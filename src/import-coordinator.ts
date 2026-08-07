@@ -36,7 +36,7 @@ export class ImportCoordinator extends Container<Env> {
 	sleepAfter = "30m";
 	enableInternet = true; // Scryfall bulk data + R2 S3 endpoint
 
-	constructor(ctx: DurableObjectState, env: Env) {
+	constructor(ctx: ConstructorParameters<typeof Container>[0], env: Env) {
 		super(ctx, env);
 		this.envVars = {
 			R2_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID,

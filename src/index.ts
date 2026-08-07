@@ -67,7 +67,11 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		return securityHeaders(response);
 	} catch (err) {
 		if (err instanceof Response) return securityHeaders(err); // redirects (HTTPMovedPermanently parity)
-		if (err instanceof EngineUnavailableError && err.bootstrapping && (path === "_root" || path === "card" || path.startsWith("card/"))) {
+		if (
+			err instanceof EngineUnavailableError &&
+			err.bootstrapping &&
+			(path === "_root" || path === "card" || path.startsWith("card/"))
+		) {
 			// Human-facing pages get the auto-refreshing "building index" page
 			// during first-deploy bootstrap; JSON endpoints keep upstream's 503.
 			return securityHeaders(await bootstrapPage(env));
@@ -76,7 +80,13 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			// The store is bootstrapping or failed to load. Loud, structured,
 			// never an empty result (this deployment has no SQL fallback).
 			return securityHeaders(
-				httpError(503, "Service Unavailable", err.bootstrapping ? "The card index is being built, please retry shortly." : "Engine is not loaded, please try again later."),
+				httpError(
+					503,
+					"Service Unavailable",
+					err.bootstrapping
+						? "The card index is being built, please retry shortly."
+						: "Engine is not loaded, please try again later.",
+				),
 			);
 		}
 		console.error(`Error handling request for ${path}:`, err);
@@ -91,7 +101,7 @@ export default {
 
 	// Nightly store rebuild (wrangler.jsonc triggers.crons). The coordinator DO
 	// serializes runs; a run already in flight makes this a no-op.
-	async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+	async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 		const coordinator = env.IMPORT_COORDINATOR.get(env.IMPORT_COORDINATOR.idFromName("singleton"));
 		ctx.waitUntil(coordinator.fetch("https://coordinator/start-import?reason=cron"));
 		// Also refresh this isolate's view of the manifest so hot-swap lag stays bounded.

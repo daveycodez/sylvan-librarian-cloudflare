@@ -23,7 +23,7 @@
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] }],
 	"triggers": { "crons": ["17 11 * * *"] },
 	"alias": {
-		"sylvan-engine-wasm": "./engine/wasm/pkg/sylvan_engine_wasm.js"
+		"sylvan-engine-wasm": "./src/engine/wasm-shim.ts"
 	},
 	"rules": [
 		{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },

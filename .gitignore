@@ -5,6 +5,6 @@ target/
 .dev.vars
 .env
 *.store
-store-build/
 __pycache__/
 .venv/
+store-build*/

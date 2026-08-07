@@ -103,7 +103,10 @@ async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Pr
  * R2 body is streamed into the cache first (no JS-side buffering), then read
  * back — two sequential streams instead of one big resident buffer.
  */
-async function openStoreStream(env: Env, storeKey: string): Promise<{ body: ReadableStream<Uint8Array>; totalLen: number }> {
+async function openStoreStream(
+	env: Env,
+	storeKey: string,
+): Promise<{ body: ReadableStream<Uint8Array>; totalLen: number }> {
 	const cacheKey = new Request(STORE_CACHE_URL + encodeURIComponent(storeKey));
 	const cache = caches.default;
 

@@ -39,7 +39,7 @@
 	// The wasm engine is imported by the module name the code uses; the built
 	// wasm-bindgen pkg is committed so Workers Builds needs no Rust toolchain.
 	"alias": {
-		"sylvan-engine-wasm": "./engine/wasm/pkg/sylvan_engine_wasm.js"
+		"sylvan-engine-wasm": "./src/engine/wasm-shim.ts"
 	},
 
 	// Bundle the wasm engine and the vendored upstream static assets.
