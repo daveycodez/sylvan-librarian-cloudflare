@@ -14,8 +14,6 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use card_engine::{store_format_version, StoreBuilder};
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use serde_json::Value;
 
 /// What a finished build produced — serialized alongside the store so the
@@ -37,9 +35,8 @@ pub struct Manifest {
     pub upstream_commit: String,
     /// card_engine's ARCHIVE_FORMAT_VERSION. Readers reject a mismatch.
     pub format_version: u32,
-    /// Uncompressed archive size in bytes (16-byte header included). The
-    /// Worker preallocates its wasm-side buffer from this before streaming
-    /// the gzipped store through DecompressionStream.
+    /// Archive size in bytes (16-byte header included). The Worker
+    /// preallocates its wasm-side buffer from this.
     pub store_bytes: u64,
 }
 
@@ -87,20 +84,17 @@ pub fn build_store(
     let format_version = store_format_version();
     // The key must be unique per build: the Worker detects a new publish by
     // store-key change and caches store bytes immutably keyed by it.
-    // Gzipped: cold isolate starts are dominated by moving the store out of
-    // R2, and the archive compresses ~2-3x. The Worker streams it through
-    // DecompressionStream into the wasm buffer it preallocates from
-    // `store_bytes`.
-    let store_key = format!("card-store-v{format_version}-{built_at}.store.gz");
+    // Stored RAW, deliberately: R2 egress to Workers is free while decompress
+    // CPU is metered per cold isolate — at scale, compression is a pure cost.
+    let store_key = format!("card-store-v{format_version}-{built_at}.store");
     let store_path = out_dir.join(&store_key);
 
     std::fs::create_dir_all(out_dir)?;
     let file = std::fs::File::create(&store_path)?;
-    let buf = BufWriter::with_capacity(1 << 20, file);
-    let mut counter = CountingWriter { inner: GzEncoder::new(buf, Compression::default()), written: 0 };
+    let mut counter = CountingWriter { inner: BufWriter::with_capacity(1 << 20, file), written: 0 };
     let stats = builder.finish_to_writer(&mut counter)?;
     let store_bytes = counter.written;
-    counter.inner.finish()?.flush()?;
+    counter.flush()?;
 
     Ok(Manifest {
         store_key,
@@ -113,8 +107,7 @@ pub fn build_store(
     })
 }
 
-/// Pass-through writer that counts bytes, sitting UPSTREAM of the gzip
-/// encoder so the count is the uncompressed archive size.
+/// Pass-through writer that counts the archive bytes as they stream out.
 struct CountingWriter<W: Write> {
     inner: W,
     written: u64,

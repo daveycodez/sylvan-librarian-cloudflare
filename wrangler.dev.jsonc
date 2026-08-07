@@ -19,9 +19,15 @@
 		}
 	],
 	"durable_objects": {
-		"bindings": [{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" }]
+		"bindings": [
+			{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" },
+			{ "name": "SEARCH_ENGINE", "class_name": "SearchEngine" }
+		]
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] }],
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] },
+		{ "tag": "v2", "new_sqlite_classes": ["SearchEngine"] }
+	],
 	"triggers": { "crons": ["17 11 * * *"] },
 	"alias": {
 		"sylvan-engine-wasm": "./src/engine/wasm-shim.ts"

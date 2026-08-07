@@ -155,7 +155,7 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 	let totalCards: number;
 	let rawCards: CardRow[];
 	try {
-		const result = timer.time("engine_query", () =>
+		const result = await timer.time("engine_query", () =>
 			engine.search({
 				filterTree,
 				unique: opts.unique,
@@ -259,7 +259,7 @@ export async function randomSearchHandler(
 	// Upstream returns an empty list while the store is loading; this port has
 	// no store-less mode, so an unloaded engine is a 503 (see module comment).
 	const engine = await ctx.getEngine();
-	const cards = engine.samplePreferred(numCards, [...DEFAULT_RESULT_FIELDS]);
+	const cards = await engine.samplePreferred(numCards, [...DEFAULT_RESULT_FIELDS]);
 	const totalCards = cards.length;
 	const shaped: unknown = (bound.shape as ResponseShape) === "columnar" ? columnarizeCards(cards) : cards;
 	return jsonResponse({ cards: shaped, total_cards: totalCards }, NO_STORE_HEADER);

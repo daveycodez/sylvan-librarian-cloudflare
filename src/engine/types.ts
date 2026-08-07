@@ -27,15 +27,20 @@ export interface EngineCatalog {
 	keywords: Record<string, number>;
 }
 
-/** What the routes need from a loaded engine instance. */
+/**
+ * What the routes need from an engine. Async because the engine may be local
+ * (warm isolate: wasm call, resolves immediately) or remote (cold isolate:
+ * RPC to the regional SearchEngine Durable Object while this isolate warms
+ * itself in the background).
+ */
 export interface Engine {
-	search(opts: EngineSearchOptions): EngineSearchResult;
-	commonCardTypes(): Record<string, number>;
-	commonCardKeywords(): Record<string, number>;
+	search(opts: EngineSearchOptions): Promise<EngineSearchResult>;
+	commonCardTypes(): Promise<Record<string, number>>;
+	commonCardKeywords(): Promise<Record<string, number>>;
 	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
-	samplePreferred(numCards: number, fields: string[]): Record<string, unknown>[];
+	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
 	/** Number of cards in the store; 0 means "not loaded" upstream — here a loaded engine is never empty. */
-	size(): number;
+	size(): Promise<number>;
 }
 
 /**

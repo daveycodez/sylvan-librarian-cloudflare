@@ -27,7 +27,7 @@ let lastManifestCheck = 0;
 let lastBootstrapKick = 0;
 
 class WasmEngine implements Engine {
-	search(opts: EngineSearchOptions): EngineSearchResult {
+	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const result = JSON.parse(
 			wasm.query(
 				JSON.stringify(opts.filterTree),
@@ -44,15 +44,15 @@ class WasmEngine implements Engine {
 		return { totalCards: result.total, cards: result.rows };
 	}
 
-	commonCardTypes(): Record<string, number> {
+	async commonCardTypes(): Promise<Record<string, number>> {
 		return (JSON.parse(wasm.catalog()) as { card_types: Record<string, number> }).card_types;
 	}
 
-	commonCardKeywords(): Record<string, number> {
+	async commonCardKeywords(): Promise<Record<string, number>> {
 		return (JSON.parse(wasm.catalog()) as { card_keywords: Record<string, number> }).card_keywords;
 	}
 
-	samplePreferred(numCards: number, fields: string[]): Record<string, unknown>[] {
+	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
 		// Engine sampling is deterministic per seed; per-request entropy keeps
 		// /random_search random, mirroring upstream's process-side RNG.
 		const seedBytes = crypto.getRandomValues(new BigUint64Array(1));
@@ -60,12 +60,12 @@ class WasmEngine implements Engine {
 		return JSON.parse(wasm.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
 	}
 
-	size(): number {
+	async size(): Promise<number> {
 		return wasm.size();
 	}
 }
 
-async function readManifest(env: Env): Promise<StoreManifest | null> {
+export async function readManifest(env: Env): Promise<StoreManifest | null> {
 	const obj = await env.STORE.get(MANIFEST_KEY);
 	if (!obj) return null;
 	return (await obj.json()) as StoreManifest;
@@ -82,29 +82,37 @@ function kickBootstrap(env: Env, reason: string): void {
 	});
 }
 
-/** Stream the store object into wasm memory via the chunked loader. */
-async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Promise<void> {
+/** Stream the store bytes into wasm memory via the chunked loader. */
+async function feedStore(
+	body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+	totalLen: number,
+): Promise<void> {
 	wasm.begin_store_load(totalLen);
-	const reader = body.getReader();
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			wasm.store_load_chunk(value);
+	if (body instanceof ReadableStream) {
+		const reader = body.getReader();
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				wasm.store_load_chunk(value);
+			}
+		} finally {
+			reader.releaseLock();
 		}
-	} finally {
-		reader.releaseLock();
+	} else {
+		for await (const chunk of body) {
+			wasm.store_load_chunk(chunk);
+		}
 	}
 	wasm.finish_store_load();
 }
 
 /**
- * Fetch the GZIPPED store bytes as a stream: Cache API first, R2 on miss. On
- * miss the R2 body is streamed into the cache first (no JS-side buffering),
- * then read back — two sequential streams instead of one big resident buffer.
- * The cache holds the compressed form (~2.5x smaller writes/reads).
+ * Fetch the store bytes as a stream: Cache API first, R2 on miss. On miss the
+ * R2 body is streamed into the cache first (no JS-side buffering), then read
+ * back — two sequential streams instead of one big resident buffer.
  */
-async function openStoreStream(env: Env, storeKey: string): Promise<ReadableStream<Uint8Array>> {
+export async function openStoreStream(env: Env, storeKey: string): Promise<ReadableStream<Uint8Array>> {
 	const cacheKey = new Request(STORE_CACHE_URL + encodeURIComponent(storeKey));
 	const cache = caches.default;
 
@@ -145,27 +153,27 @@ async function loadStore(env: Env): Promise<Engine> {
 		throw new EngineUnavailableError("No store manifest in R2; import has been triggered", true);
 	}
 
-	if (!manifest.store_bytes || !manifest.store_key.endsWith(".store.gz")) {
-		// A manifest from an incompatible builder (pre-compression format).
-		// Loud, and self-healing: the next import publishes the current format.
+	if (!manifest.store_bytes || !manifest.store_key.endsWith(".store")) {
+		// A manifest from an incompatible builder format. Loud, and
+		// self-healing: the next import publishes the current format.
 		throw new EngineUnavailableError(
-			`Manifest ${manifest.store_key} is not in the gzipped store format this Worker reads`,
+			`Manifest ${manifest.store_key} is not in the raw store format this Worker reads`,
 			false,
 		);
 	}
 
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
-	const gzBody = await openStoreStream(env, manifest.store_key);
+	const body = await openStoreStream(env, manifest.store_key);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
 		current = null;
 		wasm.unload_store();
 	}
-	// Decompress in-flight: the wasm buffer is preallocated at the manifest's
-	// uncompressed size, so the chunked loader never guesses.
-	await feedStore(gzBody.pipeThrough(new DecompressionStream("gzip")), manifest.store_bytes);
+	// Raw bytes, deliberately uncompressed: R2 egress to Workers is free while
+	// decompress CPU would be metered on every isolate warm-up.
+	await feedStore(body, manifest.store_bytes);
 
 	const engine = new WasmEngine();
 	current = { storeKey: manifest.store_key, engine };
@@ -190,7 +198,7 @@ async function refreshIfStale(env: Env): Promise<void> {
 	}
 }
 
-export async function getEngine(env: Env, ctx: ExecutionContext): Promise<Engine> {
+export async function getEngine(env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<Engine> {
 	if (current) {
 		ctx.waitUntil(refreshIfStale(env));
 		return current.engine;
@@ -201,6 +209,76 @@ export async function getEngine(env: Env, ctx: ExecutionContext): Promise<Engine
 		});
 	}
 	return loading;
+}
+
+/** The loaded store's key, or null — lets the DO decide persistence/freshness. */
+export function currentStoreKey(): string | null {
+	return current?.storeKey ?? null;
+}
+
+/** What adoptStoreFromChunks needs to know about a locally-persisted store. */
+export interface AdoptableStoreMeta {
+	store_key: string;
+	store_bytes: number;
+	card_count: number;
+	built_at: string;
+}
+
+/**
+ * Activate a store from an arbitrary chunk source (the DO's SQLite copy on
+ * wake) without touching R2. Same guards as the R2 path: no-op when the key
+ * is already active, single-flight via `loading`.
+ */
+export function adoptStoreFromChunks(meta: AdoptableStoreMeta, chunks: AsyncIterable<Uint8Array>): Promise<Engine> {
+	if (current && current.storeKey === meta.store_key) return Promise.resolve(current.engine);
+	if (loading) return loading;
+	loading = (async () => {
+		if (current) {
+			current = null;
+			wasm.unload_store();
+		}
+		await feedStore(chunks, meta.store_bytes);
+		const engine = new WasmEngine();
+		current = { storeKey: meta.store_key, engine };
+		console.log(
+			`Store adopted from local chunks: ${meta.store_key} (${meta.card_count} cards, built ${meta.built_at})`,
+		);
+		return engine;
+	})().finally(() => {
+		loading = null;
+	});
+	return loading;
+}
+
+/** Force a manifest read + load now (single-flight); used by DO freshening. */
+export function reloadStore(env: Env): Promise<Engine> {
+	if (loading) return loading;
+	loading = loadStore(env).finally(() => {
+		loading = null;
+	});
+	return loading;
+}
+
+/** Non-blocking: the local engine if this isolate is already warm, else null. */
+export function tryGetLoadedEngine(): Engine | null {
+	return current?.engine ?? null;
+}
+
+/**
+ * Cold-isolate self-warming: start the store load in the background (the
+ * request itself is served by the regional SearchEngine DO meanwhile). A
+ * failure here is logged, never thrown — the DO path is the request's fate.
+ */
+export function warmInBackground(env: Env, waitUntil: (p: Promise<unknown>) => void): void {
+	if (current || loading) return;
+	loading = loadStore(env).finally(() => {
+		loading = null;
+	});
+	waitUntil(
+		loading.catch((err) => {
+			console.warn("Background isolate warm-up failed:", err);
+		}),
+	);
 }
 
 /** Called from the cron handler so isolates converge on a fresh publish fast. */

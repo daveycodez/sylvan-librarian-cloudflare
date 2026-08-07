@@ -30,9 +30,15 @@
 	// import runs (only one at a time), starts the container, and records the
 	// last run's outcome. The Worker talks to a single named instance.
 	"durable_objects": {
-		"bindings": [{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" }]
+		"bindings": [
+			{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" },
+			{ "name": "SEARCH_ENGINE", "class_name": "SearchEngine" }
+		]
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] }],
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] },
+		{ "tag": "v2", "new_sqlite_classes": ["SearchEngine"] }
+	],
 	"containers": [
 		{
 			"class_name": "ImportCoordinator",

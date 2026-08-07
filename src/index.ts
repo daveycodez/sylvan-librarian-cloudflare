@@ -3,14 +3,43 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { bootstrapPage } from "./engine/bootstrap-page";
-import { getEngine, manifestPollAlarm } from "./engine/store";
-import type { Env } from "./engine/types";
+import { RemoteEngine } from "./engine/remote-engine";
+import { SearchEngine } from "./engine/search-engine-do";
+import { getEngine, manifestPollAlarm, tryGetLoadedEngine, warmInBackground } from "./engine/store";
+import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
 import { buildRoutesListing, routes } from "./routes";
 import { httpError, securityHeaders } from "./routes/http";
 
-export { ImportCoordinator };
+export { ImportCoordinator, SearchEngine };
+
+// Hybrid engine routing: a warm isolate answers locally (full horizontal
+// scale); a cold isolate forwards to its REGION's session-warm SearchEngine
+// DO while warming itself in the background. One DO per location hint,
+// created near the traffic that names it.
+const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
+	AF: "afr",
+	AN: "oc",
+	AS: "apac",
+	EU: "weur",
+	NA: "wnam",
+	OC: "oc",
+	SA: "sam",
+};
+
+function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
+	const local = tryGetLoadedEngine();
+	if (local) {
+		source.tag = "isolate";
+		return getEngine(env, ctx); // resolves immediately + background staleness check
+	}
+	warmInBackground(env, (p) => ctx.waitUntil(p));
+	const hint = CONTINENT_TO_HINT[(request.cf as { continent?: string } | undefined)?.continent ?? "NA"] ?? "wnam";
+	source.tag = `do-${hint}`;
+	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${hint}`), { locationHint: hint });
+	return Promise.resolve(new RemoteEngine(stub));
+}
 
 // Upstream DISALLOWED_QUERY_ARGS: these names are reserved for internal
 // plumbing and are stripped from client query params before binding.
@@ -52,11 +81,21 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 
 	const requestHost = request.headers.get("X-Proxy-Host") ?? url.host;
 
+	// Observability: which engine answered (empty when the route never asked).
+	// Cached responses replay the header from generation time; pair it with
+	// cf-cache-status to distinguish edge cache hits.
+	const engineSource = { tag: "" };
+	const finish = (response: Response): Response => {
+		const out = securityHeaders(response);
+		if (engineSource.tag) out.headers.set("x-sylvan-engine", engineSource.tag);
+		return out;
+	};
+
 	try {
 		const response = await entry.handler(
 			{
 				env,
-				getEngine: () => getEngine(env, ctx),
+				getEngine: () => resolveEngine(request, env, ctx, engineSource),
 				request,
 				requestHost,
 				waitUntil: (p) => ctx.waitUntil(p),
@@ -64,9 +103,9 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			resolved.positionalArgs,
 			params,
 		);
-		return securityHeaders(response);
+		return finish(response);
 	} catch (err) {
-		if (err instanceof Response) return securityHeaders(err); // redirects (HTTPMovedPermanently parity)
+		if (err instanceof Response) return finish(err); // redirects (HTTPMovedPermanently parity)
 		if (
 			err instanceof EngineUnavailableError &&
 			err.bootstrapping &&
@@ -74,12 +113,12 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		) {
 			// Human-facing pages get the auto-refreshing "building index" page
 			// during first-deploy bootstrap; JSON endpoints keep upstream's 503.
-			return securityHeaders(await bootstrapPage(env));
+			return finish(await bootstrapPage(env));
 		}
 		if (err instanceof EngineUnavailableError) {
 			// The store is bootstrapping or failed to load. Loud, structured,
 			// never an empty result (this deployment has no SQL fallback).
-			return securityHeaders(
+			return finish(
 				httpError(
 					503,
 					"Service Unavailable",
@@ -90,7 +129,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			);
 		}
 		console.error(`Error handling request for ${path}:`, err);
-		return securityHeaders(httpError(500, "Server Error", "An internal error occurred."));
+		return finish(httpError(500, "Server Error", "An internal error occurred."));
 	}
 }
 

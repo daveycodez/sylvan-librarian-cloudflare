@@ -45,7 +45,7 @@ export class FakeEngine implements Engine {
 	types: Record<string, number> = { Creature: 100, Kindred: 5, Land: 42 };
 	keywords: Record<string, number> = { Flying: 10, Haste: 3 };
 
-	search(opts: EngineSearchOptions): { totalCards: number; cards: Record<string, unknown>[] } {
+	async search(opts: EngineSearchOptions): Promise<{ totalCards: number; cards: Record<string, unknown>[] }> {
 		this.lastSearch = opts;
 		if (this.searchError) {
 			throw this.searchError;
@@ -53,15 +53,15 @@ export class FakeEngine implements Engine {
 		return { totalCards: this.totalCards, cards: this.cards.slice(0, opts.limit) };
 	}
 
-	commonCardTypes(): Record<string, number> {
+	async commonCardTypes(): Promise<Record<string, number>> {
 		return { ...this.types };
 	}
 
-	commonCardKeywords(): Record<string, number> {
+	async commonCardKeywords(): Promise<Record<string, number>> {
 		return { ...this.keywords };
 	}
 
-	samplePreferred(numCards: number, fields: string[]): Record<string, unknown>[] {
+	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
 		this.lastSampleArgs = { numCards, fields };
 		const out: Record<string, unknown>[] = [];
 		for (let i = 0; i < Math.min(numCards, this.cards.length); i++) {
@@ -70,7 +70,7 @@ export class FakeEngine implements Engine {
 		return out;
 	}
 
-	size(): number {
+	async size(): Promise<number> {
 		return this.totalCards;
 	}
 }
