@@ -167,7 +167,20 @@ for every service — they measure whatever cache/isolate state each provider
 happens to be in (an earlier run of this same table caught Scryfall's CDN
 cold at ~751ms median where this run found it warm at 99ms).
 
-| query | this port (cold/warm) | sylvan-librarian.com | Scryfall API |
+**Headline (medians across the 10 queries):**
+
+| | cold (cache miss) | warm (repeat) | payload |
+|---|---|---|---|
+| **this port** | **111ms** | **57ms** | **~34 KB** |
+| sylvan-librarian.com | 397ms — 3.6× slower | 381ms — 6.7× slower | ~34 KB |
+| Scryfall API | 87ms — 1.3× faster | 89ms — 1.6× slower | ~813 KB — 24× larger |
+
+Worst single request: **this port 164ms** · upstream 594ms · Scryfall 128ms.
+
+<details>
+<summary>Per-query results (cold / warm, ms)</summary>
+
+| query | this port | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|
 | `t:goblin cmc<3 c:r` | 164 / 58 | 594 / 423 | 128 / 99 |
 | `o:"draw a card" t:creature f:modern` | 117 / 51 | 467 / 460 | 84 / 88 |
@@ -179,8 +192,8 @@ cold at ~751ms median where this run found it warm at 99ms).
 | `r:mythic t:dragon cmc<=4` | 80 / 66 | 364 / 364 | 70 / 66 |
 | `t:planeswalker c:b f:pioneer` | 109 / 64 | 382 / 372 | 74 / 81 |
 | `t:instant o:damage cmc=1` | 148 / 99 | 381 / 376 | 86 / 90 |
-| **median** | **111 / 57** | **397 / 381** | **87 / 89** |
-| median payload | ~34 KB | ~34 KB | ~813 KB |
+
+</details>
 
 Reading the numbers honestly:
 
