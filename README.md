@@ -113,19 +113,23 @@ The complete list of intentional differences:
 - **Built-in per-IP rate limit** on the engine-computing routes (`/search`,
   `/random_search`, the SSR root with a query): a continuously-refilling
   token bucket in a tiny per-IP Durable Object (the pattern from Cloudflare's
-  rules-of-durable-objects docs) — globally exact, unlike the Workers
+  rules-of-durable-objects docs), created with a location hint in the
+  region the IP's traffic comes from — globally exact, unlike the Workers
   rate-limiting binding, whose eventually-consistent counters we measured
   barely enforcing. Default 100 requests/10s per IP, 429 + `Retry-After`
-  when exceeded. **Off by default** — opt in by setting
+  when exceeded. **Enforcement is asynchronous and costs zero request
+  latency**: requests are served immediately while the check reports in the
+  background; an over-limit verdict blocks the IP from the next request
+  onward, answered from isolate memory (a fresh burst gets a brief grace —
+  measured: blocking began mid-burst). **Off by default** — opt in with
   `RATE_LIMIT_ENABLED=true` (runtime var, no redeploy); `RATE_LIMIT_PER_10S`
-  tunes the allowance. Cache hits never count (served
-  before the Worker runs), so repeat queries and crowds behind shared IPs are
-  unaffected; the cost is one short DO round-trip on cache-missing engine
-  requests. Server-to-server callers bypass with the optional
-  `TRUSTED_API_KEY` secret + `x-sylvan-api-key` header (see .env.example).
-  The `x-sylvan-rl` response header reports the limiter's verdict. This caps
-  engine/CPU abuse; blocking a mega-flood's per-invocation fees still needs
-  zone WAF rules on a custom domain — the layers compose.
+  tunes the allowance. Cache hits never count (served before the Worker
+  runs), so repeat queries and crowds behind shared IPs are unaffected.
+  Server-to-server callers bypass with the optional `TRUSTED_API_KEY` secret
+  + `x-sylvan-api-key` header (see .env.example). The `x-sylvan-rl` response
+  header reports the limiter's verdict. This caps engine/CPU abuse; blocking
+  a mega-flood's per-invocation fees still needs zone WAF rules on a custom
+  domain — the layers compose.
 - Postgres-only admin/import routes answer `501`; the container pipeline is
   their replacement. `get_pid` returns `0` (isolates have no pid).
 - `card_is_tags` stays empty, matching upstream's *automated* import (upstream
