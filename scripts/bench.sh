@@ -34,12 +34,13 @@ bench_service() { # service base_url extra_curl_args...
   for q in "${QUERIES[@]}"; do
     local enc; enc=$(urlencode "$q")
     for _run in "${RUNS[@]}"; do
-      args+=(--url "$base?q=$enc")
+      args+=(--url "$base?q=$enc" --output /dev/null)
     done
   done
   # One invocation = one reused connection; -w emits one line per transfer.
   local i=0
   while IFS=$'\t' read -r code total ttfb size; do
+    [[ "$code" == "200" ]] || echo "WARN: $service non-200 ($code)" >&2
     local q="${QUERIES[$((i / 3))]}"
     local run="${RUNS[$((i % 3))]}"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$service" "$q" "$run" "$code" "$total" "$ttfb" "$size" >> "$OUT"

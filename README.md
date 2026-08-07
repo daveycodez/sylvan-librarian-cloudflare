@@ -152,8 +152,12 @@ Same 10 queries against this deployment, upstream's own
 [Scryfall API](https://api.scryfall.com) (2026-08-07, single US residential
 vantage). Per query: one **cold** request (cache miss) then the median of two
 immediate **warm** repeats; all services keep their production caching —
-that's the point. Scryfall requests spaced 600ms per their rate etiquette.
-Times are total request ms.
+that's the point. Each service is measured over one reused HTTP/2 connection,
+the way a browser behaves (an earlier revision of this harness paid a fresh
+TLS handshake per request, which unfairly penalized the distant single-origin
+upstream by ~300ms — spotted because the upstream site *felt* faster than the
+table claimed). Scryfall requests are rate-limited to 1/s per their
+etiquette. Times are total request ms.
 
 Reproduce it yourself (only needs curl):
 
@@ -171,47 +175,47 @@ cold at ~751ms median where this run found it warm at 99ms).
 
 | | cold (cache miss) | warm (repeat) | payload |
 |---|---|---|---|
-| **this port (Cloudflare)** | **111ms** | **57ms** | **~34 KB** |
-| sylvan-librarian.com | 397ms — 3.6× slower | 381ms — 6.7× slower | ~34 KB |
-| Scryfall API | 87ms — 1.3× faster | 89ms — 1.6× slower | ~813 KB — 24× larger |
+| **this port (Cloudflare)** | **22ms** | **20ms** | **~34 KB** |
+| sylvan-librarian.com | 103ms — 4.7× slower | 100ms — 5× slower | ~34 KB |
+| Scryfall API | 30ms — 1.4× slower | 31ms — 1.6× slower | ~813 KB — 24× larger |
 
-Worst single request: **this port (Cloudflare) 164ms** · upstream 594ms · Scryfall 128ms.
+Worst single request: **this port (Cloudflare) 54ms** · upstream 402ms · Scryfall 85ms.
 
 <details open>
 <summary>Per-query results (cold / warm, ms)</summary>
 
 | query | this port (Cloudflare) | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|
-| `t:goblin cmc<3 c:r` | 164 / 58 | 594 / 423 | 128 / 99 |
-| `o:"draw a card" t:creature f:modern` | 117 / 51 | 467 / 460 | 84 / 88 |
-| `kw:flying pow>=4 -c:w` | 113 / 56 | 451 / 458 | 114 / 80 |
-| `t:instant cmc=1 c:u` | 137 / 61 | 408 / 379 | 103 / 103 |
-| `t:legendary t:elf f:commander` | 99 / 52 | 465 / 465 | 118 / 102 |
-| `o:"enters tapped" t:land` | 107 / 46 | 387 / 383 | 88 / 97 |
-| `c:wu t:bird` | 101 / 52 | 380 / 370 | 71 / 75 |
-| `r:mythic t:dragon cmc<=4` | 80 / 66 | 364 / 364 | 70 / 66 |
-| `t:planeswalker c:b f:pioneer` | 109 / 64 | 382 / 372 | 74 / 81 |
-| `t:instant o:damage cmc=1` | 148 / 99 | 381 / 376 | 86 / 90 |
+| `t:goblin cmc<3 c:r` | 54 / 18 | 402 / 98 | 85 / 36 |
+| `o:"draw a card" t:creature f:modern` | 19 / 21 | 101 / 99 | 26 / 38 |
+| `kw:flying pow>=4 -c:w` | 19 / 20 | 102 / 103 | 30 / 33 |
+| `t:instant cmc=1 c:u` | 24 / 19 | 103 / 100 | 31 / 29 |
+| `t:legendary t:elf f:commander` | 22 / 21 | 103 / 101 | 29 / 28 |
+| `o:"enters tapped" t:land` | 21 / 21 | 104 / 99 | 27 / 38 |
+| `c:wu t:bird` | 23 / 20 | 102 / 97 | 36 / 24 |
+| `r:mythic t:dragon cmc<=4` | 22 / 22 | 103 / 96 | 26 / 21 |
+| `t:planeswalker c:b f:pioneer` | 25 / 19 | 103 / 101 | 28 / 22 |
+| `t:instant o:damage cmc=1` | 19 / 20 | 105 / 103 | 32 / 35 |
 
 </details>
 
 Reading the numbers honestly:
 
-- **Warm (the common case): ~57ms** — network round-trip to the nearest
-  Cloudflare colo, since edge cache hits and warm-isolate engine queries
-  (0.2–3ms of compute) are both effectively free. ~7× upstream, with 24× less
-  payload than Scryfall's full card objects.
+- **~20ms flat** — one round-trip to the nearest Cloudflare colo; edge cache
+  hits and warm-engine queries (0.2–3ms of compute) are both effectively
+  free, so cold and warm are indistinguishable. 24× less payload than
+  Scryfall's full card objects.
 - **No cold tail**: a cache-miss on a cold isolate is answered by the
-  regional warm-engine Durable Object (~100–200ms) while the isolate warms in
-  the background — the worst cell in the table above is 164ms. Before the
-  hybrid, the same probe showed 1.3–3.5s spikes whenever a request landed on
-  a cold machine.
-- **Upstream is impressively consistent** (~360–600ms): a single always-warm
-  origin, so it never cold-starts — but every request pays the trip to that
-  one origin, which is why the hybrid's worst case now beats upstream's best.
+  regional warm-engine Durable Object while the isolate warms in the
+  background — the worst cell in the table is 54ms. Before the hybrid, the
+  same probe showed 1.3–3.5s spikes whenever a request landed on a cold
+  machine.
+- **Upstream's honest number is ~100ms** — a single always-warm origin, so
+  never a cold start, but every request pays the trip to that one origin
+  (plus a first-connection handshake, visible in its 402ms worst cell).
 - Scryfall's numbers are its CDN serving cached responses (fast and steady);
-  ours are live engine computation per cache-miss. Comparable feel, different
-  mechanics.
+  ours are live engine computation per cache-miss. We edge it on both
+  columns from this vantage, but their API serves a far richer card object.
 
 ## License
 
