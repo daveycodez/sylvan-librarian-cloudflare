@@ -120,6 +120,9 @@ export class ImportCoordinator extends Container<Env> {
 
 	override onStop(params: { exitCode: number; reason: string }): void {
 		// Ground truth for success is the R2 manifest; this just records the exit.
+		// Guarded: these lifecycle hooks also fire mid platform resets (code
+		// updates, storage resets), where storage access itself throws — a
+		// bookkeeping failure must not escalate into a crashing error handler.
 		this.ctx.waitUntil(
 			(async () => {
 				const run = await this.getRun();
@@ -130,7 +133,9 @@ export class ImportCoordinator extends Container<Env> {
 					run.detail = `container exited (${params.reason})`;
 					await this.ctx.storage.put("run", run);
 				}
-			})(),
+			})().catch((err) => {
+				console.warn(`onStop bookkeeping skipped (storage unavailable): ${err}`);
+			}),
 		);
 	}
 
@@ -143,7 +148,9 @@ export class ImportCoordinator extends Container<Env> {
 				run.finishedAt = new Date().toISOString();
 				run.detail = String(error);
 				await this.ctx.storage.put("run", run);
-			})(),
+			})().catch((err) => {
+				console.warn(`onError bookkeeping skipped (storage unavailable): ${err}`);
+			}),
 		);
 	}
 }

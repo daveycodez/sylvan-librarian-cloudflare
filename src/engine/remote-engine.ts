@@ -40,6 +40,32 @@ async function unwrap<T>(call: Promise<T>): Promise<T> {
 	}
 }
 
+/**
+ * Run one engine RPC, retrying failures the runtime flags as transient.
+ *
+ * Every deploy RESETS every DO, and an RPC landing during the reset is
+ * rejected with "Durable Object reset because its code was updated" (storage
+ * resets and network blips behave the same). The runtime marks these
+ * `retryable: true`, and Cloudflare's guidance is to retry them — without
+ * this, the first request after each deploy surfaced as a raw 500. All
+ * engine RPCs are pure reads, so retrying is always safe. Engine-unavailable
+ * errors (real 503 semantics) are never retried.
+ */
+async function withRetry<T>(call: () => Promise<T>): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await unwrap(call());
+		} catch (err) {
+			if (err instanceof EngineUnavailableError) throw err;
+			const flags = err as { retryable?: boolean; overloaded?: boolean };
+			if (attempt >= 2 || flags.retryable !== true || flags.overloaded === true) throw err;
+			console.warn(`Retryable engine RPC failure (attempt ${attempt + 1}): ${err}`);
+			// The reset completes in well under a second; brief linear backoff.
+			await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+		}
+	}
+}
+
 export class RemoteEngine implements Engine {
 	/** get_catalog reads both catalogs; one RPC serves both calls. */
 	private catalogOnce: Promise<{ types: Record<string, number>; keywords: Record<string, number> }> | null = null;
@@ -52,7 +78,7 @@ export class RemoteEngine implements Engine {
 
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, ...result } = await unwrap(this.stub.search(opts, this.fallbackHint));
+		const { acquireMs, load, ...result } = await withRetry(() => this.stub.search(opts, this.fallbackHint));
 		// The DO's queue-depth rider feeds the shard autoscaler; both metadata
 		// fields are stripped so the search envelope never carries them.
 		if (load !== undefined) reportEngineLoad(load);
@@ -66,7 +92,7 @@ export class RemoteEngine implements Engine {
 	}
 
 	private catalog() {
-		this.catalogOnce ??= unwrap(this.stub.catalog(this.fallbackHint));
+		this.catalogOnce ??= withRetry(() => this.stub.catalog(this.fallbackHint));
 		return this.catalogOnce;
 	}
 
@@ -79,10 +105,10 @@ export class RemoteEngine implements Engine {
 	}
 
 	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return unwrap(this.stub.samplePreferred(numCards, fields, this.fallbackHint));
+		return withRetry(() => this.stub.samplePreferred(numCards, fields, this.fallbackHint));
 	}
 
 	size(): Promise<number> {
-		return unwrap(this.stub.size(this.fallbackHint));
+		return withRetry(() => this.stub.size(this.fallbackHint));
 	}
 }
