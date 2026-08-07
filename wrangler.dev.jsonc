@@ -1,0 +1,36 @@
+{
+	// LOCAL DEV config: identical to wrangler.jsonc minus the "containers"
+	// section — wrangler dev requires a local Docker daemon to emulate
+	// containers, and local dev must not depend on Docker. The ImportCoordinator
+	// DO still exists (its container-start calls fail loudly and harmlessly);
+	// the store is seeded into local simulated R2 by scripts/seed-local.sh.
+	// Keep every other setting in lockstep with wrangler.jsonc.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sylvan-librarian",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"r2_buckets": [
+		{
+			"binding": "STORE",
+			"bucket_name": "sylvan-librarian"
+		}
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] }],
+	"triggers": { "crons": ["17 11 * * *"] },
+	"alias": {
+		"sylvan-engine-wasm": "./engine/wasm/pkg/sylvan_engine_wasm.js"
+	},
+	"rules": [
+		{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+		{ "type": "Text", "globs": ["**/*.css", "**/*.html", "**/*.txt"], "fallthrough": true },
+		{ "type": "Data", "globs": ["**/*.ico", "**/*.webp"], "fallthrough": true }
+	],
+	"vars": {
+		"R2_BUCKET": "sylvan-librarian"
+	}
+}

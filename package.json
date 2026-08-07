@@ -5,14 +5,15 @@
   "description": "Sylvan Librarian, ported to run natively on Cloudflare Workers + R2 + Containers",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev -c wrangler.dev.jsonc",
     "deploy": "wrangler deploy",
     "build:wasm": "cd engine/wasm && wasm-pack build --target bundler --release --out-dir pkg",
     "build:builder": "cargo build --release -p sylvan-store-builder",
     "test": "bun test",
     "check": "biome check src scripts tests",
     "typecheck": "tsc --noEmit",
-    "sync-upstream": "scripts/sync-upstream.sh"
+    "sync-upstream": "scripts/sync-upstream.sh",
+    "seed:local": "scripts/seed-local.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.1.2",

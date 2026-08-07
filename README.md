@@ -69,21 +69,17 @@ routes) so those ports get re-reviewed and their parity fixtures regenerated.
 
 ```bash
 bun install
-bun run build:wasm      # wasm engine → engine/wasm/pkg (needs rust + wasm-pack)
-bun run dev             # wrangler dev with local simulated R2
+bun run seed:local      # build a real store from Scryfall bulk → local simulated R2 (once)
+bun dev                 # full site at localhost — UI, /search, everything
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck
+bun run build:wasm      # rebuild wasm engine after touching Rust (pkg is committed)
 ```
 
-To seed local R2 with a store without waiting for the container flow:
-
-```bash
-bun run build:builder
-./target/release/sylvan-store-builder --out store-build/   # fetches Scryfall bulk
-bunx wrangler r2 object put sylvan-librarian/manifest.json --local --file store-build/manifest.json
-bunx wrangler r2 object put "sylvan-librarian/$(python3 -c "import json;print(json.load(open('store-build/manifest.json'))['store_key'])")" --local --file store-build/cards.store
-```
+Local dev covers everything except the import container itself (wrangler dev
+would need a local Docker daemon for that; `seed:local` runs the same builder
+code natively instead). The container path is exercised in production only.
 
 ## License
 
