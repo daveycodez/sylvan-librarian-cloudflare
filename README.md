@@ -157,7 +157,11 @@ the way a browser behaves (an earlier revision of this harness paid a fresh
 TLS handshake per request, which unfairly penalized the distant single-origin
 upstream by ~300ms — spotted because the upstream site *felt* faster than the
 table claimed). Scryfall requests are rate-limited to 1/s per their
-etiquette. Times are total request ms.
+etiquette. Times are **total wall-clock request ms, door to door** — network
+round trip included, as a user experiences it. (Not to be confused with the
+server-side "completed in Xms" the UI displays, which is the engine's
+self-reported processing time from inside the response — every service here
+computes in single-digit ms; the table measures who's *near you* too.)
 
 Reproduce it yourself (only needs curl):
 
