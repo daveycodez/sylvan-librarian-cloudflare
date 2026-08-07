@@ -10,9 +10,9 @@ export const FALLBACK_SITE_NAME = "MTG Search";
 
 // Deliberate deviation (see README "Deviations from upstream"): this deployment
 // IS Sylvan Librarian, so pages always use its name instead of upstream's
-// hostname-derived one (which can never produce it — mtgseeker.com-family
-// hosts derive "Mtgseeker", workers.dev derives "Workers"). The derivation
-// port below stays intact and tested for upstream-sync fidelity.
+// hostname-derived one (which never produces it on the domains this deploys
+// to — e.g. workers.dev derives "Workers"). The derivation port below stays
+// intact and tested for upstream-sync fidelity.
 export const SITE_NAME = "Sylvan Librarian";
 
 // TLDs in this set are stripped from the hostname; others are concatenated
