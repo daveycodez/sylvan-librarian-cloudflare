@@ -36,12 +36,17 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 ```
 request ──▶ Workers Cache (regional edge cache in front of the Worker;
         │   honors the upstream-mirrored Cache-Control on every route —
-        │   hits skip the Worker, and its cold starts, entirely)
+        │   hits skip the Worker entirely)
         └─▶ Worker isolate (auto-scales horizontally with load)
               ├─ TS parser: Scryfall syntax → filter tree  (port of hand_parser.py)
               ├─ wasm card_engine: evaluates tree against the in-memory store
               ├─ store: ~70MB rkyv archive, loaded per-isolate from R2 (Cache API),
               │         hot-swapped when the R2 manifest advances
+              ├─ COLD isolate: forwards to the region's SearchEngine Durable
+              │   Object (one per continent, session-warm, store persisted in
+              │   its embedded SQLite so wake-ups never wait on R2) while the
+              │   isolate warms itself in the background — the x-sylvan-engine
+              │   response header says which path answered (isolate | do-<region>)
               └─ UI: upstream's static assets, served with upstream's cache headers
 
 cron (nightly) / first-deploy bootstrap
@@ -63,10 +68,11 @@ refreshes happen in the background), page HTML carries no card data
 bootstrap page) and error statuses are never cached, and the cache is
 per-deploy-version so releases can't serve stale assets.
 
-Cold-start note: the store is published gzipped (~2.5x smaller) and streamed
-through `DecompressionStream` into a wasm buffer preallocated from the
-manifest's `store_bytes`, cutting the one-time cold-isolate store load to
-well under a second in-region.
+Cold-start note: cold isolates never make users wait on a store load — the
+request is served by the regional warm-engine DO (~100-200ms) while the
+isolate loads in the background. The store is stored raw, deliberately: R2
+egress to Workers is free while decompress CPU would be metered on every
+isolate warm-up.
 
 ## Upstream tracking
 
@@ -163,17 +169,17 @@ cold at ~751ms median where this run found it warm at 99ms).
 
 | query | this port (cold/warm) | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|
-| `t:goblin cmc<3 c:r` | 82 / 57 | 414 / 375 | 109 / 88 |
-| `o:"draw a card" t:creature f:modern` | 120 / 48 | 453 / 464 | 277 / 103 |
-| `kw:flying pow>=4 -c:w` | 1751 / 52 | 453 / 455 | 94 / 100 |
-| `t:instant cmc=1 c:u` | 2170 / 51 | 382 / 379 | 111 / 86 |
-| `t:legendary t:elf f:commander` | 1989 / 63 | 547 / 492 | 83 / 88 |
-| `o:"enters tapped" t:land` | 1884 / 51 | 388 / 384 | 104 / 143 |
-| `c:wu t:bird` | 2472 / 54 | 371 / 373 | 66 / 71 |
-| `r:mythic t:dragon cmc<=4` | 1290 / 54 | 375 / 370 | 68 / 63 |
-| `t:planeswalker c:b f:pioneer` | 1487 / 51 | 386 / 389 | 74 / 73 |
-| `t:instant o:damage cmc=1` | 1402 / 51 | 377 / 386 | 171 / 82 |
-| **median** | **1619 / 52** | **387 / 385** | **99 / 87** |
+| `t:goblin cmc<3 c:r` | 164 / 58 | 594 / 423 | 128 / 99 |
+| `o:"draw a card" t:creature f:modern` | 117 / 51 | 467 / 460 | 84 / 88 |
+| `kw:flying pow>=4 -c:w` | 113 / 56 | 451 / 458 | 114 / 80 |
+| `t:instant cmc=1 c:u` | 137 / 61 | 408 / 379 | 103 / 103 |
+| `t:legendary t:elf f:commander` | 99 / 52 | 465 / 465 | 118 / 102 |
+| `o:"enters tapped" t:land` | 107 / 46 | 387 / 383 | 88 / 97 |
+| `c:wu t:bird` | 101 / 52 | 380 / 370 | 71 / 75 |
+| `r:mythic t:dragon cmc<=4` | 80 / 66 | 364 / 364 | 70 / 66 |
+| `t:planeswalker c:b f:pioneer` | 109 / 64 | 382 / 372 | 74 / 81 |
+| `t:instant o:damage cmc=1` | 148 / 99 | 381 / 376 | 86 / 90 |
+| **median** | **111 / 57** | **397 / 381** | **87 / 89** |
 | median payload | ~34 KB | ~34 KB | ~813 KB |
 
 Reading the numbers honestly:
@@ -182,13 +188,11 @@ Reading the numbers honestly:
   Cloudflare colo, since edge cache hits and warm-isolate engine queries
   (0.2–3ms of compute) are both effectively free. ~7× upstream, ~2× Scryfall's
   CDN-warm, with 24× less payload than Scryfall's full card objects.
-- **Our cold column is bimodal**: ~80–120ms when the request reaches an
-  already-warm isolate, ~1.3–2.5s when it lands on a cold one and pays the
-  one-time store load (28MB gzipped from R2, decompressed in-flight into
-  wasm). Real traffic keeps isolates warm, and stale-while-revalidate serves
-  any previously-seen query instantly while refreshing — so this cost
-  concentrates on never-seen queries hitting idle colos. It is the
-  architecture's honest trade.
+- **No cold tail**: a cache-miss on a cold isolate is answered by the
+  regional warm-engine DO (~100–200ms) while the isolate warms in the
+  background — the worst cell in the table above is 164ms. Before the hybrid,
+  the same probe showed 1.3–3.5s spikes whenever a request landed on a cold
+  machine.
 - **Upstream is impressively consistent** (~370–460ms always): a single
   always-warm origin, so no cold starts ever — and no edge, so no 53ms
   either. The two architectures trade tails for medians.
