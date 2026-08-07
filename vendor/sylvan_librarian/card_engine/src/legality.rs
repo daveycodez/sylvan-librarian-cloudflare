@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 use rkyv::Archived;
 
@@ -43,7 +45,7 @@ pub(crate) fn format_shift_or_assign(format: &str) -> Option<u8> {
     Some(shift)
 }
 
-fn legality_code(status: &str) -> u64 {
+pub(crate) fn legality_code(status: &str) -> u64 {
     match status {
         "legal"      => LEGALITY_LEGAL,
         "restricted" => LEGALITY_RESTRICTED,
@@ -52,6 +54,7 @@ fn legality_code(status: &str) -> u64 {
     }
 }
 
+#[cfg(feature = "python")]
 pub(crate) fn jsonb_obj_to_legality_bits(d: &Bound<PyDict>, key: &str) -> u64 {
     d.get_item(key)
         .ok()

@@ -1,0 +1,17 @@
+{
+  "name": "sylvan-engine-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "sylvan_engine_wasm_bg.wasm",
+    "sylvan_engine_wasm.js",
+    "sylvan_engine_wasm_bg.js",
+    "sylvan_engine_wasm.d.ts"
+  ],
+  "main": "sylvan_engine_wasm.js",
+  "types": "sylvan_engine_wasm.d.ts",
+  "sideEffects": [
+    "./sylvan_engine_wasm.js",
+    "./snippets/*"
+  ]
+}

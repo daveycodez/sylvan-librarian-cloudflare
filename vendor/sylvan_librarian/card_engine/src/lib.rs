@@ -1,26 +1,42 @@
+#[cfg(feature = "python")]
 use pyo3::create_exception;
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::{PyDate, PyDateAccess, PyDict, PyList, PyTuple};
 use rkyv::{Archive, Archived, Deserialize, Serialize};
+#[cfg(any(feature = "mmap-store", test))]
 use memmap2::Mmap;
 use memchr::memmem;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(feature = "python")]
+use std::collections::HashSet;
 use std::io::Write as IoWrite;
+#[cfg(feature = "python")]
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(feature = "python")]
+use std::sync::Arc;
+use std::sync::LazyLock;
+#[cfg(feature = "python")]
+use std::sync::Mutex;
+#[cfg(feature = "python")]
 use std::os::unix::io::AsRawFd;
+#[cfg(feature = "python")]
 use std::os::unix::fs::MetadataExt;
 
 // Raised for malformed query input (bad filter JSON, unbuildable filter expression). Subclasses
 // ValueError so existing `except ValueError` call sites keep working; new call sites can catch
 // this specifically to distinguish "the query was bad" from unrelated ValueErrors.
+#[cfg(feature = "python")]
 create_exception!(card_engine, QueryError, PyValueError, "Raised when a query cannot be parsed or built.");
 
 // Subclass of QueryError (not a sibling) so `except QueryError` already catches it; callers that
 // need to distinguish "requested a field that doesn't exist" from other query errors can catch
 // this specifically instead.
+#[cfg(feature = "python")]
 create_exception!(card_engine, UnknownFieldError, QueryError, "Raised when `fields` names an unknown field.");
 
 // ─── Feature-gated counting allocator (memory measurement only) ──────────────
@@ -34,6 +50,18 @@ mod alloc_stats;
 
 mod inline_str;
 use inline_str::InlineStr;
+
+// ─── Cloudflare port shims (LOCAL PATCH) ─────────────────────────────────────
+// `clock` re-exports crate::clock::Instant on native and a zero-duration stub on
+// wasm32-unknown-unknown (where Instant::now() aborts at runtime); `core_api`
+// is the pure-Rust surface (JSON card input, buffer-backed store, JSON query
+// output) the Cloudflare Worker and the native store builder consume. Both new
+// modules live in their own files so the upstream diff stays minimal.
+
+mod clock;
+mod core_api;
+pub use core_api::{BufferStore, EngineError, QueryOptions, QueryOutput, StoreBuilder, StoreStats, store_format_version};
+pub use rkyv::util::AlignedVec;
 
 // ─── Card type bits (u16) ─────────────────────────────────────────────────────
 
@@ -463,12 +491,12 @@ impl VocabInterner {
         VocabInterner { map: HashMap::new(), strings: Vec::new() }
     }
 
-    fn intern(&mut self, s: String) -> PyResult<u16> {
+    fn intern(&mut self, s: String) -> Result<u16, EngineError> {
         if let Some(&id) = self.map.get(&s) {
             return Ok(id);
         }
         let id = u16::try_from(self.strings.len()).map_err(|_| {
-            pyo3::exceptions::PyRuntimeError::new_err(
+            EngineError::runtime(
                 "collection vocabulary exceeded u16::MAX distinct values; widen Card's collection ids to u32",
             )
         })?;
@@ -492,12 +520,12 @@ impl ManaVocabInterner {
         ManaVocabInterner { map: HashMap::new(), strings: Vec::new() }
     }
 
-    fn intern(&mut self, s: &str) -> PyResult<u8> {
+    fn intern(&mut self, s: &str) -> Result<u8, EngineError> {
         if let Some(&id) = self.map.get(s) {
             return Ok(id);
         }
         if self.strings.len() >= 255 {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            return Err(EngineError::runtime(
                 "mana symbol vocabulary exceeded 254 distinct values; widen ManaCost hybrid ids",
             ));
         }
@@ -510,6 +538,7 @@ impl ManaVocabInterner {
 
 // ─── Loading helpers ─────────────────────────────────────────────────────────
 
+#[cfg(feature = "python")]
 fn opt_str(d: &Bound<PyDict>, key: &str) -> Option<String> {
     d.get_item(key).ok().flatten().and_then(|v| v.extract::<String>().ok())
 }
@@ -554,6 +583,7 @@ fn parse_uuid_or_hash(s: &str) -> u128 {
     if h == 0 { 1 } else { h }
 }
 
+#[cfg(feature = "python")]
 fn opt_uuid(d: &Bound<PyDict>, key: &str) -> u128 {
     let Some(v) = d.get_item(key).ok().flatten() else { return 0 };
     // psycopg returns uuid.UUID objects natively; try that first.
@@ -584,6 +614,7 @@ fn uuid_from_u128(v: u128) -> Option<uuid::Uuid> {
 }
 
 // Accepts ISO strings or datetime.date (psycopg returns date columns as datetime.date).
+#[cfg(feature = "python")]
 fn opt_date_str(d: &Bound<PyDict>, key: &str) -> Option<String> {
     let v = d.get_item(key).ok().flatten()?;
     if let Ok(s) = v.extract::<String>() {
@@ -597,12 +628,14 @@ fn opt_date_str(d: &Bound<PyDict>, key: &str) -> Option<String> {
 /// the source value is a decimal price (from Scryfall's JSON via Python's json/psycopg, both
 /// already correctly-rounded f64), so rounding to the nearest cent recovers the exact intended
 /// value even if the f64 isn't bit-exact for the decimal (see Printing's price_usd doc comment).
+#[cfg(feature = "python")]
 fn opt_price_cents(d: &Bound<PyDict>, key: &str) -> Option<u32> {
     d.get_item(key).ok().flatten().and_then(|v| {
         v.extract::<f64>().ok().or_else(|| v.extract::<i64>().ok().map(|n| n as f64))
     }).map(|dollars| (dollars * 100.0).round() as u32)
 }
 
+#[cfg(feature = "python")]
 fn opt_f32(d: &Bound<PyDict>, key: &str) -> Option<f32> {
     d.get_item(key).ok().flatten().and_then(|v| {
         v.extract::<f64>().ok().map(|n| n as f32)
@@ -610,22 +643,27 @@ fn opt_f32(d: &Bound<PyDict>, key: &str) -> Option<f32> {
     })
 }
 
+#[cfg(feature = "python")]
 fn opt_i8(d: &Bound<PyDict>, key: &str) -> Option<i8> {
     opt_f32(d, key).map(|v| v as i8)
 }
 
+#[cfg(feature = "python")]
 fn opt_u8(d: &Bound<PyDict>, key: &str) -> Option<u8> {
     opt_f32(d, key).map(|v| v as u8)
 }
 
+#[cfg(feature = "python")]
 fn opt_u16(d: &Bound<PyDict>, key: &str) -> Option<u16> {
     opt_f32(d, key).map(|v| v as u16)
 }
 
+#[cfg(feature = "python")]
 fn opt_u32(d: &Bound<PyDict>, key: &str) -> Option<u32> {
     opt_f32(d, key).map(|v| v as u32)
 }
 
+#[cfg(feature = "python")]
 fn str_list(d: &Bound<PyDict>, key: &str) -> Vec<String> {
     d.get_item(key)
         .ok()
@@ -634,6 +672,7 @@ fn str_list(d: &Bound<PyDict>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[cfg(feature = "python")]
 fn jsonb_color_to_bits(d: &Bound<PyDict>, key: &str) -> u8 {
     let colors: Vec<String> = d
         .get_item(key)
@@ -650,12 +689,14 @@ fn jsonb_color_to_bits(d: &Bound<PyDict>, key: &str) -> u8 {
 
 /// Interned vocab ids of a JSON list of strings, preserving element order
 /// (card_subtypes keeps the printed subtype order).
+#[cfg(feature = "python")]
 fn str_list_to_ids(d: &Bound<PyDict>, key: &str, vocab: &mut VocabInterner) -> PyResult<Vec<u16>> {
-    str_list(d, key).into_iter().map(|s| vocab.intern(s)).collect()
+    str_list(d, key).into_iter().map(|s| vocab.intern(s).map_err(PyErr::from)).collect()
 }
 
 /// Interned vocab ids of a JSONB object's keys, sorted and deduped — the set-like
 /// collections (keywords, tags, frame data) as sorted `Vec<u16>`.
+#[cfg(feature = "python")]
 fn jsonb_obj_to_ids(d: &Bound<PyDict>, key: &str, vocab: &mut VocabInterner) -> PyResult<Vec<u16>> {
     let mut ids: Vec<u16> = d
         .get_item(key)
@@ -666,7 +707,7 @@ fn jsonb_obj_to_ids(d: &Bound<PyDict>, key: &str, vocab: &mut VocabInterner) -> 
                 m.keys()
                     .iter()
                     .filter_map(|k| k.extract::<String>().ok())
-                    .map(|s| vocab.intern(s))
+                    .map(|s| vocab.intern(s).map_err(PyErr::from))
                     .collect::<PyResult<Vec<u16>>>()
             })
         })
@@ -682,6 +723,7 @@ fn jsonb_obj_to_ids(d: &Bound<PyDict>, key: &str, vocab: &mut VocabInterner) -> 
 mod legality;
 use legality::*;
 
+#[cfg(feature = "python")]
 fn mana_cost_from_pydict(d: &Bound<PyDict>, cmc_val: Option<f32>, mana_vocab: &mut ManaVocabInterner, card_types: u16) -> PyResult<ManaCost> {
     let mut core = 0u64;
     let mut devotion = 0u64;
@@ -718,6 +760,7 @@ fn mana_cost_from_pydict(d: &Bound<PyDict>, cmc_val: Option<f32>, mana_vocab: &m
     Ok(ManaCost { core, hybrids, devotion, cmc: cmc_val.unwrap_or(0.0) })
 }
 
+#[cfg(feature = "python")]
 fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInterner, artists: &mut VocabInterner, mana: &mut ManaVocabInterner) -> PyResult<CardRow> {
     let released_at = opt_date_str(d, "released_at").unwrap_or_default();
     let released_at_int: Option<u32> = released_at.replace('-', "").parse().ok();
@@ -6348,7 +6391,7 @@ fn printing_range_fastpath<'a>(
     //
     // Only a run that PRODUCED a page publishes. A decline returns `None`, records no trial, and must
     // leave the slot as `take_phase_stats` cleared it.
-    let t = std::time::Instant::now();
+    let t = crate::clock::Instant::now();
     let out = printing_range_fastpath_inner(ctx, params, filter);
     if out.is_some() {
         PHASE_STATS.with(|c| c.set(PhaseStats { ns_loop: t.elapsed().as_nanos() as u64, ..PhaseStats::default() }));
@@ -7200,26 +7243,26 @@ struct RoutedPhases {
 /// `routed-phases` feature is off. See `RoutedPhases`.
 #[cfg(feature = "routed-phases")]
 struct RoutedPhaseTimer {
-    entry: std::time::Instant,
-    acquired: Option<std::time::Instant>,
-    chosen: Option<std::time::Instant>,
+    entry: crate::clock::Instant,
+    acquired: Option<crate::clock::Instant>,
+    chosen: Option<crate::clock::Instant>,
 }
 
 #[cfg(feature = "routed-phases")]
 impl RoutedPhaseTimer {
     fn start() -> Self {
-        Self { entry: std::time::Instant::now(), acquired: None, chosen: None }
+        Self { entry: crate::clock::Instant::now(), acquired: None, chosen: None }
     }
     fn acquired(&mut self) {
-        self.acquired = Some(std::time::Instant::now());
+        self.acquired = Some(crate::clock::Instant::now());
     }
     fn chosen(&mut self) {
-        self.chosen = Some(std::time::Instant::now());
+        self.chosen = Some(crate::clock::Instant::now());
     }
     /// Publishes the three disjoint spans. A boundary that was never marked collapses to the entry
     /// instant, which cannot happen on the one path that exists but keeps this total.
     fn finish(self) {
-        let done = std::time::Instant::now();
+        let done = crate::clock::Instant::now();
         let acquired = self.acquired.unwrap_or(self.entry);
         let chosen = self.chosen.unwrap_or(acquired);
         ROUTED_PHASES.with(|c| {
@@ -7760,7 +7803,7 @@ fn printing_compose_fastpath<'a>(
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
     // Ends at whichever exit produces a page; see `ComposePageWork::ns_total`. Declines return before
     // any publish and so leave the slot as `take_phase_stats` cleared it.
-    let t_start = std::time::Instant::now();
+    let t_start = crate::clock::Instant::now();
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, sort_col, descending, page_offset, .. } = *params;
     if !is_printing_composable(filter, indexes) || !printing_compose_indexes_built(indexes) {
@@ -8428,7 +8471,7 @@ fn exec_plane_popcount_order<'a>(
         // the forced trial re-evaluates the plane, so the router appeared to beat the best plan by a
         // mean of 4.21us and held -13% of share. That is the `prepare_candidates` asymmetry again, one
         // artifact along.
-        let t = std::time::Instant::now();
+        let t = crate::clock::Instant::now();
         eval_planes(plane_expr, &ctx.indexes.planes, &mut bitmap);
         note_pending_prepare_ns(t.elapsed().as_nanos() as u64);
         exec_plane_popcount_order_with_bitmap(ctx, params, plane_expr, &bitmap)
@@ -9139,7 +9182,7 @@ fn timed_prepare_candidates(
         0,
         "a previous timed_prepare_candidates was not consumed by an executor; its time would be reported as this run's",
     );
-    let t = std::time::Instant::now();
+    let t = crate::clock::Instant::now();
     let prep = prepare_candidates(ctx, params, filter, plane);
     PENDING_PREPARE_NS.with(|c| c.set(t.elapsed().as_nanos() as u64));
     prep
@@ -9211,7 +9254,7 @@ fn exec_gathered_scan<'a>(
     plane: Option<&PlaneExpr>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // First of the three phase boundaries — everything down to the match loop is `ns_setup`.
-    let t_start = std::time::Instant::now();
+    let t_start = crate::clock::Instant::now();
     let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let all_match_known = prep.all_match_known;
@@ -9240,7 +9283,7 @@ fn exec_gathered_scan<'a>(
     // inferred.
     let mut n_printings_examined = 0u64;
     // Ends `ns_setup` and starts `ns_loop` — one read, two phases.
-    let t_loop = std::time::Instant::now();
+    let t_loop = crate::clock::Instant::now();
     for cid in card_ids {
         n_cards_visited += 1;
         let card = &cards[cid as usize];
@@ -9265,13 +9308,13 @@ fn exec_gathered_scan<'a>(
         sel.absorb(before);
     }
     // Ends `ns_loop` and starts `ns_finish`.
-    let t_finish = std::time::Instant::now();
+    let t_finish = crate::clock::Instant::now();
     let (total, page_ids) = sel.finish(page_offset, limit);
     let page = page_ids
         .into_iter()
         .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
         .collect();
-    let t_end = std::time::Instant::now();
+    let t_end = crate::clock::Instant::now();
     let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
     PHASE_STATS.with(|c| {
         // A WHOLE-struct set, deliberately: nothing here is inherited, so this executor cannot
@@ -10329,7 +10372,7 @@ fn run_query_routed<'a>(
             // Timed and handed to the executor as `ns_prepare`: this build happens in DISPATCH on
             // both paths, so it belongs to the plan's cost, and `card_range_popcount` being a
             // RANGE_ACQUIRE is what tells `plan_self_ns` to add it rather than exclude it.
-            let t_build = std::time::Instant::now();
+            let t_build = crate::clock::Instant::now();
             let (card_bits, range_pbits) =
                 build_card_range_bits(idx, lo, hi, ctx.indexes, ctx.cards.len(), ctx.printings.len());
             note_pending_prepare_ns(t_build.elapsed().as_nanos() as u64);
@@ -10405,7 +10448,7 @@ fn run_query_with_plan<'a>(
             let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicability guarantees a bare range");
             // Timed exactly as the routed path times it, so a forced trial and dispatch contain the
             // same work; see the routed call site.
-            let t_build = std::time::Instant::now();
+            let t_build = crate::clock::Instant::now();
             let (card_bits, range_pbits) = build_card_range_bits(idx, lo, hi, indexes, cards.len(), ctx.printings.len());
             note_pending_prepare_ns(t_build.elapsed().as_nanos() as u64);
             Some(exec_card_range_popcount(ctx, params, &card_bits, &range_pbits))
@@ -10573,7 +10616,7 @@ fn explain(
     unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
 ) -> (AcquireFacts, Vec<PlanEstimate>) {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (feats, prep, _plane_bits) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     let acquire_ns = t0.elapsed().as_nanos() as u64;
     let facts = AcquireFacts {
@@ -10794,7 +10837,7 @@ fn explain_analyze(
             // deallocation — otherwise the plans, which hold their result, would be measured on
             // different terms from the two that discard it.
             let (mut ran, mut acquired, mut routed) = (None, None, None);
-            let t0 = std::time::Instant::now();
+            let t0 = crate::clock::Instant::now();
             match participant {
                 Participant::Plan(i) => ran = run_query_with_plan(estimates[i].plan, ctx, params, &mut round_filter, unsplit, plane),
                 Participant::Acquire => acquired = Some(acquire_plan_features(ctx, params, &mut round_filter, unsplit, plane)),
@@ -10901,7 +10944,7 @@ fn run_query_streamed_popcount<'a>(
     // skip scan is `ns_setup` (here the total popcount plus the permuted scatter), the skip scan is
     // `ns_loop`, the emit walk is `ns_finish`. Shared by BOTH popcount plans, so instrumenting here
     // covers `PlanePopcountOrder` and `CardRangePopcount` at once.
-    let t_start = std::time::Instant::now();
+    let t_start = crate::clock::Instant::now();
     let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
     let QueryParams { prefer, limit, page_offset, .. } = *params;
     let SortOrder { perm, inv: inv_perm } = order;
@@ -10937,7 +10980,7 @@ fn run_query_streamed_popcount<'a>(
         }
 
         // Ends `ns_setup` (popcount + scatter) and starts `ns_loop`.
-        let t_loop = std::time::Instant::now();
+        let t_loop = crate::clock::Instant::now();
 
         // Skip: accumulate word popcounts until the boundary word containing
         // page_offset — 64 cards per word read, deep pagination is a
@@ -10968,7 +11011,7 @@ fn run_query_streamed_popcount<'a>(
         // and only pays the extra check at all for legality-touching planes.
         let existential = plane.is_some_and(|e| plane_expr_is_existential(e, u64::from(planes.divergent_formats)));
         // Ends `ns_loop` (the skip scan) and starts `ns_finish` (the emit walk).
-        let t_finish = std::time::Instant::now();
+        let t_finish = crate::clock::Instant::now();
         let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
         'walk: while word_idx < permuted.len() {
             let mut w = permuted[word_idx];
@@ -11062,7 +11105,7 @@ fn run_query_streamed<'a>(
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // First of the three phase boundaries — everything down to the match loop is `ns_setup`, which
     // for this executor is dominated by the `counts` zeroing below. See `PhaseStats::ns_setup`.
-    let t_start = std::time::Instant::now();
+    let t_start = crate::clock::Instant::now();
     let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let artwork_groups = &indexes.artwork_groups;
@@ -11094,7 +11137,7 @@ fn run_query_streamed<'a>(
     // where `n_printing_span` is the full corpus span.
     let mut n_printings_examined = 0u64;
     // Ends `ns_setup` and starts `ns_loop` — one read, two phases.
-    let t_loop = std::time::Instant::now();
+    let t_loop = crate::clock::Instant::now();
     for cid in card_ids {
         n_cards_visited += 1;
         let card = &cards[cid as usize];
@@ -11168,11 +11211,11 @@ fn run_query_streamed<'a>(
         n_matches_pushed += c as u64;
     }
     // Ends `ns_loop` and starts `ns_finish`.
-    let t_finish = std::time::Instant::now();
+    let t_finish = crate::clock::Instant::now();
     // Publishing helper: the walk below has several early returns, and every one of them must leave
     // the stats behind or the accounting silently attributes this plan's work to nothing. Each takes
     // the closing instant itself, so the emit phase is bounded without a second start marker.
-    let publish = |end: std::time::Instant, perm_steps: u64| {
+    let publish = |end: crate::clock::Instant, perm_steps: u64| {
         let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
         PHASE_STATS.with(|c| {
             c.set(PhaseStats {
@@ -11192,7 +11235,7 @@ fn run_query_streamed<'a>(
         });
     };
     if total == 0 || page_offset >= total {
-        publish(std::time::Instant::now(), 0);
+        publish(crate::clock::Instant::now(), 0);
         return (total, Vec::new());
     }
 
@@ -11227,7 +11270,7 @@ fn run_query_streamed<'a>(
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect();
-        publish(std::time::Instant::now(), 0);
+        publish(crate::clock::Instant::now(), 0);
         return (total, page);
     }
 
@@ -11282,7 +11325,7 @@ fn run_query_streamed<'a>(
         }
         skip = 0;
     }
-    publish(std::time::Instant::now(), n_perm_steps);
+    publish(crate::clock::Instant::now(), n_perm_steps);
     (total, page)
     }) // COUNTS.with
 }
@@ -11293,9 +11336,11 @@ fn run_query_streamed<'a>(
 // `fields` list is validated and deduped against this same table by resolve_fields(). There is
 // no separate hardcoded path for "the old fields" vs. "the new fields" — everything is an entry
 // in FIELD_TABLE.
+#[cfg(feature = "python")]
 type FieldExtractor =
     for<'a> fn(Python<'a>, &'a AOracleCard, &'a APrinting, &'a AStrings, &'a AStrings) -> PyResult<Bound<'a, PyAny>>;
 
+#[cfg(feature = "python")]
 const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
     ("name", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.card_name_id)).into_pyobject(py)?.into_any())),
     ("set_code", |py, _c, p, _s, _v| Ok(p.card_set_code.as_str().into_pyobject(py)?.into_any())),
@@ -11348,6 +11393,7 @@ const DEFAULT_FIELDS: &[&str] =
 /// requested twice is only fetched/emitted once) and rejecting anything outside the vocabulary.
 /// `None` resolves to DEFAULT_FIELDS. Called once per query, before the per-row loop, so the
 /// per-row cost is a flat list of closure calls rather than a name comparison per field per card.
+#[cfg(feature = "python")]
 fn resolve_fields(fields: Option<Vec<String>>) -> PyResult<Vec<(&'static str, FieldExtractor)>> {
     let requested: Vec<&str> = match &fields {
         Some(v) => v.iter().map(String::as_str).collect(),
@@ -11367,6 +11413,7 @@ fn resolve_fields(fields: Option<Vec<String>>) -> PyResult<Vec<(&'static str, Fi
     Ok(resolved)
 }
 
+#[cfg(feature = "python")]
 fn card_to_pydict<'py>(
     py: Python<'py>,
     card: &AOracleCard,
@@ -11412,12 +11459,14 @@ fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
 }
 
 /// The rkyv payload of a mapping whose header get_mmap() already validated.
+#[cfg(any(feature = "mmap-store", test))]
 fn archive_payload(mmap: &Mmap) -> &[u8] {
     &mmap[ARCHIVE_HEADER_LEN..]
 }
 
 // ─── PyO3 bindings ───────────────────────────────────────────────────────────
 
+#[cfg(feature = "python")]
 struct CachedMmap {
     mmap: Arc<Mmap>,
     inode: u64,
@@ -11428,6 +11477,7 @@ struct CachedMmap {
 /// reload_abort() so no other process can interleave a write. Dropping the
 /// staging (commit, abort, or a fresh reload_begin after an abandoned cycle)
 /// closes the lock file, which releases the flock.
+#[cfg(feature = "python")]
 struct Staging {
     rows: Vec<CardRow>,
     interner: Interner,
@@ -11514,6 +11564,7 @@ pub(crate) fn count_common_keywords(data: &Archived<CardData>) -> HashMap<String
 /// `FilterExpr::True` behind, so by the time a plan runs there is nothing left to read the bound from.
 /// Every caller that does not want it can ignore it and get `UNBOUNDED` behaviour — a longer walk, never
 /// a different page.
+#[cfg(feature = "python")]
 fn bind_and_split_filter(
     py: Python<'_>,
     filters: &Bound<PyAny>,
@@ -11531,11 +11582,25 @@ fn bind_and_split_filter(
     let json_val: Value = serde_json::from_str(json_str)
         .map_err(|e| QueryError::new_err(format!("bad query JSON: {e}")))?;
 
+    Ok(bind_and_split_filter_value(&json_val, unique, data, sort_col)?)
+}
+
+/// The pure-Rust core of `bind_and_split_filter` (LOCAL PATCH, Cloudflare
+/// port): everything after the Python filter object has been rendered to a
+/// serde_json `Value`. Shared verbatim between the pyo3 wrapper above and
+/// `core_api`'s JSON query path, so the two surfaces can never route a query
+/// differently. Behavior and error strings are the pyo3 path's, unchanged.
+fn bind_and_split_filter_value(
+    json_val: &Value,
+    unique: &str,
+    data: &Archived<CardData>,
+    sort_col: SortCol,
+) -> Result<(Option<PlaneExpr>, FilterExpr, SortBound, FilterExpr), EngineError> {
     // Must run before build_filter so legality shifts resolve in workers that
     // never executed the load path themselves.
     sync_format_shifts(&data.format_shifts);
-    let mut filter_expr = build_filter(&json_val)
-        .map_err(|e| QueryError::new_err(format!("build_filter: {e}")))?;
+    let mut filter_expr = build_filter(json_val)
+        .map_err(|e| EngineError::query(format!("build_filter: {e}")))?;
     filter_expr.bind(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.mana_vocab, &data.indexes.flavor, &data.strings);
 
     // Read before the split consumes the tree.
@@ -11555,6 +11620,7 @@ fn bind_and_split_filter(
     Ok((plane, residual, sort_bound, unsplit))
 }
 
+#[cfg(feature = "python")]
 fn plan_estimate_to_pydict<'py>(py: Python<'py>, e: &PlanEstimate) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("plan", format!("{:?}", e.plan))?;
@@ -11564,6 +11630,7 @@ fn plan_estimate_to_pydict<'py>(py: Python<'py>, e: &PlanEstimate) -> PyResult<B
     Ok(d)
 }
 
+#[cfg(feature = "python")]
 fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("plan", format!("{:?}", t.plan))?;
@@ -11594,6 +11661,7 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
 
 /// The acquire step's per-query facts, as both `explain` and `explain_analyze` report
 /// them under the `"acquire"` key.
+#[cfg(feature = "python")]
 fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("count_source", f.count_source.label())?;
@@ -11636,6 +11704,303 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
     Ok(d)
 }
 
+// ─── Store build core (LOCAL PATCH, Cloudflare port) ─────────────────────────
+// The sort/group/index/serialize pipeline that used to live inline in the pyo3
+// reload_commit(), extracted verbatim into pure functions so the native store
+// builder and the wasm buffer store can reuse it without python. reload_commit
+// below now calls these; behavior and error strings are unchanged.
+
+/// A fully built store, plus the alloc-counter snapshots reload_commit's
+/// diagnostics block reads (compiled to nothing without `alloc-counter`).
+struct BuiltStore {
+    card_data: CardData,
+    #[cfg(feature = "alloc-counter")]
+    stats_after_cards: (usize, usize),
+    #[cfg(feature = "alloc-counter")]
+    stats_after_indexes: (usize, usize),
+}
+
+/// Sort, group, and index staged rows into a `CardData`. Moved verbatim from
+/// reload_commit(); see the comments inside for the invariants.
+fn build_card_data(
+    mut rows: Vec<CardRow>,
+    interner: Interner,
+    vocab: VocabInterner,
+    artists: VocabInterner,
+    mana: ManaVocabInterner,
+) -> Result<BuiltStore, EngineError> {
+
+    // The store groups printings by oracle_id, so rows without one would all
+    // collapse into a single card. The DB enforces NOT NULL; fail loudly here
+    // for any other caller (e.g. hand-built test dicts).
+    if let Some((idx, row)) = rows.iter().enumerate().find(|(_, r)| r.oracle_id == 0) {
+        let name = interner.strings.get(row.card_name_id as usize).map_or("", |s| s.as_str());
+        return Err(EngineError::value(format!(
+            "card {idx} ({name:?}) is missing oracle_id (required for card grouping)"
+        )));
+    }
+    // Equal oracle ids end up adjacent (making each card's printings one
+    // contiguous range), and within a card printings order by descending
+    // default prefer_score so the default-prefer walk takes the first
+    // matching printing. Score ties fall back to illustration order, then
+    // scryfall_id, making the chosen printing fully deterministic (exact
+    // ties on the prefer metric are common — reprint sheets share scores —
+    // and an unstable sort would otherwise pick arbitrarily among them).
+    rows.sort_unstable_by(|a, b| {
+        a.oracle_id
+            .cmp(&b.oracle_id)
+            .then_with(|| {
+                let sa = a.prefer_score.unwrap_or(0.0);
+                let sb = b.prefer_score.unwrap_or(0.0);
+                sb.total_cmp(&sa)
+            })
+            .then_with(|| a.illustration_id.cmp(&b.illustration_id))
+            .then_with(|| a.scryfall_id.cmp(&b.scryfall_id))
+    });
+
+    // Group rows into OracleCards + Printings + CSR offsets. Card-level
+    // fields come from the group's first row (verified printing-constant on
+    // the real corpus; the 3 divergent-name omen cards take the first
+    // printing's value). Legality is the exception: a group whose rows
+    // disagree gets legality_divergent set, deferring legality filters to
+    // each printing's own word.
+    let mut cards: Vec<OracleCard> = Vec::new();
+    let mut printings: Vec<Printing> = Vec::with_capacity(rows.len());
+    let mut offsets: Vec<u32> = Vec::new();
+    for mut row in rows {
+        let is_new = cards.last().is_none_or(|c| c.oracle_id != row.oracle_id);
+        if is_new {
+            offsets.push(printings.len() as u32);
+            cards.push(OracleCard {
+                card_name_lower: row.card_name_lower,
+                card_name_folded: row.card_name_folded,
+                card_colors: row.card_colors,
+                card_color_identity: row.card_color_identity,
+                produced_mana: row.produced_mana,
+                card_types: row.card_types,
+                legality_divergent: false,
+                oracle_id: row.oracle_id,
+                card_name_id: row.card_name_id,
+                oracle_text_id: row.oracle_text_id,
+                oracle_text_lower_id: row.oracle_text_lower_id,
+                card_layout_id: row.card_layout_id,
+                mana_cost_text_id: row.mana_cost_text_id,
+                type_line_id: row.type_line_id,
+                cmc: row.cmc,
+                creature_power: row.creature_power,
+                creature_toughness: row.creature_toughness,
+                planeswalker_loyalty: row.planeswalker_loyalty,
+                edhrec_rank: row.edhrec_rank,
+                cubecobra_score: row.cubecobra_score,
+                name_rank: 0, // assigned after grouping by assign_name_ranks
+
+                card_subtypes: std::mem::take(&mut row.card_subtypes),
+                card_keywords: std::mem::take(&mut row.card_keywords),
+                card_oracle_tags: std::mem::take(&mut row.card_oracle_tags),
+                card_legalities: row.card_legalities,
+                mana_cost: row.mana_cost.clone(),
+                creature_power_text_id: row.creature_power_text_id,
+                creature_toughness_text_id: row.creature_toughness_text_id,
+            });
+        } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
+            cards.last_mut().unwrap().legality_divergent = true;
+        }
+        printings.push(Printing {
+            scryfall_id: row.scryfall_id,
+            illustration_id: row.illustration_id,
+            flavor_text_id: row.flavor_text_id,
+            flavor_text_lower_id: row.flavor_text_lower_id,
+            card_artist_vid: row.card_artist_vid,
+            card_set_code: row.card_set_code,
+            card_border_id: row.card_border_id,
+            card_watermark_id: row.card_watermark_id,
+            collector_number_id: row.collector_number_id,
+            set_name_id: row.set_name_id,
+            released_at_int: row.released_at_int,
+            card_rarity_int: row.card_rarity_int,
+            collector_number_int: row.collector_number_int,
+            price_usd: row.price_usd,
+            price_eur: row.price_eur,
+            price_tix: row.price_tix,
+            prefer_score: row.prefer_score,
+            card_legalities: row.card_legalities,
+            card_art_tags: row.card_art_tags,
+            card_is_tags: row.card_is_tags,
+            card_frame_data: row.card_frame_data,
+            artwork_group_id: 0, // placeholder; assign_artwork_groups fills every printing below
+        });
+    }
+    offsets.push(printings.len() as u32);
+    assign_name_ranks(&mut cards);
+
+    #[cfg(feature = "alloc-counter")]
+    let stats_after_cards = (alloc_stats::live(), alloc_stats::allocs());
+
+    let strings = interner.strings;
+    drop(interner.map);
+    let coll_vocab = vocab.strings;
+    drop(vocab.map);
+    let artist_vocab = artists.strings;
+    drop(artists.map);
+    let mana_vocab = mana.strings;
+    drop(mana.map);
+    // String-sorted permutation of the vocab ids; VocabInterner caps the
+    // vocab at u16::MAX entries so the cast can't truncate.
+    let mut coll_vocab_sorted: Vec<u16> = (0..coll_vocab.len() as u16).collect();
+    coll_vocab_sorted.sort_unstable_by(|&a, &b| coll_vocab[a as usize].cmp(&coll_vocab[b as usize]));
+    // Assigns every printing's artwork_group_id in place; the returned counts
+    // feed CardIndexes.artwork_groups below. Must run before printings is
+    // borrowed by the builders in the CardIndexes literal.
+    let artwork_group_counts = assign_artwork_groups(&mut printings, &offsets);
+    // Before the counts are moved into the struct below.
+    let artwork_base = build_artwork_base_from(&artwork_group_counts);
+    // The range indexes and their exact card-count tables come out here rather than inside the
+    // literal below, because the tables need `printing_to_card` — which the literal also wants,
+    // so it is derived once and moved in.
+    let printing_to_card = build_printing_to_card(&offsets);
+    let released_at_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.released_at_int);
+    let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_usd);
+    let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_eur);
+    let price_tix_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_tix);
+    let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
+    let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    let price_tix_cards = build_range_card_counts(&price_tix_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    let rarity_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from));
+    let rarity_cards = build_range_card_counts(&rarity_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    // Out here for the same reason as the count tables: it reads `printing_to_card`, which the
+    // struct literal below moves.
+    let pair_totals = build_pair_totals(
+        &cards,
+        &printings,
+        &printing_to_card,
+        &strings,
+        &coll_vocab,
+        usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+    );
+    let value_totals = build_all_value_totals(
+        &cards,
+        &printings,
+        &printing_to_card,
+        &strings,
+        &coll_vocab,
+        usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+    );
+    let indexes = CardIndexes {
+        name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
+        oracle_trigram: build_oracle_text_index(&cards, &strings),
+        cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
+        power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
+        toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
+        rarity:         build_rarity_index(&printings, &offsets),
+        subtypes:       build_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes),
+        keywords:       build_tag_index(&cards, &coll_vocab, |c| &c.card_keywords),
+        oracle_tags:    build_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags),
+        art_tags:       build_tag_index(&printings, &coll_vocab, |p| &p.card_art_tags),
+        is_tags:        build_tag_index(&printings, &coll_vocab, |p| &p.card_is_tags),
+        frame_data:     build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data),
+        artists:        build_artist_index(&printings, artist_vocab.len()),
+        flavor:         build_flavor_index(&printings, &strings),
+        set_codes:      {
+            let mut idx: TagIndex = HashMap::new();
+            for (i, p) in printings.iter().enumerate() {
+                let code = p.card_set_code.as_str();
+                if !code.is_empty() {
+                    idx.entry(code.to_string()).or_default().push(i as u32);
+                }
+            }
+            idx
+        },
+        watermarks:     {
+            let mut idx: TagIndex = HashMap::new();
+            for (i, p) in printings.iter().enumerate() {
+                if p.card_watermark_id != NONE_STR {
+                    let wm = strings[p.card_watermark_id as usize].as_str();
+                    idx.entry(wm.to_string()).or_default().push(i as u32);
+                }
+            }
+            idx
+        },
+        released_at:    released_at_idx,
+        price_usd:      price_usd_idx,
+        price_eur:      price_eur_idx,
+        price_tix:      price_tix_idx,
+        collector_number: collector_number_idx,
+        released_at_cards,
+        price_usd_cards,
+        price_eur_cards,
+        price_tix_cards,
+        collector_number_cards,
+        sort_perms:     build_sort_permutations(&cards),
+        max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
+        artwork_groups: artwork_group_counts,
+        // Columnar copy of each printing's assigned artwork_group_id, derived here — the single
+        // production spot where assign_artwork_groups (above) has just filled it. Archived with
+        // the store, so it is never recomputed post-load and cannot drift from the struct field.
+        artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
+        // Same reasoning as artwork_group_col: derived here, archived, never recomputed
+        // post-load, so it cannot drift from the counts it sums.
+        artwork_base,
+        printing_to_card,
+        planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
+        border_printing: build_border_printing_planes(&printings, &strings),
+        rarity_printing: build_rarity_printing_planes(&printings),
+        rarity_printing_ordered: rarity_idx,
+        rarity_cards,
+        value_totals,
+        pair_totals,
+        name_bigrams:   build_name_bigram_index(&cards),
+        name_unigrams:  build_name_unigram_index(&cards),
+        legal_divergent: build_divergent_ids(&cards),
+        arith_tuple:    build_arith_tuple_index(&cards),
+    };
+
+    #[cfg(feature = "alloc-counter")]
+    let stats_after_indexes = (alloc_stats::live(), alloc_stats::allocs());
+
+    // Snapshot the registry card_from_pydict just populated so reader
+    // processes can adopt the same format→shift assignments.
+    let format_shifts_snapshot = format_shifts().read().map(|m| m.clone()).unwrap_or_default();
+
+    let card_data = CardData {
+        cards,
+        printings,
+        offsets,
+        strings,
+        coll_vocab,
+        coll_vocab_sorted,
+        artist_vocab,
+        mana_vocab,
+        indexes,
+        format_shifts: format_shifts_snapshot,
+    };
+
+    Ok(BuiltStore {
+        card_data,
+        #[cfg(feature = "alloc-counter")]
+        stats_after_cards,
+        #[cfg(feature = "alloc-counter")]
+        stats_after_indexes,
+    })
+}
+
+/// Write the 16-byte archive header plus the rkyv archive of `card_data` into
+/// `w`. The header offset is what keeps the payload 16-aligned for readers
+/// (see the archive-header section above). Callers flush.
+fn write_archive<W: IoWrite>(card_data: &CardData, w: &mut W) -> Result<(), EngineError> {
+    w.write_all(&archive_header())
+        .map_err(|e| EngineError::runtime(format!("write header: {e}")))?;
+    rkyv::api::high::to_bytes_in::<_, rkyv::rancor::Error>(
+        card_data,
+        rkyv::ser::writer::IoWriter::new(w),
+    )
+    .map_err(|e| EngineError::runtime(format!("rkyv serialize: {e}")))?;
+    Ok(())
+}
+
+#[cfg(feature = "python")]
 #[pyclass]
 struct QueryEngine {
     shm_path: PathBuf,
@@ -11643,6 +12008,7 @@ struct QueryEngine {
     cached_mmap: Mutex<Option<CachedMmap>>,
 }
 
+#[cfg(feature = "python")]
 impl QueryEngine {
     // Returns the cached mmap, remapping if the on-disk inode has changed since
     // the last remap (i.e. another worker wrote a new archive via rename).
@@ -11685,6 +12051,7 @@ impl QueryEngine {
     }
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl QueryEngine {
     #[new]
@@ -11792,254 +12159,17 @@ impl QueryEngine {
         let staging = self.staging.lock().unwrap().take().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("reload_commit called without reload_begin")
         })?;
-        let Staging { mut rows, interner, vocab, artists, mana, lock_file } = staging;
+        let Staging { rows, interner, vocab, artists, mana, lock_file } = staging;
 
-        // The store groups printings by oracle_id, so rows without one would all
-        // collapse into a single card. The DB enforces NOT NULL; fail loudly here
-        // for any other caller (e.g. hand-built test dicts).
-        if let Some((idx, row)) = rows.iter().enumerate().find(|(_, r)| r.oracle_id == 0) {
-            let name = interner.strings.get(row.card_name_id as usize).map_or("", |s| s.as_str());
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "card {idx} ({name:?}) is missing oracle_id (required for card grouping)"
-            )));
-        }
-        // Equal oracle ids end up adjacent (making each card's printings one
-        // contiguous range), and within a card printings order by descending
-        // default prefer_score so the default-prefer walk takes the first
-        // matching printing. Score ties fall back to illustration order, then
-        // scryfall_id, making the chosen printing fully deterministic (exact
-        // ties on the prefer metric are common — reprint sheets share scores —
-        // and an unstable sort would otherwise pick arbitrarily among them).
-        rows.sort_unstable_by(|a, b| {
-            a.oracle_id
-                .cmp(&b.oracle_id)
-                .then_with(|| {
-                    let sa = a.prefer_score.unwrap_or(0.0);
-                    let sb = b.prefer_score.unwrap_or(0.0);
-                    sb.total_cmp(&sa)
-                })
-                .then_with(|| a.illustration_id.cmp(&b.illustration_id))
-                .then_with(|| a.scryfall_id.cmp(&b.scryfall_id))
-        });
-
-        // Group rows into OracleCards + Printings + CSR offsets. Card-level
-        // fields come from the group's first row (verified printing-constant on
-        // the real corpus; the 3 divergent-name omen cards take the first
-        // printing's value). Legality is the exception: a group whose rows
-        // disagree gets legality_divergent set, deferring legality filters to
-        // each printing's own word.
-        let mut cards: Vec<OracleCard> = Vec::new();
-        let mut printings: Vec<Printing> = Vec::with_capacity(rows.len());
-        let mut offsets: Vec<u32> = Vec::new();
-        for mut row in rows {
-            let is_new = cards.last().is_none_or(|c| c.oracle_id != row.oracle_id);
-            if is_new {
-                offsets.push(printings.len() as u32);
-                cards.push(OracleCard {
-                    card_name_lower: row.card_name_lower,
-                    card_name_folded: row.card_name_folded,
-                    card_colors: row.card_colors,
-                    card_color_identity: row.card_color_identity,
-                    produced_mana: row.produced_mana,
-                    card_types: row.card_types,
-                    legality_divergent: false,
-                    oracle_id: row.oracle_id,
-                    card_name_id: row.card_name_id,
-                    oracle_text_id: row.oracle_text_id,
-                    oracle_text_lower_id: row.oracle_text_lower_id,
-                    card_layout_id: row.card_layout_id,
-                    mana_cost_text_id: row.mana_cost_text_id,
-                    type_line_id: row.type_line_id,
-                    cmc: row.cmc,
-                    creature_power: row.creature_power,
-                    creature_toughness: row.creature_toughness,
-                    planeswalker_loyalty: row.planeswalker_loyalty,
-                    edhrec_rank: row.edhrec_rank,
-                    cubecobra_score: row.cubecobra_score,
-                    name_rank: 0, // assigned after grouping by assign_name_ranks
-
-                    card_subtypes: std::mem::take(&mut row.card_subtypes),
-                    card_keywords: std::mem::take(&mut row.card_keywords),
-                    card_oracle_tags: std::mem::take(&mut row.card_oracle_tags),
-                    card_legalities: row.card_legalities,
-                    mana_cost: row.mana_cost.clone(),
-                    creature_power_text_id: row.creature_power_text_id,
-                    creature_toughness_text_id: row.creature_toughness_text_id,
-                });
-            } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
-                cards.last_mut().unwrap().legality_divergent = true;
-            }
-            printings.push(Printing {
-                scryfall_id: row.scryfall_id,
-                illustration_id: row.illustration_id,
-                flavor_text_id: row.flavor_text_id,
-                flavor_text_lower_id: row.flavor_text_lower_id,
-                card_artist_vid: row.card_artist_vid,
-                card_set_code: row.card_set_code,
-                card_border_id: row.card_border_id,
-                card_watermark_id: row.card_watermark_id,
-                collector_number_id: row.collector_number_id,
-                set_name_id: row.set_name_id,
-                released_at_int: row.released_at_int,
-                card_rarity_int: row.card_rarity_int,
-                collector_number_int: row.collector_number_int,
-                price_usd: row.price_usd,
-                price_eur: row.price_eur,
-                price_tix: row.price_tix,
-                prefer_score: row.prefer_score,
-                card_legalities: row.card_legalities,
-                card_art_tags: row.card_art_tags,
-                card_is_tags: row.card_is_tags,
-                card_frame_data: row.card_frame_data,
-                artwork_group_id: 0, // placeholder; assign_artwork_groups fills every printing below
-            });
-        }
-        offsets.push(printings.len() as u32);
-        assign_name_ranks(&mut cards);
-
+        // Sort/group/index/serialize moved verbatim into build_card_data()/
+        // write_archive() (see the store-build-core section above) so the
+        // non-python store builder shares this exact pipeline.
+        let built = build_card_data(rows, interner, vocab, artists, mana)?;
         #[cfg(feature = "alloc-counter")]
-        let stats_after_cards = (alloc_stats::live(), alloc_stats::allocs());
-
-        let strings = interner.strings;
-        drop(interner.map);
-        let coll_vocab = vocab.strings;
-        drop(vocab.map);
-        let artist_vocab = artists.strings;
-        drop(artists.map);
-        let mana_vocab = mana.strings;
-        drop(mana.map);
-        // String-sorted permutation of the vocab ids; VocabInterner caps the
-        // vocab at u16::MAX entries so the cast can't truncate.
-        let mut coll_vocab_sorted: Vec<u16> = (0..coll_vocab.len() as u16).collect();
-        coll_vocab_sorted.sort_unstable_by(|&a, &b| coll_vocab[a as usize].cmp(&coll_vocab[b as usize]));
-        // Assigns every printing's artwork_group_id in place; the returned counts
-        // feed CardIndexes.artwork_groups below. Must run before printings is
-        // borrowed by the builders in the CardIndexes literal.
-        let artwork_group_counts = assign_artwork_groups(&mut printings, &offsets);
-        // Before the counts are moved into the struct below.
-        let artwork_base = build_artwork_base_from(&artwork_group_counts);
-        // The range indexes and their exact card-count tables come out here rather than inside the
-        // literal below, because the tables need `printing_to_card` — which the literal also wants,
-        // so it is derived once and moved in.
-        let printing_to_card = build_printing_to_card(&offsets);
-        let released_at_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.released_at_int);
-        let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_usd);
-        let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_eur);
-        let price_tix_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_tix);
-        let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
-        let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
-        let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
-        let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
-        let price_tix_cards = build_range_card_counts(&price_tix_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
-        let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
-        let rarity_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from));
-        let rarity_cards = build_range_card_counts(&rarity_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
-        // Out here for the same reason as the count tables: it reads `printing_to_card`, which the
-        // struct literal below moves.
-        let pair_totals = build_pair_totals(
-            &cards,
-            &printings,
-            &printing_to_card,
-            &strings,
-            &coll_vocab,
-            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
-        );
-        let value_totals = build_all_value_totals(
-            &cards,
-            &printings,
-            &printing_to_card,
-            &strings,
-            &coll_vocab,
-            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
-        );
-        let indexes = CardIndexes {
-            name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
-            oracle_trigram: build_oracle_text_index(&cards, &strings),
-            cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
-            power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
-            toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
-            rarity:         build_rarity_index(&printings, &offsets),
-            subtypes:       build_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes),
-            keywords:       build_tag_index(&cards, &coll_vocab, |c| &c.card_keywords),
-            oracle_tags:    build_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags),
-            art_tags:       build_tag_index(&printings, &coll_vocab, |p| &p.card_art_tags),
-            is_tags:        build_tag_index(&printings, &coll_vocab, |p| &p.card_is_tags),
-            frame_data:     build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data),
-            artists:        build_artist_index(&printings, artist_vocab.len()),
-            flavor:         build_flavor_index(&printings, &strings),
-            set_codes:      {
-                let mut idx: TagIndex = HashMap::new();
-                for (i, p) in printings.iter().enumerate() {
-                    let code = p.card_set_code.as_str();
-                    if !code.is_empty() {
-                        idx.entry(code.to_string()).or_default().push(i as u32);
-                    }
-                }
-                idx
-            },
-            watermarks:     {
-                let mut idx: TagIndex = HashMap::new();
-                for (i, p) in printings.iter().enumerate() {
-                    if p.card_watermark_id != NONE_STR {
-                        let wm = strings[p.card_watermark_id as usize].as_str();
-                        idx.entry(wm.to_string()).or_default().push(i as u32);
-                    }
-                }
-                idx
-            },
-            released_at:    released_at_idx,
-            price_usd:      price_usd_idx,
-            price_eur:      price_eur_idx,
-            price_tix:      price_tix_idx,
-            collector_number: collector_number_idx,
-            released_at_cards,
-            price_usd_cards,
-            price_eur_cards,
-            price_tix_cards,
-            collector_number_cards,
-            sort_perms:     build_sort_permutations(&cards),
-            max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
-            artwork_groups: artwork_group_counts,
-            // Columnar copy of each printing's assigned artwork_group_id, derived here — the single
-            // production spot where assign_artwork_groups (above) has just filled it. Archived with
-            // the store, so it is never recomputed post-load and cannot drift from the struct field.
-            artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
-            // Same reasoning as artwork_group_col: derived here, archived, never recomputed
-            // post-load, so it cannot drift from the counts it sums.
-            artwork_base,
-            printing_to_card,
-            planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
-            border_printing: build_border_printing_planes(&printings, &strings),
-            rarity_printing: build_rarity_printing_planes(&printings),
-            rarity_printing_ordered: rarity_idx,
-            rarity_cards,
-            value_totals,
-            pair_totals,
-            name_bigrams:   build_name_bigram_index(&cards),
-            name_unigrams:  build_name_unigram_index(&cards),
-            legal_divergent: build_divergent_ids(&cards),
-            arith_tuple:    build_arith_tuple_index(&cards),
-        };
-
+        let stats_after_cards = built.stats_after_cards;
         #[cfg(feature = "alloc-counter")]
-        let stats_after_indexes = (alloc_stats::live(), alloc_stats::allocs());
-
-        // Snapshot the registry card_from_pydict just populated so reader
-        // processes can adopt the same format→shift assignments.
-        let format_shifts_snapshot = format_shifts().read().map(|m| m.clone()).unwrap_or_default();
-
-        let card_data = CardData {
-            cards,
-            printings,
-            offsets,
-            strings,
-            coll_vocab,
-            coll_vocab_sorted,
-            artist_vocab,
-            mana_vocab,
-            indexes,
-            format_shifts: format_shifts_snapshot,
-        };
+        let stats_after_indexes = built.stats_after_indexes;
+        let card_data = built.card_data;
 
         // Write atomically: stream into a per-PID .tmp, then rename over shm_path.
         // Per-PID avoids the race where two workers write to the same .tmp and
@@ -12058,13 +12188,7 @@ impl QueryEngine {
             let f = std::fs::File::create(&tmp_path)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("create tmp: {e}")))?;
             let mut buf = std::io::BufWriter::with_capacity(1 << 20, f);
-            buf.write_all(&archive_header())
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("write header: {e}")))?;
-            rkyv::api::high::to_bytes_in::<_, rkyv::rancor::Error>(
-                &card_data,
-                rkyv::ser::writer::IoWriter::new(&mut buf),
-            )
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("rkyv serialize: {e}")))?;
+            write_archive(&card_data, &mut buf)?;
             buf.flush()
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("flush tmp: {e}")))?;
         }
@@ -12387,6 +12511,7 @@ impl QueryEngine {
     }
 }
 
+#[cfg(feature = "python")]
 #[pymodule]
 mod card_engine {
     use pyo3::prelude::*;

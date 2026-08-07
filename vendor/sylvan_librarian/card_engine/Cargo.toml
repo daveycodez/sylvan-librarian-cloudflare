@@ -6,7 +6,14 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "card_engine"
-crate-type = ["cdylib"]
+# LOCAL PATCH (Cloudflare port): "rlib" added so the engine/wasm and
+# engine/builder crates in this workspace can link the engine as an ordinary
+# Rust library. Upstream builds only the cdylib (python extension module).
+# doctest = false because a cdylib-only crate never ran doctests, so upstream's
+# doc-comment code blocks are pseudocode that the rlib target would otherwise
+# try (and fail) to compile as tests.
+crate-type = ["cdylib", "rlib"]
+doctest = false
 
 [features]
 # Counting global allocator + reload memory breakdown, exposed via QueryEngine.mem_stats().
@@ -19,17 +26,37 @@ alloc-counter = []
 # acquire turns out to be 45% of a candidate-acquired query and the cost model prices none of
 # it -- and not worth it on every production request.
 routed-phases = []
+# LOCAL PATCH (Cloudflare port): the pyo3 surface (QueryEngine + the pydict
+# load path) is behind `python`, and the mmap-backed store access + flock
+# publishing behind `mmap-store`. NEITHER is default: nothing in this repo
+# builds the python extension, and the wasm build must exclude memmap2/libc,
+# which do not compile for wasm32-unknown-unknown. Upstream keeps working
+# because scripts/sync-upstream.sh preserves upstream's own Cargo.toml feature
+# wiring on their side; these features only shape what THIS workspace builds.
+# `python` implies `mmap-store` because the pyo3 QueryEngine is defined over
+# the mmap-backed store (get_mmap, flock publishing).
+python = ["dep:pyo3", "mmap-store"]
+mmap-store = ["dep:memmap2", "dep:libc"]
 
 [dependencies]
 # extension-module is enabled by maturin (see pyproject.toml [tool.maturin]) so that
 # plain `cargo test` can still link against libpython for Rust unit tests.
-pyo3 = { version = "0.29.0", features = ["uuid"] }
+# LOCAL PATCH (Cloudflare port): optional, see the `python` feature above.
+pyo3 = { version = "0.29.0", features = ["uuid"], optional = true }
 regex = "1"
 regex-syntax = "0.8" # HIR literal-factor extraction for regex trigram-narrowing (#734)
 memchr = "2"
 serde_json = "1"
 rkyv = "0.8"
-memmap2 = "0.9"
-libc = "0.2"
+# LOCAL PATCH (Cloudflare port): optional, see the `mmap-store` feature above.
+memmap2 = { version = "0.9", optional = true }
+libc = { version = "0.2", optional = true }
 rand = "0.10"
 uuid = "1.12"
+
+# LOCAL PATCH (Cloudflare port): the unit tests / bench harnesses in src/*.rs
+# mmap a real store file and are native-only, so they always get memmap2 even
+# when the library is built without `mmap-store` (dev-dependencies apply to the
+# cfg(test) compilation of the crate).
+[dev-dependencies]
+memmap2 = "0.9"

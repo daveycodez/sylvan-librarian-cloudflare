@@ -1,0 +1,7 @@
+# getrandom (pulled in by card_engine's `rand`) has no default entropy source
+# on wasm32-unknown-unknown and asks the leaf crate to pick one explicitly.
+# `wasm_js` routes it to the JS crypto API, which Cloudflare Workers provide.
+# The matching cargo feature is enabled in engine/wasm/Cargo.toml; this flag is
+# the second half of getrandom's two-part opt-in.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

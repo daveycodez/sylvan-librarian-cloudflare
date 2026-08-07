@@ -1,0 +1,278 @@
+//! Thin wasm-bindgen boundary over `card_engine`'s pure-Rust core API.
+//!
+//! No engine logic lives here: every export marshals JS values in, calls
+//! `card_engine::{BufferStore, StoreBuilder-adjacent}` APIs, and marshals JSON
+//! strings out.
+//!
+//! Store loading is CHUNKED by design. A Worker isolate has ~128MB and the
+//! store is ~70MB, so the JS side must never hold a full copy of the store
+//! while wasm holds another. The intended flow is:
+//!
+//! ```js
+//! begin_store_load(totalLen);          // preallocates the aligned buffer
+//! for await (const chunk of r2Body) {  // ~1MB chunks straight off the R2 stream
+//!   store_load_chunk(chunk);
+//! }
+//! finish_store_load();                 // validates + atomically swaps in
+//! ```
+//!
+//! `finish_store_load` swaps atomically: on any error the previously active
+//! store (if any) stays live. For a hot swap under memory pressure, the JS
+//! glue may call `unload_store()` first (accepting a brief unavailability
+//! window) so the old ~70MB is returned to the allocator before the new
+//! buffer grows; without it the swap transiently needs both stores in linear
+//! memory.
+
+use std::cell::RefCell;
+use wasm_bindgen::prelude::*;
+
+use card_engine::{AlignedVec, BufferStore, EngineError, QueryOptions};
+
+thread_local! {
+    /// The active store. Worker isolates are single-threaded, so a
+    /// thread_local RefCell is a plain module-level slot.
+    static STORE: RefCell<Option<BufferStore>> = const { RefCell::new(None) };
+    /// An in-progress chunked load: (buffer, expected total length).
+    static LOADING: RefCell<Option<(AlignedVec, usize)>> = const { RefCell::new(None) };
+}
+
+/// Panics must be loud, not silent isolate deaths: route the panic message to
+/// console.error before the trap. Installed once at module instantiation.
+#[wasm_bindgen(start)]
+pub fn __init_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        console_error(&format!("sylvan-engine-wasm panic: {info}"));
+    }));
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = error)]
+    fn console_error(s: &str);
+}
+
+fn js_err(e: EngineError) -> JsError {
+    JsError::new(&e.to_string())
+}
+
+// ─── Store loading ───────────────────────────────────────────────────────────
+
+/// One-shot load for callers that already hold the whole archive (tests,
+/// small stores). Copies `bytes` into an aligned buffer; prefer the chunked
+/// API for production-size stores to avoid a second full-size JS-side copy.
+#[wasm_bindgen]
+pub fn init_store(bytes: &[u8]) -> Result<(), JsError> {
+    let store = BufferStore::from_bytes(bytes).map_err(js_err)?;
+    STORE.with(|s| *s.borrow_mut() = Some(store));
+    LOADING.with(|l| *l.borrow_mut() = None);
+    Ok(())
+}
+
+/// Start a chunked store load: preallocate the full aligned buffer up front
+/// (one allocation, no growth reallocs while chunks stream in). Any previous
+/// in-progress load is discarded; the ACTIVE store is untouched until
+/// `finish_store_load` succeeds.
+#[wasm_bindgen]
+pub fn begin_store_load(total_len: u32) -> Result<(), JsError> {
+    let total = total_len as usize;
+    if total == 0 {
+        return Err(JsError::new("begin_store_load: total_len must be non-zero"));
+    }
+    let buf = AlignedVec::with_capacity(total);
+    LOADING.with(|l| *l.borrow_mut() = Some((buf, total)));
+    Ok(())
+}
+
+/// Append one chunk of the archive (wasm-bindgen copies the chunk into linear
+/// memory; stream ~1MB chunks so the JS side never holds the whole store).
+#[wasm_bindgen]
+pub fn store_load_chunk(chunk: &[u8]) -> Result<(), JsError> {
+    LOADING.with(|l| {
+        let mut slot = l.borrow_mut();
+        let Some((buf, total)) = slot.as_mut() else {
+            return Err(JsError::new("store_load_chunk called without begin_store_load"));
+        };
+        if buf.len() + chunk.len() > *total {
+            let msg = format!(
+                "store_load_chunk: overflow ({} + {} > declared total {})",
+                buf.len(),
+                chunk.len(),
+                total
+            );
+            *slot = None; // abort the load; the active store is untouched
+            return Err(JsError::new(&msg));
+        }
+        buf.extend_from_slice(chunk);
+        Ok(())
+    })
+}
+
+/// Validate the streamed archive and atomically swap it in as the active
+/// store. On any error the in-progress buffer is dropped and the previously
+/// active store (if any) keeps serving.
+#[wasm_bindgen]
+pub fn finish_store_load() -> Result<(), JsError> {
+    let (buf, total) = LOADING
+        .with(|l| l.borrow_mut().take())
+        .ok_or_else(|| JsError::new("finish_store_load called without begin_store_load"))?;
+    if buf.len() != total {
+        return Err(JsError::new(&format!(
+            "finish_store_load: incomplete load ({} of declared {} bytes)",
+            buf.len(),
+            total
+        )));
+    }
+    let store = BufferStore::from_aligned(buf).map_err(js_err)?;
+    STORE.with(|s| *s.borrow_mut() = Some(store));
+    Ok(())
+}
+
+/// Drop the active store, returning its memory to the wasm allocator (linear
+/// memory never shrinks, but the pages are reused by the next load). Call
+/// before a swap when there isn't headroom for two stores at once.
+#[wasm_bindgen]
+pub fn unload_store() {
+    STORE.with(|s| *s.borrow_mut() = None);
+}
+
+#[wasm_bindgen]
+pub fn store_loaded() -> bool {
+    STORE.with(|s| s.borrow().is_some())
+}
+
+// ─── Queries / catalog / health ──────────────────────────────────────────────
+
+fn with_store<T>(f: impl FnOnce(&BufferStore) -> Result<T, JsError>) -> Result<T, JsError> {
+    STORE.with(|s| {
+        let guard = s.borrow();
+        let store = guard.as_ref().ok_or_else(|| JsError::new("no store loaded"))?;
+        f(store)
+    })
+}
+
+/// Run a query. `filter_tree_json` is the filter-tree JSON (TrueNode /
+/// AndNode / ... encoding); `opts_json` is an object with any of `unique`,
+/// `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields` — missing
+/// keys take the same defaults as the upstream pyo3 `query()`. Returns
+/// `{"total": n, "rows": [...]}` as a JSON string.
+#[wasm_bindgen]
+pub fn query(filter_tree_json: &str, opts_json: &str) -> Result<String, JsError> {
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    with_store(|store| {
+        let out = store.query(filter_tree_json, &opts).map_err(js_err)?;
+        Ok(out.to_json().to_string())
+    })
+}
+
+/// `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
+/// behind /get_catalog.
+#[wasm_bindgen]
+pub fn catalog() -> Result<String, JsError> {
+    with_store(|store| {
+        let out = serde_json::json!({
+            "card_types": store.common_card_types(),
+            "card_keywords": store.common_card_keywords(),
+        });
+        Ok(out.to_string())
+    })
+}
+
+/// Printing count of the loaded store (the upstream `size()` health number);
+/// 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
+#[wasm_bindgen]
+pub fn size() -> u32 {
+    STORE.with(|s| s.borrow().as_ref().map(|st| st.size() as u32).unwrap_or(0))
+}
+
+/// Oracle-card count of the loaded store; 0 when no store is loaded.
+#[wasm_bindgen]
+pub fn card_count() -> u32 {
+    STORE.with(|s| s.borrow().as_ref().map(|st| st.card_count() as u32).unwrap_or(0))
+}
+
+/// The archive format version this build reads/writes. A store manifest's
+/// `format_version` must match, or `finish_store_load` will reject the bytes.
+#[wasm_bindgen]
+pub fn store_version() -> u32 {
+    card_engine::store_format_version()
+}
+
+/// `n` randomly sampled oracle cards, each as its default-preferred printing —
+/// the engine behind /random_search. `seed` comes from the caller (JS
+/// `crypto.getRandomValues` or per-request entropy): the sampling itself is
+/// deterministic per seed. `fields_json` is a JSON list of field names, or
+/// "null"/"" for the default field set. Returns a JSON array of card objects.
+#[wasm_bindgen]
+pub fn random_search(n: u32, seed: u64, fields_json: &str) -> Result<String, JsError> {
+    let fields: Option<Vec<String>> = if fields_json.is_empty() || fields_json == "null" {
+        None
+    } else {
+        serde_json::from_str(fields_json)
+            .map_err(|e| JsError::new(&format!("bad fields JSON: {e}")))?
+    };
+    with_store(|store| {
+        let rows = store.sample_preferred(n as usize, seed, fields).map_err(js_err)?;
+        Ok(serde_json::Value::Array(rows).to_string())
+    })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// The chunked load path, driven natively: StoreBuilder bytes streamed in
+    /// 7-byte chunks through begin/chunk/finish, then queried. Happy-path only
+    /// (constructing a JsError outside wasm is not supported), which is exactly
+    /// the path the Worker runs.
+    #[test]
+    fn chunked_load_then_query() {
+        let row = serde_json::json!({
+            "card_name": "Chunk Test",
+            "card_name_folded": "chunk test",
+            "oracle_id": "33333333-3333-3333-3333-333333333333",
+            "scryfall_id": "cccccccc-0000-0000-0000-000000000001",
+            "card_set_code": "tst",
+            "set_name": "Test Set",
+            "collector_number": "1",
+            "oracle_text": "Do the thing.",
+            "type_line": "Sorcery",
+            "card_types": ["Sorcery"],
+            "card_subtypes": [],
+            "card_keywords": {},
+            "card_colors": {"U": true},
+            "card_color_identity": {"U": true},
+            "cmc": 2,
+            "card_legalities": {"commander": "legal"},
+        });
+        let mut builder = card_engine::StoreBuilder::new();
+        builder.add_card(&row).expect("add_card");
+        let mut bytes = Vec::new();
+        builder.finish_to_writer(&mut bytes).expect("finish");
+
+        begin_store_load(bytes.len() as u32).expect("begin");
+        for chunk in bytes.chunks(7) {
+            store_load_chunk(chunk).expect("chunk");
+        }
+        finish_store_load().expect("finish_store_load");
+        assert!(store_loaded());
+        assert_eq!(size(), 1);
+        assert_eq!(card_count(), 1);
+
+        let out = query(r#"{"node_type": "TrueNode"}"#, "{}").expect("query");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON out");
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["rows"][0]["name"], "Chunk Test");
+
+        let cat = catalog().expect("catalog");
+        let v: serde_json::Value = serde_json::from_str(&cat).expect("valid catalog JSON");
+        assert_eq!(v["card_types"]["Sorcery"], 1);
+
+        let sampled = random_search(3, 7, "null").expect("random_search");
+        let v: serde_json::Value = serde_json::from_str(&sampled).expect("valid sample JSON");
+        assert_eq!(v.as_array().unwrap().len(), 1);
+
+        unload_store();
+        assert!(!store_loaded());
+        assert_eq!(size(), 0);
+    }
+}
