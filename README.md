@@ -111,22 +111,20 @@ The complete list of intentional differences:
   cold isolate start. Staleness is bounded by one nightly import cycle;
   upstream sends plain `max-age=90`.
 - **Built-in per-IP rate limit** on the engine-computing routes (`/search`,
-  `/random_search`, the SSR root with a query): 100 requests/10s per IP via
-  the Workers rate-limiting binding, answered with a 429 + `Retry-After`.
-  Upstream has none (it sits on a private VPS). Honest capability statement,
-  from measuring it: the binding's counters are per-location, per-isolate
-  cached, and eventually consistent — in practice it dampens *concurrent*
-  floods (the abusive shape) but polite sequential traffic can run well past
-  the configured number before it bites. Treat it as best-effort burst
-  damping, not a guarantee; the strong layer is zone WAF rate rules on a
-  custom domain, which also block pre-Worker (no invocation fees) — the two
-  compose. Cache hits never count (served before the Worker runs), so repeat
-  queries and crowds behind shared IPs are unaffected. The limit/period
-  numbers are deploy-time binding config in `wrangler.jsonc` (platform
-  constraint); `RATE_LIMIT_ENABLED=false` disables enforcement at runtime,
-  and server-to-server callers bypass with the optional `TRUSTED_API_KEY`
-  secret + `x-sylvan-api-key` header (see .env.example). The `x-sylvan-rl`
-  response header reports the limiter's verdict per request.
+  `/random_search`, the SSR root with a query): a continuously-refilling
+  token bucket in a tiny per-IP Durable Object (the pattern from Cloudflare's
+  rules-of-durable-objects docs) — globally exact, unlike the Workers
+  rate-limiting binding, whose eventually-consistent counters we measured
+  barely enforcing. Default 100 requests/10s per IP, 429 + `Retry-After`
+  when exceeded. Runtime-configurable, no redeploy: `RATE_LIMIT_ENABLED=false`
+  disables it, `RATE_LIMIT_PER_10S` tunes it. Cache hits never count (served
+  before the Worker runs), so repeat queries and crowds behind shared IPs are
+  unaffected; the cost is one short DO round-trip on cache-missing engine
+  requests. Server-to-server callers bypass with the optional
+  `TRUSTED_API_KEY` secret + `x-sylvan-api-key` header (see .env.example).
+  The `x-sylvan-rl` response header reports the limiter's verdict. This caps
+  engine/CPU abuse; blocking a mega-flood's per-invocation fees still needs
+  zone WAF rules on a custom domain — the layers compose.
 - Postgres-only admin/import routes answer `501`; the container pipeline is
   their replacement. `get_pid` returns `0` (isolates have no pid).
 - `card_is_tags` stays empty, matching upstream's *automated* import (upstream

@@ -7,8 +7,48 @@
 // hobbyist can clone, so it ships with wallet protection by default. The
 // limiter only ever runs on cache MISSES (Workers Cache answers hits before
 // the Worker starts), so crowds of repeat queries never count against it.
+//
+// Counting lives in a tiny per-IP RateLimiter Durable Object (the pattern
+// from Cloudflare's rules-of-durable-objects docs): one instance per IP,
+// created near that IP's first request, globally exact — chosen after
+// measuring the Workers rate-limiting *binding*, whose per-isolate
+// eventually-consistent counters barely enforced at all. Costs one short DO
+// round-trip (~5-15ms) per cache-missing engine request; a flooding IP ends
+// up serialized by its own single-threaded limiter, which is fitting.
 
+import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../engine/types";
+
+/** Default allowance when RATE_LIMIT_PER_10S is unset: generous for many
+ * people behind one shared IP, a wall for scripts. */
+const DEFAULT_LIMIT_PER_10S = 100;
+const PERIOD_SECONDS = 10;
+
+/**
+ * Continuously-refilling token bucket, in memory. Eviction resets it (a full
+ * bucket) — same trade as the docs example, fine for burst damping.
+ */
+export class RateLimiter extends DurableObject<Env> {
+	private tokens = Number.NaN; // NaN = uninitialized (capacity unknown until first check)
+	private lastRefillMs = 0;
+
+	/** Returns true when the request is allowed. */
+	async check(limit: number): Promise<boolean> {
+		const now = Date.now();
+		if (Number.isNaN(this.tokens)) {
+			this.tokens = limit;
+			this.lastRefillMs = now;
+		}
+		const refillPerMs = limit / (PERIOD_SECONDS * 1000);
+		this.tokens = Math.min(limit, this.tokens + (now - this.lastRefillMs) * refillPerMs);
+		this.lastRefillMs = now;
+		if (this.tokens >= 1) {
+			this.tokens -= 1;
+			return true;
+		}
+		return false;
+	}
+}
 
 /** Routes whose handlers run the engine; everything else is never limited. */
 export function isRateLimitedRoute(routeKey: string, params: Record<string, string>): boolean {
@@ -35,26 +75,24 @@ export async function isTrustedRequest(env: Env, request: Request): Promise<bool
 }
 
 /**
- * Enforce the per-IP limit. Returns the outcome (surfaced in a diagnostic
- * response header) and the 429 response when limited. Binding absent (older
- * local simulators) = fail open: availability over throttling for a
- * protection feature.
+ * Enforce the per-IP limit via the per-IP RateLimiter DO. Returns the outcome
+ * (surfaced in the x-sylvan-rl response header) and the 429 when limited.
+ * RATE_LIMIT_ENABLED="false" switches enforcement off at runtime;
+ * RATE_LIMIT_PER_10S overrides the default allowance — both plain vars,
+ * changeable in the dashboard without a redeploy.
  */
 export async function enforceRateLimit(
 	env: Env,
 	request: Request,
-): Promise<{ outcome: "absent" | "off" | "allowed" | "limited"; response: Response | null }> {
-	// Runtime kill switch (dashboard var, no redeploy). The limit/period
-	// NUMBERS are deploy-time binding config and can only live in
-	// wrangler.jsonc — a platform constraint, not a choice.
-	if ((env as { RATE_LIMIT_ENABLED?: string }).RATE_LIMIT_ENABLED === "false") {
-		return { outcome: "off", response: null };
-	}
-	const limiter = (env as { SEARCH_RATE_LIMITER?: RateLimit }).SEARCH_RATE_LIMITER;
-	if (!limiter) return { outcome: "absent", response: null };
+): Promise<{ outcome: "off" | "allowed" | "limited"; response: Response | null }> {
+	const cfg = env as { RATE_LIMIT_ENABLED?: string; RATE_LIMIT_PER_10S?: string };
+	if (cfg.RATE_LIMIT_ENABLED === "false") return { outcome: "off", response: null };
+	const limit = Math.max(1, Number.parseInt(cfg.RATE_LIMIT_PER_10S ?? "", 10) || DEFAULT_LIMIT_PER_10S);
+
 	const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-	const { success } = await limiter.limit({ key: ip });
-	if (success) return { outcome: "allowed", response: null };
+	const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(ip));
+	const allowed = await stub.check(limit);
+	if (allowed) return { outcome: "allowed", response: null };
 	return {
 		outcome: "limited",
 		response: new Response(

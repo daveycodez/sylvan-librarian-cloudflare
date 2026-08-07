@@ -11,9 +11,9 @@ import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
 import { buildRoutesListing, routes } from "./routes";
 import { httpError, securityHeaders } from "./routes/http";
-import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest } from "./routes/rate-limit";
+import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
 
-export { ImportCoordinator, SearchEngine };
+export { ImportCoordinator, RateLimiter, SearchEngine };
 
 // Hybrid engine routing: a warm isolate answers locally (full horizontal
 // scale); a cold isolate forwards to its REGION's session-warm SearchEngine
