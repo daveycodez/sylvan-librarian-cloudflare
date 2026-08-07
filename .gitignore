@@ -1,6 +1,6 @@
 node_modules/
 target/
-engine/wasm/pkg/
+# engine/wasm/pkg is COMMITTED (built artifact) so Workers Builds needs no Rust.
 .wrangler/
 .dev.vars
 .env

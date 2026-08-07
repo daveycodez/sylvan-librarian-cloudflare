@@ -11,7 +11,7 @@
 	"r2_buckets": [
 		{
 			"binding": "STORE",
-			"bucket_name": "sylvan-librarian-store"
+			"bucket_name": "sylvan-librarian"
 		}
 	],
 
@@ -36,6 +36,12 @@
 	// Nightly store rebuild, after Scryfall's daily bulk-data refresh window.
 	"triggers": { "crons": ["17 11 * * *"] },
 
+	// The wasm engine is imported by the module name the code uses; the built
+	// wasm-bindgen pkg is committed so Workers Builds needs no Rust toolchain.
+	"alias": {
+		"sylvan-engine-wasm": "./engine/wasm/pkg/sylvan_engine_wasm.js"
+	},
+
 	// Bundle the wasm engine and the vendored upstream static assets.
 	"rules": [
 		{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
@@ -47,6 +53,6 @@
 		// Documentation of expected plain vars; real values are set in the
 		// dashboard (Workers Builds) or .dev.vars locally. Secrets (ADMIN_TOKEN,
 		// R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, CF_ACCOUNT_ID) are never here.
-		"R2_BUCKET": "sylvan-librarian-store"
+		"R2_BUCKET": "sylvan-librarian"
 	}
 }

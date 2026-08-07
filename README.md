@@ -81,8 +81,8 @@ To seed local R2 with a store without waiting for the container flow:
 ```bash
 bun run build:builder
 ./target/release/sylvan-store-builder --out store-build/   # fetches Scryfall bulk
-bunx wrangler r2 object put sylvan-librarian-store/manifest.json --local --file store-build/manifest.json
-bunx wrangler r2 object put "sylvan-librarian-store/$(python3 -c "import json;print(json.load(open('store-build/manifest.json'))['store_key'])")" --local --file store-build/cards.store
+bunx wrangler r2 object put sylvan-librarian/manifest.json --local --file store-build/manifest.json
+bunx wrangler r2 object put "sylvan-librarian/$(python3 -c "import json;print(json.load(open('store-build/manifest.json'))['store_key'])")" --local --file store-build/cards.store
 ```
 
 ## License

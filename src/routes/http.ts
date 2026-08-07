@@ -1,0 +1,62 @@
+// HTTP plumbing shared by dispatch (src/index.ts) and route handlers:
+// falcon-parity error responses, security/CORS headers, cache headers.
+// Mirrors vendor/sylvan_librarian/api/api_worker.py json_error_serializer,
+// api/middlewares/security_headers.py + cors_middleware.py, and
+// api_resource.py set_cache_header/set_no_store_header.
+
+// Upstream reads CDN_URL with a CloudFront default; this deployment serves
+// everything same-origin, so the CDN hosts collapse to 'self'.
+const SECURITY_HEADERS: Record<string, string> = {
+	"Content-Security-Policy":
+		"default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"font-src 'self'; " +
+		"img-src 'self' data: https:; " +
+		"connect-src 'self'; " +
+		"frame-ancestors 'none'; " +
+		"base-uri 'self'; " +
+		"form-action 'self'",
+	"X-Frame-Options": "DENY",
+	"X-Content-Type-Options": "nosniff",
+	"X-XSS-Protection": "1; mode=block",
+	"Referrer-Policy": "strict-origin-when-cross-origin",
+	"Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+	"Access-Control-Allow-Origin": "*",
+};
+
+/** Applied to every response, matching upstream's process_response middlewares. */
+export function securityHeaders(response: Response): Response {
+	const out = new Response(response.body, response);
+	for (const [header, value] of Object.entries(SECURITY_HEADERS)) {
+		out.headers.set(header, value);
+	}
+	return out;
+}
+
+/**
+ * Falcon HTTP error as JSON: {"title": ..., "description": ...} via upstream's
+ * json_error_serializer (description may be a structured object, e.g. the 404
+ * routes listing).
+ */
+export function httpError(status: number, title: string, description: unknown, extraHeaders?: Record<string, string>): Response {
+	return new Response(JSON.stringify({ title, description }), {
+		status,
+		headers: { "content-type": "application/json", ...extraHeaders },
+	});
+}
+
+/** Upstream set_cache_header: Cache-Control: public, max-age=<seconds>. */
+export function cacheHeader(seconds: number): Record<string, string> {
+	return { "Cache-Control": `public, max-age=${seconds}` };
+}
+
+/** Upstream set_no_store_header. */
+export const NO_STORE_HEADER: Record<string, string> = { "Cache-Control": "no-store" };
+
+/** JSON success envelope; upstream uses orjson with default options (compact). */
+export function jsonResponse(body: unknown, headers?: Record<string, string>): Response {
+	return new Response(JSON.stringify(body), {
+		headers: { "content-type": "application/json", ...headers },
+	});
+}
