@@ -2,6 +2,7 @@
 // serving path: isolates parse and RPC here, never loading the store.
 
 import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
+import { reportEngineLoad } from "./shard-controller";
 import type { Engine, EngineSearchOptions, EngineSearchResult } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -12,7 +13,7 @@ interface SearchEngineStub {
 	search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs?: number }>;
+	): Promise<EngineSearchResult & { acquireMs?: number; load?: number }>;
 	catalog(
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
@@ -51,11 +52,13 @@ export class RemoteEngine implements Engine {
 
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const rpcStart = Date.now();
-		const { acquireMs, ...result } = await unwrap(this.stub.search(opts, this.fallbackHint));
+		const { acquireMs, load, ...result } = await unwrap(this.stub.search(opts, this.fallbackHint));
+		// The DO's queue-depth rider feeds the shard autoscaler; both metadata
+		// fields are stripped so the search envelope never carries them.
+		if (load !== undefined) reportEngineLoad(load);
 		// Wake observability: logged only when the DO had to acquire its engine
 		// (acquireMs > 0) — warm queries stay quiet. The gap between the two
-		// numbers is transport + serialization. The field is stripped so the
-		// search envelope never carries it.
+		// numbers is transport + serialization.
 		if (acquireMs) {
 			console.log(`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO`);
 		}

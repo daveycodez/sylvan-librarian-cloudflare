@@ -6,6 +6,7 @@ import { bootstrapPage } from "./engine/bootstrap-page";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
+import { pickShard } from "./engine/shard-controller";
 import { manifestPollAlarm } from "./engine/store";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
@@ -25,10 +26,17 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // REGION rides along as the fallback hint: a cold colo DO relays to the
 // regional DO (engine-wnam, ...) while waking in the background, so an
 // evicted colo never makes a user wait on the ~1s store wake.
+// A colo whose lone shard reports sustained queue depth fans out to
+// engine-<colo>-1, -2, ... (shard 0 keeps the plain name, so single-shard
+// steady state is byte-identical to unsharded routing); see shard-controller.
+// SHARDS_MAX (runtime var) overrides the default cap of 8.
 function resolveEngine(request: Request, env: Env, source: { tag: string }): Promise<Engine> {
 	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
-	source.tag = `do-${colo}`;
-	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${colo}`));
+	const maxShards = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10) || undefined;
+	const shard = pickShard(maxShards);
+	const name = shard === 0 ? `engine-${colo}` : `engine-${colo}-${shard}`;
+	source.tag = `do-${name.slice("engine-".length)}`;
+	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name));
 	return Promise.resolve(new RemoteEngine(stub, regionHint(request)));
 }
 

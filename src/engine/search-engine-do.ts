@@ -69,28 +69,40 @@ export class SearchEngine extends DurableObject<Env> {
 	// The relay passes NO hint, so a cold regional DO answers after its own
 	// wake rather than relaying further (recursion depth 1 by construction).
 
+	/** Searches already executing here; snapshotted per request as the queue-
+	 * depth (`load`) signal the isolates' shard controllers scale on. */
+	private inFlightSearches = 0;
+
 	async search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs: number }> {
+	): Promise<EngineSearchResult & { acquireMs: number; load: number }> {
 		if (this.shouldRelay(fallbackHint)) {
 			this.wakeInBackground();
 			const relayStart = Date.now();
+			// The relayed result carries the REGIONAL engine's acquireMs/load —
+			// honest numbers for whoever actually computed the answer.
 			const result = await this.regionStub(fallbackHint).search(opts);
 			console.log(`Cold colo relayed search to engine-${fallbackHint} in ${Date.now() - relayStart}ms`);
 			return result;
 		}
-		// Time the engine acquisition (the wake cost, when there is one) for the
-		// calling isolate's cold-path breakdown. Date.now() only advances across
-		// I/O in Workers, which is exactly what a wake spends: SQLite/R2 reads.
-		// Warm calls report ~0.
-		const acquireStart = Date.now();
-		const engine = await this.engine();
-		const acquireMs = Date.now() - acquireStart;
+		const load = this.inFlightSearches;
+		this.inFlightSearches += 1;
 		try {
-			return { ...(await engine.search(opts)), acquireMs };
-		} catch (err) {
-			rethrowForRpc(err);
+			// Time the engine acquisition (the wake cost, when there is one) for
+			// the calling isolate's cold-path breakdown. Date.now() only advances
+			// across I/O in Workers, which is exactly what a wake spends:
+			// SQLite/R2 reads. Warm calls report ~0.
+			const acquireStart = Date.now();
+			const engine = await this.engine();
+			const acquireMs = Date.now() - acquireStart;
+			try {
+				return { ...(await engine.search(opts)), acquireMs, load };
+			} catch (err) {
+				rethrowForRpc(err);
+			}
+		} finally {
+			this.inFlightSearches -= 1;
 		}
 	}
 
