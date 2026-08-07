@@ -171,16 +171,16 @@ cold at ~751ms median where this run found it warm at 99ms).
 
 | | cold (cache miss) | warm (repeat) | payload |
 |---|---|---|---|
-| **this port** | **111ms** | **57ms** | **~34 KB** |
+| **this port (Cloudflare)** | **111ms** | **57ms** | **~34 KB** |
 | sylvan-librarian.com | 397ms — 3.6× slower | 381ms — 6.7× slower | ~34 KB |
 | Scryfall API | 87ms — 1.3× faster | 89ms — 1.6× slower | ~813 KB — 24× larger |
 
-Worst single request: **this port 164ms** · upstream 594ms · Scryfall 128ms.
+Worst single request: **this port (Cloudflare) 164ms** · upstream 594ms · Scryfall 128ms.
 
 <details open>
 <summary>Per-query results (cold / warm, ms)</summary>
 
-| query | this port | sylvan-librarian.com | Scryfall API |
+| query | this port (Cloudflare) | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|
 | `t:goblin cmc<3 c:r` | 164 / 58 | 594 / 423 | 128 / 99 |
 | `o:"draw a card" t:creature f:modern` | 117 / 51 | 467 / 460 | 84 / 88 |
