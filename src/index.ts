@@ -6,7 +6,7 @@ import { bootstrapPage } from "./engine/bootstrap-page";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
-import { pickShard, takeWarmTarget } from "./engine/shard-controller";
+import { pickShard, takeSeedTarget, takeWarmTarget } from "./engine/shard-controller";
 import { manifestPollAlarm } from "./engine/store";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
@@ -47,6 +47,19 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 		ctx.waitUntil(
 			new RemoteEngine(warmStub, regionHint(request)).size().catch((err) => {
 				console.warn(`Warm ping for shard ${warmTarget} failed: ${err}`);
+			}),
+		);
+	}
+	// Seed-ahead at ~75% of the expansion threshold: materialize the NEXT
+	// unopened shard's SQLite copy (storage only — the DO writes it and
+	// evicts) so a later expansion opens a ~1s revival, never a 70MB R2
+	// first-boot mid-spike.
+	const seedTarget = takeSeedTarget();
+	if (seedTarget !== null) {
+		const seedStub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${colo}-${seedTarget}`));
+		ctx.waitUntil(
+			(seedStub as unknown as { seed(): Promise<unknown> }).seed().catch((err) => {
+				console.warn(`Seed ping for shard ${seedTarget} failed: ${err}`);
 			}),
 		);
 	}

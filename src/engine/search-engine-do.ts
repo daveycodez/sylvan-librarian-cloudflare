@@ -23,7 +23,7 @@ import {
 	reloadStore,
 	tryGetLoadedEngine,
 } from "./store";
-import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
+import type { Engine, EngineSearchOptions, EngineSearchResult, Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";
 
 /**
@@ -148,6 +148,28 @@ export class SearchEngine extends DurableObject<Env> {
 		return engine.size();
 	}
 
+	/**
+	 * Storage-only pre-seed: materialize this shard's SQLite copy of the
+	 * current store WITHOUT loading the engine, so a later expansion opens a
+	 * ~1s local revival instead of running a 70MB R2 first-boot mid-spike.
+	 * Fired fire-and-forget by isolates when the active fan-out nears its
+	 * expansion threshold (see shard-controller). A shard whose copy is
+	 * current answers in ~1ms and simply evicts again — no engine, no alarm,
+	 * no residency: seeding never compromises scale-to-zero.
+	 */
+	async seed(): Promise<{ seeding: boolean }> {
+		const manifest = await readManifest(this.env);
+		if (!manifest) return { seeding: false };
+		if (this.sqliteMeta()?.store_key === manifest.store_key) return { seeding: false };
+		console.log(`Seeding shard SQLite ahead of need (${manifest.store_key})`);
+		this.ctx.waitUntil(
+			this.persistStore(manifest).catch((err) => {
+				console.warn(`Seed persist failed (expansion will first-boot from R2): ${err}`);
+			}),
+		);
+		return { seeding: true };
+	}
+
 	// ── Cold relay ─────────────────────────────────────────────────────────────
 
 	/** Cold (no engine in this isolate) and permitted to relay. */
@@ -250,12 +272,17 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 	}
 
-	/**
-	 * Persist the currently-loaded store into SQLite by re-reading its bytes
-	 * from the colo cache (they were just streamed through it). Crash-safe by
-	 * ordering: meta is deleted first and written last, so a partial write
-	 * reads as "no local copy" and the wake path falls back to R2.
-	 */
+	/** Single-flighted store persist: seed() and persistCurrent() may race. */
+	private persistInFlight: Promise<void> | null = null;
+
+	private persistStore(manifest: StoreManifest): Promise<void> {
+		this.persistInFlight ??= this.streamStoreToSqlite(manifest).finally(() => {
+			this.persistInFlight = null;
+		});
+		return this.persistInFlight;
+	}
+
+	/** Persist the currently-loaded store into SQLite (no-op if already stored). */
 	private async persistCurrent(): Promise<void> {
 		try {
 			const key = currentStoreKey();
@@ -263,12 +290,26 @@ export class SearchEngine extends DurableObject<Env> {
 			if (this.sqliteMeta()?.store_key === key) return;
 			const manifest = await readManifest(this.env);
 			if (!manifest || manifest.store_key !== key) return;
+			await this.persistStore(manifest);
+		} catch (err) {
+			console.warn(`SQLite persist failed (wake-ups will use R2): ${err}`);
+		}
+	}
 
+	/**
+	 * Stream the manifest's store bytes (colo cache first, R2 on miss) into
+	 * SQLite. Crash-safe by ordering: meta is deleted first and written last,
+	 * so a partial write reads as "no local copy" and the wake path falls
+	 * back to R2. Runs WITHOUT the engine — seed() uses it on shards that
+	 * have never loaded a store.
+	 */
+	private async streamStoreToSqlite(manifest: StoreManifest): Promise<void> {
+		{
 			const sql = this.ctx.storage.sql;
 			sql.exec("DELETE FROM store_meta");
 			sql.exec("DELETE FROM store_chunks");
 
-			const body = await openStoreStream(this.env, key);
+			const body = await openStoreStream(this.env, manifest.store_key);
 			const reader = body.getReader();
 			let seq = 0;
 			let carry: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
@@ -316,9 +357,7 @@ export class SearchEngine extends DurableObject<Env> {
 				manifest.built_at,
 				seq,
 			);
-			console.log(`Persisted ${key} to DO SQLite (${seq} chunks)`);
-		} catch (err) {
-			console.warn(`SQLite persist failed (wake-ups will use R2): ${err}`);
+			console.log(`Persisted ${manifest.store_key} to DO SQLite (${seq} chunks)`);
 		}
 	}
 }
