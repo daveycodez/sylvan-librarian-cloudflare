@@ -6,9 +6,16 @@ members = [
     "engine/builder",
 ]
 
-# Release profile tuned for the two artifacts this workspace produces:
-# the wasm engine (size + speed inside a Worker isolate) and the native
-# store builder (a batch job where build time is irrelevant).
+# Tuned for the wasm engine (size + speed inside a Worker isolate); built
+# locally via wasm-pack, with the pkg committed, so its cost never hits CI.
 [profile.release]
 lto = true
 codegen-units = 1
+
+# Container-image builds only: the import binary is a network-bound batch job,
+# so fat LTO buys nothing there while dominating CI build time. The wasm
+# engine keeps the tuned [profile.release] (built locally, pkg committed).
+[profile.container]
+inherits = "release"
+lto = false
+codegen-units = 16
