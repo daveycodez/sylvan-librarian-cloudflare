@@ -69,17 +69,21 @@ routes) so those ports get re-reviewed and their parity fixtures regenerated.
 
 ```bash
 bun install
-bun run seed:local      # build a real store from Scryfall bulk → local simulated R2 (once)
-bun dev                 # full site at localhost — UI, /search, everything
+bun dev                 # full site at localhost — UI, /search, everything.
+                        # First run auto-builds the card store from Scryfall
+                        # bulk data (a few minutes), mirroring production's
+                        # first-boot bootstrap; later runs start instantly.
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck
 bun run build:wasm      # rebuild wasm engine after touching Rust (pkg is committed)
+bun run seed:local      # rebuild/refresh the local store on demand
 ```
 
-Local dev covers everything except the import container itself (wrangler dev
-would need a local Docker daemon for that; `seed:local` runs the same builder
-code natively instead). The container path is exercised in production only.
+Local dev matches production behavior with one substitution: the store build
+runs as a native binary instead of inside a Cloudflare Container (wrangler dev
+would need a local Docker daemon to emulate the container; it is the same
+builder code either way). The container path itself is exercised in production.
 
 ## License
 

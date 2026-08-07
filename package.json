@@ -5,7 +5,7 @@
   "description": "Sylvan Librarian, ported to run natively on Cloudflare Workers + R2 + Containers",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev -c wrangler.dev.jsonc",
+    "dev": "scripts/dev.sh",
     "deploy": "wrangler deploy",
     "build:wasm": "cd engine/wasm && wasm-pack build --target bundler --release --out-dir pkg",
     "build:builder": "cargo build --release -p sylvan-store-builder",
