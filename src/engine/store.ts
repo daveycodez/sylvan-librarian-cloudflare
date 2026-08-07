@@ -99,22 +99,17 @@ async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Pr
 }
 
 /**
- * Fetch the store bytes as a stream: Cache API first, R2 on miss. On miss the
- * R2 body is streamed into the cache first (no JS-side buffering), then read
- * back — two sequential streams instead of one big resident buffer.
+ * Fetch the GZIPPED store bytes as a stream: Cache API first, R2 on miss. On
+ * miss the R2 body is streamed into the cache first (no JS-side buffering),
+ * then read back — two sequential streams instead of one big resident buffer.
+ * The cache holds the compressed form (~2.5x smaller writes/reads).
  */
-async function openStoreStream(
-	env: Env,
-	storeKey: string,
-): Promise<{ body: ReadableStream<Uint8Array>; totalLen: number }> {
+async function openStoreStream(env: Env, storeKey: string): Promise<ReadableStream<Uint8Array>> {
 	const cacheKey = new Request(STORE_CACHE_URL + encodeURIComponent(storeKey));
 	const cache = caches.default;
 
 	const hit = await cache.match(cacheKey);
-	if (hit?.body) {
-		const len = Number(hit.headers.get("content-length") ?? 0);
-		if (len > 0) return { body: hit.body, totalLen: len };
-	}
+	if (hit?.body) return hit.body;
 
 	const obj = await env.STORE.get(storeKey);
 	if (!obj) {
@@ -133,12 +128,12 @@ async function openStoreStream(
 		}),
 	);
 	const cached = await cache.match(cacheKey);
-	if (cached?.body) return { body: cached.body, totalLen: obj.size };
+	if (cached?.body) return cached.body;
 
 	// Cache eviction raced us; fall back to a fresh R2 read.
 	const again = await env.STORE.get(storeKey);
 	if (!again) throw new EngineUnavailableError(`Store object ${storeKey} vanished from R2`, false);
-	return { body: again.body, totalLen: again.size };
+	return again.body;
 }
 
 async function loadStore(env: Env): Promise<Engine> {
@@ -150,16 +145,27 @@ async function loadStore(env: Env): Promise<Engine> {
 		throw new EngineUnavailableError("No store manifest in R2; import has been triggered", true);
 	}
 
+	if (!manifest.store_bytes || !manifest.store_key.endsWith(".store.gz")) {
+		// A manifest from an incompatible builder (pre-compression format).
+		// Loud, and self-healing: the next import publishes the current format.
+		throw new EngineUnavailableError(
+			`Manifest ${manifest.store_key} is not in the gzipped store format this Worker reads`,
+			false,
+		);
+	}
+
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
-	const { body, totalLen } = await openStoreStream(env, manifest.store_key);
+	const gzBody = await openStoreStream(env, manifest.store_key);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
 		current = null;
 		wasm.unload_store();
 	}
-	await feedStore(body, totalLen);
+	// Decompress in-flight: the wasm buffer is preallocated at the manifest's
+	// uncompressed size, so the chunked loader never guesses.
+	await feedStore(gzBody.pipeThrough(new DecompressionStream("gzip")), manifest.store_bytes);
 
 	const engine = new WasmEngine();
 	current = { storeKey: manifest.store_key, engine };

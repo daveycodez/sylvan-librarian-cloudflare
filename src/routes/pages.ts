@@ -7,7 +7,7 @@ import { staticText } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { buildBaseHtml, buildCardHtml, CRITICAL_CSS, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
-import { cacheHeader } from "./http";
+import { cacheHeader, searchCacheHeader } from "./http";
 import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
 import type { RouteContext } from "./registry";
@@ -71,7 +71,7 @@ export async function rootHandler(
 			const embeddedData = `// Server-side embedded search results\n      window.EMBEDDED_SEARCH_RESULTS = ${searchResultsJson};\n      `;
 			htmlContent = replaceAllLiteral(htmlContent, "<!-- SERVER_SIDE_EMBEDDED_DATA -->", embeddedData);
 
-			headers = cacheHeader(90);
+			headers = searchCacheHeader();
 		} catch (err) {
 			// If search fails, just serve the page without embedded results.
 			// EngineQueryError lands here too: upstream would have recovered via

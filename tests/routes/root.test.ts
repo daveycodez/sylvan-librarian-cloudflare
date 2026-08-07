@@ -49,7 +49,7 @@ describe("_root with a search query", () => {
 	test("embeds server-side results, count and envelope, cached 90s", async () => {
 		const res = await testDispatch(makeCtx(), "/?q=elf");
 		expect(res.status).toBe(200);
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
 		const html = await res.text();
 		expect(html).not.toContain("<!-- SERVER_SIDE_RESULTS -->");
 		expect(html).not.toContain("<!-- SERVER_SIDE_EMBEDDED_DATA -->");

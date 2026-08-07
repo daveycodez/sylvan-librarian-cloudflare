@@ -56,6 +56,17 @@ export function cacheHeader(seconds: number): Record<string, string> {
 	return { "Cache-Control": `public, max-age=${seconds}` };
 }
 
+/**
+ * Search-bearing responses: upstream's 90s max-age plus stale-while-revalidate
+ * (a deliberate deviation, see README): Workers Cache serves an expired entry
+ * instantly while refreshing in the background, turning repeat-query cold
+ * isolate hits into edge-speed responses. A day of SWR bounds staleness at
+ * one nightly import cycle.
+ */
+export function searchCacheHeader(): Record<string, string> {
+	return { "Cache-Control": "public, max-age=90, stale-while-revalidate=86400" };
+}
+
 /** Upstream set_no_store_header. */
 export const NO_STORE_HEADER: Record<string, string> = { "Cache-Control": "no-store" };
 

@@ -56,11 +56,17 @@ Queries the engine cannot answer return a structured error — never silently
 empty. Upstream's Postgres-only admin/import endpoints return `501` here; the
 container pipeline replaces them.
 
-Caching notes: `/search` caches for 90s (smaller than the isolates' manifest
-poll, so nightly imports need no purge), page HTML carries no card data
+Caching notes: `/search` caches for 90s + a day of stale-while-revalidate
+(nightly imports need no purge — staleness is bounded by one import cycle and
+refreshes happen in the background), page HTML carries no card data
 (client-side fetches stay fresh), `no-store` routes (`/random_search`, the
 bootstrap page) and error statuses are never cached, and the cache is
 per-deploy-version so releases can't serve stale assets.
+
+Cold-start note: the store is published gzipped (~2.5x smaller) and streamed
+through `DecompressionStream` into a wasm buffer preallocated from the
+manifest's `store_bytes`, cutting the one-time cold-isolate store load to
+well under a second in-region.
 
 ## Upstream tracking
 
@@ -93,6 +99,11 @@ The complete list of intentional differences:
   upstream's hostname-derived name (which could never produce it on our
   domains). The derivation port stays intact and tested in
   `src/routes/site-name.ts`.
+- **`stale-while-revalidate=86400` added to search responses** (the `/search`
+  API and the SSR root page): Workers Cache serves an expired cached query
+  instantly while refreshing in the background, so repeat queries never pay a
+  cold isolate start. Staleness is bounded by one nightly import cycle;
+  upstream sends plain `max-age=90`.
 - Postgres-only admin/import routes answer `501`; the container pipeline is
   their replacement. `get_pid` returns `0` (isolates have no pid).
 - `card_is_tags` stays empty, matching upstream's *automated* import (upstream
@@ -133,10 +144,20 @@ builder code either way). The container path itself is exercised in production.
 Same 10 queries against this deployment, upstream's own
 [sylvan-librarian.com](https://sylvan-librarian.com), and the
 [Scryfall API](https://api.scryfall.com) (2026-08-07, single US residential
-vantage, `scripts/bench.sh`). Per query: one **cold** request (cache miss)
-then the median of two immediate **warm** repeats; all services keep their
-production caching — that's the point. Scryfall requests spaced 600ms per
-their rate etiquette. Times are total request ms.
+vantage). Per query: one **cold** request (cache miss) then the median of two
+immediate **warm** repeats; all services keep their production caching —
+that's the point. Scryfall requests spaced 600ms per their rate etiquette.
+Times are total request ms.
+
+Reproduce it yourself (only needs curl):
+
+```bash
+scripts/bench.sh results.tsv
+```
+
+The TSV columns are service, query, run, HTTP status, total seconds, TTFB
+seconds, payload bytes. Numbers below predate the gzipped-store cold-start
+work, so a rerun should beat the cold column.
 
 | query | this port (cold/warm) | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|

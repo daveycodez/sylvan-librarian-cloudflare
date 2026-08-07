@@ -11,7 +11,7 @@ import { EngineUnavailableError } from "../engine/types";
 import type { CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, RESPONSE_SHAPE, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { explainWireTree } from "./explanation";
-import { cacheHeader, httpError, jsonResponse, NO_STORE_HEADER } from "./http";
+import { httpError, jsonResponse, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
 import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from "./param-binding";
 import { loadParser } from "./parser-bridge";
@@ -213,7 +213,7 @@ export async function searchHandler(
 	const bound = bindParams("APIResource.search", SEARCH_SPEC, [], params);
 	// Falcon sets Cache-Control before running the search, so the header also
 	// rides on the 400s raised inside it (upstream parity).
-	const cache = cacheHeader(90);
+	const cache = searchCacheHeader();
 	try {
 		const results = await runSearch(ctx, {
 			query: (bound.query as string | null) || (bound.q as string | null),

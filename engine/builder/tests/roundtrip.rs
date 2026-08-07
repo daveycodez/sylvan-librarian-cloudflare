@@ -240,7 +240,17 @@ fn build_store_writes_archive_and_manifest_data() {
     assert_eq!(manifest.built_at, "1754000000");
     assert!(!manifest.upstream_commit.is_empty());
 
-    let bytes = std::fs::read(out_dir.join(&manifest.store_key)).expect("read store file");
+    assert!(manifest.store_key.ends_with(".store.gz"), "{}", manifest.store_key);
+
+    // The file on disk is gzipped; the Worker streams it through
+    // DecompressionStream into a buffer preallocated from store_bytes.
+    let gz = std::fs::read(out_dir.join(&manifest.store_key)).expect("read store file");
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(gz.as_slice()), &mut bytes)
+        .expect("gunzip store");
+    assert_eq!(bytes.len() as u64, manifest.store_bytes, "store_bytes must match decompressed size");
+    assert!(gz.len() < bytes.len(), "compression should shrink the archive");
+
     let store = BufferStore::from_bytes(&bytes).expect("load written store");
     assert_eq!(store.card_count(), 2);
 
