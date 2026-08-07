@@ -1,0 +1,109 @@
+name: Python Tests
+
+on:
+  push:
+    branches:
+      - main
+  # Deliberately NO `paths:` filter — see .github/scripts/changed-paths.sh. This
+  # workflow always runs so its check is reported exactly once; the `changes` job
+  # decides whether the real work happens.
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.scope.outputs.changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Does this change touch Python or the Rust extensions?
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          .github/scripts/changed-paths.sh
+          '\.py$|\.rs$|(^|/)Cargo\.(toml|lock)$|^requirements/|(^|/)pyproject\.toml$|^api/static/fixtures/|^\.github/(workflows/python-tests\.yml|scripts/changed-paths\.sh)$'
+
+  # Named python-test (not `test`) to match js-test / rust-test — the three check
+  # names should read alike in the PR checks list and in the required-checks rule.
+  # The workflow was called "Unit Tests" until the Rust suites arrived and made that
+  # name ambiguous; the job name has always been python-test, so renaming the workflow
+  # did not disturb the required-checks rule, which matches on the check name.
+  python-test:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install system dependencies
+        run: |
+          true || { sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev ; }
+
+      - name: Install uv dependencies
+        run: |
+          # Try the official installer first, fallback to pip if needed
+          if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+            source $HOME/.cargo/env
+          else
+            echo "Installing uv via pip as fallback..."
+            python -m pip install --upgrade pip
+            python -m pip install uv
+          fi
+          uv pip install --system --break-system-packages -r requirements/base.txt -r requirements/test.txt
+
+      - name: Cache card_engine wheel
+        id: ce-cache
+        uses: actions/cache@v5
+        with:
+          path: /tmp/card-engine-wheel
+          key: card-engine-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('card_engine/**') }}
+
+      - name: Cache shared_cache wheel
+        id: sc-cache
+        uses: actions/cache@v5
+        with:
+          path: /tmp/shared-cache-wheel
+          key: shared-cache-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('shared_cache/**') }}
+
+      - name: Install Rust toolchain
+        if: steps.ce-cache.outputs.cache-hit != 'true' || steps.sc-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artifacts
+        if: steps.ce-cache.outputs.cache-hit != 'true' || steps.sc-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            card_engine
+            shared_cache
+
+      - name: Build card_engine wheel
+        if: steps.ce-cache.outputs.cache-hit != 'true'
+        run: pip wheel ./card_engine -w /tmp/card-engine-wheel
+
+      - name: Build shared_cache wheel
+        if: steps.sc-cache.outputs.cache-hit != 'true'
+        run: pip wheel ./shared_cache -w /tmp/shared-cache-wheel
+
+      - name: Install Rust extensions
+        run: |
+          pip install /tmp/card-engine-wheel/card_engine*.whl
+          pip install /tmp/shared-cache-wheel/shared_cache*.whl
+
+      - name: Run tests
+        run: |
+          python -m pytest -vvv --durations=10

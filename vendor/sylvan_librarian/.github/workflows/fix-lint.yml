@@ -1,0 +1,45 @@
+name: Fix Lint on Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  fix-lint:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/fix-lint' &&
+      github.event.comment.user.login == 'jbylund'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff fix and format
+        run: |
+          python -m ruff check --fix --unsafe-fixes .
+          python -m ruff format .
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          branch=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json headRefName -q .headRefName)
+          git diff --exit-code && echo "No changes to commit" || (git add -u && git commit -m "style: auto-fix ruff" && git push origin HEAD:"$branch")
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

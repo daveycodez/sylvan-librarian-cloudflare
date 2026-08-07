@@ -1,0 +1,25 @@
+{
+  "name": "sylvan-librarian-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sylvan Librarian, ported to run natively on Cloudflare Workers + R2 + Containers",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build:wasm": "cd engine/wasm && wasm-pack build --target bundler --release --out-dir pkg",
+    "build:builder": "cargo build --release -p sylvan-store-builder",
+    "test": "bun test",
+    "check": "biome check src scripts tests",
+    "typecheck": "tsc --noEmit",
+    "sync-upstream": "scripts/sync-upstream.sh"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.2",
+    "@cloudflare/containers": "^0.0.28",
+    "@cloudflare/workers-types": "^4.20250801.0",
+    "bun-types": "^1.3.14",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.27.0"
+  }
+}

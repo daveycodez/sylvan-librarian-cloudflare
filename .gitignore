@@ -1,0 +1,10 @@
+node_modules/
+target/
+engine/wasm/pkg/
+.wrangler/
+.dev.vars
+.env
+*.store
+store-build/
+__pycache__/
+.venv/

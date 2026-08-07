@@ -1,0 +1,35 @@
+[package]
+name = "card_engine"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "card_engine"
+crate-type = ["cdylib"]
+
+[features]
+# Counting global allocator + reload memory breakdown, exposed via QueryEngine.mem_stats().
+# Measurement-only; never enable for production builds.
+alloc-counter = []
+# Disjoint acquire/choose/dispatch timing inside run_query_routed, exposed through
+# explain_analyze's `routed_*_ns`. Measurement-only, same rule as alloc-counter, and for a
+# measured reason: the four clock reads cost +2.7us and +2.3us on a ~40us median query
+# (~1.6%, paired interleaved A/B, both CIs excluding zero). Worth that in a diagnostic build --
+# acquire turns out to be 45% of a candidate-acquired query and the cost model prices none of
+# it -- and not worth it on every production request.
+routed-phases = []
+
+[dependencies]
+# extension-module is enabled by maturin (see pyproject.toml [tool.maturin]) so that
+# plain `cargo test` can still link against libpython for Rust unit tests.
+pyo3 = { version = "0.29.0", features = ["uuid"] }
+regex = "1"
+regex-syntax = "0.8" # HIR literal-factor extraction for regex trigram-narrowing (#734)
+memchr = "2"
+serde_json = "1"
+rkyv = "0.8"
+memmap2 = "0.9"
+libc = "0.2"
+rand = "0.10"
+uuid = "1.12"

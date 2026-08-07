@@ -1,0 +1,80 @@
+rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.rs"
+
+python:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.py"
+
+javascript:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.js"
+
+shared_cache:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "shared_cache/**"
+
+card_engine:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "card_engine/**"
+
+parser:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/parsing/**"
+
+frontend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/static/**"
+
+api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/**"
+
+database:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/db/**"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/tests/**"
+          - "api/parsing/tests/**"
+          - "conftest.py"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+          - ".github/ISSUE_TEMPLATE/**"
+          - ".github/PULL_REQUEST_TEMPLATE.md"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - "makefile"
+          - "docker-compose.yml"
+          - "envs/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "pyproject.toml"
+          - "requirements/**"
+          - "package.json"
+          - "package-lock.json"
+          - "uv.lock"
+          - "card_engine/Cargo.toml"
+          - "card_engine/Cargo.lock"
+          - "shared_cache/Cargo.toml"
+          - "shared_cache/Cargo.lock"

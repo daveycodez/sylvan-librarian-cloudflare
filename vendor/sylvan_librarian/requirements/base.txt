@@ -1,0 +1,16 @@
+boto3
+brotli
+cachebox>=6.0.0
+falcon
+honeybadger
+minify-html
+orjson
+psycopg[binary,pool]
+pyparsing
+requests
+tenacity
+testcontainers[postgres]
+tinycss2
+titlecase
+xxhash
+zstandard

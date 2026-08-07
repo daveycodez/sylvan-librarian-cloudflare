@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Generate postgresql.conf from template with memory settings tuned to available memory.
+
+Memory values are computed from the available memory with conservative ratios so that two
+concurrent instances (blue/green) fit comfortably on the host.
+"""
+
+import argparse
+import platform
+import subprocess
+from pathlib import Path
+from string import Template
+
+
+def get_available_memory_bytes() -> int:
+    """Return available memory in bytes.
+
+    Prefers the Docker VM's allocation (via `docker info`) so that limits set
+    in Docker Desktop / colima are respected.  Falls back to host physical
+    memory if Docker is not reachable.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.MemTotal}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 0:
+            mem = int(result.stdout.strip())
+            if mem > 0:
+                return mem
+    except OSError:
+        pass
+
+    if platform.system() == "Darwin":
+        result = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=False)
+        return int(result.stdout.strip())
+
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+
+    msg = "Could not determine available memory"
+    raise RuntimeError(msg)
+
+
+def fmt_mb(n_bytes: int) -> str:
+    """Format bytes as a PostgreSQL memory string in MB."""
+    return f"{n_bytes // (1024 * 1024)}MB"
+
+
+def _compute_raw(total_bytes: int) -> dict[str, int]:
+    """Compute PostgreSQL memory settings in bytes, sized for two concurrent instances (blue/green)."""
+    mb = 1024 * 1024
+    gb = 1024 * mb
+    return {
+        "shared_buffers": int(total_bytes * 0.05),
+        "effective_cache_size": int(total_bytes * 0.40),
+        # 2% of RAM, clamped to [64 MB, 2 GB]
+        "maintenance_work_mem": max(64 * mb, min(int(total_bytes * 0.02), 2 * gb)),
+        # 0.1% of RAM (safe under 100 connections * 4 parallel workers), minimum 16 MB
+        "work_mem": max(16 * mb, int(total_bytes * 0.001)),
+    }
+
+
+def compute_settings(total_bytes: int) -> dict[str, str]:
+    """Compute PostgreSQL memory settings as formatted strings for postgresql.conf."""
+    raw = _compute_raw(total_bytes)
+    return {
+        "available_memory": fmt_mb(total_bytes),
+        "shared_buffers": fmt_mb(raw["shared_buffers"]),
+        "effective_cache_size": fmt_mb(raw["effective_cache_size"]),
+        "maintenance_work_mem": fmt_mb(raw["maintenance_work_mem"]),
+        "work_mem": fmt_mb(raw["work_mem"]),
+    }
+
+
+def compute_pg_mem_limit_bytes(total_bytes: int) -> int:
+    """Compute Docker memory limit for a single postgres container.
+
+    shared_buffers + maintenance_work_mem + 256 MB overhead for process memory.
+    """
+    raw = _compute_raw(total_bytes)
+    return raw["shared_buffers"] + raw["maintenance_work_mem"] + 256 * 1024 * 1024
+
+
+def _is_gitignored(path: Path) -> bool:
+    """Return True if git ignores path, False if tracked or if git cannot be consulted."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(path)],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        return True  # No git available; nothing useful to warn about.
+    return result.returncode == 0
+
+
+def update_env_file(env_path: Path, key: str, value: str) -> None:
+    """Update or append key=value in an env file, leaving all other lines untouched."""
+    line = f"{key}={value}\n"
+    if env_path.exists():
+        content = env_path.read_text()
+        lines = content.splitlines(keepends=True)
+        for i, existing in enumerate(lines):
+            if existing.startswith(f"{key}="):
+                lines[i] = line
+                env_path.write_text("".join(lines))
+                return
+        # Key not present — append, ensuring there's a trailing newline first.
+        if content and not content.endswith("\n"):
+            content += "\n"
+        env_path.write_text(content + line)
+    else:
+        env_path.write_text(line)
+
+
+def main() -> None:
+    """Parse args, detect available memory, and render the postgresql.conf template."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--template", required=True, help="path to postgresql.conf.template")
+    parser.add_argument("--output", required=True, help="path to write postgresql.conf")
+    parser.add_argument(
+        "--env-output",
+        help=(
+            "path of the per-host env file to update with POSTGRES_MEM_LIMIT (e.g. .env). Must be a "
+            "gitignored file: the limit is derived from THIS host's memory and has to travel with the "
+            "postgresql.conf generated alongside it."
+        ),
+    )
+    args = parser.parse_args()
+
+    total_bytes = get_available_memory_bytes()
+    settings = compute_settings(total_bytes)
+
+    template_text = Path(args.template).read_text()
+    result = Template(template_text).safe_substitute(settings)
+    Path(args.output).write_text(result)
+
+    print(f"Generated {args.output}")
+    for key, val in settings.items():
+        print(f"  {key}: {val}")
+
+    if args.env_output:
+        limit_mb = compute_pg_mem_limit_bytes(total_bytes) // (1024 * 1024)
+        limit_str = f"{limit_mb}m"
+        # One per-host file, not the tracked envs/ directory. POSTGRES_MEM_LIMIT has to agree with the
+        # shared_buffers in the postgresql.conf generated just above, and both are derived from this
+        # host's memory. Written into a tracked file, the next git checkout reverts it while the
+        # untracked conf survives — and make then considers the conf up to date and never regenerates,
+        # so the compose default silently applies to a conf that needs more. Compose reads .env before
+        # envs/<stack>, so this still wins for every stack.
+        env_file = Path(args.env_output)
+        update_env_file(env_file, "POSTGRES_MEM_LIMIT", limit_str)
+        print(f"  POSTGRES_MEM_LIMIT: {limit_str} -> {env_file}")
+        if not _is_gitignored(env_file):
+            print(f"  WARNING: {env_file} is tracked by git; a checkout will revert this value.")
+
+
+if __name__ == "__main__":
+    main()

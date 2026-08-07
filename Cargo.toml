@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "vendor/sylvan_librarian/card_engine",
+    "engine/wasm",
+    "engine/builder",
+]
+
+# Release profile tuned for the two artifacts this workspace produces:
+# the wasm engine (size + speed inside a Worker isolate) and the native
+# store builder (a batch job where build time is irrelevant).
+[profile.release]
+lto = true
+codegen-units = 1

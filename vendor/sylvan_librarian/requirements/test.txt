@@ -1,0 +1,6 @@
+boto3-stubs[s3]
+maturin
+pytest
+pytest-cov
+pytest-profiling
+ruff

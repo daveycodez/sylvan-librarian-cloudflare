@@ -1,0 +1,52 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sylvan-librarian",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+
+	// The engine store + version manifest live here. The import container writes
+	// via the R2 S3 API; the Worker reads via this binding.
+	"r2_buckets": [
+		{
+			"binding": "STORE",
+			"bucket_name": "sylvan-librarian-store"
+		}
+	],
+
+	// ImportCoordinator is a container-enabled Durable Object: it serializes
+	// import runs (only one at a time), starts the container, and records the
+	// last run's outcome. The Worker talks to a single named instance.
+	"durable_objects": {
+		"bindings": [{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] }],
+	"containers": [
+		{
+			"class_name": "ImportCoordinator",
+			"image": "./Dockerfile",
+			"max_instances": 1,
+			// The store build peaks well above a Worker isolate's 128MB — that is
+			// why the import is a container at all. standard = 4GiB / 1/2 vCPU.
+			"instance_type": "standard"
+		}
+	],
+
+	// Nightly store rebuild, after Scryfall's daily bulk-data refresh window.
+	"triggers": { "crons": ["17 11 * * *"] },
+
+	// Bundle the wasm engine and the vendored upstream static assets.
+	"rules": [
+		{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+		{ "type": "Text", "globs": ["**/*.css", "**/*.html", "**/*.txt"], "fallthrough": true },
+		{ "type": "Data", "globs": ["**/*.ico", "**/*.webp"], "fallthrough": true }
+	],
+
+	"vars": {
+		// Documentation of expected plain vars; real values are set in the
+		// dashboard (Workers Builds) or .dev.vars locally. Secrets (ADMIN_TOKEN,
+		// R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, CF_ACCOUNT_ID) are never here.
+		"R2_BUCKET": "sylvan-librarian-store"
+	}
+}

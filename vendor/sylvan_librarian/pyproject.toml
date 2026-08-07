@@ -1,0 +1,50 @@
+[tool.ruff]
+line-length = 132
+exclude = [".venv", "venv", "build", "dist", "migrations", "ignored"]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "D", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ", "EM", "EXE", "FBT", "ICN", "INP", "PIE", "PT", "Q", "RET", "SIM", "T20", "TID", "TCH", "ARG", "PTH", "ERA", "PL", "RUF"]
+# E501: Ignore line too long
+# S105: Ignore hardcoded password string
+ignore = [
+    "B911",
+    "E501", # line too long
+    "FBT001",
+    "FBT002",
+    "FBT003",
+    "S105",
+    "S608",
+    "SIM117",
+    "COM812", # trailing comma - enforced by ruff format
+    "S311",   # random is fine for non-cryptographic use in this codebase
+]
+per-file-ignores = {"**/tests/**/*.py" = ["ANN001", "ANN201", "ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "PT006", "S101"], "conftest.py" = ["ANN001", "ANN201", "ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "PT006", "S101"], "api_worker.py" = ["PLC0415"], "**/scripts/**/*.py" = ["T201", "S603", "S607", "PTH123"]}
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15  # Increase from default 10 to 15
+
+[tool.ruff.lint.pylint]
+max-returns = 12  # Increase from default 6 to 12
+
+[tool.pylint]
+max-line-length = 120
+disable = ["line-too-long"]
+ignore = [".venv", "venv", "build", "dist", "migrations"]
+
+[tool.pylint."**/tests/**/*.py"]
+disable = ["missing-docstring", "protected-access"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+strict = true
+# exclude = "(\.venv|venv|build|dist|migrations)"
+show_error_codes = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unused_configs = true

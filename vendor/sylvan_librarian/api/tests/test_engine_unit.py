@@ -1,0 +1,1375 @@
+# ruff: noqa: ERA001, PLR0913
+"""Unit tests for the Rust QueryEngine — filters, dedup, prefer, and sort.
+
+Fixture: api/tests/fixtures/engine_cards.json
+  90 real card printings across 16 oracle IDs and 40+ illustration IDs.
+  Chosen to exercise shared artworks, null prices, multi-color, hybrid mana,
+  Phyrexian mana, X costs, and varied CMC / type / rarity distributions.
+
+Card summary (name → printings):
+  Black Lotus       5p   colorless artifact        cmc=0
+  Boggart Ram-Gang  4p   RG creature {R/G}{R/G}{R/G}  cmc=3
+  Cathedral Membrane 1p  W artifact creature {1}{W/P} cmc=2
+  Counterspell      6p   blue instant              cmc=2
+  Dark Ritual       5p   black instant             cmc=1
+  Fireball          1p   red sorcery {X}{R}         cmc=1
+  Jace, the Mind Sculptor 10p  blue planeswalker   cmc=4
+  Kitchen Finks     6p   GW creature {1}{G/W}{G/W} cmc=3
+  Lightning Bolt   10p   red instant               cmc=1
+  Monastery Messenger 1p RUW creature {2/U}{2/R}{2/W} cmc=6
+  Nicol Bolas, Planeswalker 7p  UBR planeswalker   cmc=8
+  Serra Angel       7p   white creature 4/4        cmc=5
+  Shivan Dragon     5p   red creature 5/5          cmc=6
+  Sol Ring          5p   colorless artifact        cmc=1
+  Spectral Procession 6p white sorcery {2/W}{2/W}{2/W}  cmc=6
+  Tarmogoyf        11p   green creature */*+1      cmc=2
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import tempfile
+import uuid
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+
+from api.parsing import parse_scryfall_query
+from card_engine import QueryEngine, UnknownFieldError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "engine_cards.json"
+
+
+@pytest.fixture(scope="module", name="fresh_engine")
+def fresh_engine_fixture() -> Generator[Callable[[], QueryEngine]]:
+    """Factory for engines with their own snapshot path; archives removed at teardown.
+
+    The default path is shared machine-wide (that's the point of the shm design),
+    so two test engines holding different card sets would clobber each other.
+    """
+    paths: list[Path] = []
+
+    def make() -> QueryEngine:
+        shm_path = Path(tempfile.gettempdir()) / f"sylvan_librarian_test_{uuid.uuid4().hex}"
+        paths.append(shm_path)
+        return QueryEngine(shm_path=str(shm_path))
+
+    yield make
+    for shm_path in paths:
+        shm_path.unlink(missing_ok=True)
+        shm_path.with_suffix(".lock").unlink(missing_ok=True)
+
+
+@pytest.fixture(scope="module", name="engine")
+def engine_fixture(fresh_engine: Callable[[], QueryEngine]) -> QueryEngine:
+    cards = json.loads(_FIXTURE.read_text())
+    e = fresh_engine()
+    e.reload(cards)
+    return e
+
+
+def _run(
+    engine: QueryEngine,
+    q: str = "",
+    *,
+    unique: str = "printing",
+    prefer: str = "default",
+    orderby: str = "edhrec",
+    direction: str = "asc",
+    limit: int = 200,
+    fields: list[str] | None = None,
+) -> tuple[int, list[dict]]:
+    """Parse q, run engine.query(), return (total, cards). q='' matches all."""
+    filters = parse_scryfall_query(q)
+    total, cards = engine.query(
+        filters=filters,
+        unique=unique,
+        prefer=prefer,
+        orderby=orderby,
+        direction=direction,
+        limit=limit,
+        fields=fields,
+    )
+    return total, list(cards)
+
+
+def _names(cards: list[dict]) -> list[str]:
+    return [c["name"] for c in cards]
+
+
+class TestFilters:
+    def test_match_all(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine)
+        assert total == 90
+        assert len(cards) == 90
+
+    def test_name_exact(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, 'name="Lightning Bolt"')
+        assert total == 10
+        assert all(c["name"] == "Lightning Bolt" for c in cards)
+
+    def test_name_contains(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "name:bolt")
+        assert total == 10
+
+    def test_name_with_absent_trigram_matches_nothing(self, engine: QueryEngine) -> None:
+        # "bolxq" shares trigrams with "bolt" but contains trigrams no card name has;
+        # the trigram narrowing must yield an empty candidate set (and zero results).
+        total, cards = _run(engine, "name:bolxq")
+        assert total == 0
+        assert cards == []
+
+    def test_negated_numeric_excludes_cards_missing_field(self, engine: QueryEngine) -> None:
+        # Scryfall semantics: attribute filters only match cards that have the
+        # attribute, even under negation — -power>0 must NOT match an instant.
+        # Mirrors SQL: NOT (power > 0) is NULL for NULL power, excluding the row.
+        total, _ = _run(engine, '-power>0 name="Counterspell"')
+        assert total == 0
+
+    def test_negated_compound_with_missing_field(self, engine: QueryEngine) -> None:
+        # SQL ternary logic: for an instant, power>0 is NULL but t:creature is
+        # false, so (power>0 and t:creature) is false and its negation is TRUE —
+        # the unknown does not poison the whole expression.
+        total, _ = _run(engine, '-(power>0 t:creature) name="Counterspell"')
+        assert total == 6
+
+    def test_negated_numeric_keeps_matching_cards_with_field(self, engine: QueryEngine) -> None:
+        # Serra Angel is 4/4: power>4 is false (not NULL), so -power>4 matches.
+        total, _ = _run(engine, '-power>4 name="Serra Angel"')
+        assert total == 7
+
+    def test_set_code_query_is_case_insensitive(self, engine: QueryEngine) -> None:
+        # Set codes are lowercased at import, so the query value is lowercased on
+        # both the engine and SQL paths — set:LEA must behave like set:lea.
+        t_upper, _ = _run(engine, "set:LEA")
+        t_lower, _ = _run(engine, "set:lea")
+        assert t_upper == t_lower == 7
+
+    def test_collector_number_query_is_case_sensitive(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        # collector_number is stored raw and mixed-case (e.g. The List's "10E-105"),
+        # and the SQL path compares it exactly — the engine must do the same.
+        e = fresh_engine()
+        e.reload(
+            [
+                {"card_name": "List Printing", "oracle_id": "o1", "collector_number": "10E-105"},
+                {"card_name": "Plain Printing", "oracle_id": "o2", "collector_number": "105"},
+            ]
+        )
+        total_exact, cards = _run(e, "cn:10E-105")
+        assert total_exact == 1
+        assert cards[0]["name"] == "List Printing"
+        total_wrong_case, _ = _run(e, "cn:10e-105")
+        assert total_wrong_case == 0
+
+    def test_name_exact_titlecase_normalized(self, engine: QueryEngine) -> None:
+        # name= should be case-insensitive (titlecase normalization applied on both paths)
+        t_lower, _ = _run(engine, 'name="lightning bolt"')
+        t_proper, _ = _run(engine, 'name="Lightning Bolt"')
+        assert t_lower == t_proper == 10
+
+    def test_artist_exact(self, engine: QueryEngine) -> None:
+        # Christopher Rush painted Black Lotus (all 5) + Lightning Bolt (lea, leb, 2ed)
+        total, _ = _run(engine, 'artist="Christopher Rush"')
+        assert total == 8
+
+    def test_artist_exact_lowercase_matches(self, engine: QueryEngine) -> None:
+        # Validates titlecase normalization fix: lowercase query must match same rows
+        t_lower, _ = _run(engine, 'artist="christopher rush"')
+        t_proper, _ = _run(engine, 'artist="Christopher Rush"')
+        assert t_lower == t_proper
+
+    def test_color_red(self, engine: QueryEngine) -> None:
+        # Lightning Bolt (10) + Shivan Dragon (5) + Nicol Bolas (7) + Boggart
+        # Ram-Gang (4) + Monastery Messenger (1, R/U/W) + Fireball (1)
+        total, _ = _run(engine, "c:r")
+        assert total == 28
+
+    def test_color_white(self, engine: QueryEngine) -> None:
+        # Serra Angel (7) + Kitchen Finks (6) + Spectral Procession (6) +
+        # Monastery Messenger (1, R/U/W) + Cathedral Membrane (1, W)
+        total, _ = _run(engine, "c:w")
+        assert total == 21
+
+    def test_color_blue(self, engine: QueryEngine) -> None:
+        # Counterspell (6) + Jace (10) + Nicol Bolas (7) + Monastery Messenger (1, R/U/W)
+        total, _ = _run(engine, "c:u")
+        assert total == 24
+
+    def test_color_black(self, engine: QueryEngine) -> None:
+        # Dark Ritual (5) + Nicol Bolas (7)
+        total, _ = _run(engine, "c:b")
+        assert total == 12
+
+    def test_color_green(self, engine: QueryEngine) -> None:
+        # Tarmogoyf (11) + Boggart Ram-Gang (4) + Kitchen Finks (6)
+        total, _ = _run(engine, "c:g")
+        assert total == 21
+
+    def test_colorless(self, engine: QueryEngine) -> None:
+        # Black Lotus (5) + Sol Ring (5): the only colorless cards in the fixture
+        total, _ = _run(engine, "color=c")
+        assert total == 10
+
+    def test_colorless_default_operator(self, engine: QueryEngine) -> None:
+        # Regression for #668: c:/color: (the default ":" operator) must match
+        # the same 10 colorless printings as color=c, not every card in the
+        # fixture (":" is Ge, and Ge with an empty mask is vacuously true
+        # unless colorless is special-cased back to equality).
+        total_colon, _ = _run(engine, "c:c")
+        total_eq, _ = _run(engine, "c=c")
+        assert total_colon == total_eq == 10
+
+    def test_produces_colorless(self, engine: QueryEngine) -> None:
+        # Only Sol Ring (5) produces {C}; Black Lotus produces WUBRG, not C.
+        total, _ = _run(engine, "produces:c")
+        assert total == 5
+
+    def test_cmc_equals_zero(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "cmc=0")
+        assert total == 5
+        assert all(c["name"] == "Black Lotus" for c in cards)
+
+    def test_cmc_equals_one(self, engine: QueryEngine) -> None:
+        # Lightning Bolt (10) + Dark Ritual (5) + Sol Ring (5) + Fireball (1,
+        # {X}{R} has cmc 1 since X contributes 0)
+        total, _ = _run(engine, "cmc=1")
+        assert total == 21
+
+    def test_cmc_gte_four(self, engine: QueryEngine) -> None:
+        # Jace (cmc=4, 10) + Serra Angel (cmc=5, 7) + Shivan Dragon (cmc=6, 5)
+        # + Spectral Procession (cmc=6, 6) + Nicol Bolas (cmc=8, 7) +
+        # Monastery Messenger (cmc=6, 1)
+        total, _ = _run(engine, "cmc>=4")
+        assert total == 36
+
+    def test_type_instant(self, engine: QueryEngine) -> None:
+        # Lightning Bolt (10) + Counterspell (6) + Dark Ritual (5)
+        total, _ = _run(engine, "t:instant")
+        assert total == 21
+
+    def test_type_creature(self, engine: QueryEngine) -> None:
+        # Serra Angel (7) + Tarmogoyf (11) + Shivan Dragon (5) + Boggart
+        # Ram-Gang (4) + Kitchen Finks (6) + Monastery Messenger (1) +
+        # Cathedral Membrane (1, Artifact Creature)
+        total, _ = _run(engine, "t:creature")
+        assert total == 35
+
+    def test_type_planeswalker(self, engine: QueryEngine) -> None:
+        # Jace (10) + Nicol Bolas (7)
+        total, _ = _run(engine, "t:planeswalker")
+        assert total == 17
+
+    def test_type_artifact(self, engine: QueryEngine) -> None:
+        # Black Lotus (5) + Sol Ring (5) + Cathedral Membrane (1, Artifact Creature)
+        total, _ = _run(engine, "t:artifact")
+        assert total == 11
+
+    def test_power_eq(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "pow=4")
+        assert total == 7
+        assert all(c["name"] == "Serra Angel" for c in cards)
+
+    def test_toughness_eq(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "tou=4")
+        assert total == 7
+        assert all(c["name"] == "Serra Angel" for c in cards)
+
+    def test_oracle_text_contains_flying(self, engine: QueryEngine) -> None:
+        # Serra Angel (7) + Shivan Dragon (5) + Spectral Procession (6, creates
+        # flying tokens) + Monastery Messenger (1, oracle text is "Flying")
+        total, _ = _run(engine, "o:flying")
+        assert total == 19
+
+    def test_set_filter(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "s:lea")
+        assert total == 7
+        assert all(c["set_code"] == "lea" for c in cards)
+
+    def test_set_colon_operator_handled_by_engine(self, engine: QueryEngine) -> None:
+        # The ":" operator for set/s must resolve inside the engine (str_op_to_cmp(":") == Eq).
+        # If it ever returned Err the engine would throw and the API would fall back to SQL;
+        # this test pins that it returns results without raising.
+        total_colon, cards_colon = _run(engine, "set:lea")
+        total_short, _ = _run(engine, "s:lea")
+        assert total_colon == total_short
+        assert total_colon > 0
+        assert all(c["set_code"] == "lea" for c in cards_colon)
+
+    def test_and_filter(self, engine: QueryEngine) -> None:
+        # Red instants: only Lightning Bolt
+        total, _ = _run(engine, "c:r t:instant")
+        assert total == 10
+
+    def test_or_filter(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, 'name="Black Lotus" OR name="Sol Ring"')
+        assert total == 10
+
+    def test_not_filter(self, engine: QueryEngine) -> None:
+        # All creatures except Serra Angel
+        total, cards = _run(engine, "t:creature -name:serra")
+        # Tarmogoyf (11) + Shivan Dragon (5) + Boggart Ram-Gang (4) + Kitchen
+        # Finks (6) + Monastery Messenger (1) + Cathedral Membrane (1)
+        assert total == 28
+        assert all(c["name"] != "Serra Angel" for c in cards)
+
+
+class TestArithmetic:
+    def test_power_minus_toughness_eq_zero(self, engine: QueryEngine) -> None:
+        # Serra Angel (4/4), Shivan Dragon (5/5), Boggart Ram-Gang (3/3)
+        total, cards = _run(engine, "pow-tou=0")
+        assert total == 16
+        assert {c["name"] for c in cards} == {"Serra Angel", "Shivan Dragon", "Boggart Ram-Gang"}
+
+    def test_power_plus_toughness_gt(self, engine: QueryEngine) -> None:
+        # Only Shivan Dragon (5+5=10 > 8); Serra Angel (4+4=8) is excluded
+        total, cards = _run(engine, "pow+tou>8")
+        assert total == 5
+        assert {c["name"] for c in cards} == {"Shivan Dragon"}
+
+    def test_cmc_plus_constant_gt_power(self, engine: QueryEngine) -> None:
+        # All creature types: cmc+1 > power for all of them, Monastery
+        # Messenger (6+1>2) and Cathedral Membrane (2+1>0) included
+        total, _ = _run(engine, "cmc+1>power")
+        assert total == 24
+
+
+class TestCollectionOperators:
+    """Non-colon operators on type/subtype/keyword fields.
+
+    Both paths use set-containment semantics against the single-value query:
+    = is exact set equality, > is contains-plus-more, <= is subset,
+    < is proper subset (only the empty collection), != is not-exactly-equal.
+    """
+
+    def test_type_gt_contains_plus_more(self, engine: QueryEngine) -> None:
+        # Jace (10) + Nicol Bolas (7) are {Legendary, Planeswalker} ⊋ {Planeswalker};
+        # Cathedral Membrane is {Artifact, Creature} ⊋ {Creature} — every other
+        # fixture creature is exactly {Creature}.
+        total_pw, _ = _run(engine, "t>planeswalker")
+        total_creature, _ = _run(engine, "t>creature")
+        assert total_pw == 17
+        assert total_creature == 1
+
+    def test_type_eq_exact(self, engine: QueryEngine) -> None:
+        # 34 creature printings are exactly {Creature} (the 33 pre-existing
+        # ones plus Monastery Messenger); Cathedral Membrane is {Artifact,
+        # Creature}, not exactly {Creature}. Both planeswalkers carry
+        # Legendary too, so t=planeswalker matches nothing.
+        total_creature, _ = _run(engine, "t=creature")
+        total_pw, _ = _run(engine, "t=planeswalker")
+        assert total_creature == 34
+        assert total_pw == 0
+
+    def test_type_lt_matches_nothing(self, engine: QueryEngine) -> None:
+        # Proper subset of {Creature} is the empty type set — no card is typeless.
+        total, _ = _run(engine, "t<creature")
+        assert total == 0
+
+    def test_type_ne_not_exactly(self, engine: QueryEngine) -> None:
+        # Everything except the 34 exactly-{Creature} printings (90 - 34).
+        total, _ = _run(engine, "t!=creature")
+        assert total == 56
+
+    def test_keyword_eq_exact(self, engine: QueryEngine) -> None:
+        # Shivan Dragon has exactly {Flying}; Serra Angel has {Flying, Vigilance}.
+        total_shivan, _ = _run(engine, 'keyword=flying name="Shivan Dragon"')
+        total_serra, _ = _run(engine, 'keyword=flying name="Serra Angel"')
+        assert total_shivan == 5
+        assert total_serra == 0
+
+    def test_keyword_gt_contains_plus_more(self, engine: QueryEngine) -> None:
+        total_serra, _ = _run(engine, 'keyword>flying name="Serra Angel"')
+        total_shivan, _ = _run(engine, 'keyword>flying name="Shivan Dragon"')
+        assert total_serra == 7
+        assert total_shivan == 0
+
+    def test_keyword_lt_matches_empty_keywords(self, engine: QueryEngine) -> None:
+        # Proper subset of {Flying} is the empty set: Sol Ring (no keywords)
+        # matches, Shivan Dragon (exactly {Flying}) does not.
+        total_sol, _ = _run(engine, 'keyword<flying name="Sol Ring"')
+        total_shivan, _ = _run(engine, 'keyword<flying name="Shivan Dragon"')
+        assert total_sol == 5
+        assert total_shivan == 0
+
+    def test_keyword_ne_not_exactly(self, engine: QueryEngine) -> None:
+        # != is not-exactly-equal: Serra ({Flying, Vigilance}) and Sol Ring (empty)
+        # match; Shivan (exactly {Flying}) does not.
+        total_shivan, _ = _run(engine, 'keyword!=flying name="Shivan Dragon"')
+        total_serra, _ = _run(engine, 'keyword!=flying name="Serra Angel"')
+        total_sol, _ = _run(engine, 'keyword!=flying name="Sol Ring"')
+        assert total_shivan == 0
+        assert total_serra == 7
+        assert total_sol == 5
+
+
+class TestStagedReload:
+    """reload_begin / add_batch / reload_commit — the streaming reload API.
+
+    _reload_engine feeds these from a server-side cursor so only one batch of
+    row dicts is alive at a time; the one-shot reload() is a wrapper over them.
+    """
+
+    def test_staged_equals_one_shot(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        cards = json.loads(_FIXTURE.read_text())
+        staged = fresh_engine()
+        assert staged.reload_begin() is True
+        # Split into 3 uneven batches to exercise accumulation across calls
+        staged.add_batch(cards[:10])
+        staged.add_batch(cards[10:50])
+        staged.add_batch(cards[50:])
+        staged.reload_commit()
+
+        one_shot = fresh_engine()
+        one_shot.reload(cards)
+
+        assert staged.size() == one_shot.size() == 90
+        for q in ("t:creature", "name:bolt", "devotion:{R}", "cmc>=4"):
+            t_staged, c_staged = _run(staged, q, orderby="cmc")
+            t_one, c_one = _run(one_shot, q, orderby="cmc")
+            assert t_staged == t_one
+            assert _names(c_staged) == _names(c_one)
+
+    def test_add_batch_without_begin_raises(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        e = fresh_engine()
+        with pytest.raises(RuntimeError, match="without reload_begin"):
+            e.add_batch([{"card_name": "X", "oracle_id": "o1"}])
+
+    def test_commit_without_begin_raises(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        e = fresh_engine()
+        with pytest.raises(RuntimeError, match="without reload_begin"):
+            e.reload_commit()
+
+    def test_abort_discards_staging(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        cards = json.loads(_FIXTURE.read_text())
+        e = fresh_engine()
+        e.reload(cards)
+        # Stage a different (smaller) corpus, then abort: store must be unchanged
+        assert e.reload_begin() is True
+        e.add_batch(cards[:5])
+        e.reload_abort()
+        assert e.size() == 90
+        # And the lock must have been released: a fresh cycle works
+        e.reload(cards[:5])
+        assert e.size() == 5
+
+    def test_begin_resets_abandoned_staging(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        cards = json.loads(_FIXTURE.read_text())
+        e = fresh_engine()
+        # First cycle abandoned mid-staging (no commit, no abort)
+        assert e.reload_begin() is True
+        e.add_batch(cards[:50])
+        # Second begin discards the abandoned buffer and its lock
+        assert e.reload_begin() is True
+        e.add_batch(cards[:5])
+        e.reload_commit()
+        assert e.size() == 5
+
+    def test_missing_oracle_id_rejected_at_commit(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        e = fresh_engine()
+        assert e.reload_begin() is True
+        e.add_batch([{"card_name": "No Oracle"}])
+        with pytest.raises(ValueError, match="missing oracle_id"):
+            e.reload_commit()
+        # Commit consumed the staging even on failure; the engine is reusable
+        e.reload([{"card_name": "Ok Card", "oracle_id": "o1"}])
+        assert e.size() == 1
+
+
+class TestUnique:
+    def test_reload_rejects_cards_missing_oracle_id(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        # unique=card/artwork group by oracle_id; cards without one would silently
+        # collapse into a single group, so reload must refuse them up front.
+        # (Unreachable from _reload_engine(): the DB column is NOT NULL.)
+        e = fresh_engine()
+        with pytest.raises(ValueError, match=r"No Oracle.*missing oracle_id"):
+            e.reload(
+                [
+                    {"card_name": "Has Oracle", "oracle_id": "o1"},
+                    {"card_name": "No Oracle"},
+                ]
+            )
+
+    def test_unique_printing_returns_all(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, unique="printing")
+        assert total == 90
+
+    def test_unique_card_deduplicates_by_oracle_id(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, unique="card")
+        assert total == 16
+        assert len({c["name"] for c in cards}) == 16
+
+    def test_unique_artwork_deduplicates_by_illustration(self, engine: QueryEngine) -> None:
+        # 41 distinct illustration_ids across the 90 fixture printings
+        total, _ = _run(engine, unique="artwork")
+        assert total == 41
+
+    def test_unique_card_single_result_per_name(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, 'name="Lightning Bolt"', unique="card")
+        assert total == 1
+
+    def test_unique_artwork_lightning_bolt(self, engine: QueryEngine) -> None:
+        # Lightning Bolt has 6 distinct illustration_ids in the fixture
+        total, _ = _run(engine, 'name="Lightning Bolt"', unique="artwork")
+        assert total == 6
+
+    def test_unique_printing_lightning_bolt(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, 'name="Lightning Bolt"', unique="printing")
+        assert total == 10
+
+
+class TestPrefer:
+    """Tests use unique=card so each name maps to exactly one result."""
+
+    def test_prefer_usd_low_picks_cheapest_priced(self, engine: QueryEngine) -> None:
+        # Cheapest priced Lightning Bolt in fixture: m11 at $1.47.
+        # Also validates the null-last fix: p09 and one sld print have null prices;
+        # before the fix (unwrap_or(0.0)) they scored 0 which beat any real price.
+        _, cards = _run(engine, 'name="Lightning Bolt"', unique="card", prefer="usd_low")
+        assert cards[0]["set_code"] == "m11"
+
+    def test_prefer_usd_high_picks_priciest(self, engine: QueryEngine) -> None:
+        # Most expensive Lightning Bolt in fixture: lea at $620
+        _, cards = _run(engine, 'name="Lightning Bolt"', unique="card", prefer="usd_high")
+        assert cards[0]["set_code"] == "lea"
+
+    def test_prefer_oldest_picks_oldest_printing(self, engine: QueryEngine) -> None:
+        # Oldest Lightning Bolt is lea (1993-08-05)
+        _, cards = _run(engine, 'name="Lightning Bolt"', unique="card", prefer="oldest")
+        assert cards[0]["set_code"] == "lea"
+
+    def test_prefer_newest_picks_newest_printing(self, engine: QueryEngine) -> None:
+        # Newest Lightning Bolt is sld (2026-04-01)
+        _, cards = _run(engine, 'name="Lightning Bolt"', unique="card", prefer="newest")
+        assert cards[0]["set_code"] == "sld"
+
+    def test_prefer_default_returns_one_per_oracle(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, unique="card", prefer="default")
+        assert total == 16
+        assert len({c["name"] for c in cards}) == 16
+
+
+class TestSort:
+    def test_sort_cmc_asc_first_is_zero(self, engine: QueryEngine) -> None:
+        _, cards = _run(engine, orderby="cmc", direction="asc")
+        assert cards[0]["name"] == "Black Lotus"  # only cmc=0 card
+
+    def test_sort_cmc_desc_first_is_highest(self, engine: QueryEngine) -> None:
+        _, cards = _run(engine, orderby="cmc", direction="desc")
+        assert cards[0]["name"] == "Nicol Bolas, Planeswalker"  # only cmc=8 card
+
+    def test_sort_cmc_asc_instants_ordered(self, engine: QueryEngine) -> None:
+        # CMC-1 instants (Lightning Bolt, Dark Ritual) must appear before CMC-2 (Counterspell)
+        _, cards = _run(engine, "t:instant", orderby="cmc", direction="asc")
+        names = _names(cards)
+        first_cmc1_idx = min(i for i, n in enumerate(names) if n in {"Lightning Bolt", "Dark Ritual"})
+        last_counterspell_idx = max(i for i, n in enumerate(names) if n == "Counterspell")
+        assert first_cmc1_idx < last_counterspell_idx
+
+    def test_limit_caps_returned_cards(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, limit=5)
+        assert total == 90  # total reflects full match count
+        assert len(cards) == 5
+
+    def test_sort_direction_desc_reverses_order(self, engine: QueryEngine) -> None:
+        _, asc_cards = _run(engine, 'name="Lightning Bolt"', orderby="edhrec", direction="asc")
+        _, desc_cards = _run(engine, 'name="Lightning Bolt"', orderby="edhrec", direction="desc")
+        # Reversed direction should produce reversed order (10 distinct printings)
+        assert _names(asc_cards) == list(reversed(_names(desc_cards)))
+
+
+class TestDevotion:
+    """Tests for devotion queries, including hybrid mana symbol splitting.
+
+    Hybrid symbols like {R/G} must contribute to BOTH R and G devotion,
+    matching calculate_devotion() in the SQL path. Previously the engine
+    kept {R/G} as a single key and missed pure-color devotion queries.
+
+    Devotion only counts permanents' mana costs (MTG comprehensive rules;
+    confirmed against the real Scryfall API — devotion: never matches a pure
+    Instant/Sorcery). Test subjects here are deliberately permanents
+    (Tarmogoyf, Shivan Dragon, Boggart Ram-Gang, Kitchen Finks, Monastery
+    Messenger) — see test_devotion_nonpermanent_never_counts for the
+    nonpermanent case.
+    """
+
+    def test_devotion_pure_color(self, engine: QueryEngine) -> None:
+        # Tarmogoyf {G}: each printing has 1 G pip, so devotion:{G} should match all 11.
+        # Tarmogoyf (Creature), not Lightning Bolt (Instant): devotion only counts
+        # permanents' mana costs (see test_devotion_nonpermanent_never_counts).
+        total, _ = _run(engine, 'devotion:{G} name="Tarmogoyf"')
+        assert total == 11
+
+    def test_devotion_nonpermanent_never_counts(self, engine: QueryEngine) -> None:
+        # Devotion (MTG comprehensive rules) is defined only over permanents'
+        # mana costs — confirmed against the real Scryfall API, where devotion:r
+        # never matches the real Lightning Bolt (an Instant). Sylvan Librarian
+        # mirrors that: a nonpermanent's colored pips never count, no matter the
+        # operator — a positive devotion query never matches, and <= (subset)
+        # always matches since its devotion is the empty set.
+        total_ge, _ = _run(engine, 'devotion:{R} name="Lightning Bolt"')
+        total_le, _ = _run(engine, 'devotion<={R} name="Lightning Bolt"')
+        total_sorcery, _ = _run(engine, 'devotion:{W} name="Spectral Procession"')
+        assert total_ge == 0
+        assert total_le == 10
+        assert total_sorcery == 0
+
+    def test_devotion_hybrid_rg_counts_as_red(self, engine: QueryEngine) -> None:
+        # Boggart Ram-Gang {R/G}{R/G}{R/G}: each {R/G} counts as 1 R pip
+        # devotion:{R} should match all 4 printings
+        total, _cards = _run(engine, 'devotion:{R} name="Boggart Ram-Gang"')
+        assert total == 4
+
+    def test_devotion_hybrid_rg_counts_as_green(self, engine: QueryEngine) -> None:
+        # Same card: each {R/G} also counts as 1 G pip
+        total, _cards = _run(engine, 'devotion:{G} name="Boggart Ram-Gang"')
+        assert total == 4
+
+    def test_devotion_hybrid_gw_counts_as_green(self, engine: QueryEngine) -> None:
+        # Kitchen Finks {1}{G/W}{G/W}: 2 G pips via hybrid
+        total, _cards = _run(engine, 'devotion:{G}{G} name="Kitchen Finks"')
+        assert total == 6
+
+    def test_devotion_hybrid_gw_counts_as_white(self, engine: QueryEngine) -> None:
+        # Kitchen Finks: 2 W pips via hybrid
+        total, _cards = _run(engine, 'devotion:{W}{W} name="Kitchen Finks"')
+        assert total == 6
+
+    def test_devotion_2w_hybrid_counts_as_white(self, engine: QueryEngine) -> None:
+        # Monastery Messenger {2/U}{2/R}{2/W}: the W in {2/W} counts as 1 W pip.
+        # Must be a permanent (Creature) — Spectral Procession is a Sorcery, so
+        # it no longer counts for devotion at all (see
+        # test_devotion_nonpermanent_never_counts).
+        total, _cards = _run(engine, 'devotion:{W} name="Monastery Messenger"')
+        assert total == 1
+
+    def test_devotion_threshold_hybrid(self, engine: QueryEngine) -> None:
+        # Boggart Ram-Gang has 3 R pips and 3 G pips from {R/G}{R/G}{R/G}
+        # devotion:{R}{R}{R} (need 3 R) should match; devotion:{R}{R}{R}{R} should not
+        total_3r, _ = _run(engine, 'devotion:{R}{R}{R} name="Boggart Ram-Gang"')
+        total_4r, _ = _run(engine, 'devotion:{R}{R}{R}{R} name="Boggart Ram-Gang"')
+        assert total_3r == 4
+        assert total_4r == 0
+
+    # Non-colon operators mirror the SQL path's JSONB containment on the devotion
+    # column: = is exact, <= is subset (<@), > is containment-but-not-equal, etc.
+
+    def test_devotion_eq_exact_match(self, engine: QueryEngine) -> None:
+        # Tarmogoyf {G} has devotion exactly {G: 1} (a permanent — see
+        # test_devotion_nonpermanent_never_counts for why this can't be
+        # Lightning Bolt, whose devotion is now the empty set).
+        total, _ = _run(engine, 'devotion={G} name="Tarmogoyf"')
+        assert total == 11
+
+    def test_devotion_eq_rejects_higher_count(self, engine: QueryEngine) -> None:
+        # Shivan Dragon {4}{R}{R} has devotion {R: 2}, not exactly {R: 1}
+        total, _ = _run(engine, 'devotion={R} name="Shivan Dragon"')
+        assert total == 0
+
+    def test_devotion_eq_rejects_extra_colors(self, engine: QueryEngine) -> None:
+        # Boggart Ram-Gang has devotion {R: 3, G: 3}; exactly-{R:3} must not match,
+        # but exactly-{R:3, G:3} must.
+        total_r3, _ = _run(engine, 'devotion={R}{R}{R} name="Boggart Ram-Gang"')
+        total_r3g3, _ = _run(engine, 'devotion={R}{R}{R}{G}{G}{G} name="Boggart Ram-Gang"')
+        assert total_r3 == 0
+        assert total_r3g3 == 4
+
+    def test_devotion_le_subset(self, engine: QueryEngine) -> None:
+        # Shivan Dragon {R: 2} is a subset of {R: 2}; Boggart Ram-Gang {R: 3, G: 3} is not
+        total_shivan, _ = _run(engine, 'devotion<={R}{R} name="Shivan Dragon"')
+        total_boggart, _ = _run(engine, 'devotion<={R}{R} name="Boggart Ram-Gang"')
+        assert total_shivan == 5
+        assert total_boggart == 0
+
+    def test_devotion_le_empty_devotion_matches(self, engine: QueryEngine) -> None:
+        # Sol Ring {1} has empty devotion (generic pips don't count), and the empty
+        # object is a subset of any query — matching SQL's devotion <@ query.
+        total, _ = _run(engine, 'devotion<={R}{R} name="Sol Ring"')
+        assert total == 5
+
+    def test_devotion_gt_strict(self, engine: QueryEngine) -> None:
+        # > means contains-but-not-equal: Boggart {R: 3, G: 3} > {R}; Bolt's
+        # devotion is the empty set (Instant, not a permanent), which can't
+        # satisfy any positive devotion query, > included.
+        total_boggart, _ = _run(engine, 'devotion>{R} name="Boggart Ram-Gang"')
+        total_bolt, _ = _run(engine, 'devotion>{R} name="Lightning Bolt"')
+        assert total_boggart == 4
+        assert total_bolt == 0
+
+    def test_devotion_ne(self, engine: QueryEngine) -> None:
+        # != is not-exactly-equal: Bolt's devotion is the empty set (Instant),
+        # which is never exactly {R: 1}, so != matches all 10 printings; Shivan
+        # {R: 2} is a permanent whose devotion isn't exactly {R: 1} either.
+        total_bolt, _ = _run(engine, 'devotion!={R} name="Lightning Bolt"')
+        total_shivan, _ = _run(engine, 'devotion!={R} name="Shivan Dragon"')
+        assert total_bolt == 10
+        assert total_shivan == 5
+
+    def test_devotion_phyrexian_counts_as_color(self, engine: QueryEngine) -> None:
+        # Cathedral Membrane {1}{W/P}: the W in {W/P} counts as 1 W pip, same
+        # as any other hybrid — Phyrexian's "or 2 life" alternate cost doesn't
+        # change how the color letter counts toward devotion.
+        total, _ = _run(engine, 'devotion:{W} name="Cathedral Membrane"')
+        assert total == 1
+
+
+class TestManaCost:
+    """Tests for mana= / mana: queries, which use the faithful pip map (not devotion).
+
+    Key invariant: {R/G}{R/G}{R/G} must NOT match mana:{R} (the card has no pure-R
+    pips), even though devotion:{R} does match. If the pip/devotion split regresses,
+    these tests will catch it.
+    """
+
+    def test_mana_contains_pure_pip(self, engine: QueryEngine) -> None:
+        # Lightning Bolt has exactly {R}; mana:{R} should match all 10 printings
+        total, _ = _run(engine, 'mana:{R} name="Lightning Bolt"')
+        assert total == 10
+
+    def test_mana_contains_hybrid_symbol(self, engine: QueryEngine) -> None:
+        # Boggart Ram-Gang costs {R/G}{R/G}{R/G}; mana:{R/G} matches
+        total, _ = _run(engine, 'mana:{R/G} name="Boggart Ram-Gang"')
+        assert total == 4
+
+    def test_mana_hybrid_does_not_match_pure_color(self, engine: QueryEngine) -> None:
+        # Boggart Ram-Gang has NO pure {R} pips — only {R/G}.
+        # mana:{R} (contains pure red) must NOT match, even though devotion:{R} does.
+        total, _ = _run(engine, 'mana:{R} name="Boggart Ram-Gang"')
+        assert total == 0
+
+    def test_mana_exact_match(self, engine: QueryEngine) -> None:
+        # Lightning Bolt mana cost is exactly {R}
+        total, _ = _run(engine, 'mana="{R}" name="Lightning Bolt"')
+        assert total == 10
+
+    def test_mana_exact_excludes_superset(self, engine: QueryEngine) -> None:
+        # Shivan Dragon costs {4}{R}{R} — mana="{R}" must not match
+        total, _ = _run(engine, 'mana="{R}" name="Shivan Dragon"')
+        assert total == 0
+
+    def test_mana_contains_2w_hybrid(self, engine: QueryEngine) -> None:
+        # Spectral Procession costs {2/W}{2/W}{2/W}; mana:{2/W} matches
+        total, _ = _run(engine, 'mana:{2/W} name="Spectral Procession"')
+        assert total == 6
+
+    def test_mana_2w_hybrid_does_not_match_pure_white(self, engine: QueryEngine) -> None:
+        # Spectral Procession has no pure {W} pips
+        total, _ = _run(engine, 'mana:{W} name="Spectral Procession"')
+        assert total == 0
+
+    def test_mana_contains_phyrexian_symbol(self, engine: QueryEngine) -> None:
+        # Cathedral Membrane costs {1}{W/P}; mana:{W/P} matches. Like any
+        # other hybrid, {W/P} is an opaque key for mana: (no color/devotion
+        # splitting — see test_mana_phyrexian_does_not_match_pure_white).
+        total, _ = _run(engine, 'mana:{W/P} name="Cathedral Membrane"')
+        assert total == 1
+
+    def test_mana_phyrexian_does_not_match_pure_white(self, engine: QueryEngine) -> None:
+        # Cathedral Membrane has no pure {W} pips — only {W/P}.
+        total, _ = _run(engine, 'mana:{W} name="Cathedral Membrane"')
+        assert total == 0
+
+    def test_mana_x_is_its_own_symbol(self, engine: QueryEngine) -> None:
+        # Fireball costs {X}{R}. X is a real pip symbol (its own lane), not a
+        # hybrid — mana:{X} matches it and must not match a card with no X.
+        total_fireball, _ = _run(engine, 'mana:{X} name="Fireball"')
+        total_bolt, _ = _run(engine, 'mana:{X} name="Lightning Bolt"')
+        assert total_fireball == 1
+        assert total_bolt == 0
+
+    def test_mana_x_bare_same_as_braced(self, engine: QueryEngine) -> None:
+        # Bare (unbraced) x must behave identically to braced {X} — confirmed
+        # against the real Scryfall API (mana:x == mana:{x}). This regresses
+        # a real bug: the query-string parser used to silently drop X, braced
+        # or not.
+        total_braced, _ = _run(engine, 'mana:{X} name="Fireball"')
+        total_bare, _ = _run(engine, 'mana:x name="Fireball"')
+        assert total_braced == total_bare == 1
+
+    def test_mana_x_excluded_from_cmc(self, engine: QueryEngine) -> None:
+        # X contributes 0 to cmc (real Scryfall: Fireball {X}{R} has cmc 1.0,
+        # not 2.0) — mana:{X}{R} (implied cmc 1) matches; mana:{X}{R}{R}
+        # (implied cmc 2) must not, since Fireball's actual cmc is 1.
+        total_cmc1, _ = _run(engine, 'mana:{X}{R} name="Fireball"')
+        total_cmc2, _ = _run(engine, 'mana:{X}{R}{R} name="Fireball"')
+        assert total_cmc1 == 1
+        assert total_cmc2 == 0
+
+
+class TestColorIdentity:
+    def test_identity_subset_green(self, engine: QueryEngine) -> None:
+        # id:g = "fits in a mono-green deck" = identity ⊆ {G}
+        # Tarmogoyf (11) + colorless (Black Lotus 5 + Sol Ring 5)
+        total, _ = _run(engine, "id:g")
+        assert total == 21
+
+    def test_identity_subset_blue(self, engine: QueryEngine) -> None:
+        # Counterspell (6) + Jace (10) + colorless (10)
+        total, _ = _run(engine, "id:u")
+        assert total == 26
+
+    def test_identity_superset_matches_all(self, engine: QueryEngine) -> None:
+        # Every card fits in a 5-color deck
+        total, _ = _run(engine, "id:wubrg")
+        assert total == 90
+
+    def test_identity_differs_from_color(self, engine: QueryEngine) -> None:
+        # Nicol Bolas (UBR) has c:r but only cards with identity ⊆ {R} fit in a mono-red deck
+        # Nicol Bolas has B+U+R identity so does NOT match id:r
+        total_color, _ = _run(engine, "c:r")  # includes Nicol Bolas
+        total_identity, _ = _run(engine, "id:r")  # excludes Nicol Bolas
+        assert total_color > total_identity
+
+
+class TestRarityAndLoyalty:
+    def test_rarity_common(self, engine: QueryEngine) -> None:
+        # +2: Monastery Messenger and Cathedral Membrane are both common
+        total, _ = _run(engine, "r=common")
+        assert total == 17
+
+    def test_rarity_rare(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "r=rare")
+        assert total == 22
+
+    def test_rarity_mythic(self, engine: QueryEngine) -> None:
+        # Jace (10) + Nicol Bolas (7) + Tarmogoyf mythic prints (8) + Kitchen Finks rare? (1) + Lightning Bolt mythic (1)
+        total, _ = _run(engine, "r=mythic")
+        assert total == 27
+
+    def test_rarity_gte_rare(self, engine: QueryEngine) -> None:
+        # rare (22) + mythic (27)
+        total, _ = _run(engine, "r>=rare")
+        assert total == 49
+
+    def test_loyalty_exact(self, engine: QueryEngine) -> None:
+        # Jace, the Mind Sculptor starts at 3 loyalty — all 10 printings
+        total, cards = _run(engine, "loy=3")
+        assert total == 10
+        assert all(c["name"] == "Jace, the Mind Sculptor" for c in cards)
+
+    def test_loyalty_gte(self, engine: QueryEngine) -> None:
+        # Jace (loy=3, 10) + Nicol Bolas (loy=5, 7)
+        total, _ = _run(engine, "loy>=3")
+        assert total == 17
+
+    def test_loyalty_nonzero(self, engine: QueryEngine) -> None:
+        # Only planeswalkers have loyalty
+        total, _ = _run(engine, "loy>0")
+        assert total == 17
+
+
+class TestKeywordsAndSubtypes:
+    def test_keyword_flying(self, engine: QueryEngine) -> None:
+        # Serra Angel (7) + Shivan Dragon (5)
+        total, _ = _run(engine, "keyword:flying")
+        assert total == 12
+
+    def test_keyword_vigilance(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "keyword:vigilance")
+        assert total == 7
+        assert all(c["name"] == "Serra Angel" for c in cards)
+
+    def test_keyword_and(self, engine: QueryEngine) -> None:
+        # Cards with BOTH flying AND vigilance: only Serra Angel
+        total, _ = _run(engine, "keyword:flying keyword:vigilance")
+        assert total == 7
+
+    def test_subtype_angel(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "t:angel")
+        assert total == 7
+        assert all(c["name"] == "Serra Angel" for c in cards)
+
+    def test_subtype_dragon(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "t:dragon")
+        assert total == 5
+        assert all(c["name"] == "Shivan Dragon" for c in cards)
+
+    def test_subtype_goblin(self, engine: QueryEngine) -> None:
+        # Boggart Ram-Gang is a Goblin Warrior
+        total, cards = _run(engine, "t:goblin")
+        assert total == 4
+        assert all(c["name"] == "Boggart Ram-Gang" for c in cards)
+
+    def test_subtype_no_match(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "t:elf")
+        assert total == 0
+
+    def test_subtype_le_empty_collection_matches(self, engine: QueryEngine) -> None:
+        # SQL: col <@ ARRAY['Dragon'] is true for an empty array (vacuously).
+        # Cards with no subtypes should match t<="Dragon" on both paths.
+        total_le, _ = _run(engine, 't<="Dragon"')
+        total_dragon, _ = _run(engine, "t:dragon")
+        # LE includes Dragon-only cards plus all cards with no subtypes (38 in
+        # fixture; Fireball has no subtypes)
+        assert total_le == total_dragon + 38
+
+
+class TestLegalityAndFormats:
+    def test_legal_in_legacy(self, engine: QueryEngine) -> None:
+        # Black Lotus is banned in legacy — 80 cards are legal (Monastery
+        # Messenger, Cathedral Membrane, and Fireball are all legacy-legal)
+        total, _ = _run(engine, "f:legacy")
+        assert total == 80
+
+    def test_legal_in_pauper(self, engine: QueryEngine) -> None:
+        # Only commons are legal in pauper; Monastery Messenger is pauper-legal,
+        # Cathedral Membrane is not
+        total, _ = _run(engine, "f:pauper")
+        assert total == 22
+
+    def test_banned_in_commander(self, engine: QueryEngine) -> None:
+        # Black Lotus (5 printings) is banned in commander
+        total, cards = _run(engine, "banned:commander")
+        assert total == 5
+        assert all(c["name"] == "Black Lotus" for c in cards)
+
+    def test_restricted_in_vintage(self, engine: QueryEngine) -> None:
+        # Black Lotus (5) + Sol Ring (5) are restricted in vintage
+        total, _ = _run(engine, "restricted:vintage")
+        assert total == 10
+
+
+class TestCardProperties:
+    def test_border_black(self, engine: QueryEngine) -> None:
+        # +3: Monastery Messenger, Cathedral Membrane, and Fireball are all black-bordered
+        total, _ = _run(engine, "border:black")
+        assert total == 73
+
+    def test_border_borderless(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "border:borderless")
+        assert total == 10
+
+    def test_layout_normal(self, engine: QueryEngine) -> None:
+        # All fixture cards are normal layout
+        total, _ = _run(engine, "layout:normal")
+        assert total == 90
+
+    def test_frame_2015(self, engine: QueryEngine) -> None:
+        total_2015, _ = _run(engine, "frame:2015")
+        total_1993, _ = _run(engine, "frame:1993")
+        assert total_2015 > 0
+        assert total_1993 > 0
+        assert total_2015 + total_1993 < 87  # other frames exist too
+
+    def test_watermark_fnm(self, engine: QueryEngine) -> None:
+        # Kitchen Finks f09 has FNM watermark
+        total, cards = _run(engine, "watermark:fnm")
+        assert total == 1
+        assert cards[0]["name"] == "Kitchen Finks"
+
+    def test_year_filter_with_date_objects(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        # _reload_engine() feeds rows straight from psycopg, which returns date
+        # columns as datetime.date (not str). The engine must extract those, or
+        # released_at silently becomes "" and every date/year filter goes empty.
+        # Card "c" keeps a string date on purpose: JSON-sourced reloads (e.g. the
+        # engine_cards.json fixture) still send strings, so both forms must work.
+        base = {
+            "card_name": "Test Beater",
+            "type_line": "Creature",
+            "creature_power": 9,
+            "creature_power_text": "9",
+        }
+        e = fresh_engine()
+        e.reload(
+            [
+                {**base, "oracle_id": "a", "released_at": datetime.date(2026, 3, 15)},
+                {**base, "oracle_id": "b", "released_at": datetime.date(2024, 1, 1)},
+                {**base, "oracle_id": "c", "released_at": "2026-07-04"},
+            ]
+        )
+        total, _ = _run(e, "power>8 year=2026")
+        assert total == 2
+        total_date, _ = _run(e, "date>=2026-01-01")
+        assert total_date == 2
+
+    def test_uuid_objects_accepted_for_oracle_scryfall_illustration(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        # psycopg returns uuid.UUID objects (not str) for UUID columns once the
+        # UUIDToStringLoader shim is removed. The engine must accept both forms:
+        # UUID objects from DB rows and strings from JSON-sourced test fixtures.
+        oid_a = uuid.uuid4()
+        oid_b = uuid.uuid4()
+        sid_a = uuid.uuid4()
+        sid_b = uuid.uuid4()
+        iid_shared = uuid.uuid4()
+        cards = [
+            {
+                "card_name": "UUID Card A",
+                "type_line": "Instant",
+                "oracle_id": oid_a,
+                "scryfall_id": sid_a,
+                "illustration_id": iid_shared,
+            },
+            {
+                "card_name": "UUID Card B",
+                "type_line": "Instant",
+                "oracle_id": oid_b,
+                "scryfall_id": sid_b,
+                "illustration_id": iid_shared,
+            },
+        ]
+        e = fresh_engine()
+        e.reload(cards)
+        # Both cards are in the store
+        total, results = _run(e, "", unique="printing", fields=["name", "scryfall_id", "illustration_id"])
+        assert total == 2
+        names = {c["name"] for c in results}
+        assert names == {"UUID Card A", "UUID Card B"}
+        # scryfall_id and illustration_id are returned as uuid.UUID objects
+        for c in results:
+            assert isinstance(c["scryfall_id"], uuid.UUID)
+            assert isinstance(c["illustration_id"], uuid.UUID)
+        # unique=artwork groups by illustration_id *within an oracle card*. Scryfall
+        # assigns each illustration_id to exactly one oracle_id, so two different
+        # oracle cards sharing one (as this synthetic fixture does) is impossible in
+        # real data; the store groups them per card and reports two artwork groups.
+        total_art, _ = _run(e, "", unique="artwork")
+        assert total_art == 2
+
+    def test_year_1993(self, engine: QueryEngine) -> None:
+        # Alpha/Beta/Unlimited/CED/CEI all released in 1993
+        total, _ = _run(engine, "year=1993")
+        assert total == 27
+
+    def test_date_gte_2025(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "date>=2025-01-01")
+        assert total > 0
+
+    def test_collector_number_exact(self, engine: QueryEngine) -> None:
+        # Black Lotus in Alpha is collector number 232
+        total, cards = _run(engine, "number=232")
+        assert total == 1
+        assert cards[0]["name"] == "Black Lotus"
+
+    def test_collector_number_lte(self, engine: QueryEngine) -> None:
+        # +1: Cathedral Membrane is cn 5 (Monastery Messenger is cn 208, excluded)
+        total, _ = _run(engine, "cn<=10")
+        assert total == 7
+
+    def test_flavor_text_contains(self, engine: QueryEngine) -> None:
+        # Shivan Dragon flavor text mentions "dragon"
+        total, cards = _run(engine, "ft:dragon")
+        assert total == 5
+        assert all(c["name"] == "Shivan Dragon" for c in cards)
+
+
+class TestPriceFilters:
+    def test_usd_lt(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "usd<2")
+        assert total == 17
+
+    def test_usd_gt(self, engine: QueryEngine) -> None:
+        # High-value Alpha/Beta/special prints
+        total, _ = _run(engine, "usd>100")
+        assert total == 13
+
+    def test_usd_filter_excludes_null(self, engine: QueryEngine) -> None:
+        # Cards with null price should not match any usd comparison
+        total_lt, _ = _run(engine, "usd<999")
+        total_all, _ = _run(engine)
+        assert total_lt < total_all  # some cards have null price
+
+
+class TestProduces:
+    def test_produces_white(self, engine: QueryEngine) -> None:
+        # Only Black Lotus produces white mana in our fixture
+        total, cards = _run(engine, "produces:w")
+        assert total == 5
+        assert all(c["name"] == "Black Lotus" for c in cards)
+
+    def test_produces_black(self, engine: QueryEngine) -> None:
+        # Black Lotus (5) + Dark Ritual (5) both produce black mana
+        total, _ = _run(engine, "produces:b")
+        assert total == 10
+
+
+class TestTags:
+    """Tests for is: (card_is_tags) and otag: (card_oracle_tags).
+
+    Tags are not populated by the Scryfall tagger in this DB; the fixture
+    was patched with representative values:
+      card_is_tags: {"spell": true} for instants/sorceries, {"permanent": true} for others
+      card_oracle_tags: {"burn": true} for Lightning Bolt, {"counter-spell": true} for Counterspell
+    """
+
+    def test_is_spell(self, engine: QueryEngine) -> None:
+        # Instants (Lightning Bolt 10 + Counterspell 6 + Dark Ritual 5)
+        # + Sorceries (Spectral Procession 6)
+        total, _ = _run(engine, "is:spell")
+        assert total == 27
+
+    def test_is_permanent(self, engine: QueryEngine) -> None:
+        # is:permanent is rewritten to a type-union (api/parsing/rewrite.py), so it no longer
+        # consults the synthetic "permanent" tag -- it matches every permanent-type card,
+        # including 2 the fixture left untagged (hence 62, not the 60 tagged "permanent").
+        total, _ = _run(engine, "is:permanent")
+        assert total == 62
+
+    def test_otag_burn(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "otag:burn")
+        assert total == 10
+        assert all(c["name"] == "Lightning Bolt" for c in cards)
+
+    def test_otag_counter_spell(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, "otag:counter-spell")
+        assert total == 6
+        assert all(c["name"] == "Counterspell" for c in cards)
+
+    def test_otag_no_match(self, engine: QueryEngine) -> None:
+        total, _ = _run(engine, "otag:ramp")
+        assert total == 0
+
+
+class TestCommonCardTypes:
+    """Tests for engine.common_card_types().
+
+    Counts types and subtypes across preferred printings only (one per oracle card).
+    The fixture has 13 oracle cards; expected counts reflect the preferred printing
+    of each group, not all 87 printings.
+    """
+
+    def test_returns_dict(self, engine: QueryEngine) -> None:
+        result = engine.common_card_types()
+        assert isinstance(result, dict)
+
+    def test_type_counts(self, engine: QueryEngine) -> None:
+        result = engine.common_card_types()
+        # 16 oracle groups: 3 artifacts, 7 creatures, 3 instants, 2 legendary
+        # planeswalkers, 2 sorceries. Jace and Nicol Bolas are both
+        # Legendary+Planeswalker; Cathedral Membrane is Artifact+Creature
+        # (counts toward both); Monastery Messenger is a plain Creature;
+        # Fireball is a plain Sorcery (alongside Spectral Procession).
+        assert result["Artifact"] == 3
+        assert result["Creature"] == 7
+        assert result["Instant"] == 3
+        assert result["Legendary"] == 2
+        assert result["Planeswalker"] == 2
+        assert result["Sorcery"] == 2
+
+    def test_subtype_counts(self, engine: QueryEngine) -> None:
+        result = engine.common_card_types()
+        # One preferred printing per oracle group; each group has a unique subtype.
+        assert result["Angel"] == 1
+        assert result["Dragon"] == 1
+        assert result["Goblin"] == 1
+        assert result["Lhurgoyf"] == 1
+        assert result["Ouphe"] == 1
+        assert result["Warrior"] == 1
+
+    def test_absent_types_not_present(self, engine: QueryEngine) -> None:
+        result = engine.common_card_types()
+        # No lands, snow, or basic cards in the fixture.
+        assert "Land" not in result
+        assert "Basic" not in result
+        assert "Snow" not in result
+        assert "Battle" not in result
+
+    def test_empty_engine_size_is_zero(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        e = fresh_engine()
+        # get_catalog checks size() == 0 and raises HTTPServiceUnavailable.
+        assert e.size() == 0
+
+
+class TestCommonCardKeywords:
+    """Tests for engine.common_card_keywords().
+
+    Counts keyword occurrences across preferred printings only (one per oracle card).
+    The fixture cards include keywords: Flying, Haste, Persist, Vigilance, Wither.
+    """
+
+    def test_returns_dict(self, engine: QueryEngine) -> None:
+        result = engine.common_card_keywords()
+        assert isinstance(result, dict)
+
+    def test_known_keywords_present(self, engine: QueryEngine) -> None:
+        result = engine.common_card_keywords()
+        # The fixture includes cards with Flying, Haste, Persist, Vigilance, Wither keywords.
+        known = {"Flying", "Haste", "Persist", "Vigilance", "Wither"}
+        assert known & result.keys(), "Expected at least one known keyword in the result"
+
+    def test_counts_are_positive(self, engine: QueryEngine) -> None:
+        result = engine.common_card_keywords()
+        for keyword, count in result.items():
+            assert count > 0, f"Keyword {keyword!r} has non-positive count {count}"
+
+
+class TestFieldSelection:
+    """fields= selects which keys come back per card; None keeps the historical 9."""
+
+    def test_default_fields_omit_illustration_and_price(self, engine: QueryEngine) -> None:
+        _, cards = _run(engine, 'name="Lightning Bolt"', unique="printing", limit=1)
+        assert cards[0].keys() == {
+            "name",
+            "set_code",
+            "collector_number",
+            "power",
+            "toughness",
+            "mana_cost",
+            "oracle_text",
+            "set_name",
+            "type_line",
+        }
+
+    def test_requested_fields_returned_exactly(self, engine: QueryEngine) -> None:
+        _, cards = _run(
+            engine,
+            'name="Lightning Bolt"',
+            unique="printing",
+            limit=1,
+            fields=["name", "illustration_id", "price_usd", "prefer_score"],
+        )
+        assert cards[0].keys() == {"name", "illustration_id", "price_usd", "prefer_score"}
+
+    def test_illustration_id_groups_shared_art(self, engine: QueryEngine) -> None:
+        # Lightning Bolt has 10 printings across 6 distinct illustration_ids.
+        _, cards = _run(
+            engine,
+            'name="Lightning Bolt"',
+            unique="printing",
+            fields=["set_code", "illustration_id"],
+        )
+        assert len({c["illustration_id"] for c in cards}) == 6
+
+    def test_price_usd_matches_prefer_ordering(self, engine: QueryEngine) -> None:
+        # Cheapest Lightning Bolt is m11 at $1.47 (see TestPrefer.test_prefer_usd_low...).
+        _, cards = _run(
+            engine,
+            'name="Lightning Bolt"',
+            unique="card",
+            prefer="usd_low",
+            fields=["set_code", "price_usd"],
+        )
+        assert cards[0]["set_code"] == "m11"
+        assert cards[0]["price_usd"] == pytest.approx(1.47)
+
+    def test_unknown_field_raises(self, engine: QueryEngine) -> None:
+        with pytest.raises(UnknownFieldError):
+            _run(engine, unique="printing", fields=["not_a_real_field"])
+
+
+class TestExplain:
+    """explain()/explain_analyze() (#745): the router's own cost model as an on-demand diagnostic.
+
+    Not a search result — see docs/issues/00745-engine-explain-analyze.md.
+    """
+
+    def test_explain_ranks_applicable_plans_ascending(self, engine: QueryEngine) -> None:
+        filters = parse_scryfall_query("t:creature")
+        result = engine.explain(filters=filters, unique="card", orderby="edhrec", direction="asc", limit=50, offset=0)
+        rows = result["plans"]
+
+        assert rows, "GatheredScan is always applicable"
+        assert {"plan", "predicted_ns"} <= rows[0].keys()
+        predicted_ns = [row["predicted_ns"] for row in rows]
+        assert predicted_ns == sorted(predicted_ns)
+        assert any(row["plan"] == "GatheredScan" for row in rows)
+
+    def test_explain_reports_the_features_the_cost_model_consumes(self, engine: QueryEngine) -> None:
+        """The acquire vector is the point of the diagnostic.
+
+        A calibration fit regresses on exactly what `cost::plan_cost` reads, rather than on a
+        reconstruction of it that can drift.
+        """
+        filters = parse_scryfall_query("t:creature")
+        acquire = engine.explain(filters=filters, unique="card", orderby="edhrec", direction="asc", limit=50, offset=0)["acquire"]
+
+        assert acquire["count_source"], "every query is acquired through some branch"
+        # The cost model's own inputs, so a mis-counted feature is visible as itself.
+        assert {"eval_domain", "scan_units", "matches", "n_cards", "n_printings", "residual_tier_ns100"} <= acquire.keys()
+        assert acquire["limit"] == 50
+        assert acquire["offset"] == 0
+        assert acquire["n_cards"] > 0
+        assert acquire["eval_domain"] <= acquire["n_cards"], "candidates cannot exceed the card universe"
+
+    def test_explain_analyze_matches_explain_and_times_every_plan(self, engine: QueryEngine) -> None:
+        filters = parse_scryfall_query("t:creature")
+        explained = engine.explain(filters=filters, unique="card", orderby="edhrec", direction="asc", limit=50, offset=0)
+        analyzed = engine.explain_analyze(
+            filters=filters,
+            unique="card",
+            prefer="default",
+            orderby="edhrec",
+            direction="asc",
+            limit=50,
+            offset=0,
+            num_warmups=1,
+            num_trials=3,
+        )
+
+        # Same plans, same order, same predicted_ns -- explain_analyze must never
+        # diverge from explain (they share the engine's acquire_plan_features step).
+        assert [row["plan"] for row in analyzed["plans"]] == [row["plan"] for row in explained["plans"]]
+        assert [row["predicted_ns"] for row in analyzed["plans"]] == [row["predicted_ns"] for row in explained["plans"]]
+        # The features must agree too, not just the predictions: they are the inputs those
+        # predictions are computed from, and a harness that reads one and times the other would be
+        # silently comparing two different queries.
+        assert analyzed["acquire"]["count_source"] == explained["acquire"]["count_source"]
+        for key in ("eval_domain", "scan_units", "matches"):
+            assert analyzed["acquire"][key] == explained["acquire"][key]
+        for row in analyzed["plans"]:
+            # A structurally-applicable plan's fastpath can still decline at runtime
+            # (empty trials_ns); otherwise warmups are discarded and exactly
+            # num_trials recorded.
+            assert row["trials_ns"] == [] or len(row["trials_ns"]) == 3
+            assert all(t >= 0 for t in row["trials_ns"])
+            # A decline is reported as its own thing rather than as an absence: it produced no page,
+            # so it is not a trial, but it still cost wall time and named the gate that fired. The
+            # two are mutually exclusive because a decline is deterministic for one query and store.
+            assert not (row["trials_ns"] and row["declined_ns"]), f"{row['plan']} reported both trials and declines"
+            if row["declined_ns"]:
+                assert len(row["declined_ns"]) == 3
+                # Nothing executed, so a non-zero counter here would be another plan's.
+                assert (row["cards_visited"], row["matches_pushed"], row["ns_round_total"]) == (0, 0, 0)
+        assert any(row["plan"] == "GatheredScan" and len(row["trials_ns"]) == 3 for row in analyzed["plans"])
+
+    def test_explain_analyze_counters_track_the_features_that_predict_them(self, engine: QueryEngine) -> None:
+        """Each counter exists to check the feature that is supposed to predict it.
+
+        A mis-counted feature then shows up as itself rather than as a rate that will not calibrate.
+        `t:creature`/card narrows, so the plan that runs must visit candidates and push results, and
+        the phase split must account for the round it reports.
+        """
+        filters = parse_scryfall_query("t:creature")
+        result = engine.explain_analyze(
+            filters=filters,
+            unique="card",
+            # `prefer` is the PRINTING preference, not a plan selector -- `prefer_from_str` maps
+            # anything unrecognised to `Prefer::Default`. explain_analyze times every applicable plan
+            # regardless, so the plan under test is looked up by name from the results below.
+            prefer="default",
+            orderby="edhrec",
+            direction="asc",
+            limit=50,
+            offset=0,
+            num_warmups=1,
+            num_trials=2,
+        )
+        acquire = result["acquire"]
+        gathered = next(row for row in result["plans"] if row["plan"] == "GatheredScan")
+        assert gathered["trials_ns"], "GatheredScan always runs"
+
+        assert gathered["cards_visited"] > 0
+        assert gathered["matches_pushed"] > 0
+        # Card mode returns one row per matching card, so the pushes ARE the distinct-card total.
+        assert gathered["matches_pushed"] <= acquire["n_cards"]
+        # The phase split must account for the round, or a phase's cost is attributed to nothing.
+        # The phases are disjoint sub-intervals of the round, so they can only sum to less than it --
+        # the shortfall is the unmodelled remainder this instrumentation exists to size.
+        # NOT asserted individually as > 0: they are timings, and on a corpus this small
+        # `prepare_candidates` really does complete inside the clock's granularity and report 0.
+        assert gathered["ns_round_total"] >= gathered["ns_loop"]
+        phases = gathered["ns_prepare"] + gathered["ns_setup"] + gathered["ns_loop"] + gathered["ns_finish"]
+        assert phases <= gathered["ns_round_total"], "phase split exceeds the round it came from"
+
+        # `result_total` is ground truth for the analyzed run itself, which is the whole reason it
+        # exists: before it, a harness wanting the true cardinality made a SECOND `query()` call and
+        # ASSUMED the two agreed. Check the assumption once here, since every plan is supposed to
+        # return the same total for one query -- that is a correctness invariant, not a measurement.
+        expected_total, _ = _run(engine, "t:creature", unique="card", orderby="edhrec", limit=50)
+        for row in result["plans"]:
+            if not row["trials_ns"]:
+                continue  # declined at runtime, so it produced no total
+            assert row["result_total"] == expected_total, f"{row['plan']} disagrees with query()'s total"

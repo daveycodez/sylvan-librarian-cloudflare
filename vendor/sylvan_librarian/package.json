@@ -1,0 +1,44 @@
+{
+  "name": "sylvan_librarian",
+  "version": "1.0.0",
+  "description": "An open source Magic: The Gathering card search engine. Unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy. Not approved/endorsed by Wizards. Card data from Scryfall.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:js": "jest",
+    "format": "prettier --write api/static/index.html",
+    "format:check": "prettier --check api/static/index.html"
+  },
+  "jest": {
+    "testEnvironment": "jsdom"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jbylund/sylvan_librarian.git"
+  },
+  "keywords": [
+    "magic-the-gathering",
+    "mtg",
+    "card-search",
+    "scryfall",
+    "open-source"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=26.1.0"
+  },
+  "bugs": {
+    "url": "https://github.com/jbylund/sylvan_librarian/issues"
+  },
+  "homepage": "https://github.com/jbylund/sylvan_librarian#readme",
+  "devDependencies": {
+    "cssnano": "^8.0.1",
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
+    "postcss": "^8.5.14",
+    "postcss-cli": "^11.0.1",
+    "prettier": "^3.6.2",
+    "terser": "^5.36.0"
+  }
+}

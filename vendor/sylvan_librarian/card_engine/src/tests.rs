@@ -1,0 +1,11208 @@
+use super::{
+    and_child_rank, assign_name_ranks,
+    build_numeric_index, build_oracle_text_index, build_tag_index, build_trigram_index,
+    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
+    assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
+    cards_of_printings, count_common_keywords, count_common_types,
+    build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
+    range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
+    acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
+    EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
+    PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
+    gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
+    walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
+    prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
+    GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
+    archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
+    bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
+    ArithOp, ArtistIndex, CardData, CardIndexes, Candidates, ColorField, NumExpr, NumField, RarityIndex,
+    CollField, CmpOp, FilterExpr, InlineStr, Interner, ManaCost, OracleCard, Printing, TagIndex,
+    TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
+    TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
+};
+use rkyv::{rancor::Error, Archived};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+// Trait bringing random_range/random_bool/random into scope for the #677 fuzzer
+// helpers below (SmallRng's inherent methods live on this extension trait).
+use rand::RngExt;
+
+/// `QueryParams` for a test driving `explain`, whose only meaningful inputs are
+/// `mode` and `limit`/`offset`: `prefer` is not read by the cost model at all
+/// (`cost::PlanFeatures` has no such field), and `SortCol::EdhrecRank`/ascending
+/// is the default orderby these tests were written against.
+fn explain_params(mode: Mode, limit: usize) -> QueryParams {
+    QueryParams {
+        mode,
+        prefer: Prefer::Default,
+        sort_col: SortCol::EdhrecRank,
+        descending: false,
+        limit,
+        page_offset: 0,
+        sort_bound: SortBound::UNBOUNDED,
+    }
+}
+
+/// `QueryParams` from the enum-space inputs a kernel-level test drives directly
+/// (rather than through the string surface `QueryParams::from_strs` adapts).
+/// `prefer` is `Default` — the value every one of these call sites passed
+/// explicitly before the bundle.
+fn kernel_params(mode: Mode, sort_col: SortCol, descending: bool, limit: usize, page_offset: usize) -> QueryParams {
+    QueryParams { mode, prefer: Prefer::Default, sort_col, descending, limit, page_offset, sort_bound: SortBound::UNBOUNDED }
+}
+
+/// `QueryParams` for a test calling a function that reads only `mode` —
+/// `prepare_candidates` narrows and rewrites the filter without consulting the
+/// orderby or the page. The remaining fields are inert for such a call; if a
+/// callee ever starts reading them, that is a signal to pass real values here.
+fn mode_only_params(mode: Mode) -> QueryParams {
+    explain_params(mode, 100)
+}
+
+/// String-sorted permutation of the vocab ids, as reload_commit builds it.
+fn sorted_vocab_ids(vocab: &[String]) -> Vec<u16> {
+    let mut ids: Vec<u16> = (0..vocab.len() as u16).collect();
+    ids.sort_unstable_by(|&a, &b| vocab[a as usize].cmp(&vocab[b as usize]));
+    ids
+}
+
+/// Intern a list of collection elements as sorted, deduped vocab ids (the load-time
+/// shape of the set-like collections).
+fn vocab_ids(vocab: &mut VocabInterner, items: &[&str]) -> Vec<u16> {
+    let mut ids: Vec<u16> = items.iter().map(|s| vocab.intern(s.to_string()).unwrap()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Build a SortedTrigramIndex mapping each word's trigrams to the given card
+/// ids. Domain is a large fixed constant so tiny test posting lists never
+/// cross into the dense tier by accident — tests that specifically want the
+/// dense/plane path use `index_of_domain` with a small domain instead.
+fn index_of(words: &[(&str, &[u32])]) -> SortedTrigramIndex {
+    index_of_domain(words, 100_000)
+}
+
+fn index_of_domain(words: &[(&str, &[u32])], domain: usize) -> SortedTrigramIndex {
+    let mut idx: HashMap<[u8; 3], Vec<u32>> = HashMap::new();
+    for (word, cards) in words {
+        for w in word.as_bytes().windows(3) {
+            let entry = idx.entry([w[0], w[1], w[2]]).or_default();
+            for &c in *cards {
+                if !entry.contains(&c) { entry.push(c); }
+            }
+            entry.sort_unstable();
+        }
+    }
+    finalize_trigram_index(idx, domain)
+}
+
+/// Archive the index and query it, matching how the engine reads the shared snapshot.
+fn candidates(idx: &SortedTrigramIndex, word: &str) -> Option<Vec<u32>> {
+    let bytes = rkyv::to_bytes::<Error>(idx).expect("serialize trigram index");
+    let archived = rkyv::access::<Archived<SortedTrigramIndex>, Error>(&bytes).expect("access trigram index");
+    trigram_candidates(archived, word)
+}
+
+#[test]
+fn trigram_short_word_cannot_narrow() {
+    let idx = index_of(&[("bolt", &[1, 2])]);
+    assert_eq!(candidates(&idx, "bo"), None);
+}
+
+#[test]
+fn trigram_all_present_intersects() {
+    // "bol" → {1,2,3}, "olt" → {1,2}: intersection is {1,2}
+    let idx = index_of(&[("bol", &[1, 2, 3]), ("olt", &[1, 2])]);
+    assert_eq!(candidates(&idx, "bolt"), Some(vec![1, 2]));
+}
+
+#[test]
+fn trigram_missing_means_no_candidates() {
+    // "bol" is indexed but "olx" appears in no card, which proves nothing can
+    // match — the result must be the empty candidate set, not an intersection
+    // of whichever trigrams happen to exist.
+    let idx = index_of(&[("bolt", &[1, 2])]);
+    assert_eq!(candidates(&idx, "bolx"), Some(Vec::new()));
+}
+
+#[test]
+fn trigram_fully_unindexed_word_is_empty_not_unnarrowed() {
+    let idx = index_of(&[("bolt", &[1, 2])]);
+    assert_eq!(candidates(&idx, "zzz"), Some(Vec::new()));
+}
+
+// Verify that HashMap<[u8; 3], Vec<u32>> (the trigram index key type) round-trips
+// through rkyv and supports lookup via the same [u8; 3] key type.
+#[test]
+fn test_trigram_index_archive_and_lookup() {
+    let mut idx: HashMap<[u8; 3], Vec<u32>> = HashMap::new();
+    idx.insert(*b"abc", vec![1, 2, 3]);
+    idx.insert(*b"xyz", vec![4, 5]);
+    idx.insert(*b"foo", vec![10, 20, 30, 40]);
+
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize trigram index");
+    let archived = rkyv::access::<rkyv::Archived<HashMap<[u8; 3], Vec<u32>>>, Error>(&bytes)
+        .expect("access trigram index");
+
+    // Key present -- length check
+    let abc = archived.get(b"abc").expect("abc must be present");
+    assert_eq!(abc.len(), 3);
+
+    // Key present -- value iteration (elements are rend::u32_le, not u32)
+    let foo: Vec<u32> = archived
+        .get(b"foo")
+        .expect("foo must be present")
+        .iter()
+        .map(|x| u32::from(*x))
+        .collect();
+    assert_eq!(foo, vec![10, 20, 30, 40]);
+
+    // Key absent
+    assert!(archived.get(b"zzz").is_none());
+}
+
+// Verify that HashMap<String, Vec<u32>> (the tag index value type) supports
+// get() via &str, which is needed for narrow_candidates tag lookups.
+#[test]
+fn test_tag_index_str_lookup() {
+    let mut idx: HashMap<String, Vec<u32>> = HashMap::new();
+    idx.insert("merfolk".to_string(), vec![1, 5, 9]);
+    idx.insert("dragon".to_string(), vec![2, 7]);
+
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize tag index");
+    let archived = rkyv::access::<rkyv::Archived<HashMap<String, Vec<u32>>>, Error>(&bytes)
+        .expect("access tag index");
+
+    let merfolk: Vec<u32> = archived
+        .get("merfolk")
+        .expect("merfolk must be present")
+        .iter()
+        .map(|x| u32::from(*x))
+        .collect();
+    assert_eq!(merfolk, vec![1, 5, 9]);
+    assert!(archived.get("angel").is_none());
+}
+
+// ─── Two-level store fixtures ─────────────────────────────────────────────────
+
+/// Minimal oracle card; interned-string IDs are NONE_STR.
+fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut VocabInterner) -> OracleCard {
+    OracleCard {
+        card_name_lower: InlineStr::from_str(""),
+        card_name_folded: InlineStr::from_str(""),
+        card_colors: 0,
+        card_color_identity: 0,
+        produced_mana: 0,
+        card_types,
+        legality_divergent: false,
+        oracle_id,
+        card_name_id: NONE_STR,
+        oracle_text_id: NONE_STR,
+        oracle_text_lower_id: NONE_STR,
+        card_layout_id: NONE_STR,
+        mana_cost_text_id: NONE_STR,
+        type_line_id: NONE_STR,
+        cmc: None,
+        creature_power: None,
+        creature_toughness: None,
+        planeswalker_loyalty: None,
+        edhrec_rank: None,
+        cubecobra_score: None,
+        name_rank: 0,
+        card_subtypes: subtypes.iter().map(|s| vocab.intern(s.to_string()).unwrap()).collect(),
+        card_keywords: Vec::new(),
+        card_oracle_tags: Vec::new(),
+        card_legalities: 0,
+        mana_cost: ManaCost { core: 0, hybrids: Vec::new(), devotion: 0, cmc: 0.0 },
+        creature_power_text_id: NONE_STR,
+        creature_toughness_text_id: NONE_STR,
+    }
+}
+
+/// Minimal printing.
+fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<f32>) -> Printing {
+    Printing {
+        scryfall_id,
+        illustration_id,
+        flavor_text_id: NONE_STR,
+        flavor_text_lower_id: NONE_STR,
+        card_artist_vid: ARTIST_NONE,
+        card_set_code: InlineStr::from_str(""),
+        card_border_id: NONE_STR,
+        card_watermark_id: NONE_STR,
+        collector_number_id: NONE_STR,
+        set_name_id: NONE_STR,
+        released_at_int: None,
+        card_rarity_int: None,
+        collector_number_int: None,
+        price_usd: None,
+        price_eur: None,
+        price_tix: None,
+        prefer_score,
+        card_legalities: 0,
+        card_art_tags: Vec::new(),
+        card_is_tags: Vec::new(),
+        card_frame_data: Vec::new(),
+        artwork_group_id: 0, // placeholder; store_of overwrites via assign_artwork_groups
+    }
+}
+
+/// A `usd <op> dollars` comparison. `field_num` divides cents to dollars
+/// unconditionally regardless of shape, so this is just a plain `Const` in
+/// dollars -- no `bind()` step or unit conversion required.
+fn usd_cmp(op: CmpOp, dollars: f64) -> FilterExpr {
+    FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op, rhs: NumExpr::Const(dollars) }
+}
+
+/// Assemble a CardData where card i owns `printing_counts[i]` printings, in the
+/// store's within-bucket invariant order: descending default prefer_score (the
+/// first printing of each range is the default-preferred one). Printings get
+/// sequential scryfall/illustration ids starting at 1, and released_at values
+/// that make the LAST printing of each range the oldest.
+fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInterner) -> CardData {
+    assert_eq!(cards.len(), printing_counts.len());
+    let mut printings = Vec::new();
+    let mut offsets = vec![0u32];
+    let mut next_id = 1u128;
+    for &n in printing_counts {
+        for k in 0..n {
+            let mut p = stub_printing(next_id, next_id, Some((n - k) as f32));
+            p.released_at_int = Some(20200101 - (k as u32) * 10_000);
+            printings.push(p);
+            next_id += 1;
+        }
+        offsets.push(printings.len() as u32);
+    }
+    // Every printing above got a distinct illustration_id (next_id strictly
+    // increases), so this assigns sequential, all-distinct artwork_group_ids by
+    // default -- fixtures that want shared artwork overwrite illustration_id
+    // after store_of returns and must recompute via assign_artwork_groups
+    // themselves (see artwork_group_counts_dedup_illustrations).
+    let artwork_groups = assign_artwork_groups(&mut printings, &offsets);
+    // Same derivation reload_commit does, so a fixture store has the artwork-space offsets the
+    // compose fastpath reads rather than an empty vec.
+    let artwork_base = build_artwork_base_from(&artwork_groups);
+    // Real planes and bigrams so narrowing tests see the same store shape
+    // reload_commit builds (type narrowing goes through the planes since #637).
+    let indexes = CardIndexes {
+        artwork_base,
+        // No printing sets card_border_id away from NONE_STR at this point (any
+        // border values a fixture wants get set after store_of returns, same as
+        // border_planes_fixture_store already does), so an empty string table is
+        // safe here -- the border-scatter loop skips every printing regardless.
+        planes: build_bit_planes(&cards, &printings, &offsets, &[]),
+        name_bigrams: build_name_bigram_index(&cards),
+        name_unigrams: build_name_unigram_index(&cards),
+        legal_divergent: build_divergent_ids(&cards),
+        sort_perms: build_sort_permutations(&cards),
+        max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
+        artwork_groups,
+        artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
+        printing_to_card: build_printing_to_card(&offsets),
+        ..Default::default()
+    };
+    CardData {
+        cards,
+        printings,
+        offsets,
+        strings: vec![],
+        coll_vocab_sorted: sorted_vocab_ids(&vocab.strings),
+        coll_vocab: vocab.strings,
+        artist_vocab: vec![],
+        mana_vocab: vec![],
+        indexes,
+        format_shifts: HashMap::new(),
+    }
+}
+
+/// Recompute both artwork-grouping-derived index fields (per-card counts and the per-printing
+/// columnar copy) from the current printings, keeping them in sync. Call after a fixture mutates
+/// `illustration_id` post-`store_of` so no site can update one and forget the other — mirrors the
+/// single production build spot in `reload_commit`. Returns the per-card counts (for asserts).
+fn reassign_artwork_grouping(data: &mut CardData) -> Vec<u16> {
+    let counts = assign_artwork_groups(&mut data.printings, &data.offsets);
+    data.indexes.max_artwork_groups = counts.iter().copied().max().unwrap_or(0);
+    data.indexes.artwork_groups = counts.clone();
+    data.indexes.artwork_group_col = data.printings.iter().map(|p| p.artwork_group_id).collect();
+    counts
+}
+
+// Verify that narrow_candidates returns printing-space candidates for art tags
+// and card-space candidates for keywords, and None (no narrowing) for absent tags.
+#[test]
+fn narrow_candidates_spaces() {
+    let mut art_tags: TagIndex = HashMap::new();
+    art_tags.insert("wolf".to_string(), vec![0, 2]);
+    let mut keywords: TagIndex = HashMap::new();
+    keywords.insert("Flying".to_string(), vec![1]);
+
+    // offsets for 2 cards with 2 printings each: printings 0-1 → card 0, 2-3 → card 1
+    let raw_offsets = vec![0u32, 2, 4];
+    let printing_to_card = build_printing_to_card(&raw_offsets);
+    let indexes = CardIndexes { art_tags, keywords, printing_to_card, ..Default::default() };
+    let bytes = rkyv::to_bytes::<Error>(&indexes).expect("serialize");
+    let archived = rkyv::access::<Archived<CardIndexes>, Error>(&bytes).expect("access");
+    let offsets_bytes = rkyv::to_bytes::<Error>(&raw_offsets).expect("serialize offsets");
+    let offsets = rkyv::access::<Archived<Vec<u32>>, Error>(&offsets_bytes).expect("access offsets");
+
+    let coll = |field, value: &str| FilterExpr::CollectionCmp {
+        field,
+        op: CmpOp::Ge,
+        value: value.to_string(),
+        value_id: None,
+    };
+
+    match narrow_candidates(&coll(CollField::ArtTags, "wolf"), archived, offsets, &[]) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0, 2]),
+        _ => panic!("art tag must narrow in printing space"),
+    }
+    match narrow_candidates(&coll(CollField::Keywords, "Flying"), archived, offsets, &[]) {
+        Some(Candidates::Cards(v)) => assert_eq!(v, vec![1]),
+        _ => panic!("keyword must narrow in card space"),
+    }
+    // A tag with no postings in a complete index proves the empty set (an
+    // unbound value_id matches nothing at eval either).
+    match narrow_candidates(&coll(CollField::ArtTags, "zombie"), archived, offsets, &[]) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty(), "absent tag narrows to the exact empty set"),
+        _ => panic!("absent tag must narrow to empty, not decline"),
+    }
+    // frame_data stores every value now (`HybridTagIndex`), so absence proves emptiness here exactly as
+    // it does for every other collection index. It used to be the sole exception.
+    match narrow_candidates(&coll(CollField::FrameData, "zombie"), archived, offsets, &[]) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty(), "frame_data is complete: absence is a proof"),
+        other => panic!("an absent frame value must narrow to empty, got {other:?}"),
+    }
+
+    // And of mixed spaces projects the printing product up and intersects in
+    // card space: art printings {0,2} → cards {0,1}, ∩ keyword cards {1} = {1}.
+    let and = FilterExpr::And(vec![coll(CollField::ArtTags, "wolf"), coll(CollField::Keywords, "Flying")]);
+    match narrow_candidates(&and, archived, offsets, &[]) {
+        Some(Candidates::Cards(v)) => assert_eq!(v, vec![1]),
+        _ => panic!("mixed And must produce card-space candidates"),
+    }
+}
+
+// #700: Eq/Gt reuse the same containment postings Ge narrows through, but
+// loosely — narrow_candidates_exact must report the identical postings for
+// all three ops, tight only for Ge. Uses Keywords (card-space, complete) so
+// the exactness bit narrow_candidates_exact returns isn't itself masked by
+// the printing-space projection (that projection always reports loose,
+// which would hide the Ge-vs-Eq/Gt distinction this test is checking).
+#[test]
+fn narrow_candidates_eq_gt_reuse_ge_postings_loosely() {
+    let mut keywords: TagIndex = HashMap::new();
+    keywords.insert("Flying".to_string(), vec![1]);
+
+    // offsets for 2 cards with 2 printings each: printings 0-1 → card 0, 2-3 → card 1
+    let raw_offsets = vec![0u32, 2, 4];
+    let printing_to_card = build_printing_to_card(&raw_offsets);
+    let indexes = CardIndexes { keywords, printing_to_card, ..Default::default() };
+    let bytes = rkyv::to_bytes::<Error>(&indexes).expect("serialize");
+    let archived = rkyv::access::<Archived<CardIndexes>, Error>(&bytes).expect("access");
+    let offsets_bytes = rkyv::to_bytes::<Error>(&raw_offsets).expect("serialize offsets");
+    let offsets = rkyv::access::<Archived<Vec<u32>>, Error>(&offsets_bytes).expect("access offsets");
+
+    let coll = |op, value: &str| FilterExpr::CollectionCmp { field: CollField::Keywords, op, value: value.to_string(), value_id: None };
+
+    for op in [CmpOp::Eq, CmpOp::Gt] {
+        match narrow_candidates_exact(&coll(op, "Flying"), archived, offsets, &[]) {
+            (Some(Candidates::Cards(v)), tight, _) => {
+                assert_eq!(v, vec![1], "{op:?} must reuse Ge's exact postings as a candidate superset");
+                assert!(!tight, "{op:?} postings only prove containment, not the length condition — must narrow loose");
+            }
+            other => panic!("{op:?} must narrow via the containment index, got {other:?}"),
+        }
+    }
+    // Ge itself stays tight over the same postings.
+    match narrow_candidates_exact(&coll(CmpOp::Ge, "Flying"), archived, offsets, &[]) {
+        (Some(Candidates::Cards(v)), tight, _) => {
+            assert_eq!(v, vec![1]);
+            assert!(tight, "Ge's postings are exact containment, must stay tight");
+        }
+        other => panic!("Ge must narrow via the containment index, got {other:?}"),
+    }
+    // A value absent from a complete index proves the empty set for Eq/Gt
+    // too — no row can satisfy either without first satisfying containment.
+    for op in [CmpOp::Eq, CmpOp::Gt, CmpOp::Ge] {
+        match narrow_candidates_exact(&coll(op, "Trample"), archived, offsets, &[]) {
+            (Some(Candidates::Cards(v)), tight, _) => {
+                assert!(v.is_empty(), "{op:?} over an absent value narrows to the exact empty set");
+                assert!(tight, "{op:?} empty-postings narrowing is exact, not just advisory");
+            }
+            other => panic!("{op:?} over an absent value must narrow to empty, not decline, got {other:?}"),
+        }
+    }
+    // frame_data joins them for Eq/Gt as well, now that it is complete: an absent value cannot satisfy
+    // containment, so it cannot satisfy Eq or Gt either, and the empty set is exact for all three.
+    let frame = |op| FilterExpr::CollectionCmp { field: CollField::FrameData, op, value: "zombie".to_string(), value_id: None };
+    for op in [CmpOp::Eq, CmpOp::Gt, CmpOp::Ge] {
+        match narrow_candidates(&frame(op), archived, offsets, &[]) {
+            Some(Candidates::Printings(v)) => assert!(v.is_empty(), "{op:?} over an absent value is empty"),
+            other => panic!("{op:?} over frame_data must narrow to empty, got {other:?}"),
+        }
+    }
+}
+
+// build_rarity_index posts each card once per distinct printing rarity;
+// rarity-less printings contribute nothing.
+#[test]
+fn rarity_index_posts_cards_per_distinct_rarity() {
+    // card 0: printings at common(0) and mythic(3); card 1: rare(2) twice
+    // (deduped by the mask); card 2: no rarity anywhere.
+    let mut printings: Vec<Printing> = (1..=5).map(|i| stub_printing(i, i, None)).collect();
+    printings[0].card_rarity_int = Some(0);
+    printings[1].card_rarity_int = Some(3);
+    printings[2].card_rarity_int = Some(2);
+    printings[3].card_rarity_int = Some(2);
+    let offsets = vec![0u32, 2, 4, 5];
+
+    let idx = build_rarity_index(&printings, &offsets);
+    assert_eq!(idx[0], vec![0]); // common: card 0
+    assert_eq!(idx[2], vec![1]); // rare: card 1, once despite two rare printings
+    assert_eq!(idx[3], vec![0]); // mythic: card 0
+    assert!(idx[1].is_empty() && idx[4].is_empty() && idx[5].is_empty());
+}
+
+// rarity_candidates unions the qualifying buckets, refuses Ne and unions past
+// MAX_UNION_FRACTION of posting entries, and proves empty sets for impossible
+// comparisons.
+#[test]
+fn rarity_candidates_ops() {
+    // common {0,3}, uncommon {1}, rare {2,3}, mythic {4}, special {}, bonus {}
+    let idx: RarityIndex = [vec![0, 3], vec![1], vec![2, 3], vec![4], vec![], vec![]];
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
+    let archived = rkyv::access::<Archived<RarityIndex>, Error>(&bytes).expect("access");
+
+    // Eq picks one bucket; a card in several buckets appears via each.
+    assert_eq!(rarity_candidates(archived, CmpOp::Eq, 2.0), Some(vec![2, 3]));
+    // Ge unions rare and above; card 3 (common+rare) appears once.
+    assert_eq!(rarity_candidates(archived, CmpOp::Ge, 2.0), Some(vec![2, 3, 4]));
+    // Lt 2 = common|uncommon.
+    assert_eq!(rarity_candidates(archived, CmpOp::Lt, 2.0), Some(vec![0, 1, 3]));
+    // Impossible comparisons prove the empty set (exact, not "no narrowing").
+    assert_eq!(rarity_candidates(archived, CmpOp::Eq, 2.5), Some(vec![]));
+    assert_eq!(rarity_candidates(archived, CmpOp::Gt, 5.0), Some(vec![]));
+    // Ne and over-ceiling unions decline to narrow.
+    assert!(rarity_candidates(archived, CmpOp::Ne, 2.0).is_none());
+    assert!(rarity_candidates(archived, CmpOp::Ge, 0.0).is_none());
+    assert!(rarity_candidates(archived, CmpOp::Le, 5.0).is_none());
+    // The ceiling is entries-based, not bucket-count: Le 3 selects only 4 of
+    // 6 buckets but 100% of posting entries (special/bonus are empty), which
+    // exceeds MAX_UNION_FRACTION and must decline.
+    assert!(rarity_candidates(archived, CmpOp::Le, 3.0).is_none());
+}
+
+// The NumericCmp narrowing arm routes rarity through the index in card space,
+// for both operand orders.
+#[test]
+fn narrow_candidates_rarity_card_space() {
+    // All three cards also at common, so the rare/mythic unions stay under
+    // MAX_UNION_FRACTION of the six entries.
+    let rarity: RarityIndex = [vec![0, 1, 2], vec![], vec![0, 2], vec![1], vec![], vec![]];
+    let indexes = CardIndexes { rarity, ..Default::default() };
+    let bytes = rkyv::to_bytes::<Error>(&indexes).expect("serialize");
+    let archived = rkyv::access::<Archived<CardIndexes>, Error>(&bytes).expect("access");
+    let offsets_bytes = rkyv::to_bytes::<Error>(&vec![0u32, 2, 4, 6]).expect("serialize offsets");
+    let offsets = rkyv::access::<Archived<Vec<u32>>, Error>(&offsets_bytes).expect("access offsets");
+
+    let cmp = FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::RarityInt),
+        op: CmpOp::Ge,
+        rhs: NumExpr::Const(2.0),
+    };
+    match narrow_candidates(&cmp, archived, offsets, &[]) {
+        Some(Candidates::Cards(v)) => assert_eq!(v, vec![0, 1, 2]),
+        _ => panic!("rarity must narrow in card space"),
+    }
+
+    // Flipped operand order: 3 <= rarity ≡ rarity >= 3.
+    let flipped = FilterExpr::NumericCmp {
+        lhs: NumExpr::Const(3.0),
+        op: CmpOp::Le,
+        rhs: NumExpr::Field(NumField::RarityInt),
+    };
+    match narrow_candidates(&flipped, archived, offsets, &[]) {
+        Some(Candidates::Cards(v)) => assert_eq!(v, vec![1]),
+        _ => panic!("flipped rarity must narrow in card space"),
+    }
+}
+
+/// Card i's printing rarities (docs/issues/00670-engine-rarity-planes.md): one value
+/// per printing, None for no-rarity. Covers all 6 buckets, cards spanning two
+/// buckets at once (mixed within the planed range, and mixed across the
+/// plane/postings-tail boundary), and a card with no rarity anywhere.
+const RARITY_PLANE_FIXTURE: &[&[Option<u8>]] = &[
+    &[Some(0)],         // card 0: common only
+    &[Some(1)],         // card 1: uncommon only
+    &[Some(2)],         // card 2: rare only
+    &[Some(3)],         // card 3: mythic only
+    &[Some(4)],         // card 4: special only
+    &[Some(5)],         // card 5: bonus only
+    &[Some(0), Some(3)], // card 6: common + mythic (mixed, both planed)
+    &[Some(2), Some(4)], // card 7: rare + special (mixed, spans plane/tail)
+    &[None],             // card 8: no rarity anywhere
+];
+
+fn rarity_plane_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..RARITY_PLANE_FIXTURE.len())
+        .map(|i| stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab))
+        .collect();
+    let counts: Vec<usize> = RARITY_PLANE_FIXTURE.iter().map(|r| r.len()).collect();
+    let mut data = store_of(cards, &counts, vocab);
+    let mut p_idx = 0;
+    for rarities in RARITY_PLANE_FIXTURE {
+        for &r in *rarities {
+            data.printings[p_idx].card_rarity_int = r;
+            p_idx += 1;
+        }
+    }
+    data.indexes.rarity = build_rarity_index(&data.printings, &data.offsets);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data
+}
+
+/// True for the (op, val) pairs where the shared "above mythic" plane can't
+/// resolve the comparison exactly -- val is 4 (special) or 5 (bonus)
+/// specifically, and the op needs to tell them apart (docs/issues/
+/// 00680-engine-existential-plane-generalization.md, #680's "K exact + 1 shared
+/// hi bucket" design, following the same tail-bucket shape as
+/// cmc/power/toughness's PLANE_*_HI, just fixed at [4,5] instead of
+/// live-observed). Every other (op, val) combination is unambiguous because
+/// 4 and 5 always agree on which side of any *other* threshold they fall.
+fn rarity_hi_ambiguous(op: CmpOp, val: f64) -> bool {
+    matches!((val, op), (4.0, CmpOp::Eq | CmpOp::Ne | CmpOp::Le | CmpOp::Gt) | (5.0, CmpOp::Eq | CmpOp::Ne | CmpOp::Lt | CmpOp::Ge))
+}
+
+/// The plane-aware narrowing function must reproduce the true existence
+/// projection ("does any printing of this card satisfy op(rarity, val)") for
+/// every op, across the full 0-5 domain and an impossible threshold, in
+/// every case it doesn't legitimately decline (`rarity_hi_ambiguous`) — the
+/// reference here is brute force over RARITY_PLANE_FIXTURE directly, not
+/// rarity_candidates (which declines for Ne and over-ceiling unions, so it
+/// can't serve as the reference for every op the way the plane path must
+/// still answer).
+#[test]
+fn rarity_plane_candidates_matches_existence_projection() {
+    let data = rarity_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_cards = RARITY_PLANE_FIXTURE.len();
+
+    let keep = |op: CmpOp, r: f64, val: f64| match op {
+        CmpOp::Eq => r == val,
+        CmpOp::Lt => r < val,
+        CmpOp::Le => r <= val,
+        CmpOp::Gt => r > val,
+        CmpOp::Ge => r >= val,
+        CmpOp::Ne => r != val,
+    };
+
+    let ops = [
+        ("Eq", CmpOp::Eq), ("Ne", CmpOp::Ne), ("Lt", CmpOp::Lt),
+        ("Le", CmpOp::Le), ("Gt", CmpOp::Gt), ("Ge", CmpOp::Ge),
+    ];
+    for (name, op) in ops {
+        for val in [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 2.5, -1.0, 6.0] {
+            match super::rarity_plane_candidates(&archived.indexes, n_cards, op, val) {
+                None => assert!(rarity_hi_ambiguous(op, val), "op {name} val {val}: plane path declined unexpectedly"),
+                Some(bits) => {
+                    assert!(!rarity_hi_ambiguous(op, val), "op {name} val {val}: plane path should have declined but didn't");
+                    let want: Vec<u32> = RARITY_PLANE_FIXTURE
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, rarities)| rarities.iter().any(|r| r.is_some_and(|r| keep(op, f64::from(r), val))))
+                        .map(|(cid, _)| cid as u32)
+                        .collect();
+                    for cid in 0..n_cards as u32 {
+                        assert_eq!(
+                            bitmap_contains(&bits, cid),
+                            want.contains(&cid),
+                            "op {name} val {val}: card {cid} membership mismatch"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Card 8 (RARITY_PLANE_FIXTURE) has no rarity on any printing -- it must not
+/// appear under any comparison, matching build_rarity_index's own None-skips
+/// silently behavior (this repo's history of Null-semantics bugs elsewhere
+/// makes this worth its own explicit case, not just incidental coverage in
+/// the parity test above).
+#[test]
+fn rarity_plane_null_rarity_card_matches_nothing() {
+    let data = rarity_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_cards = RARITY_PLANE_FIXTURE.len();
+    let null_card = 8u32;
+
+    let ops = [
+        ("Eq", CmpOp::Eq), ("Ne", CmpOp::Ne), ("Lt", CmpOp::Lt),
+        ("Le", CmpOp::Le), ("Gt", CmpOp::Gt), ("Ge", CmpOp::Ge),
+    ];
+    for (name, op) in ops {
+        for val in [0.0, 1.0, 2.0, 3.0, 4.0, 5.0] {
+            let Some(bits) = super::rarity_plane_candidates(&archived.indexes, n_cards, op, val) else {
+                assert!(rarity_hi_ambiguous(op, val), "op {name} val {val}: plane path declined unexpectedly");
+                continue;
+            };
+            assert!(!bitmap_contains(&bits, null_card), "op {name} val {val}: null-rarity card must never match");
+        }
+    }
+}
+
+/// Rarity is now an existential-plane field (docs/issues/engine-existential-
+/// plane-generalization.md, #680), promoted the same way legality is
+/// (docs/issues/00667-engine-legality-divergent-carveout.md): the 4 tracked values
+/// exact-consume via compile_plane, `!=val` on a tracked value is exact too
+/// (Or of the other tracked planes plus the shared hi plane), but a query
+/// needing to distinguish special from bonus specifically still declines to
+/// compile — the plane can't tell them apart (see `PLANE_RARITY_HI`'s doc) --
+/// and correctly falls back to the (unaffected) narrow_rec/RarityIndex path,
+/// not a silently wrong all_match.
+#[test]
+fn rarity_tracked_values_exact_consumed_hi_bucket_declines() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let rarity_eq = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(v) };
+
+    // Tracked values (mythic=3) compile exactly.
+    assert!(compile_plane(&rarity_eq(3.0), bounds, words).is_some(), "r:mythic must compile to a plane expression");
+    // Special/bonus specifically can't be told apart by the shared hi plane.
+    assert!(compile_plane(&rarity_eq(4.0), bounds, words).is_none(), "r:special must decline (hi bucket is ambiguous)");
+    assert!(compile_plane(&rarity_eq(5.0), bounds, words).is_none(), "r:bonus must decline (hi bucket is ambiguous)");
+
+    // Mixed with an otherwise fully plane-expressible sibling: an ambiguous
+    // rarity child must stay in the residual, not get silently dropped or promoted.
+    let creature = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let (pe, residual) = split_planes(FilterExpr::And(vec![creature, rarity_eq(4.0)]), bounds, words, true);
+    assert!(pe.is_some(), "the creature child must still plane-consume");
+    assert!(
+        matches!(&residual, FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), .. }),
+        "r:special must remain in the residual, not be consumed to True"
+    );
+
+    // A tracked value's negation is exact too.
+    let not_mythic = FilterExpr::Not(Box::new(rarity_eq(3.0)));
+    assert!(compile_plane(&not_mythic, bounds, words).is_some(), "-r:mythic must compile to a plane expression");
+}
+
+/// Y=2 shared-witness decline: two distinct rarity plane indices under one
+/// And (whether from the same field, like a bounded range, or a different
+/// field entirely, like legality) can't be answered from independent
+/// existence planes -- the same argument as two distinct legality facts
+/// (docs/issues/00680-engine-existential-plane-generalization.md point 1's hand
+/// verification), now exercised with rarity's own indices in scope.
+#[test]
+fn rarity_shared_witness_declines_same_field_and_cross_field() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let rarity_ge = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Ge, rhs: NumExpr::Const(v) };
+    let rarity_le = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Le, rhs: NumExpr::Const(v) };
+
+    // rarity>=rare AND rarity<=mythic: two distinct tracked plane indices
+    // (rare, mythic) shared between the two Or-trees -- must decline.
+    let bounded_range = FilterExpr::And(vec![rarity_ge(2.0), rarity_le(3.0)]);
+    assert!(compile_plane(&bounded_range, bounds, words).is_none(), "same-field rarity range must decline (shared witness)");
+
+    // format:A AND r:mythic: two distinct fields, still the identical
+    // shared-witness problem -- collect_existential_indices doesn't care
+    // which family a plane index came from.
+    let format_a = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let cross_field = FilterExpr::And(vec![format_a, FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(3.0),
+    }]);
+    assert!(compile_plane(&cross_field, bounds, words).is_none(), "legality+rarity compound must decline (shared witness)");
+
+    // The fallback must still produce the correct (not just declined)
+    // result: no printing in this fixture is both format-A-legal and
+    // mythic, so it must be zero, not a false positive from independently
+    // narrowing each fact.
+    let mut residual_check = cross_field;
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual_check, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 0, "no card in this fixture is both format-A-legal and mythic");
+}
+
+/// -rarity:x / rarity:x negation, exercised through narrow_rec end-to-end
+/// (not just narrow_rarity directly), through the dedicated Not arm --
+/// recomputes with negate_op(op) rather than complementing the existing
+/// candidate set. Covers both operand orders (Field/Const and Const/Field,
+/// the latter needing negate_op(flip_op(op))) and confirms the negated form
+/// agrees with the same brute-force existence projection used for the
+/// non-negated ops above.
+#[test]
+fn rarity_not_arm_matches_existence_projection() {
+    let data = rarity_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_cards = RARITY_PLANE_FIXTURE.len();
+
+    let keep = |op: CmpOp, r: f64, val: f64| match op {
+        CmpOp::Eq => r == val,
+        CmpOp::Lt => r < val,
+        CmpOp::Le => r <= val,
+        CmpOp::Gt => r > val,
+        CmpOp::Ge => r >= val,
+        CmpOp::Ne => r != val,
+    };
+
+    let ops = [
+        ("Eq", CmpOp::Eq), ("Ne", CmpOp::Ne), ("Lt", CmpOp::Lt),
+        ("Le", CmpOp::Le), ("Gt", CmpOp::Gt), ("Ge", CmpOp::Ge),
+    ];
+    for (name, op) in ops {
+        for val in [0.0, 1.0, 2.0, 3.0, 4.0, 5.0] {
+            // A tracked value narrows exactly via the plane. Special/bonus
+            // specifically (val 4 or 5, hi-bucket-ambiguous op) may decline
+            // the plane and fall to RarityIndex postings instead -- which can
+            // itself decline for its own, pre-existing, unrelated reason (the
+            // MAX_UNION_FRACTION broadness guard, when the negated op selects
+            // most of the corpus). Either decline is a correct answer (a full
+            // residual scan is always correct, just unnarrowed), so this test
+            // only checks correctness when narrowing *does* happen -- the
+            // plane's own decline boundary is pinned down precisely by
+            // rarity_hi_ambiguous elsewhere, which doesn't depend on corpus
+            // shape the way the postings guard does.
+            let filter = FilterExpr::Not(Box::new(FilterExpr::NumericCmp {
+                lhs: NumExpr::Field(NumField::RarityInt),
+                op,
+                rhs: NumExpr::Const(val),
+            }));
+            let Some(n) = super::narrow_rec(&filter, &archived.indexes, &archived.offsets, &archived.cards, true) else {
+                continue;
+            };
+            let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+            let want: Vec<u32> = RARITY_PLANE_FIXTURE
+                .iter()
+                .enumerate()
+                .filter(|(_, rarities)| rarities.iter().any(|r| r.is_some_and(|r| !keep(op, f64::from(r), val))))
+                .map(|(cid, _)| cid as u32)
+                .collect();
+            for cid in 0..n_cards as u32 {
+                assert_eq!(
+                    cand.contains(&cid),
+                    want.contains(&cid),
+                    "Not(field {name} {val}): card {cid} membership mismatch"
+                );
+            }
+
+            // Not(val flip_op(op) field) -- the flipped operand order
+            // expressing the SAME predicate as `field op val` (e.g. `field <
+            // val` is `val > field`, not `val < field` -- same op on both
+            // sides would be a different comparison entirely).
+            let filter_flipped = FilterExpr::Not(Box::new(FilterExpr::NumericCmp {
+                lhs: NumExpr::Const(val),
+                op: super::flip_op(op),
+                rhs: NumExpr::Field(NumField::RarityInt),
+            }));
+            let n2 = super::narrow_rec(&filter_flipped, &archived.indexes, &archived.offsets, &archived.cards, true)
+                .unwrap_or_else(|| panic!("Not({val} {name} field) must narrow given Not(field {name} {val}) did"));
+            let cand2 = n2.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+            assert_eq!(cand, cand2, "operand order must not change the result: {name} {val}");
+        }
+    }
+}
+
+#[test]
+fn cards_of_printings_maps_and_dedups() {
+    let raw_offsets = vec![0u32, 3, 4, 7];
+    let offsets_bytes = rkyv::to_bytes::<Error>(&raw_offsets).expect("serialize");
+    let offsets = rkyv::access::<Archived<Vec<u32>>, Error>(&offsets_bytes).expect("access");
+    let printing_to_card_bytes = rkyv::to_bytes::<Error>(&build_printing_to_card(&raw_offsets)).expect("serialize");
+    let printing_to_card = rkyv::access::<Archived<Vec<u32>>, Error>(&printing_to_card_bytes).expect("access");
+    // printings 0-2 → card 0, 3 → card 1, 4-6 → card 2
+    assert_eq!(cards_of_printings(offsets, printing_to_card, &[0, 1, 2, 3, 5, 6]), vec![0, 1, 2]);
+    assert_eq!(cards_of_printings(offsets, printing_to_card, &[1]), vec![0]);
+    assert_eq!(cards_of_printings(offsets, printing_to_card, &[]), Vec::<u32>::new());
+}
+
+/// Differential test for the direct-array projection
+/// (docs/issues/00690-engine-direct-projection-arrays.md): `cards_of_printings`
+/// must agree with an independent reference oracle (a `partition_point` search on
+/// `offsets`, applied uniformly regardless of size -- the mechanism the small-k
+/// path itself used before this change) at every k, spanning both the small-k
+/// (<=1024) and broad-k (>1024) branches, so the branch split is provably a pure
+/// performance choice, not a behavior change.
+#[test]
+fn cards_of_printings_matches_naive_projection_across_sizes() {
+    use rand::SeedableRng;
+    const NUM_SEEDS: u64 = 40;
+    const N_CARDS: usize = 200;
+
+    for seed in 0..NUM_SEEDS {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let mut raw_offsets = Vec::with_capacity(N_CARDS + 1);
+        raw_offsets.push(0u32);
+        let mut total = 0u32;
+        for _ in 0..N_CARDS {
+            total += rng.random_range(1..=20);
+            raw_offsets.push(total);
+        }
+        let n_printings = total as usize;
+
+        let offsets_bytes = rkyv::to_bytes::<Error>(&raw_offsets).expect("serialize");
+        let offsets = rkyv::access::<Archived<Vec<u32>>, Error>(&offsets_bytes).expect("access");
+        let printing_to_card_vec = build_printing_to_card(&raw_offsets);
+        let printing_to_card_bytes = rkyv::to_bytes::<Error>(&printing_to_card_vec).expect("serialize");
+        let printing_to_card = rkyv::access::<Archived<Vec<u32>>, Error>(&printing_to_card_bytes).expect("access");
+
+        // k values straddling the 1024 small/broad split; clamp to n_printings.
+        for &k in &[0usize, 1, 5, 50, 999, 1024, 1025, 2000, 5000] {
+            let k = k.min(n_printings);
+            let mut printing_ids: Vec<u32> = {
+                let mut set = std::collections::HashSet::with_capacity(k);
+                while set.len() < k {
+                    set.insert(rng.random_range(0..n_printings as u32));
+                }
+                set.into_iter().collect()
+            };
+            printing_ids.sort_unstable();
+
+            let got = cards_of_printings(offsets, printing_to_card, &printing_ids);
+
+            // Reference oracle: partition_point on offsets directly, shares no
+            // code with build_printing_to_card or cards_of_printings' branches.
+            let mut want: Vec<u32> = printing_ids
+                .iter()
+                .map(|&p| raw_offsets.partition_point(|&o| o <= p) as u32 - 1)
+                .collect();
+            want.dedup();
+
+            assert_eq!(got, want, "seed={seed}, k={k}, n_printings={n_printings}");
+        }
+    }
+}
+
+#[test]
+fn count_common_types_counts_every_card_once() {
+    // card 0: Legendary Planeswalker, subtype "Jace"
+    // card 1: Instant, no subtypes
+    // card 2: Artifact + Creature, subtype "Merfolk"
+    // card 3: Creature, subtypes ["Warrior", "Merfolk"]
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_LEGENDARY | TYPE_PLANESWALKER, &["Jace"], &mut vocab),
+        stub_card(2, TYPE_INSTANT,                        &[], &mut vocab),
+        stub_card(3, TYPE_ARTIFACT | TYPE_CREATURE,       &["Merfolk"], &mut vocab),
+        stub_card(4, TYPE_CREATURE,                       &["Warrior", "Merfolk"], &mut vocab),
+    ];
+    // Multiple printings per card must not inflate the counts.
+    let data = store_of(cards, &[3, 1, 2, 1], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let counts = count_common_types(archived);
+
+    assert_eq!(counts.get("Legendary"),    Some(&1));
+    assert_eq!(counts.get("Planeswalker"), Some(&1));
+    assert_eq!(counts.get("Artifact"),     Some(&1));
+    assert_eq!(counts.get("Creature"),     Some(&2)); // cards 2 and 3
+    assert_eq!(counts.get("Instant"),      Some(&1));
+    assert_eq!(counts.get("Merfolk"),  Some(&2));
+    assert_eq!(counts.get("Warrior"),  Some(&1));
+    assert_eq!(counts.get("Jace"),     Some(&1));
+    assert_eq!(counts.get("Land"),   None);
+    assert_eq!(counts.get("Sorcery"), None);
+}
+
+#[test]
+fn count_common_keywords_counts_every_card_once() {
+    let mut vocab = VocabInterner::new();
+    let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card0.card_keywords = vocab_ids(&mut vocab, &["Flying", "Haste"]);
+    let mut card1 = stub_card(2, TYPE_INSTANT, &[], &mut vocab);
+    card1.card_keywords = vocab_ids(&mut vocab, &["Trample"]);
+    let mut card2 = stub_card(3, TYPE_CREATURE, &[], &mut vocab);
+    card2.card_keywords = vocab_ids(&mut vocab, &["Flying"]);
+
+    let data = store_of(vec![card0, card1, card2], &[2, 1, 4], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let counts = count_common_keywords(archived);
+    assert_eq!(counts.get("Flying"),  Some(&2));
+    assert_eq!(counts.get("Haste"),   Some(&1));
+    assert_eq!(counts.get("Trample"), Some(&1));
+}
+
+#[test]
+fn collection_cmp_binds_vocab_ids_and_matches() {
+    // First-seen intern order ("Trample" before "Flying") differs from the
+    // alphabetical order the sorted permutation provides, so this exercises
+    // the binary-search resolution rather than a trivial identity mapping.
+    let mut vocab = VocabInterner::new();
+    let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card0.card_keywords = vocab_ids(&mut vocab, &["Trample", "Flying"]);
+    let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
+    card1.card_keywords = vocab_ids(&mut vocab, &["Haste"]);
+    let card2 = stub_card(3, TYPE_CREATURE, &[], &mut vocab); // no keywords
+
+    let data = store_of(vec![card0, card1, card2], &[1, 1, 1], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    // Keywords are card-level, so the card pass alone must fully decide.
+    let run = |value: &str, op: CmpOp| -> Vec<bool> {
+        let mut f = FilterExpr::CollectionCmp {
+            field: CollField::Keywords,
+            op,
+            value: value.to_string(),
+            value_id: None,
+        };
+        f.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+        archived.cards.iter().map(|c| f.eval_card(c, &archived.strings) == Tri::True).collect()
+    };
+
+    assert_eq!(run("Flying", CmpOp::Ge),  vec![true, false, false]);
+    assert_eq!(run("Haste", CmpOp::Ge),   vec![false, true, false]);
+    assert_eq!(run("Haste", CmpOp::Eq),   vec![false, true, false]); // exactly {Haste}
+    assert_eq!(run("Flying", CmpOp::Eq),  vec![false, false, false]); // card0 has two keywords
+    assert_eq!(run("Flying", CmpOp::Ne),  vec![true, true, true]);
+    // A value absent from the vocab matches no element: Ge nothing, Le only empty.
+    assert_eq!(run("Deathtouch", CmpOp::Ge), vec![false, false, false]);
+    assert_eq!(run("Deathtouch", CmpOp::Le), vec![false, false, true]);
+}
+
+#[test]
+fn printing_level_predicates_are_printing_dep_in_card_pass() {
+    let mut vocab = VocabInterner::new();
+    let card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let wolf_ids = vocab_ids(&mut vocab, &["wolf"]);
+    let mut data = store_of(vec![card0], &[2], vocab);
+    data.printings[1].card_art_tags = wolf_ids;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut f = FilterExpr::CollectionCmp {
+        field: CollField::ArtTags,
+        op: CmpOp::Ge,
+        value: "wolf".to_string(),
+        value_id: None,
+    };
+    f.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+
+    let card = &archived.cards[0];
+    // Card pass can't decide an art-tag predicate...
+    assert!(f.eval_card(card, &archived.strings) == Tri::PrintingDep);
+    // ...but per-printing evaluation is exact.
+    assert!(!f.matches(card, &archived.printings[0], &archived.strings));
+    assert!(f.matches(card, &archived.printings[1], &archived.strings));
+
+    // Negation keeps printing-dependence (NOT PrintingDep = PrintingDep).
+    let g = FilterExpr::Not(Box::new(f));
+    assert!(g.eval_card(card, &archived.strings) == Tri::PrintingDep);
+    assert!(g.matches(card, &archived.printings[0], &archived.strings));
+    assert!(!g.matches(card, &archived.printings[1], &archived.strings));
+}
+
+#[test]
+fn divergent_legality_defers_to_printings() {
+    let mut vocab = VocabInterner::new();
+    let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card0.card_legalities = 0b01; // legal at shift 0
+    let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
+    card1.card_legalities = 0b01;
+    card1.legality_divergent = true;
+    let mut data = store_of(vec![card0, card1], &[1, 2], vocab);
+    data.printings[1].card_legalities = 0b01; // tournament printing: legal
+    data.printings[2].card_legalities = 0b00; // 30A-style printing: not legal
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let f = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+
+    // Non-divergent card: exact at card level.
+    assert!(f.eval_card(&archived.cards[0], &archived.strings) == Tri::True);
+    // Divergent card: card pass defers, printings decide individually.
+    assert!(f.eval_card(&archived.cards[1], &archived.strings) == Tri::PrintingDep);
+    assert!(f.matches(&archived.cards[1], &archived.printings[1], &archived.strings));
+    assert!(!f.matches(&archived.cards[1], &archived.printings[2], &archived.strings));
+}
+
+// ─── Legality bitplanes (#630 phase 2 / #667 dual-exact-plane redesign) ───────
+
+/// card0: legal in format A (shift 0) only, single printing. card1: legal in
+/// format B (shift 2) only, single printing. card2: genuinely divergent for
+/// format A — two printings, one legal and one not — so both
+/// `legal_exists(A)` and `illegal_exists(A)` are true for it at once
+/// (docs/issues/00667-engine-legality-divergent-carveout.md). All three also carry
+/// a format C (shift 4) banned/restricted status, generalized by #678 (see
+/// docs/issues/00678-engine-legality-banned-restricted-planes.md): card0 banned in
+/// C (single printing), card1 restricted in C (single printing), card2
+/// divergent on *banned(C)* too — one printing banned, the other merely
+/// legal (not banned) — mirroring the real `restricted:oldschool` shape
+/// (a 30th-Anniversary-style promo printing disagreeing with the rest).
+fn legal_plane_fixture() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card0.card_legalities = 0b01; // legal at shift 0
+    let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
+    card1.card_legalities = 0b01 << 2; // legal at shift 2
+    let mut card2 = stub_card(3, TYPE_CREATURE, &[], &mut vocab);
+    card2.legality_divergent = true;
+    let mut data = store_of(vec![card0, card1, card2], &[1, 1, 2], vocab);
+    // build_bit_planes reads printing-level card_legalities, not the
+    // OracleCard-level field set above -- store_of's stub printings all
+    // default to 0, so every printing needs its own legality set here before
+    // the planes are rebuilt below. card2's two printings deliberately
+    // disagree on format A: one legal, one not.
+    data.printings[0].card_legalities = 0b01 | (0b11 << 4); // card0: legal in A, banned in C
+    data.printings[1].card_legalities = (0b01 << 2) | (0b10 << 4); // card1: legal in B, restricted in C
+    data.printings[2].card_legalities = 0b01 | (0b11 << 4); // card2 printing 1: legal in A, banned in C
+    data.printings[3].card_legalities = 0b01 << 4; // card2 printing 2: not legal in A, legal (not banned) in C
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.legal_divergent = build_divergent_ids(&data.cards);
+    data
+}
+
+#[test]
+fn legal_plane_narrows_positive_includes_divergent() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    // Format A (shift 0): card0 (truly legal) + card2 (divergent, has a legal
+    // printing) narrow in; card1 (legal only in format B) must not.
+    let f = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    match narrow_candidates(&f, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            assert!(bitmap_contains(&bits, 0), "truly legal card must narrow in");
+            assert!(!bitmap_contains(&bits, 1), "card legal only in a different format must not narrow in");
+            assert!(bitmap_contains(&bits, 2), "divergent card with a legal printing must narrow in");
+        }
+        _ => panic!("expected a card bitmap"),
+    }
+
+    // Format B (shift 2): card1 narrows in, card0 does not, card2 does not
+    // (its printings only vary on format A; shift math must independently
+    // address each format's plane).
+    let g = FilterExpr::Legality { shift: Some(2), expected: 0b01 };
+    match narrow_candidates(&g, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            assert!(!bitmap_contains(&bits, 0));
+            assert!(bitmap_contains(&bits, 1));
+            assert!(!bitmap_contains(&bits, 2));
+        }
+        _ => panic!("expected a card bitmap"),
+    }
+}
+
+#[test]
+fn legal_plane_narrows_negated_includes_divergent() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    // -f:A: card0 is truly legal in A (no illegal printing), so it must NOT
+    // narrow in; card1 (not legal in A) and card2 (divergent, has a
+    // not-legal printing too) must.
+    let not_a = FilterExpr::Not(Box::new(FilterExpr::Legality { shift: Some(0), expected: 0b01 }));
+    match narrow_candidates(&not_a, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            assert!(!bitmap_contains(&bits, 0), "truly legal card must not narrow into the negation");
+            assert!(bitmap_contains(&bits, 1), "truly not-legal card must narrow into the negation");
+            assert!(bitmap_contains(&bits, 2), "divergent card with a not-legal printing must narrow into the negation");
+        }
+        _ => panic!("expected a card bitmap"),
+    }
+}
+
+/// #678: banned:/restricted: now plane-narrow exactly like format:, including
+/// through a divergent card (card2, banned in C via one printing, merely
+/// legal via the other — see `legal_plane_fixture`'s doc). Only a format
+/// absent from all loaded data (shift: None) still declines.
+#[test]
+fn banned_restricted_plane_narrows_positive_includes_divergent() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let banned_c = FilterExpr::Legality { shift: Some(4), expected: 0b11 };
+    match narrow_candidates(&banned_c, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            assert!(bitmap_contains(&bits, 0), "card0 truly banned in C must narrow in");
+            assert!(!bitmap_contains(&bits, 1), "card1 is restricted, not banned, in C");
+            assert!(bitmap_contains(&bits, 2), "divergent card2 has a banned-in-C printing");
+        }
+        _ => panic!("expected a card bitmap for banned:C"),
+    }
+
+    let restricted_c = FilterExpr::Legality { shift: Some(4), expected: 0b10 };
+    match narrow_candidates(&restricted_c, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            assert!(!bitmap_contains(&bits, 0), "card0 is banned, not restricted, in C");
+            assert!(bitmap_contains(&bits, 1), "card1 truly restricted in C must narrow in");
+            assert!(!bitmap_contains(&bits, 2), "card2 has no restricted-in-C printing");
+        }
+        _ => panic!("expected a card bitmap for restricted:C"),
+    }
+
+    // A format absent from all loaded data (shift: None) matches nothing at
+    // eval and isn't plane-narrowed either — falls to the (cheap, correct)
+    // full scan, for every indexed status.
+    let absent_banned = FilterExpr::Legality { shift: None, expected: 0b11 };
+    assert!(narrow_candidates(&absent_banned, &archived.indexes, &archived.offsets, &archived.cards).is_none());
+    let absent_restricted = FilterExpr::Legality { shift: None, expected: 0b10 };
+    assert!(narrow_candidates(&absent_restricted, &archived.indexes, &archived.offsets, &archived.cards).is_none());
+}
+
+/// -banned:C: card0 (truly banned) must not narrow in; card1 (restricted, so
+/// not banned) and card2 (divergent, has a not-banned printing) must.
+#[test]
+fn banned_restricted_plane_narrows_negated_includes_divergent() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let not_banned_c = FilterExpr::Not(Box::new(FilterExpr::Legality { shift: Some(4), expected: 0b11 }));
+    match narrow_candidates(&not_banned_c, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            assert!(!bitmap_contains(&bits, 0), "truly banned-in-C card must not narrow into the negation");
+            assert!(bitmap_contains(&bits, 1), "restricted (not banned) card must narrow into the negation");
+            assert!(bitmap_contains(&bits, 2), "divergent card with a not-banned-in-C printing must narrow in");
+        }
+        _ => panic!("expected a card bitmap"),
+    }
+}
+
+/// banned:C AND restricted:C: two distinct existence facts about the *same*
+/// format — the same shared-witness exposure as two distinct formats or two
+/// polarities of one format, now reachable because `collect_legality_formats`
+/// dedupes by raw plane index (#678) rather than a `(format, polarity)` tuple
+/// that had no way to express "same format, different status."
+#[test]
+fn legality_same_format_cross_status_declines_shared_witness() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let banned_c = || FilterExpr::Legality { shift: Some(4), expected: 0b11 };
+    let restricted_c = || FilterExpr::Legality { shift: Some(4), expected: 0b10 };
+
+    assert!(
+        compile_plane(&FilterExpr::And(vec![banned_c(), restricted_c()]), bounds, words).is_none(),
+        "banned:C AND restricted:C (same format, distinct statuses) must decline (shared-witness)"
+    );
+    assert!(
+        compile_plane(&FilterExpr::Or(vec![banned_c(), restricted_c()]), bounds, words).is_some(),
+        "OR has no shared-witness problem and must compile"
+    );
+}
+
+/// The shared-witness decline's fallback must still be *correct*: a card
+/// banned in C via one printing and restricted in C via a different printing
+/// (no single printing is both) is the trap in action — banned_exists(C) AND
+/// restricted_exists(C) would wrongly say true if naively ANDed.
+#[test]
+fn legality_cross_status_shared_witness_falls_back_to_correct_result() {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0b11 << 4; // banned in C only
+    data.printings[1].card_legalities = 0b10 << 4; // restricted in C only
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let and_both = FilterExpr::And(vec![
+        FilterExpr::Legality { shift: Some(4), expected: 0b11 },
+        FilterExpr::Legality { shift: Some(4), expected: 0b10 },
+    ]);
+    let (plane, mut residual) = split_planes(and_both, bounds, words, true);
+    assert!(plane.is_none(), "shared-witness AND must not partially promote either leaf into the plane");
+    assert!(matches!(residual, FilterExpr::And(_)), "both legality children must remain in the residual");
+
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 0, "no single printing is both banned and restricted in C at once");
+}
+
+/// Row-selection correctness (docs/issues/00667-engine-legality-divergent-carveout.md
+/// "Row selection for unique=card") through the real `run_query` pipeline,
+/// mirroring `legal_plane_narrowing_preserves_divergent_printing_correctness`
+/// but for `banned:` — the preferred printing deliberately says NOT banned,
+/// the non-preferred one says banned, to stress that row emission for
+/// `unique=printing` picks the printing that actually satisfies the query,
+/// not just the card's usual preferred one.
+#[test]
+fn banned_plane_row_selection_preserves_divergent_printing_correctness() {
+    let mut vocab = VocabInterner::new();
+    let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card.legality_divergent = true;
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0b01 << 4; // preferred: legal (not banned) in C
+    data.printings[1].card_legalities = 0b11 << 4; // non-preferred: banned in C
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.legal_divergent = build_divergent_ids(&data.cards);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let run = |filter: &mut FilterExpr, unique: &str| {
+        run_query(&QueryCtx::from(archived), filter, None, unique, "default", "edhrec", "asc", 100, 0)
+    };
+
+    // banned:C, unique=printing: exactly the one banned printing.
+    let mut f = FilterExpr::Legality { shift: Some(4), expected: 0b11 };
+    let (total, page) = run(&mut f, "printing");
+    assert_eq!(total, 1);
+    assert_eq!(u128::from(page[0].1.scryfall_id), 2); // the non-preferred, banned printing
+
+    // banned:C, unique=card: the card matches (at least one printing is
+    // banned), read straight from the exact banned_exists(C) plane bit.
+    let mut f2 = FilterExpr::Legality { shift: Some(4), expected: 0b11 };
+    let (total, _) = run(&mut f2, "card");
+    assert_eq!(total, 1);
+
+    // -banned:C, unique=printing: exactly the one not-banned printing.
+    let mut not_f = FilterExpr::Not(Box::new(FilterExpr::Legality { shift: Some(4), expected: 0b11 }));
+    let (total, page) = run(&mut not_f, "printing");
+    assert_eq!(total, 1);
+    assert_eq!(u128::from(page[0].1.scryfall_id), 1); // the preferred, not-banned printing
+}
+
+/// The correctness property the whole design hinges on: a divergent card must
+/// never be silently dropped by the narrowing, in either polarity, even when
+/// its *preferred* printing's status disagrees with a non-preferred printing
+/// that the query should actually match. This exercises the full path
+/// (narrow_rec's plane arms feeding run_query's unmodified card_pass/residual
+/// walk), not just the bitmap in isolation.
+#[test]
+fn legal_plane_narrowing_preserves_divergent_printing_correctness() {
+    let mut vocab = VocabInterner::new();
+    // Preferred printing (higher prefer_score, sorts first) says NOT legal;
+    // the second, non-preferred printing says legal — the opposite of the
+    // "usual" case, deliberately, to stress that narrowing is built from
+    // per-printing truth, not just the preferred printing's status.
+    let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card.legality_divergent = true;
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0; // preferred: not legal
+    data.printings[1].card_legalities = 0b01; // non-preferred: legal
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.legal_divergent = build_divergent_ids(&data.cards);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let run = |filter: &mut FilterExpr, unique: &str| {
+        run_query(&QueryCtx::from(archived), filter, None, unique, "default", "edhrec", "asc", 100, 0)
+    };
+
+    // f:A, unique=printing: exactly the one legal printing, not the not-legal one.
+    let mut f = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let (total, page) = run(&mut f, "printing");
+    assert_eq!(total, 1);
+    assert_eq!(u128::from(page[0].1.scryfall_id), 2); // the non-preferred, legal printing
+
+    // f:A, unique=card: the card matches (at least one printing is legal),
+    // read straight from the exact legal_exists(A) plane bit.
+    let mut f2 = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let (total, _) = run(&mut f2, "card");
+    assert_eq!(total, 1);
+
+    // -f:A, unique=printing: exactly the one not-legal printing.
+    let mut not_f = FilterExpr::Not(Box::new(FilterExpr::Legality { shift: Some(0), expected: 0b01 }));
+    let (total, page) = run(&mut not_f, "printing");
+    assert_eq!(total, 1);
+    assert_eq!(u128::from(page[0].1.scryfall_id), 1); // the preferred, not-legal printing
+}
+
+/// Word-boundary check: plane-index and bit-index arithmetic must stay correct
+/// past the first 64-card word, for a non-zero format shift.
+#[test]
+fn legal_plane_narrows_correctly_across_word_boundary() {
+    let mut vocab = VocabInterner::new();
+    let n = 70;
+    let cards: Vec<OracleCard> = (0..n).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let printing_counts = vec![1usize; n];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    // Legal (at shift 2) on even ids only, spanning past the 64-bit word
+    // boundary; printing_counts is all 1s so printing i belongs to card i.
+    for i in 0..n {
+        data.printings[i].card_legalities = if i % 2 == 0 { 0b01 << 2 } else { 0 };
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let f = FilterExpr::Legality { shift: Some(2), expected: 0b01 };
+    match narrow_candidates(&f, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::CardBits(bits)) => {
+            for i in 0..n {
+                assert_eq!(bitmap_contains(&bits, i as u32), i % 2 == 0, "card {i} narrowing mismatch");
+            }
+        }
+        _ => panic!("expected a card bitmap"),
+    }
+}
+
+/// `plane_expr_is_existential` is the whole mode-aware-all_match fix's load-
+/// bearing check: it must flag any compiled expression touching a legality
+/// plane (docs/issues/00667-engine-legality-divergent-carveout.md) and only those
+/// -- card-invariant fields (types here) must never be flagged, and an And
+/// mixing the two must still be flagged (any existential leaf taints the
+/// whole composed expression).
+#[test]
+fn plane_expr_is_existential_identifies_legality_only() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    // This fixture's card2 has two printings disagreeing at shifts 0 and 4, and nothing disagrees at
+    // shift 2 -- so it carries both regimes, and the mask says which is which. Asserted rather than
+    // assumed, because every expectation below depends on it.
+    let divergent = u64::from(bounds.divergent_formats);
+    assert_eq!(divergent & 0b11, 0b01, "shift 0 diverges: card2 is legal in one printing, not the other");
+    assert_eq!(divergent >> 2 & 0b11, 0b00, "shift 2 is card-invariant across this fixture");
+    assert_ne!(divergent >> 4 & 0b11, 0b00, "shift 4 diverges: banned in one printing, legal in the other");
+
+    let legality_pe = compile_plane(&FilterExpr::Legality { shift: Some(0), expected: 0b01 }, bounds, words).unwrap();
+    assert!(super::plane_expr_is_existential(&legality_pe, divergent), "a DIVERGENT format needs per-printing truth");
+
+    // The new half: a legality plane for a format whose printings never disagree is card-invariant, so it
+    // is not existential and the #667 carveout does not apply to it. This is what makes `f:modern` behave
+    // like `t:creature` -- in the production corpus every format but `oldschool` is in this case.
+    let invariant_pe = compile_plane(&FilterExpr::Legality { shift: Some(2), expected: 0b01 }, bounds, words).unwrap();
+    assert!(
+        !super::plane_expr_is_existential(&invariant_pe, divergent),
+        "a format no card diverges in is card-invariant, so its plane needs no per-printing verification",
+    );
+    // ...and the conservative mask still says yes, which is what a pre-mask store supplies.
+    assert!(
+        super::plane_expr_is_existential(&invariant_pe, u64::MAX),
+        "u64::MAX must reproduce the pre-mask behaviour for every format",
+    );
+
+    let creature_pe = compile_plane(&FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }, bounds, words).unwrap();
+    assert!(!super::plane_expr_is_existential(&creature_pe, divergent));
+
+    let mixed = compile_plane(
+        &FilterExpr::And(vec![
+            FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+            FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge },
+        ]),
+        bounds,
+        words,
+    )
+    .unwrap();
+    assert!(super::plane_expr_is_existential(&mixed, divergent), "one existential leaf must taint the whole And");
+}
+
+/// Regression for the mode-aware all_match bug found while building this
+/// design: `format:A` run through the *real* pipeline (split_planes, not a
+/// direct narrow_candidates/run_query call with plane=None) must not let
+/// unique=printing see every printing of a matching card just because the
+/// card-level existence fact is true. A bare Legality leaf fully consumed to
+/// `FilterExpr::True` regardless of mode would discard the only thing that
+/// could re-derive *which* printing matches, so split_planes now declines the
+/// fold itself for unique=printing/artwork (`unique_is_card=false`), leaving
+/// the original Legality node in the residual for the normal per-printing
+/// card_pass walk. unique=card is unaffected: existence is exactly what it
+/// needs, so it still takes the fully-consumed fast path.
+#[test]
+fn legality_plane_promotion_respects_mode_through_split_planes() {
+    let mut vocab = VocabInterner::new();
+    // Preferred printing not legal, non-preferred printing legal -- same
+    // deliberately-inverted shape as the narrow_rec-level correctness test
+    // above, but exercised through split_planes this time.
+    let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card.legality_divergent = true;
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0; // preferred: not legal
+    data.printings[1].card_legalities = 0b01; // non-preferred: legal
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.legal_divergent = build_divergent_ids(&data.cards);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let run_mode = |unique: &str| {
+        let f = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+        let unique_is_card = unique != "printing" && unique != "artwork";
+        let (plane, mut residual) = split_planes(f, bounds, words, unique_is_card);
+        if unique_is_card {
+            assert!(plane.is_some(), "a bare Legality leaf must still fully plane-consume for unique=card");
+            assert!(matches!(residual, FilterExpr::True), "split_planes must leave a bare True residual for unique=card");
+        } else {
+            assert!(plane.is_none(), "unique=printing/artwork must decline the fold, not just patch around it");
+            assert!(matches!(residual, FilterExpr::Legality { .. }), "the original Legality node must survive for per-printing verification");
+        }
+        run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), unique, "default", "edhrec", "asc", 100, 0)
+    };
+
+    let (total, page) = run_mode("printing");
+    assert_eq!(total, 1, "only the one legal printing may match, even though the plane says the card matches");
+    assert_eq!(u128::from(page[0].1.scryfall_id), 2);
+
+    // unique=card: the count is right via existence alone, but the *returned
+    // printing* must still be the legal one, not just the card's normal
+    // default-preferred printing (docs/issues/engine-legality-divergent-
+    // carveout.md "Row selection for unique=card") -- this is exactly the
+    // case a prior version of this test missed, by discarding `page` here.
+    let (total, page) = run_mode("card");
+    assert_eq!(total, 1, "unique=card only needs the existence fact the plane already proves");
+    assert_eq!(
+        u128::from(page[0].1.scryfall_id),
+        2,
+        "unique=card must return the legal printing, not the preferred-but-not-legal one"
+    );
+}
+
+/// The same row-selection bug, but reached via a compound filter (the shape
+/// this issue's own motivating query has: `format:X` ANDed with a
+/// card-invariant sibling) rather than a bare Legality leaf -- exercises
+/// `existential_plane` detection on a composed `PlaneExpr::And`, not just a
+/// single `PlaneExpr::Plane`.
+#[test]
+fn legality_compound_and_respects_row_selection_for_unique_card() {
+    let mut vocab = VocabInterner::new();
+    let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card.legality_divergent = true;
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0; // preferred: not legal in A
+    data.printings[1].card_legalities = 0b01; // non-preferred: legal in A
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.legal_divergent = build_divergent_ids(&data.cards);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let filter = FilterExpr::And(vec![
+        FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+        FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge },
+    ]);
+    let (plane, mut residual) = split_planes(filter, bounds, words, true);
+    assert!(plane.is_some(), "format:A AND t:creature (one format, no shared-witness issue) must compile whole");
+    assert!(matches!(residual, FilterExpr::True));
+
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1);
+    assert_eq!(
+        u128::from(page[0].1.scryfall_id),
+        2,
+        "the compound's card-invariant sibling must not mask the legality leaf's row-selection requirement"
+    );
+}
+
+/// Found in #676's review: a legality leaf ANDed with a genuinely
+/// printing-dependent, non-plane-compilable residual (`DateCmp` here --
+/// never appears in `planes.rs`, so it always stays in the residual after
+/// `split_planes`'s partial extraction) needs *both* checked against the
+/// *same* printing. printing 0 is legal in A but released before the cutoff;
+/// printing 1 is released after the cutoff but not legal in A -- no single
+/// printing satisfies both, so `format:A AND date>cutoff` (unique=card) must
+/// match 0 times, not pick either printing on the strength of just one half
+/// of the conjunction.
+#[test]
+fn legality_and_date_residual_must_be_checked_together() {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0b01; // legal in A, but...
+    data.printings[0].released_at_int = Some(20100101); // ...released before the cutoff
+    data.printings[1].card_legalities = 0; // not legal in A, but...
+    data.printings[1].released_at_int = Some(20220101); // ...released after the cutoff
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let filter = FilterExpr::And(vec![
+        FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+        FilterExpr::DateCmp { op: CmpOp::Gt, value: 20200101 },
+    ]);
+    let (plane, mut residual) = split_planes(filter, bounds, words, true);
+    assert!(plane.is_some(), "the legality leaf alone must still promote into the plane");
+    assert!(
+        matches!(residual, FilterExpr::DateCmp { .. }),
+        "date> isn't plane-compilable, so it must remain a real residual, not collapse to True"
+    );
+
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 0, "no single printing is both legal in A and released after the cutoff");
+}
+
+// ─── #677: differential row-identity fuzzer ──────────────────────────────────
+//
+// Every other legality/plane parity test above checks a `total` or a candidate
+// id *set*. #676 was a bug where `total` was right but the emitted
+// `(card, printing)` row for `unique=card`/`printing`/`artwork` did not itself
+// satisfy the filter — a divergent card's plane `all_match` promotion picked a
+// printing that matched the card-level existence projection but not this
+// specific printing. A count-only or set-only assertion cannot see that; the
+// wrong *printing* of a matching *card* is invisible unless you check row
+// identity.
+//
+// This fuzzer generates random small stores and random filters (legality,
+// rarity, border — the printing-varying fields — mixed with card-invariant
+// colors/types/cmc under And/Or/Not), runs each through the real `run_query`
+// pipeline (both the unplaned path and the `split_planes` + plane path, for all
+// three `unique` modes), and asserts that *every returned row* is accepted by
+// the trusted per-printing evaluator `FilterExpr::matches` (linear scan,
+// `tri()`-only, no planes / no all_match shortcut). It also cross-checks the
+// `total` against a brute-force count as a secondary guard, but the row-identity
+// assertion is the one that would have caught #676. Deterministic per-seed so a
+// failure reproduces exactly.
+
+#[derive(Clone)]
+enum FuzzLeaf {
+    Color { op: CmpOp, mask: u8 },      // card-invariant
+    Type { op: CmpOp, mask: u16 },      // card-invariant
+    Cmc { op: CmpOp, val: f64 },        // card-invariant
+    Power { op: CmpOp, val: f64 },      // card-invariant, nullable (non-creatures)
+    Toughness { op: CmpOp, val: f64 },  // card-invariant, nullable
+    Loyalty { op: CmpOp, val: f64 },    // card-invariant, nullable (planeswalkers only)
+    Rarity { op: CmpOp, val: f64 },     // printing-varying
+    CollectorNumber { op: CmpOp, val: f64 }, // printing-varying, nullable
+    // printing-varying, nullable (dollars). `field` is one of the three integer-cent columns --
+    // usd/eur/tix share a representation, a bounds derivation and (since eur/tix were indexed) a
+    // narrowing path, so covering only usd would leave two thirds of that path unfuzzed.
+    Price { field: NumField, op: CmpOp, val: f64 },
+    Date { op: CmpOp, value: u32 },     // printing-varying (released_at, DateCmp)
+    Year { op: CmpOp, year: i32 },      // printing-varying (released_at, YearCmp)
+    Border { value: String },           // printing-varying
+    Legality { shift: Option<u8>, expected: u64 }, // printing-dependent for divergent cards
+    // Arithmetic (NumExpr::Arith), mixing a card-level and a printing-level field — exercises
+    // field_num on both operands and PrintingDep propagation through arithmetic. `shape` selects
+    // one of the fixed operand pairs in `fuzz_arith_pair` (kept as an id, not a stored NumExpr,
+    // so FuzzLeaf stays Clone without NumExpr needing to be).
+    Arith { shape: u8, op: CmpOp },
+    // Set-containment against a single value (`CollectionCmp`) — subtypes/keywords/tags. `Ge` (`:`),
+    // `Eq` (`=`), and `Gt` (`>`) all narrow via the tag index (#700): all three require
+    // `contains(value)`, so the same postings serve as an exact candidate set for `Ge` and a loose
+    // superset for `Eq`/`Gt`, which still need a residual `matches()` check for the length condition
+    // (`len == 1` / `len > 1`) the postings alone don't decide. `Le`/`Lt`/`Ne` stay fully residual —
+    // not expressible as containment plus a length check. `value` resolves to a vocab id via bind.
+    Collection { field: CollField, op: CmpOp, value: String },
+    // Artist predicate: `TextContains(ArtistLower)` that bind() rewrites to `ArtistMatch` (printing-
+    // space, CSR-indexed via the artist vocab). `word` is a lowercased artist name.
+    Artist { word: String },
+    // Text contains (`:`) over name/oracle/flavor. `needle` is a real corpus token so it matches
+    // something. Name/oracle drive the trigram + name-bigram indexes and the full-scan memoization
+    // (NameMatch/OracleMatch); flavor is bind-rewritten to FlavorMatch (fingerprint-prefiltered,
+    // printing-space).
+    TextContains { field: TextSearchField, needle: String },
+    // Whole-name comparison (`!name` and ordered variants) — the ExactName path via TextExact.
+    NameExact { op: CmpOp, value: String },
+    // Mana cost comparison (`mana <op> <cost>`): query core pips packed into lanes + hybrid symbols
+    // (bind() resolves to mana-vocab ids) + cmc. Card-invariant; SWAR lane arithmetic, no index.
+    ManaCost { op: CmpOp, core: u64, hybrids: Vec<(String, u8)>, cmc: f32 },
+    // Devotion (`devotion <op> <pips>`): queried WUBRGC counts in the low six lanes. Card-invariant;
+    // exercises the devotion planes (built from card.mana_cost.devotion).
+    Devotion { op: CmpOp, pips: u64 },
+}
+
+/// The `(lhs, rhs)` operand pair for an `Arith` leaf's `shape`, built fresh each call.
+fn fuzz_arith_pair(shape: u8) -> (NumExpr, NumExpr) {
+    let f = |field| NumExpr::Field(field);
+    let arith = |l, o, r| NumExpr::Arith(Box::new(l), o, Box::new(r));
+    match shape {
+        0 => (arith(f(NumField::Cmc), ArithOp::Add, NumExpr::Const(1.0)), f(NumField::Power)),
+        1 => (arith(f(NumField::PriceUsd), ArithOp::Add, NumExpr::Const(1.0)), f(NumField::Cmc)),
+        2 => (arith(f(NumField::Power), ArithOp::Add, f(NumField::Toughness)), f(NumField::Cmc)),
+        _ => (arith(f(NumField::Cmc), ArithOp::Mul, NumExpr::Const(2.0)), f(NumField::CollectorNumberInt)),
+    }
+}
+
+/// Weighted pick from a small `(value, weight)` table — lets `fuzz_store` sample fields on rough
+/// real-card distributions (measured from the corpus) instead of uniformly.
+fn fuzz_weighted<T: Copy>(rng: &mut rand::rngs::SmallRng, table: &[(T, u32)]) -> T {
+    let total: u32 = table.iter().map(|(_, w)| w).sum();
+    let mut r = rng.random_range(0..total);
+    for &(v, w) in table {
+        if r < w {
+            return v;
+        }
+        r -= w;
+    }
+    table[table.len() - 1].0
+}
+
+#[derive(Clone)]
+enum FuzzSpec {
+    Leaf(FuzzLeaf),
+    And(Vec<FuzzSpec>),
+    Or(Vec<FuzzSpec>),
+    Not(Box<FuzzSpec>),
+}
+
+const FUZZ_OPS: [CmpOp; 6] = [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge];
+// Three formats packed at even shifts, 2 bits each — the fixture layout from
+// `legal_plane_fixture`. Expected status is one of legal(0b01)/restricted(0b10)/
+// banned(0b11); NOT_LEGAL(0b00) is never a query leaf (the parser negates instead).
+const FUZZ_SHIFTS: [u8; 3] = [0, 2, 4];
+
+/// Card layouts the fuzz store assigns, cycled by card index. Weighted toward `normal` the way the
+/// corpus is (96% there), so the tail values stay small enough to exercise the sparse end.
+const FUZZ_LAYOUTS: [&str; 8] = ["normal", "normal", "normal", "normal", "transform", "split", "saga", "flip"];
+const FUZZ_STATUSES: [u64; 3] = [0b01, 0b10, 0b11];
+// Shifts a divergent card is allowed to disagree at. Deliberately NOT all of `FUZZ_SHIFTS`: production
+// has exactly one divergent format (`oldschool`, all 556 of the corpus's divergent cards) and the rest
+// are card-invariant, so a corpus where every format can diverge would only ever exercise the
+// conservative existential path. Queries still draw leaves from all three shifts, so both regimes get
+// hit -- and `FUZZ_SHIFT_INVARIANT` is the one whose per-printing verification is provably redundant.
+const FUZZ_SHIFTS_DIVERGENT: [u8; 2] = [0, 2];
+const FUZZ_SHIFT_INVARIANT: u8 = 4;
+
+fn fuzz_op(rng: &mut rand::rngs::SmallRng) -> CmpOp {
+    FUZZ_OPS[rng.random_range(0..FUZZ_OPS.len())]
+}
+
+fn fuzz_leaf_color(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Color { op: fuzz_op(rng), mask: rng.random_range(0..32u8) })
+}
+fn fuzz_leaf_type(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Type { op: fuzz_op(rng), mask: fuzz_type_bits(rng) })
+}
+fn fuzz_leaf_cmc(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Cmc { op: fuzz_op(rng), val: rng.random_range(0..=8u8) as f64 })
+}
+fn fuzz_leaf_rarity(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Rarity { op: fuzz_op(rng), val: rng.random_range(0..=4u8) as f64 })
+}
+fn fuzz_leaf_border(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    // "yellow" is deliberately untracked by the border planes (#680 tracks
+    // black/white/borderless/gold, folding anything else into the shared
+    // `other` plane) — a decline-to-compile-exactly case that must still be
+    // evaluated correctly via the residual path.
+    const BORDERS: [&str; 5] = ["black", "white", "borderless", "gold", "yellow"];
+    FuzzSpec::Leaf(FuzzLeaf::Border { value: BORDERS[rng.random_range(0..BORDERS.len())].to_string() })
+}
+fn fuzz_leaf_legality(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    // 10% of the time an absent format (shift: None), which matches nothing.
+    let shift = if rng.random_bool(0.1) { None } else { Some(FUZZ_SHIFTS[rng.random_range(0..FUZZ_SHIFTS.len())]) };
+    FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected: FUZZ_STATUSES[rng.random_range(0..FUZZ_STATUSES.len())] })
+}
+
+fn fuzz_leaf_power(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Power { op: fuzz_op(rng), val: rng.random_range(0..=7u8) as f64 })
+}
+fn fuzz_leaf_toughness(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Toughness { op: fuzz_op(rng), val: rng.random_range(0..=7u8) as f64 })
+}
+fn fuzz_leaf_loyalty(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Loyalty { op: fuzz_op(rng), val: rng.random_range(2..=7u8) as f64 })
+}
+fn fuzz_leaf_collector_number(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op: fuzz_op(rng), val: fuzz_weighted(rng, &[(10.0, 2), (50.0, 3), (100.0, 3), (250.0, 2), (500.0, 1)]) })
+}
+fn fuzz_leaf_price(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    // Dollars; thresholds straddle the corpus's skew (median ~$0.33, 99th ~$60). eur and tix are drawn
+    // as often as usd: the fixture gives them different values per printing, so a query that narrows on
+    // one and verifies against another would be caught here.
+    let field = match rng.random_range(0..3) {
+        0 => NumField::PriceEur,
+        1 => NumField::PriceTix,
+        _ => NumField::PriceUsd,
+    };
+    FuzzSpec::Leaf(FuzzLeaf::Price { field, op: fuzz_op(rng), val: fuzz_weighted(rng, &[(0.1, 2), (0.5, 4), (1.0, 4), (2.0, 3), (5.0, 2), (20.0, 1), (60.0, 1)]) })
+}
+/// A release year on the corpus's rough distribution (skewed recent), + a small jitter.
+fn fuzz_year_value(rng: &mut rand::rngs::SmallRng) -> u32 {
+    fuzz_weighted(rng, &[(1995, 7), (2000, 6), (2005, 7), (2010, 8), (2015, 15), (2020, 40), (2025, 11)]) + rng.random_range(0..5)
+}
+fn fuzz_leaf_date(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    // Mid-year threshold (YYYYMMDD packed int), straddling the sampled release dates.
+    FuzzSpec::Leaf(FuzzLeaf::Date { op: fuzz_op(rng), value: fuzz_year_value(rng) * 10_000 + 700 })
+}
+fn fuzz_leaf_year(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Year { op: fuzz_op(rng), year: fuzz_year_value(rng) as i32 })
+}
+fn fuzz_leaf_arith(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::Arith { shape: rng.random_range(0..4u8), op: fuzz_op(rng) })
+}
+
+// Collection vocab tables with corpus-like frequency bias (measured from the blue store).
+// Lowercased for a consistent fuzz vocab. Weights drive how often each value is *populated*;
+// queries sample uniformly so rare values still exercise the low-selectivity index postings.
+
+// Creature subtypes (human very common, monkey rare). Card-space, populated only on creatures
+// (which also get the creature type bit set, so `t:creature` and `type:human` correlate).
+const FUZZ_SUBTYPES: [(&str, u32); 14] = [
+    ("human", 30), ("goblin", 12), ("elf", 10), ("soldier", 8), ("wizard", 7), ("zombie", 6),
+    ("beast", 6), ("spirit", 5), ("warrior", 5), ("dragon", 4), ("angel", 3), ("cat", 3),
+    ("monkey", 1), ("octopus", 1),
+];
+// Keywords span every card type (Flying dominant; Fateseal a real rare tail). Card-space.
+const FUZZ_KEYWORDS: [(&str, u32); 11] = [
+    ("flying", 30), ("enchant", 11), ("trample", 9), ("vigilance", 6), ("haste", 6),
+    ("equip", 5), ("flash", 5), ("mill", 5), ("scry", 4), ("cycling", 4), ("fateseal", 1),
+];
+// Oracle tags: the corpus's densest collection (avg ~12/card, ~4k distinct). Card-space.
+const FUZZ_ORACLE_TAGS: [(&str, u32); 11] = [
+    ("triggered-ability", 40), ("activated-ability", 34), ("cycle", 31), ("card-names", 27),
+    ("removal", 18), ("card-advantage", 17), ("removal-creature", 15), ("evasion", 13),
+    ("spot-removal", 13), ("draw", 12), ("typal-snail", 1),
+];
+// Art tags: densest of all (~10k distinct); bortuk-bonerattle is a real rare tail. Printing-space.
+const FUZZ_ART_TAGS: [(&str, u32); 11] = [
+    ("plane", 40), ("planar-origin", 20), ("location", 15), ("pose", 15), ("signature", 13),
+    ("artist-signature", 13), ("animal", 12), ("human", 11), ("character", 11), ("weapon", 10),
+    ("bortuk-bonerattle", 1),
+];
+// Is-tags are empty in the current corpus, so a synthetic but realistic Scryfall `is:` vocab keeps
+// the leaf exercised rather than always-empty. Printing-space.
+const FUZZ_IS_TAGS: [(&str, u32); 8] = [
+    ("reprint", 30), ("promo", 12), ("firstprint", 10), ("fullart", 6), ("foil", 6),
+    ("textless", 3), ("oversized", 2), ("funny", 1),
+];
+// Frame data: tiny vocab (~29 distinct); "2015" is dominant and dropped by the thresholded index
+// (exercising that drop path). Printing-space.
+const FUZZ_FRAME_DATA: [(&str, u32); 10] = [
+    ("2015", 50), ("2003", 13), ("1997", 9), ("legendary", 8), ("inverted", 6),
+    ("1993", 5), ("extendedart", 4), ("showcase", 3), ("enchantment", 2), ("etched", 1),
+];
+// Artists: own vocab (~2.2k distinct, no NULLs in corpus). Printing-space, matched via ArtistMatch.
+const FUZZ_ARTISTS: [(&str, u32); 11] = [
+    ("john avon", 13), ("kev walker", 11), ("svetlin velinov", 8), ("greg staples", 7),
+    ("daarken", 7), ("dan frazier", 7), ("mark tedin", 7), ("adam paquette", 7),
+    ("chris rahn", 6), ("rebecca guay", 4), ("yan li", 1),
+];
+
+// Fraction of creatures that are vanilla (empty oracle text). In the corpus, empty oracle text is
+// almost exclusively a creature trait: 2.2% of creatures, ~0% of non-creatures. Conditioning on the
+// creature bit reproduces that so the text predicates see a realistic vanilla population.
+const VANILLA_CREATURE_FRAC: f64 = 0.022;
+
+/// Sample `count` weighted picks from a collection table (duplicates allowed; `vocab_ids` sorts and
+/// dedups them into the id-sorted set the set-like collections expect at load).
+fn fuzz_collection_picks<'a>(rng: &mut rand::rngs::SmallRng, table: &[(&'a str, u32)], count: usize) -> Vec<&'a str> {
+    (0..count).map(|_| fuzz_weighted(rng, table)).collect()
+}
+
+/// A `CollectionCmp` leaf over `field`, its value sampled from `table`. Biases toward Ge (`:`, the
+/// indexed containment path) with the residual ops (=, >, !=) mixed in.
+fn fuzz_leaf_collection(rng: &mut rand::rngs::SmallRng, field: CollField, table: &[(&str, u32)]) -> FuzzSpec {
+    const OPS: [CmpOp; 6] = [CmpOp::Ge, CmpOp::Ge, CmpOp::Ge, CmpOp::Eq, CmpOp::Gt, CmpOp::Ne];
+    let op = OPS[rng.random_range(0..OPS.len())];
+    let value = table[rng.random_range(0..table.len())].0.to_string();
+    FuzzSpec::Leaf(FuzzLeaf::Collection { field, op, value })
+}
+
+fn fuzz_leaf_subtype(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    fuzz_leaf_collection(rng, CollField::Subtypes, &FUZZ_SUBTYPES)
+}
+
+/// `artist:<name>` — a full lowercased name (the common `a:` substring-contains shape), which
+/// bind() resolves against the artist vocab and rewrites to `ArtistMatch`.
+fn fuzz_leaf_artist(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    let word = FUZZ_ARTISTS[rng.random_range(0..FUZZ_ARTISTS.len())].0.to_string();
+    FuzzSpec::Leaf(FuzzLeaf::Artist { word })
+}
+
+/// Frozen (name, oracle, flavor) triples sampled once from the blue store, lowercased. Record
+/// separator \x1e, field separator \x1f — neither appears in card text. Real strings give the
+/// name/oracle trigram, name-bigram, and flavor indexes realistic selectivity (and exercise the
+/// full-scan memoization crossover) that hand-written vocab cannot. Sampled into the store by the
+/// seeded RNG; see docs/issues/00699.
+static TEXT_CORPUS_RAW: &str = include_str!("../testdata/text_corpus.txt");
+fn text_corpus() -> &'static [(&'static str, &'static str, &'static str)] {
+    static CORPUS: OnceLock<Vec<(&str, &str, &str)>> = OnceLock::new();
+    CORPUS.get_or_init(|| {
+        TEXT_CORPUS_RAW
+            .split('\x1e')
+            .filter_map(|rec| {
+                let mut f = rec.split('\x1f');
+                Some((f.next()?, f.next()?, f.next()?))
+            })
+            .collect()
+    })
+}
+
+/// A real search token from the corpus for `field`: a whole word, occasionally trimmed to a 2-3
+/// char fragment to hit the short-needle / name-bigram path (#639). Retries past empty fields (a
+/// card with no flavor); falls back to a common token if the field keeps coming up empty.
+fn fuzz_text_needle(rng: &mut rand::rngs::SmallRng, field: TextSearchField) -> String {
+    let corpus = text_corpus();
+    for _ in 0..8 {
+        let t = corpus[rng.random_range(0..corpus.len())];
+        let text = match field {
+            TextSearchField::NameLower => t.0,
+            TextSearchField::OracleTextLower => t.1,
+            TextSearchField::FlavorTextLower => t.2,
+            TextSearchField::ArtistLower => t.0, // artist has its own leaf; not reached here
+        };
+        let words: Vec<&str> = text
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+            .filter(|w| w.chars().count() >= 2)
+            .collect();
+        if words.is_empty() {
+            continue;
+        }
+        let w = words[rng.random_range(0..words.len())];
+        // ~20% of the time a short 2-3 char fragment (a prefix of a real word is still a substring
+        // of the text), exercising the bigram / short-needle path.
+        return if rng.random_bool(0.2) {
+            w.chars().take(rng.random_range(2..=3)).collect()
+        } else {
+            w.to_string()
+        };
+    }
+    "the".to_string()
+}
+
+fn fuzz_leaf_text_contains(rng: &mut rand::rngs::SmallRng, field: TextSearchField) -> FuzzSpec {
+    FuzzSpec::Leaf(FuzzLeaf::TextContains { field, needle: fuzz_text_needle(rng, field) })
+}
+
+/// Whole-name comparison (`!name` exact plus ordered variants) — the ExactName path via TextExact.
+fn fuzz_leaf_name_exact(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    const OPS: [CmpOp; 4] = [CmpOp::Eq, CmpOp::Eq, CmpOp::Ne, CmpOp::Ge];
+    let value = text_corpus()[rng.random_range(0..text_corpus().len())].0.to_string();
+    FuzzSpec::Leaf(FuzzLeaf::NameExact { op: OPS[rng.random_range(0..OPS.len())], value })
+}
+
+// Hybrid mana symbols (uppercase, matching MANA_LANE_SYMS / mana_lane). Cards and queries draw from
+// the same set so query hybrids resolve against the store's mana vocab instead of always-unknown.
+const FUZZ_HYBRIDS: [&str; 7] = ["W/U", "U/B", "B/R", "R/G", "G/W", "R/W", "2/W"];
+
+/// Sample a small mana cost as (uppercase symbol, count) pips. `colors_mask` limits colored pips to
+/// the card's colors (cost colors ⊆ card colors, the real relationship); a query passes all colors.
+/// Adds occasional {C}/{X} and (rarely) one hybrid. Generic mana isn't a pip — it lives only in cmc.
+fn fuzz_mana_pips(rng: &mut rand::rngs::SmallRng, colors_mask: u8) -> Vec<(&'static str, u8)> {
+    let mut pips: Vec<(&'static str, u8)> = Vec::new();
+    for lane in 0..5usize {
+        if colors_mask & (1 << lane) != 0 {
+            // Mostly 1 pip, sometimes 2-3, rarely 5 — the 5 exercises devotion's >3 plane saturation.
+            let n = fuzz_weighted(rng, &[(1u8, 70), (2, 22), (3, 6), (5, 2)]);
+            pips.push((super::MANA_LANE_SYMS[lane], n));
+        }
+    }
+    if rng.random_bool(0.08) {
+        pips.push(("C", rng.random_range(1..=2)));
+    }
+    if rng.random_bool(0.05) {
+        pips.push(("X", 1));
+    }
+    // Hybrids are on ~3% of real cards; slightly over-represented here for coverage of the bind path.
+    if rng.random_bool(0.06) {
+        pips.push((FUZZ_HYBRIDS[rng.random_range(0..FUZZ_HYBRIDS.len())], 1));
+    }
+    pips
+}
+
+/// `mana <op> <cost>`: core from lane symbols, hybrids kept as strings (bind resolves), cmc = pip
+/// sum (X contributes 0) plus a little generic. Query cost spans all colors, not card-limited.
+fn fuzz_leaf_mana_cost(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    let pips = fuzz_mana_pips(rng, 0b1_1111);
+    let mut core = 0u64;
+    let mut hybrids: Vec<(String, u8)> = Vec::new();
+    let mut cmc = 0.0f32;
+    for &(sym, n) in &pips {
+        match super::mana_lane(sym) {
+            Some(lane) => {
+                core = super::lane_add(core, lane, n);
+                if sym != "X" {
+                    cmc += f32::from(n);
+                }
+            }
+            None => {
+                hybrids.push((sym.to_string(), n));
+                cmc += f32::from(n);
+            }
+        }
+    }
+    cmc += f32::from(rng.random_range(0..=2u8)); // generic mana: cmc only, no pip
+    hybrids.sort();
+    let op = FUZZ_OPS[rng.random_range(0..FUZZ_OPS.len())];
+    FuzzSpec::Leaf(FuzzLeaf::ManaCost { op, core, hybrids, cmc })
+}
+
+/// `devotion <op> <pips>`: 1-2 colors (occasionally colorless C), each 1-3 pips, in the low six lanes.
+fn fuzz_leaf_devotion(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    let mut pips = 0u64;
+    for _ in 0..rng.random_range(1..=2) {
+        let lane = rng.random_range(0..6usize); // WUBRGC
+        let n = fuzz_weighted(rng, &[(1u8, 50), (2, 35), (3, 15)]);
+        pips = super::lane_add(pips, lane, n);
+    }
+    let op = FUZZ_OPS[rng.random_range(0..FUZZ_OPS.len())];
+    FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips })
+}
+
+fn fuzz_leaf(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    match rng.random_range(0..27u8) {
+        0 => fuzz_leaf_color(rng),
+        1 => fuzz_leaf_type(rng),
+        2 => fuzz_leaf_cmc(rng),
+        3 => fuzz_leaf_power(rng),
+        4 => fuzz_leaf_toughness(rng),
+        5 => fuzz_leaf_loyalty(rng),
+        6 => fuzz_leaf_rarity(rng),
+        7 => fuzz_leaf_collector_number(rng),
+        8 => fuzz_leaf_price(rng),
+        9 => fuzz_leaf_date(rng),
+        10 => fuzz_leaf_year(rng),
+        11 => fuzz_leaf_border(rng),
+        12 => fuzz_leaf_legality(rng),
+        13 => fuzz_leaf_subtype(rng),
+        14 => fuzz_leaf_collection(rng, CollField::Keywords, &FUZZ_KEYWORDS),
+        15 => fuzz_leaf_collection(rng, CollField::OracleTags, &FUZZ_ORACLE_TAGS),
+        16 => fuzz_leaf_collection(rng, CollField::ArtTags, &FUZZ_ART_TAGS),
+        17 => fuzz_leaf_collection(rng, CollField::IsTags, &FUZZ_IS_TAGS),
+        18 => fuzz_leaf_collection(rng, CollField::FrameData, &FUZZ_FRAME_DATA),
+        19 => fuzz_leaf_artist(rng),
+        20 => fuzz_leaf_text_contains(rng, TextSearchField::NameLower),
+        21 => fuzz_leaf_text_contains(rng, TextSearchField::OracleTextLower),
+        22 => fuzz_leaf_text_contains(rng, TextSearchField::FlavorTextLower),
+        23 => fuzz_leaf_name_exact(rng),
+        24 => fuzz_leaf_mana_cost(rng),
+        25 => fuzz_leaf_devotion(rng),
+        _ => fuzz_leaf_arith(rng),
+    }
+}
+
+fn fuzz_gen(rng: &mut rand::rngs::SmallRng, depth: u8) -> FuzzSpec {
+    if depth == 0 || rng.random_bool(0.45) {
+        return fuzz_leaf(rng);
+    }
+    match rng.random_range(0..3u8) {
+        0 => FuzzSpec::And((0..rng.random_range(2..=4)).map(|_| fuzz_gen(rng, depth - 1)).collect()),
+        1 => FuzzSpec::Or((0..rng.random_range(2..=4)).map(|_| fuzz_gen(rng, depth - 1)).collect()),
+        _ => {
+            let inner = fuzz_gen(rng, depth - 1);
+            // ~30% double negation, exercising the Not/Not identity path.
+            if rng.random_bool(0.3) {
+                FuzzSpec::Not(Box::new(FuzzSpec::Not(Box::new(inner))))
+            } else {
+                FuzzSpec::Not(Box::new(inner))
+            }
+        }
+    }
+}
+
+/// Compounds that deliberately mix a printing-varying leaf with a card-invariant
+/// one — the exact `format:A AND date>X` shape from #677's description, with
+/// whichever fields the generator supports substituted in.
+fn fuzz_targeted(rng: &mut rand::rngs::SmallRng) -> Vec<FuzzSpec> {
+    let rar = fuzz_leaf_rarity(rng);
+    let bor = fuzz_leaf_border(rng);
+    let col = fuzz_leaf_color(rng);
+    let typ = fuzz_leaf_type(rng);
+    let cmc = fuzz_leaf_cmc(rng);
+    let leg1 = fuzz_leaf_legality(rng);
+    let leg2 = fuzz_leaf_legality(rng);
+    // The newer fields, so their multi-predicate shapes are guaranteed each run rather than left to
+    // fuzz_gen's random draws across 14 leaf kinds.
+    let pow = fuzz_leaf_power(rng);
+    let tou = fuzz_leaf_toughness(rng);
+    let price = fuzz_leaf_price(rng);
+    let date = fuzz_leaf_date(rng);
+    let cn = fuzz_leaf_collector_number(rng);
+    let arith = fuzz_leaf_arith(rng);
+    vec![
+        FuzzSpec::And(vec![leg1.clone(), cmc.clone()]),
+        FuzzSpec::And(vec![leg1.clone(), col.clone()]),
+        FuzzSpec::And(vec![rar.clone(), typ.clone()]),
+        FuzzSpec::And(vec![bor.clone(), cmc.clone()]),
+        FuzzSpec::Or(vec![leg2, rar.clone()]),
+        FuzzSpec::Not(Box::new(FuzzSpec::And(vec![leg1.clone(), bor.clone()]))),
+        FuzzSpec::And(vec![leg1, rar.clone(), col.clone()]),
+        FuzzSpec::Or(vec![FuzzSpec::And(vec![rar.clone(), cmc.clone()]), FuzzSpec::And(vec![bor, typ.clone()])]),
+        // Two card-level numerics (e.g. cmc=2 AND power=3); correlated card-level pair.
+        FuzzSpec::And(vec![cmc.clone(), pow.clone()]),
+        FuzzSpec::And(vec![pow, tou]),
+        // Printing-varying range field AND a card-invariant one -- the #677 wrong-printing shape.
+        FuzzSpec::And(vec![price.clone(), typ]),
+        FuzzSpec::And(vec![date, col.clone()]),
+        FuzzSpec::And(vec![cn, rar]),
+        FuzzSpec::Or(vec![price, cmc]),
+        // Arithmetic leaf inside a compound (its own operands already mix card + printing fields).
+        FuzzSpec::And(vec![arith, col]),
+        // Number of printing-varying predicates in one And drives distinct Y-predicate paths:
+        //   0 -> card-invariant, exact card-level answer (all_match promotes);
+        //   1 -> a single existence projection + witness-printing selection;
+        //   2+ -> the shared-witness path -- ∃p:A(p)∧B(p) != (∃p:A(p))∧(∃p:B(p)), so compile_plane
+        //         must decline to compose and fall back to per-printing residual verification.
+        // fuzz_gen hits all three probabilistically; guarantee 0 and 2+ here across field mixes.
+        FuzzSpec::And(vec![fuzz_leaf_cmc(rng), fuzz_leaf_color(rng)]),                       // 0 printing-varying
+        FuzzSpec::And(vec![fuzz_leaf_legality(rng), fuzz_leaf_border(rng)]),                 // 2 existential (legality+border)
+        FuzzSpec::And(vec![fuzz_leaf_rarity(rng), fuzz_leaf_border(rng)]),                   // 2 existential (rarity+border)
+        FuzzSpec::And(vec![fuzz_leaf_price(rng), fuzz_leaf_date(rng)]),                      // 2 printing-range (price+date)
+        FuzzSpec::And(vec![fuzz_leaf_collector_number(rng), fuzz_leaf_price(rng)]),          // 2 printing-range (cn+price)
+        FuzzSpec::And(vec![fuzz_leaf_rarity(rng), fuzz_leaf_price(rng)]),                    // existential + range
+        FuzzSpec::And(vec![fuzz_leaf_legality(rng), fuzz_leaf_rarity(rng), fuzz_leaf_border(rng)]), // 3 existential
+    ]
+}
+
+fn fuzz_build_filter(spec: &FuzzSpec) -> FilterExpr {
+    match spec {
+        FuzzSpec::Leaf(FuzzLeaf::Color { op, mask }) => FilterExpr::ColorCmp { field: ColorField::Colors, op: *op, mask: *mask },
+        FuzzSpec::Leaf(FuzzLeaf::Type { op, mask }) => FilterExpr::TypeCmp { mask: *mask, op: *op },
+        FuzzSpec::Leaf(FuzzLeaf::Cmc { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Power { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Toughness { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Toughness), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Loyalty { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Loyalty), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Rarity { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Price { field, op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(*field), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Date { op, value }) => FilterExpr::DateCmp { op: *op, value: *value },
+        FuzzSpec::Leaf(FuzzLeaf::Year { op, year }) => FilterExpr::YearCmp { op: *op, year: *year },
+        FuzzSpec::Leaf(FuzzLeaf::Arith { shape, op }) => {
+            let (lhs, rhs) = fuzz_arith_pair(*shape);
+            FilterExpr::NumericCmp { lhs, op: *op, rhs }
+        }
+        FuzzSpec::Leaf(FuzzLeaf::Collection { field, op, value }) => {
+            FilterExpr::CollectionCmp { field: *field, op: *op, value: value.clone(), value_id: None }
+        }
+        FuzzSpec::Leaf(FuzzLeaf::Artist { word }) => {
+            FilterExpr::TextContains { field: TextSearchField::ArtistLower, word: word.clone() }
+        }
+        FuzzSpec::Leaf(FuzzLeaf::TextContains { field, needle }) => {
+            FilterExpr::TextContains { field: *field, word: needle.clone() }
+        }
+        FuzzSpec::Leaf(FuzzLeaf::NameExact { op, value }) => {
+            FilterExpr::TextExact { field: TextField::NameLower, op: *op, value: value.clone() }
+        }
+        FuzzSpec::Leaf(FuzzLeaf::ManaCost { op, core, hybrids, cmc }) => FilterExpr::ManaCostCmp {
+            op: *op,
+            core: *core,
+            hybrids: hybrids.clone(),
+            hybrid_ids: Vec::new(), // bind() fills this from `hybrids` when non-empty
+            cmc: *cmc,
+        },
+        FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => FilterExpr::Devotion { op: *op, pips: *pips },
+        FuzzSpec::Leaf(FuzzLeaf::Border { value }) => FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: value.clone() },
+        FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => FilterExpr::Legality { shift: *shift, expected: *expected },
+        FuzzSpec::And(v) => FilterExpr::And(v.iter().map(fuzz_build_filter).collect()),
+        FuzzSpec::Or(v) => FilterExpr::Or(v.iter().map(fuzz_build_filter).collect()),
+        FuzzSpec::Not(b) => FilterExpr::Not(Box::new(fuzz_build_filter(b))),
+    }
+}
+
+/// Build the filter for `spec` and bind it against the store's vocabs -- resolves CollectionCmp
+/// value ids (and ArtistMatch/ManaCostCmp when those land), a no-op for the numeric/card-invariant
+/// leaves. The real query path binds before matching, and both the engine and the reference
+/// evaluator (`FilterExpr::matches`) need the resolved ids, so every built filter goes through here.
+fn fuzz_bound_filter(spec: &FuzzSpec, archived: &Archived<CardData>) -> FilterExpr {
+    let mut f = fuzz_build_filter(spec);
+    f.bind(
+        &archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab,
+        &archived.mana_vocab, &archived.indexes.flavor, &archived.strings,
+    );
+    f
+}
+
+fn fuzz_op_str(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Eq => "==", CmpOp::Ne => "!=", CmpOp::Lt => "<", CmpOp::Le => "<=", CmpOp::Gt => ">", CmpOp::Ge => ">=",
+    }
+}
+fn fuzz_num_field_str(f: NumField) -> &'static str {
+    match f {
+        NumField::Cmc => "cmc", NumField::Power => "power", NumField::Toughness => "toughness", NumField::Loyalty => "loyalty",
+        NumField::RarityInt => "rarity", NumField::CollectorNumberInt => "cn", NumField::EdhrEc => "edhrec",
+        NumField::PriceUsd => "usd", NumField::PriceEur => "eur", NumField::PriceTix => "tix", NumField::PreferScore => "prefer",
+    }
+}
+fn fuzz_num_expr_str(e: &NumExpr) -> String {
+    match e {
+        NumExpr::Const(c) => format!("{c}"),
+        NumExpr::Field(f) => fuzz_num_field_str(*f).to_string(),
+        NumExpr::Arith(l, o, r) => {
+            let os = match o { ArithOp::Add => "+", ArithOp::Sub => "-", ArithOp::Mul => "*", ArithOp::Div => "/" };
+            format!("({} {os} {})", fuzz_num_expr_str(l), fuzz_num_expr_str(r))
+        }
+    }
+}
+fn fuzz_describe(spec: &FuzzSpec) -> String {
+    match spec {
+        FuzzSpec::Leaf(FuzzLeaf::Color { op, mask }) => format!("colors{}{:#07b}", fuzz_op_str(*op), mask),
+        FuzzSpec::Leaf(FuzzLeaf::Type { op, mask }) => format!("types{}{:#018b}", fuzz_op_str(*op), mask),
+        FuzzSpec::Leaf(FuzzLeaf::Cmc { op, val }) => format!("cmc{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Power { op, val }) => format!("power{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Toughness { op, val }) => format!("toughness{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Loyalty { op, val }) => format!("loyalty{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Rarity { op, val }) => format!("rarity{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op, val }) => format!("cn{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field, op, val }) => format!("{}{}{val}", fuzz_num_field_str(*field), fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Date { op, value }) => format!("date{}{value}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Year { op, year }) => format!("year{}{year}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Arith { shape, op }) => {
+            let (lhs, rhs) = fuzz_arith_pair(*shape);
+            format!("{}{}{}", fuzz_num_expr_str(&lhs), fuzz_op_str(*op), fuzz_num_expr_str(&rhs))
+        }
+        FuzzSpec::Leaf(FuzzLeaf::Collection { field, op, value }) => {
+            let f = match field {
+                CollField::Subtypes => "subtypes", CollField::Keywords => "keywords", CollField::OracleTags => "oracle_tags",
+                CollField::ArtTags => "art_tags", CollField::IsTags => "is_tags", CollField::FrameData => "frame_data",
+            };
+            format!("{f}{}{value}", fuzz_op_str(*op))
+        }
+        FuzzSpec::Leaf(FuzzLeaf::Artist { word }) => format!("artist:{word}"),
+        FuzzSpec::Leaf(FuzzLeaf::TextContains { field, needle }) => {
+            let f = match field {
+                TextSearchField::NameLower => "name",
+                TextSearchField::OracleTextLower => "oracle",
+                TextSearchField::FlavorTextLower => "flavor",
+                TextSearchField::ArtistLower => "artist",
+            };
+            format!("{f}:{needle}")
+        }
+        FuzzSpec::Leaf(FuzzLeaf::NameExact { op, value }) => format!("name{}{value}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::ManaCost { op, core, hybrids, cmc }) => {
+            format!("mana{}(core={core:#018x}, hyb={hybrids:?}, cmc={cmc})", fuzz_op_str(*op))
+        }
+        FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => format!("devotion{}{pips:#014x}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Border { value }) => format!("border=={value}"),
+        FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => format!("legality(shift={shift:?}, expected={expected:#04b})"),
+        FuzzSpec::And(v) => format!("AND({})", v.iter().map(fuzz_describe).collect::<Vec<_>>().join(", ")),
+        FuzzSpec::Or(v) => format!("OR({})", v.iter().map(fuzz_describe).collect::<Vec<_>>().join(", ")),
+        FuzzSpec::Not(b) => format!("NOT({})", fuzz_describe(b)),
+    }
+}
+
+// A random card_types bitmask; shared by fuzz_store and the type leaf so both
+// draw from the same set of single- and multi-bit type shapes.
+fn fuzz_type_bits(rng: &mut rand::rngs::SmallRng) -> u16 {
+    const TYPES: [u16; 8] = [
+        TYPE_CREATURE, TYPE_INSTANT, TYPE_SORCERY, TYPE_ARTIFACT, TYPE_ENCHANTMENT, TYPE_LAND,
+        TYPE_CREATURE | TYPE_ARTIFACT, TYPE_CREATURE | TYPE_LEGENDARY,
+    ];
+    TYPES[rng.random_range(0..TYPES.len())]
+}
+
+/// A random small store: 5-15 cards, 1-3 printings each, card-invariant
+/// colors/types/cmc, printing-varying rarity/border, and legality across 3
+/// formats with a deliberate mix of non-divergent cards (all printings share
+/// one word, matching the card-level word) and divergent cards
+/// (`legality_divergent = true` plus printings that genuinely disagree on at
+/// least one format).
+fn fuzz_store(rng: &mut rand::rngs::SmallRng) -> CardData {
+    let ncards = rng.random_range(5..=15usize);
+    fuzz_store_n(rng, ncards)
+}
+
+/// `fuzz_store` with an explicit card count — the large-store variant (item 9) passes a few
+/// thousand so `maybe_broad` holds and `run_query_streamed` / `run_query_streamed_popcount` fire.
+fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
+    // Concrete legality word: an independent random status per format.
+    fn rand_word(rng: &mut rand::rngs::SmallRng) -> u64 {
+        FUZZ_SHIFTS.iter().fold(0u64, |w, &s| w | (rng.random_range(0..4u64) << s))
+    }
+    const BORDERS: [Option<&str>; 6] = [Some("black"), Some("white"), Some("borderless"), Some("gold"), Some("yellow"), None];
+
+    let mut vocab = VocabInterner::new();
+    // Artists live in their own vocab (not the shared collection vocab), matched via ArtistMatch.
+    let mut artist_vocab = VocabInterner::new();
+    // Mana hybrid vocab (id = index), shared across cards; bind() resolves query hybrids against it.
+    let mut mana_vocab: Vec<String> = Vec::new();
+    // String table for oracle/flavor text (interned here, in the card/printing loops) and borders
+    // (interned in the application loop). Assigned to data.strings after store_of returns.
+    let mut interner = Interner::new();
+    let corpus = text_corpus();
+    let mut cards: Vec<OracleCard> = Vec::with_capacity(ncards);
+    let mut counts: Vec<usize> = Vec::with_capacity(ncards);
+    // Per-printing scalar metadata, flat in card/printing order, applied after store_of lays out the
+    // printings. A struct rather than the tuple this was: it reached eight fields once all three price
+    // columns were fuzzed, three of them `Option<u32>` and adjacent, which is exactly the shape where a
+    // positional swap compiles and silently fuzzes the wrong column.
+    struct PMeta {
+        rarity: Option<u8>,
+        border: Option<&'static str>,
+        legality_word: u64,
+        collector_number: Option<u16>,
+        price_usd: Option<u32>,
+        price_eur: Option<u32>,
+        price_tix: Option<u32>,
+        released_at: u32,
+    }
+    let mut pmeta: Vec<PMeta> = Vec::new();
+    // Printing-space collections + artist vid + flavor text id, same flat card/printing order as
+    // pmeta. Interned here (while the vocabs/interner are in scope) but only applied to the printings
+    // after store_of returns.
+    let mut art_meta: Vec<Vec<u16>> = Vec::new();
+    let mut is_meta: Vec<Vec<u16>> = Vec::new();
+    let mut frame_meta: Vec<Vec<u16>> = Vec::new();
+    let mut artist_meta: Vec<u16> = Vec::new();
+    let mut flavor_meta: Vec<u32> = Vec::new();
+
+    for i in 0..ncards {
+        let mut card = stub_card(i as u128 + 1, fuzz_type_bits(rng), &[], &mut vocab);
+        card.card_colors = rng.random_range(0..32u8);
+        // Layout, assigned DETERMINISTICALLY from the card index rather than by an rng draw: a draw here
+        // would shift the rng stream and so change every fuzz store in the suite. The skew mirrors the
+        // corpus, where `normal` is 96% of cards and the tail is what the `is:flip`-family predicates
+        // reach. Present at all because `exact_result_total`'s layout arm is otherwise untestable --
+        // this field sat at NONE_STR for every fuzz card.
+        card.card_layout_id = interner.intern(FUZZ_LAYOUTS[i % FUZZ_LAYOUTS.len()].to_string());
+        // cmc on the corpus distribution (peaks at 2-3). Power/toughness/loyalty are *derived* from
+        // it so bigger stats cost more and P~T track each other, and are present only on the
+        // matching card kind: creatures have power/toughness, planeswalkers have loyalty.
+        let cmc = fuzz_weighted(rng, &[(0u8, 1), (1, 3), (2, 7), (3, 8), (4, 6), (5, 4), (6, 2), (7, 1), (8, 1)]);
+        card.cmc = Some(cmc);
+        card.edhrec_rank = Some(rng.random_range(1..=30_000u32)); // distinct-ish, gives the sort keys something to order
+        // creature 55% / planeswalker 6% / neither 39%. Planeswalkers are over-represented vs the
+        // corpus's ~1% so loyalty predicates actually match something under the fuzzer's small stores.
+        match fuzz_weighted(rng, &[(0u8, 55), (1, 6), (2, 39)]) {
+            0 => {
+                let power = (i32::from(cmc) - 1 + rng.random_range(-1..=2)).clamp(0, 12) as i8;
+                let toughness = (i32::from(power) + rng.random_range(-1..=2)).clamp(1, 13) as i8;
+                card.creature_power = Some(power);
+                card.creature_toughness = Some(toughness);
+                // Subtypes correlate with the creature type (real data: creature subtypes only
+                // appear on creatures, modulo the rare kindred/tribal tail we don't model). Set the
+                // bit so `t:creature` and `type:human` co-select. 1-2 subtypes, biased frequency.
+                card.card_types |= TYPE_CREATURE;
+                let n = rng.random_range(1..=2);
+                card.card_subtypes = vocab_ids(&mut vocab, &fuzz_collection_picks(rng, &FUZZ_SUBTYPES, n));
+            }
+            1 => card.planeswalker_loyalty = Some((2 + i32::from(cmc) / 2 + rng.random_range(0..=2)).clamp(2, 8) as u8),
+            _ => {}
+        }
+        // Text from a real corpus triple. Name is always present. Empty oracle (vanilla) is
+        // conditioned on the creature bit at the real rate; every other card gets a non-empty oracle
+        // (loop past the ~1% corpus empties). Textless cards intern "" (never NONE_STR), matching the
+        // loader, so an oracle-text search evaluates False on them rather than Null.
+        // Both name fields from one corpus name: card_name_folded (InlineStr) is what contains()
+        // reads; card_name_id is the interned id NameMatch re-keys to after memoization, so it must
+        // distinguish names (leaving it NONE_STR collapses every name to one id and over-matches).
+        // card_name_folded is a raw copy here (not actually diacritic-folded) since this fuzzer
+        // tests indexing/algebra parity, not fold_accents() semantics (#649 covers that directly).
+        let name = corpus[rng.random_range(0..corpus.len())].0;
+        card.card_name_lower = InlineStr::from_str(name);
+        card.card_name_folded = card.card_name_lower;
+        card.card_name_id = interner.intern(name.to_string());
+        let vanilla = card.card_types & TYPE_CREATURE != 0 && rng.random_bool(VANILLA_CREATURE_FRAC);
+        let oracle = if vanilla {
+            ""
+        } else {
+            loop {
+                let o = corpus[rng.random_range(0..corpus.len())].1;
+                if !o.is_empty() {
+                    break o;
+                }
+            }
+        };
+        card.oracle_text_lower_id = interner.intern(oracle.to_string());
+        // Mana cost: colored pips only in the card's colors (cost colors ⊆ card colors, the real
+        // relationship) so identity covers them; occasional {C}/{X}/hybrid. Devotion is gated to
+        // permanents (loader rule). The devotion-plane build asserts identity covers every colored
+        // devotion lane, so derive identity from the devotion lanes (C exempt). cmc mirrors card.cmc.
+        let mut mc = mana_cost_of(&fuzz_mana_pips(rng, card.card_colors), &mut mana_vocab);
+        if card.card_types & super::PERMANENT_TYPES == 0 {
+            mc.devotion = 0;
+        }
+        mc.cmc = f32::from(cmc);
+        let mut ident = card.card_colors;
+        for lane in 0..5usize {
+            if super::lane_get(mc.devotion, lane) > 0 {
+                ident |= 1u8 << lane;
+            }
+        }
+        card.card_color_identity = ident;
+        card.mana_cost = mc;
+        // Keywords and oracle tags apply across all card types (unlike subtypes). vocab_ids sorts
+        // and dedups into the id-sorted set the engine binary-searches at match time. (Counts are
+        // pulled into locals so the fn call doesn't hold `rng` while `random_range` also needs it.)
+        let (nk, no) = (rng.random_range(0..=3), rng.random_range(0..=4));
+        card.card_keywords = vocab_ids(&mut vocab, &fuzz_collection_picks(rng, &FUZZ_KEYWORDS, nk));
+        card.card_oracle_tags = vocab_ids(&mut vocab, &fuzz_collection_picks(rng, &FUZZ_ORACLE_TAGS, no));
+        let divergent = rng.random_bool(0.4);
+        card.legality_divergent = divergent;
+        // Printings per card is heavily skewed in the corpus (~41% have exactly one, long tail);
+        // sample that shape rather than uniform 1-3. ~1% are basic-land-like with piles of printings
+        // (the corpus tail runs to ~850), exercising long per-card ranges and heavy artwork dedup.
+        // Divergent cards need >= 2 printings to actually disagree.
+        let npr = if rng.random_bool(0.01) {
+            rng.random_range(30..=200usize)
+        } else {
+            let n = fuzz_weighted(rng, &[(1usize, 41), (2, 22), (3, 11), (4, 9), (5, 5), (6, 3), (7, 2), (8, 1), (10, 1), (15, 1)]);
+            if divergent { n.max(2) } else { n }
+        };
+        counts.push(npr);
+
+        // One base word shared by every printing, then divergence introduced at ONE format. Drawing a
+        // fresh `rand_word` per printing (as this did) made every format differ between the printings of
+        // a divergent card, so the whole corpus was divergent in all three and `FUZZ_SHIFT_INVARIANT`
+        // could not exist -- caught by `fuzz_corpus_has_both_divergent_and_invariant_formats`, which read
+        // a mask of 0x3f. Production diverges in exactly one format, so this is also the more faithful
+        // shape.
+        let base = rand_word(rng);
+        let mut words: Vec<u64> = vec![base; npr];
+        if divergent {
+            // Force a real disagreement at one DIVERGENT-ELIGIBLE format between printings 0 and 1, so
+            // the "divergent flag but printings happen to agree" degenerate case is not all this branch
+            // produces, and so the invariant shift stays invariant.
+            let ds = FUZZ_SHIFTS_DIVERGENT[rng.random_range(0..FUZZ_SHIFTS_DIVERGENT.len())];
+            let s0 = rng.random_range(0..4u64);
+            let s1 = { let c = rng.random_range(0..4u64); if c == s0 { (s0 + 1) & 0b11 } else { c } };
+            words[0] = (base & !(0b11 << ds)) | (s0 << ds);
+            words[1] = (base & !(0b11 << ds)) | (s1 << ds);
+            // Card-level word is unused for divergent cards (eval reads per-printing).
+            card.card_legalities = words[0];
+        } else {
+            // Non-divergent: every printing shares the card-level word (the
+            // real-data invariant the exact card-level plane relies on).
+            card.card_legalities = base;
+        }
+
+        for &word in &words {
+            // Rarity weighted like the corpus (rare > common > uncommon > mythic); 15% NULL for
+            // Null-propagation coverage. Collector number spread 1-300 (mostly present). Price 16%
+            // NULL, heavy sub-$2 tail. Release date recent-skewed.
+            let rarity = if rng.random_bool(0.85) {
+                Some(fuzz_weighted(rng, &[(0u8, 28), (1, 24), (2, 37), (3, 9), (4, 2)]))
+            } else {
+                None
+            };
+            let border = BORDERS[rng.random_range(0..BORDERS.len())];
+            let cn = if rng.random_bool(0.95) { Some(rng.random_range(1..=300u16)) } else { None };
+            // One draw per price column, INDEPENDENTLY. Three separate draws rather than one scaled
+            // three ways, and independent null rates, because the point of fuzzing all three is to
+            // catch a narrowing that reads the wrong index or the wrong column: derived values would
+            // agree often enough to hide it, and a shared null pattern would hide an absent-printing
+            // mix-up entirely. tix is nulled harder, matching the real corpus (54,896 priced against
+            // usd's 81,542).
+            let mut cents = |null_rate: f64| {
+                if rng.random_bool(null_rate) {
+                    None
+                } else {
+                    Some(match fuzz_weighted(rng, &[(0u8, 50), (1, 25), (2, 15), (3, 10)]) {
+                        0 => rng.random_range(5..=50u32),
+                        1 => rng.random_range(50..=200u32),
+                        2 => rng.random_range(200..=1000u32),
+                        _ => rng.random_range(1000..=6000u32),
+                    })
+                }
+            };
+            let price = cents(0.16);
+            let price_eur = cents(0.20);
+            let price_tix = cents(0.45);
+            let year = fuzz_year_value(rng);
+            let released = year * 10_000 + rng.random_range(1..=12u32) * 100 + rng.random_range(1..=28u32);
+            pmeta.push(PMeta {
+                rarity,
+                border,
+                legality_word: word,
+                collector_number: cn,
+                price_usd: price,
+                price_eur,
+                price_tix,
+                released_at: released,
+            });
+            // Printing-space collections (sorted+deduped by vocab_ids) + one artist per printing
+            // (real data has no NULL artists). frame_data keeps "2015" dominant so the corpus-scale
+            // store exercises the thresholded-index drop.
+            let (na, ni, nf) = (rng.random_range(0..=4), rng.random_range(0..=2), rng.random_range(0..=2));
+            art_meta.push(vocab_ids(&mut vocab, &fuzz_collection_picks(rng, &FUZZ_ART_TAGS, na)));
+            is_meta.push(vocab_ids(&mut vocab, &fuzz_collection_picks(rng, &FUZZ_IS_TAGS, ni)));
+            frame_meta.push(vocab_ids(&mut vocab, &fuzz_collection_picks(rng, &FUZZ_FRAME_DATA, nf)));
+            artist_meta.push(artist_vocab.intern(fuzz_weighted(rng, &FUZZ_ARTISTS).to_string()).unwrap());
+            // Flavor is printing-varying (a fresh corpus draw per printing, ~half empty like the
+            // corpus) so the printing-space FlavorMatch path selects among differing printings.
+            flavor_meta.push(interner.intern(corpus[rng.random_range(0..corpus.len())].2.to_string()));
+        }
+        cards.push(card);
+    }
+
+    let mut data = store_of(cards, &counts, vocab);
+    data.artist_vocab = artist_vocab.strings;
+    data.mana_vocab = mana_vocab;
+    for (idx, m) in pmeta.into_iter().enumerate() {
+        data.printings[idx].card_rarity_int = m.rarity;
+        data.printings[idx].card_border_id = m.border.map_or(NONE_STR, |b| interner.intern(b.to_string()));
+        data.printings[idx].card_legalities = m.legality_word;
+        data.printings[idx].collector_number_int = m.collector_number;
+        data.printings[idx].price_usd = m.price_usd;
+        data.printings[idx].price_eur = m.price_eur;
+        data.printings[idx].price_tix = m.price_tix;
+        data.printings[idx].released_at_int = Some(m.released_at);
+        data.printings[idx].card_art_tags = std::mem::take(&mut art_meta[idx]);
+        data.printings[idx].card_is_tags = std::mem::take(&mut is_meta[idx]);
+        data.printings[idx].card_frame_data = std::mem::take(&mut frame_meta[idx]);
+        data.printings[idx].card_artist_vid = artist_meta[idx];
+        data.printings[idx].flavor_text_lower_id = flavor_meta[idx];
+    }
+    data.strings = interner.strings;
+    // store_of built indexes from the placeholder printings and left the numeric/range indexes at
+    // empty defaults; rebuild everything the mutated fields feed. The range indexes are load-bearing
+    // for correctness, not just coverage: an empty range index narrows a matching predicate to the
+    // empty (tight) set, which would make run_query wrongly return nothing.
+    data.indexes.rarity = build_rarity_index(&data.printings, &data.offsets);
+    // Collection narrowing indexes — load-bearing like the range indexes above: an unbuilt index
+    // narrows a populated predicate to the empty set, disagreeing with the residual `matches` path.
+    // frame_data is thresholded (drops the dominant "2015"), matching the engine's build.
+    data.indexes.subtypes = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.keywords = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.oracle_tags = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
+    data.indexes.art_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
+    data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
+    data.indexes.frame_data = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_frame_data);
+    data.indexes.artists = build_artist_index(&data.printings, data.artist_vocab.len());
+    // Text narrowing indexes — same load-bearing property. name/oracle drive trigram + bigram
+    // narrowing and the full-scan memoization; flavor is the printing-space CSR bind() resolves against.
+    data.indexes.name_trigram = build_trigram_index(&data.cards, |c| c.card_name_folded.as_str());
+    data.indexes.name_bigrams = build_name_bigram_index(&data.cards);
+    data.indexes.name_unigrams = build_name_unigram_index(&data.cards);
+    data.indexes.oracle_trigram = build_oracle_text_index(&data.cards, &data.strings);
+    data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.legal_divergent = build_divergent_ids(&data.cards);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(i16::from));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(i16::from));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(i16::from));
+    // #743 arith-tuple postings — load-bearing like the numeric indexes above: an unbuilt index
+    // (n_cards mismatch) makes arith_tuple_narrow decline, so building it here is what actually
+    // exercises the new positive/negated narrowing through run_query in fuzz_row_identity_matches_reference.
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    // Rarity was MISSING from this list until the exact-total arm needed it, so it sat at its empty
+    // default: `idx.len() == 0` with a populated rarity histogram. Nothing failed, because the only
+    // consumer was the `rarity` orderby walk, which declines on an empty index and falls back --
+    // i.e. the walk was silently un-fuzzed, not wrong.
+    data.indexes.rarity_printing_ordered =
+        build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.card_rarity_int.map(u32::from));
+    // The exact card-count tables ride on those indexes and must be rebuilt with them — leaving them
+    // at their empty defaults would make every range acquire silently fall back to the `k.min(n_cards)`
+    // proxy here while production used the table, so the fuzz differential would stop covering the
+    // path it is meant to cover.
+    let p2c = build_printing_to_card(&data.offsets);
+    let n_cards = data.cards.len();
+    // The artwork column of the range counts needs each printing's global artwork id, which is
+    // `artwork_base[card] + artwork_group_id`; both are already assigned by `store_of`.
+    let artwork_base = build_artwork_base_from(&data.indexes.artwork_groups.to_vec());
+    data.indexes.released_at_cards = build_range_card_counts(&data.indexes.released_at, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.price_eur_cards = build_range_card_counts(&data.indexes.price_eur, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.price_tix_cards = build_range_card_counts(&data.indexes.price_tix, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.rarity_cards =
+        build_range_card_counts(&data.indexes.rarity_printing_ordered, &p2c, n_cards, &data.printings, &artwork_base);
+    // Same load-bearing property as the count tables: left at its default, every per-value acquire would
+    // read an exact ZERO from an empty-but-"complete" table, which is a wrong total rather than a missing
+    // one. `format_shifts` comes from the data, not the global registry, so the keys match what `bind`
+    // resolved against.
+    data.indexes.pair_totals = build_pair_totals(
+        &data.cards,
+        &data.printings,
+        &p2c,
+        &data.strings,
+        &data.coll_vocab,
+        usize::from(data.indexes.max_artwork_groups),
+    );
+    data.indexes.value_totals = build_all_value_totals(
+        &data.cards,
+        &data.printings,
+        &p2c,
+        &data.strings,
+        &data.coll_vocab,
+        usize::from(data.indexes.max_artwork_groups),
+    );
+    data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
+    data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
+    data
+}
+
+/// Trusted brute-force count for the given `unique` mode: `matches` per printing,
+/// no planes, no all_match. Mirrors `card_match_count`'s mode semantics exactly
+/// (printing: matching printings; card: cards with >=1 matching printing;
+/// artwork: per-card distinct illustration ids among matching printings, summed).
+fn fuzz_reference_total(archived: &Archived<CardData>, f: &FilterExpr, mode: &str) -> usize {
+    let strings = &archived.strings;
+    let mut total = 0usize;
+    for cid in 0..archived.cards.len() {
+        let card = &archived.cards[cid];
+        let start = u32::from(archived.offsets[cid]) as usize;
+        let end = u32::from(archived.offsets[cid + 1]) as usize;
+        match mode {
+            "printing" => {
+                for pid in start..end {
+                    if f.matches(card, &archived.printings[pid], strings) {
+                        total += 1;
+                    }
+                }
+            }
+            "artwork" => {
+                let mut ills: Vec<u128> = Vec::new();
+                for pid in start..end {
+                    if f.matches(card, &archived.printings[pid], strings) {
+                        let ill = u128::from(archived.printings[pid].illustration_id);
+                        if !ills.contains(&ill) {
+                            ills.push(ill);
+                        }
+                    }
+                }
+                total += ills.len();
+            }
+            _ => {
+                if (start..end).any(|pid| f.matches(card, &archived.printings[pid], strings)) {
+                    total += 1;
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Run one (store, filter, mode) case at the given sort column/direction through both the unplaned
+/// and the plane paths, asserting: (a) total matches the brute-force reference, (b) **every emitted
+/// row satisfies the filter** per the trusted evaluator, and (c) a partial page at a middle offset
+/// equals the ordered full result's corresponding slice (pagination correctness). `ctx` carries the
+/// seed + filter description so a failure reproduces exactly.
+fn fuzz_check_case(archived: &Archived<CardData>, spec: &FuzzSpec, ctx: &str, orderby: &str, direction: &str) {
+    // >= any possible total, so the offset-0 page is the complete ordered result to slice against.
+    let full_limit = archived.printings.len().max(1);
+    let ref_filter = fuzz_bound_filter(spec, archived);
+    let strings = &archived.strings;
+    let ids = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+        page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+    };
+    let all_satisfy = |page: &[(&Archived<OracleCard>, &Archived<Printing>)], label: &str, mode: &str| {
+        for &(card, p) in page {
+            assert!(
+                ref_filter.matches(card, p, strings),
+                "{label} emitted a row that does not satisfy the filter (mode={mode}, orderby={orderby}, dir={direction}, scryfall_id={}, {ctx})",
+                u128::from(p.scryfall_id),
+            );
+        }
+    };
+
+    for mode in ["card", "printing", "artwork"] {
+        let expected = fuzz_reference_total(archived, &ref_filter, mode);
+        let unique_is_card = mode == "card";
+
+        // #702 PR1: the standalone cardinality estimator's SOUND bounds must
+        // bracket the mode="card" reference count for every query. `ref_filter`
+        // is the full bound filter (no plane split — matches fuzz_reference_total).
+        if mode == "card" {
+            let c = super::estimator::estimate_cardinality(&ref_filter, &archived.indexes, &archived.offsets);
+            assert!(
+                (c.lo as usize) <= expected && expected <= (c.hi as usize),
+                "estimator bounds unsound: mode=card expected={expected} bounds=[{},{}] est={} ({ctx})",
+                c.lo, c.hi, c.est,
+            );
+        }
+
+        // Full page (offset 0): total + every row satisfies. Unplaned = raw filter, plane = None;
+        // plane path = split_planes + the promoted plane (unique_is_card matches the real caller).
+        let mut plain = fuzz_bound_filter(spec, archived);
+        let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, mode, "default", orderby, direction, full_limit, 0);
+        let (pe, mut residual) = split_planes(
+            fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+        );
+        let (t1, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), mode, "default", orderby, direction, full_limit, 0);
+
+        assert_eq!(t0, expected, "unplaned total mismatch (mode={mode}, orderby={orderby}, dir={direction}, {ctx})");
+        assert_eq!(t1, expected, "plane-path total mismatch (mode={mode}, orderby={orderby}, dir={direction}, {ctx})");
+        assert_eq!(p0.len(), t0, "unplaned page truncated unexpectedly (mode={mode}, {ctx})");
+        assert_eq!(p1.len(), t1, "plane-path page truncated unexpectedly (mode={mode}, {ctx})");
+        all_satisfy(&p0, "unplaned", mode);
+        all_satisfy(&p1, "plane path", mode);
+
+        // Pagination: a partial page at a middle offset must be exactly the ordered full result's
+        // [offset, offset+limit) slice (same query, so deterministic), and each row still satisfies.
+        if expected >= 3 {
+            let offset = expected / 3;
+            let plimit = ((expected - offset) / 2).max(1);
+            let (full0, full1) = (ids(&p0), ids(&p1));
+
+            let mut plain_pg = fuzz_bound_filter(spec, archived);
+            let (_, pg0) = run_query(&QueryCtx::from(archived), &mut plain_pg, None, mode, "default", orderby, direction, plimit, offset);
+            assert_eq!(
+                ids(&pg0), full0[offset..offset + plimit].to_vec(),
+                "unplaned pagination slice mismatch (mode={mode}, orderby={orderby}, dir={direction}, offset={offset}, {ctx})",
+            );
+            all_satisfy(&pg0, "unplaned paginated", mode);
+
+            let (pe_pg, mut residual_pg) = split_planes(
+                fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+            );
+            let (_, pg1) = run_query(&QueryCtx::from(archived), &mut residual_pg, pe_pg.as_ref(), mode, "default", orderby, direction, plimit, offset);
+            assert_eq!(
+                ids(&pg1), full1[offset..offset + plimit].to_vec(),
+                "plane pagination slice mismatch (mode={mode}, orderby={orderby}, dir={direction}, offset={offset}, {ctx})",
+            );
+            all_satisfy(&pg1, "plane paginated", mode);
+        }
+    }
+}
+
+/// Row-identity-only check: assert every emitted page row satisfies the filter, for both the
+/// unplaned and plane paths. O(page), with no O(printings) reference-total pass — cheap enough to
+/// run thousands of times against a corpus-scale fixture. Catches false positives (a returned row
+/// that doesn't match); the O(n) `fuzz_check_case` guards false negatives (missing matches).
+#[allow(clippy::too_many_arguments)]
+fn fuzz_check_row_identity(
+    archived: &Archived<CardData>, spec: &FuzzSpec, ctx: &str, orderby: &str, direction: &str, mode: &str, limit: usize, offset: usize,
+) {
+    let f = fuzz_bound_filter(spec, archived);
+    let strings = &archived.strings;
+    let check = |page: &[(&Archived<OracleCard>, &Archived<Printing>)], label: &str| {
+        for &(card, p) in page {
+            assert!(
+                f.matches(card, p, strings),
+                "{label} emitted a non-matching row (mode={mode}, orderby={orderby}, dir={direction}, offset={offset}, scryfall_id={}, {ctx})",
+                u128::from(p.scryfall_id),
+            );
+        }
+    };
+    let mut plain = fuzz_bound_filter(spec, archived);
+    let (_, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, mode, "default", orderby, direction, limit, offset);
+    check(&p0, "unplaned");
+    let (pe, mut residual) = split_planes(
+        fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, mode == "card",
+    );
+    let (_, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), mode, "default", orderby, direction, limit, offset);
+    check(&p1, "plane path");
+}
+
+/// #677: differential row-identity fuzzer. Unlike the surrounding `total`-only
+/// parity tests, this asserts the literal `(card, printing)` rows `run_query`
+/// emits are each accepted by the trusted per-printing evaluator — the check
+/// that catches a wrong-printing-of-a-matching-card bug like #676. Expected to
+/// pass clean (card-invariant fields are safe by construction; border/rarity/
+/// legality planes are all kept loose or existence-only); it is a regression
+/// guard, not a live-bug finder.
+///
+/// #696 expanded its coverage: numeric/date/price/collector-number and arithmetic
+/// leaves (on rough real-card distributions with the cross-field correlations —
+/// power/toughness only on creatures, loyalty only on planeswalkers, stats
+/// tracking cmc); every sort column and both directions; a paginated slice check
+/// (the page must equal the ordered full result's window); and a large-store pass
+/// so `run_query_streamed` / `run_query_streamed_popcount` fire (`maybe_broad`).
+#[test]
+fn fuzz_row_identity_matches_reference() {
+    use rand::SeedableRng;
+    const NUM_SEEDS: u64 = 96;
+    const RANDOM_FILTERS_PER_STORE: usize = 10;
+    const MAX_DEPTH: u8 = 3;
+    // edhrec/name/cmc have sort permutations (streamed path + inverse perms); usd/rarity have
+    // none, so they fall to the gathered, printing-keyed path (and, for a composable filter,
+    // PrintingCompose's own gather_composed_page fallback — see
+    // docs/issues/local-engine-compose-permutation-fallback.md). `desc` exercises the inverse
+    // perms / descending key.
+    const SORTS: [&str; 5] = ["edhrec", "name", "cmc", "usd", "rarity"];
+    let pick_order = |rng: &mut rand::rngs::SmallRng| (SORTS[rng.random_range(0..SORTS.len())], if rng.random_bool(0.5) { "desc" } else { "asc" });
+
+    // Small stores: broad predicate + structural combinatorics through the gather / small-total paths.
+    for seed in 0..NUM_SEEDS {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let data = fuzz_store(&mut rng);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+        // Targeted compounds first (the exact bug shape), then purely random trees.
+        let mut specs = fuzz_targeted(&mut rng);
+        for _ in 0..RANDOM_FILTERS_PER_STORE {
+            specs.push(fuzz_gen(&mut rng, MAX_DEPTH));
+        }
+        for spec in &specs {
+            let (orderby, direction) = pick_order(&mut rng);
+            let ctx = format!("seed={seed}, filter={}", fuzz_describe(spec));
+            fuzz_check_case(archived, spec, &ctx, orderby, direction);
+        }
+    }
+
+    // Corpus-like fixture on the real distributions, built ONCE and amortized across thousands of
+    // queries. Sized well above the fast-path thresholds (3x STREAM_MIN_MATCHES) so random broad-ish
+    // filters reliably engage the production paths, not just maximally-broad ones: `maybe_broad`
+    // holds (`run_query_streamed`), a pure Color+Type card query folds to `True` and hits
+    // `run_query_streamed_popcount`, and a broad range predicate under unique=printing crosses
+    // k > STREAM_MIN_MATCHES into #695's fastpath.
+    //
+    // Not full 30k/100k scale: `run_query` computes `total` on every call, so its cost is O(cards)
+    // *per query* regardless of `limit` -- thousands of queries at 30k is ~40s in a debug (CI) build.
+    // 6k is the point that keeps every path exercised while thousands of varied queries stay a few
+    // seconds. Split into a modest set of O(cards) full checks (total-parity + pagination -- the
+    // false-negative guard) and a large set of row-identity-only checks (false-positive guard).
+    const CORPUS_CARDS: usize = 6_000;
+    const CORPUS_FULL_CHECKS: usize = 24;
+    const CORPUS_ROWID_CHECKS: usize = 2_500;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(9_999);
+    let data = fuzz_store_n(&mut rng, CORPUS_CARDS);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let modes = ["card", "printing", "artwork"];
+
+    // Full checks: deliberate fast-path shapes (popcount, #695 broad-range) plus random trees.
+    let mut full_specs = vec![
+        FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]), // -> True (card-mode popcount path)
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),        // matches ~all priced -> #695 fastpath
+        FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }),       // broad date -> range fastpath
+    ];
+    while full_specs.len() < CORPUS_FULL_CHECKS {
+        full_specs.push(fuzz_gen(&mut rng, MAX_DEPTH));
+    }
+    for spec in &full_specs {
+        let (orderby, direction) = pick_order(&mut rng);
+        let ctx = format!("corpus-full, filter={}", fuzz_describe(spec));
+        fuzz_check_case(archived, spec, &ctx, orderby, direction);
+    }
+
+    // Thousands of cheap row-identity checks across varied query / sort / direction / offset / mode.
+    for _ in 0..CORPUS_ROWID_CHECKS {
+        let spec = fuzz_gen(&mut rng, MAX_DEPTH);
+        let (orderby, direction) = pick_order(&mut rng);
+        let mode = modes[rng.random_range(0..modes.len())];
+        let offset = if rng.random_bool(0.5) { 0 } else { rng.random_range(0..800) };
+        let ctx = format!("corpus-rowid, filter={}", fuzz_describe(&spec));
+        fuzz_check_row_identity(archived, &spec, &ctx, orderby, direction, mode, 100, offset);
+    }
+}
+
+/// #743: the arith-tuple narrowing must return *exactly* the per-card scan + `tri`/`eval` reference,
+/// in both polarities (bare and negated), for the in-scope shapes `is_arith_tuple_route` routes to
+/// the joint tuple index (arith expressions, field-vs-field, bare loyalty), over every comparison op.
+/// This is the direct check `fuzz_row_identity_matches_reference` only exercises through full
+/// `run_query`: it inspects the candidate set itself and asserts it is tight and byte-identical to the
+/// reference — the exactness guarantee `tight` rests on. The reference is `FilterExpr::matches` (which
+/// evaluates through the same `tri`/`eval` the driver's residual uses); a card's verdict is
+/// printing-independent for these card-level fields, so any printing witnesses it.
+#[test]
+fn arith_tuple_narrowing_matches_reference() {
+    use rand::SeedableRng;
+
+    let field = |f| NumExpr::Field(f);
+    let konst = NumExpr::Const;
+    let arith = |l, o, r| NumExpr::Arith(Box::new(l), o, Box::new(r));
+    let cmp = |lhs, op, rhs| FilterExpr::NumericCmp { lhs, op, rhs };
+
+    // The result of a filter over one archived store, as a sorted card-id vec, via the per-card
+    // reference scan (matches == tri==True; for a `Not`, matches == tri(inner)==False — exactly the
+    // Tri::False set the negated arm builds).
+    let reference = |archived: &Archived<CardData>, filter: &FilterExpr| -> Vec<u32> {
+        let strings = &archived.strings;
+        (0..archived.cards.len() as u32)
+            .filter(|&cid| {
+                let card = &archived.cards[cid as usize];
+                let p0 = u32::from(archived.offsets[cid as usize]) as usize;
+                filter.matches(card, &archived.printings[p0], strings)
+            })
+            .collect()
+    };
+
+    // Corpus-like fixtures (real null/value distributions for cmc/power/toughness/loyalty) across a
+    // few seeds, so both selective and broad predicates and their negations are covered.
+    for seed in [1u64, 7, 42, 100] {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let data = fuzz_store_n(&mut rng, 1_500);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let indexes = &archived.indexes;
+        let offsets = &archived.offsets;
+        let cards = &archived.cards[..];
+        let n_cards = cards.len();
+        // narrow_candidates_exact declines (None) above this breadth — the >75%-of-domain cap. A
+        // decline for an in-scope filter is only ever this cap, never a narrowing failure.
+        let broad_cap = n_cards - n_cards / 4;
+
+        // Builder closures — each returns a fresh NumericCmp (FilterExpr isn't Clone), parameterized
+        // by op, so the same predicate can be built bare and again inside a `Not`.
+        for op in [CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge, CmpOp::Eq, CmpOp::Ne] {
+            let builders: [(&str, &dyn Fn() -> FilterExpr); 6] = [
+                ("loyalty op 4", &|| cmp(field(NumField::Loyalty), op, konst(4.0))),
+                ("power op toughness", &|| cmp(field(NumField::Power), op, field(NumField::Toughness))),
+                ("cmc+1 op power", &|| cmp(arith(field(NumField::Cmc), ArithOp::Add, konst(1.0)), op, field(NumField::Power))),
+                ("power+toughness op 4", &|| cmp(arith(field(NumField::Power), ArithOp::Add, field(NumField::Toughness)), op, konst(4.0))),
+                ("cmc*2 op toughness", &|| cmp(arith(field(NumField::Cmc), ArithOp::Mul, konst(2.0)), op, field(NumField::Toughness))),
+                ("toughness-power op 0", &|| cmp(arith(field(NumField::Toughness), ArithOp::Sub, field(NumField::Power)), op, konst(0.0))),
+            ];
+            for (label, mk) in builders {
+                assert!(is_arith_tuple_route(&mk()), "seed={seed} {label} {op:?}: must route to the tuple index");
+                for negated in [false, true] {
+                    let filter = if negated { FilterExpr::Not(Box::new(mk())) } else { mk() };
+                    let ref_set = reference(archived, &filter);
+                    let ctx = format!("seed={seed} {label} {op:?} negated={negated}");
+                    match narrow_candidates_exact(&filter, indexes, offsets, cards) {
+                        (Some(Candidates::Cards(v)), tight, _) => {
+                            assert!(tight, "{ctx}: card-level in-scope narrowing must be tight (exact)");
+                            assert_eq!(v, ref_set, "{ctx}: tuple narrowing must equal the per-card reference");
+                        }
+                        (Some(other), ..) => panic!("{ctx}: expected card-space candidates, got {other:?}"),
+                        (None, ..) => assert!(
+                            ref_set.len() > broad_cap,
+                            "{ctx}: declined but the reference isn't broad ({} of {n_cards}) — a narrowing failure, not the breadth cap",
+                            ref_set.len()
+                        ),
+                    }
+                }
+            }
+        }
+
+        // Out-of-scope: `usd+1<power` mixes a printing-level field (usd) with a card-level one — it must
+        // NOT route to the tuple index and must decline to the existing full-scan path, in either
+        // polarity, never partially narrowed. A pure out-of-scope arith (`usd*2<cmc`) likewise.
+        let mixed = || cmp(arith(field(NumField::PriceUsd), ArithOp::Add, konst(1.0)), CmpOp::Lt, field(NumField::Power));
+        let pure_oos = || cmp(arith(field(NumField::PriceUsd), ArithOp::Mul, konst(2.0)), CmpOp::Lt, field(NumField::Cmc));
+        assert!(!is_arith_tuple_route(&mixed()), "seed={seed}: mixed in/out-of-scope arith must not route to the tuple index");
+        assert!(!is_arith_tuple_route(&pure_oos()), "seed={seed}: pure out-of-scope arith must not route to the tuple index");
+        assert!(narrow_candidates(&mixed(), indexes, offsets, cards).is_none(), "seed={seed}: mixed-field arith must decline (full scan)");
+        assert!(narrow_candidates(&pure_oos(), indexes, offsets, cards).is_none(), "seed={seed}: out-of-scope arith must decline (full scan)");
+        // The negated arm gates on is_arith_tuple_route(inner) too, so a negated mixed expression also
+        // stays off the tuple path.
+        assert!(!is_arith_tuple_route(&mixed()), "seed={seed}: -(mixed) inner must not route either");
+
+        // Bare single-field cmc/power/toughness vs const stay on their dedicated numeric-index arms
+        // (not the tuple route), so their negation ranking can't drift; loyalty (no dedicated arm) does route.
+        assert!(!is_arith_tuple_route(&cmp(field(NumField::Cmc), CmpOp::Lt, konst(3.0))), "bare cmc<c is owned by the dedicated numeric arm");
+        assert!(!is_arith_tuple_route(&cmp(field(NumField::Power), CmpOp::Ge, konst(2.0))), "bare power>=c is owned by the dedicated numeric arm");
+        assert!(is_arith_tuple_route(&cmp(field(NumField::Loyalty), CmpOp::Lt, konst(3.0))), "bare loyalty<c has no dedicated arm -> tuple route");
+    }
+}
+
+/// Deterministic pseudo-random / adversarial `Match` keys for `GatherSelect` (pid =
+/// index, so every match is distinct and `page_cmp` is a total order).
+fn build_gather_matches(n: usize, ordering: u32) -> Vec<Match> {
+    (0..n)
+        .map(|i| {
+            let key: u128 = match ordering {
+                // splitmix-style scramble: deterministic, no ordering structure
+                0 => {
+                    let mut x = (i as u128).wrapping_add(0x9E37_79B9_7F4A_7C15);
+                    x ^= x >> 30;
+                    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    x ^= x >> 27;
+                    x
+                }
+                1 => i as u128,           // ascending: after the 1st prune every later match is rejected
+                2 => (n - 1 - i) as u128, // descending: every later match beats the cutoff → prune repeatedly
+                3 => 0,                   // all ties: page_cmp must break by pid
+                _ => (i % 8) as u128,     // clustered / heavy ties
+            };
+            (key, i as u32, i as u32) // (sort_key, cid, pid)
+        })
+        .collect()
+}
+
+/// `GatherSelect` (the bounded gather buffer in `exec_gathered_scan`) must, for any
+/// match sequence in any batching, produce the identical `(total, page)` as gathering
+/// every match and calling `select_page` once — the reference the P4 rewrite rests on.
+/// This drives the prune + running-cutoff algorithm (`prune_to_smallest`, `page_cmp`)
+/// directly on adversarial orderings and sizes forced well past `prune_at` (multiple
+/// prune cycles), so it doesn't depend on a fuzz store happening to exceed the
+/// threshold — and it asserts the buffer actually stays bounded.
+#[test]
+fn gather_select_matches_reference() {
+    for &limit in &[1usize, 10, 60] {
+        for &offset in &[0usize, 5, 50, 500] {
+            let k = offset + limit;
+            let prune_at = k + GATHER_PRUNE_CHUNK;
+            // sizes: empty, exactly the page (no prune), either side of prune_at (one
+            // prune), and well past it (several prune cycles + cutoff tightening).
+            for &n in &[0, k, prune_at - 1, prune_at + 1, 2 * GATHER_PRUNE_CHUNK + k] {
+                for ordering in 0..5 {
+                    let matches = build_gather_matches(n, ordering);
+                    let ref_total = matches.len();
+                    let ref_page = select_page(matches.clone(), offset, limit);
+
+                    // Feed the matches in deterministically-varying batches (mimics the
+                    // per-card pushes), so `absorb` fires at buffer fills unaligned with
+                    // prune_at.
+                    let mut sel = GatherSelect::new(offset, limit);
+                    let (mut i, mut step) = (0usize, 0usize);
+                    while i < matches.len() {
+                        let batch = (1 + step % 7).min(matches.len() - i);
+                        let before = sel.buf().len();
+                        sel.buf().extend_from_slice(&matches[i..i + batch]);
+                        sel.absorb(before);
+                        i += batch;
+                        step += 1;
+                    }
+                    let ctx = format!("n={n} off={offset} lim={limit} ord={ordering}");
+                    // The bounded-memory promise: never more than a chunk past the page.
+                    assert!(sel.best.len() <= prune_at, "buffer unbounded: {ctx}");
+
+                    let (total, page) = sel.finish(offset, limit);
+                    assert_eq!(total, ref_total, "total mismatch: {ctx}");
+                    assert_eq!(page, ref_page, "page mismatch: {ctx}");
+                }
+            }
+        }
+    }
+}
+
+/// The fuzz corpus must contain BOTH regimes of legality, or every differential test that touches it
+/// verifies only the conservative one.
+///
+/// Production has exactly one divergent format (`oldschool`: all 556 of the corpus's divergent cards) and
+/// the rest are card-invariant, which is what makes skipping per-printing legality verification safe for
+/// them. A fuzz store where every format could diverge would exercise the carveout and never the
+/// shortcut; one where none could would do the opposite. This pins both, on the mask `reload` itself
+/// computes, so the two cannot drift apart silently.
+#[test]
+fn fuzz_corpus_has_both_divergent_and_invariant_formats() {
+    use rand::SeedableRng;
+    // Enough cards that the ~10% divergent branch fires on every shift it is allowed to use.
+    const CORPUS_CARDS: usize = 4_000;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(828_003);
+    let data = fuzz_store_n(&mut rng, CORPUS_CARDS);
+    let mask = divergent_formats_of(&data.printings, &data.offsets);
+
+    for shift in FUZZ_SHIFTS_DIVERGENT {
+        assert_ne!(
+            mask >> shift & 0b11,
+            0,
+            "shift {shift} is in FUZZ_SHIFTS_DIVERGENT but no card diverged there, so the existential \
+             legality path is unexercised for it (mask {mask:#x})",
+        );
+    }
+    assert_eq!(
+        mask >> FUZZ_SHIFT_INVARIANT & 0b11,
+        0,
+        "shift {FUZZ_SHIFT_INVARIANT} must be card-invariant across every card -- it is the format whose \
+         per-printing verification is provably redundant, and the only reason a test can assert a \
+         shortcut is safe (mask {mask:#x})",
+    );
+}
+
+/// #702 step 2 (force-plan seam): every physical plan that is *applicable* to a
+/// query must return rows identical to `GatheredScan`, the universal fallback /
+/// reference. This is the correctness guard for the extraction — it proves the
+/// four individually-callable executors (`run_query_with_plan`) agree, so
+/// swapping which plan runs a query is a pure performance decision.
+///
+/// For each fuzz query × prefer × unique mode × sort: compute the `GatheredScan`
+/// result (always `Some`) as the reference, then for every other plan call
+/// `run_query_with_plan`; if it returns `Some` (it was applicable), assert
+/// against the reference on three axes at the full offset-0 page:
+/// - `total` equality,
+/// - `scryfall_id` multiset equality — same *rows*,
+/// - **2-key ordering** equality — the `(primary, edhrec_rank)` value
+///   sequence (top 64 bits of `sort_key_bits`).
+///
+/// The 2-key value sequence is the ordering-parity contract (#702): plans agree
+/// on the two SQL-defined keys they're guaranteed to, and diverge only past
+/// them (key 3, prefer_score, and below — see the `PREFERS` comment below and
+/// docs/issues/00702). Comparing the 2-key *value* sequence, not the row
+/// sequence, is what tolerates that key-3 slop while still catching any real
+/// mis-ordering: tied rows share their (key1, key2) value, so the sequence is
+/// identical even when they interleave.
+///
+/// Hand-built specs guarantee P1 (`PrintingRangeScan`) and P2
+/// (`PlanePopcountOrder`) coverage — the random generator rarely emits a bare
+/// broad range or a fully-True color+type conjunction. A coverage assertion at
+/// the end fails if any of the four plans was never exercised.
+#[test]
+fn force_plan_differential_agreement() {
+    use rand::SeedableRng;
+    const CORPUS_CARDS: usize = 6_000;
+    const MAX_DEPTH: u8 = 3;
+    const RANDOM_QUERIES: usize = 150;
+    const SORTS: [&str; 5] = ["edhrec", "name", "cmc", "usd", "rarity"];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(70_202);
+    let data = fuzz_store_n(&mut rng, CORPUS_CARDS);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    // (spec, orderby, direction). Hand-built entries pin sorts that guarantee a
+    // plan fires: color+type -> True residual + plane (PlanePopcountOrder needs a
+    // perm sort in card mode); a broad date over a perm sort -> the range
+    // fastpath's walk branch (k > STREAM_MIN); a broad price over usd -> the
+    // fastpath's aligned branch. Random trees then broaden the coverage.
+    let mut cases: Vec<(FuzzSpec, &str, &str)> = vec![
+        (FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]), "edhrec", "asc"),
+        (FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]), "name", "desc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }), "cmc", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }), "edhrec", "desc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "usd", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "usd", "desc"),
+        // Bare broad price over a card-level perm -> CardRangePopcount (PR 2a) in card mode; a narrow
+        // price at low density -> its argmin fallback to the candidate path. price AND a color plane
+        // stays on the general path (CardRangePopcount is bare-range-only) — kept as a plain
+        // agreement case covering the non-applicable branch.
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "edhrec", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 2.0 }), "edhrec", "desc"),
+        (FuzzSpec::And(vec![FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), fuzz_leaf_color(&mut rng)]), "edhrec", "asc"),
+        // A numeric bound on the SORT column itself, which is what `walk_bounds` narrows a streamed
+        // walk with. Hand-built in BOTH directions, and in compound as well as bare form: the random
+        // generator draws its predicate and its orderby independently, so it produced descending
+        // bounded cases and no ascending ones (caught by the per-direction coverage assertion at the
+        // end). The compound case checks that an `And` sibling neither widens nor blocks the bound, and
+        // the `Or` case that a disjunction correctly yields no bound at all — a bound taken from one
+        // arm of an `Or` would cut off rows the other arm matches, and only a row-order comparison
+        // against the reference catches that.
+        (FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 4.0 }), "cmc", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Le, val: 3.0 }), "cmc", "desc"),
+        (FuzzSpec::And(vec![FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 3.0 }), fuzz_leaf_type(&mut rng)]), "cmc", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Power { op: CmpOp::Ge, val: 3.0 }), "power", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Toughness { op: CmpOp::Eq, val: 2.0 }), "toughness", "asc"),
+        (
+            FuzzSpec::Or(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 6.0 }),
+                fuzz_leaf_color(&mut rng),
+            ]),
+            "cmc",
+            "asc",
+        ),
+        // PR 3: cn/date bare ranges also route through CardRangePopcount in card mode (the Date cases
+        // above already exercise it; add collector_number + year over card-level perms too).
+        (FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op: CmpOp::Lt, val: 100.0 }), "edhrec", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Year { op: CmpOp::Ge, year: 2015 }), "edhrec", "desc"),
+        // #724: a bare border leaf routes through PrintingCompose in printing mode (black is ~1/6
+        // of printings, above STREAM_MIN in this corpus → the walk; agreement vs GatheredScan checked).
+        (FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }), "edhrec", "asc"),
+        // #724 compose: a border AND rarity compound is composable in printing space (both are exact
+        // planes) — PrintingCompose AND's the two bitmaps, popcounts the total, and walks the
+        // composed filter. Forces the plane-on-plane AND path and checks agreement vs GatheredScan.
+        (
+            FuzzSpec::And(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+                FuzzSpec::Leaf(FuzzLeaf::Rarity { op: CmpOp::Eq, val: 2.0 }),
+            ]),
+            "edhrec",
+            "asc",
+        ),
+        // #724 legality compose: a legality AND border compound. Legality's printing bitmap is built
+        // from #667's card `_EXISTS` plane + the authoritative divergent repair (legality_leaf_bits),
+        // then AND'd with border in printing space. The fuzz corpus is 40% divergent-legality, so this
+        // forces the repair path; agreement vs GatheredScan is checked in both printing and card modes.
+        (
+            FuzzSpec::And(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(FUZZ_SHIFTS[0]), expected: FUZZ_STATUSES[0] }),
+                FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+            ]),
+            "edhrec",
+            "asc",
+        ),
+        // #731 range compose: a range AND border compound. The collector-number range scatters its
+        // in-range index slice into a printing bitmap (`range_leaf_bits`), AND'd with the border plane,
+        // projected once per mode — the shared-witness case `CardRangePopcount` explicitly declined.
+        // Forced in all three modes (incl. artwork, the #694 gap) and checked against GatheredScan.
+        (
+            FuzzSpec::And(vec![
+                FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op: CmpOp::Lt, val: 100.0 }),
+                FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+            ]),
+            "edhrec",
+            "asc",
+        ),
+        // Card-space collection compose leaf (subtype) OR'd with a near-total legality — the
+        // motivating `type:goblin or format:legacy` shape (#752-followup): the subtype's card-id
+        // postings are projected up to printings and OR'd with legality's printing bitmap, then paged
+        // by the #744 orderby walk under `usd`/printing (no card permutation for usd). Checked vs
+        // GatheredScan in every mode.
+        (
+            FuzzSpec::Or(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Subtypes, op: CmpOp::Ge, value: "human".to_string() }),
+                FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(FUZZ_SHIFTS[0]), expected: FUZZ_STATUSES[0] }),
+            ]),
+            "usd",
+            "asc",
+        ),
+        (
+            FuzzSpec::Or(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".to_string() }),
+                FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(FUZZ_SHIFTS[0]), expected: FUZZ_STATUSES[0] }),
+            ]),
+            "rarity",
+            "desc",
+        ),
+        // Negated card-space collection leaf (exact complement) mixed with a border plane in printing
+        // space — forces the `Not(CollectionCmp)` compose arm through the walk.
+        (
+            FuzzSpec::And(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+                FuzzSpec::Not(Box::new(FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".to_string() }))),
+            ]),
+            "usd",
+            "asc",
+        ),
+    ];
+    for _ in 0..RANDOM_QUERIES {
+        let orderby = SORTS[rng.random_range(0..SORTS.len())];
+        let direction = if rng.random_bool(0.5) { "desc" } else { "asc" };
+        cases.push((fuzz_gen(&mut rng, MAX_DEPTH), orderby, direction));
+    }
+
+    let modes = ["card", "printing", "artwork"];
+    let all_plans = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PrintingCompose,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::CardRangePopcount,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+    let plan_idx = |p: PhysicalPlan| match p {
+        PhysicalPlan::PrintingRangeScan => 0,
+        PhysicalPlan::PrintingCompose => 1,
+        PhysicalPlan::PlanePopcountOrder => 2,
+        PhysicalPlan::CardRangePopcount => 3,
+        PhysicalPlan::StreamedSelect => 4,
+        PhysicalPlan::GatheredScan => 5,
+    };
+    let mut ran = [0u32; 6];
+    // Coverage for the sort-column bound below: a corpus that never produced one would verify nothing
+    // about `walk_bounds`, and the assertion at the end of this test would pass vacuously. Counted per
+    // DIRECTION because `walk_bounds` negates the key under `desc`, so the two directions map an
+    // interval onto opposite ends of the permutation and a sign error would only show in one of them.
+    let mut bounded_cases = [0usize; 2];
+
+    // >= any possible total, so the offset-0 page is the complete ordered result.
+    let full_limit = archived.printings.len().max(1);
+    // Same rows regardless of tie order.
+    // Order-preserving, unlike `id_multiset` below -- the full row sequence.
+    let id_seq = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+        page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+    };
+    let id_multiset = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+        let mut v: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+        v.sort_unstable();
+        v
+    };
+
+    // Ordering-parity contract (#702): plans agree on the SQL-defined keys 1-2
+    // (primary sort column, then edhrec_rank) — the top 64 bits of
+    // sort_key_bits. Key 3 (prefer_score) and beyond are unspecified across
+    // plans: the permutation bakes in the *default* representative's
+    // prefer_score, so under a non-default prefer the perm-based plans can order
+    // a key-3 tie differently from the gathered path (a known, pre-existing
+    // divergence — see docs/issues/00702-engine-plan-selection-layer.md).
+    // Comparing the 2-key VALUE sequence is stable across that: tied rows share
+    // their (key1, key2) value, so the sequence is identical even when they
+    // interleave. Exercised under a default AND a non-default prefer — 2-key
+    // parity holds at both (3-key would not, at non-default prefer).
+    const PREFERS: [&str; 2] = ["default", "usd_low"];
+
+    for (spec, orderby, direction) in &cases {
+        let sort_col = orderby_to_col(orderby);
+        let descending = *direction == "desc";
+        // Extracted from the unsplit filter, as `bind_and_split_filter` does in production, and passed
+        // to every plan. This is what holds `walk_bounds` to the reference across the whole fuzz corpus:
+        // numeric leaves on cmc/power/toughness appear under And, Or and Not here, so an extractor that
+        // read a bound out of a disjunction or inverted one out of a negation would return a short page
+        // for some case and fail the row-order assertion below. Applied to ALL plans, not just P3, since
+        // a bound that changed any plan's answer is equally wrong.
+        let sort_bound = sort_col_bound(&fuzz_bound_filter(spec, archived), sort_col);
+        bounded_cases[usize::from(descending)] += usize::from(!sort_bound.is_unbounded());
+        // (key1, key2) = the top 64 bits of sort_key_bits; drop the low 32 (key 3).
+        let key2_seq = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+            page.iter().map(|&(c, p)| sort_key_bits(c, p, sort_col, descending) >> 32).collect()
+        };
+        for &prefer in &PREFERS {
+            for &mode in &modes {
+                let unique_is_card = mode == "card";
+
+                // Reference: GatheredScan is always applicable. A fresh bound + split
+                // filter per plan call because prepare_candidates mutates the filter.
+                let (ref_pe, mut ref_res) = split_planes(
+                    fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+                );
+                let (ref_total, ref_page) = run_query_with_plan(
+                    PhysicalPlan::GatheredScan, &QueryCtx::from(archived),
+                    &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0).with_sort_bound(sort_bound),
+                    &mut ref_res, None, ref_pe.as_ref(),
+                )
+                .expect("GatheredScan is always applicable");
+                ran[plan_idx(PhysicalPlan::GatheredScan)] += 1;
+                let ref_ids = id_multiset(&ref_page);
+                let ref_key2 = key2_seq(&ref_page);
+                // Full ROW ORDER, not just the 2-key value sequence. Every plan now orders on
+                // (key1, key2, cid, pid) -- all four filter-independent, all four reachable from
+                // either side -- so the sequences must be identical, not merely compatible. This
+                // could not be asserted while key 3 decided: the permutation baked in the first
+                // STORED printing's prefer_score and the gathered paths used the first MATCHING
+                // one, so tied rows legitimately interleaved differently per plan.
+                let ref_order = id_seq(&ref_page);
+
+                for &plan in &all_plans {
+                    if plan == PhysicalPlan::GatheredScan {
+                        continue;
+                    }
+                    let (pe, mut res) = split_planes(
+                        fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+                    );
+                    let out = run_query_with_plan(
+                        plan, &QueryCtx::from(archived),
+                        &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0).with_sort_bound(sort_bound),
+                        &mut res, None, pe.as_ref(),
+                    );
+                    let Some((total, page)) = out else { continue };
+                    ran[plan_idx(plan)] += 1;
+                    assert_eq!(
+                        total, ref_total,
+                        "{plan:?} total disagrees with GatheredScan (mode={mode}, prefer={prefer}, orderby={orderby}, dir={direction}, filter={})",
+                        fuzz_describe(spec),
+                    );
+                    assert_eq!(
+                        id_multiset(&page), ref_ids,
+                        "{plan:?} rows disagree with GatheredScan (mode={mode}, prefer={prefer}, orderby={orderby}, dir={direction}, filter={})",
+                        fuzz_describe(spec),
+                    );
+                    assert_eq!(
+                        key2_seq(&page), ref_key2,
+                        "{plan:?} 2-key order disagrees with GatheredScan (mode={mode}, prefer={prefer}, orderby={orderby}, dir={direction}, filter={})",
+                        fuzz_describe(spec),
+                    );
+                    // Full row order, for every plan that orders through `page_cmp` or a card
+                    // permutation -- i.e. everything except `PrintingRangeScan`, which walks the
+                    // range index bucket by bucket and windows within the touched ones instead of
+                    // ordering the whole match set. That is a SEPARATE, pre-existing divergence:
+                    // verified by probe, it fails identically with and without the `cid` tiebreak
+                    // this change adds, so it is neither caused nor fixed here. Tracked for its own
+                    // change rather than silently folded in.
+                    if plan != PhysicalPlan::PrintingRangeScan {
+                        assert_eq!(
+                            id_seq(&page), ref_order,
+                            "{plan:?} ROW ORDER disagrees with GatheredScan (mode={mode}, prefer={prefer}, orderby={orderby}, dir={direction}, filter={})",
+                            fuzz_describe(spec),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for plan in all_plans {
+        assert!(
+            ran[plan_idx(plan)] > 0,
+            "plan {plan:?} was never exercised by the differential corpus — add coverage",
+        );
+    }
+    for (dir, count) in [("asc", bounded_cases[0]), ("desc", bounded_cases[1])] {
+        assert!(
+            count > 0,
+            "no {dir} case constrained its own sort column, so `walk_bounds` never narrowed a walk in that \
+             direction — the row assertions above did not verify it. Add a numeric leaf on \
+             cmc/power/toughness under a matching orderby.",
+        );
+    }
+}
+
+/// The soundness condition for skipping a proven conjunct: for EVERY candidate the narrowing returns,
+/// every child in the `proven` mask must evaluate to `Tri::True` at card level.
+///
+/// Checked over all candidates rather than over a returned page, because that is the property
+/// `card_pass` relies on — a page-level comparison would pass while a rare candidate silently returned
+/// `False` and got emitted as a false positive.
+///
+/// Also asserts the mask is EMPTY for a printing-space result. A tight printing-space set says "this
+/// printing matches", not "every printing of this card does", so it cannot excuse a per-printing check.
+#[test]
+fn a_proven_conjunct_holds_for_every_candidate() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 3_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let (indexes, offsets, cards, strings) = (&archived.indexes, &archived.offsets, &*archived.cards, &archived.strings);
+
+    // Mixed `And`s: a card-space child that narrows tightly, plus a printing-space one that does not.
+    // The keyword/subtype postings are the tight card-space case; border and the ranges are the partners.
+    let card_side = [
+        FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "flying".to_string() },
+        FuzzLeaf::Collection { field: CollField::Subtypes, op: CmpOp::Ge, value: "human".to_string() },
+        FuzzLeaf::Collection { field: CollField::OracleTags, op: CmpOp::Ge, value: "removal".to_string() },
+    ];
+    let printing_side = [
+        FuzzLeaf::Border { value: "black".to_string() },
+        FuzzLeaf::Collection { field: CollField::FrameData, op: CmpOp::Ge, value: "2003".to_string() },
+        FuzzLeaf::Collection { field: CollField::ArtTags, op: CmpOp::Ge, value: "dragon".to_string() },
+    ];
+
+    let mut fired = 0usize;
+    for c in &card_side {
+        for p in &printing_side {
+            for order in [[c.clone(), p.clone()], [p.clone(), c.clone()]] {
+                let spec = FuzzSpec::And(order.into_iter().map(FuzzSpec::Leaf).collect());
+                let filter = fuzz_bound_filter(&spec, archived);
+                let (Some(set), _, proven) = narrow_candidates_exact(&filter, indexes, offsets, cards) else {
+                    continue;
+                };
+                if set.is_printing_space() {
+                    assert_eq!(proven, 0, "{}: a printing-space result must prove nothing", fuzz_describe(&spec));
+                    continue;
+                }
+                if proven == 0 {
+                    continue;
+                }
+                fired += 1;
+                let FilterExpr::And(children) = &filter else { panic!("built an And") };
+                let candidate_cards = set.into_cards(offsets, &indexes.printing_to_card);
+                for &cid in &candidate_cards {
+                    for (i, child) in children.iter().enumerate() {
+                        if proven & (1 << i) == 0 {
+                            continue;
+                        }
+                        assert!(
+                            matches!(child.eval_card(&cards[cid as usize], strings), Tri::True),
+                            "{}: proven child {i} is not True for candidate card {cid}",
+                            fuzz_describe(&spec),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Otherwise the sweep proves nothing about a mask that is never set.
+    assert!(fired >= 6, "the proven mask fired on only {fired} of 18 mixed Ands; the property is undertested");
+}
+
+/// A dense `frame_data` value must still narrow under `broad_ok: false` unless it is genuinely BROAD.
+///
+/// Dense is the storage crossover (1/32 of printings); broad is the narrowing guard
+/// (`MAX_NARROW_FRACTION`, 1/4). Values between the two — the corpus has three, at 10.6%, 11% and 17% —
+/// must produce a bitmap, because `narrow_candidates_exact` enters with `broad_ok: false` and an `And`'s
+/// rank-0 children inherit it. Conflating the two thresholds cost `o:this frame:2003` 1,809 us against
+/// 52 us for `o:this` alone, with results identical either way — so no correctness test could see it and
+/// this asserts the representation decision directly.
+#[test]
+fn a_dense_but_not_broad_frame_value_narrows_without_broad_ok() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 4_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let (offsets, cards) = (&archived.offsets, &archived.cards);
+    let n_printings = archived.printings.len();
+
+    let mut checked = (0usize, 0usize); // (dense-not-broad, broad)
+    for (value, _) in FUZZ_FRAME_DATA {
+        if !archived.indexes.frame_data.is_dense(value) {
+            continue;
+        }
+        let k = archived.indexes.frame_data.len_of(value).expect("a dense value has a count");
+        let mut f = FilterExpr::CollectionCmp {
+            field: CollField::FrameData,
+            op: CmpOp::Ge,
+            value: value.to_string(),
+            value_id: None,
+        };
+        f.bind(
+            &archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab,
+            &archived.mana_vocab, &archived.indexes.flavor, &archived.strings,
+        );
+        let got = narrow_rec(&f, &archived.indexes, offsets, cards, false);
+        if range_too_broad_to_narrow(k, n_printings) {
+            assert!(got.is_none(), "frame:{value} is broad ({k} of {n_printings}) and must decline without broad_ok");
+            checked.1 += 1;
+        } else {
+            let n = got.unwrap_or_else(|| panic!("frame:{value} is dense but NOT broad ({k} of {n_printings}) — must narrow"));
+            assert_eq!(n.set.len(), k, "frame:{value}: the bitmap must hold exactly the indexed printings");
+            assert!(n.tight, "Ge containment postings are exact, so the bitmap is tight");
+            checked.0 += 1;
+        }
+    }
+    // Both sides of the threshold must actually be present, or the test proves nothing about the
+    // distinction it exists to pin down.
+    assert!(checked.0 > 0, "no dense-but-not-broad frame value in the store; the regression case is uncovered");
+    assert!(checked.1 > 0, "no broad frame value in the store; the decline case is uncovered");
+}
+
+/// The per-value `ValueTotals` table must be exact in all three spaces, for every value of every
+/// dimension it covers, against the same brute-force reference the fuzz differential uses.
+///
+/// Includes values the corpus does NOT contain, because absence from this table is claimed to be an
+/// exact ZERO rather than a declined shape — a claim that is only safe while the table is complete, and
+/// this is what checks it.
+#[test]
+fn value_totals_are_exact_in_all_three_spaces() {
+    // Asserts the arm ANSWERS, so it is meaningless with the arm switched off. Skipping rather than
+    // adapting: `CARD_ENGINE_EXACT_VALUE_TOTALS=0` exists to measure the estimator's behaviour, and a
+    // test that quietly passed either way would stop guarding the default.
+    if !*EXACT_VALUE_TOTALS {
+        return;
+    }
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut leaves: Vec<(String, FilterExpr)> = Vec::new();
+    // "chartreuse" and "leveler" are absent from the store on purpose: the zero case.
+    for value in ["black", "white", "borderless", "gold", "yellow", "chartreuse"] {
+        leaves.push((format!("border:{value}"), FilterExpr::TextExact {
+            field: TextField::Border,
+            op: CmpOp::Eq,
+            value: value.to_string(),
+        }));
+    }
+    for value in ["normal", "transform", "split", "saga", "flip", "leveler"] {
+        leaves.push((format!("layout:{value}"), FilterExpr::TextExact {
+            field: TextField::Layout,
+            op: CmpOp::Eq,
+            value: value.to_string(),
+        }));
+    }
+    for (value, _) in FUZZ_FRAME_DATA {
+        leaves.push((format!("frame:{value}"), FilterExpr::CollectionCmp {
+            field: CollField::FrameData,
+            op: CmpOp::Ge,
+            value: value.to_string(),
+            value_id: None,
+        }));
+    }
+    for shift in FUZZ_SHIFTS {
+        for expected in 0..4u64 {
+            leaves.push((format!("legality shift={shift} status={expected}"), FilterExpr::Legality {
+                shift: Some(shift),
+                expected,
+            }));
+        }
+    }
+    // An unregistered format matches nothing in every space.
+    leaves.push(("legality shift=None".to_string(), FilterExpr::Legality { shift: None, expected: 1 }));
+
+    // Bound leaves, because `CollectionCmp` needs its `value_id` resolved before it can be counted.
+    let mut nonzero = 0usize;
+    for (label, leaf) in &leaves {
+        let mut f = leaf.clone();
+        f.bind(
+            &archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab,
+            &archived.mana_vocab, &archived.indexes.flavor, &archived.strings,
+        );
+        for (mode_label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
+            let got = exact_result_total(&f, &archived.indexes, mode)
+                .unwrap_or_else(|| panic!("{label} / {mode_label}: the table must answer, not decline"));
+            assert_eq!(got, fuzz_reference_total(archived, &f, mode_label), "{label} / {mode_label}");
+            nonzero += usize::from(got > 0);
+        }
+    }
+    // Otherwise a table that answered 0 to everything would pass every assertion above.
+    assert!(nonzero >= leaves.len(), "too many zero totals ({nonzero}); the sweep is not exercising the table");
+}
+
+/// `exact_result_total`'s rarity arm must be exact in all three spaces, for every op against every
+/// rarity value, against the same brute-force reference the fuzz differential uses.
+///
+/// Rarity is the one dimension where per-value counts would have been WRONG rather than merely
+/// incomplete: a card printed at both common and rare is in the distinct-card count for each, so
+/// `r<=rare` is not a sum. This checks the prefix/suffix shape actually answers the ranges.
+#[test]
+fn exact_result_total_is_exact_for_rarity() {
+    // Asserts the arm ANSWERS, so it is meaningless with the arm switched off. Skipping rather than
+    // adapting: `CARD_ENGINE_EXACT_VALUE_TOTALS=0` exists to measure the estimator's behaviour, and a
+    // test that quietly passed either way would stop guarding the default.
+    if !*EXACT_VALUE_TOTALS {
+        return;
+    }
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut answered = 0usize;
+    for value in 0..=6i32 {
+        for op in [CmpOp::Eq, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge] {
+            for negate in [false, true] {
+                let leaf = FilterExpr::NumericCmp {
+                    lhs: NumExpr::Field(NumField::RarityInt),
+                    op,
+                    rhs: NumExpr::Const(f64::from(value)),
+                };
+                let f = if negate { FilterExpr::Not(Box::new(leaf)) } else { leaf };
+                for mode in [Mode::Printing, Mode::Card, Mode::Artwork] {
+                    let Some(got) = exact_result_total(&f, &archived.indexes, mode) else {
+                        continue;
+                    };
+                    let label = match mode {
+                        Mode::Printing => "printing",
+                        Mode::Card => "card",
+                        Mode::Artwork => "artwork",
+                    };
+                    assert_eq!(
+                        got,
+                        fuzz_reference_total(archived, &f, label),
+                        "rarity {op:?} {value} negate={negate} mode={label}",
+                    );
+                    answered += 1;
+                }
+            }
+        }
+    }
+    // Every cell must be ANSWERED, not merely consistent -- a silently-declining arm would satisfy
+    // every assertion above. The one shape that must decline is a negated `Eq`, i.e. `Ne`, which covers
+    // two disjoint windows and so is not a range at all: 7 values x 3 modes of the 210 cells.
+    assert_eq!(answered, (7 * 5 * 2 - 7) * 3, "the rarity arm should answer every op except `Ne`, in every mode");
+}
+
+/// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided
+/// cut and every single value, on all three range indexes, checked against a brute-force distinct
+/// count over the store for cards and for artworks alike.
+///
+/// Exhaustive over the distinct values rather than sampled. There are only a few thousand per
+/// dimension — the same property that makes the table affordable — and this investigation's errors
+/// clustered at the ends of ranges, exactly where a sampled check would have missed them.
+#[test]
+fn range_card_counts_are_exact() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_730);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let indexes = &archived.indexes;
+    let p2c = &indexes.printing_to_card;
+
+    for (name, idx, counts) in [
+        ("released_at", &indexes.released_at, &indexes.released_at_cards),
+        ("price_usd", &indexes.price_usd, &indexes.price_usd_cards),
+        ("collector_number", &indexes.collector_number, &indexes.collector_number_cards),
+    ] {
+        if idx.len() == 0 {
+            continue;
+        }
+        assert_eq!(counts.values.len(), counts.below.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at_or_above.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.below_artworks.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at_or_above_artworks.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at_artworks.len(), "{name}: parallel vectors");
+
+        // Brute force: distinct cards, and distinct artworks, among printings whose value satisfies
+        // the predicate. The artwork id is global -- `artwork_base[card] + artwork_group_id` -- so a
+        // group id colliding across two cards must not merge them, which is why the base is added.
+        let distinct = |keep: &dyn Fn(u32) -> bool| -> (u32, u32) {
+            let (mut cards, mut arts) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+            for (i, key) in idx.keys.iter().enumerate() {
+                if !keep(u32::from(*key)) {
+                    continue;
+                }
+                for t in idx.run(i) {
+                    let pid = idx.pid_at(t);
+                    let cid = u32::from(p2c[pid]);
+                    cards.insert(cid);
+                    arts.insert(u32::from(archived.indexes.artwork_base[cid as usize]) + u32::from(u16::from(archived.printings[pid].artwork_group_id)));
+                }
+            }
+            (cards.len() as u32, arts.len() as u32)
+        };
+
+        for (i, value) in counts.values.iter().enumerate() {
+            let v = u32::from(*value);
+            let (lt, ge, eq) = (distinct(&|x| x < v), distinct(&|x| x >= v), distinct(&|x| x == v));
+            assert_eq!((u32::from(counts.below[i]), u32::from(counts.below_artworks[i])), lt, "{name}: below[{i}] at {v}");
+            assert_eq!(
+                (u32::from(counts.at_or_above[i]), u32::from(counts.at_or_above_artworks[i])),
+                ge,
+                "{name}: at_or_above[{i}] at {v}",
+            );
+            assert_eq!((u32::from(counts.at[i]), u32::from(counts.at_artworks[i])), eq, "{name}: at[{i}] at {v}");
+            // And through the lookups the acquire actually calls, for all three answerable shapes.
+            for (shape, (lo, hi), want) in [("< {v}", (0, v), lt), (">= {v}", (v, u32::MAX), ge), ("== {v}", (v, v + 1), eq)] {
+                assert_eq!(counts.distinct_cards(lo, hi), Some(want.0), "{name}: cards lookup `{shape}`");
+                assert_eq!(counts.distinct_artworks(lo, hi), Some(want.1), "{name}: artworks lookup `{shape}`");
+            }
+        }
+
+        // A range spanning several distinct values is the one shape the table declines, rather than
+        // answering it wrongly by subtracting neighbouring entries. It has to be genuinely interior:
+        // a multi-value range starting at the minimum is a prefix and IS answerable, which is what
+        // `below` is for.
+        if counts.values.len() >= 4 {
+            let (lo, hi) = (u32::from(counts.values[1]), u32::from(counts.values[3]));
+            assert_eq!(counts.distinct_cards(lo, hi), None, "{name}: multi-value interior must decline");
+            assert_eq!(counts.distinct_artworks(lo, hi), None, "{name}: artworks must decline the same shapes");
+            let span = u32::from(counts.values[2]);
+            assert!(
+                counts.distinct_cards(0, span).is_some(),
+                "{name}: a multi-value range from the bottom is a prefix and must still answer",
+            );
+        }
+    }
+}
+
+/// #745: `explain` reports a nonempty, cheapest-first ranked list for every mode,
+/// always including `GatheredScan` (universally applicable), and its predicted
+/// costs are exactly what `PhysicalPlan::ALL.filter(applicable)` + `cost::plan_cost`
+/// would compute directly — i.e. `explain` cannot silently diverge from
+/// `run_query_routed`'s own argmin (they share `acquire_plan_features`).
+#[test]
+fn explain_reports_ranked_applicable_plans() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_001);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let specs = [
+        FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+
+    for spec in &specs {
+        for &(mode_label, mode) in &modes {
+            let (pe, mut filter) = split_planes(
+                fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+            );
+            let (facts, estimates): (AcquireFacts, Vec<PlanEstimate>) = explain(
+                &QueryCtx::from(archived), &explain_params(mode, 60), &mut filter, None, pe.as_ref(),
+            );
+
+            // The acquire facts every plan in this call shares. `eval_domain` is what a
+            // caller filters on to decide whether a query exercises a given code path,
+            // so it must be a real count in range, not a placeholder.
+            //
+            // NOT asserted here any more: that `count_source` and `narrowed_repr` are drawn from
+            // their known sets. Both were `&'static str` and a "label is one of these five"
+            // `matches!` was the only thing keeping a typo'd or invented label out; as `CountSource`
+            // and `NarrowedRepr` the type says it, and the check would be a tautology.
+            assert_eq!(facts.feats.n_cards, archived.cards.len() as u32, "n_cards must be the corpus size");
+            assert!(
+                facts.feats.eval_domain <= facts.feats.n_cards,
+                "eval_domain {} exceeds n_cards {} ({mode_label}, {})",
+                facts.feats.eval_domain,
+                facts.feats.n_cards,
+                fuzz_describe(spec),
+            );
+            assert_eq!(facts.acquire_ns.len(), 1, "explain() reports exactly one acquire sample");
+            // `None` is legitimate for a candidate-acquired query — the residual narrowing can
+            // produce nothing and leave the plane bitmap as the whole candidate list, which is
+            // itself a "no sort happened" signal. What must still hold, and what no type enforces,
+            // is that the two preps which materialize no candidate list never claim otherwise.
+            assert!(
+                facts.count_source == CountSource::Candidates || facts.narrowed_repr == NarrowedRepr::None,
+                "{:?}-acquired query reported narrowed_repr {:?} ({mode_label}, {})",
+                facts.count_source, facts.narrowed_repr, fuzz_describe(spec),
+            );
+
+            assert!(!estimates.is_empty(), "GatheredScan is always applicable ({mode_label}, {})", fuzz_describe(spec));
+            assert!(
+                estimates.iter().any(|e| e.plan == PhysicalPlan::GatheredScan),
+                "GatheredScan missing from explain() output ({mode_label}, {})", fuzz_describe(spec),
+            );
+            assert!(
+                estimates.windows(2).all(|w| w[0].predicted_ns <= w[1].predicted_ns),
+                "explain() not sorted ascending ({mode_label}, {})", fuzz_describe(spec),
+            );
+            // Exactly one plan is the router's pick, and it is the cheapest predicted — i.e. index
+            // 0 after the sort. A caller must never need to re-derive this.
+            assert_eq!(
+                estimates.iter().filter(|e| e.picked).count(), 1,
+                "exactly one plan must be marked picked ({mode_label}, {})", fuzz_describe(spec),
+            );
+            assert!(estimates[0].picked, "the picked plan must be index 0 ({mode_label}, {})", fuzz_describe(spec));
+            // The materialization term is REPORTED, never folded into predicted_ns — folding it in
+            // would change routing, which cost.rs's "Candidate materialization" section declines to
+            // do until the term is validated. Non-materializing plans must report exactly 0.
+            for e in &estimates {
+                assert!(e.materialize_ns >= 0.0 && e.materialize_ns.is_finite(), "bad materialize_ns for {:?}", e.plan);
+                let materializes = matches!(e.plan, PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan);
+                assert_eq!(
+                    e.materialize_ns > 0.0, materializes,
+                    "{:?} materialize_ns {} contradicts whether it builds a candidate list",
+                    e.plan, e.materialize_ns,
+                );
+            }
+            for e in &estimates {
+                // `PrintingCompose` alone may report `+inf`, and it means one specific thing: the
+                // fastpath is predicted to REFUSE this query, so `cost::plan_cost` returns
+                // `f64::INFINITY` to keep it out of the argmin rather than route to a plan that
+                // returns `None` and pays a detour. It still appears in `estimates` (sorted last),
+                // and `costbench.predicted_ns` screens it for exactly this reason.
+                //
+                // This assertion used to demand finiteness from every plan and passed only because
+                // the fixture never tripped the small-total decline. Calibrating the compose card
+                // estimate (it read a median 1.73x the truth) shrank `result_total` enough to
+                // predict declines here -- the prediction mirrors the fastpath's real
+                // `total <= STREAM_MIN_MATCHES` bail, so predicting more of them on a better
+                // estimate is the improvement, not a regression.
+                if e.plan == PhysicalPlan::PrintingCompose && e.predicted_ns == f64::INFINITY {
+                    continue;
+                }
+                assert!(e.predicted_ns.is_finite() && e.predicted_ns >= 0.0, "non-finite/negative predicted_ns for {:?}", e.plan);
+            }
+        }
+    }
+}
+
+/// #745: `explain_analyze` times every plan `explain` reports, carrying the same
+/// `predicted_ns` alongside real per-trial timings — so a caller never has to zip
+/// two separate calls' results by plan to compare predicted vs actual. Warmups are
+/// small here (test speed, not a calibration run); the assertions are about wiring
+/// (same plan set, matching predicted cost, right trial counts, non-negative
+/// timings), not about the model's accuracy.
+#[test]
+fn explain_analyze_matches_explain_and_times_every_plan() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_002);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    const NUM_WARMUPS: usize = 1;
+    const NUM_TRIALS: usize = 3;
+
+    let spec = FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]);
+    let bound = fuzz_bound_filter(&spec, archived);
+
+    // Reference: what explain() alone reports for this same query.
+    let (ref_pe, mut ref_filter) = split_planes(
+        bound.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
+    );
+    let (ref_facts, reference): (AcquireFacts, Vec<PlanEstimate>) = explain(
+        &QueryCtx::from(archived), &explain_params(Mode::Card, 60), &mut ref_filter, None, ref_pe.as_ref(),
+    );
+
+    let (pe, filter) = split_planes(bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    let (facts, trials): (AcquireFacts, Vec<PlanTrial>) = explain_analyze(
+        &QueryCtx::from(archived), &QueryParams::from_strs("card", "default", "edhrec", "asc", 60, 0),
+        &filter, None, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS,
+    );
+
+    // The acquire facts describe the query, not the round, so they must agree with
+    // what explain() alone reported — except acquire_ns, which is a measurement:
+    // explain() takes one sample, explain_analyze re-samples once per recorded round.
+    assert_eq!(facts.count_source, ref_facts.count_source, "count_source must match explain()'s");
+    assert_eq!(facts.feats.eval_domain, ref_facts.feats.eval_domain, "eval_domain must match explain()'s");
+    assert_eq!(facts.feats.matches, ref_facts.feats.matches, "matches must match explain()'s");
+    assert_eq!(facts.acquire_ns.len(), NUM_TRIALS, "explain_analyze records one acquire sample per trial round");
+    // The routed row is what distinguishes a ranking error from a live defect, so it must be
+    // present for every recorded round — and absent from explain(), which executes nothing.
+    assert_eq!(facts.routed_ns.len(), NUM_TRIALS, "explain_analyze records one routed sample per trial round");
+    assert!(ref_facts.routed_ns.is_empty(), "explain() runs no query, so it reports no routed timing");
+
+    assert_eq!(trials.len(), reference.len(), "explain_analyze must cover exactly the plans explain() reports");
+    for (t, r) in trials.iter().zip(&reference) {
+        assert_eq!(t.plan, r.plan, "plan order must match explain()'s ranking");
+        assert_eq!(t.predicted_ns, r.predicted_ns, "predicted_ns must be identical to explain()'s for {:?}", t.plan);
+        // Carried through, not recomputed — a caller comparing explain against explain_analyze must
+        // see the same term and the same pick, or the two primitives are not describing one query.
+        assert_eq!(t.materialize_ns, r.materialize_ns, "materialize_ns must match explain()'s for {:?}", t.plan);
+        assert_eq!(t.picked, r.picked, "picked must match explain()'s for {:?}", t.plan);
+        // A structurally-applicable plan's fastpath can legitimately decline at
+        // runtime (empty trials_ns); when it doesn't decline, it must have run
+        // exactly NUM_TRIALS times (warmups are discarded, never recorded).
+        assert!(
+            t.trials_ns.is_empty() || t.trials_ns.len() == NUM_TRIALS,
+            "{:?}: expected 0 or {NUM_TRIALS} trials, got {}", t.plan, t.trials_ns.len(),
+        );
+    }
+    assert!(
+        trials.iter().any(|t| t.plan == PhysicalPlan::GatheredScan && t.trials_ns.len() == NUM_TRIALS),
+        "GatheredScan is always applicable and never declines",
+    );
+}
+
+/// `feats.compose_paging` must name the branch `printing_compose_fastpath` really takes.
+///
+/// The two decisions are made independently: `acquire_plan_features` recomputes the permutation
+/// lookup, the `orderby_walk_available` test and the decline conditions on its own, and the fastpath
+/// decides again at run time. Nothing checked that they agree — the same shape as the Python cost
+/// mirror that silently drifted from `cost.rs` for two revisions. `PhaseStats::paging_taken` exists
+/// to make the agreement checkable; this is the check.
+///
+/// The prediction is 3-way (`ComposePaging`) and `paging_taken` is 10-way, because a decline or an
+/// empty page reaches no strategy at all. Only the strategy labels are comparable; the rest must
+/// still name the gate that fired, which is the other half of what this checks.
+///
+/// Equality holds in every cell but one, and the exception is structural rather than a tolerance.
+/// Acquire never composes, so it can test only that an orderby walk is AVAILABLE, never that the
+/// walk will succeed: the walk declines at run time on the null-value tail or a page past the value
+/// structure and falls into the gather. So `OrderbyWalk` may legally come back as
+/// `GatherWalkDeclined`, and nothing else may be inexact — in particular a predicted `Gather` that
+/// took a walk is still a failure, since that direction can only mean the availability tests
+/// drifted. Checking equality in all three cells would be asserting something the engine cannot
+/// promise; over the real corpus this cell fires about once in 1,700 compose runs.
+///
+/// Swept at two corpus sizes on purpose, because the two regimes are mutually exclusive and each
+/// leaves the other's assertion unexercised:
+/// - 8,000 cards reaches `Gather`, which needs a card/artwork compose on `rarity`/`usd` (the two
+///   orderbys with no permutation) to thread between the `COMPOSE_GATHER_MAX_CARD_FRACTION` breadth
+///   gate and the pre-compose sparse decline. At 2,000 that band is too narrow to land in.
+/// - 2,000 cards reaches the declines, which at 8,000 stop firing entirely.
+#[test]
+fn compose_paging_prediction_matches_the_branch_taken() {
+    use rand::SeedableRng;
+    // Both regimes, because they are mutually exclusive -- see the doc above. At 8,000 no query
+    // declines at all; at 2,000 `Gather` is unreachable. One size leaves half the test asleep.
+    const CORPUS_SIZES: [usize; 2] = [2_000, 8_000];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_003);
+
+    // ONLY the last two specs actually reach a compose acquire, and that is not obvious from
+    // reading them: `is_printing_composable` accepts `border==`, `set:`/`watermark:` and
+    // `CollectionCmp` at `Ge`, and nothing else. The colour/type/rarity leaves above are bitmask
+    // and numeric comparisons, so every one of their combinations acquires as `plane` or
+    // `candidates` and is skipped by the `count_source` guard below. They are kept because a spec
+    // that stops composing is exactly the regression this test should notice — but adding more of
+    // that shape does NOT widen coverage here. Add composable leaves.
+    let specs = [
+        FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]),
+        fuzz_leaf_type(&mut rng),
+        fuzz_leaf_color(&mut rng),
+        fuzz_leaf_rarity(&mut rng),
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        FuzzSpec::And(vec![fuzz_leaf_type(&mut rng), fuzz_leaf_rarity(&mut rng)]),
+        // The one composable leaf whose build needs a card-plane BROADCAST, and therefore the only
+        // shape that now reaches `Gather` under a grouped mode on a walkable orderby -- every other
+        // composable leaf walks there (see `orderby_walk_beats_gather`). Without this spec
+        // `ComposePaging::Gather` is unreachable in this sweep, which is how the walk's extension to
+        // card/artwork was caught removing the branch entirely.
+        FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(0), expected: 0b01 }),
+        FuzzSpec::And(vec![
+            FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(0), expected: 0b01 }),
+            FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        ]),
+        // Deliberately NARROW, and one of only three specs here built from leaves
+        // `is_printing_composable` accepts (`border==`, and `CollectionCmp` at `Ge`). `fateseal` is the
+        // rare tail of `FUZZ_KEYWORDS` (weight 1 of 86), and ANDing a border narrows it ~6x further:
+        // 74 matching printings at n=8000. That is BELOW the sparse floor, so this spec declines before
+        // any paging strategy runs and contributes to `declined`, not to the strategy cells.
+        FuzzSpec::And(vec![
+            FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "fateseal".to_string() }),
+            FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        ]),
+        // What actually reaches `GatherWalkDeclined`, which needs three things at once: enough matches
+        // to clear the sparse floor, more matches than `page_offset` (or the page is empty and returns
+        // early), and FEWER matches carrying the sort value than `page_offset + limit` -- that last one
+        // is the decline. At n=8000 `keyword:flying` matches 11,061 printings of which 9,337 are priced,
+        // so at `offset=10_000, limit=60` the walk runs out of priced entries 723 short of the page and
+        // hands over to the gather. Narrowing it further does NOT work: the comment here used to credit
+        // the `fateseal` spec above, but the branch was in fact being reached because
+        // `rarity_printing_ordered` was silently EMPTY in the fuzz store, which made every
+        // rarity-ordered walk decline for want of an index. Populating it (see `fuzz_store_n`) removed
+        // that accident and left this cell at zero, which is how the mis-attribution surfaced.
+        FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "flying".to_string() }),
+    ];
+    // Every orderby, because which one is set is exactly what picks the branch: a card-space
+    // permutation gives `Perm`, `usd`/`rarity` in printing mode give `OrderbyWalk` (#744), and
+    // anything else falls through to `Gather`.
+    let sort_cols = [
+        ("edhrec", SortCol::EdhrecRank), ("cmc", SortCol::Cmc), ("power", SortCol::Power),
+        ("toughness", SortCol::Toughness), ("rarity", SortCol::Rarity), ("usd", SortCol::PriceUsd),
+        ("cubecobra", SortCol::Cubecobra), ("name", SortCol::Name),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+    // Both, since the strategy branch keys off `sort_perms.get(sort_col, descending)`.
+    let directions = [false, true];
+    // A deep offset as well as the first page: `EmptyPage` is only reachable past the total.
+    let offsets = [0usize, 40, 10_000];
+
+    let (mut exercised, mut declined, mut empty) = (0usize, 0usize, 0usize);
+    // Predicted `Decline` where the fastpath actually RAN. Not a failure: acquire predicts the
+    // small-total bail from an ESTIMATED total where the fastpath has the exact one, so queries near
+    // `STREAM_MIN_MATCHES` can fall either side. Counted and printed so the rate stays visible --
+    // silently predicting Decline for plans that would have run removes them from the argmin.
+    let mut decline_predicted_but_ran = 0usize;
+    // Perm / OrderbyWalk / Gather / GatherWalkDeclined. The fourth is not a strategy the model
+    // predicts -- it is the one legal inexactness in the prediction, and it gets its own cell so
+    // the allowance above cannot pass by never being exercised.
+    let mut by_strategy = [0usize; 4];
+    for &n_cards in &CORPUS_SIZES {
+        let data = fuzz_store_n(&mut rng, n_cards);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let ctx = QueryCtx::from(archived);
+        for spec in &specs {
+            for &(mode_label, mode) in &modes {
+                for &(orderby, sort_col) in &sort_cols {
+                    for &descending in &directions {
+                        for &page_offset in &offsets {
+                            let params = kernel_params(mode, sort_col, descending, 60, page_offset);
+                            let bound = fuzz_bound_filter(spec, archived);
+                            let (pe, filter) = split_planes(
+                                bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                            );
+
+                            // The prediction, on its own clone -- acquire mutates the filter it reads.
+                            let mut acq_filter = filter.clone();
+                            let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
+                            if prep.count_source() != CountSource::PrintingCompose {
+                                continue; // not a compose acquire; compose_paging has no referent
+                            }
+                            let predicted = feats.compose_paging;
+
+                            // The branch really taken, on a pristine clone. Clear first: an earlier
+                            // iteration's label survives in the cell otherwise (see PHASE_STATS).
+                            let mut run_filter = filter.clone();
+                            take_phase_stats();
+                            let ran = run_query_with_plan(PhysicalPlan::PrintingCompose, &ctx, &params, &mut run_filter, None, pe.as_ref());
+                            let taken = take_phase_stats().paging_taken;
+
+                            let case = format!(
+                                    "n={n_cards} {mode_label}/{orderby}/desc={descending}/offset={page_offset} ({})",
+                                fuzz_describe(spec),
+                            );
+                            // A decline reached no paging strategy, so there is nothing to compare
+                            // against `compose_paging`. But it must still say WHICH gate declined it:
+                            // `""` would mean the fastpath was never entered, and this call entered it.
+                            // That is the silent hole the labels close -- before them, three of the four
+                            // decline sites returned without recording anything.
+                            if ran.is_none() {
+                                assert!(
+                                    matches!(taken, PagingTaken::NotComposable | PagingTaken::DeclineBroad | PagingTaken::DeclineSparseEstimate | PagingTaken::DeclineSparseExact),
+                                    "compose declined without recording which gate fired (got {taken:?}): {case}",
+                                );
+                                declined += 1;
+                                continue;
+                            }
+                            if taken == PagingTaken::EmptyPage {
+                                empty += 1;
+                                continue; // returned before any paging strategy ran
+                            }
+                            // Not a blanket equality: the prediction is an upper bound on
+                            // `OrderbyWalk` and exact everywhere else -- see the doc above. Each
+                            // arm names the labels that are legal for it, so a wrong branch in the
+                            // OTHER direction (`Gather` predicted, walk taken) still fails.
+                            let legal: &[PagingTaken] = match predicted {
+                                ComposePaging::Perm => &[PagingTaken::Perm],
+                                ComposePaging::OrderbyWalk => &[PagingTaken::OrderbyWalk, PagingTaken::GatherWalkDeclined],
+                                // Bare `Gather` only. `GatherWalkDeclined` here would mean the
+                                // fastpath found a walk available where acquire predicted none,
+                                // i.e. the two availability tests really had drifted.
+                                ComposePaging::Gather => &[PagingTaken::Gather],
+                                // The fastpath disagreed and ran. Legal (estimated vs exact total),
+                                // but every run-branch is a distinct disagreement worth counting.
+                                ComposePaging::Decline => {
+                                    &[PagingTaken::Perm, PagingTaken::OrderbyWalk, PagingTaken::Gather, PagingTaken::GatherWalkDeclined]
+                                }
+                            };
+                            assert!(
+                                legal.contains(&taken),
+                                "cost model predicted {predicted:?} (legal: {legal:?}) but the fastpath took {taken:?}: {case}",
+                            );
+                            exercised += 1;
+                            match (predicted, taken) {
+                                (ComposePaging::Perm, _) => by_strategy[0] += 1,
+                                (ComposePaging::OrderbyWalk, PagingTaken::GatherWalkDeclined) => by_strategy[3] += 1,
+                                (ComposePaging::OrderbyWalk, _) => by_strategy[1] += 1,
+                                (ComposePaging::Gather, _) => by_strategy[2] += 1,
+                                (ComposePaging::Decline, _) => decline_predicted_but_ran += 1,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Guard against the sweep silently covering nothing -- every `continue` above is a shape
+    // that skipped the assertion, and all of them skipping would still pass.
+    println!(
+        "compose paging: {exercised} strategy runs checked \
+         ({} Perm, {} OrderbyWalk, {} Gather, {} walk-declined), {declined} declined, {empty} empty-page, \
+         {decline_predicted_but_ran} predicted-decline-but-ran",
+        by_strategy[0], by_strategy[1], by_strategy[2], by_strategy[3],
+    );
+    // Every cell, not just a total: the agreement is only interesting where the two decisions could
+    // differ, and a sweep that reaches one branch 64 times checks one branch. This caught the sweep
+    // exercising `Gather` zero times at a smaller corpus size. `GatherWalkDeclined` is in the list
+    // for the same reason and one more: it is the single cell where the prediction is allowed to be
+    // inexact, so a sweep that never reaches it turns that allowance into an unchecked hole.
+    for (i, strategy) in ["Perm", "OrderbyWalk", "Gather", "GatherWalkDeclined"].iter().enumerate() {
+        assert!(by_strategy[i] > 0, "no compose query reached {strategy}; that branch is unchecked");
+    }
+    // And at least one decline, or the "every gate names itself" assertion never ran either.
+    assert!(declined > 0, "no compose query declined; the decline-label assertion is unexercised");
+}
+
+/// The two materializing plans must report identical `cards_visited` and `printing_span`.
+///
+/// These are ONE counter under one name: `PhaseStats` has a single set of fields and both
+/// `exec_gathered_scan` and `run_query_streamed` publish into them, so a consumer reading
+/// `printing_span` off a `PlanTrial` cannot tell which executor produced it. `scan_units` has
+/// one definition too, and both plans' cost arms key on it — so if the executors count differently,
+/// at most one of them is the valid comparison, and the damage surfaces as a rate constant that
+/// will not calibrate rather than as anything that looks like a bug.
+///
+/// `printing_span` is the load-bearing half, and the reason is a one-line placement: both
+/// executors count it BELOW the `card_pass` continue, because a card rejected there never has its
+/// printings touched. Counting at the top of the loop instead is the exact defect this pins, and it
+/// is the shape a plausible "just count once at the top" cleanup would reintroduce silently.
+///
+/// Equality therefore rests on that continue firing identically in both loops — and the two
+/// `all_match` gates are NOT identical:
+///
+///     gathered:   all_match_known || card_pass(..)
+///     streamed:  (all_match_known && !Artwork) || card_pass(..)
+///
+/// In artwork mode with `all_match_known`, gathered short-circuits and never calls `card_pass`,
+/// while streamed calls it and could hit the `continue`. The counts stay equal only if
+/// `all_match_known` is honest, so the artwork/all-match cell checks the narrowing's own claim as
+/// well as the counters — which is why it is guarded for coverage separately below.
+///
+/// `printings_examined` is deliberately NOT in this set, and must not be added: the two executors do
+/// genuinely different work there, which is the whole reason it exists as a second counter. Streamed
+/// only COUNTS, so both `all_match` arms of `card_match_count` answer from span arithmetic and examine
+/// zero printings; gathered must EMIT, so it reads the one printing it picks. Asserting equality would
+/// pin the very conflation `printing_span` already suffered from — see `PhaseStats`.
+///
+/// `matches_pushed` is asserted two ways: plan-vs-plan like the others, and against the total each
+/// run actually returned. The second is what carries it. Plan-vs-plan alone cannot catch both
+/// executors being wrong the same way, and "it equals the total by construction" is not something
+/// this file should take on faith across two functions — `GatherSelect::absorb` accumulates the
+/// identical `len() - before` the counter does, and in artwork mode that expression sits downstream
+/// of the group dedup, so a counter moved above it would still agree plan-to-plan while both
+/// disagreed with reality.
+#[test]
+fn materializing_plans_agree_on_the_counters_they_share() {
+    use rand::SeedableRng;
+    // One size is enough here: unlike the compose sweep there are no mutually exclusive regimes,
+    // and what varies the `card_pass` continue is the predicate and the mode, not the corpus.
+    const CORPUS_SIZE: usize = 4_000;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_004);
+    // Both narrowing kinds, and the second group is the load-bearing one. The plane/index leaves
+    // above it narrow EXACTLY -- every candidate they return passes `card_pass`, so the continue
+    // never fires and the two loops trivially agree. Only an inexact narrowing (an oracle-text
+    // trigram superset, an arithmetic comparison across a card and a printing field) hands the
+    // executors candidates that `card_pass` then rejects, which is the only condition under which
+    // `printing_span` can diverge at all. Verified: without the second group `saw_continue` is
+    // 0 across the whole sweep and both assertions pass without exercising anything.
+    let specs = [
+        fuzz_leaf_type(&mut rng),
+        fuzz_leaf_color(&mut rng),
+        fuzz_leaf_rarity(&mut rng),
+        FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]),
+        FuzzSpec::And(vec![fuzz_leaf_type(&mut rng), fuzz_leaf_rarity(&mut rng)]),
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        fuzz_leaf_text_contains(&mut rng, TextSearchField::OracleTextLower),
+        fuzz_leaf_text_contains(&mut rng, TextSearchField::NameLower),
+        fuzz_leaf_arith(&mut rng),
+        FuzzSpec::And(vec![fuzz_leaf_type(&mut rng), fuzz_leaf_text_contains(&mut rng, TextSearchField::OracleTextLower)]),
+    ];
+    // `usd`/`rarity` have no sort permutation, so StreamedSelect declines on them and the pair is
+    // skipped. Left in deliberately: which orderbys have permutations is not this test's business
+    // to encode, and `ran.is_none()` filters them without a second source of truth to drift.
+    let sort_cols = [
+        ("edhrec", SortCol::EdhrecRank), ("cmc", SortCol::Cmc), ("power", SortCol::Power),
+        ("toughness", SortCol::Toughness), ("name", SortCol::Name), ("cubecobra", SortCol::Cubecobra),
+        ("rarity", SortCol::Rarity), ("usd", SortCol::PriceUsd),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+
+    let data = fuzz_store_n(&mut rng, CORPUS_SIZE);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let (mut checked, mut artwork_all_match, mut saw_continue) = (0usize, 0usize, 0usize);
+    for spec in &specs {
+        for &(mode_label, mode) in &modes {
+            for &(orderby, sort_col) in &sort_cols {
+                let params = kernel_params(mode, sort_col, false, 60, 0);
+                let bound = fuzz_bound_filter(spec, archived);
+                let (pe, filter) = split_planes(
+                    bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                );
+
+                // Each run gets a pristine clone -- `prepare_candidates` mutates the filter it is
+                // handed (`memoize_text_predicates`), and a shared one would let the second plan
+                // narrow a tree the first already rewrote.
+                let mut streamed_filter = filter.clone();
+                take_phase_stats();
+                let streamed_ran =
+                    run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref());
+                let streamed = take_phase_stats();
+                if streamed_ran.is_none() {
+                    continue; // no sort permutation for this orderby; nothing to compare against
+                }
+
+                let mut gathered_filter = filter.clone();
+                take_phase_stats();
+                let gathered_ran =
+                    run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref());
+                let gathered = take_phase_stats();
+                assert!(gathered_ran.is_some(), "GatheredScan is always applicable");
+
+                let case = format!("{mode_label}/{orderby} ({})", fuzz_describe(spec));
+                assert_eq!(
+                    streamed.cards_visited, gathered.cards_visited,
+                    "cards_visited disagrees (streamed {} vs gathered {}): {case}",
+                    streamed.cards_visited, gathered.cards_visited,
+                );
+                assert_eq!(
+                    streamed.printing_span, gathered.printing_span,
+                    "printing_span disagrees (streamed {} vs gathered {}): {case}",
+                    streamed.printing_span, gathered.printing_span,
+                );
+                assert_eq!(
+                    streamed.matches_pushed, gathered.matches_pushed,
+                    "matches_pushed disagrees (streamed {} vs gathered {}): {case}",
+                    streamed.matches_pushed, gathered.matches_pushed,
+                );
+                // And anchored to the value the run really returned, in BOTH executors. The two
+                // above are plan-vs-plan only, which cannot catch the two of them being wrong the
+                // same way; this is the one counter with an independent ground truth available for
+                // free, since `run_query_with_plan` already hands back the total.
+                //
+                // It is also what makes the `matches_pushed` parity above more than a restatement:
+                // the counter and `GatherSelect::total` accumulate the identical `len() - before`,
+                // and in artwork mode that expression is downstream of the group dedup, so a
+                // counter placed outside it would diverge here rather than in some later re-fit.
+                assert_eq!(
+                    streamed.matches_pushed, streamed_ran.as_ref().expect("checked above").0 as u64,
+                    "StreamedSelect's matches_pushed must equal the total it returned: {case}",
+                );
+                assert_eq!(
+                    gathered.matches_pushed, gathered_ran.as_ref().expect("asserted above").0 as u64,
+                    "GatheredScan's matches_pushed must equal the total it returned: {case}",
+                );
+                checked += 1;
+
+                // Coverage bookkeeping, so the assertions above cannot pass by never meeting the
+                // cases that could break them. `all_match_known` is read from a third narrowing
+                // rather than inferred: nothing in `PhaseStats` reports it.
+                let mut prep_filter = filter.clone();
+                let prep = prepare_candidates(&ctx, &params, &mut prep_filter, pe.as_ref());
+                if prep.all_match_known && matches!(mode, Mode::Artwork) {
+                    artwork_all_match += 1;
+                }
+                // Did the `card_pass` continue actually fire? Only then do the two loops take
+                // different numbers of trips past the counter, which is the only way
+                // `printing_span` can come apart at all. Measured as "fewer printings scanned
+                // than the candidate set holds", not guessed from the counters alone.
+                let scannable: u64 = prep
+                    .card_ids(&ctx)
+                    .map(|cid| {
+                        let (s, e) = (ctx.offsets[cid as usize], ctx.offsets[cid as usize + 1]);
+                        u64::from(u32::from(e) - u32::from(s))
+                    })
+                    .sum();
+                if gathered.printing_span < scannable {
+                    saw_continue += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "counter parity: {checked} query/plan pairs checked, {artwork_all_match} artwork+all_match_known, \
+         {saw_continue} with card_pass rejecting at least one candidate"
+    );
+    assert!(checked > 0, "no query ran both materializing plans; the parity assertions are unexercised");
+    // The one cell where the two `all_match` gates actually differ. Without it the sweep only ever
+    // compares two loops taking the identical branch, which is not a test of anything.
+    assert!(
+        artwork_all_match > 0,
+        "no artwork query had all_match_known; the one cell where the two all_match gates diverge is unchecked",
+    );
+    // And the continue must actually fire somewhere, or `printing_span` equality is trivial:
+    // with every candidate passing, both loops scan every printing and cannot disagree. This is
+    // what the inexact-narrowing specs are in the list for -- drop them and this drops to 0.
+    assert!(
+        saw_continue > 0,
+        "card_pass never rejected a candidate; printing_span agreed only because nothing was skipped",
+    );
+}
+
+/// No plan may report stats it did not write. Driven through `explain_analyze` on purpose — the
+/// invariant at risk lives in *its* loop, not in any executor.
+///
+/// `PHASE_STATS` is one thread-local slot every participant in a round publishes into, and
+/// `explain_analyze` separates them with a single `take_phase_stats()` after each. Nothing else
+/// enforces that separation, so deleting it corrupts the counters silently: the numbers stay
+/// plausible, every other test stays green, and the damage only appears later as a feature that
+/// disagrees with its counter for reasons no re-fit can find. This is the assertion that fails.
+///
+/// Two distinct leaks, and the second is the one actually observed:
+///
+/// 1. A participant that publishes NOTHING reads its predecessor's state. `PrintingRangeScan`,
+///    `PlanePopcountOrder` and `CardRangePopcount` write no counters at all (they are bitmap/index
+///    operations with no per-card match loop), so without the clear they report whichever
+///    materializing plan ran before them.
+///
+/// 2. `paging_taken` crossing from the plan that recorded it to a later one. Only
+///    `printing_compose_fastpath` writes it, and it must survive a materializing publish within one
+///    run — the routed path's "compose declines, records its gate, falls through to a materializing
+///    plan" sequence depends on that. So its lifetime is deliberately wider than any single
+///    publisher, and the per-participant clear is the only thing bounding it to one run instead of
+///    "this thread, ever". Measured when that clear was absent: 49 of 600 queries had
+///    `GatheredScan` reporting a `paging_taken` only the compose fastpath sets.
+///
+/// So a fully-instrumented, looping plan was the contaminated one — which is why asserting only
+/// that the silent fast paths report zeros would miss the real defect.
+///
+/// The two leaks now fail in different ways, and both still need pinning. Leak 1 needs
+/// `take_phase_stats` to clear `PHASE_STATS`; leak 2 needs it to clear `PAGING_TAKEN`, which is a
+/// separate thread-local precisely so a publisher cannot clobber it — dropping either half of that
+/// take reproduces the corresponding leak. (An earlier draft stored both in one slot and had the
+/// executors preserve the label through `..c.get()`; that made every publisher responsible for not
+/// wiping a field it does not own, which is the arrangement leak 2 came out of.)
+///
+/// `result_total` is not checked: `explain_analyze` overwrites it after the take, so it has no
+/// exposure. `paging_taken` is the whole of it.
+#[test]
+fn plan_stats_never_leak_between_participants() {
+    use rand::SeedableRng;
+    const CORPUS_SIZE: usize = 3_000;
+    const NUM_WARMUPS: usize = 1;
+    const NUM_TRIALS: usize = 3;
+    /// Publish no per-card COUNTERS — they popcount bitmaps or walk an index and visit no cards, so
+    /// `cards_visited`/`printings_examined`/`matches_pushed` have nothing to report. They DO publish
+    /// phase timings: every plan does now, which is what lets `plan_self_ns` read the executor's own
+    /// time directly instead of recovering it by subtracting `ns_prepare` from a trial.
+    const SILENT_PLANS: [PhysicalPlan; 3] =
+        [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::CardRangePopcount];
+    /// The subset of `SILENT_PLANS` that writes NO field at all, `paging_taken` included, so
+    /// `NotEntered` there is still proof no label leaked in. `PrintingRangeScan` is silent for the
+    /// counters and phase timings but labels its own exits, so it is checked separately below —
+    /// against its own labels, which is a stronger statement than "inherited nothing".
+    const UNLABELLED_PLANS: [PhysicalPlan; 2] = [PhysicalPlan::PlanePopcountOrder, PhysicalPlan::CardRangePopcount];
+    /// What a `PrintingRangeScan` that produced a page must report. Both are success exits; every
+    /// other `Range*` variant means it declined, and a declining plan has empty `trials_ns` and is
+    /// skipped above.
+    const RANGE_SUCCESS: [PagingTaken; 2] = [PagingTaken::RangeAligned, PagingTaken::RangeWalk];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_005);
+    // Chosen for plan COVERAGE, not for query realism: the bare ranges are what make
+    // `PrintingRangeScan`/`CardRangePopcount` applicable, the plane leaves reach
+    // `PlanePopcountOrder` in card mode, and the border leaf is the one that composes -- and a
+    // compose is what puts a real `paging_taken` in the cell for leak 2 to inherit.
+    let specs = [
+        fuzz_leaf_price(&mut rng),
+        fuzz_leaf_year(&mut rng),
+        fuzz_leaf_collector_number(&mut rng),
+        fuzz_leaf_type(&mut rng),
+        fuzz_leaf_color(&mut rng),
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+    let sort_cols = [("edhrec", SortCol::EdhrecRank), ("usd", SortCol::PriceUsd), ("name", SortCol::Name)];
+
+    let data = fuzz_store_n(&mut rng, CORPUS_SIZE);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let (mut silent_checked, mut materializing_checked, mut compose_labelled) = (0usize, 0usize, 0usize);
+    // Counted apart from `silent_checked` so the range fastpath's own success labels cannot go
+    // unexercised behind the two plans that legitimately report nothing.
+    let mut range_labelled = 0usize;
+    for spec in &specs {
+        for &(mode_label, mode) in &modes {
+            for &(orderby, sort_col) in &sort_cols {
+                let params = kernel_params(mode, sort_col, false, 60, 0);
+                let bound = fuzz_bound_filter(spec, archived);
+                let (pe, filter) = split_planes(
+                    bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                );
+                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, None, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
+
+                for t in &trials {
+                    if t.trials_ns.is_empty() {
+                        continue; // declined at runtime, so nothing was recorded for it
+                    }
+                    let case = format!("{:?} {mode_label}/{orderby} ({})", t.plan, fuzz_describe(spec));
+                    let p = &t.phases;
+                    if SILENT_PLANS.contains(&t.plan) {
+                        // Leak 1. `ns_round_total` and `result_total` are excluded: `explain_analyze`
+                        // fills both itself after the take, so they are non-zero by design here.
+                        assert_eq!(
+                            (p.cards_visited, p.printing_span, p.printings_examined, p.matches_pushed), (0, 0, 0, 0),
+                            "uninstrumented plan reported counters it never wrote: {case}",
+                        );
+                        // The INVERSE of the old assertion, and a stronger statement: these plans must
+                        // publish a phase span, because `plan_self_ns` now reads the executor's own
+                        // time from the phases rather than recovering it by subtraction. A plan that
+                        // ran and reports no phase would be priced at zero.
+                        assert!(
+                            p.ns_setup + p.ns_loop + p.ns_finish > 0,
+                            "plan produced a page but published no phase timing, so it prices as zero: {case}",
+                        );
+                        // The label half splits: only the two plans that write nothing can be
+                        // checked as "still NotEntered". `PrintingRangeScan` labels its own exits,
+                        // so for it the equivalent — and stronger — statement is that the label is
+                        // one of ITS OWN success variants, not merely absent. A leaked compose
+                        // label would fail that just as surely.
+                        if UNLABELLED_PLANS.contains(&t.plan) {
+                            assert_eq!(
+                                p.paging_taken, PagingTaken::NotEntered,
+                                "uninstrumented plan inherited a paging label: {case}",
+                            );
+                        } else {
+                            assert!(
+                                RANGE_SUCCESS.contains(&p.paging_taken),
+                                "PrintingRangeScan produced a page but reported {:?}, not one of its success exits: {case}",
+                                p.paging_taken,
+                            );
+                            range_labelled += 1;
+                        }
+                        silent_checked += 1;
+                    } else if matches!(t.plan, PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan) {
+                        // Leak 2: the field neither executor writes. Only the two printing-space
+                        // fastpaths set it, and neither is on either of their paths.
+                        assert_eq!(
+                            p.paging_taken, PagingTaken::NotEntered,
+                            "materializing plan inherited a paging label only a printing fastpath sets: {case}",
+                        );
+                        materializing_checked += 1;
+                    } else if t.plan == PhysicalPlan::PrintingCompose {
+                        // The source of the label leak 2 would propagate. Asserting it is REAL is what
+                        // makes the check above meaningful: if compose never recorded anything, there
+                        // would be nothing for a broken clear to spread.
+                        assert_ne!(
+                            p.paging_taken, PagingTaken::NotEntered,
+                            "compose ran but recorded no paging branch, so leak 2 has no source: {case}",
+                        );
+                        compose_labelled += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "stat isolation: {silent_checked} uninstrumented-plan runs ({range_labelled} range-labelled), \
+         {materializing_checked} materializing runs, {compose_labelled} compose runs carrying a real paging label"
+    );
+    // Each guard covers a leak that would otherwise go unasserted, and the third is what supplies
+    // the contaminant: without a labelled compose in the mix, leak 2 cannot be reproduced even with
+    // the clear deleted.
+    assert!(silent_checked > 0, "no uninstrumented plan ran; leak 1 is unchecked");
+    assert!(materializing_checked > 0, "no materializing plan ran; leak 2 is unchecked");
+    assert!(compose_labelled > 0, "no compose recorded a paging label; leak 2 has no contaminant to detect");
+    // The range fastpath is a second contaminant source AND the only plan here whose success is
+    // asserted against its own labels rather than against their absence. A sweep that never runs it
+    // successfully leaves both unexercised.
+    assert!(range_labelled > 0, "no PrintingRangeScan produced a page; its success labels are unchecked");
+}
+
+/// The predicted strategy and the taken strategy must SPELL themselves the same way.
+///
+/// These are two enums — `ComposePaging` (what the cost model predicted) and `PagingTaken` (what the
+/// fastpath did) — and Rust compares them nowhere: `compose_paging_prediction_matches_the_branch_taken`
+/// maps one to the other through an explicit table, so a rename on either side is invisible to it.
+///
+/// The comparison that DOES happen is in Python, on the strings.
+/// `scripts/bench_cost_model_agreement.py` counts agreement as `cells[(predicted, taken)]`, drawing
+/// `predicted` from `acquire["compose_paging"]` and `taken` from `plans[i]["paging_taken"]`. If the
+/// two labels drift apart, every agreed run is reclassified as a disagreement and the whole
+/// diagonal empties — a table full of alarming off-diagonal counts, with nothing wrong but a name.
+///
+/// This was a live hole until `ComposePaging::label()` existed: that side was `format!("{:?}", ..)`,
+/// so it followed a variant rename automatically while `PagingTaken::label()` did not.
+#[test]
+fn compose_paging_and_paging_taken_agree_on_strategy_names() {
+    // The three strategies that exist on BOTH sides, which is exactly the set the Python table
+    // compares. `PagingTaken`'s other variants are gates and outcomes with no predicted counterpart,
+    // and `GatherWalkDeclined` is deliberately spelled differently — it is the one cell where the
+    // prediction is allowed to be inexact, so it must NOT collide with `Gather`.
+    let paired = [
+        (ComposePaging::Perm, PagingTaken::Perm),
+        (ComposePaging::OrderbyWalk, PagingTaken::OrderbyWalk),
+        (ComposePaging::Gather, PagingTaken::Gather),
+    ];
+    for (predicted, taken) in paired {
+        assert_eq!(
+            predicted.label(), taken.label(),
+            "{predicted:?} and {taken:?} are the same strategy but spell it differently; \
+             bench_cost_model_agreement.py compares them as strings and its diagonal would empty",
+        );
+    }
+    // The fallback must stay distinguishable from the strategy it falls back to, or the walk-declined
+    // rate folds into the agreed count and the under-costing it measures disappears.
+    assert_ne!(
+        PagingTaken::GatherWalkDeclined.label(), PagingTaken::Gather.label(),
+        "a declined walk must not be reported as a plain gather",
+    );
+}
+
+/// A plan that enters a fastpath and declines must say so through `explain_analyze`, not just
+/// through `run_query_with_plan`.
+///
+/// `compose_paging_prediction_matches_the_branch_taken` checks the decline labels by driving
+/// `run_query_with_plan` and reading the thread-local directly, which only Rust can do. Everything
+/// outside the crate — `scripts/bench_cost_model_agreement.py`, any future calibration harness —
+/// sees `explain_analyze`, and that used to drop the stats of any plan whose round returned `None`.
+/// So `NotComposable`, `DeclineBroad`, `DeclineSparseEstimate` and `DeclineSparseExact` were
+/// recorded, asserted in-crate, and then discarded before anyone outside could count them.
+///
+/// The distinction is worth a wire field rather than an inference because the four declines do not
+/// cost the same thing. Three gate BEFORE `printing_compose_fastpath` composes. `DeclineSparseExact`
+/// gates AFTER, off the real total, so it pays a full printing compose and throws it away before
+/// the general path answers the query again. `declined_ns` is what sizes that; `paging_taken` is
+/// what says which of the two happened.
+///
+/// Asserted here, in order: a declining plan reports EMPTY `trials_ns` (it produced nothing), a
+/// NON-EMPTY `declined_ns` (it still cost something), zero counters and zero phase timings (no
+/// executor ran, so anything else would be a leak), and a label naming the gate rather than the
+/// `NotEntered` default that would mean it was never tried.
+///
+/// That last one now covers BOTH printing-space fastpaths. `PrintingRangeScan` used to decline as
+/// `NotEntered` — indistinguishable from never having been tried, and rendered as a blank gate
+/// column in `scripts/bench_cost_model_agreement.py`'s decline table. Its gates carry no prediction
+/// to falsify, unlike compose's, so the assertion is only that one fired; what they are for is
+/// sizing the declines and surfacing the two that should never fire at all.
+#[test]
+fn declining_plans_report_their_gate_through_explain_analyze() {
+    use rand::SeedableRng;
+    const CORPUS_SIZE: usize = 2_000;
+    const NUM_WARMUPS: usize = 1;
+    const NUM_TRIALS: usize = 2;
+    /// Gates that mean "entered the compose fastpath and turned back". `NotEntered` is excluded on
+    /// purpose: it is the value this test exists to prove a decline never reports.
+    ///
+    /// `NotComposable` is IN the list but should never be seen, exactly like the range fastpath's
+    /// two tripwires below: `PhysicalPlan::PrintingCompose.applicable` IS `printing_compose_applicable`,
+    /// the same structural test the fastpath re-checks. Admitted here rather than asserted against
+    /// for the same reason as those — this test's job is "a gate was named", and `by_gate` below
+    /// prints the distribution so its showing up is visible.
+    const DECLINE_GATES: [PagingTaken; 4] = [
+        PagingTaken::NotComposable,
+        PagingTaken::DeclineBroad,
+        PagingTaken::DeclineSparseEstimate,
+        PagingTaken::DeclineSparseExact,
+    ];
+    /// The same for the range fastpath. `RangeAligned`/`RangeWalk` are excluded because they are
+    /// its success exits — reaching one of those with an empty `trials_ns` would mean the fastpath
+    /// returned a page and `explain_analyze` recorded a decline anyway.
+    ///
+    /// `RangeNotBare` and `RangePermutationStale` are IN the list but should never be seen:
+    /// `PhysicalPlan::PrintingRangeScan.applicable` already requires bare range bounds, and a
+    /// permutation whose length disagrees with the corpus is a corrupt index. They are admitted
+    /// here rather than asserted against because this test's job is "a gate was named", and
+    /// `range_gate_counts` below prints the distribution so either one showing up is visible.
+    const RANGE_DECLINE_GATES: [PagingTaken; 6] = [
+        PagingTaken::RangeSelective,
+        PagingTaken::RangeSparse,
+        PagingTaken::RangeUnalignedPrice,
+        PagingTaken::RangeNoPermutation,
+        PagingTaken::RangeNotBare,
+        PagingTaken::RangePermutationStale,
+    ];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_006);
+    // The narrow keyword/border AND is the one that reliably declines -- same reasoning as the
+    // compose sweep's last spec, where a small match set is what drives the sparse gates. The
+    // broader leaves are here so the sweep also covers plans that decline for other reasons.
+    let specs = [
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        fuzz_leaf_type(&mut rng),
+        fuzz_leaf_price(&mut rng),
+        // The range fastpath's declines, which the sampled price leaf above does not reach: with
+        // this seed it draws a threshold that is broad enough to walk under every orderby in the
+        // list, so the sweep only ever saw the fastpath SUCCEED. Both of these are bare ranges, so
+        // `PrintingRangeScan` is applicable for all three of them and only the gate differs.
+        //
+        // Broad: passes `range_too_broad_to_narrow` and reaches the strategy choice, so it succeeds
+        // where a permutation exists and declines `RangeNoPermutation` where one does not.
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),
+        // Matches nothing, so the breadth gate turns it back first — `RangeSelective`, NOT
+        // `EmptyPage`: the broadness test runs before the `k == 0` check, which is why an empty
+        // range reads as "the narrowing wins" rather than as an empty page.
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Gt, val: 100_000.0 }),
+        // A broad range that is NOT a price leaf, so under the `usd` orderby in `sort_cols` the
+        // index is not the sort permutation and there is no aligned mapping — `RangeUnalignedPrice`,
+        // the one gate that needs the predicate and the orderby to disagree.
+        FuzzSpec::Leaf(FuzzLeaf::Year { op: CmpOp::Gt, year: 1900 }),
+        FuzzSpec::And(vec![
+            FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "fateseal".to_string() }),
+            FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        ]),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+    let sort_cols = [("edhrec", SortCol::EdhrecRank), ("usd", SortCol::PriceUsd), ("rarity", SortCol::Rarity)];
+
+    let data = fuzz_store_n(&mut rng, CORPUS_SIZE);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let (mut declines_seen, mut compose_gates_seen, mut range_gates_seen) = (0usize, 0usize, 0usize);
+    // Decline rounds that measured above zero. Counted rather than asserted per round — see the
+    // note at the accumulation site for why a zero is legitimate for the cheapest gates.
+    let mut nonzero_declines = 0usize;
+    let mut by_gate = std::collections::BTreeMap::<String, usize>::new();
+    for spec in &specs {
+        for &(mode_label, mode) in &modes {
+            for &(orderby, sort_col) in &sort_cols {
+                let params = kernel_params(mode, sort_col, false, 60, 0);
+                let bound = fuzz_bound_filter(spec, archived);
+                let (pe, filter) = split_planes(
+                    bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                );
+                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, None, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
+
+                for t in &trials {
+                    if t.declined_ns.is_empty() {
+                        continue;
+                    }
+                    let case = format!("{:?} {mode_label}/{orderby} ({})", t.plan, fuzz_describe(spec));
+                    // Mutually exclusive: a decline is deterministic for one query and store, so a
+                    // plan cannot both produce a page and bail across rounds of the same sweep.
+                    assert!(t.trials_ns.is_empty(), "a plan reported both trials and declines: {case}");
+                    assert_eq!(t.declined_ns.len(), NUM_TRIALS, "one decline sample per recorded round: {case}");
+                    // NOT asserted per-round as `> 0`. The cheapest gates really do complete inside
+                    // the clock's granularity: `RangeSelective` on `usd>100000` is two binary
+                    // searches over an empty span, and in a release build it measures 0 ns. An
+                    // earlier draft asserted every round was non-zero and failed on exactly that
+                    // query — the assertion was wrong, not the timer. What is worth pinning is that
+                    // the timer is wired up AT ALL, which is a sweep-level claim; see
+                    // `nonzero_declines` below.
+                    nonzero_declines += t.declined_ns.iter().filter(|&&ns| ns > 0).count();
+                    // No executor ran, so anything non-zero here came from somewhere else.
+                    let p = &t.phases;
+                    assert_eq!(
+                        (p.cards_visited, p.printing_span, p.printings_examined, p.matches_pushed), (0, 0, 0, 0),
+                        "a declining plan reported counters no executor wrote: {case}",
+                    );
+                    assert_eq!(
+                        (p.ns_setup, p.ns_loop, p.ns_finish, p.ns_prepare, p.ns_round_total, p.result_total), (0, 0, 0, 0, 0, 0),
+                        "a declining plan reported timings or a total it never produced: {case}",
+                    );
+                    declines_seen += 1;
+                    // Both printing-space fastpaths label their gates, against their own legal
+                    // sets — a compose gate arriving on a range decline (or vice versa) is a leak,
+                    // and a shared "is not NotEntered" check would pass straight through it.
+                    // No other plan has a fastpath, so no other plan can reach here labelled.
+                    match t.plan {
+                        PhysicalPlan::PrintingCompose => {
+                            assert!(
+                                DECLINE_GATES.contains(&p.paging_taken),
+                                "a declining compose reported {:?}, which does not name a compose gate: {case}",
+                                p.paging_taken,
+                            );
+                            *by_gate.entry(format!("{:?}", p.paging_taken)).or_default() += 1;
+                            compose_gates_seen += 1;
+                        }
+                        PhysicalPlan::PrintingRangeScan => {
+                            assert!(
+                                RANGE_DECLINE_GATES.contains(&p.paging_taken),
+                                "a declining range scan reported {:?}, which does not name a range gate: {case}",
+                                p.paging_taken,
+                            );
+                            *by_gate.entry(format!("{:?}", p.paging_taken)).or_default() += 1;
+                            range_gates_seen += 1;
+                        }
+                        _ => assert_eq!(
+                            p.paging_taken, PagingTaken::NotEntered,
+                            "a plan with no fastpath declined carrying a label: {case}",
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    let gates: Vec<String> = by_gate.iter().map(|(g, n)| format!("{g} x{n}")).collect();
+    println!(
+        "declines through explain_analyze: {declines_seen} total, {compose_gates_seen} compose, \
+         {range_gates_seen} range ({})",
+        gates.join(", "),
+    );
+    // Each guard matters: the first says the wire field is reachable at all, the other two say the
+    // labels ride along with it. Before `declined_ns` existed every one of these rows was dropped,
+    // and before the `Range*` labels the third was reachable but blank.
+    assert!(declines_seen > 0, "no plan declined; the whole assertion block above is unexercised");
+    assert!(compose_gates_seen > 0, "no compose declined; the gate labels are still unreachable from outside Rust");
+    assert!(range_gates_seen > 0, "no range scan declined; its gate labels are still unreachable from outside Rust");
+    // `declined_ns` must be a real measurement somewhere, or it is a vector of zeros nothing would
+    // notice. Sweep-level because a single cheap gate legitimately reads 0 — the claim is that the
+    // timer runs, not that every gate is expensive enough to see.
+    assert!(nonzero_declines > 0, "every decline measured 0 ns; declined_ns is not timing anything");
+}
+
+/// #702 PR1 estimator accuracy report (NOT an assertion — a reporting tool).
+/// Runs a spread of fuzz queries against a corpus store, comparing the point
+/// estimate and bounds to the mode="card" reference count, and prints the
+/// error distribution. Run with:
+///   cargo test --release estimator_accuracy -- --ignored --nocapture
+#[test]
+#[ignore = "estimator accuracy report; cargo test estimator_accuracy -- --ignored --nocapture"]
+fn estimator_accuracy() {
+    use rand::SeedableRng;
+    const CORPUS_CARDS: usize = 6_000;
+    const QUERIES: usize = 5_000;
+    const MAX_DEPTH: u8 = 3;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4_242);
+    let data = fuzz_store_n(&mut rng, CORPUS_CARDS);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_cards = archived.cards.len();
+
+    let (mut exact, mut within_2x, mut worse) = (0u32, 0u32, 0u32);
+    let mut tight_bounds = 0u32; // bounds narrower than half the universe
+    let mut collapsed_bounds = 0u32; // lo == hi (a fully-pinned answer)
+    let mut unsound = 0u32; // must stay 0
+    let mut total = 0u32;
+
+    for _ in 0..QUERIES {
+        let spec = fuzz_gen(&mut rng, MAX_DEPTH);
+        let f = fuzz_bound_filter(&spec, archived);
+        let truth = fuzz_reference_total(archived, &f, "card");
+        let c = super::estimator::estimate_cardinality(&f, &archived.indexes, &archived.offsets);
+        total += 1;
+
+        if (c.lo as usize) > truth || truth > (c.hi as usize) {
+            unsound += 1;
+            eprintln!("UNSOUND: truth={truth} bounds=[{},{}] filter={}", c.lo, c.hi, fuzz_describe(&spec));
+        }
+
+        // Point-estimate accuracy vs truth.
+        let est = c.est as usize;
+        if est == truth {
+            exact += 1;
+        } else {
+            let (a, b) = (est.max(1), truth.max(1));
+            if a <= 2 * b && b <= 2 * a {
+                within_2x += 1;
+            } else {
+                worse += 1;
+            }
+        }
+
+        // Bounds tightness.
+        let width = (c.hi - c.lo) as usize;
+        if width * 2 < n_cards {
+            tight_bounds += 1;
+        }
+        if c.lo == c.hi {
+            collapsed_bounds += 1;
+        }
+    }
+
+    let pct = |x: u32| 100.0 * f64::from(x) / f64::from(total);
+    eprintln!("\n=== #702 estimator accuracy ({total} queries, {n_cards} cards) ===");
+    eprintln!("unsound bounds violations : {unsound} (MUST be 0)");
+    eprintln!("point est == truth        : {exact} ({:.1}%)", pct(exact));
+    eprintln!("point est within 2x       : {within_2x} ({:.1}%)", pct(within_2x));
+    eprintln!("point est worse than 2x   : {worse} ({:.1}%)", pct(worse));
+    eprintln!("bounds width < N/2        : {tight_bounds} ({:.1}%)", pct(tight_bounds));
+    eprintln!("bounds collapsed (lo==hi) : {collapsed_bounds} ({:.1}%)", pct(collapsed_bounds));
+    assert_eq!(unsound, 0, "estimator produced unsound bounds — see stderr");
+}
+
+/// The shared 22-query calibration set used by `plan_cost_calibration`,
+/// `plan_cost_model_matches_gold`, and `plan_regret_report`. A spread from
+/// near-whole-corpus down to narrow, covering each plan's applicability
+/// (pure-plane → True residual for P2; bare range for P1; residual predicate for
+/// P3/P4) AND a range of residual verify tiers (plane/numeric cheap → tag
+/// SET_LOOKUP → oracle/name TEXT_SCAN), plus a sparse postings-narrow
+/// (`o:annihilator`, `kw:Flying`) and an OR union. The closures capture nothing,
+/// so they live here rather than being copy-pasted into each bench.
+fn calibration_queries() -> Vec<(&'static str, FuzzSpec)> {
+    // Colors are the low 5 bits (WUBRG); TYPE_CREATURE is 1<<4. Ge (`:`) = contains.
+    let color = |op, mask| FuzzSpec::Leaf(FuzzLeaf::Color { op, mask });
+    let typ   = |op, mask| FuzzSpec::Leaf(FuzzLeaf::Type { op, mask });
+    let cmc   = |op, val| FuzzSpec::Leaf(FuzzLeaf::Cmc { op, val });
+    let power = |op, val| FuzzSpec::Leaf(FuzzLeaf::Power { op, val });
+    let price = |op, val| FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op, val });
+    let year   = |op, y: i32| FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
+    let otext  = |needle: &str| FuzzSpec::Leaf(FuzzLeaf::TextContains { field: TextSearchField::OracleTextLower, needle: needle.to_string() });
+    let ntext  = |needle: &str| FuzzSpec::Leaf(FuzzLeaf::TextContains { field: TextSearchField::NameLower, needle: needle.to_string() });
+    let rarity = |op, val| FuzzSpec::Leaf(FuzzLeaf::Rarity { op, val });
+    let kw     = |value: &str| FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: value.to_string() });
+
+    vec![
+        ("cmc>=0 (all)",       cmc(CmpOp::Ge, 0.0)),
+        ("t:creature",         typ(CmpOp::Ge, TYPE_CREATURE)),
+        ("color(bit3)",        color(CmpOp::Ge, 1 << 3)),
+        ("color3 t:creature",  FuzzSpec::And(vec![color(CmpOp::Ge, 1 << 3), typ(CmpOp::Ge, TYPE_CREATURE)])),
+        ("t:creature power>3", FuzzSpec::And(vec![typ(CmpOp::Ge, TYPE_CREATURE), power(CmpOp::Gt, 3.0)])),
+        ("cmc<=2",             cmc(CmpOp::Le, 2.0)),
+        ("cmc==7",             cmc(CmpOp::Eq, 7.0)),
+        ("usd<5",              price(CmpOp::Lt, 5.0)),
+        ("year>=2020",         year(CmpOp::Ge, 2020)),
+        ("r:mythic(=3)",       rarity(CmpOp::Eq, 3.0)),
+        ("o:flying",           otext("flying")),
+        ("o:sacrifice",        otext("sacrifice")),
+        ("o:annihilator",      otext("annihilator")),
+        ("name:dragon",        ntext("dragon")),
+        ("kw:Flying",          kw("Flying")),
+        ("c:g or c:r",         FuzzSpec::Or(vec![color(CmpOp::Ge, 1 << 3), color(CmpOp::Ge, 1 << 2)])),
+        // Compounds: plane narrows → expensive residual verify on the CANDIDATE
+        // set (not full N); mixed card/printing-space AND; nested And/Or; a Not.
+        ("t:creature o:flying", FuzzSpec::And(vec![typ(CmpOp::Ge, TYPE_CREATURE), otext("flying")])),
+        ("t:creature usd<5",   FuzzSpec::And(vec![typ(CmpOp::Ge, TYPE_CREATURE), price(CmpOp::Lt, 5.0)])),
+        ("cmc<=3 o:draw",      FuzzSpec::And(vec![cmc(CmpOp::Le, 3.0), otext("draw")])),
+        ("t:cr (c:g or c:r)",  FuzzSpec::And(vec![typ(CmpOp::Ge, TYPE_CREATURE), FuzzSpec::Or(vec![color(CmpOp::Ge, 1 << 3), color(CmpOp::Ge, 1 << 2)])])),
+        ("-t:creature",        FuzzSpec::Not(Box::new(typ(CmpOp::Ge, TYPE_CREATURE)))),
+        ("cmc>=15 (narrow)",   cmc(CmpOp::Ge, 15.0)),
+    ]
+}
+
+/// A large, diverse calibration corpus generated via the #677 fuzzer — for the
+/// cost-model FIT/validation benches, where 22 hand-picked queries were too few
+/// and too collinear (`scan_units`/`matches`/`page_span` all rose together) to
+/// identify the per-plan constants. Random `fuzz_gen` spans predicate types,
+/// selectivities, and compounds (plane∧expensive-residual shapes decouple scan
+/// from match count), deduped by description. NOT used by the fast correctness
+/// test (`cost_route_matches_legacy` keeps the small hand set).
+fn generate_calibration_corpus(n: usize, seed: u64) -> Vec<(String, FuzzSpec)> {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(n);
+    let mut guard = 0usize;
+    while out.len() < n && guard < n * 50 {
+        guard += 1;
+        let depth = rng.random_range(1..=3u8);
+        let spec = fuzz_gen(&mut rng, depth);
+        let desc = fuzz_describe(&spec);
+        if seen.insert(desc.clone()) {
+            out.push((desc, spec));
+        }
+    }
+    out
+}
+
+/// #702 step 3 (cost calibration): time each *applicable* physical plan on the
+/// REAL corpus archive, across a spread of query selectivities × unique modes ×
+/// page depths, so the per-plan cost formulas can be fit to measured runtime and
+/// the empirical gold (fastest plan) established. Reporting tool, not an
+/// assertion.
+///
+///     cargo test --release plan_cost_calibration -- --ignored --nocapture
+///
+/// Needs benchmarks/verify-order/real.store (see bench_verify_cost.rs to (re)build
+/// it); skips cleanly if absent or stale. Min-of-N after warmup, binding a fresh
+/// filter per iteration OUTSIDE the timer (FilterExpr isn't Clone, and
+/// prepare_candidates mutates it via memoize). For calibration-grade numbers run
+/// on a quiesced machine (benchmark-artifacts protocol) — otherwise directional.
+/// The `est` column is the estimator's card-space point estimate (meaningful vs
+/// `total` in card mode; printing-mode totals count printings).
+#[test]
+#[ignore = "plan-cost calibration bench; needs real.store; cargo test --release plan_cost_calibration -- --ignored --nocapture"]
+fn plan_cost_calibration() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 60;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    // Safety: same contract as bench_verify_cost / get_mmap — header re-validated below.
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    eprintln!("real.store: {} cards, {} printings\n", archived.cards.len(), archived.printings.len());
+
+    let queries = calibration_queries();
+    let modes = ["card", "printing"];
+    // (label, limit, offset): shallow first page vs a deep page (broad queries only reach it).
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let all_plans = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+    let labels = ["P1-range", "P2-popcnt", "P3-stream", "P4-gather"];
+
+    println!(
+        "{:<20} {:>7} {:>7} {:>7} {:>6}  {:>9} {:>9} {:>9} {:>9}  gold",
+        "query", "mode", "page", "total", "est", labels[0], labels[1], labels[2], labels[3],
+    );
+
+    for (qlabel, spec) in &queries {
+        // Estimator's card-space point estimate (full unsplit filter, as validated).
+        let est = super::estimator::estimate_cardinality(
+            &fuzz_bound_filter(spec, archived), &archived.indexes, &archived.offsets,
+        ).est;
+        for &mode in &modes {
+            let unique_is_card = mode == "card";
+            for &(plabel, limit, offset) in &pages {
+                let mut ns = [None::<u64>; 4];
+                let mut total = 0usize;
+                for (pi, plan) in all_plans.iter().enumerate() {
+                    let mut best = u64::MAX;
+                    let mut applicable = false;
+                    for it in 0..(WARMUP + ITERS) {
+                        // Fresh bind+split per iteration (outside the timer): memoize
+                        // mutates the residual, so reusing it would drift the cost.
+                        let (pe, mut res) = split_planes(
+                            fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                            &archived.indexes.oracle_trigram.words, unique_is_card,
+                        );
+                        let t0 = Instant::now();
+                        let out = black_box(run_query_with_plan(
+                            *plan, &QueryCtx::from(archived),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
+                        ));
+                        let dt = t0.elapsed().as_nanos() as u64;
+                        match out {
+                            Some((t, _)) => {
+                                total = t;
+                                applicable = true;
+                                if it >= WARMUP {
+                                    best = best.min(dt);
+                                }
+                            }
+                            None => break, // inapplicable for this query/mode
+                        }
+                    }
+                    if applicable {
+                        ns[pi] = Some(best);
+                    }
+                }
+                let gold = (0..4)
+                    .filter_map(|i| ns[i].map(|v| (v, labels[i])))
+                    .min_by_key(|(v, _)| *v)
+                    .map_or("-", |(_, l)| l);
+                let cell = |o: Option<u64>| o.map_or_else(|| "-".to_string(), |v| v.to_string());
+                println!(
+                    "{:<20} {:>7} {:>7} {:>7} {:>6}  {:>9} {:>9} {:>9} {:>9}  {}",
+                    qlabel, mode, plabel, total, est, cell(ns[0]), cell(ns[1]), cell(ns[2]), cell(ns[3]), gold,
+                );
+            }
+        }
+    }
+}
+
+/// #702 step 3b (cost-model validation): for each calibration query × mode ×
+/// page, compute the ACTUAL `PlanFeatures` (via `prepare_candidates` +
+/// `verify_cost_tier`, exactly as `run_query` would see them) and check that
+/// `argmin_plan cost::plan_cost` over the *applicable* plans reproduces the
+/// re-measured empirically-fastest ("gold") plan. Uses measured `total` for
+/// `matches` (validating the model given true features — estimator regret is a
+/// later step). A disagreement where the model's pick measured within ~15% of
+/// gold is an indifferent near-tie (counted a pass); a pick measuring >~1.3× gold
+/// is a real miss.
+///
+///     cargo test --release plan_cost_model_matches_gold -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as `plan_cost_calibration` (min-of-N after
+/// warmup, fresh bind+split per iter outside the timer); needs real.store.
+#[test]
+#[ignore = "cost-model validation bench; needs real.store; cargo test --release plan_cost_model_matches_gold -- --ignored --nocapture"]
+fn plan_cost_model_matches_gold() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    use super::cost::{PlanFeatures, plan_cost};
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 10;
+    const ITERS: usize = 150;
+    // Near-tie band: a model pick measuring within this factor of gold is
+    // indifferent (a pass); above REAL_MISS it is a genuine misroute.
+    const TIE: f64 = 1.15;
+    const REAL_MISS: f64 = 1.30;
+    // Fidelity floor: below this measured ns, a plan's runtime is dominated by
+    // timing jitter (a 200ns query ±50ns reads as 1.25× off with a PERFECT model),
+    // so fit error and noise are inseparable. Reporting fidelity split at this
+    // floor isolates the model error we can actually reduce by re-fitting.
+    const FIDELITY_FLOOR_NS: u64 = 2_000;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+    eprintln!("real.store: {n_cards} cards, {n_printings} printings\n");
+
+    let queries = calibration_queries();
+    let modes = ["card", "printing"];
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let all_plans = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+    let labels = ["P1-range", "P2-popcnt", "P3-stream", "P4-gather"];
+
+    println!(
+        "{:<20} {:>7} {:>7} {:>7} {:>8} {:>4}  {:>9} {:>9}  {:>9} {:>9}  result",
+        "query", "mode", "page", "total", "eval_dom", "tier", "gold", "model", "gold_ns", "model_ns",
+    );
+
+    let (mut n_match, mut n_tie, mut n_miss) = (0usize, 0usize, 0usize);
+    // Per-mode ABSOLUTE fidelity of plan_cost vs measured ns: geomean of
+    // |ln(model/measured)| over every applicable plan measurement, plus the count
+    // beyond 2×. Routing only needs ordering, but a model whose numbers *mean*
+    // something is the maintainability goal — this quantifies how far off it is.
+    // Indexed [mode 0=card 1=printing][bucket 0=fast(<floor) 1=slow(≥floor)] so the
+    // re-fittable model error (slow) is separated from irreducible jitter (fast).
+    let (mut fid_ln, mut fid_n, mut fid_2x) = ([[0.0f64; 2]; 2], [[0usize; 2]; 2], [[0usize; 2]; 2]);
+
+    for (qlabel, spec) in &queries {
+        for &mode in &modes {
+            let unique_is_card = mode == "card";
+            let mode_enum = if unique_is_card { Mode::Card } else { Mode::Printing };
+            for &(plabel, limit, offset) in &pages {
+                // ── Measure each applicable plan (min-of-N), like calibration ──
+                let mut ns = [None::<u64>; 4];
+                let mut total = 0usize;
+                for (pi, plan) in all_plans.iter().enumerate() {
+                    let mut best = u64::MAX;
+                    let mut applicable = false;
+                    for it in 0..(WARMUP + ITERS) {
+                        let (pe, mut res) = split_planes(
+                            fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                            &archived.indexes.oracle_trigram.words, unique_is_card,
+                        );
+                        let t0 = Instant::now();
+                        let out = black_box(run_query_with_plan(
+                            *plan, &QueryCtx::from(archived),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
+                        ));
+                        let dt = t0.elapsed().as_nanos() as u64;
+                        match out {
+                            Some((t, _)) => {
+                                total = t;
+                                applicable = true;
+                                if it >= WARMUP { best = best.min(dt); }
+                            }
+                            None => break,
+                        }
+                    }
+                    if applicable { ns[pi] = Some(best); }
+                }
+
+                // ── Compute the ACTUAL features (once; shared by P3/P4) ──
+                let (pe, mut res) = split_planes(
+                    fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                    &archived.indexes.oracle_trigram.words, unique_is_card,
+                );
+                let prep = prepare_candidates(
+                    &QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref(),
+                );
+                let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+                // Tier reflects the residual AFTER memoize (what the walk pays).
+                let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let feats = PlanFeatures {
+                    n_cards, n_printings,
+                    matches: total as u32,
+                    eval_domain,
+                    scan_units: su,
+                    // No compose acquire in this fixture, so P3's estimate is the shared one.
+                    stream_scan_units: su,
+                    residual_tier_ns100,
+                    residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
+                    limit: limit as u32,
+                    offset: offset as u32,
+                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
+                gather_group_printings: 0,
+                };
+
+                // ── Model argmin over the applicable plans ──
+                let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
+                let model = (0..4)
+                    .filter(|&i| ns[i].is_some())
+                    .map(|i| (plan_cost(all_plans[i], &feats), i))
+                    .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+                // Absolute fidelity: model cost vs measured, per applicable plan,
+                // bucketed fast/slow at FIDELITY_FLOOR_NS.
+                let mode_ix = if unique_is_card { 0 } else { 1 };
+                for i in 0..4 {
+                    if let Some(meas) = ns[i] {
+                        let r = plan_cost(all_plans[i], &feats) / meas as f64;
+                        let b = (meas >= FIDELITY_FLOOR_NS) as usize;
+                        fid_ln[mode_ix][b] += r.ln().abs();
+                        fid_n[mode_ix][b] += 1;
+                        if !(0.5..=2.0).contains(&r) { fid_2x[mode_ix][b] += 1; }
+                    }
+                }
+
+                let (Some((gold_ns, gi)), Some((_, mi))) = (gold, model) else { continue };
+                let model_ns = ns[mi].unwrap();
+                let ratio = model_ns as f64 / gold_ns as f64;
+                let result = if mi == gi {
+                    n_match += 1; "GOLD"
+                } else if ratio <= TIE {
+                    n_tie += 1; "tie"
+                } else if ratio > REAL_MISS {
+                    n_miss += 1; "MISS"
+                } else {
+                    n_tie += 1; "~tie" // marginal (1.15,1.30]: counted a pass
+                };
+
+                println!(
+                    "{:<20} {:>7} {:>7} {:>7} {:>8} {:>4}  {:>9} {:>9}  {:>9} {:>9}  {} ({:.2}x)",
+                    qlabel, mode, plabel, total, eval_domain, residual_tier_ns100,
+                    labels[gi], labels[mi], gold_ns, model_ns, result, ratio,
+                );
+            }
+        }
+    }
+
+    let n_total = n_match + n_tie + n_miss;
+    println!(
+        "\nagreement: {n_match} gold-match, {n_tie} near-tie(pass), {n_miss} real-miss  of {n_total}  ({:.1}% pass)",
+        100.0 * (n_match + n_tie) as f64 / n_total as f64,
+    );
+    let geo = |m: usize, b: usize| (fid_ln[m][b] / fid_n[m][b].max(1) as f64).exp();
+    println!("\ncost-model fidelity (geomean |model/measured|, want ~1.0), split at {FIDELITY_FLOOR_NS}ns:");
+    for (m, name) in [(0, "card"), (1, "printing")] {
+        println!(
+            "  {name:<9} slow(≥floor, re-fittable) {:.2}× ({}/{} beyond 2×)   fast(<floor, jitter) {:.2}× ({}/{} beyond 2×)",
+            geo(m, 1), fid_2x[m][1], fid_n[m][1], geo(m, 0), fid_2x[m][0], fid_n[m][0],
+        );
+    }
+    println!("(slow-bucket geomean is the real model error; fast-bucket is dominated by sub-µs timing floor, not re-fittable)");
+}
+
+/// Solve `A c = b` (A is n×n, row-major) by Gaussian elimination with partial
+/// pivoting. `None` if singular (rank-deficient — collinear features). Small n.
+// needless_range_loop: `c` indexes two different rows of `a` in the same statement; a slice
+// iterator would need split_at_mut and obscure the elimination step.
+#[allow(clippy::needless_range_loop)]
+fn solve_normal_eqs(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    for col in 0..n {
+        let piv = (col..n).max_by(|&r1, &r2| a[r1][col].abs().partial_cmp(&a[r2][col].abs()).unwrap())?;
+        if a[piv][col].abs() < 1e-9 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for r in 0..n {
+            if r == col {
+                continue;
+            }
+            let f = a[r][col] / a[col][col];
+            for c in col..n {
+                a[r][c] -= f * a[col][c];
+            }
+            b[r] -= f * b[col];
+        }
+    }
+    Some((0..n).map(|i| b[i] / a[i][i]).collect())
+}
+
+/// The cost formula's terms for `plan`, as `(free-param term vector, known offset)`
+/// — EXACTLY mirroring `cost::plan_cost` so a weighted least-squares fit of the
+/// term vector yields drop-in constants. Free params per plan (order = printed
+/// labels in `plan_cost_refit`):
+///   P1 [STEP, FIXED]; P2 [SCATTER, WORD, EMIT, FIXED];
+///   P3 [CARD_PASS, SCAN, EMIT, FLOOR/card, FIXED]; P4 [CARD_PASS, SCAN, PUSH, SELECT, FIXED].
+/// The verify `tier` rides `scan_units` with a fixed coefficient (1), so it is a
+/// known offset, not a fitted param.
+fn cost_terms(plan: PhysicalPlan, f: &super::cost::PlanFeatures) -> (Vec<f64>, f64) {
+    let n_cards = f64::from(f.n_cards);
+    let matches = f64::from(f.matches);
+    let eval_domain = f64::from(f.eval_domain);
+    let scan_units = f64::from(f.scan_units);
+    let tier_ns = f64::from(f.residual_tier_ns100) / 100.0;
+    let limit = f64::from(f.limit);
+    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    let match_rate = (matches / f64::from(f.n_printings)).max(1.0e-6);
+    match plan {
+        // [WALK, FIXED].
+        PhysicalPlan::PrintingRangeScan => (vec![page_span / match_rate, 1.0], 0.0),
+        // [POPCOUNT(result words), WALK(printings walked), EMIT, FIXED]; the build passes (broadcast +
+        // scatter + project) are hand-set offsets, not refit params.
+        PhysicalPlan::PrintingCompose => (
+            vec![f64::from(f.popcount_words), page_span / match_rate, limit, 1.0],
+            (f64::from(f.broadcast_printings) + f64::from(f.project_printings)) * super::cost::COMPOSE_LINEAR_PASS_PER_PRINTING_NS
+                + f64::from(f.scatter_printings) * super::cost::COMPOSE_SCATTER_PER_PRINTING_NS,
+        ),
+        // [PERM_SCATTER, POPCOUNT(card words), EMIT, FIXED].
+        PhysicalPlan::PlanePopcountOrder => (vec![matches, n_cards / 64.0, limit, 1.0], 0.0),
+        // Same term vector as PlanePopcountOrder; the fused build (CARD_RANGE_BUILD) is a hand-set offset.
+        PhysicalPlan::CardRangePopcount => (
+            vec![matches, n_cards / 64.0, limit, 1.0],
+            f64::from(f.scatter_printings) * super::cost::CARD_RANGE_BUILD_PER_PRINTING_NS,
+        ),
+        PhysicalPlan::StreamedSelect => {
+            let floor = if u64::from(f.matches) <= *STREAM_MIN_MATCHES as u64 { n_cards } else { 0.0 };
+            (vec![eval_domain, scan_units, matches, floor, 1.0], scan_units * tier_ns)
+        }
+        PhysicalPlan::GatheredScan => (vec![eval_domain, scan_units, matches, page_span, 1.0], scan_units * tier_ns),
+    }
+}
+
+/// #702 (cost-model re-fit): the formulas are LINEAR in their constants, so fit
+/// them by weighted least squares (weight 1/measured² → minimizes *relative*
+/// error, what a ratio-based model wants) on the slow bucket (≥ floor, where model
+/// error is separable from timing jitter), across card+printing jointly (so the
+/// card_pass/scan split is identifiable — collinear within card alone). Prints the
+/// fitted constants + before/after slow-bucket fidelity so a human can adopt them
+/// into cost.rs with provenance. Reporting tool, not an assertion.
+///
+///     cargo test --release plan_cost_refit -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as `plan_cost_model_matches_gold`; needs real.store.
+#[test]
+#[ignore = "cost-model re-fit; needs real.store; cargo test --release plan_cost_refit -- --ignored --nocapture"]
+fn plan_cost_refit() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    use super::cost::PlanFeatures;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const FLOOR_NS: u64 = 2_000; // fit only where model error > timing jitter
+    // Env-tunable (defaults sized for ~5-10 min of CPU on the real corpus). More
+    // queries beats more iters for identifiability: the fit averages timing noise
+    // across queries, so a big corpus with modest iters de-correlates features
+    // better than a small corpus hammered many times.
+    let corpus_n: usize = std::env::var("REFIT_CORPUS_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
+    let iters: usize = std::env::var("REFIT_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+    let seed: u64 = std::env::var("REFIT_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0xC057);
+    const WARMUP: usize = 5;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+
+    let queries = generate_calibration_corpus(corpus_n, seed);
+    eprintln!(
+        "real.store: {n_cards} cards, {n_printings} printings | corpus {} queries × 2 modes × 2 pages, {iters} iters, fit slow(≥{FLOOR_NS}ns)\n",
+        queries.len(),
+    );
+    let modes = ["card", "printing"];
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let all_plans = [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan];
+    let plan_labels = ["P1-range", "P2-popcnt", "P3-stream", "P4-gather"];
+    let param_labels: [&[&str]; 4] = [
+        &["STEP", "FIXED"],
+        &["SCATTER", "WORD", "EMIT", "FIXED"],
+        &["CARD_PASS", "SCAN", "EMIT", "FLOOR/card", "FIXED"],
+        &["CARD_PASS", "SCAN", "PUSH", "SELECT", "FIXED"],
+    ];
+    // One observation in a plan's least-squares fit. 70/30 train/test by query index so
+    // held-out fidelity reveals overfitting (the 22-query trap).
+    type FitRow = (
+        Vec<f64>, // design-matrix terms, one per cost coefficient being fitted
+        f64,      // measured ns minus the plan's fixed offset (the value actually regressed on)
+        f64,      // measured ns, unadjusted
+        bool,     // in the training split?
+    );
+    let mut rows: [Vec<FitRow>; 4] = Default::default();
+    let t_start = Instant::now();
+
+    for (qi, (_qlabel, spec)) in queries.iter().enumerate() {
+        let is_train = qi % 10 < 7;
+        for &mode in &modes {
+            let unique_is_card = mode == "card";
+            let mode_enum = if unique_is_card { Mode::Card } else { Mode::Printing };
+            for &(_plabel, limit, offset) in &pages {
+                let mut ns = [None::<u64>; 4];
+                let mut total = 0usize;
+                for (pi, plan) in all_plans.iter().enumerate() {
+                    let mut best = u64::MAX;
+                    let mut applicable = false;
+                    for it in 0..(WARMUP + iters) {
+                        let (pe, mut res) = split_planes(
+                            fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                            &archived.indexes.oracle_trigram.words, unique_is_card,
+                        );
+                        let t0 = Instant::now();
+                        let out = black_box(run_query_with_plan(
+                            *plan, &QueryCtx::from(archived),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
+                        ));
+                        let dt = t0.elapsed().as_nanos() as u64;
+                        match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { best = best.min(dt); } } None => break }
+                    }
+                    if applicable { ns[pi] = Some(best); }
+                }
+
+                let (pe, mut res) = split_planes(
+                    fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                    &archived.indexes.oracle_trigram.words, unique_is_card,
+                );
+                let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref());
+                let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let feats = PlanFeatures {
+                    n_cards, n_printings, matches: total as u32, eval_domain,
+                    scan_units: su,
+                    stream_scan_units: su, // no compose acquire here, so P3's estimate is the shared one
+                    residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
+                    residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
+                    limit: limit as u32, offset: offset as u32,
+                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
+                gather_group_printings: 0,
+                };
+                for (pi, plan) in all_plans.iter().enumerate() {
+                    if let Some(meas) = ns[pi] {
+                        if meas < FLOOR_NS { continue; }
+                        let (terms, offset_ns) = cost_terms(*plan, &feats);
+                        rows[pi].push((terms, meas as f64 - offset_ns, meas as f64, is_train));
+                    }
+                }
+            }
+        }
+        if qi % 100 == 99 {
+            eprintln!("  measured {}/{} queries ({:.0}s elapsed)", qi + 1, queries.len(), t_start.elapsed().as_secs_f64());
+        }
+    }
+
+    eprintln!("\nmeasurement done in {:.0}s\n", t_start.elapsed().as_secs_f64());
+    // Geomean |ln(model/measured)| over a row subset for a given constant vector.
+    let fidelity = |plan_rows: &[(Vec<f64>, f64, f64, bool)], fit: &[f64], train: bool| -> (f64, usize) {
+        let mut ln = 0.0;
+        let mut n = 0usize;
+        for (terms, y_adj, y, is_train) in plan_rows {
+            if *is_train != train { continue; }
+            let fitted = terms.iter().zip(fit).map(|(t, c)| t * c).sum::<f64>() + (y - y_adj);
+            ln += (fitted / y).ln().abs();
+            n += 1;
+        }
+        (if n > 0 { (ln / n as f64).exp() } else { f64::NAN }, n)
+    };
+
+    // Per plan: weighted normal equations (w = 1/y²) on TRAIN rows; report fitted
+    // constants + train AND held-out-test fidelity (test ≈ train ⇒ genuine fit).
+    for (pi, plan_rows) in rows.iter().enumerate() {
+        let p = param_labels[pi].len();
+        let n_train = plan_rows.iter().filter(|r| r.3).count();
+        if n_train < p * 3 {
+            println!("{:<10}: only {n_train} train rows for {p} params — skip\n", plan_labels[pi]);
+            continue;
+        }
+        let mut a = vec![vec![0.0f64; p]; p];
+        let mut b = vec![0.0f64; p];
+        for (terms, y_adj, y, is_train) in plan_rows {
+            if !is_train { continue; }
+            let w = 1.0 / (y * y);
+            for i in 0..p {
+                for j in 0..p { a[i][j] += w * terms[i] * terms[j]; }
+                b[i] += w * terms[i] * y_adj;
+            }
+        }
+        let Some(fit) = solve_normal_eqs(a, b) else {
+            println!("{:<10}: normal equations singular (collinear) — keep current\n", plan_labels[pi]);
+            continue;
+        };
+        let (train_fid, ntr) = fidelity(plan_rows, &fit, true);
+        let (test_fid, nte) = fidelity(plan_rows, &fit, false);
+        let neg = fit.iter().any(|&c| c < 0.0);
+        println!(
+            "{:<10}  fit on {ntr} train rows{}:",
+            plan_labels[pi],
+            if neg { "  [!] has NEGATIVE (unphysical) constants — overfit/collinear" } else { "" },
+        );
+        for (lbl, c) in param_labels[pi].iter().zip(&fit) {
+            println!("    {lbl:<11} = {c:>10.3}");
+        }
+        println!("    fidelity: train {train_fid:.2}× ({ntr} rows)   TEST(held-out) {test_fid:.2}× ({nte} rows)\n");
+    }
+    println!("(adopt only constants that are NON-NEGATIVE and whose TEST fidelity ≈ train and beats the current ~1.4×; then re-run plan_cost_model_matches_gold + plan_routing_ab to validate)");
+}
+
+/// #702 (printing-mode routing probe): does cost-based routing beat the LEGACY
+/// TREE on `unique=printing` bare-range queries? Card-mode routing only tied the
+/// tree (`plan_routing_ab`), so before building printing routing we test the
+/// hypothesis that the tree's P1 gate — `range_too_broad_to_narrow`, a fixed
+/// `k/index_len > 0.25` ratio that IGNORES page depth and sort alignment — misroutes
+/// where the true P1-vs-P4 crossover moves. P1's misaligned walk costs
+/// `(offset+limit)/match_rate`, so a *moderately*-broad range at a *deep* page is
+/// where a depth-blind ratio should mispredict.
+///
+/// For each range query × page depth (printing mode, edhrec sort = MISALIGNED, the
+/// case the walk pays for), measure P1/P3/P4 (min-of-N), then compare two pickers
+/// against empirical gold:
+/// - TREE: what `run_query` dispatches — P1 iff the fastpath fired
+///   (`run_query_with_plan(P1)` is `Some`), else P3/P4 via the `maybe_broad` gate.
+/// - MODEL: `argmin cost::plan_cost` on the TRUE features (matches = measured
+///   printing total; for a range query this is the index's exact `k`, so there is
+///   no estimation error to muddy the plan-choice question).
+///
+/// Reports per-row regret (picked_ns/gold_ns) and geomean regret for each. A model
+/// geomean below the tree's — with the gap on deep+moderate rows — is the win that
+/// justifies printing routing; parity means printing ties too (report, don't build).
+///
+///     cargo test --release printing_range_route_probe -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as `plan_cost_model_matches_gold`; needs real.store.
+#[test]
+#[ignore = "printing-route probe; needs real.store; cargo test --release printing_range_route_probe -- --ignored --nocapture"]
+fn printing_range_route_probe() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    use super::cost::{PlanFeatures, plan_cost};
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 60;
+    const LIMIT: usize = 60;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+    eprintln!("real.store: {n_cards} cards, {n_printings} printings (printing mode, edhrec sort = misaligned)\n");
+
+    // Bare price/year ranges spanning the broad/narrow margin; `total` reveals each
+    // one's true match_rate (of the priced/dated index) at run time.
+    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op, val });
+    let year  = |op, y: i32|   FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
+    let queries: Vec<(&str, FuzzSpec)> = vec![
+        ("usd<0.25", price(CmpOp::Lt, 0.25)),
+        ("usd<0.5",  price(CmpOp::Lt, 0.5)),
+        ("usd<1",    price(CmpOp::Lt, 1.0)),
+        ("usd<2",    price(CmpOp::Lt, 2.0)),
+        ("usd<5",    price(CmpOp::Lt, 5.0)),
+        ("usd<20",   price(CmpOp::Lt, 20.0)),
+        ("usd>=1",   price(CmpOp::Ge, 1.0)),
+        ("usd>=5",   price(CmpOp::Ge, 5.0)),
+        ("year>=2020", year(CmpOp::Ge, 2020)),
+        ("year>=2010", year(CmpOp::Ge, 2010)),
+        ("year>=2000", year(CmpOp::Ge, 2000)),
+    ];
+    // Shallow → progressively deeper: the depth axis the tree's ratio ignores.
+    let offsets = [0usize, 1_000, 5_000, 10_000, 20_000];
+    let all_plans = [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan];
+    let labels = ["P1", "P2", "P3", "P4"];
+    let sort_col = orderby_to_col("edhrec");
+    let descending = false;
+
+    println!(
+        "{:<12} {:>7} {:>7}  {:>4} {:>9} {:>7}  {:>4} {:>9} {:>7}",
+        "query", "total", "offset", "gold", "gold_ns", "", "tree", "tree_ns", "t/g", // header spacing
+    );
+    println!(
+        "{:<12} {:>7} {:>7}  {:>4} {:>9} {:>7}  {:>4} {:>9} {:>7}",
+        "", "", "", "", "", "", "model", "model_ns", "m/g",
+    );
+
+    // geomean accumulators (sum of ln regret) over scored rows.
+    let (mut tree_ln, mut model_ln, mut n_scored, mut n_model_wins) = (0.0f64, 0.0f64, 0usize, 0usize);
+
+    for (qlabel, spec) in &queries {
+        for &offset in &offsets {
+            // ── Measure each applicable plan (min-of-N) ──
+            let mut ns = [None::<u64>; 4];
+            let mut total = 0usize;
+            for (pi, plan) in all_plans.iter().enumerate() {
+                let mut best = u64::MAX;
+                let mut applicable = false;
+                for it in 0..(WARMUP + ITERS) {
+                    let (pe, mut res) = split_planes(
+                        fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                        &archived.indexes.oracle_trigram.words, false, // unique_is_card=false (printing)
+                    );
+                    let t0 = Instant::now();
+                    let out = black_box(run_query_with_plan(
+                        *plan, &QueryCtx::from(archived),
+                        &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, None, pe.as_ref(),
+                    ));
+                    let dt = t0.elapsed().as_nanos() as u64;
+                    match out {
+                        Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { best = best.min(dt); } }
+                        None => break,
+                    }
+                }
+                if applicable { ns[pi] = Some(best); }
+            }
+
+            // Only score rows the page can actually reach — else every plan returns an
+            // empty page early and the comparison is meaningless.
+            if total <= offset + LIMIT { continue; }
+
+            // ── Features (true count = measured printing total = the index's k) ──
+            let (pe, mut res) = split_planes(
+                fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                &archived.indexes.oracle_trigram.words, false,
+            );
+            let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Printing), &mut res, pe.as_ref());
+            let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+            let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
+            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, eval_domain);
+            let feats = PlanFeatures {
+                n_cards, n_printings, matches: total as u32, eval_domain,
+                scan_units: su,
+                stream_scan_units: su, // no compose acquire here, so P3's estimate is the shared one
+                residual_tier_ns100,
+                residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
+                limit: LIMIT as u32, offset: offset as u32,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
+                gather_group_printings: 0,
+            };
+
+            // ── Three pickers ──
+            let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
+            let model = (0..4).filter(|&i| ns[i].is_some())
+                .map(|i| (plan_cost(all_plans[i], &feats), i))
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            // TREE: P1 iff the fastpath fired (force-seam Some), else the P3/P4 maybe_broad gate.
+            let tree_i = if ns[0].is_some() {
+                0
+            } else {
+                let maybe_broad = prep.candidate_cards.as_ref().is_none_or(|v| v.len() > *STREAM_MIN_MATCHES);
+                if maybe_broad && streamed_select_applicable(&archived.cards, sort_col, descending, &archived.indexes) { 2 } else { 3 }
+            };
+
+            let (Some((gold_ns, gi)), Some((_, mi))) = (gold, model) else { continue };
+            let tree_ns = ns[tree_i].expect("tree pick was measured");
+            let model_ns = ns[mi].unwrap();
+            let tree_reg = tree_ns as f64 / gold_ns as f64;
+            let model_reg = model_ns as f64 / gold_ns as f64;
+            tree_ln += tree_reg.ln();
+            model_ln += model_reg.ln();
+            n_scored += 1;
+            if model_ns < tree_ns { n_model_wins += 1; }
+
+            // Per-plan FIDELITY: modeled cost vs measured ns (model_ns/meas_ns).
+            // A faithful cost model has this ~constant across plans (argmin then
+            // reproduces gold); ratios that differ *by plan* are what flip picks.
+            let fid = |i: usize| ns[i].map(|meas| {
+                let mc = plan_cost(all_plans[i], &feats);
+                format!("{}:{:>7}/{:<7}={:.2}", labels[i], meas, mc as u64, mc / meas as f64)
+            }).unwrap_or_default();
+
+            println!(
+                "{:<12} {:>7} {:>7}  gold={:<3} tree={:<3}({:.2}x) model={:<3}({:.2}x)  | {}  {}  {}  {}",
+                qlabel, total, offset,
+                labels[gi], labels[tree_i], tree_reg, labels[mi], model_reg,
+                fid(0), fid(1), fid(2), fid(3),
+            );
+        }
+    }
+
+    let g = |ln: f64| (ln / n_scored.max(1) as f64).exp();
+    println!(
+        "\n{n_scored} scored rows | geomean regret  tree {:.3}x  model {:.3}x  | model strictly faster on {n_model_wins}/{n_scored}",
+        g(tree_ln), g(model_ln),
+    );
+    println!("(model geomean below tree, gap on deep+moderate rows => printing routing is a real win; parity => printing ties too)");
+}
+
+/// Cost-representative idea-2 kernel (see docs/issues/local-engine-sorted-range-fastpath.md):
+/// range binary-search → scatter the `k` matching printings into a printing-space existence
+/// bitmap → popcount-skip to `page_offset` → emit `limit` printings (resolving pid→card, the
+/// representative emit work). This times idea-2's WORK so it can be compared to idea-1's
+/// measured walk WITHOUT first building the deferred #656 printing-space pager — the whole
+/// point of the probe is to decide whether that build is worth funding.
+///
+/// The emitted page is deliberately NOT sort-correct: bits are scattered in pid order, not
+/// sort order. That does not affect the COST being measured — scatter is O(k), the popcount-skip
+/// scans the same number of words to reach the offset-th set bit, and emit touches `limit`
+/// printings — all independent of which bits are set where. A shipping idea-2 would need a
+/// printing permutation to make the page correct (that is #656); its cost is what this measures.
+/// Returns `(k, checksum)` (checksum defeats dead-code elimination of the emit) or `None` when
+/// `filter` is not a bare range.
+fn idea2_printing_cost_kernel(
+    filter: &FilterExpr,
+    archived: &Archived<CardData>,
+    page_offset: usize,
+    limit: usize,
+) -> Option<(usize, u64)> {
+    let (idx, lo, hi) = bare_range_bounds(filter, &archived.indexes)?;
+    let (s, e) = idx.range(lo, hi);
+    let k = e - s;
+    let n_printings = archived.printings.len();
+    thread_local! {
+        static I2_BITS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    I2_BITS.with(|cell| {
+        let mut bits = cell.borrow_mut();
+        bits.clear();
+        bits.resize(n_printings.div_ceil(64), 0);
+        // Scatter: O(k), one bit set per matching printing.
+        for t in s..e {
+            let pid = idx.pid_at(t);
+            bits[pid >> 6] |= 1u64 << (pid & 63);
+        }
+        if k == 0 || page_offset >= k {
+            return Some((k, 0));
+        }
+        // Popcount-skip: accumulate word popcounts to the offset-th set bit — cheap
+        // O(words-to-offset) word ops, vs idea-1's per-card printing rescan.
+        let mut skip = page_offset;
+        let mut wi = 0usize;
+        while wi < bits.len() {
+            let wc = bits[wi].count_ones() as usize;
+            if skip < wc {
+                break;
+            }
+            skip -= wc;
+            wi += 1;
+        }
+        // Emit: walk `limit` set bits from the boundary word, resolving pid→card
+        // (printing_to_card) and touching the printing — representative emit work.
+        let ptc = &archived.indexes.printing_to_card;
+        let mut checksum = 0u64;
+        let mut emitted = 0usize;
+        'walk: while wi < bits.len() {
+            let mut w = bits[wi];
+            while w != 0 {
+                let bit = w.trailing_zeros();
+                w &= w - 1;
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let pid = (wi as u32) << 6 | bit;
+                let cid = u32::from(ptc[pid as usize]);
+                // The printing_to_card lookup is the emit's dominant per-row cost; fold
+                // cid+pid into a checksum so the walk isn't optimized away.
+                checksum ^= u64::from(cid).wrapping_mul(0x9E3779B9) ^ u64::from(pid);
+                emitted += 1;
+                if emitted == limit {
+                    break 'walk;
+                }
+            }
+            wi += 1;
+        }
+        Some((k, checksum))
+    })
+}
+
+/// #702 (idea-1 vs idea-2 probe): the ONE cell the design doc says the two mechanisms
+/// genuinely compete — `unique=printing`, broad range, unrelated (card-level) order-by —
+/// swept across page depth. idea-1 (P1, built) walks the card permutation at cost
+/// `(offset+limit)/match_rate`; idea-2 (range→printing bitmap→popcount-skip, NOT built —
+/// needs #656) is offset-independent-ish. This measures BOTH (idea-2 via the cost kernel
+/// above, so no #656 build is needed to decide whether #656 is worth building) and reports
+/// the crossover offset per query. A crossover at a realistic depth for realistic match-rates
+/// ⇒ idea-2 is worth building; a crossover only at extreme depth ⇒ leave it deferred.
+///
+///     cargo test --release idea1_vs_idea2_probe -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as the other probes; needs real.store.
+#[test]
+#[ignore = "idea-1 vs idea-2 crossover probe; needs real.store; cargo test --release idea1_vs_idea2_probe -- --ignored --nocapture"]
+fn idea1_vs_idea2_probe() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 60;
+    const LIMIT: usize = 60;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_printings = archived.printings.len();
+    eprintln!("real.store: {} cards, {n_printings} printings (printing mode, edhrec sort = unrelated order-by)\n", archived.cards.len());
+
+    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op, val });
+    let year  = |op, y: i32|   FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
+    let queries: Vec<(&str, FuzzSpec)> = vec![
+        ("usd<0.25", price(CmpOp::Lt, 0.25)), ("usd<0.5", price(CmpOp::Lt, 0.5)),
+        ("usd<1", price(CmpOp::Lt, 1.0)), ("usd<2", price(CmpOp::Lt, 2.0)),
+        ("usd<5", price(CmpOp::Lt, 5.0)), ("usd<20", price(CmpOp::Lt, 20.0)),
+        ("usd>=1", price(CmpOp::Ge, 1.0)),
+        ("year>=2020", year(CmpOp::Ge, 2020)), ("year>=2010", year(CmpOp::Ge, 2010)),
+        ("year>=2000", year(CmpOp::Ge, 2000)),
+    ];
+    let offsets = [0usize, 500, 1_000, 2_000, 5_000, 10_000, 20_000];
+
+    println!("{:<12} {:>7} {:>7} {:>6}  {:>9} {:>9} {:>7}", "query", "total", "rate%", "offset", "i1(P1)_ns", "i2_ns", "i1/i2");
+
+    for (qlabel, spec) in &queries {
+        let mut crossover: Option<usize> = None;
+        for &offset in &offsets {
+            // idea-1: force P1 (min-of-N).
+            let mut i1 = u64::MAX;
+            let mut total = 0usize;
+            let mut applicable = false;
+            for it in 0..(WARMUP + ITERS) {
+                let (pe, mut res) = split_planes(fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+                let t0 = Instant::now();
+                let out = black_box(run_query_with_plan(
+                    PhysicalPlan::PrintingRangeScan, &QueryCtx::from(archived),
+                    &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, None, pe.as_ref(),
+                ));
+                let dt = t0.elapsed().as_nanos() as u64;
+                match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { i1 = i1.min(dt); } } None => break }
+            }
+            if !applicable || total <= offset + LIMIT { continue; }
+
+            // idea-2: the cost kernel (min-of-N).
+            let mut i2 = u64::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let (_pe, res) = split_planes(fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+                let t0 = Instant::now();
+                let out = black_box(idea2_printing_cost_kernel(&res, archived, offset, LIMIT));
+                let dt = t0.elapsed().as_nanos() as u64;
+                if out.is_some() && it >= WARMUP { i2 = i2.min(dt); }
+            }
+
+            let rate = 100.0 * total as f64 / n_printings as f64;
+            let ratio = i1 as f64 / i2 as f64;
+            if ratio > 1.0 && crossover.is_none() { crossover = Some(offset); }
+            println!(
+                "{:<12} {:>7} {:>6.1} {:>6}  {:>9} {:>9} {:.2}x  {}",
+                qlabel, total, rate, offset, i1, i2, ratio,
+                if ratio > 1.0 { "<-- idea-2 faster" } else { "" },
+            );
+        }
+        match crossover {
+            Some(off) => println!("  => {qlabel}: idea-2 wins from offset ~{off}\n"),
+            None => println!("  => {qlabel}: idea-1 wins at every tested depth\n"),
+        }
+    }
+    println!("(crossover at a realistic depth for realistic match-rates => #656 idea-2 is worth building; only-extreme-depth => leave deferred)");
+}
+
+/// #702 step 4 (estimate-regret report): the payoff of the whole plan-selection
+/// sequence. Steps 1+3 give us a calibrated cost model and an estimator; this
+/// asks the load-bearing question directly — *if the router picked plans by
+/// `argmin cost(·|est)` using the ESTIMATOR's cardinality instead of the true
+/// count, how much latency would its mistakes cost?* — measured against the
+/// empirical gold (the plan actually fastest).
+///
+/// Per query × page (card mode): measure every applicable plan (min-of-N, same
+/// discipline as `plan_cost_model_matches_gold`), take `gold` = the fastest.
+/// Then build the router's *consistent belief*: the plan STRUCTURE it knows
+/// exactly (`prepare_candidates`'s `all_match_known`, hence the residual verify
+/// tier), but the CARDINALITY only from `estimate_cardinality(...).est`. Feed
+/// that into the calibrated `plan_cost`, take `est_pick` = its argmin over the
+/// applicable plans, and report
+///
+///     regret = measured_ns[est_pick] / measured_ns[gold]   (1.0× when est_pick == gold)
+///
+/// so a wrong estimate is scored only by the latency it actually costs — the
+/// #702 "estimate regret" figure of merit. Near-1.0× everywhere → the estimator
+/// is good enough to route on as-is; a fat tail → tighten the leaf/plan driving
+/// it (§Cost model, §Estimate regret).
+///
+/// **Card mode only.** The estimator is card-space (`estimate_cardinality`
+/// returns a card-space `Cardinality`), so P1/printing-mode regret would need a
+/// printing-space estimate that doesn't exist yet — out of scope here.
+///
+///     cargo test --release plan_regret_report -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as the other two benches; needs real.store.
+#[test]
+#[ignore = "estimate-regret report; needs real.store; cargo test --release plan_regret_report -- --ignored --nocapture"]
+fn plan_regret_report() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    use super::cost::{PlanFeatures, plan_cost};
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 60;
+    // A pick measuring above this factor of gold is "real" regret; (1.0, MINOR]
+    // is minor (the estimate cost the router a slightly slower but comparable plan).
+    const MINOR: f64 = 1.30;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+    eprintln!("real.store: {n_cards} cards, {n_printings} printings (card mode only)\n");
+
+    let queries = calibration_queries();
+    // Card mode only (estimator is card-space); shallow first page vs a deep page.
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let all_plans = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+    let labels = ["P1-range", "P2-popcnt", "P3-stream", "P4-gather"];
+
+    println!(
+        "{:<20} {:>7} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10} {:>8}",
+        "query", "page", "true_tot", "est", "gold", "est_pick", "gold_ns", "est_ns", "regret",
+    );
+
+    let (mut n_none, mut n_minor, mut n_real) = (0usize, 0usize, 0usize);
+    let mut log_sum = 0.0f64; // Σ ln(regret) for the geomean
+    let mut n_configs = 0usize;
+    let mut offenders: Vec<(f64, String)> = Vec::new(); // (regret, "query [page]")
+
+    for (qlabel, spec) in &queries {
+        // Estimator's card-space point estimate (full unsplit filter, as validated).
+        let est = super::estimator::estimate_cardinality(
+            &fuzz_bound_filter(spec, archived), &archived.indexes, &archived.offsets,
+        ).est;
+        for &(plabel, limit, offset) in &pages {
+            // ── Measure each applicable plan (min-of-N), like the other benches ──
+            let mut ns = [None::<u64>; 4];
+            let mut total = 0usize;
+            for (pi, plan) in all_plans.iter().enumerate() {
+                let mut best = u64::MAX;
+                let mut applicable = false;
+                for it in 0..(WARMUP + ITERS) {
+                    // Fresh bind+split per iteration OUTSIDE the timer (memoize mutates res).
+                    let (pe, mut res) = split_planes(
+                        fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                        &archived.indexes.oracle_trigram.words, true, // unique_is_card
+                    );
+                    let t0 = Instant::now();
+                    let out = black_box(run_query_with_plan(
+                        *plan, &QueryCtx::from(archived),
+                        &QueryParams::from_strs("card", "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
+                    ));
+                    let dt = t0.elapsed().as_nanos() as u64;
+                    match out {
+                        Some((t, _)) => {
+                            total = t;
+                            applicable = true;
+                            if it >= WARMUP { best = best.min(dt); }
+                        }
+                        None => break,
+                    }
+                }
+                if applicable { ns[pi] = Some(best); }
+            }
+
+            // ── Actual plan STRUCTURE (the router knows this exactly; only
+            //    cardinality is estimated): all_match_known → residual tier. ──
+            let (pe, mut res) = split_planes(
+                fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                &archived.indexes.oracle_trigram.words, true,
+            );
+            let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Card), &mut res, pe.as_ref());
+            let tier = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
+
+            // ── Router's belief: cardinality from `est`, structure `tier` actual. ──
+            let feats_est = PlanFeatures {
+                n_cards, n_printings,
+                matches: est,
+                eval_domain: est.min(n_cards),
+                scan_units: est.min(n_cards), // card-mode regret report ⇒ scan_units == eval_domain
+                stream_scan_units: est.min(n_cards),
+                residual_tier_ns100: tier,
+                residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
+                limit: limit as u32,
+                offset: offset as u32,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
+                gather_group_printings: 0,
+            };
+
+            let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
+            let est_pick = (0..4)
+                .filter(|&i| ns[i].is_some())
+                .map(|i| (plan_cost(all_plans[i], &feats_est), i))
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+            let (Some((gold_ns, gi)), Some((_, ei))) = (gold, est_pick) else { continue };
+            let est_ns = ns[ei].unwrap();
+            let regret = est_ns as f64 / gold_ns as f64;
+
+            n_configs += 1;
+            log_sum += regret.ln();
+            if ei == gi {
+                n_none += 1;
+            } else if regret <= MINOR {
+                n_minor += 1;
+            } else {
+                n_real += 1;
+            }
+            offenders.push((regret, format!("{qlabel} [{plabel}]")));
+
+            println!(
+                "{:<20} {:>7} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10} {:>7.2}x",
+                qlabel, plabel, total, est, labels[gi], labels[ei], gold_ns, est_ns, regret,
+            );
+        }
+    }
+
+    let geomean = if n_configs > 0 { (log_sum / n_configs as f64).exp() } else { 1.0 };
+    println!(
+        "\nregret summary ({n_configs} configs): {n_none} no-regret(est_pick==gold), \
+         {n_minor} minor(1.0,{MINOR}x], {n_real} real(>{MINOR}x)  |  geomean {geomean:.3}x",
+    );
+    offenders.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    println!("worst offenders:");
+    for (regret, name) in offenders.iter().take(5) {
+        println!("  {regret:>7.2}x  {name}");
+    }
+}
+
+/// #702 step 4 (breadth): MODELED regret over a large fuzz-generated query set.
+/// No timing, so it scales to thousands of queries where the timed
+/// `plan_regret_report` can't — it catches estimator errors that flip a plan
+/// choice on shapes the hand-picked set doesn't cover. Trustworthy because the
+/// cost model is validated against real timing at 100%
+/// (`plan_cost_model_matches_gold`): for each query we compare the plan the
+/// estimator's `est` would pick against the plan TRUE cardinality would pick,
+/// both scored by the MODELED cost in the true world —
+///
+///     modeled_regret = plan_cost(est_pick | true_feats) / plan_cost(gold_pick | true_feats)  (>= 1.0)
+///
+/// Card mode only (estimator is card-space).
+///
+///     cargo test --release plan_regret_fuzz -- --ignored --nocapture
+///
+/// Needs real.store.
+#[test]
+#[ignore = "modeled-regret fuzz sweep; needs real.store; cargo test --release plan_regret_fuzz -- --ignored --nocapture"]
+fn plan_regret_fuzz() {
+    use rand::SeedableRng;
+    use super::cost::{PlanFeatures, plan_cost};
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const QUERIES: usize = 3_000;
+    const MAX_DEPTH: u8 = 3;
+    const MINOR: f64 = 1.30;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+    eprintln!("real.store: {n_cards} cards, {n_printings} printings; {QUERIES} fuzz queries, card mode\n");
+
+    let sort_col = orderby_to_col("edhrec");
+    let descending = false;
+    let pages = [(60usize, 0usize), (60usize, 10_000usize)];
+    let all_plans = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(90_210);
+    let (mut n_none, mut n_minor, mut n_real, mut n_configs) = (0usize, 0usize, 0usize, 0usize);
+    let mut log_sum = 0.0f64;
+    let mut worst: Vec<(f64, String)> = Vec::new();
+
+    for _ in 0..QUERIES {
+        let spec = fuzz_gen(&mut rng, MAX_DEPTH);
+        let f = fuzz_bound_filter(&spec, archived);
+        let true_total = fuzz_reference_total(archived, &f, "card") as u32;
+        let est = super::estimator::estimate_cardinality(&f, &archived.indexes, &archived.offsets).est;
+
+        // Actual structure/features (the router knows structure; only cardinality is estimated).
+        let (pe, mut res) = split_planes(
+            fuzz_bound_filter(&spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
+        );
+        let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Card), &mut res, pe.as_ref());
+        let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+        let tier = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
+
+        // Applicable plans (card mode) via the predicates — no execution needed.
+        let applicable = [
+            printing_range_scan_applicable(Mode::Card, pe.as_ref(), &archived.cards), // false: card mode
+            plane_popcount_order_applicable(&res, Mode::Card, &archived.cards, pe.as_ref(), sort_col, descending, &archived.indexes),
+            streamed_select_applicable(&archived.cards, sort_col, descending, &archived.indexes),
+            gathered_scan_applicable(),
+        ];
+
+        for &(limit, offset) in &pages {
+            let mk = |matches: u32, evd: u32| PlanFeatures {
+                n_cards, n_printings, matches, eval_domain: evd, scan_units: evd, // card mode ⇒ scan_units == eval_domain
+                stream_scan_units: evd,
+                residual_tier_ns100: tier,
+                residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
+                limit: limit as u32, offset: offset as u32,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
+                gather_group_printings: 0,
+            };
+            let feats_true = mk(true_total, eval_domain);
+            let feats_est = mk(est, est.min(n_cards));
+            let pick = |feats: &PlanFeatures| {
+                (0..4)
+                    .filter(|&i| applicable[i])
+                    .map(|i| (plan_cost(all_plans[i], feats), i))
+                    .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                    .map(|(_, i)| i)
+            };
+            let (Some(gi), Some(ei)) = (pick(&feats_true), pick(&feats_est)) else { continue };
+            // est-pick's cost vs gold-pick's cost, both in the true world (>= 1.0).
+            let regret = plan_cost(all_plans[ei], &feats_true) / plan_cost(all_plans[gi], &feats_true);
+            n_configs += 1;
+            log_sum += regret.ln();
+            if ei == gi {
+                n_none += 1;
+            } else if regret <= MINOR {
+                n_minor += 1;
+            } else {
+                n_real += 1;
+                worst.push((regret, format!("{} [off {offset}] true={true_total} est={est} gold=P{} pick=P{}", fuzz_describe(&spec), gi + 1, ei + 1)));
+            }
+        }
+    }
+
+    let geomean = if n_configs > 0 { (log_sum / n_configs as f64).exp() } else { 1.0 };
+    println!("modeled regret ({n_configs} configs): {n_none} no-regret, {n_minor} minor(<={MINOR}x), {n_real} real(>{MINOR}x)  |  geomean {geomean:.4}x");
+    worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    println!("worst {} real-regret offenders:", worst.len().min(10));
+    for (regret, name) in worst.iter().take(10) {
+        println!("  {regret:>7.2}x  {name}");
+    }
+}
+
+/// format:A AND format:B (two distinct formats) can't be answered by ANDing
+/// independent existence-projection planes -- ∃p: legal_A(p) ∧ legal_B(p) is
+/// not the same as (∃p: legal_A(p)) ∧ (∃p: legal_B(p)); a card can have
+/// different witness printings for each side. compile_plane must decline this
+/// shape and shared-format-both-polarities alike, while Or of two distinct
+/// formats has no such problem and does compile (∃ distributes over ∨).
+#[test]
+fn legality_and_of_two_formats_declines_but_or_compiles() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let a = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let b = || FilterExpr::Legality { shift: Some(2), expected: 0b01 };
+
+    // Still unconditional: `compile_plane` deliberately asks this question with `u64::MAX` rather than the
+    // store's divergence mask, because the answer decides whether the filter consumes to a plane -- and a
+    // consumed filter takes `PrintingCompose` out of the running, which measured a 54x loss on
+    // `f:commander`/printing. The mask is used below the applicability decisions, never inside them.
+    // Once compose is applicable to plane-consumed filters, `a AND invariant` becomes composable and this
+    // assertion is the one to revisit.
+    assert!(
+        compile_plane(&FilterExpr::And(vec![a(), b()]), bounds, words).is_none(),
+        "two distinct formats ANDed must decline (shared-witness)"
+    );
+    assert!(
+        compile_plane(&FilterExpr::Or(vec![a(), b()]), bounds, words).is_some(),
+        "OR of two formats has no shared-witness problem and must compile"
+    );
+    assert!(
+        compile_plane(&FilterExpr::And(vec![a(), FilterExpr::Not(Box::new(a()))]), bounds, words).is_none(),
+        "format:A AND -format:A (same format, both polarities) is the same contradiction-prone shape and must also decline"
+    );
+}
+
+/// The shared-witness decline's fallback must still be *correct*, not just
+/// declined: a card legal in A via one printing and legal in B via a
+/// different printing (no single printing satisfies both) is the trap in
+/// action -- legal_exists(A) AND legal_exists(B) would wrongly say true.
+/// Routed through the real split_planes + run_query pipeline.
+#[test]
+fn legality_shared_witness_and_falls_back_to_correct_result() {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0b01; // legal in A (shift 0) only
+    data.printings[1].card_legalities = 0b01 << 2; // legal in B (shift 2) only
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let and_both = FilterExpr::And(vec![
+        FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+        FilterExpr::Legality { shift: Some(2), expected: 0b01 },
+    ]);
+    let (plane, mut residual) = split_planes(and_both, bounds, words, true);
+    assert!(plane.is_none(), "shared-witness AND must not partially promote either leaf into the plane");
+    assert!(matches!(residual, FilterExpr::And(_)), "both legality children must remain in the residual");
+
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 0, "no single printing is legal in both A and B at once");
+}
+
+/// -(format:A AND t:creature): Not wrapping a compound needs De Morgan pushed
+/// to compile time so the Not lands on the Legality leaf directly (swapping
+/// to illegal_exists), never as a bit-complement of the AND's compiled plane.
+/// Demonstrated against a card divergent in A: the positive AND is true for
+/// it (its legal-in-A printing is also a creature), so a naive complement
+/// would wrongly exclude it -- but the card's *other*, not-legal-in-A
+/// printing separately satisfies the negation, so the correct answer
+/// includes it.
+#[test]
+fn legality_de_morgan_not_of_compound() {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let mut data = store_of(vec![card], &[2], vocab);
+    data.printings[0].card_legalities = 0b01; // legal in A
+    data.printings[1].card_legalities = 0; // not legal in A
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let a = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let creature = || FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+
+    let and_pe = compile_plane(&FilterExpr::And(vec![a(), creature()]), bounds, words)
+        .expect("format:A AND t:creature must compile (one format, no shared-witness issue)");
+    let mut and_bits: Vec<u64> = Vec::new();
+    eval_planes(&and_pe, &archived.indexes.planes, &mut and_bits);
+    assert!(bitmap_contains(&and_bits, 0), "printing0 is legal in A and a creature, so the positive AND is true for card 0");
+
+    let not_and = FilterExpr::Not(Box::new(FilterExpr::And(vec![a(), creature()])));
+    let pe = compile_plane(&not_and, bounds, words).expect("-(format:A AND t:creature) must still compile via De Morgan");
+    let mut bits: Vec<u64> = Vec::new();
+    eval_planes(&pe, &archived.indexes.planes, &mut bits);
+    assert!(bitmap_contains(&bits, 0), "card has a not-legal-in-A printing, so it satisfies the negation despite the positive AND being true");
+}
+
+/// Regression closing a gap this design doc's own Acceptance section left
+/// open (and a second reviewer flagged): `contains_unnegatable_numeric`'s
+/// pre-existing guard (declining `Not` entirely when a null-valued numeric
+/// field like power/toughness is anywhere inside, since `Tri::Null` never
+/// flips to `True`) must still fire correctly now that `compile_plane_neg`
+/// has a Legality-aware `And`/`Or` arm alongside it -- composing a legality
+/// leaf with an unnegatable numeric leaf under `Not` must decline exactly
+/// like composing it with any other card-invariant leaf already did
+/// (`numeric_plane_declines_not_over_numeric_cmp` covers the pre-existing,
+/// Legality-free shapes; this covers the new interaction specifically).
+#[test]
+fn legality_not_still_declines_with_unnegatable_numeric_sibling() {
+    let data = legal_plane_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let a = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let power_gt3 = || FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Gt, rhs: NumExpr::Const(3.0) };
+
+    // Sanity: the positive compound compiles fine on its own (one format,
+    // no shared-witness issue, and the un-negated numeric comparison is
+    // plane-eligible) -- isolates the failure to the Not/Null interaction.
+    assert!(
+        compile_plane(&FilterExpr::And(vec![a(), power_gt3()]), bounds, words).is_some(),
+        "format:A AND power>3 must compile without a Not present"
+    );
+
+    // Not(And(legality, unnegatable numeric)): the And arm of compile_plane_neg
+    // recurses per child (De Morgan into an Or) -- the numeric child must
+    // still decline via contains_unnegatable_numeric's catch-all check,
+    // collapsing the whole compile to None through the `?` propagation.
+    let not_and = FilterExpr::Not(Box::new(FilterExpr::And(vec![a(), power_gt3()])));
+    assert!(
+        compile_plane(&not_and, bounds, words).is_none(),
+        "-(format:A AND power>3) must decline: Null doesn't flip to True, even with a legality sibling"
+    );
+
+    // Not(Or(legality, unnegatable numeric)): the Or arm goes through
+    // and_of_checked_for_shared_witness, a different code path than And's --
+    // must decline there too, not just in the And arm.
+    let not_or = FilterExpr::Not(Box::new(FilterExpr::Or(vec![a(), power_gt3()])));
+    assert!(
+        compile_plane(&not_or, bounds, words).is_none(),
+        "-(format:A OR power>3) must decline via the Or arm of compile_plane_neg too"
+    );
+}
+
+#[test]
+fn run_query_walk_dedups_and_prefers() {
+    // card 0: Creature with 3 printings, card 1: Instant with 1, card 2: Creature with 2.
+    // store_of orders each bucket by descending prefer score, so the first
+    // printing of each range is the default-preferred one and the last is the
+    // oldest by released_at.
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_INSTANT, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let data = store_of(cards, &[3, 1, 2], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut creatures = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let mut run = |unique: &str, prefer: &str| {
+        run_query(&QueryCtx::from(archived), &mut creatures, None, unique, prefer, "edhrec", "asc", 100, 0)
+    };
+
+    // unique=card, default prefer: one result per matching card; the walk's
+    // early exit takes the first printing of each range (ids 1 and 5).
+    let (total, page) = run("card", "default");
+    assert_eq!(total, 2);
+    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    assert!(chosen.contains(&1) && chosen.contains(&5));
+
+    // unique=printing: every matching printing (3 + 2 creatures).
+    let (total, _) = run("printing", "default");
+    assert_eq!(total, 5);
+
+    // unique=artwork: every printing has a distinct illustration here, so all 5 groups.
+    let (total, _) = run("artwork", "default");
+    assert_eq!(total, 5);
+
+    // prefer=oldest scans each range and picks the smallest released_at —
+    // the LAST printing of each range in store_of's construction (ids 3 and 6).
+    let (total, page) = run("card", "oldest");
+    assert_eq!(total, 2);
+    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    assert!(chosen.contains(&3) && chosen.contains(&6));
+}
+
+#[test]
+fn run_query_artwork_groups_shared_illustrations() {
+    // One card, 4 printings; printings 0 and 2 share an illustration.
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[4], vocab);
+    // ids from store_of: scryfall/illustration 1,2,3,4. Make printing 2 share
+    // printing 0's illustration (non-contiguous under prefer-desc order).
+    // store_of already assigned artwork_group_id from the original (all-distinct)
+    // illustration_ids, so it must be recomputed after this mutation.
+    data.printings[2].illustration_id = 1;
+    reassign_artwork_grouping(&mut data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut all = FilterExpr::True;
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 3); // illustrations {1, 2, 4}
+    // Group {printings 0, 2}: printing 0 has the higher prefer score (desc order)
+    // and must be the group's representative.
+    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    assert!(chosen.contains(&1) && !chosen.contains(&3));
+}
+
+/// Measures checked rkyv::access vs access_unchecked on a production-scale
+/// archive. This is the evidence behind the access_unchecked safety comments
+/// on query()/size(): checked access re-validates the entire archive graph
+/// on every call, which is milliseconds per call at ~100k printings — orders
+/// of magnitude over total query time. Run with:
+///   cargo test --release -- --ignored bench_checked_vs_unchecked --nocapture
+#[test]
+#[ignore]
+fn bench_checked_vs_unchecked_access() {
+    const N_CARDS: usize = 31_500;
+    const PRINTINGS_PER_CARD: usize = 3;
+    let words = ["draw", "card", "creature", "destroy", "target", "flying", "counter", "spell", "token", "exile"];
+    let mut interner = Interner::new();
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = Vec::with_capacity(N_CARDS);
+    let mut printings: Vec<Printing> = Vec::with_capacity(N_CARDS * PRINTINGS_PER_CARD);
+    let mut offsets: Vec<u32> = Vec::with_capacity(N_CARDS + 1);
+    for i in 0..N_CARDS {
+        let name = format!("Benchmark Card Number {i}");
+        let oracle = format!(
+            "{}: {} a {} {}, then {} {} cards. This text is representative filler standing in for \
+             real oracle text so string validation cost is realistic for card group {i}.",
+            words[i % 10], words[(i + 1) % 10], words[(i + 2) % 10],
+            words[(i + 3) % 10], words[(i + 4) % 10], words[(i + 5) % 10],
+        );
+        let mut card = stub_card((i + 1) as u128, TYPE_CREATURE, &["Benchmark", words[i % 10]], &mut vocab);
+        card.card_name_lower = InlineStr::from_str(&name.to_lowercase());
+        card.card_name_folded = card.card_name_lower;
+        card.card_name_id = interner.intern(name.clone());
+        card.oracle_text_id = interner.intern(oracle.clone());
+        card.oracle_text_lower_id = interner.intern(oracle.to_lowercase());
+        card.card_keywords = vocab_ids(&mut vocab, &[words[i % 10]]);
+        card.cmc = Some((i % 8) as u8);
+        offsets.push(printings.len() as u32);
+        for k in 0..PRINTINGS_PER_CARD {
+            let flavor = format!("Flavor text for printing {i}-{k}, roughly the length of a real flavor quote.");
+            let pid = (i * PRINTINGS_PER_CARD + k + 1) as u128;
+            let mut p = stub_printing(pid, pid, Some((PRINTINGS_PER_CARD - k) as f32));
+            p.flavor_text_id = interner.intern(flavor.clone());
+            p.flavor_text_lower_id = interner.intern(flavor.to_lowercase());
+            p.set_name_id = interner.intern(format!("Benchmark Set {}", i % 300));
+            printings.push(p);
+        }
+        cards.push(card);
+    }
+    offsets.push(printings.len() as u32);
+    let strings = interner.strings;
+    let artwork_groups = assign_artwork_groups(&mut printings, &offsets);
+    let artwork_base = build_artwork_base_from(&artwork_groups);
+
+    let indexes = CardIndexes {
+        artwork_base,
+        name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
+        name_unigrams:  build_name_unigram_index(&cards),
+        oracle_trigram: build_oracle_text_index(&cards, &strings),
+        cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
+        power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
+        toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
+        rarity:         build_rarity_index(&printings, &offsets),
+        subtypes:       build_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
+        keywords:       build_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
+        oracle_tags:    build_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
+        art_tags:       build_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
+        is_tags:        build_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
+        frame_data:     HybridTagIndex::default(),
+        artists:        ArtistIndex::default(),
+        flavor:         build_flavor_index(&printings, &strings),
+        set_codes:      HashMap::new(),
+        watermarks:     HashMap::new(),
+        released_at:    PrintingValueIndex::default(),
+        price_usd:      PrintingValueIndex::default(),
+        price_eur:      PrintingValueIndex::default(),
+        price_tix:      PrintingValueIndex::default(),
+        collector_number: PrintingValueIndex::default(),
+        // Empty to match the empty range indexes above; fuzz_store_n rebuilds all six together.
+        released_at_cards: RangeCardCounts::default(),
+        price_usd_cards: RangeCardCounts::default(),
+        price_eur_cards: RangeCardCounts::default(),
+        price_tix_cards: RangeCardCounts::default(),
+        collector_number_cards: RangeCardCounts::default(),
+        rarity_cards:   RangeCardCounts::default(),
+        value_totals:   ValueTotals::default(),
+        pair_totals:    PairTotals::default(),
+        sort_perms:     build_sort_permutations(&cards),
+        max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
+        artwork_groups,
+        artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
+        printing_to_card: build_printing_to_card(&offsets),
+        planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
+        border_printing: build_border_printing_planes(&printings, &strings),
+        rarity_printing: build_rarity_printing_planes(&printings),
+        rarity_printing_ordered: build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from)),
+        name_bigrams:   build_name_bigram_index(&cards),
+        legal_divergent: build_divergent_ids(&cards),
+        arith_tuple:    build_arith_tuple_index(&cards),
+    };
+    let data = CardData {
+        cards,
+        printings,
+        offsets,
+        strings,
+        coll_vocab_sorted: sorted_vocab_ids(&vocab.strings),
+        coll_vocab: vocab.strings,
+        artist_vocab: vec![],
+        mana_vocab: vec![],
+        indexes,
+        format_shifts: HashMap::new(),
+    };
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    println!("archive size: {:.1} MB", bytes.len() as f64 / 1e6);
+
+    const ITERS: u32 = 10;
+    let t = std::time::Instant::now();
+    for _ in 0..ITERS {
+        let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("checked access");
+        assert_eq!(a.printings.len(), N_CARDS * PRINTINGS_PER_CARD);
+    }
+    let checked = t.elapsed() / ITERS;
+
+    let t = std::time::Instant::now();
+    for _ in 0..ITERS {
+        let a = unsafe { rkyv::access_unchecked::<Archived<CardData>>(&bytes) };
+        assert_eq!(a.printings.len(), N_CARDS * PRINTINGS_PER_CARD);
+    }
+    let unchecked = t.elapsed() / ITERS;
+
+    println!("checked rkyv::access:   {checked:?} per call");
+    println!("access_unchecked:       {unchecked:?} per call");
+}
+
+#[test]
+fn card_pass_extracts_residual_and_matches() {
+    // card 0 is a Creature whose second printing is art:wolf; card 1 is an Instant.
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_INSTANT, &[], &mut vocab),
+    ];
+    let wolf_ids = vocab_ids(&mut vocab, &["wolf"]);
+    let mut data = store_of(cards, &[2, 1], vocab);
+    data.printings[1].card_art_tags = wolf_ids;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut wolf = FilterExpr::CollectionCmp {
+        field: CollField::ArtTags,
+        op: CmpOp::Ge,
+        value: "wolf".to_string(),
+        value_id: None,
+    };
+    wolf.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    let creature = || FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+
+    // And[t:creature, art:wolf]: the type check is proven at card level and
+    // hoisted out; only the art check stays in the residual.
+    let and = FilterExpr::And(vec![creature(), wolf]);
+    let mut residual: Vec<&FilterExpr> = Vec::new();
+    let mut is_or = false;
+
+    // Creature card: PrintingDep with a one-element residual (the art term).
+    let t = and.card_pass(&archived.cards[0], &archived.strings, &mut residual, &mut is_or, 0);
+    assert!(t == Tri::PrintingDep && residual.len() == 1 && !is_or);
+    assert!(!FilterExpr::residual_matches(&archived.cards[0], &archived.printings[0], &archived.strings, &residual, is_or));
+    assert!(FilterExpr::residual_matches(&archived.cards[0], &archived.printings[1], &archived.strings, &residual, is_or));
+
+    // Instant card: the type child is False at card level — whole And settles
+    // to False without touching printings.
+    let t = and.card_pass(&archived.cards[1], &archived.strings, &mut residual, &mut is_or, 0);
+    assert!(t == Tri::False);
+
+    // Or[t:creature, art:wolf]: True for the creature card at card level (no
+    // residual needed); PrintingDep with an Or-residual for the instant.
+    let mut wolf2 = FilterExpr::CollectionCmp {
+        field: CollField::ArtTags,
+        op: CmpOp::Ge,
+        value: "wolf".to_string(),
+        value_id: None,
+    };
+    wolf2.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    let or = FilterExpr::Or(vec![creature(), wolf2]);
+    let t = or.card_pass(&archived.cards[0], &archived.strings, &mut residual, &mut is_or, 0);
+    assert!(t == Tri::True && residual.is_empty());
+    let t = or.card_pass(&archived.cards[1], &archived.strings, &mut residual, &mut is_or, 0);
+    assert!(t == Tri::PrintingDep && residual.len() == 1 && is_or);
+    assert!(!FilterExpr::residual_matches(&archived.cards[1], &archived.printings[2], &archived.strings, &residual, is_or));
+}
+
+#[test]
+fn artist_predicates_bind_to_vocab_ids_and_narrow() {
+    // Two artists; printings 0,2 by "rebecca guay", printing 1 by "john avon",
+    // printing 3 has no artist.
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 2], vocab);
+    let mut artists = VocabInterner::new();
+    let rebecca = artists.intern("rebecca guay".to_string()).unwrap();
+    let avon = artists.intern("john avon".to_string()).unwrap();
+    data.printings[0].card_artist_vid = rebecca;
+    data.printings[1].card_artist_vid = avon;
+    data.printings[2].card_artist_vid = rebecca;
+    data.artist_vocab = artists.strings;
+    data.indexes.artists = build_artist_index(&data.printings, data.artist_vocab.len());
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut f = FilterExpr::TextContains {
+        field: super::TextSearchField::ArtistLower,
+        word: "rebecca".to_string(),
+    };
+    f.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    // bind rewrites the contains into an id-set match
+    let FilterExpr::ArtistMatch { ref ids } = f else { panic!("expected ArtistMatch after bind") };
+    assert_eq!(ids, &vec![rebecca]);
+
+    // per-printing evaluation: integer membership; missing artist is Null (no match)
+    let card = &archived.cards[0];
+    assert!(f.matches(card, &archived.printings[0], &archived.strings));
+    assert!(!f.matches(card, &archived.printings[1], &archived.strings));
+    assert!(!f.matches(card, &archived.printings[3], &archived.strings));
+    assert!(f.eval_card(card, &archived.strings) == Tri::PrintingDep);
+
+    // narrowing expands the CSR rows to sorted printing ids
+    match narrow_candidates(&f, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0, 2]),
+        _ => panic!("artist predicate must narrow in printing space"),
+    }
+
+    // an artist matching nothing narrows to the exact empty set
+    let mut g = FilterExpr::TextContains {
+        field: super::TextSearchField::ArtistLower,
+        word: "zzz".to_string(),
+    };
+    g.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    match narrow_candidates(&g, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty()),
+        _ => panic!("empty artist match must narrow to the empty set"),
+    }
+}
+
+// The fingerprint is a sound necessary-condition filter: a text containing the
+// needle carries every feature bit the needle carries.
+#[test]
+fn flavor_fingerprint_superset_property() {
+    let text = flavor_fingerprint("the dream of fire never dies");
+    for needle in ["dream", "fire", "never", "the dream", "re", "e"] {
+        let n = flavor_fingerprint(needle);
+        assert_eq!(text & n, n, "contained needle {needle:?} must be a mask subset");
+    }
+    // A non-contained needle with rare features is filterable.
+    let z = flavor_fingerprint("zombie");
+    assert_ne!(text & z, z);
+    // Non-ASCII and non-alpha bytes contribute no bits on either side.
+    assert_eq!(flavor_fingerprint("¡0—9!"), 0);
+}
+
+// FlavorMatch mirrors ArtistMatch at flavor scale: bind resolves the predicate
+// once over the distinct texts (fingerprint-prefiltered), eval is integer
+// membership with SQL NULL for flavorless printings, and narrowing expands the
+// CSR in printing space.
+#[test]
+fn flavor_match_bind_eval_and_narrow() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 2], vocab);
+    let mut interner = Interner::new();
+    let shared = interner.intern("the dream of fire".to_string());
+    data.printings[0].flavor_text_lower_id = shared;
+    data.printings[2].flavor_text_lower_id = shared; // same text on two printings
+    data.printings[1].flavor_text_lower_id = interner.intern("a quiet forest".to_string());
+    // printings[3] keeps NONE_STR: no flavor text at all
+    data.strings = interner.strings;
+    data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let bound = |f: &mut FilterExpr| {
+        f.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    };
+
+    let mut f = FilterExpr::TextContains {
+        field: super::TextSearchField::FlavorTextLower,
+        word: "dream".to_string(),
+    };
+    bound(&mut f);
+    let FilterExpr::FlavorMatch { ref gids, ref dense_ids } = f else { panic!("expected FlavorMatch after bind") };
+    assert_eq!(gids, &vec![shared]);
+    assert_eq!(dense_ids, &vec![0]); // dense ids are first-seen order
+
+    // Per-printing evaluation: membership on the shared text, Null (no match)
+    // for the flavorless printing, printing-dependent at the card level.
+    let card0 = &archived.cards[0];
+    let card1 = &archived.cards[1];
+    assert!(f.matches(card0, &archived.printings[0], &archived.strings));
+    assert!(!f.matches(card0, &archived.printings[1], &archived.strings));
+    assert!(f.matches(card1, &archived.printings[2], &archived.strings));
+    assert!(!f.matches(card1, &archived.printings[3], &archived.strings));
+    assert!(f.eval_card(card0, &archived.strings) == Tri::PrintingDep);
+
+    // NOT keeps NULL semantics: a flavorless printing matches neither ft:dream
+    // nor its negation.
+    let mut inner = FilterExpr::TextContains {
+        field: super::TextSearchField::FlavorTextLower,
+        word: "dream".to_string(),
+    };
+    bound(&mut inner);
+    let neg = FilterExpr::Not(Box::new(inner));
+    assert!(!neg.matches(card1, &archived.printings[3], &archived.strings));
+    assert!(neg.matches(card0, &archived.printings[1], &archived.strings));
+
+    // Narrowing expands the matched texts' CSR rows to sorted printing ids —
+    // this is what makes ft: participate in Or narrowing.
+    match narrow_candidates(&f, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0, 2]),
+        _ => panic!("flavor predicate must narrow in printing space"),
+    }
+
+    // Exact and regex forms resolve through the same mechanism.
+    let mut ex = FilterExpr::TextExact {
+        field: super::TextField::FlavorTextLower,
+        op: CmpOp::Eq,
+        value: "a quiet forest".to_string(),
+    };
+    bound(&mut ex);
+    match narrow_candidates(&ex, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![1]),
+        _ => panic!("exact flavor must narrow"),
+    }
+    let mut rx = FilterExpr::TextRegex {
+        field: super::TextField::FlavorTextLower,
+        regex: regex::Regex::new("qu.et").unwrap(),
+    };
+    bound(&mut rx);
+    assert!(rx.matches(card0, &archived.printings[1], &archived.strings));
+    match narrow_candidates(&rx, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![1]),
+        _ => panic!("regex flavor must narrow"),
+    }
+
+    // A needle matching nothing proves the empty candidate set.
+    let mut none = FilterExpr::TextContains {
+        field: super::TextSearchField::FlavorTextLower,
+        word: "zzzqqq".to_string(),
+    };
+    bound(&mut none);
+    match narrow_candidates(&none, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty()),
+        _ => panic!("empty flavor match must narrow to the empty set"),
+    }
+
+    // The fingerprint prefilter must not change results: same sets with the
+    // prefilter on (mask of the needle) and off (mask 0).
+    let mask = flavor_fingerprint("dream");
+    assert_ne!(mask, 0);
+    let with = flavor_match_sets(&archived.indexes.flavor, &archived.strings, mask, |s| s.contains("dream"));
+    let without = flavor_match_sets(&archived.indexes.flavor, &archived.strings, 0, |s| s.contains("dream"));
+    assert_eq!(with, without);
+}
+
+// Collector numbers index the extracted int; fractional and out-of-range
+// query values resolve to exact half-open ranges (or exact empty sets), and
+// printings without a numeric part are absent (SQL NULL semantics).
+#[test]
+fn collector_number_narrowing() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 2], vocab);
+    data.printings[0].collector_number_int = Some(100);
+    data.printings[1].collector_number_int = Some(228); // "228s" extracts to 228
+    data.printings[2].collector_number_int = Some(101);
+    // printings[3] has no numeric part: absent from the index
+    data.indexes.collector_number =
+        build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let cn = |op, v| FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::CollectorNumberInt),
+        op,
+        rhs: NumExpr::Const(v),
+    };
+    let narrow = |f: &FilterExpr| match narrow_candidates(f, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => Some(v),
+        // Bitmaps materialize in ascending id order, so both representations
+        // compare against the same expected vectors.
+        Some(Candidates::PrintingBits(b)) => Some(super::bitmap_card_ids(&b)),
+        Some(_) => panic!("cn must narrow in printing space"),
+        None => None,
+    };
+
+    assert_eq!(narrow(&cn(CmpOp::Eq, 100.0)), Some(vec![0]));
+    assert_eq!(narrow(&cn(CmpOp::Ge, 101.0)), Some(vec![1, 2]));
+    assert_eq!(narrow(&cn(CmpOp::Gt, 101.0)), Some(vec![1]));
+    // Fractional bounds are exact: cn<100.5 means cn<=100; cn>100.5 means cn>=101.
+    assert_eq!(narrow(&cn(CmpOp::Lt, 100.5)), Some(vec![0]));
+    assert_eq!(narrow(&cn(CmpOp::Gt, 100.5)), Some(vec![1, 2]));
+    // Fractional equality and out-of-range comparisons prove the empty set.
+    assert_eq!(narrow(&cn(CmpOp::Eq, 100.5)), Some(vec![]));
+    assert_eq!(narrow(&cn(CmpOp::Lt, -3.0)), Some(vec![]));
+    // Negative lower bounds cover everything indexed (printing 3 stays absent).
+    assert_eq!(narrow(&cn(CmpOp::Ge, -3.0)), Some(vec![0, 1, 2]));
+    // Ne never narrows.
+    assert_eq!(narrow(&cn(CmpOp::Ne, 100.0)), None);
+
+    // Flipped operand order: 101 <= cn.
+    let flipped = FilterExpr::NumericCmp {
+        lhs: NumExpr::Const(101.0),
+        op: CmpOp::Le,
+        rhs: NumExpr::Field(NumField::CollectorNumberInt),
+    };
+    assert_eq!(narrow(&flipped), Some(vec![1, 2]));
+
+    // The structural payoff: an Or with a trigram-narrowable sibling stays
+    // narrowable now that cn has an index (this was the post-#622 worst query).
+    let or = FilterExpr::Or(vec![cn(CmpOp::Eq, 228.0), cn(CmpOp::Eq, 100.0)]);
+    assert_eq!(narrow(&or), Some(vec![0, 1]));
+}
+
+// ─── #634 Step 1: all_match promotion ─────────────────────────────────────────
+
+/// The regression this suite exists to prevent: a printing-space predicate
+/// narrowing "tight" (every posted printing genuinely matches — see
+/// collector_number_narrowing above) does NOT mean "every printing of the
+/// associated card matches," which is what `all_match`/`Tri::True` means at
+/// card_pass's level. card 0 has two printings — one at cn=100 (matches),
+/// one at cn=228 (does not) — so `cn=100` must resolve to exactly one
+/// printing match, never both (which is what wrongly promoting a tight
+/// printing-space result to all_match would produce).
+#[test]
+fn all_match_promotion_never_fires_for_printing_space_tight_results() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 2], vocab);
+    data.printings[0].collector_number_int = Some(100);
+    data.printings[1].collector_number_int = Some(228);
+    data.printings[2].collector_number_int = Some(101);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut cn_eq_100 = FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::CollectorNumberInt),
+        op: CmpOp::Eq,
+        rhs: NumExpr::Const(100.0),
+    };
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut cn_eq_100, None, "printing", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1, "cn=100 must match exactly one printing, not both of card 0's printings");
+    assert_eq!(u128::from(page[0].1.scryfall_id), 1); // the cn=100 printing specifically
+
+    // unique=card must also see exactly one matching card (not both, and not
+    // zero), and it must be card 0.
+    let mut cn_eq_100b = FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::CollectorNumberInt),
+        op: CmpOp::Eq,
+        rhs: NumExpr::Const(100.0),
+    };
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut cn_eq_100b, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1);
+    assert_eq!(u128::from(page[0].0.oracle_id), 1);
+}
+
+/// The positive case: a genuinely card-space exact predicate (a numeric
+/// range — cmc/power/toughness are card-level fields, identical across every
+/// printing) gets the same correct results with or without all_match
+/// promotion. Doesn't assert card_pass was skipped (an implementation
+/// detail) — just that results stay correct, across uniques, when the
+/// narrowing IS safe to trust directly.
+#[test]
+fn all_match_promotion_correct_for_card_space_exact_predicate() {
+    let mut vocab = VocabInterner::new();
+    let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card0.creature_power = Some(5);
+    let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
+    card1.creature_power = Some(1);
+    let mut data = store_of(vec![card0, card1], &[2, 3], vocab);
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut power_gt_3 = FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Power),
+        op: CmpOp::Gt,
+        rhs: NumExpr::Const(3.0),
+    };
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut power_gt_3, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1); // only card0 (power 5)
+
+    let mut power_gt_3p = FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Power),
+        op: CmpOp::Gt,
+        rhs: NumExpr::Const(3.0),
+    };
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut power_gt_3p, None, "printing", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 2); // card0's 2 printings, all matching (power is card-level)
+}
+
+// ─── #634 Step 2: popcount-skip order phase ───────────────────────────────────
+
+/// Five all-Creature cards (so `t:creature` fully plane-consumes to True —
+/// the whole filter, every selectivity) with three tied on cmc=3, to stress
+/// exactly the property the design correction was about: descending order is
+/// NOT simply the reverse of ascending, because the edhrec tie-break never
+/// flips with the primary column's direction. If inverse permutations were
+/// (wrongly) derived via `n-1-pos` instead of stored per-direction, the tied
+/// group's internal order would come out reversed in one direction.
+fn tie_break_fixture() -> (Vec<OracleCard>, VocabInterner) {
+    let mut vocab = VocabInterner::new();
+    let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab); // cmc=3, edhrec=10
+    card0.cmc = Some(3);
+    card0.edhrec_rank = Some(10);
+    let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab); // cmc=3, edhrec=5 (lowest in the tie)
+    card1.cmc = Some(3);
+    card1.edhrec_rank = Some(5);
+    let mut card2 = stub_card(3, TYPE_CREATURE, &[], &mut vocab); // cmc=3, edhrec=20 (highest in the tie)
+    card2.cmc = Some(3);
+    card2.edhrec_rank = Some(20);
+    let mut card3 = stub_card(4, TYPE_CREATURE, &[], &mut vocab); // cmc=1
+    card3.cmc = Some(1);
+    card3.edhrec_rank = Some(1);
+    let mut card4 = stub_card(5, TYPE_CREATURE, &[], &mut vocab); // cmc=5
+    card4.cmc = Some(5);
+    card4.edhrec_rank = Some(1);
+    (vec![card0, card1, card2, card3, card4], vocab)
+}
+
+/// Expected order, by oracle_id: ascending is [card3(1), card1(3,e5),
+/// card0(3,e10), card2(3,e20), card4(5)]; descending is [card4(5), card1,
+/// card0, card2, card3(1)] — the tied trio (card1,card0,card2) keeps the
+/// SAME internal order in both directions, only the untied cards (card3,
+/// card4) swap ends.
+#[test]
+fn popcount_skip_tie_breaking_preserves_group_order_both_directions() {
+    let (cards, vocab) = tie_break_fixture();
+    let data = store_of(cards, &[1, 1, 1, 1, 1], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let creature = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let (plane, mut residual) = split_planes(creature, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    assert!(matches!(residual, FilterExpr::True), "t:creature must fully plane-consume");
+
+    let mut run = |direction: &str| {
+        run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "cmc", direction, 100, 0)
+    };
+
+    let (total, page) = run("asc");
+    assert_eq!(total, 5);
+    let order: Vec<u128> = page.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
+    assert_eq!(order, vec![4, 2, 1, 3, 5], "ascending: tied trio in edhrec-ascending order");
+
+    let (total, page) = run("desc");
+    assert_eq!(total, 5);
+    let order: Vec<u128> = page.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
+    assert_eq!(
+        order,
+        vec![5, 2, 1, 3, 4],
+        "descending: only the untied ends (card3/card4) swap — the tied trio's \
+         internal order (card1,card0,card2) must stay identical to ascending, \
+         not reverse"
+    );
+}
+
+/// Offset landing mid-tied-group: skipping the first 2 (ascending) must land
+/// exactly on the third-ranked card, not off-by-one from a word/bit
+/// miscount.
+#[test]
+fn popcount_skip_offset_lands_inside_tied_group() {
+    let (cards, vocab) = tie_break_fixture();
+    let data = store_of(cards, &[1, 1, 1, 1, 1], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let creature = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let (plane, mut residual) = split_planes(creature, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+
+    // Full ascending order is [card3, card1, card0, card2, card4] (oracle ids
+    // [4,2,1,3,5]); offset=2 must skip card3 and card1, landing on card0.
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "cmc", "asc", 100, 2);
+    assert_eq!(total, 5);
+    let order: Vec<u128> = page.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
+    assert_eq!(order, vec![1, 3, 5]);
+
+    // offset at exactly total must yield an empty page, not panic.
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "cmc", "asc", 100, 5);
+    assert_eq!(total, 5);
+    assert!(page.is_empty());
+}
+
+/// The popcount-skip path must produce byte-identical results to the
+/// existing (non-popcount) path for the same query — cross-checked directly
+/// against run_query_streamed's counts-buffer path by disabling the plane
+/// (forcing the old path) and comparing.
+#[test]
+fn popcount_skip_matches_non_popcount_path() {
+    let (cards, vocab) = tie_break_fixture();
+    let data = store_of(cards, &[1, 1, 1, 1, 1], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let creature = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let (plane, mut residual_true) = split_planes(creature, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    assert!(matches!(residual_true, FilterExpr::True));
+
+    // Popcount path: plane present, residual True.
+    let (total_pc, page_pc) = run_query(&QueryCtx::from(archived), &mut residual_true, plane.as_ref(), "card", "default", "cmc", "desc", 100, 1);
+
+    // Non-popcount path: same logical filter, but passed as a real predicate
+    // (not pre-consumed to True) with no plane, forcing the counts-buffer path.
+    let mut creature_raw = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let (total_old, page_old) = run_query(&QueryCtx::from(archived), &mut creature_raw, None, "card", "default", "cmc", "desc", 100, 1);
+
+    assert_eq!(total_pc, total_old);
+    let ids_pc: Vec<u128> = page_pc.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
+    let ids_old: Vec<u128> = page_old.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
+    assert_eq!(ids_pc, ids_old);
+}
+
+// The representation split: `build_hybrid_tag_index` decides per value by size, and the crossover is
+// arithmetic, so assert it directly. This replaces `frame_postings_thresholded_at_build`, which pinned
+// the opposite contract -- that dense values are DROPPED.
+#[test]
+fn hybrid_tag_index_splits_dense_from_sparse_at_the_size_crossover() {
+    // A bitmap costs 1 bit per row and a posting 4 bytes, so a bitmap is smaller once k * 32 > n.
+    assert!(!bitmap_beats_postings(62, 2000) && bitmap_beats_postings(63, 2000), "crossover is 1/32");
+    assert!(!bitmap_beats_postings(0, 2000), "an absent value is not dense");
+
+    let mut vocab = VocabInterner::new();
+    let modern = vocab_ids(&mut vocab, &["2015"]);
+    let showcase = vocab_ids(&mut vocab, &["Showcase"]);
+    // 1,200 of 2,000 carry "2015" (60%, dense); the first 40 also carry "Showcase" (2%, sparse).
+    let mut printings: Vec<Printing> = (1..=2000u128).map(|i| stub_printing(i, i, None)).collect();
+    for (i, p) in printings.iter_mut().enumerate() {
+        if i < 1200 {
+            p.card_frame_data = modern.clone();
+        }
+        if i < 40 {
+            p.card_frame_data = [modern.clone(), showcase.clone()].concat();
+            p.card_frame_data.sort_unstable();
+        }
+    }
+    let idx = build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_frame_data);
+    assert!(idx.dense.contains_key("2015"), "a dense value belongs in `dense`, not dropped");
+    assert!(!idx.sparse.contains_key("2015"), "and not duplicated into `sparse`");
+    assert_eq!(idx.sparse.get("Showcase").map(|v| v.len()), Some(40), "a sparse value stays postings");
+    assert!(!idx.dense.contains_key("Showcase"));
+    // Nothing dropped: that is what makes the index complete, and completeness is what lets absence
+    // prove emptiness and puts frame leaves on the compose path.
+    assert_eq!(idx.dense.len() + idx.sparse.len(), 2, "every value is stored in exactly one form");
+
+    // The archived accessors agree on the count whichever form backs the value.
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
+    let archived = rkyv::access::<Archived<HybridTagIndex>, Error>(&bytes).expect("access");
+    assert!(archived.is_dense("2015") && !archived.is_dense("Showcase"));
+    assert_eq!(archived.len_of("2015"), Some(1200), "popcount of the bitmap");
+    assert_eq!(archived.len_of("Showcase"), Some(40), "length of the postings");
+    assert_eq!(archived.len_of("Zzz"), None, "absent is absent, not zero-length");
+    for value in ["2015", "Showcase"] {
+        let bits = archived.bits(value, 2000).expect("present");
+        let want = if value == "2015" { 1200 } else { 40 };
+        assert_eq!(bits.iter().map(|w| w.count_ones() as usize).sum::<usize>(), want, "{value} bits");
+    }
+}
+
+
+// Streamed selection must agree with the gathered path. Two stores identical
+// except for the presence of sort permutations: the perm-less store takes the
+// gathered path, the other streams (matches > STREAM_MIN_MATCHES). Distinct
+// edhrec ranks everywhere, so no full-key tie blocks (the one place the
+// canonical-secondary permutation is allowed to order differently).
+#[test]
+fn streamed_selection_matches_gathered() {
+    const N: usize = 1_500;
+    let build = |with_perms: bool| {
+        let mut vocab = VocabInterner::new();
+        let mut cards = Vec::with_capacity(N);
+        for i in 0..N {
+            let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some((i % 8) as u8);
+            c.edhrec_rank = Some(((i * 37) % N) as u32 + 1); // distinct, shuffled
+            if i % 11 == 0 {
+                c.edhrec_rank = None; // a null block, ordered by canonical secondary
+            }
+            cards.push(c);
+        }
+        let mut data = store_of(cards, &vec![3usize; N], vocab);
+        // vary prices so prefer=usd_high picks different printings
+        for (pid, p) in data.printings.iter_mut().enumerate() {
+            p.price_usd = Some((pid % 7) as u32 * 100 + 50); // $0.50, $1.50, ... $6.50
+        }
+        if with_perms {
+            data.indexes.sort_perms = build_sort_permutations(&data.cards);
+            reassign_artwork_grouping(&mut data);
+        }
+        rkyv::to_bytes::<Error>(&data).expect("serialize")
+    };
+    let gathered_bytes = build(false);
+    let streamed_bytes = build(true);
+    let gathered = rkyv::access::<Archived<CardData>, Error>(&gathered_bytes).expect("access");
+    let streamed = rkyv::access::<Archived<CardData>, Error>(&streamed_bytes).expect("access");
+
+    // cmc >= 2 matches 6/8 of cards (1,125 > STREAM_MIN_MATCHES streams).
+    let filt = || FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc),
+        op: CmpOp::Ge,
+        rhs: NumExpr::Const(2.0),
+    };
+    for unique in ["card", "printing", "artwork"] {
+        for prefer in ["default", "usd_high"] {
+            for orderby in ["edhrec", "cmc"] {
+                for direction in ["asc", "desc"] {
+                    for offset in [0usize, 7, 1120] {
+                        // Fresh filter per store: run_query may memoize text
+                        // predicates into store-specific string ids, so a
+                        // filter must never outlive the store it ran against.
+                        let (tg, pg) = run_query(&QueryCtx::from(gathered), &mut filt(), None, unique, prefer, orderby, direction, 10, offset);
+                        let (ts, ps) = run_query(&QueryCtx::from(streamed), &mut filt(), None, unique, prefer, orderby, direction, 10, offset);
+                        let ids = |v: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<(u128, u128)> {
+                            v.iter().map(|(c, p)| (u128::from(c.oracle_id), u128::from(p.scryfall_id))).collect()
+                        };
+                        assert_eq!(tg, ts, "total {unique}/{prefer}/{orderby}/{direction}/{offset}");
+                        assert_eq!(ids(&pg), ids(&ps), "page {unique}/{prefer}/{orderby}/{direction}/{offset}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The emission walk must cover only the segment of the permutation its filter's bound on the sort
+/// column admits — the `cmc>=6 order=cmc asc` shape, built here as a corpus whose sort order and match
+/// set are deliberately anti-correlated: 8,500 non-matching cards sort ahead of the 1,500 that match.
+///
+/// Both ends matter, and one direction exercises each. Ascending, the walk would step the 8,500-entry
+/// prefix before its first emit; descending at a deep offset it would run to the END of the permutation,
+/// because the only thing that stops it is the page filling and a partial last page never fills. The
+/// bound is one interval either way: `walk_bounds` swaps which side of it starts the segment, since the
+/// permutation's key negates under `desc`.
+///
+/// Three assertions, and none substitutes for another:
+///
+/// - **Row identity against `GatheredScan`** at several page offsets. The segment decides where the
+///   paging walk starts and stops, so an end one entry off drops a row silently — a wrong page, not a
+///   crash, and only a reference comparison catches it.
+/// - **`perm_steps`**, which is how far the walk actually stepped. The row assertions pass just as well
+///   on a walk that steps everything: unbounded, the ascending cells cost `offset + limit + PREFIX`
+///   steps and the deep descending ones the full 10,000.
+/// - **The unbounded control.** The same query ordered by a column the filter says nothing about
+///   (`edhrec`) must return identical rows while stepping the whole permutation — that is the fallback
+///   every query without a bound on its sort column takes, and it has to stay correct.
+#[test]
+fn streamed_walk_bounds_itself_by_the_sort_column_predicate() {
+    // > STREAM_MIN_MATCHES (1,024) in every mode, so the walk branch runs rather than the
+    // small-total gather -- the span bound only exists on the walk.
+    const MATCHING: usize = 1_500;
+    // Cards sorting ahead of every match under `cmc asc`, so the prefix the bound skips is 85% of the
+    // corpus and a walk that ignored the bound would be caught by an order of magnitude.
+    const PREFIX: usize = 8_500;
+    const N: usize = PREFIX + MATCHING;
+    const MATCH_CMC: u8 = 5;
+    const LIMIT: usize = 10;
+    // Two printings per card, so printing and artwork mode have more than one row per matching card
+    // to page through rather than degenerating to card mode.
+    const PRINTINGS_PER_CARD: usize = 2;
+
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::with_capacity(N);
+    for i in 0..N {
+        let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+        // The anti-correlation: cmc 0 for the prefix, MATCH_CMC for the tail, so the ascending cmc
+        // permutation puts every match last and the descending one puts every match first. One
+        // fixture then covers both "the seek skips almost everything" and "the seek is a no-op".
+        c.cmc = Some(if i < PREFIX { 0 } else { MATCH_CMC });
+        c.edhrec_rank = Some(((i * 37) % N) as u32 + 1); // distinct, shuffled: no full-key tie blocks
+        cards.push(c);
+    }
+    let data = store_of(cards, &vec![PRINTINGS_PER_CARD; N], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let filt = || FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc),
+        op: CmpOp::Ge,
+        rhs: NumExpr::Const(f64::from(MATCH_CMC)),
+    };
+    let ids = |page: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<(u128, u128)> {
+        page.iter().map(|(c, p)| (u128::from(c.oracle_id), u128::from(p.scryfall_id))).collect()
+    };
+
+    // Extracted from the UNSPLIT filter, exactly as `bind_and_split_filter` does: `cmc>=MATCH_CMC`
+    // plane-consumes to `FilterExpr::True`, so a bound read after the split would find nothing.
+    let cmc_bound = sort_col_bound(&filt(), SortCol::Cmc);
+    assert_eq!(
+        cmc_bound,
+        SortBound { lo: Some(f64::from(MATCH_CMC)), hi: None },
+        "a bare `cmc >= k` must bound the cmc column below and leave it unbounded above",
+    );
+    // The control: the same filter says nothing about `edhrec`, so ordering by it must fall back to
+    // walking everything.
+    assert_eq!(sort_col_bound(&filt(), SortCol::EdhrecRank), SortBound::UNBOUNDED, "cmc says nothing about edhrec");
+
+    let mut checked = 0usize;
+    for &(mode_label, mode) in &[("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
+        for descending in [false, true] {
+            // Offsets across the page-depth range this plan sees, including one deep enough that the
+            // walk runs off the end of the matches (1,499 in card mode leaves a single row).
+            for offset in [0usize, 7, 750, 1_499] {
+                let params = kernel_params(mode, SortCol::Cmc, descending, LIMIT, offset).with_sort_bound(cmc_bound);
+                let (pe, filter) = split_planes(
+                    filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                );
+                // A pristine clone per plan: `prepare_candidates` rewrites the filter it is handed.
+                let mut streamed_filter = filter.clone();
+                take_phase_stats();
+                let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref())
+                    .expect("store_of builds the cmc permutation, so StreamedSelect is applicable");
+                let stats = take_phase_stats();
+                let mut gathered_filter = filter.clone();
+                let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref())
+                    .expect("GatheredScan is always applicable");
+
+                let case = format!("{mode_label}/{}/offset={offset}", if descending { "desc" } else { "asc" });
+                assert!(streamed.0 > *STREAM_MIN_MATCHES, "cell must reach the walk branch, not the gather: {case}");
+                assert_eq!(streamed.0, gathered.0, "total disagrees with GatheredScan: {case}");
+                assert_eq!(ids(&streamed.1), ids(&gathered.1), "page disagrees with GatheredScan: {case}");
+
+                // The walk consumes `offset` matches and emits at most `limit` more, and every entry
+                // inside the span is a match here (the matching group is contiguous in this fixture),
+                // so one step per match plus the entry the break lands on bounds it. Unbounded, the
+                // ascending cells were PREFIX higher than this and the deep descending ones ran to N.
+                let bound = (offset + LIMIT + 1) as u64;
+                assert!(
+                    stats.perm_steps <= bound,
+                    "walk stepped {} entries, over the {bound}-step bound — the match span did not bound it: {case}",
+                    stats.perm_steps,
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 24, "every mode × direction × offset cell must have run");
+
+    // The unbounded control: same filter, ordered by a column it constrains not at all. Rows must still
+    // agree with the reference, and the walk must step far more than the bounded cells did -- otherwise
+    // this test would pass with `walk_bounds` returning an empty slice for everything.
+    for offset in [0usize, 750] {
+        let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, offset);
+        let (pe, filter) =
+            split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+        let mut streamed_filter = filter.clone();
+        take_phase_stats();
+        let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref())
+            .expect("store_of builds the edhrec permutation too");
+        let stats = take_phase_stats();
+        let mut gathered_filter = filter.clone();
+        let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref())
+            .expect("GatheredScan is always applicable");
+        assert_eq!(streamed.0, gathered.0, "unbounded total disagrees with GatheredScan: offset={offset}");
+        assert_eq!(ids(&streamed.1), ids(&gathered.1), "unbounded page disagrees with GatheredScan: offset={offset}");
+        // Matches are 15% of the corpus and scattered through edhrec order, so filling a 10-row page
+        // takes ~`limit / 0.15` steps at minimum -- far above the bounded cells' `offset + LIMIT + 1`.
+        assert!(
+            stats.perm_steps > (offset + LIMIT + 1) as u64,
+            "an unbounded walk must step more than a bounded one ({} steps at offset={offset})",
+            stats.perm_steps,
+        );
+    }
+}
+
+// Group counts collapse duplicate illustrations within a card.
+#[test]
+fn artwork_group_counts_dedup_illustrations() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[4], vocab);
+    data.printings[0].illustration_id = 7;
+    data.printings[1].illustration_id = 7; // same art, different printing
+    data.printings[2].illustration_id = 9;
+    data.printings[3].illustration_id = 7;
+    let counts = reassign_artwork_grouping(&mut data);
+    assert_eq!(counts, vec![2]);
+    // 0 = first-seen (printing 0's illustration 7), 1 = next distinct (printing 2's
+    // illustration 9); printings 1 and 3 share illustration 7's group.
+    let gids: Vec<u16> = data.printings.iter().map(|p| p.artwork_group_id).collect();
+    assert_eq!(gids, vec![0, 0, 1, 0]);
+}
+
+// #629: real data has a handful of cards (basic lands) with >64 distinct
+// illustrations -- this exercises the match-count bitmask and emission
+// scratch's growth past a single u64 word / past 64 array slots, and (via a
+// shared-illustration group) that group selection still picks the best-scored
+// *matching* printing, not just the highest prefer_score overall.
+#[test]
+fn artwork_group_ids_handle_more_than_64_groups() {
+    const N: usize = 70;
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[N], vocab);
+    // Printings 0 and 1 share an illustration (one group of 2); 2..70 each
+    // keep their distinct store_of-assigned illustration -- 69 distinct
+    // groups total, past the 64-bit single-word threshold.
+    data.printings[1].illustration_id = data.printings[0].illustration_id;
+    reassign_artwork_grouping(&mut data);
+    assert_eq!(data.indexes.artwork_groups, vec![69]);
+
+    // Printing 0 has the higher prefer_score (store_of orders descending) but
+    // fails usd<50; printing 1 shares its group and passes -- the chosen
+    // representative for that group must be printing 1, not printing 0.
+    data.printings[0].price_usd = Some(10_000); // $100.00
+    for p in data.printings[1..].iter_mut() {
+        p.price_usd = Some(1_000); // $10.00
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let mut filter = usd_cmp(CmpOp::Lt, 50.0);
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut filter, None, "artwork", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 69); // every group has >= 1 passing printing
+    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    // store_of assigns scryfall_id = printing index + 1, so printing 0 is
+    // scryfall_id 1 and printing 1 is scryfall_id 2.
+    assert!(chosen.contains(&2) && !chosen.contains(&1));
+}
+
+// Permutations put missing sort values last in both directions and reverse
+// only the non-null primary order, matching sort_key_bits semantics.
+#[test]
+fn sort_permutations_nulls_last_both_directions() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    cards[0].cmc = Some(5);
+    cards[1].cmc = None;
+    cards[2].cmc = Some(1);
+    let data = store_of(cards, &[1, 1, 1], vocab);
+    let perms = build_sort_permutations(&data.cards);
+    assert_eq!(perms.cmc[0], vec![2, 0, 1], "asc: 1, 5, null");
+    assert_eq!(perms.cmc[1], vec![0, 2, 1], "desc: 5, 1, null");
+}
+
+#[test]
+fn set_code_and_date_narrowing() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 1], vocab);
+    data.printings[0].card_set_code = InlineStr::from_str("lea");
+    data.printings[1].card_set_code = InlineStr::from_str("fdn");
+    data.printings[2].card_set_code = InlineStr::from_str("lea");
+    data.printings[0].released_at_int = Some(19930805);
+    data.printings[1].released_at_int = Some(20241115);
+    data.printings[2].released_at_int = None; // dateless printings never satisfy date filters
+    // set_codes / released_at built the way reload_commit builds them
+    let mut set_codes: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+    }
+    data.indexes.set_codes = set_codes;
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let lea = FilterExpr::TextExact {
+        field: super::TextField::SetCode,
+        op: CmpOp::Eq,
+        value: "lea".to_string(),
+    };
+    match narrow_candidates(&lea, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0, 2]),
+        _ => panic!("set code must narrow in printing space"),
+    }
+    // Unknown set code: exact empty narrowing (the index covers every code).
+    let none = FilterExpr::TextExact {
+        field: super::TextField::SetCode,
+        op: CmpOp::Eq,
+        value: "zzz".to_string(),
+    };
+    match narrow_candidates(&none, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty()),
+        _ => panic!("unknown set code must narrow to the empty set"),
+    }
+
+    let year1993 = FilterExpr::YearCmp { op: CmpOp::Eq, year: 1993 };
+    match narrow_candidates(&year1993, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0]),
+        _ => panic!("year must narrow in printing space"),
+    }
+    let date_ge = FilterExpr::DateCmp { op: CmpOp::Ge, value: 20240101 };
+    match narrow_candidates(&date_ge, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![1]),
+        _ => panic!("date must narrow in printing space"),
+    }
+    // Ne is not selective and must not narrow.
+    assert!(narrow_candidates(&FilterExpr::DateCmp { op: CmpOp::Ne, value: 19930805 }, &archived.indexes, &archived.offsets, &archived.cards).is_none());
+}
+
+#[test]
+fn watermark_narrowing() {
+    // Sparse field (93% null, 67 distinct values in real data, largest ~0.8% of
+    // printings) — postings, same shape as SetCode, not a plane. See
+    // docs/issues/done/local-engine-watermark-postings.md.
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 1], vocab);
+    let mut interner = Interner::new();
+    data.printings[0].card_watermark_id = interner.intern("wotc".to_string());
+    data.printings[1].card_watermark_id = interner.intern("set".to_string());
+    data.printings[2].card_watermark_id = NONE_STR; // no watermark — must not appear in any postings list
+    data.strings = interner.strings;
+    let mut watermarks: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        if p.card_watermark_id != NONE_STR {
+            watermarks.entry(data.strings[p.card_watermark_id as usize].clone()).or_default().push(i as u32);
+        }
+    }
+    data.indexes.watermarks = watermarks;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let wotc = FilterExpr::TextExact { field: super::TextField::Watermark, op: CmpOp::Eq, value: "wotc".to_string() };
+    match narrow_candidates(&wotc, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0]),
+        _ => panic!("watermark must narrow in printing space"),
+    }
+
+    // Unknown watermark: exact empty narrowing, same as an unknown set code —
+    // and the short-circuit this doc's timing (~3us) relies on.
+    let unknown = FilterExpr::TextExact { field: super::TextField::Watermark, op: CmpOp::Eq, value: "notarealvalue".to_string() };
+    match narrow_candidates(&unknown, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty()),
+        _ => panic!("unknown watermark must narrow to the empty set"),
+    }
+
+    // The bug this fixes: before this arm existed, Watermark had no narrow_rec
+    // case at all, so `Or([Watermark(..), <anything narrowable>])` vetoed the
+    // whole Or to None (every child must narrow). Confirm the Or now composes.
+    let set = FilterExpr::TextExact { field: super::TextField::Watermark, op: CmpOp::Eq, value: "set".to_string() };
+    match narrow_candidates(&FilterExpr::Or(vec![wotc, set]), &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(mut v)) => {
+            v.sort_unstable();
+            assert_eq!(v, vec![0, 1]);
+        }
+        _ => panic!("watermark Or must narrow now that both children narrow"),
+    }
+}
+
+// #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
+// differential test the design doc calls for: for every filter shape (both `set:` polarities,
+// `watermark:` positive, and mixes with a year range) the exact `compose_printing_bits` bitmap must
+// agree — printing for printing — with the general per-candidate residual-check path (`card_pass` +
+// `residual_matches`, the same two functions the materializing plan verifies with). A compose leaf
+// that's fast because it's *wrong* fails here, not just slow.
+#[test]
+fn set_watermark_compose_leaves() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[2, 2, 2], vocab); // pids 0,1 | 2,3 | 4,5
+    let mut interner = Interner::new();
+    // Set codes span card boundaries (card 1 owns pid2=dmu and pid3=dmu; card 0 owns pid0=dmu,
+    // pid1=lea — a card whose printings straddle a set, so `set:`/`-set:` is genuinely
+    // printing-dependent, not card-invariant).
+    let set_codes_by_pid = ["dmu", "lea", "dmu", "dmu", "lea", "neo"];
+    for (p, code) in data.printings.iter_mut().zip(set_codes_by_pid) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    // Watermark is nullable: pid1/pid4/pid5 have none (must satisfy neither `watermark:x` nor its
+    // negation — but we only compose the positive form, so this just tests they're excluded).
+    let watermark_by_pid = [Some("wotc"), None, Some("set"), Some("wotc"), None, None];
+    for (p, wm) in data.printings.iter_mut().zip(watermark_by_pid) {
+        p.card_watermark_id = wm.map_or(NONE_STR, |s| interner.intern(s.to_string()));
+    }
+    data.strings = interner.strings;
+    // Released dates give a mix of years for the range-leaf mixes (pid4 dateless — fails any year).
+    let year_by_pid = [Some(20200101), Some(20230101), Some(20200101), Some(20230101), None, Some(20240101)];
+    for (p, y) in data.printings.iter_mut().zip(year_by_pid) {
+        p.released_at_int = y;
+    }
+    // set_codes / watermarks / released_at built the way reload_commit builds them.
+    let mut set_codes: TagIndex = HashMap::new();
+    let mut watermarks: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        if p.card_watermark_id != NONE_STR {
+            watermarks.entry(data.strings[p.card_watermark_id as usize].clone()).or_default().push(i as u32);
+        }
+    }
+    data.indexes.set_codes = set_codes;
+    data.indexes.watermarks = watermarks;
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let set = |code: &str| FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: code.to_string() };
+    let not_set = |code: &str| FilterExpr::Not(Box::new(set(code)));
+    let wm = |v: &str| FilterExpr::TextExact { field: super::TextField::Watermark, op: CmpOp::Eq, value: v.to_string() };
+    let year = |y: i32| FilterExpr::YearCmp { op: CmpOp::Eq, year: y };
+
+    // Ground truth: the general per-candidate residual-check path. `card_pass` settles the
+    // card-invariant part; `residual_matches` settles the per-printing residual — exactly what the
+    // materializing plan runs, and independent of anything the compose path touches.
+    let brute = |f: &FilterExpr| -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut residual: Vec<&FilterExpr> = Vec::new();
+        let mut is_or = false;
+        for c in 0..archived.cards.len() {
+            let card = &archived.cards[c];
+            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or, 0);
+            let (lo, hi) = (u32::from(archived.offsets[c]), u32::from(archived.offsets[c + 1]));
+            for pid in lo..hi {
+                let matched = match tri {
+                    Tri::True => true,
+                    Tri::False => false,
+                    Tri::PrintingDep => {
+                        FilterExpr::residual_matches(card, &archived.printings[pid as usize], &archived.strings, &residual, is_or)
+                    }
+                    Tri::Null => false,
+                };
+                if matched {
+                    out.push(pid);
+                }
+            }
+        }
+        out
+    };
+    let composed = |f: &FilterExpr| -> Vec<u32> {
+        let bits = super::compose_printing_bits(f, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+        (0..n_printings as u32).filter(|&p| bits[p as usize >> 6] & (1u64 << (p & 63)) != 0).collect()
+    };
+
+    // Every shape must be composable, and its composed bits must equal the brute-force truth.
+    let cases: Vec<(&str, FilterExpr)> = vec![
+        ("set:dmu", set("dmu")),
+        ("-set:dmu", not_set("dmu")),
+        ("set:zzz (absent)", set("zzz")),
+        ("-set:zzz (absent -> all)", not_set("zzz")),
+        ("watermark:wotc", wm("wotc")),
+        ("watermark:set", wm("set")),
+        ("watermark:nope (absent)", wm("nope")),
+        ("set:dmu year:2023", FilterExpr::And(vec![set("dmu"), year(2023)])),
+        ("-set:dmu year:2023", FilterExpr::And(vec![not_set("dmu"), year(2023)])),
+        ("watermark:wotc year:2020", FilterExpr::And(vec![wm("wotc"), year(2020)])),
+        ("set:dmu or watermark:set", FilterExpr::Or(vec![set("dmu"), wm("set")])),
+        ("-set:dmu or watermark:wotc", FilterExpr::Or(vec![not_set("dmu"), wm("wotc")])),
+    ];
+    for (label, f) in &cases {
+        assert!(super::is_printing_composable(f, &archived.indexes), "{label} must be printing-composable");
+        let mut got = composed(f);
+        got.sort_unstable();
+        let mut want = brute(f);
+        want.sort_unstable();
+        assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
+        // The estimate feeds plan choice and must be a valid upper bound on the true match count
+        // (AND takes the min-of-children intersection bound, OR the capped sum — never an
+        // undercount, which would misprice the plan). For a bare leaf it's exact (postings length).
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
+        if matches!(f, FilterExpr::TextExact { .. } | FilterExpr::Not(_)) {
+            assert_eq!(est_matches, want.len(), "bare-leaf estimate must be exact for {label}");
+        }
+    }
+
+    // The negated form of the NULLABLE field must NOT be a compose leaf (its all-ones-minus-postings
+    // complement would wrongly include no-watermark printings — the trivalent trap the doc flags).
+    let not_wm = FilterExpr::Not(Box::new(wm("wotc")));
+    assert!(!super::is_printing_composable(&not_wm, &archived.indexes), "-watermark: must stay off the compose path (nullable field)");
+    // And a positive watermark mixed with an unsupported leaf still declines as a whole.
+    let unsupported = FilterExpr::And(vec![wm("wotc"), FilterExpr::Not(Box::new(wm("set")))]);
+    assert!(!super::is_printing_composable(&unsupported, &archived.indexes), "-watermark inside an And keeps the whole And off the compose path");
+}
+
+/// Card-space collection containment fields (`type:`/`kw:`/`otag:`) and their printing-space siblings
+/// (`art:`/`is:`) as PrintingCompose leaves: `compose_printing_bits` must be bit-for-bit the residual
+/// path's truth for the positive `Ge` leaf, its negation, mixes with a range, and absent values —
+/// while `Eq`/`Gt` (loose) and `FrameData` (non-complete) must stay OFF the compose path.
+#[test]
+fn collection_compose_leaves() {
+    let mut vocab = VocabInterner::new();
+    // Register every collection value up front so it lands in coll_vocab before store_of consumes
+    // vocab; capture the ids for the printing-space fields (set after store_of builds the printings).
+    let commander = vocab.intern("commander".to_string()).unwrap();
+    let showcase = vocab.intern("showcase".to_string()).unwrap();
+    // card0 subtypes [goblin]; card1 [goblin, warrior]; card2 [elf].
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["goblin"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["goblin", "warrior"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &["elf"], &mut vocab),
+    ];
+    // keywords (card-space): card0 [Flying]; card2 [Flying, Haste]; card1 none.
+    cards[0].card_keywords = vec![vocab.intern("Flying".to_string()).unwrap()];
+    cards[2].card_keywords = vec![vocab.intern("Flying".to_string()).unwrap(), vocab.intern("Haste".to_string()).unwrap()];
+    // oracle_tags (card-space): card0 [removal]; card1 [ramp]; card2 none.
+    cards[0].card_oracle_tags = vec![vocab.intern("removal".to_string()).unwrap()];
+    cards[1].card_oracle_tags = vec![vocab.intern("ramp".to_string()).unwrap()];
+
+    let mut data = store_of(cards, &[2, 2, 2], vocab); // pids 0,1 | 2,3 | 4,5
+    // is_tags (printing-space) — card0's two printings DIVERGE (pid0 has commander, pid1 doesn't), so
+    // `is:commander` is genuinely printing-dependent, not card-invariant. art_tags (printing-space):
+    // pid2/pid5 showcase.
+    let is_tags_by_pid: [&[u16]; 6] = [&[commander], &[], &[commander], &[], &[], &[commander]];
+    let art_tags_by_pid: [&[u16]; 6] = [&[], &[], &[showcase], &[], &[], &[showcase]];
+    for (p, (is_t, art_t)) in data.printings.iter_mut().zip(is_tags_by_pid.iter().zip(art_tags_by_pid.iter())) {
+        p.card_is_tags = is_t.to_vec();
+        p.card_art_tags = art_t.to_vec();
+    }
+    // Released years for the range-leaf mixes: pid4 dateless (fails any year).
+    let year_by_pid = [Some(20200101), Some(20230101), Some(20200101), Some(20230101), None, Some(20240101)];
+    for (p, y) in data.printings.iter_mut().zip(year_by_pid) {
+        p.released_at_int = y;
+    }
+    // Build the collection indexes the way reload_commit does (card-space over cards, printing-space
+    // over printings), plus the released_at range for the mixes.
+    data.indexes.subtypes = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.keywords = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.oracle_tags = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
+    data.indexes.art_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
+    data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    // The compose path keys the TagIndex on the value *string*, but the brute `matches()` reference
+    // compares the bound vocab *id* — so resolve `value_id` (the same partition_point `bind` runs), or
+    // the reference would treat every value as unknown and match nothing.
+    let coll = |field, op, value: &str| -> FilterExpr {
+        let (vocab, sorted) = (&archived.coll_vocab, &archived.coll_vocab_sorted);
+        let i = sorted.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value);
+        let value_id = sorted.get(i).map(|id| u16::from(*id)).filter(|&id| vocab[id as usize].as_str() == value);
+        FilterExpr::CollectionCmp { field, op, value: value.to_string(), value_id }
+    };
+    let ge = |field, v: &str| coll(field, CmpOp::Ge, v);
+    let not = |f: FilterExpr| FilterExpr::Not(Box::new(f));
+    let year = |y: i32| FilterExpr::YearCmp { op: CmpOp::Eq, year: y };
+
+    // Ground truth: the general per-candidate residual path (card_pass settles the card-invariant
+    // part, residual_matches the per-printing part) — exactly what the materializing plan runs,
+    // independent of anything the compose path touches.
+    let brute = |f: &FilterExpr| -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut residual: Vec<&FilterExpr> = Vec::new();
+        let mut is_or = false;
+        for c in 0..archived.cards.len() {
+            let card = &archived.cards[c];
+            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or, 0);
+            let (lo, hi) = (u32::from(archived.offsets[c]), u32::from(archived.offsets[c + 1]));
+            for pid in lo..hi {
+                let matched = match tri {
+                    Tri::True => true,
+                    Tri::False | Tri::Null => false,
+                    Tri::PrintingDep => FilterExpr::residual_matches(card, &archived.printings[pid as usize], &archived.strings, &residual, is_or),
+                };
+                if matched {
+                    out.push(pid);
+                }
+            }
+        }
+        out
+    };
+    let composed = |f: &FilterExpr| -> Vec<u32> {
+        let bits = super::compose_printing_bits(f, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+        (0..n_printings as u32).filter(|&p| bits[p as usize >> 6] & (1u64 << (p & 63)) != 0).collect()
+    };
+
+    let cases: Vec<(&str, FilterExpr)> = vec![
+        // Card-space positive containment — every printing of a matching card (exact card property).
+        ("type:goblin", ge(CollField::Subtypes, "goblin")),
+        ("type:elf", ge(CollField::Subtypes, "elf")),
+        ("type:absent", ge(CollField::Subtypes, "sliver")),
+        ("kw:Flying", ge(CollField::Keywords, "Flying")),
+        ("otag:ramp", ge(CollField::OracleTags, "ramp")),
+        // Card-space negation — exact complement (collection is never NULL).
+        ("-type:goblin", not(ge(CollField::Subtypes, "goblin"))),
+        ("-type:absent (-> all)", not(ge(CollField::Subtypes, "sliver"))),
+        ("-kw:Flying", not(ge(CollField::Keywords, "Flying"))),
+        // Printing-space positive/negation (scatter directly; the divergent is:commander printings).
+        ("is:commander", ge(CollField::IsTags, "commander")),
+        ("-is:commander", not(ge(CollField::IsTags, "commander"))),
+        ("art:showcase", ge(CollField::ArtTags, "showcase")),
+        // Mixes with a range, both And and Or, card-space × printing-space × range.
+        ("type:goblin year:2023", FilterExpr::And(vec![ge(CollField::Subtypes, "goblin"), year(2023)])),
+        ("type:goblin or year:2023", FilterExpr::Or(vec![ge(CollField::Subtypes, "goblin"), year(2023)])),
+        ("kw:Flying and is:commander", FilterExpr::And(vec![ge(CollField::Keywords, "Flying"), ge(CollField::IsTags, "commander")])),
+        ("type:goblin or is:commander", FilterExpr::Or(vec![ge(CollField::Subtypes, "goblin"), ge(CollField::IsTags, "commander")])),
+        ("-type:elf and year:2020", FilterExpr::And(vec![not(ge(CollField::Subtypes, "elf")), year(2020)])),
+    ];
+    for (label, f) in &cases {
+        assert!(super::is_printing_composable(f, &archived.indexes), "{label} must be printing-composable");
+        let mut got = composed(f);
+        got.sort_unstable();
+        let mut want = brute(f);
+        want.sort_unstable();
+        assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
+        // The estimate feeds plan choice: a valid upper bound at minimum, and exact for a bare leaf.
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
+        if matches!(f, FilterExpr::CollectionCmp { .. } | FilterExpr::Not(_)) {
+            assert_eq!(est_matches, want.len(), "bare collection-leaf estimate must be exact for {label}");
+        }
+    }
+
+    // Loose ops (`Eq`/`Gt`) must NOT compose — the postings prove containment, not the length
+    // condition, and the compose path has no residual re-check. FrameData (non-complete) must not
+    // compose in ANY op. A negated loose/FrameData inner must not sneak on via the Not arm either.
+    for op in [CmpOp::Eq, CmpOp::Gt] {
+        let f = coll(CollField::Subtypes, op, "goblin");
+        assert!(!super::is_printing_composable(&f, &archived.indexes), "type:goblin op={op:?} (loose) must stay off the compose path");
+        assert!(!super::is_printing_composable(&not(f), &archived.indexes), "-(loose collection) must stay off the compose path");
+    }
+    // Composability follows completeness: the index used to drop dense values, so absence proved nothing
+    // and it could not be an exact compose leaf. Storing everything makes it complete, hence composable,
+    // and that chain is most of this change's win.
+    let frame = coll(CollField::FrameData, CmpOp::Ge, "showcase");
+    assert!(super::is_printing_composable(&frame.clone(), &archived.indexes), "frame: is complete and composes");
+    assert!(super::is_printing_composable(&not(frame), &archived.indexes), "-frame: composes via the Not arm");
+    // A loose Eq inside an And keeps the whole And off the compose path.
+    let mixed = FilterExpr::And(vec![ge(CollField::Subtypes, "goblin"), coll(CollField::Keywords, CmpOp::Eq, "Flying")]);
+    assert!(!super::is_printing_composable(&mixed, &archived.indexes), "a loose Eq collection inside an And keeps the whole And off the compose path");
+}
+
+#[test]
+fn broad_ranges_decline_to_narrow() {
+    // Fraction rule: past MAX_NARROW_FRACTION of the index, gathering candidates
+    // costs more than the scan it replaces.
+    assert!(!range_too_broad_to_narrow(2_500, 10_000)); // exactly 25%: narrows
+    assert!(range_too_broad_to_narrow(2_501, 10_000)); // past it: scan
+    // Absolute floor: small candidate counts always narrow, even when they
+    // cover the whole index (tiny stores, tests, partial imports).
+    assert!(!range_too_broad_to_narrow(*NARROW_FLOOR, 10));
+    assert!(range_too_broad_to_narrow(*NARROW_FLOOR + 1, 10));
+
+    // End-to-end through the archived index: a broad slice returns None (fall
+    // back to the scan), a selective slice still narrows.
+    let printings: Vec<Printing> = (0..8_000u32).map(|v| {
+        let mut p = stub_printing(u128::from(v) + 1, u128::from(v) + 1, None);
+        p.price_usd = Some(v);
+        p
+    }).collect();
+    let idx = build_printing_value_index(&printings, &[], &[], |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
+    let archived = rkyv::access::<Archived<PrintingValueIndex>, Error>(&bytes).expect("access");
+    assert!(range_candidates(archived, 0, u32::MAX).is_none());
+    assert_eq!(range_candidates(archived, 100, 200).map(|v| v.len()), Some(100));
+}
+
+// Price is stored as integer cents (see Printing::price_usd's doc comment) specifically to make
+// both narrowing (via int_range_bounds, same as collector_number) and verification (field_num's
+// exact cents/100.0 division) genuinely exact at the boundary -- not "may include as a
+// candidate, verified later" like the old f32-dollars representation.
+#[test]
+fn price_narrowing_and_verification_are_exact_at_the_boundary() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[4], vocab);
+    data.printings[0].price_usd = Some(5); // $0.05
+    data.printings[1].price_usd = Some(10); // $0.10 -- sits exactly on the query boundary
+    data.printings[2].price_usd = Some(6000); // $60.00
+    data.printings[3].price_usd = None; // priceless printings never satisfy price filters
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+
+    let cmp = |op| usd_cmp(op, 0.10);
+
+    // Lt must exclude the boundary printing exactly -- both in narrowing and in verification.
+    let lt = cmp(CmpOp::Lt);
+    match narrow_candidates(&lt, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => {
+            assert!(v.contains(&0));
+            assert!(!v.contains(&1), "Lt must exclude the exact boundary price");
+            assert!(!v.contains(&2) && !v.contains(&3));
+        }
+        _ => panic!("usd must narrow in printing space"),
+    }
+    assert!(lt.matches(card, &archived.printings[0], &archived.strings));
+    assert!(!lt.matches(card, &archived.printings[1], &archived.strings));
+
+    // Le, Ge, Eq must all include the boundary printing -- the Bug B repro (a stored price
+    // widened from f32 essentially never bit-matched a full-precision query constant, so Ge/Eq
+    // silently excluded exact matches independent of narrowing).
+    for (op, op_name, is_eq) in [(CmpOp::Le, "Le", false), (CmpOp::Ge, "Ge", false), (CmpOp::Eq, "Eq", true)] {
+        let f = cmp(op);
+        match narrow_candidates(&f, &archived.indexes, &archived.offsets, &archived.cards) {
+            Some(Candidates::Printings(v)) => assert!(v.contains(&1), "narrowing must include the boundary price for {op_name}"),
+            None if is_eq => {} // narrow_candidates_exact's broadness filter can decline Eq on a tiny store; matches() below is what matters
+            _ => panic!("usd must narrow in printing space for {op_name}"),
+        }
+        assert!(f.matches(card, &archived.printings[1], &archived.strings), "verification must include the boundary price for {op_name}");
+    }
+    // Gt must exclude it.
+    let gt = cmp(CmpOp::Gt);
+    assert!(!gt.matches(card, &archived.printings[1], &archived.strings));
+
+    // Flipped operand order (50.0 < usd, i.e. usd > 50.0): only the $60 printing qualifies.
+    let pricey = FilterExpr::NumericCmp { lhs: NumExpr::Const(50.0), op: CmpOp::Lt, rhs: NumExpr::Field(NumField::PriceUsd) };
+    match narrow_candidates(&pricey, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![2]),
+        _ => panic!("flipped usd comparison must narrow"),
+    }
+    // Ne is not selective.
+    let ne = usd_cmp(CmpOp::Ne, 1.0);
+    assert!(narrow_candidates(&ne, &archived.indexes, &archived.offsets, &archived.cards).is_none());
+}
+
+// Direct repro of the review-caught bug: comparing a stored price widened from a lossy f32 to
+// f64 against a full-precision query constant essentially never matched, even at the exact
+// value the query was checking for. usd=7.22 must match a printing priced at exactly $7.22, and
+// usd>=7.22 must not drop it -- confirmed on a clean main worktree that both failed identically
+// before this fix (unrelated to narrowing, since it's in field_num/cmp's verification path).
+#[test]
+fn price_comparison_matches_exact_value_not_lossy_f32_widening() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[1], vocab);
+    data.printings[0].price_usd = Some(722); // $7.22 -- 7.22_f32 widened to f64 is 7.21999979019165
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+    let p = &archived.printings[0];
+
+    let cmp = |op| usd_cmp(op, 7.22);
+    assert!(cmp(CmpOp::Eq).matches(card, p, &archived.strings), "usd=7.22 must match a printing priced at exactly $7.22");
+    assert!(cmp(CmpOp::Ge).matches(card, p, &archived.strings), "usd>=7.22 must not drop the exact match");
+    assert!(cmp(CmpOp::Le).matches(card, p, &archived.strings));
+    assert!(!cmp(CmpOp::Lt).matches(card, p, &archived.strings));
+    assert!(!cmp(CmpOp::Gt).matches(card, p, &archived.strings));
+}
+
+// The `price` closure in narrow_rec's NumericCmp arm is int_range_bounds(op,
+// snap_to_nearest_cent(v * PRICE_CENTS_PER_DOLLAR)) -- not a standalone function anymore (the
+// old price_bounds was deleted), so this pins down that exact composition directly rather than
+// through a name that no longer exists. Thresholds include on-grid values a user would actually
+// type (paired with their exact cents value, Some(_)) and deliberately off-grid ones an
+// arithmetic expression could produce (paired with None); 0.28 and 0.57 are the review-caught
+// repro values (`0.28_f64 * 100.0 == 28.000000000000004`, `0.57_f64 * 100.0 ==
+// 56.99999999999999`) that snap_to_nearest_cent exists to correct.
+#[test]
+fn price_narrowing_bound_matches_direct_comparison_on_and_off_grid() {
+    let thresholds: &[(f64, Option<u32>)] = &[
+        (50.00, Some(5000)), (49.99, Some(4999)), (0.01, Some(1)), (5142.02, Some(514202)),
+        (100.00, Some(10000)), (0.28, Some(28)), (0.57, Some(57)), (0.0, Some(0)),
+        (49.998, None), (50.003, None), (33.335, None), (0.005, None), (12.3456789, None),
+    ];
+    let ops = [
+        (CmpOp::Lt, "Lt"),
+        (CmpOp::Le, "Le"),
+        (CmpOp::Gt, "Gt"),
+        (CmpOp::Ge, "Ge"),
+        (CmpOp::Eq, "Eq"),
+    ];
+    let bound = |op, v: f64| super::int_range_bounds(op, super::snap_to_nearest_cent(v * 100.0)).unwrap();
+
+    for &(t, on_grid_cents) in thresholds {
+        for &(op, op_name) in &ops {
+            let range = bound(op, t);
+            let in_range = |cents: u32| match range {
+                None => false, // provably empty
+                Some((lo, hi)) => cents >= lo && cents < hi,
+            };
+            if let Some(cents) = on_grid_cents {
+                let price = f64::from(cents) / 100.0;
+                let expected = match op {
+                    CmpOp::Lt => price < t,
+                    CmpOp::Le => price <= t,
+                    CmpOp::Gt => price > t,
+                    CmpOp::Ge => price >= t,
+                    CmpOp::Eq => true,
+                    CmpOp::Ne => unreachable!(),
+                };
+                assert_eq!(in_range(cents), expected, "{op_name}({t}) disagrees with direct comparison AT ITS OWN threshold price {price}");
+            }
+            for cents in (1..514_202u32).step_by(37) {
+                // sampled every 37 cents across the real max-price range -- not exhaustive, but
+                // int_range_bounds' own exactness over the integer domain is already trusted
+                // (mirrors collector_number's identical usage); this is specifically about
+                // whether *100.0 + snap survives the multiplication noise it's meant to correct.
+                let price = cents as f64 / 100.0;
+                let expected = match op {
+                    CmpOp::Lt => price < t,
+                    CmpOp::Le => price <= t,
+                    CmpOp::Gt => price > t,
+                    CmpOp::Ge => price >= t,
+                    CmpOp::Eq => (price - t).abs() < 1e-9,
+                    CmpOp::Ne => unreachable!(),
+                };
+                assert_eq!(in_range(cents), expected, "{op_name}({t}) disagrees with direct comparison at price {price}");
+            }
+        }
+    }
+}
+
+#[test]
+fn negated_range_narrowing() {
+    // docs/issues/local-engine-negated-range-narrowing.md: NOT(x op c) == x negate_op(op) c is
+    // exact under this engine's null semantics, so -usd<0.25 narrows identically to usd>=0.25 --
+    // including on the no-price printing, which must fail *both* forms, not just the direct one.
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2, 2], vocab); // card 0: pids 0,1; card 1: pids 2,3
+    data.printings[0].price_usd = Some(10); // $0.10
+    data.printings[1].price_usd = Some(30); // $0.30
+    data.printings[2].price_usd = None; // no price -- must fail both usd<0.25 and -usd<0.25
+    data.printings[3].price_usd = Some(1000); // $10.00
+    data.printings[0].collector_number_int = Some(5);
+    data.printings[1].collector_number_int = Some(150);
+    data.printings[2].collector_number_int = None;
+    data.printings[3].collector_number_int = Some(200);
+    data.printings[0].released_at_int = Some(19_930_805);
+    data.printings[1].released_at_int = Some(20_241_115);
+    data.printings[2].released_at_int = None;
+    data.printings[3].released_at_int = Some(20_200_101);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let not_usd_lt_25 = FilterExpr::Not(Box::new(FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::PriceUsd),
+        op: CmpOp::Lt,
+        rhs: NumExpr::Const(0.25),
+    }));
+    let usd_ge_25 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op: CmpOp::Ge, rhs: NumExpr::Const(0.25) };
+    // pid1 ($0.30) and pid3 ($10.00) satisfy both forms; pid0 ($0.10) fails both directly; pid2
+    // (no price) fails both -- the trivalent guarantee, not just the ordinary in-range cases.
+    for (i, f) in [&not_usd_lt_25, &usd_ge_25].into_iter().enumerate() {
+        match narrow_candidates(f, &archived.indexes, &archived.offsets, &archived.cards) {
+            Some(Candidates::Printings(v)) => assert_eq!(v, vec![1, 3], "form {i}"),
+            other => panic!("expected tight printing narrowing, got {other:?}"),
+        }
+    }
+
+    // The motivating example: -usd<0.25 usd<5 -- only pid1 ($0.30) survives both halves (pid3 at
+    // $10.00 fails usd<5; pid0/pid2 already fail the first half above). Checked end-to-end via
+    // run_query, not narrow_candidates directly: with only 4 printings, the first child alone
+    // already narrows below AND_SKIP_THRESHOLD, so the And arm's (separate, pre-existing, correct)
+    // early-stop skips evaluating the second child as a *narrowing* source -- residual verification
+    // still catches it, so the final answer is exact either way, just not through narrow_candidates
+    // alone on a corpus this tiny.
+    let usd_lt_5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op: CmpOp::Lt, rhs: NumExpr::Const(5.0) };
+    let mut compound = FilterExpr::And(vec![not_usd_lt_25, usd_lt_5]);
+    let (total, page) = super::run_query(&QueryCtx::from(archived), &mut compound, None, "printing", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1);
+    assert_eq!(page.len(), 1);
+    let got_cents = page[0].1.price_usd.as_ref().map(|v| u32::from(*v));
+    assert_eq!(got_cents, Some(30), "must be pid1 ($0.30), the only printing satisfying both halves");
+
+    // Same compound is printing-composable (#731/#724's PrintingCompose), and its composed bits
+    // agree with narrow_candidates -- the compose path (is_printing_composable /
+    // compose_printing_bits) shares bare_range_bounds with narrow_rec, not a second implementation.
+    assert!(super::is_printing_composable(&compound, &archived.indexes));
+    let n_printings = archived.printings.len();
+    let pbits = super::compose_printing_bits(&compound, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+    let set_bits: Vec<u32> = (0..n_printings as u32).filter(|&p| pbits[p as usize >> 6] & (1u64 << (p & 63)) != 0).collect();
+    assert_eq!(set_bits, vec![1]);
+
+    // -cn<50 -> cn>=50: pid1 (150) and pid3 (200); not pid0 (5) or pid2 (no collector number).
+    let not_cn_lt_50 = FilterExpr::Not(Box::new(FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::CollectorNumberInt),
+        op: CmpOp::Lt,
+        rhs: NumExpr::Const(50.0),
+    }));
+    match narrow_candidates(&not_cn_lt_50, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![1, 3]),
+        other => panic!("expected tight printing narrowing, got {other:?}"),
+    }
+
+    // -year:1993 doesn't reduce (negate_op(Eq) == Ne, and Ne isn't a single half-open range) --
+    // must decline cleanly, not silently narrow to something wrong.
+    assert!(
+        narrow_candidates(
+            &FilterExpr::Not(Box::new(FilterExpr::YearCmp { op: CmpOp::Eq, year: 1993 })),
+            &archived.indexes,
+            &archived.offsets,
+            &archived.cards,
+        )
+        .is_none()
+    );
+    // -date>=20200101 -> date<20200101: only pid0 (1993-08-05); pid2 (no date) fails both forms.
+    let not_date_ge = FilterExpr::Not(Box::new(FilterExpr::DateCmp { op: CmpOp::Ge, value: 20_200_101 }));
+    match narrow_candidates(&not_date_ge, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => assert_eq!(v, vec![0]),
+        other => panic!("expected tight printing narrowing, got {other:?}"),
+    }
+}
+
+#[test]
+fn and_child_rank_matches_narrow_rec_dispatch() {
+    // Review catch (not caught by the differential test: rank/execution mismatches are a cost
+    // question, not a correctness one, so they can't surface as a wrong final answer). Each case
+    // here mirrors a real `narrow_rec` dispatch decision -- `and_child_rank` now gates its Not-arms
+    // on the *same* predicates (`is_rarity_negation_shape`/`is_legality_negation_shape`) and the
+    // *same* function (`bare_range_bounds`) narrow_rec's own dedicated arms use, so this is really
+    // testing that consistency held, not reimplementing a second copy to compare against.
+    //
+    // An empty store's indexes suffice: `bare_range_bounds`'s Not-arm resolves purely from field/op
+    // (`int_range_bounds` et al. are closed-form, no index contents inspected), and the two shape
+    // predicates are index-free by construction (see their docs).
+    let data = store_of(vec![], &[], VocabInterner::new());
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let indexes = &archived.indexes;
+
+    let usd = |op: CmpOp, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op, rhs: NumExpr::Const(v) };
+    let cmc = |op: CmpOp, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op, rhs: NumExpr::Const(v) };
+    let rarity = |op: CmpOp, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(v) };
+
+    // -usd<c: reduces to usd>=c via bare_range_bounds's Not handling -- same cheap tier (1) as its
+    // un-negated form, not the generic complement's rank 2.
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(usd(CmpOp::Lt, 50.0))), indexes), and_child_rank(&usd(CmpOp::Lt, 50.0), indexes));
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(usd(CmpOp::Lt, 50.0))), indexes), 1);
+
+    // -usd:c (negated equality): Ne isn't a representable range, so bare_range_bounds declines and
+    // narrow_rec falls through to the generic Not-arm (which itself declines via tight_narrow_space,
+    // per docs/issues/local-engine-negated-range-narrowing.md) -- must NOT get the cheap-tier rank.
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(usd(CmpOp::Eq, 5.0))), indexes), 2);
+
+    // -cmc:c (any op): cmc/power/toughness aren't printing-range-indexed, so bare_range_bounds never
+    // matches this field -- narrow_rec falls through to the generic bit-complement arm (tight in card
+    // space, unrelated to this feature), which is the same cost shape as any other Not-complement.
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(cmc(CmpOp::Lt, 3.0))), indexes), 2);
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(cmc(CmpOp::Eq, 3.0))), indexes), 2);
+
+    // -r:x (any op): rarity's own dedicated narrow_rec arm re-narrows regardless of op -- must keep
+    // its pre-existing cheap-tier rank (0), matching the un-negated bare rarity comparison's rank.
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(rarity(CmpOp::Eq, 2.0))), indexes), and_child_rank(&rarity(CmpOp::Eq, 2.0), indexes));
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(rarity(CmpOp::Eq, 2.0))), indexes), 0);
+
+    // -f:x (a tracked format, expected=LEGALITY_LEGAL=0b01): reads the status's own _ABSENT plane
+    // directly (narrow_rec's dedicated -f:x arm), the same "not a complement" shape as -r:x above --
+    // must also keep its bare form's cheap-tier rank (0), not the generic complement's rank 2.
+    let legal_fmt = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(legal_fmt())), indexes), and_child_rank(&legal_fmt(), indexes));
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(legal_fmt())), indexes), 0);
+
+    // -f:x for an untracked format (no shift resolved, i.e. absent from loaded data): status_plane_bases
+    // is irrelevant here (shift: None doesn't even reach it) -- must fall to the generic tier, same as
+    // any other Not this classifier doesn't recognize.
+    assert_eq!(and_child_rank(&FilterExpr::Not(Box::new(FilterExpr::Legality { shift: None, expected: 0b01 })), indexes), 2);
+}
+
+#[test]
+fn and_skip_probes_range_selectivity() {
+    // The probe-before-and-skip rule (docs/issues/local-engine-probe-before-and-skip.md): once a
+    // driver is selective (`best <= AND_SKIP_THRESHOLD`), a rank-1 printing-range child is no longer
+    // skipped by its worst-case cost *class*. Its real match count `k` (probe_range_k, two binary
+    // searches) decides: include when it would beat the driver (`k < best`) or is under
+    // AND_PROBE_FLOOR; skip when broad. The old rule skipped every range child here identically -- a
+    // wrong-cost decision the differential fuzzer can't catch (both choices return the *same rows*
+    // via residual verification; only the narrowed candidate-set size differs, which is what we
+    // assert on here).
+    const N: usize = 400;
+    let mut vocab = VocabInterner::new();
+    // Card i owns one printing (printing i). Even i are creatures (a 200-card driver); every 40th
+    // card is additionally legendary (a 10-card driver); the rest are instants. Price(printing i) =
+    // i+1 cents, a gradient so `usd<x` selects an exactly dialable prefix of the cards.
+    let cards: Vec<OracleCard> = (0..N)
+        .map(|i| {
+            let types = if i % 40 == 0 {
+                TYPE_CREATURE | TYPE_LEGENDARY
+            } else if i % 2 == 0 {
+                TYPE_CREATURE
+            } else {
+                TYPE_INSTANT
+            };
+            stub_card(i as u128 + 1, types, &[], &mut vocab)
+        })
+        .collect();
+    let mut data = store_of(cards, &[1; N], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(i as u32 + 1); // 1..=400 cents
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let (indexes, offsets, cards) = (&archived.indexes, &archived.offsets, &archived.cards);
+
+    // FilterExpr isn't Clone, so build fresh nodes per use.
+    let creature = || FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let legendary = || FilterExpr::TypeCmp { mask: TYPE_LEGENDARY, op: CmpOp::Ge };
+    let cmc_lt = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Lt, rhs: NumExpr::Const(3.0) };
+    let len = |f: &FilterExpr| narrow_candidates(f, indexes, offsets, cards).map(|c| c.len());
+
+    // probe_range_k reads a range child's exact selectivity; None for a non-range sibling.
+    assert_eq!(probe_range_k(&usd_cmp(CmpOp::Lt, 0.21), indexes), Some(20)); // <21c -> printings 0..=19
+    assert_eq!(probe_range_k(&usd_cmp(CmpOp::Lt, 2.51), indexes), Some(250)); // <251c -> printings 0..=249
+    assert_eq!(probe_range_k(&creature(), indexes), None); // a card-space plane, not a range
+    assert_eq!(probe_range_k(&cmc_lt, indexes), None); // cmc is card-space numeric, not printing-range-indexed
+
+    // Drivers alone.
+    assert_eq!(len(&creature()), Some(200));
+    assert_eq!(len(&legendary()), Some(10));
+
+    // k < best: a selective range (k=20) beats the 200-card driver, so it is included and the And
+    // narrows to the true intersection (even cards among printings 0..=19 = {0,2,..,18} = 10),
+    // rather than being skipped back to the 200-card driver as the cost-class rule would have.
+    assert_eq!(len(&FilterExpr::And(vec![creature(), usd_cmp(CmpOp::Lt, 0.21)])), Some(10));
+    // Broad range (k=250 > best=200 and > floor): skipped -- the candidate set stays the driver.
+    assert_eq!(len(&FilterExpr::And(vec![creature(), usd_cmp(CmpOp::Lt, 2.51)])), Some(200));
+
+    // Floor: under the tiny 10-card driver, a range with best(10) < k <= AND_PROBE_FLOOR(64) is
+    // still included though it cannot lower the driver -- usd<0.51 (k=50) keeps only the legendary
+    // cards priced <51c ({0,40} = 2). One printing past the floor (k=70) is skipped (stays 10).
+    assert_eq!(probe_range_k(&usd_cmp(CmpOp::Lt, 0.51), indexes), Some(50));
+    assert_eq!(probe_range_k(&usd_cmp(CmpOp::Lt, 0.71), indexes), Some(70));
+    assert_eq!(len(&FilterExpr::And(vec![legendary(), usd_cmp(CmpOp::Lt, 0.51)])), Some(2));
+    assert_eq!(len(&FilterExpr::And(vec![legendary(), usd_cmp(CmpOp::Lt, 0.71)])), Some(10));
+}
+
+// ─── #744: PrintingCompose orderby-range-index walk ─────────────────────────────
+
+/// Part 1 differential: the #744 sparse-side (`_ABSENT`) legality build must produce **bit-for-bit**
+/// the same printing bitmap as the pre-#744 broadcast-from-`_EXISTS` build, on stores with a real
+/// illegal/divergent card mix (fuzz stores are ~40% divergent). Also cross-checks both against the
+/// direct per-printing truth (`(word >> shift) & 0b11 == expected`), so this proves the bits are
+/// *correct*, not merely that the two builds happen to agree. Mirrors
+/// `and_child_rank_matches_narrow_rec_dispatch`'s "test the two sources produce the same thing" spirit.
+#[test]
+fn legality_sparse_side_build_matches_broadcast() {
+    use rand::SeedableRng;
+    for seed in 0..48u64 {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let data = fuzz_store(&mut rng);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let n_cards = archived.cards.len();
+        let n_printings = archived.printings.len();
+        for shift in [0u8, 2, 4] {
+            for expected in [0b01u64, 0b10, 0b11] {
+                let Some(exists) = super::legality_candidate_bits(&archived.indexes, n_cards, shift, expected, false) else {
+                    continue;
+                };
+                let absent = super::legality_candidate_bits(&archived.indexes, n_cards, shift, expected, true).expect("absent side resolves");
+                let from_exists = super::legality_leaf_bits_from_exists(
+                    shift, expected, &exists, &archived.indexes.legal_divergent, &archived.offsets, &archived.printings, n_printings,
+                );
+                let from_absent = super::legality_leaf_bits_from_absent(
+                    shift, expected, &exists, &absent, &archived.indexes.legal_divergent, &archived.offsets, &archived.printings, n_printings,
+                );
+                assert_eq!(
+                    from_exists, from_absent,
+                    "sparse-side (_ABSENT) build disagrees with broadcast (_EXISTS) build (seed={seed}, shift={shift}, expected={expected:#04b})"
+                );
+                let adaptive =
+                    super::legality_leaf_bits(shift, expected, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+                assert_eq!(adaptive, from_exists, "adaptive legality_leaf_bits picked a differing build (seed={seed}, shift={shift})");
+                // Direct per-printing truth: the build must equal it on every printing.
+                for p in 0..n_printings {
+                    let want = (u64::from(archived.printings[p].card_legalities) >> shift) & 0b11 == expected;
+                    let got = from_exists[p >> 6] & (1u64 << (p & 63)) != 0;
+                    assert_eq!(got, want, "bit {p} wrong vs per-printing truth (seed={seed}, shift={shift}, expected={expected:#04b})");
+                }
+            }
+        }
+    }
+}
+
+/// Part 2 differential: the #744 orderby walk (`walk_range_orderby_page` for `usd`,
+/// `walk_rarity_orderby_page` for `rarity`) must produce the **identical** printing-mode page — same
+/// rows, same order — as `gather_composed_page` (the #740 reference the walk replaces on the fast
+/// path), across composable filters, both orderbys, both directions, and several offsets. Same
+/// differential-vs-reference pattern `fuzz_row_identity_matches_reference` uses. A larger store keeps
+/// enough non-null-valued matches that the walk actually fires (rather than declining to the
+/// null-value tail); `walked_any` guards against the test going vacuous if that ever stops holding.
+#[test]
+fn orderby_walk_matches_gather_composed() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4242);
+    let data = fuzz_store_n(&mut rng, 4_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let border = |v: &str| FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: v.to_string() };
+    let leg = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let filters: [(&str, FilterExpr); 3] = [
+        ("legality", leg()),
+        ("border:black", border("black")),
+        ("legality∧border", FilterExpr::And(vec![leg(), border("black")])),
+    ];
+    let ids = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+        page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+    };
+
+    // Every distinct-on, both prefers that matter, both directions. Mode is the axis this test exists
+    // for now: card/artwork rows are GROUPS, and the walk places a group at its representative rather
+    // than at whichever printing it met first, so a wrong representative shows up here as a row
+    // difference and nowhere else. `prefer` is swept because it DECIDES the representative --
+    // `Prefer::Default` lets the walk stop at the first match in store order while `UsdHigh` forces it
+    // to score the whole group, and only the latter can catch a walk that assumed store order.
+    let mut walked = 0usize;
+    let mut grouped_walked = 0usize;
+    for (name, filter) in &filters {
+        assert!(super::is_printing_composable(filter, &archived.indexes), "{name} must be composable");
+        let pbits = super::compose_printing_bits(filter, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+        for (mode_name, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
+            // `total` is the count in the query's RESULT space, which is what the walk's null-tail
+            // decline compares against; taking the printing popcount for every mode would make the
+            // grouped modes think they had more rows to find than exist and decline where they should not.
+            let card_bits = matches!(mode, Mode::Card)
+                .then(|| super::printing_bits_to_card_bits(&pbits, &archived.offsets, archived.cards.len()));
+            let total = super::compose_total_for_mode(&pbits, mode, &archived.indexes, &archived.printings, card_bits.as_deref());
+            for (prefer_name, prefer) in [("default", Prefer::Default), ("usd_high", Prefer::UsdHigh)] {
+                for orderby in ["usd", "rarity"] {
+                    let sort_col = orderby_to_col(orderby);
+                    let idx = match sort_col {
+                        SortCol::PriceUsd => &archived.indexes.price_usd,
+                        _ => &archived.indexes.rarity_printing_ordered,
+                    };
+                    for &descending in &[false, true] {
+                        for &offset in &[0usize, 50, 200] {
+                            let limit = 100usize;
+                            let mut params = kernel_params(mode, sort_col, descending, limit, offset);
+                            params.prefer = prefer;
+                            let (gather, _) = super::gather_composed_page(
+                                &QueryCtx::from(archived), &params, &pbits, card_bits.as_deref(),
+                            );
+                            let walk = super::walk_value_orderby_page(&QueryCtx::from(archived), &params, idx, &pbits, total);
+                            if let Some((walk, _)) = walk {
+                                walked += 1;
+                                grouped_walked += usize::from(!matches!(mode, Mode::Printing));
+                                assert_eq!(
+                                    ids(&walk), ids(&gather),
+                                    "walk vs gather_composed_page differs ({name}, unique={mode_name}, \
+                                     prefer={prefer_name}, orderby={orderby}, desc={descending}, offset={offset})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(walked > 0, "the orderby walk never fired on this fixture — the differential would be vacuous");
+    // The grouped modes are the new coverage; a fixture where only printing mode ever walks would pass
+    // the assert above while testing none of the representative logic.
+    assert!(grouped_walked > 0, "the walk never fired in card/artwork mode — the group path is untested");
+}
+
+// ─── Bitplanes (#630) ─────────────────────────────────────────────────────────
+
+/// A color/type-diverse store for plane parity: colorless, mono, guild pairs,
+/// lands whose identity exceeds their colors, multi-type cards — and Fallaji
+/// Wayfarer, the one real card (of 97,206 printings, checked 2026-07-07) whose
+/// colors are NOT a subset of its color identity ("is all colors" CDA vs. a
+/// {G} mana cost). Any plane scheme assuming colors ⊆ identity must fail here.
+const FALLAJI_CID: usize = 5;
+fn plane_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    // (card_colors, card_color_identity, card_types, produced_mana); color bits W=1 U=2 B=4 R=8 G=16 C=32.
+    // produced_mana is deliberately independent of colors/identity on several
+    // rows (card 0: colorless artifact that produces all five + C, like a
+    // mana rock; card 5: Fallaji Wayfarer produces only C, matching neither
+    // its own colors (31) nor its identity (16)) to prove the plane is its
+    // own independent transposition, not derived from the other two.
+    let specs: &[(u8, u8, u16, u8)] = &[
+        (0, 0, TYPE_ARTIFACT, 63),                   // colorless artifact, produces everything
+        (16, 16, TYPE_CREATURE, 0),                  // mono G creature, produces nothing
+        (1, 1, TYPE_CREATURE | TYPE_LEGENDARY, 0),   // mono W legendary creature
+        (3, 3, TYPE_INSTANT, 0),                      // WU instant
+        (0, 24, TYPE_LAND, 24),                       // land: no colors, RG identity (Taiga), produces RG
+        (31, 16, TYPE_CREATURE, 32),                  // Fallaji Wayfarer (see FALLAJI_CID), produces only C
+        (2, 3, TYPE_SORCERY, 0),                       // U sorcery with WU identity
+        (24, 31, TYPE_CREATURE | TYPE_ARTIFACT, 8),   // RG artifact creature, WUBRG identity, produces only R
+        (4, 4, TYPE_ENCHANTMENT | TYPE_SNOW, 0),      // mono B snow enchantment
+        (0, 32, TYPE_LAND, 32),                        // C-bit identity, exercising the C plane, produces C
+    ];
+    let cards = specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(colors, identity, types, produced))| {
+            let mut c = stub_card(i as u128 + 1, types, &[], &mut vocab);
+            c.card_colors = colors;
+            c.card_color_identity = identity;
+            c.produced_mana = produced;
+            c
+        })
+        .collect();
+    store_of(cards, &[1usize; 10], vocab)
+}
+
+// Every plane-expressible op on every color/type mask must reproduce the
+// filter's card-level truth bit for bit — including Not/And/Or composition.
+#[test]
+fn plane_parity_color_and_type_ops() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut bitmap: Vec<u64> = Vec::new();
+    let mut check = |f: &FilterExpr| {
+        let pe = compile_plane(f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words).expect("filter must be plane-expressible");
+        eval_planes(&pe, &archived.indexes.planes, &mut bitmap);
+        for (cid, card) in archived.cards.iter().enumerate() {
+            let want = f.eval_card(card, &archived.strings) == Tri::True;
+            assert_eq!(
+                bitmap_contains(&bitmap, cid as u32),
+                want,
+                "plane/filter mismatch at card {cid}"
+            );
+        }
+    };
+
+    let ops = [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge];
+    let color_masks: [u8; 8] = [0, 1, 2, 16, 3, 24, 31, 32];
+    let type_masks: [u16; 6] = [
+        0, TYPE_CREATURE, TYPE_ARTIFACT | TYPE_CREATURE, TYPE_INSTANT,
+        TYPE_LEGENDARY | TYPE_CREATURE, TYPE_SNOW,
+    ];
+    for op in ops {
+        for mask in color_masks {
+            check(&FilterExpr::ColorCmp { field: ColorField::Colors, op, mask });
+            check(&FilterExpr::ColorCmp { field: ColorField::ColorIdentity, op, mask });
+            check(&FilterExpr::ColorCmp { field: ColorField::ProducedMana, op, mask });
+        }
+        for mask in type_masks {
+            check(&FilterExpr::TypeCmp { mask, op });
+        }
+    }
+
+    let green = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 16 };
+    let creature = || FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let produces_red = || FilterExpr::ColorCmp { field: ColorField::ProducedMana, op: CmpOp::Ge, mask: 8 };
+    check(&FilterExpr::And(vec![green(), creature()]));
+    check(&FilterExpr::Or(vec![green(), creature()]));
+    check(&FilterExpr::Not(Box::new(FilterExpr::Or(vec![green(), creature()]))));
+    check(&FilterExpr::And(vec![produces_red(), creature()]));
+    check(&FilterExpr::Not(Box::new(produces_red())));
+}
+
+// Regression for #668 (color:c / produces:c matching every card): Ge with an
+// empty mask is the "c"/"colorless" query, and must reduce to bits == 0, not
+// the vacuously-true and_of([])/bits & 0 == 0 shape. Checked against both the
+// row-scan filter and the bitplane compiler, since each has its own Ge arm.
+#[test]
+fn color_cmp_ge_empty_mask_is_colorless_only() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let check = |field: ColorField, want_true: &[usize]| {
+        let f = FilterExpr::ColorCmp { field, op: CmpOp::Ge, mask: 0 };
+        for (cid, card) in archived.cards.iter().enumerate() {
+            let want = want_true.contains(&cid);
+            assert_eq!(f.eval_card(card, &archived.strings) == Tri::True, want, "eval_card mismatch at card {cid}");
+        }
+        let pe = compile_plane(&f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words).expect("filter must be plane-expressible");
+        let mut bitmap: Vec<u64> = Vec::new();
+        eval_planes(&pe, &archived.indexes.planes, &mut bitmap);
+        for cid in 0..archived.cards.len() {
+            assert_eq!(bitmap_contains(&bitmap, cid as u32), want_true.contains(&cid), "plane mismatch at card {cid}");
+        }
+    };
+
+    // card_colors == 0: cards 0, 4, 9 (see plane_fixture_store specs above)
+    check(ColorField::Colors, &[0, 4, 9]);
+    // produced_mana == 0: cards 1, 2, 3, 6, 8
+    check(ColorField::ProducedMana, &[1, 2, 3, 6, 8]);
+    // card_color_identity == 0: only card 0
+    check(ColorField::ColorIdentity, &[0]);
+}
+
+// produced_mana must be its own independent transposition, not derived from
+// colors or identity: card 0 (colorless, produces everything) and card 5
+// (Fallaji Wayfarer, colors=WUBR/identity=G, produces only C) both have
+// produced_mana disjoint from their own colors/identity bits.
+#[test]
+fn plane_produces_independent_of_colors_and_identity() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let produces_white = FilterExpr::ColorCmp { field: ColorField::ProducedMana, op: CmpOp::Ge, mask: 1 };
+    let pe = compile_plane(&produces_white, bounds, words).expect("produces: must be plane-expressible");
+    let mut bitmap: Vec<u64> = Vec::new();
+    eval_planes(&pe, bounds, &mut bitmap);
+    assert!(bitmap_contains(&bitmap, 0), "colorless artifact produces white (mask 63) despite having no colors of its own");
+    assert!(!bitmap_contains(&bitmap, 5), "Fallaji Wayfarer (colors WUBR) produces only C, not white");
+}
+
+// The Fallaji shape specifically: color planes and identity planes must be
+// independent transpositions, not derived from one another.
+#[test]
+fn plane_fallaji_colors_not_subset_of_identity() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut bitmap: Vec<u64> = Vec::new();
+    let mut matches = |field: ColorField, op: CmpOp, mask: u8| {
+        let f = FilterExpr::ColorCmp { field, op, mask };
+        eval_planes(&compile_plane(&f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words).unwrap(), &archived.indexes.planes, &mut bitmap);
+        bitmap_contains(&bitmap, FALLAJI_CID as u32)
+    };
+    assert!(matches(ColorField::Colors, CmpOp::Ge, 1)); // c>=W: colors carry W
+    assert!(!matches(ColorField::ColorIdentity, CmpOp::Ge, 1)); // id>=W: identity is only G
+    assert!(matches(ColorField::ColorIdentity, CmpOp::Le, 16)); // id<=G holds
+    assert!(!matches(ColorField::Colors, CmpOp::Le, 16)); // c<=G does not
+}
+
+// split_planes composition rules: And partitions, Or is all-or-nothing,
+// produced mana and bare True stay residual.
+#[test]
+fn split_planes_composition_rules() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let green = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 16 };
+    let creature = || FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let text = || FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "draw".to_string() };
+
+    // And(plane, plane, text): planes consumed, the lone leftover unwraps.
+    let (pe, residual) = split_planes(FilterExpr::And(vec![green(), creature(), text()]), bounds, words, true);
+    assert!(pe.is_some());
+    assert!(matches!(residual, FilterExpr::TextContains { .. }));
+
+    // Fully plane-expressible tree is consumed whole.
+    let (pe, residual) = split_planes(FilterExpr::And(vec![green(), creature()]), bounds, words, true);
+    assert!(pe.is_some());
+    assert!(matches!(residual, FilterExpr::True));
+    let (pe, residual) = split_planes(FilterExpr::Or(vec![green(), creature()]), bounds, words, true);
+    assert!(pe.is_some());
+    assert!(matches!(residual, FilterExpr::True));
+
+    // Or mixing plane and non-plane children stays entirely residual:
+    // mask ∨ residual is not a narrowing mask.
+    let (pe, residual) = split_planes(FilterExpr::Or(vec![green(), text()]), bounds, words, true);
+    assert!(pe.is_none());
+    assert!(matches!(residual, FilterExpr::Or(ref v) if v.len() == 2));
+
+    // Produced mana is plane-expressible (docs/issues/00669-engine-produces-planes.md):
+    // same card-level, always-known bitmask shape as Colors/ColorIdentity.
+    let produces = FilterExpr::ColorCmp { field: ColorField::ProducedMana, op: CmpOp::Ge, mask: 16 };
+    let (pe, residual) = split_planes(produces, bounds, words, true);
+    assert!(pe.is_some());
+    assert!(matches!(residual, FilterExpr::True));
+
+    // Bare True keeps the range-scan path (no all-ones bitmap materialization).
+    let (pe, residual) = split_planes(FilterExpr::True, bounds, words, true);
+    assert!(pe.is_none());
+    assert!(matches!(residual, FilterExpr::True));
+}
+
+// End-to-end: run_query through the plane path returns the same totals and
+// pages as the plain filter path, across uniques and a mixed filter.
+#[test]
+fn run_query_plane_path_parity() {
+    let data = plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let filters: Vec<Box<dyn Fn() -> FilterExpr>> = vec![
+        Box::new(|| FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 16 }),
+        Box::new(|| FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ne, mask: 0 }),
+        Box::new(|| {
+            FilterExpr::And(vec![
+                FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 16 },
+                FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge },
+            ])
+        }),
+        Box::new(|| {
+            // Mixed: the type check planes out, the numeric check stays residual.
+            FilterExpr::And(vec![
+                FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge },
+                FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ne, rhs: NumExpr::Const(1.0) },
+            ])
+        }),
+    ];
+    for make in &filters {
+        for unique in ["card", "printing", "artwork"] {
+            let mut plain = make();
+            let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, unique, "default", "edhrec", "asc", 100, 0);
+            let (pe, mut residual) = split_planes(make(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+            let (t1, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), unique, "default", "edhrec", "asc", 100, 0);
+            assert_eq!(t0, t1, "totals must agree (unique={unique})");
+            let ids = |page: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<u128> {
+                page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+            };
+            assert_eq!(ids(&p0), ids(&p1), "pages must agree (unique={unique})");
+        }
+    }
+}
+
+/// Regression for a real bug that shipped briefly in this area: an earlier
+/// version rewrote a bare price `Field` (compared directly against a
+/// `Const`) into a cents-only fast path at bind time, to avoid dividing on
+/// every printing evaluated. That rewrite only recognized the *exact* bare
+/// shape -- it did not recurse into `NumExpr::Arith`. `usd+1<power` (price
+/// inside an arithmetic expression -- `parser_class=NUMERIC` on
+/// `usd`/`eur`/`tix` admits this grammatically, same as `cmc`/`power`) left
+/// the `1` in dollars while the fast path made `field_num` return cents
+/// unconditionally, silently computing `(cents+1)<power` instead of
+/// `(dollars+1)<power` -- off by a factor of 100. A second, independent
+/// instance of the same bug (`usd<cmc`, a price `Field` compared directly
+/// against *another* `Field`, no `Const` anywhere) confirmed the rewrite
+/// couldn't be patched to cover every shape without either false negatives
+/// or a full scaling transform on both sides of the comparison. Reverted the
+/// whole optimization: `NumExpr::Field(Price*)` always means dollars again
+/// (matching every build before it), for a ~2-3% loss on the one shape the
+/// fast path covered, in exchange for making every shape correct by
+/// construction rather than by rewrite coverage. Kept as a permanent
+/// regression test for exactly this class of bug, in case a similar
+/// shape-specific fast path is tried again later.
+#[test]
+fn usd_inside_arithmetic_evaluates_in_dollars_not_cents() {
+    let mut vocab = VocabInterner::new();
+    let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card.creature_power = Some(52);
+    let mut data = store_of(vec![card], &[1], vocab);
+    data.printings[0].price_usd = Some(5000); // $50.00
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+    let printing = &archived.printings[0];
+
+    // usd+1<power: $50.00 + 1 = 51 < power(52) -- must match.
+    let mut f = FilterExpr::NumericCmp {
+        lhs: NumExpr::Arith(Box::new(NumExpr::Field(NumField::PriceUsd)), ArithOp::Add, Box::new(NumExpr::Const(1.0))),
+        op: CmpOp::Lt,
+        rhs: NumExpr::Field(NumField::Power),
+    };
+    f.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    assert!(f.matches(card, printing, &archived.strings), "usd+1<power must evaluate in dollars: 50+1=51 < 52");
+}
+
+/// The second independent instance referenced in the doc above:
+/// `usd<cmc` -- a price `Field` compared directly against *another* `Field`,
+/// no `Const` anywhere -- which no version of a `Const`-rewriting fast path
+/// could have covered at all, since there's no `Const` to rewrite.
+#[test]
+fn usd_compared_directly_against_another_field_evaluates_in_dollars() {
+    let mut vocab = VocabInterner::new();
+    let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card.cmc = Some(3);
+    let mut data = store_of(vec![card], &[1], vocab);
+    data.printings[0].price_usd = Some(200); // $2.00
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+    let printing = &archived.printings[0];
+
+    // usd<cmc: $2.00 < cmc(3) -- must match.
+    let mut f = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op: CmpOp::Lt, rhs: NumExpr::Field(NumField::Cmc) };
+    f.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+    assert!(f.matches(card, printing, &archived.strings), "usd<cmc must evaluate in dollars: 2.00 < 3");
+}
+
+// ─── Numeric-range planes (#655) ───────────────────────────────────────────────
+
+/// A cmc/power/toughness-diverse store: interior values at both extremes (0,
+/// 12), the low tail (negative power/toughness — legal per the source data,
+/// e.g. `*`-power cards), TWO distinct high-tail values per field (so the
+/// high bucket is genuinely ambiguous for a within-bucket threshold, not
+/// trivially a single-value bucket), and a noncreature card whose power/
+/// toughness are absent (`Tri::Null`) entirely.
+fn numeric_plane_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    // (cmc, power, toughness); card 0 is a noncreature (power/toughness absent).
+    let specs: &[(u8, Option<i8>, Option<i8>)] = &[
+        (0, None, None),
+        (4, Some(-1), Some(-1)),
+        (12, Some(12), Some(12)),
+        (13, Some(15), Some(20)),
+        (14, Some(16), Some(25)),
+        (6, Some(3), Some(3)),
+        (3, Some(0), Some(0)),
+    ];
+    let cards = specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(cmc, power, toughness))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some(cmc);
+            c.creature_power = power;
+            c.creature_toughness = toughness;
+            c
+        })
+        .collect();
+    store_of(cards, &[1usize; 7], vocab)
+}
+
+// Every numeric plane that compiles must reproduce the filter's card-level
+// truth bit for bit, across both operand orders, every operator, and
+// thresholds spanning the low tail / interior / high tail. Declines (Ne
+// always, and Eq/Lt/Le/Gt/Ge inside an ambiguous bucket) are skipped here —
+// their contract is just "fall back," proven separately below.
+#[test]
+fn numeric_plane_parity_interior_and_tails() {
+    let data = numeric_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut bitmap: Vec<u64> = Vec::new();
+    let mut check = |f: &FilterExpr, label: &str| {
+        let Some(pe) = compile_plane(f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words) else { return };
+        eval_planes(&pe, &archived.indexes.planes, &mut bitmap);
+        for (cid, card) in archived.cards.iter().enumerate() {
+            let want = f.eval_card(card, &archived.strings) == Tri::True;
+            assert_eq!(bitmap_contains(&bitmap, cid as u32), want, "numeric plane mismatch at card {cid} for {label}");
+        }
+    };
+
+    let field_name = |f: NumField| match f {
+        NumField::Cmc => "cmc",
+        NumField::Power => "power",
+        NumField::Toughness => "toughness",
+        _ => "other",
+    };
+    let op_name = |op: CmpOp| match op {
+        CmpOp::Eq => "=",
+        CmpOp::Ne => "!=",
+        CmpOp::Lt => "<",
+        CmpOp::Le => "<=",
+        CmpOp::Gt => ">",
+        CmpOp::Ge => ">=",
+    };
+
+    let fields = [NumField::Cmc, NumField::Power, NumField::Toughness];
+    let ops = [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge];
+    // Spans the low tail, every interior value's boundary, and the high tail.
+    let thresholds: [f64; 8] = [-1.0, 0.0, 3.0, 6.0, 12.0, 13.0, 15.0, 20.0];
+    for field in fields {
+        for op in ops {
+            for &t in &thresholds {
+                let label = format!("{} {} {t}", field_name(field), op_name(op));
+                check(&FilterExpr::NumericCmp { lhs: NumExpr::Field(field), op, rhs: NumExpr::Const(t) }, &label);
+                check(
+                    &FilterExpr::NumericCmp { lhs: NumExpr::Const(t), op, rhs: NumExpr::Field(field) },
+                    &format!("{t} {} {}", op_name(op), field_name(field)),
+                );
+            }
+        }
+    }
+}
+
+// Boundary-crossing ranges (needing the low or high tail bucket folded in,
+// not just the interior) must still compile exactly, and within-bucket
+// distinguishing queries must decline rather than guess.
+#[test]
+fn numeric_plane_boundary_inclusion_and_decline() {
+    let data = numeric_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let cmp = |field, op, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(field), op, rhs: NumExpr::Const(v) };
+
+    // Crosses into the high tail, but includes BOTH high-tail values (13, 14)
+    // fully — unambiguous, since every possible bucket member qualifies.
+    assert!(compile_plane(&cmp(NumField::Cmc, CmpOp::Le, 14.0), bounds, words).is_some());
+    // Crosses into the low tail: power>=-1 must include the power=-1 card.
+    assert!(compile_plane(&cmp(NumField::Power, CmpOp::Ge, -1.0), bounds, words).is_some());
+    // Entirely within the interior: no bucket involved at all.
+    assert!(compile_plane(&cmp(NumField::Toughness, CmpOp::Le, 6.0), bounds, words).is_some());
+
+    // Distinguishing inside the high tail bucket (which now holds two
+    // distinct values each) can't be answered by the cumulative plane alone.
+    assert!(compile_plane(&cmp(NumField::Cmc, CmpOp::Eq, 13.0), bounds, words).is_none());
+    assert!(compile_plane(&cmp(NumField::Toughness, CmpOp::Eq, 20.0), bounds, words).is_none());
+    assert!(compile_plane(&cmp(NumField::Toughness, CmpOp::Lt, 22.0), bounds, words).is_none());
+}
+
+// Ne is declined unconditionally, matching numeric_candidates' own choice
+// ("Ne is not selective") rather than trying to express it as a plane
+// complement (which would also fail the Not-safety guard for power/toughness).
+#[test]
+fn numeric_plane_declines_ne_unconditionally() {
+    let data = numeric_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    for field in [NumField::Cmc, NumField::Power, NumField::Toughness] {
+        let ne = FilterExpr::NumericCmp { lhs: NumExpr::Field(field), op: CmpOp::Ne, rhs: NumExpr::Const(3.0) };
+        assert!(compile_plane(&ne, bounds, words).is_none());
+    }
+}
+
+// Tri::Null (a noncreature's absent power/toughness) propagates through Not
+// as Null, never flipped to True (filter.rs's FilterExpr::Not tri() arm) — so
+// Not(NumericCmp) on cmc/power/toughness must always decline compile_plane,
+// standalone or buried under And/Or, even though the un-negated comparison
+// compiles fine on its own.
+#[test]
+fn numeric_plane_declines_not_over_numeric_cmp() {
+    let data = numeric_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+
+    let power_gt3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Gt, rhs: NumExpr::Const(3.0) };
+    assert!(compile_plane(&power_gt3, bounds, words).is_some(), "power>3 alone must compile");
+    let make_negated = || FilterExpr::Not(Box::new(FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Power),
+        op: CmpOp::Gt,
+        rhs: NumExpr::Const(3.0),
+    }));
+    assert!(compile_plane(&make_negated(), bounds, words).is_none(), "Not(power>3) must decline: Null doesn't flip to True");
+
+    // Buried under And/Or, not just at the top.
+    let buried_and = FilterExpr::And(vec![make_negated(), FilterExpr::True]);
+    assert!(compile_plane(&buried_and, bounds, words).is_none());
+    let buried_or = FilterExpr::Or(vec![make_negated(), FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }]);
+    assert!(compile_plane(&buried_or, bounds, words).is_none());
+
+    // cmc is Option<u8> (never negative) but can still be unset on odd data,
+    // so the guard applies uniformly across all three fields, not just the
+    // two that are visibly Option in this fixture.
+    let cmc_le6 = || FilterExpr::Not(Box::new(FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc),
+        op: CmpOp::Le,
+        rhs: NumExpr::Const(6.0),
+    }));
+    assert!(compile_plane(&cmc_le6(), bounds, words).is_none());
+
+    // A Not over a non-numeric plane child must still compile fine — the
+    // guard must not over-decline unrelated Not subtrees.
+    let not_creature = FilterExpr::Not(Box::new(FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }));
+    assert!(compile_plane(&not_creature, bounds, words).is_some());
+}
+
+// End-to-end: run_query through the numeric-plane path (split_planes consumes
+// the filter to True) must return identical totals/pages to the same filter
+// run unconsumed (the pre-#655 fallback path), across uniques.
+#[test]
+fn run_query_numeric_plane_path_parity() {
+    let data = numeric_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let filters: Vec<Box<dyn Fn() -> FilterExpr>> = vec![
+        Box::new(|| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(6.0) }),
+        Box::new(|| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(-1.0) }),
+        Box::new(|| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Toughness), op: CmpOp::Lt, rhs: NumExpr::Const(-1.0) }),
+        Box::new(|| {
+            FilterExpr::And(vec![
+                FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge },
+                FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(12.0) },
+            ])
+        }),
+    ];
+    for make in &filters {
+        for unique in ["card", "printing", "artwork"] {
+            let mut plain = make();
+            let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, unique, "default", "edhrec", "asc", 100, 0);
+            let (pe, mut residual) = split_planes(make(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+            let (t1, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), unique, "default", "edhrec", "asc", 100, 0);
+            assert_eq!(t0, t1, "totals must agree (unique={unique})");
+            let ids = |page: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<u128> {
+                page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+            };
+            assert_eq!(ids(&p0), ids(&p1), "pages must agree (unique={unique})");
+        }
+    }
+}
+
+// Step-2 eligibility (#634): a numeric range that fully consumes to True via
+// split_planes must feed the same popcount-skip order-phase path that
+// color/type planes already do — proven by a real all_match promotion, not
+// just an equal-output check (which the parity test above already covers).
+#[test]
+fn numeric_plane_enables_all_match_promotion() {
+    let data = numeric_plane_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let cmc_le12 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(12.0) };
+    let (pe, residual) = split_planes(cmc_le12, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    assert!(pe.is_some(), "cmc<=12 must plane-compile");
+    assert!(matches!(residual, FilterExpr::True), "cmc<=12 must fully consume: no residual card_pass needed");
+}
+
+// ─── Bind-time text-predicate memoization (#624) ─────────────────────────────
+
+/// Store with real interned oracle texts and a name trigram index, for the
+/// memoization tests. Card 3 has no oracle text — interned as "" exactly like
+/// card_from_pydict does (contains on it is False, not NULL); card 4's text is
+/// a trigram candidate for "abcde" that contains() must reject; four texts
+/// share the marker "xyz" so a needle can exceed the half-corpus guard.
+fn text_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let specs: &[(&str, Option<&str>)] = &[
+        ("lightning bolt", Some("deal 3 damage to any target xyz")),
+        ("healing angel", Some("when this enters, you gain 3 life xyz")),
+        ("goblin token maker", Some("create two 1/1 red goblin creature tokens xyz")),
+        ("vanilla bear", None),
+        ("trigram trap", Some("abcbcde xyz")),
+        ("draw engine", Some("draw a card. draw another card")),
+    ];
+    let cards: Vec<OracleCard> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(name, text))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.card_name_lower = InlineStr::from_str(name);
+            c.card_name_folded = c.card_name_lower;
+            c.card_name_id = interner.intern(name.to_string());
+            c.oracle_text_lower_id = interner.intern(text.unwrap_or_default().to_string());
+            c
+        })
+        .collect();
+    let mut data = store_of(cards, &[1usize; 6], vocab);
+    data.strings = interner.strings;
+    data.indexes.name_trigram = build_trigram_index(&data.cards, |c| c.card_name_folded.as_str());
+    data.indexes.oracle_trigram = build_oracle_text_index(&data.cards, &data.strings);
+    data
+}
+
+// Memoized nodes must reproduce TextContains truth for every card — including
+// NULL on textless cards, trigram false positives rejected by the verify, and
+// negation (Not(Null) stays Null, so `-o:x` still excludes textless cards).
+#[test]
+fn memoize_text_predicates_parity() {
+    let data = text_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let memo = |mut f: FilterExpr| {
+        f.memoize_text_predicates(&archived.cards, &archived.strings, &archived.indexes.name_trigram, &archived.indexes.name_bigrams, &archived.indexes.oracle_trigram, archived.cards.len());
+        f
+    };
+    let oracle = |w: &str| FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: w.to_string() };
+    let name = |w: &str| FilterExpr::TextContains { field: TextSearchField::NameLower, word: w.to_string() };
+
+    for needle in ["damage", "draw", "goblin", "abcde", "card.", "zzz"] {
+        let rewritten = memo(oracle(needle));
+        assert!(matches!(rewritten, FilterExpr::OracleMatch { .. }), "oracle:{needle} must rewrite");
+        let neg = memo(FilterExpr::Not(Box::new(oracle(needle))));
+        let neg_orig = FilterExpr::Not(Box::new(oracle(needle)));
+        for card in archived.cards.iter() {
+            assert!(rewritten.eval_card(card, &archived.strings) == oracle(needle).eval_card(card, &archived.strings));
+            assert!(neg.eval_card(card, &archived.strings) == neg_orig.eval_card(card, &archived.strings));
+        }
+    }
+    for needle in ["angel", "goblin", "trap", "zzz"] {
+        let rewritten = memo(name(needle));
+        assert!(matches!(rewritten, FilterExpr::NameMatch { .. }), "name:{needle} must rewrite");
+        for card in archived.cards.iter() {
+            assert!(rewritten.eval_card(card, &archived.strings) == name(needle).eval_card(card, &archived.strings));
+        }
+    }
+    // "abcde"'s trigrams all exist in "abcbcde" but the text does not contain
+    // it: the verify must reject, leaving an empty match set.
+    match memo(oracle("abcde")) {
+        FilterExpr::OracleMatch { gids } => assert!(gids.is_empty(), "trigram false positive must be verified away"),
+        _ => panic!("must rewrite"),
+    }
+}
+
+// The rewrite must refuse: sub-trigram needles, non-card text fields, and
+// needles whose candidates exceed half the corpus (binary search stops paying).
+#[test]
+fn memoize_text_predicates_guards() {
+    let data = text_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let memo = |mut f: FilterExpr| {
+        f.memoize_text_predicates(&archived.cards, &archived.strings, &archived.indexes.name_trigram, &archived.indexes.name_bigrams, &archived.indexes.oracle_trigram, archived.cards.len());
+        f
+    };
+    let short = memo(FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "dr".to_string() });
+    assert!(matches!(short, FilterExpr::TextContains { .. }), "2-char needle has no trigrams");
+    let flavor = memo(FilterExpr::TextContains { field: TextSearchField::FlavorTextLower, word: "damage".to_string() });
+    assert!(matches!(flavor, FilterExpr::TextContains { .. }), "flavor is printing-level, not ours");
+    // "xyz" appears in 4 of the 6 distinct texts (> half): guard keeps the scan.
+    let broad = memo(FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "xyz".to_string() });
+    assert!(matches!(broad, FilterExpr::TextContains { .. }), "broad needle stays unrewritten");
+}
+
+// End-to-end trigger: a full-scan Or (unnarrowable sibling) memoizes inside
+// run_query and returns the brute-force result; a narrowable query is left
+// untouched.
+#[test]
+fn run_query_memoizes_only_full_scans() {
+    let data = text_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let oracle = |w: &str| FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: w.to_string() };
+    // Keywords <= "flying": no narrowing arm for Le, true for keyword-less cards.
+    let broad_sibling = || FilterExpr::CollectionCmp {
+        field: CollField::Keywords,
+        op: CmpOp::Le,
+        value: "flying".to_string(),
+        value_id: None,
+    };
+
+    let mut f = FilterExpr::Or(vec![oracle("draw"), broad_sibling()]);
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 6, "every card matches the Or (empty keywords pass Le)");
+    match &f {
+        FilterExpr::Or(children) => assert!(
+            matches!(children[0], FilterExpr::OracleMatch { .. }),
+            "full-scan Or must memoize its oracle child"
+        ),
+        _ => panic!("shape preserved"),
+    }
+
+    // Narrowable single predicate: candidates exist, no rewrite.
+    let mut g = oracle("draw");
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut g, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1);
+    assert!(matches!(g, FilterExpr::TextContains { .. }), "narrowable query stays unrewritten");
+}
+
+// The NONE_STR → Null defense in OracleMatch mirrors TextContains exactly.
+// Loaded cards can't produce this state (missing text interns ""), but stub
+// cards can, and both paths must agree there too.
+#[test]
+fn oracle_match_none_str_mirrors_text_contains() {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab); // oracle_text_lower_id = NONE_STR
+    let data = store_of(vec![card], &[1], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let memoized = FilterExpr::OracleMatch { gids: Vec::new() };
+    let plain = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "draw".to_string() };
+    assert!(memoized.eval_card(&archived.cards[0], &archived.strings) == Tri::Null);
+    assert!(plain.eval_card(&archived.cards[0], &archived.strings) == Tri::Null);
+}
+
+// ─── Oracle word index (docs/issues/00663-engine-oracle-word-index.md) ────────────
+
+/// 17 distinct oracle texts (n_texts=17, so words_per_plane=1 and the #639
+/// crossover is "dense iff a word's own text count exceeds 4"), deliberately
+/// engineered so a single `oracle:` needle can exercise every cell of the
+/// query-time dispatch:
+/// - "target": word "target" alone contains it (5 texts, dense) and no other
+///   dictionary word does — the single-dense-hit, no-sparse-hit shape.
+/// - "creature": word "creature" (9 texts, dense) plus "creaturehood" (1
+///   text, sparse) both contain it — the mixed dense+sparse shape.
+/// - "cast": "cast"/"recast"/"broadcast" (1 text each, all sparse) all
+///   contain it — the dense-empty, multi-sparse-hit shape.
+/// - "zzzzz": nothing contains it — the both-empty shape.
+fn oracle_word_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let texts: &[&str] = &[
+        "this creature has flying",
+        "this creature has trample",
+        "when this creature enters draw a card",
+        "sacrifice a creature gain 1 life",
+        "target creature gets plus one plus one",
+        "destroy target creature",
+        "return target creature to owner hand",
+        "counter target creature spell",
+        "create a token",
+        "create two tokens",
+        "create a token thats a copy",
+        "exile target artifact or creature",
+        "cast this spell only during combat",
+        "you may recast spells",
+        "broadcast a signal to allies",
+        "vanilla bear with no text",
+        "no true creaturehood exists",
+    ];
+    let cards: Vec<OracleCard> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.oracle_text_lower_id = interner.intern(text.to_string());
+            c
+        })
+        .collect();
+    let mut data = store_of(cards, &[1usize; 17], vocab);
+    data.strings = interner.strings;
+    data.indexes.oracle_trigram = build_oracle_text_index(&data.cards, &data.strings);
+    data
+}
+
+/// 6 distinct texts (n_texts=6, words_per_plane=1, dense iff a word's own
+/// text count exceeds 4) engineered so a single needle has TWO dense hits and
+/// ZERO sparse hits: "wordone" and "wordtwo" each appear in 5 of the 6 texts,
+/// and both contain "word" as a substring, with no other dictionary word
+/// containing it. This is the one dispatch shape oracle_word_fixture_store
+/// doesn't produce — "creature" there mixes one dense hit with one sparse hit
+/// ("creaturehood"), never two-or-more dense hits alone — even though both
+/// land in the same catch-all match arm in narrow_rec.
+fn oracle_word_multi_dense_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let texts: &[&str] = &[
+        "wordone wordtwo alpha",
+        "wordone wordtwo beta",
+        "wordone wordtwo gamma",
+        "wordone wordtwo delta",
+        "wordone wordtwo epsilon",
+        "nothing relevant here",
+    ];
+    let cards: Vec<OracleCard> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.oracle_text_lower_id = interner.intern(text.to_string());
+            c
+        })
+        .collect();
+    let mut data = store_of(cards, &[1usize; 6], vocab);
+    data.strings = interner.strings;
+    data.indexes.oracle_trigram = build_oracle_text_index(&data.cards, &data.strings);
+    data
+}
+
+/// Brute-force `oracle:<needle>` over every card, for differential comparison.
+fn brute_force_oracle_contains(archived: &Archived<CardData>, needle: &str) -> Vec<u32> {
+    (0..archived.cards.len() as u32)
+        .filter(|&cid| archived.strings[u32::from(archived.cards[cid as usize].oracle_text_lower_id) as usize].as_str().contains(needle))
+        .collect()
+}
+
+// Every eligible needle (len > 3, no token-boundary bytes) must narrow to the
+// exact brute-force match set, tight — no verification pass, matching the
+// design doc's exactness argument.
+#[test]
+fn oracle_word_index_exact_union_parity() {
+    let data = oracle_word_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+    let oracle = |w: &str| FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: w.to_string() };
+
+    for needle in ["target", "creature", "cast", "zzzzz"] {
+        let expected = brute_force_oracle_contains(archived, needle);
+        let n = rec(&oracle(needle)).unwrap_or_else(|| panic!("oracle:{needle} must narrow"));
+        assert!(n.tight, "oracle:{needle} must narrow tight (exact, no verification)");
+        assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card), expected, "oracle:{needle} must match the brute-force set exactly");
+    }
+}
+
+// Pins the specific representation each needle takes, so a future change that
+// silently falls back to a superset (losing exactness) or picks the wrong
+// tier fails loudly here instead of only in the parity test above.
+#[test]
+fn oracle_word_index_dispatch_shapes() {
+    let data = oracle_word_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+    let oracle = |w: &str| FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: w.to_string() };
+
+    // Single dense hit, no sparse hit: the dense word's bitmap comes back
+    // directly, no allocation-and-scatter round trip.
+    match rec(&oracle("target")).expect("must narrow").set {
+        Candidates::CardBits(_) => {}
+        other => panic!("single dense hit must return CardBits directly, got {other:?}", other = std::mem::discriminant(&other)),
+    }
+    // Dense-empty, sparse hits only: a plain sorted-merge union, no bitmap
+    // touched at all.
+    match rec(&oracle("cast")).expect("must narrow").set {
+        Candidates::Cards(_) => {}
+        other => panic!("sparse-only hits must stay a Cards vec, got {other:?}", other = std::mem::discriminant(&other)),
+    }
+    // Both empty: the empty set is exact (no card can contain a needle no
+    // dictionary word contains), not a decline.
+    match rec(&oracle("zzzzz")).expect("empty is still exact narrowing").set {
+        Candidates::Cards(v) => assert!(v.is_empty()),
+        other => panic!("no-hit shape must be an empty Cards vec, got {other:?}", other = std::mem::discriminant(&other)),
+    }
+    // Mixed dense+sparse: scratch bitmap, OR the dense hit in, scatter the
+    // expanded sparse hit on top.
+    match rec(&oracle("creature")).expect("must narrow").set {
+        Candidates::CardBits(_) => {}
+        other => panic!("mixed dense+sparse must return CardBits, got {other:?}", other = std::mem::discriminant(&other)),
+    }
+}
+
+// Two-or-more dense hits with zero sparse hits lands in the same catch-all
+// match arm as "mixed dense+sparse" above, but oracle_word_fixture_store never
+// produces that exact shape (its only multi-hit needle, "creature", always
+// pairs a dense hit with a sparse one) — so this pins it with a dedicated
+// fixture, both for exactness and for the CardBits representation.
+#[test]
+fn oracle_word_index_multi_dense_no_sparse() {
+    let data = oracle_word_multi_dense_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+    let oracle = |w: &str| FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: w.to_string() };
+
+    let expected = brute_force_oracle_contains(archived, "word");
+    let n = rec(&oracle("word")).expect("oracle:word must narrow");
+    assert!(n.tight, "oracle:word must narrow tight (exact, no verification)");
+    match &n.set {
+        Candidates::CardBits(_) => {}
+        other => panic!("2+ dense hits, no sparse, must return CardBits, got {other:?}", other = std::mem::discriminant(other)),
+    }
+    assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card), expected, "oracle:word must match the brute-force set exactly");
+}
+
+// compile_plane's bonus arm only fires for the single-dense-hit shape (needed
+// for correctness — a mixed shape's dense bitmap alone would undercount) and,
+// when it does, composes with an unrelated plane predicate via a plain AND —
+// exercising PlaneExpr::Bits directly instead of just the standalone
+// narrow_rec path above.
+#[test]
+fn compile_plane_word_bonus_composes_with_other_planes() {
+    let data = oracle_word_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let oracle = |w: &str| FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: w.to_string() };
+
+    // Single-dense-hit needle: compile_plane must consume it directly.
+    assert!(compile_plane(&oracle("target"), bounds, words).is_some(), "single dense hit must compile to a plane");
+    // Mixed dense+sparse needle: compile_plane must decline (the dense bitmap
+    // alone would miss the sparse "creaturehood" match) — narrow_rec's
+    // general dispatch is the only correct path for this shape.
+    assert!(compile_plane(&oracle("creature"), bounds, words).is_none(), "mixed dense+sparse must not compile: dense bitmap alone would undercount");
+
+    // AND with an unrelated plane-expressible predicate (every card here is a
+    // creature, so this is a true tautological AND, just exercising composition).
+    let creature_type = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let both = FilterExpr::And(vec![oracle("target"), creature_type]);
+    let pe = compile_plane(&both, bounds, words).expect("dense word AND a plane predicate must compile whole");
+    let mut bitmap: Vec<u64> = Vec::new();
+    eval_planes(&pe, bounds, &mut bitmap);
+    assert_eq!(bitmap_card_ids(&bitmap), brute_force_oracle_contains(archived, "target"), "every card here is a creature, so the AND changes nothing");
+}
+
+// SortedTrigramIndex's posting-vs-plane dispatch (merge/probe/AND), forced
+// through every combination by picking a domain small enough that some
+// trigrams promote to the dense tier and some don't.
+#[test]
+fn trigram_dense_sparse_dispatch_parity() {
+    // Domain 40: words_per_plane(40)=1, plane_bytes=8, dense iff count > 4.
+    let domain = 40usize;
+    // "aaa": 6 ids (dense). "bbb": 6 ids, same 6 ids as "aaa" (dense x dense,
+    // AND path). "ccc": 2 ids, subset of aaa's (sparse x dense, probe path).
+    // "ddd": 2 ids disjoint from "ccc" (sparse x sparse, merge path — already
+    // covered elsewhere, included here for completeness).
+    let mut idx: HashMap<[u8; 3], Vec<u32>> = HashMap::new();
+    idx.insert(*b"aaa", vec![1, 2, 3, 4, 5, 6]);
+    idx.insert(*b"bbb", vec![1, 2, 3, 4, 5, 6]);
+    idx.insert(*b"ccc", vec![2, 4]);
+    idx.insert(*b"ddd", vec![7, 8]);
+    let finalized = super::finalize_trigram_index(idx, domain);
+    let bytes = rkyv::to_bytes::<Error>(&finalized).expect("serialize");
+    let archived = rkyv::access::<Archived<SortedTrigramIndex>, Error>(&bytes).expect("access");
+
+    // "aaabbb": trigrams aaa, aab(absent -> empty), ... — use a needle whose
+    // trigrams are exactly {aaa, bbb} minus the absent middle ones isn't
+    // possible with real sliding windows, so exercise the dispatch directly
+    // through needles built to hit exactly the desired trigram pairs.
+    assert_eq!(trigram_candidates(archived, "aaa").unwrap(), vec![1, 2, 3, 4, 5, 6], "single dense trigram: bitmap bit-scanned back to ids");
+    assert_eq!(super::trigram_min_posting(archived, "aaa"), Some(6));
+    assert_eq!(super::trigram_min_posting(archived, "ccc"), Some(2));
+
+    // ccc's sparse posting [2,4] probed against aaa's dense plane: both 2 and
+    // 4 are set, so the probe keeps everything — same answer as a merge would
+    // give, but taken through the posting-vs-plane path.
+    let ops = vec![super::lookup_trigram(archived, *b"aaa").unwrap(), super::lookup_trigram(archived, *b"ccc").unwrap()];
+    assert_eq!(super::intersect_operands(ops), vec![2, 4], "posting seed probed against a plane operand");
+
+    // aaa AND bbb (both dense, identical bitmaps): plane x plane AND path,
+    // with no posting to seed from at all.
+    let ops = vec![super::lookup_trigram(archived, *b"aaa").unwrap(), super::lookup_trigram(archived, *b"bbb").unwrap()];
+    assert_eq!(super::intersect_operands(ops), vec![1, 2, 3, 4, 5, 6], "plane x plane AND path, no posting seed available");
+}
+
+// ─── Border planes (docs/issues/done/00664-engine-border-planes.md, #664; promoted
+// to an existential field reaching compile_plane/all_match for the 4 tracked
+// values by docs/issues/00680-engine-existential-plane-generalization.md, #680) ──
+
+/// 9 cards with varied printing-level border colors. Card 3 independently has
+/// a black printing *and* a separate borderless printing — the shared-witness
+/// correctness canary subject: `border:black border:borderless` must find no
+/// single printing satisfying both, even though the card "has" each color.
+/// Card 5 (gold) is now a *tracked* value, unlike before #680; card 8
+/// (yellow) is the genuinely-untracked subject exercising the shared `other`
+/// plane -- real Scryfall data (all yellow-border cards are from Aetherdrift/
+/// `dft`), not a synthetic placeholder.
+fn border_planes_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let specs: &[&[Option<&str>]] = &[
+        &[Some("black")],                                     // 0: pure black
+        &[Some("black"), Some("black")],                       // 1: pure black, 2 printings
+        &[Some("borderless")],                                 // 2: pure borderless
+        &[Some("black"), Some("borderless")],                  // 3: shared-witness subject
+        &[Some("white")],                                       // 4: pure white
+        &[Some("gold")],                                        // 5: tracked (4th value)
+        &[None],                                                 // 6: missing border
+        &[Some("black"), Some("white"), Some("borderless")],   // 7: all tracked values at once
+        &[Some("yellow")],                                       // 8: untracked -- the shared `other` plane's subject
+    ];
+    let cards: Vec<OracleCard> = specs.iter().enumerate().map(|(i, _)| stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let printing_counts: Vec<usize> = specs.iter().map(|s| s.len()).collect();
+    let mut data = store_of(cards, &printing_counts, vocab);
+    let mut idx = 0;
+    for borders in specs {
+        for border in borders.iter() {
+            data.printings[idx].card_border_id = border.map_or(NONE_STR, |b| interner.intern(b.to_string()));
+            idx += 1;
+        }
+    }
+    data.strings = interner.strings;
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data
+}
+
+/// Brute-force `border:<value>` over every card, for differential comparison:
+/// does any printing of this card carry the given border color.
+fn brute_force_has_border(archived: &Archived<CardData>, border: &str) -> Vec<u32> {
+    (0..archived.cards.len() as u32)
+        .filter(|&cid| {
+            let start = u32::from(archived.offsets[cid as usize]);
+            let end = u32::from(archived.offsets[cid as usize + 1]);
+            (start..end).any(|p| {
+                let bid = u32::from(archived.printings[p as usize].card_border_id);
+                bid != NONE_STR && archived.strings[bid as usize].as_str() == border
+            })
+        })
+        .collect()
+}
+
+// narrow_rec's border arm must reproduce the brute-force existential exactly
+// for every tracked value (a solo leaf's per-card existential really is
+// exact), but never mark it tight -- narrow_rec's loose narrowing feeds the
+// residual per-printing walk regardless of what compile_plane can separately
+// do with the same leaf (tested below).
+#[test]
+fn border_planes_exact_union_parity() {
+    let data = border_planes_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+    let border = |v: &str| FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: v.to_string() };
+
+    for value in ["borderless", "white", "gold"] {
+        let expected = brute_force_has_border(archived, value);
+        let n = rec(&border(value)).unwrap_or_else(|| panic!("border:{value} must narrow"));
+        assert!(!n.tight, "border planes narrow loose through narrow_rec, tight or not is compile_plane's separate call to make");
+        assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card), expected, "border:{value} narrowed set must match brute force");
+    }
+
+    // Untracked (yellow): narrows loosely through the shared `other` plane --
+    // strictly better than declining outright, even though it can't tell
+    // yellow apart from a hypothetical second untracked value.
+    let expected_yellow = brute_force_has_border(archived, "yellow");
+    let n = rec(&border("yellow")).expect("untracked value must still narrow via the shared other plane");
+    assert!(!n.tight);
+    assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card), expected_yellow, "border:yellow narrowed set must match brute force");
+}
+
+// The regression test this design exists to guarantee: two independent
+// per-card "has X border" bits, ANDed, would wrongly include card 3 (which
+// has a black printing and a separate borderless printing, independently
+// satisfying both) -- but no single printing is both, so the real answer
+// (found by the residual per-printing walk the loose narrowing never
+// bypasses) must be zero matches. Checked through both the unplaned path
+// (plane: None, exercising narrow_rec + card_pass alone) and the real planed
+// path (split_planes, exercising compile_plane's new shared-witness decline
+// for border -- see and_of_checked_for_shared_witness's generalization).
+#[test]
+fn border_shared_witness_correctness() {
+    let data = border_planes_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let border = |v: &str| FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: v.to_string() };
+
+    let and_both = FilterExpr::And(vec![border("black"), border("borderless")]);
+
+    assert!(
+        compile_plane(&and_both, bounds, words).is_none(),
+        "border:black AND border:borderless must decline to compile exactly (shared witness)"
+    );
+
+    let mut f = and_both;
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 0, "unplaned: no printing is both black and borderless");
+
+    let (pe, mut residual) = split_planes(
+        FilterExpr::And(vec![border("black"), border("borderless")]), bounds, words, true,
+    );
+    let (total2, _) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total2, 0, "planed: falls back to the same correct zero result, not a false positive from independent narrowing");
+}
+
+/// Tracked values (black/borderless/white/gold) now exact-consume via
+/// compile_plane, mirroring rarity/legality; an untracked value
+/// (`border:yellow`) can't be told apart from any other untracked value by
+/// the shared `other` plane, so it declines to compile exactly -- same shape
+/// as `r:special`/`r:bonus` -- while still narrowing loosely (tested above).
+/// Negation on a tracked value is exact too (Or of the other 3 tracked planes
+/// plus `other`).
+#[test]
+fn border_tracked_values_exact_consumed_other_bucket_declines() {
+    let data = border_planes_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let border = |v: &str| FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: v.to_string() };
+
+    for value in ["black", "borderless", "white", "gold"] {
+        assert!(compile_plane(&border(value), bounds, words).is_some(), "border:{value} must compile to a plane expression");
+        let not_value = FilterExpr::Not(Box::new(border(value)));
+        assert!(compile_plane(&not_value, bounds, words).is_some(), "-border:{value} must compile to a plane expression");
+    }
+
+    assert!(compile_plane(&border("yellow"), bounds, words).is_none(), "border:yellow must decline (other bucket is ambiguous)");
+    let not_yellow = FilterExpr::Not(Box::new(border("yellow")));
+    assert!(compile_plane(&not_yellow, bounds, words).is_none(), "-border:yellow must decline (other bucket is ambiguous)");
+
+    // Mixed with an otherwise fully plane-expressible sibling: the untracked
+    // child must stay in the residual, not get silently dropped or promoted.
+    let creature = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
+    let (pe, residual) = split_planes(FilterExpr::And(vec![creature, border("yellow")]), bounds, words, true);
+    assert!(pe.is_some(), "the creature child must still plane-consume");
+    assert!(
+        matches!(&residual, FilterExpr::TextExact { field: TextField::Border, .. }),
+        "border:yellow must remain in the residual, not be consumed to True"
+    );
+}
+
+/// The `other` bucket's exact-negation safety net, specifically: a card whose
+/// *only* printing carries an untracked border must still evaluate correctly
+/// (via `Or(..., other)`) for both a positive and a negated query on a
+/// tracked value -- proving the shared bucket really does close the domain by
+/// construction the way the design doc argues, not just for the cards this
+/// fixture happens to include incidentally.
+#[test]
+fn border_other_bucket_closes_domain_for_tracked_negation() {
+    let data = border_planes_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let yellow_card = 8u32; // card 8: only printing is yellow (untracked)
+
+    let not_black = FilterExpr::Not(Box::new(FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: "black".to_string() }));
+    let pe = compile_plane(&not_black, bounds, words).expect("-border:black must compile");
+    let mut bits = Vec::new();
+    eval_planes(&pe, bounds, &mut bits);
+    assert!(
+        bitmap_contains(&bits, yellow_card),
+        "a card whose only printing is untracked must satisfy -border:black (it has no black printing)"
+    );
+
+    let black = FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: "black".to_string() };
+    let pe2 = compile_plane(&black, bounds, words).expect("border:black must compile");
+    let mut bits2 = Vec::new();
+    eval_planes(&pe2, bounds, &mut bits2);
+    assert!(!bitmap_contains(&bits2, yellow_card), "the same card must not satisfy border:black");
+}
+
+/// 7 of 8 cards have a black printing (87.5%, past narrow_candidates_exact's
+/// keep-if-<=75%-of-domain broadness guard, `domain - domain/4` with integer
+/// division); the 8th has a borderless printing (12.5%).
+fn border_broadness_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let specs: &[&str] = &["black", "black", "black", "black", "black", "black", "black", "borderless"];
+    let cards: Vec<OracleCard> = specs.iter().enumerate().map(|(i, _)| stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let mut data = store_of(cards, &[1usize; 8], vocab);
+    for (i, border) in specs.iter().enumerate() {
+        data.printings[i].card_border_id = interner.intern(border.to_string());
+    }
+    data.strings = interner.strings;
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data
+}
+
+// The dedicated arm always narrows (that's its whole job), but
+// narrow_candidates_exact's existing broadness guard -- unrelated to this
+// PR, already exercised elsewhere -- must still decline an overly-broad
+// result at the root, exactly as it would for any other narrowing source.
+// No special-casing needed for border:black: this is the guard doing its
+// job, not a gap this design has to plug itself.
+#[test]
+fn border_black_declines_via_broadness_guard() {
+    let data = border_broadness_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let border = |v: &str| FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: v.to_string() };
+
+    let n = super::narrow_rec(&border("black"), &archived.indexes, &archived.offsets, &archived.cards, true).expect("the dedicated arm itself always narrows");
+    assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card).len(), 7);
+
+    assert!(
+        narrow_candidates(&border("black"), &archived.indexes, &archived.offsets, &archived.cards).is_none(),
+        "border:black alone must decline: 87.5% exceeds narrow_candidates_exact's 75% broadness cutoff"
+    );
+    assert!(narrow_candidates(&border("borderless"), &archived.indexes, &archived.offsets, &archived.cards).is_some());
+}
+
+// ─── Adaptive candidate sets (#636) ───────────────────────────────────────────
+
+// range_narrowed never declines: sparse ranges keep the vec path, broad ones
+// become bitmaps — scattered directly when the slice is the smaller side,
+// complement-scattered (loose) when it isn't. Uses a synthetic index large
+// enough to clear NARROW_FLOOR, which tiny fixtures never do.
+#[test]
+fn range_narrowed_representations() {
+    let printings: Vec<Printing> = (0..4096u32).map(|i| {
+        let mut p = stub_printing(u128::from(i) + 1, u128::from(i) + 1, None);
+        // values (cents) 0..1024, four printings per value; printings 0-3 get value 0, etc.
+        p.price_usd = Some(i / 4);
+        p
+    }).collect();
+    let idx = build_printing_value_index(&printings, &[], &[], |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
+    let archived = rkyv::access::<Archived<PrintingValueIndex>, Error>(&bytes).expect("access");
+    let n = printings.len();
+    // int_range_bounds directly (not through the dollars->cents *100 step) -- this test is
+    // about range_narrowed's own branching, exercised via the plain integer domain it always
+    // operates on, same as collector_number's own tests would.
+    let bounds = |op, v| super::int_range_bounds(op, v).unwrap().unwrap();
+
+    // Bounds are exact (no widening) -- `< v` excludes v's own value, counts below are values
+    // 0..v (v itself excluded).
+    // Sparse (160 entries, 3.9%): vec, tight.
+    let (lo, hi) = bounds(CmpOp::Lt, 40.0);
+    let nr = super::range_narrowed(archived, lo, hi, n, false, false).expect("sparse ranges narrow in any context");
+    assert!(!nr.tight, "exact param was passed false here to exercise range_narrowed's own branching");
+    match nr.set {
+        Candidates::Printings(v) => assert_eq!(v.len(), 160),
+        _ => panic!("sparse range must stay a vec"),
+    }
+
+    // Broad but at most half (values 0..400 → 1600 entries, 39%): direct scatter, tight.
+    let (lo, hi) = bounds(CmpOp::Lt, 400.0);
+    assert!(super::range_narrowed(archived, lo, hi, n, false, true).is_none(), "broad bits need a consumer (broad_ok)");
+    let nr = super::range_narrowed(archived, lo, hi, n, true, true).expect("broad_ok materializes the bitmap");
+    assert!(nr.tight, "integer-exact bounds keep the direct scatter tight");
+    match &nr.set {
+        Candidates::PrintingBits(b) => {
+            assert_eq!(b.iter().map(|w| w.count_ones()).sum::<u32>(), 1600);
+            assert!(bitmap_contains(b, 0) && !bitmap_contains(b, 1700));
+        }
+        _ => panic!("broad range must be a bitmap"),
+    }
+
+    // Beyond half (values 0..900 → 3600 entries, 88%): complement scatter, loose.
+    let (lo, hi) = bounds(CmpOp::Lt, 900.0);
+    let nr = super::range_narrowed(archived, lo, hi, n, true, true).expect("broad_ok materializes the complement");
+    assert!(!nr.tight, "complement over-includes unindexed printings");
+    match &nr.set {
+        Candidates::PrintingBits(b) => {
+            assert_eq!(b.iter().map(|w| w.count_ones()).sum::<u32>(), 3600);
+            assert!(bitmap_contains(b, 0) && !bitmap_contains(b, 3700));
+        }
+        _ => panic!("broad range must be a bitmap"),
+    }
+}
+
+/// Store for composition tests: subtypes, colors/types (planes), per-printing
+/// set codes and rarities, with the real index builders the reload path uses.
+fn narrow_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let specs: &[(&[&str], u8, u16)] = &[
+        (&["goblin"], 8, TYPE_CREATURE),         // R goblin
+        (&["goblin"], 8, TYPE_CREATURE),         // R goblin
+        (&["merfolk"], 2, TYPE_CREATURE),        // U merfolk
+        (&[], 16, TYPE_ENCHANTMENT),             // G enchantment
+        (&[], 0, TYPE_ARTIFACT),                 // colorless artifact
+        (&["wizard"], 2, TYPE_CREATURE),         // U wizard
+    ];
+    let cards: Vec<OracleCard> = specs.iter().enumerate().map(|(i, &(subs, colors, types))| {
+        let mut c = stub_card(i as u128 + 1, types, subs, &mut vocab);
+        c.card_colors = colors;
+        c.card_color_identity = colors;
+        c
+    }).collect();
+    let mut data = store_of(cards, &[2usize; 6], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.card_set_code = InlineStr::from_str(if i % 2 == 0 { "lea" } else { "m21" });
+        p.card_rarity_int = Some((i % 2) as u8); // even printings common, odd uncommon
+    }
+    data.indexes.subtypes = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.rarity = build_rarity_index(&data.printings, &data.offsets);
+    // Rarity planes are built from the same printings, so they must be
+    // rebuilt here too -- build_bit_planes already ran once inside store_of
+    // before card_rarity_int was overwritten above, leaving stale (all-zero)
+    // rarity plane bits otherwise.
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    let mut set_codes: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+    }
+    data.indexes.set_codes = set_codes;
+    data
+}
+
+// Tightness and complement rules: Not narrows only through tight children.
+// Rarity postings are the trap — a mixed-rarity card matches both `r:x` and
+// `-r:x`, so complementing its card-space existence set would drop real
+// matches; the loose tag must block the Not arm.
+#[test]
+fn not_narrows_only_tight_children() {
+    let data = narrow_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+
+    // value_id bound as production's bind() would — narrowing keys on the
+    // string, evaluation on the id, and they must agree.
+    let goblin_id = archived.coll_vocab.iter().position(|s| s.as_str() == "goblin").map(|i| i as u16);
+    let goblin = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".into(), value_id: goblin_id };
+    let rarity = || FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(0.0) };
+    // 1-char: below even the bigram floor, so genuinely unindexable.
+    // A sub-trigram ORACLE needle: names have unigram/bigram indexes (#858, #639) so they narrow
+    // tightly, but oracle text has neither and still cannot narrow at all.
+    let name1 = || FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "q".into() };
+
+    // Tight leaf → complement narrows, loose, and covers every ¬-match.
+    let n = rec(&FilterExpr::Not(Box::new(goblin()))).expect("Not(subtype) must narrow");
+    assert!(!n.tight);
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    for (cid, card) in archived.cards.iter().enumerate() {
+        let matches_not = (u32::from(archived.offsets[cid])..u32::from(archived.offsets[cid + 1]))
+            .any(|p| FilterExpr::Not(Box::new(goblin())).matches(card, &archived.printings[p as usize], &archived.strings));
+        if matches_not {
+            assert!(cand.contains(&(cid as u32)), "complement must not drop card {cid}");
+        }
+    }
+
+    // -r:x narrows via its own dedicated Not(NumericCmp{RarityInt}) arm --
+    // recomputing with the negated op (Not(Eq) -> Ne), not complementing the
+    // existing loose rarity candidate set (which would be unsafe: a posted
+    // card can have other printings that don't satisfy the comparison). Same
+    // superset check as the tight-child case above, just via a different arm.
+    let n = rec(&FilterExpr::Not(Box::new(rarity()))).expect("-r:x must narrow via the negated-op arm");
+    assert!(!n.tight);
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    for (cid, card) in archived.cards.iter().enumerate() {
+        let matches_not = (u32::from(archived.offsets[cid])..u32::from(archived.offsets[cid + 1]))
+            .any(|p| FilterExpr::Not(Box::new(rarity())).matches(card, &archived.printings[p as usize], &archived.strings));
+        if matches_not {
+            assert!(cand.contains(&(cid as u32)), "-r:x narrowing must not drop card {cid}");
+        }
+    }
+
+    // Genuinely loose children with no dedicated Not arm still block it.
+    assert!(rec(&FilterExpr::Not(Box::new(name1()))).is_none(), "sub-trigram oracle text cannot narrow at all");
+    let double_not = FilterExpr::Not(Box::new(FilterExpr::Not(Box::new(goblin()))));
+    assert!(rec(&double_not).is_none(), "complements are loose, so double negation stops narrowing");
+
+    // Printing-space complement: -set:lea covers the m21 printings' cards.
+    let not_lea = FilterExpr::Not(Box::new(FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "lea".into() }));
+    let n = rec(&not_lea).expect("Not(set) must narrow");
+    assert!(matches!(n.set, Candidates::PrintingBits(_)));
+}
+
+// Or composition with previously-vetoing children: a plane-expressible color
+// child and a Not child now contribute bitmaps instead of forcing None.
+#[test]
+fn or_composes_plane_and_complement_children() {
+    let data = narrow_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+
+    let goblin_id = archived.coll_vocab.iter().position(|s| s.as_str() == "goblin").map(|i| i as u16);
+    let goblin = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".into(), value_id: goblin_id };
+    let green = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 16 };
+
+    // ColorCmp had no narrowing arm before #636; via the plane feed-in the Or composes.
+    let or = FilterExpr::Or(vec![goblin(), green()]);
+    let n = rec(&or).expect("Or(subtype, color) must narrow");
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    assert_eq!(cand, vec![0, 1, 3], "goblins ∪ green");
+
+    // An unindexable child still vetoes: nothing can represent it. Oracle rather than name, since a
+    // 1-byte name needle now resolves exactly through the unigram index (#858).
+    let or = FilterExpr::Or(vec![goblin(), FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "q".into() }]);
+    assert!(rec(&or).is_none());
+}
+
+// End-to-end: run_query totals equal brute-force counts for shapes that
+// exercise every new composition rule. Narrowing is advisory, so an unsound
+// candidate set shows up here as a missing match.
+#[test]
+fn adaptive_narrowing_run_query_parity() {
+    let data = narrow_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let goblin_id = archived.coll_vocab.iter().position(|s| s.as_str() == "goblin").map(|i| i as u16);
+    let goblin = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".into(), value_id: goblin_id };
+    let green = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 16 };
+    let lea = || FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "lea".into() };
+    let rarity = || FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(0.0) };
+
+    let filters: Vec<FilterExpr> = vec![
+        FilterExpr::Or(vec![goblin(), green()]),
+        FilterExpr::Or(vec![goblin(), rarity()]),
+        FilterExpr::Not(Box::new(goblin())),
+        FilterExpr::Not(Box::new(lea())),
+        FilterExpr::Not(Box::new(rarity())),
+        FilterExpr::And(vec![FilterExpr::Not(Box::new(lea())), goblin()]),
+        FilterExpr::And(vec![green(), FilterExpr::Or(vec![goblin(), lea()])]),
+        FilterExpr::Or(vec![FilterExpr::Not(Box::new(goblin())), lea()]),
+    ];
+    for f in filters {
+        let brute = archived
+            .cards
+            .iter()
+            .enumerate()
+            .filter(|(cid, card)| {
+                (u32::from(archived.offsets[*cid])..u32::from(archived.offsets[cid + 1]))
+                    .any(|p| f.matches(card, &archived.printings[p as usize], &archived.strings))
+            })
+            .count();
+        let mut f2 = f;
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut f2, None, "card", "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, brute, "narrowing must stay advisory-sound");
+    }
+}
+
+// Not over a partially-represented And: if a child contributes no candidate
+// set (unindexable, skipped, or dropped), the And's intersection members need
+// not satisfy that child, so the result must NOT be tight — a complement over
+// it would drop cards that fail the unrepresented child (which is exactly what
+// makes them match the negation). Caught by inspection in review; pinned here.
+#[test]
+fn not_over_partial_and_is_blocked() {
+    let data = narrow_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let goblin_id = archived.coll_vocab.iter().position(|s| s.as_str() == "goblin").map(|i| i as u16);
+    let goblin = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".into(), value_id: goblin_id };
+    // A 4+ byte name needle: unrepresentable for the Not arm (trigram sets are supersets, so
+    // `tight_narrow_space` declines it) while still evaluating cleanly FALSE for every card, which is what
+    // the total below pins. Not a 1-byte needle any more -- those resolve exactly through the unigram
+    // index now (#858) -- and not an oracle needle either, since this fixture leaves oracle text unset,
+    // making it Null rather than False and changing what the negation matches.
+    let unindexable = || FilterExpr::TextContains { field: TextSearchField::NameLower, word: "qqqq".into() };
+
+    // Static check: And with an unrepresentable child can't be tight → Not
+    // must refuse to narrow at all.
+    let not_partial = FilterExpr::Not(Box::new(FilterExpr::And(vec![goblin(), unindexable()])));
+    assert!(super::narrow_rec(&not_partial, &archived.indexes, &archived.offsets, &archived.cards, true).is_none());
+
+    // Dynamic check via run_query: totals must equal brute force. Every card
+    // fails `name:qqqq` here, so every card matches the negation — a complement
+    // of the goblins-only set would have dropped cards 0 and 1.
+    let brute = archived
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(cid, card)| {
+            (u32::from(archived.offsets[*cid])..u32::from(archived.offsets[cid + 1]))
+                .any(|p| not_partial.matches(card, &archived.printings[p as usize], &archived.strings))
+        })
+        .count();
+    let mut f = FilterExpr::Not(Box::new(FilterExpr::And(vec![goblin(), unindexable()])));
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, brute);
+    assert_eq!(total, 6, "every card matches -(goblin and name:qqqq)");
+}
+
+
+// The review's reproduction: `tight_narrow_space` still declines price (deliberately --
+// composition/Not-arm safety for a printing-varying field is a separate question from
+// price_bounds/field_num's own exactness, not addressed by the integer-cents migration), so
+// Not(usd>5) takes the plain per-candidate tri() path, not narrow_rec's Not-arm complement
+// shortcut. A printing priced exactly 5.0 fails `usd>5` and must survive `-usd>5`.
+#[test]
+fn not_over_price_range_keeps_boundary_matches() {
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..6).map(|i| stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let mut data = store_of(cards, &[2usize; 6], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(if i < 2 { 500 } else { 1000 }); // card 0 sits on the boundary ($5.00)
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut f = FilterExpr::Not(Box::new(usd_cmp(CmpOp::Gt, 5.0)));
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 1, "the boundary-priced card matches -usd>5 and must not be complemented away");
+}
+
+// ─── Name bigram index (#639) ─────────────────────────────────────────────────
+
+// Tier assignment at the derived crossover (plane bytes vs 2 bytes/entry),
+// and exactness on both tiers: for a 2-byte needle, the set IS the answer.
+#[test]
+fn name_bigrams_tiers_and_exactness() {
+    // 4,096 cards: every card contains "zz" (dense → plane tier); every 64th
+    // contains "qx" (64 entries × 2 B ≤ the 512 B plane cost at this store
+    // size → u16 postings tier; the crossover scales with n_cards).
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..4096u32).map(|i| {
+        let mut c = stub_card(u128::from(i) + 1, TYPE_CREATURE, &[], &mut vocab);
+        let name = if i % 64 == 0 { format!("azz qx{i}") } else { format!("azz b{i}") };
+        c.card_name_lower = InlineStr::from_str(&name);
+        c.card_name_folded = c.card_name_lower;
+        c
+    }).collect();
+    let data = store_of(cards, &vec![1usize; 4096], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let idx = &archived.indexes.name_bigrams;
+
+    assert!(idx.plane_of.get(b"zz").is_some(), "4,096-name bigram must promote to a plane");
+    assert!(idx.postings.get(b"qx").is_some(), "64-name bigram stays a posting list");
+
+    let rec = |w: &str| {
+        let f = FilterExpr::TextContains { field: TextSearchField::NameLower, word: w.to_string() };
+        super::narrow_rec(&f, &archived.indexes, &archived.offsets, &archived.cards, false)
+    };
+    // Dense tier: exact bitmap, tight.
+    let n = rec("zz").expect("dense bigram narrows");
+    assert!(n.tight);
+    assert!(matches!(n.set, Candidates::CardBits(_)));
+    assert_eq!(n.set.len(), 4096);
+    // Sparse tier: exact vec, tight, and byte-for-byte the contains() answer.
+    let n = rec("qx").expect("sparse bigram narrows");
+    assert!(n.tight);
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    let brute: Vec<u32> = archived.cards.iter().enumerate()
+        .filter(|(_, c)| c.card_name_folded.as_str().contains("qx"))
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(cand, brute, "bigram membership IS containment for 2-byte needles");
+    // Absent bigram: exact empty (no name contains it), not None.
+    let n = rec("vw").expect("absent bigram is an exact empty narrowing");
+    assert_eq!(n.set.len(), 0);
+    // 1-char is indexed too now (#858) -- see name_unigrams_tiers_and_exactness for its tiers. What
+    // stays unindexable is a sub-trigram ORACLE needle, which has no unigram/bigram index.
+    let f = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "z".to_string() };
+    assert!(super::narrow_rec(&f, &archived.indexes, &archived.offsets, &archived.cards, false).is_none());
+}
+
+/// The complement of a 1-byte NAME needle is exact, so the `Not` arm may mark it tight — and the
+/// complement of an ORACLE needle may not, because oracle text can be absent and a Null card satisfies
+/// neither the predicate nor its negation. Pins both sides of `never_null` (#858).
+#[test]
+fn not_over_unigram_is_tight_but_oracle_stays_loose() {
+    let mut vocab = VocabInterner::new();
+    // 'q' in every 8th name; no name contains 'v'. Oracle text left unset, which is what makes the
+    // oracle side Null rather than false.
+    let cards: Vec<OracleCard> = (0..256u32)
+        .map(|i| {
+            let mut c = stub_card(u128::from(i) + 1, TYPE_CREATURE, &[], &mut vocab);
+            let name = if i % 8 == 0 { format!("aq b{i}") } else { format!("ab c{i}") };
+            c.card_name_lower = InlineStr::from_str(&name);
+            c.card_name_folded = c.card_name_lower;
+            c
+        })
+        .collect();
+    let data = store_of(cards, &vec![1usize; 256], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+
+    let name_q = || FilterExpr::TextContains { field: TextSearchField::NameLower, word: "q".into() };
+    let n = rec(&FilterExpr::Not(Box::new(name_q()))).expect("-name:q must narrow");
+    assert!(n.tight, "name is never Null, so the complement of a tight 1-byte set is exact");
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    let brute: Vec<u32> = archived
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.card_name_folded.as_str().contains('q'))
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(cand, brute, "-name:q must be exactly the cards whose name lacks 'q'");
+
+    // An absent byte complements to every card, and that must stay exact rather than trip a breadth guard.
+    let name_v = FilterExpr::TextContains { field: TextSearchField::NameLower, word: "v".into() };
+    let n = rec(&FilterExpr::Not(Box::new(name_v))).expect("-name:v must narrow");
+    assert!(n.tight);
+    assert_eq!(n.set.len(), archived.cards.len(), "no name contains 'v', so its negation is every card");
+
+    // The other side of the gate: oracle text can be absent, so its complement is NOT exact. It cannot
+    // narrow at all here (no sub-trigram oracle index), which is the conservative outcome either way.
+    let oracle_q = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "q".into() };
+    assert!(!super::never_null(&oracle_q), "oracle text is nullable, so its negation must not be tight");
+    assert!(rec(&FilterExpr::Not(Box::new(oracle_q))).is_none());
+}
+
+/// The 1-byte name tier: both storage tiers, exactness against brute-force `contains`, and the empty
+/// case. Mirrors `name_bigrams_tiers_and_exactness` one length down (#858).
+#[test]
+fn name_unigrams_tiers_and_exactness() {
+    // 4,096 cards: every name contains 'z' (dense -> plane tier); every 64th contains 'q' (64 entries
+    // x 2 B <= the 512 B plane cost at this store size -> u16 postings tier). No name contains 'v'.
+    // Digits are unavoidable in the unique suffix, so the probe bytes are letters only.
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..4096u32).map(|i| {
+        let mut c = stub_card(u128::from(i) + 1, TYPE_CREATURE, &[], &mut vocab);
+        let name = if i % 64 == 0 { format!("az q{i}") } else { format!("az b{i}") };
+        c.card_name_lower = InlineStr::from_str(&name);
+        c.card_name_folded = c.card_name_lower;
+        c
+    }).collect();
+    let data = store_of(cards, &vec![1usize; 4096], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let idx = &archived.indexes.name_unigrams;
+
+    assert!(idx.plane_of.get(&b'z').is_some(), "a byte in 4,096 names must promote to a plane");
+    assert!(idx.postings.get(&b'q').is_some(), "a byte in 64 names stays a posting list");
+
+    let rec = |w: &str| {
+        let f = FilterExpr::TextContains { field: TextSearchField::NameLower, word: w.to_string() };
+        super::narrow_rec(&f, &archived.indexes, &archived.offsets, &archived.cards, false)
+    };
+    // Dense tier: exact bitmap, tight.
+    let n = rec("z").expect("dense byte narrows");
+    assert!(n.tight);
+    assert!(matches!(n.set, Candidates::CardBits(_)));
+    assert_eq!(n.set.len(), 4096);
+    // Sparse tier: exact vec, tight, and byte-for-byte the contains() answer.
+    let n = rec("q").expect("sparse byte narrows");
+    assert!(n.tight);
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    let brute: Vec<u32> = archived.cards.iter().enumerate()
+        .filter(|(_, c)| c.card_name_folded.as_str().contains('q'))
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(cand, brute, "byte membership IS containment for 1-byte needles");
+    // Absent byte: exact empty, not None -- the same convention the bigram tier uses.
+    let n = rec("v").expect("absent byte is an exact empty narrowing");
+    assert_eq!(n.set.len(), 0);
+}
+
+// The motivating composition: `name:xx or name:yy` previously full-scanned
+// (two per-card substring searches); both children now contribute exact sets.
+// Also: Not(bigram) is a sound complement, and memoize rewrites 2-byte needles
+// to NameMatch with zero contains() calls in full-scan contexts.
+#[test]
+fn name_bigrams_compose_and_memoize() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let names = ["fire drake", "field agent", "drone", "bear", "firm hand", "quiet"];
+    let cards: Vec<OracleCard> = names.iter().enumerate().map(|(i, name)| {
+        let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+        c.card_name_lower = InlineStr::from_str(name);
+        c.card_name_folded = c.card_name_lower;
+        c.card_name_id = interner.intern(name.to_string());
+        c
+    }).collect();
+    let mut data = store_of(cards, &[1usize; 6], vocab);
+    data.strings = interner.strings;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let name2 = |w: &str| FilterExpr::TextContains { field: TextSearchField::NameLower, word: w.to_string() };
+
+    // Or of two bigram children composes: "fi" → {0,1,4}, "dr" → {0,2}.
+    let or = FilterExpr::Or(vec![name2("fi"), name2("dr")]);
+    let n = super::narrow_rec(&or, &archived.indexes, &archived.offsets, &archived.cards, false).expect("bigram Or composes");
+    assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card), vec![0, 1, 2, 4]);
+
+    // run_query parity across the new shapes, negation included.
+    for f in [or, FilterExpr::Not(Box::new(name2("fi")))] {
+        let brute = archived.cards.iter().enumerate()
+            .filter(|(cid, card)| {
+                (u32::from(archived.offsets[*cid])..u32::from(archived.offsets[cid + 1]))
+                    .any(|p| f.matches(card, &archived.printings[p as usize], &archived.strings))
+            })
+            .count();
+        let mut f2 = f;
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut f2, None, "card", "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, brute);
+    }
+
+    // Memoize path: a 2-byte needle in a full-scan context becomes NameMatch
+    // through the bigram index (exact — no contains() verification).
+    let mut f = name2("fi");
+    f.memoize_text_predicates(&archived.cards, &archived.strings, &archived.indexes.name_trigram, &archived.indexes.name_bigrams, &archived.indexes.oracle_trigram, archived.cards.len());
+    match &f {
+        FilterExpr::NameMatch { ids } => assert_eq!(ids.len(), 3),
+        _ => panic!("2-byte needle must memoize via bigrams"),
+    }
+    for (cid, card) in archived.cards.iter().enumerate() {
+        let want = card.card_name_folded.as_str().contains("fi");
+        assert!((f.eval_card(card, &archived.strings) == Tri::True) == want, "NameMatch parity at card {cid}");
+    }
+}
+
+// Broad printing-space tag postings behave like broad ranges (#640): scatter
+// to a tight bitmap when a consumer exists (broad_ok), decline otherwise —
+// never gather tens of thousands of ids raw. Sparse tags keep the vec path.
+#[test]
+fn broad_tag_postings_scatter_or_decline() {
+    let mut vocab = VocabInterner::new();
+    let spell = vocab.intern("spell".to_string()).unwrap();
+    let rare_tag = vocab.intern("etched".to_string()).unwrap();
+    let cards: Vec<OracleCard> = (0..1200u32).map(|i| stub_card(u128::from(i) + 1, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let mut data = store_of(cards, &vec![4usize; 1200], vocab); // 4,800 printings
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        // "spell" on half of all printings (2,400 = 50% > MAX_NARROW_FRACTION);
+        // "etched" on 1 in 100 (48, sparse).
+        if i % 2 == 0 { p.card_is_tags.push(spell); }
+        if i % 100 == 0 { p.card_is_tags.push(rare_tag); }
+    }
+    data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let tag = |v: &str| FilterExpr::CollectionCmp { field: CollField::IsTags, op: CmpOp::Ge, value: v.into(), value_id: None };
+    let rec = |f: &FilterExpr, broad_ok: bool| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, broad_ok);
+
+    // Broad tag: bitmap under broad_ok, decline without.
+    assert!(rec(&tag("spell"), false).is_none(), "broad tag without a consumer reverts to the scan");
+    let n = rec(&tag("spell"), true).expect("broad tag scatters for a consumer");
+    assert!(n.tight, "every posted printing carries the tag");
+    match &n.set {
+        Candidates::PrintingBits(b) => assert_eq!(b.iter().map(|w| w.count_ones()).sum::<u32>(), 2400),
+        _ => panic!("broad tag must be a bitmap"),
+    }
+    // Sparse tag: vec either way.
+    let n = rec(&tag("etched"), false).expect("sparse tag narrows in any context");
+    assert!(matches!(n.set, Candidates::Printings(ref v) if v.len() == 48));
+    // Absent tag: exact empty.
+    let n = rec(&tag("foil"), false).expect("absent tag proves the empty set");
+    assert_eq!(n.set.len(), 0);
+}
+
+// ─── Devotion bit-sliced planes ───────────────────────────────────────────────
+
+/// Cards with controlled mana costs, hybrids included. A {R/G} pip counts
+/// toward BOTH red and green devotion (the loader's hybrid expansion), which
+/// the planes must reproduce.
+fn devotion_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let costs: &[(&[(&str, u8)], u16)] = &[
+        (&[], TYPE_CREATURE),                     // no cost
+        (&[("U", 1)], TYPE_CREATURE),              // {U}
+        (&[("U", 2)], TYPE_CREATURE),              // {U}{U}
+        (&[("U", 3)], TYPE_CREATURE),              // {U}{U}{U}
+        (&[("U", 5)], TYPE_CREATURE),              // deep: saturates
+        (&[("R/G", 1)], TYPE_CREATURE),            // {R/G}: 1 red AND 1 green
+        (&[("R/G", 2), ("R", 1)], TYPE_CREATURE),  // {R/G}{R/G}{R}: R=3, G=2
+        (&[("W", 1), ("U", 1)], TYPE_CREATURE),    // {W}{U}
+        (&[("C", 2)], TYPE_CREATURE),               // {C}{C}: colorless devotion
+        (&[("R", 1)], TYPE_INSTANT),                // {R} on an Instant: never counts (see devotion_ignores_nonpermanent_pips)
+    ];
+    let mut mana_vocab: Vec<String> = Vec::new();
+    let cards: Vec<OracleCard> = costs.iter().enumerate().map(|(i, &(pips, card_types))| {
+        let mut c = stub_card(i as u128 + 1, card_types, &[], &mut vocab);
+        c.mana_cost = mana_cost_of(pips, &mut mana_vocab);
+        // Mirrors mana_cost_from_pydict()'s PERMANENT_TYPES gate (lib.rs):
+        // devotion only exists for permanents, regardless of the raw pips.
+        if card_types & super::PERMANENT_TYPES == 0 {
+            c.mana_cost.devotion = 0;
+        }
+        // identity must cover devotion colors (the build tripwire enforces it)
+        let mut ident = 0u8;
+        for (lane, sym) in ["W", "U", "B", "R", "G"].iter().enumerate() {
+            if super::lane_get(c.mana_cost.devotion, lane) > 0 {
+                ident |= super::color_list_to_mask(&[sym]);
+            }
+        }
+        c.card_color_identity = ident;
+        c
+    }).collect();
+    let mut data = store_of(cards, &[1usize; 10], vocab);
+    data.mana_vocab = mana_vocab;
+    data
+}
+
+/// Build a ManaCost from (symbol, count) pairs the way the loader does:
+/// lane symbols pack into core, hybrids expand into devotion and intern into
+/// `mana_vocab` (the store's table, shared across cards).
+fn mana_cost_of(pips: &[(&str, u8)], mana_vocab: &mut Vec<String>) -> ManaCost {
+    let mut core = 0u64;
+    let mut devotion = 0u64;
+    let mut hybrids: Vec<(u8, u8)> = Vec::new();
+    for &(sym, n) in pips {
+        match super::mana_lane(sym) {
+            Some(lane) => {
+                core = super::lane_add(core, lane, n);
+                if lane < 6 {
+                    devotion = super::lane_add(devotion, lane, n);
+                }
+            }
+            None => {
+                let id = mana_vocab.iter().position(|v| v == sym).unwrap_or_else(|| {
+                    mana_vocab.push(sym.to_string());
+                    mana_vocab.len() - 1
+                });
+                hybrids.push((id as u8, n));
+                for part in sym.split('/') {
+                    if let Some(lane) = super::mana_lane(part).filter(|&l| l < 6) {
+                        devotion = super::lane_add(devotion, lane, n);
+                    }
+                }
+            }
+        }
+    }
+    hybrids.sort_unstable();
+    ManaCost { core, hybrids, devotion, cmc: 0.0 }
+}
+
+/// Pack WUBRGC (symbol, count) pairs into devotion lanes for query pips.
+fn packed_pips(pips: &[(&str, u8)]) -> u64 {
+    let mut p = 0u64;
+    for &(sym, n) in pips {
+        p = super::lane_add(p, super::mana_lane(sym).expect("lane symbol"), n);
+    }
+    p
+}
+
+// Every devotion op agrees with tri() through the planes, at every saturation
+// depth — and past the boundary the compiler declines rather than guesses.
+#[test]
+fn devotion_plane_parity_and_boundaries() {
+    let data = devotion_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let dev = |op, pips: &[(&str, u8)]| FilterExpr::Devotion { op, pips: packed_pips(pips) };
+    let mut bitmap: Vec<u64> = Vec::new();
+    let mut check_exact = |f: &FilterExpr| {
+        let pe = compile_plane(f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words).expect("must compile exactly");
+        eval_planes(&pe, &archived.indexes.planes, &mut bitmap);
+        for (cid, card) in archived.cards.iter().enumerate() {
+            let want = f.eval_card(card, &archived.strings) == Tri::True;
+            assert_eq!(bitmap_contains(&bitmap, cid as u32), want, "devotion parity at card {cid}");
+        }
+    };
+    for op in [CmpOp::Ge, CmpOp::Eq, CmpOp::Le, CmpOp::Ne, CmpOp::Gt, CmpOp::Lt] {
+        for k in 1..=2u8 {
+            check_exact(&dev(op, &[("U", k)]));
+        }
+    }
+    check_exact(&dev(CmpOp::Ge, &[("U", 3)])); // saturated value 3 means >= 3: exact
+    check_exact(&dev(CmpOp::Ge, &[("R", 1), ("G", 1)])); // multi-color, hybrid cards in play
+    check_exact(&dev(CmpOp::Ge, &[("C", 2)])); // colorless devotion
+    check_exact(&dev(CmpOp::Ge, &[("R", 3)])); // {R/G}{R/G}{R} card reaches R=3
+
+    // Past the saturation boundary the exact compiler declines...
+    assert!(compile_plane(&dev(CmpOp::Ge, &[("U", 4)]), &archived.indexes.planes, &archived.indexes.oracle_trigram.words).is_none());
+    assert!(compile_plane(&dev(CmpOp::Eq, &[("U", 3)]), &archived.indexes.planes, &archived.indexes.oracle_trigram.words).is_none());
+    assert!(compile_plane(&dev(CmpOp::Le, &[("U", 3)]), &archived.indexes.planes, &archived.indexes.oracle_trigram.words).is_none());
+    // ...and the saturated superset covers every deep match for narrowing.
+    let deep = dev(CmpOp::Ge, &[("U", 5)]);
+    let n = super::narrow_rec(&deep, &archived.indexes, &archived.offsets, &archived.cards, false).expect("deep-k narrows loosely");
+    assert!(!n.tight);
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    for (cid, card) in archived.cards.iter().enumerate() {
+        if deep.eval_card(card, &archived.strings) == Tri::True {
+            assert!(cand.contains(&(cid as u32)), "superset must cover card {cid}");
+        }
+    }
+}
+
+// The user-specified hybrid invariant, pinned: a card costing {R/G} has one
+// red devotion AND one green devotion.
+#[test]
+fn hybrid_pip_counts_toward_both_colors() {
+    let data = devotion_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let dev = |sym: &str, k: u8| FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[(sym, k)]) };
+    let mut bitmap: Vec<u64> = Vec::new();
+    let rg_card = 5; // {R/G}
+    for (f, want) in [(dev("R", 1), true), (dev("G", 1), true), (dev("R", 2), false), (dev("U", 1), false)] {
+        eval_planes(&compile_plane(&f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words).unwrap(), &archived.indexes.planes, &mut bitmap);
+        assert_eq!(bitmap_contains(&bitmap, rg_card), want);
+    }
+}
+
+// Devotion (MTG comprehensive rules) is defined only over permanents' mana
+// costs, confirmed against the real Scryfall API (devotion: never matches a
+// pure Instant/Sorcery, e.g. the real Lightning Bolt). A colored pip on a
+// nonpermanent must contribute zero devotion, no matter the operator.
+#[test]
+fn devotion_ignores_nonpermanent_pips() {
+    let data = devotion_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let instant_card = &archived.cards[9]; // {R} on TYPE_INSTANT
+    assert_eq!(u64::from(instant_card.mana_cost.devotion), 0, "an Instant's devotion must be zeroed at load, regardless of its pips");
+    let ge_r = FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("R", 1)]) };
+    let le_r = FilterExpr::Devotion { op: CmpOp::Le, pips: packed_pips(&[("R", 1)]) };
+    assert!(ge_r.eval_card(instant_card, &archived.strings) != Tri::True, "a nonpermanent's {{R}} must not satisfy devotion:{{R}}");
+    assert!(le_r.eval_card(instant_card, &archived.strings) == Tri::True, "empty devotion is a subset of any query");
+}
+
+// ─── Sorted name index: order:name + exact-name narrowing ────────────────────
+
+/// Six single-printing cards with names out of store order, one duplicated
+/// ("sol ring" twice), ranks assigned and sort permutations built exactly as
+/// the real load path does. Sorted name order: atog, black lotus, cancel,
+/// fog, sol ring, sol ring — with the duplicate pair tied on name_rank and
+/// separated by their edhrec ranks.
+fn named_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let names = ["fog", "sol ring", "atog", "sol ring", "black lotus", "cancel"];
+    let mut cards: Vec<OracleCard> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.card_name_lower = InlineStr::from_str(name);
+            c.card_name_folded = c.card_name_lower;
+            // Distinct, deliberately store-order-scrambled edhrec ranks: the
+            // second "sol ring" (card 3) outranks the first (card 1).
+            c.edhrec_rank = Some([40, 60, 10, 20, 30, 50][i]);
+            c
+        })
+        .collect();
+    assign_name_ranks(&mut cards);
+    let mut data = store_of(cards, &[1; 6], vocab);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data
+}
+
+// Equal names share a dense rank; distinct names rank in byte order.
+#[test]
+fn name_ranks_dense_and_shared_across_duplicates() {
+    let data = named_store();
+    let ranks: Vec<u32> = data.cards.iter().map(|c| c.name_rank).collect();
+    // fog=3, sol ring=4 (both copies), atog=0, black lotus=1, cancel=2
+    assert_eq!(ranks, vec![3, 4, 0, 4, 1, 2]);
+}
+
+// ExactName narrows to the exact, tight card set through the ascending name
+// permutation: hit (single), hit (duplicate pair), boundary names, and a miss
+// proving the empty set.
+#[test]
+fn exact_name_narrows_tight() {
+    let data = named_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let exact = |name: &str| FilterExpr::ExactName(name.to_string());
+    let narrow = |name: &str| {
+        super::narrow_rec(&exact(name), &archived.indexes, &archived.offsets, &archived.cards, false)
+            .expect("exact name must narrow")
+    };
+
+    for (name, mut want) in [
+        ("fog", vec![0u32]),
+        ("sol ring", vec![1, 3]),
+        ("atog", vec![2]),          // first in sorted order
+        ("cancel", vec![5]),        // adjacent to the last block
+        ("zzz past the end", vec![]),
+        ("aaa before the start", vec![]),
+        ("sol rin", vec![]),        // prefix of a real name is still a miss
+    ] {
+        let n = narrow(name);
+        assert!(n.tight, "{name}: equality through the sorted permutation is exact");
+        let mut got = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want, "candidates for {name:?}");
+    }
+
+    // Composition: the tight set participates in the candidate algebra, and
+    // run_query totals agree with a full scan on every shape.
+    let mut shapes: Vec<FilterExpr> = vec![
+        exact("sol ring"),
+        exact("no such card"),
+        FilterExpr::Or(vec![exact("sol ring"), FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }]),
+        FilterExpr::And(vec![exact("fog"), FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }]),
+        FilterExpr::Not(Box::new(exact("sol ring"))),
+    ];
+    for (i, f) in shapes.iter_mut().enumerate() {
+        let brute = archived
+            .cards
+            .iter()
+            .filter(|c| f.eval_card(c, &archived.strings) == Tri::True)
+            .count();
+        let (total, _) = run_query(&QueryCtx::from(archived), f, None, "card", "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, brute, "totals parity for shape {i}");
+    }
+}
+
+// #649: fuzzy name: search is accent-folded. card_name_folded is precomputed in
+// Python (fold_accents(), NFKD strip-combining-marks) and the query word is folded
+// the same way before crossing into Rust, so a user typing "eowyn" (no diacritic)
+// finds "Éowyn" — and typing the accent doesn't change the fuzzy result, since both
+// spellings fold to the same word by the time Rust sees them. ExactName deliberately
+// keeps comparing the unfolded card_name_lower, so only the literal accented
+// spelling narrows to an exact match.
+#[test]
+fn accent_folded_name_search_matches_unaccented_query() {
+    let mut vocab = VocabInterner::new();
+    let rows: [(&str, &str); 2] = [
+        ("éowyn, fearless knight", "eowyn, fearless knight"),
+        ("ferocious knight", "ferocious knight"),
+    ];
+    let cards: Vec<OracleCard> = rows.iter().enumerate().map(|(i, (lower, folded))| {
+        let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+        c.card_name_lower = InlineStr::from_str(lower);
+        c.card_name_folded = InlineStr::from_str(folded);
+        c
+    }).collect();
+    let data = store_of(cards, &[1usize; 2], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    // A query word already folded by Python (whether the user typed "eowyn" or
+    // "Éowyn") must find the accented card and only it.
+    let contains_eowyn = FilterExpr::TextContains { field: TextSearchField::NameLower, word: "eowyn".to_string() };
+    let matches: Vec<u32> = archived.cards.iter().enumerate()
+        .filter(|(_, c)| contains_eowyn.eval_card(c, &archived.strings) == Tri::True)
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(matches, vec![0], "unaccented fuzzy query must find only the accented card");
+
+    // Exact match stays accent-sensitive: typing the accent finds it; typing
+    // without the accent does not.
+    let exact_accented = FilterExpr::ExactName("éowyn, fearless knight".to_string());
+    let exact_unaccented = FilterExpr::ExactName("eowyn, fearless knight".to_string());
+    assert!(exact_accented.eval_card(&archived.cards[0], &archived.strings) == Tri::True);
+    assert!(exact_unaccented.eval_card(&archived.cards[0], &archived.strings) == Tri::False);
+}
+
+// order:name sorts pages by name in both directions, breaks the duplicate-name
+// tie by edhrec rank in BOTH directions (direction folds into the primary key
+// only), and paginates consistently.
+#[test]
+fn order_name_sorts_and_paginates() {
+    let data = named_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let run = |direction: &str, limit: usize, offset: usize| -> Vec<String> {
+        let mut all = FilterExpr::True;
+        let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "card", "default", "name", direction, limit, offset);
+        assert_eq!(total, 6);
+        page.iter().map(|(c, _)| c.card_name_lower.as_str().to_string()).collect()
+    };
+
+    assert_eq!(run("asc", 100, 0), ["atog", "black lotus", "cancel", "fog", "sol ring", "sol ring"]);
+    assert_eq!(run("desc", 100, 0), ["sol ring", "sol ring", "fog", "cancel", "black lotus", "atog"]);
+    // Pagination: the page [2, 4) of the ascending order.
+    assert_eq!(run("asc", 2, 2), ["cancel", "fog"]);
+
+    // The duplicate pair ties on name and must break by edhrec rank ascending
+    // in both directions: card 3 (rank 20) before card 0 (rank 60).
+    let ids = |direction: &str| -> Vec<u128> {
+        let mut all = FilterExpr::True;
+        let (_, page) = run_query(&QueryCtx::from(archived), &mut all, None, "card", "default", "name", direction, 100, 0);
+        page.iter()
+            .filter(|(c, _)| c.card_name_lower.as_str() == "sol ring")
+            .map(|(c, _)| u128::from(c.oracle_id))
+            .collect()
+    };
+    assert_eq!(ids("asc"), [4, 2], "within the tie: lower edhrec rank first");
+    assert_eq!(ids("desc"), [4, 2], "secondaries keep their order under desc");
+}
+
+// ─── Verifier cost ordering ───────────────────────────────────────────────────
+
+fn type_mask() -> FilterExpr {
+    FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }
+}
+
+fn contains_scan() -> FilterExpr {
+    FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "draw".to_string() }
+}
+
+fn machinery_regex() -> FilterExpr {
+    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: regex::Regex::new("draw .* cards?").unwrap() }
+}
+
+// Pattern-shape cost classification: anchored literals are memcmp-cheap
+// (SET_LOOKUP_NS100); everything else — bare literals included, measured the
+// same cost as real machinery, not a text scan (bench_verify_cost.rs) —
+// shares REGEX_MACHINERY_NS100.
+#[test]
+fn regex_tier_classifies_pattern_shapes() {
+    use super::{regex_tier, REGEX_MACHINERY_NS100, SET_LOOKUP_NS100};
+    assert_eq!(regex_tier("(?i)^flying$"), SET_LOOKUP_NS100);
+    assert_eq!(regex_tier("dragon$"), SET_LOOKUP_NS100);
+    assert_eq!(regex_tier("(?i)^\\{t\\}: add"), SET_LOOKUP_NS100, "escaped punctuation is literal");
+    assert_eq!(regex_tier("^gob"), SET_LOOKUP_NS100);
+    assert_eq!(regex_tier("(?i)flying"), REGEX_MACHINERY_NS100, "unanchored literal measures the same as machinery");
+    assert_eq!(regex_tier("draw .* cards?"), REGEX_MACHINERY_NS100);
+    assert_eq!(regex_tier("^[aeiou]"), REGEX_MACHINERY_NS100);
+    assert_eq!(regex_tier("(?i)^\\d+$"), REGEX_MACHINERY_NS100, "class escapes are machinery");
+    assert_eq!(regex_tier("a|b"), REGEX_MACHINERY_NS100);
+    assert_eq!(regex_tier("ends with backslash\\"), REGEX_MACHINERY_NS100, "dangling escape: not literal");
+}
+
+// And children reorder cheapest-tier-first regardless of written order, and
+// equal-tier children keep their written order (stable sort).
+#[test]
+fn verify_order_sorts_and_children_cheap_first() {
+    let cmc_lt = |v: f64| FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc),
+        op: CmpOp::Lt,
+        rhs: NumExpr::Const(v),
+    };
+    let mut f = FilterExpr::And(vec![machinery_regex(), cmc_lt(3.0), contains_scan(), cmc_lt(5.0), type_mask()]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &f else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::NumericCmp { rhs: NumExpr::Const(v), .. } if v == 3.0));
+    assert!(matches!(children[1], FilterExpr::NumericCmp { rhs: NumExpr::Const(v), .. } if v == 5.0));
+    assert!(matches!(children[2], FilterExpr::TypeCmp { .. }));
+    assert!(matches!(children[3], FilterExpr::TextContains { .. }));
+    assert!(matches!(children[4], FilterExpr::TextRegex { .. }));
+}
+
+// Within the memoized-set tier, And children refine to ascending set size
+// (smaller set = more rejections per identical binary-search cost); tier-1
+// children without a known size (collections) come after the sized sets.
+#[test]
+fn verify_order_and_refines_by_set_size() {
+    let coll = FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "flying".to_string(), value_id: None };
+    let mut f = FilterExpr::And(vec![
+        coll,
+        FilterExpr::NameMatch { ids: vec![1, 2, 3, 4, 5] },
+        FilterExpr::OracleMatch { gids: vec![7, 9] },
+    ]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &f else { panic!("still an And") };
+    assert!(matches!(&children[0], FilterExpr::OracleMatch { gids } if gids.len() == 2));
+    assert!(matches!(&children[1], FilterExpr::NameMatch { ids } if ids.len() == 5));
+    assert!(matches!(children[2], FilterExpr::CollectionCmp { .. }));
+}
+
+// Or children sort by coarse buckets: acceptance short-circuits an Or, and a
+// small set is the worst acceptance lead, so neither set size nor fine cost
+// tiers may reorder Or children — only decisive gaps do.
+#[test]
+fn verify_order_or_sorts_by_bucket_only() {
+    let mut f = FilterExpr::Or(vec![
+        machinery_regex(),
+        FilterExpr::NameMatch { ids: vec![1, 2, 3, 4, 5] },
+        FilterExpr::OracleMatch { gids: vec![7, 9] },
+        type_mask(),
+    ]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::Or(children) = &f else { panic!("still an Or") };
+    assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
+    assert!(matches!(&children[1], FilterExpr::NameMatch { ids } if ids.len() == 5), "written order kept within tier");
+    assert!(matches!(&children[2], FilterExpr::OracleMatch { gids } if gids.len() == 2));
+    assert!(matches!(children[3], FilterExpr::TextRegex { .. }));
+}
+
+// Within an Or, nodes of text-scan-adjacent cost (pip maps, contains, bare
+// literals) keep written order: their cost gap is too small to outweigh the
+// unknowable acceptance rates (devotion-first cost `oracle:vigilance or
+// devotion:bbb` 1.2× when measured).
+#[test]
+fn verify_order_or_keeps_scan_cost_band_in_written_order() {
+    let devotion = || FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("B", 3)]) };
+    let mut f = FilterExpr::Or(vec![contains_scan(), devotion()]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::Or(children) = &f else { panic!("still an Or") };
+    assert!(matches!(children[0], FilterExpr::TextContains { .. }), "contains keeps its written lead");
+    assert!(matches!(children[1], FilterExpr::Devotion { .. }));
+
+    // In an And the same pair DOES reorder: rejection is what And children
+    // short-circuit on, and the pip walk measures ~3× under the text scan.
+    let mut g = FilterExpr::And(vec![contains_scan(), devotion()]);
+    g.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &g else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::Devotion { .. }), "And sorts the cheaper pip walk first");
+    assert!(matches!(children[1], FilterExpr::TextContains { .. }));
+}
+
+// Within an Or, a memoized set must NOT jump ahead of a contains: the ~3×
+// cost gap between a binary search and a substring scan is smaller than the
+// acceptance-rate swing it gambles on (measured: `(… or color:g)
+// (oracle:token or name:storm)` lost 1.1× to set-first ordering).
+#[test]
+fn verify_order_or_keeps_sets_and_scans_in_written_order() {
+    let mut f = FilterExpr::Or(vec![contains_scan(), FilterExpr::NameMatch { ids: vec![1, 2] }]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::Or(children) = &f else { panic!("still an Or") };
+    assert!(matches!(children[0], FilterExpr::TextContains { .. }));
+    assert!(matches!(children[1], FilterExpr::NameMatch { .. }));
+}
+
+// And children that can reject at card level run before printing-dependent
+// ones, which never can: `usd>20 t:dragon` must check the subtype first so
+// rejected cards skip the price eval entirely. A composite with any
+// card-level member can still settle at card level, so it stays early.
+#[test]
+fn verify_order_and_defers_printing_dependent_children() {
+    let usd = || usd_cmp(CmpOp::Gt, 20.0);
+    let dragon = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "dragon".to_string(), value_id: None };
+    let mut f = FilterExpr::And(vec![usd(), dragon()]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &f else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::CollectionCmp { .. }), "card-level rejector first");
+    assert!(matches!(children[1], FilterExpr::NumericCmp { .. }));
+
+    // Or(usd, type) can settle at card level through its type member (a True
+    // settles an Or), so it is not printing-dependent and leads the contains.
+    let mut g = FilterExpr::And(vec![contains_scan(), FilterExpr::Or(vec![usd(), type_mask()])]);
+    g.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &g else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::Or(_)), "mixed composite can settle: stays card-level");
+    assert!(matches!(children[1], FilterExpr::TextContains { .. }));
+}
+
+// Printing-dependent Or children can never settle the Or during the card
+// pass, so a cheap tier never pulls them ahead of card-level children —
+// `usd>20` must not jump ahead of the contains it can't short-circuit.
+#[test]
+fn verify_order_or_defers_printing_dependent_children() {
+    let usd = || usd_cmp(CmpOp::Gt, 20.0);
+    let mut f = FilterExpr::Or(vec![contains_scan(), usd()]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::Or(children) = &f else { panic!("still an Or") };
+    assert!(matches!(children[0], FilterExpr::TextContains { .. }), "card-level scan stays ahead of pdep numeric");
+    assert!(matches!(children[1], FilterExpr::NumericCmp { .. }));
+
+    // A card-level mask still moves ahead of a printing-dependent set lookup.
+    let mut g = FilterExpr::Or(vec![FilterExpr::FlavorMatch { gids: vec![3], dense_ids: vec![] }, type_mask()]);
+    g.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::Or(children) = &g else { panic!("still an Or") };
+    assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
+    assert!(matches!(children[1], FilterExpr::FlavorMatch { .. }));
+}
+
+// Composites rank as the max of their children (their evaluation may have to
+// run every child), and the sort recurses through And/Or/Not nesting.
+#[test]
+fn verify_order_recurses_and_ranks_composites() {
+    let inner_or = FilterExpr::Or(vec![machinery_regex(), type_mask()]);
+    let mut f = FilterExpr::Not(Box::new(FilterExpr::And(vec![inner_or, contains_scan(), type_mask()])));
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::Not(inner) = &f else { panic!("still a Not") };
+    let FilterExpr::And(children) = inner.as_ref() else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
+    assert!(matches!(children[1], FilterExpr::TextContains { .. }));
+    let FilterExpr::Or(or_children) = &children[2] else { panic!("Or ranks tier 3, last") };
+    assert!(matches!(or_children[0], FilterExpr::TypeCmp { .. }), "nested Or sorted too");
+    assert!(matches!(or_children[1], FilterExpr::TextRegex { .. }));
+}
+
+// End-to-end: the two spellings of a mixed-cost conjunction return identical
+// totals and pages through run_query — ordering is a speed dial, not a
+// semantics change.
+#[test]
+fn verify_order_spellings_agree_end_to_end() {
+    let mut vocab = VocabInterner::new();
+    let mut strings = Interner::new();
+    let mut cards = Vec::new();
+    for i in 0..12u32 {
+        let types = if i % 2 == 0 { TYPE_CREATURE } else { TYPE_INSTANT };
+        let mut c = stub_card((i + 1) as u128, types, &[], &mut vocab);
+        let text = if i % 3 == 0 { "flying" } else { "draw a card" };
+        c.oracle_text_lower_id = strings.intern(text.to_string());
+        c.edhrec_rank = Some(i + 1);
+        cards.push(c);
+    }
+    let mut data = store_of(cards, &[2usize; 12], vocab);
+    data.strings = strings.strings;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let run = |mut filter: FilterExpr| {
+        let (total, page) = run_query(&QueryCtx::from(archived), &mut filter, None, "card", "default", "edhrec", "asc", 100, 0);
+        let ids: Vec<u128> = page.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
+        (total, ids)
+    };
+    let expensive_first = FilterExpr::And(vec![machinery_regex(), type_mask()]);
+    let cheap_first = FilterExpr::And(vec![type_mask(), machinery_regex()]);
+    let (t1, p1) = run(expensive_first);
+    let (t2, p2) = run(cheap_first);
+    assert_eq!(t1, 4, "creatures with draw-a-card text: cards 3, 5, 9, 11");
+    assert_eq!((t1, p1), (t2, p2));
+
+    let or_a = FilterExpr::Or(vec![machinery_regex(), type_mask()]);
+    let or_b = FilterExpr::Or(vec![type_mask(), machinery_regex()]);
+    assert_eq!(run(or_a), run(or_b));
+}
+
+// ─── Query-string mana parsing: mana_pip_counts / mana_cmc ───────────────────
+
+// X is its own pip symbol (its own lane, see MANA_LANE_SYMS), not a hybrid and
+// not excluded — only its cmc contribution is 0, handled by mana_cmc
+// separately. Confirmed against the real Scryfall API: mana:{X} matches
+// Fireball ({X}{R}) and mana:x behaves identically to mana:{x}. This parser
+// (used only for query-time mana:/devotion: values — see build_binary's
+// attr == "mana_cost_jsonb"/"devotion" arms) once dropped X entirely, braced
+// or not, silently degrading `mana:{X}{R}` into `mana:{R}` and matching cards
+// with no X pip at all (e.g. Shivan Dragon, {4}{R}{R}).
+#[test]
+fn mana_pip_counts_treats_x_as_a_real_symbol() {
+    use super::mana_pip_counts;
+    let braced = mana_pip_counts("{X}{R}");
+    assert_eq!(braced.get("X"), Some(&1), "braced X must not be dropped");
+    assert_eq!(braced.get("R"), Some(&1));
+    let bare = mana_pip_counts("XR");
+    assert_eq!(bare.get("X"), Some(&1), "bare X must be recognized, same as braced");
+    assert_eq!(bare.get("R"), Some(&1));
+    let doubled = mana_pip_counts("{X}{X}{R}");
+    assert_eq!(doubled.get("X"), Some(&2), "repeated X pips must accumulate");
+}
+
+// mana_cmc's X-exclusion was already correct (X contributes 0 whether braced
+// or bare) — pinned here so a future refactor of mana_pip_counts can't
+// accidentally couple the two functions' X handling back together.
+#[test]
+fn mana_cmc_excludes_x_braced_and_bare() {
+    use super::mana_cmc;
+    assert_eq!(mana_cmc("{X}{R}"), 1.0);
+    assert_eq!(mana_cmc("XR"), 1.0);
+    assert_eq!(mana_cmc("{X}{X}{2}{R}"), 3.0, "two generic + one R; both Xs contribute 0");
+}
+
+// ─── Packed mana pips: ManaCostCmp semantics ─────────────────────────────────
+
+/// Store with a spread of cost shapes: plain, multi-pip, hybrid, X, snow,
+/// empty — enough to exercise every ManaCostCmp op against the packed lanes,
+/// the hybrid overflow vec, and the bind path.
+fn mana_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut mana_vocab: Vec<String> = Vec::new();
+    // (pips, cmc): oracle ids 1..=8 in this order
+    let costs: &[(&[(&str, u8)], f32)] = &[
+        (&[("W", 1)], 1.0),               // 1: {W}
+        (&[("W", 2)], 2.0),               // 2: {W}{W}
+        (&[("W", 1), ("U", 1)], 2.0),     // 3: {W}{U}
+        (&[("R/G", 1)], 1.0),             // 4: {R/G}
+        (&[("X", 1), ("R", 1)], 1.0),     // 5: {X}{R}
+        (&[("S", 1), ("G", 1)], 2.0),     // 6: {S}{G}
+        (&[], 0.0),                       // 7: no cost
+        (&[("W/P", 1)], 1.0),             // 8: {W/P} (Phyrexian — an opaque hybrid key, same as {R/G})
+    ];
+    let cards: Vec<OracleCard> = costs.iter().enumerate().map(|(i, &(pips, cmc))| {
+        let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+        c.mana_cost = mana_cost_of(pips, &mut mana_vocab);
+        c.mana_cost.cmc = cmc;
+        // identity must cover devotion colors (the build tripwire enforces it)
+        for (lane, sym) in ["W", "U", "B", "R", "G"].iter().enumerate() {
+            if super::lane_get(c.mana_cost.devotion, lane) > 0 {
+                c.card_color_identity |= super::color_list_to_mask(&[sym]);
+            }
+        }
+        c
+    }).collect();
+    let mut data = store_of(cards, &[1usize; 8], vocab);
+    data.mana_vocab = mana_vocab;
+    data
+}
+
+/// Build a bound ManaCostCmp the way build_binary + bind would: lane symbols
+/// pack into core, hybrid symbols resolve against the store's vocab (or the
+/// reserved unknown id when absent).
+fn mana_cmp_of(op: CmpOp, pips: &[(&str, u8)], cmc: f32, mana_vocab: &[String]) -> FilterExpr {
+    let mut core = 0u64;
+    let mut hybrids: Vec<(String, u8)> = Vec::new();
+    let mut hybrid_ids: Vec<(u8, u8)> = Vec::new();
+    let mut unknown = 0u8;
+    for &(sym, n) in pips {
+        match super::mana_lane(sym) {
+            Some(lane) => core = super::lane_add(core, lane, n),
+            None => {
+                hybrids.push((sym.to_string(), n));
+                match mana_vocab.iter().position(|v| v == sym) {
+                    Some(i) => hybrid_ids.push((i as u8, n)),
+                    None => unknown = unknown.saturating_add(n),
+                }
+            }
+        }
+    }
+    hybrids.sort_unstable();
+    hybrid_ids.sort_unstable();
+    if unknown > 0 {
+        hybrid_ids.push((super::MANA_SYM_UNKNOWN, unknown));
+    }
+    FilterExpr::ManaCostCmp { op, core, hybrids, hybrid_ids, cmc }
+}
+
+// Containment, exactness, and their strict/negated variants over the packed
+// representation, matching the jsonb multiset semantics they replace: `=`
+// needs the same distinct symbols with the same counts (a zero lane IS an
+// absent key), hybrids are their own symbols (never lane-expanded for
+// mana=), and X on a card blocks exactness against an X-less query.
+#[test]
+fn mana_cost_cmp_packed_semantics() {
+    let data = mana_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let matches = |f: &FilterExpr| -> Vec<u128> {
+        archived.cards.iter()
+            .filter(|c| f.eval_card(c, &archived.strings) == Tri::True)
+            .map(|c| u128::from(c.oracle_id))
+            .collect()
+    };
+    let mv: Vec<String> = archived.mana_vocab.iter().map(|s| s.to_string()).collect();
+
+    // Ge = query ⊆ card (and cmc >=): every white cost with cmc >= 1.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("W", 1)], 1.0, &mv)), [1, 2, 3]);
+    // Eq: same symbols, same counts, same cmc — {W} only, not {W}{W} or {W}{U}.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("W", 1)], 1.0, &mv)), [1]);
+    // Le = card ⊆ query: {W}, {W}{W}, and the empty cost.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("W", 2)], 2.0, &mv)), [1, 2, 7]);
+    // Strict variants exclude the exact cost.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Gt, &[("W", 1)], 1.0, &mv)), [2, 3]);
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Lt, &[("W", 2)], 2.0, &mv)), [1, 7]);
+    // Hybrid pips are distinct symbols: {R/G} matches only through the vocab.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("R/G", 1)], 1.0, &mv)), [4]);
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("R/G", 1)], 1.0, &mv)), [4]);
+    // ...and {R} does not contain {R/G}, nor does the {X}{R} card equal {R}.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("R", 1)], 1.0, &mv)), [5]);
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("R", 1)], 1.0, &mv)), Vec::<u128>::new());
+    // Phyrexian mana is just another opaque hybrid symbol for mana: — {W/P}
+    // matches only through the vocab, and {W} does not contain it (mirrors
+    // {R/G} above; the "Phyrexian still counts toward W devotion" invariant
+    // is pinned in api/tests/test_engine_unit.py and test_data.sql instead,
+    // since this fixture only exercises ManaCostCmp, not Devotion).
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("W/P", 1)], 1.0, &mv)), [8]);
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("W/P", 1)], 1.0, &mv)), [8]);
+    // Snow is a lane like any other.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("S", 1)], 1.0, &mv)), [6]);
+    // X is a lane like any other too, not a hybrid — only card 5 carries it.
+    // (This exercises the FilterExpr evaluator's already-correct lane
+    // handling; the query-string parser's X-dropping bug is pinned directly
+    // in mana_pip_counts_treats_x_as_a_real_symbol above, since mana_cmp_of
+    // builds the FilterExpr from typed pips and bypasses string parsing.)
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("X", 1)], 0.0, &mv)), [5]);
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("X", 1), ("R", 1)], 1.0, &mv)), [5]);
+    // A symbol no card carries: containment and exactness fail everywhere;
+    // card ⊆ query still holds for the empty cost (query-only symbols never
+    // constrain the subset direction — same as the HashMap semantics).
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("Q/Z", 1)], 1.0, &mv)), Vec::<u128>::new());
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("Q/Z", 1)], 1.0, &mv)), Vec::<u128>::new());
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("Q/Z", 1)], 2.0, &mv)), [7]);
+    // Ne is not-exactly-equal.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ne, &[("W", 1)], 1.0, &mv)), [2, 3, 4, 5, 6, 7, 8]);
+}
+
+// The SWAR lane comparison agrees with the scalar per-lane loop across the
+// value spectrum, including the saturation cap that keeps it sound.
+#[test]
+fn lanes_ge_matches_scalar_compare() {
+    let vals = [0u8, 1, 2, 3, 5, 126, 127];
+    for &a0 in &vals {
+        for &b0 in &vals {
+            for &a5 in &vals {
+                for &b5 in &vals {
+                    let a = super::lane_add(super::lane_add(0, 0, a0), 5, a5);
+                    let b = super::lane_add(super::lane_add(0, 0, b0), 5, b5);
+                    let want = a0 >= b0 && a5 >= b5;
+                    assert_eq!(super::lanes_ge(a, b, super::LANES6_HI), want, "a0={a0} b0={b0} a5={a5} b5={b5}");
+                }
+            }
+        }
+    }
+    // lane_add saturates below the lane's high bit, so borrows can't escape.
+    let big = super::lane_add(super::lane_add(0, 2, 120), 2, 120);
+    assert_eq!(super::lane_get(big, 2), 127);
+    assert_eq!(super::lane_get(big, 1), 0);
+    assert_eq!(super::lane_get(big, 3), 0);
+}
+
+// ─── Printing-range fastpath (PR 1, docs/issues/local-engine-sorted-range-fastpath.md) ────────
+// The fastpath produces a page for a bare, broad printing-mode range predicate without the O(n)
+// count pass. These differential-test its page production (the card-permutation walk and the
+// aligned boundary-bucket sort) against a naive full-sort reference that shares only the ordering
+// primitive (sort_key_bits) with it, not its bucket/walk selection logic.
+
+/// `n_cards` cards with populated edhrec/cmc sort keys, 1-4 printings each, prices heavily
+/// clustered onto a few hot values (so the price index has large equal-value tie buckets) plus
+/// ~15% NULL, and a real price range index built over them.
+// needless_range_loop: `i` is both the synthesized card id (`i as u128`) and the `ranks` index.
+#[allow(clippy::needless_range_loop)]
+fn printing_range_fixture(seed: u64, n_cards: usize) -> CardData {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut vocab = VocabInterner::new();
+    // Distinct edhrec ranks (shuffled), as real data has — a rank is unique per card. This keeps
+    // any two cards from sharing a full (primary, edhrec) sort key, so the streamed/walk emission
+    // (per-card-contiguous) and a naive global (key, pid) sort agree; colliding ranks would let
+    // them legitimately differ on cross-card full ties, which never occur in practice.
+    let mut ranks: Vec<u32> = (0..n_cards as u32).collect();
+    for i in (1..n_cards).rev() {
+        ranks.swap(i, rng.random_range(0..=i));
+    }
+    let mut cards = Vec::with_capacity(n_cards);
+    for i in 0..n_cards {
+        let mut c = stub_card(i as u128, 0, &[], &mut vocab);
+        c.edhrec_rank = Some(ranks[i]);
+        c.cmc = Some(rng.random_range(0..8u8));
+        cards.push(c);
+    }
+    let counts: Vec<usize> = (0..n_cards).map(|_| rng.random_range(1..=4)).collect();
+    let mut data = store_of(cards, &counts, vocab);
+    // cents; 5000 == $50.00, which usd<50 excludes (strict). Hot values 15/100 form big buckets.
+    const PRICES: [u32; 6] = [15, 15, 100, 100, 100, 5000];
+    for p in data.printings.iter_mut() {
+        p.price_usd = (rng.random_range(0..100) >= 15).then(|| PRICES[rng.random_range(0..PRICES.len())]);
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data
+}
+
+/// Naive reference page for a printing-mode query: filter every printing by `leaf`, sort by
+/// (sort_key_bits, pid) — the exact comparator select_page uses — and window [offset, offset+limit).
+/// Returns the page's scryfall ids in order.
+fn naive_printing_page(
+    archived: &Archived<CardData>, leaf: &FilterExpr, sc: SortCol, desc: bool, offset: usize, limit: usize,
+) -> Vec<u128> {
+    let mut all: Vec<(u128, u32, u32)> = Vec::new();
+    for cid in 0..archived.cards.len() as u32 {
+        let card = &archived.cards[cid as usize];
+        let start = u32::from(archived.offsets[cid as usize]) as usize;
+        let end = u32::from(archived.offsets[cid as usize + 1]) as usize;
+        for pid in start..end {
+            let p = &archived.printings[pid];
+            if FilterExpr::residual_matches(card, p, &archived.strings, &[leaf], false) {
+                all.push((sort_key_bits(card, p, sc, desc), cid, pid as u32));
+            }
+        }
+    }
+    all.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+    let end = (offset + limit).min(all.len());
+    if offset >= end {
+        return Vec::new();
+    }
+    all[offset..end].iter().map(|&(_, _, pid)| u128::from(archived.printings[pid as usize].scryfall_id)).collect()
+}
+
+fn page_scryfall_ids(page: &[(&Archived<OracleCard>, &Archived<Printing>)]) -> Vec<u128> {
+    page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+}
+
+#[test]
+fn bare_range_bounds_recognizes_leaves_and_rejects_rest() {
+    let data = printing_range_fixture(0, 10);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ix = &archived.indexes;
+    let bounds = |f: &FilterExpr| bare_range_bounds(f, ix).map(|(_, lo, hi)| (lo, hi));
+    // usd<50 -> [0, 5000) cents; cn>=100 -> [100, MAX); year>2020 -> [2021*10000, MAX)
+    assert_eq!(bounds(&usd_cmp(CmpOp::Lt, 50.0)), Some((0, 5000)));
+    let cn_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Ge, rhs: NumExpr::Const(100.0) };
+    assert_eq!(bounds(&cn_ge), Some((100, u32::MAX)));
+    assert_eq!(bounds(&FilterExpr::YearCmp { op: CmpOp::Gt, year: 2020 }), Some((2021 * 10_000, u32::MAX)));
+    // rejects: Ne, compound, and a non-range numeric field (cmc is card-space)
+    assert!(bounds(&usd_cmp(CmpOp::Ne, 50.0)).is_none());
+    assert!(bounds(&FilterExpr::And(vec![usd_cmp(CmpOp::Lt, 50.0)])).is_none());
+    let cmc_lt = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Lt, rhs: NumExpr::Const(3.0) };
+    assert!(bounds(&cmc_lt).is_none());
+    // The negated arm takes the same leaf grammar with the op negated: -usd<50 is usd>=50's
+    // bounds outright, no complement. Ne is the shape that doesn't reduce, from either side --
+    // written as Ne above, and reached as negate_op(Eq) here.
+    let not_usd_lt = FilterExpr::Not(Box::new(usd_cmp(CmpOp::Lt, 50.0)));
+    assert_eq!(bounds(&not_usd_lt), Some((5000, u32::MAX)));
+    assert!(bounds(&FilterExpr::Not(Box::new(usd_cmp(CmpOp::Eq, 50.0)))).is_none());
+    // One Not deep and no further: the inner Not is not a leaf, so a double negation falls
+    // through the leaf catch-all rather than cancelling to the bare comparison.
+    assert!(bounds(&FilterExpr::Not(Box::new(not_usd_lt))).is_none());
+}
+
+/// #724 de-risk: does `popcount` + a printing walk over a *precomputed* border plane beat today's
+/// per-printing scan for `border:black`/printing (~0.87 ms)? A precomputed plane has no per-query
+/// build (unlike CardRangePopcount's ~105µs), so this should land near #634's ~0.06 ms bare-plane
+/// popcount. Builds the border:black printing bitmap once (simulating the persisted plane), then
+/// times `popcount` (the total) + an edhrec-perm membership walk (the page).
+/// `cargo test --release border_plane_query_kernel -- --ignored --nocapture`
+#[test]
+#[ignore = "#724 border-plane query kernel; needs real.store"]
+fn border_plane_query_kernel() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 30;
+    const ITERS: usize = 300;
+    const LIMIT: usize = 100;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_printings = archived.printings.len();
+    let strings = &archived.strings;
+    let offsets = &archived.offsets;
+
+    // Build the border:black printing bitmap once — simulates the persisted #724 plane (no per-query build).
+    let mut plane = vec![0u64; n_printings.div_ceil(64)];
+    for (pid, p) in archived.printings.iter().enumerate() {
+        if super::str_at(strings, u32::from(p.card_border_id)) == Some("black") {
+            plane[pid >> 6] |= 1u64 << (pid & 63);
+        }
+    }
+    let matches: usize = plane.iter().map(|w| w.count_ones() as usize).sum();
+    let perm = archived.indexes.sort_perms.get(SortCol::EdhrecRank, false).expect("edhrec perm");
+
+    let mut best = u128::MAX;
+    let mut sink = 0usize;
+    for it in 0..(WARMUP + ITERS) {
+        let t0 = Instant::now();
+        // total = popcount (replaces the O(n) count pass)
+        let total: usize = plane.iter().map(|w| w.count_ones() as usize).sum();
+        // page = walk cards in edhrec order, expand to printings, test the plane bit, early-stop
+        let mut page: Vec<u32> = Vec::with_capacity(LIMIT);
+        'walk: for c in perm.iter() {
+            let cid = u32::from(*c) as usize;
+            let start = u32::from(offsets[cid]) as usize;
+            let end = u32::from(offsets[cid + 1]) as usize;
+            for pid in start..end {
+                if (plane[pid >> 6] >> (pid & 63)) & 1 == 1 {
+                    page.push(pid as u32);
+                    if page.len() == LIMIT {
+                        break 'walk;
+                    }
+                }
+            }
+        }
+        black_box(&page);
+        sink = total;
+        let dt = t0.elapsed().as_nanos();
+        if it >= WARMUP {
+            best = best.min(dt);
+        }
+    }
+    println!("\nborder:black/printing via a PRECOMPUTED plane (real.store):");
+    println!("  matching printings: {matches}");
+    println!("  popcount + edhrec walk to fill {LIMIT}: {best} ns   (checksum total={sink})");
+    println!("  today's per-printing scan (bench_printing_planes): ~869,000 ns");
+}
+
+/// #724 legality-compose kernel costs (real.store): the three query-time operations the broadcast +
+/// divergent-repair legality leaf pays, which a precomputed legality *printing* plane would avoid. This
+/// quantifies the plane-vs-broadcast tradeoff and calibrates the cost model's build term instead of
+/// hand-picking it. Reports, per real legality format (`_EXISTS` plane density varies), the broadcast
+/// (card→printing) and projection (printing→card) kernels, plus the divergent repair once (~format
+/// -independent, driven by the divergent-card printing count).
+/// `cargo test --release legality_compose_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "#724 legality-compose kernel costs; needs real.store"]
+fn legality_compose_kernel_costs() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+    let wpp_c = super::words_per_plane(n_cards);
+    let planes = &archived.indexes.planes;
+    let divergent = &archived.indexes.legal_divergent;
+
+    // Time a closure to its minimum over ITERS (min = least-contended, matches the other kernels).
+    let bench = |f: &mut dyn FnMut() -> u64| -> (u128, u64) {
+        let mut best = u128::MAX;
+        let mut sink = 0u64;
+        for it in 0..ITERS {
+            let t0 = Instant::now();
+            sink = sink.wrapping_add(black_box(f()));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+        }
+        (best, sink)
+    };
+
+    println!("\n#724 legality-compose kernel costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("divergent-legality cards: {} ({:.1}%)", divergent.len(), 100.0 * divergent.len() as f64 / n_cards as f64);
+    println!("{:>6}  {:>10}  {:>11}  {:>12}  {:>13}  {:>12}", "fmt", "∃cards", "bcast-prtg", "bcast ns", "project ns", "ns/prtg");
+
+    for f in 0..super::MAX_FORMATS {
+        let base = (super::PLANE_LEGAL_EXISTS + f) * wpp_c;
+        let card_bits: Vec<u64> = planes.words[base..base + wpp_c].iter().map(|w| u64::from(*w)).collect();
+        let set_cards: u64 = card_bits.iter().map(|w| w.count_ones() as u64).sum();
+        if set_cards == 0 {
+            continue; // format not loaded / no legal cards
+        }
+        // (1) broadcast: card ∃-legal bits → printing bits.
+        let (bcast_ns, _) = bench(&mut || {
+            let pb = super::broadcast_card_bits_to_printings(&card_bits, offsets, n_printings);
+            pb.iter().map(|w| w.count_ones() as u64).sum()
+        });
+        let pbits = super::broadcast_card_bits_to_printings(&card_bits, offsets, n_printings);
+        let bcast_printings: u64 = pbits.iter().map(|w| w.count_ones() as u64).sum();
+        // (2) projection: printing bits → card bits.
+        let (proj_ns, _) = bench(&mut || {
+            let cb = super::printing_bits_to_card_bits(&pbits, offsets, n_cards);
+            cb.iter().map(|w| w.count_ones() as u64).sum()
+        });
+        let per_prtg = bcast_ns as f64 / bcast_printings.max(1) as f64;
+        println!("{f:>6}  {set_cards:>10}  {bcast_printings:>11}  {bcast_ns:>12}  {proj_ns:>13}  {per_prtg:>12.3}");
+    }
+
+    // (3) repair: overwrite each divergent card's printings from the per-printing legality word, for
+    // one representative shift (0). Format-independent — driven by the divergent printing count.
+    let shift = 0u8;
+    let expected = super::status_plane_bases(0b01).map(|_| 0b01u64).unwrap_or(0b01);
+    let mut div_printings = 0u64;
+    for cid in divergent.iter() {
+        let c = u16::from(*cid) as usize;
+        div_printings += (u32::from(offsets[c + 1]) - u32::from(offsets[c])) as u64;
+    }
+    let (repair_ns, sink) = bench(&mut || {
+        let mut hits = 0u64;
+        for cid in divergent.iter() {
+            let c = u16::from(*cid) as usize;
+            for p in u32::from(offsets[c]) as usize..u32::from(offsets[c + 1]) as usize {
+                if (u64::from(archived.printings[p].card_legalities) >> shift) & 0b11 == expected {
+                    hits += 1;
+                }
+            }
+        }
+        hits
+    });
+    println!(
+        "repair: {} divergent cards, {div_printings} printings, {repair_ns} ns ({:.3} ns/printing)  (sink={sink})",
+        divergent.len(),
+        repair_ns as f64 / div_printings.max(1) as f64,
+    );
+}
+
+/// #731 range-compose kernel costs (real.store): the two operations a range compose leaf adds — the
+/// **range scatter** (`range_leaf_bits`: gather the value-sorted index's in-range slice into a printing
+/// bitmap, a random-write scatter) and the **card projection + grouped walk** it feeds. Reports each at
+/// several densities so the `SCATTER_PER_PRINTING_NS` and `RANGE_WALK_STEP_NS` cost constants are fit
+/// from measurement, not guessed. Companion to `legality_compose_kernel_costs` (which covers the
+/// broadcast + projection kernels). `cargo test --release range_compose_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "#731 range-compose kernel costs; needs real.store"]
+fn range_compose_kernel_costs() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const LIMIT: usize = 100; // one page — matches the default result page the grouped walk fills
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+    let idx = &archived.indexes.price_usd; // printing-space range index (integer cents), value-sorted
+    let perm = archived.indexes.sort_perms.get(super::SortCol::EdhrecRank, false).expect("edhrec perm");
+
+    let bench = |f: &mut dyn FnMut() -> u64| -> (u128, u64) {
+        let mut best = u128::MAX;
+        let mut sink = 0u64;
+        for it in 0..ITERS {
+            let t0 = Instant::now();
+            sink = sink.wrapping_add(black_box(f()));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+        }
+        (best, sink)
+    };
+
+    println!("\n#731 range-compose kernel costs (real.store: {n_cards} cards, {n_printings} printings, {} priced)", idx.len());
+    println!(
+        "{:>8}  {:>10}  {:>10}  {:>11}  {:>10}  {:>10}  {:>9}",
+        "hi(cents)", "set-prtg", "scatter", "ns/prtg", "project", "∃cards", "card-walk"
+    );
+    // Density sweep: hi at percentiles of the value-sorted index (0 = min value).
+    for pct in [5usize, 25, 50, 75, 90, 100] {
+        // hi at a percentile of the DISTINCT values, which is what the index is keyed on.
+        let hi = u32::from(idx.keys[(idx.keys.len() * pct / 100).min(idx.keys.len() - 1)]).saturating_add(1);
+        // (1) range scatter: in-range slice [0, hi) → printing bitmap.
+        let (scatter_ns, _) = bench(&mut || {
+            let pb = super::range_leaf_bits(idx, 0, hi, n_printings);
+            pb.iter().map(|w| w.count_ones() as u64).sum()
+        });
+        let pbits = super::range_leaf_bits(idx, 0, hi, n_printings);
+        let set_prtg: u64 = pbits.iter().map(|w| w.count_ones() as u64).sum();
+        // (2) projection: printing bits → card bits (the total-computing pass for unique=card).
+        let (proj_ns, _) = bench(&mut || {
+            let cb = super::printing_bits_to_card_bits(&pbits, offsets, n_cards);
+            cb.iter().map(|w| w.count_ones() as u64).sum()
+        });
+        let card_bits = super::printing_bits_to_card_bits(&pbits, offsets, n_cards);
+        let exists_cards: u64 = card_bits.iter().map(|w| w.count_ones() as u64).sum();
+        // (3) grouped card walk: fill one page of best-representative rows in edhrec order.
+        let (walk_ns, _) = bench(&mut || {
+            let page = super::walk_grouped_page(
+                &QueryCtx::from(archived), &kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0), &pbits, perm,
+            );
+            page.0.len() as u64
+        });
+        let per_prtg = scatter_ns as f64 / set_prtg.max(1) as f64;
+        println!(
+            "{hi:>8}  {set_prtg:>10}  {scatter_ns:>10}  {per_prtg:>11.3}  {proj_ns:>10}  {exists_cards:>10}  {walk_ns:>9}"
+        );
+    }
+}
+
+/// #724 build-side correctness oracle: projecting a printing-space border plane up to card-existence
+/// (`printing_bits_to_card_bits`) must equal #664's card-space border plane for the same value —
+/// both mean "this card has a printing with border=value" (existence projection). Diffed for the
+/// three shared tracked values (black/borderless/white, same plane-index order). Needs a
+/// freshly-built real.store (new archive format). `cargo test --release
+/// border_printing_plane_matches_card_plane_projected -- --ignored --nocapture`
+#[test]
+#[ignore = "#724 border-plane oracle diff; needs a freshly-built real.store"]
+fn border_printing_plane_matches_card_plane_projected() {
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (rebuild after the #724 build-side change)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild for the bumped ARCHIVE_FORMAT_VERSION");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let bp = &archived.indexes.border_printing; // printing-space (#724)
+    let cp = &archived.indexes.planes; // card-space (#664)
+    let wpp_p = super::words_per_plane(n_printings);
+    let wpp_c = super::words_per_plane(n_cards);
+    for (k, value) in super::BORDER_PRINTING_PLANE_VALUES.iter().enumerate() {
+        let printing_bits: Vec<u64> = bp.words[k * wpp_p..(k + 1) * wpp_p].iter().map(|w| u64::from(*w)).collect();
+        let projected = super::printing_bits_to_card_bits(&printing_bits, &archived.offsets, n_cards);
+        let start = (super::PLANE_BORDER + k) * wpp_c;
+        let card_bits: Vec<u64> = cp.words[start..start + wpp_c].iter().map(|w| u64::from(*w)).collect();
+        assert_eq!(projected, card_bits, "border '{value}' (plane {k}): projected-up printing plane != #664 card plane");
+    }
+    eprintln!("OK: {} border printing planes project up to match #664's card planes", super::BORDER_PRINTING_PLANE_VALUES.len());
+}
+
+/// #724 build-side correctness oracle (rarity): projecting a printing-space rarity plane up to
+/// card-existence must equal #670's card-space rarity plane for the same int — both mean "this card
+/// has a printing at this rarity." The printing plane for `RARITY_PRINTING_PLANE_INTS[k]` (= k, the
+/// interior rarities 0..4) projects to card plane `PLANE_RARITY + k`. Same real.store + format guard
+/// as the border oracle. `cargo test --release rarity_printing_plane_matches_card_plane_projected --
+/// --ignored --nocapture`
+#[test]
+#[ignore = "#724 rarity-plane oracle diff; needs a freshly-built real.store"]
+fn rarity_printing_plane_matches_card_plane_projected() {
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (rebuild after the #724 rarity build-side change)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild for the bumped ARCHIVE_FORMAT_VERSION");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let rp = &archived.indexes.rarity_printing; // printing-space (#724)
+    let cp = &archived.indexes.planes; // card-space (#670)
+    let wpp_p = super::words_per_plane(n_printings);
+    let wpp_c = super::words_per_plane(n_cards);
+    for (k, int) in super::RARITY_PRINTING_PLANE_INTS.iter().enumerate() {
+        let printing_bits: Vec<u64> = rp.words[k * wpp_p..(k + 1) * wpp_p].iter().map(|w| u64::from(*w)).collect();
+        let projected = super::printing_bits_to_card_bits(&printing_bits, &archived.offsets, n_cards);
+        let start = (super::PLANE_RARITY + k) * wpp_c;
+        let card_bits: Vec<u64> = cp.words[start..start + wpp_c].iter().map(|w| u64::from(*w)).collect();
+        assert_eq!(projected, card_bits, "rarity int {int} (plane {k}): projected-up printing plane != #670 card plane");
+    }
+    eprintln!("OK: {} rarity printing planes project up to match #670's card planes", super::RARITY_PRINTING_PLANE_INTS.len());
+}
+
+/// PR 2a build-cost split: for `usd<50`, which half of `CardRangePopcount`'s build dominates —
+/// scattering the price slice into a printing bitmap, or projecting that to a card-existence bitmap
+/// — and does building the card bitmap *directly* (`printing_to_card[pid]`, one pass, skipping the
+/// intermediate) help? The slice is in price order, so the direct path's `printing_to_card` reads
+/// are random (vs the projection's sequential `offsets` cursor), so it is not obviously a win —
+/// hence measured. Kernel timing over the real slice; same discipline as the other probes.
+#[test]
+#[ignore = "CardRangePopcount build-cost split; needs real.store; cargo test --release card_range_build_cost_split -- --ignored --nocapture"]
+fn card_range_build_cost_split() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 30;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let idx = &archived.indexes.price_usd;
+    let ptc = &archived.indexes.printing_to_card;
+    let offsets = &archived.offsets;
+    // The benched range is `usd<50`: every price below HI_CENTS, over the value-sorted price index.
+    const HI_CENTS: u32 = 5_000;
+    // The low bound is 0 and prices are unsigned, so the slice starts at the front of the index by
+    // definition; `range` still reports it rather than the call site assuming it.
+    let (s, e) = idx.range(0, HI_CENTS);
+    let k = e - s;
+
+    // A: scatter the price slice into a printing bitmap.
+    let mut a = u128::MAX;
+    for it in 0..(WARMUP + ITERS) {
+        let t0 = Instant::now();
+        let pb = super::scatter_bits(idx.range_pids(0, HI_CENTS), n_printings);
+        black_box(&pb);
+        if it >= WARMUP {
+            a = a.min(t0.elapsed().as_nanos());
+        }
+    }
+    // B: project that printing bitmap to a card-existence bitmap (pbits built once, reused).
+    let pbits = super::scatter_bits(idx.range_pids(0, HI_CENTS), n_printings);
+    let mut b = u128::MAX;
+    for it in 0..(WARMUP + ITERS) {
+        let t0 = Instant::now();
+        let cb = super::printing_bits_to_card_bits(&pbits, offsets, n_cards);
+        black_box(&cb);
+        if it >= WARMUP {
+            b = b.min(t0.elapsed().as_nanos());
+        }
+    }
+    // C: build both bitmaps in one pass via printing_to_card (the "direct card bitmap" idea).
+    let mut c = u128::MAX;
+    for it in 0..(WARMUP + ITERS) {
+        let t0 = Instant::now();
+        let mut rp = vec![0u64; n_printings.div_ceil(64)];
+        let mut cb = vec![0u64; n_cards.div_ceil(64)];
+        for t in s..e {
+            let pid = idx.pid_at(t);
+            rp[pid >> 6] |= 1u64 << (pid & 63);
+            let cid = u32::from(ptc[pid]) as usize;
+            cb[cid >> 6] |= 1u64 << (cid & 63);
+        }
+        black_box(&rp);
+        black_box(&cb);
+        if it >= WARMUP {
+            c = c.min(t0.elapsed().as_nanos());
+        }
+    }
+
+    println!("\nusd<50 build cost (k={k} printings, n_cards={n_cards}, min of {ITERS}):");
+    println!("  A scatter -> printing bitmap : {a:>7} ns");
+    println!("  B project -> card bitmap     : {b:>7} ns");
+    println!("  current total (A + B)        : {:>7} ns", a + b);
+    println!("  C direct both, one pass      : {c:>7} ns");
+}
+
+#[test]
+fn printing_range_walk_matches_naive_page() {
+    let leaf = usd_cmp(CmpOp::Lt, 50.0);
+    for seed in 0..16u64 {
+        let data = printing_range_fixture(seed, 200);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        for &sc in &[SortCol::EdhrecRank, SortCol::Cmc] {
+            for &desc in &[false, true] {
+                let perm = archived.indexes.sort_perms.get(sc, desc).expect("perm exists");
+                for &(off, lim) in &[(0usize, 10usize), (0, 100), (5, 20), (50, 50), (300, 25)] {
+                    let got = walk_printing_page(
+                        &QueryCtx::from(archived), &kernel_params(Mode::Printing, sc, desc, lim, off), &leaf, perm,
+                    );
+                    let want = naive_printing_page(archived, &leaf, sc, desc, off, lim);
+                    assert_eq!(page_scryfall_ids(&got), want, "walk seed {seed} desc {desc} off {off} lim {lim}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn printing_range_aligned_page_matches_naive_incl_tie_buckets() {
+    let leaf = usd_cmp(CmpOp::Lt, 50.0);
+    for seed in 0..16u64 {
+        let data = printing_range_fixture(seed, 300);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let idx = &archived.indexes.price_usd;
+        // usd<50 -> cents [0, 5000).
+        let (s, e) = idx.range(0, 5000);
+        let k = e - s;
+        assert!(k > 100, "seed {seed}: matching set must be broad with big tie buckets, got {k}");
+        // total = k = the true match count (independent count over all printings). The fastpath
+        // reports total = k, so pinning k == count pins the reported total.
+        let naive_count = (0..archived.printings.len())
+            .filter(|&pid| FilterExpr::residual_matches(&archived.cards[u32::from(archived.indexes.printing_to_card[pid]) as usize], &archived.printings[pid], &archived.strings, &[&leaf], false))
+            .count();
+        assert_eq!(k, naive_count, "seed {seed}: binary-search k must equal the true match count");
+        for &desc in &[false, true] {
+            // offsets at the start, inside each tie bucket, spanning a boundary, and near the end
+            for &off in &[0, k / 5, k / 2, (3 * k) / 4, k.saturating_sub(30)] {
+                for &lim in &[10usize, 40, 175] {
+                    if off >= k {
+                        continue;
+                    }
+                    let got = aligned_page(idx, 0, 5000, &archived.cards, &archived.printings, &archived.indexes.printing_to_card, desc, off, lim);
+                    let want = naive_printing_page(archived, &leaf, SortCol::PriceUsd, desc, off, lim);
+                    assert_eq!(page_scryfall_ids(&got), want, "aligned seed {seed} desc {desc} off {off} lim {lim} k {k}");
+                }
+            }
+        }
+    }
+}
+
+/// `n` cards, one printing each, all priced $1.00 — so `usd<50` matches every printing and k == n,
+/// exactly dialable across the STREAM_MIN_MATCHES boundary. Distinct edhrec ranks, price index built.
+fn all_priced_fixture(n: usize) -> CardData {
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..n)
+        .map(|i| {
+            let mut c = stub_card(i as u128, 0, &[], &mut vocab);
+            c.edhrec_rank = Some(i as u32);
+            c
+        })
+        .collect();
+    let mut data = store_of(cards, &vec![1usize; n], vocab);
+    for p in data.printings.iter_mut() {
+        p.price_usd = Some(100);
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data
+}
+
+#[test]
+fn printing_range_fastpath_gates_card_walk_at_stream_threshold() {
+    // The card-level walk reproduces run_query_streamed's per-card-contiguous *stream* emission,
+    // which the general path only uses above STREAM_MIN_MATCHES; at or below it the general path
+    // gathers (global sort), ordering full-key ties across cards differently. So the walk must bail
+    // at/below the threshold and fire above it. Aligned (order by usd) matches the gathered path and
+    // is exempt. k == n in this fixture.
+    let stream_min = *STREAM_MIN_MATCHES;
+    for (n, walk_fires) in [(stream_min, false), (stream_min + 16, true)] {
+        let data = all_priced_fixture(n);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let leaf = usd_cmp(CmpOp::Lt, 50.0);
+        let fp = |sc| printing_range_fastpath(&QueryCtx::from(archived), &kernel_params(Mode::Printing, sc, false, 100, 0), &leaf);
+        // Every printing is priced $1 < $50, so the true match count is n; when the fastpath fires
+        // its reported total must equal it (total == k == match count), end to end.
+        match fp(SortCol::EdhrecRank) {
+            Some((total, _)) => {
+                assert!(walk_fires, "card-walk fired below the gate at n={n} (STREAM_MIN={stream_min})");
+                assert_eq!(total, n, "walk total must equal the true match count at n={n}");
+            }
+            None => assert!(!walk_fires, "card-walk should have fired at n={n} (STREAM_MIN={stream_min})"),
+        }
+        let (aligned_total, _) = fp(SortCol::PriceUsd).expect("aligned exempt from stream gate");
+        assert_eq!(aligned_total, n, "aligned total must equal the true match count at n={n}");
+    }
+}
+
+/// #702 router timing: absolute `run_query` (the cost router) latency over the
+/// calibration set × modes × pages, min-of-N, on the real corpus. Used to A/B two
+/// versions of `run_query_routed` against each other (git-stash one, run, restore,
+/// run) since the tree-vs-router bench retired with the tree. Prints per-config ns
+/// and per-mode + grand totals (sum of the min times).
+///
+///     cargo test --release router_timing -- --ignored --nocapture
+#[test]
+#[ignore = "router timing; needs real.store; cargo test --release router_timing -- --ignored --nocapture"]
+fn router_timing() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 50;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let planes = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let modes = ["card", "printing", "artwork"];
+
+    let mut grand: u64 = 0;
+    for &mode in &modes {
+        let uic = mode == "card";
+        let mut mode_total: u64 = 0;
+        for (qlabel, spec) in &calibration_queries() {
+            for &(plabel, limit, offset) in &pages {
+                let mut best = u64::MAX;
+                for it in 0..(WARMUP + ITERS) {
+                    let full = fuzz_bound_filter(spec, archived);
+                    let t0 = Instant::now();
+                    let (_pe, mut res) = split_planes(full, planes, words, uic);
+                    let out = run_query(&QueryCtx::from(archived), &mut res, _pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset);
+                    let dt = t0.elapsed().as_nanos() as u64;
+                    black_box(&out.1);
+                    if it >= WARMUP {
+                        best = best.min(dt);
+                    }
+                }
+                mode_total += best;
+                println!("{qlabel:<22} {mode:>8} {plabel:>7} {best:>10}ns");
+            }
+        }
+        println!("  -> {mode} total: {mode_total}ns\n");
+        grand += mode_total;
+    }
+    println!("GRAND TOTAL (sum of per-config min ns): {grand}");
+}
+
+
+/// #734 step 3: the regex literal-factor extractor must emit ONLY guaranteed factors — a factor absent
+/// from some match would wrongly narrow it away (the walk re-verifies, so over-emitting = false
+/// negatives). Optional/`*`/class/alternation/look boundaries must all cut the run.
+#[test]
+fn regex_required_factors_extracts_only_guaranteed() {
+    use super::regex_required_factors as f;
+    // concatenation with a `.*` gap: both surrounding literals are required (the spaces around the gap
+    // are literal too), the optional `s` is dropped
+    assert_eq!(f("draw .* cards?"), vec!["draw ".to_string(), " card".to_string()]);
+    // anchors are zero-width — the literal between them survives
+    assert_eq!(f("^flying$"), vec!["flying".to_string()]);
+    assert_eq!(f("dragon$"), vec!["dragon".to_string()]);
+    assert_eq!(f("^gob"), vec!["gob".to_string()]);
+    // the `(?i)` we prepend is stripped; factors come back lowercased
+    assert_eq!(f("(?i)Dragon"), vec!["dragon".to_string()]);
+    // optional tail char drops below the ≥3 threshold on its own but keeps the mandatory stem
+    assert_eq!(f("colou?r"), vec!["colo".to_string()]); // "r" alone is <3 → dropped
+    // escaped punctuation is a literal
+    assert_eq!(f(r"\{t\}: add"), vec!["{t}: add".to_string()]);
+    // no guaranteed factor ≥3 → empty (full scan): bare alternation, class-only, short, digit class
+    assert!(f("exile|destroy").is_empty(), "alternation has no OUTER guaranteed factor in pass one");
+    assert!(f("^[aeiou]").is_empty());
+    assert!(f(r"\d+").is_empty());
+    assert!(f("a.b").is_empty(), "no run reaches 3 literal bytes");
+    // a min≥1 repetition of a literal is still guaranteed
+    assert_eq!(f("(?i)aaa+"), vec!["aaa".to_string()]);
+}
+
+/// The arith-tuple key budget is a tripwire for adding a high-cardinality field to
+/// `ArithTupleKey`, which would silently turn the 564-combination scan back into a per-card
+/// scan with extra indirection. Assert both halves: a realistic corpus sits well inside the
+/// budget, and a deliberately near-unique key space blows through it.
+///
+/// `debug_assert` only fires in debug builds, so the panicking half is gated — release runs
+/// skip it rather than failing.
+#[test]
+fn arith_tuple_key_budget_bounds_the_domain() {
+    use rand::SeedableRng;
+    const N: usize = 8_000;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(11);
+    let data = fuzz_store_n(&mut rng, N);
+    let keys = data.indexes.arith_tuple.keys.len();
+    let budget = super::arith_tuple_key_budget(N);
+    assert!(
+        keys <= budget,
+        "corpus-shaped fixture should sit inside the budget: {keys} keys over {N} cards, budget {budget}"
+    );
+    // The guard is only useful if it has real headroom over reality, not if it barely clears.
+    assert!(keys * 2 <= budget, "want >=2x headroom, got {keys} keys against budget {budget}");
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "arith tuple domain blew up")]
+fn arith_tuple_key_budget_catches_a_blown_domain() {
+    // Give every card a distinct cmc/power pair, which is what adding something like
+    // edhrec_rank to the key would effectively do.
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..ARITH_TUPLE_BLOWUP_CARDS)
+        .map(|i| {
+            let mut c = stub_card(i as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some((i % 251) as u8);
+            c.creature_power = Some((i / 251) as i8);
+            c
+        })
+        .collect();
+    let _ = super::build_arith_tuple_index(&cards);
+}
+
+/// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
+/// clears `10*sqrt(n)+32` by a wide margin.
+const ARITH_TUPLE_BLOWUP_CARDS: usize = 6_000;
