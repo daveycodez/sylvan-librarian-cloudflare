@@ -68,11 +68,13 @@ refreshes happen in the background), page HTML carries no card data
 bootstrap page) and error statuses are never cached, and the cache is
 per-deploy-version so releases can't serve stale assets.
 
-Cold-start note: a colo whose DO has evicted pays one wake on its next
-engine query — the store loads from the DO's local SQLite (never R2), and
-the wake duration is logged (`SearchEngine wake: ...`). Warm queries are
-sub-ms of DO CPU. The store is stored raw, deliberately: R2 egress to
-Workers is free while decompress CPU would be metered on every load.
+Cold-start note: users never wait on a store wake. A colo whose DO has
+evicted relays the query to the region's DO (engine-wnam, ...) while
+waking itself in the background — the store loads from the DO's local
+SQLite (never R2), and the wake duration is logged (`SearchEngine wake:
+...`). Warm queries are sub-ms of DO CPU. The store is stored raw,
+deliberately: R2 egress to Workers is free while decompress CPU would be
+metered on every load.
 
 ## Upstream tracking
 

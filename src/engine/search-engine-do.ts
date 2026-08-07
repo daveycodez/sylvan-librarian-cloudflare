@@ -62,8 +62,24 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	// ── RPC surface ────────────────────────────────────────────────────────────
+	//
+	// Every method takes an optional fallbackHint: when this DO is COLD and a
+	// hint is present, it relays the call to the region's DO (engine-<hint>)
+	// and wakes itself in the background — the caller never waits on a wake.
+	// The relay passes NO hint, so a cold regional DO answers after its own
+	// wake rather than relaying further (recursion depth 1 by construction).
 
-	async search(opts: EngineSearchOptions): Promise<EngineSearchResult & { acquireMs: number }> {
+	async search(
+		opts: EngineSearchOptions,
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<EngineSearchResult & { acquireMs: number }> {
+		if (this.shouldRelay(fallbackHint)) {
+			this.wakeInBackground();
+			const relayStart = Date.now();
+			const result = await this.regionStub(fallbackHint).search(opts);
+			console.log(`Cold colo relayed search to engine-${fallbackHint} in ${Date.now() - relayStart}ms`);
+			return result;
+		}
 		// Time the engine acquisition (the wake cost, when there is one) for the
 		// calling isolate's cold-path breakdown. Date.now() only advances across
 		// I/O in Workers, which is exactly what a wake spends: SQLite/R2 reads.
@@ -79,19 +95,61 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/** Both catalogs in one RPC (get_catalog needs both). */
-	async catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+	async catalog(
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+		if (this.shouldRelay(fallbackHint)) {
+			this.wakeInBackground();
+			return this.regionStub(fallbackHint).catalog();
+		}
 		const engine = await this.engine();
 		return { types: await engine.commonCardTypes(), keywords: await engine.commonCardKeywords() };
 	}
 
-	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+	async samplePreferred(
+		numCards: number,
+		fields: string[],
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<Record<string, unknown>[]> {
+		if (this.shouldRelay(fallbackHint)) {
+			this.wakeInBackground();
+			return this.regionStub(fallbackHint).samplePreferred(numCards, fields);
+		}
 		const engine = await this.engine();
 		return engine.samplePreferred(numCards, fields);
 	}
 
-	async size(): Promise<number> {
+	async size(fallbackHint?: DurableObjectLocationHint): Promise<number> {
+		if (this.shouldRelay(fallbackHint)) {
+			this.wakeInBackground();
+			return this.regionStub(fallbackHint).size();
+		}
 		const engine = await this.engine();
 		return engine.size();
+	}
+
+	// ── Cold relay ─────────────────────────────────────────────────────────────
+
+	/** Cold (no engine in this isolate) and permitted to relay. */
+	private shouldRelay(hint?: DurableObjectLocationHint): hint is DurableObjectLocationHint {
+		return hint !== undefined && tryGetLoadedEngine() === null;
+	}
+
+	/** The regional fallback engine's stub, typed like RemoteEngine's. */
+	private regionStub(hint: DurableObjectLocationHint) {
+		return this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(`engine-${hint}`), {
+			locationHint: hint,
+		}) as unknown as SearchEngine;
+	}
+
+	/** Single-flighted wake under waitUntil; failures logged, never thrown. */
+	private wakeInBackground(): void {
+		this.ctx.waitUntil(
+			this.engine().then(
+				() => {},
+				(err) => console.warn(`Background colo wake failed (still relaying): ${err}`),
+			),
+		);
 	}
 
 	// ── Engine acquisition ─────────────────────────────────────────────────────

@@ -9,10 +9,19 @@ import { EngineUnavailableError } from "./types";
  * optional only for one deploy's worth of rolling-update skew (new isolate,
  * old DO); current DO code always sets it. */
 interface SearchEngineStub {
-	search(opts: EngineSearchOptions): Promise<EngineSearchResult & { acquireMs?: number }>;
-	catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
-	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
-	size(): Promise<number>;
+	search(
+		opts: EngineSearchOptions,
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<EngineSearchResult & { acquireMs?: number }>;
+	catalog(
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
+	samplePreferred(
+		numCards: number,
+		fields: string[],
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<Record<string, unknown>[]>;
+	size(fallbackHint?: DurableObjectLocationHint): Promise<number>;
 }
 
 /** Decode the DO's EngineUnavailableError marker back into the real type. */
@@ -34,11 +43,15 @@ export class RemoteEngine implements Engine {
 	/** get_catalog reads both catalogs; one RPC serves both calls. */
 	private catalogOnce: Promise<{ types: Record<string, number>; keywords: Record<string, number> }> | null = null;
 
-	constructor(private readonly stub: SearchEngineStub) {}
+	constructor(
+		private readonly stub: SearchEngineStub,
+		/** Region of the calling request: where a COLD colo DO relays to. */
+		private readonly fallbackHint?: DurableObjectLocationHint,
+	) {}
 
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const rpcStart = Date.now();
-		const { acquireMs, ...result } = await unwrap(this.stub.search(opts));
+		const { acquireMs, ...result } = await unwrap(this.stub.search(opts, this.fallbackHint));
 		// Wake observability: logged only when the DO had to acquire its engine
 		// (acquireMs > 0) — warm queries stay quiet. The gap between the two
 		// numbers is transport + serialization. The field is stripped so the
@@ -50,7 +63,7 @@ export class RemoteEngine implements Engine {
 	}
 
 	private catalog() {
-		this.catalogOnce ??= unwrap(this.stub.catalog());
+		this.catalogOnce ??= unwrap(this.stub.catalog(this.fallbackHint));
 		return this.catalogOnce;
 	}
 
@@ -63,10 +76,10 @@ export class RemoteEngine implements Engine {
 	}
 
 	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return unwrap(this.stub.samplePreferred(numCards, fields));
+		return unwrap(this.stub.samplePreferred(numCards, fields, this.fallbackHint));
 	}
 
 	size(): Promise<number> {
-		return unwrap(this.stub.size());
+		return unwrap(this.stub.size(this.fallbackHint));
 	}
 }

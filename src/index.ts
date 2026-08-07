@@ -3,6 +3,7 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { bootstrapPage } from "./engine/bootstrap-page";
+import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
 import { manifestPollAlarm } from "./engine/store";
@@ -20,12 +21,15 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // DO is placed near its first caller). Isolates never load the store or serve
 // engine queries themselves: they parse, RPC out, and stay tiny. Sharding
 // therefore tracks the traffic distribution (each colo's DO carries that
-// colo's load), and idle colos evict their DO — scale to zero.
+// colo's load), and idle colos evict their DO — scale to zero. The request's
+// REGION rides along as the fallback hint: a cold colo DO relays to the
+// regional DO (engine-wnam, ...) while waking in the background, so an
+// evicted colo never makes a user wait on the ~1s store wake.
 function resolveEngine(request: Request, env: Env, source: { tag: string }): Promise<Engine> {
 	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
 	source.tag = `do-${colo}`;
 	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${colo}`));
-	return Promise.resolve(new RemoteEngine(stub));
+	return Promise.resolve(new RemoteEngine(stub, regionHint(request)));
 }
 
 // Upstream DISALLOWED_QUERY_ARGS: these names are reserved for internal
