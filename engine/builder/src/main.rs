@@ -142,6 +142,16 @@ fn run_import(out_dir: &Path, upload: bool, status: &Arc<Mutex<Status>>) -> Resu
             .put_json("manifest.json", &manifest.to_json())
             .map_err(|e| format!("upload manifest: {e}"))?;
         eprintln!("published {} + manifest.json", manifest.store_key);
+
+        // Old stores accumulate ~70MB/night otherwise. Keep a few for isolates
+        // still mid-swap on the previous manifest; failure here is logged, not
+        // fatal — the publish above already succeeded.
+        set_phase(status, "pruning old stores");
+        match r2_client.prune_old_stores("card-store-", 3) {
+            Ok(deleted) if deleted.is_empty() => eprintln!("prune: nothing to delete"),
+            Ok(deleted) => eprintln!("prune: deleted {}", deleted.join(", ")),
+            Err(e) => eprintln!("prune failed (non-fatal): {e}"),
+        }
     }
     Ok(())
 }

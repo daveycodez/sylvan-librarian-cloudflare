@@ -12,7 +12,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use rusty_s3::actions::CreateMultipartUpload;
+use rusty_s3::actions::{CreateMultipartUpload, ListObjectsV2};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use serde_json::Value;
 
@@ -101,6 +101,40 @@ impl R2Client {
             .send()?;
         Self::check(resp, "PutObject", key)?;
         Ok(())
+    }
+
+    /// List object keys under `prefix`. One page (1000 keys) — far beyond what
+    /// pruning ever sees, since imports prune down to a handful each run.
+    pub fn list_keys(&self, prefix: &str) -> Result<Vec<String>, R2Error> {
+        let mut action = self.bucket.list_objects_v2(Some(&self.creds));
+        action.with_prefix(prefix);
+        let url = action.sign(SIGN_TTL);
+        let resp = Self::check(self.http.get(url).send()?, "ListObjectsV2", prefix)?;
+        let body = resp.text()?;
+        let parsed = ListObjectsV2::parse_response(&body).map_err(|e| R2Error::MultipartResponse(e.to_string()))?;
+        Ok(parsed.contents.into_iter().map(|c| c.key).collect())
+    }
+
+    /// DELETE one object.
+    pub fn delete_object(&self, key: &str) -> Result<(), R2Error> {
+        let url = self.bucket.delete_object(Some(&self.creds), key).sign(SIGN_TTL);
+        Self::check(self.http.delete(url).send()?, "DeleteObject", key)?;
+        Ok(())
+    }
+
+    /// Delete all but the newest `keep` objects under `prefix`, returning the
+    /// deleted keys. Store keys embed a fixed-width unix timestamp
+    /// (`card-store-v{version}-{secs}.store`), so descending lexicographic
+    /// order is newest-first. Called AFTER the manifest publish, so the
+    /// manifest's own store is always among the kept newest.
+    pub fn prune_old_stores(&self, prefix: &str, keep: usize) -> Result<Vec<String>, R2Error> {
+        let mut keys = self.list_keys(prefix)?;
+        keys.sort_unstable_by(|a, b| b.cmp(a));
+        let old: Vec<String> = keys.into_iter().skip(keep).collect();
+        for key in &old {
+            self.delete_object(key)?;
+        }
+        Ok(old)
     }
 
     /// Multipart-upload `reader`'s contents to `key`. Aborts the multipart

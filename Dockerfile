@@ -12,13 +12,15 @@
 
 FROM rust:1.88-slim AS build
 WORKDIR /app
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY vendor/sylvan_librarian/card_engine ./vendor/sylvan_librarian/card_engine
 COPY engine ./engine
-# -A dead_code: the vendored card_engine carries python-feature-only diagnostics
-# that are (correctly) dead in this build; keep deploy logs readable without
-# patching vendor code. Local `cargo build` still surfaces the warnings.
-RUN RUSTFLAGS="-A dead_code" cargo build --profile container -p sylvan-store-builder
+# --locked: build exactly the dependency versions tested locally (without the
+# lockfile, CI re-resolved all deps fresh on every deploy — irreproducible and
+# slower). -A dead_code: the vendored card_engine carries python-feature-only
+# diagnostics that are (correctly) dead in this build; keep deploy logs
+# readable without patching vendor code. Local builds still show the warnings.
+RUN RUSTFLAGS="-A dead_code" cargo build --locked --profile container -p sylvan-store-builder
 
 FROM gcr.io/distroless/cc-debian12
 COPY --from=build /app/target/container/sylvan-store-builder /usr/local/bin/sylvan-store-builder
