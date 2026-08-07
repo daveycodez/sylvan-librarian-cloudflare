@@ -15,10 +15,12 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
    (Workers Builds). The build compiles the wasm engine and the import
    container image automatically.
 2. Set the variables listed in [.env.example](.env.example) (three R2 secrets +
-   the bucket name) under Worker → Settings → Variables. Serving needs only the
-   R2 *binding* — the three secrets are used exclusively by the import
-   container, so if they're missing the symptom is a failed import run (loud,
-   in the container logs), never a dead site.
+   the bucket name) under Worker → Settings → Variables and Secrets — these are
+   **runtime Worker secrets only**; nothing needs to be set as a *build*
+   variable (the build reads no secrets). Serving needs only the R2 *binding* —
+   the three secrets are used exclusively by the import container, so if
+   they're missing the symptom is a failed import run (loud, in the container
+   logs), never a dead site.
 3. Deploy, then open the Worker's URL. The first request bootstraps the card
    index: an import container streams Scryfall bulk data, builds the engine
    store (~70MB), and publishes it to R2 with a version manifest. The page
@@ -107,6 +109,7 @@ bun run check           # biome
 bun run typecheck
 bun run build:wasm      # rebuild wasm engine after touching Rust (pkg is committed)
 bun run seed:local      # rebuild/refresh the local store on demand
+bun run cf-typegen      # regenerate worker-configuration.d.ts after wrangler.jsonc changes
 ```
 
 Local dev matches production behavior with one substitution: the store build

@@ -13,12 +13,12 @@
     "check": "biome check src scripts tests",
     "typecheck": "tsc --noEmit",
     "sync-upstream": "scripts/sync-upstream.sh",
-    "seed:local": "scripts/seed-local.sh"
+    "seed:local": "scripts/seed-local.sh",
+    "cf-typegen": "wrangler types"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.1.2",
     "@cloudflare/containers": "^0.0.28",
-    "@cloudflare/workers-types": "^4.20250801.0",
     "bun-types": "^1.3.14",
     "terser": "^5.49.2",
     "typescript": "^5.9.2",

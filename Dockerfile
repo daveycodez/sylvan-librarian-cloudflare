@@ -11,7 +11,10 @@ COPY Cargo.toml ./
 COPY vendor/sylvan_librarian/card_engine ./vendor/sylvan_librarian/card_engine
 COPY engine ./engine
 # The workspace lists engine/wasm, which needs no compiling here; build only the builder.
-RUN cargo build --release -p sylvan-store-builder
+# -A dead_code: the vendored card_engine carries python-feature-only diagnostics
+# that are (correctly) dead in this build; keep deploy logs readable without
+# patching vendor code. Local `cargo build` still surfaces the warnings.
+RUN RUSTFLAGS="-A dead_code" cargo build --release -p sylvan-store-builder
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
