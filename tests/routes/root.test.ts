@@ -28,9 +28,9 @@ describe("_root without a query", () => {
 		expect(html).not.toContain("%%%SITENAME%%%");
 	});
 
-	test("unusable hosts fall back to MTG Search", async () => {
+	test("every host gets the fixed Sylvan Librarian title (deliberate deviation)", async () => {
 		const res = await testDispatch(makeCtx({ requestHost: "127.0.0.1:8080" }), "/");
-		expect(await res.text()).toContain("<title>MTG Search - Magic: The Gathering Card Search</title>");
+		expect(await res.text()).toContain("<title>Sylvan Librarian - Magic: The Gathering Card Search</title>");
 	});
 
 	test("shared fragments and cache-busted asset URLs are spliced in", async () => {

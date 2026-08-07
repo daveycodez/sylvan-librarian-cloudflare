@@ -12,7 +12,7 @@ import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
 import type { RouteContext } from "./registry";
 import { EngineQueryError, runSearch, SearchBadRequest } from "./search";
-import { hostnameToSiteName } from "./site-name";
+import { SITE_NAME } from "./site-name";
 
 // Keyword parameters of _root(), in signature order (request_host is injected
 // by dispatch, never bound from the query string).
@@ -32,7 +32,7 @@ export async function rootHandler(
 	params: Record<string, string>,
 ): Promise<Response> {
 	const bound = bindParams("APIResource._root", ROOT_SPEC, [], params);
-	const siteName = hostnameToSiteName(ctx.requestHost);
+	const siteName = SITE_NAME;
 	let htmlContent = buildBaseHtml(CRITICAL_CSS, siteName);
 
 	// Cache for 1 hour unless a search is embedded below.
@@ -100,7 +100,7 @@ export function cardHandler(ctx: RouteContext, positionalArgs: string[], params:
 	// The handler ignores the values, but binding still runs: a query param
 	// colliding with a path segment is a 400 upstream (TypeError → HTTPBadRequest).
 	bindParams("APIResource.card", CARD_SPEC, positionalArgs, params);
-	const siteName = hostnameToSiteName(ctx.requestHost);
+	const siteName = SITE_NAME;
 	const html = replaceAllLiteral(buildCardHtml(CRITICAL_CSS), SITE_NAME_PLACEHOLDER, siteName);
 	return new Response(html, { headers: { "content-type": "text/html", ...cacheHeader(3600) } });
 }

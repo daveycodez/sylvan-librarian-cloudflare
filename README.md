@@ -1,5 +1,7 @@
 # sylvan-librarian-cloudflare
 
+**Live demo: [sylvan-librarian.deckgen.workers.dev](https://sylvan-librarian.deckgen.workers.dev)**
+
 [Sylvan Librarian](https://github.com/jbylund/sylvan_librarian) — a Magic: the
 Gathering card search engine — ported to run **entirely on Cloudflare**:
 Workers (serving), R2 (the card index), and a Container (data imports). No VPS,
@@ -82,6 +84,10 @@ The complete list of intentional differences:
 
 - **No silent SQL fallback**: where upstream quietly falls back to Postgres
   when the engine declines a query, this port returns a structured error.
+- **Fixed site title**: pages always say "Sylvan Librarian" instead of
+  upstream's hostname-derived name (which could never produce it on our
+  domains). The derivation port stays intact and tested in
+  `src/routes/site-name.ts`.
 - Postgres-only admin/import routes answer `501`; the container pipeline is
   their replacement. `get_pid` returns `0` (isolates have no pid).
 - `card_is_tags` stays empty, matching upstream's *automated* import (upstream
