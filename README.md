@@ -149,8 +149,8 @@ builder code either way). The container path itself is exercised in production.
 
 Same 10 queries against this deployment, upstream's own
 [sylvan-librarian.com](https://sylvan-librarian.com), and the
-[Scryfall API](https://api.scryfall.com) (2026-08-07, single US residential
-vantage). Per query: one **cold** request (cache miss) then the median of two
+[Scryfall API](https://api.scryfall.com) (2026-08-07, single residential
+vantage in Southern California). Per query: one **cold** request (cache miss) then the median of two
 immediate **warm** repeats; all services keep their production caching —
 that's the point. Each service is measured over one reused HTTP/2 connection,
 the way a browser behaves (an earlier revision of this harness paid a fresh
