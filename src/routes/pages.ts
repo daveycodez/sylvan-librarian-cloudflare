@@ -96,7 +96,7 @@ const CARD_SPEC = [
 ] as const;
 
 /** Serve the per-card page for /card/{set_code}/{collector_number} (upstream card()). */
-export function cardHandler(ctx: RouteContext, positionalArgs: string[], params: Record<string, string>): Response {
+export function cardHandler(_ctx: RouteContext, positionalArgs: string[], params: Record<string, string>): Response {
 	// The handler ignores the values, but binding still runs: a query param
 	// colliding with a path segment is a 400 upstream (TypeError → HTTPBadRequest).
 	bindParams("APIResource.card", CARD_SPEC, positionalArgs, params);
