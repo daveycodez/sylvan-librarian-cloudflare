@@ -2,7 +2,7 @@
 // serving path: isolates parse and RPC here, never loading the store.
 
 import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
-import { reportEngineLoad } from "./shard-controller";
+import { reportEngineLatency, reportEngineLoad } from "./shard-controller";
 import type { Engine, EngineSearchOptions, EngineSearchResult } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -82,11 +82,13 @@ export class RemoteEngine implements Engine {
 		// The DO's queue-depth rider feeds the shard autoscaler; both metadata
 		// fields are stripped so the search envelope never carries them.
 		if (load !== undefined) reportEngineLoad(load);
-		// Wake observability: logged only when the DO had to acquire its engine
-		// (acquireMs > 0) — warm queries stay quiet. The gap between the two
-		// numbers is transport + serialization.
 		if (acquireMs) {
+			// Wake observability: logged only when the DO had to acquire its
+			// engine — and wake-carrying RPCs are excluded from the latency
+			// signal (their wall time is legitimately inflated).
 			console.log(`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO`);
+		} else {
+			reportEngineLatency(Date.now() - rpcStart);
 		}
 		return result;
 	}
