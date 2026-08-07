@@ -31,14 +31,13 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
    the store; Worker isolates hot-swap to the new version without dropping
    queries.
 
-The page title derives from the hostname (upstream's `hostname_to_site_name`),
-so a `*.workers.dev` deployment titles itself "Workers" — point a custom domain
-at the Worker and the title follows it.
-
 ## Architecture
 
 ```
-request ──▶ Worker isolate (auto-scales horizontally with load)
+request ──▶ Workers Cache (regional edge cache in front of the Worker;
+        │   honors the upstream-mirrored Cache-Control on every route —
+        │   hits skip the Worker, and its cold starts, entirely)
+        └─▶ Worker isolate (auto-scales horizontally with load)
               ├─ TS parser: Scryfall syntax → filter tree  (port of hand_parser.py)
               ├─ wasm card_engine: evaluates tree against the in-memory store
               ├─ store: ~70MB rkyv archive, loaded per-isolate from R2 (Cache API),
@@ -56,6 +55,12 @@ cron (nightly) / first-deploy bootstrap
 Queries the engine cannot answer return a structured error — never silently
 empty. Upstream's Postgres-only admin/import endpoints return `501` here; the
 container pipeline replaces them.
+
+Caching notes: `/search` caches for 90s (smaller than the isolates' manifest
+poll, so nightly imports need no purge), page HTML carries no card data
+(client-side fetches stay fresh), `no-store` routes (`/random_search`, the
+bootstrap page) and error statuses are never cached, and the cache is
+per-deploy-version so releases can't serve stale assets.
 
 ## Upstream tracking
 
