@@ -177,7 +177,7 @@ cold at ~751ms median where this run found it warm at 99ms).
 
 Worst single request: **this port 164ms** · upstream 594ms · Scryfall 128ms.
 
-<details>
+<details open>
 <summary>Per-query results (cold / warm, ms)</summary>
 
 | query | this port | sylvan-librarian.com | Scryfall API |
