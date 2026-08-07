@@ -156,22 +156,24 @@ scripts/bench.sh results.tsv
 ```
 
 The TSV columns are service, query, run, HTTP status, total seconds, TTFB
-seconds, payload bytes. Numbers below predate the gzipped-store cold-start
-work, so a rerun should beat the cold column.
+seconds, payload bytes. Expect meaningful cross-run variance in cold columns
+for every service — they measure whatever cache/isolate state each provider
+happens to be in (an earlier run of this same table caught Scryfall's CDN
+cold at ~751ms median where this run found it warm at 99ms).
 
 | query | this port (cold/warm) | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|
-| `t:goblin cmc<3 c:r` | 3554 / 56 | 377 / 393 | 913 / 96 |
-| `o:"draw a card" t:creature f:modern` | 1680 / 52 | 463 / 465 | 1164 / 97 |
-| `kw:flying pow>=4 -c:w` | 50 / 50 | 455 / 457 | 94 / 120 |
-| `t:instant cmc=1 c:u` | 2132 / 47 | 387 / 381 | 651 / 96 |
-| `t:legendary t:elf f:commander` | 3531 / 48 | 466 / 463 | 1145 / 93 |
-| `o:"enters tapped" t:land` | 1906 / 59 | 381 / 383 | 1117 / 94 |
-| `c:wu t:bird` | 3215 / 55 | 403 / 374 | 350 / 93 |
-| `r:mythic t:dragon cmc<=4` | 55 / 49 | 368 / 367 | 73 / 89 |
-| `t:planeswalker c:b f:pioneer` | 113 / 54 | 394 / 375 | 851 / 78 |
-| `t:instant o:damage cmc=1` | 1336 / 54 | 383 / 382 | 575 / 85 |
-| **median** | **1793 / 53** | **391 / 382** | **751 / 94** |
+| `t:goblin cmc<3 c:r` | 82 / 57 | 414 / 375 | 109 / 88 |
+| `o:"draw a card" t:creature f:modern` | 120 / 48 | 453 / 464 | 277 / 103 |
+| `kw:flying pow>=4 -c:w` | 1751 / 52 | 453 / 455 | 94 / 100 |
+| `t:instant cmc=1 c:u` | 2170 / 51 | 382 / 379 | 111 / 86 |
+| `t:legendary t:elf f:commander` | 1989 / 63 | 547 / 492 | 83 / 88 |
+| `o:"enters tapped" t:land` | 1884 / 51 | 388 / 384 | 104 / 143 |
+| `c:wu t:bird` | 2472 / 54 | 371 / 373 | 66 / 71 |
+| `r:mythic t:dragon cmc<=4` | 1290 / 54 | 375 / 370 | 68 / 63 |
+| `t:planeswalker c:b f:pioneer` | 1487 / 51 | 386 / 389 | 74 / 73 |
+| `t:instant o:damage cmc=1` | 1402 / 51 | 377 / 386 | 171 / 82 |
+| **median** | **1619 / 52** | **387 / 385** | **99 / 87** |
 | median payload | ~34 KB | ~34 KB | ~813 KB |
 
 Reading the numbers honestly:
@@ -180,11 +182,13 @@ Reading the numbers honestly:
   Cloudflare colo, since edge cache hits and warm-isolate engine queries
   (0.2–3ms of compute) are both effectively free. ~7× upstream, ~2× Scryfall's
   CDN-warm, with 24× less payload than Scryfall's full card objects.
-- **Our cold column is bimodal**: 50–113ms when the request reaches an
-  already-warm isolate, 1.3–3.5s when it lands on a cold one and pays the
-  one-time ~70MB store load from R2. Real traffic keeps isolates warm and
-  Workers Cache absorbs repeats, so this cost concentrates on the first
-  request per colo after idle — but it is the architecture's honest trade.
+- **Our cold column is bimodal**: ~80–120ms when the request reaches an
+  already-warm isolate, ~1.3–2.5s when it lands on a cold one and pays the
+  one-time store load (28MB gzipped from R2, decompressed in-flight into
+  wasm). Real traffic keeps isolates warm, and stale-while-revalidate serves
+  any previously-seen query instantly while refreshing — so this cost
+  concentrates on never-seen queries hitting idle colos. It is the
+  architecture's honest trade.
 - **Upstream is impressively consistent** (~370–460ms always): a single
   always-warm origin, so no cold starts ever — and no edge, so no 53ms
   either. The two architectures trade tails for medians.
