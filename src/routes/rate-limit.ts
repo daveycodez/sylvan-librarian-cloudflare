@@ -35,24 +35,31 @@ export async function isTrustedRequest(env: Env, request: Request): Promise<bool
 }
 
 /**
- * Enforce the per-IP limit. Returns null to proceed, or the 429 response.
- * Binding absent (older local simulators) = fail open: availability over
- * throttling for a protection feature.
+ * Enforce the per-IP limit. Returns the outcome (surfaced in a diagnostic
+ * response header) and the 429 response when limited. Binding absent (older
+ * local simulators) = fail open: availability over throttling for a
+ * protection feature.
  */
-export async function enforceRateLimit(env: Env, request: Request): Promise<Response | null> {
+export async function enforceRateLimit(
+	env: Env,
+	request: Request,
+): Promise<{ outcome: "absent" | "allowed" | "limited"; response: Response | null }> {
 	const limiter = (env as { SEARCH_RATE_LIMITER?: RateLimit }).SEARCH_RATE_LIMITER;
-	if (!limiter) return null;
+	if (!limiter) return { outcome: "absent", response: null };
 	const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
 	const { success } = await limiter.limit({ key: ip });
-	if (success) return null;
-	return new Response(
-		JSON.stringify({
-			title: "Too Many Requests",
-			description: "Rate limit exceeded for this address; retry shortly.",
-		}),
-		{
-			status: 429,
-			headers: { "content-type": "application/json", "Retry-After": "10" },
-		},
-	);
+	if (success) return { outcome: "allowed", response: null };
+	return {
+		outcome: "limited",
+		response: new Response(
+			JSON.stringify({
+				title: "Too Many Requests",
+				description: "Rate limit exceeded for this address; retry shortly.",
+			}),
+			{
+				status: 429,
+				headers: { "content-type": "application/json", "Retry-After": "10" },
+			},
+		),
+	};
 }

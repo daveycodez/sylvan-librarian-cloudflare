@@ -86,9 +86,11 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	// Cached responses replay the header from generation time; pair it with
 	// cf-cache-status to distinguish edge cache hits.
 	const engineSource = { tag: "" };
+	const rateLimitOutcome = { tag: "" };
 	const finish = (response: Response): Response => {
 		const out = securityHeaders(response);
 		if (engineSource.tag) out.headers.set("x-sylvan-engine", engineSource.tag);
+		if (rateLimitOutcome.tag) out.headers.set("x-sylvan-rl", rateLimitOutcome.tag);
 		return out;
 	};
 
@@ -97,7 +99,8 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		// the trusted key (server-to-server callers on shared egress IPs) skip
 		// it. Cache hits never reach this code at all.
 		if (isRateLimitedRoute(resolved.key, params) && !(await isTrustedRequest(env, request))) {
-			const limited = await enforceRateLimit(env, request);
+			const { outcome, response: limited } = await enforceRateLimit(env, request);
+			rateLimitOutcome.tag = outcome;
 			if (limited) return finish(limited);
 		}
 
