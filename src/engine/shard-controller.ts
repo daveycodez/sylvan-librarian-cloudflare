@@ -31,24 +31,27 @@
 //    warm-path overload. Wake/relay-carrying samples are excluded by the
 //    caller so revivals don't fake an overload.
 
+// ██ TEST-ONLY THRESHOLDS — hair-trigger values so a modest synthetic load
+// ██ visibly opens and folds shards. REVERT before real traffic. Production
+// ██ values in trailing comments.
 /** A response reporting this many already-executing searches counts as queuing. */
 const EXPAND_DEPTH = 2;
 /** Queued samples within EXPAND_WINDOW_MS needed to step up. */
 const EXPAND_SAMPLES = 3;
 const EXPAND_WINDOW_MS = 15_000;
-const EXPAND_COOLDOWN_MS = 30_000;
+const EXPAND_COOLDOWN_MS = 10_000; // production: 30_000
 /** No sample with any queue depth for this long steps the fan-out down. */
-const CONTRACT_IDLE_MS = 10 * 60_000;
-const CONTRACT_COOLDOWN_MS = 60_000;
+const CONTRACT_IDLE_MS = 2 * 60_000; // production: 10 * 60_000
+const CONTRACT_COOLDOWN_MS = 15_000; // production: 60_000
 const DEFAULT_MAX_SHARDS = 8;
 
 /** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing. */
-const LATENCY_FLOOR_MULT = 3;
-const LATENCY_ABS_MS = 75;
+const LATENCY_FLOOR_MULT = 1.2; // production: 3
+const LATENCY_ABS_MS = 5; // production: 75
 /** Consecutive breaching reports needed to step up (EWMA already smooths). */
-const LATENCY_BREACHES_TO_EXPAND = 5;
+const LATENCY_BREACHES_TO_EXPAND = 2; // production: 5
 /** Don't judge latency until the floor has seen this many samples. */
-const LATENCY_MIN_SAMPLES = 20;
+const LATENCY_MIN_SAMPLES = 5; // production: 20
 
 let activeShards = 1;
 let configuredMax = DEFAULT_MAX_SHARDS;
@@ -63,6 +66,8 @@ let floorEwma = 0;
 let fastEwma = 0;
 let latencySamples = 0;
 let latencyBreaches = 0;
+/** A just-opened shard awaiting its decision-time warm ping (see takeWarmTarget). */
+let pendingWarmShard: number | null = null;
 
 /** Feed one response's reported queue depth back into the controller. */
 export function reportEngineLoad(depth: number): void {
@@ -75,6 +80,7 @@ export function reportEngineLoad(depth: number): void {
 		activeShards += 1;
 		lastExpandAt = now;
 		queuedAt = [];
+		pendingWarmShard = activeShards - 1;
 		console.log(`Shard controller: expanded to ${activeShards} shards (sustained queue depth)`);
 	}
 }
@@ -114,10 +120,25 @@ export function reportEngineLatency(rpcMs: number): void {
 		activeShards += 1;
 		lastExpandAt = now;
 		latencyBreaches = 0;
+		pendingWarmShard = activeShards - 1;
 		console.log(
 			`Shard controller: expanded to ${activeShards} shards (rpc ${fastEwma.toFixed(0)}ms vs floor ${floorEwma.toFixed(0)}ms)`,
 		);
 	}
+}
+
+/**
+ * The just-opened shard index, handed out exactly once: the caller fires a
+ * fire-and-forget warm ping so the shard's wake starts at DECISION time, not
+ * at its first real request — and since a cold shard relays the ping, the
+ * regional fallback gets touched (and woken, if evicted) in the same motion.
+ * Routing never waits on this: the relay serves the shard's early traffic
+ * regardless, so surge relief still begins on the next request.
+ */
+export function takeWarmTarget(): number | null {
+	const target = pendingWarmShard;
+	pendingWarmShard = null;
+	return target;
 }
 
 /**
