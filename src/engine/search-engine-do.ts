@@ -41,8 +41,10 @@ function rethrowForRpc(err: unknown): never {
 	throw err;
 }
 
-/** SQLite rows stay well under the 2MB per-value cap. */
-const PERSIST_CHUNK_BYTES = 1 << 20;
+/** Just under the 2MB SQLite per-value cap: fewer rows to write on persist
+ * and read back on wake. The read path accepts any chunking, so stores
+ * persisted at an older chunk size keep working until their next repersist. */
+const PERSIST_CHUNK_BYTES = 1_900_000;
 
 export class SearchEngine extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -62,10 +64,16 @@ export class SearchEngine extends DurableObject<Env> {
 
 	// ── RPC surface ────────────────────────────────────────────────────────────
 
-	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
+	async search(opts: EngineSearchOptions): Promise<EngineSearchResult & { acquireMs: number }> {
+		// Time the engine acquisition (the wake cost, when there is one) for the
+		// calling isolate's cold-path breakdown. Date.now() only advances across
+		// I/O in Workers, which is exactly what a wake spends: SQLite/R2 reads.
+		// Warm calls report ~0.
+		const acquireStart = Date.now();
 		const engine = await this.engine();
+		const acquireMs = Date.now() - acquireStart;
 		try {
-			return await engine.search(opts);
+			return { ...(await engine.search(opts)), acquireMs };
 		} catch (err) {
 			rethrowForRpc(err);
 		}
@@ -100,7 +108,12 @@ export class SearchEngine extends DurableObject<Env> {
 			const meta = this.sqliteMeta();
 			if (meta) {
 				try {
+					const wakeStart = Date.now();
 					const engine = await adoptStoreFromChunks(meta, this.sqliteChunks(meta.chunk_count));
+					console.log(
+						`SearchEngine wake: adopted ${meta.store_key} from SQLite ` +
+							`(${meta.store_bytes} bytes, ${meta.chunk_count} chunks) in ${Date.now() - wakeStart}ms`,
+					);
 					this.ctx.waitUntil(this.freshen());
 					return engine;
 				} catch (err) {
@@ -109,7 +122,9 @@ export class SearchEngine extends DurableObject<Env> {
 			}
 
 			// First boot (or corrupt local copy): R2 path, then persist locally.
+			const wakeStart = Date.now();
 			const engine = await getEngine(this.env, this.ctx);
+			console.log(`SearchEngine wake: loaded store from R2 in ${Date.now() - wakeStart}ms (no usable local copy)`);
 			this.ctx.waitUntil(this.persistCurrent());
 			return engine;
 		} catch (err) {

@@ -5,9 +5,11 @@ import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
 import type { Engine, EngineSearchOptions, EngineSearchResult } from "./types";
 import { EngineUnavailableError } from "./types";
 
-/** Structural stub type: the SearchEngine DO's RPC surface. */
+/** Structural stub type: the SearchEngine DO's RPC surface. `acquireMs` is
+ * optional only for one deploy's worth of rolling-update skew (new isolate,
+ * old DO); current DO code always sets it. */
 interface SearchEngineStub {
-	search(opts: EngineSearchOptions): Promise<EngineSearchResult>;
+	search(opts: EngineSearchOptions): Promise<EngineSearchResult & { acquireMs?: number }>;
 	catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
 	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
 	size(): Promise<number>;
@@ -34,8 +36,17 @@ export class RemoteEngine implements Engine {
 
 	constructor(private readonly stub: SearchEngineStub) {}
 
-	search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return unwrap(this.stub.search(opts));
+	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
+		const rpcStart = Date.now();
+		const { acquireMs, ...result } = await unwrap(this.stub.search(opts));
+		// Cold-path observability (only cold isolates come through here): the
+		// gap between the two numbers is transport + serialization; acquireMs is
+		// the DO waking its engine (0 when it was already warm). The field is
+		// stripped so the search envelope stays byte-identical to the local path.
+		console.log(
+			`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs ?? 0}ms engine acquisition in the DO`,
+		);
+		return result;
 	}
 
 	private catalog() {
