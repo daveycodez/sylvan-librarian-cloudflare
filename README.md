@@ -110,6 +110,19 @@ The complete list of intentional differences:
   instantly while refreshing in the background, so repeat queries never pay a
   cold isolate start. Staleness is bounded by one nightly import cycle;
   upstream sends plain `max-age=90`.
+- **Built-in per-IP rate limit** on the engine-computing routes (`/search`,
+  `/random_search`, the SSR root with a query): 100 requests/10s per IP via
+  the Workers rate-limiting binding, answered with a 429 + `Retry-After`.
+  Upstream has none (it sits on a private VPS); this ships in the repo so any
+  clone is wallet-protected on `workers.dev` by default — a single abusive IP
+  stays within the plan's included request quota. Cache hits never count
+  (they are served before the Worker runs), so crowds of repeat queries and
+  many users behind one shared IP are unaffected. Tune it in one place in
+  `wrangler.jsonc`; server-to-server callers bypass it with the optional
+  `TRUSTED_API_KEY` secret + `x-sylvan-api-key` header (see .env.example).
+  Note the honest boundary: this caps engine/CPU abuse; blocking the
+  per-request invocation fee of a mega-flood requires zone WAF rules on a
+  custom domain — the two layers compose.
 - Postgres-only admin/import routes answer `501`; the container pipeline is
   their replacement. `get_pid` returns `0` (isolates have no pid).
 - `card_is_tags` stays empty, matching upstream's *automated* import (upstream

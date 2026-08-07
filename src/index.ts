@@ -11,6 +11,7 @@ import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
 import { buildRoutesListing, routes } from "./routes";
 import { httpError, securityHeaders } from "./routes/http";
+import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest } from "./routes/rate-limit";
 
 export { ImportCoordinator, SearchEngine };
 
@@ -92,6 +93,14 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	};
 
 	try {
+		// Per-IP rate limit on engine-computing routes only; requests carrying
+		// the trusted key (server-to-server callers on shared egress IPs) skip
+		// it. Cache hits never reach this code at all.
+		if (isRateLimitedRoute(resolved.key, params) && !(await isTrustedRequest(env, request))) {
+			const limited = await enforceRateLimit(env, request);
+			if (limited) return finish(limited);
+		}
+
 		const response = await entry.handler(
 			{
 				env,
