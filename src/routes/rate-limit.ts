@@ -43,7 +43,13 @@ export async function isTrustedRequest(env: Env, request: Request): Promise<bool
 export async function enforceRateLimit(
 	env: Env,
 	request: Request,
-): Promise<{ outcome: "absent" | "allowed" | "limited"; response: Response | null }> {
+): Promise<{ outcome: "absent" | "off" | "allowed" | "limited"; response: Response | null }> {
+	// Runtime kill switch (dashboard var, no redeploy). The limit/period
+	// NUMBERS are deploy-time binding config and can only live in
+	// wrangler.jsonc — a platform constraint, not a choice.
+	if ((env as { RATE_LIMIT_ENABLED?: string }).RATE_LIMIT_ENABLED === "false") {
+		return { outcome: "off", response: null };
+	}
 	const limiter = (env as { SEARCH_RATE_LIMITER?: RateLimit }).SEARCH_RATE_LIMITER;
 	if (!limiter) return { outcome: "absent", response: null };
 	const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
