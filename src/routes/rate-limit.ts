@@ -73,7 +73,7 @@ export function isRateLimitedRoute(routeKey: string, params: Record<string, stri
 export async function isTrustedRequest(env: Env, request: Request): Promise<boolean> {
 	const secret = (env as { TRUSTED_API_KEY?: string }).TRUSTED_API_KEY;
 	if (!secret) return false;
-	const presented = request.headers.get("x-sylvan-api-key");
+	const presented = request.headers.get("X-API-Key");
 	if (!presented) return false;
 	const enc = new TextEncoder();
 	const a = enc.encode(secret);

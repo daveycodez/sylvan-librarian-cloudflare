@@ -47,6 +47,13 @@ request ──▶ Workers Cache (regional edge cache in front of the Worker;
               ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in
               │   memory; store persisted in its embedded SQLite so wake-ups
               │   never wait on R2, hot-swapped when the R2 manifest advances
+              ├─ autoscaling: every response reports the DO's queue depth;
+              │   sustained depth fans the colo out to engine-<colo>-1..N
+              │   (cap 8, SHARDS_MAX var) at zero request-path cost, and ten
+              │   idle minutes fold it back — surplus shards just evict
+              ├─ resilience: transient DO errors (deploy resets, storage
+              │   resets, network blips) are runtime-flagged retryable and
+              │   retried, never surfaced as 500s
               └─ UI: upstream's static assets, served with upstream's cache headers
 
 cron (nightly) / first-deploy bootstrap
@@ -128,7 +135,7 @@ The complete list of intentional differences:
   tunes the allowance. Cache hits never count (served before the Worker
   runs), so repeat queries and crowds behind shared IPs are unaffected.
   Server-to-server callers bypass with the optional `TRUSTED_API_KEY` secret
-  + `x-sylvan-api-key` header (see .env.example). The `x-sylvan-rl` response
+  + `X-API-Key` header (see .env.example). The `x-sylvan-rl` response
   header reports the limiter's verdict. This caps engine/CPU abuse; blocking
   a mega-flood's per-invocation fees still needs zone WAF rules on a custom
   domain — the layers compose.
@@ -201,47 +208,49 @@ cold at ~751ms median where this run found it warm at 99ms).
 
 | | cold (cache miss) | warm (repeat) | payload |
 |---|---|---|---|
-| **this port (Cloudflare)** | **22ms** | **20ms** | **~34 KB** |
-| sylvan-librarian.com | 103ms — 4.7× slower | 100ms — 5× slower | ~34 KB |
-| Scryfall API | 30ms — 1.4× slower | 31ms — 1.6× slower | ~813 KB — 24× larger |
+| **this port (Cloudflare)** | **30ms** | **29ms** | **~34 KB** |
+| Scryfall API | 56ms — 1.9× slower | 56ms — 1.9× slower | ~813 KB — 24× larger |
+| sylvan-librarian.com | 106ms — 3.5× slower | 107ms — 3.7× slower | ~34 KB |
 
-Worst single request: **this port (Cloudflare) 54ms** · upstream 402ms · Scryfall 85ms.
+Worst single request: **this port (Cloudflare) 106ms** · Scryfall 323ms · upstream 434ms.
 
 <details open>
 <summary>Per-query results (cold / warm, ms)</summary>
 
 | query | this port (Cloudflare) | sylvan-librarian.com | Scryfall API |
 |---|---|---|---|
-| `t:goblin cmc<3 c:r` | 54 / 18 | 402 / 98 | 85 / 36 |
-| `o:"draw a card" t:creature f:modern` | 19 / 21 | 101 / 99 | 26 / 38 |
-| `kw:flying pow>=4 -c:w` | 19 / 20 | 102 / 103 | 30 / 33 |
-| `t:instant cmc=1 c:u` | 24 / 19 | 103 / 100 | 31 / 29 |
-| `t:legendary t:elf f:commander` | 22 / 21 | 103 / 101 | 29 / 28 |
-| `o:"enters tapped" t:land` | 21 / 21 | 104 / 99 | 27 / 38 |
-| `c:wu t:bird` | 23 / 20 | 102 / 97 | 36 / 24 |
-| `r:mythic t:dragon cmc<=4` | 22 / 22 | 103 / 96 | 26 / 21 |
-| `t:planeswalker c:b f:pioneer` | 25 / 19 | 103 / 101 | 28 / 22 |
-| `t:instant o:damage cmc=1` | 19 / 20 | 105 / 103 | 32 / 35 |
+| `t:goblin cmc<3 c:r` | 99 / 24 | 434 / 117 | 158 / 90 |
+| `o:"draw a card" t:creature f:modern` | 30 / 39 | 106 / 108 | 144 / 100 |
+| `kw:flying pow>=4 -c:w` | 34 / 66 | 198 / 107 | 49 / 187 |
+| `t:instant cmc=1 c:u` | 29 / 30 | 102 / 105 | 64 / 43 |
+| `t:legendary t:elf f:commander` | 29 / 27 | 111 / 106 | 39 / 68 |
+| `o:"enters tapped" t:land` | 33 / 30 | 103 / 104 | 117 / 41 |
+| `c:wu t:bird` | 25 / 27 | 104 / 104 | 30 / 38 |
+| `r:mythic t:dragon cmc<=4` | 26 / 24 | 99 / 101 | 45 / 35 |
+| `t:planeswalker c:b f:pioneer` | 106 / 30 | 105 / 110 | 47 / 83 |
+| `t:instant o:damage cmc=1` | 26 / 25 | 107 / 110 | 124 / 41 |
 
 </details>
 
 Reading the numbers honestly:
 
-- **~20ms flat** — one round-trip to the nearest Cloudflare colo; edge cache
-  hits and warm-engine queries (0.2–3ms of compute) are both effectively
-  free, so cold and warm are indistinguishable. 24× less payload than
-  Scryfall's full card objects.
-- **No cold tail**: a cache-miss on a cold isolate is answered by the
-  regional warm-engine Durable Object while the isolate warms in the
-  background — the worst cell in the table is 54ms. Before the hybrid, the
-  same probe showed 1.3–3.5s spikes whenever a request landed on a cold
-  machine.
-- **Upstream's honest number is ~100ms** — a single always-warm origin, so
+- **~30ms flat, cold indistinguishable from warm** — one round-trip to the
+  nearest Cloudflare colo. Edge cache hits and warm colo-DO queries (0.2–3ms
+  of compute, a same-building RPC hop) cost about the same, so cache misses
+  don't show. 24× less payload than Scryfall's full card objects.
+- **No cold tail**: a cache-miss in a colo whose engine DO has evicted is
+  relayed to the coast's regional DO while the colo DO wakes in the
+  background — the worst cell in the table is 106ms. The same probe against
+  an earlier architecture (per-isolate engine loading) showed 849ms–3.5s
+  spikes whenever a request landed on a cold machine; a benchmark run
+  minutes after a deploy (every DO reset, versioned edge cache empty — the
+  system's worst case) still tops out around 300ms.
+- **Upstream's honest number is ~105ms** — a single always-warm origin, so
   never a cold start, but every request pays the trip to that one origin
-  (plus a first-connection handshake, visible in its 402ms worst cell).
-- Scryfall's numbers are its CDN serving cached responses (fast and steady);
-  ours are live engine computation per cache-miss. We edge it on both
-  columns from this vantage, but their API serves a far richer card object.
+  (plus a first-connection handshake, visible in its 434ms worst cell).
+- Scryfall's numbers are its CDN serving cached responses; ours are live
+  engine computation per cache-miss. We beat it on every column from this
+  vantage, but their API serves a far richer card object.
 
 ## License
 
