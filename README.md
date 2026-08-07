@@ -15,7 +15,10 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
    (Workers Builds). The build compiles the wasm engine and the import
    container image automatically.
 2. Set the variables listed in [.env.example](.env.example) (three R2 secrets +
-   the bucket name) under Worker → Settings → Variables.
+   the bucket name) under Worker → Settings → Variables. Serving needs only the
+   R2 *binding* — the three secrets are used exclusively by the import
+   container, so if they're missing the symptom is a failed import run (loud,
+   in the container logs), never a dead site.
 3. Deploy, then open the Worker's URL. The first request bootstraps the card
    index: an import container streams Scryfall bulk data, builds the engine
    store (~70MB), and publishes it to R2 with a version manifest. The page
@@ -23,6 +26,10 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
    UI works. A nightly cron (11:17 UTC, after Scryfall's bulk refresh) rebuilds
    the store; Worker isolates hot-swap to the new version without dropping
    queries.
+
+The page title derives from the hostname (upstream's `hostname_to_site_name`),
+so a `*.workers.dev` deployment titles itself "Workers" — point a custom domain
+at the Worker and the title follows it.
 
 ## Architecture
 
@@ -65,7 +72,29 @@ Three-way-merges upstream into `vendor/`, updates the pin, and lists any
 changed files whose behavior is re-implemented here (parser, transform,
 routes) so those ports get re-reviewed and their parity fixtures regenerated.
 
+## Deviations from upstream
+
+Everything user-visible mirrors upstream byte-for-byte (the parser is gated on
+100% tree agreement with the Python parser across upstream's own test corpus).
+The complete list of intentional differences:
+
+- **No silent SQL fallback**: where upstream quietly falls back to Postgres
+  when the engine declines a query, this port returns a structured error.
+- Postgres-only admin/import routes answer `501`; the container pipeline is
+  their replacement. `get_pid` returns `0` (isolates have no pid).
+- `card_is_tags` stays empty, matching upstream's *automated* import (upstream
+  only fills it via a manual admin route).
+- HTML minification is off (upstream's own default configuration).
+- Engine timing fields read `0` on wasm (Workers freeze clocks during CPU work).
+
 ## Development
+
+Prerequisites: [bun](https://bun.sh), and a Rust toolchain (1.88+) for the
+store builder that `bun dev`'s first run compiles. Touching the Rust engine
+additionally needs `wasm-pack` + the `wasm32-unknown-unknown` target
+(`bun run build:wasm` — the built pkg is committed, so TS-only work never
+needs Rust). Regenerating parser fixtures (`scripts/export-parser-fixtures.py`)
+needs `python3`.
 
 ```bash
 bun install
