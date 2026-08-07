@@ -11,12 +11,16 @@
 // Counting lives in a REGIONAL RateLimiter Durable Object (token-bucket
 // pattern from Cloudflare's rules-of-durable-objects docs): one instance per
 // continent, location-hinted next to its callers like the SearchEngine DOs,
-// holding all of its region's per-IP buckets in one in-memory Map. Regional
-// (not per-IP) deliberately: per-IP instances measured ~80ms per check with
-// 700ms wake outliers — a far-flung DO per new IP — while a regional
-// instance stays warm on aggregate traffic and costs a ~5-20ms nearby hop.
-// Chosen after the Workers rate-limiting *binding* measured as barely
-// enforcing (per-isolate eventually-consistent counters).
+// holding all of its region's per-IP buckets in one in-memory Map.
+//
+// Enforcement is ASYNCHRONOUS, deliberately: awaiting the DO check measured
+// ~70ms added per cache-miss request (DO RPC is a regional hop, not a colo
+// hop). Instead the request is served immediately while the check reports in
+// the background; when the DO rules an IP over-limit, this isolate caches a
+// block-until timestamp and answers 429 from memory — zero added latency,
+// enforcement within ~one round trip of a violation, a few dozen grace
+// requests for a fresh burst. (The Workers rate-limiting *binding* was tried
+// first and measured as barely enforcing at all.)
 
 import { DurableObject } from "cloudflare:workers";
 import { regionHint } from "../engine/region";
@@ -95,17 +99,23 @@ export async function isTrustedRequest(env: Env, request: Request): Promise<bool
 	return crypto.subtle.timingSafeEqual(a, b);
 }
 
+/** Per-isolate cache of DO verdicts: ip -> blocked-until epoch ms. */
+const blockedUntil = new Map<string, number>();
+/** A 429'd IP stays blocked in this isolate for one full refill window. */
+const BLOCK_MS = PERIOD_SECONDS * 1000;
+
 /**
- * Enforce the per-IP limit via the per-IP RateLimiter DO. Returns the outcome
- * (surfaced in the x-sylvan-rl response header) and the 429 when limited.
- * RATE_LIMIT_ENABLED="false" switches enforcement off at runtime;
- * RATE_LIMIT_PER_10S overrides the default allowance — both plain vars,
- * changeable in the dashboard without a redeploy.
+ * Enforce the per-IP limit — without awaiting the DO. The local verdict
+ * cache answers instantly; the regional DO check runs via waitUntil and
+ * blocks the IP from the NEXT request onward when it rules over-limit.
+ * RATE_LIMIT_ENABLED="true" opts in (unset = off); RATE_LIMIT_PER_10S tunes
+ * the allowance — both runtime vars, changeable without a redeploy.
  */
-export async function enforceRateLimit(
+export function enforceRateLimit(
 	env: Env,
 	request: Request,
-): Promise<{ outcome: "off" | "allowed" | "limited"; response: Response | null }> {
+	waitUntil: (p: Promise<unknown>) => void,
+): { outcome: "off" | "allowed" | "limited"; response: Response | null } {
 	const cfg = env as { RATE_LIMIT_ENABLED?: string; RATE_LIMIT_PER_10S?: string };
 	// Opt-in: enforcement only when RATE_LIMIT_ENABLED=true is set (env var /
 	// dashboard). Unset = off — a clone does nothing surprising by default.
@@ -113,21 +123,38 @@ export async function enforceRateLimit(
 	const limit = Math.max(1, Number.parseInt(cfg.RATE_LIMIT_PER_10S ?? "", 10) || DEFAULT_LIMIT_PER_10S);
 
 	const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+	const now = Date.now();
+	const until = blockedUntil.get(ip);
+	if (until !== undefined && now < until) {
+		return {
+			outcome: "limited",
+			response: new Response(
+				JSON.stringify({
+					title: "Too Many Requests",
+					description: "Rate limit exceeded for this address; retry shortly.",
+				}),
+				{
+					status: 429,
+					headers: { "content-type": "application/json", "Retry-After": "10" },
+				},
+			),
+		};
+	}
+	if (until !== undefined) blockedUntil.delete(ip);
+
+	// Background verdict: never on the request path. Errors are logged, not
+	// thrown — a broken limiter must not break search.
 	const hint = regionHint(request);
 	const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(`limiter-${hint}`), { locationHint: hint });
-	const allowed = await stub.check(ip, limit);
-	if (allowed) return { outcome: "allowed", response: null };
-	return {
-		outcome: "limited",
-		response: new Response(
-			JSON.stringify({
-				title: "Too Many Requests",
-				description: "Rate limit exceeded for this address; retry shortly.",
+	waitUntil(
+		stub
+			.check(ip, limit)
+			.then((allowed) => {
+				if (!allowed) blockedUntil.set(ip, Date.now() + BLOCK_MS);
+			})
+			.catch((err) => {
+				console.warn(`Rate-limit check failed (fail open): ${err}`);
 			}),
-			{
-				status: 429,
-				headers: { "content-type": "application/json", "Retry-After": "10" },
-			},
-		),
-	};
+	);
+	return { outcome: "allowed", response: null };
 }

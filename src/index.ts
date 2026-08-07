@@ -90,7 +90,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		// the trusted key (server-to-server callers on shared egress IPs) skip
 		// it. Cache hits never reach this code at all.
 		if (isRateLimitedRoute(resolved.key, params) && !(await isTrustedRequest(env, request))) {
-			const { outcome, response: limited } = await enforceRateLimit(env, request);
+			const { outcome, response: limited } = enforceRateLimit(env, request, (p) => ctx.waitUntil(p));
 			rateLimitOutcome.tag = outcome;
 			if (limited) return finish(limited);
 		}
