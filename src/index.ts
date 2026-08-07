@@ -3,10 +3,9 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { bootstrapPage } from "./engine/bootstrap-page";
-import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
-import { getEngine, manifestPollAlarm, tryGetLoadedEngine, warmInBackground } from "./engine/store";
+import { manifestPollAlarm } from "./engine/store";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
@@ -16,28 +15,16 @@ import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } f
 
 export { ImportCoordinator, RateLimiter, SearchEngine };
 
-// Hybrid engine routing: a warm isolate answers locally (full horizontal
-// scale); a cold isolate forwards to its REGION's session-warm SearchEngine
-// DO while warming itself in the background. One DO per location hint,
-// created near the traffic that names it.
-//
-// Self-warming is LAZY: only the second engine request an isolate sees starts
-// the ~1s-of-CPU background store load. A keystroke burst fans out across
-// fresh isolates (the runtime routes around busy ones), and eagerly warming
-// every one of them multiplied that cost for isolates that would never see a
-// second request; one-shot isolates now just ride the DO (~35-55ms).
-let coldEngineRequests = 0;
-
-function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
-	const local = tryGetLoadedEngine();
-	if (local) {
-		source.tag = "isolate";
-		return getEngine(env, ctx); // resolves immediately + background staleness check
-	}
-	if (++coldEngineRequests >= 2) warmInBackground(env, (p) => ctx.waitUntil(p));
-	const hint = regionHint(request);
-	source.tag = `do-${hint}`;
-	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${hint}`), { locationHint: hint });
+// Engine routing: one SearchEngine DO per colo, named by the colo the request
+// landed in and created there (per-colo naming needs no location hint — the
+// DO is placed near its first caller). Isolates never load the store or serve
+// engine queries themselves: they parse, RPC out, and stay tiny. Sharding
+// therefore tracks the traffic distribution (each colo's DO carries that
+// colo's load), and idle colos evict their DO — scale to zero.
+function resolveEngine(request: Request, env: Env, source: { tag: string }): Promise<Engine> {
+	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
+	source.tag = `do-${colo}`;
+	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${colo}`));
 	return Promise.resolve(new RemoteEngine(stub));
 }
 
@@ -106,7 +93,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		const response = await entry.handler(
 			{
 				env,
-				getEngine: () => resolveEngine(request, env, ctx, engineSource),
+				getEngine: () => resolveEngine(request, env, engineSource),
 				request,
 				requestHost,
 				waitUntil: (p) => ctx.waitUntil(p),

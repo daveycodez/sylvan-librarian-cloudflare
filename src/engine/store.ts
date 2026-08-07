@@ -264,23 +264,6 @@ export function tryGetLoadedEngine(): Engine | null {
 	return current?.engine ?? null;
 }
 
-/**
- * Cold-isolate self-warming: start the store load in the background (the
- * request itself is served by the regional SearchEngine DO meanwhile). A
- * failure here is logged, never thrown — the DO path is the request's fate.
- */
-export function warmInBackground(env: Env, waitUntil: (p: Promise<unknown>) => void): void {
-	if (current || loading) return;
-	loading = loadStore(env).finally(() => {
-		loading = null;
-	});
-	waitUntil(
-		loading.catch((err) => {
-			console.warn("Background isolate warm-up failed:", err);
-		}),
-	);
-}
-
 /** Called from the cron handler so isolates converge on a fresh publish fast. */
 export async function manifestPollAlarm(env: Env): Promise<void> {
 	lastManifestCheck = 0;

@@ -1,5 +1,5 @@
-// Engine implementation backed by the regional SearchEngine DO — what a cold
-// isolate serves through while its own store loads in the background.
+// Engine implementation backed by the colo's SearchEngine DO — the only
+// serving path: isolates parse and RPC here, never loading the store.
 
 import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
 import type { Engine, EngineSearchOptions, EngineSearchResult } from "./types";
@@ -39,13 +39,13 @@ export class RemoteEngine implements Engine {
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const rpcStart = Date.now();
 		const { acquireMs, ...result } = await unwrap(this.stub.search(opts));
-		// Cold-path observability (only cold isolates come through here): the
-		// gap between the two numbers is transport + serialization; acquireMs is
-		// the DO waking its engine (0 when it was already warm). The field is
-		// stripped so the search envelope stays byte-identical to the local path.
-		console.log(
-			`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs ?? 0}ms engine acquisition in the DO`,
-		);
+		// Wake observability: logged only when the DO had to acquire its engine
+		// (acquireMs > 0) — warm queries stay quiet. The gap between the two
+		// numbers is transport + serialization. The field is stripped so the
+		// search envelope never carries it.
+		if (acquireMs) {
+			console.log(`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO`);
+		}
 		return result;
 	}
 

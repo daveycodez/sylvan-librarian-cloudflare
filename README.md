@@ -37,16 +37,16 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 request ──▶ Workers Cache (regional edge cache in front of the Worker;
         │   honors the upstream-mirrored Cache-Control on every route —
         │   hits skip the Worker entirely)
-        └─▶ Worker isolate (auto-scales horizontally with load)
+        └─▶ Worker isolate (thin: parses, RPCs, serves static assets)
               ├─ TS parser: Scryfall syntax → filter tree  (port of hand_parser.py)
-              ├─ wasm card_engine: evaluates tree against the in-memory store
-              ├─ store: ~70MB rkyv archive, loaded per-isolate from R2 (Cache API),
-              │         hot-swapped when the R2 manifest advances
-              ├─ COLD isolate: forwards to the region's SearchEngine Durable
-              │   Object (one per continent, session-warm, store persisted in
-              │   its embedded SQLite so wake-ups never wait on R2) while the
-              │   isolate warms itself in the background — the x-sylvan-engine
-              │   response header says which path answered (isolate | do-<region>)
+              ├─ engine queries: RPC to the colo's SearchEngine Durable Object
+              │   (engine-<colo>, created in the colo that first names it) —
+              │   sharding tracks the traffic distribution, and idle colos
+              │   evict their DO: scale to zero. The x-sylvan-engine response
+              │   header says which DO answered (do-<colo>)
+              ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in
+              │   memory; store persisted in its embedded SQLite so wake-ups
+              │   never wait on R2, hot-swapped when the R2 manifest advances
               └─ UI: upstream's static assets, served with upstream's cache headers
 
 cron (nightly) / first-deploy bootstrap
@@ -68,11 +68,11 @@ refreshes happen in the background), page HTML carries no card data
 bootstrap page) and error statuses are never cached, and the cache is
 per-deploy-version so releases can't serve stale assets.
 
-Cold-start note: cold isolates never make users wait on a store load — the
-request is served by the regional warm-engine DO (~100-200ms) while the
-isolate loads in the background. The store is stored raw, deliberately: R2
-egress to Workers is free while decompress CPU would be metered on every
-isolate warm-up.
+Cold-start note: a colo whose DO has evicted pays one wake on its next
+engine query — the store loads from the DO's local SQLite (never R2), and
+the wake duration is logged (`SearchEngine wake: ...`). Warm queries are
+sub-ms of DO CPU. The store is stored raw, deliberately: R2 egress to
+Workers is free while decompress CPU would be metered on every load.
 
 ## Upstream tracking
 

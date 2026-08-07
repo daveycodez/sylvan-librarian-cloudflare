@@ -1,10 +1,9 @@
-// Regional warm-engine Durable Object.
-//
-// The hybrid serving model: warm Worker isolates answer locally at full
-// horizontal scale; a COLD isolate forwards its request here — the region's
-// session-warm engine — while warming itself in the background. One DO per
-// region (engine-wnam, engine-weur, ...), created near the traffic that first
-// names it. No alarms, no standing cost: idle regions evict and cost nothing.
+// Per-colo warm-engine Durable Object — the only thing that serves engine
+// queries. Worker isolates parse and RPC here; they never load the store.
+// One DO per colo (engine-LAX, engine-SEA, ...), created in the colo that
+// first names it, so sharding tracks the traffic distribution. No alarms, no
+// standing cost: idle colos evict their DO and cost nothing (scale to zero);
+// the wake path below makes revival cheap.
 //
 // Wake-ups avoid R2: the store is persisted in this DO's embedded SQLite
 // (colocated disk), so a wake feeds wasm from local chunks and only checks
