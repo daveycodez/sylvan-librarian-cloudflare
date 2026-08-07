@@ -10,6 +10,9 @@ import * as wasm from "sylvan-engine-wasm";
 import type { Engine, EngineSearchOptions, EngineSearchResult, Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";
 
+// Wasm panics must land in console.error, not die silently with the isolate.
+wasm.__init_panic_hook();
+
 const MANIFEST_KEY = "manifest.json";
 // How stale an isolate's view of the manifest may get before a background
 // re-check. Nightly publishes mean sub-hour propagation is plenty.
@@ -37,20 +40,24 @@ class WasmEngine implements Engine {
 					fields: opts.fields,
 				}),
 			),
-		) as { total_cards: number; cards: Record<string, unknown>[] };
-		return { totalCards: result.total_cards, cards: result.cards };
+		) as { total: number; rows: Record<string, unknown>[] };
+		return { totalCards: result.total, cards: result.rows };
 	}
 
 	commonCardTypes(): Record<string, number> {
-		return (JSON.parse(wasm.catalog()) as { types: Record<string, number> }).types;
+		return (JSON.parse(wasm.catalog()) as { card_types: Record<string, number> }).card_types;
 	}
 
 	commonCardKeywords(): Record<string, number> {
-		return (JSON.parse(wasm.catalog()) as { keywords: Record<string, number> }).keywords;
+		return (JSON.parse(wasm.catalog()) as { card_keywords: Record<string, number> }).card_keywords;
 	}
 
 	samplePreferred(numCards: number, fields: string[]): Record<string, unknown>[] {
-		return JSON.parse(wasm.sample_preferred(numCards, JSON.stringify(fields))) as Record<string, unknown>[];
+		// Engine sampling is deterministic per seed; per-request entropy keeps
+		// /random_search random, mirroring upstream's process-side RNG.
+		const seedBytes = crypto.getRandomValues(new BigUint64Array(1));
+		const seed = seedBytes[0] ?? 0n;
+		return JSON.parse(wasm.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
 	}
 
 	size(): number {

@@ -24,7 +24,7 @@ fi
 STORE_KEY=$(python3 -c "import json;print(json.load(open('$OUT_DIR/manifest.json'))['store_key'])")
 
 echo "Seeding local R2 ($BUCKET)..."
-bunx wrangler r2 object put "$BUCKET/$STORE_KEY" --local --file "$OUT_DIR/cards.store" -c wrangler.dev.jsonc
+bunx wrangler r2 object put "$BUCKET/$STORE_KEY" --local --file "$OUT_DIR/$STORE_KEY" -c wrangler.dev.jsonc
 bunx wrangler r2 object put "$BUCKET/manifest.json" --local --file "$OUT_DIR/manifest.json" -c wrangler.dev.jsonc
 
 echo "Done. Run: bun dev"

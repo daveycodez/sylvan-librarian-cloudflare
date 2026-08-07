@@ -78,7 +78,9 @@ pub fn build_store(
     }
 
     let format_version = store_format_version();
-    let store_key = format!("card-store-v{format_version}.store");
+    // The key must be unique per build: the Worker detects a new publish by
+    // store-key change and caches store bytes immutably keyed by it.
+    let store_key = format!("card-store-v{format_version}-{built_at}.store");
     let store_path = out_dir.join(&store_key);
 
     std::fs::create_dir_all(out_dir)?;
