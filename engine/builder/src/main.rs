@@ -13,7 +13,7 @@
 //! Pipeline sequence per engine/builder/PIPELINE.md, mirroring upstream's
 //! _run_import_under_lock.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

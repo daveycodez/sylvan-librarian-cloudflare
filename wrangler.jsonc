@@ -28,8 +28,8 @@
 			"image": "./Dockerfile",
 			"max_instances": 1,
 			// The store build peaks well above a Worker isolate's 128MB — that is
-			// why the import is a container at all. standard = 4GiB / 1/2 vCPU.
-			"instance_type": "standard"
+			// why the import is a container at all. standard-1 = 4GiB / 1/2 vCPU.
+			"instance_type": "standard-1"
 		}
 	],
 
