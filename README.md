@@ -184,18 +184,21 @@ cold at ~751ms median where this run found it warm at 99ms).
 
 Reading the numbers honestly:
 
-- **Warm (the common case): 53ms** — network round-trip to the nearest
+- **Warm (the common case): ~57ms** — network round-trip to the nearest
   Cloudflare colo, since edge cache hits and warm-isolate engine queries
-  (0.2–3ms of compute) are both effectively free. ~7× upstream, ~2× Scryfall's
-  CDN-warm, with 24× less payload than Scryfall's full card objects.
+  (0.2–3ms of compute) are both effectively free. ~7× upstream, with 24× less
+  payload than Scryfall's full card objects.
 - **No cold tail**: a cache-miss on a cold isolate is answered by the
-  regional warm-engine DO (~100–200ms) while the isolate warms in the
-  background — the worst cell in the table above is 164ms. Before the hybrid,
-  the same probe showed 1.3–3.5s spikes whenever a request landed on a cold
-  machine.
-- **Upstream is impressively consistent** (~370–460ms always): a single
-  always-warm origin, so no cold starts ever — and no edge, so no 53ms
-  either. The two architectures trade tails for medians.
+  regional warm-engine Durable Object (~100–200ms) while the isolate warms in
+  the background — the worst cell in the table above is 164ms. Before the
+  hybrid, the same probe showed 1.3–3.5s spikes whenever a request landed on
+  a cold machine.
+- **Upstream is impressively consistent** (~360–600ms): a single always-warm
+  origin, so it never cold-starts — but every request pays the trip to that
+  one origin, which is why the hybrid's worst case now beats upstream's best.
+- Scryfall's numbers are its CDN serving cached responses (fast and steady);
+  ours are live engine computation per cache-miss. Comparable feel, different
+  mechanics.
 
 ## License
 
