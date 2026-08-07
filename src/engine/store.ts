@@ -30,7 +30,7 @@ class WasmEngine implements Engine {
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const result = JSON.parse(
 			wasm.query(
-				JSON.stringify(opts.filterTree),
+				opts.filterTreeJson,
 				JSON.stringify({
 					unique: opts.unique,
 					prefer: opts.prefer,

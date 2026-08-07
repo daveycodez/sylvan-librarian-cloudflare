@@ -10,6 +10,8 @@
 import { EngineUnavailableError } from "../engine/types";
 import type { CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, RESPONSE_SHAPE, SORT_DIRECTION, UNIQUE_ON } from "./enums";
+import type { FilterValue } from "../parser";
+import { canonicalStringify } from "../parser";
 import { explainWireTree } from "./explanation";
 import { httpError, jsonResponse, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
@@ -157,7 +159,7 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 	try {
 		const result = await timer.time("engine_query", () =>
 			engine.search({
-				filterTree,
+				filterTreeJson: canonicalStringify(filterTree as FilterValue),
 				unique: opts.unique,
 				prefer: opts.prefer,
 				orderby: opts.orderby,

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Benchmark: our Worker vs upstream sylvan-librarian.com vs Scryfall API.
-# Per service, per query: 1 cold hit + 2 warm hits, sequential. Scryfall
-# requests are spaced >=600ms (their etiquette floor is 500ms). Captures
-# HTTP status, total time, TTFB, payload bytes as TSV for analysis.
+# Benchmark: this port vs upstream sylvan-librarian.com vs Scryfall API.
+#
+# Per service, ONE curl invocation issues all requests over a reused
+# connection (matching how browsers behave; a fresh TLS handshake per request
+# would penalize distant origins hardest). Per query: 1 cold hit + 2 warm
+# hits, sequential. Scryfall requests are rate-limited to 1/s via --rate
+# (their etiquette floor is 500ms between requests). Output TSV:
+# service, query, run, HTTP status, total seconds, TTFB seconds, bytes.
 set -euo pipefail
 
 QUERIES=(
@@ -17,37 +21,36 @@ QUERIES=(
   't:planeswalker c:b f:pioneer'
   't:instant o:damage cmc=1'
 )
+RUNS=(cold warm1 warm2)
 
 OUT="$1"
 : > "$OUT"
 
-measure() { # service query run url
-  local line
-  line=$(curl -sG -o /dev/null \
+urlencode() { python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$1"; }
+
+bench_service() { # service base_url extra_curl_args...
+  local service="$1" base="$2"; shift 2
+  local args=()
+  for q in "${QUERIES[@]}"; do
+    local enc; enc=$(urlencode "$q")
+    for _run in "${RUNS[@]}"; do
+      args+=(--url "$base?q=$enc")
+    done
+  done
+  # One invocation = one reused connection; -w emits one line per transfer.
+  local i=0
+  while IFS=$'\t' read -r code total ttfb size; do
+    local q="${QUERIES[$((i / 3))]}"
+    local run="${RUNS[$((i % 3))]}"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$service" "$q" "$run" "$code" "$total" "$ttfb" "$size" >> "$OUT"
+    i=$((i + 1))
+  done < <(curl -s -o /dev/null \
     -H "User-Agent: sylvan-librarian-cloudflare-bench/1.0" \
-    -w "%{http_code}\t%{time_total}\t%{time_starttransfer}\t%{size_download}" \
-    --data-urlencode "q=$2" "$4")
-  printf "%s\t%s\t%s\t%s\n" "$1" "$2" "$3" "$line" >> "$OUT"
+    -w "%{http_code}\t%{time_total}\t%{time_starttransfer}\t%{size_download}\n" \
+    "$@" "${args[@]}")
+  echo "$service done" >&2
 }
 
-for q in "${QUERIES[@]}"; do
-  for run in cold warm1 warm2; do
-    measure ours "$q" "$run" "https://sylvan-librarian.deckgen.workers.dev/search"
-  done
-done
-echo "ours done" >&2
-
-for q in "${QUERIES[@]}"; do
-  for run in cold warm1 warm2; do
-    measure upstream "$q" "$run" "https://sylvan-librarian.com/search"
-  done
-done
-echo "upstream done" >&2
-
-for q in "${QUERIES[@]}"; do
-  for run in cold warm1 warm2; do
-    sleep 0.6
-    measure scryfall "$q" "$run" "https://api.scryfall.com/cards/search"
-  done
-done
-echo "scryfall done" >&2
+bench_service ours     "https://sylvan-librarian.deckgen.workers.dev/search"
+bench_service upstream "https://sylvan-librarian.com/search"
+bench_service scryfall "https://api.scryfall.com/cards/search" --rate 1/s

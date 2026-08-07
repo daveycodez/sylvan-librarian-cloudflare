@@ -3,8 +3,13 @@
 
 /** Options accepted by the engine search, mirroring upstream's pyo3 query() surface. */
 export interface EngineSearchOptions {
-	/** Engine-wire filter tree JSON (produced by src/parser). */
-	filterTree: unknown;
+	/**
+	 * Engine-wire filter tree, PRE-SERIALIZED to its canonical JSON string by
+	 * the parser's serializer. A string (not the node objects) deliberately:
+	 * the tree preserves Python int/float semantics via class behavior that
+	 * structured clone would strip when this crosses the DO RPC boundary.
+	 */
+	filterTreeJson: string;
 	unique: string;
 	prefer: string;
 	orderby: string;
