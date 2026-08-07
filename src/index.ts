@@ -20,13 +20,21 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // scale); a cold isolate forwards to its REGION's session-warm SearchEngine
 // DO while warming itself in the background. One DO per location hint,
 // created near the traffic that names it.
+//
+// Self-warming is LAZY: only the second engine request an isolate sees starts
+// the ~1s-of-CPU background store load. A keystroke burst fans out across
+// fresh isolates (the runtime routes around busy ones), and eagerly warming
+// every one of them multiplied that cost for isolates that would never see a
+// second request; one-shot isolates now just ride the DO (~35-55ms).
+let coldEngineRequests = 0;
+
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const local = tryGetLoadedEngine();
 	if (local) {
 		source.tag = "isolate";
 		return getEngine(env, ctx); // resolves immediately + background staleness check
 	}
-	warmInBackground(env, (p) => ctx.waitUntil(p));
+	if (++coldEngineRequests >= 2) warmInBackground(env, (p) => ctx.waitUntil(p));
 	const hint = regionHint(request);
 	source.tag = `do-${hint}`;
 	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${hint}`), { locationHint: hint });
