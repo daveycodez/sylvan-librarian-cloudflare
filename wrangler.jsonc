@@ -6,6 +6,17 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
+	// Workers Cache: regionally tiered cache in front of the Worker, honoring
+	// the Cache-Control headers the routes already mirror from upstream
+	// (statics 30d/1h, pages+catalog 1h, /search 90s). Hits skip the Worker —
+	// and therefore cold isolate starts — entirely. no-store responses
+	// (random_search, bootstrap page) and error statuses are never cached, so
+	// the honest-failure invariants hold. Per-version cache (default): each
+	// deploy starts fresh, so statics can't go stale across releases. Nightly
+	// imports need no purge: /search's 90s TTL is smaller than the isolates'
+	// own manifest-poll staleness, and page HTML carries no card data.
+	"cache": { "enabled": true },
+
 	// The engine store + version manifest live here. The import container writes
 	// via the R2 S3 API; the Worker reads via this binding.
 	"r2_buckets": [
