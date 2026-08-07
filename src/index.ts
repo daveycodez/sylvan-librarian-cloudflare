@@ -3,6 +3,7 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { bootstrapPage } from "./engine/bootstrap-page";
+import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
 import { getEngine, manifestPollAlarm, tryGetLoadedEngine, warmInBackground } from "./engine/store";
@@ -19,16 +20,6 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // scale); a cold isolate forwards to its REGION's session-warm SearchEngine
 // DO while warming itself in the background. One DO per location hint,
 // created near the traffic that names it.
-const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
-	AF: "afr",
-	AN: "oc",
-	AS: "apac",
-	EU: "weur",
-	NA: "wnam",
-	OC: "oc",
-	SA: "sam",
-};
-
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const local = tryGetLoadedEngine();
 	if (local) {
@@ -36,7 +27,7 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 		return getEngine(env, ctx); // resolves immediately + background staleness check
 	}
 	warmInBackground(env, (p) => ctx.waitUntil(p));
-	const hint = CONTINENT_TO_HINT[(request.cf as { continent?: string } | undefined)?.continent ?? "NA"] ?? "wnam";
+	const hint = regionHint(request);
 	source.tag = `do-${hint}`;
 	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${hint}`), { locationHint: hint });
 	return Promise.resolve(new RemoteEngine(stub));
