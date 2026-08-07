@@ -116,8 +116,9 @@ The complete list of intentional differences:
   rules-of-durable-objects docs) — globally exact, unlike the Workers
   rate-limiting binding, whose eventually-consistent counters we measured
   barely enforcing. Default 100 requests/10s per IP, 429 + `Retry-After`
-  when exceeded. Runtime-configurable, no redeploy: `RATE_LIMIT_ENABLED=false`
-  disables it, `RATE_LIMIT_PER_10S` tunes it. Cache hits never count (served
+  when exceeded. **Off by default** — opt in by setting
+  `RATE_LIMIT_ENABLED=true` (runtime var, no redeploy); `RATE_LIMIT_PER_10S`
+  tunes the allowance. Cache hits never count (served
   before the Worker runs), so repeat queries and crowds behind shared IPs are
   unaffected; the cost is one short DO round-trip on cache-missing engine
   requests. Server-to-server callers bypass with the optional

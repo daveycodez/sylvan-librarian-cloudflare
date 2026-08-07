@@ -86,7 +86,9 @@ export async function enforceRateLimit(
 	request: Request,
 ): Promise<{ outcome: "off" | "allowed" | "limited"; response: Response | null }> {
 	const cfg = env as { RATE_LIMIT_ENABLED?: string; RATE_LIMIT_PER_10S?: string };
-	if (cfg.RATE_LIMIT_ENABLED === "false") return { outcome: "off", response: null };
+	// Opt-in: enforcement only when RATE_LIMIT_ENABLED=true is set (env var /
+	// dashboard). Unset = off — a clone does nothing surprising by default.
+	if (cfg.RATE_LIMIT_ENABLED !== "true") return { outcome: "off", response: null };
 	const limit = Math.max(1, Number.parseInt(cfg.RATE_LIMIT_PER_10S ?? "", 10) || DEFAULT_LIMIT_PER_10S);
 
 	const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
