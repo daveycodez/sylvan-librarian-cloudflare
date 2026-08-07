@@ -44,6 +44,14 @@ function rethrowForRpc(err: unknown): never {
  * and read back on wake. The read path accepts any chunking, so stores
  * persisted at an older chunk size keep working until their next repersist. */
 const PERSIST_CHUNK_BYTES = 1_900_000;
+/**
+ * Pause between persist chunk INSERTs. The DO output gate holds every
+ * outgoing response until storage writes issued before it are confirmed —
+ * persisting 70MB in one continuous burst held live responses hostage for
+ * 20-58s on brand-new shards (measured). Trickling the writes means a
+ * response only ever waits on ONE in-flight chunk.
+ */
+const PERSIST_CHUNK_PAUSE_MS = 150;
 
 export class SearchEngine extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -270,6 +278,7 @@ export class SearchEngine extends DurableObject<Env> {
 				const exact = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 				sql.exec("INSERT INTO store_chunks (seq, bytes) VALUES (?, ?)", seq++, exact);
 			};
+			const persistStart = Date.now();
 			try {
 				for (;;) {
 					const { done, value } = await reader.read();
@@ -286,6 +295,10 @@ export class SearchEngine extends DurableObject<Env> {
 					while (merged.length - offset >= PERSIST_CHUNK_BYTES) {
 						flush(merged.subarray(offset, offset + PERSIST_CHUNK_BYTES));
 						offset += PERSIST_CHUNK_BYTES;
+						// Let the output gate drain between chunks (see
+						// PERSIST_CHUNK_PAUSE_MS) — never block live responses
+						// behind the whole store.
+						await new Promise((resolve) => setTimeout(resolve, PERSIST_CHUNK_PAUSE_MS));
 					}
 					carry = merged.subarray(offset);
 				}
@@ -293,6 +306,7 @@ export class SearchEngine extends DurableObject<Env> {
 				reader.releaseLock();
 			}
 			if (carry.length) flush(carry);
+			console.log(`Persist trickled ${seq} chunks in ${Date.now() - persistStart}ms`);
 
 			sql.exec(
 				"INSERT INTO store_meta (id, store_key, store_bytes, card_count, built_at, chunk_count) VALUES (1, ?, ?, ?, ?, ?)",

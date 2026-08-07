@@ -31,27 +31,24 @@
 //    warm-path overload. Wake/relay-carrying samples are excluded by the
 //    caller so revivals don't fake an overload.
 
-// ██ TEST-ONLY THRESHOLDS — hair-trigger values so a modest synthetic load
-// ██ visibly opens and folds shards. REVERT before real traffic. Production
-// ██ values in trailing comments.
 /** A response reporting this many already-executing searches counts as queuing. */
 const EXPAND_DEPTH = 2;
 /** Queued samples within EXPAND_WINDOW_MS needed to step up. */
 const EXPAND_SAMPLES = 3;
 const EXPAND_WINDOW_MS = 15_000;
-const EXPAND_COOLDOWN_MS = 10_000; // production: 30_000
+const EXPAND_COOLDOWN_MS = 30_000;
 /** No sample with any queue depth for this long steps the fan-out down. */
-const CONTRACT_IDLE_MS = 2 * 60_000; // production: 10 * 60_000
-const CONTRACT_COOLDOWN_MS = 15_000; // production: 60_000
+const CONTRACT_IDLE_MS = 10 * 60_000;
+const CONTRACT_COOLDOWN_MS = 60_000;
 const DEFAULT_MAX_SHARDS = 8;
 
 /** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing. */
-const LATENCY_FLOOR_MULT = 1.2; // production: 3
-const LATENCY_ABS_MS = 5; // production: 75
+const LATENCY_FLOOR_MULT = 3;
+const LATENCY_ABS_MS = 75;
 /** Consecutive breaching reports needed to step up (EWMA already smooths). */
-const LATENCY_BREACHES_TO_EXPAND = 2; // production: 5
+const LATENCY_BREACHES_TO_EXPAND = 5;
 /** Don't judge latency until the floor has seen this many samples. */
-const LATENCY_MIN_SAMPLES = 5; // production: 20
+const LATENCY_MIN_SAMPLES = 20;
 
 let activeShards = 1;
 let configuredMax = DEFAULT_MAX_SHARDS;
