@@ -30,7 +30,11 @@ export interface RouteEntry {
 	/** Max positional path segments the handler absorbs (upstream positional_capacity). 0 unless noted. */
 	positionalCapacity: number;
 	/** Entry in the 404 routes listing: upstream _build_routes_listing shape. */
-	listing: { doc: string; args: { name: string; type: string }[]; kwargs: Record<string, { type: string; default: unknown }> };
+	listing: {
+		doc: string;
+		args: { name: string; type: string }[];
+		kwargs: Record<string, { type: string; default: unknown }>;
+	};
 }
 
 export type RouteTable = Record<string, RouteEntry>;

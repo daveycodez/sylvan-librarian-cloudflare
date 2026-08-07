@@ -39,7 +39,12 @@ export function securityHeaders(response: Response): Response {
  * json_error_serializer (description may be a structured object, e.g. the 404
  * routes listing).
  */
-export function httpError(status: number, title: string, description: unknown, extraHeaders?: Record<string, string>): Response {
+export function httpError(
+	status: number,
+	title: string,
+	description: unknown,
+	extraHeaders?: Record<string, string>,
+): Response {
 	return new Response(JSON.stringify({ title, description }), {
 		status,
 		headers: { "content-type": "application/json", ...extraHeaders },
