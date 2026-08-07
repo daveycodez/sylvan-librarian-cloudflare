@@ -128,6 +128,46 @@ runs as a native binary instead of inside a Cloudflare Container (wrangler dev
 would need a local Docker daemon to emulate the container; it is the same
 builder code either way). The container path itself is exercised in production.
 
+## Benchmarks
+
+Same 10 queries against this deployment, upstream's own
+[sylvan-librarian.com](https://sylvan-librarian.com), and the
+[Scryfall API](https://api.scryfall.com) (2026-08-07, single US residential
+vantage, `scripts/bench.sh`). Per query: one **cold** request (cache miss)
+then the median of two immediate **warm** repeats; all services keep their
+production caching — that's the point. Scryfall requests spaced 600ms per
+their rate etiquette. Times are total request ms.
+
+| query | this port (cold/warm) | sylvan-librarian.com | Scryfall API |
+|---|---|---|---|
+| `t:goblin cmc<3 c:r` | 3554 / 56 | 377 / 393 | 913 / 96 |
+| `o:"draw a card" t:creature f:modern` | 1680 / 52 | 463 / 465 | 1164 / 97 |
+| `kw:flying pow>=4 -c:w` | 50 / 50 | 455 / 457 | 94 / 120 |
+| `t:instant cmc=1 c:u` | 2132 / 47 | 387 / 381 | 651 / 96 |
+| `t:legendary t:elf f:commander` | 3531 / 48 | 466 / 463 | 1145 / 93 |
+| `o:"enters tapped" t:land` | 1906 / 59 | 381 / 383 | 1117 / 94 |
+| `c:wu t:bird` | 3215 / 55 | 403 / 374 | 350 / 93 |
+| `r:mythic t:dragon cmc<=4` | 55 / 49 | 368 / 367 | 73 / 89 |
+| `t:planeswalker c:b f:pioneer` | 113 / 54 | 394 / 375 | 851 / 78 |
+| `t:instant o:damage cmc=1` | 1336 / 54 | 383 / 382 | 575 / 85 |
+| **median** | **1793 / 53** | **391 / 382** | **751 / 94** |
+| median payload | ~34 KB | ~34 KB | ~813 KB |
+
+Reading the numbers honestly:
+
+- **Warm (the common case): 53ms** — network round-trip to the nearest
+  Cloudflare colo, since edge cache hits and warm-isolate engine queries
+  (0.2–3ms of compute) are both effectively free. ~7× upstream, ~2× Scryfall's
+  CDN-warm, with 24× less payload than Scryfall's full card objects.
+- **Our cold column is bimodal**: 50–113ms when the request reaches an
+  already-warm isolate, 1.3–3.5s when it lands on a cold one and pays the
+  one-time ~70MB store load from R2. Real traffic keeps isolates warm and
+  Workers Cache absorbs repeats, so this cost concentrates on the first
+  request per colo after idle — but it is the architecture's honest trade.
+- **Upstream is impressively consistent** (~370–460ms always): a single
+  always-warm origin, so no cold starts ever — and no edge, so no 53ms
+  either. The two architectures trade tails for medians.
+
 ## License
 
 Upstream sylvan_librarian is ISC-licensed (© Joseph Bylund) — see
