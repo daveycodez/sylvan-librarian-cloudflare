@@ -1,10 +1,12 @@
-// Per-isolate store manager: loads the rkyv store from R2 into the wasm
-// engine, hot-swaps when the R2 manifest advances, and triggers the
-// self-bootstrap import when the bucket is empty.
+// Per-isolate store manager: loads the rkyv store from D1 into the wasm
+// engine, hot-swaps when the D1 manifest advances, and triggers the
+// self-bootstrap import when the database is empty.
 //
-// Memory discipline: the store (~70MB) is streamed R2 → Cache API → wasm
+// Memory discipline: the store (~70MB) is streamed D1 → Cache API → wasm
 // linear memory in ~1MB chunks; no full-store JS buffer ever exists, keeping
-// peak isolate usage well inside the 128MB limit.
+// peak isolate usage well inside the 128MB limit. Chunk reads are batched a
+// few rows per query, so a full load stays inside the free plan's
+// per-invocation subrequest allowance.
 
 import * as wasm from "sylvan-engine-wasm";
 import type { Engine, EngineSearchOptions, EngineSearchResult, Env, StoreManifest } from "./types";
@@ -13,13 +15,14 @@ import { EngineUnavailableError } from "./types";
 // Wasm panics must land in console.error, not die silently with the isolate.
 wasm.__init_panic_hook();
 
-const MANIFEST_KEY = "manifest.json";
 // How stale an isolate's view of the manifest may get before a background
 // re-check. Nightly publishes mean sub-hour propagation is plenty.
 const MANIFEST_RECHECK_MS = 5 * 60 * 1000;
 // Per-isolate rate limit on bootstrap kicks; the coordinator DO dedupes anyway.
 const BOOTSTRAP_KICK_INTERVAL_MS = 60 * 1000;
 const STORE_CACHE_URL = "https://sylvan-store.internal/";
+/** Chunk rows per D1 query while streaming the store (~2MB/query). */
+const CHUNK_ROWS_PER_QUERY = 2;
 
 let current: { storeKey: string; engine: Engine } | null = null;
 let loading: Promise<Engine> | null = null;
@@ -66,9 +69,23 @@ class WasmEngine implements Engine {
 }
 
 export async function readManifest(env: Env): Promise<StoreManifest | null> {
-	const obj = await env.STORE.get(MANIFEST_KEY);
-	if (!obj) return null;
-	return (await obj.json()) as StoreManifest;
+	try {
+		const row = await env.STORE_DB.prepare("SELECT json FROM store_manifest WHERE id = 1").first<{ json: string }>();
+		if (!row) return null;
+		return JSON.parse(row.json) as StoreManifest;
+	} catch (err) {
+		// A fresh database has no tables yet — that is the bootstrap state, not
+		// an error. Anything else propagates.
+		if (String(err).includes("no such table")) return null;
+		throw err;
+	}
+}
+
+/** D1 blob columns arrive as ArrayBuffer (or a number array on older paths). */
+function asBytes(value: unknown): Uint8Array {
+	if (value instanceof ArrayBuffer) return new Uint8Array(value);
+	if (Array.isArray(value)) return Uint8Array.from(value as number[]);
+	throw new Error(`store chunk has unexpected blob type ${typeof value}`);
 }
 
 function kickBootstrap(env: Env, reason: string): void {
@@ -107,30 +124,90 @@ async function feedStore(
 	wasm.finish_store_load();
 }
 
+/** Stream the store's chunk rows out of D1, a few rows per query. */
+function d1StoreStream(env: Env, storeKey: string, expectedBytes: number): ReadableStream<Uint8Array> {
+	let nextSeq = 0;
+	let seenBytes = 0;
+	let done = false;
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			if (done) return;
+			const res = await env.STORE_DB.prepare(
+				"SELECT seq, bytes FROM store_chunks WHERE store_key = ? AND seq >= ? ORDER BY seq LIMIT ?",
+			)
+				.bind(storeKey, nextSeq, CHUNK_ROWS_PER_QUERY)
+				.all<{ seq: number; bytes: unknown }>();
+			const rows = res.results ?? [];
+			if (rows.length === 0) {
+				if (seenBytes !== expectedBytes) {
+					controller.error(
+						new EngineUnavailableError(
+							`Store ${storeKey} incomplete in D1: ${seenBytes}/${expectedBytes} bytes`,
+							false,
+						),
+					);
+					return;
+				}
+				done = true;
+				controller.close();
+				return;
+			}
+			for (const row of rows) {
+				if (row.seq !== nextSeq) {
+					controller.error(new EngineUnavailableError(`Store ${storeKey} has a chunk gap at seq ${nextSeq}`, false));
+					return;
+				}
+				nextSeq += 1;
+				const bytes = asBytes(row.bytes);
+				seenBytes += bytes.length;
+				controller.enqueue(bytes);
+			}
+			if (seenBytes >= expectedBytes) {
+				done = true;
+				controller.close();
+			}
+		},
+	});
+}
+
 /**
- * Fetch the store bytes as a stream: Cache API first, R2 on miss. On miss the
- * R2 body is streamed into the cache first (no JS-side buffering), then read
- * back — two sequential streams instead of one big resident buffer.
+ * Fetch the store bytes as a stream: Cache API first, D1 on miss. On miss the
+ * D1 chunk stream is written into the cache first (no JS-side buffering),
+ * then read back — two sequential streams instead of one big resident buffer.
  */
-export async function openStoreStream(env: Env, storeKey: string): Promise<ReadableStream<Uint8Array>> {
+export async function openStoreStream(
+	env: Env,
+	storeKey: string,
+	expectedBytes: number,
+): Promise<ReadableStream<Uint8Array>> {
 	const cacheKey = new Request(STORE_CACHE_URL + encodeURIComponent(storeKey));
 	const cache = caches.default;
 
 	const hit = await cache.match(cacheKey);
-	if (hit?.body) return hit.body;
+	if (hit?.body) {
+		// Keys are content-addressed, but defend against a stale body anyway
+		// (dev state can pair an old cache with a newer database): on a length
+		// mismatch, drop the entry and rebuild from D1 rather than letting the
+		// wasm loader reject the stream mid-swap.
+		if (Number(hit.headers.get("content-length")) === expectedBytes) return hit.body;
+		await hit.body.cancel();
+		await cache.delete(cacheKey);
+	}
 
-	const obj = await env.STORE.get(storeKey);
-	if (!obj) {
-		// The manifest names a store object that is missing: loud failure, never
-		// a silently empty engine (this deployment's honest-failure invariant).
-		throw new EngineUnavailableError(`Store object ${storeKey} missing from R2 despite manifest`, false);
+	// Existence probe before caching: a manifest naming a store D1 no longer
+	// has must fail loudly, never serve a silently empty engine.
+	const probe = await env.STORE_DB.prepare("SELECT 1 AS one FROM store_chunks WHERE store_key = ? AND seq = 0")
+		.bind(storeKey)
+		.first();
+	if (!probe) {
+		throw new EngineUnavailableError(`Store ${storeKey} missing from D1 despite manifest`, false);
 	}
 
 	await cache.put(
 		cacheKey,
-		new Response(obj.body, {
+		new Response(d1StoreStream(env, storeKey, expectedBytes), {
 			headers: {
-				"content-length": String(obj.size),
+				"content-length": String(expectedBytes),
 				"Cache-Control": "public, max-age=604800, immutable", // keyed by store_key → content-addressed
 			},
 		}),
@@ -138,10 +215,8 @@ export async function openStoreStream(env: Env, storeKey: string): Promise<Reada
 	const cached = await cache.match(cacheKey);
 	if (cached?.body) return cached.body;
 
-	// Cache eviction raced us; fall back to a fresh R2 read.
-	const again = await env.STORE.get(storeKey);
-	if (!again) throw new EngineUnavailableError(`Store object ${storeKey} vanished from R2`, false);
-	return again.body;
+	// Cache eviction raced us; fall back to a fresh D1 read.
+	return d1StoreStream(env, storeKey, expectedBytes);
 }
 
 async function loadStore(env: Env): Promise<Engine> {
@@ -149,8 +224,8 @@ async function loadStore(env: Env): Promise<Engine> {
 	lastManifestCheck = Date.now();
 
 	if (!manifest) {
-		kickBootstrap(env, "bootstrap-empty-bucket");
-		throw new EngineUnavailableError("No store manifest in R2; import has been triggered", true);
+		kickBootstrap(env, "bootstrap-empty-database");
+		throw new EngineUnavailableError("No store manifest in D1; import has been triggered", true);
 	}
 
 	if (!manifest.store_bytes || !manifest.store_key.endsWith(".store")) {
@@ -164,15 +239,15 @@ async function loadStore(env: Env): Promise<Engine> {
 
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
-	const body = await openStoreStream(env, manifest.store_key);
+	const body = await openStoreStream(env, manifest.store_key, manifest.store_bytes);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
 		current = null;
 		wasm.unload_store();
 	}
-	// Raw bytes, deliberately uncompressed: R2 egress to Workers is free while
-	// decompress CPU would be metered on every isolate warm-up.
+	// Raw bytes, deliberately uncompressed: D1 reads cost rows, not bytes,
+	// while decompress CPU would be metered on every isolate warm-up.
 	await feedStore(body, manifest.store_bytes);
 
 	const engine = new WasmEngine();
@@ -226,7 +301,7 @@ export interface AdoptableStoreMeta {
 
 /**
  * Activate a store from an arbitrary chunk source (the DO's SQLite copy on
- * wake) without touching R2. Same guards as the R2 path: no-op when the key
+ * wake) without touching D1. Same guards as the D1 path: no-op when the key
  * is already active, single-flight via `loading`.
  */
 export function adoptStoreFromChunks(meta: AdoptableStoreMeta, chunks: AsyncIterable<Uint8Array>): Promise<Engine> {

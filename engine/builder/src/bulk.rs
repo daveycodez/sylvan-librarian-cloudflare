@@ -151,9 +151,12 @@ impl BulkClient {
     }
 
     /// Fetch the /bulk-data listing and return the record for `kind`
-    /// (`list_bulk_data` + `get_download_uri_for_key`).
+    /// (`list_bulk_data` + `get_download_uri_for_key`). SCRYFALL_BULK_URL
+    /// overrides the listing URL (mirrors, local test servers) — the same
+    /// var the ImportCoordinator honors.
     pub fn jsonl_download_uri(&self, kind: &str) -> Result<String, BulkError> {
-        let body = self.get_with_retry(BULK_DATA_URL)?.text()?;
+        let listing_url = std::env::var("SCRYFALL_BULK_URL").unwrap_or_else(|_| BULK_DATA_URL.to_owned());
+        let body = self.get_with_retry(&listing_url)?.text()?;
         let listing: Value = serde_json::from_str(&body)
             .map_err(|e| BulkError::Format(format!("/bulk-data response is not JSON: {e}")))?;
         download_uri_from_listing(&listing, kind)

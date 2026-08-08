@@ -5,20 +5,29 @@
 //! Python import pipeline — see PIPELINE.md for the wiring sequence) feed
 //! [`build_store`], this crate's store-build seam.
 
+// bulk (reqwest) is native-only: the wasm import path
+// (engine/wasm-import, run inside the ImportCoordinator Durable Object) does
+// its networking in JS and publishes through bindings, consuming only the
+// pure transform/tags logic from this crate.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod bulk;
-pub mod r2;
 pub mod tags;
 pub mod transform;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufWriter, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+#[cfg(not(target_arch = "wasm32"))]
 use card_engine::{store_format_version, StoreBuilder};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::Value;
 
 /// What a finished build produced — serialized alongside the store so the
 /// Worker can verify it is loading bytes from the same engine build.
 #[derive(Debug, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Manifest {
     /// Object key the store is published under (R2). Versioned by the archive
     /// format so a Worker running an older engine never loads incompatible bytes.
@@ -40,6 +49,7 @@ pub struct Manifest {
     pub store_bytes: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Manifest {
     pub fn to_json(&self) -> Value {
         serde_json::json!({
@@ -56,6 +66,7 @@ impl Manifest {
 
 /// UPSTREAM.lock's pinned commit, read at runtime from the repo root (two
 /// levels above this crate). Falls back to "unknown" outside the repo layout.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn upstream_commit() -> String {
     let lock_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../UPSTREAM.lock");
     std::fs::read_to_string(lock_path)
@@ -69,6 +80,7 @@ pub fn upstream_commit() -> String {
 /// shape `card_engine`'s loader expects) and write it into `out_dir`, named by
 /// its store key. Returns the manifest; the caller decides where the manifest
 /// itself is written/published.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn build_store(
     rows: impl Iterator<Item = Value>,
     out_dir: &Path,
@@ -108,11 +120,13 @@ pub fn build_store(
 }
 
 /// Pass-through writer that counts the archive bytes as they stream out.
+#[cfg(not(target_arch = "wasm32"))]
 struct CountingWriter<W: Write> {
     inner: W,
     written: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<W: Write> Write for CountingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let n = self.inner.write(buf)?;

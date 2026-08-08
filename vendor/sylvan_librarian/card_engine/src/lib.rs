@@ -44,7 +44,28 @@ create_exception!(card_engine, UnknownFieldError, QueryError, "Raised when `fiel
 // a breakdown of reload(): see docs/issues/00504-engine-store-size-reduction.md step 0.
 
 #[cfg(feature = "alloc-counter")]
-mod alloc_stats;
+pub mod alloc_stats;
+
+/// Per-phase heap checkpoint for the store build, active only under
+/// `alloc-counter` on native (diagnostics for the memory-capped wasm build
+/// path; wasm has no stderr). Prints live/peak since the previous checkpoint,
+/// then resets the peak so each phase's transient is isolated.
+#[cfg(all(feature = "alloc-counter", not(target_arch = "wasm32")))]
+macro_rules! build_ckpt {
+    ($label:expr) => {{
+        eprintln!(
+            "ckpt {:<26} live {:>6.1} MB   phase-peak {:>6.1} MB",
+            $label,
+            crate::alloc_stats::live() as f64 / 1048576.0,
+            crate::alloc_stats::peak() as f64 / 1048576.0,
+        );
+        crate::alloc_stats::PEAK.store(crate::alloc_stats::live(), std::sync::atomic::Ordering::Relaxed);
+    }};
+}
+#[cfg(not(all(feature = "alloc-counter", not(target_arch = "wasm32"))))]
+macro_rules! build_ckpt {
+    ($label:expr) => {};
+}
 
 // ─── Inline string (no heap allocation) ──────────────────────────────────────
 
@@ -60,7 +81,10 @@ use inline_str::InlineStr;
 
 mod clock;
 mod core_api;
-pub use core_api::{BufferStore, EngineError, QueryOptions, QueryOutput, StoreBuilder, StoreStats, store_format_version};
+pub use core_api::{
+    BufferStore, EngineError, QueryOptions, QueryOutput, SpillingStoreBuilder, StoreBuilder, StoreStats,
+    store_format_version,
+};
 pub use rkyv::util::AlignedVec;
 
 // ─── Card type bits (u16) ─────────────────────────────────────────────────────
@@ -1157,32 +1181,6 @@ fn build_oracle_text_index(cards: &[OracleCard], strings: &[String]) -> OracleTe
         global_of_dense[d as usize] = global;
     }
 
-    // Trigram postings and the word dictionary's postings, over distinct texts
-    // only, in the same window-sliding/tokenizing pass per text (one pass
-    // instead of one for each of trigrams/words). Visiting texts in ascending
-    // dense-id order appends ids in ascending order for both, giving sorted
-    // posting lists with no per-list sort needed.
-    let mut trigrams: HashMap<[u8; 3], Vec<u32>> = HashMap::new();
-    let mut words: HashMap<String, Vec<u32>> = HashMap::new();
-    for (d, &global) in global_of_dense.iter().enumerate() {
-        let text = strings[global as usize].as_str();
-        let bytes = text.as_bytes();
-        if bytes.len() >= 3 {
-            for w in bytes.windows(3) {
-                let list = trigrams.entry([w[0], w[1], w[2]]).or_default();
-                if list.last() != Some(&(d as u32)) {
-                    list.push(d as u32);
-                }
-            }
-        }
-        tokenize_words_ge4(text, |word| {
-            let list = words.entry(word.to_string()).or_default();
-            if list.last() != Some(&(d as u32)) {
-                list.push(d as u32);
-            }
-        });
-    }
-
     // CSR expansion table via counting sort: count cards per text, prefix-sum
     // the counts into row offsets, then place each card index in its row. Placement
     // walks cards in store order, so every row comes out sorted by card index.
@@ -1190,44 +1188,164 @@ fn build_oracle_text_index(cards: &[OracleCard], strings: &[String]) -> OracleTe
     // exactly `cards.len()` long.
     let (offsets, card_indices) = build_csr(n_texts, text_id_of_card.len(), |i| Some(text_id_of_card[i] as usize));
 
-    // Word dictionary split: #639's crossover, reused verbatim with domain =
-    // n_texts (matching SortedTrigramIndex's oracle instance) to decide
-    // sparse-vs-dense, but a promoted word's *stored* bitmap is expanded
-    // through the CSR just built above to card space — see OracleWordIndex's
-    // doc for why.
+    // ── Pass 1 (count): per-trigram / per-word deduped occurrence counts.
+    // This builder used to materialize every posting in HashMap<_, Vec<u32>>
+    // lists before the tier split compressed them ~7× (dense trigrams/words
+    // become bitplanes) — a ~40MB transient on a corpus whose finished index
+    // is ~6MB, and the single biggest allocation spike on the memory-capped
+    // (128MB isolate) build path. Counting first lets every final buffer be
+    // allocated at exact size and filled in place (pass 2), with the same
+    // per-text dedup (last-id check) semantics and identical final layouts.
+    let mut tri_counts: HashMap<[u8; 3], (u32, u32)> = HashMap::new(); // (count, last d)
+    let mut word_counts: HashMap<String, (u32, u32)> = HashMap::new();
+    for (d, &global) in global_of_dense.iter().enumerate() {
+        let d = d as u32;
+        let text = strings[global as usize].as_str();
+        let bytes = text.as_bytes();
+        if bytes.len() >= 3 {
+            for w in bytes.windows(3) {
+                let e = tri_counts.entry([w[0], w[1], w[2]]).or_insert((0, u32::MAX));
+                if e.1 != d {
+                    e.0 += 1;
+                    e.1 = d;
+                }
+            }
+        }
+        tokenize_words_ge4(text, |word| {
+            if let Some(e) = word_counts.get_mut(word) {
+                if e.1 != d {
+                    e.0 += 1;
+                    e.1 = d;
+                }
+            } else {
+                word_counts.insert(word.to_owned(), (1, d));
+            }
+        });
+    }
+
     let n_cards = cards.len();
     let wpp_cards = words_per_plane(n_cards);
     let wpp_texts = words_per_plane(n_texts);
     let text_u16_ok = n_texts <= u16::MAX as usize + 1;
-    let mut word_entries: Vec<(String, Vec<u32>)> = words.into_iter().collect();
-    word_entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
+    // ── Trigram tiers, exact-size: same split rule and layouts as
+    // finalize_trigram_index (which the name index still uses), driven by
+    // counts instead of materialized posting lists.
+    let tri_plane_bytes = wpp_texts * 8;
+    let mut tri_keys: Vec<[u8; 3]> = tri_counts.keys().copied().collect();
+    tri_keys.sort_unstable();
+    let mut trigrams = SortedTrigramIndex { domain: n_texts as u32, ..Default::default() };
+    trigrams.sparse_offsets.push(0);
+    // Parallel fill state per sorted key: destination (sparse write cursor /
+    // dense bit-plane word base), tier, and last-filled d for the dedup check.
+    let mut tri_dst: Vec<u32> = Vec::with_capacity(tri_keys.len());
+    let mut tri_dense: Vec<bool> = Vec::with_capacity(tri_keys.len());
+    let mut tri_last: Vec<u32> = vec![u32::MAX; tri_keys.len()];
+    let mut tri_sparse_total = 0u32;
+    let mut tri_dense_planes = 0usize;
+    for key in &tri_keys {
+        let count = tri_counts[key].0;
+        if text_u16_ok && count as usize * 2 <= tri_plane_bytes {
+            trigrams.sparse_keys.push(*key);
+            tri_dst.push(tri_sparse_total);
+            tri_dense.push(false);
+            tri_sparse_total += count;
+            trigrams.sparse_offsets.push(tri_sparse_total);
+        } else {
+            trigrams.dense_keys.push(*key);
+            trigrams.dense_counts.push(count);
+            tri_dst.push((tri_dense_planes * wpp_texts) as u32);
+            tri_dense.push(true);
+            tri_dense_planes += 1;
+        }
+    }
+    drop(tri_counts);
+    trigrams.sparse_postings = vec![0u16; tri_sparse_total as usize];
+    trigrams.dense_bits = vec![0u64; tri_dense_planes * wpp_texts];
+
+    // ── Word tiers: #639's crossover, reused verbatim with domain = n_texts
+    // (matching SortedTrigramIndex's oracle instance) to decide
+    // sparse-vs-dense, but a promoted word's *stored* bitmap is expanded
+    // through the CSR built above to card space — see OracleWordIndex's doc
+    // for why. Exact-size allocation from the counts, like the trigrams.
+    let mut word_list: Vec<(String, u32)> = word_counts.into_iter().map(|(w, (c, _))| (w, c)).collect();
+    word_list.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut oracle_words = OracleWordIndex { n_cards: n_cards as u32, ..Default::default() };
     oracle_words.sparse_offsets.push(0);
-    for (word, text_ids) in word_entries {
-        if text_u16_ok && text_ids.len() * 2 <= wpp_texts * 8 {
+    let mut word_dst: Vec<u32> = Vec::with_capacity(word_list.len());
+    let mut word_dense: Vec<bool> = Vec::with_capacity(word_list.len());
+    let mut word_last: Vec<u32> = vec![u32::MAX; word_list.len()];
+    let mut word_sparse_total = 0u32;
+    let mut word_dense_planes = 0usize;
+    for (word, count) in &word_list {
+        if text_u16_ok && *count as usize * 2 <= wpp_texts * 8 {
             oracle_words.sparse_word_starts.push(oracle_words.sparse_blob.len() as u32);
             oracle_words.sparse_blob.push(WORD_BLOB_DELIM as char);
-            oracle_words.sparse_blob.push_str(&word);
-            oracle_words.sparse_words.push(word);
-            oracle_words.sparse_postings.extend(text_ids.iter().map(|&t| t as u16));
-            oracle_words.sparse_offsets.push(oracle_words.sparse_postings.len() as u32);
+            oracle_words.sparse_blob.push_str(word);
+            oracle_words.sparse_words.push(word.clone());
+            word_dst.push(word_sparse_total);
+            word_dense.push(false);
+            word_sparse_total += count;
+            oracle_words.sparse_offsets.push(word_sparse_total);
         } else {
-            let base = oracle_words.dense_bits.len();
-            oracle_words.dense_bits.resize(base + wpp_cards, 0);
-            for t in text_ids {
-                let start = offsets[t as usize] as usize;
-                let end = offsets[t as usize + 1] as usize;
-                for &cid in &card_indices[start..end] {
-                    oracle_words.dense_bits[base + (cid as usize >> 6)] |= 1u64 << (cid & 63);
+            word_dst.push((word_dense_planes * wpp_cards) as u32);
+            word_dense.push(true);
+            word_dense_planes += 1;
+            oracle_words.dense_words.push(word.clone());
+        }
+    }
+    oracle_words.sparse_postings = vec![0u16; word_sparse_total as usize];
+    oracle_words.dense_bits = vec![0u64; word_dense_planes * wpp_cards];
+
+    // ── Pass 2 (fill): revisit texts in the same ascending dense-id order,
+    // writing each posting straight into its final slot (sparse rows fill
+    // ascending — exactly the order the appending version produced) or its
+    // final bitplane. Binary search over the sorted key lists replaces the
+    // hash lookups; the id spaces match the previous code (text ids for the
+    // sparse tiers and trigram planes, CSR-expanded card ids for word planes).
+    for (d, &global) in global_of_dense.iter().enumerate() {
+        let d = d as u32;
+        let text = strings[global as usize].as_str();
+        let bytes = text.as_bytes();
+        if bytes.len() >= 3 {
+            for w in bytes.windows(3) {
+                let key = [w[0], w[1], w[2]];
+                let i = tri_keys.binary_search(&key).expect("trigram counted in pass 1");
+                if tri_last[i] != d {
+                    tri_last[i] = d;
+                    if tri_dense[i] {
+                        let base = tri_dst[i] as usize;
+                        trigrams.dense_bits[base + (d as usize >> 6)] |= 1u64 << (d & 63);
+                    } else {
+                        trigrams.sparse_postings[tri_dst[i] as usize] = d as u16;
+                        tri_dst[i] += 1;
+                    }
                 }
             }
-            oracle_words.dense_words.push(word);
         }
+        tokenize_words_ge4(text, |word| {
+            let i = word_list
+                .binary_search_by(|(w, _)| w.as_str().cmp(word))
+                .expect("word counted in pass 1");
+            if word_last[i] != d {
+                word_last[i] = d;
+                if word_dense[i] {
+                    let base = word_dst[i] as usize;
+                    let start = offsets[d as usize] as usize;
+                    let end = offsets[d as usize + 1] as usize;
+                    for &cid in &card_indices[start..end] {
+                        oracle_words.dense_bits[base + (cid as usize >> 6)] |= 1u64 << (cid & 63);
+                    }
+                } else {
+                    oracle_words.sparse_postings[word_dst[i] as usize] = d as u16;
+                    word_dst[i] += 1;
+                }
+            }
+        });
     }
 
     OracleTextIndex {
-        trigrams: finalize_trigram_index(trigrams, n_texts),
+        trigrams,
         gids: global_of_dense,
         offsets,
         card_indices,
@@ -11746,18 +11864,60 @@ fn build_card_data(
     // scryfall_id, making the chosen printing fully deterministic (exact
     // ties on the prefer metric are common — reprint sheets share scores —
     // and an unstable sort would otherwise pick arbitrarily among them).
-    rows.sort_unstable_by(|a, b| {
-        a.oracle_id
-            .cmp(&b.oracle_id)
-            .then_with(|| {
-                let sa = a.prefer_score.unwrap_or(0.0);
-                let sb = b.prefer_score.unwrap_or(0.0);
-                sb.total_cmp(&sa)
-            })
-            .then_with(|| a.illustration_id.cmp(&b.illustration_id))
-            .then_with(|| a.scryfall_id.cmp(&b.scryfall_id))
-    });
+    rows.sort_unstable_by(|a, b| card_row_build_order(
+        (a.oracle_id, a.prefer_score, a.illustration_id, a.scryfall_id),
+        (b.oracle_id, b.prefer_score, b.illustration_id, b.scryfall_id),
+    ));
 
+    let expected_rows = rows.len();
+    build_card_data_sorted(rows.into_iter().map(Ok), expected_rows, interner, vocab, artists, mana)
+}
+
+/// The exact ordering build_card_data sorts rows into before grouping,
+/// expressed over the sort-key tuple (oracle_id, prefer_score,
+/// illustration_id, scryfall_id) so callers that pre-sort spilled rows
+/// (SpillingStoreBuilder) replicate it bit-for-bit.
+pub(crate) fn card_row_build_order(
+    a: (u128, Option<f32>, u128, u128),
+    b: (u128, Option<f32>, u128, u128),
+) -> std::cmp::Ordering {
+    a.0.cmp(&b.0)
+        .then_with(|| {
+            let sa = a.1.unwrap_or(0.0);
+            let sb = b.1.unwrap_or(0.0);
+            sb.total_cmp(&sa)
+        })
+        .then_with(|| a.2.cmp(&b.2))
+        .then_with(|| a.3.cmp(&b.3))
+}
+
+/// Grouping + index build + assembly over rows already in build order (see
+/// card_row_build_order). Split out of build_card_data so a memory-capped
+/// caller (the 128MB-isolate wasm build) can stream rows from external
+/// storage instead of holding a Vec<CardRow>; the Vec path above delegates
+/// here, so both paths produce identical archives by construction.
+fn build_card_data_sorted(
+    rows: impl Iterator<Item = Result<CardRow, EngineError>>,
+    expected_rows: usize,
+    interner: Interner,
+    vocab: VocabInterner,
+    artists: VocabInterner,
+    mana: ManaVocabInterner,
+) -> Result<BuiltStore, EngineError> {
+    // The interner hash maps (string → id, duplicating every interned string
+    // as a key) are only needed while add_card interns; from here on only the
+    // id-indexed string tables are read. Freeing the maps FIRST matters on
+    // the memory-capped wasm build path: it returns a large contiguous
+    // region to the allocator right before grouping and index construction
+    // want one, cutting both the live peak and heap fragmentation.
+    let Interner { map: interner_map, strings } = interner;
+    drop(interner_map);
+    let VocabInterner { map: vocab_map, strings: coll_vocab } = vocab;
+    drop(vocab_map);
+    let VocabInterner { map: artists_map, strings: artist_vocab } = artists;
+    drop(artists_map);
+    let ManaVocabInterner { map: mana_map, strings: mana_vocab } = mana;
+    drop(mana_map);
     // Group rows into OracleCards + Printings + CSR offsets. Card-level
     // fields come from the group's first row (verified printing-constant on
     // the real corpus; the 3 divergent-name omen cards take the first
@@ -11765,9 +11925,18 @@ fn build_card_data(
     // disagree gets legality_divergent set, deferring legality filters to
     // each printing's own word.
     let mut cards: Vec<OracleCard> = Vec::new();
-    let mut printings: Vec<Printing> = Vec::with_capacity(rows.len());
+    let mut printings: Vec<Printing> = Vec::with_capacity(expected_rows);
     let mut offsets: Vec<u32> = Vec::new();
-    for mut row in rows {
+    for row_res in rows {
+        let mut row = row_res?;
+        // Same invariant the Vec path pre-checks; streamed rows check inline.
+        if row.oracle_id == 0 {
+            let idx = printings.len();
+            let name = strings.get(row.card_name_id as usize).map_or("", |s| s.as_str());
+            return Err(EngineError::value(format!(
+                "card {idx} ({name:?}) is missing oracle_id (required for card grouping)"
+            )));
+        }
         let is_new = cards.last().is_none_or(|c| c.oracle_id != row.oracle_id);
         if is_new {
             offsets.push(printings.len() as u32);
@@ -11832,18 +12001,12 @@ fn build_card_data(
     }
     offsets.push(printings.len() as u32);
     assign_name_ranks(&mut cards);
+    build_ckpt!("group+name_ranks");
 
     #[cfg(feature = "alloc-counter")]
     let stats_after_cards = (alloc_stats::live(), alloc_stats::allocs());
 
-    let strings = interner.strings;
-    drop(interner.map);
-    let coll_vocab = vocab.strings;
-    drop(vocab.map);
-    let artist_vocab = artists.strings;
-    drop(artists.map);
-    let mana_vocab = mana.strings;
-    drop(mana.map);
+    // (Interner maps were dropped at function entry — see above.)
     // String-sorted permutation of the vocab ids; VocabInterner caps the
     // vocab at u16::MAX entries so the cast can't truncate.
     let mut coll_vocab_sorted: Vec<u16> = (0..coll_vocab.len() as u16).collect();
@@ -11870,6 +12033,7 @@ fn build_card_data(
     let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
     let rarity_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from));
     let rarity_cards = build_range_card_counts(&rarity_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+    build_ckpt!("range indexes+counts");
     // Out here for the same reason as the count tables: it reads `printing_to_card`, which the
     // struct literal below moves.
     let pair_totals = build_pair_totals(
@@ -11880,6 +12044,7 @@ fn build_card_data(
         &coll_vocab,
         usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
     );
+    build_ckpt!("pair_totals");
     let value_totals = build_all_value_totals(
         &cards,
         &printings,
@@ -11888,21 +12053,48 @@ fn build_card_data(
         &coll_vocab,
         usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
     );
+    build_ckpt!("value_totals");
+    // The text/tag/permutation builders are hoisted out of the literal below
+    // so the memory-capped build path can checkpoint each one (build_ckpt) —
+    // all are pure functions of cards/printings/strings, so evaluation order
+    // does not affect their output.
+    let name_trigram = build_trigram_index(&cards, |c| c.card_name_folded.as_str());
+    build_ckpt!("name_trigram");
+    let oracle_trigram = build_oracle_text_index(&cards, &strings);
+    build_ckpt!("oracle_trigram");
+    let subtypes_idx = build_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes);
+    let keywords_idx = build_tag_index(&cards, &coll_vocab, |c| &c.card_keywords);
+    let oracle_tags_idx = build_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags);
+    let art_tags_idx = build_tag_index(&printings, &coll_vocab, |p| &p.card_art_tags);
+    let is_tags_idx = build_tag_index(&printings, &coll_vocab, |p| &p.card_is_tags);
+    let frame_data_idx = build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data);
+    build_ckpt!("tag indexes");
+    let artists_idx = build_artist_index(&printings, artist_vocab.len());
+    let flavor_idx = build_flavor_index(&printings, &strings);
+    build_ckpt!("artists+flavor");
+    let sort_perms_idx = build_sort_permutations(&cards);
+    build_ckpt!("sort_perms");
+    let planes_idx = build_bit_planes(&cards, &printings, &offsets, &strings);
+    build_ckpt!("bit_planes");
+    let name_bigrams_idx = build_name_bigram_index(&cards);
+    let name_unigrams_idx = build_name_unigram_index(&cards);
+    let arith_tuple_idx = build_arith_tuple_index(&cards);
+    build_ckpt!("bigrams+unigrams+arith");
     let indexes = CardIndexes {
-        name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
-        oracle_trigram: build_oracle_text_index(&cards, &strings),
+        name_trigram,
+        oracle_trigram,
         cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
         power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
         toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
         rarity:         build_rarity_index(&printings, &offsets),
-        subtypes:       build_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes),
-        keywords:       build_tag_index(&cards, &coll_vocab, |c| &c.card_keywords),
-        oracle_tags:    build_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags),
-        art_tags:       build_tag_index(&printings, &coll_vocab, |p| &p.card_art_tags),
-        is_tags:        build_tag_index(&printings, &coll_vocab, |p| &p.card_is_tags),
-        frame_data:     build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data),
-        artists:        build_artist_index(&printings, artist_vocab.len()),
-        flavor:         build_flavor_index(&printings, &strings),
+        subtypes:       subtypes_idx,
+        keywords:       keywords_idx,
+        oracle_tags:    oracle_tags_idx,
+        art_tags:       art_tags_idx,
+        is_tags:        is_tags_idx,
+        frame_data:     frame_data_idx,
+        artists:        artists_idx,
+        flavor:         flavor_idx,
         set_codes:      {
             let mut idx: TagIndex = HashMap::new();
             for (i, p) in printings.iter().enumerate() {
@@ -11933,7 +12125,7 @@ fn build_card_data(
         price_eur_cards,
         price_tix_cards,
         collector_number_cards,
-        sort_perms:     build_sort_permutations(&cards),
+        sort_perms:     sort_perms_idx,
         max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
         artwork_groups: artwork_group_counts,
         // Columnar copy of each printing's assigned artwork_group_id, derived here — the single
@@ -11944,17 +12136,17 @@ fn build_card_data(
         // post-load, so it cannot drift from the counts it sums.
         artwork_base,
         printing_to_card,
-        planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
+        planes:         planes_idx,
         border_printing: build_border_printing_planes(&printings, &strings),
         rarity_printing: build_rarity_printing_planes(&printings),
         rarity_printing_ordered: rarity_idx,
         rarity_cards,
         value_totals,
         pair_totals,
-        name_bigrams:   build_name_bigram_index(&cards),
-        name_unigrams:  build_name_unigram_index(&cards),
+        name_bigrams:   name_bigrams_idx,
+        name_unigrams:  name_unigrams_idx,
         legal_divergent: build_divergent_ids(&cards),
-        arith_tuple:    build_arith_tuple_index(&cards),
+        arith_tuple:    arith_tuple_idx,
     };
 
     #[cfg(feature = "alloc-counter")]

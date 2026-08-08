@@ -1,0 +1,26 @@
+# The import pipeline compiled for the ImportCoordinator Durable Object: all
+# parity-sensitive logic (transform, tag ancestors, dedupe/aggregation,
+# prefer/cubecobra scoring, spilling store build) runs in here; the DO's
+# TypeScript only shuttles bytes between fetch/SQLite/D1 and this module's
+# C ABI (no wasm-bindgen — see src/lib.rs for the protocol).
+#
+# Built with:  bun run build:wasm-import   (pkg committed, like engine/wasm)
+
+[package]
+name = "sylvan-wasm-import"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+card_engine = { path = "../../vendor/sylvan_librarian/card_engine" }
+sylvan-store-builder = { path = "../builder" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Same two-part getrandom opt-in as engine/wasm (see that crate's Cargo.toml):
+# the wasm_js feature plus the getrandom_backend rustflag in .cargo/config.toml.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }

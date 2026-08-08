@@ -46,8 +46,10 @@ pub enum TransformError {
 }
 
 /// One preprocessed printing row plus the raw-blob inputs the prefer-score
-/// backfill reads. ~100k of these are held in memory during aggregation.
-#[derive(Debug, Clone)]
+/// backfill reads. ~100k of these are held in memory during aggregation on
+/// the native path; the wasm (Durable Object) import serializes each draft
+/// out to external storage instead — hence the serde derives.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RowDraft {
     // ── engine columns (ENGINE_COLUMNS) ─────────────────────────────────────
     pub scryfall_id: String,
@@ -621,8 +623,6 @@ fn prefer_score(draft: &RowDraft, art_tags: &[String], illustration_count: u64) 
 /// nothing, exactly as in Postgres — leaving 25 * PERCENT_RANK(edhrec_rank ASC
 /// NULLS LAST).
 fn cubecobra_scores_by_name(drafts: &[RowDraft]) -> HashMap<String, f64> {
-    const W_EDHREC: f64 = 25.0;
-
     // DISTINCT ON (card_name): one representative row per name (edhrec_rank is
     // per-oracle-card in the bulk data, so all printings agree; first-seen is
     // as good as Postgres's unspecified tie-break).
@@ -633,6 +633,15 @@ fn cubecobra_scores_by_name(drafts: &[RowDraft]) -> HashMap<String, f64> {
             per_name.push((d.card_name.as_str(), d.edhrec_rank));
         }
     }
+    cubecobra_scores_from_pairs(&per_name)
+}
+
+/// The cubecobra score computation over already-deduped (name, edhrec_rank)
+/// pairs, in first-seen order. Shared with the wasm import's aggregation
+/// pass, which collects the same pairs while streaming drafts from external
+/// storage.
+pub fn cubecobra_scores_from_pairs(per_name: &[(&str, Option<i64>)]) -> HashMap<String, f64> {
+    const W_EDHREC: f64 = 25.0;
 
     let n = per_name.len();
     if n == 0 {
@@ -651,8 +660,8 @@ fn cubecobra_scores_by_name(drafts: &[RowDraft]) -> HashMap<String, f64> {
     }
 
     per_name
-        .into_iter()
-        .map(|(name, rank_val)| {
+        .iter()
+        .map(|&(name, rank_val)| {
             let pr = if n == 1 {
                 0.0
             } else {
@@ -732,12 +741,8 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
     //     NULL illustration_id never matches (SQL NULL equality), giving 0.
     let mut illust_counts: HashMap<(String, String), u64> = HashMap::new();
     for r in &rows {
-        if let Some(ill) = &r.illustration_id
-            && r.raw_lang_en
-            && r.raw_set_type.as_deref() != Some("memorabilia")
-            && !matches!(r.card_border.as_deref(), Some("gold") | Some("yellow"))
-        {
-            *illust_counts.entry((ill.clone(), r.card_name.clone())).or_insert(0) += 1;
+        if let Some(ill) = illust_count_key(r) {
+            *illust_counts.entry((ill.to_owned(), r.card_name.clone())).or_insert(0) += 1;
         }
     }
 
@@ -759,8 +764,41 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
             .and_then(|ill| illust_counts.get(&(ill.clone(), r.card_name.clone())))
             .copied()
             .unwrap_or(0);
-        let prefer = prefer_score(&r, art_tags, illustration_count);
         let cubecobra_score = cubecobra.get(&r.card_name).copied();
+        finalize_row(r, oracle_tags, art_tags, illustration_count, cubecobra_score)
+    })
+}
+
+/// The illustration_count predicate (backfill_prefer_scores.sql lines 31-45):
+/// returns the row's illustration_id when the row qualifies for counting.
+/// Shared by the native aggregation above and the wasm import's aggregation
+/// pass, so the two paths cannot drift.
+pub fn illust_count_key(r: &RowDraft) -> Option<&str> {
+    let ill = r.illustration_id.as_deref()?;
+    if r.raw_lang_en
+        && r.raw_set_type.as_deref() != Some("memorabilia")
+        && !matches!(r.card_border.as_deref(), Some("gold") | Some("yellow"))
+    {
+        Some(ill)
+    } else {
+        None
+    }
+}
+
+/// Emit one finalized ENGINE_COLUMNS row from a draft plus its aggregation
+/// inputs. Split out of [`finalize`]'s closure so the wasm (Durable Object)
+/// import path — which streams drafts from external storage instead of
+/// holding a Vec — produces byte-identical rows through the same code.
+pub fn finalize_row(
+    r: RowDraft,
+    oracle_tags: &[String],
+    art_tags: &[String],
+    illustration_count: u64,
+    cubecobra_score: Option<f64>,
+) -> Value {
+    {
+        let r = r;
+        let prefer = prefer_score(&r, art_tags, illustration_count);
 
         // Exactly ENGINE_COLUMNS (card_engine/card_engine/__init__.py lines
         // 40-84); columns the engine never reads (raw_card_blob, devotion,
@@ -827,7 +865,7 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
             cubecobra_score.map_or(Value::Null, real_val),
         );
         Value::Object(m)
-    })
+    }
 }
 
 #[cfg(test)]

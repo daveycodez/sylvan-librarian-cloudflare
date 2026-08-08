@@ -1,10 +1,8 @@
 {
-	// LOCAL DEV config: identical to wrangler.jsonc minus the "containers"
-	// section — wrangler dev requires a local Docker daemon to emulate
-	// containers, and local dev must not depend on Docker. The ImportCoordinator
-	// DO still exists (its container-start calls fail loudly and harmlessly);
-	// the store is seeded into local simulated R2 by scripts/seed-local.sh.
-	// Keep every other setting in lockstep with wrangler.jsonc.
+	// LOCAL DEV config: kept in lockstep with wrangler.jsonc. With the import
+	// running inside a Durable Object (wasm) against local simulated D1, dev
+	// is production-identical — wrangler dev emulates D1, DO SQLite, and
+	// alarms natively, so even the import pipeline runs locally unchanged.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "sylvan-librarian",
 	"main": "src/index.ts",
@@ -12,10 +10,11 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	"cache": { "enabled": true },
-	"r2_buckets": [
+	"d1_databases": [
 		{
-			"binding": "STORE",
-			"bucket_name": "sylvan-librarian"
+			"binding": "STORE_DB",
+			"database_name": "sylvan-librarian",
+			"database_id": "sylvan-librarian-local"
 		}
 	],
 	"durable_objects": {
@@ -40,8 +39,5 @@
 		{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
 		{ "type": "Text", "globs": ["**/*.css", "**/*.html", "**/*.txt"], "fallthrough": true },
 		{ "type": "Data", "globs": ["**/*.ico", "**/*.webp"], "fallthrough": true }
-	],
-	"vars": {
-		"R2_BUCKET": "sylvan-librarian"
-	}
+	]
 }

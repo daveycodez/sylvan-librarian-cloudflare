@@ -1,0 +1,20 @@
+# Free-plan feasibility probe: StoreBuilder compiled to wasm32 with linear
+# memory hard-capped below a Worker isolate's 128MB, driven from Bun (see
+# driver.ts). Prototype only — not part of the deployed Worker.
+
+[package]
+name = "sylvan-wasm-builder-probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+card_engine = { path = "../../vendor/sylvan_librarian/card_engine" }
+serde_json = "1"
+
+# Same two-part getrandom opt-in as engine/wasm (see that crate's Cargo.toml):
+# the wasm_js feature plus the getrandom_backend rustflag in .cargo/config.toml.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
