@@ -253,6 +253,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		// Same shape the container version exposed; the bootstrap page reads
 		// builder.phase and the routes pass the whole object through.
+		// `retrying` lets the bootstrap page distinguish "working" from
+		// "stuck retrying a failing phase" without waiting for the run to be
+		// declared failed 8 backoffs later.
+		const retries = Number(this.metaGet("retries") ?? 0);
 		return Response.json({
 			run,
 			builder: {
@@ -260,6 +264,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				phase: phase === "idle" ? run.state : phase,
 				detail: detailBits.join(", ") || undefined,
 				printings,
+				retrying: retries > 0 ? { attempt: retries, of: MAX_RETRIES } : undefined,
 			},
 		});
 	}
