@@ -96,6 +96,10 @@ const LINES_PER_CALL = 2_000;
 const KEEP_STORES = 3;
 /** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
 const CARDS_SYNC_BATCHES = 4;
+/** Evictions tolerated before the cards sync gives up for this run: its diff
+ * basis is in-memory, so each one restarts the phase, and without a bound that
+ * is an alarm chain that never ends. */
+const CARDS_MAX_RESTARTS = 3;
 /** Cards-table write pacing is ADAPTIVE by default: a run writes until D1
  * itself reports the free plan's hard daily-limit error (~100k metered rows
  * written/day, index maintenance included, reset 00:00 UTC), then remembers
@@ -373,6 +377,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				this.metaSet("resume_phase", phase);
 				this.metaSet("phase", "idle");
 				await this.ctx.storage.put("run", run);
+				await this.ctx.storage.deleteAlarm();
 				return;
 			}
 			const retries = Number(this.metaGet("retries") ?? 0) + 1;
@@ -405,6 +410,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("resume_phase", phase);
 			this.metaSet("phase", "idle");
 			await this.ctx.storage.put("run", run);
+			await this.ctx.storage.deleteAlarm();
 		}
 	}
 
@@ -1262,8 +1268,34 @@ export class ImportCoordinator extends DurableObject<Env> {
 				.run();
 		}
 		if (!this.cardsHashes || !this.cardsSeen) {
-			// Eviction dropped the in-memory diff basis — restart the phase.
-			this.metaSet("cards_synced", "0");
+			// Eviction dropped the in-memory diff basis — restart the phase from
+			// the FIRST batch. cards_batch_done must reset too: cardsSeen is the
+			// set of ids this run has looked at, and the tail step deletes every
+			// card missing from it. Resuming mid-way would leave cardsSeen
+			// holding only the remaining batches and delete the rest of the
+			// table as "no longer in the import".
+			// Restarting from scratch on every eviction is the one path here that
+			// could loop forever — a DO evicted faster than the sync completes
+			// would rebuild the diff basis (a ~98k-row D1 read) and start over
+			// indefinitely, keeping the alarm chain alive for no progress. Give
+			// up after a few and let the next nightly import continue; the store
+			// is already live and the fallback table is additive.
+			const restarts = Number(this.metaGet("cards_restarts") ?? 0) + 1;
+			if (restarts > CARDS_MAX_RESTARTS) {
+				await this.finishRun(
+					`published ${this.storeKey()}; cards table sync abandoned after ${CARDS_MAX_RESTARTS} evictions — the next import continues it`,
+				);
+				return;
+			}
+			console.warn(
+				`Cards sync lost its diff basis to eviction; restarting from batch 0 (${restarts}/${CARDS_MAX_RESTARTS})`,
+			);
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("cards_restarts", String(restarts));
+				this.metaSet("cards_synced", "0");
+				this.metaSet("cards_batch_done", "0");
+				this.metaSet("cards_upserted", "0");
+			});
 			return;
 		}
 
@@ -1321,11 +1353,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 
 		const done = batchRows.length < CARDS_SYNC_BATCHES;
+		const upserted = Number(this.metaGet("cards_upserted") ?? 0) + upserts.length;
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("cards_batch_done", String(Number(this.metaGet("cards_batch_done") ?? 0) + batchRows.length));
 			this.metaSet("cards_synced", String(synced + processed));
 			this.metaSet("cards_writes_used", String(writesUsed + writes));
+			this.metaSet("cards_upserted", String(upserted));
 		});
+		// This phase was silent, which made a normal multi-minute sync look like
+		// a runaway alarm loop with nothing to explain it.
+		console.log(
+			`Cards sync slice: ${processed} rows examined (${synced + processed}/${staged}), ` +
+				`${upserts.length} upserted, ${writes} metered writes`,
+		);
 		if (!done) return;
 
 		// All rows examined: remove cards this import no longer carries, then
@@ -1357,15 +1397,31 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 
 		// Queue the volatile-column refresh (prices, EDHREC — churn the
-		// structural sync never sees): everything the ceiling still allows, the
-		// whole corpus when unmetered, drained in alarm-sized slices above.
+		// structural sync never sees).
+		//
+		// A run must do a BOUNDED amount of this and then stop: the alarm chain
+		// is what wakes this Durable Object, so anything still queued here keeps
+		// it awake, burning CPU on a schedule nobody asked for. So:
+		//   - rows this run just upserted already carry today's prices; there is
+		//     nothing to refresh. A first import rewrites the whole corpus, so
+		//     its refresh target is zero and the run ends here.
+		//   - otherwise refresh at most one slice's worth, which rotates the
+		//     corpus over ~8 nightly runs (volatile_pos persists across runs).
+		// Cost of getting this wrong, before the cap: a paid-plan run refreshed
+		// all ~98k rows it had just written — a second full pass of D1 writes
+		// and ~9 extra alarms per night for no change in the data.
 		const used = writesUsed + writes + tailWrites;
-		const remaining = Number.isFinite(ceiling) ? Math.max(0, ceiling - used) : staged;
-		const target = Math.min(staged, Number.isFinite(ceiling) ? Math.min(VOLATILE_REFRESH_ROWS, remaining) : staged);
+		const remaining = Number.isFinite(ceiling) ? Math.max(0, ceiling - used) : VOLATILE_REFRESH_ROWS;
+		const stale = Math.max(0, staged - upserted);
+		const target = Math.min(stale, VOLATILE_REFRESH_ROWS, remaining);
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("cards_writes_used", String(used));
 			this.metaSet("cards_volatile_left", String(target));
 		});
+		console.log(
+			`Cards sync complete: ${staged} rows, ${upserted} upserted this run; ` +
+				`price refresh queued for ${target} rows${target === 0 ? " (nothing stale — run ends)" : ""}`,
+		);
 		if (target <= 0) {
 			await this.finishRun(completeDetail());
 		}
@@ -1413,11 +1469,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			this.resetStaging();
 			this.metaSet("phase", "idle");
+			this.metaSet("resume_phase", "");
 		});
 		await this.ctx.storage.put("run", run);
+		// Cancel any alarm still pending. Nothing should re-arm after an idle
+		// phase, but an alarm outliving the run is what turns this DO from
+		// "asleep until the next trigger" into a standing CPU cost.
+		await this.ctx.storage.deleteAlarm();
 		this.cardsHashes = null;
 		this.cardsSeen = null;
-		console.log(`Import complete: ${detail}`);
+		console.log(`Import complete — alarms stopped until the next trigger: ${detail}`);
 	}
 
 	// ── staging helpers ────────────────────────────────────────────────────────
