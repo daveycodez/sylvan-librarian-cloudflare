@@ -28,12 +28,17 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+// The dump download is native-only (reqwest); the map-building logic below it
+// is shared with the wasm import, which feeds records over its ABI instead.
+#[cfg(not(target_arch = "wasm32"))]
 use crate::bulk::{ART_TAGS, BulkClient, BulkError, ORACLE_TAGS};
 
 /// Denormalized tag assignments, ready for `transform::finalize`.
 /// Values are sorted slug lists (JSONB object key order is irrelevant to the
 /// engine — `jsonb_obj_to_ids` sorts and dedupes — sorted keeps output stable).
-#[derive(Debug, Default, Clone)]
+/// Serde derives: the wasm import snapshots TagData across Durable Object
+/// evictions (tags_export / tags_restore in engine/wasm-import).
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TagData {
     /// oracle_id → slugs (incl. ancestors) for `card_oracle_tags`.
     pub oracle: HashMap<String, Vec<String>>,
@@ -42,6 +47,7 @@ pub struct TagData {
 }
 
 /// Download both tag dumps and build the assignment maps.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn fetch_tag_data(client: &BulkClient) -> Result<TagData, BulkError> {
     let oracle_tags: Vec<Value> = client.stream(ORACLE_TAGS)?.collect::<Result<_, _>>()?;
     let art_tags: Vec<Value> = client.stream(ART_TAGS)?.collect::<Result<_, _>>()?;

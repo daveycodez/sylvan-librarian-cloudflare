@@ -1344,6 +1344,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvan-wasm-import"
+version = "0.1.0"
+dependencies = [
+ "card_engine",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "sylvan-store-builder",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
