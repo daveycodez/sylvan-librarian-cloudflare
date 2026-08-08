@@ -24,9 +24,17 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
    build variables. The first request bootstraps the card index on-platform:
    the ImportCoordinator Durable Object streams Scryfall bulk data, builds the
    engine store inside its isolate (wasm), and publishes it to D1. The page
-   shows build progress until the index is live, then the full UI works. A
-   nightly cron (11:17 UTC, after Scryfall's bulk refresh) rebuilds the store;
-   Worker isolates hot-swap to the new version without dropping queries.
+   shows build progress until the index is live (~10 minutes, once per fresh
+   database), then the full UI works. A nightly cron (11:17 UTC, after
+   Scryfall's bulk refresh) rebuilds the store; Worker isolates hot-swap to
+   the new version without dropping queries.
+
+Don't want the one-time bootstrap wait? `bun run seed:remote` builds the
+store natively on your machine and pushes it straight to production D1
+(needs `wrangler login`) — the site is live the moment the manifest lands.
+Add `--with-cards` on a paid plan to seed the SQL-fallback table too (~200k
+metered writes; on free, the nightly import fills it under its adaptive
+write pacing).
 
 All optional knobs (rate limiting, API-key bypass, shard cap) are documented
 in [.env.example](.env.example).
@@ -199,6 +207,8 @@ bun dev                 # full site at localhost — UI, /search, everything.
                         # forces the production-identical in-Worker import
                         # instead (local D1 + DO SQLite + alarms, ~10-20 min)
 bun run seed:local      # the native build + seed, runnable on its own
+bun run seed:remote     # push a natively-built store to PRODUCTION D1
+                        # (first deploy live instantly; --with-cards on paid)
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck

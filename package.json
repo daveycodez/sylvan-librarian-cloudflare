@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "sync-upstream": "scripts/sync-upstream.sh",
     "seed:local": "scripts/seed-local.sh",
+    "seed:remote": "scripts/seed-remote.sh",
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {
