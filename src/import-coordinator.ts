@@ -29,6 +29,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import type { Env } from "./engine/types";
+import { cardsRowValues, ensureCardsSchema, execCardsUpserts, fnv1a64 } from "./fallback/cards-sync";
 
 interface RunRecord {
 	state: "idle" | "starting" | "running" | "done" | "failed";
@@ -67,6 +68,13 @@ const STAGE_BLOB_BYTES = 1_900_000;
 const LINES_PER_CALL = 2_000;
 /** Published store versions kept in D1 for isolates mid-swap. */
 const KEEP_STORES = 3;
+/** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
+const CARDS_SYNC_BATCHES = 4;
+/** Cards-table rows upserted per import run. Each row costs ~3 metered D1
+ * writes (row + 2 indexes) against the free plan's ~100k/day, shared with
+ * the chunk publish — so the first fill of ~100k printings deliberately
+ * spans a few nightly runs; hash-diffed steady-state deltas fit in one. */
+const CARDS_WRITE_BUDGET = 25_000;
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
 const PARSE_COVERAGE_THRESHOLD = 0.8;
@@ -76,7 +84,17 @@ const BULK_DATA_URL = "https://api.scryfall.com/bulk-data";
 const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags"] as const;
 type DumpKind = (typeof DUMP_KINDS)[number];
 
-type Phase = "idle" | "listing" | `fetch:${DumpKind}` | "transform" | "tags" | "agg" | "finalize" | "build" | "publish";
+type Phase =
+	| "idle"
+	| "listing"
+	| `fetch:${DumpKind}`
+	| "transform"
+	| "tags"
+	| "agg"
+	| "finalize"
+	| "build"
+	| "publish"
+	| "cards";
 
 /** `sylvan-librarian-worker/<YYYYMMDD>` — Scryfall rejects default UAs. */
 function userAgent(): string {
@@ -198,6 +216,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		if (phase === "transform") detailBits.push(`${this.metaGet("lines_done") ?? 0} lines`);
 		if (phase === "publish") detailBits.push(`${this.metaGet("chunks_published") ?? 0} chunks`);
+		if (phase === "cards") detailBits.push(`${this.metaGet("cards_synced") ?? 0} rows synced`);
 		// Same shape the container version exposed; the bootstrap page reads
 		// builder.phase and the routes pass the whole object through.
 		return Response.json({
@@ -267,6 +286,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepBuild();
 			case "publish":
 				return this.stepPublish();
+			case "cards":
+				return this.stepCards();
 			default: {
 				if (phase.startsWith("fetch:")) {
 					return this.stepFetch(phase.slice("fetch:".length) as DumpKind);
@@ -933,17 +954,133 @@ export class ImportCoordinator extends DurableObject<Env> {
 			]);
 		}
 
+		// The store is live. The engine no longer needs the wasm group; the
+		// cards-table sync (SQL fallback data) runs next with plain JS.
+		dropGroupWasm();
+		console.log(`Store published: ${storeKey} (${manifest.card_count} cards)`);
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("cards_synced", "0");
+			this.metaSet("cards_writes_used", "0");
+			this.metaSet("phase", "cards");
+		});
+	}
+
+	// ── phase: cards (D1 SQL-fallback table sync) ──────────────────────────────
+	//
+	// Maintains the queryable `cards` table the D1 SQL fallback reads — the
+	// same finalized ENGINE_COLUMNS rows the store was built from, hash-diffed
+	// so steady-state nightly writes are small, under an explicit write budget
+	// (D1 free meters ~100k rows written/day, index maintenance included).
+	// The first fill of ~100k printings therefore spans a few nightly runs;
+	// fallback_meta.complete flips only when the table matches the import, and
+	// the Worker keeps upstream's structured error until then.
+
+	private async stepCards(): Promise<void> {
+		const db = this.env.STORE_DB;
+		const sql = this.ctx.storage.sql;
+		const synced = Number(this.metaGet("cards_synced") ?? 0);
+		const writesUsed = Number(this.metaGet("cards_writes_used") ?? 0);
+		const staged = Number(this.metaGet("staged_rows") ?? 0);
+
+		if (synced === 0) {
+			await ensureCardsSchema(db);
+			// Existing content hashes: the diff basis for this sync.
+			const existing = await db.prepare("SELECT scryfall_id, row_hash FROM cards").all<{
+				scryfall_id: string;
+				row_hash: string;
+			}>();
+			this.cardsHashes = new Map((existing.results ?? []).map((r) => [r.scryfall_id, r.row_hash]));
+			this.cardsSeen = new Set();
+			await db
+				.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 0, ?)")
+				.bind(this.storeKey(), this.cardsHashes.size)
+				.run();
+		}
+		if (!this.cardsHashes || !this.cardsSeen) {
+			// Eviction dropped the in-memory diff basis — restart the phase.
+			this.metaSet("cards_synced", "0");
+			return;
+		}
+
+		if (writesUsed >= CARDS_WRITE_BUDGET) {
+			// Budget exhausted: finish the run with the table incomplete; the
+			// next nightly import continues from its own fresh diff.
+			await this.finishRun(
+				`published ${this.storeKey()}; cards table ${synced}/${staged} rows synced (write budget reached — completes over upcoming imports)`,
+			);
+			return;
+		}
+
+		const batchRows = sql
+			.exec(
+				"SELECT seq, count, bytes FROM row_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+				Number(this.metaGet("cards_batch_done") ?? 0),
+				CARDS_SYNC_BATCHES,
+			)
+			.toArray();
+		let processed = 0;
+		let writes = 0;
+		const upserts: Record<string, unknown>[] = [];
+		for (const batch of batchRows) {
+			for (const blob of splitBatch(new Uint8Array(batch.bytes as ArrayBuffer))) {
+				const rowJson = new TextDecoder().decode(blob);
+				const row = JSON.parse(rowJson) as Record<string, unknown>;
+				const id = String(row.scryfall_id);
+				this.cardsSeen.add(id);
+				const hash = fnv1a64(rowJson);
+				if (this.cardsHashes.get(id) !== hash) {
+					upserts.push(cardsRowValues(row, hash));
+					writes++;
+				}
+				processed++;
+			}
+		}
+		if (upserts.length > 0) {
+			await execCardsUpserts(db, upserts);
+		}
+
+		const done = batchRows.length < CARDS_SYNC_BATCHES;
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("cards_batch_done", String(Number(this.metaGet("cards_batch_done") ?? 0) + batchRows.length));
+			this.metaSet("cards_synced", String(synced + processed));
+			this.metaSet("cards_writes_used", String(writesUsed + writes));
+		});
+		if (!done) return;
+
+		// All rows examined: remove cards this import no longer carries, then
+		// mark the fallback complete for this store version.
+		const stale = await db.prepare("SELECT scryfall_id FROM cards").all<{ scryfall_id: string }>();
+		const deletions = (stale.results ?? []).map((r) => r.scryfall_id).filter((id) => !this.cardsSeen?.has(id));
+		for (let at = 0; at < deletions.length; at += 50) {
+			const slice = deletions.slice(at, at + 50);
+			await db.batch(slice.map((id) => db.prepare("DELETE FROM cards WHERE scryfall_id = ?").bind(id)));
+		}
+		await db
+			.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 1, ?)")
+			.bind(this.storeKey(), staged)
+			.run();
+		await this.finishRun(
+			`published ${this.storeKey()} (${this.metaGet("build_card_count")} cards, ${staged} printings; fallback table complete)`,
+		);
+	}
+
+	/** In-memory diff basis for the cards sync (rebuilt if the DO evicts). */
+	private cardsHashes: Map<string, string> | null = null;
+	private cardsSeen: Set<string> | null = null;
+
+	private async finishRun(detail: string): Promise<void> {
 		const run = await this.getRun();
 		run.state = "done";
 		run.finishedAt = new Date().toISOString();
-		run.detail = `published ${storeKey} (${manifest.card_count} cards, ${manifest.printing_count} printings)`;
+		run.detail = detail;
 		this.ctx.storage.transactionSync(() => {
 			this.resetStaging();
 			this.metaSet("phase", "idle");
 		});
 		await this.ctx.storage.put("run", run);
-		dropGroupWasm();
-		console.log(`Import complete: ${run.detail}`);
+		this.cardsHashes = null;
+		this.cardsSeen = null;
+		console.log(`Import complete: ${detail}`);
 	}
 
 	// ── staging helpers ────────────────────────────────────────────────────────

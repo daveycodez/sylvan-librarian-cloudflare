@@ -69,6 +69,11 @@ cron (nightly) / first-deploy bootstrap
                      point readers act on); old store versions pruned
 ```
 
+D1 also carries a queryable `cards` table (the same finalized rows the store
+is built from, hash-diffed nightly under an explicit write budget) — the
+fallback target for queries the engine declines, mirroring upstream's
+engine→SQL architecture.
+
 The store's distribution layer is D1: the builder publishes ~70MB of chunk
 rows plus a manifest; each SearchEngine DO pulls the dump once per version,
 persists it in its own SQLite, and serves every query from memory. **Queries
@@ -137,8 +142,12 @@ Everything user-visible mirrors upstream byte-for-byte (the parser is gated on
 100% tree agreement with the Python parser across upstream's own test corpus).
 The complete list of intentional differences:
 
-- **No silent SQL fallback**: where upstream quietly falls back to Postgres
-  when the engine declines a query, this port returns a structured error.
+- **SQL fallback on D1**: upstream quietly falls back to Postgres when the
+  engine declines a query; this port does the same against a D1 `cards` table
+  the import maintains (responses carry `"compiled": "(d1 fallback)"` so the
+  path is observable). Until the table's first fill completes — it spans a
+  few nightly imports under the free plan's write metering — an engine
+  failure returns a structured error instead of a silently empty result.
 - **Fixed site title**: pages always say "Sylvan Librarian" instead of
   upstream's hostname-derived name (which could never produce it on our
   domains). The derivation port stays intact and tested in
