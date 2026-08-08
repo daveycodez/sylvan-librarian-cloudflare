@@ -9,7 +9,8 @@
 // per-invocation subrequest allowance.
 
 import * as wasm from "sylvan-engine-wasm";
-import type { Engine, EngineSearchOptions, EngineSearchResult, Env, StoreManifest } from "./types";
+import { kickBootstrap, readManifest } from "./manifest";
+import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
 import { EngineUnavailableError } from "./types";
 
 // Wasm panics must land in console.error, not die silently with the isolate.
@@ -18,8 +19,6 @@ wasm.__init_panic_hook();
 // How stale an isolate's view of the manifest may get before a background
 // re-check. Nightly publishes mean sub-hour propagation is plenty.
 const MANIFEST_RECHECK_MS = 5 * 60 * 1000;
-// Per-isolate rate limit on bootstrap kicks; the coordinator DO dedupes anyway.
-const BOOTSTRAP_KICK_INTERVAL_MS = 60 * 1000;
 const STORE_CACHE_URL = "https://sylvan-store.internal/";
 /** Chunk rows per D1 query while streaming the store (~2MB/query). */
 const CHUNK_ROWS_PER_QUERY = 2;
@@ -27,7 +26,6 @@ const CHUNK_ROWS_PER_QUERY = 2;
 let current: { storeKey: string; engine: Engine } | null = null;
 let loading: Promise<Engine> | null = null;
 let lastManifestCheck = 0;
-let lastBootstrapKick = 0;
 
 class WasmEngine implements Engine {
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
@@ -68,35 +66,13 @@ class WasmEngine implements Engine {
 	}
 }
 
-export async function readManifest(env: Env): Promise<StoreManifest | null> {
-	try {
-		const row = await env.STORE_DB.prepare("SELECT json FROM store_manifest WHERE id = 1").first<{ json: string }>();
-		if (!row) return null;
-		return JSON.parse(row.json) as StoreManifest;
-	} catch (err) {
-		// A fresh database has no tables yet — that is the bootstrap state, not
-		// an error. Anything else propagates.
-		if (String(err).includes("no such table")) return null;
-		throw err;
-	}
-}
+export { kickBootstrap, readManifest } from "./manifest";
 
 /** D1 blob columns arrive as ArrayBuffer (or a number array on older paths). */
 function asBytes(value: unknown): Uint8Array {
 	if (value instanceof ArrayBuffer) return new Uint8Array(value);
 	if (Array.isArray(value)) return Uint8Array.from(value as number[]);
 	throw new Error(`store chunk has unexpected blob type ${typeof value}`);
-}
-
-function kickBootstrap(env: Env, reason: string): void {
-	const now = Date.now();
-	if (now - lastBootstrapKick < BOOTSTRAP_KICK_INTERVAL_MS) return;
-	lastBootstrapKick = now;
-	const coordinator = env.IMPORT_COORDINATOR.get(env.IMPORT_COORDINATOR.idFromName("singleton"));
-	// Fire and forget; the DO serializes concurrent kicks from many isolates.
-	void coordinator.fetch(`https://coordinator/start-import?reason=${encodeURIComponent(reason)}`).catch((err) => {
-		console.error("Failed to kick bootstrap import:", err);
-	});
 }
 
 /** Stream the store bytes into wasm memory via the chunked loader. */

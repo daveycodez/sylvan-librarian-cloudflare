@@ -1,6 +1,7 @@
-// First-deploy bootstrap page: shown on HTML routes while the card index is
-// being built (empty R2 bucket → import container running). Auto-refreshes;
-// once the manifest lands, the normal UI takes over. This page is the one
+// First-deploy bootstrap page: shown on HTML routes (including the bare
+// homepage) while the card index is being built — empty D1, ImportCoordinator
+// DO running the in-Worker import. Auto-refreshes with the live phase; once
+// the manifest lands, the normal UI takes over. This page is the one
 // intentional addition to upstream's surface — upstream answers 503 here,
 // which is still what all JSON endpoints do.
 

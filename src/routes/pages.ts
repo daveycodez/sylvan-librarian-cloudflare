@@ -3,6 +3,8 @@
 // prefer_score_tuner, and the legacy index → / redirect
 // (api_resource.py:1494-1602, 1702-1728).
 
+import { kickBootstrap, readManifest } from "../engine/manifest";
+import { EngineUnavailableError } from "../engine/types";
 import { staticText } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
@@ -39,6 +41,22 @@ export async function rootHandler(
 	let headers: Record<string, string> = cacheHeader(3600);
 
 	const searchQuery = (bound.query as string | null) || (bound.q as string | null);
+	if (!searchQuery) {
+		// The bare homepage renders without the engine, which would silently
+		// hide a first-deploy bootstrap (its client-side fetches just fail).
+		// One cheap manifest read: no store yet → show the live "building card
+		// index" page instead, and make sure a homepage-only visitor still
+		// kicks the bootstrap off. A D1 hiccup must never take the homepage
+		// down, so any read error falls through to the normal render.
+		try {
+			if ((await readManifest(ctx.env)) === null) {
+				ctx.waitUntil(kickBootstrap(ctx.env, "bootstrap-homepage"));
+				throw new EngineUnavailableError("No store manifest in D1; import has been triggered", true);
+			}
+		} catch (err) {
+			if (err instanceof EngineUnavailableError) throw err;
+		}
+	}
 	if (searchQuery) {
 		try {
 			// Run the search server-side and embed results in the HTML.
