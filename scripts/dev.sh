@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 
 if ! bunx wrangler d1 execute sylvan-librarian --local -c wrangler.dev.jsonc \
         --command "SELECT 1 FROM store_manifest LIMIT 1" >/dev/null 2>&1; then
-    if [[ "${DEV_BOOTSTRAP:-}" != "worker" ]] && command -v cargo >/dev/null 2>&1; then
+    if [[ "${DEV_BOOTSTRAP:-}" != "worker" ]] && { command -v cargo >/dev/null 2>&1 || [[ -x "$HOME/.cargo/bin/cargo" ]]; }; then
         # Fast lane, automatic: your machine runs native code, so build the
         # store natively (same shared Rust as the production import) and seed
         # local D1 directly — a couple of minutes, mostly download — instead
