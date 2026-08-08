@@ -118,18 +118,52 @@ export function structuralHash(row: Record<string, unknown>): string {
 	return fnv1a64(JSON.stringify(stripped));
 }
 
-/** Refresh volatile columns for a set of rows (1 metered write per row). */
-export async function execVolatileUpdates(db: D1Database, rows: Record<string, unknown>[]): Promise<void> {
+/**
+ * True when a D1 error is the Workers Free plan's hard daily-limit stop.
+ * Cloudflare documents the behavior ("D1 API will return errors ... indicating
+ * that your daily limits have been exceeded") but not an exact code, so match
+ * the documented wording loosely — "exceeded" plus a daily/quota qualifier —
+ * without also matching unrelated errors ("exceeded CPU time limit", "too many
+ * SQL variables"). The adaptive write pacing keys off this signal.
+ */
+export function isDailyLimitError(err: unknown): boolean {
+	const msg = err instanceof Error ? `${err.message} ${String((err as { cause?: unknown }).cause ?? "")}` : String(err);
+	return /exceed/i.test(msg) && /daily|quota/i.test(msg);
+}
+
+/**
+ * Sum actual metered row writes from a batch's results (D1 reports them in
+ * each statement's `meta.rows_written`, index maintenance included). Falls
+ * back to `fallback` when the platform omits the meta (local sqlite shims).
+ */
+export function meteredWrites(results: { meta?: { rows_written?: number } }[], fallback: number): number {
+	let sum = 0;
+	let seen = false;
+	for (const r of results) {
+		const w = r.meta?.rows_written;
+		if (typeof w === "number") {
+			sum += w;
+			seen = true;
+		}
+	}
+	return seen ? sum : fallback;
+}
+
+/** Refresh volatile columns for a set of rows; returns metered writes. */
+export async function execVolatileUpdates(db: D1Database, rows: Record<string, unknown>[]): Promise<number> {
 	const sets = VOLATILE_COLUMNS.map((c) => `${c} = ?`).join(", ");
 	const stmt = db.prepare(`UPDATE cards SET ${sets} WHERE scryfall_id = ?`);
+	let writes = 0;
 	for (let at = 0; at < rows.length; at += 50) {
 		const slice = rows.slice(at, at + 50);
-		await db.batch(
+		const results = await db.batch(
 			slice.map((row) =>
 				stmt.bind(...VOLATILE_COLUMNS.map((c) => (row[c] as string | number | null) ?? null), String(row.scryfall_id)),
 			),
 		);
+		writes += meteredWrites(results, slice.length);
 	}
+	return writes;
 }
 
 /** calculate_devotion (card_query_nodes.py:463): per-color pip lists. */
@@ -176,13 +210,14 @@ export function cardsRowValues(row: Record<string, unknown>, hash: string): Reco
  * row carries 45 — one statement per row, batched 40 statements per call to
  * stay inside per-invocation subrequest budgets.
  */
-export async function execCardsUpserts(db: D1Database, rows: Record<string, unknown>[]): Promise<void> {
+export async function execCardsUpserts(db: D1Database, rows: Record<string, unknown>[]): Promise<number> {
 	const cols = CARD_COLUMNS.join(", ");
 	const placeholders = CARD_COLUMNS.map(() => "?").join(", ");
 	const stmt = db.prepare(`INSERT OR REPLACE INTO cards (${cols}) VALUES (${placeholders})`);
+	let writes = 0;
 	for (let at = 0; at < rows.length; at += 40) {
 		const slice = rows.slice(at, at + 40);
-		await db.batch(
+		const results = await db.batch(
 			slice.map((row) =>
 				stmt.bind(
 					...CARD_COLUMNS.map((col) => {
@@ -193,5 +228,9 @@ export async function execCardsUpserts(db: D1Database, rows: Record<string, unkn
 				),
 			),
 		);
+		// Each upsert lands ~2 metered writes (row + PK index) — the estimate
+		// only matters where meta is absent.
+		writes += meteredWrites(results, slice.length * 2);
 	}
+	return writes;
 }

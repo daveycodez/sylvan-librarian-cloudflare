@@ -184,7 +184,15 @@ export async function openStoreStream(
 	const cache = caches.default;
 
 	const hit = await cache.match(cacheKey);
-	if (hit?.body) return hit.body;
+	if (hit?.body) {
+		// Keys are content-addressed, but defend against a stale body anyway
+		// (dev state can pair an old cache with a newer database): on a length
+		// mismatch, drop the entry and rebuild from D1 rather than letting the
+		// wasm loader reject the stream mid-swap.
+		if (Number(hit.headers.get("content-length")) === expectedBytes) return hit.body;
+		await hit.body.cancel();
+		await cache.delete(cacheKey);
+	}
 
 	// Existence probe before caching: a manifest naming a store D1 no longer
 	// has must fail loudly, never serve a silently empty engine.

@@ -34,6 +34,8 @@ import {
 	ensureCardsSchema,
 	execCardsUpserts,
 	execVolatileUpdates,
+	isDailyLimitError,
+	meteredWrites,
 	structuralHash,
 } from "./fallback/cards-sync";
 
@@ -76,17 +78,24 @@ const LINES_PER_CALL = 2_000;
 const KEEP_STORES = 3;
 /** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
 const CARDS_SYNC_BATCHES = 4;
-/** Cards-table rows upserted per import run (override: CARDS_WRITE_BUDGET
- * var — paid plans can set it above the corpus size to fill in one run).
- * Each row costs ~2 metered D1 writes (row + PK index; the table carries no
- * secondary indexes for exactly this reason) against the free plan's
- * ~100k/day shared with the chunk publish — so the first fill of ~100k
- * printings spans two-to-three nightly runs. Steady-state deltas are tiny:
- * daily price/EDHREC churn is excluded from the structural hash and synced
- * separately with whatever budget remains (see VOLATILE_COLUMNS). */
-const CARDS_WRITE_BUDGET = 45_000;
-/** Rows whose volatile columns are refreshed per run once the table is
- * complete (~1 metered write each; full price-refresh cycle ≈ a week). */
+/** Cards-table write pacing is ADAPTIVE by default: a run writes until D1
+ * itself reports the free plan's hard daily-limit error (~100k metered rows
+ * written/day, index maintenance included, reset 00:00 UTC), then remembers
+ * where that ceiling sits so later runs pace below it without hitting the
+ * error again. A paid account never produces the error, so the whole table
+ * fills in the first run with zero configuration — this is how the import
+ * "detects" the plan, from the platform's own signal rather than an API
+ * token. The learned ceiling is re-probed monthly (CEILING_RELEARN_MS) so a
+ * free→paid upgrade is picked up automatically. Setting the
+ * CARDS_WRITE_BUDGET var opts out of all of this: a fixed metered-write cap
+ * per run (0 disables the fallback table entirely). */
+const CEILING_RELEARN_MS = 30 * 24 * 60 * 60 * 1000;
+/** Headroom kept under an observed daily limit (publish + deletes share it). */
+const CEILING_SAFETY = 0.9;
+const CEILING_FLOOR = 10_000;
+/** Volatile-column refresh rows per alarm slice — also the per-run total
+ * whenever a finite ceiling applies (full price-refresh cycle ≈ a week on
+ * the free plan; unmetered runs drain the whole corpus in these slices). */
 const VOLATILE_REFRESH_ROWS = 12_000;
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
@@ -229,7 +238,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		if (phase === "transform") detailBits.push(`${this.metaGet("lines_done") ?? 0} lines`);
 		if (phase === "publish") detailBits.push(`${this.metaGet("chunks_published") ?? 0} chunks`);
-		if (phase === "cards") detailBits.push(`${this.metaGet("cards_synced") ?? 0} rows synced`);
+		if (phase === "cards") {
+			detailBits.push(`${this.metaGet("cards_synced") ?? 0} rows synced`);
+			const volatileLeft = Number(this.metaGet("cards_volatile_left") ?? 0);
+			if (volatileLeft > 0) detailBits.push(`${volatileLeft} price refreshes left`);
+		}
 		// Same shape the container version exposed; the bootstrap page reads
 		// builder.phase and the routes pass the whole object through.
 		return Response.json({
@@ -258,6 +271,21 @@ export class ImportCoordinator extends DurableObject<Env> {
 				await this.ctx.storage.setAlarm(Date.now());
 			}
 		} catch (err) {
+			if (isDailyLimitError(err)) {
+				// D1's daily quota resets at 00:00 UTC — minutes of backoff can't
+				// clear it, so retrying is pure churn. Fail the run with the real
+				// reason; the next scheduled import restarts on fresh quota. (The
+				// cards phase absorbs this error itself in adaptive mode; reaching
+				// here means an earlier phase — publish — or a fixed
+				// CARDS_WRITE_BUDGET set above the account's actual daily limit.)
+				console.error(`Import stopped by D1 daily limit in phase ${phase}:`, err);
+				run.state = "failed";
+				run.finishedAt = new Date().toISOString();
+				run.detail = `${phase}: D1 daily write limit reached — the next scheduled import retries on fresh quota`;
+				this.metaSet("phase", "idle");
+				await this.ctx.storage.put("run", run);
+				return;
+			}
 			const retries = Number(this.metaGet("retries") ?? 0) + 1;
 			if (retries <= MAX_RETRIES) {
 				const backoffMs = Math.min(60_000, 1000 * 2 ** retries);
@@ -982,11 +1010,37 @@ export class ImportCoordinator extends DurableObject<Env> {
 	//
 	// Maintains the queryable `cards` table the D1 SQL fallback reads — the
 	// same finalized ENGINE_COLUMNS rows the store was built from, hash-diffed
-	// so steady-state nightly writes are small, under an explicit write budget
-	// (D1 free meters ~100k rows written/day, index maintenance included).
-	// The first fill of ~100k printings therefore spans a few nightly runs;
+	// so steady-state nightly writes are small. Write pacing is adaptive (see
+	// the CEILING_* constants): unlimited until D1's own daily-limit error
+	// reveals a free-plan account, so paid accounts fill the table in one run
+	// and free accounts learn their real ceiling instead of guessing.
 	// fallback_meta.complete flips only when the table matches the import, and
 	// the Worker keeps upstream's structured error until then.
+
+	/**
+	 * Resolve this run's metered-write ceiling. CARDS_WRITE_BUDGET set →
+	 * fixed cap (0 disables the table). Unset → adaptive: Infinity until a
+	 * run has observed the daily-limit error, then the learned ceiling until
+	 * it expires (CEILING_RELEARN_MS) and the next run probes again.
+	 */
+	private async writeCeiling(): Promise<{ fixed: boolean; ceiling: number }> {
+		const parsed = Number.parseInt((this.env as { CARDS_WRITE_BUDGET?: string }).CARDS_WRITE_BUDGET ?? "", 10);
+		if (!Number.isNaN(parsed)) return { fixed: true, ceiling: parsed };
+		const learned = await this.ctx.storage.get<{ ceiling: number; learnedAt: string }>("d1_write_ceiling");
+		if (!learned) return { fixed: false, ceiling: Number.POSITIVE_INFINITY };
+		if (Date.now() - Date.parse(learned.learnedAt) > CEILING_RELEARN_MS) {
+			await this.ctx.storage.delete("d1_write_ceiling");
+			return { fixed: false, ceiling: Number.POSITIVE_INFINITY };
+		}
+		return { fixed: false, ceiling: learned.ceiling };
+	}
+
+	/** Remember where D1's daily limit interrupted us, with safety headroom. */
+	private async learnCeiling(writesUsed: number): Promise<void> {
+		const ceiling = Math.max(CEILING_FLOOR, Math.floor(writesUsed * CEILING_SAFETY));
+		await this.ctx.storage.put("d1_write_ceiling", { ceiling, learnedAt: new Date().toISOString() });
+		console.warn(`D1 daily write limit hit after ~${writesUsed} metered writes; learned per-run ceiling ${ceiling}`);
+	}
 
 	private async stepCards(): Promise<void> {
 		const db = this.env.STORE_DB;
@@ -994,6 +1048,41 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const synced = Number(this.metaGet("cards_synced") ?? 0);
 		const writesUsed = Number(this.metaGet("cards_writes_used") ?? 0);
 		const staged = Number(this.metaGet("staged_rows") ?? 0);
+		const { fixed, ceiling } = await this.writeCeiling();
+		const completeDetail = () =>
+			`published ${this.storeKey()} (${this.metaGet("build_card_count")} cards, ${staged} printings; fallback table complete)`;
+
+		// Volatile drain: the table is already complete for this store version;
+		// remaining alarm slices refresh price/EDHREC columns for the rows the
+		// ceiling allows (the whole corpus when unmetered).
+		const volatileLeft = Number(this.metaGet("cards_volatile_left") ?? 0);
+		if (volatileLeft > 0) {
+			const headroom = Number.isFinite(ceiling) ? Math.max(0, ceiling - writesUsed) : volatileLeft;
+			const want = Math.min(volatileLeft, VOLATILE_REFRESH_ROWS, headroom);
+			if (want <= 0) {
+				await this.finishRun(completeDetail());
+				return;
+			}
+			let refreshed: { rows: number; writes: number };
+			try {
+				refreshed = await this.refreshVolatile(want, staged);
+			} catch (err) {
+				if (!fixed && isDailyLimitError(err)) {
+					await this.learnCeiling(writesUsed);
+					await this.finishRun(`${completeDetail()} — daily write limit reached mid price-refresh`);
+					return;
+				}
+				throw err;
+			}
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("cards_volatile_left", String(Math.max(0, volatileLeft - refreshed.rows)));
+				this.metaSet("cards_writes_used", String(writesUsed + refreshed.writes));
+			});
+			if (refreshed.rows === 0 || volatileLeft - refreshed.rows <= 0) {
+				await this.finishRun(completeDetail());
+			}
+			return;
+		}
 
 		if (synced === 0) {
 			await ensureCardsSchema(db);
@@ -1015,15 +1104,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return;
 		}
 
-		// 0 is a meaningful value: it disables the fallback table entirely
-		// (fallback_meta.complete never flips; the engine-only behavior stands).
-		const parsedBudget = Number.parseInt((this.env as { CARDS_WRITE_BUDGET?: string }).CARDS_WRITE_BUDGET ?? "", 10);
-		const writeBudget = Number.isNaN(parsedBudget) ? CARDS_WRITE_BUDGET : parsedBudget;
-		if (writesUsed >= writeBudget) {
-			// Budget exhausted: finish the run with the table incomplete; the
-			// next nightly import continues from its own fresh diff.
+		// A CARDS_WRITE_BUDGET of 0 is meaningful: it disables the fallback
+		// table entirely (fallback_meta.complete never flips; the engine-only
+		// behavior stands). A learned ceiling ends the run the same way — the
+		// next nightly import continues from its own fresh diff.
+		if (writesUsed >= ceiling) {
 			await this.finishRun(
-				`published ${this.storeKey()}; cards table ${synced}/${staged} rows synced (write budget reached — completes over upcoming imports)`,
+				`published ${this.storeKey()}; cards table ${synced}/${staged} rows synced (write ${fixed ? "budget" : "ceiling"} reached — completes over upcoming imports)`,
 			);
 			return;
 		}
@@ -1036,7 +1123,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			)
 			.toArray();
 		let processed = 0;
-		let writes = 0;
 		const upserts: Record<string, unknown>[] = [];
 		for (const batch of batchRows) {
 			for (const blob of splitBatch(new Uint8Array(batch.bytes as ArrayBuffer))) {
@@ -1048,13 +1134,27 @@ export class ImportCoordinator extends DurableObject<Env> {
 				const hash = structuralHash(row);
 				if (this.cardsHashes.get(id) !== hash) {
 					upserts.push(cardsRowValues(row, hash));
-					writes++;
 				}
 				processed++;
 			}
 		}
+		let writes = 0;
 		if (upserts.length > 0) {
-			await execCardsUpserts(db, upserts);
+			try {
+				writes = await execCardsUpserts(db, upserts);
+			} catch (err) {
+				if (!fixed && isDailyLimitError(err)) {
+					// The probe found the free plan's daily limit. Remember it and
+					// finish cleanly — the table completes over upcoming imports,
+					// which pace under the learned ceiling and never error again.
+					await this.learnCeiling(writesUsed);
+					await this.finishRun(
+						`published ${this.storeKey()}; cards table ${synced}/${staged} rows synced (D1 daily write limit reached — learned pacing for upcoming imports)`,
+					);
+					return;
+				}
+				throw err;
+			}
 		}
 
 		const done = batchRows.length < CARDS_SYNC_BATCHES;
@@ -1067,32 +1167,53 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		// All rows examined: remove cards this import no longer carries, then
 		// mark the fallback complete for this store version.
-		const stale = await db.prepare("SELECT scryfall_id FROM cards").all<{ scryfall_id: string }>();
-		const deletions = (stale.results ?? []).map((r) => r.scryfall_id).filter((id) => !this.cardsSeen?.has(id));
-		for (let at = 0; at < deletions.length; at += 50) {
-			const slice = deletions.slice(at, at + 50);
-			await db.batch(slice.map((id) => db.prepare("DELETE FROM cards WHERE scryfall_id = ?").bind(id)));
+		let tailWrites = 0;
+		try {
+			const stale = await db.prepare("SELECT scryfall_id FROM cards").all<{ scryfall_id: string }>();
+			const deletions = (stale.results ?? []).map((r) => r.scryfall_id).filter((id) => !this.cardsSeen?.has(id));
+			for (let at = 0; at < deletions.length; at += 50) {
+				const slice = deletions.slice(at, at + 50);
+				const results = await db.batch(
+					slice.map((id) => db.prepare("DELETE FROM cards WHERE scryfall_id = ?").bind(id)),
+				);
+				tailWrites += meteredWrites(results, slice.length);
+			}
+			await db
+				.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 1, ?)")
+				.bind(this.storeKey(), staged)
+				.run();
+		} catch (err) {
+			if (!fixed && isDailyLimitError(err)) {
+				await this.learnCeiling(writesUsed + writes + tailWrites);
+				await this.finishRun(
+					`published ${this.storeKey()}; cards table ${synced + processed}/${staged} rows synced (D1 daily write limit reached — learned pacing for upcoming imports)`,
+				);
+				return;
+			}
+			throw err;
 		}
-		await db
-			.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 1, ?)")
-			.bind(this.storeKey(), staged)
-			.run();
 
-		// Leftover budget refreshes volatile columns (prices, EDHREC) for a
-		// rotating slice of rows — structural sync never sees that churn.
-		const leftover = Math.min(VOLATILE_REFRESH_ROWS, Math.max(0, writeBudget - (writesUsed + writes)));
-		if (leftover > 0) {
-			await this.refreshVolatile(leftover, staged);
+		// Queue the volatile-column refresh (prices, EDHREC — churn the
+		// structural sync never sees): everything the ceiling still allows, the
+		// whole corpus when unmetered, drained in alarm-sized slices above.
+		const used = writesUsed + writes + tailWrites;
+		const remaining = Number.isFinite(ceiling) ? Math.max(0, ceiling - used) : staged;
+		const target = Math.min(staged, Number.isFinite(ceiling) ? Math.min(VOLATILE_REFRESH_ROWS, remaining) : staged);
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("cards_writes_used", String(used));
+			this.metaSet("cards_volatile_left", String(target));
+		});
+		if (target <= 0) {
+			await this.finishRun(completeDetail());
 		}
-		await this.finishRun(
-			`published ${this.storeKey()} (${this.metaGet("build_card_count")} cards, ${staged} printings; fallback table complete)`,
-		);
 	}
 
-	/** Rotate volatile-column refreshes through the corpus, `budget` rows/run. */
-	private async refreshVolatile(budget: number, staged: number): Promise<void> {
-		if (staged === 0) return;
-		const start = Number(this.metaGet("volatile_pos") ?? 0) % staged;
+	/** Rotate volatile-column refreshes through the corpus, `budget` rows/call.
+	 * The rotation cursor lives in durable KV (not the meta table, which every
+	 * run clears) so the cycle genuinely advances across imports. */
+	private async refreshVolatile(budget: number, staged: number): Promise<{ rows: number; writes: number }> {
+		if (staged === 0) return { rows: 0, writes: 0 };
+		const start = ((await this.ctx.storage.get<number>("volatile_pos")) ?? 0) % staged;
 		const wanted = Math.min(budget, staged);
 		const picks: Record<string, unknown>[] = [];
 		let index = 0;
@@ -1111,9 +1232,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			}
 			if (start + wanted <= staged) break; // no wrap needed
 		}
-		await execVolatileUpdates(this.env.STORE_DB, picks);
-		this.metaSet("volatile_pos", String((start + picks.length) % staged));
+		const writes = await execVolatileUpdates(this.env.STORE_DB, picks);
+		await this.ctx.storage.put("volatile_pos", (start + picks.length) % staged);
 		console.log(`Volatile refresh: ${picks.length} rows from position ${start}`);
+		return { rows: picks.length, writes };
 	}
 
 	/** In-memory diff basis for the cards sync (rebuilt if the DO evicts). */
