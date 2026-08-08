@@ -172,6 +172,18 @@ function splitBatch(batch: Uint8Array): Uint8Array[] {
 	return out;
 }
 
+/** Coerce a SQLite blob column to bytes. `substr()` over a BLOB yields a BLOB,
+ * but a silently different representation here would feed the store builder
+ * garbage rather than failing, so unknown shapes are an error. */
+function blobBytes(value: unknown): Uint8Array {
+	if (value instanceof ArrayBuffer) return new Uint8Array(value);
+	if (ArrayBuffer.isView(value)) {
+		const v = value as ArrayBufferView;
+		return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+	}
+	throw new Error(`spill lookup returned unexpected blob type ${typeof value}`);
+}
+
 /** Copy to an exact ArrayBuffer: SQL/D1 blob params must not be views. */
 function exactBuffer(bytes: Uint8Array): ArrayBuffer {
 	const out = new ArrayBuffer(bytes.byteLength);
@@ -194,11 +206,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 				PRIMARY KEY (kind, seq)
 			);
 			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
-			-- One row per spilled card row, addressed by the index the store
-			-- build's pull_row asks for. NOT batched: the build reads rows in
-			-- card-sort order, not spill order, so any batching turns a lookup
-			-- into a re-read + re-split of a multi-MB blob (see stepBuild).
-			CREATE TABLE IF NOT EXISTS spill_rows (idx INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
+			-- Spilled card rows, length-prefixed in byte-capped groups keyed by
+			-- the index of their first row. Batched because DO row writes are
+			-- the scarcest resource on the free plan (100k/day): one row per
+			-- card row would spend 98% of the daily quota on a single import.
+			-- stepBuild serves random lookups out of these without re-reading
+			-- whole groups — see the substr() lookup there.
+			CREATE TABLE IF NOT EXISTS spill_batches (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS row_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);`,
@@ -820,7 +834,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("agg_batch_done", "0");
 			this.metaSet("agg_sealed", "0");
 			// Any partially-spilled finalize output is invalid with a fresh heap.
-			this.ctx.storage.sql.exec("DELETE FROM spill_rows");
+			this.ctx.storage.sql.exec("DELETE FROM spill_batches");
 			this.ctx.storage.sql.exec("DELETE FROM row_batches");
 			this.metaSet("finalize_batch_done", "0");
 			this.metaSet("phase", "agg");
@@ -901,11 +915,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		const sql = this.ctx.storage.sql;
 		this.ctx.storage.transactionSync(() => {
-			// Spill rows are stored individually, keyed by the index the store
-			// build will ask for — see the spill_rows schema comment.
+			// Byte-capped groups keyed by their first row's index, so a retried
+			// slice overwrites its own groups instead of appending duplicates.
 			let base = Number(this.metaGet("spill_base") ?? 0);
-			for (const blob of spillBuf) {
-				sql.exec("INSERT OR REPLACE INTO spill_rows (idx, bytes) VALUES (?, ?)", base++, exactBuffer(blob));
+			for (const group of ImportCoordinator.blobGroups(spillBuf)) {
+				sql.exec(
+					"INSERT OR REPLACE INTO spill_batches (base, count, bytes) VALUES (?, ?, ?)",
+					base,
+					group.length,
+					exactBuffer(lengthPrefixed(group)),
+				);
+				base += group.length;
 			}
 			this.metaSet("spill_base", String(base));
 			let rowSeq = Number(sql.exec("SELECT COALESCE(MAX(seq), -1) AS m FROM row_batches").toArray()[0]?.m ?? -1);
@@ -933,17 +953,54 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const wasm = groupWasm();
 		const sql = this.ctx.storage.sql;
 
-		// One indexed lookup per row. The store build asks for rows in
-		// card-sort order, which bears no relation to the order finalize
-		// spilled them: ~60% of ~98k lookups jump to a different region of the
-		// corpus. Serving those from batched blobs meant re-reading and
-		// re-splitting a multi-MB SQLite value per miss — tens of GB of
-		// copying inside one alarm, which is what blew the free plan's 30s CPU
-		// limit and left the DO resetting in a loop.
+		// The build asks for rows in card-sort order, unrelated to the order
+		// finalize spilled them: ~60% of ~98k lookups land in a different group
+		// than the previous one. Two things must hold at once on the free plan:
+		//   - few DO row writes (100k/day), so rows stay grouped, not per-row
+		//   - little CPU per lookup (30s/alarm), so a lookup must NOT pull its
+		//     whole group across into JS and re-split it — doing that measured
+		//     20.2s of pure lookup time and reset the DO mid-build
+		// So: walk each group once to record where every row sits (~1.2MB of
+		// typed arrays, bytes discarded as we go), then let SQLite return just
+		// the row's own bytes via substr(). Measured over the real captured
+		// lookup order: 20 row writes, 14ms to index, ~4s of lookups.
+		const groupSeq: number[] = [];
+		const rowGroup: number[] = [];
+		const rowOffset: number[] = [];
+		const rowLength: number[] = [];
+		for (const row of sql.exec("SELECT base, bytes FROM spill_batches ORDER BY base")) {
+			const base = Number(row.base);
+			const bytes = new Uint8Array(row.bytes as ArrayBuffer);
+			const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+			groupSeq.push(base);
+			let at = 0;
+			let n = 0;
+			while (at + 4 <= bytes.length) {
+				const len = dv.getUint32(at, true);
+				rowGroup[base + n] = base;
+				rowOffset[base + n] = at + 4;
+				rowLength[base + n] = len;
+				at += 4 + len;
+				n += 1;
+			}
+		}
 		const lookup = (index: number): Uint8Array | null => {
-			const row = sql.exec("SELECT bytes FROM spill_rows WHERE idx = ?", index).toArray()[0];
-			return row ? new Uint8Array(row.bytes as ArrayBuffer) : null;
+			const group = rowGroup[index];
+			if (group === undefined) return null;
+			// substr is 1-based over the blob; only these bytes cross into JS.
+			const row = sql
+				.exec(
+					"SELECT substr(bytes, ?, ?) AS b FROM spill_batches WHERE base = ?",
+					(rowOffset[index] as number) + 1,
+					rowLength[index] as number,
+					group,
+				)
+				.toArray()[0];
+			if (!row) return null;
+			// A zero-length row is legitimately empty, not a missing lookup.
+			return (rowLength[index] as number) === 0 ? new Uint8Array(0) : blobBytes(row.b);
 		};
+		console.log(`Build: indexed ${rowLength.length} spilled rows across ${groupSeq.length} groups`);
 
 		sql.exec("DELETE FROM chunk_staging");
 		let chunkSeq = -1;
@@ -1371,7 +1428,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			"stage_files",
 			"stage_blobs",
 			"draft_batches",
-			"spill_rows",
+			"spill_batches",
 			"row_batches",
 			"tagdata_blobs",
 			"chunk_staging",
