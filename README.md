@@ -192,11 +192,13 @@ needs a toolchain (1.88+) with the `wasm32-unknown-unknown` target;
 ```bash
 bun install
 bun dev                 # full site at localhost — UI, /search, everything.
-                        # First run self-bootstraps the card store through the
-                        # real import pipeline (local D1 + DO SQLite + alarms,
-                        # all emulated — the same code path as production);
-                        # later runs start instantly. In a hurry or offline:
-bun run seed:local      # native build of the same pipeline, seeded into local D1
+                        # First run builds the card store NATIVELY (~2-3 min,
+                        # same shared Rust as production) and seeds local D1;
+                        # later runs start instantly. DEV_BOOTSTRAP=worker
+                        # forces the production-identical in-Worker import
+                        # instead (local D1 + DO SQLite + alarms, ~10-20 min —
+                        # also what fills the SQL-fallback cards table locally)
+bun run seed:local      # the native build + seed, runnable on its own
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck
