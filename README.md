@@ -145,9 +145,13 @@ The complete list of intentional differences:
 - **SQL fallback on D1**: upstream quietly falls back to Postgres when the
   engine declines a query; this port does the same against a D1 `cards` table
   the import maintains (responses carry `"compiled": "(d1 fallback)"` so the
-  path is observable). Until the table's first fill completes — it spans a
-  few nightly imports under the free plan's write metering — an engine
-  failure returns a structured error instead of a silently empty result.
+  path is observable). The free plan meters ~100k row writes/day (indexes
+  included) on D1 and Durable Object SQLite alike, so the table's one-time
+  first fill spans two-to-three nightly imports; until it completes, an
+  engine failure returns a structured error instead of a silently empty
+  result. Steady-state deltas are tiny — daily price/EDHREC churn is synced
+  separately from structural changes — and on a paid plan the
+  `CARDS_WRITE_BUDGET` var lifts the pacing so the fill lands in one run.
 - **Fixed site title**: pages always say "Sylvan Librarian" instead of
   upstream's hostname-derived name (which could never produce it on our
   domains). The derivation port stays intact and tested in

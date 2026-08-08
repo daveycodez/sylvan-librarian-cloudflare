@@ -29,7 +29,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import type { Env } from "./engine/types";
-import { cardsRowValues, ensureCardsSchema, execCardsUpserts, fnv1a64 } from "./fallback/cards-sync";
+import {
+	cardsRowValues,
+	ensureCardsSchema,
+	execCardsUpserts,
+	execVolatileUpdates,
+	structuralHash,
+} from "./fallback/cards-sync";
 
 interface RunRecord {
 	state: "idle" | "starting" | "running" | "done" | "failed";
@@ -70,11 +76,18 @@ const LINES_PER_CALL = 2_000;
 const KEEP_STORES = 3;
 /** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
 const CARDS_SYNC_BATCHES = 4;
-/** Cards-table rows upserted per import run. Each row costs ~3 metered D1
- * writes (row + 2 indexes) against the free plan's ~100k/day, shared with
- * the chunk publish — so the first fill of ~100k printings deliberately
- * spans a few nightly runs; hash-diffed steady-state deltas fit in one. */
-const CARDS_WRITE_BUDGET = 25_000;
+/** Cards-table rows upserted per import run (override: CARDS_WRITE_BUDGET
+ * var — paid plans can set it above the corpus size to fill in one run).
+ * Each row costs ~2 metered D1 writes (row + PK index; the table carries no
+ * secondary indexes for exactly this reason) against the free plan's
+ * ~100k/day shared with the chunk publish — so the first fill of ~100k
+ * printings spans two-to-three nightly runs. Steady-state deltas are tiny:
+ * daily price/EDHREC churn is excluded from the structural hash and synced
+ * separately with whatever budget remains (see VOLATILE_COLUMNS). */
+const CARDS_WRITE_BUDGET = 45_000;
+/** Rows whose volatile columns are refreshed per run once the table is
+ * complete (~1 metered write each; full price-refresh cycle ≈ a week). */
+const VOLATILE_REFRESH_ROWS = 12_000;
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
 const PARSE_COVERAGE_THRESHOLD = 0.8;
@@ -1002,7 +1015,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return;
 		}
 
-		if (writesUsed >= CARDS_WRITE_BUDGET) {
+		const writeBudget =
+			Number.parseInt((this.env as { CARDS_WRITE_BUDGET?: string }).CARDS_WRITE_BUDGET ?? "", 10) || CARDS_WRITE_BUDGET;
+		if (writesUsed >= writeBudget) {
 			// Budget exhausted: finish the run with the table incomplete; the
 			// next nightly import continues from its own fresh diff.
 			await this.finishRun(
@@ -1027,7 +1042,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				const row = JSON.parse(rowJson) as Record<string, unknown>;
 				const id = String(row.scryfall_id);
 				this.cardsSeen.add(id);
-				const hash = fnv1a64(rowJson);
+				// Structural hash only: daily price/EDHREC churn is not a delta.
+				const hash = structuralHash(row);
 				if (this.cardsHashes.get(id) !== hash) {
 					upserts.push(cardsRowValues(row, hash));
 					writes++;
@@ -1059,9 +1075,43 @@ export class ImportCoordinator extends DurableObject<Env> {
 			.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 1, ?)")
 			.bind(this.storeKey(), staged)
 			.run();
+
+		// Leftover budget refreshes volatile columns (prices, EDHREC) for a
+		// rotating slice of rows — structural sync never sees that churn.
+		const leftover = Math.min(VOLATILE_REFRESH_ROWS, Math.max(0, writeBudget - (writesUsed + writes)));
+		if (leftover > 0) {
+			await this.refreshVolatile(leftover, staged);
+		}
 		await this.finishRun(
 			`published ${this.storeKey()} (${this.metaGet("build_card_count")} cards, ${staged} printings; fallback table complete)`,
 		);
+	}
+
+	/** Rotate volatile-column refreshes through the corpus, `budget` rows/run. */
+	private async refreshVolatile(budget: number, staged: number): Promise<void> {
+		if (staged === 0) return;
+		const start = Number(this.metaGet("volatile_pos") ?? 0) % staged;
+		const wanted = Math.min(budget, staged);
+		const picks: Record<string, unknown>[] = [];
+		let index = 0;
+		// Two passes cover the wrap; row_batches still hold this import's rows.
+		for (let pass = 0; pass < 2 && picks.length < wanted; pass++) {
+			index = 0;
+			for (const batch of this.ctx.storage.sql.exec("SELECT bytes FROM row_batches ORDER BY seq").toArray()) {
+				for (const blob of splitBatch(new Uint8Array(batch.bytes as ArrayBuffer))) {
+					const inWindow = pass === 0 ? index >= start : index < (start + wanted) % staged && start + wanted > staged;
+					if (inWindow && picks.length < wanted) {
+						picks.push(JSON.parse(new TextDecoder().decode(blob)) as Record<string, unknown>);
+					}
+					index++;
+				}
+				if (picks.length >= wanted && pass === 0 && start + wanted <= staged) break;
+			}
+			if (start + wanted <= staged) break; // no wrap needed
+		}
+		await execVolatileUpdates(this.env.STORE_DB, picks);
+		this.metaSet("volatile_pos", String((start + picks.length) % staged));
+		console.log(`Volatile refresh: ${picks.length} rows from position ${start}`);
 	}
 
 	/** In-memory diff basis for the cards sync (rebuilt if the DO evicts). */

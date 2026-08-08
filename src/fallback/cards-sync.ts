@@ -83,15 +83,53 @@ const JSON_COLUMNS = new Set([
 const COLOR_BITS: Record<string, number> = { W: 16, U: 8, B: 4, R: 2, G: 1 };
 
 export async function ensureCardsSchema(db: D1Database): Promise<void> {
+	// No secondary indexes, deliberately: every index doubles the metered
+	// write cost of the first fill and of deltas (D1 counts index
+	// maintenance as rows written), while the fallback's rare queries scan
+	// ~100k rows in a few ms either way. The PK's implicit index is the only
+	// write amplification.
 	const columns = CARD_COLUMNS.map((c) => (c === "scryfall_id" ? `${c} TEXT PRIMARY KEY` : c)).join(", ");
 	await db.batch([
 		db.prepare(`CREATE TABLE IF NOT EXISTS cards (${columns})`),
-		db.prepare("CREATE INDEX IF NOT EXISTS idx_cards_oracle ON cards (oracle_id)"),
-		db.prepare("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards (card_name)"),
+		db.prepare("DROP INDEX IF EXISTS idx_cards_oracle"),
+		db.prepare("DROP INDEX IF EXISTS idx_cards_name"),
 		db.prepare(
 			"CREATE TABLE IF NOT EXISTS fallback_meta (id INTEGER PRIMARY KEY CHECK (id = 1), store_key TEXT NOT NULL, complete INTEGER NOT NULL, synced_rows INTEGER NOT NULL)",
 		),
 	]);
+}
+
+/**
+ * Columns that churn on nearly every card, nearly every day (Scryfall
+ * refreshes prices and EDHREC ranks daily). They are excluded from the
+ * structural row hash so daily churn does not count as a delta — otherwise
+ * the nightly diff would exceed the write budget forever and completeness
+ * would flap. They still land with every structural upsert, and the sync's
+ * leftover budget refreshes them for a rotating slice of rows each night
+ * (the engine's in-memory store always has fresh values; only rare fallback
+ * answers can be a couple of days stale on prices).
+ */
+export const VOLATILE_COLUMNS = ["price_usd", "price_eur", "price_tix", "edhrec_rank", "cubecobra_score"] as const;
+
+/** The structural content hash: the row with volatile fields nulled out. */
+export function structuralHash(row: Record<string, unknown>): string {
+	const stripped: Record<string, unknown> = { ...row };
+	for (const col of VOLATILE_COLUMNS) stripped[col] = null;
+	return fnv1a64(JSON.stringify(stripped));
+}
+
+/** Refresh volatile columns for a set of rows (1 metered write per row). */
+export async function execVolatileUpdates(db: D1Database, rows: Record<string, unknown>[]): Promise<void> {
+	const sets = VOLATILE_COLUMNS.map((c) => `${c} = ?`).join(", ");
+	const stmt = db.prepare(`UPDATE cards SET ${sets} WHERE scryfall_id = ?`);
+	for (let at = 0; at < rows.length; at += 50) {
+		const slice = rows.slice(at, at + 50);
+		await db.batch(
+			slice.map((row) =>
+				stmt.bind(...VOLATILE_COLUMNS.map((c) => (row[c] as string | number | null) ?? null), String(row.scryfall_id)),
+			),
+		);
+	}
 }
 
 /** calculate_devotion (card_query_nodes.py:463): per-color pip lists. */
