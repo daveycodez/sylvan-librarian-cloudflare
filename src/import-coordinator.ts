@@ -1015,8 +1015,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return;
 		}
 
-		const writeBudget =
-			Number.parseInt((this.env as { CARDS_WRITE_BUDGET?: string }).CARDS_WRITE_BUDGET ?? "", 10) || CARDS_WRITE_BUDGET;
+		// 0 is a meaningful value: it disables the fallback table entirely
+		// (fallback_meta.complete never flips; the engine-only behavior stands).
+		const parsedBudget = Number.parseInt((this.env as { CARDS_WRITE_BUDGET?: string }).CARDS_WRITE_BUDGET ?? "", 10);
+		const writeBudget = Number.isNaN(parsedBudget) ? CARDS_WRITE_BUDGET : parsedBudget;
 		if (writesUsed >= writeBudget) {
 			// Budget exhausted: finish the run with the table incomplete; the
 			// next nightly import continues from its own fresh diff.

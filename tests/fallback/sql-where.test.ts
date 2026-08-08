@@ -11,23 +11,36 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { calculateDevotion, cardsRowValues, fnv1a64 } from "../../src/fallback/cards-sync";
-import { compileWhere } from "../../src/fallback/sql-where";
+import { compileWhere, SqlUnsupportedError } from "../../src/fallback/sql-where";
 import { parseScryfallQuery } from "../../src/parser";
 import corpus from "../parser/fixtures/corpus.json";
 
 // ── corpus coverage ──────────────────────────────────────────────────────────
 
 describe("corpus coverage", () => {
-	test("every corpus tree compiles", () => {
+	test("every corpus tree compiles or is a deliberate boolean-position decline", () => {
 		let compiled = 0;
+		const declined: string[] = [];
 		for (const item of corpus as { query: string; tree?: string }[]) {
 			if (!item.tree) continue;
 			const tree = JSON.parse(item.tree);
-			const out = compileWhere(tree);
-			expect(out.sql.length).toBeGreaterThan(0);
-			compiled++;
+			try {
+				const out = compileWhere(tree);
+				expect(out.sql.length).toBeGreaterThan(0);
+				compiled++;
+			} catch (err) {
+				if (!(err instanceof SqlUnsupportedError) || !String(err).includes("boolean position")) {
+					throw err;
+				}
+				// Degenerate arithmetic/value roots (`1`, `cmc+power`, ...):
+				// Postgres rejects a non-boolean WHERE, so upstream errors on
+				// these too — the fallback declines rather than inventing
+				// SQLite truthiness semantics.
+				declined.push(item.query);
+			}
 		}
 		expect(compiled).toBeGreaterThan(500);
+		expect(declined.length).toBeLessThanOrEqual(15);
 	});
 });
 

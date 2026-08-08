@@ -118,6 +118,35 @@ class Compiler {
 		return "?";
 	}
 
+	/**
+	 * Boolean context: the query root and every AND/OR/NOT operand. Postgres
+	 * rejects a non-boolean WHERE operand (upstream 500s on queries like
+	 * `cmc+power` or a bare `1`), while SQLite would silently apply numeric
+	 * truthiness — so boolean positions accept only predicate-shaped nodes
+	 * and anything else is declined, keeping the fallback's failure surface
+	 * identical to upstream's.
+	 */
+	compileBool(node: WireNode): string {
+		switch (node.node_type) {
+			case "TrueNode":
+			case "AndNode":
+			case "OrNode":
+			case "NotNode":
+			case "ExactNameNode":
+				return this.compile(node);
+			case "CardBinaryOperatorNode":
+			case "BinaryOperatorNode": {
+				const op = String(node.kwargs.op);
+				if (["+", "-", "*", "/"].includes(op)) {
+					throw new SqlUnsupportedError(`arithmetic expression in boolean position (${op})`);
+				}
+				return this.compile(node);
+			}
+			default:
+				throw new SqlUnsupportedError(`${node.node_type} in boolean position`);
+		}
+	}
+
 	compile(node: WireNode): string {
 		switch (node.node_type) {
 			case "TrueNode":
@@ -128,7 +157,7 @@ class Compiler {
 			case "OrNode":
 				return this.nary(node, "OR", "FALSE");
 			case "NotNode":
-				return `(NOT ${this.compile(node.kwargs.operand as WireNode)})`;
+				return `(NOT ${this.compileBool(node.kwargs.operand as WireNode)})`;
 			case "ExactNameNode": {
 				// Case-insensitive exact match; value is pre-lowered in the wire
 				// tree, LIKE metacharacters escaped so it matches literally.
@@ -159,8 +188,8 @@ class Compiler {
 	private nary(node: WireNode, op: "AND" | "OR", empty: string): string {
 		const operands = (node.kwargs.operands as WireNode[]) ?? [];
 		if (operands.length === 0) return empty;
-		if (operands.length === 1) return this.compile(operands[0] as WireNode);
-		return `(${operands.map((o) => this.compile(o)).join(` ${op} `)})`;
+		if (operands.length === 1) return this.compileBool(operands[0] as WireNode);
+		return `(${operands.map((o) => this.compileBool(o)).join(` ${op} `)})`;
 	}
 
 	private binary(node: WireNode): string {
@@ -516,6 +545,6 @@ class Compiler {
 /** Compile a wire filter tree (the parser's serialized output) to SQLite. */
 export function compileWhere(tree: unknown): CompiledWhere {
 	const compiler = new Compiler();
-	const sql = compiler.compile(tree as WireNode);
+	const sql = compiler.compileBool(tree as WireNode);
 	return { sql, params: compiler.params, postFilters: compiler.postFilters };
 }
