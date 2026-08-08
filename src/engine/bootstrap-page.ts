@@ -31,7 +31,7 @@ interface StatusShape {
 		phase?: string;
 		detail?: string;
 		printings?: number;
-		retrying?: { attempt?: number; of?: number };
+		retrying?: { attempt?: number; of?: number; error?: string };
 	};
 }
 
@@ -81,7 +81,7 @@ start.</p>
 		const warn = retrying
 			? `<p class="warn">Retrying after an error (attempt ${esc(String(retrying.attempt))} of
 ${esc(String(retrying.of))}). Transient failures are expected; the run only fails
-if the retries run out.</p>`
+if the retries run out.</p>${retrying.error ? `<pre>${esc(retrying.error)}</pre>` : ""}`
 			: "";
 		body = `<div class="spin"></div>
 <h1>Building the card index</h1>

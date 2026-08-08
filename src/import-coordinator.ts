@@ -65,7 +65,15 @@ const AGG_SLICE_BATCHES = 8;
  * tags+aggregates+interners (~90MB at full corpus) — small slices keep the
  * isolate total well under 128MB. */
 const FINALIZE_SLICE_BATCHES = 4;
-/** Store chunks copied to D1 per publish slice (staying inside subrequest limits). */
+/** Raw chunk bytes copied to D1 per publish slice.
+ *
+ * The binding is the D1 binding's RPC limit — "Serialized RPC arguments or
+ * return values are limited to 32MiB" — NOT the raw byte count. Blobs inflate
+ * on the way across: a measured 18MB of chunks (20 x 900KB) serialized to
+ * 47.5MB, a factor of ~2.6. This budget is set so that even a 4x factor stays
+ * under half the limit, because blowing it fails the whole publish. */
+const PUBLISH_SLICE_BYTES = 4 * 1024 * 1024;
+/** Upper bound on statements per publish batch, independent of size. */
 const PUBLISH_SLICE_CHUNKS = 20;
 
 /** Drafts per SQLite batch row (~1.5MB of draft JSON, under the 2MB value cap). */
@@ -264,7 +272,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				phase: phase === "idle" ? run.state : phase,
 				detail: detailBits.join(", ") || undefined,
 				printings,
-				retrying: retries > 0 ? { attempt: retries, of: MAX_RETRIES } : undefined,
+				retrying:
+					retries > 0
+						? { attempt: retries, of: MAX_RETRIES, error: this.metaGet("last_error") || undefined }
+						: undefined,
 			},
 		});
 	}
@@ -278,7 +289,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (phase === "idle") return;
 		try {
 			await this.step(phase);
+			// A slice that succeeded clears the retry state, so a recovered
+			// transient failure stops being reported as an ongoing problem.
 			this.metaSet("retries", "0");
+			this.metaSet("last_error", "");
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
 			if (next !== "idle") {
 				await this.ctx.storage.setAlarm(Date.now());
@@ -304,6 +318,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				const backoffMs = Math.min(60_000, 1000 * 2 ** retries);
 				console.warn(`Import phase ${phase} failed (retry ${retries}/${MAX_RETRIES} in ${backoffMs}ms): ${err}`);
 				this.metaSet("retries", String(retries));
+				// Record WHY, so the bootstrap page can show the error on the
+				// first retry instead of only after all 8 are spent — a phase
+				// that fails deterministically is worth reading about now.
+				this.metaSet("last_error", `${phase}: ${err}`);
 				// A failed slice in a wasm-state-coupled phase leaves the wasm heap
 				// ahead of the (rolled-back) SQLite progress — e.g. rows staged in
 				// the interners that the retry would stage again. Marking the wasm
@@ -937,10 +955,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const rows = sql
 			.exec("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", published, PUBLISH_SLICE_CHUNKS)
 			.toArray();
-		if (rows.length > 0) {
+		// Trim the batch to PUBLISH_SLICE_BYTES of raw chunk data. Always send
+		// at least one chunk, so an oversized chunk fails loudly on its own
+		// rather than stalling the phase forever at zero progress.
+		const take: typeof rows = [];
+		let takeBytes = 0;
+		for (const r of rows) {
+			const len = (r.bytes as ArrayBuffer).byteLength;
+			if (take.length > 0 && takeBytes + len > PUBLISH_SLICE_BYTES) break;
+			take.push(r);
+			takeBytes += len;
+		}
+		if (take.length > 0) {
 			const stmt = db.prepare("INSERT INTO store_chunks (store_key, seq, bytes) VALUES (?, ?, ?)");
-			await db.batch(rows.map((r) => stmt.bind(storeKey, r.seq, r.bytes as ArrayBuffer)));
-			this.metaSet("chunks_published", String(published + rows.length));
+			await db.batch(take.map((r) => stmt.bind(storeKey, r.seq, r.bytes as ArrayBuffer)));
+			this.metaSet("chunks_published", String(published + take.length));
+			console.log(
+				`Publish slice: ${take.length} chunks (${(takeBytes / 1048576).toFixed(1)}MB), ` +
+					`${published + take.length}/${chunkCount} total`,
+			);
 			return; // next alarm continues
 		}
 		if (published < chunkCount) {
