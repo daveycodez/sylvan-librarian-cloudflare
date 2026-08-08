@@ -50,8 +50,30 @@ fn run_import(out_dir: &std::path::Path) -> Result<(), String> {
     eprintln!("computing scores and finalizing rows...");
     let rows = transform::finalize(drafts, &tag_data);
 
+    // Tee the finalized ENGINE_COLUMNS rows to rows.jsonl while the store
+    // build consumes the iterator — the local D1 seeder feeds the SQL-fallback
+    // cards table from it, so a native seed is as complete as the DO import.
     eprintln!("building store...");
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
+    let rows_path = out_dir.join("rows.jsonl");
+    let rows_file = std::cell::RefCell::new(std::io::BufWriter::new(
+        std::fs::File::create(&rows_path).map_err(|e| format!("create rows.jsonl: {e}"))?,
+    ));
+    let write_err: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    let rows = rows.inspect(|row| {
+        use std::io::Write;
+        if writeln!(rows_file.borrow_mut(), "{row}").is_err() {
+            write_err.set(true);
+        }
+    });
     let manifest = build_store(rows, out_dir, &now_unix()).map_err(|e| format!("store build: {e}"))?;
+    {
+        use std::io::Write;
+        let mut file = rows_file.into_inner();
+        if write_err.get() || file.flush().is_err() {
+            return Err("write rows.jsonl failed".to_owned());
+        }
+    }
     let manifest_path = out_dir.join("manifest.json");
     std::fs::write(&manifest_path, manifest.to_json().to_string()).map_err(|e| format!("write manifest: {e}"))?;
     eprintln!(

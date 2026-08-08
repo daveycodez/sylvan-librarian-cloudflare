@@ -104,11 +104,10 @@ export async function fallbackSearch(env: Env, opts: FallbackSearchOptions): Pro
 	];
 	// Regex post-filter columns ride along under stable aliases.
 	const pfColumns = where.postFilters.map((pf, i) => `${pf.column} AS __pf_${i}`);
-	const selectCols = [...cteColumns, `${orderCol} AS sort_value`, ...pfColumns].join(", ");
-
-	const matching = distinctOn
-		? `WITH ranked AS (
-				SELECT ${selectCols},
+	const matchingFor = (cols: string) =>
+		distinctOn
+			? `WITH ranked AS (
+				SELECT ${cols},
 					ROW_NUMBER() OVER (
 						PARTITION BY ${distinctOn}
 						ORDER BY ${preferCol} ${preferDir} NULLS LAST, prefer_score DESC NULLS LAST
@@ -116,17 +115,27 @@ export async function fallbackSearch(env: Env, opts: FallbackSearchOptions): Pro
 				FROM cards AS card
 				WHERE ${where.sql}
 			), matching_cards AS (SELECT * FROM ranked WHERE __rn = 1)`
-		: `WITH matching_cards AS (
-				SELECT ${selectCols}
+			: `WITH matching_cards AS (
+				SELECT ${cols}
 				FROM cards AS card
 				WHERE ${where.sql}
 			)`;
+	const matching = matchingFor([...cteColumns, `${orderCol} AS sort_value`].join(", "));
 	const orderBy = `sort_value ${direction} NULLS LAST, edhrec_rank ASC NULLS LAST, prefer_score DESC NULLS LAST`;
 
 	if (where.postFilters.length > 0) {
-		// Regex path: fetch the ordered candidate set (capped), re-check every
-		// post-filter in JS, then apply the limit and count what survived.
-		const sql = `${matching} SELECT * FROM matching_cards ORDER BY ${orderBy} LIMIT ${POST_FILTER_CANDIDATE_CAP}`;
+		// Regex path, two phases so memory stays flat: a wide-open regex means
+		// no SQL prefilter, and dragging every result column for a 50k-row
+		// candidate set materializes ~100MB — enough to OOM a 128MB isolate.
+		// Phase 1 pulls only ids, the sort key, and the regexed columns for
+		// the ordered candidate set (capped), re-checks every post-filter in
+		// JS; phase 2 fetches full rows for just the surviving page.
+		const slimCols = [
+			...new Set(["scryfall_id", "edhrec_rank", "prefer_score"]),
+			`${orderCol} AS sort_value`,
+			...pfColumns,
+		].join(", ");
+		const sql = `${matchingFor(slimCols)} SELECT * FROM matching_cards ORDER BY ${orderBy} LIMIT ${POST_FILTER_CANDIDATE_CAP}`;
 		const res = await env.STORE_DB.prepare(sql)
 			.bind(...where.params)
 			.all<Record<string, unknown>>();
@@ -134,9 +143,25 @@ export async function fallbackSearch(env: Env, opts: FallbackSearchOptions): Pro
 		const survivors = (res.results ?? []).filter((row) =>
 			regexes.every((re, i) => re.test(String(row[`__pf_${i}`] ?? ""))),
 		);
+
+		const pageIds = survivors.slice(0, limit).map((row) => String(row.scryfall_id));
+		const fetchCols = [...new Set(["scryfall_id", ...cteColumns])].join(", ");
+		const byId = new Map<string, Record<string, unknown>>();
+		for (let at = 0; at < pageIds.length; at += 80) {
+			const slice = pageIds.slice(at, at + 80);
+			const pageRes = await env.STORE_DB.prepare(
+				`SELECT ${fetchCols} FROM cards WHERE scryfall_id IN (${slice.map(() => "?").join(", ")})`,
+			)
+				.bind(...slice)
+				.all<Record<string, unknown>>();
+			for (const row of pageRes.results ?? []) byId.set(String(row.scryfall_id), row);
+		}
 		return {
 			totalCards: survivors.length,
-			cards: survivors.slice(0, limit).map((row) => projectRow(row, opts.resolvedFields)),
+			cards: pageIds
+				.map((id) => byId.get(id))
+				.filter((row): row is Record<string, unknown> => row !== undefined)
+				.map((row) => projectRow(row, opts.resolvedFields)),
 		};
 	}
 

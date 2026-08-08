@@ -22,9 +22,9 @@ if ! bunx wrangler d1 execute sylvan-librarian --local -c wrangler.dev.jsonc \
         # store natively (same shared Rust as the production import) and seed
         # local D1 directly — a couple of minutes, mostly download — instead
         # of the production-identical in-Worker bootstrap (~10-20 minutes).
-        # DEV_BOOTSTRAP=worker forces the slow path when you want to exercise
-        # the real pipeline; it is also what fills the SQL-fallback cards
-        # table locally (the native seed skips it — engine-only until then).
+        # The seed covers everything the DO import produces: store, manifest,
+        # and the SQL-fallback cards table. DEV_BOOTSTRAP=worker forces the
+        # slow path when you want to exercise the real pipeline itself.
         echo "No local card store yet — building natively (~2-3 minutes)..."
         "$REPO_ROOT/scripts/seed-local.sh"
     else
