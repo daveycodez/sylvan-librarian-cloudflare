@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Build a real card store from live Scryfall bulk data and seed it into
-# wrangler's LOCAL simulated R2, so `bun dev` serves a fully working site.
+# wrangler's LOCAL simulated D1, so `bun dev` serves a fully working site
+# without waiting on the in-DO bootstrap import.
 #
-# Same code path as the production import container (sylvan-store-builder);
-# only the destination differs: local R2 simulation instead of the S3 API.
+# Same shared pipeline code as the production Durable Object import (the
+# transform/tags/finalize/store-build Rust is identical); only the runner
+# differs: a native binary writing straight into local D1.
 #
-#   bun run seed:local            # build store (~a few minutes) + seed local R2
+#   bun run seed:local            # build store (~a few minutes) + seed local D1
 #   bun run seed:local --reuse    # skip the build, re-seed the last built store
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 OUT_DIR="store-build"
-BUCKET="sylvan-librarian"
 
 if [[ "${1:-}" != "--reuse" ]]; then
     echo "Building sylvan-store-builder..."
@@ -21,10 +22,7 @@ if [[ "${1:-}" != "--reuse" ]]; then
     ./target/release/sylvan-store-builder --out "$OUT_DIR"
 fi
 
-STORE_KEY=$(python3 -c "import json;print(json.load(open('$OUT_DIR/manifest.json'))['store_key'])")
-
-echo "Seeding local R2 ($BUCKET)..."
-bunx wrangler r2 object put "$BUCKET/$STORE_KEY" --local --file "$OUT_DIR/$STORE_KEY" -c wrangler.dev.jsonc
-bunx wrangler r2 object put "$BUCKET/manifest.json" --local --file "$OUT_DIR/manifest.json" -c wrangler.dev.jsonc
+echo "Seeding local D1..."
+bun scripts/seed-local-d1.ts "$OUT_DIR"
 
 echo "Done. Run: bun dev"

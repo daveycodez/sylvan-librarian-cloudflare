@@ -5,9 +5,9 @@
 // standing cost: idle colos evict their DO and cost nothing (scale to zero);
 // the wake path below makes revival cheap.
 //
-// Wake-ups avoid R2: the store is persisted in this DO's embedded SQLite
+// Wake-ups avoid D1: the store is persisted in this DO's embedded SQLite
 // (colocated disk), so a wake feeds wasm from local chunks and only checks
-// the R2 manifest in the background (stale-while-revalidate for the store
+// the D1 manifest in the background (stale-while-revalidate for the store
 // itself). Nightly publishes therefore propagate lazily — live DOs pick them
 // up via the per-request staleness check within minutes, woken DOs via the
 // freshen pass — no push channel, no cron fan-out.
@@ -151,7 +151,7 @@ export class SearchEngine extends DurableObject<Env> {
 	/**
 	 * Storage-only pre-seed: materialize this shard's SQLite copy of the
 	 * current store WITHOUT loading the engine, so a later expansion opens a
-	 * ~1s local revival instead of running a 70MB R2 first-boot mid-spike.
+	 * ~1s local revival instead of running a 70MB D1 first-boot mid-spike.
 	 * Fired fire-and-forget by isolates when the active fan-out nears its
 	 * expansion threshold (see shard-controller). A shard whose copy is
 	 * current answers in ~1ms and simply evicts again — no engine, no alarm,
@@ -164,7 +164,7 @@ export class SearchEngine extends DurableObject<Env> {
 		console.log(`Seeding shard SQLite ahead of need (${manifest.store_key})`);
 		this.ctx.waitUntil(
 			this.persistStore(manifest).catch((err) => {
-				console.warn(`Seed persist failed (expansion will first-boot from R2): ${err}`);
+				console.warn(`Seed persist failed (expansion will first-boot from D1): ${err}`);
 			}),
 		);
 		return { seeding: true };
@@ -202,7 +202,7 @@ export class SearchEngine extends DurableObject<Env> {
 			// hosting this DO serves worker traffic that warmed the module global).
 			if (tryGetLoadedEngine()) return await getEngine(this.env, this.ctx);
 
-			// Wake path: adopt the SQLite copy — local disk, no R2 — and check
+			// Wake path: adopt the SQLite copy — local disk, no D1 — and check
 			// freshness in the background.
 			const meta = this.sqliteMeta();
 			if (meta) {
@@ -216,14 +216,14 @@ export class SearchEngine extends DurableObject<Env> {
 					this.ctx.waitUntil(this.freshen());
 					return engine;
 				} catch (err) {
-					console.warn(`SQLite store adoption failed (falling back to R2): ${err}`);
+					console.warn(`SQLite store adoption failed (falling back to D1): ${err}`);
 				}
 			}
 
-			// First boot (or corrupt local copy): R2 path, then persist locally.
+			// First boot (or corrupt local copy): D1 path, then persist locally.
 			const wakeStart = Date.now();
 			const engine = await getEngine(this.env, this.ctx);
-			console.log(`SearchEngine wake: loaded store from R2 in ${Date.now() - wakeStart}ms (no usable local copy)`);
+			console.log(`SearchEngine wake: loaded store from D1 in ${Date.now() - wakeStart}ms (no usable local copy)`);
 			this.ctx.waitUntil(this.persistCurrent());
 			return engine;
 		} catch (err) {
@@ -231,7 +231,7 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 	}
 
-	/** Reload from R2 if the manifest moved past what we serve; then repersist. */
+	/** Reload from D1 if the manifest moved past what we serve; then repersist. */
 	private async freshen(): Promise<void> {
 		try {
 			const manifest = await readManifest(this.env);
@@ -292,15 +292,15 @@ export class SearchEngine extends DurableObject<Env> {
 			if (!manifest || manifest.store_key !== key) return;
 			await this.persistStore(manifest);
 		} catch (err) {
-			console.warn(`SQLite persist failed (wake-ups will use R2): ${err}`);
+			console.warn(`SQLite persist failed (wake-ups will use D1): ${err}`);
 		}
 	}
 
 	/**
-	 * Stream the manifest's store bytes (colo cache first, R2 on miss) into
+	 * Stream the manifest's store bytes (colo cache first, D1 on miss) into
 	 * SQLite. Crash-safe by ordering: meta is deleted first and written last,
 	 * so a partial write reads as "no local copy" and the wake path falls
-	 * back to R2. Runs WITHOUT the engine — seed() uses it on shards that
+	 * back to D1. Runs WITHOUT the engine — seed() uses it on shards that
 	 * have never loaded a store.
 	 */
 	private async streamStoreToSqlite(manifest: StoreManifest): Promise<void> {
@@ -309,7 +309,7 @@ export class SearchEngine extends DurableObject<Env> {
 			sql.exec("DELETE FROM store_meta");
 			sql.exec("DELETE FROM store_chunks");
 
-			const body = await openStoreStream(this.env, manifest.store_key);
+			const body = await openStoreStream(this.env, manifest.store_key, manifest.store_bytes);
 			const reader = body.getReader();
 			let seq = 0;
 			let carry: Uint8Array<ArrayBufferLike> = new Uint8Array(0);

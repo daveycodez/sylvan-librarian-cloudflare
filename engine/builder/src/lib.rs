@@ -5,14 +5,12 @@
 //! Python import pipeline — see PIPELINE.md for the wiring sequence) feed
 //! [`build_store`], this crate's store-build seam.
 
-// bulk (reqwest) and r2 (rusty-s3) are native-only: the wasm import path
+// bulk (reqwest) is native-only: the wasm import path
 // (engine/wasm-import, run inside the ImportCoordinator Durable Object) does
 // its networking in JS and publishes through bindings, consuming only the
 // pure transform/tags logic from this crate.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bulk;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod r2;
 pub mod tags;
 pub mod transform;
 

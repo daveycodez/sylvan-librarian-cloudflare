@@ -3,9 +3,11 @@
 **Live demo: [sylvan-librarian.deckgen.workers.dev](https://sylvan-librarian.deckgen.workers.dev)**
 
 [Sylvan Librarian](https://github.com/jbylund/sylvan_librarian) — a Magic: the
-Gathering card search engine — ported to run **entirely on Cloudflare**:
-Workers (serving), R2 (the card index), and a Container (data imports). No VPS,
-no Postgres, no external infrastructure of any kind.
+Gathering card search engine — ported to run **entirely on Cloudflare's free
+plan**: Workers (serving), Durable Objects (the in-memory engine and the
+import pipeline), and D1 (the card index at rest). No VPS, no Postgres, no
+containers, no CI imports, no secrets, no payment method on file —
+`wrangler deploy` on a free account is the whole install.
 
 A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 (full Scryfall-style query syntax via the same Rust engine, compiled to wasm),
@@ -14,22 +16,20 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 ## Deploy
 
 1. Cloudflare dashboard → Workers → Create → connect this git repository
-   (Workers Builds). The build compiles the wasm engine and the import
-   container image automatically.
-2. Set the variables listed in [.env.example](.env.example) (three R2 secrets +
-   the bucket name) under Worker → Settings → Variables and Secrets — these are
-   **runtime Worker secrets only**; nothing needs to be set as a *build*
-   variable (the build reads no secrets). Serving needs only the R2 *binding* —
-   the three secrets are used exclusively by the import container, so if
-   they're missing the symptom is a failed import run (loud, in the container
-   logs), never a dead site.
-3. Deploy, then open the Worker's URL. The first request bootstraps the card
-   index: an import container streams Scryfall bulk data, builds the engine
-   store (~70MB), and publishes it to R2 with a version manifest. The page
-   shows build progress until the index is live (a few minutes), then the full
-   UI works. A nightly cron (11:17 UTC, after Scryfall's bulk refresh) rebuilds
-   the store; Worker isolates hot-swap to the new version without dropping
-   queries.
+   (Workers Builds), or `wrangler deploy` from a checkout. The D1 database
+   (`sylvan-librarian`) is provisioned on first deploy; deploying manually,
+   create it once with `wrangler d1 create sylvan-librarian` and put the id in
+   wrangler.jsonc.
+2. Deploy, then open the Worker's URL. There is no step 2 — no secrets, no
+   build variables. The first request bootstraps the card index on-platform:
+   the ImportCoordinator Durable Object streams Scryfall bulk data, builds the
+   engine store inside its isolate (wasm), and publishes it to D1. The page
+   shows build progress until the index is live, then the full UI works. A
+   nightly cron (11:17 UTC, after Scryfall's bulk refresh) rebuilds the store;
+   Worker isolates hot-swap to the new version without dropping queries.
+
+All optional knobs (rate limiting, API-key bypass, shard cap) are documented
+in [.env.example](.env.example).
 
 ## Architecture
 
@@ -46,36 +46,44 @@ request ──▶ Workers Cache (regional edge cache in front of the Worker;
               │   header says which DO answered (do-<colo>)
               ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in
               │   memory; store persisted in its embedded SQLite so wake-ups
-              │   never wait on R2, hot-swapped when the R2 manifest advances
-              ├─ autoscaling: each isolate watches its RPC wall time against
-              │   a healthy-floor EWMA (queue depth rides responses too);
-              │   sustained elevation fans the colo out to engine-<colo>-1..N
-              │   (cap 8, SHARDS_MAX var) at zero request-path cost, and ten
-              │   idle minutes fold it back — surplus shards just evict.
-              │   A just-opened shard gets a decision-time warm ping, and at
-              │   ~75% of the expansion bar the NEXT shard's SQLite copy is
-              │   seeded ahead of need (storage only, engine never loaded, the
-              │   DO evicts right after) so expansion opens a ~1s revival,
-              │   never a 70MB R2 first-boot mid-spike. No alarms anywhere:
-              │   every DO still scales to zero
-              ├─ resilience: transient DO errors (deploy resets, storage
-              │   resets, network blips) are runtime-flagged retryable and
-              │   retried, never surfaced as 500s; store persists trickle
-              │   their SQLite writes so the DO output gate never holds live
-              │   responses behind a 70MB write burst
+              │   never wait on D1, hot-swapped when the D1 manifest advances
+              ├─ autoscaling: latency-signal fan-out to engine-<colo>-1..N
+              │   (cap 8, SHARDS_MAX var), idle fold-back, warm pings and
+              │   seed-ahead — see the header of src/engine/shard-controller.ts
               └─ UI: upstream's static assets, served with upstream's cache headers
 
 cron (nightly) / first-deploy bootstrap
-        ──▶ ImportCoordinator (container-enabled Durable Object, serializes runs)
-              └─ Container: native Rust builder
-                   Scryfall bulk stream → row transform (port of card_processing.py)
-                   → oracle/art tags → rkyv store build (upstream's own code)
-                   → multipart upload to R2 + manifest
+        ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
+              └─ alarm-chained import pipeline, all inside the 128MB isolate:
+                   fetch: ranged, resumable download of Scryfall's gzipped
+                     dumps into DO SQLite (compressed at rest)
+                   transform/tags/aggregate/finalize: the SAME Rust the native
+                     dev builder runs, compiled to wasm (engine/wasm-import) —
+                     row transform, tag ancestors, dedupe, prefer/cubecobra
+                     scores; drafts and finalized rows spill to DO SQLite in
+                     batched blobs, never accumulating in memory
+                   build: card_engine's SpillingStoreBuilder streams the rkyv
+                     archive out in chunks (measured ~95MB peak at full corpus
+                     scale — see engine/wasm-builder-probe/RESULTS.md)
+                   publish: chunks + manifest to D1, manifest LAST (the commit
+                     point readers act on); old store versions pruned
 ```
+
+The store's distribution layer is D1: the builder publishes ~70MB of chunk
+rows plus a manifest; each SearchEngine DO pulls the dump once per version,
+persists it in its own SQLite, and serves every query from memory. **Queries
+never touch D1** — the free plan's row-read metering only sees a handful of
+manifest polls and version pulls per day.
+
+Every phase of the import is restart-safe: inputs live in the coordinator's
+SQLite, progress commits transactionally with outputs, and phases whose state
+lives in the wasm heap record the instance nonce — an eviction mid-run redoes
+minutes of compute, never producing a wrong store. Success is ultimately
+judged by the D1 manifest advancing.
 
 Queries the engine cannot answer return a structured error — never silently
 empty. Upstream's Postgres-only admin/import endpoints return `501` here; the
-container pipeline replaces them.
+Durable Object pipeline replaces them.
 
 Caching notes: `/search` caches for 90s + a day of stale-while-revalidate
 (nightly imports need no purge — staleness is bounded by one import cycle and
@@ -87,19 +95,31 @@ per-deploy-version so releases can't serve stale assets.
 Cold-start note: users never wait on a store wake. A colo whose DO has
 evicted relays the query to the region's DO (engine-wnam, ...) while
 waking itself in the background — the store loads from the DO's local
-SQLite (never R2), and the wake duration is logged (`SearchEngine wake:
+SQLite (never D1), and the wake duration is logged (`SearchEngine wake:
 ...`). Warm queries are sub-ms of DO CPU. The store is stored raw,
-deliberately: R2 egress to Workers is free while decompress CPU would be
-metered on every load.
+deliberately: D1 meters rows (a chunk row is one row regardless of size)
+while decompress CPU would be metered on every load.
+
+### Free-plan fit
+
+Serving reads zero SQL rows per query (in-memory engine) and the import
+writes ~1k SQLite rows + ~70 D1 rows per night (batched blobs), so the free
+tier's daily meters — 100k Worker requests, 100k DO requests, 5M rows read,
+100k rows written — bound *traffic*, not architecture. On the free plan set
+`SHARDS_MAX=1`: each warm shard holds a ~70MB store copy against the 5GB
+account storage and the daily duration allowance.
 
 ## Upstream tracking
 
 Upstream is vendored at the commit pinned in [UPSTREAM.lock](UPSTREAM.lock).
 The Rust engine (`vendor/sylvan_librarian/card_engine`) is upstream's own code
-with a thin feature-gate patch (PyO3 optional, buffer-based store load for
-wasm); the store build logic, filter evaluation, and archive format are
-untouched, so a store built by the container is byte-compatible with the wasm
-engine by construction.
+with a thin patch set (PyO3 optional, buffer-based store load for wasm, and a
+memory-capped streaming build path — `SpillingStoreBuilder` — whose output is
+verified semantically identical to the standard build; see
+engine/wasm-builder-probe/RESULTS.md). The filter evaluation and archive
+format are untouched, so the store the Durable Object builds is the same
+store the native dev builder produces — the repo's tests compare them
+byte-for-byte at the row level and semantically at the store level.
 
 To pull upstream changes:
 
@@ -130,26 +150,14 @@ The complete list of intentional differences:
   upstream sends plain `max-age=90`.
 - **Built-in per-IP rate limit** on the engine-computing routes (`/search`,
   `/random_search`, the SSR root with a query): a continuously-refilling
-  token bucket in a tiny per-IP Durable Object (the pattern from Cloudflare's
-  rules-of-durable-objects docs), created with a location hint in the
-  region the IP's traffic comes from — globally exact, unlike the Workers
-  rate-limiting binding, whose eventually-consistent counters we measured
-  barely enforcing. Default 100 requests/10s per IP, 429 + `Retry-After`
-  when exceeded. **Enforcement is asynchronous and costs zero request
-  latency**: requests are served immediately while the check reports in the
-  background; an over-limit verdict blocks the IP from the next request
-  onward, answered from isolate memory (a fresh burst gets a brief grace —
-  measured: blocking began mid-burst). **Off by default** — opt in with
-  `RATE_LIMIT_ENABLED=true` (runtime var, no redeploy); `RATE_LIMIT_PER_10S`
-  tunes the allowance. Cache hits never count (served before the Worker
-  runs), so repeat queries and crowds behind shared IPs are unaffected.
-  Server-to-server callers bypass with the optional `TRUSTED_API_KEY` secret
-  + `X-API-Key` header (see .env.example). The `x-sylvan-rl` response
-  header reports the limiter's verdict. This caps engine/CPU abuse; blocking
-  a mega-flood's per-invocation fees still needs zone WAF rules on a custom
-  domain — the layers compose.
-- Postgres-only admin/import routes answer `501`; the container pipeline is
-  their replacement. `get_pid` returns `0` (isolates have no pid).
+  token bucket in a tiny per-IP Durable Object, created with a location hint
+  in the region the IP's traffic comes from. Default 100 requests/10s per IP,
+  429 + `Retry-After` when exceeded; enforcement is asynchronous and costs
+  zero request latency. **Off by default** — opt in with
+  `RATE_LIMIT_ENABLED=true`; see .env.example for the knobs and the
+  `TRUSTED_API_KEY` server-to-server bypass. Cache hits never count.
+- Postgres-only admin/import routes answer `501`; the Durable Object pipeline
+  is their replacement. `get_pid` returns `0` (isolates have no pid).
 - `card_is_tags` stays empty, matching upstream's *automated* import (upstream
   only fills it via a manual admin route).
 - HTML minification is off (upstream's own default configuration).
@@ -157,61 +165,52 @@ The complete list of intentional differences:
 
 ## Development
 
-Prerequisites: [bun](https://bun.sh), and a Rust toolchain (1.88+) for the
-store builder that `bun dev`'s first run compiles. Touching the Rust engine
-additionally needs `wasm-pack` + the `wasm32-unknown-unknown` target
-(`bun run build:wasm` — the built pkg is committed, so TS-only work never
-needs Rust). Regenerating parser fixtures (`scripts/export-parser-fixtures.py`)
-needs `python3`.
+Prerequisites: [bun](https://bun.sh). That's all for TS work — both wasm
+modules (query engine, import pipeline) are committed prebuilt. Touching Rust
+needs a toolchain (1.88+) with the `wasm32-unknown-unknown` target;
+`wasm-pack` only for the query engine's pkg. Regenerating parser fixtures
+(`scripts/export-parser-fixtures.py`) needs `python3`.
 
 ```bash
 bun install
 bun dev                 # full site at localhost — UI, /search, everything.
-                        # First run auto-builds the card store from Scryfall
-                        # bulk data (a few minutes), mirroring production's
-                        # first-boot bootstrap; later runs start instantly.
+                        # First run self-bootstraps the card store through the
+                        # real import pipeline (local D1 + DO SQLite + alarms,
+                        # all emulated — the same code path as production);
+                        # later runs start instantly. In a hurry or offline:
+bun run seed:local      # native build of the same pipeline, seeded into local D1
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck
-bun run build:wasm      # rebuild wasm engine after touching Rust (pkg is committed)
-bun run seed:local      # rebuild/refresh the local store on demand
+bun run build:wasm          # rebuild query-engine wasm after touching Rust
+bun run build:wasm-import   # rebuild import wasm after touching Rust
 bun run cf-typegen      # regenerate worker-configuration.d.ts after wrangler.jsonc changes
 ```
 
-Local dev matches production behavior with one substitution: the store build
-runs as a native binary instead of inside a Cloudflare Container (wrangler dev
-would need a local Docker daemon to emulate the container; it is the same
-builder code either way). The container path itself is exercised in production.
+Local dev is production-identical: the import that seeds your local D1 is the
+same Durable Object pipeline production runs, executed by wrangler dev's local
+emulator. The end-to-end of that pipeline against a corpus-scale fake Scryfall
+is exercised by `engine/wasm-import/driver.ts` (see RESULTS.md for the
+native-vs-wasm parity gates).
 
 ## Benchmarks
 
 Same 10 queries against this deployment, upstream's own
 [sylvan-librarian.com](https://sylvan-librarian.com), and the
 [Scryfall API](https://api.scryfall.com) (2026-08-07, single residential
-vantage in Southern California). Per query: one **cold** request (cache miss) then the median of two
-immediate **warm** repeats; all services keep their production caching —
-that's the point. Each service is measured over one reused HTTP/2 connection,
-the way a browser behaves (an earlier revision of this harness paid a fresh
-TLS handshake per request, which unfairly penalized the distant single-origin
-upstream by ~300ms — spotted because the upstream site *felt* faster than the
-table claimed). Scryfall requests are rate-limited to 1/s per their
-etiquette. Times are **total wall-clock request ms, door to door** — network
-round trip included, as a user experiences it. (Not to be confused with the
-server-side "completed in Xms" the UI displays, which is the engine's
-self-reported processing time from inside the response — every service here
-computes in single-digit ms; the table measures who's *near you* too.)
+vantage in Southern California; measured on the R2-era build — the serving
+path is unchanged by the D1 migration: same engine DOs, same edge cache, and
+the store-distribution swap only affects rare version pulls). Per query: one
+**cold** request (cache miss) then the median of two immediate **warm**
+repeats; all services keep their production caching. Each service is measured
+over one reused HTTP/2 connection. Times are total wall-clock request ms,
+door to door.
 
 Reproduce it yourself (only needs curl):
 
 ```bash
 scripts/bench.sh results.tsv
 ```
-
-The TSV columns are service, query, run, HTTP status, total seconds, TTFB
-seconds, payload bytes. Expect meaningful cross-run variance in cold columns
-for every service — they measure whatever cache/isolate state each provider
-happens to be in (an earlier run of this same table caught Scryfall's CDN
-cold at ~751ms median where this run found it warm at 99ms).
 
 **Headline (medians across the 10 queries):**
 
@@ -222,44 +221,6 @@ cold at ~751ms median where this run found it warm at 99ms).
 | sylvan-librarian.com | 106ms — 3.5× slower | 107ms — 3.7× slower | ~34 KB |
 
 Worst single request: **this port (Cloudflare) 106ms** · Scryfall 323ms · upstream 434ms.
-
-<details open>
-<summary>Per-query results (cold / warm, ms)</summary>
-
-| query | this port (Cloudflare) | sylvan-librarian.com | Scryfall API |
-|---|---|---|---|
-| `t:goblin cmc<3 c:r` | 99 / 24 | 434 / 117 | 158 / 90 |
-| `o:"draw a card" t:creature f:modern` | 30 / 39 | 106 / 108 | 144 / 100 |
-| `kw:flying pow>=4 -c:w` | 34 / 66 | 198 / 107 | 49 / 187 |
-| `t:instant cmc=1 c:u` | 29 / 30 | 102 / 105 | 64 / 43 |
-| `t:legendary t:elf f:commander` | 29 / 27 | 111 / 106 | 39 / 68 |
-| `o:"enters tapped" t:land` | 33 / 30 | 103 / 104 | 117 / 41 |
-| `c:wu t:bird` | 25 / 27 | 104 / 104 | 30 / 38 |
-| `r:mythic t:dragon cmc<=4` | 26 / 24 | 99 / 101 | 45 / 35 |
-| `t:planeswalker c:b f:pioneer` | 106 / 30 | 105 / 110 | 47 / 83 |
-| `t:instant o:damage cmc=1` | 26 / 25 | 107 / 110 | 124 / 41 |
-
-</details>
-
-Reading the numbers honestly:
-
-- **~30ms flat, cold indistinguishable from warm** — one round-trip to the
-  nearest Cloudflare colo. Edge cache hits and warm colo-DO queries (0.2–3ms
-  of compute, a same-building RPC hop) cost about the same, so cache misses
-  don't show. 24× less payload than Scryfall's full card objects.
-- **No cold tail**: a cache-miss in a colo whose engine DO has evicted is
-  relayed to the coast's regional DO while the colo DO wakes in the
-  background — the worst cell in the table is 106ms. The same probe against
-  an earlier architecture (per-isolate engine loading) showed 849ms–3.5s
-  spikes whenever a request landed on a cold machine; a benchmark run
-  minutes after a deploy (every DO reset, versioned edge cache empty — the
-  system's worst case) still tops out around 300ms.
-- **Upstream's honest number is ~105ms** — a single always-warm origin, so
-  never a cold start, but every request pays the trip to that one origin
-  (plus a first-connection handshake, visible in its 434ms worst cell).
-- Scryfall's numbers are its CDN serving cached responses; ours are live
-  engine computation per cache-miss. We beat it on every column from this
-  vantage, but their API serves a far richer card object.
 
 ## License
 

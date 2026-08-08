@@ -17,18 +17,25 @@
 	// own manifest-poll staleness, and page HTML carries no card data.
 	"cache": { "enabled": true },
 
-	// The engine store + version manifest live here. The import container writes
-	// via the R2 S3 API; the Worker reads via this binding.
-	"r2_buckets": [
+	// The engine store lives here as chunk rows + a manifest, written by the
+	// ImportCoordinator DO and read by every isolate/SearchEngine DO. D1's
+	// free tier covers it (~70MB per store version, 3 versions kept), and —
+	// unlike R2 — enabling D1 needs no payment method on file. When deploying
+	// manually, create the database once (`wrangler d1 create sylvan-librarian`)
+	// and fill in database_id; Workers Builds provisions it automatically.
+	"d1_databases": [
 		{
-			"binding": "STORE",
-			"bucket_name": "sylvan-librarian"
+			"binding": "STORE_DB",
+			"database_name": "sylvan-librarian"
 		}
 	],
 
-	// ImportCoordinator is a container-enabled Durable Object: it serializes
-	// import runs (only one at a time), starts the container, and records the
-	// last run's outcome. The Worker talks to a single named instance.
+	// ImportCoordinator is a plain SQLite-backed Durable Object: it serializes
+	// import runs (only one at a time) and executes the whole import pipeline
+	// itself via the wasm import module — Scryfall fetch, transform, tag
+	// resolution, aggregation, store build, D1 publish — in an alarm chain
+	// that keeps each invocation far below the isolate CPU allowance. No
+	// container, no external CI, no secrets.
 	"durable_objects": {
 		"bindings": [
 			{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" },
@@ -43,16 +50,6 @@
 		{ "tag": "v2", "new_sqlite_classes": ["SearchEngine"] },
 		{ "tag": "v3", "new_sqlite_classes": ["RateLimiter"] }
 	],
-	"containers": [
-		{
-			"class_name": "ImportCoordinator",
-			"image": "./Dockerfile",
-			"max_instances": 1,
-			// The store build peaks well above a Worker isolate's 128MB — that is
-			// why the import is a container at all. standard-1 = 4GiB / 1/2 vCPU.
-			"instance_type": "standard-1"
-		}
-	],
 
 	// Nightly store rebuild, after Scryfall's daily bulk-data refresh window.
 	"triggers": { "crons": ["17 11 * * *"] },
@@ -63,17 +60,11 @@
 		"sylvan-engine-wasm": "./src/engine/wasm-shim.ts"
 	},
 
-	// Bundle the wasm engine and the vendored upstream static assets.
+	// Bundle the wasm engine + wasm import module and the vendored upstream
+	// static assets.
 	"rules": [
 		{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
 		{ "type": "Text", "globs": ["**/*.css", "**/*.html", "**/*.txt"], "fallthrough": true },
 		{ "type": "Data", "globs": ["**/*.ico", "**/*.webp"], "fallthrough": true }
-	],
-
-	"vars": {
-		// Documentation of expected plain vars; real values are set in the
-		// dashboard (Workers Builds) or .dev.vars locally. Secrets (ADMIN_TOKEN,
-		// R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, CF_ACCOUNT_ID) are never here.
-		"R2_BUCKET": "sylvan-librarian"
-	}
+	]
 }

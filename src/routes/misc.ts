@@ -50,7 +50,7 @@ export async function getCatalogHandler(ctx: RouteContext): Promise<Response> {
  * The Postgres-only routes exist in the route table (so the 404 listing, 405s
  * and path resolution mirror upstream) but answer 501: their work — schema
  * setup, bulk import, tag ingestion, score backfills — was replaced by the
- * Cloudflare import pipeline (container build → R2 store) in this port.
+ * Cloudflare import pipeline (Durable Object build → D1 store) in this port.
  */
 export function notImplementedHandler(routeName: string): RouteEntry["handler"] {
 	return () =>

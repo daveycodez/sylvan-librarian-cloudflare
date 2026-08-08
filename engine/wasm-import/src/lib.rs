@@ -596,9 +596,18 @@ impl ChunkWriter {
 
 impl Write for ChunkWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.buf.extend_from_slice(data);
-        if self.buf.len() >= CHUNK_BYTES {
-            self.flush_chunk();
+        // Split at exact chunk boundaries: rkyv can hand this writer a single
+        // multi-MB slice (the archived string table), and appending it whole
+        // would emit a chunk far over the host's 2MB SQLite value cap.
+        let mut at = 0;
+        while at < data.len() {
+            let room = CHUNK_BYTES - self.buf.len();
+            let take = room.min(data.len() - at);
+            self.buf.extend_from_slice(&data[at..at + take]);
+            at += take;
+            if self.buf.len() >= CHUNK_BYTES {
+                self.flush_chunk();
+            }
         }
         Ok(data.len())
     }
@@ -663,6 +672,13 @@ pub extern "C" fn build_store_stream() -> i64 {
 }
 
 // ─── observability ───────────────────────────────────────────────────────────
+
+/// card_engine's ARCHIVE_FORMAT_VERSION — the host composes the store key and
+/// manifest from it, so readers reject stores from a different engine build.
+#[unsafe(no_mangle)]
+pub extern "C" fn format_version() -> u32 {
+    card_engine::store_format_version()
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn current_alloc() -> usize {

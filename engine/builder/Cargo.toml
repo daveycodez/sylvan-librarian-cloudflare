@@ -18,17 +18,13 @@ thiserror = "2"
 # fold_accents(): NFKD + strip combining marks, mirroring Python unicodedata.
 unicode-normalization = "0.1"
 
-# ── Native-only: bulk.rs / r2.rs (the wasm import does I/O in JS) ────────────
+# ── Native-only: bulk.rs (the wasm import does its I/O in JS) ────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Gzip: Scryfall serves .jsonl.gz payloads with no Content-Encoding header.
 # Default features = pure-Rust miniz_oxide backend; no C zlib anywhere.
 flate2 = "1"
 # Blocking HTTP with rustls only — no openssl-sys.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
-# S3 SigV4 presigning for R2 — small, tokio-free. Default features include the
-# pure-Rust "rustcrypto" hmac/sha2 backend and "xml" multipart response parsing.
-rusty-s3 = "0.10"
-url = "2"
 
 [features]
 # Diagnostics for the memory-capped build path: switches the memprobe example
