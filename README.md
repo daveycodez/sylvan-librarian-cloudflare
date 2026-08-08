@@ -47,13 +47,22 @@ request ──▶ Workers Cache (regional edge cache in front of the Worker;
               ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in
               │   memory; store persisted in its embedded SQLite so wake-ups
               │   never wait on R2, hot-swapped when the R2 manifest advances
-              ├─ autoscaling: every response reports the DO's queue depth;
-              │   sustained depth fans the colo out to engine-<colo>-1..N
+              ├─ autoscaling: each isolate watches its RPC wall time against
+              │   a healthy-floor EWMA (queue depth rides responses too);
+              │   sustained elevation fans the colo out to engine-<colo>-1..N
               │   (cap 8, SHARDS_MAX var) at zero request-path cost, and ten
-              │   idle minutes fold it back — surplus shards just evict
+              │   idle minutes fold it back — surplus shards just evict.
+              │   A just-opened shard gets a decision-time warm ping, and at
+              │   ~75% of the expansion bar the NEXT shard's SQLite copy is
+              │   seeded ahead of need (storage only, engine never loaded, the
+              │   DO evicts right after) so expansion opens a ~1s revival,
+              │   never a 70MB R2 first-boot mid-spike. No alarms anywhere:
+              │   every DO still scales to zero
               ├─ resilience: transient DO errors (deploy resets, storage
               │   resets, network blips) are runtime-flagged retryable and
-              │   retried, never surfaced as 500s
+              │   retried, never surfaced as 500s; store persists trickle
+              │   their SQLite writes so the DO output gate never holds live
+              │   responses behind a 70MB write burst
               └─ UI: upstream's static assets, served with upstream's cache headers
 
 cron (nightly) / first-deploy bootstrap
