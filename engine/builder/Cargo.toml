@@ -28,3 +28,9 @@ thiserror = "2"
 # fold_accents(): NFKD + strip combining marks, mirroring Python unicodedata.
 unicode-normalization = "0.1"
 url = "2"
+
+[features]
+# Diagnostics for the memory-capped build path: switches the memprobe example
+# to card_engine's counting allocator and enables its per-phase build_ckpt
+# prints. Never used by production builds.
+vendor-alloc-counter = ["card_engine/alloc-counter"]

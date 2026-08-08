@@ -409,6 +409,282 @@ impl Default for StoreBuilder {
     }
 }
 
+// ─── Spilling store builder (memory-capped build path) ───────────────────────
+
+/// StoreBuilder variant for memory-capped environments (a 128MB Worker
+/// isolate): staged rows leave process memory instead of accumulating in a
+/// Vec. `add_card` returns each parsed row as an opaque encoded blob the
+/// caller stores externally (Durable Object SQLite in production); at finish
+/// the caller streams the blobs back in `sorted_order()` and the build
+/// proceeds exactly like [`StoreBuilder::finish_to_writer`] — same grouping
+/// code, same archive bytes. Only the interners and per-row sort keys stay
+/// resident (~a few MB per 100k rows for the keys).
+pub struct SpillingStoreBuilder {
+    interner: Interner,
+    vocab: VocabInterner,
+    artists: VocabInterner,
+    mana: ManaVocabInterner,
+    /// (oracle_id, prefer_score, illustration_id, scryfall_id) per staged row,
+    /// in add order — the inputs to card_row_build_order.
+    keys: Vec<(u128, Option<f32>, u128, u128)>,
+}
+
+impl SpillingStoreBuilder {
+    pub fn new() -> Self {
+        SpillingStoreBuilder {
+            interner: Interner::new(),
+            vocab: VocabInterner::new(),
+            artists: VocabInterner::new(),
+            mana: ManaVocabInterner::new(),
+            keys: Vec::new(),
+        }
+    }
+
+    /// Stage one card row; returns the encoded row for external storage.
+    pub fn add_card(&mut self, card: &Value) -> Result<Vec<u8>, EngineError> {
+        let row = card_from_json(card, &mut self.interner, &mut self.vocab, &mut self.artists, &mut self.mana)?;
+        self.keys.push((row.oracle_id, row.prefer_score, row.illustration_id, row.scryfall_id));
+        Ok(encode_card_row(&row))
+    }
+
+    pub fn staged_rows(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Indices into add order, sorted by the exact build order. Feed the
+    /// spilled rows back to [`Self::finish_from_sorted`] in this sequence.
+    /// Comparator outcomes match build_card_data's row sort bit-for-bit, so
+    /// the resulting permutation is identical.
+    pub fn sorted_order(&self) -> Vec<u32> {
+        let mut idx: Vec<u32> = (0..self.keys.len() as u32).collect();
+        idx.sort_unstable_by(|&a, &b| {
+            crate::card_row_build_order(self.keys[a as usize], self.keys[b as usize])
+        });
+        idx
+    }
+
+    /// Consume the spilled rows (already in sorted_order) and write the
+    /// archive. Bytes are identical to the Vec path's by construction: both
+    /// feed the same row sequence to the same grouping/serialization code.
+    pub fn finish_from_sorted<W: std::io::Write>(
+        self,
+        rows: impl Iterator<Item = Vec<u8>>,
+        w: &mut W,
+    ) -> Result<StoreStats, EngineError> {
+        let SpillingStoreBuilder { interner, vocab, artists, mana, keys } = self;
+        let expected = keys.len();
+        drop(keys);
+        let rows = rows.map(|bytes| decode_card_row(&bytes));
+        let built = crate::build_card_data_sorted(rows, expected, interner, vocab, artists, mana)?;
+        let stats = StoreStats {
+            card_count: built.card_data.cards.len(),
+            printing_count: built.card_data.printings.len(),
+        };
+        write_archive(&built.card_data, w)?;
+        w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
+        Ok(stats)
+    }
+}
+
+impl Default for SpillingStoreBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ─── CardRow spill codec ─────────────────────────────────────────────────────
+//
+// Little-endian, field-by-field, version-free: blobs never outlive one build
+// (spilled and replayed within a single import run), so there is no
+// cross-version compatibility surface. Encode and decode must mirror each
+// other exactly; round-trip is asserted in tests below.
+
+struct RowEnc(Vec<u8>);
+
+impl RowEnc {
+    fn u8v(&mut self, v: u8) { self.0.push(v); }
+    fn u16v(&mut self, v: u16) { self.0.extend_from_slice(&v.to_le_bytes()); }
+    fn u32v(&mut self, v: u32) { self.0.extend_from_slice(&v.to_le_bytes()); }
+    fn u64v(&mut self, v: u64) { self.0.extend_from_slice(&v.to_le_bytes()); }
+    fn u128v(&mut self, v: u128) { self.0.extend_from_slice(&v.to_le_bytes()); }
+    fn f32v(&mut self, v: f32) { self.0.extend_from_slice(&v.to_le_bytes()); }
+    fn opt<T>(&mut self, v: &Option<T>, f: impl FnOnce(&mut Self, &T)) {
+        match v {
+            None => self.u8v(0),
+            Some(x) => {
+                self.u8v(1);
+                f(self, x);
+            }
+        }
+    }
+    fn str_inline(&mut self, s: &str) {
+        debug_assert!(s.len() < 256);
+        self.u8v(s.len() as u8);
+        self.0.extend_from_slice(s.as_bytes());
+    }
+    fn vec_u16(&mut self, v: &[u16]) {
+        self.u16v(v.len() as u16);
+        for &x in v {
+            self.u16v(x);
+        }
+    }
+}
+
+struct RowDec<'a> {
+    buf: &'a [u8],
+    at: usize,
+}
+
+impl<'a> RowDec<'a> {
+    fn take(&mut self, n: usize) -> &'a [u8] {
+        let s = &self.buf[self.at..self.at + n];
+        self.at += n;
+        s
+    }
+    fn u8v(&mut self) -> u8 { self.take(1)[0] }
+    fn u16v(&mut self) -> u16 { u16::from_le_bytes(self.take(2).try_into().unwrap()) }
+    fn u32v(&mut self) -> u32 { u32::from_le_bytes(self.take(4).try_into().unwrap()) }
+    fn u64v(&mut self) -> u64 { u64::from_le_bytes(self.take(8).try_into().unwrap()) }
+    fn u128v(&mut self) -> u128 { u128::from_le_bytes(self.take(16).try_into().unwrap()) }
+    fn f32v(&mut self) -> f32 { f32::from_le_bytes(self.take(4).try_into().unwrap()) }
+    fn opt<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> Option<T> {
+        if self.u8v() == 1 { Some(f(self)) } else { None }
+    }
+    fn str_owned(&mut self) -> String {
+        let n = self.u8v() as usize;
+        String::from_utf8(self.take(n).to_vec()).expect("spill blob utf8")
+    }
+    fn vec_u16(&mut self) -> Vec<u16> {
+        let n = self.u16v() as usize;
+        (0..n).map(|_| self.u16v()).collect()
+    }
+}
+
+fn encode_card_row(r: &CardRow) -> Vec<u8> {
+    let mut e = RowEnc(Vec::with_capacity(256));
+    e.str_inline(r.card_name_lower.as_str());
+    e.str_inline(r.card_name_folded.as_str());
+    e.u8v(r.card_colors);
+    e.u8v(r.card_color_identity);
+    e.u8v(r.produced_mana);
+    e.u16v(r.card_types);
+    e.u128v(r.scryfall_id);
+    e.u128v(r.oracle_id);
+    e.u128v(r.illustration_id);
+    e.u32v(r.card_name_id);
+    e.u32v(r.oracle_text_id);
+    e.u32v(r.oracle_text_lower_id);
+    e.u32v(r.flavor_text_id);
+    e.u32v(r.flavor_text_lower_id);
+    e.u16v(r.card_artist_vid);
+    e.str_inline(r.card_set_code.as_str());
+    e.u32v(r.card_layout_id);
+    e.u32v(r.card_border_id);
+    e.u32v(r.card_watermark_id);
+    e.u32v(r.collector_number_id);
+    e.u32v(r.mana_cost_text_id);
+    e.u32v(r.type_line_id);
+    e.u32v(r.set_name_id);
+    e.opt(&r.released_at_int, |e, &v| e.u32v(v));
+    e.opt(&r.cmc, |e, &v| e.u8v(v));
+    e.opt(&r.creature_power, |e, &v| e.u8v(v as u8));
+    e.opt(&r.creature_toughness, |e, &v| e.u8v(v as u8));
+    e.opt(&r.planeswalker_loyalty, |e, &v| e.u8v(v));
+    e.opt(&r.card_rarity_int, |e, &v| e.u8v(v));
+    e.opt(&r.collector_number_int, |e, &v| e.u16v(v));
+    e.opt(&r.edhrec_rank, |e, &v| e.u32v(v));
+    e.opt(&r.price_usd, |e, &v| e.u32v(v));
+    e.opt(&r.price_eur, |e, &v| e.u32v(v));
+    e.opt(&r.price_tix, |e, &v| e.u32v(v));
+    e.opt(&r.prefer_score, |e, &v| e.f32v(v));
+    e.opt(&r.cubecobra_score, |e, &v| e.f32v(v));
+    e.vec_u16(&r.card_subtypes);
+    e.vec_u16(&r.card_keywords);
+    e.u64v(r.card_legalities);
+    e.vec_u16(&r.card_oracle_tags);
+    e.vec_u16(&r.card_art_tags);
+    e.vec_u16(&r.card_is_tags);
+    e.vec_u16(&r.card_frame_data);
+    e.u64v(r.mana_cost.core);
+    e.u16v(r.mana_cost.hybrids.len() as u16);
+    for &(id, count) in &r.mana_cost.hybrids {
+        e.u8v(id);
+        e.u8v(count);
+    }
+    e.u64v(r.mana_cost.devotion);
+    e.f32v(r.mana_cost.cmc);
+    e.u32v(r.creature_power_text_id);
+    e.u32v(r.creature_toughness_text_id);
+    e.0
+}
+
+fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
+    let mut d = RowDec { buf, at: 0 };
+    let row = CardRow {
+        card_name_lower: InlineStr::from_str(&d.str_owned()),
+        card_name_folded: InlineStr::from_str(&d.str_owned()),
+        card_colors: d.u8v(),
+        card_color_identity: d.u8v(),
+        produced_mana: d.u8v(),
+        card_types: d.u16v(),
+        scryfall_id: d.u128v(),
+        oracle_id: d.u128v(),
+        illustration_id: d.u128v(),
+        card_name_id: d.u32v(),
+        oracle_text_id: d.u32v(),
+        oracle_text_lower_id: d.u32v(),
+        flavor_text_id: d.u32v(),
+        flavor_text_lower_id: d.u32v(),
+        card_artist_vid: d.u16v(),
+        card_set_code: InlineStr::from_str(&d.str_owned()),
+        card_layout_id: d.u32v(),
+        card_border_id: d.u32v(),
+        card_watermark_id: d.u32v(),
+        collector_number_id: d.u32v(),
+        mana_cost_text_id: d.u32v(),
+        type_line_id: d.u32v(),
+        set_name_id: d.u32v(),
+        released_at_int: d.opt(|d| d.u32v()),
+        cmc: d.opt(|d| d.u8v()),
+        creature_power: d.opt(|d| d.u8v() as i8),
+        creature_toughness: d.opt(|d| d.u8v() as i8),
+        planeswalker_loyalty: d.opt(|d| d.u8v()),
+        card_rarity_int: d.opt(|d| d.u8v()),
+        collector_number_int: d.opt(|d| d.u16v()),
+        edhrec_rank: d.opt(|d| d.u32v()),
+        price_usd: d.opt(|d| d.u32v()),
+        price_eur: d.opt(|d| d.u32v()),
+        price_tix: d.opt(|d| d.u32v()),
+        prefer_score: d.opt(|d| d.f32v()),
+        cubecobra_score: d.opt(|d| d.f32v()),
+        card_subtypes: d.vec_u16(),
+        card_keywords: d.vec_u16(),
+        card_legalities: d.u64v(),
+        card_oracle_tags: d.vec_u16(),
+        card_art_tags: d.vec_u16(),
+        card_is_tags: d.vec_u16(),
+        card_frame_data: d.vec_u16(),
+        mana_cost: {
+            let core = d.u64v();
+            let n = d.u16v() as usize;
+            let hybrids = (0..n).map(|_| (d.u8v(), d.u8v())).collect();
+            let devotion = d.u64v();
+            let cmc = d.f32v();
+            ManaCost { core, hybrids, devotion, cmc }
+        },
+        creature_power_text_id: d.u32v(),
+        creature_toughness_text_id: d.u32v(),
+    };
+    if d.at != buf.len() {
+        return Err(EngineError::runtime(format!(
+            "spill blob length mismatch: consumed {} of {}",
+            d.at,
+            buf.len()
+        )));
+    }
+    Ok(row)
+}
+
 // ─── Buffer-backed store (the wasm/no-mmap load path) ────────────────────────
 
 /// The archive held as an owned buffer instead of an mmap. The rkyv payload

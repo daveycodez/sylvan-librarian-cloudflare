@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "vendor/sylvan_librarian/card_engine",
     "engine/wasm",
+    "engine/wasm-builder-probe",
     "engine/builder",
 ]
 
