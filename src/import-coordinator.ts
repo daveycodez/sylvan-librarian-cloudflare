@@ -176,7 +176,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				PRIMARY KEY (kind, seq)
 			);
 			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
-			CREATE TABLE IF NOT EXISTS spill_batches (seq INTEGER PRIMARY KEY, base INTEGER NOT NULL, count INTEGER NOT NULL, bytes BLOB NOT NULL);
+			-- One row per spilled card row, addressed by the index the store
+			-- build's pull_row asks for. NOT batched: the build reads rows in
+			-- card-sort order, not spill order, so any batching turns a lookup
+			-- into a re-read + re-split of a multi-MB blob (see stepBuild).
+			CREATE TABLE IF NOT EXISTS spill_rows (idx INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS row_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);`,
@@ -192,10 +196,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.startImport(url.searchParams.get("reason") ?? "unspecified");
 			case "/status":
 				return this.status();
-			case "/heartbeat":
-				// No-op target for the alarm chain's CPU-budget refresh (see
-				// heartbeat()). Touches nothing; exists to be an incoming request.
-				return new Response(null, { status: 204 });
 			default:
 				return new Response("not found", { status: 404 });
 		}
@@ -266,33 +266,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── alarm chain ────────────────────────────────────────────────────────────
 
-	/**
-	 * Keep the alarm chain inside the free plan's CPU budget. A Durable
-	 * Object's CPU pool (30s, not raisable on free) is refreshed only by
-	 * INCOMING requests — chained alarm invocations all draw from one pool.
-	 * The full import burns well past 30s of cumulative CPU across its
-	 * slices, so with no visitor polling /status the chain dies mid-run with
-	 * "Durable Object exceeded its CPU time limit and was reset". Each slice
-	 * therefore sends itself one no-op request: it lands at the next input-
-	 * gate opening and resets the remaining budget to 30s, which every
-	 * individual slice fits in with room to spare.
-	 */
-	private heartbeat(): void {
-		try {
-			const stub = this.env.IMPORT_COORDINATOR.get(this.ctx.id);
-			this.ctx.waitUntil(
-				stub.fetch("https://coordinator/heartbeat").then(
-					(r) => r.body?.cancel(),
-					() => {},
-				),
-			);
-		} catch {
-			// Best-effort: a missed top-up only matters if many in a row miss.
-		}
-	}
-
 	override async alarm(): Promise<void> {
-		this.heartbeat();
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
 		const phase = (this.metaGet("phase") ?? "idle") as Phase;
@@ -771,7 +745,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("agg_batch_done", "0");
 			this.metaSet("agg_sealed", "0");
 			// Any partially-spilled finalize output is invalid with a fresh heap.
-			this.ctx.storage.sql.exec("DELETE FROM spill_batches");
+			this.ctx.storage.sql.exec("DELETE FROM spill_rows");
 			this.ctx.storage.sql.exec("DELETE FROM row_batches");
 			this.metaSet("finalize_batch_done", "0");
 			this.metaSet("phase", "agg");
@@ -852,19 +826,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		const sql = this.ctx.storage.sql;
 		this.ctx.storage.transactionSync(() => {
-			// Persist in byte-capped groups: one slice's output (~8k rows of row
-			// JSON) far exceeds a single SQLite value's 2MB limit.
+			// Spill rows are stored individually, keyed by the index the store
+			// build will ask for — see the spill_rows schema comment.
 			let base = Number(this.metaGet("spill_base") ?? 0);
-			let spillSeq = Number(sql.exec("SELECT COALESCE(MAX(seq), -1) AS m FROM spill_batches").toArray()[0]?.m ?? -1);
-			for (const group of ImportCoordinator.blobGroups(spillBuf)) {
-				sql.exec(
-					"INSERT INTO spill_batches (seq, base, count, bytes) VALUES (?, ?, ?, ?)",
-					++spillSeq,
-					base,
-					group.length,
-					exactBuffer(lengthPrefixed(group)),
-				);
-				base += group.length;
+			for (const blob of spillBuf) {
+				sql.exec("INSERT OR REPLACE INTO spill_rows (idx, bytes) VALUES (?, ?)", base++, exactBuffer(blob));
 			}
 			this.metaSet("spill_base", String(base));
 			let rowSeq = Number(sql.exec("SELECT COALESCE(MAX(seq), -1) AS m FROM row_batches").toArray()[0]?.m ?? -1);
@@ -892,39 +858,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const wasm = groupWasm();
 		const sql = this.ctx.storage.sql;
 
-		// Spill-batch directory for pull_row: (base, count, seq), ascending.
-		const dir = sql.exec("SELECT seq, base, count FROM spill_batches ORDER BY base").toArray() as {
-			seq: number;
-			base: number;
-			count: number;
-		}[];
-		const cache = new Map<number, Uint8Array[]>(); // batch seq → split blobs (LRU-ish)
+		// One indexed lookup per row. The store build asks for rows in
+		// card-sort order, which bears no relation to the order finalize
+		// spilled them: ~60% of ~98k lookups jump to a different region of the
+		// corpus. Serving those from batched blobs meant re-reading and
+		// re-splitting a multi-MB SQLite value per miss — tens of GB of
+		// copying inside one alarm, which is what blew the free plan's 30s CPU
+		// limit and left the DO resetting in a loop.
 		const lookup = (index: number): Uint8Array | null => {
-			// Binary search the directory for the batch containing `index`.
-			let lo = 0;
-			let hi = dir.length - 1;
-			while (lo <= hi) {
-				const mid = (lo + hi) >> 1;
-				const d = dir[mid];
-				if (!d) return null;
-				if (index < d.base) hi = mid - 1;
-				else if (index >= d.base + d.count) lo = mid + 1;
-				else {
-					let blobs = cache.get(d.seq);
-					if (!blobs) {
-						const row = sql.exec("SELECT bytes FROM spill_batches WHERE seq = ?", d.seq).toArray()[0];
-						if (!row) return null;
-						blobs = splitBatch(new Uint8Array(row.bytes as ArrayBuffer));
-						if (cache.size >= 8) {
-							const first = cache.keys().next().value;
-							if (first !== undefined) cache.delete(first);
-						}
-						cache.set(d.seq, blobs);
-					}
-					return blobs[index - d.base] ?? null;
-				}
-			}
-			return null;
+			const row = sql.exec("SELECT bytes FROM spill_rows WHERE idx = ?", index).toArray()[0];
+			return row ? new Uint8Array(row.bytes as ArrayBuffer) : null;
 		};
 
 		sql.exec("DELETE FROM chunk_staging");
@@ -1331,7 +1274,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			"stage_files",
 			"stage_blobs",
 			"draft_batches",
-			"spill_batches",
+			"spill_rows",
 			"row_batches",
 			"tagdata_blobs",
 			"chunk_staging",
