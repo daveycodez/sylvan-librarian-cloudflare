@@ -53,7 +53,7 @@ use std::sync::Mutex;
 
 use card_engine::SpillingStoreBuilder;
 use serde_json::Value;
-use sylvan_store_builder::tags::{build_id_to_tags, TagData};
+use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
     cubecobra_scores_from_pairs, finalize_row, illust_count_key, transform, RowDraft,
 };
@@ -155,8 +155,8 @@ struct AggState {
 #[derive(Default)]
 struct ImportState {
     tags: TagData,
-    /// Pruned tag records accumulated between tags_begin and tags_finish.
-    tag_recs: Vec<Value>,
+    /// Streaming fold of tag-dump lines between tags_begin and tags_finish.
+    tag_acc: TagAccumulator,
     agg: AggState,
     /// Position counter for finalize's second pass over the same draft order.
     finalize_pos: u32,
@@ -265,12 +265,12 @@ fn trim_ascii(b: &[u8]) -> &[u8] {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tags_begin() {
-    with_state(|s| s.tag_recs.clear());
+    with_state(|s| s.tag_acc = TagAccumulator::default());
 }
 
-/// Tag-dump JSONL lines. Records are pruned to the fields build_id_to_tags
-/// reads (id, slug, parent_ids, taggings' id fields) so a full dump fits
-/// comfortably in memory.
+/// Tag-dump JSONL lines, folded into the accumulator as they arrive. Lines
+/// never accumulate — the real dumps carry ~700k taggings, and buffering the
+/// records (even pruned to the read fields) blew the wasm heap on real data.
 #[unsafe(no_mangle)]
 pub extern "C" fn tags_add_lines(ptr: *mut u8, len: usize) -> i64 {
     let buf = take_buf(ptr, len);
@@ -281,32 +281,10 @@ pub extern "C" fn tags_add_lines(ptr: *mut u8, len: usize) -> i64 {
             if trimmed.is_empty() {
                 continue;
             }
-            let Ok(tag @ Value::Object(_)) = serde_json::from_slice::<Value>(trimmed) else {
-                continue; // same skip-junk-lines posture as the bulk stream
-            };
-            let mut pruned = serde_json::Map::new();
-            for key in ["id", "slug", "parent_ids"] {
-                if let Some(v) = tag.get(key) {
-                    pruned.insert(key.to_owned(), v.clone());
-                }
+            // Junk lines are skipped — same posture as the bulk stream.
+            if s.tag_acc.add_line(trimmed) {
+                added += 1;
             }
-            if let Some(taggings) = tag.get("taggings").and_then(Value::as_array) {
-                let kept: Vec<Value> = taggings
-                    .iter()
-                    .map(|t| {
-                        let mut m = serde_json::Map::new();
-                        for field in ["oracle_id", "illustration_id"] {
-                            if let Some(v) = t.get(field) {
-                                m.insert(field.to_owned(), v.clone());
-                            }
-                        }
-                        Value::Object(m)
-                    })
-                    .collect();
-                pruned.insert("taggings".to_owned(), Value::Array(kept));
-            }
-            s.tag_recs.push(Value::Object(pruned));
-            added += 1;
         }
     });
     added
@@ -316,17 +294,20 @@ pub extern "C" fn tags_add_lines(ptr: *mut u8, len: usize) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn tags_finish(kind: u32) -> i64 {
     with_state(|s| {
-        let recs = std::mem::take(&mut s.tag_recs);
-        let (field, target) = match kind {
-            1 => ("oracle_id", &mut s.tags.oracle),
-            2 => ("illustration_id", &mut s.tags.art),
+        let acc = std::mem::take(&mut s.tag_acc);
+        let kind = match kind {
+            1 => TagKind::Oracle,
+            2 => TagKind::Art,
             _ => {
                 log(&format!("tags_finish: unknown kind {kind}"));
                 return -1;
             }
         };
-        *target = build_id_to_tags(&recs, field);
-        target.len() as i64
+        acc.finish_into(kind, &mut s.tags);
+        match kind {
+            TagKind::Oracle => s.tags.oracle.len() as i64,
+            TagKind::Art => s.tags.art.len() as i64,
+        }
     })
 }
 
@@ -510,7 +491,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             log("finalize_drafts before finalize_begin");
             return -1;
         };
-        let empty: Vec<String> = Vec::new();
+        let empty: Vec<u32> = Vec::new();
         for blob in blobs {
             let pos = s.finalize_pos;
             s.finalize_pos += 1;
@@ -524,12 +505,14 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             if s.agg.winner_pos.get(&draft.scryfall_id) != Some(&pos) {
                 continue; // a duplicated scryfall_id's non-winning occurrence
             }
-            let oracle_tags = s.tags.oracle.get(&draft.oracle_id).unwrap_or(&empty);
-            let art_tags = draft
-                .illustration_id
-                .as_ref()
-                .and_then(|ill| s.tags.art.get(ill))
-                .unwrap_or(&empty);
+            let oracle_tags = s.tags.resolve(s.tags.oracle.get(&draft.oracle_id).unwrap_or(&empty));
+            let art_tags = s.tags.resolve(
+                draft
+                    .illustration_id
+                    .as_ref()
+                    .and_then(|ill| s.tags.art.get(ill))
+                    .unwrap_or(&empty),
+            );
             let illustration_count = draft
                 .illustration_id
                 .as_ref()
@@ -537,7 +520,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
                 .copied()
                 .unwrap_or(0);
             let cubecobra_score = s.agg.cubecobra.get(&draft.card_name).copied();
-            let row = finalize_row(draft, oracle_tags, art_tags, illustration_count, cubecobra_score);
+            let row = finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score);
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");
             match builder.add_card(&row) {

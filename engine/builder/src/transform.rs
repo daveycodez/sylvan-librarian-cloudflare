@@ -537,7 +537,7 @@ fn round4(v: f64) -> f64 {
 /// `prefer_score_components`, summed into `prefer_score`.
 /// `illustration_count` is the number of qualifying rows sharing this row's
 /// (illustration_id, card_name) — see [`finalize`] for the corpus-wide count.
-fn prefer_score(draft: &RowDraft, art_tags: &[String], illustration_count: u64) -> f64 {
+fn prefer_score(draft: &RowDraft, art_tags: &[&str], illustration_count: u64) -> f64 {
     let mut total = 0.0f64;
 
     // 'illustration_count': 23 * LN(1 + COUNT(*)) / LN(40), rounded to 4 places.
@@ -603,7 +603,7 @@ fn prefer_score(draft: &RowDraft, art_tags: &[String], illustration_count: u64) 
     };
 
     // 'art_style': licensed-crossover / stylistic-departure art gets no bonus.
-    let has_tag = |t: &str| art_tags.iter().any(|x| x == t);
+    let has_tag = |t: &str| art_tags.iter().any(|x| *x == t);
     let off_style = (has_tag("external-ip") && !(has_tag("dungeons-and-dragons") || has_tag("the-lord-of-the-rings")))
         || has_tag("anime")
         || has_tag("comic-style")
@@ -672,10 +672,10 @@ pub fn cubecobra_scores_from_pairs(per_name: &[(&str, Option<i64>)]) -> HashMap<
         .collect()
 }
 
-fn keys_true(keys: &[String]) -> Value {
+fn keys_true<S: AsRef<str>>(keys: &[S]) -> Value {
     let mut m = Map::new();
     for k in keys {
-        m.insert(k.clone(), Value::Bool(true));
+        m.insert(k.as_ref().to_owned(), Value::Bool(true));
     }
     Value::Object(m)
 }
@@ -749,15 +749,16 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
     // 4. cubecobra scores per card_name.
     let cubecobra = cubecobra_scores_by_name(&rows);
 
-    let empty: Vec<String> = Vec::new();
+    let empty: Vec<u32> = Vec::new();
     let tags = tags.clone();
     rows.into_iter().map(move |r| {
-        let oracle_tags = tags.oracle.get(&r.oracle_id).unwrap_or(&empty);
-        let art_tags = r
-            .illustration_id
-            .as_ref()
-            .and_then(|ill| tags.art.get(ill))
-            .unwrap_or(&empty);
+        let oracle_tags = tags.resolve(tags.oracle.get(&r.oracle_id).unwrap_or(&empty));
+        let art_tags = tags.resolve(
+            r.illustration_id
+                .as_ref()
+                .and_then(|ill| tags.art.get(ill))
+                .unwrap_or(&empty),
+        );
         let illustration_count = r
             .illustration_id
             .as_ref()
@@ -765,7 +766,7 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
             .copied()
             .unwrap_or(0);
         let cubecobra_score = cubecobra.get(&r.card_name).copied();
-        finalize_row(r, oracle_tags, art_tags, illustration_count, cubecobra_score)
+        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score)
     })
 }
 
@@ -791,8 +792,8 @@ pub fn illust_count_key(r: &RowDraft) -> Option<&str> {
 /// holding a Vec — produces byte-identical rows through the same code.
 pub fn finalize_row(
     r: RowDraft,
-    oracle_tags: &[String],
-    art_tags: &[String],
+    oracle_tags: &[&str],
+    art_tags: &[&str],
     illustration_count: u64,
     cubecobra_score: Option<f64>,
 ) -> Value {
@@ -1181,11 +1182,14 @@ mod tests {
 
     #[test]
     fn finalize_attaches_tags_and_art_style() {
-        let mut tags = TagData::default();
         let draft = transform(&fixture("llanowar_elves")).unwrap().unwrap();
-        tags.oracle.insert(draft.oracle_id.clone(), vec!["mana-dork".into(), "mana-producer".into()]);
-        tags.art
-            .insert(draft.illustration_id.clone().unwrap(), vec!["external-ip".into(), "fallout".into()]);
+        let tags = TagData::from_slug_maps(
+            HashMap::from([(draft.oracle_id.clone(), vec!["mana-dork".into(), "mana-producer".into()])]),
+            HashMap::from([(
+                draft.illustration_id.clone().unwrap(),
+                vec!["external-ip".into(), "fallout".into()],
+            )]),
+        );
         let rows: Vec<Value> = finalize(vec![draft], &tags).collect();
         assert_eq!(rows[0]["card_oracle_tags"], json!({"mana-dork": true, "mana-producer": true}));
         assert_eq!(rows[0]["card_art_tags"], json!({"external-ip": true, "fallout": true}));

@@ -364,7 +364,7 @@ fn load_tag_data(tags_path: &Path) -> TagData {
             })
             .collect()
     };
-    TagData { oracle: to_map("oracle"), art: to_map("art") }
+    TagData::from_slug_maps(to_map("oracle"), to_map("art"))
 }
 
 fn cmd_rows(bulk_path: &Path, tags_path: &Path, out_path: &Path) {
