@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# `bun dev`: production-identical local dev in one command.
+# `bun dev`: full local dev in one command.
+#
+# First run with no local store: builds the card store NATIVELY (same shared
+# pipeline Rust as production) and seeds local D1 — store, engine, and the
+# SQL-fallback cards table — in ~2-3 minutes, mostly download. Later runs
+# start instantly from the persisted local D1.
 #
 # wrangler dev emulates everything this deployment uses — D1, Durable Objects
-# with SQLite, alarms — so even the import pipeline runs locally exactly as in
-# production: with no store in local D1, the first request kicks the
-# ImportCoordinator, which streams Scryfall bulk data, builds the store in
-# wasm, and publishes to (local) D1. That first bootstrap takes ~10-20 minutes
-# and needs network; later runs start instantly from the persisted local D1.
-#
-# In a hurry (or offline after a first build)? `bun run seed:local` builds the
-# store natively (same shared pipeline code) and seeds local D1 directly.
+# with SQLite, alarms — so the production import pipeline also runs locally:
+# DEV_BOOTSTRAP=worker skips the native seed and lets the ImportCoordinator
+# bootstrap in-Worker exactly as a fresh production deploy would
+# (~10-20 minutes).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

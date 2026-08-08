@@ -56,7 +56,8 @@ request ──▶ Workers Cache (regional edge cache in front of the Worker;
               │   memory; store persisted in its embedded SQLite so wake-ups
               │   never wait on D1, hot-swapped when the D1 manifest advances
               ├─ autoscaling: latency-signal fan-out to engine-<colo>-1..N
-              │   (cap 8, SHARDS_MAX var), idle fold-back, warm pings and
+              │   (plan-aware cap: free 1 / paid 8, no config — plan-hint.ts;
+              │   SHARDS_MAX overrides), idle fold-back, warm pings and
               │   seed-ahead — see the header of src/engine/shard-controller.ts
               └─ UI: upstream's static assets, served with upstream's cache headers
 
