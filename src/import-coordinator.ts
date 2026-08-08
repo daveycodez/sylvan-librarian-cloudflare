@@ -93,6 +93,10 @@ const CEILING_RELEARN_MS = 30 * 24 * 60 * 60 * 1000;
 /** Headroom kept under an observed daily limit (publish + deletes share it). */
 const CEILING_SAFETY = 0.9;
 const CEILING_FLOOR = 10_000;
+/** A single run writing this many metered rows without a daily-limit error is
+ * evidence of a paid plan (the free quota is ~100k/day) — recorded as the
+ * plan hint that lifts the shard cap (src/engine/plan-hint.ts). */
+const PAID_HINT_WRITES = 120_000;
 /** Volatile-column refresh rows per alarm slice — also the per-run total
  * whenever a finite ceiling applies (full price-refresh cycle ≈ a week on
  * the free plan; unmetered runs drain the whole corpus in these slices). */
@@ -1040,6 +1044,27 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const ceiling = Math.max(CEILING_FLOOR, Math.floor(writesUsed * CEILING_SAFETY));
 		await this.ctx.storage.put("d1_write_ceiling", { ceiling, learnedAt: new Date().toISOString() });
 		console.warn(`D1 daily write limit hit after ~${writesUsed} metered writes; learned per-run ceiling ${ceiling}`);
+		// Best effort now (the quota that just ran out may reject it) — the
+		// next run re-records it on fresh quota (see stepCards init).
+		await this.setPlanHint("free");
+	}
+
+	/**
+	 * Record observed plan evidence where isolates can read it (plan-aware
+	 * shard cap, src/engine/plan-hint.ts). Advisory — never fails a run.
+	 */
+	private async setPlanHint(plan: "free" | "paid"): Promise<void> {
+		try {
+			const db = this.env.STORE_DB;
+			await db.batch([
+				db.prepare(
+					"CREATE TABLE IF NOT EXISTS plan_meta (id INTEGER PRIMARY KEY CHECK (id = 1), plan TEXT NOT NULL, observed_at INTEGER NOT NULL)",
+				),
+				db.prepare("INSERT OR REPLACE INTO plan_meta (id, plan, observed_at) VALUES (1, ?, ?)").bind(plan, Date.now()),
+			]);
+		} catch (err) {
+			console.warn(`Plan hint (${plan}) not recorded: ${err}`);
+		}
 	}
 
 	private async stepCards(): Promise<void> {
@@ -1079,6 +1104,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				this.metaSet("cards_writes_used", String(writesUsed + refreshed.writes));
 			});
 			if (refreshed.rows === 0 || volatileLeft - refreshed.rows <= 0) {
+				// A full unmetered run past the free quota without an error is
+				// how a paid plan reveals itself.
+				if (!fixed && !Number.isFinite(ceiling) && writesUsed + refreshed.writes >= PAID_HINT_WRITES) {
+					await this.setPlanHint("paid");
+				}
 				await this.finishRun(completeDetail());
 			}
 			return;
@@ -1086,6 +1116,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		if (synced === 0) {
 			await ensureCardsSchema(db);
+			// A learned ceiling means the daily-limit error was observed — make
+			// sure the plan hint reflects it now that quota is fresh (the
+			// attempt at learn time may itself have been over quota).
+			if (!fixed && Number.isFinite(ceiling)) {
+				await this.setPlanHint("free");
+			}
 			// Existing content hashes: the diff basis for this sync.
 			const existing = await db.prepare("SELECT scryfall_id, row_hash FROM cards").all<{
 				scryfall_id: string;

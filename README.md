@@ -118,9 +118,11 @@ while decompress CPU would be metered on every load.
 Serving reads zero SQL rows per query (in-memory engine) and the import
 writes ~1k SQLite rows + ~70 D1 rows per night (batched blobs), so the free
 tier's daily meters — 100k Worker requests, 100k DO requests, 5M rows read,
-100k rows written — bound *traffic*, not architecture. On the free plan set
-`SHARDS_MAX=1`: each warm shard holds a ~70MB store copy against the 5GB
-account storage and the daily duration allowance.
+100k rows written — bound *traffic*, not architecture. The per-colo shard
+cap is plan-aware automatically (1 on detected free — each warm shard pins
+a ~70MB store copy against the 5GB storage and daily duration allowances —
+8 on detected paid, 2 until the first import produces evidence), using the
+same detection signal as the write pacing; `SHARDS_MAX` overrides it.
 
 ## Upstream tracking
 

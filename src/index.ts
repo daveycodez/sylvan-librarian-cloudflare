@@ -3,6 +3,7 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { bootstrapPage } from "./engine/bootstrap-page";
+import { planShardCap } from "./engine/plan-hint";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
@@ -29,10 +30,11 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // A colo whose lone shard reports sustained queue depth fans out to
 // engine-<colo>-1, -2, ... (shard 0 keeps the plain name, so single-shard
 // steady state is byte-identical to unsharded routing); see shard-controller.
-// SHARDS_MAX (runtime var) overrides the default cap of 8.
+// The cap is plan-aware with zero configuration (free 1 / paid 8 / unknown 2
+// — see plan-hint.ts); SHARDS_MAX (runtime var) overrides it.
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
-	const maxShards = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10) || undefined;
+	const maxShards = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10) || planShardCap(env, ctx);
 	const shard = pickShard(maxShards);
 	const name = shard === 0 ? `engine-${colo}` : `engine-${colo}-${shard}`;
 	source.tag = `do-${name.slice("engine-".length)}`;
@@ -153,7 +155,8 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		}
 		if (err instanceof EngineUnavailableError) {
 			// The store is bootstrapping or failed to load. Loud, structured,
-			// never an empty result (this deployment has no SQL fallback).
+			// never an empty result (the SQL fallback is built by the same
+			// import that hasn't produced a store yet, so it can't help here).
 			return finish(
 				httpError(
 					503,
