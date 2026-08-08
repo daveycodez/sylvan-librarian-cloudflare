@@ -192,6 +192,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.startImport(url.searchParams.get("reason") ?? "unspecified");
 			case "/status":
 				return this.status();
+			case "/heartbeat":
+				// No-op target for the alarm chain's CPU-budget refresh (see
+				// heartbeat()). Touches nothing; exists to be an incoming request.
+				return new Response(null, { status: 204 });
 			default:
 				return new Response("not found", { status: 404 });
 		}
@@ -262,7 +266,33 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── alarm chain ────────────────────────────────────────────────────────────
 
+	/**
+	 * Keep the alarm chain inside the free plan's CPU budget. A Durable
+	 * Object's CPU pool (30s, not raisable on free) is refreshed only by
+	 * INCOMING requests — chained alarm invocations all draw from one pool.
+	 * The full import burns well past 30s of cumulative CPU across its
+	 * slices, so with no visitor polling /status the chain dies mid-run with
+	 * "Durable Object exceeded its CPU time limit and was reset". Each slice
+	 * therefore sends itself one no-op request: it lands at the next input-
+	 * gate opening and resets the remaining budget to 30s, which every
+	 * individual slice fits in with room to spare.
+	 */
+	private heartbeat(): void {
+		try {
+			const stub = this.env.IMPORT_COORDINATOR.get(this.ctx.id);
+			this.ctx.waitUntil(
+				stub.fetch("https://coordinator/heartbeat").then(
+					(r) => r.body?.cancel(),
+					() => {},
+				),
+			);
+		} catch {
+			// Best-effort: a missed top-up only matters if many in a row miss.
+		}
+	}
+
 	override async alarm(): Promise<void> {
+		this.heartbeat();
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
 		const phase = (this.metaGet("phase") ?? "idle") as Phase;
