@@ -38,8 +38,13 @@
 //    RPC, compared against a slow "healthy floor" EWMA. Event-loop queuing
 //    inside the DO is invisible to counters but shows up here as sustained
 //    wall-time inflation — this is the signal that fires under real
-//    warm-path overload. Wake/relay-carrying samples are excluded by the
-//    caller so revivals don't fake an overload.
+//    warm-path overload. Wake- and relay-carrying samples are excluded by the
+//    caller so revivals don't fake an overload: the DO tags relays with a
+//    `relayed` rider and remote-engine.ts drops those samples entirely (all
+//    three signals, not just latency — a relayed result's depth and rate are
+//    the REGION's, not this colo's). Relays are the case that matters most:
+//    every shard this controller opens relays until it warms, so without the
+//    tag each expansion would inflate the very signal that triggers the next.
 
 /** Searches per second at the DO below which elevated latency is NOT read as
  * saturation. A warm query costs 0.2-3ms, so one DO saturates somewhere north
@@ -53,7 +58,14 @@ const EXPAND_DEPTH = 2;
 const EXPAND_SAMPLES = 3;
 const EXPAND_WINDOW_MS = 15_000;
 const EXPAND_COOLDOWN_MS = 30_000;
-/** No sample with any queue depth for this long steps the fan-out down. */
+/** No evidence of saturation for this long steps the fan-out down. Note this
+ * is NOT idleness, despite what a fan-out walking down looks like: lastBusyAt
+ * is set by any reported queue depth OR a latency breach, and a warm DO reports
+ * depth 0 almost always (see QUEUE DEPTH above), so in practice only breaches
+ * hold contraction off. A busy-but-COPING colo therefore does contract, one
+ * step per CONTRACT_COOLDOWN_MS, until latency reaches the bar again — it
+ * walks toward the smallest fan-out that keeps up rather than holding whatever
+ * peak it once hit. */
 const CONTRACT_IDLE_MS = 10 * 60_000;
 const CONTRACT_COOLDOWN_MS = 60_000;
 /** Cap on the fan-out. Not a scaling limit so much as a blast radius: the
@@ -195,7 +207,10 @@ export function pickShard(maxShards?: number): number {
 	) {
 		activeShards -= 1;
 		lastContractAt = now;
-		console.log(`Shard controller: contracted to ${activeShards} shards (idle)`);
+		console.log(
+			`Shard controller: contracted to ${activeShards} shards ` +
+				`(no saturation for ${CONTRACT_IDLE_MS / 60_000}m — not necessarily idle)`,
+		);
 	}
 	if (configuredMax > 0 && activeShards > configuredMax) activeShards = configuredMax;
 	return activeShards === 1 ? 0 : Math.floor(Math.random() * activeShards);

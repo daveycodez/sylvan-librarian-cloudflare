@@ -64,15 +64,21 @@ export class SearchEngine extends DurableObject<Env> {
 	async search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs: number; load: number; rate: number }> {
+	): Promise<EngineSearchResult & { acquireMs: number; load: number; rate: number; relayed: boolean }> {
 		if (this.shouldRelay(fallbackHint)) {
 			this.warmInBackground();
 			const relayStart = Date.now();
-			// The relayed result carries the REGIONAL engine's acquireMs/load —
-			// honest numbers for whoever actually computed the answer.
+			// The relayed result carries the REGIONAL engine's acquireMs/load/rate
+			// — honest numbers for whoever actually computed the answer, but they
+			// describe a DIFFERENT DO than the one the caller is scaling. `relayed`
+			// marks the whole sample so the shard controller drops it: the wall
+			// time carries a cross-colo hop (region.ts budgets 60-80ms for a bad
+			// one, against a 75ms latency bar), and the depth/rate belong to the
+			// region. Without this every freshly opened shard, which relays until
+			// it warms, would manufacture the evidence for the next expansion.
 			const result = await this.regionStub(fallbackHint).search(opts);
 			console.log(`Cold colo relayed search to engine-${fallbackHint} in ${Date.now() - relayStart}ms`);
-			return result;
+			return { ...result, relayed: true };
 		}
 		const load = this.inFlightSearches;
 		const rate = this.searchRate(Date.now());
@@ -86,7 +92,7 @@ export class SearchEngine extends DurableObject<Env> {
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				return { ...(await engine.search(opts)), acquireMs, load, rate };
+				return { ...(await engine.search(opts)), acquireMs, load, rate, relayed: false };
 			} catch (err) {
 				rethrowForRpc(err);
 			}

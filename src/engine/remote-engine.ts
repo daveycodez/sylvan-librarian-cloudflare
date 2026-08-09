@@ -6,14 +6,16 @@ import { reportEngineLatency, reportEngineLoad, reportEngineRate } from "./shard
 import type { Engine, EngineSearchOptions, EngineSearchResult } from "./types";
 import { EngineUnavailableError } from "./types";
 
-/** Structural stub type: the SearchEngine DO's RPC surface. `acquireMs` is
- * optional only for one deploy's worth of rolling-update skew (new isolate,
- * old DO); current DO code always sets it. */
+/** Structural stub type: the SearchEngine DO's RPC surface. `acquireMs` and
+ * `relayed` are optional only for one deploy's worth of rolling-update skew
+ * (new isolate, old DO); current DO code always sets them. A missing `relayed`
+ * reads as false, which is the pre-existing behavior — the skew window keeps
+ * the old contamination rather than inventing a new failure mode. */
 interface SearchEngineStub {
 	search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs?: number; load?: number; rate?: number }>;
+	): Promise<EngineSearchResult & { acquireMs?: number; load?: number; rate?: number; relayed?: boolean }>;
 	catalog(
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
@@ -77,18 +79,29 @@ export class RemoteEngine implements Engine {
 
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, rate, ...result } = await withRetry(() => this.stub.search(opts, this.fallbackHint));
-		// The DO's queue-depth rider feeds the shard autoscaler; both metadata
-		// fields are stripped so the search envelope never carries them.
-		if (load !== undefined) reportEngineLoad(load);
-		if (rate !== undefined) reportEngineRate(rate);
+		const { acquireMs, load, rate, relayed, ...result } = await withRetry(() =>
+			this.stub.search(opts, this.fallbackHint),
+		);
 		if (acquireMs) {
-			// Wake observability: logged only when the DO had to acquire its
-			// engine — and wake-carrying RPCs are excluded from the latency
-			// signal (their wall time is legitimately inflated).
-			console.log(`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO`);
-		} else {
-			reportEngineLatency(Date.now() - rpcStart);
+			// Wake observability: logged only when the DO that answered had to
+			// acquire its engine. Under a relay that DO is the regional one.
+			console.log(
+				`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO` +
+					(relayed ? " (relayed)" : ""),
+			);
+		}
+		// The DO's riders feed the shard autoscaler, and are stripped so the
+		// search envelope never carries them. A RELAYED sample is dropped
+		// wholesale: it describes the regional DO, not the colo shard being
+		// scaled — its wall time includes a cross-colo hop, and its depth/rate
+		// are the region's. Since every freshly opened shard relays until it
+		// warms, reporting these would let each expansion argue for the next.
+		if (!relayed) {
+			if (load !== undefined) reportEngineLoad(load);
+			if (rate !== undefined) reportEngineRate(rate);
+			// Wake-carrying RPCs are excluded from the latency signal too: their
+			// wall time is legitimately inflated by the load.
+			if (!acquireMs) reportEngineLatency(Date.now() - rpcStart);
 		}
 		return result;
 	}
