@@ -61,10 +61,10 @@ const sqlLit = (v: unknown): string => {
 
 async function execRemote(sqlPath: string): Promise<void> {
 	if (process.env.SEED_REMOTE_DRY) {
-		console.error(`[dry-run] would ingest ${sqlPath}`);
+		console.log(`[dry-run] would ingest ${sqlPath}`);
 		return;
 	}
-	console.error(`Ingesting ${sqlPath}...`);
+	console.log(`Ingesting ${sqlPath}...`);
 	const proc = Bun.spawn(
 		[
 			"bunx",
@@ -136,13 +136,13 @@ for (const path of await writeSqlFiles("seed-remote-chunks", chunkStatements()))
 		].join("\n"),
 	);
 	await execRemote(path);
-	console.error(`Manifest live: ${manifest.store_key} — the site now serves.`);
+	console.log(`Manifest live: ${manifest.store_key} — the site now serves.`);
 }
 
 // ── 3. optional: the SQL-fallback cards table ────────────────────────────────
 if (!withCards) {
-	console.error("Done (store only). The nightly import fills the SQL-fallback cards table;");
-	console.error("on a paid plan, re-run with --with-cards to seed it now.");
+	console.log("Done (store only). The nightly import fills the SQL-fallback cards table;");
+	console.log("on a paid plan, re-run with --with-cards to seed it now.");
 	process.exit(0);
 }
 
@@ -183,9 +183,9 @@ function* cardsStatements(): Generator<string> {
 		// Completeness flips LAST, after every row landed.
 		yield `INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, '${sqlEscape(manifest.store_key)}', 1, ${total});`;
 	}
-	console.error(`(${total} card rows staged)`);
+	console.log(`(${total} card rows staged)`);
 }
 for (const path of await writeSqlFiles("seed-remote-cards", cardsStatements())) {
 	await execRemote(path);
 }
-console.error("Done: store live + SQL-fallback cards table complete.");
+console.log("Done: store live + SQL-fallback cards table complete.");

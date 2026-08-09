@@ -81,7 +81,7 @@ async function localD1Path(): Promise<string> {
 }
 
 const dbPath = await localD1Path();
-console.error(`Seeding ${dbPath} directly...`);
+console.log(`Seeding ${dbPath} directly...`);
 const db = new Database(dbPath);
 db.exec("PRAGMA journal_mode = WAL;");
 
@@ -106,7 +106,7 @@ db.transaction(() => {
 	]);
 	db.run("INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, ?)", [JSON.stringify(manifest)]);
 })();
-console.error(`Store seeded: ${manifest.store_key} (${chunkCount} chunks).`);
+console.log(`Store seeded: ${manifest.store_key} (${chunkCount} chunks).`);
 
 // ── cards: the SQL-fallback table, from the rows the builder teed out ────────
 // Same cardsRowValues/structuralHash derivations the production cards phase
@@ -159,7 +159,7 @@ DELETE FROM cards;`,
 	}
 })();
 db.close();
-console.error(
+console.log(
 	totalRows > 0
 		? `Seeded ${totalRows} cards rows; SQL fallback marked complete.`
 		: `${rowsPath} is empty — SQL-fallback cards table not seeded.`,
