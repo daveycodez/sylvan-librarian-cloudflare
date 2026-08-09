@@ -53,6 +53,24 @@ const PERSIST_CHUNK_BYTES = 1_900_000;
  */
 const PERSIST_CHUNK_PAUSE_MS = 150;
 
+/**
+ * Wake timing breakdown, filled by sqliteChunks and logged by engine().
+ * Exists to answer one question with data instead of theory: is the ~1s
+ * wake storage bandwidth, per-read latency, storage attach, or CPU? Each
+ * answer has a different fix, and only one of them is "shrink the store".
+ */
+interface WakeStats {
+	/** Time to open the cursor, before any row is fetched. */
+	openMs: number;
+	/** Time the first row took — large here means the storage layer attaching. */
+	firstRowMs: number;
+	/** Cumulative time inside the cursor across all rows. */
+	readMs: number;
+	slowestRowMs: number;
+	rows: number;
+	bytes: number;
+}
+
 export class SearchEngine extends DurableObject<Env> {
 	/** Schema created once per instance — see ensureSchema. */
 	private schemaReady = false;
@@ -221,10 +239,27 @@ export class SearchEngine extends DurableObject<Env> {
 			if (meta) {
 				try {
 					const wakeStart = Date.now();
-					const engine = await adoptStoreFromChunks(meta, this.sqliteChunks(meta.chunk_count));
+					const stats: WakeStats = {
+						openMs: 0,
+						firstRowMs: 0,
+						readMs: 0,
+						slowestRowMs: 0,
+						rows: 0,
+						bytes: 0,
+					};
+					const engine = await adoptStoreFromChunks(meta, this.sqliteChunks(meta.chunk_count, stats));
+					const totalMs = Date.now() - wakeStart;
+					// read = time inside the SQLite cursor; feed = everything else
+					// (wasm instantiation + store_load_chunk + finish). Which term
+					// dominates decides the fix: a big readMs spread evenly across
+					// rows is bandwidth (compress the chunks), a big firstRowMs is
+					// the storage layer attaching, and a big feed is CPU.
 					console.log(
-						`SearchEngine wake: adopted ${meta.store_key} from SQLite ` +
-							`(${meta.store_bytes} bytes, ${meta.chunk_count} chunks) in ${Date.now() - wakeStart}ms`,
+						`SearchEngine wake: adopted ${meta.store_key} in ${totalMs}ms ` +
+							`[open=${stats.openMs}ms firstRow=${stats.firstRowMs}ms read=${stats.readMs}ms ` +
+							`slowestRow=${stats.slowestRowMs}ms feed=${totalMs - stats.openMs - stats.readMs}ms] ` +
+							`${stats.rows} rows / ${stats.bytes} bytes ` +
+							`(avg ${stats.rows ? Math.round(stats.readMs / stats.rows) : 0}ms/row)`,
 					);
 					this.ctx.waitUntil(this.freshen());
 					return engine;
@@ -285,12 +320,31 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/** Lazy row-by-row read so at most ~1MB of chunk data is resident in JS. */
-	private async *sqliteChunks(expected: number): AsyncGenerator<Uint8Array> {
+	private async *sqliteChunks(expected: number, stats?: WakeStats): AsyncGenerator<Uint8Array> {
 		let seen = 0;
-		for (const row of this.ctx.storage.sql.exec("SELECT bytes FROM store_chunks ORDER BY seq")) {
+		const openStart = Date.now();
+		const cursor = this.ctx.storage.sql.exec("SELECT bytes FROM store_chunks ORDER BY seq");
+		const iter = cursor[Symbol.iterator]();
+		if (stats) stats.openMs = Date.now() - openStart;
+		for (;;) {
+			// Time ONLY the row fetch: the gap between this and the caller's
+			// total is the wasm feed, which the workerd rig measures at ~5ms
+			// for the whole store — so anything large here is the storage layer.
+			const readStart = Date.now();
+			const next = iter.next();
+			const rowMs = Date.now() - readStart;
+			if (stats) {
+				stats.readMs += rowMs;
+				if (seen === 0) stats.firstRowMs = rowMs;
+				if (rowMs > stats.slowestRowMs) stats.slowestRowMs = rowMs;
+			}
+			if (next.done) break;
 			seen++;
-			yield new Uint8Array(row.bytes as ArrayBuffer);
+			const bytes = new Uint8Array(next.value.bytes as ArrayBuffer);
+			if (stats) stats.bytes += bytes.byteLength;
+			yield bytes;
 		}
+		if (stats) stats.rows = seen;
 		if (seen !== expected) {
 			throw new Error(`SQLite store is incomplete: ${seen}/${expected} chunks`);
 		}
