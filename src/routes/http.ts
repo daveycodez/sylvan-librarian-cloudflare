@@ -4,14 +4,20 @@
 // api/middlewares/security_headers.py + cors_middleware.py, and
 // api_resource.py set_cache_header/set_no_store_header.
 
-// Upstream reads CDN_URL with a CloudFront default; this deployment serves
-// everything same-origin, so the CDN hosts collapse to 'self'.
+// Upstream reads CDN_URL with a CloudFront default. Our own assets (app.min.js,
+// styles.css, card.js) are same-origin out of public/, but the FONTS fragment we
+// vendor verbatim still loads mana/beleren/mplantin from upstream's CloudFront —
+// so style-src and font-src must keep naming it. Dropping it silently kills
+// mana-subset.css, which is what turns every <span class="ms ms-*"> mana symbol
+// into an empty box.
+const CDN_URL = "https://d1hot9ps2xugbc.cloudfront.net";
+
 const SECURITY_HEADERS: Record<string, string> = {
 	"Content-Security-Policy":
 		"default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline'; " +
-		"style-src 'self' 'unsafe-inline'; " +
-		"font-src 'self'; " +
+		`style-src 'self' 'unsafe-inline' ${CDN_URL}; ` +
+		`font-src 'self' ${CDN_URL}; ` +
 		"img-src 'self' data: https:; " +
 		"connect-src 'self'; " +
 		"frame-ancestors 'none'; " +

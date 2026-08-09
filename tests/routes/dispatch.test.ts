@@ -135,3 +135,33 @@ describe("Postgres-only routes answer 501", () => {
 		});
 	}
 });
+
+// The FONTS fragment is vendored verbatim and loads mana-subset.css (and the
+// Beleren/MPlantin faces) from upstream's CloudFront. If the CSP stops naming
+// that host, the stylesheet is blocked, .ms-* never gets a glyph, and every
+// mana symbol in a card's oracle text renders as an empty box — with nothing
+// failing server-side to say so. Derive the hosts from the page we actually
+// serve rather than restating the constant.
+describe("Content-Security-Policy covers the font CDN", () => {
+	test("every cross-origin stylesheet/font host in the page is allowed", async () => {
+		const res = await testDispatch(makeCtx(), "/");
+		const html = await res.text();
+		const csp = res.headers.get("Content-Security-Policy") ?? "";
+		const directive = (name: string) =>
+			csp
+				.split(";")
+				.map((part) => part.trim())
+				.find((part) => part.startsWith(`${name} `)) ?? "";
+
+		const hosts = new Set(
+			[...html.matchAll(/href="(https:\/\/[^/"]+)[^"]*"/g)]
+				.map((m) => m[1])
+				.filter((host) => html.includes(`${host}/cdn/fonts/`)),
+		);
+		expect(hosts.size).toBeGreaterThan(0);
+		for (const host of hosts) {
+			expect(directive("style-src")).toContain(host);
+			expect(directive("font-src")).toContain(host);
+		}
+	});
+});
