@@ -50,12 +50,21 @@
  * saturation. This sits far below the ceiling deliberately — it is a sanity
  * gate on the latency trigger, not the trigger itself.
  *
- * The ceiling moved with the encode-in-the-DO change (d538c1f). That profile
- * put total warm busy at 2.08ms with 1.43ms of it isolate-side, leaving ~0.65ms
- * in the DO for a 26KB result — so a single-threaded DO tops out nearer 1500/s
- * than the 300/s this comment used to assume, and 50/s is ~3% of capacity
- * rather than ~15%. Being permissive is the right failure direction for a gate
- * whose job is only to reject latency with no load behind it. */
+ * The ceiling probably moved with the encode-in-the-DO change (d538c1f): that
+ * profile put total warm busy at 2.08ms with 1.43ms of it isolate-side, which
+ * would leave ~0.65ms in the DO for a 26KB result and put a single-threaded DO
+ * nearer 1500/s than the 300/s this comment used to assume. Treat that as an
+ * estimate, not a measurement — it was taken locally under wrangler dev, and
+ * e7ec18d is this repo's own worked example of a local harness disagreeing with
+ * production outright (it predicted 35% off startup for a split that delivered
+ * 0). Nothing has measured the DO's ceiling against real traffic.
+ *
+ * Whatever the ceiling is, this gate is harder to reach than raw traffic
+ * suggests: /search sits behind a 90s edge cache with a day of
+ * stale-while-revalidate, and hits never reach the Worker at all. 50/s here
+ * means 50 cache-MISSING searches per second at one colo's DO. Being permissive
+ * is the right failure direction for a gate whose only job is rejecting latency
+ * with no load behind it. */
 const EXPAND_MIN_RATE = 50;
 
 /** A response reporting this many already-executing searches counts as queuing. */
@@ -93,8 +102,10 @@ const DEFAULT_MAX_SHARDS = 32;
  * expansion actually fired at p = 98-99.3% — past the knee, where mean queue
  * depth is already 24+ requests.
  *
- * HELD at 10 after the d538c1f/0cbcf75 perf work, deliberately, because the
- * inference does not reach:
+ * HELD at 10 through the perf work of d538c1f onward, deliberately, because
+ * the inference does not reach. (0cbcf75's minify was reverted in e7ec18d for
+ * moving production p50/p90 by zero; only its catalog-aggregation fix stands,
+ * and that is off the search path.) The two reasons:
  *
  *   - Those profiles measured CPU, but this signal is RPC WALL TIME — DO CPU
  *     (~0.65ms) plus same-colo RPC transport, which nothing has measured. If
