@@ -86,6 +86,10 @@ const proc = Bun.spawn(
 		"--remote",
 		"-y",
 		"--json",
+		// Same config the seeder writes through, so a read and a write can never
+		// resolve to different databases.
+		"-c",
+		"wrangler.jsonc",
 		"--command",
 		"SELECT json FROM store_manifest WHERE id = 1",
 	],
@@ -99,8 +103,29 @@ if ((await proc.exited) !== 0) {
 	// account needs CLOUDFLARE_ACCOUNT_ID, or every deploy re-imports).
 	// wrangler puts some failures (e.g. "more than one account available") on
 	// stdout rather than stderr, so fall back to whichever carried text.
-	const hint = (errText.trim() || out.trim() || "no output").split("\n").slice(-3).join(" ");
-	console.error(`store-age: could not read the manifest from D1 — ${hint}`);
+	//
+	// Print ALL of it, minus wrangler's own footer. A tail-of-3-lines slice
+	// looked tidy and reported this:
+	//
+	//   could not read the manifest from D1 — 🪵 Logs were written to "..."
+	//
+	// which is the one line carrying no information, because the actual error
+	// sits ABOVE the footer. A diagnostic that truncates the diagnosis is the
+	// same bug as the `2>/dev/null` this replaced, one layer further in.
+	const noise = /Logs were written to|^\s*$|^\s*🪵/;
+	const detail = (errText.trim() || out.trim() || "no output")
+		.split("\n")
+		.filter((line) => !noise.test(line))
+		.join("\n  ")
+		.trim();
+	// A database that has never been published to has no store_manifest table.
+	// That is an ANSWER — "nothing here yet" — not a failure to ask, and
+	// conflating the two turns a first deploy into an alarming red herring.
+	if (/no such table/i.test(detail)) {
+		console.error("store-age: this database has no store_manifest table — nothing has ever been published to it.");
+		process.exit(1);
+	}
+	console.error(`store-age: could not read the manifest from D1 —\n  ${detail}`);
 	process.exit(2);
 }
 
