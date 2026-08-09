@@ -13,6 +13,7 @@
 // colo-cached chunks, so the local copy earned nothing it cost.
 
 import { DurableObject } from "cloudflare:workers";
+import { firstToSucceed } from "./first-to-succeed";
 import { getEngine, tryGetLoadedEngine } from "./store";
 import type {
 	Engine,
@@ -123,7 +124,12 @@ export class SearchEngine extends DurableObject<Env> {
 		reportedShards?: number,
 	): Promise<EngineSearchResult & SearchTelemetry> {
 		if (this.shouldRelay(fallbackHint)) {
-			return this.relay(fallbackHint, (region) => region.search(opts));
+			return this.relay(
+				fallbackHint,
+				(region) => region.search(opts),
+				(engine) => engine.search(opts),
+				reportedShards,
+			);
 		}
 		return this.instrumented(reportedShards, (engine) => engine.search(opts));
 	}
@@ -140,32 +146,53 @@ export class SearchEngine extends DurableObject<Env> {
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		if (this.shouldRelay(fallbackHint)) {
-			return this.relay(fallbackHint, (region) => region.searchSerialized(opts, shape));
+			return this.relay(
+				fallbackHint,
+				(region) => region.searchSerialized(opts, shape),
+				(engine) => engine.searchSerialized(opts, shape),
+				reportedShards,
+			);
 		}
 		return this.instrumented(reportedShards, (engine) => engine.searchSerialized(opts, shape));
 	}
 
 	/**
-	 * Answer from the region's DO while this colo warms behind it.
+	 * Answer from whichever is ready first: the region's already-warm store, or
+	 * this colo's own load.
 	 *
-	 * The relayed result carries the REGIONAL engine's acquireMs/load/rate —
-	 * honest numbers for whoever actually computed the answer, but they describe
-	 * a DIFFERENT DO than the one the caller is scaling. `relayed` marks the
-	 * whole sample so the shard controller drops it: the wall time carries a
-	 * cross-colo hop (region.ts budgets 60-80ms for a bad one, against a 10ms
-	 * latency bar), and the depth/rate belong to the region. Without this every
-	 * freshly opened shard, which relays until it warms, would manufacture the
-	 * evidence for the next expansion.
+	 * It used to relay unconditionally and warm in the background. That is right
+	 * only while the region is WARM. Every deploy resets every Durable Object,
+	 * so the first request in each colo found the region cold too — and then
+	 * relaying was strictly worse than doing nothing clever: the region loaded
+	 * the whole ~70MB store just to answer one request, this colo loaded it as
+	 * well, and the user waited for the slower of the two plus a cross-colo hop.
+	 * Measured on one such request: two loads, 865ms + 465ms of DO CPU, 2.4s of
+	 * wall, for a page that needed twelve random cards.
+	 *
+	 * Racing fixes that without giving up the case the relay exists for. The
+	 * local attempt is not extra work — this DO has to end up warm regardless,
+	 * and `instrumented` is what starts that load, so the race simply keeps its
+	 * answer instead of discarding it. A warm region still wins on a
+	 * cross-colo hop; a cold region no longer costs the user anything.
+	 *
+	 * Telemetry stays honest either way: a relayed answer carries the REGION's
+	 * acquireMs/load/rate and is flagged `relayed` so the shard controller drops
+	 * it, while a locally-won answer carries this colo's own.
 	 */
 	private async relay<T extends object>(
 		hint: DurableObjectLocationHint,
-		call: (region: SearchEngine) => Promise<T>,
-	): Promise<T & { relayed: true }> {
-		this.warmInBackground();
-		const relayStart = Date.now();
-		const result = await call(this.regionStub(hint));
-		console.log(`Cold colo relayed search to engine-${hint} in ${Date.now() - relayStart}ms`);
-		return { ...result, relayed: true };
+		viaRegion: (region: SearchEngine) => Promise<T & SearchTelemetry>,
+		locally: (engine: Engine) => Promise<T>,
+		reportedShards?: number,
+	): Promise<T & SearchTelemetry> {
+		const started = Date.now();
+		const local = this.instrumented(reportedShards, locally);
+		const relayed = viaRegion(this.regionStub(hint)).then((result) => ({ ...result, relayed: true }));
+		const answer = await firstToSucceed<T & SearchTelemetry>(local, relayed);
+		console.log(
+			`Cold colo answered ${answer.relayed ? `via engine-${hint}` : "from its own load"} in ${Date.now() - started}ms`,
+		);
+		return answer;
 	}
 
 	/** Run a search against the local engine, carrying the autoscaler's signals. */
@@ -200,12 +227,16 @@ export class SearchEngine extends DurableObject<Env> {
 	async catalog(
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+		const local = async () => {
+			const engine = await this.engine();
+			return { types: await engine.commonCardTypes(), keywords: await engine.commonCardKeywords() };
+		};
 		if (this.shouldRelay(fallbackHint)) {
-			this.warmInBackground();
-			return this.regionStub(fallbackHint).catalog();
+			// See relay(): the local attempt IS the warm, so racing costs nothing
+			// and stops a cold region from making the caller wait for its load.
+			return firstToSucceed(local(), this.regionStub(fallbackHint).catalog());
 		}
-		const engine = await this.engine();
-		return { types: await engine.commonCardTypes(), keywords: await engine.commonCardKeywords() };
+		return local();
 	}
 
 	async samplePreferred(
@@ -213,12 +244,11 @@ export class SearchEngine extends DurableObject<Env> {
 		fields: string[],
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<Record<string, unknown>[]> {
+		const local = async () => (await this.engine()).samplePreferred(numCards, fields);
 		if (this.shouldRelay(fallbackHint)) {
-			this.warmInBackground();
-			return this.regionStub(fallbackHint).samplePreferred(numCards, fields);
+			return firstToSucceed(local(), this.regionStub(fallbackHint).samplePreferred(numCards, fields));
 		}
-		const engine = await this.engine();
-		return engine.samplePreferred(numCards, fields);
+		return local();
 	}
 
 	/**
@@ -247,9 +277,16 @@ export class SearchEngine extends DurableObject<Env> {
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<EngineSerializedResult> {
 		if (this.shouldRelay(fallbackHint)) {
-			this.warmInBackground();
-			return this.regionStub(fallbackHint).samplePreferredSerialized(numCards, fields, shape);
+			return firstToSucceed(
+				this.localSample(numCards, fields, shape),
+				this.regionStub(fallbackHint).samplePreferredSerialized(numCards, fields, shape),
+			);
 		}
+		return this.localSample(numCards, fields, shape);
+	}
+
+	/** samplePreferredSerialized against THIS colo's engine, loading if needed. */
+	private async localSample(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
 		const warm = tryGetLoadedEngine() !== null;
 		const acquireStart = Date.now();
 		const engine = await this.engine();
