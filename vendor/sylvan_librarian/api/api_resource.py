@@ -266,6 +266,11 @@ _ENGINE_RELOAD_BATCH_SIZE = 2_000
 # have a same-named entry in FIELD_TABLE with matching semantics, so a `fields=` request for one
 # of these names gets identically-shaped results regardless of which path serves it; FIELD_TABLE
 # is free to have entries with no counterpart here.
+# Pagination default: offset 0 everywhere it appears, extracted so the internal
+# search methods keep it optional (per review) and route/internal defaults can
+# never drift apart.
+DEFAULT_OFFSET = 0
+
 RESULT_FIELD_COLUMNS: dict[str, str] = {
     "name": "card_name",
     "set_code": "card_set_code",
@@ -294,6 +299,43 @@ DEFAULT_RESULT_FIELDS: tuple[str, ...] = (
     "set_name",
     "type_line",
 )
+
+# is: values Scryfall ships as BOOLEANS on every bulk card object, synced
+# in one set-based statement from raw_card_blob after each import (see
+# _sync_boolean_is_tags) -- no per-tag API sweep, unlike CUSTOM_IS_TAGS
+# below, and no accumulation in the import loop. card_is_tags key -> raw
+# blob key; adding a field here is the whole change. foil/promo/reprint are
+# deliberately NOT here yet (higher cardinality, memory check first).
+BOOLEAN_IS_TAGS: dict[str, str] = {
+    "reserved": "reserved",
+    "gamechanger": "game_changer",
+}
+
+_SYNC_BOOLEAN_IS_TAGS_SQL = """
+WITH tag_map(tag, blob_key) AS (
+    SELECT key, value FROM jsonb_each_text(%(tag_map)s::jsonb)
+),
+proposed AS (
+    SELECT
+        cards.scryfall_id,
+        (cards.card_is_tags - (SELECT array_agg(tag_map.tag) FROM tag_map))
+            || COALESCE(
+                   (
+                       SELECT jsonb_object_agg(tag_map.tag, true)
+                       FROM tag_map
+                       WHERE cards.raw_card_blob -> tag_map.blob_key = 'true'::jsonb
+                   ),
+                   '{}'::jsonb
+               ) AS proposed_is_tags
+    FROM magic.cards
+)
+UPDATE magic.cards
+SET card_is_tags = proposed.proposed_is_tags
+FROM proposed
+WHERE
+    cards.scryfall_id = proposed.scryfall_id AND
+    cards.card_is_tags IS DISTINCT FROM proposed.proposed_is_tags
+"""
 
 CUSTOM_IS_TAGS = [
     "historic",  # artifact, legendary, saga
@@ -1042,14 +1084,21 @@ class APIResource:
                 total_time,
                 rate,
             )
+            # Art tags first: the prefer score's art_style component reads card_art_tags, so
+            # running the backfill ahead of the tag import scored every card as on-style on a
+            # first boot, and nothing rescored until the next import. Oracle tags feed search
+            # rather than scoring, so their position relative to the backfill does not matter.
+            _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
             self.backfill_prefer_scores()
             self.backfill_cubecobra_scores()
             _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
-            _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
             self._reload_engine(force=True)
             self._clear_caches()
             self._last_import_time.value = time.time()
             self._setup_complete_cache = None
+            # Every step above logs its own duration; this closes the sequence with the wall
+            # clock the operator actually waited, upsert through engine reload.
+            logger.info("Import complete in %.2f seconds", time.monotonic() - before)
             return
         logger.error("Failed to import data: %s", result["message"])
         return
@@ -1120,6 +1169,7 @@ class APIResource:
         direction: SortDirection = SortDirection.ASC,
         fields: Sequence[str] | None = None,
         limit: int = 100,
+        offset: int = DEFAULT_OFFSET,
         orderby: CardOrdering = CardOrdering.EDHREC,
         prefer: PreferOrder = PreferOrder.DEFAULT,
         q: str | None = None,
@@ -1138,6 +1188,10 @@ class APIResource:
                 to the usual 9 (name, set_code, collector_number, power, toughness, mana_cost,
                 oracle_text, set_name, type_line). See RESULT_FIELD_COLUMNS for the full vocabulary.
             limit: Maximum number of results to return.
+            offset: Number of results to skip before the first returned card, in the
+                same sort order the query uses -- limit/offset together give clients
+                pagination over the full result set (total_cards is always the
+                unpaginated count).
             orderby: Field to sort by.
             shape: Shape of the "cards" list: 'rows' (list of card objects, default) or
                 'columnar' (one list per field, keyed by field name — smaller on the wire).
@@ -1154,6 +1208,7 @@ class APIResource:
             direction=direction,
             fields=fields,
             limit=limit,
+            offset=offset,
             unique=unique,
             prefer=prefer,
         )
@@ -1161,6 +1216,15 @@ class APIResource:
             # Shallow copy: _search returns cached dicts, which must stay row-shaped.
             results = {**results, "cards": _columnarize_cards(results["cards"])}
         return results
+
+    def _validate_offset(self, offset: int) -> int:
+        """Validate the offset and return it if valid."""
+        if not isinstance(offset, int) or offset < 0:
+            raise falcon.HTTPBadRequest(
+                title="Invalid Offset",
+                description="Offset must be a non-negative integer.",
+            )
+        return offset
 
     def _validate_limit(self, limit: int | None) -> int | None:
         """Validate the limit and return it if valid."""
@@ -1197,6 +1261,7 @@ class APIResource:
         direction: SortDirection = SortDirection.ASC,
         fields: Sequence[str] | None = None,
         limit: int = 100,
+        offset: int = DEFAULT_OFFSET,
         orderby: CardOrdering = CardOrdering.EDHREC,
         prefer: PreferOrder = PreferOrder.DEFAULT,
         query: str | None = None,
@@ -1204,13 +1269,14 @@ class APIResource:
     ) -> dict[str, Any]:
         self._require_setup_complete()
         limit = self._validate_limit(limit)
+        offset = self._validate_offset(offset)
         # Resolved once here (rather than inside _search_sql/_search_engine) so an unknown field
         # name always raises HTTPBadRequest instead of being swallowed by the engine's blanket
         # except-and-fall-back-to-SQL below.
         resolved_fields = self._resolve_result_fields(fields)
 
         if settings.enable_cache:
-            cache_key = (direction, limit, orderby, prefer, query, unique, tuple(resolved_fields))
+            cache_key = (direction, limit, offset, orderby, prefer, query, unique, tuple(resolved_fields))
             gen = self._cache_generation.value
             try:
                 search_cache = self._search_gen_cache[gen]
@@ -1249,10 +1315,29 @@ class APIResource:
                     orderby=orderby,
                     direction=direction,
                     limit=limit,
+                    offset=offset,
                     timer=timer,
                     fields=resolved_fields,
                 )
-            except Exception as e:
+            except BaseException as e:
+                # BaseException, not Exception: a Rust panic anywhere under `self._engine.query`
+                # surfaces as pyo3's `PanicException`, which derives from BaseException and so went
+                # straight past this handler — the one whose entire job is to let an engine failure
+                # degrade to the SQL path instead of failing the request. Falcon's own error handling
+                # catches Exception too, so nothing of ours ran: the panic left the WSGI handler and
+                # bjoern turned it into a bare 500 on a query the SQL path answers fine.
+                #
+                # Measured, because the obvious guess is worse than the truth and was in this comment:
+                # bjoern prints the traceback and keeps serving. The worker does NOT die, so
+                # `_all_workers_alive` in entrypoint.py — which tears down every worker when one dies
+                # — is not in play. The cost is one wrong 500, not lost capacity.
+                #
+                # `pyo3_runtime.PanicException` is not imported and named directly: the module only
+                # exists once a pyo3 extension has registered it, so naming it would couple this
+                # fallback to the engine having loaded and to pyo3's own module layout. The two
+                # BaseExceptions that must still propagate are the ones that are not failures.
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
                 logger.warning("Engine query failed for %r, falling back to SQL: %s", query, e, exc_info=True)
             else:
                 if settings.enable_cache:
@@ -1267,6 +1352,7 @@ class APIResource:
             orderby=orderby,
             direction=direction,
             limit=limit,
+            offset=offset,
             timer=timer,
             fields=resolved_fields,
         )
@@ -1285,6 +1371,7 @@ class APIResource:
         direction: SortDirection,
         limit: int,
         timer: Timer,
+        offset: int = DEFAULT_OFFSET,
         fields: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         logger.info("Searching engine for %r", query)
@@ -1299,6 +1386,7 @@ class APIResource:
                     direction=str(direction),
                     # limit=None means "no limit"; the engine requires an int, so use a large number
                     limit=limit if limit is not None else 1_000_000,
+                    offset=offset,
                     fields=fields,
                 )
         except _QueryError as err:
@@ -1331,6 +1419,7 @@ class APIResource:
         direction: SortDirection,
         limit: int,
         timer: Timer,
+        offset: int = DEFAULT_OFFSET,
         fields: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         logger.info("Searching SQL for %r", query)
@@ -1414,6 +1503,8 @@ class APIResource:
                     {_order_by}
                 LIMIT
                     %(limit)s
+                OFFSET
+                    %(offset)s
             )
             UNION ALL
             (
@@ -1448,6 +1539,8 @@ class APIResource:
                     {_order_by}
                 LIMIT
                     %(limit)s
+                OFFSET
+                    %(offset)s
             )
             UNION ALL
             (
@@ -1459,6 +1552,7 @@ class APIResource:
             )"""
 
         params["limit"] = limit
+        params["offset"] = offset
         query_sql = rewrap(query_sql)
         logger.info("Full query: %s", query_sql)
         logger.info("Params: %s", params)
@@ -1819,13 +1913,12 @@ class APIResource:
         Returns:
             Dict with status and count of cards updated
         """
+        start = time.monotonic()
         logger.info("Starting prefer score backfill")
 
         backfill_sql = db_utils.read_sql("backfill_prefer_scores")
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            statement_timeout = 120_000
-            # Validate and set statement timeout
-            self._set_statement_timeout(cursor, statement_timeout)
+            self._set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
             cursor.execute(backfill_sql)
             updated_count = cursor.rowcount
 
@@ -1836,12 +1929,21 @@ class APIResource:
 
             conn.commit()
 
-        logger.info("Prefer score backfill complete: %d of %d cards updated", updated_count, total_cards)
+        # cards_updated counts only rows whose score actually moved -- the backfill's UPDATE
+        # skips rows already carrying the right value, so a steady-state re-run reports 0 of N
+        # rather than N of N. Both numbers are worth having: the first says how much churned,
+        # the second that the corpus is fully scored.
+        stats = {
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "cards_updated": updated_count,
+            "cards_scored": total_cards,
+        }
+        logger.info("Prefer score backfill complete: %s", stats)
 
         return {
             "status": "success",
-            "cards_updated": updated_count,
             "message": f"Successfully backfilled prefer scores for {updated_count} of {total_cards} cards",
+            **stats,
         }
 
     def _fetch_cubecobra_data(self, db_oracle_ids: set[uuid.UUID]) -> dict[uuid.UUID, dict[str, Any]]:
@@ -1956,6 +2058,7 @@ class APIResource:
             "w_elo": 1,
             "w_pick_count": 1,
         }
+        start = time.monotonic()
         scale_factor = sum(weights.values()) / 100.0
         weights = {k: v / scale_factor for k, v in weights.items()}
         logger.info("Starting CubeCobra score backfill with weights: %s", weights)
@@ -1965,13 +2068,27 @@ class APIResource:
             self._set_statement_timeout(cursor, 600_000)
             cursor.execute(backfill_sql, weights)
             updated_count = cursor.rowcount
+
+            # The percent ranks are computed over cubecobra_elo and friends, which the normal
+            # import never populates -- they arrive via ingest_cubecobra. Reporting how many
+            # cards actually carry that data distinguishes "ranked the whole corpus" from
+            # "ranked a corpus of all-NULLs", which otherwise look identical in the log.
+            cursor.execute("SELECT COUNT(*) as count FROM magic.cards WHERE cubecobra_elo IS NOT NULL")
+            result = cursor.fetchone()
+            cards_with_data = result["count"] if result else 0
+
             conn.commit()
 
-        logger.info("CubeCobra score backfill complete: %d cards updated", updated_count)
+        stats = {
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "cards_updated": updated_count,
+            "cards_with_cubecobra_data": cards_with_data,
+        }
+        logger.info("CubeCobra score backfill complete: %s", stats)
         return {
             "status": "success",
-            "cards_updated": updated_count,
             "weights": weights,
+            **stats,
         }
 
     @route()
@@ -2100,6 +2217,31 @@ class APIResource:
             "total_cards_found": len(card_names),
             "message": f"Successfully updated {updated_count} cards with is:{is_tag}",
         }
+
+    def _sync_boolean_is_tags(self, conn: Connection) -> int:
+        """Sync the boolean-backed is: tags (BOOLEAN_IS_TAGS) from raw_card_blob, one-shot.
+
+        Rebuilds each card's managed keys as (existing minus managed) plus the keys whose
+        blob boolean is true, touching only rows whose result actually differs -- so list
+        churn (a card entering or leaving the game-changer roster) converges on every
+        import, and unrelated card_is_tags entries are never disturbed.
+
+        Args:
+        ----
+            conn (Connection): open connection; committed here.
+
+        Returns:
+        -------
+            int: rows whose card_is_tags changed.
+
+        """
+        with conn.cursor() as cursor:
+            cursor.execute(_SYNC_BOOLEAN_IS_TAGS_SQL, {"tag_map": orjson.dumps(BOOLEAN_IS_TAGS).decode("utf-8")})
+            updated_count = cursor.rowcount
+        conn.commit()
+        if updated_count:
+            logger.info("Synced boolean is: tags on %d printings", updated_count)
+        return updated_count
 
     def _add_is_tag_to_printings(self, *, is_tag: str) -> dict[str, Any]:
         """Add a specific is: tag to all printings matching that tag using Scryfall search.
@@ -2519,6 +2661,9 @@ class APIResource:
                     )
 
                 conn.commit()
+
+                if cards_sent:
+                    self._sync_boolean_is_tags(conn)
 
                 if cards_sent == 0:
                     if stream.raw == 0:

@@ -16,6 +16,12 @@ export interface EngineSearchOptions {
 	direction: string;
 	/** Upstream passes 1_000_000 for "no limit". */
 	limit: number;
+	/**
+	 * Results to skip before the first returned card, in the query's own sort
+	 * order — limit/offset together paginate the full result set. total_cards
+	 * stays the UNPAGINATED count.
+	 */
+	offset: number;
 	/** Resolved result field names (never undefined by the time it reaches the engine). */
 	fields: string[];
 }
@@ -91,6 +97,12 @@ export interface StoreManifest {
 	printing_count: number;
 	upstream_commit: string;
 	format_version: number;
+	/**
+	 * The builder-content generation this store was built by (see
+	 * STORE_CONTENT_GENERATION). Absent on stores built before it was recorded,
+	 * which the deploy reads as "older than generation 1" and rebuilds.
+	 */
+	content_generation?: number;
 	/** Uncompressed archive size; the wasm buffer is preallocated from this. */
 	store_bytes: number;
 	/** KV chunks the store occupies; readers validate the total byte count. */

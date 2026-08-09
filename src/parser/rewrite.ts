@@ -43,8 +43,68 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000meld", "layout:meld"],
 	["is\u0000leveler", "layout:leveler"],
 	["is\u0000dfc", "layout:transform or layout:modal_dfc or layout:meld"],
+	// Frame-effect (stored in card_frame_data). is:colorshifted == frame:colorshifted exactly (45).
 	["is\u0000colorshifted", "frame:colorshifted"],
+	// ── Land cycles: one alphabetized segment ────────────────────────────────
+	// creatureland/manland keep the oracle-text heuristic: 48/49 vs Scryfall,
+	// 0 false positives (the one miss is Alchemy-only and absent here).
+	// `o:become` (substring), NOT `o:becomes` -- the looser form also catches
+	// Crawling Barrens; the "still a land" clause keeps false positives at 0.
+	// Backed by the community cycle/parent tags in Scryfall's oracle-tags bulk
+	// export; ancestor propagation makes parent slugs self-updating as new
+	// cycles are tagged. Plain parent tags preferred where they exist. Upstream
+	// accepts deviations from Scryfall's own is: membership as community
+	// sentiment -- otag:shockland includes Multiversal Passage, otag:gainland
+	// reaches newer enters-tapped-gain-life cycles Scryfall's list lacks.
+	["is\u0000battleland", "otag:cycle-tangoland"], // 10
+	["is\u0000bondland", "otag:cycle-bondland"], // 10
+	["is\u0000bounceland", "otag:bounceland"], // 17, exact
+	["is\u0000canopyland", "otag:cycle-horizon-land"], // 6, exact
+	["is\u0000checkland", "otag:cycle-checkland"], // 10, exact
+	["is\u0000creatureland", "t:land o:become o:creature o:/still a.* land/"],
+	["is\u0000dual", "otag:cycle-abu-dual-land"], // 10, the ABUR duals, exact
+	["is\u0000fastland", "otag:cycle-fastland"], // 10, exact
+	["is\u0000fetchland", "otag:cycle-fetchland"], // 10, exact
+	["is\u0000filterland", "otag:cycle-hybrid-filterland or otag:cycle-ody-filterland"], // 20 vs 22
+	["is\u0000gainland", "otag:gainland"], // 42, self-updating superset of Scryfall's 15
 	["is\u0000manland", "t:land o:become o:creature o:/still a.* land/"],
+	["is\u0000painland", "otag:cycle-painland"], // 10, exact
+	["is\u0000scryland", "otag:cycle-block-ths-scry-land"], // 10, exact
+	// shadowland/snarl: the reveal-or-tapped lands that reveal a BASIC LAND TYPE
+	// card -- the basic-type regex is what separates them from the Lorwyn-style
+	// typal reveal-lands, which reveal a CREATURE-type card and otherwise share
+	// the wording. 10, name-verified (5 shadowlands + 5 snarls); no cycle tag
+	// exists for the SOI half.
+	["is\u0000shadowland", "t:land o:/reveal an? (Plains|Island|Swamp|Mountain|Forest)/"],
+	["is\u0000shockland", "otag:shockland"], // 11, includes Multiversal Passage
+	["is\u0000slowland", "otag:cycle-slowland"], // 10, exact
+	["is\u0000snarl", "t:land o:/reveal an? (Plains|Island|Swamp|Mountain|Forest)/"], // same family
+	["is\u0000storageland", "otag:cycle-fem-storage-land or otag:cycle-mmq-storage-land or otag:cycle-tsp-storage-land"], // 15 vs 12
+	["is\u0000tangoland", "otag:cycle-tangoland"], // 10; Scryfall accepts both names
+	["is\u0000triland", "otag:cycle-ala-shardland or otag:cycle-ktk-wedgeland"], // 10, name-verified
+	["is\u0000triome", "otag:cycle-iko-triome or otag:cycle-snc-triland"], // 10, name-verified
+	// ── Non-land derivables ──────────────────────────────────────────────────
+	// Commander eligibility: legendary permanents with a printed toughness
+	// (creatures, Vehicles, Spacecraft -- toughness>=0, the parser-friendly
+	// spelling of toughness>-1; no legendary prints negative toughness and *
+	// compares as 0 on both engines) plus Backgrounds, plus rules text granting
+	// eligibility outright, MINUS the commander banlist.
+	[
+		"is\u0000commander",
+		'((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") -banned:commander',
+	],
+	["is\u0000companion", "kw:companion"], // 10, name-verified
+	["is\u0000class", "t:class"], // 34, equals Scryfall's paper count exactly
+	// is:adventure is LAYOUT semantics by Scryfall's own definition -- it equals
+	// `t:adventure or t:omen` there (164 = 164; Omen cards use the adventure
+	// layout with an Omen-typed face), so layout is the faithful mirror.
+	["is\u0000adventure", "layout:adventure"],
+	["is\u0000frenchvanilla", "otag:french-vanilla"], // community tag, ~+233 looser than "keywords only"
+	// The community tag tracks is:modal far better than the mode-introducing
+	// wording did, and is cheaper to evaluate: scored on Scryfall's corpus
+	// against their own is:modal (800 cards), otag:modal disagrees on 9 while
+	// the 'o:"choose one" or ...' union it replaces disagrees on 197.
+	["is\u0000modal", "otag:modal"],
 ]);
 
 function makeKey(alias: string, value: string): string {

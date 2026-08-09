@@ -38,6 +38,10 @@ export const RESULT_FIELD_NAMES: readonly string[] = [
 	"prefer_score",
 ];
 
+// Pagination default: offset 0 everywhere it appears, extracted so the route
+// and the internal search default can never drift apart (upstream DEFAULT_OFFSET).
+export const DEFAULT_OFFSET = 0;
+
 // `fields=None` resolves to these 9 (upstream DEFAULT_RESULT_FIELDS).
 export const DEFAULT_RESULT_FIELDS: readonly string[] = [
 	"name",
@@ -78,6 +82,14 @@ export function validateLimit(limit: number | null): number | null {
 	return limit;
 }
 
+/** Upstream _validate_offset; like validateLimit, the non-int branch is unreachable over HTTP. */
+export function validateOffset(offset: number): number {
+	if (offset < 0) {
+		throw new SearchBadRequest("Invalid Offset", "Offset must be a non-negative integer.");
+	}
+	return offset;
+}
+
 /** Upstream _resolve_result_fields: dedupe, reject empty and unknown names. */
 export function resolveResultFields(fields: readonly string[] | null): string[] {
 	if (fields === null) {
@@ -115,6 +127,8 @@ export interface RunSearchOptions {
 	prefer: PreferOrder;
 	/** null means "no limit" (engine gets 1_000_000, like upstream). Defaults to 100. */
 	limit?: number | null;
+	/** Results to skip, in the query's sort order. Defaults to DEFAULT_OFFSET (0). */
+	offset?: number;
 	fields?: readonly string[] | null;
 }
 
@@ -152,6 +166,7 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 	// parameter validation errors are reported.
 	const engine = await ctx.getEngine();
 	const limit = validateLimit(opts.limit === undefined ? 100 : opts.limit);
+	const offset = validateOffset(opts.offset === undefined ? DEFAULT_OFFSET : opts.offset);
 	const resolvedFields = resolveResultFields(opts.fields ?? null);
 
 	const timer = new Timer();
@@ -178,6 +193,7 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 			direction: opts.direction,
 			// limit=None means "no limit"; the engine requires an int (upstream parity)
 			limit: limit !== null ? limit : 1_000_000,
+			offset,
 			fields: resolvedFields,
 		},
 		timer,
@@ -258,6 +274,7 @@ const SEARCH_SPEC = [
 	{ name: "direction", converter: enumParam(SORT_DIRECTION), default: "asc" },
 	{ name: "fields", converter: strListParam(), default: null },
 	{ name: "limit", converter: intParam(), default: 100 },
+	{ name: "offset", converter: intParam(), default: DEFAULT_OFFSET },
 	{ name: "orderby", converter: enumParam(CARD_ORDERING), default: "edhrec" },
 	{ name: "prefer", converter: enumParam(PREFER_ORDER), default: "default" },
 	{ name: "q", converter: strParam(), default: null },
@@ -286,6 +303,7 @@ export async function searchHandler(
 				unique: bound.unique as UniqueOn,
 				prefer: bound.prefer as PreferOrder,
 				limit: bound.limit as number,
+				offset: bound.offset as number,
 				fields: bound.fields as string[] | null,
 			},
 			bound.shape as ResponseShape,

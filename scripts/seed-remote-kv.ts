@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunkCountFor, chunkKey, MANIFEST_KEY, splitStore } from "../src/engine/store-kv";
+import { chunkCountFor, chunkKey, MANIFEST_KEY, STORE_CONTENT_GENERATION, splitStore } from "../src/engine/store-kv";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -40,6 +40,12 @@ if (store.length !== manifest.store_bytes) {
 
 const chunks = splitStore(store);
 manifest.chunk_count = chunks.length;
+// Stamped at publish time, not by the Rust builder: the generation describes
+// what this checkout's builder puts in a store, and one TS constant shared by
+// every publisher (here, the seed scripts, and the ImportCoordinator) cannot
+// drift the way a copy in Rust would. Without it store-age reads a natively
+// seeded store as generation 0 and demands a rebuild forever.
+manifest.content_generation = STORE_CONTENT_GENERATION;
 // Content hashes were a D1-era field; nothing reads them now, and leaving a
 // stale one in the manifest would be a lie about how the store is addressed.
 manifest.chunks = undefined;

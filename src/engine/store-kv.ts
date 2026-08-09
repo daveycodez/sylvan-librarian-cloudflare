@@ -41,6 +41,25 @@ export const KV_CHUNK_BYTES = 25_000_000;
 /** The manifest key: the one mutable pointer in the namespace. */
 export const MANIFEST_KEY = "store:manifest";
 
+/**
+ * What the BUILDER puts in the archive, versioned separately from
+ * `format_version` (which describes the archive's struct LAYOUT and comes from
+ * the Rust engine).
+ *
+ * A change here is a change in the VALUES a structurally-identical store holds,
+ * so no header check can catch it: the store loads fine and answers wrongly.
+ * The deploy compares this against the published manifest and rebuilds on a
+ * mismatch — this repo's equivalent of the data migrations upstream ships next
+ * to such changes (e.g. api/db/2026-08-06-01-lowercase-keywords.sql).
+ *
+ * BUMP THIS whenever transform.rs/tags.rs change what a card's stored fields
+ * contain, even though the schema is untouched. History:
+ *   1 — initial
+ *   2 — keywords stored lowercase (upstream #869); card_is_tags carries the
+ *       boolean-backed reserved/gamechanger (upstream #888)
+ */
+export const STORE_CONTENT_GENERATION = 2;
+
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
 	return `store:${storeKey}:${seq}`;

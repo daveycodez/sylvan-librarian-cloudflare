@@ -627,6 +627,18 @@ class TestSearchResponseShape(TestBaseAPIResourceTest):
         assert list(api_resource_module._columnarize_cards(cards)) == ["b", "a"]
 
 
+class TestOffsetValidation(TestBaseAPIResourceTest):
+    """offset must be a non-negative integer; violations are 400s, not silent clamps."""
+
+    def test_negative_offset_rejected(self) -> None:
+        with pytest.raises(falcon.HTTPBadRequest):
+            self.api_resource._validate_offset(-1)
+
+    def test_valid_offsets_pass_through(self) -> None:
+        assert self.api_resource._validate_offset(0) == 0
+        assert self.api_resource._validate_offset(175) == 175
+
+
 class TestAPIResourceStaticFileServing(unittest.TestCase):
     """Test static file serving methods."""
 

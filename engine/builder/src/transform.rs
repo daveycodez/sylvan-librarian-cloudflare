@@ -22,9 +22,11 @@
 //!   `_run_import_under_lock`, api_resource.py lines 1045-1046). Both are
 //!   ported in [`finalize`].
 //! - `card_oracle_tags` / `card_art_tags` are attached from the tag bulk dumps
-//!   (api/tag_import.py, ported in `tags.rs`); `card_is_tags` is never written
-//!   by `import_data` (it is in bulk_upsert's `skip_columns` and only a separate
-//!   manual route touches it), so it is always `{}` here.
+//!   (api/tag_import.py, ported in `tags.rs`). `card_is_tags` carries only the
+//!   [`BOOLEAN_IS_TAGS`] subset, which `_sync_boolean_is_tags` derives from the
+//!   bulk card's own booleans after each upsert; upstream's CUSTOM_IS_TAGS need
+//!   a per-tag Scryfall search sweep that no automated import runs, so they stay
+//!   absent on both sides.
 
 use std::collections::HashMap;
 
@@ -33,6 +35,12 @@ use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::canonical_combining_class;
 
 use crate::tags::TagData;
+
+/// `is:` values Scryfall ships as BOOLEANS on every bulk card object, as
+/// `(card_is_tags key, raw blob key)`. Mirrors api_resource.BOOLEAN_IS_TAGS.
+/// foil/promo/reprint are deliberately NOT here yet (higher cardinality,
+/// upstream wants a memory check first).
+const BOOLEAN_IS_TAGS: &[(&str, &str)] = &[("reserved", "reserved"), ("gamechanger", "game_changer")];
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransformError {
@@ -74,6 +82,10 @@ pub struct RowDraft {
     pub card_color_identity: Vec<String>,
     pub produced_mana: Vec<String>,
     pub card_keywords: Vec<String>,
+    /// The BOOLEAN_IS_TAGS whose bulk-card boolean is true (api_resource.py
+    /// `_sync_boolean_is_tags`). Only these are derivable from bulk data;
+    /// every other `is:` tag still needs upstream's per-tag Scryfall sweep.
+    pub card_is_tags: Vec<String>,
     pub card_types: Vec<String>,
     pub card_subtypes: Vec<String>,
     pub card_legalities: Map<String, Value>,
@@ -359,8 +371,23 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         Some(Value::Array(_)) => str_array(card, "color_identity"),
         _ => return Err(miss("color_identity")),
     };
-    let card_keywords = str_array(card, "keywords");
+    // Lowercased so the stored key matches what `keyword:` looks up -- Scryfall's own spelling
+    // is inconsistently cased ("First strike", "Doctor's companion"), and lowercase is the same
+    // normalization the oracle/art tag collections already use on both sides. Any collision the
+    // fold creates collapses in keys_true, matching Python's dict.fromkeys.
+    let card_keywords: Vec<String> = str_array(card, "keywords").iter().map(|k| k.to_lowercase()).collect();
     let produced_mana = str_array(card, "produced_mana");
+
+    // The is: tags Scryfall ships as booleans on every bulk card object. Upstream
+    // syncs these from raw_card_blob in one set-based statement after each upsert
+    // (_sync_boolean_is_tags); there is no stored row to reconcile against here,
+    // so the set is simply rebuilt per card. Adding an entry to BOOLEAN_IS_TAGS is
+    // the whole change on both sides.
+    let card_is_tags: Vec<String> = BOOLEAN_IS_TAGS
+        .iter()
+        .filter(|(_, blob_key)| card.get(*blob_key) == Some(&Value::Bool(true)))
+        .map(|(tag, _)| (*tag).to_owned())
+        .collect();
 
     // Line 197: edhrec_rank passes through (bulk_upsert casts to integer).
     let edhrec_rank = maybe_int(card.get("edhrec_rank"));
@@ -460,6 +487,7 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         card_color_identity,
         produced_mana,
         card_keywords,
+        card_is_tags,
         card_types,
         card_subtypes,
         card_legalities,
@@ -814,9 +842,11 @@ pub fn finalize_row(
         m.insert("card_color_identity".into(), keys_true(&r.card_color_identity));
         m.insert("card_colors".into(), keys_true(&r.card_colors));
         m.insert("card_frame_data".into(), keys_true(&r.card_frame_data));
-        // Never written by import_data: bulk_upsert runs with card_is_tags in
-        // skip_columns and only the manual /import_all_is_tags route fills it.
-        m.insert("card_is_tags".into(), Value::Object(Map::new()));
+        // Only the BOOLEAN_IS_TAGS subset: those come off the bulk card's own
+        // booleans (_sync_boolean_is_tags, which runs after every upsert). The
+        // CUSTOM_IS_TAGS still need upstream's per-tag Scryfall search sweep and
+        // stay absent here, as they are under upstream's own automated import.
+        m.insert("card_is_tags".into(), keys_true(&r.card_is_tags));
         m.insert("card_keywords".into(), keys_true(&r.card_keywords));
         m.insert("card_layout".into(), opt_str_val(&r.card_layout));
         m.insert("card_legalities".into(), Value::Object(r.card_legalities));
@@ -1001,7 +1031,7 @@ mod tests {
         assert_eq!(draft.scryfall_id, card["id"].as_str().unwrap());
         assert_eq!(draft.oracle_id, card["oracle_id"].as_str().unwrap());
         assert_eq!(draft.card_color_identity, vec!["U"]);
-        assert_eq!(draft.card_keywords, vec!["Flying", "Transform"]);
+        assert_eq!(draft.card_keywords, vec!["flying", "transform"]);
     }
 
     fn minimal_card(name: &str) -> Value {
@@ -1109,6 +1139,34 @@ mod tests {
         assert_eq!(row["mana_cost_jsonb"], json!({"G": [1]}));
         assert_eq!(row["card_is_tags"], json!({}));
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
+    }
+
+    #[test]
+    fn boolean_is_tags_come_from_the_bulk_card_booleans() {
+        // _sync_boolean_is_tags parity: only the managed keys, only when the
+        // blob boolean is exactly true. A missing key and a false key are the
+        // same absence, and a non-boolean never counts.
+        let tags_of = |card: &Value| {
+            let draft = transform(card).unwrap().unwrap();
+            let rows: Vec<Value> = finalize(vec![draft], &TagData::default()).collect();
+            rows[0]["card_is_tags"].clone()
+        };
+
+        let mut card = minimal_card("Both");
+        card["reserved"] = json!(true);
+        card["game_changer"] = json!(true);
+        assert_eq!(tags_of(&card), json!({"reserved": true, "gamechanger": true}));
+
+        let mut only_reserved = minimal_card("OnlyReserved");
+        only_reserved["reserved"] = json!(true);
+        only_reserved["game_changer"] = json!(false);
+        assert_eq!(tags_of(&only_reserved), json!({"reserved": true}));
+
+        // Truthy-but-not-true must not leak in: upstream's SQL compares the blob
+        // value to 'true'::jsonb, not for presence.
+        let mut stringly = minimal_card("Stringly");
+        stringly["reserved"] = json!("true");
+        assert_eq!(tags_of(&stringly), json!({}));
     }
 
     #[test]

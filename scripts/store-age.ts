@@ -31,7 +31,7 @@
 // is exactly the failure this split exists to make visible. Every path says
 // why on stderr; callers must show that text, not discard it.
 
-import { chunkKey, MANIFEST_KEY } from "../src/engine/store-kv";
+import { chunkKey, MANIFEST_KEY, STORE_CONTENT_GENERATION } from "../src/engine/store-kv";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -129,7 +129,13 @@ if (!json) {
 	process.exit(1);
 }
 
-let manifest: { built_at?: string; store_bytes?: number; chunk_count?: number; store_key?: string };
+let manifest: {
+	built_at?: string;
+	store_bytes?: number;
+	chunk_count?: number;
+	store_key?: string;
+	content_generation?: number;
+};
 try {
 	manifest = JSON.parse(json) as typeof manifest;
 } catch {
@@ -139,6 +145,21 @@ try {
 const builtAt = Number(manifest.built_at);
 if (!Number.isFinite(builtAt) || builtAt <= 0) {
 	console.error(`store-age: the manifest has no usable built_at (${JSON.stringify(manifest.built_at)}).`);
+	process.exit(1);
+}
+// The store may be structurally fine and still hold the wrong VALUES: a builder
+// change (lowercase keywords, a new is: tag) leaves the layout untouched, so
+// nothing in the header or the byte count catches it and the engine answers
+// confidently with stale semantics. Timestamps cannot see this either — the
+// store can be newer than every Scryfall dump and still predate the builder.
+// So compare generations, and treat older as no usable store.
+const publishedGeneration = manifest.content_generation ?? 0;
+if (publishedGeneration !== STORE_CONTENT_GENERATION) {
+	console.error(
+		`store-age: the published store is builder generation ${publishedGeneration}, but this deploy builds ` +
+			`generation ${STORE_CONTENT_GENERATION} — its contents no longer match what the code queries.`,
+	);
+	console.error("           Treating it as no store at all, so the build rebuilds it.");
 	process.exit(1);
 }
 if (!manifest.store_bytes || !manifest.chunk_count) {

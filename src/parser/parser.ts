@@ -268,7 +268,7 @@ export class Parser {
 		// ── dual-class alias (cn / number): dispatch on value shape ──
 		if (DUAL_NUM_TEXT.has(wl) && nextTok.type === TT.OP) {
 			const op = this.consume().value as string;
-			if (this.peek().type === TT.NUMBER) {
+			if (this.valueStartsNumber()) {
 				return new CardBinaryOperatorNode(new CardAttributeNode(wl, PC.NUMERIC), op, this.parseNumExprValue());
 			}
 			return new CardBinaryOperatorNode(new CardAttributeNode(wl, PC.TEXT), op, this.parseTextValue(wl));
@@ -388,9 +388,32 @@ export class Parser {
 		throw new InternalParseError(`Expected numeric term, got ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
 
+	/** True if the value about to be parsed opens with a numeric literal, signed or not. */
+	private valueStartsNumber(): boolean {
+		if (this.peek().type === TT.NUMBER) return true;
+		return this.peek().type === TT.MINUS && this.peek(1).type === TT.NUMBER;
+	}
+
+	/**
+	 * Parse a numeric term that may carry a leading '-' sign (the -1 in 'power>-1').
+	 *
+	 * Only the leading term of a value expression may be signed. A '-' there has no competing
+	 * reading — filter negation and binary subtraction both require a preceding operand, and a
+	 * comparison operator has just consumed that position — so no spacing rule is needed to
+	 * disambiguate it, unlike the '-' handling in spacedArithTail.
+	 */
+	parseSignedNumTerm(): QueryNode {
+		if (this.peek().type === TT.MINUS && this.peek(1).type === TT.NUMBER) {
+			this.consume(); // MINUS
+			const tok = this.consume(); // NUMBER
+			return new NumericValueNode((tok.value as PyNumber).negate());
+		}
+		return this.parseNumTerm();
+	}
+
 	/** Numeric expression in value context (spaces around arith ops are OK). */
 	parseNumExprValue(): QueryNode {
-		let lhs = this.parseNumTerm();
+		let lhs = this.parseSignedNumTerm();
 		while (ARITH_OPS.has(this.peek().type) && this.numTermStart(this.peek(1))) {
 			const tok = this.peek();
 			if (tok.type === TT.MINUS && tok.spaceBefore && !this.peek(1).spaceBefore) break;

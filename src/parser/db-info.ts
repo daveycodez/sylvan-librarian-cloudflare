@@ -50,7 +50,7 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 	{
 		dbColumnName: "card_color_identity",
 		fieldType: FieldType.JSONB_OBJECT,
-		searchAliases: ["color_identity", "coloridentity", "id", "identity"],
+		searchAliases: ["color_identity", "coloridentity", "id", "identity", "ci"],
 		parserClass: ParserClass.COLOR,
 	},
 	{
@@ -145,13 +145,13 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 	{
 		dbColumnName: "card_oracle_tags",
 		fieldType: FieldType.JSONB_OBJECT,
-		searchAliases: ["oracle_tags", "otag"],
+		searchAliases: ["oracle_tags", "otag", "oracletag", "function"],
 		parserClass: ParserClass.TEXT,
 	},
 	{
 		dbColumnName: "card_art_tags",
 		fieldType: FieldType.JSONB_OBJECT,
-		searchAliases: ["art_tags", "art"],
+		searchAliases: ["art_tags", "art", "atag", "arttag"],
 		parserClass: ParserClass.TEXT,
 	},
 	{

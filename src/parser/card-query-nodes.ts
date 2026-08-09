@@ -132,7 +132,11 @@ export function getFrameDataComparisonKeys(val: string): string[] {
 
 /** get_keywords_comparison_object(...).keys() */
 export function getKeywordsComparisonKeys(val: string): string[] {
-	return [pyStrTitle(pyStrip(val))];
+	// Keywords are stored in lowercase (see the builder's preprocess_card port in
+	// engine/builder/src/transform.rs) — Scryfall's own spelling is inconsistently
+	// cased ("First strike", "Doctor's companion"), and lowercase is the same
+	// normalization the oracle/art tag collections already use on both sides.
+	return [pyLower(pyStrip(val))];
 }
 
 /** get_oracle_tags_comparison_object(...).keys() */

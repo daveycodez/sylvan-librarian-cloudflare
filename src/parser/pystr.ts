@@ -220,6 +220,15 @@ export class PyNumber {
 		return this.kind === "int" ? Number(this.intValue) : this.floatValue;
 	}
 
+	/**
+	 * Python's unary minus: preserves the int/float split, so -1 stays an int and
+	 * -1.0 stays a float. Mirrors the `-tok.value` in hand_parser's
+	 * parse_signed_num_term.
+	 */
+	negate(): PyNumber {
+		return this.kind === "int" ? PyNumber.int(-this.intValue) : PyNumber.float(-this.floatValue);
+	}
+
 	/** Mirrors Python str()/repr() of the number (also what json.dumps emits). */
 	toString(): string {
 		return this.kind === "int" ? this.intValue.toString() : pyFloatRepr(this.floatValue);

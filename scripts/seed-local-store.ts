@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunkKey, MANIFEST_KEY, splitStore } from "../src/engine/store-kv";
+import { chunkKey, MANIFEST_KEY, STORE_CONTENT_GENERATION, splitStore } from "../src/engine/store-kv";
 import { wranglerArgv } from "./wrangler-cmd";
 
 /** Write one key into miniflare's local KV for the STORE_KV binding. */
@@ -59,6 +59,9 @@ if (store.length !== manifest.store_bytes) {
 const chunkBytes = splitStore(store);
 (manifest as Record<string, unknown>).chunk_count = chunkBytes.length;
 (manifest as Record<string, unknown>).chunks = undefined;
+// See the note in seed-remote-kv.ts: the generation is stamped by whoever
+// publishes, from the one shared constant.
+(manifest as Record<string, unknown>).content_generation = STORE_CONTENT_GENERATION;
 
 // ── store: chunks → manifest into local KV (manifest last = commit point) ───
 // Miniflare keeps KV as a SQLite-backed blob store; `wrangler kv key put

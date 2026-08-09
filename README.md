@@ -114,7 +114,9 @@ What reaches it is what the isolate must *load*, and only that. Measured, each
 as its own uploaded version: minifying (212KB→118KB of JS), dropping the import
 pipeline (56KB of JS plus its 1.1MB wasm) and dropping the 1.4MB engine wasm
 all reported the same 10ms — one of them 12ms, which puts the metric's noise at
-±2ms. Do not spend effort on any of those.
+±2ms. Do not spend effort on any of those. (The engine wasm has since grown to
+~1.55MB with upstream's bitmap-materialize arms; the sizes above are the ones
+that were measured, and the conclusion is that this axis does not move startup.)
 
 Moving the browser's files to the CDN did move it, because it removed a ~313KB
 text module the script had to carry: **10/12/13ms → 5/6/9ms**, against that 5ms
@@ -142,6 +144,15 @@ bun run sync-upstream
 
 Three-way-merges upstream into `vendor/`, updates the pin, and lists changed
 files whose behavior is re-implemented here so those ports get re-reviewed.
+
+**When a sync changes what the builder stores** — not the archive's layout, but
+the values in it, like keywords becoming lowercase — bump
+`STORE_CONTENT_GENERATION` in [src/engine/store-kv.ts](src/engine/store-kv.ts).
+It rides in the manifest, and `store-age.ts` rebuilds on a mismatch. Nothing
+else can catch this class of change: the store still loads, the header still
+matches, it is newer than every Scryfall dump, and it answers queries
+confidently with the old semantics. This is the port's counterpart to the data
+migrations upstream ships beside such commits.
 
 ## Deviations from upstream
 
@@ -172,7 +183,10 @@ The complete list of intentional differences:
   `application/javascript`) and cache lifetimes are set for this deployment in
   `public/_headers`. Parity is kept where it matters, on the query endpoints.
 - Postgres-only admin/import routes answer `501`. `get_pid` returns `0`.
-- `card_is_tags` stays empty, matching upstream's *automated* import.
+- `card_is_tags` carries only upstream's `BOOLEAN_IS_TAGS` — `is:reserved` and
+  `is:gamechanger`, which come off booleans the bulk cards already carry. The
+  `CUSTOM_IS_TAGS` need a per-tag Scryfall search sweep that upstream's
+  *automated* import does not run either, so they are absent on both sides.
 - HTML minification is off (upstream's own default).
 - Engine timing fields read `0` on wasm (Workers freeze clocks during CPU work).
 
@@ -180,8 +194,19 @@ The complete list of intentional differences:
 
 Prerequisites: [bun](https://bun.sh). Both wasm modules are committed
 prebuilt, so TS work needs nothing else. Touching Rust needs a toolchain
-(1.88+) with `wasm32-unknown-unknown`; regenerating parser fixtures needs
-`python3`.
+(1.88+) with `wasm32-unknown-unknown`.
+
+Regenerating parser fixtures needs **CPython 3.13** specifically — upstream's
+target, and the version whose Unicode tables (15.1) `src/parser/py-unicode-data.ts`
+encodes. A newer interpreter silently reshapes the unicode fixtures:
+
+```bash
+uv venv --python 3.13 .venv && VIRTUAL_ENV=.venv uv pip install pytest pyparsing cachebox titlecase
+.venv/bin/python scripts/export-parser-fixtures.py && bunx biome check --write tests/parser/fixtures
+```
+
+Do NOT install `regex` there — upstream does not, so titlecase's `re` fallback
+is the production behavior and installing it makes fixtures diverge.
 
 ```bash
 bun install

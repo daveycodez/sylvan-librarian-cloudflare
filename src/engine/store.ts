@@ -48,6 +48,7 @@ class WasmEngine implements Engine {
 					orderby: opts.orderby,
 					direction: opts.direction,
 					limit: opts.limit,
+					offset: opts.offset,
 					fields: opts.fields,
 				}),
 			),

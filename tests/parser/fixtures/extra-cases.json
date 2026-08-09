@@ -401,7 +401,7 @@
 	},
 	{
 		"query": "is:party",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Cleric\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Rogue\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Warrior\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Wizard\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Changeling\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}]},\"node_type\":\"AndNode\"}"
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Cleric\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Rogue\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Warrior\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Wizard\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"changeling\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
 		"query": "is:unknown_tag",
@@ -413,15 +413,15 @@
 	},
 	{
 		"query": "kw:\"first strike\"",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"First Strike\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"first strike\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "kw:/flying/",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Flying\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"flying\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "kw:first_strike",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"First_Strike\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"first_strike\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "layout:MODAL_DFC",

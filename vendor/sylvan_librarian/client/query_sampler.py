@@ -164,29 +164,57 @@ STATIC_VALUES: dict[str, list[str]] = {
     # _DERIVED_EXPANSIONS; test_query_sampler asserts they agree). Not imported from there because
     # this module ships in the client image, which contains no `api/`.
     #
-    # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that
-    # column is empty — `is:reprint`, `is:token`, `is:modal`, `is:spell` and `is:commander` were in
-    # the old load-generator list and every one of them matched zero cards. All 17 are kept rather
+    # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that column
+    # carries only the two booleans the import syncs from the bulk blob — `is:reserved` is the one to
+    # reach for. Values with no key there still match zero cards, as `is:reprint`, `is:token` and
+    # `is:spell` did in the old load-generator list. All 44 are kept rather
     # than a token few: the family's share of traffic is set by its weight, not by how many values
     # it holds, and each expands to a genuinely different shape — layout lookups, type unions, an
     # oracle-text heuristic, a numeric conjunction.
     "tag": [
+        "is:adventure",
+        "is:battleland",
         "is:bear",
+        "is:bondland",
+        "is:bounceland",
+        "is:canopyland",
+        "is:checkland",
+        "is:class",
         "is:colorshifted",
+        "is:commander",
+        "is:companion",
+        "is:creatureland",
         "is:dfc",
+        "is:dual",
+        "is:fastland",
+        "is:fetchland",
+        "is:filterland",
         "is:flip",
+        "is:frenchvanilla",
+        "is:gainland",
         "is:historic",
         "is:leveler",
         "is:manland",
         "is:mdfc",
         "is:meld",
+        "is:modal",
         "is:new",
         "is:old",
         "is:outlaw",
         "is:party",
+        "is:painland",
         "is:permanent",
+        "is:scryland",
+        "is:shadowland",
+        "is:shockland",
+        "is:slowland",
+        "is:snarl",
         "is:split",
+        "is:storageland",
+        "is:tangoland",
         "is:transform",
+        "is:triland",
+        "is:triome",
         "is:vanilla",
     ],
     "devotion": [
@@ -236,21 +264,6 @@ MAX_VOCAB = 4000
 NAME_PREFIX_LEN = (2, 6)
 NAME_PREFIX_FRACTION = 0.5
 WORD_RE = re.compile(rf"[a-z]{{{MIN_WORD_LEN},}}")
-
-
-def is_queryable_keyword(keyword: str) -> bool:
-    """Whether `keyword:<this>` can match anything at all.
-
-    Keywords are stored verbatim from Scryfall (`api/card_processing.py`) but looked up
-    title-cased (`get_keywords_comparison_object`), so any keyword Scryfall does not itself write in
-    Title Case is unreachable: the stored key is `First strike` and the lookup asks for
-    `First Strike`. 131 of 770 distinct keywords are affected, including the evergreen `First
-    strike` and `Double strike` — see docs/issues/00825-keyword-title-case-mismatch.md.
-
-    Sampling them would only manufacture guaranteed-empty queries, which measure nothing. Delete
-    this filter along with the mismatch.
-    """
-    return keyword == keyword.title()
 
 
 # ─── Query structures ─────────────────────────────────────────────────────────
@@ -408,13 +421,13 @@ FALLBACK_VOCAB: dict[str, list[str]] = {
     # The evergreen keywords, plus a handful of distinctive non-evergreen mechanics for the
     # narrow end — `keyword:infect` matches 80 printings against `keyword:flying`'s 9,060, and a
     # vocabulary of only common values would never exercise the selective side of this index.
-    # `first strike` and `double strike` are evergreen and deliberately absent: they are among the
-    # 131 keywords `is_queryable_keyword` rejects.
     "keyword": [
         "deathtouch",
         "defender",
+        "double strike",
         "enchant",
         "equip",
+        "first strike",
         "flash",
         "flying",
         "haste",
@@ -571,8 +584,8 @@ class QuerySampler:
             counters[family].update(pip.lower() for pip in row.get(column) or {})
         # Keywords have a long tail (770 distinct, down to one-offs) which is left whole on purpose:
         # uniform mode reaching `keyword:"brood telepathy"` is how the selectivity extremes get
-        # sampled at all. The queryable filter is not about rarity — see QUERYABLE_KEYWORD note.
-        counters["keyword"].update(k.lower() for k in row.get("card_keywords") or {} if is_queryable_keyword(k))
+        # sampled at all.
+        counters["keyword"].update(k.lower() for k in row.get("card_keywords") or {})
         # Only formats a card can actually be legal in; `f:` on a format nothing is legal in is a
         # guaranteed-empty query, which measures nothing.
         counters["legality"].update(fmt.lower() for fmt, status in (row.get("card_legalities") or {}).items() if status == "legal")

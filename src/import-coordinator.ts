@@ -36,6 +36,7 @@ import {
 	chunkKey,
 	KV_CHUNK_BYTES,
 	MANIFEST_KEY,
+	STORE_CONTENT_GENERATION,
 	type StagedRow,
 } from "./engine/store-kv";
 import type { Env } from "./engine/types";
@@ -1326,6 +1327,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			printing_count: Number(this.metaGet("build_printing_count") ?? 0),
 			upstream_commit: "vendored", // UPSTREAM.lock is a build-time concern; readers ignore this field
 			format_version: Number(this.metaGet("format_version") ?? 0),
+			content_generation: STORE_CONTENT_GENERATION,
 			store_bytes: storeBytes,
 			chunk_count: kvTotal,
 			source_updated_at: this.metaGet("source_updated_at") ?? undefined,

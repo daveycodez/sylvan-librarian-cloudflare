@@ -82,6 +82,7 @@ def _run(
     orderby: str = "edhrec",
     direction: str = "asc",
     limit: int = 200,
+    offset: int = 0,
     fields: list[str] | None = None,
 ) -> tuple[int, list[dict]]:
     """Parse q, run engine.query(), return (total, cards). q='' matches all."""
@@ -93,6 +94,7 @@ def _run(
         orderby=orderby,
         direction=direction,
         limit=limit,
+        offset=offset,
         fields=fields,
     )
     return total, list(cards)
@@ -376,7 +378,7 @@ class TestCollectionOperators:
         assert total == 56
 
     def test_keyword_eq_exact(self, engine: QueryEngine) -> None:
-        # Shivan Dragon has exactly {Flying}; Serra Angel has {Flying, Vigilance}.
+        # Shivan Dragon has exactly {flying}; Serra Angel has {flying, vigilance}.
         total_shivan, _ = _run(engine, 'keyword=flying name="Shivan Dragon"')
         total_serra, _ = _run(engine, 'keyword=flying name="Serra Angel"')
         assert total_shivan == 5
@@ -389,16 +391,16 @@ class TestCollectionOperators:
         assert total_shivan == 0
 
     def test_keyword_lt_matches_empty_keywords(self, engine: QueryEngine) -> None:
-        # Proper subset of {Flying} is the empty set: Sol Ring (no keywords)
-        # matches, Shivan Dragon (exactly {Flying}) does not.
+        # Proper subset of {flying} is the empty set: Sol Ring (no keywords)
+        # matches, Shivan Dragon (exactly {flying}) does not.
         total_sol, _ = _run(engine, 'keyword<flying name="Sol Ring"')
         total_shivan, _ = _run(engine, 'keyword<flying name="Shivan Dragon"')
         assert total_sol == 5
         assert total_shivan == 0
 
     def test_keyword_ne_not_exactly(self, engine: QueryEngine) -> None:
-        # != is not-exactly-equal: Serra ({Flying, Vigilance}) and Sol Ring (empty)
-        # match; Shivan (exactly {Flying}) does not.
+        # != is not-exactly-equal: Serra ({flying, vigilance}) and Sol Ring (empty)
+        # match; Shivan (exactly {flying}) does not.
         total_shivan, _ = _run(engine, 'keyword!=flying name="Shivan Dragon"')
         total_serra, _ = _run(engine, 'keyword!=flying name="Serra Angel"')
         total_sol, _ = _run(engine, 'keyword!=flying name="Sol Ring"')
@@ -1177,7 +1179,7 @@ class TestCommonCardKeywords:
     """Tests for engine.common_card_keywords().
 
     Counts keyword occurrences across preferred printings only (one per oracle card).
-    The fixture cards include keywords: Flying, Haste, Persist, Vigilance, Wither.
+    The fixture cards include keywords: flying, haste, persist, vigilance, wither.
     """
 
     def test_returns_dict(self, engine: QueryEngine) -> None:
@@ -1186,14 +1188,36 @@ class TestCommonCardKeywords:
 
     def test_known_keywords_present(self, engine: QueryEngine) -> None:
         result = engine.common_card_keywords()
-        # The fixture includes cards with Flying, Haste, Persist, Vigilance, Wither keywords.
-        known = {"Flying", "Haste", "Persist", "Vigilance", "Wither"}
+        # The fixture includes cards with flying, haste, persist, vigilance, wither keywords.
+        known = {"flying", "haste", "persist", "vigilance", "wither"}
         assert known & result.keys(), "Expected at least one known keyword in the result"
 
     def test_counts_are_positive(self, engine: QueryEngine) -> None:
         result = engine.common_card_keywords()
         for keyword, count in result.items():
             assert count > 0, f"Keyword {keyword!r} has non-positive count {count}"
+
+
+class TestOffsetPagination:
+    """offset skips rows in sort order; total_cards stays the unpaginated count."""
+
+    def test_offset_windows_tile_the_full_ordering(self, engine: QueryEngine) -> None:
+        _, full = _run(engine, "t:creature", unique="card", limit=20)
+        _, first = _run(engine, "t:creature", unique="card", limit=10)
+        _, second = _run(engine, "t:creature", unique="card", limit=10, offset=10)
+        names = [c["name"] for c in full]
+        assert [c["name"] for c in first] == names[:10]
+        assert [c["name"] for c in second] == names[10:20]
+
+    def test_total_cards_ignores_offset(self, engine: QueryEngine) -> None:
+        total_plain, _ = _run(engine, "t:creature", unique="card", limit=5)
+        total_offset, _ = _run(engine, "t:creature", unique="card", limit=5, offset=50)
+        assert total_offset == total_plain
+
+    def test_offset_past_the_end_is_empty(self, engine: QueryEngine) -> None:
+        total, cards = _run(engine, 'name="Lightning Bolt"', unique="card", offset=1000)
+        assert cards == []
+        assert total >= 1
 
 
 class TestFieldSelection:
@@ -1373,3 +1397,67 @@ class TestExplain:
             if not row["trials_ns"]:
                 continue  # declined at runtime, so it produced no total
             assert row["result_total"] == expected_total, f"{row['plan']} disagrees with query()'s total"
+
+
+class TestRouterDispatchScope:
+    """The router may only pick a plan the dispatch arm for its acquire can execute.
+
+    `PhysicalPlan::applicable` answers "is this plan correct for this query"; it says nothing about
+    which artifact the acquire step materialized. A `Prep::Plane` acquire holds the plane bitmap and
+    can run that plan's order walk or either candidate-list executor over it — nothing else. The
+    router's argmin was unrestricted, so it could hand that arm a plan with no executor there, which
+    `exec_from_candidates` met with `unreachable!` — a panic, and one that escapes the SQL fallback
+    (`PanicException` derives from `BaseException`), turning a valid query into a bare 500.
+
+    See docs/issues/ for the plane-acquire/plan-mismatch write-up. These queries are the ones that
+    panicked on this fixture before `PlanScope` existed, so this class is the regression that fails
+    on an engine without it.
+    """
+
+    # A bare border or rarity leaf under `unique=card` folds into a plane, so these acquire as
+    # `Prep::Plane`; `f:` does too via the legality fold. The limit matters: it is what tipped the
+    # cost model onto PrintingCompose, which the plane arm cannot run.
+    PLANE_QUERIES = ("f:pauper", "border:borderless", "border:black", "r:mythic", "f:legacy")
+
+    @pytest.mark.parametrize("query", PLANE_QUERIES)
+    @pytest.mark.parametrize("limit", [10, 200, 1_000_000])
+    def test_plane_acquired_query_never_panics(self, engine: QueryEngine, query: str, limit: int) -> None:
+        """1_000_000 is not a synthetic limit — it is what `_search` sends when a request has none."""
+        total, cards = _run(engine, query, unique="card", limit=limit)
+        assert total >= 0
+        assert len(cards) <= min(limit, total)
+
+    @pytest.mark.parametrize("query", PLANE_QUERIES)
+    def test_page_size_does_not_change_what_a_query_matches(self, engine: QueryEngine, query: str) -> None:
+        """The panic was reachable only at a large limit, so the totals either side of it must agree.
+
+        A plan swap is a performance decision; if the total moves with `limit`, the router swapped in
+        a plan that answers a different question.
+        """
+        small_total, _ = _run(engine, query, unique="card", limit=10)
+        large_total, large_cards = _run(engine, query, unique="card", limit=1_000_000)
+        assert small_total == large_total
+        assert len(large_cards) == large_total, "a limit past the total must return every match"
+
+    def test_the_router_picks_a_plan_its_acquire_can_run(self, engine: QueryEngine) -> None:
+        """`explain` marks `picked` as the in-scope argmin, not the cheapest plan overall.
+
+        The full ranking still lists every applicable plan — out-of-scope rows are real calibration
+        data for `explain_analyze`, which forces plans and does not route — so `picked` is the only
+        field that reports what `run_query_routed` would actually do.
+        """
+        candidate_plans = {"StreamedSelect", "GatheredScan"}
+        scope_of = {"plane": candidate_plans | {"PlanePopcountOrder"}, "candidates": candidate_plans}
+        checked = 0
+        for query in self.PLANE_QUERIES:
+            filters = parse_scryfall_query(query)
+            for limit in (10, 200, 1_000_000):
+                result = engine.explain(filters=filters, unique="card", limit=limit)
+                scope = scope_of.get(result["acquire"]["count_source"])
+                if scope is None:
+                    continue  # a Prep::Range acquire, whose arm runs every plan
+                picked = [row["plan"] for row in result["plans"] if row["picked"]]
+                assert len(picked) == 1, f"{query}@{limit}: exactly one plan is picked, got {picked}"
+                assert picked[0] in scope, f"{query}@{limit}: picked {picked[0]}, which this acquire cannot run"
+                checked += 1
+        assert checked, "no query in PLANE_QUERIES acquired through a plane or candidate list"
