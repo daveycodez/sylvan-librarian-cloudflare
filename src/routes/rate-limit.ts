@@ -88,6 +88,42 @@ const blockedUntil = new Map<string, number>();
 const BLOCK_MS = PERIOD_SECONDS * 1000;
 
 /**
+ * Ceiling on the verdict cache, because the only other eviction is an IP
+ * coming BACK after its block expired (see enforceRateLimit). An address that
+ * gets blocked and never returns leaves its entry forever, so a distributed
+ * source — precisely the case this limiter exists for — grows the map without
+ * bound in a 128MB isolate. 10k entries is roughly a megabyte and far above
+ * any legitimate count of simultaneously-blocked addresses.
+ */
+const MAX_BLOCKED_ENTRIES = 10_000;
+
+/**
+ * Record a block, keeping the cache bounded and in expiry order.
+ *
+ * Every entry is written with the same BLOCK_MS, so insertion order IS expiry
+ * order — which makes the oldest entry the soonest to expire and therefore the
+ * right one to drop. Map.set on an existing key would leave that key in its
+ * original position and break the invariant, so a re-block deletes first.
+ */
+function rememberBlock(ip: string, until: number): void {
+	blockedUntil.delete(ip);
+	if (blockedUntil.size >= MAX_BLOCKED_ENTRIES) {
+		const now = Date.now();
+		for (const [addr, expiry] of blockedUntil) {
+			if (expiry <= now) blockedUntil.delete(addr);
+		}
+		// Still at the cap means every entry is live; drop from the front,
+		// which is the closest to expiring anyway.
+		while (blockedUntil.size >= MAX_BLOCKED_ENTRIES) {
+			const oldest = blockedUntil.keys().next();
+			if (oldest.done) break;
+			blockedUntil.delete(oldest.value);
+		}
+	}
+	blockedUntil.set(ip, until);
+}
+
+/**
  * Enforce the per-IP limit — without awaiting the DO. The local verdict
  * cache answers instantly; the regional DO check runs via waitUntil and
  * blocks the IP from the NEXT request onward when it rules over-limit.
@@ -133,7 +169,7 @@ export function enforceRateLimit(
 		stub
 			.check(limit)
 			.then((allowed) => {
-				if (!allowed) blockedUntil.set(ip, Date.now() + BLOCK_MS);
+				if (!allowed) rememberBlock(ip, Date.now() + BLOCK_MS);
 			})
 			.catch((err) => {
 				console.warn(`Rate-limit check failed (fail open): ${err}`);
