@@ -88,6 +88,28 @@ const MAX_WASM_REWINDS = 3;
 const MAX_RUN_ROWS_READ = 1_000_000;
 const MAX_RUN_ROWS_WRITTEN = 40_000;
 
+/**
+ * The same ceilings, per UTC DAY across all runs — the ones that actually
+ * match the limit being protected.
+ *
+ * A per-run budget alone bounds nothing durable: startImport clears the run's
+ * counters, so every fresh run gets a fresh allowance, and a run that stalls
+ * is restartable after STALE_RUN_MS. Enough restarts and the day is gone
+ * anyway, one "within budget" run at a time. These counters therefore survive
+ * metaClear (see metaClear's key filter) and reset only when the date does,
+ * exactly like the meter they stand in for.
+ *
+ * Well under the account's 5M/100k so the serving path keeps its share: a
+ * SearchEngine wake reads its local store copy, and losing THAT to an
+ * exhausted meter is what turns a background import problem into 15-second
+ * searches.
+ */
+const MAX_DAY_ROWS_READ = 1_500_000;
+const MAX_DAY_ROWS_WRITTEN = 60_000;
+
+/** Meta keys under this prefix are day-scoped and survive a run reset. */
+const DAY_PREFIX = "day:";
+
 /** An import failure that retrying cannot fix, so the run stops at once. */
 class FatalImportError extends Error {}
 
@@ -367,6 +389,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ── alarm chain ────────────────────────────────────────────────────────────
 
 	override async alarm(): Promise<void> {
+		try {
+			await this.runAlarm();
+		} catch (err) {
+			// The alarm's own bookkeeping failed — reading the run record, the
+			// budget counters, the schema. The overwhelmingly likely cause is the
+			// storage API refusing everything because the daily row allowance is
+			// gone, which is precisely when retrying is worst: each attempt spends
+			// more of a meter that is already empty. Log it and stop; the next
+			// scheduled import starts fresh on a new day's allowance.
+			console.error("Import alarm could not manage its own state (storage unavailable?):", err);
+		}
+	}
+
+	private async runAlarm(): Promise<void> {
 		this.ensureSchema();
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
@@ -390,19 +426,27 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// Spend check, before anything expensive. The counters are cumulative for
 		// the run and survive eviction (flushed below), so this bounds the whole
 		// import rather than one instance's share of it.
+		const day = ImportCoordinator.dayKey();
 		const spentRead = Number(this.metaGet("do_rows_read") ?? 0);
 		const spentWritten = Number(this.metaGet("do_rows_written") ?? 0);
-		if (spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN) {
+		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0);
+		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0);
+		const overRun = spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN;
+		const overDay = dayRead > MAX_DAY_ROWS_READ || dayWritten > MAX_DAY_ROWS_WRITTEN;
+		if (overRun || overDay) {
+			const scope = overDay ? "today's" : "this run's";
+			const read = overDay ? dayRead : spentRead;
+			const written = overDay ? dayWritten : spentWritten;
 			console.error(
-				`Import stopped on its own storage budget in phase ${phase}: ` +
-					`${spentRead.toLocaleString()} rows read, ${spentWritten.toLocaleString()} written. ` +
+				`Import stopped on ${scope} storage budget in phase ${phase}: ` +
+					`${read.toLocaleString()} rows read, ${written.toLocaleString()} written. ` +
 					"A single import costs a fraction of this, so exceeding it means work is being repeated.",
 			);
 			run.state = "failed";
 			run.finishedAt = new Date().toISOString();
 			run.detail =
-				`${phase}: storage budget exhausted (${spentRead.toLocaleString()} rows read, ` +
-				`${spentWritten.toLocaleString()} written) — stopped before spending the daily allowance`;
+				`${phase}: ${scope} storage budget exhausted (${read.toLocaleString()} rows read, ` +
+				`${written.toLocaleString()} written) — stopped before spending the daily allowance`;
 			this.metaSet("phase", "idle");
 			await this.ctx.storage.put("run", run);
 			await this.ctx.storage.deleteAlarm();
@@ -497,17 +541,44 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 	}
 
-	/** Bank this instance's metered rows into the run's cumulative totals. */
+	/** Today's UTC date, the scope the platform's own meters reset on. */
+	private static dayKey(): string {
+		return `${DAY_PREFIX}${new Date().toISOString().slice(0, 10)}`;
+	}
+
+	/** Bank this instance's metered rows into the run's and the day's totals. */
 	private flushMeters(): void {
 		if (this.rowsRead === 0 && this.rowsWritten === 0) return;
+		const day = ImportCoordinator.dayKey();
 		const read = Number(this.metaGet("do_rows_read") ?? 0) + this.rowsRead;
 		const written = Number(this.metaGet("do_rows_written") ?? 0) + this.rowsWritten;
+		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0) + this.rowsRead;
+		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0) + this.rowsWritten;
 		this.rowsRead = 0;
 		this.rowsWritten = 0;
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("do_rows_read", String(read));
 			this.metaSet("do_rows_written", String(written));
+			this.metaSet(`${day}:read`, String(dayRead));
+			this.metaSet(`${day}:written`, String(dayWritten));
 		});
+	}
+
+	/**
+	 * Charge rows to the meters BEFORE spending them.
+	 *
+	 * flushMeters runs in the alarm's `finally`, which a slice killed outright
+	 * by the runtime never reaches — so the most expensive thing this DO does
+	 * was also the one thing that could spend without ever being recorded, and
+	 * repeat. Pre-charging a phase's known cost makes the spend durable first
+	 * and the work second, so a kill leaves evidence instead of a clean slate.
+	 *
+	 * Deliberately never refunded: over-counting costs a skipped import, while
+	 * under-counting costs the day.
+	 */
+	private prechargeReads(rows: number): void {
+		this.rowsRead += rows;
+		this.flushMeters();
 	}
 
 	private async step(phase: Phase): Promise<void> {
@@ -1143,6 +1214,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return (rowLength[index] as number) === 0 ? new Uint8Array(0) : blobBytes(row.b);
 		};
 		console.log(`Build: indexed ${rowLength.length} spilled rows across ${groupSeq.length} groups`);
+		// Charge the lookups now, not after. buildStoreStream() pulls each spilled
+		// row through `lookup` — one metered row read apiece, ~98k of them — in a
+		// single alarm that is the likeliest of all of them to be killed for CPU.
+		// Charged afterwards, a killed build would spend that every attempt while
+		// the counters read zero, which is exactly how a day's allowance
+		// disappeared with nothing in the logs to show for it.
+		this.prechargeReads(rowLength.length);
 
 		sql.exec("DELETE FROM chunk_staging");
 		let chunkSeq = -1;
@@ -1752,8 +1830,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * Reset the run's bookkeeping — but NOT the day-scoped spend counters.
+	 *
+	 * Those are the whole point: a budget a new run can clear is a budget that
+	 * only ever bounds one run, and the failure being guarded against restarts.
+	 * Old days are pruned here too, so this never accumulates rows.
+	 */
 	private metaClear(): void {
-		this.ctx.storage.sql.exec("DELETE FROM meta");
+		const today = ImportCoordinator.dayKey();
+		// Plain positional `?` throughout: numbered parameters (?1) are not part
+		// of the storage API's binding contract.
+		this.ctx.storage.sql.exec(
+			"DELETE FROM meta WHERE key NOT LIKE ? OR (key LIKE ? AND key NOT LIKE ?)",
+			`${DAY_PREFIX}%`,
+			`${DAY_PREFIX}%`,
+			`${today}%`,
+		);
 	}
 
 	private metaGet(key: string): string | null {
