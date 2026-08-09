@@ -173,6 +173,25 @@ export class SearchEngine extends DurableObject<Env> {
 		return engine.samplePreferred(numCards, fields);
 	}
 
+	/**
+	 * Instrumented like search(), and for the reason search() already was: this
+	 * is the most expensive invocation in the deployment (~200ms of CPU against
+	 * 1-2ms warm) and working out WHY took hours of inference, because search
+	 * reports whether it had to acquire its engine and this did not.
+	 *
+	 * `warm` is the datum, and it needs no clock: whether this isolate already
+	 * held the store before acquiring. An expensive call with warm=true would
+	 * rule out the store load outright — which is the answer nothing else here
+	 * can give, since the load's own log line is emitted by another module and
+	 * cannot be correlated per invocation.
+	 *
+	 * `acquireMs` measures I/O only. Workers freeze the clock during synchronous
+	 * execution, so a 0 beside a large cpuTime is itself the finding: the time
+	 * went to compute, not to KV.
+	 *
+	 * Logged only when it actually acquired, matching RemoteEngine.searchRpc —
+	 * a warm call is the boring case and says nothing worth a log line.
+	 */
 	async samplePreferredSerialized(
 		numCards: number,
 		fields: string[],
@@ -183,8 +202,15 @@ export class SearchEngine extends DurableObject<Env> {
 			this.warmInBackground();
 			return this.regionStub(fallbackHint).samplePreferredSerialized(numCards, fields, shape);
 		}
+		const warm = tryGetLoadedEngine() !== null;
+		const acquireStart = Date.now();
 		const engine = await this.engine();
-		return engine.samplePreferredSerialized(numCards, fields, shape);
+		const acquireMs = Date.now() - acquireStart;
+		const result = await engine.samplePreferredSerialized(numCards, fields, shape);
+		if (!warm) {
+			console.log(`samplePreferred acquired its engine in ${acquireMs}ms (cold isolate) for n=${numCards}`);
+		}
+		return result;
 	}
 
 	async size(fallbackHint?: DurableObjectLocationHint): Promise<number> {
