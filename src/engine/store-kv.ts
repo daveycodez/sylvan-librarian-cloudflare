@@ -135,11 +135,29 @@ export async function readManifest(env: Env): Promise<StoreManifest | null> {
 }
 
 /**
- * Stream a store's chunks out of KV in order.
+ * Stream a store's chunks out of KV: every chunk requested at once, consumed
+ * strictly in order.
  *
- * One `get` per chunk, pulled lazily so at most one chunk is resident: the
- * whole point of the 128MB isolate discipline is that the store exists once,
- * inside wasm linear memory, and never as a second JS-side copy.
+ * Both halves of that matter.
+ *
+ * ALL AT ONCE, because the load used to be `get` → copy into wasm → `get` →
+ * copy, so the network and the CPU never ran together and the wall time was
+ * their sum. Cloudflare's own guidance for several large values is to "read
+ * individual keys in parallel with Promise.all()", which is what starting
+ * every get up front does. The read count is unchanged — one per chunk, as
+ * before.
+ *
+ * IN ORDER, because the archive has to reach wasm in order: the loader appends.
+ * Consuming sequentially keeps that true while the other chunks are still
+ * arriving, so no random-access write path is needed.
+ *
+ * `stream` rather than `arrayBuffer` is what makes the two compatible. An
+ * arrayBuffer get materialises its whole 25MB before we can touch it, so three
+ * in flight would be 75MB on top of the ~70MB store in wasm linear memory —
+ * past the 128MB isolate. A stream applies backpressure instead: a chunk that
+ * is not being read stops pulling once its queue fills, so the transfers
+ * overlap without the bytes piling up. Cloudflare documents `stream` as the
+ * fastest of the return types and the way to stay inside 128MB.
  *
  * `cacheTtl` is a week because chunk keys are immutable — a given store key's
  * bytes never change — so a colo that has loaded this store once serves later
@@ -149,32 +167,68 @@ export function kvStoreStream(env: Env, manifest: StoreManifest): ReadableStream
 	const storeKey = manifest.store_key;
 	const expected = manifest.store_bytes;
 	const total = manifest.chunk_count ?? chunkCountFor(expected);
+
+	// Every chunk's read starts here, before anything is consumed.
+	const requests: Promise<ReadableStream<Uint8Array> | null>[] = [];
+	for (let n = 0; n < total; n++) {
+		const pending = env.STORE_KV.get(chunkKey(storeKey, n), {
+			type: "stream",
+			cacheTtl: 604_800,
+		}) as Promise<ReadableStream<Uint8Array> | null>;
+		// A load that fails or is cancelled leaves the later reads unawaited;
+		// without a handler their rejections surface as unhandled promise
+		// rejections. Whoever awaits still sees the original rejection.
+		pending.catch(() => {});
+		requests.push(pending);
+	}
+
 	let seq = 0;
 	let seen = 0;
+	let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
 	return new ReadableStream<Uint8Array>({
 		async pull(controller) {
-			if (seq >= total) {
-				if (seen !== expected) {
-					controller.error(new EngineUnavailableError(`Store ${storeKey} incomplete in KV: ${seen}/${expected} bytes`));
-					return;
+			for (;;) {
+				if (!reader) {
+					if (seq >= total) {
+						if (seen !== expected) {
+							controller.error(
+								new EngineUnavailableError(`Store ${storeKey} incomplete in KV: ${seen}/${expected} bytes`),
+							);
+							return;
+						}
+						controller.close();
+						return;
+					}
+					const body = await requests[seq];
+					if (!body) {
+						// A manifest naming chunks KV does not have means a publish was
+						// interrupted between chunks and manifest, or retention deleted a
+						// store still referenced. Never serve a short store: fail the load
+						// and leave the previously loaded engine in place.
+						controller.error(new EngineUnavailableError(`Store ${storeKey} is missing chunk ${seq} in KV`));
+						return;
+					}
+					reader = body.getReader();
 				}
-				controller.close();
+				const { done, value } = await reader.read();
+				if (done) {
+					reader = null;
+					seq += 1;
+					continue;
+				}
+				seen += value.byteLength;
+				controller.enqueue(value);
 				return;
 			}
-			const key = chunkKey(storeKey, seq);
-			const body = await env.STORE_KV.get(key, { type: "arrayBuffer", cacheTtl: 604_800 });
-			if (!body) {
-				// A manifest naming chunks KV does not have means a publish was
-				// interrupted between chunks and manifest, or retention deleted a
-				// store still referenced. Never serve a short store: fail the load
-				// and leave the previously loaded engine in place.
-				controller.error(new EngineUnavailableError(`Store ${storeKey} is missing chunk ${seq} in KV`));
-				return;
+		},
+		async cancel(reason) {
+			// An abandoned load must not leave chunk reads holding connections
+			// open for the rest of the invocation.
+			await reader?.cancel(reason).catch(() => {});
+			for (const pending of requests) {
+				await pending.then((body) => body?.cancel(reason)).catch(() => {});
 			}
-			const bytes = new Uint8Array(body);
-			seen += bytes.byteLength;
-			seq += 1;
-			controller.enqueue(bytes);
 		},
 	});
 }

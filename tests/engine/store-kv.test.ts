@@ -182,6 +182,21 @@ function fakeKv(entries: Record<string, Uint8Array | string>, onGet?: (key: stri
 				const bytes = value as Uint8Array;
 				return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 			}
+			if (opts?.type === "stream") {
+				const bytes = value as Uint8Array;
+				// Delivered in several pieces, as a real KV stream would, so the
+				// reader is exercised across piece boundaries rather than getting
+				// one whole chunk per read.
+				return new ReadableStream<Uint8Array>({
+					start(controller) {
+						const step = Math.max(1, Math.ceil(bytes.byteLength / 3));
+						for (let at = 0; at < bytes.byteLength; at += step) {
+							controller.enqueue(bytes.subarray(at, Math.min(at + step, bytes.byteLength)));
+						}
+						controller.close();
+					},
+				});
+			}
 			return value as string;
 		},
 	} as unknown as Env["STORE_KV"];
@@ -232,6 +247,35 @@ describe("kvStoreStream", () => {
 		const env = { STORE_KV: fakeKv(entries, (k) => gets.push(k)) } as Env;
 		await drain(kvStoreStream(env, manifest));
 		expect(gets.length).toBe(manifest.chunk_count ?? 0);
+	});
+
+	test("requests every chunk up front, not one at a time", async () => {
+		// The load used to be get → copy into wasm → get → copy, so the network
+		// and the CPU never overlapped and the wall time was their sum. Every
+		// read now starts before anything is consumed; backpressure on the
+		// streams is what keeps that from piling 25MB chunks up in memory.
+		const first = new Uint8Array(16).fill(1);
+		const second = new Uint8Array(16).fill(2);
+		const manifest = { ...manifestFor(concat([first, second])), store_bytes: 32, chunk_count: 2 };
+		const gets: string[] = [];
+		const env = {
+			STORE_KV: fakeKv(
+				{
+					[chunkKey(manifest.store_key, 0)]: first,
+					[chunkKey(manifest.store_key, 1)]: second,
+				},
+				(k) => gets.push(k),
+			),
+		} as Env;
+
+		const stream = kvStoreStream(env, manifest);
+		// Nothing has been read yet, and both reads are already in flight.
+		expect(gets.length).toBe(2);
+		// Still delivered in order, because the wasm loader appends.
+		expect(await drain(stream)).toEqual(concat([first, second]));
+		// And no chunk is read twice — a re-read is a metered read and a
+		// doubled transfer.
+		expect(gets.length).toBe(2);
 	});
 
 	test("a missing chunk fails loudly rather than serving a short store", async () => {

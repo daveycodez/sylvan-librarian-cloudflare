@@ -119,20 +119,33 @@ class WasmEngine implements Engine {
 
 export { readManifest } from "./store-kv";
 
-/** Stream the store bytes into wasm memory via the chunked loader. */
-async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Promise<void> {
+/**
+ * Stream the store bytes into wasm memory, returning how many pieces the
+ * source delivered.
+ *
+ * The count is logged because it is not knowable from this side — it depends
+ * entirely on how KV hands the bytes over, and that differs sharply between
+ * wrangler dev's simulated KV (17,880 pieces of ~4KB for a ~70MB store) and
+ * the network. Gathering small pieces into larger blocks before crossing into
+ * wasm was tried and removed: at 17,880 pieces it measured no better than
+ * passing them straight through, so the crossings are not the cost.
+ */
+async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Promise<number> {
 	wasm.begin_store_load(totalLen);
 	const reader = body.getReader();
+	let pieces = 0;
 	try {
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
+			pieces += 1;
 			wasm.store_load_chunk(value);
 		}
 	} finally {
 		reader.releaseLock();
 	}
 	wasm.finish_store_load();
+	return pieces;
 }
 
 async function loadStore(env: Env): Promise<Engine> {
@@ -171,13 +184,14 @@ async function loadStore(env: Env): Promise<Engine> {
 	// Raw bytes, deliberately uncompressed: KV reads are metered per read, not
 	// per byte, so compression would buy nothing but decompress CPU on every
 	// load — and CPU is the scarcer meter.
-	await feedStore(body, manifest.store_bytes);
+	const pieces = await feedStore(body, manifest.store_bytes);
 
 	const engine = new WasmEngine();
 	current = { storeKey: manifest.store_key, engine };
 	console.log(
 		`Store loaded from KV: ${manifest.store_key} (${manifest.card_count} cards, ` +
-			`${manifest.store_bytes} bytes, built ${manifest.built_at}) in ${Date.now() - started}ms`,
+			`${manifest.store_bytes} bytes, built ${manifest.built_at}) in ${Date.now() - started}ms ` +
+			`from ${pieces} pieces`,
 	);
 	return engine;
 }
