@@ -344,10 +344,3 @@ export async function manifestPollAlarm(env: Env): Promise<void> {
 	lastManifestCheck = 0;
 	if (current) await refreshIfStale(env);
 }
-
-/** Coordinator status passthrough for the bootstrap page. */
-export async function importStatus(env: Env): Promise<unknown> {
-	const coordinator = env.IMPORT_COORDINATOR.get(env.IMPORT_COORDINATOR.idFromName("singleton"));
-	const res = await coordinator.fetch("https://coordinator/status");
-	return res.json();
-}

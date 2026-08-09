@@ -226,18 +226,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.schemaReady = true;
 	}
 
-	// ── HTTP surface (unchanged contract with store.ts / bootstrap page) ───────
+	// ── HTTP surface ───────────────────────────────────────────────────────────
+	//
+	// One route. /status existed to drive the "building the card index" page,
+	// which is gone: the deploy builds the index and fails if it cannot, so
+	// there is no in-progress state for a visitor to watch. Progress lives in
+	// the Worker logs, where an unattended nightly run belongs.
 
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		switch (url.pathname) {
-			case "/start-import":
-				return this.startImport(url.searchParams.get("reason") ?? "unspecified");
-			case "/status":
-				return this.status();
-			default:
-				return new Response("not found", { status: 404 });
+		if (new URL(request.url).pathname === "/start-import") {
+			return this.startImport(url.searchParams.get("reason") ?? "unspecified");
 		}
+		return new Response("not found", { status: 404 });
 	}
 
 	private async getRun(): Promise<RunRecord> {
@@ -277,77 +278,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return Response.json({ ok: true, run: record }, { status: 202 });
 	}
 
-	private async status(): Promise<Response> {
-		// Nothing here may assume storage is reachable. Exceeding the Durable
-		// Objects free-tier daily allowance blocks the WHOLE storage API, not
-		// just writes: `storage.get("run")` — a plain read of a single value —
-		// throws "Exceeded allowed rows written" exactly like a write does. So
-		// status degrades in two steps, and the outer one touches no storage at
-		// all, because a status endpoint that needs storage to say "storage is
-		// unavailable" can never deliver that message.
-		let run: RunRecord;
-		try {
-			run = await this.getRun();
-		} catch (err) {
-			console.error(`Status could not reach storage at all: ${err}`);
-			return Response.json({
-				run: { state: "unknown" },
-				builder: { state: "unknown", phase: "blocked", blocked: String(err) },
-			});
-		}
-		try {
-			return await this.statusFromSql(run);
-		} catch (err) {
-			// Storage answered for the run record but not for SQL (or the schema
-			// is not there yet). Report what we have plus the reason.
-			console.error(`Status could not read staging state: ${err}`);
-			return Response.json({
-				run,
-				builder: { state: run.state, phase: "blocked", blocked: String(err) },
-			});
-		}
-	}
-
-	private async statusFromSql(run: RunRecord): Promise<Response> {
-		this.ensureSchema();
-		const phase = this.metaGet("phase") ?? "idle";
-		const printings = Number(this.metaGet("staged_rows") ?? this.metaGet("drafts_total") ?? 0);
-		const detailBits: string[] = [];
-		if (phase.startsWith("fetch:")) {
-			const kind = phase.slice("fetch:".length);
-			const f = this.ctx.storage.sql
-				.exec("SELECT fetched_bytes, total_bytes FROM stage_files WHERE kind = ?", kind)
-				.toArray()[0];
-			if (f) detailBits.push(`${f.fetched_bytes}/${f.total_bytes ?? "?"} bytes`);
-		}
-		if (phase === "transform") detailBits.push(`${this.metaGet("lines_done") ?? 0} lines`);
-		if (phase === "publish") detailBits.push(`${this.metaGet("chunks_published") ?? 0} chunks`);
-		if (phase === "cards") {
-			detailBits.push(`${this.metaGet("cards_synced") ?? 0} rows synced`);
-			const volatileLeft = Number(this.metaGet("cards_volatile_left") ?? 0);
-			if (volatileLeft > 0) detailBits.push(`${volatileLeft} price refreshes left`);
-		}
-		// Same shape the container version exposed; the bootstrap page reads
-		// builder.phase and the routes pass the whole object through.
-		// `retrying` lets the bootstrap page distinguish "working" from
-		// "stuck retrying a failing phase" without waiting for the run to be
-		// declared failed 8 backoffs later.
-		const retries = Number(this.metaGet("retries") ?? 0);
-		return Response.json({
-			run,
-			builder: {
-				state: run.state,
-				phase: phase === "idle" ? run.state : phase,
-				detail: detailBits.join(", ") || undefined,
-				printings,
-				retrying:
-					retries > 0
-						? { attempt: retries, of: MAX_RETRIES, error: this.metaGet("last_error") || undefined }
-						: undefined,
-			},
-		});
-	}
-
 	// ── alarm chain ────────────────────────────────────────────────────────────
 
 	override async alarm(): Promise<void> {
@@ -361,7 +291,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// A slice that succeeded clears the retry state, so a recovered
 			// transient failure stops being reported as an ongoing problem.
 			this.metaSet("retries", "0");
-			this.metaSet("last_error", "");
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
 			if (next !== "idle") {
 				await this.ctx.storage.setAlarm(Date.now());
@@ -388,10 +317,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				const backoffMs = Math.min(60_000, 1000 * 2 ** retries);
 				console.warn(`Import phase ${phase} failed (retry ${retries}/${MAX_RETRIES} in ${backoffMs}ms): ${err}`);
 				this.metaSet("retries", String(retries));
-				// Record WHY, so the bootstrap page can show the error on the
-				// first retry instead of only after all 8 are spent — a phase
-				// that fails deterministically is worth reading about now.
-				this.metaSet("last_error", `${phase}: ${err}`);
 				// A failed slice in a wasm-state-coupled phase leaves the wasm heap
 				// ahead of the (rolled-back) SQLite progress — e.g. rows staged in
 				// the interners that the retry would stage again. Marking the wasm

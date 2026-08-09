@@ -144,12 +144,16 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	} catch (err) {
 		if (err instanceof Response) return finish(err); // redirects (HTTPMovedPermanently parity)
 		if (err instanceof EngineUnavailableError) {
-			// No "building the index" page any more: the index is built by the
-			// DEPLOY (scripts/import-store.sh), which fails rather than shipping a
-			// Worker without one. So if this Worker is serving at all, its store
-			// exists — and reaching here means something is actually wrong, which
-			// deserves upstream's structured 503 rather than a soothing spinner.
-			return finish(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));
+			// The index is built by the DEPLOY (scripts/import-store.sh), which
+			// fails rather than shipping a Worker without one — so reaching here
+			// means something broke after a good deploy, most likely the D1
+			// database being deleted or emptied under a running deployment.
+			//
+			// The reason travels in `description`, which the existing UI already
+			// surfaces: app.js reads title/description off a non-ok JSON body and
+			// renders it through showError(). So one structured 503 serves both
+			// the API and the page — no bespoke error page needed.
+			return finish(httpError(503, "Service Unavailable", `Card index unavailable: ${err.message}`));
 		}
 		console.error(`Error handling request for ${path}:`, err);
 		return finish(httpError(500, "Server Error", "An internal error occurred."));
