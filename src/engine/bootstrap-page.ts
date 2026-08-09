@@ -32,6 +32,9 @@ interface StatusShape {
 		detail?: string;
 		printings?: number;
 		retrying?: { attempt?: number; of?: number; error?: string };
+		/** Set when the coordinator's storage is refusing operations (free-tier
+		 * daily rows_written spent) — carries the platform's own message. */
+		blocked?: string;
 	};
 }
 
@@ -46,6 +49,7 @@ export async function bootstrapPage(env: Env): Promise<Response> {
 		reachable = false;
 	}
 
+	const blocked = status.builder?.blocked;
 	const failed = status.run?.state === "failed";
 	const retrying = status.builder?.retrying;
 	const phase = status.builder?.phase ?? status.run?.state ?? (reachable ? "starting" : "unreachable");
@@ -54,11 +58,33 @@ export async function bootstrapPage(env: Env): Promise<Response> {
 
 	// A failed run stops refreshing: reloading restarts the import from
 	// scratch, so an auto-refresh loop would silently retry forever and
-	// re-download the dumps every 5 seconds.
-	const refresh = failed ? "" : '<meta http-equiv="refresh" content="5">';
+	// re-download the dumps every 5 seconds. A quota block refreshes slowly —
+	// it clears on its own at a known time, and hammering it changes nothing.
+	const refresh = failed ? "" : `<meta http-equiv="refresh" content="${blocked ? 300 : 5}">`;
 
 	let body: string;
-	if (failed) {
+	if (blocked) {
+		// Time until the next 00:00 UTC, when free-tier daily limits reset. Show
+		// the absolute time too: a countdown near 24h means the window just
+		// rolled over, which reads as alarming without that context (quota
+		// accounting can lag a few minutes behind the reset).
+		const now = new Date();
+		const reset = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+		const mins = Math.max(0, Math.round((reset - now.getTime()) / 60000));
+		const when = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+		const nextReset = new Date(reset).toISOString().replace(".000Z", "Z");
+		body = `<div class="bad">!</div>
+<h1>Paused by a daily platform limit</h1>
+<p>The import coordinator's storage is refusing writes, so the build cannot
+continue right now. It reported:</p>
+<pre>${esc(blocked)}</pre>
+<p>Durable Objects free-tier daily limits reset at 00:00 UTC. The next reset is
+<code>${esc(nextReset)}</code>, in ${when}. The build resumes on its own after
+that — progress already on disk is kept, so it continues rather than starting
+over.</p>
+<p class="dim">If that countdown is close to 24 hours, the window just reset
+and this should clear within a few minutes. This page rechecks every 5 minutes.</p>`;
+	} else if (failed) {
 		const reason = status.run?.detail ?? "no detail recorded";
 		const when = status.run?.finishedAt ? ` at ${esc(status.run.finishedAt)}` : "";
 		body = `<div class="bad">!</div>
@@ -101,7 +127,7 @@ ${warn}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 ${refresh}
-<title>Sylvan Librarian — ${failed ? "card index build failed" : "building card index"}</title>
+<title>Sylvan Librarian — ${blocked ? "card index build paused" : failed ? "card index build failed" : "building card index"}</title>
 <style>
 body{font-family:system-ui,sans-serif;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center;background:#1a2318;color:#e8efe4}
 main{text-align:center;max-width:34rem;padding:2rem}
@@ -127,7 +153,7 @@ ${body}
 		headers: {
 			"content-type": "text/html; charset=utf-8",
 			"Cache-Control": "no-store",
-			...(failed ? {} : { "Retry-After": "5" }),
+			...(failed ? {} : { "Retry-After": blocked ? "300" : "5" }),
 		},
 	});
 }

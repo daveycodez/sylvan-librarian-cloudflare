@@ -196,8 +196,20 @@ function exactBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 export class ImportCoordinator extends DurableObject<Env> {
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
+	/** Schema created once per instance — see ensureSchema. */
+	private schemaReady = false;
+
+	/**
+	 * Create the staging schema. Deliberately NOT in the constructor: DDL is a
+	 * storage write, and the Durable Objects free tier blocks writes once the
+	 * daily rows_written allowance is spent. Writing in the constructor made
+	 * every instantiation throw while blocked — including plain GET /status —
+	 * so the one surface that could have explained the outage was the one
+	 * surface that could not respond. Write paths call this; the read path
+	 * tolerates its absence.
+	 */
+	private ensureSchema(): void {
+		if (this.schemaReady) return;
 		this.ctx.storage.sql.exec(
 			`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 			CREATE TABLE IF NOT EXISTS stage_files (
@@ -221,6 +233,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);`,
 		);
+		this.schemaReady = true;
 	}
 
 	// ── HTTP surface (unchanged contract with store.ts / bootstrap page) ───────
@@ -242,6 +255,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async startImport(reason: string): Promise<Response> {
+		this.ensureSchema();
 		const run = await this.getRun();
 		if (run.state === "starting" || run.state === "running") {
 			const age = run.startedAt ? Date.now() - Date.parse(run.startedAt) : 0;
@@ -304,7 +318,27 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async status(): Promise<Response> {
+		// The run record is a plain storage value, so it reads back even when
+		// SQL is unavailable — report it no matter what happens below.
 		const run = await this.getRun();
+		try {
+			return await this.statusFromSql(run);
+		} catch (err) {
+			// Storage is refusing to serve this DO: on the free tier that means
+			// the daily rows_written allowance is spent and every write —
+			// including CREATE TABLE IF NOT EXISTS — is rejected until 00:00
+			// UTC. Say so, rather than looking like a coordinator that never
+			// started; the bootstrap page turns `blocked` into an explanation.
+			console.error(`Status could not read staging state: ${err}`);
+			return Response.json({
+				run,
+				builder: { state: run.state, phase: "blocked", blocked: String(err) },
+			});
+		}
+	}
+
+	private async statusFromSql(run: RunRecord): Promise<Response> {
+		this.ensureSchema();
 		const phase = this.metaGet("phase") ?? "idle";
 		const printings = Number(this.metaGet("staged_rows") ?? this.metaGet("drafts_total") ?? 0);
 		const detailBits: string[] = [];
@@ -346,6 +380,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ── alarm chain ────────────────────────────────────────────────────────────
 
 	override async alarm(): Promise<void> {
+		this.ensureSchema();
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
 		const phase = (this.metaGet("phase") ?? "idle") as Phase;
