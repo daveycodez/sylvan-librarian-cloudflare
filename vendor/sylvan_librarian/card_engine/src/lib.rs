@@ -1,3 +1,18 @@
+// LOCAL PATCH (Cloudflare port): upstream builds this crate WITH the `python`
+// feature, where the PyO3 QueryEngine surface (see the #[cfg(feature =
+// "python")] impl block below) is the caller for the explain/plan-diagnostic
+// machinery — explain, explain_analyze, run_query_with_plan, PhaseStats,
+// PlanEstimate, AcquireFacts, PlanTrial and their label() helpers. This port
+// does not build that feature (`python` implies `mmap-store`, and memmap2/libc
+// do not compile for wasm32-unknown-unknown), so ~25 items lose their only
+// caller and report as dead code. That is an artifact of the feature split,
+// not rot, and it says nothing a consumer of this workspace can act on.
+//
+// Scoped deliberately: dead_code ONLY, in THIS crate ONLY, and only when the
+// python feature is off — so upstream's own builds stay honest, every other
+// lint still fires here, and the port's own crates are untouched.
+#![cfg_attr(not(feature = "python"), allow(dead_code))]
+
 #[cfg(feature = "python")]
 use pyo3::create_exception;
 #[cfg(feature = "python")]
