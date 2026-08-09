@@ -25,6 +25,7 @@ const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 
 interface ImportExports {
 	memory: WebAssembly.Memory;
 	alloc(len: number): number;
+	dealloc(ptr: number, len: number): void;
 	reset(): void;
 	transform_lines(ptr: number, len: number): bigint;
 	tags_begin(): void;
@@ -37,6 +38,7 @@ interface ImportExports {
 	finalize_begin(): bigint;
 	finalize_drafts(ptr: number, len: number): bigint;
 	finalize_end(): bigint;
+	staged_order(dest: number, cap: number): bigint;
 	build_store_stream(): bigint;
 	format_version(): number;
 	current_alloc(): number;
@@ -117,6 +119,34 @@ export class ImportWasm {
 		}
 		const instance = new WebAssembly.Instance(module_, imports);
 		this.ex = instance.exports as unknown as ImportExports;
+	}
+
+	/**
+	 * The order `buildStoreStream` will pull rows in, as add-order indices.
+	 *
+	 * The build needs rows sorted; the spill is written in add order. Knowing
+	 * the permutation BEFORE the build lets the host lay the spill out to match
+	 * it, so the build reads sequentially. Without it the only way to answer an
+	 * arbitrary pullRow is a random seek — 97,802 of them for a real corpus,
+	 * which is what pushed the build past the Durable Object CPU ceiling.
+	 *
+	 * Called once per reorder slice and once at the build, against a wasm
+	 * instance that survives every alarm in the group — so the buffer is freed
+	 * rather than left to `alloc`'s usual leak.
+	 */
+	stagedOrder(rows: number): Uint32Array {
+		const cap = rows * 4;
+		const ptr = this.ex.alloc(cap);
+		try {
+			const n = Number(this.ex.staged_order(ptr, cap));
+			if (n < 0) throw new Error("wasm-import staged_order failed (buffer too small)");
+			// Copied out immediately: the view is invalidated by any later
+			// allocation that grows linear memory.
+			return new Uint32Array(new Uint8Array(this.ex.memory.buffer, ptr, n).slice().buffer);
+		} finally {
+			// `cap`, not the returned length — the allocation's own size.
+			this.ex.dealloc(ptr, cap);
+		}
 	}
 
 	setHandlers(handlers: ImportEmitHandlers): void {

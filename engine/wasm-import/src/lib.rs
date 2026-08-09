@@ -186,6 +186,20 @@ fn take_buf(ptr: *mut u8, len: usize) -> Vec<u8> {
     unsafe { Vec::from_raw_parts(ptr, len, len) }
 }
 
+/// Free a buffer produced by `alloc`, with the length it was allocated with.
+///
+/// `alloc` leaks by design: every other export CONSUMES its input buffer, so
+/// the host never has one left to free. `staged_order` is the exception — it
+/// fills a host buffer rather than consuming one, and the host calls it once
+/// per reorder slice. Unfreed, that is ~390KB of permutation leaked per slice
+/// into linear memory that is never handed back, and it persists into the
+/// build, whose high-water already sits at 94.9MB against this module's 112MB
+/// `--max-memory`.
+#[unsafe(no_mangle)]
+pub extern "C" fn dealloc(ptr: *mut u8, len: usize) {
+    drop(take_buf(ptr, len));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn reset() {
     std::panic::set_hook(Box::new(|info| {
@@ -598,6 +612,38 @@ impl Write for ChunkWriter {
         self.flush_chunk();
         Ok(())
     }
+}
+
+/// The permutation `build_store_stream` will pull in: `staged_rows()` u32s,
+/// little-endian, written into a host buffer. Returns the byte length, 0 if
+/// nothing is staged, or -1 if `cap` is too small.
+///
+/// Exposed so the HOST can lay the spill out in build order before the build
+/// runs. Without it the host only learns each index when `pull_row` asks for
+/// it, one at a time, and the only way to serve an arbitrary index is a random
+/// seek into the spill — 97,802 of them for a real corpus, which is what took
+/// the build past the Durable Object CPU ceiling. Knowing the order up front
+/// turns that into a sequential scan.
+#[unsafe(no_mangle)]
+pub extern "C" fn staged_order(dest: *mut u8, cap: usize) -> i64 {
+    with_state(|s| {
+        let Some(builder) = s.staging.as_ref() else {
+            return 0;
+        };
+        let order = builder.sorted_order();
+        let need = order.len() * 4;
+        if need > cap {
+            log(&format!("staged_order: need {need} bytes, host offered {cap}"));
+            return -1;
+        }
+        // Safety: the host allocated `cap` bytes at `dest` via alloc() and
+        // does not touch them until this returns; `need <= cap` is checked.
+        let out = unsafe { std::slice::from_raw_parts_mut(dest, need) };
+        for (i, idx) in order.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&idx.to_le_bytes());
+        }
+        need as i64
+    })
 }
 
 /// Pull spilled rows back (host-stored, indexed by add order) in build order,
