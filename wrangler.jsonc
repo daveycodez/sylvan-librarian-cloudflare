@@ -20,9 +20,11 @@
 	// The engine store lives here as chunk rows + a manifest, written by the
 	// ImportCoordinator DO and read by every isolate/SearchEngine DO. D1's
 	// free tier covers it (~70MB per store version, 3 versions kept), and —
-	// unlike R2 — enabling D1 needs no payment method on file. When deploying
-	// manually, create the database once (`wrangler d1 create sylvan-librarian`)
-	// and fill in database_id; Workers Builds provisions it automatically.
+	// unlike R2 — enabling D1 needs no payment method on file. Nothing to fill
+	// in by hand: the deploy creates the database if absent and pins
+	// database_id to it (scripts/align-d1-binding.ts) before wrangler reads
+	// this file, which is also what repairs the binding after the database is
+	// deleted and recreated.
 	"d1_databases": [
 		{
 			"binding": "STORE_DB",

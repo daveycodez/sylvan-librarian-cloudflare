@@ -18,16 +18,8 @@ cd "$REPO_ROOT"
 # override included — so two Workers on one account each own their own
 # database, from an unedited fork. Never hardcoded.
 DB_NAME="$(bun scripts/project-config.ts d1)"
-# ...and make the deployed binding agree with the database we are about to
-# publish into (no-op unless CI renamed the Worker).
-bun scripts/align-d1-binding.ts
 
-if [[ "${SKIP_IMPORT:-}" == "1" ]]; then
-    echo "==> SKIP_IMPORT=1 — leaving the card store as it is."
-    exit 0
-fi
-
-# 1. The database must exist before anything can be published into it. `d1
+# 1. The database must exist before anything can reference or fill it. `d1
 #    create` fails when it already does, which is the common case and not an
 #    error — so ask first, and only create when genuinely absent.
 if bunx wrangler d1 info "$DB_NAME" >/dev/null 2>&1; then
@@ -37,7 +29,19 @@ else
     bunx wrangler d1 create "$DB_NAME"
 fi
 
-# 2. Skip when a recent store is already live: without this every routine code
+# 2. Pin the binding to THAT database, by id, before `wrangler deploy` reads
+#    the config. Must come after the create above (the id has to exist) and
+#    before any early exit below: a skipped import still has to deploy against
+#    a binding that resolves, which is exactly what a deleted-and-recreated
+#    database breaks.
+bun scripts/align-d1-binding.ts
+
+if [[ "${SKIP_IMPORT:-}" == "1" ]]; then
+    echo "==> SKIP_IMPORT=1 — leaving the card store as it is."
+    exit 0
+fi
+
+# 3. Skip when a recent store is already live: without this every routine code
 #    push re-downloads ~450MB to republish an identical store. The nightly
 #    in-Worker refresh is what keeps it current between deploys.
 if [[ "${FORCE_IMPORT:-}" != "1" ]]; then
@@ -49,7 +53,7 @@ if [[ "${FORCE_IMPORT:-}" != "1" ]]; then
     echo "==> No current store published — running the full bulk import."
 fi
 
-# 3. Full native import. 8GB and 20 minutes in Workers Builds, versus a 128MB
+# 4. Full native import. 8GB and 20 minutes in Workers Builds, versus a 128MB
 #    isolate and 30s alarms in the Worker runtime — which is why this lives in
 #    the build and the in-Worker pipeline only handles nightly changes.
 echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes)..."
