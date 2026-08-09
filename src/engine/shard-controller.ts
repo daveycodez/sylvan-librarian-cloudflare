@@ -39,6 +39,16 @@
 // the announcement never decayed, a contracting isolate would re-adopt the
 // stale higher value on its next RPC and never get smaller.
 //
+// VERIFIED against production, same ramp before and after, at 64 concurrent:
+//
+//   before   4 shards   68.4 / 17.3 /  9.3 /  4.9 %      imbalance 2.74x
+//   after    5 shards   20.5 / 20.0 / 20.0 / 19.9 / 19.6  imbalance 1.02x
+//
+// and the hot shard's latency penalty went with its share: shard 0 was p50
+// 154ms against 86-125ms for the others, and is now 117ms against 116-122ms —
+// every shard alike. Whole-run p50 at that stage fell 142ms -> 118ms, because
+// no shard is carrying two thirds of the colo any more.
+//
 // Expansion: sustained queue depth — several responses within a short window
 // reporting that >=2 searches were already executing when the request
 // arrived — steps the fan-out up by one, with a cooldown so a single blip

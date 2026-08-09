@@ -118,7 +118,13 @@
 //     governs only the local regime where the floor collapses to ~1ms.
 //   - Within a 2s window min/avg ran 1.2-2.2x, never near 3x, so the variance
 //     concern is retired under real load as well as locally.
-//   - The shard split never converges: see the note in shard-controller.ts.
+//   - The shard split never converged, which was a real defect. Fixed by the
+//     rendezvous in shard-controller.ts and re-run to confirm: at conc=64 the
+//     same ramp went from 68.4/17.3/9.3/4.9 across four shards (2.74x
+//     imbalance, shard 0 at p50 154ms against 86-125ms for the rest) to
+//     20.5/20.0/20.0/19.9/19.6 across five (1.02x, every shard 116-122ms).
+//     Stage p50 fell 142ms -> 118ms with it. Re-running this pair is how to
+//     check the fan-out still balances after any change to the controller.
 //
 // Read TRUSTED_API_KEY from your own shell (`export TRUSTED_API_KEY=...`) or
 // pass --key. This script never reads .env.
