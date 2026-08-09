@@ -217,14 +217,25 @@ scripts/bench.sh results.tsv
 
 | | cold (cache miss) | warm (repeat) | payload |
 |---|---|---|---|
-| **this port (Cloudflare)** | **30ms** | **29ms** | **~34 KB** |
-| Scryfall API | 56ms — 1.9× slower | 56ms — 1.9× slower | ~813 KB — 24× larger |
-| sylvan-librarian.com | 106ms — 3.5× slower | 107ms — 3.7× slower | ~34 KB |
+| **this port (Cloudflare)** | 139ms | **21ms** | **~34 KB** |
+| sylvan-librarian.com | **114ms** — 0.8× | 111ms — 5.2× slower | ~34 KB |
+| Scryfall API | 928ms — 6.7× slower | 43ms — 2.0× slower | ~813 KB — 24× larger |
 
-Worst single request: **this port 106ms** · Scryfall 323ms · upstream 434ms.
+Worst single request: **this port 260ms** · upstream 482ms · Scryfall 4037ms.
 
-Measured before the KV migration; the serving path is unchanged by it (same
-engine DOs, same edge cache), which only affects version pulls.
+Upstream is FASTER than this port on a genuine cache miss, and that is the
+honest shape of the trade: they run a warm process that is always resident,
+while a miss here goes through an isolate and a Durable Object that may both
+be cold. What this port buys instead is the repeat — 21ms against their 111ms,
+because they front `/search` with no edge cache at all and their cold and warm
+numbers are the same number. Scryfall's miss is 928ms and its worst case four
+seconds; its 43ms warm is its own CDN.
+
+Every URL carries a per-run nonce, so the cold column measures a real miss.
+Without it the fixed query set collides with `/search`'s own
+`stale-while-revalidate=86400` and every run after the first reports cache hits
+as "cold" — which is what the previous table in this file did, understating
+cold by roughly 5× for both cached services.
 
 ## License
 
