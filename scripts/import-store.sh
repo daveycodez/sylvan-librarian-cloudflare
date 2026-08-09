@@ -78,7 +78,21 @@ if [[ "${FORCE_IMPORT:-}" != "1" && -n "$STORE_AGE" ]]; then
     echo "    (FORCE_IMPORT=1 rebuilds it anyway.)"
     exit 0
 fi
-[[ -n "$STORE_AGE" ]] || echo "==> No current store published — running the full bulk import."
+# Say why the import is running. store-age has already printed the SPECIFIC
+# finding on stderr just above — nothing published, a manifest whose chunks are
+# gone, a store Scryfall has superseded, or a read that failed — so this line
+# must not invent a different one. It used to say "No current store published"
+# for every one of those, which reported a stale-but-present store as an absent
+# one: the same class of lie the store-age reason text exists to prevent.
+if [[ -n "$STORE_AGE" ]]; then
+    # Only reachable with FORCE_IMPORT=1; every other path with a live store
+    # returned above.
+    echo "==> FORCE_IMPORT=1 — rebuilding even though a store built $STORE_AGE is live."
+elif [[ "$STORE_AGE_STATUS" -ge 2 ]]; then
+    echo "==> Could not read the live store's state — running the full bulk import to be safe."
+else
+    echo "==> The live store is missing or superseded (reason above) — running the full bulk import."
+fi
 
 # 3. Full native import. 8GB and 20 minutes in Workers Builds, versus a 128MB
 #    isolate and 30s alarms in the Worker runtime — which is why this lives in
