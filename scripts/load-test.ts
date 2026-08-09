@@ -51,10 +51,13 @@
 //                (param-binding.ts, upstream ParamBinder.bind), so it changes
 //                the cache key and nothing else. --cached opts out to measure
 //                the cache instead, which is a different and also useful run.
-//   Rate limit.  RATE_LIMIT_PER_10S defaults to 100 per 10s = 10/s per IP,
-//                which is below every threshold in the controller. Without a
-//                trusted key this script measures the limiter and reports a
-//                wall at 10/s. Pass --key (or export TRUSTED_API_KEY) to send
+//   Rate limit.  RATE_LIMIT_PER_10S defaults to 100 per 10s. Enforcement is
+//                asynchronous by design, so the effective ceiling is ~3.5x the
+//                configured one: measured against production on 2026-08-09,
+//                a 10/s configuration passed 34.5/s (518 of 1180 requests over
+//                15s, the rest 429). Still far below EXPAND_MIN_RATE, so
+//                without a trusted key this measures the limiter and nothing
+//                else. Pass --key (or export TRUSTED_API_KEY) to send
 //                X-API-Key; x-sylvan-rl in the output says which happened.
 //   Query memo. The engine memoizes (see vendor bench_text_memo.py). One
 //                repeated query measures the memo, not a search. The pool below
@@ -281,7 +284,7 @@ console.error(`Stages:      ${stages.join(", ")} concurrent, ${holdMs / 1000}s e
 console.error(`Shape:       ${shape} (both shapes take the DO-encoded searchSerialized path)`);
 console.error(`Cache:       ${values.cached ? "REUSED urls (measures the edge cache)" : "busted per request"}`);
 console.error(
-	`Rate limit:  ${apiKey ? "bypass key present" : "NO KEY — expect a wall at RATE_LIMIT_PER_10S/10 req/s"}`,
+	`Rate limit:  ${apiKey ? "bypass key present" : "NO KEY — expect a wall near 3.5x RATE_LIMIT_PER_10S/10 req/s"}`,
 );
 console.error(
 	`Warmup:      ${warmupMs / 1000}s discarded${warmupMs === 0 ? " (DISABLED — stage 1 will measure the relay path)" : ""}`,
