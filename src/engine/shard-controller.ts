@@ -11,6 +11,27 @@
 // later, and a cold shard relays to the regional DO while adopting, so
 // opening one never makes a user wait).
 //
+// THAT LAST CLAIM IS TOO GENEROUS, AND A PRODUCTION RAMP MEASURED HOW MUCH.
+// Disagreement is harmless to CORRECTNESS but not to BALANCE. Because
+// activeShards is per-isolate and every new isolate starts at 1, an isolate
+// that has not expanded sends 100% of its traffic to shard 0. Ramping
+// sylvan.mtgseeker.com to 64 concurrent on 2026-08-09, with four shards open,
+// the split held at roughly 73/17/10/5 across every stage — never converging,
+// because fresh isolates keep arriving at 1. Solving f + (1-f)/4 = 0.73 puts
+// about 64% of isolates on the unexpanded path throughout.
+//
+// So the fan-out relieved ~27% of the load, not the ~75% four shards implies,
+// and shard 0 stayed the slowest of them (p50 130-154ms against 80-125ms for
+// the rest) precisely because it kept the majority share. The mechanism fires
+// correctly; the ROUTING does not follow it.
+//
+// The fix is a rendezvous these isolates do not currently have: carry the
+// fan-out width in the telemetry rider, have each DO remember the widest value
+// any caller has reported, and return it so callers adopt max(own, returned).
+// Shard 0 sees the expanded isolates' traffic anyway, so it converges the
+// unexpanded ones within a request. Not implemented yet — it is a protocol
+// addition, not a constant.
+//
 // Expansion: sustained queue depth — several responses within a short window
 // reporting that >=2 searches were already executing when the request
 // arrived — steps the fan-out up by one, with a cooldown so a single blip

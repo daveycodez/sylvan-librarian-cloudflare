@@ -97,6 +97,29 @@
 // length also has to exceed EXPAND_COOLDOWN_MS (30s) before a run can say
 // anything about laddering; at 10s stages this one could not.
 //
+// AND A PRODUCTION RUN, sylvan.mtgseeker.com, limiter off, 30s warmup, 20s
+// stages, 18450 requests, none cached, none limited, zero errors:
+//
+//   conc=  1  rps=  7.0  p50=132ms  p90=212ms   |  s=72.9% s-1=17.9% s-2= 9.3%
+//   conc=  8  rps= 63.6  p50=117ms  p90=190ms   |  s=72.1% s-1=15.8% s-2=12.1%
+//   conc= 32  rps=233.9  p50=136ms  p90=195ms   |  s=73.5% s-1=16.3% s-2=10.3%
+//   conc= 64  rps=436.1  p50=142ms  p90=203ms   |  s=68.4% s-1=17.3% s-2=9.3% s-3=4.9%
+//
+// READ THIS AS A NON-RESULT FOR THE CEILING. p50 is flat across a 64x range and
+// throughput scales linearly with concurrency — 64/0.142s = 451/s against 436
+// observed — which is the signature of a generator bound by its own round trip,
+// not a saturated server. One machine at ~130ms RTT cannot saturate this; the
+// DO's ceiling is somewhere above 436/s and this run does not find it. To get
+// it you need either many source machines or a generator inside Cloudflare.
+//
+// What it DID establish, from the warm-rpc log lines underneath:
+//   - Production floor is 5-7ms even under load, so `3 x floor` is 15-21ms and
+//     the ratio rule binds. LATENCY_ABS_MS (10) is inert in production; it
+//     governs only the local regime where the floor collapses to ~1ms.
+//   - Within a 2s window min/avg ran 1.2-2.2x, never near 3x, so the variance
+//     concern is retired under real load as well as locally.
+//   - The shard split never converges: see the note in shard-controller.ts.
+//
 // Read TRUSTED_API_KEY from your own shell (`export TRUSTED_API_KEY=...`) or
 // pass --key. This script never reads .env.
 //
@@ -110,6 +133,13 @@
 // one d538c1f profiled, so run the pair if you want C's payload sensitivity.
 
 import { parseArgs } from "node:util";
+
+/** Unique per invocation. The cache-buster below must not repeat WITHIN a
+ * run (stages would replay each other's URLs) or ACROSS runs inside the 90s
+ * edge TTL (a rerun would replay the last one's). A per-stage counter did
+ * both: a production ramp came back 52% cache HITs, each stage hitting
+ * exactly the previous stage's request count. */
+const RUN_ID = Date.now().toString(36);
 
 const QUERIES = [
 	"t:goblin cmc<3 c:r",
@@ -192,7 +222,7 @@ async function worker(
 		url.searchParams.set("q", query);
 		url.searchParams.set("shape", cfg.shape);
 		// Unknown param: dropped by the binder, but part of the edge cache key.
-		if (!cfg.cached) url.searchParams.set("_lt", `${seq}`);
+		if (!cfg.cached) url.searchParams.set("_lt", `${RUN_ID}-${seq}`);
 		const started = Date.now();
 		try {
 			const res = await fetch(url, { headers: cfg.headers });
@@ -220,13 +250,15 @@ async function worker(
 	}
 }
 
+/** Shared by every stage AND the warmup: see RUN_ID. */
+const runCounter = { n: 0 };
+
 async function runStage(base: string, concurrency: number, holdMs: number, cfg: RunConfig): Promise<StageResult> {
 	const samples: Sample[] = [];
-	const counter = { n: 0 };
 	const startedAt = Date.now();
 	const deadline = startedAt + holdMs;
 	await Promise.all(
-		Array.from({ length: concurrency }, () => worker(base, startedAt, deadline, cfg, counter, samples)),
+		Array.from({ length: concurrency }, () => worker(base, startedAt, deadline, cfg, runCounter, samples)),
 	);
 	return { concurrency, elapsedMs: Date.now() - startedAt, samples };
 }
