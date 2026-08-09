@@ -83,8 +83,10 @@ const DRAFTS_PER_BATCH = 1_000;
 const STAGE_BLOB_BYTES = 1_900_000;
 /** Lines per wasm transform call within a slice. */
 const LINES_PER_CALL = 2_000;
-/** Published store versions kept in D1 for isolates mid-swap. */
-const KEEP_STORES = 3;
+/** Published store versions kept in D1 for isolates mid-swap. One previous
+ * version is enough for that; more just consumes the free plan's 500MB D1
+ * ceiling, which a ~75MB store and a ~100MB cards table already share. */
+const KEEP_STORES = 2;
 /** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
 const CARDS_SYNC_BATCHES = 4;
 /** Evictions tolerated before the cards sync gives up for this run: its diff

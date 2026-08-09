@@ -17,9 +17,9 @@ OUT_DIR="store-build"
 
 if [[ "${1:-}" != "--reuse" ]]; then
     echo "Building sylvan-store-builder..."
-    "$REPO_ROOT/scripts/with-rust.sh" cargo build --release -p sylvan-store-builder
+    "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
     echo "Building store from Scryfall bulk data (this streams ~450MB, takes a few minutes)..."
-    ./target/release/sylvan-store-builder --out "$OUT_DIR"
+    ./target/fast-native/sylvan-store-builder --out "$OUT_DIR"
 fi
 
 echo "Seeding local D1..."

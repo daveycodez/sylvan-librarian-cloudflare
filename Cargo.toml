@@ -14,10 +14,15 @@ members = [
 lto = true
 codegen-units = 1
 
-# Container-image builds only: the import binary is a network-bound batch job,
-# so fat LTO buys nothing there while dominating CI build time. The wasm
-# engine keeps the tuned [profile.release] (built locally, pkg committed).
-[profile.container]
+# The native store builder, wherever it is compiled on demand: Workers Builds
+# during a deploy, or a laptop on first `bun dev`. It is a network- and
+# IO-bound batch job whose actual work is ~20s, so fat LTO and one codegen unit
+# buy nothing measurable while dominating compile time — 22.0s → 12.9s on this
+# workspace's own two crates alone, before counting the dependency tree, where
+# codegen-units=1 hurts just as much. The wasm engine keeps the tuned
+# [profile.release]: it is built locally and its pkg is committed, so its
+# compile time is paid once by a human, never in a deploy.
+[profile.fast-native]
 inherits = "release"
 lto = false
 codegen-units = 16

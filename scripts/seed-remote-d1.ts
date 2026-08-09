@@ -57,6 +57,12 @@ const CHUNK_BYTES = 40_000;
 const chunkCount = Math.ceil(store.length / CHUNK_BYTES);
 (manifest as Record<string, unknown>).chunk_count = chunkCount;
 
+/** Published store versions kept. One previous version covers isolates mid-swap;
+ * more just consumes the free plan's 500MB D1 ceiling (~75MB per version, and
+ * the SQL-fallback cards table wants ~100MB of it too). Matches the in-Worker
+ * publish path's KEEP_STORES. */
+const KEEP_STORES = 2;
+
 /** Statements per SQL file — sized to keep each file well under 100MB. */
 const TARGET_FILE_BYTES = 48_000_000;
 
@@ -138,7 +144,30 @@ for (const path of await writeSqlFiles("seed-remote-chunks", chunkStatements()))
 	console.log(`Manifest live: ${manifest.store_key} — the site now serves.`);
 }
 
-// ── 3. optional: the SQL-fallback cards table ────────────────────────────────
+// ── 3. prune superseded store versions ───────────────────────────────────────
+//
+// Without this D1 grows by a whole store (~75MB) per publish and never shrinks:
+// step 1 only clears chunks for the key it is about to write. Observed on a real
+// deployment going 75MB → 150MB across two builds, against the FREE plan's
+// 500MB database ceiling — roughly six more deploys before publishes fail.
+//
+// Runs AFTER the manifest is live, so a failure here leaves a serving site with
+// some extra rows, never a live manifest pointing at pruned chunks.
+{
+	const path = `${dir}/seed-remote-prune.sql`;
+	const keep = `SELECT store_key FROM store_history ORDER BY published_at DESC LIMIT ${KEEP_STORES}`;
+	await Bun.write(
+		path,
+		[
+			`DELETE FROM store_chunks WHERE store_key NOT IN (${keep});`,
+			`DELETE FROM store_history WHERE store_key NOT IN (${keep});`,
+		].join("\n"),
+	);
+	await execRemote(path);
+	console.log(`Pruned store versions beyond the ${KEEP_STORES} most recent.`);
+}
+
+// ── 4. optional: the SQL-fallback cards table ────────────────────────────────
 if (!withCards) {
 	console.log("Done (store only). The nightly import fills the SQL-fallback cards table;");
 	console.log("on a paid plan, re-run with --with-cards to seed it now.");

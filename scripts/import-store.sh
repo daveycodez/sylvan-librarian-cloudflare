@@ -57,8 +57,8 @@ fi
 #    isolate and 30s alarms in the Worker runtime — which is why this lives in
 #    the build and the in-Worker pipeline only handles nightly changes.
 echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes)..."
-"$REPO_ROOT/scripts/with-rust.sh" cargo build --release -p sylvan-store-builder
-./target/release/sylvan-store-builder --out store-build
+"$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
+./target/fast-native/sylvan-store-builder --out store-build
 
 echo "==> Publishing the store to D1..."
 bun scripts/seed-remote-d1.ts store-build
