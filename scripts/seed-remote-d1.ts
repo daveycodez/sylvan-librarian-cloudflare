@@ -32,6 +32,7 @@
 import { readFileSync } from "node:fs";
 import { chunkHash, splitStore } from "../src/engine/store-chunks";
 import { d1Name } from "./project-config";
+import { wranglerArgv } from "./wrangler-cmd";
 
 const args = process.argv.slice(2);
 const withCards = args.includes("--with-cards");
@@ -79,6 +80,20 @@ const sqlLit = (v: unknown): string => {
 	return `'${sqlEscape(s)}'`;
 };
 
+/**
+ * What this publish cost D1, accumulated across every ingested file.
+ *
+ * Worth surfacing because these are metered: the free plan allows 5M rows read
+ * and 100k rows written per day, and before chunks were content-addressed a
+ * single publish spent ~1,831 of those writes whether or not anything had
+ * changed. A number printed at the end of the build is how that stays honest —
+ * the delta either shows up here as a small write count or it is not real.
+ *
+ * wrangler reports the figures per `--file` execution under `--json`; they are
+ * D1's own accounting, not an estimate of ours.
+ */
+const d1Cost = { queries: 0, rowsRead: 0, rowsWritten: 0, sizeMB: "" };
+
 async function execRemote(sqlPath: string): Promise<void> {
 	if (process.env.SEED_REMOTE_DRY) {
 		console.log(`[dry-run] would ingest ${sqlPath}`);
@@ -86,14 +101,40 @@ async function execRemote(sqlPath: string): Promise<void> {
 	}
 	console.log(`Ingesting ${sqlPath}...`);
 	const proc = Bun.spawn(
-		["bunx", "wrangler", "d1", "execute", d1Name, "--remote", "-y", "-c", "wrangler.jsonc", "--file", sqlPath],
-		{ stdout: "inherit", stderr: "inherit" },
+		[...wranglerArgv(), "d1", "execute", d1Name, "--remote", "-y", "--json", "-c", "wrangler.jsonc", "--file", sqlPath],
+		{ stdout: "pipe", stderr: "inherit" },
 	);
+	const out = await new Response(proc.stdout).text();
 	if ((await proc.exited) !== 0) {
+		console.error(out.trim());
 		console.error(`Ingest of ${sqlPath} failed — the deployment is still in a valid state`);
 		console.error("(no manifest = the site reports an unavailable index; manifest live = site serves).");
 		process.exit(1);
 	}
+	// Accounting is a bonus, never a failure: a parse miss must not fail a
+	// publish that D1 already accepted.
+	try {
+		const parsed = JSON.parse(out.slice(out.indexOf("["))) as {
+			results?: Record<string, unknown>[];
+		}[];
+		const stats = parsed[0]?.results?.[0] ?? {};
+		d1Cost.queries += Number(stats["Total queries executed"] ?? 0);
+		d1Cost.rowsRead += Number(stats["Rows read"] ?? 0);
+		d1Cost.rowsWritten += Number(stats["Rows written"] ?? 0);
+		if (stats["Database size (MB)"]) d1Cost.sizeMB = String(stats["Database size (MB)"]);
+	} catch {
+		/* statistics unavailable for this file */
+	}
+}
+
+/** One line at the end of the build saying what this publish cost D1. */
+function reportD1Cost(label: string): void {
+	if (process.env.SEED_REMOTE_DRY) return;
+	console.log(
+		`D1 cost (${label}): ${d1Cost.rowsWritten.toLocaleString()} rows written, ` +
+			`${d1Cost.rowsRead.toLocaleString()} rows read, ${d1Cost.queries.toLocaleString()} queries` +
+			`${d1Cost.sizeMB ? `, database now ${d1Cost.sizeMB}MB` : ""}.`,
+	);
 }
 
 /**
@@ -110,10 +151,15 @@ async function execRemote(sqlPath: string): Promise<void> {
 async function existingHashes(hashes: string[]): Promise<string[]> {
 	if (process.env.SEED_REMOTE_DRY || hashes.length === 0) return [];
 	const inList = hashes.map((h) => `'${h}'`).join(",");
+	// Spawned through wranglerArgv(), not `bunx`: this query contains spaces,
+	// and under Workers Builds' bun `bunx` splits them, so it failed there every
+	// time and fell back to "D1 has nothing" — re-uploading the whole store
+	// while the OR IGNORE inserts deduplicated it at the far end. The rows were
+	// right; the bytes on the wire were not. `--file` is not an alternative
+	// here: that path returns execution statistics rather than rows.
 	const proc = Bun.spawn(
 		[
-			"bunx",
-			"wrangler",
+			...wranglerArgv(),
 			"d1",
 			"execute",
 			d1Name,
@@ -270,6 +316,7 @@ async function writeSqlFiles(prefix: string, statements: Iterable<string>): Prom
 
 // ── 4. optional: the SQL-fallback cards table ────────────────────────────────
 if (!withCards) {
+	reportD1Cost("store only");
 	console.log("Done (store only). The nightly import fills the SQL-fallback cards table;");
 	console.log("on a paid plan, re-run with --with-cards to seed it now.");
 	process.exit(0);
@@ -317,4 +364,5 @@ function* cardsStatements(): Generator<string> {
 for (const path of await writeSqlFiles("seed-remote-cards", cardsStatements())) {
 	await execRemote(path);
 }
+reportD1Cost("store + cards");
 console.log("Done: store live + SQL-fallback cards table complete.");

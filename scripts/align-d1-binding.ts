@@ -23,6 +23,7 @@
 //   bun scripts/align-d1-binding.ts
 
 import { configuredD1Name, d1Name, workerName } from "./project-config";
+import { wranglerArgv } from "./wrangler-cmd";
 
 const CONFIG = new URL("../wrangler.jsonc", import.meta.url).pathname;
 
@@ -34,7 +35,7 @@ const CONFIG = new URL("../wrangler.jsonc", import.meta.url).pathname;
  * to repair — makes it fail with 7404 before it can tell us anything. list is
  * account-level and answers regardless. */
 async function databaseId(name: string): Promise<string> {
-	const proc = Bun.spawn(["bunx", "wrangler", "d1", "list", "--json"], { stdout: "pipe", stderr: "pipe" });
+	const proc = Bun.spawn([...wranglerArgv(), "d1", "list", "--json"], { stdout: "pipe", stderr: "pipe" });
 	const out = await new Response(proc.stdout).text();
 	const err = await new Response(proc.stderr).text();
 	if ((await proc.exited) !== 0) {

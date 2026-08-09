@@ -32,6 +32,7 @@
 // why on stderr; callers must show that text, not discard it.
 
 import { d1Name } from "./project-config";
+import { wranglerArgv } from "./wrangler-cmd";
 
 /** Backstop only — see the header. A week covers "nothing upstream changed but
  * this repo did", without reinstating a nightly rebuild of identical bytes. */
@@ -76,10 +77,12 @@ async function upstreamUpdatedAt(): Promise<number | null> {
 	}
 }
 
+// Spawned through wranglerArgv(), NOT `bunx` — this statement contains spaces,
+// and `bunx` under Workers Builds' bun splits them, which is precisely what
+// made this check fail on every deploy. See scripts/wrangler-cmd.ts.
 const proc = Bun.spawn(
 	[
-		"bunx",
-		"wrangler",
+		...wranglerArgv(),
 		"d1",
 		"execute",
 		d1Name,
@@ -138,7 +141,7 @@ try {
 } catch {
 	// wrangler exited 0 but did not hand back the result shape we parse. That
 	// is this script failing to read D1, not D1 saying the store is missing.
-	console.error(`store-age: could not parse wrangler's output — ${out.trim().split("\n").slice(-3).join(" ")}`);
+	console.error(`store-age: could not parse wrangler's output —\n  ${out.trim().split("\n").join("\n  ")}`);
 	process.exit(2);
 }
 if (!json) {

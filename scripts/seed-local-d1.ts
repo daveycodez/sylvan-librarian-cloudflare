@@ -21,6 +21,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { chunkHash, splitStore } from "../src/engine/store-chunks";
 import { cardsRowValues, structuralHash } from "../src/fallback/cards-sync";
 import { d1Name } from "./project-config";
+import { wranglerArgv } from "./wrangler-cmd";
 
 const dir = process.argv[2];
 if (!dir) {
@@ -62,8 +63,10 @@ async function localD1Path(): Promise<string> {
 	let files = find();
 	if (files.length === 0) {
 		// Fresh checkout: let wrangler materialize the database file once.
+		// Through wranglerArgv(), not `bunx`: "SELECT 1" contains a space, and
+		// that is the shape that broke every CI deploy (scripts/wrangler-cmd.ts).
 		const proc = Bun.spawn(
-			["bunx", "wrangler", "d1", "execute", d1Name, "--local", "-c", "wrangler.dev.jsonc", "--command", "SELECT 1"],
+			[...wranglerArgv(), "d1", "execute", d1Name, "--local", "-c", "wrangler.dev.jsonc", "--command", "SELECT 1"],
 			{ stdout: "ignore", stderr: "inherit" },
 		);
 		if ((await proc.exited) !== 0) process.exit(1);
