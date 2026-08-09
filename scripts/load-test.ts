@@ -69,6 +69,28 @@
 //                stretch; it defaults on, and turning it off is how you get a
 //                1.5s first stage that looks like a knee and is not one.
 //
+// A REFERENCE RUN, so a future one has something to differ from. Local
+// `bun run dev`, rows shape, 15s warmup discarded, 10s per stage:
+//
+//   conc=  1  rps=398.7  p50= 2ms  p90= 3ms  p99=  8ms  | do-LAX
+//   conc=  2  rps=419.7  p50= 4ms  p90= 6ms  p99= 15ms  | do-LAX
+//   conc=  4  rps=449.5  p50= 8ms  p90=11ms  p99= 22ms  | do-LAX
+//   conc=  8  rps=449.7  p50=16ms  p90=21ms  p99= 40ms  | do-LAX + do-LAX-1
+//   conc= 16  rps=446.7  p50=33ms  p90=40ms  p99=183ms  | both
+//   conc= 32  rps=464.0  p50=65ms  p90=82ms  p99=104ms  | both
+//
+// Throughput flattens at ~450/s from conc=2 and p50 then doubles with each step —
+// textbook saturation, latency = concurrency / throughput. The controller
+// expanded once, at conc=8: "rpc 16ms vs floor 1ms at 410/s".
+//
+// Two cautions about reading that table as production. Locally every DO shares
+// one miniflare process, so a second shard adds no capacity — throughput is
+// flat across the expansion, which says nothing about whether sharding works.
+// And the ~450/s ceiling is the whole local stack, not the DO: warm RPCs
+// underneath were 0.9-5.3ms, so the DO was nowhere near its own limit. Stage
+// length also has to exceed EXPAND_COOLDOWN_MS (30s) before a run can say
+// anything about laddering; at 10s stages this one could not.
+//
 // Read TRUSTED_API_KEY from your own shell (`export TRUSTED_API_KEY=...`) or
 // pass --key. This script never reads .env.
 //

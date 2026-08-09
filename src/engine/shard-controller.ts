@@ -59,6 +59,14 @@
 // sharding buys anything. Anything measuring this therefore needs sustained
 // traffic against a WARM colo DO; a burst at a cold one measures the relay
 // path and tells you nothing about the fan-out.
+//
+// AND THE SIGNAL IS DELIBERATELY NARROW: it sees the DO round trip and nothing
+// else. A local ramp at 32 concurrent measured 65ms end-to-end while the DO
+// round trip underneath was ~4.5ms, because the saturation was isolate-side,
+// not in the DO. The controller stayed quiet through that, which is correct —
+// fanning out more DOs cannot help a bottleneck that is not in a DO. Do not
+// "fix" this by feeding end-to-end latency in; that would make every isolate
+// slowdown, cold start and cache miss look like a reason to open shards.
 
 /** Searches per second at the DO below which elevated latency is NOT read as
  * saturation. This sits far below the ceiling deliberately — it is a sanity
@@ -122,25 +130,28 @@ const DEFAULT_MAX_SHARDS = 32;
  * transport, which nothing had measured. Production warm samples on 2026-08-09
  * answered it — 7, 8, 8, 28, 29, 33, 35, 44, 49, 51, 68, 77 ms.
  *
- * floorEwma ratchets to the fast tail (0.7/0.3 down, 0.999/0.001 up), so it
- * settles near 7-8ms. MULT then gives a ~24ms bar against ABS's 10, so THE
- * RATIO RULE ALREADY BINDS and lowering ABS would change nothing. It would have
- * to fall below ~3.3ms before ABS mattered again, and that is well under
- * anything observed. Keep 10 as the floor-of-the-floor for a hypothetical
- * much faster path; do not spend effort tuning it.
+ * WHICH TERM BINDS DEPENDS ON THE REGIME, and both are fine:
  *
- *   - Caveat on the sample: 12 points at ~0.1 req/s, each from a different
- *     isolate serving exactly one request, so it is the sparse regime rather
- *     than the loaded one. Under sustained load the distribution should tighten
- *     and drop. The conclusion is robust to that — the margin is 2.4x — but the
- *     MULT concern below is not.
- *   - A REAL RISK this exposed: the spread is over 10x (7ms fast tail against a
- *     ~36ms mean). Since floorEwma tracks the tail and fastEwma tracks the mean,
- *     fastEwma would sit near 36 against a 24ms bar — a permanent breach, so a
- *     colo past the rate gate would expand continuously to SHARDS_MAX on
- *     variance alone. Whether that survives into the loaded regime is exactly
- *     what the load test has to show; if it does, MULT is what needs raising,
- *     not ABS lowering. Do not act on 12 sparse samples.
+ *   - Sparse (~0.1 req/s, production): floorEwma ratchets to the fast tail and
+ *     settles near 7-8ms, so MULT gives a ~24ms bar and the ratio rule binds.
+ *   - Loaded (~430 req/s, measured locally via scripts/load-test.ts): the floor
+ *     collapses to 0-1ms, MULT gives ~3ms, and ABS binds at 10.
+ *
+ * So ABS is not inert after all — it is what governs precisely when the system
+ * is busy, which is when it matters. Keep it at 10. Lowering it toward 4 would
+ * make expansion fire earlier under load, which is a real (if modest) argument,
+ * but it costs the single-outlier rejection described below, and the loaded
+ * measurement shows fastEwma sitting at 4.5-5.3ms against the 10ms bar — a
+ * comfortable margin rather than a system straining to trigger.
+ *
+ * The 10x spread the sparse samples showed was an ARTIFACT of that regime, not
+ * intrinsic variance: every one of those 12 was the first (and only) RPC its
+ * isolate ever made, so each carried a first-call cost that amortizes away.
+ * Under sustained load min and avg track each other closely (min 0-2ms against
+ * avg 0.9-5.3ms over ~850-sample windows). An earlier version of this comment
+ * predicted the spread would breach the bar permanently and expand a busy colo
+ * to SHARDS_MAX on variance alone. It does not happen; that concern is retired,
+ * and LATENCY_FLOOR_MULT should NOT be raised.
  *   - Below ~9ms the bar stops rejecting single outliers. One 100ms sample
  *     drives fastEwma to 20.8 against a 1ms floor, and the 0.2 weight decays it
  *     back under 9 only on the fifth sample after — so any lower bar turns one
