@@ -52,13 +52,16 @@
 //                the cache key and nothing else. --cached opts out to measure
 //                the cache instead, which is a different and also useful run.
 //   Rate limit.  RATE_LIMIT_PER_10S defaults to 100 per 10s. Enforcement is
-//                asynchronous by design, so the effective ceiling is ~3.5x the
-//                configured one: measured against production on 2026-08-09,
-//                a 10/s configuration passed 34.5/s (518 of 1180 requests over
-//                15s, the rest 429). Still far below EXPAND_MIN_RATE, so
-//                without a trusted key this measures the limiter and nothing
-//                else. Pass --key (or export TRUSTED_API_KEY) to send
-//                X-API-Key; x-sylvan-rl in the output says which happened.
+//                asynchronous by design, so the effective ceiling runs ~2x the
+//                configured one: measured against production 2026-08-09 at 8
+//                concurrent for 60s, a 10/s configuration passed 20.5/s in
+//                steady state (t>=20s; 1301 of 5311 requests allowed overall).
+//                Read the steady state, not the total — the first ~15s carry a
+//                one-time grace from the cold per-IP DO that made a 15s run
+//                look like 3.5x. Still far below EXPAND_MIN_RATE, so without a
+//                trusted key this measures the limiter and nothing else. Pass
+//                --key (or export TRUSTED_API_KEY) to send X-API-Key;
+//                x-sylvan-rl in the output says which happened.
 //   Query memo. The engine memoizes (see vendor bench_text_memo.py). One
 //                repeated query measures the memo, not a search. The pool below
 //                is cycled per request for that reason.
@@ -127,6 +130,11 @@ const QUERIES = [
 ];
 
 interface Sample {
+	/** Completion time, ms since the stage began. Without this a run can only
+	 * report totals, and a total cannot separate a one-time startup effect from
+	 * a steady-state rate — which is exactly the distinction that matters when
+	 * reading the rate limiter. */
+	t: number;
 	ms: number;
 	status: number;
 	/** x-sylvan-engine: which DO answered (do-<colo>, do-<colo>-N). */
@@ -171,6 +179,7 @@ interface RunConfig {
 /** One worker: issue requests back to back until the deadline. */
 async function worker(
 	base: string,
+	stageStart: number,
 	deadline: number,
 	cfg: RunConfig,
 	counter: { n: number },
@@ -189,6 +198,7 @@ async function worker(
 			const res = await fetch(url, { headers: cfg.headers });
 			const body = await res.arrayBuffer();
 			out.push({
+				t: Date.now() - stageStart,
 				ms: Date.now() - started,
 				status: res.status,
 				shard: res.headers.get("x-sylvan-engine") ?? "",
@@ -197,7 +207,15 @@ async function worker(
 				bytes: body.byteLength,
 			});
 		} catch (err) {
-			out.push({ ms: Date.now() - started, status: 0, shard: "", cache: "", rl: String(err).slice(0, 40), bytes: 0 });
+			out.push({
+				t: Date.now() - stageStart,
+				ms: Date.now() - started,
+				status: 0,
+				shard: "",
+				cache: "",
+				rl: String(err).slice(0, 40),
+				bytes: 0,
+			});
 		}
 	}
 }
@@ -207,7 +225,9 @@ async function runStage(base: string, concurrency: number, holdMs: number, cfg: 
 	const counter = { n: 0 };
 	const startedAt = Date.now();
 	const deadline = startedAt + holdMs;
-	await Promise.all(Array.from({ length: concurrency }, () => worker(base, deadline, cfg, counter, samples)));
+	await Promise.all(
+		Array.from({ length: concurrency }, () => worker(base, startedAt, deadline, cfg, counter, samples)),
+	);
 	return { concurrency, elapsedMs: Date.now() - startedAt, samples };
 }
 
@@ -340,10 +360,10 @@ if (cacheHits === 0 && limited === 0) {
 }
 
 if (values.out) {
-	const lines = ["concurrency\tms\tstatus\tshard\tcache\trl\tbytes"];
+	const lines = ["concurrency\tt\tms\tstatus\tshard\tcache\trl\tbytes"];
 	for (const stage of results) {
 		for (const s of stage.samples) {
-			lines.push(`${stage.concurrency}\t${s.ms}\t${s.status}\t${s.shard}\t${s.cache}\t${s.rl}\t${s.bytes}`);
+			lines.push(`${stage.concurrency}\t${s.t}\t${s.ms}\t${s.status}\t${s.shard}\t${s.cache}\t${s.rl}\t${s.bytes}`);
 		}
 	}
 	await Bun.write(values.out as string, `${lines.join("\n")}\n`);
