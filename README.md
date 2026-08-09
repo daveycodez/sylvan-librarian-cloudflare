@@ -97,13 +97,28 @@ cached; the cache is per-deploy-version.
 **Free-plan fit.** A store load is 4 KV reads, a publish 4 writes, and serving
 touches neither — so the daily meters (100k Worker requests, 100k KV reads, 1k
 KV writes) bound *traffic*, not architecture. Storage is one ~70MB copy per
-retained version against KV's 1GB. The one meter worth watching is the free
-plan's **10ms CPU per request**, which a cache-missing `/search` spends in the
-isolate without a hot spot to remove: profiling puts it across query parsing,
-DO routing, param binding and V8 overhead, none over ~20%. What was removable
-has been removed — the engine encodes results in the DO, so the isolate no
-longer parses, clones and re-encodes the same rows (worth ~28% of its CPU). The
-query itself is 1–2ms of DO CPU, metered separately.
+retained version against KV's 1GB.
+
+The meter worth watching is the free plan's **10ms CPU per request**, and
+almost all of what a `/search` spends there is **cold isolate startup, not the
+query**. The same route measures 1–2ms landing on a live isolate and 7–13ms
+otherwise, and `/get_catalog` — which parses nothing and returns a few KB —
+costs the same as a full search. Cloudflare reports the startup directly on
+upload: 10ms for this Worker against **5ms for a hello-world with the same
+bindings**, so half of it is the platform and the rest is module
+initialization.
+
+None of it is reachable by shrinking the bundle. Measured, each as its own
+uploaded version: minifying (212KB→118KB of JS), dropping the import pipeline
+(56KB of JS plus its 1.1MB wasm) and dropping the 1.4MB engine wasm all report
+the same 10ms — the last of them 12ms, which puts the metric's noise at ±2ms.
+Do not spend effort there. What actually avoids the cost is not being cold,
+which the edge cache above already does: repeat queries never reach the Worker.
+
+Request work itself is that 1–2ms, and the engine encodes results inside the
+Durable Object so the isolate never parses, clones and re-encodes the same
+rows (~28% of it). The query is 1–2ms of DO CPU, metered separately against a
+30s limit rather than 10ms.
 
 ## Upstream tracking
 

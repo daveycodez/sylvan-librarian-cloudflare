@@ -6,20 +6,6 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
-	// Minify: this is a COLD START optimization, not a bandwidth one.
-	//
-	// An isolate compiles the whole script before it can serve anything, and
-	// compile time tracks source size. At this deployment's traffic isolates
-	// rarely survive between requests, so nearly every request pays it — which
-	// is why /get_catalog, which parses nothing and returns a few KB, measured
-	// the same isolate CPU as a full /search, and why the same route costs 1ms
-	// when it lands on a live isolate and 7-11ms when it does not.
-	//
-	// Measured on the real bundle: 212KB -> 118KB, and V8 compile 2.25ms ->
-	// 1.56ms (31% off). Deliberately NOT set in wrangler.dev.jsonc, the one
-	// place those two files diverge: minified stack traces are worth less in
-	// dev than the cold start is worth in production.
-	"minify": true,
 
 	// Workers Cache: regionally tiered cache in front of the Worker, honoring
 	// the Cache-Control headers the routes already mirror from upstream
