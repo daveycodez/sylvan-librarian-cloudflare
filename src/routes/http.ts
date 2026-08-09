@@ -72,7 +72,18 @@ export const NO_STORE_HEADER: Record<string, string> = { "Cache-Control": "no-st
 
 /** JSON success envelope; upstream uses orjson with default options (compact). */
 export function jsonResponse(body: unknown, headers?: Record<string, string>): Response {
-	return new Response(JSON.stringify(body), {
+	return jsonResponseText(JSON.stringify(body), headers);
+}
+
+/**
+ * The same envelope, from a body that is ALREADY JSON text.
+ *
+ * Card results reach the isolate pre-serialized (Engine.searchSerialized), so
+ * re-encoding them here would spend this deployment's scarcest budget — the
+ * free plan's 10ms of isolate CPU — undoing work the Durable Object has done.
+ */
+export function jsonResponseText(body: string, headers?: Record<string, string>): Response {
+	return new Response(body, {
 		headers: { "content-type": "application/json", ...headers },
 	});
 }

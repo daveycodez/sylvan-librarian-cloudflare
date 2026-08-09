@@ -14,8 +14,23 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { getEngine, tryGetLoadedEngine } from "./store";
-import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
+import type {
+	Engine,
+	EngineSearchOptions,
+	EngineSearchResult,
+	EngineSerializedResult,
+	Env,
+	ResultShape,
+} from "./types";
 import { EngineUnavailableError } from "./types";
+
+/** Shard-controller riders every search RPC carries back (see RemoteEngine). */
+interface SearchTelemetry {
+	acquireMs: number;
+	load: number;
+	rate: number;
+	relayed: boolean;
+}
 
 /**
  * RPC error marker: workerd propagates only Error#message across RPC, so the
@@ -64,22 +79,54 @@ export class SearchEngine extends DurableObject<Env> {
 	async search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs: number; load: number; rate: number; relayed: boolean }> {
+	): Promise<EngineSearchResult & SearchTelemetry> {
 		if (this.shouldRelay(fallbackHint)) {
-			this.warmInBackground();
-			const relayStart = Date.now();
-			// The relayed result carries the REGIONAL engine's acquireMs/load/rate
-			// — honest numbers for whoever actually computed the answer, but they
-			// describe a DIFFERENT DO than the one the caller is scaling. `relayed`
-			// marks the whole sample so the shard controller drops it: the wall
-			// time carries a cross-colo hop (region.ts budgets 60-80ms for a bad
-			// one, against a 75ms latency bar), and the depth/rate belong to the
-			// region. Without this every freshly opened shard, which relays until
-			// it warms, would manufacture the evidence for the next expansion.
-			const result = await this.regionStub(fallbackHint).search(opts);
-			console.log(`Cold colo relayed search to engine-${fallbackHint} in ${Date.now() - relayStart}ms`);
-			return { ...result, relayed: true };
+			return this.relay(fallbackHint, (region) => region.search(opts));
 		}
+		return this.instrumented((engine) => engine.search(opts));
+	}
+
+	/**
+	 * The API path: identical routing and telemetry, but the cards come back
+	 * already encoded, so no card ever becomes a JS object in the isolate that
+	 * serves the request. See EngineSerializedResult.
+	 */
+	async searchSerialized(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<EngineSerializedResult & SearchTelemetry> {
+		if (this.shouldRelay(fallbackHint)) {
+			return this.relay(fallbackHint, (region) => region.searchSerialized(opts, shape));
+		}
+		return this.instrumented((engine) => engine.searchSerialized(opts, shape));
+	}
+
+	/**
+	 * Answer from the region's DO while this colo warms behind it.
+	 *
+	 * The relayed result carries the REGIONAL engine's acquireMs/load/rate —
+	 * honest numbers for whoever actually computed the answer, but they describe
+	 * a DIFFERENT DO than the one the caller is scaling. `relayed` marks the
+	 * whole sample so the shard controller drops it: the wall time carries a
+	 * cross-colo hop (region.ts budgets 60-80ms for a bad one, against a 75ms
+	 * latency bar), and the depth/rate belong to the region. Without this every
+	 * freshly opened shard, which relays until it warms, would manufacture the
+	 * evidence for the next expansion.
+	 */
+	private async relay<T extends object>(
+		hint: DurableObjectLocationHint,
+		call: (region: SearchEngine) => Promise<T>,
+	): Promise<T & { relayed: true }> {
+		this.warmInBackground();
+		const relayStart = Date.now();
+		const result = await call(this.regionStub(hint));
+		console.log(`Cold colo relayed search to engine-${hint} in ${Date.now() - relayStart}ms`);
+		return { ...result, relayed: true };
+	}
+
+	/** Run a search against the local engine, carrying the autoscaler's signals. */
+	private async instrumented<T extends object>(run: (engine: Engine) => Promise<T>): Promise<T & SearchTelemetry> {
 		const load = this.inFlightSearches;
 		const rate = this.searchRate(Date.now());
 		this.inFlightSearches += 1;
@@ -92,7 +139,7 @@ export class SearchEngine extends DurableObject<Env> {
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				return { ...(await engine.search(opts)), acquireMs, load, rate, relayed: false };
+				return { ...(await run(engine)), acquireMs, load, rate, relayed: false };
 			} catch (err) {
 				rethrowForRpc(err);
 			}
@@ -124,6 +171,20 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 		const engine = await this.engine();
 		return engine.samplePreferred(numCards, fields);
+	}
+
+	async samplePreferredSerialized(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		fallbackHint?: DurableObjectLocationHint,
+	): Promise<EngineSerializedResult> {
+		if (this.shouldRelay(fallbackHint)) {
+			this.warmInBackground();
+			return this.regionStub(fallbackHint).samplePreferredSerialized(numCards, fields, shape);
+		}
+		const engine = await this.engine();
+		return engine.samplePreferredSerialized(numCards, fields, shape);
 	}
 
 	async size(fallbackHint?: DurableObjectLocationHint): Promise<number> {

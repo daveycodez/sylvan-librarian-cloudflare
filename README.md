@@ -57,7 +57,9 @@ request ──▶ Workers Cache (regional edge cache; hits skip the Worker entir
               │   says which DO answered
               ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in memory,
               │   streamed from KV as 3 immutable chunks; no local copy, and it
-              │   hot-swaps when the KV manifest advances
+              │   hot-swaps when the KV manifest advances. Results come back
+              │   already JSON-encoded in the requested shape, so no card ever
+              │   becomes an object in the isolate serving the request
               └─ autoscaling: fan-out to engine-<colo>-1..N when the DO reports
                   sustained load AND the isolate sees sustained slowness, with
                   idle fold-back — see src/engine/shard-controller.ts
@@ -96,9 +98,12 @@ cached; the cache is per-deploy-version.
 touches neither — so the daily meters (100k Worker requests, 100k KV reads, 1k
 KV writes) bound *traffic*, not architecture. Storage is one ~70MB copy per
 retained version against KV's 1GB. The one meter worth watching is the free
-plan's **10ms CPU per request**: a cache-missing `/search` currently spends
-6–11ms in the isolate, almost all of it marshalling the ~34KB response rather
-than computing it (the engine itself is 0–1ms of DO CPU).
+plan's **10ms CPU per request**, which a cache-missing `/search` spends in the
+isolate without a hot spot to remove: profiling puts it across query parsing,
+DO routing, param binding and V8 overhead, none over ~20%. What was removable
+has been removed — the engine encodes results in the DO, so the isolate no
+longer parses, clones and re-encodes the same rows (worth ~28% of its CPU). The
+query itself is 1–2ms of DO CPU, metered separately.
 
 ## Upstream tracking
 

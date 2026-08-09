@@ -26,6 +26,25 @@ export interface EngineSearchResult {
 	cards: Record<string, unknown>[];
 }
 
+/** Wire shape of the envelope's `cards` value (upstream's `shape=` parameter). */
+export type ResultShape = "rows" | "columnar";
+
+/**
+ * A result whose card data never becomes JS objects in the request isolate.
+ *
+ * The engine emits JSON; the old path parsed it in the DO, structured-cloned
+ * the row objects across the RPC, re-shaped them, and re-encoded them — three
+ * conversions of the same bytes, two of them charged to the isolate's 10ms
+ * free-plan CPU budget. Here the DO shapes and encodes once, and `cardsJson`
+ * crosses the boundary as a string (a copy, not a per-property clone) that the
+ * route splices into the envelope verbatim.
+ */
+export interface EngineSerializedResult {
+	totalCards: number;
+	/** The envelope's `cards` value, already JSON-encoded in the asked-for shape. */
+	cardsJson: string;
+}
+
 export interface EngineCatalog {
 	/** Card type → count, as the engine reports it (pre-alias massaging). */
 	types: Record<string, number>;
@@ -39,11 +58,16 @@ export interface EngineCatalog {
  * itself in the background).
  */
 export interface Engine {
+	/** Row objects — for the server-rendered page, which needs them as data. */
 	search(opts: EngineSearchOptions): Promise<EngineSearchResult>;
+	/** Pre-encoded cards — for the JSON API, which only ever needs the bytes. */
+	searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
 	commonCardTypes(): Promise<Record<string, number>>;
 	commonCardKeywords(): Promise<Record<string, number>>;
 	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
 	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
+	/** The same sample, pre-encoded (see searchSerialized). */
+	samplePreferredSerialized(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
 	/** Number of cards in the store; 0 means "not loaded" upstream — here a loaded engine is never empty. */
 	size(): Promise<number>;
 }

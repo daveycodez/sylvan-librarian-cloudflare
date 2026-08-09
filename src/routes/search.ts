@@ -6,13 +6,14 @@
 // loud 500 and an empty/unloaded store is an EngineUnavailableError (dispatch
 // answers 503) — never a silent empty result.
 
+import type { Engine, EngineSearchOptions } from "../engine/types";
 import { EngineUnavailableError } from "../engine/types";
 import type { FilterValue } from "../parser";
 import { canonicalStringify } from "../parser";
 import type { CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, RESPONSE_SHAPE, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { explainWireTree } from "./explanation";
-import { httpError, jsonResponse, NO_STORE_HEADER, searchCacheHeader } from "./http";
+import { httpError, jsonResponseText, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
 import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from "./param-binding";
 import { loadParser } from "./parser-bridge";
@@ -94,15 +95,6 @@ export function resolveResultFields(fields: readonly string[] | null): string[] 
 	return resolved;
 }
 
-/**
- * Upstream _columnarize_cards: invert a list of card dicts into one list per
- * field. Every card carries the same keys, so keys come from the first card.
- */
-export function columnarizeCards(cards: CardRow[]): Record<string, unknown[]> {
-	const keys = cards.length > 0 ? Object.keys(cards[0] as CardRow) : [];
-	return Object.fromEntries(keys.map((k) => [k, cards.map((c) => c[k])]));
-}
-
 export interface SearchEnvelope {
 	cards: CardRow[];
 	compiled: string;
@@ -127,11 +119,35 @@ export interface RunSearchOptions {
 }
 
 /**
- * Port of _search/_search_engine. Throws SearchBadRequest for parse/limit/
- * fields problems, EngineQueryError when the engine fails, and lets
- * EngineUnavailableError from getEngine() propagate (503 at dispatch).
+ * Everything the envelope carries except `cards`, in upstream's key order —
+ * spelled out rather than Omit<SearchEnvelope, "cards">, which collapses to the
+ * bare index signature and would let a missing field through unnoticed.
  */
-export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Promise<SearchEnvelope> {
+interface SearchMetadata {
+	compiled: string;
+	inner_timings: unknown;
+	outer_timings: unknown;
+	params: Record<string, never>;
+	query: string;
+	query_explanation: string;
+	total_cards: number;
+}
+
+interface PreparedSearch {
+	engine: Engine;
+	engineOpts: EngineSearchOptions;
+	timer: Timer;
+	query: string;
+	queryExplanation: string;
+}
+
+/**
+ * The half of _search/_search_engine that runs before the engine: parameter
+ * validation, parse, and the wire tree. Throws SearchBadRequest for
+ * parse/limit/fields problems and lets EngineUnavailableError from getEngine()
+ * propagate (503 at dispatch).
+ */
+async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise<PreparedSearch> {
 	// _require_setup_complete parity: the engine must be resolvable before any
 	// parameter validation errors are reported.
 	const engine = await ctx.getEngine();
@@ -151,49 +167,89 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 		throw err;
 	}
 
-	const queryExplanation = query ? explainWireTree(filterTree) : "";
-
-	let totalCards: number;
-	let rawCards: CardRow[];
-	const compiled = "(rust engine)";
-	try {
-		const result = await timer.time("engine_query", () =>
-			engine.search({
-				filterTreeJson: canonicalStringify(filterTree as FilterValue),
-				unique: opts.unique,
-				prefer: opts.prefer,
-				orderby: opts.orderby,
-				direction: opts.direction,
-				// limit=None means "no limit"; the engine requires an int (upstream parity)
-				limit: limit !== null ? limit : 1_000_000,
-				fields: resolvedFields,
-			}),
-		);
-		totalCards = result.totalCards;
-		rawCards = result.cards;
-	} catch (err) {
-		if (err instanceof EngineUnavailableError) {
-			throw err;
-		}
-		// DELIBERATE DEVIATION from upstream, restored: upstream falls back to
-		// SQL when the engine throws on a query it was handed. This port has no
-		// SQL to fall back to — the wasm engine is the only query path — so an
-		// engine failure is a loud 500 rather than a silently different answer.
-		throw new EngineQueryError(`Engine query failed for ${JSON.stringify(query)}`, { cause: err });
-	}
-	const cards = timer.time("engine_collect", () => [...rawCards]);
-
-	const timings = timer.getTimings();
 	return {
-		cards,
-		compiled,
+		engine,
+		queryExplanation: query ? explainWireTree(filterTree) : "",
+		engineOpts: {
+			filterTreeJson: canonicalStringify(filterTree as FilterValue),
+			unique: opts.unique,
+			prefer: opts.prefer,
+			orderby: opts.orderby,
+			direction: opts.direction,
+			// limit=None means "no limit"; the engine requires an int (upstream parity)
+			limit: limit !== null ? limit : 1_000_000,
+			fields: resolvedFields,
+		},
+		timer,
+		query,
+	};
+}
+
+/**
+ * DELIBERATE DEVIATION from upstream, restored: upstream falls back to SQL when
+ * the engine throws on a query it was handed. This port has no SQL to fall back
+ * to — the wasm engine is the only query path — so an engine failure is a loud
+ * 500 rather than a silently different answer.
+ */
+function engineFailure(query: string, err: unknown): never {
+	if (err instanceof EngineUnavailableError) throw err;
+	throw new EngineQueryError(`Engine query failed for ${JSON.stringify(query)}`, { cause: err });
+}
+
+function metadataFor(prep: PreparedSearch, totalCards: number): SearchMetadata {
+	const timings = prep.timer.getTimings();
+	return {
+		compiled: "(rust engine)",
 		inner_timings: timings,
 		outer_timings: timings,
 		params: {},
-		query,
-		query_explanation: queryExplanation,
+		query: prep.query,
+		query_explanation: prep.queryExplanation,
 		total_cards: totalCards,
 	};
+}
+
+/**
+ * Port of _search/_search_engine, returning the envelope as DATA — for the
+ * server-rendered page, which reads the rows to build HTML. The JSON API uses
+ * runSearchJson instead, which never materializes them.
+ */
+export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Promise<SearchEnvelope> {
+	const prep = await prepareSearch(ctx, opts);
+	let totalCards: number;
+	let rawCards: CardRow[];
+	try {
+		const result = await prep.timer.time("engine_query", () => prep.engine.search(prep.engineOpts));
+		totalCards = result.totalCards;
+		rawCards = result.cards;
+	} catch (err) {
+		engineFailure(prep.query, err);
+	}
+	const cards = prep.timer.time("engine_collect", () => [...rawCards]);
+	return { cards, ...metadataFor(prep, totalCards) };
+}
+
+/**
+ * The same search, returning the envelope as JSON TEXT.
+ *
+ * The engine hands back `cards` already encoded in the requested shape, and it
+ * splices in here without ever being parsed: `cards` is the envelope's first
+ * key upstream, so the bytes are identical to JSON.stringify({cards, ...rest})
+ * — one encode, done in the Durable Object, where CPU is not metered against
+ * the free plan's 10ms per request.
+ */
+export async function runSearchJson(ctx: RouteContext, opts: RunSearchOptions, shape: ResponseShape): Promise<string> {
+	const prep = await prepareSearch(ctx, opts);
+	let result: { totalCards: number; cardsJson: string };
+	try {
+		result = await prep.timer.time("engine_query", () => prep.engine.searchSerialized(prep.engineOpts, shape));
+	} catch (err) {
+		engineFailure(prep.query, err);
+	}
+	// Upstream's engine_collect span materialized the row list; nothing is
+	// materialized here, but the span still has to appear in the timings tree.
+	prep.timer.time("engine_collect", () => {});
+	return `{"cards":${result.cardsJson},${JSON.stringify(metadataFor(prep, result.totalCards)).slice(1)}`;
 }
 
 // Keyword parameters of search(), in signature order (binding reports the
@@ -221,21 +277,20 @@ export async function searchHandler(
 	// rides on the 400s raised inside it (upstream parity).
 	const cache = searchCacheHeader();
 	try {
-		const results = await runSearch(ctx, {
-			query: (bound.query as string | null) || (bound.q as string | null),
-			orderby: bound.orderby as CardOrdering,
-			direction: bound.direction as SortDirection,
-			unique: bound.unique as UniqueOn,
-			prefer: bound.prefer as PreferOrder,
-			limit: bound.limit as number,
-			fields: bound.fields as string[] | null,
-		});
-		let envelope: Record<string, unknown> = results;
-		if ((bound.shape as ResponseShape) === "columnar") {
-			// Shallow copy: the cards list must stay row-shaped elsewhere.
-			envelope = { ...results, cards: columnarizeCards(results.cards) };
-		}
-		return jsonResponse(envelope, cache);
+		const body = await runSearchJson(
+			ctx,
+			{
+				query: (bound.query as string | null) || (bound.q as string | null),
+				orderby: bound.orderby as CardOrdering,
+				direction: bound.direction as SortDirection,
+				unique: bound.unique as UniqueOn,
+				prefer: bound.prefer as PreferOrder,
+				limit: bound.limit as number,
+				fields: bound.fields as string[] | null,
+			},
+			bound.shape as ResponseShape,
+		);
+		return jsonResponseText(body, cache);
 	} catch (err) {
 		if (err instanceof SearchBadRequest) {
 			return httpError(400, err.title, err.description, cache);
@@ -265,8 +320,11 @@ export async function randomSearchHandler(
 	// Upstream returns an empty list while the store is loading; this port has
 	// no store-less mode, so an unloaded engine is a 503 (see module comment).
 	const engine = await ctx.getEngine();
-	const cards = await engine.samplePreferred(numCards, [...DEFAULT_RESULT_FIELDS]);
-	const totalCards = cards.length;
-	const shaped: unknown = (bound.shape as ResponseShape) === "columnar" ? columnarizeCards(cards) : cards;
-	return jsonResponse({ cards: shaped, total_cards: totalCards }, NO_STORE_HEADER);
+	// Pre-encoded next to the store, like /search — see runSearchJson.
+	const result = await engine.samplePreferredSerialized(
+		numCards,
+		[...DEFAULT_RESULT_FIELDS],
+		bound.shape as ResponseShape,
+	);
+	return jsonResponseText(`{"cards":${result.cardsJson},"total_cards":${result.totalCards}}`, NO_STORE_HEADER);
 }

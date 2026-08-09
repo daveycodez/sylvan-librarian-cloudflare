@@ -17,8 +17,16 @@
 // for free, on immutable chunk keys, with none of that overhead.
 
 import * as wasm from "sylvan-engine-wasm";
+import { serializeCards } from "./columnar";
 import { kvStoreStream, readManifest } from "./store-kv";
-import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
+import type {
+	Engine,
+	EngineSearchOptions,
+	EngineSearchResult,
+	EngineSerializedResult,
+	Env,
+	ResultShape,
+} from "./types";
 import { EngineUnavailableError } from "./types";
 
 // How stale an isolate's view of the manifest may get before a background
@@ -30,8 +38,8 @@ let loading: Promise<Engine> | null = null;
 let lastManifestCheck = 0;
 
 class WasmEngine implements Engine {
-	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		const result = JSON.parse(
+	private query(opts: EngineSearchOptions): { total: number; rows: Record<string, unknown>[] } {
+		return JSON.parse(
 			wasm.query(
 				opts.filterTreeJson,
 				JSON.stringify({
@@ -44,7 +52,16 @@ class WasmEngine implements Engine {
 				}),
 			),
 		) as { total: number; rows: Record<string, unknown>[] };
+	}
+
+	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
+		const result = this.query(opts);
 		return { totalCards: result.total, cards: result.rows };
+	}
+
+	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
+		const result = this.query(opts);
+		return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape) };
 	}
 
 	async commonCardTypes(): Promise<Record<string, number>> {
@@ -61,6 +78,15 @@ class WasmEngine implements Engine {
 		const seedBytes = crypto.getRandomValues(new BigUint64Array(1));
 		const seed = seedBytes[0] ?? 0n;
 		return JSON.parse(wasm.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
+	}
+
+	async samplePreferredSerialized(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+	): Promise<EngineSerializedResult> {
+		const rows = await this.samplePreferred(numCards, fields);
+		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape) };
 	}
 
 	async size(): Promise<number> {

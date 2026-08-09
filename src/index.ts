@@ -32,6 +32,11 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // memory (streamed from KV), so an extra shard costs no storage at all — the
 // old design pinned a 70MB SQLite copy per shard against the DO pool, which is
 // why the cap used to be plan-aware. SHARDS_MAX (runtime var) overrides it.
+// Engine stubs are resolved per request, and deliberately not memoised. A stub
+// is a request-scoped I/O object — reusing one across requests fails with
+// "Cannot perform I/O on behalf of a different request" — and caching just the
+// DurableObjectId, which is a plain value, measured flat: the cost here is in
+// `get()`, not in hashing the name.
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
 	// SHARDS_MAX="0" is meaningful (unbounded), so an explicit 0 must survive —

@@ -4,7 +4,8 @@
 // imported here: it pulls in the engine store and import coordinator, which
 // are wasm/DO-backed). No network, no wasm.
 
-import type { Engine, EngineSearchOptions, Env } from "../../src/engine/types";
+import { serializeCards } from "../../src/engine/columnar";
+import type { Engine, EngineSearchOptions, EngineSerializedResult, Env, ResultShape } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
 import { buildRoutesListing, routes } from "../../src/routes";
 import { httpError, securityHeaders } from "../../src/routes/http";
@@ -53,6 +54,13 @@ export class FakeEngine implements Engine {
 		return { totalCards: this.totalCards, cards: this.cards.slice(0, opts.limit) };
 	}
 
+	// Encodes from the same rows search() returns, so a test asserting on the
+	// API bytes and one asserting on the page's data are checking one source.
+	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
+		const { totalCards, cards } = await this.search(opts);
+		return { totalCards, cardsJson: serializeCards(cards, shape) };
+	}
+
 	async commonCardTypes(): Promise<Record<string, number>> {
 		return { ...this.types };
 	}
@@ -68,6 +76,15 @@ export class FakeEngine implements Engine {
 			out.push(this.cards[i] as Record<string, unknown>);
 		}
 		return out;
+	}
+
+	async samplePreferredSerialized(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+	): Promise<EngineSerializedResult> {
+		const rows = await this.samplePreferred(numCards, fields);
+		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape) };
 	}
 
 	async size(): Promise<number> {
