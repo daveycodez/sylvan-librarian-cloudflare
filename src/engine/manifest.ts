@@ -18,6 +18,6 @@ export async function readManifest(env: Env): Promise<StoreManifest | null> {
 		// reason reaches the response instead of being flattened into a generic
 		// 500 by the dispatcher's catch-all.
 		if (String(err).includes("no such table")) return null;
-		throw new EngineUnavailableError(`Cannot read the store manifest from D1: ${err}`, false);
+		throw new EngineUnavailableError(`Cannot read the store manifest from D1: ${err}`);
 	}
 }

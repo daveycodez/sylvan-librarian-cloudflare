@@ -115,7 +115,7 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 		env: {} as Env,
 		getEngine: async () => {
 			if (!engine) {
-				throw new EngineUnavailableError("Engine is not loaded, please try again later.", false);
+				throw new EngineUnavailableError("Engine is not loaded, please try again later.");
 			}
 			return engine;
 		},
@@ -172,15 +172,8 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 			return securityHeaders(err);
 		}
 		if (err instanceof EngineUnavailableError) {
-			return securityHeaders(
-				httpError(
-					503,
-					"Service Unavailable",
-					err.bootstrapping
-						? "The card index is being built, please retry shortly."
-						: "Engine is not loaded, please try again later.",
-				),
-			);
+			// Mirrors src/index.ts: upstream's exact wording, cause to the log.
+			return securityHeaders(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));
 		}
 		return securityHeaders(httpError(500, "Server Error", "An internal error occurred."));
 	}

@@ -33,8 +33,7 @@ async function unwrap<T>(call: Promise<T>): Promise<T> {
 		const message = err instanceof Error ? err.message : String(err);
 		const at = message.indexOf(ENGINE_UNAVAILABLE_MARKER);
 		if (at >= 0) {
-			const rest = message.slice(at + ENGINE_UNAVAILABLE_MARKER.length + 1);
-			throw new EngineUnavailableError(rest.slice(2), rest.startsWith("1"));
+			throw new EngineUnavailableError(message.slice(at + ENGINE_UNAVAILABLE_MARKER.length + 1));
 		}
 		throw err;
 	}

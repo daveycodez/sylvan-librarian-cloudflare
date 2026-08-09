@@ -54,11 +54,7 @@ export interface Engine {
  * here; this deployment has no SQL by design).
  */
 export class EngineUnavailableError extends Error {
-	constructor(
-		message: string,
-		/** True while the store is still being built/bootstrapped. */
-		public readonly bootstrapping: boolean,
-	) {
+	constructor(message: string) {
 		super(message);
 		this.name = "EngineUnavailableError";
 	}

@@ -14,7 +14,7 @@
 //   3. cards + fallback_meta   (--with-cards only)
 //
 // A failure at any point leaves the deployment in a valid state — before the
-// manifest the Worker keeps bootstrapping on its own; after it, the site
+// manifest the site reports an unavailable index; after it, the site
 // serves and the nightly import tops up whatever is missing.
 //
 // --with-cards also seeds the SQL-fallback cards table (~200k metered row
@@ -82,7 +82,7 @@ async function execRemote(sqlPath: string): Promise<void> {
 	);
 	if ((await proc.exited) !== 0) {
 		console.error(`Ingest of ${sqlPath} failed — the deployment is still in a valid state`);
-		console.error("(no manifest = Worker keeps self-bootstrapping; manifest live = site serves).");
+		console.error("(no manifest = the site reports an unavailable index; manifest live = site serves).");
 		process.exit(1);
 	}
 }

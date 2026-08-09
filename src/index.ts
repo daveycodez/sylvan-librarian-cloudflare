@@ -153,7 +153,12 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			// surfaces: app.js reads title/description off a non-ok JSON body and
 			// renders it through showError(). So one structured 503 serves both
 			// the API and the page — no bespoke error page needed.
-			return finish(httpError(503, "Service Unavailable", `Card index unavailable: ${err.message}`));
+			// Upstream's exact wording — tests pin it, and the UI renders
+			// `description` via showError(), so this reaches the browser and the
+			// API alike. The specific cause (a deleted D1 database, a binding that
+			// stopped resolving) goes to the log, where a diagnostic belongs.
+			console.error(`Card index unavailable: ${err.message}`);
+			return finish(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));
 		}
 		console.error(`Error handling request for ${path}:`, err);
 		return finish(httpError(500, "Server Error", "An internal error occurred."));

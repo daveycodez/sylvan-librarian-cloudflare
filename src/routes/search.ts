@@ -5,7 +5,7 @@
 // that throws on a query it was handed sends the search to SQL — here the D1
 // cards table (src/fallback/), once the import has fully synced it. An
 // empty/unloaded store still surfaces as EngineUnavailableError (dispatch
-// answers 503 / the bootstrap page), and if the fallback is unavailable or
+// answers 503), and if the fallback is unavailable or
 // also fails, the failure stays a loud 500 — never a silent empty result.
 
 import { EngineUnavailableError } from "../engine/types";

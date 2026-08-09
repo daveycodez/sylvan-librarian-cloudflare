@@ -136,10 +136,7 @@ function d1StoreStream(
 			if (rows.length === 0) {
 				if (seenBytes !== expectedBytes) {
 					controller.error(
-						new EngineUnavailableError(
-							`Store ${storeKey} incomplete in D1: ${seenBytes}/${expectedBytes} bytes`,
-							false,
-						),
+						new EngineUnavailableError(`Store ${storeKey} incomplete in D1: ${seenBytes}/${expectedBytes} bytes`),
 					);
 					return;
 				}
@@ -149,7 +146,7 @@ function d1StoreStream(
 			}
 			for (const row of rows) {
 				if (row.seq !== nextSeq) {
-					controller.error(new EngineUnavailableError(`Store ${storeKey} has a chunk gap at seq ${nextSeq}`, false));
+					controller.error(new EngineUnavailableError(`Store ${storeKey} has a chunk gap at seq ${nextSeq}`));
 					return;
 				}
 				nextSeq += 1;
@@ -196,7 +193,7 @@ export async function openStoreStream(
 		.bind(storeKey)
 		.first();
 	if (!probe) {
-		throw new EngineUnavailableError(`Store ${storeKey} missing from D1 despite manifest`, false);
+		throw new EngineUnavailableError(`Store ${storeKey} missing from D1 despite manifest`);
 	}
 
 	await cache.put(
@@ -225,16 +222,13 @@ async function loadStore(env: Env): Promise<Engine> {
 		// do it in, and a failure fails the deploy. A request finding no store
 		// means the deploy did not publish one — kicking a 10-minute in-Worker
 		// rebuild here would hide that, and hide it once per visitor.
-		throw new EngineUnavailableError("No store manifest in D1; deploy has not published an index", false);
+		throw new EngineUnavailableError("No store manifest in D1; deploy has not published an index");
 	}
 
 	if (!manifest.store_bytes || !manifest.store_key.endsWith(".store")) {
 		// A manifest from an incompatible builder format. Loud, and
 		// self-healing: the next import publishes the current format.
-		throw new EngineUnavailableError(
-			`Manifest ${manifest.store_key} is not in the raw store format this Worker reads`,
-			false,
-		);
+		throw new EngineUnavailableError(`Manifest ${manifest.store_key} is not in the raw store format this Worker reads`);
 	}
 
 	if (current && current.storeKey === manifest.store_key) return current.engine;

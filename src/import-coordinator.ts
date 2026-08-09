@@ -2,9 +2,10 @@
 // nightly/bootstrap store import on-platform — no container, no external CI.
 //
 // One named instance ("singleton") serializes runs. Triggers:
-//   - nightly cron (src/index.ts scheduled handler)
-//   - first-request bootstrap (src/engine/store.ts, when D1 has no manifest)
-// Both call /start-import; a run already in flight makes that a no-op.
+//   - nightly cron (src/index.ts scheduled handler), the only trigger
+// The FULL bulk import runs in the deploy instead (scripts/import-store.sh),
+// where there is 8GB and 20 minutes rather than a 128MB isolate and 30s
+// alarms; this pipeline exists to refresh an already-published index.
 //
 // The pipeline is the wasm import module (engine/wasm-import) — the same Rust
 // the native dev builder runs — driven phase by phase through an alarm chain
@@ -263,7 +264,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 
 		// Always a fresh run. Resume-where-it-failed used to matter when a visitor
-		// hitting the bootstrap page could retrigger an import minutes later;
+		// hitting a progress page could retrigger an import minutes later;
 		// the nightly cron is now the only trigger, and it exists precisely to
 		// pick up today's dumps, so inheriting yesterday's staged ones would
 		// defeat the point.

@@ -5,9 +5,11 @@
 [Sylvan Librarian](https://github.com/jbylund/sylvan_librarian) — a Magic: the
 Gathering card search engine — ported to run **entirely on Cloudflare's free
 plan**: Workers (serving), Durable Objects (the in-memory engine and the
-import pipeline), and D1 (the card index at rest). No VPS, no Postgres, no
-containers, no CI imports, no secrets, no payment method on file —
-`wrangler deploy` on a free account is the whole install.
+nightly refresh), and D1 (the card index at rest). No VPS, no Postgres, no
+container to run, no secrets, no payment method on file — connect the repo, or
+`bun run deploy`, and that is the whole install. The card index is built by the
+deploy itself, in Cloudflare's own CI (Workers Builds), and a build that
+cannot produce an index fails rather than shipping a broken site.
 
 A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 (full Scryfall-style query syntax via the same Rust engine, compiled to wasm),
@@ -16,25 +18,38 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 ## Deploy
 
 1. Cloudflare dashboard → Workers → Create → connect this git repository
-   (Workers Builds), or `wrangler deploy` from a checkout. The D1 database
-   (`sylvan-librarian`) is provisioned on first deploy; deploying manually,
-   create it once with `wrangler d1 create sylvan-librarian` and put the id in
-   wrangler.jsonc.
-2. Deploy, then open the Worker's URL. There is no step 2 — no secrets, no
-   build variables. The first request bootstraps the card index on-platform:
-   the ImportCoordinator Durable Object streams Scryfall bulk data, builds the
-   engine store inside its isolate (wasm), and publishes it to D1. The page
-   shows build progress until the index is live (~10 minutes, once per fresh
-   database), then the full UI works. A nightly cron (11:17 UTC, after
-   Scryfall's bulk refresh) rebuilds the store; Worker isolates hot-swap to
-   the new version without dropping queries.
+   (Workers Builds), or `bun run deploy` from a checkout.
+2. There is no step 2. No secrets, no build variables, no dashboard settings,
+   nothing to edit in this repo.
 
-Don't want the one-time bootstrap wait? `bun run seed:remote` builds the
-store natively on your machine and pushes it straight to production D1
-(needs `wrangler login`) — the site is live the moment the manifest lands.
-Add `--with-cards` on a paid plan to seed the SQL-fallback table too (~200k
-metered writes; on free, the nightly import fills it under its adaptive
-write pacing).
+The **deploy builds the card index**, and a deploy that cannot build it fails
+instead of shipping a Worker without one — so a green build means a working
+site, with no progress page to watch. Concretely: `bun install` runs
+`scripts/ci-postinstall.sh`, which on Workers Builds (`WORKERS_CI=1`) creates
+the D1 database if absent, runs the native Rust store builder over Scryfall's
+bulk data, and publishes the store to D1 — all before `wrangler deploy`
+uploads the Worker. `bun run deploy` does the same two steps in the same
+order, so a laptop deploy and a git-connected build behave identically.
+
+Why the build and not the Worker: Workers Builds gives 2 vCPU, 8GB of memory
+and 20 minutes, against the Worker runtime's 128MB isolate and 30s per alarm.
+The full import is comfortable in the former and a slicing exercise in the
+latter.
+
+Two Workers on one account work with no edits either. Workers Builds injects
+`WRANGLER_CI_OVERRIDE_NAME` with the connected Worker's name and wrangler
+prefers it over `wrangler.jsonc`'s `name`; the scripts resolve the name the
+same way and derive the D1 database from it, so each Worker owns its own
+index.
+
+Routine pushes skip the import: `scripts/store-age.ts` asks D1 how old the
+live store is, and only a missing or >20h-old store triggers a rebuild.
+`FORCE_IMPORT=1` rebuilds anyway, `SKIP_IMPORT=1` deploys code only. Delete
+the D1 database and redeploy and the full import runs again.
+
+A nightly cron (11:17 UTC, after Scryfall's bulk refresh) then keeps the index
+current from inside the Worker; isolates hot-swap to each new version without
+dropping queries.
 
 All optional knobs (rate limiting, API-key bypass, shard cap) are documented
 in [.env.example](.env.example).
@@ -61,7 +76,7 @@ request ──▶ Workers Cache (regional edge cache in front of the Worker;
               │   seed-ahead — see the header of src/engine/shard-controller.ts
               └─ UI: upstream's static assets, served with upstream's cache headers
 
-cron (nightly) / first-deploy bootstrap
+cron (nightly refresh; the deploy does the first build)
         ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
               └─ alarm-chained import pipeline, all inside the 128MB isolate:
                    fetch: ranged, resumable download of Scryfall's gzipped
@@ -102,8 +117,8 @@ Durable Object pipeline replaces them.
 Caching notes: `/search` caches for 90s + a day of stale-while-revalidate
 (nightly imports need no purge — staleness is bounded by one import cycle and
 refreshes happen in the background), page HTML carries no card data
-(client-side fetches stay fresh), `no-store` routes (`/random_search`, the
-bootstrap page) and error statuses are never cached, and the cache is
+(client-side fetches stay fresh), `no-store` routes (`/random_search`) and
+error statuses are never cached, and the cache is
 per-deploy-version so releases can't serve stale assets.
 
 Cold-start note: users never wait on a store wake. A colo whose DO has
@@ -203,15 +218,18 @@ needs a toolchain (1.88+) with the `wasm32-unknown-unknown` target;
 ```bash
 bun install
 bun dev                 # full site at localhost — UI, /search, everything.
-                        # First run builds the card store NATIVELY (~2-3 min,
-                        # same shared Rust as production) and seeds local D1 —
-                        # store, manifest, AND the SQL-fallback cards table;
-                        # later runs start instantly. DEV_BOOTSTRAP=worker
-                        # forces the production-identical in-Worker import
-                        # instead (local D1 + DO SQLite + alarms, ~10-20 min)
+                        # Mirrors deploy: the first run does the FULL import
+                        # natively (~2-3 min, same shared Rust as production)
+                        # and seeds local D1 — store, manifest, AND the
+                        # SQL-fallback cards table — before the dev server
+                        # serves anything, and refuses to start if it fails.
+                        # Later runs start instantly. DEV_BOOTSTRAP=worker
+                        # skips the seed and exercises the in-Worker nightly
+                        # pipeline instead (local D1 + DO SQLite + alarms)
 bun run seed:local      # the native build + seed, runnable on its own
-bun run seed:remote     # push a natively-built store to PRODUCTION D1
-                        # (first deploy live instantly; --with-cards on paid)
+bun run deploy          # publish the index, then deploy the Worker
+bun run seed:remote     # push a natively-built store to PRODUCTION D1 on its
+                        # own (--with-cards also seeds the fallback table)
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck

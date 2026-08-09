@@ -10,7 +10,7 @@ import type { Engine, Env } from "../engine/types";
 
 export interface RouteContext {
 	env: Env;
-	/** Resolves the loaded engine, or throws EngineUnavailableError (bootstrap page / 503 parity). */
+	/** Resolves the loaded engine, or throws EngineUnavailableError (503 parity). */
 	getEngine(): Promise<Engine>;
 	request: Request;
 	/** Upstream: X-Proxy-Host header, else Host. */

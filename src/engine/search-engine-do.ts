@@ -29,13 +29,13 @@ import { EngineUnavailableError } from "./types";
 /**
  * RPC error marker: workerd propagates only Error#message across RPC, so the
  * EngineUnavailableError contract (routes turn it into upstream's exact 503 /
- * the bootstrap page) is encoded into the message and decoded by RemoteEngine.
+ * is preserved across the RPC boundary and decoded by RemoteEngine.
  */
 export const ENGINE_UNAVAILABLE_MARKER = "__ENGINE_UNAVAILABLE__";
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
-		throw new Error(`${ENGINE_UNAVAILABLE_MARKER}:${err.bootstrapping ? "1" : "0"}:${err.message}`);
+		throw new Error(`${ENGINE_UNAVAILABLE_MARKER}:${err.message}`);
 	}
 	throw err;
 }
