@@ -33,8 +33,25 @@ function rethrowForRpc(err: unknown): never {
 
 export class SearchEngine extends DurableObject<Env> {
 	/** Searches already executing here; snapshotted per request as the queue-
-	 * depth (`load`) signal the isolates' shard controllers scale on. */
+	 * depth (`load`) signal. */
 	private inFlightSearches = 0;
+	/** Arrival times of recent searches, for the request-RATE the shard
+	 * controller gates expansion on. Rate is the cause-side measurement:
+	 * latency rises for reasons sharding cannot fix (KV slowness, network,
+	 * a noisy neighbour), and adding shards to those only makes them worse,
+	 * because every new shard cold-loads ~70MB. Load without slowness means
+	 * we are coping; slowness without load means the problem is elsewhere.
+	 * Real saturation always shows both. */
+	private recentSearches: number[] = [];
+
+	/** Searches per second over the trailing window. */
+	private searchRate(now: number): number {
+		const windowMs = 10_000;
+		this.recentSearches.push(now);
+		if (this.recentSearches.length > 4096) this.recentSearches.shift();
+		this.recentSearches = this.recentSearches.filter((t) => now - t <= windowMs);
+		return this.recentSearches.length / (windowMs / 1000);
+	}
 
 	// ── RPC surface ────────────────────────────────────────────────────────────
 	//
@@ -47,7 +64,7 @@ export class SearchEngine extends DurableObject<Env> {
 	async search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs: number; load: number }> {
+	): Promise<EngineSearchResult & { acquireMs: number; load: number; rate: number }> {
 		if (this.shouldRelay(fallbackHint)) {
 			this.warmInBackground();
 			const relayStart = Date.now();
@@ -58,6 +75,7 @@ export class SearchEngine extends DurableObject<Env> {
 			return result;
 		}
 		const load = this.inFlightSearches;
+		const rate = this.searchRate(Date.now());
 		this.inFlightSearches += 1;
 		try {
 			// Time the engine acquisition (the KV load, when there is one) for
@@ -68,7 +86,7 @@ export class SearchEngine extends DurableObject<Env> {
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				return { ...(await engine.search(opts)), acquireMs, load };
+				return { ...(await engine.search(opts)), acquireMs, load, rate };
 			} catch (err) {
 				rethrowForRpc(err);
 			}

@@ -34,7 +34,10 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // why the cap used to be plan-aware. SHARDS_MAX (runtime var) overrides it.
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
-	const maxShards = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10) || undefined;
+	// SHARDS_MAX="0" is meaningful (unbounded), so an explicit 0 must survive —
+	// hence the NaN check rather than `|| undefined`, which would swallow it.
+	const configured = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10);
+	const maxShards = Number.isNaN(configured) ? undefined : configured;
 	const shard = pickShard(maxShards);
 	const name = shard === 0 ? `engine-${colo}` : `engine-${colo}-${shard}`;
 	source.tag = `do-${name.slice("engine-".length)}`;

@@ -17,7 +17,17 @@
 // cannot ladder. Contraction: a long fully-idle stretch steps it back down;
 // the abandoned shard then evicts on its own (scale-in IS eviction).
 
-// Two expansion signals, because each is blind where the other sees:
+// Expansion needs evidence of LOAD and evidence of SLOWNESS, together.
+//
+// Latency alone is an effect with many causes — KV slowness, network jitter,
+// a noisy neighbour — and none of those are fixed by adding shards. They are
+// made worse by it, since every shard opened cold-loads ~70MB. So a rate
+// gate stands in front of the latency trigger: high rate without slowness
+// means the fan-out is coping; slowness without rate means the problem is
+// somewhere sharding cannot reach. Real saturation of a single-threaded DO
+// always produces both.
+//
+// The two load-side signals, and why neither is sufficient alone:
 //
 // 1. QUEUE DEPTH (reportEngineLoad): the DO's in-flight count at arrival.
 //    Blind on the warm path — a warm search is synchronous CPU whose only
@@ -31,6 +41,12 @@
 //    warm-path overload. Wake/relay-carrying samples are excluded by the
 //    caller so revivals don't fake an overload.
 
+/** Searches per second at the DO below which elevated latency is NOT read as
+ * saturation. A warm query costs 0.2-3ms, so one DO saturates somewhere north
+ * of 300/s; this sits far below that deliberately — it is a sanity gate on the
+ * latency trigger, not the trigger itself. */
+const EXPAND_MIN_RATE = 50;
+
 /** A response reporting this many already-executing searches counts as queuing. */
 const EXPAND_DEPTH = 2;
 /** Queued samples within EXPAND_WINDOW_MS needed to step up. */
@@ -40,7 +56,11 @@ const EXPAND_COOLDOWN_MS = 30_000;
 /** No sample with any queue depth for this long steps the fan-out down. */
 const CONTRACT_IDLE_MS = 10 * 60_000;
 const CONTRACT_COOLDOWN_MS = 60_000;
-const DEFAULT_MAX_SHARDS = 8;
+/** Cap on the fan-out. Not a scaling limit so much as a blast radius: the
+ * signals that drive expansion can be wrong, and an unbounded response to a
+ * wrong signal opens shards that each cold-load ~70MB and hold it resident.
+ * SHARDS_MAX=0 opts into genuinely unbounded scaling. */
+const DEFAULT_MAX_SHARDS = 32;
 
 /** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing. */
 const LATENCY_FLOOR_MULT = 3;
@@ -63,8 +83,16 @@ let floorEwma = 0;
 let fastEwma = 0;
 let latencySamples = 0;
 let latencyBreaches = 0;
+/** Most recent searches-per-second the DO reported. */
+let engineRate = 0;
 /** A just-opened shard awaiting its decision-time warm ping (see takeWarmTarget). */
 let pendingWarmShard: number | null = null;
+
+/** Feed the DO's reported request rate back into the controller. This is the
+ * cause-side half of the expansion decision — see the header. */
+export function reportEngineRate(rate: number): void {
+	engineRate = rate;
+}
 
 /** Feed one response's reported queue depth back into the controller. */
 export function reportEngineLoad(depth: number): void {
@@ -73,7 +101,12 @@ export function reportEngineLoad(depth: number): void {
 	if (depth < EXPAND_DEPTH) return;
 	queuedAt.push(now);
 	queuedAt = queuedAt.filter((t) => now - t <= EXPAND_WINDOW_MS);
-	if (queuedAt.length >= EXPAND_SAMPLES && now - lastExpandAt >= EXPAND_COOLDOWN_MS && activeShards < configuredMax) {
+	if (
+		queuedAt.length >= EXPAND_SAMPLES &&
+		engineRate >= EXPAND_MIN_RATE &&
+		now - lastExpandAt >= EXPAND_COOLDOWN_MS &&
+		canExpand()
+	) {
 		activeShards += 1;
 		lastExpandAt = now;
 		queuedAt = [];
@@ -111,15 +144,17 @@ export function reportEngineLatency(rpcMs: number): void {
 	latencyBreaches += 1;
 	if (
 		latencyBreaches >= LATENCY_BREACHES_TO_EXPAND &&
+		engineRate >= EXPAND_MIN_RATE &&
 		now - lastExpandAt >= EXPAND_COOLDOWN_MS &&
-		activeShards < configuredMax
+		canExpand()
 	) {
 		activeShards += 1;
 		lastExpandAt = now;
 		latencyBreaches = 0;
 		pendingWarmShard = activeShards - 1;
 		console.log(
-			`Shard controller: expanded to ${activeShards} shards (rpc ${fastEwma.toFixed(0)}ms vs floor ${floorEwma.toFixed(0)}ms)`,
+			`Shard controller: expanded to ${activeShards} shards ` +
+				`(rpc ${fastEwma.toFixed(0)}ms vs floor ${floorEwma.toFixed(0)}ms at ${engineRate.toFixed(0)}/s)`,
 		);
 	}
 }
@@ -144,8 +179,13 @@ export function takeWarmTarget(): number | null {
  * lazy home of contraction — isolates have no timers, so the check rides the
  * pick path (two timestamp compares).
  */
+/** Room to grow: SHARDS_MAX=0 means unbounded, so treat 0 as no ceiling. */
+function canExpand(): boolean {
+	return configuredMax === 0 || activeShards < configuredMax;
+}
+
 export function pickShard(maxShards?: number): number {
-	if (maxShards && maxShards > 0) configuredMax = maxShards;
+	if (maxShards !== undefined && maxShards >= 0) configuredMax = maxShards;
 	const now = Date.now();
 	if (
 		activeShards > 1 &&
@@ -157,6 +197,6 @@ export function pickShard(maxShards?: number): number {
 		lastContractAt = now;
 		console.log(`Shard controller: contracted to ${activeShards} shards (idle)`);
 	}
-	if (activeShards > configuredMax) activeShards = configuredMax;
+	if (configuredMax > 0 && activeShards > configuredMax) activeShards = configuredMax;
 	return activeShards === 1 ? 0 : Math.floor(Math.random() * activeShards);
 }

@@ -56,9 +56,10 @@ request ──▶ Workers Cache (regional edge cache; hits skip the Worker entir
               │   their DO — scale to zero. The x-sylvan-engine response header
               │   says which DO answered
               ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in memory,
-              │   streamed from KV as ~4 immutable chunks; no local copy, and it
+              │   streamed from KV as 3 immutable chunks; no local copy, and it
               │   hot-swaps when the KV manifest advances
-              └─ autoscaling: latency-signal fan-out to engine-<colo>-1..N with
+              └─ autoscaling: fan-out to engine-<colo>-1..N when the DO reports
+                  sustained load AND the isolate sees sustained slowness, with
                   idle fold-back — see src/engine/shard-controller.ts
 
 cron (nightly refresh; the deploy does the first build)
@@ -67,7 +68,7 @@ cron (nightly refresh; the deploy does the first build)
                    fetch → transform → tags → aggregate → finalize → build
                    (the SAME Rust the native builder runs, compiled to wasm;
                     intermediates spill to DO SQLite, never to memory)
-                   publish: ~4 chunks + manifest to KV, manifest LAST (the
+                   publish: 3 chunks + manifest to KV, manifest LAST (the
                    commit point readers act on); the store before last dropped
 ```
 
@@ -82,19 +83,22 @@ CPU per load, and KV's own `cacheTtl` gives the same colo-level caching for
 free on immutable chunk keys. The store is stored raw for the same reason — KV
 meters reads, not bytes, so compression would buy only decompress CPU.
 
-**Publishing** is `chunk_count + 1` writes: ~20MB chunks (KV's value cap is 25
-MiB) keyed by store key, then the manifest as the commit point. Two versions
-are retained, so a reader mid-stream finishes and a bad build can be rolled
-back.
+**Publishing** is `chunk_count + 1` writes: ~25MB chunks (just under KV's 25
+MiB value cap) keyed by store key, then the manifest as the commit point — so
+a ~70MB store is four writes. Two versions are retained, so a reader
+mid-stream finishes and a bad build can be rolled back.
 
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
 page HTML carries no card data; `no-store` routes and error statuses are never
 cached; the cache is per-deploy-version.
 
-**Free-plan fit.** A store load is ~5 KV reads, a publish ~5 KV writes, and
-serving touches neither — so the daily meters (100k Worker requests, 100k DO
-requests, 100k KV reads, 1k KV writes) bound *traffic*, not architecture.
-Storage is one ~70MB copy per retained version against KV's 1GB.
+**Free-plan fit.** A store load is 4 KV reads, a publish 4 writes, and serving
+touches neither — so the daily meters (100k Worker requests, 100k KV reads, 1k
+KV writes) bound *traffic*, not architecture. Storage is one ~70MB copy per
+retained version against KV's 1GB. The one meter worth watching is the free
+plan's **10ms CPU per request**: a cache-missing `/search` currently spends
+6–11ms in the isolate, almost all of it marshalling the ~34KB response rather
+than computing it (the engine itself is 0–1ms of DO CPU).
 
 ## Upstream tracking
 

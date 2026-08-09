@@ -2,6 +2,10 @@
 // bundler target; committed at engine/wasm/pkg, aliased in wrangler config).
 // Mirrors engine/wasm/pkg/sylvan_engine_wasm.d.ts — keep in lockstep.
 declare module "sylvan-engine-wasm" {
+	/** Instantiate the engine on first use. Provided by the Workers shim
+	 * (src/engine/wasm-shim.ts), not by wasm-bindgen: instantiation is lazy so
+	 * request isolates, which never query, never pay for it. */
+	export function ensureEngine(): void;
 	export function __init_panic_hook(): void;
 	/** Preallocate the aligned store buffer (one allocation, no growth). */
 	export function begin_store_load(totalLen: number): void;

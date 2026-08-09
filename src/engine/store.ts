@@ -7,6 +7,9 @@
 // ~20MB chunk at a time; no full-store JS buffer ever exists, keeping peak
 // isolate usage inside the 128MB limit.
 //
+// The wasm engine is instantiated lazily (wasm-shim.ts): only a DO that
+// actually loads a store pays for it, never a plain request isolate.
+//
 // There is deliberately NO Cache API layer in front of KV. The previous
 // architecture wrote the store through `caches.default` and read it back, and
 // that double-stream measured 0.6-1.3s of billed CPU per load — the single
@@ -17,9 +20,6 @@ import * as wasm from "sylvan-engine-wasm";
 import { kvStoreStream, readManifest } from "./store-kv";
 import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
 import { EngineUnavailableError } from "./types";
-
-// Wasm panics must land in console.error, not die silently with the isolate.
-wasm.__init_panic_hook();
 
 // How stale an isolate's view of the manifest may get before a background
 // re-check. Nightly publishes mean sub-hour propagation is plenty.
@@ -87,6 +87,10 @@ async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Pr
 }
 
 async function loadStore(env: Env): Promise<Engine> {
+	// The one place wasm is first touched, so the one place that has to bring
+	// it up. Isolates that only parse and RPC never reach here and never pay
+	// the instantiation — see the header of wasm-shim.ts.
+	wasm.ensureEngine();
 	const manifest = await readManifest(env);
 	lastManifestCheck = Date.now();
 

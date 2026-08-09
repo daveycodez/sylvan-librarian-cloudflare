@@ -2,7 +2,7 @@
 // serving path: isolates parse and RPC here, never loading the store.
 
 import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
-import { reportEngineLatency, reportEngineLoad } from "./shard-controller";
+import { reportEngineLatency, reportEngineLoad, reportEngineRate } from "./shard-controller";
 import type { Engine, EngineSearchOptions, EngineSearchResult } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -13,7 +13,7 @@ interface SearchEngineStub {
 	search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSearchResult & { acquireMs?: number; load?: number }>;
+	): Promise<EngineSearchResult & { acquireMs?: number; load?: number; rate?: number }>;
 	catalog(
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
@@ -77,10 +77,11 @@ export class RemoteEngine implements Engine {
 
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, ...result } = await withRetry(() => this.stub.search(opts, this.fallbackHint));
+		const { acquireMs, load, rate, ...result } = await withRetry(() => this.stub.search(opts, this.fallbackHint));
 		// The DO's queue-depth rider feeds the shard autoscaler; both metadata
 		// fields are stripped so the search envelope never carries them.
 		if (load !== undefined) reportEngineLoad(load);
+		if (rate !== undefined) reportEngineRate(rate);
 		if (acquireMs) {
 			// Wake observability: logged only when the DO had to acquire its
 			// engine — and wake-carrying RPCs are excluded from the latency
