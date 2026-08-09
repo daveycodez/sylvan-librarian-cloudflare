@@ -78,6 +78,30 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
 	}
 }
 
+/**
+ * Warm RPC wall time, sampled into the log.
+ *
+ * This is the ONLY input to the shard controller's latency trigger, and until
+ * now not one warm sample was observable: the wake log above fires only when
+ * the answering DO had to acquire its engine, so production could show cold
+ * RPCs and nothing else. That left floorEwma — which decides whether the
+ * `MULT x floor` rule or the flat LATENCY_ABS_MS bar binds, and therefore what
+ * utilization expansion actually fires at — unmeasurable from outside.
+ *
+ * Sampled rather than logged outright because this is the hot path: one line
+ * per 64 warm searches is enough to read a distribution off a load-test run
+ * without turning the log into the workload.
+ */
+let warmRpcSeen = 0;
+const WARM_RPC_LOG_EVERY = 64;
+
+function sampleWarmRpc(rpcMs: number): void {
+	warmRpcSeen += 1;
+	if (warmRpcSeen % WARM_RPC_LOG_EVERY === 0) {
+		console.log(`Remote engine search: ${rpcMs}ms warm rpc (1-in-${WARM_RPC_LOG_EVERY} sample, n=${warmRpcSeen})`);
+	}
+}
+
 export class RemoteEngine implements Engine {
 	/** get_catalog reads both catalogs; one RPC serves both calls. */
 	private catalogOnce: Promise<{ types: Record<string, number>; keywords: Record<string, number> }> | null = null;
@@ -112,7 +136,11 @@ export class RemoteEngine implements Engine {
 			if (rate !== undefined) reportEngineRate(rate);
 			// Wake-carrying RPCs are excluded from the latency signal too: their
 			// wall time is legitimately inflated by the load.
-			if (!acquireMs) reportEngineLatency(Date.now() - rpcStart);
+			if (!acquireMs) {
+				const rpcMs = Date.now() - rpcStart;
+				reportEngineLatency(rpcMs);
+				sampleWarmRpc(rpcMs);
+			}
 		}
 		return result as Omit<T, keyof Telemetry>;
 	}

@@ -47,9 +47,15 @@
 //    tag each expansion would inflate the very signal that triggers the next.
 
 /** Searches per second at the DO below which elevated latency is NOT read as
- * saturation. A warm query costs 0.2-3ms, so one DO saturates somewhere north
- * of 300/s; this sits far below that deliberately — it is a sanity gate on the
- * latency trigger, not the trigger itself. */
+ * saturation. This sits far below the ceiling deliberately — it is a sanity
+ * gate on the latency trigger, not the trigger itself.
+ *
+ * The ceiling moved with the encode-in-the-DO change (d538c1f). That profile
+ * put total warm busy at 2.08ms with 1.43ms of it isolate-side, leaving ~0.65ms
+ * in the DO for a 26KB result — so a single-threaded DO tops out nearer 1500/s
+ * than the 300/s this comment used to assume, and 50/s is ~3% of capacity
+ * rather than ~15%. Being permissive is the right failure direction for a gate
+ * whose job is only to reject latency with no load behind it. */
 const EXPAND_MIN_RATE = 50;
 
 /** A response reporting this many already-executing searches counts as queuing. */
@@ -81,16 +87,35 @@ const DEFAULT_MAX_SHARDS = 32;
  * expansion at p = 80% utilization, which is where a single-threaded server
  * should fan out.
  *
- * ABS only exists as a noise floor — 3x of a 0.2ms query is 0.6ms, and no
- * signal survives at that scale. It must stay SMALL or it silently replaces
- * the rule: max() picks ABS whenever floor < ABS/MULT, and at 75ms that meant
- * floor < 25ms, i.e. always, since a warm query is 0.2-3ms. The ratio rule was
- * dead code and expansion actually fired at T/C = 25-75, or p = 98-99.3% —
- * past the knee, where mean queue depth is already 24+ requests. 10ms keeps a
- * real noise floor while letting MULT bind for any floor above ~3ms.
+ * ABS only exists as a noise floor. It must stay SMALL or it silently replaces
+ * the rule: max() picks ABS whenever floor < ABS/MULT, and at the original 75ms
+ * that meant floor < 25ms, i.e. always. The ratio rule was dead code and
+ * expansion actually fired at p = 98-99.3% — past the knee, where mean queue
+ * depth is already 24+ requests.
  *
- * Both numbers are still unverified: C has never been measured. scripts/
- * load-test.ts exists to measure it (run it with SHARDS_MAX=1 first). */
+ * HELD at 10 after the d538c1f/0cbcf75 perf work, deliberately, because the
+ * inference does not reach:
+ *
+ *   - Those profiles measured CPU, but this signal is RPC WALL TIME — DO CPU
+ *     (~0.65ms) plus same-colo RPC transport, which nothing has measured. If
+ *     transport is ~0.5ms, floor lands near 1.2ms, MULT gives a 3.6ms bar, ABS
+ *     wins at 10 and expansion fires at p = 94%: too late, argues for ~4.
+ *     If transport is ~3ms, floor is ~3.7ms, MULT gives 11ms, the ratio rule
+ *     already binds and lowering ABS would change nothing. The transport term
+ *     decides the answer and it is exactly the term we do not have.
+ *   - Below ~9ms the bar stops rejecting single outliers. One 100ms sample
+ *     drives fastEwma to 20.8 against a 1ms floor, and the 0.2 weight decays it
+ *     back under 9 only on the fifth sample after — so any lower bar turns one
+ *     GC pause into an expansion. At 10 the count is exactly 4 of the 5
+ *     required (tests/engine/shard-controller.test.ts pins this). No EWMA
+ *     weight fixes that; a rank filter over the last N samples would, and that
+ *     is a redesign, not a constant.
+ *
+ * So the perf work did move the target — cheaper C means a fixed absolute bar
+ * corresponds to HIGHER utilization — but it did not move which term binds, and
+ * guessing the transport cost would trade a property we have for one we don't.
+ * remote-engine.ts now samples warm RPC wall time into the log; one load-test
+ * run makes floorEwma observable and settles this. */
 const LATENCY_FLOOR_MULT = 3;
 const LATENCY_ABS_MS = 10;
 /** Consecutive breaching reports needed to step up (EWMA already smooths). */

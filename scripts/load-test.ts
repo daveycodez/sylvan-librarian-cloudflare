@@ -6,15 +6,19 @@
 //
 // It exists to measure two numbers and one behavior:
 //
-//   C  — per-request occupancy of a single SearchEngine DO (engine search plus
-//        marshalling a ~34KB result across the RPC boundary). A DO is
-//        single-threaded, so its ceiling is 1000/C req/s. Every default in the
-//        shard controller is a guess about C; measure it with --shards-max 1.
+//   C  — per-request occupancy of a single SearchEngine DO. Profiling in
+//        d538c1f put the DO side near 0.65ms of CPU for a 26KB result, but the
+//        controller keys on RPC WALL TIME, which is that plus same-colo
+//        transport — an unmeasured term that decides whether the controller's
+//        ratio rule or its flat floor binds. A DO is single-threaded, so its
+//        ceiling is 1000/C req/s. Set SHARDS_MAX=1 on the target to measure it.
 //   ρ  — where the latency knee sits. Service time is CPU-bound and close to
 //        deterministic, so M/D/1 applies: T/C = 1 + ρ/(2(1-ρ)). The controller's
 //        `3 x floor` rule targets T/C = 3, i.e. ρ = 80%, which is the right
-//        place to fan out. Its LATENCY_ABS_MS floor targets ρ = 98%+, which is
-//        past the knee. The ramp below shows which one actually fires.
+//        place to fan out. Whether LATENCY_ABS_MS (10ms) preempts it depends on
+//        that transport term. The ramp below shows which one actually fires;
+//        remote-engine.ts logs one warm RPC per 64, so the run also reports the
+//        floor directly.
 //   the fan-out itself — x-sylvan-engine names the DO that answered
 //        (`do-<colo>` for shard 0, `do-<colo>-N` after), so the per-stage shard
 //        histogram is the controller converging, live.
@@ -55,7 +59,11 @@
 // Usage:
 //   bun run scripts/load-test.ts --url https://example.com/search --dry-run
 //   bun run scripts/load-test.ts --url https://example.com/search \
-//     --stages 1,2,4,8,16,32,64 --hold 20 --out results.tsv
+//     --stages 1,2,4,8,16,32,64 --hold 20 --shape rows --out results.tsv
+//
+// --shape rows|columnar picks the encoding. Both go through searchSerialized,
+// so both charge the encode to the DO; columnar is the heavier payload and the
+// one d538c1f profiled, so run the pair if you want C's payload sensitivity.
 
 import { parseArgs } from "node:util";
 
@@ -110,12 +118,20 @@ function histogram(values: string[]): string {
 		.join(" ");
 }
 
+/** How every request in a run is shaped. */
+interface RunConfig {
+	headers: Record<string, string>;
+	cached: boolean;
+	/** RESPONSE_SHAPE: "rows" (the route default) or "columnar". Both take the
+	 * searchSerialized path, where the DO encodes — the CPU this is measuring. */
+	shape: string;
+}
+
 /** One worker: issue requests back to back until the deadline. */
 async function worker(
 	base: string,
 	deadline: number,
-	headers: Record<string, string>,
-	cached: boolean,
+	cfg: RunConfig,
 	counter: { n: number },
 	out: Sample[],
 ): Promise<void> {
@@ -124,11 +140,12 @@ async function worker(
 		const query = QUERIES[seq % QUERIES.length] as string;
 		const url = new URL(base);
 		url.searchParams.set("q", query);
+		url.searchParams.set("shape", cfg.shape);
 		// Unknown param: dropped by the binder, but part of the edge cache key.
-		if (!cached) url.searchParams.set("_lt", `${seq}`);
+		if (!cfg.cached) url.searchParams.set("_lt", `${seq}`);
 		const started = Date.now();
 		try {
-			const res = await fetch(url, { headers });
+			const res = await fetch(url, { headers: cfg.headers });
 			const body = await res.arrayBuffer();
 			out.push({
 				ms: Date.now() - started,
@@ -144,20 +161,12 @@ async function worker(
 	}
 }
 
-async function runStage(
-	base: string,
-	concurrency: number,
-	holdMs: number,
-	headers: Record<string, string>,
-	cached: boolean,
-): Promise<StageResult> {
+async function runStage(base: string, concurrency: number, holdMs: number, cfg: RunConfig): Promise<StageResult> {
 	const samples: Sample[] = [];
 	const counter = { n: 0 };
 	const startedAt = Date.now();
 	const deadline = startedAt + holdMs;
-	await Promise.all(
-		Array.from({ length: concurrency }, () => worker(base, deadline, headers, cached, counter, samples)),
-	);
+	await Promise.all(Array.from({ length: concurrency }, () => worker(base, deadline, cfg, counter, samples)));
 	return { concurrency, elapsedMs: Date.now() - startedAt, samples };
 }
 
@@ -185,9 +194,13 @@ const { values } = parseArgs({
 		key: { type: "string" },
 		out: { type: "string" },
 		cached: { type: "boolean", default: false },
+		shape: { type: "string", default: "rows" },
 		"dry-run": { type: "boolean", default: false },
 	},
 });
+
+/** RESPONSE_SHAPE in src/routes/enums.ts. */
+const SHAPES = ["rows", "columnar"];
 
 const base = values.url;
 if (!base) {
@@ -207,13 +220,21 @@ if (!Number.isFinite(holdMs) || holdMs < 1000) {
 	process.exit(2);
 }
 
+const shape = values.shape as string;
+if (!SHAPES.includes(shape)) {
+	console.error(`--shape must be one of ${SHAPES.join(", ")}, got ${shape}`);
+	process.exit(2);
+}
+
 const apiKey = values.key ?? process.env.TRUSTED_API_KEY;
 const headers: Record<string, string> = { "User-Agent": "sylvan-librarian-cloudflare-loadtest/1.0" };
 if (apiKey) headers["X-API-Key"] = apiKey;
+const cfg: RunConfig = { headers, cached: values.cached as boolean, shape };
 
 const peak = Math.max(...stages);
 console.error(`Target:      ${base}`);
 console.error(`Stages:      ${stages.join(", ")} concurrent, ${holdMs / 1000}s each`);
+console.error(`Shape:       ${shape} (both shapes take the DO-encoded searchSerialized path)`);
 console.error(`Cache:       ${values.cached ? "REUSED urls (measures the edge cache)" : "busted per request"}`);
 console.error(
 	`Rate limit:  ${apiKey ? "bypass key present" : "NO KEY — expect a wall at RATE_LIMIT_PER_10S/10 req/s"}`,
@@ -228,7 +249,7 @@ if (values["dry-run"]) {
 
 const results: StageResult[] = [];
 for (const concurrency of stages) {
-	const stage = await runStage(base, concurrency, holdMs, headers, values.cached as boolean);
+	const stage = await runStage(base, concurrency, holdMs, cfg);
 	results.push(stage);
 	console.error(reportStage(stage));
 }

@@ -109,7 +109,7 @@ export class SearchEngine extends DurableObject<Env> {
 	 * honest numbers for whoever actually computed the answer, but they describe
 	 * a DIFFERENT DO than the one the caller is scaling. `relayed` marks the
 	 * whole sample so the shard controller drops it: the wall time carries a
-	 * cross-colo hop (region.ts budgets 60-80ms for a bad one, against a 75ms
+	 * cross-colo hop (region.ts budgets 60-80ms for a bad one, against a 10ms
 	 * latency bar), and the depth/rate belong to the region. Without this every
 	 * freshly opened shard, which relays until it warms, would manufacture the
 	 * evidence for the next expansion.
