@@ -42,7 +42,9 @@ mock.module("../../src/engine/store", () => ({
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
 
-type Do = { search: (opts: unknown, hint?: unknown, reported?: number) => Promise<{ shards: number }> };
+type Do = {
+	search: (opts: unknown, hint?: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
+};
 
 function makeDo(): Do {
 	return new SearchEngine({ waitUntil: () => {} } as never, {} as never) as unknown as Do;
@@ -99,6 +101,48 @@ describe("announcing the fan-out width", () => {
 		expect(await report(engine, 0)).toBe(1);
 		expect(await report(engine, -3)).toBe(1);
 		expect(await report(engine, Number.NaN)).toBe(1);
+	});
+});
+
+describe("the arrival-rate meter", () => {
+	/** Fire n searches inside one second and return the last reported rate. */
+	async function burst(engine: Do, n: number): Promise<number> {
+		let rate = 0;
+		for (let i = 0; i < n; i++) rate = (await engine.search({ limit: 1 }, undefined, 1)).rate;
+		return rate;
+	}
+
+	test("reports arrivals per second over the trailing window", async () => {
+		const engine = makeDo();
+		// 100 in one second, ten-second window: 10/s.
+		expect(await burst(engine, 100)).toBeCloseTo(10, 5);
+	});
+
+	test("does not saturate above the old 410/s ceiling", async () => {
+		// The array it replaced capped at 4096 samples over 10s, so it could
+		// never report more than 409.6/s — the production expansion log read
+		// "at 410/s", which was the cap rather than the traffic.
+		const engine = makeDo();
+		expect(await burst(engine, 20_000)).toBeCloseTo(2000, 5);
+	});
+
+	test("ages arrivals out once they leave the window", async () => {
+		const engine = makeDo();
+		await burst(engine, 100);
+		clock += 11_000;
+		// One arrival in the new window, nothing carried over from the old one.
+		expect(await burst(engine, 1)).toBeCloseTo(0.1, 5);
+	});
+
+	test("keeps counting across a bucket boundary", async () => {
+		const engine = makeDo();
+		for (let s = 0; s < 5; s++) {
+			await burst(engine, 10);
+			clock += 1000;
+		}
+		// 50 arrivals spread over five buckets, plus this one, all still inside
+		// the ten-second window.
+		expect(await burst(engine, 1)).toBeCloseTo(5.1, 5);
 	});
 });
 

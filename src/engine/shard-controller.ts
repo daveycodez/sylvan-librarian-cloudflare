@@ -146,8 +146,32 @@ const CONTRACT_COOLDOWN_MS = 60_000;
 /** Cap on the fan-out. Not a scaling limit so much as a blast radius: the
  * signals that drive expansion can be wrong, and an unbounded response to a
  * wrong signal opens shards that each cold-load ~70MB and hold it resident.
- * SHARDS_MAX=0 opts into genuinely unbounded scaling. */
-const DEFAULT_MAX_SHARDS = 32;
+ * SHARDS_MAX=0 opts into genuinely unbounded scaling.
+ *
+ * Lowered from 32 on 2026-08-09, because this cap turned out to be doing real
+ * work rather than sitting unreachable:
+ *
+ *   - The production ramp laddered 1 -> 2 -> 5 in about 40 seconds of load.
+ *     That is faster than one step per EXPAND_COOLDOWN_MS, because the
+ *     rendezvous propagates the widest isolate's width to every other isolate
+ *     at once — so the colo advances at the pace of its FASTEST expander, not
+ *     its average one. Balance and ladder speed came from the same change.
+ *   - And the latency trigger breaches almost continuously under production
+ *     load: floorEwma latches the fast tail (5-7ms) while fastEwma tracks
+ *     current conditions (40-100ms), so the ratio sits far above MULT whenever
+ *     there is traffic. Expansion is therefore paced by cooldown and this cap,
+ *     not by evidence of saturation.
+ *   - Extra shards are not free the way the old comment implied. Splitting a
+ *     colo's traffic N ways makes each shard N times likelier to fall idle and
+ *     evict, and a cold shard costs a user ~1.5-2s against ~120ms warm. Past
+ *     the point of relieving load, more shards make latency WORSE.
+ *
+ * 8 still leaves room far beyond anything measured — a single shard carried
+ * 301/s at roughly a fifth of its capacity — while bounding how cold a colo can
+ * get if the ladder runs. Raise it with SHARDS_MAX where a colo genuinely needs
+ * more. The real fix is making the latency trigger mean something again; see
+ * the floorEwma note there. */
+const DEFAULT_MAX_SHARDS = 8;
 
 /** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing.
  *
@@ -182,14 +206,30 @@ const DEFAULT_MAX_SHARDS = 32;
  * measurement shows fastEwma sitting at 4.5-5.3ms against the 10ms bar — a
  * comfortable margin rather than a system straining to trigger.
  *
- * The 10x spread the sparse samples showed was an ARTIFACT of that regime, not
- * intrinsic variance: every one of those 12 was the first (and only) RPC its
- * isolate ever made, so each carried a first-call cost that amortizes away.
- * Under sustained load min and avg track each other closely (min 0-2ms against
- * avg 0.9-5.3ms over ~850-sample windows). An earlier version of this comment
- * predicted the spread would breach the bar permanently and expand a busy colo
- * to SHARDS_MAX on variance alone. It does not happen; that concern is retired,
- * and LATENCY_FLOOR_MULT should NOT be raised.
+ * THE OPEN PROBLEM, and a correction. A previous version of this comment
+ * retired the worry that variance alone would breach the bar permanently,
+ * on the grounds that within a 2s window min and avg track closely (min 0-2ms
+ * against avg 0.9-5.3ms locally, 1.2-2.2x in production). That comparison was
+ * against the wrong quantity. floorEwma is not the within-window minimum: it
+ * falls fast (0.7/0.3 on any sample below it) and rises at 0.001, so it latches
+ * onto the fast tail across ALL windows and stays there. In production that
+ * pins it at 5-7ms while fastEwma tracks current conditions at 40-100ms — a
+ * ratio far above MULT whenever there is any traffic at all.
+ *
+ * So the latency trigger does not currently measure queueing. It measures "is
+ * now worse than the best moment ever seen", which under real network variance
+ * is almost always true once loaded. Expansion is in practice paced by
+ * EXPAND_COOLDOWN_MS and DEFAULT_MAX_SHARDS rather than by evidence of
+ * saturation — the production ramp laddered 1 -> 2 -> 5 in about 40s while the
+ * busiest shard sat at roughly a fifth of its capacity.
+ *
+ * Raising MULT is NOT the fix: the observed ratio is ~16x, so any multiplier
+ * large enough to stop this would be too blunt to detect real queueing. The
+ * fix is making floorEwma represent a healthy RECENT baseline instead of an
+ * all-time minimum — softening the 0.3 downward weight so a single fast sample
+ * cannot yank it back down, and letting it rise faster than 0.001. Both numbers
+ * need a measurement to choose, which is why this is written down rather than
+ * guessed at; the cap is holding the blast radius meanwhile.
  *   - Below ~9ms the bar stops rejecting single outliers. One 100ms sample
  *     drives fastEwma to 20.8 against a 1ms floor, and the 0.2 weight decays it
  *     back under 9 only on the fifth sample after — so any lower bar turns one

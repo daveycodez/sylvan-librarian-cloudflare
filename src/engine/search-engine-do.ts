@@ -47,6 +47,10 @@ interface SearchTelemetry {
  */
 const WIDTH_TTL_MS = 60_000;
 
+/** One-second buckets behind the arrival-rate meter; also its window in
+ * seconds, since each bucket holds exactly one. */
+const RATE_BUCKETS = 10;
+
 /**
  * RPC error marker: workerd propagates only Error#message across RPC, so the
  * EngineUnavailableError contract (routes turn it into upstream's exact 503 /
@@ -65,14 +69,24 @@ export class SearchEngine extends DurableObject<Env> {
 	/** Searches already executing here; snapshotted per request as the queue-
 	 * depth (`load`) signal. */
 	private inFlightSearches = 0;
-	/** Arrival times of recent searches, for the request-RATE the shard
-	 * controller gates expansion on. Rate is the cause-side measurement:
-	 * latency rises for reasons sharding cannot fix (KV slowness, network,
-	 * a noisy neighbour), and adding shards to those only makes them worse,
-	 * because every new shard cold-loads ~70MB. Load without slowness means
-	 * we are coping; slowness without load means the problem is elsewhere.
-	 * Real saturation always shows both. */
-	private recentSearches: number[] = [];
+	/** Arrivals per second, for the request-RATE the shard controller gates
+	 * expansion on. Rate is the cause-side measurement: latency rises for
+	 * reasons sharding cannot fix (KV slowness, network, a noisy neighbour),
+	 * and adding shards to those only makes them worse, because every new
+	 * shard cold-loads ~70MB. Load without slowness means we are coping;
+	 * slowness without load means the problem is elsewhere. Real saturation
+	 * always shows both.
+	 *
+	 * Ten one-second buckets in a ring, indexed by epoch second, each carrying
+	 * the second it belongs to so a stale one is skipped rather than cleared.
+	 * This replaced an array of arrival timestamps that had two faults: it was
+	 * capped at 4096 entries over a 10s window, so the reported rate SATURATED
+	 * at 409.6/s — the production expansion log reads "at 410/s", which is the
+	 * cap and not the traffic — and it re-filtered the whole array into a fresh
+	 * allocation on every single search, putting an O(n) copy on the hot path
+	 * of a single-threaded object precisely when n was largest. */
+	private readonly rateCounts = new Uint32Array(RATE_BUCKETS);
+	private readonly rateSeconds = new Float64Array(RATE_BUCKETS);
 
 	/**
 	 * The fan-out rendezvous: widest width any caller has reported, with a TTL.
@@ -101,13 +115,21 @@ export class SearchEngine extends DurableObject<Env> {
 		return this.announcedShards;
 	}
 
-	/** Searches per second over the trailing window. */
+	/** Searches per second over the trailing window. O(RATE_BUCKETS), no
+	 * allocation, and no ceiling short of 2^32 arrivals in one second. */
 	private searchRate(now: number): number {
-		const windowMs = 10_000;
-		this.recentSearches.push(now);
-		if (this.recentSearches.length > 4096) this.recentSearches.shift();
-		this.recentSearches = this.recentSearches.filter((t) => now - t <= windowMs);
-		return this.recentSearches.length / (windowMs / 1000);
+		const second = Math.floor(now / 1000);
+		const slot = ((second % RATE_BUCKETS) + RATE_BUCKETS) % RATE_BUCKETS;
+		if (this.rateSeconds[slot] !== second) {
+			this.rateSeconds[slot] = second;
+			this.rateCounts[slot] = 0;
+		}
+		this.rateCounts[slot] = (this.rateCounts[slot] as number) + 1;
+		let total = 0;
+		for (let i = 0; i < RATE_BUCKETS; i++) {
+			if (second - (this.rateSeconds[i] as number) < RATE_BUCKETS) total += this.rateCounts[i] as number;
+		}
+		return total / RATE_BUCKETS;
 	}
 
 	// ── RPC surface ────────────────────────────────────────────────────────────
