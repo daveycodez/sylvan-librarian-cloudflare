@@ -6,6 +6,24 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
+	// Static assets, served straight from Cloudflare's CDN out of public/ —
+	// app.js, app.min.js, card.js, styles.css, the icons, robots.txt and the
+	// tuner page. A request matching one of these NEVER invokes the Worker: no
+	// isolate start, no CPU, and it does not count against the Worker request
+	// budget. They also leave the script entirely, which is the point: they were
+	// a ~313KB text module inside it, and script size costs isolate startup at
+	// roughly 1.5ms per 100KB — a cost every /search was paying to carry files
+	// it never reads (measured: 313KB 10-13ms, 0.5KB 7ms, empty Worker 5ms).
+	//
+	// html_handling "none" so nothing is rewritten under this Worker's own
+	// paths, and not_found_handling "none" so anything that is not an asset
+	// falls through to the router, which owns the 404.
+	"assets": {
+		"directory": "./public",
+		"html_handling": "none",
+		"not_found_handling": "none"
+	},
+
 
 	// Workers Cache: regionally tiered cache in front of the Worker, honoring
 	// the Cache-Control headers the routes already mirror from upstream

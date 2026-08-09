@@ -3,10 +3,10 @@
 // prefer_score_tuner, and the legacy index → / redirect
 // (api_resource.py:1494-1602, 1702-1728).
 
-import { staticText } from "./assets";
+import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
-import { buildBaseHtml, buildCardHtml, CRITICAL_CSS, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
+import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
 import { cacheHeader, searchCacheHeader } from "./http";
 import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
@@ -33,7 +33,7 @@ export async function rootHandler(
 ): Promise<Response> {
 	const bound = bindParams("APIResource._root", ROOT_SPEC, [], params);
 	const siteName = SITE_NAME;
-	let htmlContent = buildBaseHtml(CRITICAL_CSS, siteName);
+	let htmlContent = buildBaseHtml(criticalCss(), siteName);
 
 	// Cache for 1 hour unless a search is embedded below.
 	let headers: Record<string, string> = cacheHeader(3600);
@@ -109,14 +109,11 @@ export function cardHandler(_ctx: RouteContext, positionalArgs: string[], params
 	// colliding with a path segment is a 400 upstream (TypeError → HTTPBadRequest).
 	bindParams("APIResource.card", CARD_SPEC, positionalArgs, params);
 	const siteName = SITE_NAME;
-	const html = replaceAllLiteral(buildCardHtml(CRITICAL_CSS), SITE_NAME_PLACEHOLDER, siteName);
+	const html = replaceAllLiteral(buildCardHtml(criticalCss()), SITE_NAME_PLACEHOLDER, siteName);
 	return new Response(html, { headers: { "content-type": "text/html", ...cacheHeader(3600) } });
 }
 
 /** Return the prefer score tuner page (upstream prefer_score_tuner(); no cache header). */
-export function preferScoreTunerHandler(): Response {
-	return new Response(staticText("prefer_score_tuner.html"), { headers: { "content-type": "text/html" } });
-}
 
 /** Send the legacy index paths to / (upstream _redirect_to_root, falcon.HTTPMovedPermanently). */
 export function redirectToRootHandler(): Response {

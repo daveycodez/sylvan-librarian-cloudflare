@@ -47,8 +47,10 @@ Optional knobs (rate limiting, API-key bypass, shard cap) are in
 ## Architecture
 
 ```
-request ──▶ Workers Cache (regional edge cache; hits skip the Worker entirely)
-        └─▶ Worker isolate (thin: parses, RPCs, serves static assets)
+request ──▶ static asset? served from the CDN out of public/ — the Worker is
+            never invoked, so it costs no isolate and no CPU
+        ──▶ Workers Cache (regional edge cache; hits skip the Worker entirely)
+        └─▶ Worker isolate (thin: parses, RPCs)
               ├─ TS parser: Scryfall syntax → filter tree (port of hand_parser.py)
               ├─ engine queries: RPC to the colo's SearchEngine Durable Object
               │   (engine-<colo>, created in the colo that first names it), so
@@ -108,12 +110,16 @@ upload: 10ms for this Worker against **5ms for a hello-world with the same
 bindings**, so half of it is the platform and the rest is module
 initialization.
 
-None of it is reachable by shrinking the bundle. Measured, each as its own
-uploaded version: minifying (212KB→118KB of JS), dropping the import pipeline
-(56KB of JS plus its 1.1MB wasm) and dropping the 1.4MB engine wasm all report
-the same 10ms — the last of them 12ms, which puts the metric's noise at ±2ms.
-Do not spend effort there. What actually avoids the cost is not being cold,
-which the edge cache above already does: repeat queries never reach the Worker.
+What reaches it is what the isolate must *load*, and only that. Measured, each
+as its own uploaded version: minifying (212KB→118KB of JS), dropping the import
+pipeline (56KB of JS plus its 1.1MB wasm) and dropping the 1.4MB engine wasm
+all reported the same 10ms — one of them 12ms, which puts the metric's noise at
+±2ms. Do not spend effort on any of those.
+
+Moving the browser's files to the CDN did move it, because it removed a ~313KB
+text module the script had to carry: **10/12/13ms → 5/6/9ms**, against that 5ms
+floor. Script size costs startup at roughly 1.5ms per 100KB, so the rule is to
+keep out of the script anything a request does not read.
 
 Request work itself is that 1–2ms, and the engine encodes results inside the
 Durable Object so the isolate never parses, clones and re-encodes the same
@@ -156,6 +162,13 @@ The complete list of intentional differences:
   Enforcement is asynchronous and costs zero request latency. **Off by
   default** — see .env.example, including the `TRUSTED_API_KEY` bypass. Cache
   hits never count.
+- **Static files are served by the CDN, not the Worker.** `/static/*`,
+  `/favicon.ico`, `/robots.txt` and the tuner page come from `public/` and
+  never invoke the Worker, which is what took cold start down to the platform
+  floor. Bytes are byte-identical to upstream's; the response headers are not —
+  content types come from the platform (`text/javascript` where upstream sends
+  `application/javascript`) and cache lifetimes are set for this deployment in
+  `public/_headers`. Parity is kept where it matters, on the query endpoints.
 - Postgres-only admin/import routes answer `501`. `get_pid` returns `0`.
 - `card_is_tags` stays empty, matching upstream's *automated* import.
 - HTML minification is off (upstream's own default).

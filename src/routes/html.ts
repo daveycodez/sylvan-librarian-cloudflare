@@ -14,16 +14,10 @@ import {
 	staticText,
 	stylesCssHash,
 } from "./assets";
-import { buildCriticalCss } from "./critical-css";
 
 // Placeholder written into index.html/card.html wherever the site name belongs
 // (upstream _SITE_NAME_PLACEHOLDER).
 export const SITE_NAME_PLACEHOLDER = "%%%SITENAME%%%";
-
-// Upstream computes this in APIResource.__init__ via build_critical_css over
-// api/static/styles.css; here it is computed once at module init from the
-// embedded asset text.
-export const CRITICAL_CSS: string = buildCriticalCss(staticText("styles.css"));
 
 /**
  * Replacement helper: String.replaceAll with a literal replacement, immune to

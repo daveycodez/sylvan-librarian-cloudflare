@@ -23,15 +23,10 @@ describe("404 routes listing", () => {
 			"index",
 			"index.html",
 			"_root",
-			"static/app.js",
-			"static/app.min.js",
 			"backfill_cubecobra_scores",
 			"backfill_prefer_scores",
 			"card",
-			"static/card.js",
 			"discover_is_tags_from_syntax",
-			"favicon.ico",
-			"static/favicon.ico",
 			"get_catalog",
 			"get_common_keywords",
 			"get_migrations",
@@ -43,13 +38,9 @@ describe("404 routes listing", () => {
 			"import_data",
 			"import_oracle_tags",
 			"ingest_cubecobra",
-			"prefer_score_tuner",
 			"random_search",
-			"robots.txt",
 			"search",
 			"setup_schema",
-			"static/social-preview.webp",
-			"static/styles.css",
 		]);
 	});
 
@@ -93,7 +84,7 @@ describe("method handling", () => {
 	});
 
 	test("HEAD is implied by GET on every route", async () => {
-		const res = await testDispatch(ctx, "/robots.txt", "HEAD");
+		const res = await testDispatch(ctx, "/get_pid", "HEAD");
 		expect(res.status).toBe(200);
 	});
 });
