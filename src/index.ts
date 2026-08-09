@@ -2,11 +2,10 @@
 // _resolve_action (vendor/sylvan_librarian/api/api_resource.py:641-731), with
 // falcon's JSON error serializer shape for all HTTP errors.
 
-import { planShardCap } from "./engine/plan-hint";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
-import { pickShard, takeSeedTarget, takeWarmTarget } from "./engine/shard-controller";
+import { pickShard, takeWarmTarget } from "./engine/shard-controller";
 import { manifestPollAlarm } from "./engine/store";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
@@ -29,11 +28,13 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // A colo whose lone shard reports sustained queue depth fans out to
 // engine-<colo>-1, -2, ... (shard 0 keeps the plain name, so single-shard
 // steady state is byte-identical to unsharded routing); see shard-controller.
-// The cap is plan-aware with zero configuration (free 1 / paid 8 / unknown 2
-// — see plan-hint.ts); SHARDS_MAX (runtime var) overrides it.
+// The cap needs no plan detection any more: a shard holds the store only in
+// memory (streamed from KV), so an extra shard costs no storage at all — the
+// old design pinned a 70MB SQLite copy per shard against the DO pool, which is
+// why the cap used to be plan-aware. SHARDS_MAX (runtime var) overrides it.
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
-	const maxShards = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10) || planShardCap(env, ctx);
+	const maxShards = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10) || undefined;
 	const shard = pickShard(maxShards);
 	const name = shard === 0 ? `engine-${colo}` : `engine-${colo}-${shard}`;
 	source.tag = `do-${name.slice("engine-".length)}`;
@@ -48,19 +49,6 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 		ctx.waitUntil(
 			new RemoteEngine(warmStub, regionHint(request)).size().catch((err) => {
 				console.warn(`Warm ping for shard ${warmTarget} failed: ${err}`);
-			}),
-		);
-	}
-	// Seed-ahead at ~75% of the expansion threshold: materialize the NEXT
-	// unopened shard's SQLite copy (storage only — the DO writes it and
-	// evicts) so a later expansion opens a ~1s revival, never a 70MB R2
-	// first-boot mid-spike.
-	const seedTarget = takeSeedTarget();
-	if (seedTarget !== null) {
-		const seedStub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${colo}-${seedTarget}`));
-		ctx.waitUntil(
-			(seedStub as unknown as { seed(): Promise<unknown> }).seed().catch((err) => {
-				console.warn(`Seed ping for shard ${seedTarget} failed: ${err}`);
 			}),
 		);
 	}
@@ -146,8 +134,8 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		if (err instanceof EngineUnavailableError) {
 			// The index is built by the DEPLOY (scripts/import-store.sh), which
 			// fails rather than shipping a Worker without one — so reaching here
-			// means something broke after a good deploy, most likely the D1
-			// database being deleted or emptied under a running deployment.
+			// means something broke after a good deploy, most likely the KV
+			// namespace being deleted or emptied under a running deployment.
 			//
 			// The reason travels in `description`, which the existing UI already
 			// surfaces: app.js reads title/description off a non-ok JSON body and
@@ -155,7 +143,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			// the API and the page — no bespoke error page needed.
 			// Upstream's exact wording — tests pin it, and the UI renders
 			// `description` via showError(), so this reaches the browser and the
-			// API alike. The specific cause (a deleted D1 database, a binding that
+			// API alike. The specific cause (a deleted KV namespace, a binding that
 			// stopped resolving) goes to the log, where a diagnostic belongs.
 			console.error(`Card index unavailable: ${err.message}`);
 			return finish(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));

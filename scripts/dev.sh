@@ -5,9 +5,9 @@
 # before the dev server starts serving, so the web interface is never up without
 # an index behind it. Same shared pipeline Rust, same failure posture — if the
 # import fails, dev does not start, because a half-ready site is worse than an
-# obvious error. Later runs start instantly from the persisted local D1.
+# obvious error. Later runs start instantly from the persisted local KV.
 #
-# wrangler dev emulates everything this deployment uses — D1, Durable Objects
+# wrangler dev emulates everything this deployment uses — KV, Durable Objects
 # with SQLite, alarms — so the production import pipeline also runs locally:
 # DEV_BOOTSTRAP=worker skips the native seed and lets the ImportCoordinator
 # bootstrap in-Worker exactly as a fresh production deploy would
@@ -21,9 +21,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DB_NAME="$(bun scripts/project-config.ts d1)"
-if ! bunx wrangler d1 execute "$DB_NAME" --local -c wrangler.dev.jsonc \
-        --command "SELECT 1 FROM store_manifest LIMIT 1" >/dev/null 2>&1; then
+# Local dev is seeded when the store is in local KV — that is the index, and
+# the only thing that gates serving.
+if ! bunx wrangler kv key get store:manifest --binding STORE_KV --local \
+        -c wrangler.dev.jsonc >/dev/null 2>&1; then
     if [[ "${DEV_BOOTSTRAP:-}" == "worker" ]]; then
         echo "DEV_BOOTSTRAP=worker — skipping the native seed. The Worker will"
         echo "self-bootstrap from Scryfall bulk data via the in-Worker import"
@@ -31,9 +32,9 @@ if ! bunx wrangler d1 execute "$DB_NAME" --local -c wrangler.dev.jsonc \
         echo "it finishes."
     else
         # Build the store natively (same shared Rust as production) and seed
-        # local D1 directly — a couple of minutes, mostly download — covering
-        # everything the DO import produces: store, manifest, and the
-        # SQL-fallback cards table. No toolchain check: with-rust.sh installs
+        # local storage — a couple of minutes, mostly download — covering
+        # everything the DO import produces: the store and manifest into local
+        # KV. No toolchain check: with-rust.sh installs
         # rustup if this machine has no Rust, exactly as it does in CI, so
         # "first run works" does not depend on what happens to be installed.
         echo "==> No local card store yet — running the full bulk import first"

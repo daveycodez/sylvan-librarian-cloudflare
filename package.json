@@ -2,7 +2,7 @@
   "name": "sylvan-librarian-cloudflare",
   "version": "0.1.0",
   "private": true,
-  "description": "Sylvan Librarian, ported to run natively on Cloudflare Workers + D1 + Durable Objects — free-plan deployable",
+  "description": "Sylvan Librarian, ported to run natively on Cloudflare Workers + KV + Durable Objects — free-plan deployable",
   "type": "module",
   "scripts": {
     "dev": "scripts/dev.sh",

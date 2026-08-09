@@ -1,15 +1,12 @@
 // Port of the /search and /random_search routes and the _search core
 // (api_resource.py:1091-1321, 2555-2586).
 //
-// Engine-first with upstream's SQL fallback semantics restored: an engine
-// that throws on a query it was handed sends the search to SQL — here the D1
-// cards table (src/fallback/), once the import has fully synced it. An
-// empty/unloaded store still surfaces as EngineUnavailableError (dispatch
-// answers 503), and if the fallback is unavailable or
-// also fails, the failure stays a loud 500 — never a silent empty result.
+// Engine-only: the wasm engine is the sole query path. Upstream sends a query
+// the engine throws on to SQL; this port has no SQL, so an engine failure is a
+// loud 500 and an empty/unloaded store is an EngineUnavailableError (dispatch
+// answers 503) — never a silent empty result.
 
 import { EngineUnavailableError } from "../engine/types";
-import { fallbackReady, fallbackSearch } from "../fallback/sql-search";
 import type { FilterValue } from "../parser";
 import { canonicalStringify } from "../parser";
 import type { CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn } from "./enums";
@@ -158,7 +155,7 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 
 	let totalCards: number;
 	let rawCards: CardRow[];
-	let compiled = "(rust engine)";
+	const compiled = "(rust engine)";
 	try {
 		const result = await timer.time("engine_query", () =>
 			engine.search({
@@ -178,35 +175,11 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 		if (err instanceof EngineUnavailableError) {
 			throw err;
 		}
-		// Upstream's fallback trigger: an engine that throws on a query it was
-		// handed sends the search to SQL. Here that is the D1 cards table —
-		// available once the import has fully synced it (fallback_meta); until
-		// then this port's original structured error stands.
-		if (!(await fallbackReady(ctx.env))) {
-			throw new EngineQueryError(`Engine query failed for ${JSON.stringify(query)}`, { cause: err });
-		}
-		try {
-			const result = await timer.time("sql_query", () =>
-				fallbackSearch(ctx.env, {
-					filterTree,
-					unique: opts.unique,
-					prefer: opts.prefer,
-					orderby: opts.orderby,
-					direction: opts.direction,
-					limit,
-					resolvedFields,
-				}),
-			);
-			totalCards = result.totalCards;
-			rawCards = result.cards as CardRow[];
-			compiled = "(d1 fallback)";
-			console.log(`Engine declined ${JSON.stringify(query)}; answered by the D1 SQL fallback`);
-		} catch (sqlErr) {
-			// The fallback could not express or execute the query either —
-			// surface the ORIGINAL engine failure (the primary path's error).
-			console.warn(`D1 fallback also failed for ${JSON.stringify(query)}: ${sqlErr}`);
-			throw new EngineQueryError(`Engine query failed for ${JSON.stringify(query)}`, { cause: err });
-		}
+		// DELIBERATE DEVIATION from upstream, restored: upstream falls back to
+		// SQL when the engine throws on a query it was handed. This port has no
+		// SQL to fall back to — the wasm engine is the only query path — so an
+		// engine failure is a loud 500 rather than a silently different answer.
+		throw new EngineQueryError(`Engine query failed for ${JSON.stringify(query)}`, { cause: err });
 	}
 	const cards = timer.time("engine_collect", () => [...rawCards]);
 

@@ -69,16 +69,8 @@ export interface StoreManifest {
 	format_version: number;
 	/** Uncompressed archive size; the wasm buffer is preallocated from this. */
 	store_bytes: number;
-	/** Chunk rows the store occupies in D1 (readers validate continuity by seq). */
+	/** KV chunks the store occupies; readers validate the total byte count. */
 	chunk_count?: number;
-	/**
-	 * Ordered content hashes of this store's chunks (see store-chunks.ts).
-	 * Present on every store published by the content-addressed path; ABSENT on
-	 * stores written by the older seq-indexed publisher, which readers still
-	 * have to load — a deploy that skips the import leaves yesterday's manifest
-	 * in place under today's Worker.
-	 */
-	chunks?: string[];
 	/**
 	 * Scryfall's `updated_at` for the bulk dump this store was built from. Lets
 	 * a deploy ask "has upstream actually changed?" instead of guessing from

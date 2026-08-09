@@ -26,12 +26,13 @@
 // Both non-zero exits make the caller import, which costs build minutes but
 // never leaves a deploy without an index. They are still kept apart, because
 // they mean opposite things about the deployment: 1 says the store really is
-// missing or stale, 2 says this script could not reach D1 — and a 2 reported
+// missing or stale, 2 says this script could not reach KV — and a 2 reported
 // as a 1 is a broken query that presents as an eternally-empty database, which
 // is exactly the failure this split exists to make visible. Every path says
 // why on stderr; callers must show that text, not discard it.
 
-import { d1Name } from "./project-config";
+import { MANIFEST_KEY } from "../src/engine/store-kv";
+import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
 /** Backstop only — see the header. A week covers "nothing upstream changed but
@@ -77,75 +78,54 @@ async function upstreamUpdatedAt(): Promise<number | null> {
 	}
 }
 
-// Spawned through wranglerArgv(), NOT `bunx` — this statement contains spaces,
-// and `bunx` under Workers Builds' bun splits them, which is precisely what
-// made this check fail on every deploy. See scripts/wrangler-cmd.ts.
+// Read the manifest straight out of KV. `kv key get` exits non-zero when the
+// key is absent, which is the "nothing published yet" answer rather than a
+// failure to ask — the two are kept apart below because they mean opposite
+// things about the deployment.
+const nsProc = Bun.spawn([...wranglerArgv(), "kv", "namespace", "list"], { stdout: "pipe", stderr: "pipe" });
+const nsOut = await new Response(nsProc.stdout).text();
+if ((await nsProc.exited) !== 0) {
+	console.error(`store-age: could not list KV namespaces —\n  ${nsOut.trim()}`);
+	process.exit(2);
+}
+let namespaceId: string | undefined;
+try {
+	const all = JSON.parse(nsOut.slice(nsOut.indexOf("["))) as { id?: string; title?: string }[];
+	namespaceId = all.find((n) => n.title === kvName)?.id;
+} catch {
+	console.error(`store-age: could not parse the KV namespace list —\n  ${nsOut.trim()}`);
+	process.exit(2);
+}
+if (!namespaceId) {
+	console.error(`store-age: no KV namespace named "${kvName}" — nothing has ever been published.`);
+	process.exit(1);
+}
+
 const proc = Bun.spawn(
-	[
-		...wranglerArgv(),
-		"d1",
-		"execute",
-		d1Name,
-		"--remote",
-		"-y",
-		"--json",
-		// Same config the seeder writes through, so a read and a write can never
-		// resolve to different databases.
-		"-c",
-		"wrangler.jsonc",
-		"--command",
-		"SELECT json FROM store_manifest WHERE id = 1",
-	],
+	[...wranglerArgv(), "kv", "key", "get", MANIFEST_KEY, "--namespace-id", namespaceId, "--remote"],
 	{ stdout: "pipe", stderr: "pipe" },
 );
 const out = await new Response(proc.stdout).text();
 const errText = await new Response(proc.stderr).text();
 if ((await proc.exited) !== 0) {
-	// Say why on stderr: "couldn't ask D1" and "no store yet" both mean the
-	// deploy imports, but only one of them is worth acting on (an ambiguous
-	// account needs CLOUDFLARE_ACCOUNT_ID, or every deploy re-imports).
-	// wrangler puts some failures (e.g. "more than one account available") on
-	// stdout rather than stderr, so fall back to whichever carried text.
-	//
-	// Print ALL of it, minus wrangler's own footer. A tail-of-3-lines slice
-	// looked tidy and reported this:
-	//
-	//   could not read the manifest from D1 — 🪵 Logs were written to "..."
-	//
-	// which is the one line carrying no information, because the actual error
-	// sits ABOVE the footer. A diagnostic that truncates the diagnosis is the
-	// same bug as the `2>/dev/null` this replaced, one layer further in.
 	const noise = /Logs were written to|^\s*$|^\s*🪵/;
 	const detail = (errText.trim() || out.trim() || "no output")
 		.split("\n")
 		.filter((line) => !noise.test(line))
 		.join("\n  ")
 		.trim();
-	// A database that has never been published to has no store_manifest table.
-	// That is an ANSWER — "nothing here yet" — not a failure to ask, and
-	// conflating the two turns a first deploy into an alarming red herring.
-	if (/no such table/i.test(detail)) {
-		console.error("store-age: this database has no store_manifest table — nothing has ever been published to it.");
+	// A namespace that has never been published to simply has no manifest key.
+	// That is an ANSWER — "nothing here yet" — not a failure to ask.
+	if (/not found|does not exist|no value/i.test(detail)) {
+		console.error("store-age: KV holds no manifest — nothing has ever been published.");
 		process.exit(1);
 	}
-	console.error(`store-age: could not read the manifest from D1 —\n  ${detail}`);
+	console.error(`store-age: could not read the manifest from KV —\n  ${detail}`);
 	process.exit(2);
 }
-
-// wrangler --json prints an array of result sets; a missing table is an error
-// (non-zero above), an empty table is an empty results array.
-let json: string | undefined;
-try {
-	const parsed = JSON.parse(out.slice(out.indexOf("["))) as { results?: { json?: string }[] }[];
-	json = parsed[0]?.results?.[0]?.json;
-} catch {
-	// wrangler exited 0 but did not hand back the result shape we parse. That
-	// is this script failing to read D1, not D1 saying the store is missing.
-	console.error(`store-age: could not parse wrangler's output —\n  ${out.trim().split("\n").join("\n  ")}`);
-	process.exit(2);
-}
+const json = out.trim();
 if (!json) {
-	console.error("store-age: store_manifest has no row — nothing has been published to this database yet.");
+	console.error("store-age: KV holds no manifest — nothing has been published yet.");
 	process.exit(1);
 }
 

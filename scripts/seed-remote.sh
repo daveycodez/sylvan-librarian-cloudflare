@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Seed PRODUCTION D1 with a natively-built store, so a first deploy is live
+# Seed PRODUCTION KV with a natively-built store, so a first deploy is live
 # immediately instead of waiting ~10 minutes for the in-Worker bootstrap.
 # Needs `wrangler login` credentials and the real database id in
 # wrangler.jsonc; the deployed Worker still needs zero configuration.
 #
-#   bun run seed:remote               # build + push the store (site goes live)
-#   bun run seed:remote --with-cards  # also push the SQL-fallback cards table
+#   bun run seed:remote               # build + push the store to KV
 #                                     # (~200k metered writes — paid plan;
 #                                     # on free let the nightly import fill it)
 #   bun run seed:remote --reuse ...   # skip the build, push the last built store
@@ -31,4 +30,4 @@ if [[ "$REUSE" != "1" ]]; then
     ./target/fast-native/sylvan-store-builder --out "$OUT_DIR"
 fi
 
-bun scripts/seed-remote-d1.ts "$OUT_DIR" ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}
+bun scripts/seed-remote-kv.ts "$OUT_DIR"

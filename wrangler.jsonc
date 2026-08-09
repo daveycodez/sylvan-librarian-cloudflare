@@ -17,25 +17,27 @@
 	// own manifest-poll staleness, and page HTML carries no card data.
 	"cache": { "enabled": true },
 
-	// The engine store lives here as chunk rows + a manifest, written by the
-	// ImportCoordinator DO and read by every isolate/SearchEngine DO. D1's
-	// free tier covers it (~70MB per store version, 3 versions kept), and —
-	// unlike R2 — enabling D1 needs no payment method on file. Nothing to fill
-	// in by hand: the deploy creates the database if absent and pins
-	// database_id to it (scripts/align-d1-binding.ts) before wrangler reads
-	// this file, which is also what repairs the binding after the database is
-	// deleted and recreated.
-	"d1_databases": [
+	// The engine store lives here: ~4 chunks of ~20MB plus a manifest, written
+	// by the deploy and the nightly cron, read by every SearchEngine DO. One
+	// copy serves every colo (KV caches it per-colo on immutable chunk keys),
+	// where the previous design kept a 70MB SQLite copy per Durable Object
+	// against the 5GB DO pool. A full load is ~5 metered reads and a full
+	// publish ~5 writes, against free-tier allowances of 100k reads and 1k
+	// writes per day. Nothing to fill in by hand: the deploy creates the
+	// namespace if absent and pins its id (scripts/align-kv-binding.ts) before
+	// wrangler reads this file, which also repairs the binding after a
+	// namespace is deleted and recreated.
+	"kv_namespaces": [
 		{
-			"binding": "STORE_DB",
-			"database_name": "sylvan-librarian"
+			"binding": "STORE_KV",
+			"id": "0000000000000000000000000000pending"
 		}
 	],
 
 	// ImportCoordinator is a plain SQLite-backed Durable Object: it serializes
 	// import runs (only one at a time) and executes the whole import pipeline
 	// itself via the wasm import module — Scryfall fetch, transform, tag
-	// resolution, aggregation, store build, D1 publish — in an alarm chain
+	// resolution, aggregation, store build, KV publish — in an alarm chain
 	// that keeps each invocation far below the isolate CPU allowance. No
 	// container, no external CI, no secrets.
 	"durable_objects": {

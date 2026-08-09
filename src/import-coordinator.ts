@@ -18,7 +18,7 @@
 //   agg       drafts pass 1: dedupe winners, illustration counts, cubecobra
 //   finalize  drafts pass 2: ENGINE_COLUMNS rows → spill blobs + row JSON
 //   build     spilled rows in build order → rkyv archive → chunk staging
-//   publish   chunks + manifest to D1 (manifest LAST — it is the commit
+//   publish   ~4 chunks + manifest to KV (manifest LAST — it is the commit
 //             point readers act on), prune old stores, clear staging
 //
 // Restart safety: every phase's inputs live in this DO's SQLite, and phase
@@ -29,17 +29,16 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
-import { chunkHash, GridChunker } from "./engine/store-chunks";
-import type { Env } from "./engine/types";
+import { GridChunker } from "./engine/store-chunks";
 import {
-	cardsRowValues,
-	ensureCardsSchema,
-	execCardsUpserts,
-	execVolatileUpdates,
-	isDailyLimitError,
-	meteredWrites,
-	structuralHash,
-} from "./fallback/cards-sync";
+	assembleChunk,
+	chunkCountFor,
+	chunkKey,
+	KV_CHUNK_BYTES,
+	MANIFEST_KEY,
+	type StagedRow,
+} from "./engine/store-kv";
+import type { Env } from "./engine/types";
 
 interface RunRecord {
 	state: "idle" | "starting" | "running" | "done" | "failed";
@@ -80,7 +79,7 @@ const MAX_WASM_REWINDS = 3;
  * therefore does not mean "a big import"; it means the same work is being done
  * repeatedly, which is exactly how 4.5M reads were once spent in a day —
  * blocking the storage API account-wide and knocking every search DO onto a
- * 15-second D1 fallback.
+ * 15-second load.
  *
  * Better to abandon a run and serve yesterday's index than to finish one and
  * take search down until midnight UTC.
@@ -111,6 +110,12 @@ const MAX_DAY_ROWS_WRITTEN = 60_000;
 const DAY_PREFIX = "day:";
 
 /** An import failure that retrying cannot fix, so the run stops at once. */
+/** A platform daily-quota rejection (KV writes, DO storage): distinguishable
+ * from a transient failure because backoff cannot clear it before midnight. */
+function isQuotaError(err: unknown): boolean {
+	return /daily limit|exceeded your|too many writes|quota/i.test(String(err));
+}
+
 class FatalImportError extends Error {}
 
 // Slice budgets — sized so a slice stays far under the 30s DO CPU allowance.
@@ -126,58 +131,16 @@ const AGG_SLICE_BATCHES = 8;
  * tags+aggregates+interners (~90MB at full corpus) — small slices keep the
  * isolate total well under 128MB. */
 const FINALIZE_SLICE_BATCHES = 4;
-/** Raw chunk bytes copied to D1 per publish slice.
- *
- * The binding is the D1 binding's RPC limit — "Serialized RPC arguments or
- * return values are limited to 32MiB" — NOT the raw byte count. Blobs inflate
- * on the way across: a measured 18MB of chunks (20 x 900KB) serialized to
- * 47.5MB, a factor of ~2.6. This budget is set so that even a 4x factor stays
- * under half the limit, because blowing it fails the whole publish. */
-const PUBLISH_SLICE_BYTES = 4 * 1024 * 1024;
-/** Upper bound on statements per publish batch, independent of size. */
-const PUBLISH_SLICE_CHUNKS = 20;
-
 /** Drafts per SQLite batch row (~1.5MB of draft JSON, under the 2MB value cap). */
 const DRAFTS_PER_BATCH = 1_000;
 /** SQLite blob row size for staged dumps and tag-data snapshots. */
 const STAGE_BLOB_BYTES = 1_900_000;
 /** Lines per wasm transform call within a slice. */
 const LINES_PER_CALL = 2_000;
-/** Published store versions kept in D1 for isolates mid-swap. One previous
- * version is enough for that; more just consumes the free plan's 500MB D1
- * ceiling, which a ~75MB store and a ~100MB cards table already share. */
+/** Published store versions kept in KV for readers mid-stream and rollback.
+ * One previous version covers both; more just consumes the free plan's 1GB
+ * KV ceiling at ~70MB apiece. */
 const KEEP_STORES = 2;
-/** D1's cap on bound parameters in one statement. */
-const D1_MAX_BOUND_PARAMS = 100;
-/** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
-const CARDS_SYNC_BATCHES = 4;
-/** Evictions tolerated before the cards sync gives up for this run: its diff
- * basis is in-memory, so each one restarts the phase, and without a bound that
- * is an alarm chain that never ends. */
-const CARDS_MAX_RESTARTS = 3;
-/** Cards-table write pacing is ADAPTIVE by default: a run writes until D1
- * itself reports the free plan's hard daily-limit error (~100k metered rows
- * written/day, index maintenance included, reset 00:00 UTC), then remembers
- * where that ceiling sits so later runs pace below it without hitting the
- * error again. A paid account never produces the error, so the whole table
- * fills in the first run with zero configuration — this is how the import
- * "detects" the plan, from the platform's own signal rather than an API
- * token. The learned ceiling is re-probed monthly (CEILING_RELEARN_MS) so a
- * free→paid upgrade is picked up automatically. Setting the
- * CARDS_WRITE_BUDGET var opts out of all of this: a fixed metered-write cap
- * per run (0 disables the fallback table entirely). */
-const CEILING_RELEARN_MS = 30 * 24 * 60 * 60 * 1000;
-/** Headroom kept under an observed daily limit (publish + deletes share it). */
-const CEILING_SAFETY = 0.9;
-const CEILING_FLOOR = 10_000;
-/** A single run writing this many metered rows without a daily-limit error is
- * evidence of a paid plan (the free quota is ~100k/day) — recorded as the
- * plan hint that lifts the shard cap (src/engine/plan-hint.ts). */
-const PAID_HINT_WRITES = 120_000;
-/** Volatile-column refresh rows per alarm slice — also the per-run total
- * whenever a finite ceiling applies (full price-refresh cycle ≈ a week on
- * the free plan; unmetered runs drain the whole corpus in these slices). */
-const VOLATILE_REFRESH_ROWS = 12_000;
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
 const PARSE_COVERAGE_THRESHOLD = 0.8;
@@ -197,7 +160,7 @@ type Phase =
 	| "finalize"
 	| "build"
 	| "publish"
-	| "cards";
+	| "publish";
 
 /** `sylvan-librarian-worker/<YYYYMMDD>` — Scryfall rejects default UAs. */
 function userAgent(): string {
@@ -243,7 +206,7 @@ function blobBytes(value: unknown): Uint8Array {
 	throw new Error(`spill lookup returned unexpected blob type ${typeof value}`);
 }
 
-/** Copy to an exact ArrayBuffer: SQL/D1 blob params must not be views. */
+/** Copy to an exact ArrayBuffer: SQL blob params must not be views. */
 function exactBuffer(bytes: Uint8Array): ArrayBuffer {
 	const out = new ArrayBuffer(bytes.byteLength);
 	new Uint8Array(out).set(bytes);
@@ -260,7 +223,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ceilings (5M read, 100k written per day) are day-scoped: spend them and
 	// the storage API starts throwing for everything, which is how an import
 	// loop once took the search wake path down with it — every DO lost its
-	// local store copy at once and fell back to a 15s D1 load.
+	// local store copy at once and fell back to a 15s reload.
 	//
 	// So the import counts what it spends, out of the runtime's own accounting
 	// rather than an estimate of ours, and stops itself before it can spend a
@@ -494,17 +457,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 				await this.ctx.storage.deleteAlarm();
 				return;
 			}
-			if (isDailyLimitError(err)) {
-				// D1's daily quota resets at 00:00 UTC — minutes of backoff can't
+			if (isQuotaError(err)) {
+				// A daily quota resets at 00:00 UTC — minutes of backoff cannot
 				// clear it, so retrying is pure churn. Fail the run with the real
-				// reason; the next scheduled import restarts on fresh quota. (The
-				// cards phase absorbs this error itself in adaptive mode; reaching
-				// here means an earlier phase — publish — or a fixed
-				// CARDS_WRITE_BUDGET set above the account's actual daily limit.)
-				console.error(`Import stopped by D1 daily limit in phase ${phase}:`, err);
+				// reason; the next scheduled import restarts on fresh quota.
+				console.error(`Import stopped by a platform daily limit in phase ${phase}:`, err);
 				run.state = "failed";
 				run.finishedAt = new Date().toISOString();
-				run.detail = `${phase}: D1 daily write limit reached — the next scheduled import retries on fresh quota`;
+				run.detail = `${phase}: daily write limit reached — the next scheduled import retries on fresh quota`;
 				this.metaSet("phase", "idle");
 				await this.ctx.storage.put("run", run);
 				await this.ctx.storage.deleteAlarm();
@@ -597,8 +557,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepBuild();
 			case "publish":
 				return this.stepPublish();
-			case "cards":
-				return this.stepCards();
 			default: {
 				if (phase.startsWith("fetch:")) {
 					return this.stepFetch(phase.slice("fetch:".length) as DumpKind);
@@ -1224,13 +1182,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		sql.exec("DELETE FROM chunk_staging");
 		let chunkSeq = -1;
-		// Stage on the SHARED grid, not on whatever sizes wasm hands back. The
-		// publish step content-addresses these rows, and a chunk only matches
-		// one the deploy-time seeder already uploaded if both were cut at the
-		// same offsets — wasm's ~900KB chunks are not a multiple of the grid, so
-		// bytes have to be carried across its boundaries. Costs ~1.7k extra DO
-		// row writes per import (of a 100k/day budget) and buys a publish that
-		// writes only what changed.
+		// Stage on the STAGING grid — rows just under the DO's 2MB per-value
+		// cap, which is as large as they can be. Publishing to KV shares a grid
+		// with nobody (it re-cuts these into ~20MB KV chunks), and the old
+		// 40,000-byte grid cost ~1,750 DO row writes per import against a
+		// 100k/day budget. At 1.9MB a 70MB store stages in ~37 rows.
 		const grid = new GridChunker();
 		const stage = (b: Uint8Array) => {
 			sql.exec("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
@@ -1259,155 +1215,70 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("chunk_count", String(chunkSeq + 1));
 			this.metaSet("built_at", String(Math.floor(Date.now() / 1000)));
-			this.metaSet("chunks_published", "0");
+			this.metaSet("kv_chunks_published", "0");
+			this.metaSet("kv_cursor_seq", "0");
+			this.metaSet("kv_cursor_off", "0");
 			this.metaSet("phase", "publish");
 		});
 	}
 
-	// ── phase: publish (D1) ────────────────────────────────────────────────────
+	// ── phase: publish (KV) ────────────────────────────────────────────────────
+	//
+	// The store goes to KV as a handful of ~20MB chunks plus a manifest, and
+	// that is the entire publish. What this replaces was a content-addressed
+	// 40,000-byte grid in D1 with hash lookups, reuse accounting and
+	// prune-by-reference — machinery that existed solely to keep ~1,800 row
+	// writes per store under the free plan's daily quota. Four KV writes a
+	// night against a 1,000/day allowance needs none of it.
+	//
+	// Still sliced across alarms, for CPU rather than quota: each slice
+	// assembles ONE ~20MB chunk out of the staged rows and puts it, so no
+	// invocation holds more than one chunk or runs long enough to be cut off.
+	// The manifest is written last — it is the commit point, and until it
+	// lands readers keep serving the previous store.
 
 	private storeKey(): string {
 		return `card-store-v${groupWasm().formatVersion()}-${this.metaGet("built_at")}.store`;
 	}
 
-	/**
-	 * Content-address every staged chunk, in staging order.
-	 *
-	 * Read in small batches and materialised with toArray() rather than held
-	 * open across the awaits: a storage cursor spanning an await is exactly the
-	 * kind of thing that breaks when the isolate is reset mid-phase, and this
-	 * loop is long enough for that to matter.
-	 */
-	private async hashStagedChunks(): Promise<string[]> {
-		const total = Number(this.metaGet("chunk_count") ?? 0);
-		const hashes: string[] = [];
-		const BATCH = 32;
-		for (let from = 0; from < total; from += BATCH) {
-			const rows = this.sqlAll("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", from, BATCH);
-			if (rows.length === 0) break;
-			for (const row of rows) {
-				hashes.push(await chunkHash(new Uint8Array(row.bytes as ArrayBuffer)));
-			}
-		}
-		if (hashes.length !== total) {
-			throw new Error(`chunk staging is short: hashed ${hashes.length} of ${total}`);
-		}
-		return hashes;
-	}
-
-	/**
-	 * The staging seqs whose chunks D1 does not already hold — the upload list.
-	 *
-	 * Returns seqs rather than hashes because the bytes are addressed by seq in
-	 * staging, and dedupes by hash so a chunk repeated within one store is
-	 * uploaded once. Batched at D1_MAX_BOUND_PARAMS: D1 caps bound parameters
-	 * per statement, and the whole point is to ask about ~1.8k of them.
-	 */
-	private async missingFromD1(hashes: string[]): Promise<number[]> {
-		const db = this.env.STORE_DB;
-		const firstSeq = new Map<string, number>();
-		for (let seq = 0; seq < hashes.length; seq++) {
-			const hash = hashes[seq] as string;
-			if (!firstSeq.has(hash)) firstSeq.set(hash, seq);
-		}
-		const unique = [...firstSeq.keys()];
-		const present = new Set<string>();
-		for (let from = 0; from < unique.length; from += D1_MAX_BOUND_PARAMS) {
-			const batch = unique.slice(from, from + D1_MAX_BOUND_PARAMS);
-			const res = await db
-				.prepare(`SELECT hash FROM store_blobs WHERE hash IN (${batch.map(() => "?").join(",")})`)
-				.bind(...batch)
-				.all<{ hash: string }>();
-			for (const row of res.results ?? []) present.add(row.hash);
-		}
-		return unique.filter((h) => !present.has(h)).map((h) => firstSeq.get(h) as number);
+	/** Staging-backed reader for assembleChunk (see src/engine/store-kv.ts). */
+	private stagedRows(fromSeq: number, limit: number): StagedRow[] {
+		return this.sqlAll("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", fromSeq, limit).map(
+			(row) => ({ seq: Number(row.seq), bytes: new Uint8Array(row.bytes as ArrayBuffer) }),
+		);
 	}
 
 	private async stepPublish(): Promise<void> {
-		const db = this.env.STORE_DB;
-		const published = Number(this.metaGet("chunks_published") ?? 0);
-		const chunkCount = Number(this.metaGet("chunk_count") ?? 0);
 		const storeKey = this.storeKey();
+		const storeBytes = Number(this.metaGet("build_store_bytes") ?? 0);
+		if (!storeBytes) throw new Error("publish: the build recorded no store size");
+		const kvTotal = chunkCountFor(storeBytes);
+		const published = Number(this.metaGet("kv_chunks_published") ?? 0);
 
-		// Prepared once per run, tracked separately from upload progress: the
-		// first upload slice still has chunks_published === 0, so keying this
-		// off that counter would re-hash the whole store on every alarm.
-		if (this.metaGet("publish_prepared") !== "1") {
-			await db.batch([
-				db.prepare("CREATE TABLE IF NOT EXISTS store_blobs (hash TEXT PRIMARY KEY, bytes BLOB NOT NULL)"),
-				db.prepare(
-					"CREATE TABLE IF NOT EXISTS store_chunks (store_key TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (store_key, seq))",
-				),
-				db.prepare(
-					"CREATE TABLE IF NOT EXISTS store_manifest (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)",
-				),
-				db.prepare(
-					"CREATE TABLE IF NOT EXISTS store_history (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL)",
-				),
-				db.prepare(
-					"CREATE TABLE IF NOT EXISTS store_versions (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL, json TEXT NOT NULL)",
-				),
-			]);
-			// Hash every staged chunk and ask D1 which it already holds. Done
-			// once, in its own slice, because both halves are bounded work that
-			// the upload slices should not repeat: ~1.8k hashes over 70MB of
-			// staged bytes (streamed a row at a time, so peak memory is one
-			// chunk), then a handful of lookup queries.
-			const hashes = await this.hashStagedChunks();
-			const missing = await this.missingFromD1(hashes);
+		// One chunk per slice. A put that lands but whose marker rolls back (the
+		// alarm threw afterwards, the isolate went away) simply re-puts the same
+		// key with the same bytes on retry — keys are stable per store, so the
+		// write is idempotent and needs no reconciliation.
+		if (published < kvTotal) {
+			const want = Math.min(KV_CHUNK_BYTES, storeBytes - published * KV_CHUNK_BYTES);
+			const { bytes, cursor } = assembleChunk(
+				want,
+				{ seq: Number(this.metaGet("kv_cursor_seq") ?? 0), off: Number(this.metaGet("kv_cursor_off") ?? 0) },
+				(fromSeq, limit) => this.stagedRows(fromSeq, limit),
+			);
+			await this.env.STORE_KV.put(chunkKey(storeKey, published), bytes);
 			this.ctx.storage.transactionSync(() => {
-				this.metaSet("chunk_hashes", JSON.stringify(hashes));
-				this.metaSet("publish_missing", JSON.stringify(missing));
-				this.metaSet("chunks_published", "0");
-				this.metaSet("publish_prepared", "1");
+				this.metaSet("kv_chunks_published", String(published + 1));
+				this.metaSet("kv_cursor_seq", String(cursor.seq));
+				this.metaSet("kv_cursor_off", String(cursor.off));
 			});
 			console.log(
-				`Publish: ${hashes.length} chunks, ${hashes.length - missing.length} already in D1 ` +
-					`(${((100 * (hashes.length - missing.length)) / Math.max(1, hashes.length)).toFixed(1)}% reused), ` +
-					`${missing.length} to upload.`,
-			);
-			if (missing.length > 0) return; // next alarm starts uploading
-		}
-
-		const missing = JSON.parse(this.metaGet("publish_missing") ?? "[]") as number[];
-		const remaining = missing.slice(published);
-		// Trim the batch to PUBLISH_SLICE_BYTES of raw chunk data. Always send
-		// at least one chunk, so an oversized chunk fails loudly on its own
-		// rather than stalling the phase forever at zero progress.
-		const take: { seq: number; bytes: ArrayBuffer; hash: string }[] = [];
-		let takeBytes = 0;
-		const hashList = JSON.parse(this.metaGet("chunk_hashes") ?? "[]") as string[];
-		for (const seq of remaining.slice(0, PUBLISH_SLICE_CHUNKS)) {
-			const row = this.sqlAll("SELECT bytes FROM chunk_staging WHERE seq = ?", seq)[0];
-			if (!row) throw new Error(`chunk staging is missing seq ${seq}`);
-			const bytes = row.bytes as ArrayBuffer;
-			if (take.length > 0 && takeBytes + bytes.byteLength > PUBLISH_SLICE_BYTES) break;
-			take.push({ seq, bytes, hash: hashList[seq] as string });
-			takeBytes += bytes.byteLength;
-		}
-		if (take.length > 0) {
-			// OR IGNORE, because the D1 write and the chunks_published marker
-			// cannot commit together: D1 is external to this DO's storage, so a
-			// slice whose batch landed but whose marker rolled back (the alarm
-			// threw afterwards, the isolate went away) retries the same chunks.
-			// A plain INSERT turns that into a permanent UNIQUE violation on the
-			// hash that no number of retries can clear — and identical content
-			// under the same hash makes ignoring it exactly right.
-			const stmt = db.prepare("INSERT OR IGNORE INTO store_blobs (hash, bytes) VALUES (?, ?)");
-			await db.batch(take.map((c) => stmt.bind(c.hash, c.bytes)));
-			this.metaSet("chunks_published", String(published + take.length));
-			console.log(
-				`Publish slice: ${take.length} chunks (${(takeBytes / 1048576).toFixed(1)}MB), ` +
-					`${published + take.length}/${missing.length} uploaded`,
+				`Publish slice: KV chunk ${published + 1}/${kvTotal} (${(want / 1048576).toFixed(1)}MB) for ${storeKey}`,
 			);
 			return; // next alarm continues
 		}
-		if (published < missing.length) {
-			throw new Error(`chunk staging is short: ${published}/${missing.length}`);
-		}
 
-		// Every chunk is in D1 — write the manifest LAST (the commit point),
-		// then prune old stores and clear staging.
+		// Every chunk is in KV — write the manifest LAST (the commit point).
 		const manifest = {
 			store_key: storeKey,
 			built_at: this.metaGet("built_at") ?? "",
@@ -1415,402 +1286,42 @@ export class ImportCoordinator extends DurableObject<Env> {
 			printing_count: Number(this.metaGet("build_printing_count") ?? 0),
 			upstream_commit: "vendored", // UPSTREAM.lock is a build-time concern; readers ignore this field
 			format_version: groupWasm().formatVersion(),
-			store_bytes: Number(this.metaGet("build_store_bytes") ?? 0),
-			chunk_count: chunkCount,
-			chunks: hashList,
+			store_bytes: storeBytes,
+			chunk_count: kvTotal,
 			source_updated_at: this.metaGet("source_updated_at") ?? undefined,
 		};
-		const manifestJson = JSON.stringify(manifest);
-		const now = Date.now();
-		await db.batch([
-			db.prepare("INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, ?)").bind(manifestJson),
-			db.prepare("INSERT OR REPLACE INTO store_history (store_key, published_at) VALUES (?, ?)").bind(storeKey, now),
-			db
-				.prepare("INSERT OR REPLACE INTO store_versions (store_key, published_at, json) VALUES (?, ?, ?)")
-				.bind(storeKey, now, manifestJson),
-		]);
-		// Prune stores older than the KEEP_STORES most recent. A blob survives
-		// while any kept version still lists it — that is what makes sharing
-		// safe, since the chunks this store has in common with its predecessor
-		// are one set of rows with two referents. The legacy seq-indexed
-		// store_chunks rows drain on the same schedule, as the versions that
-		// own them age out.
-		const old = await db
-			.prepare("SELECT store_key FROM store_history ORDER BY published_at DESC LIMIT -1 OFFSET ?")
-			.bind(KEEP_STORES)
-			.all<{ store_key: string }>();
-		for (const row of old.results ?? []) {
-			await db.batch([
-				db.prepare("DELETE FROM store_chunks WHERE store_key = ?").bind(row.store_key),
-				db.prepare("DELETE FROM store_versions WHERE store_key = ?").bind(row.store_key),
-				db.prepare("DELETE FROM store_history WHERE store_key = ?").bind(row.store_key),
-			]);
-		}
-		if ((old.results ?? []).length > 0) {
-			await db
-				.prepare(
-					"DELETE FROM store_blobs WHERE hash NOT IN (SELECT je.value FROM store_versions v, json_each(v.json, '$.chunks') je)",
-				)
-				.run();
+		await this.env.STORE_KV.put(MANIFEST_KEY, JSON.stringify(manifest));
+
+		// Retention: keep this store and the one before it. The predecessor
+		// stays addressable so a reader that started streaming it finishes, and
+		// so one bad build can be rolled back by republishing the older
+		// manifest. History lives in this DO's own storage — one row, and no
+		// metered KV list operations.
+		const previous = JSON.parse(this.metaGet("kv_store_history") ?? "[]") as string[];
+		const history = [storeKey, ...previous].filter((key, at, all) => all.indexOf(key) === at).slice(0, KEEP_STORES);
+		for (const key of previous.filter((k) => !history.includes(k))) {
+			// Best effort: a chunk that fails to delete costs 20MB of a 1GB
+			// allowance and gets another chance next publish. Never fail a
+			// completed publish over cleanup.
+			for (let seq = 0; seq < kvTotal + 2; seq++) {
+				try {
+					await this.env.STORE_KV.delete(chunkKey(key, seq));
+				} catch (err) {
+					console.warn(`Retention: could not delete ${chunkKey(key, seq)}: ${err}`);
+				}
+			}
+			console.log(`Retention: dropped store ${key} from KV`);
 		}
 
-		// The store is live. The engine no longer needs the wasm group; the
-		// cards-table sync (SQL fallback data) runs next with plain JS.
+		// The store is live and the import is done — there is no phase after
+		// publish now that the SQL fallback is gone.
 		dropGroupWasm();
-		console.log(`Store published: ${storeKey} (${manifest.card_count} cards)`);
+		console.log(`Store published to KV: ${storeKey} (${manifest.card_count} cards, ${kvTotal} chunks)`);
 		this.ctx.storage.transactionSync(() => {
-			this.metaSet("cards_synced", "0");
-			this.metaSet("cards_writes_used", "0");
-			this.metaSet("phase", "cards");
-		});
-	}
-
-	// ── phase: cards (D1 SQL-fallback table sync) ──────────────────────────────
-	//
-	// Maintains the queryable `cards` table the D1 SQL fallback reads — the
-	// same finalized ENGINE_COLUMNS rows the store was built from, hash-diffed
-	// so steady-state nightly writes are small. Write pacing is adaptive (see
-	// the CEILING_* constants): unlimited until D1's own daily-limit error
-	// reveals a free-plan account, so paid accounts fill the table in one run
-	// and free accounts learn their real ceiling instead of guessing.
-	// fallback_meta.complete flips only when the table matches the import, and
-	// the Worker keeps upstream's structured error until then.
-
-	/**
-	 * Resolve this run's metered-write ceiling. CARDS_WRITE_BUDGET set →
-	 * fixed cap (0 disables the table). Unset → adaptive: Infinity until a
-	 * run has observed the daily-limit error, then the learned ceiling until
-	 * it expires (CEILING_RELEARN_MS) and the next run probes again.
-	 */
-	private async writeCeiling(): Promise<{ fixed: boolean; ceiling: number }> {
-		const parsed = Number.parseInt((this.env as { CARDS_WRITE_BUDGET?: string }).CARDS_WRITE_BUDGET ?? "", 10);
-		if (!Number.isNaN(parsed)) return { fixed: true, ceiling: parsed };
-		const learned = await this.ctx.storage.get<{ ceiling: number; learnedAt: string }>("d1_write_ceiling");
-		if (!learned) return { fixed: false, ceiling: Number.POSITIVE_INFINITY };
-		if (Date.now() - Date.parse(learned.learnedAt) > CEILING_RELEARN_MS) {
-			await this.ctx.storage.delete("d1_write_ceiling");
-			return { fixed: false, ceiling: Number.POSITIVE_INFINITY };
-		}
-		return { fixed: false, ceiling: learned.ceiling };
-	}
-
-	/** Remember where D1's daily limit interrupted us, with safety headroom. */
-	private async learnCeiling(writesUsed: number): Promise<void> {
-		const ceiling = Math.max(CEILING_FLOOR, Math.floor(writesUsed * CEILING_SAFETY));
-		await this.ctx.storage.put("d1_write_ceiling", { ceiling, learnedAt: new Date().toISOString() });
-		console.warn(`D1 daily write limit hit after ~${writesUsed} metered writes; learned per-run ceiling ${ceiling}`);
-		// Best effort now (the quota that just ran out may reject it) — the
-		// next run re-records it on fresh quota (see stepCards init).
-		await this.setPlanHint("free");
-	}
-
-	/**
-	 * Record observed plan evidence where isolates can read it (plan-aware
-	 * shard cap, src/engine/plan-hint.ts). Advisory — never fails a run.
-	 */
-	private async setPlanHint(plan: "free" | "paid"): Promise<void> {
-		try {
-			const db = this.env.STORE_DB;
-			await db.batch([
-				db.prepare(
-					"CREATE TABLE IF NOT EXISTS plan_meta (id INTEGER PRIMARY KEY CHECK (id = 1), plan TEXT NOT NULL, observed_at INTEGER NOT NULL)",
-				),
-				db.prepare("INSERT OR REPLACE INTO plan_meta (id, plan, observed_at) VALUES (1, ?, ?)").bind(plan, Date.now()),
-			]);
-		} catch (err) {
-			console.warn(`Plan hint (${plan}) not recorded: ${err}`);
-		}
-	}
-
-	private async stepCards(): Promise<void> {
-		const db = this.env.STORE_DB;
-		const sql = this.ctx.storage.sql;
-		const synced = Number(this.metaGet("cards_synced") ?? 0);
-		const writesUsed = Number(this.metaGet("cards_writes_used") ?? 0);
-		const staged = Number(this.metaGet("staged_rows") ?? 0);
-		const { fixed, ceiling } = await this.writeCeiling();
-		const completeDetail = () =>
-			`published ${this.storeKey()} (${this.metaGet("build_card_count")} cards, ${staged} printings; fallback table complete)`;
-
-		// Volatile drain: the table is already complete for this store version;
-		// remaining alarm slices refresh price/EDHREC columns for the rows the
-		// ceiling allows (the whole corpus when unmetered).
-		const volatileLeft = Number(this.metaGet("cards_volatile_left") ?? 0);
-		if (volatileLeft > 0) {
-			const headroom = Number.isFinite(ceiling) ? Math.max(0, ceiling - writesUsed) : volatileLeft;
-			const want = Math.min(volatileLeft, VOLATILE_REFRESH_ROWS, headroom);
-			if (want <= 0) {
-				await this.finishRun(completeDetail());
-				return;
-			}
-			let refreshed: { rows: number; writes: number };
-			try {
-				refreshed = await this.refreshVolatile(want, staged);
-			} catch (err) {
-				if (!fixed && isDailyLimitError(err)) {
-					await this.learnCeiling(writesUsed);
-					await this.finishRun(`${completeDetail()} — daily write limit reached mid price-refresh`);
-					return;
-				}
-				throw err;
-			}
-			this.ctx.storage.transactionSync(() => {
-				this.metaSet("cards_volatile_left", String(Math.max(0, volatileLeft - refreshed.rows)));
-				this.metaSet("cards_writes_used", String(writesUsed + refreshed.writes));
-			});
-			if (refreshed.rows === 0 || volatileLeft - refreshed.rows <= 0) {
-				// A full unmetered run past the free quota without an error is
-				// how a paid plan reveals itself.
-				if (!fixed && !Number.isFinite(ceiling) && writesUsed + refreshed.writes >= PAID_HINT_WRITES) {
-					await this.setPlanHint("paid");
-				}
-				await this.finishRun(completeDetail());
-			}
-			return;
-		}
-
-		if (synced === 0) {
-			await ensureCardsSchema(db);
-			// A learned ceiling means the daily-limit error was observed — make
-			// sure the plan hint reflects it now that quota is fresh (the
-			// attempt at learn time may itself have been over quota).
-			if (!fixed && Number.isFinite(ceiling)) {
-				await this.setPlanHint("free");
-			}
-			// Existing content hashes: the diff basis for this sync.
-			const existing = await db.prepare("SELECT scryfall_id, row_hash FROM cards").all<{
-				scryfall_id: string;
-				row_hash: string;
-			}>();
-			this.cardsHashes = new Map((existing.results ?? []).map((r) => [r.scryfall_id, r.row_hash]));
-			this.cardsSeen = new Set();
-			await db
-				.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 0, ?)")
-				.bind(this.storeKey(), this.cardsHashes.size)
-				.run();
-		}
-		if (!this.cardsHashes || !this.cardsSeen) {
-			// Eviction dropped the in-memory diff basis — restart the phase from
-			// the FIRST batch. cards_batch_done must reset too: cardsSeen is the
-			// set of ids this run has looked at, and the tail step deletes every
-			// card missing from it. Resuming mid-way would leave cardsSeen
-			// holding only the remaining batches and delete the rest of the
-			// table as "no longer in the import".
-			// Restarting from scratch on every eviction is the one path here that
-			// could loop forever — a DO evicted faster than the sync completes
-			// would rebuild the diff basis (a ~98k-row D1 read) and start over
-			// indefinitely, keeping the alarm chain alive for no progress. Give
-			// up after a few and let the next nightly import continue; the store
-			// is already live and the fallback table is additive.
-			const restarts = Number(this.metaGet("cards_restarts") ?? 0) + 1;
-			if (restarts > CARDS_MAX_RESTARTS) {
-				await this.finishRun(
-					`published ${this.storeKey()}; cards table sync abandoned after ${CARDS_MAX_RESTARTS} evictions — the next import continues it`,
-				);
-				return;
-			}
-			console.warn(
-				`Cards sync lost its diff basis to eviction; restarting from batch 0 (${restarts}/${CARDS_MAX_RESTARTS})`,
-			);
-			this.ctx.storage.transactionSync(() => {
-				this.metaSet("cards_restarts", String(restarts));
-				this.metaSet("cards_synced", "0");
-				this.metaSet("cards_batch_done", "0");
-				this.metaSet("cards_upserted", "0");
-			});
-			return;
-		}
-
-		// A CARDS_WRITE_BUDGET of 0 is meaningful: it disables the fallback
-		// table entirely (fallback_meta.complete never flips; the engine-only
-		// behavior stands). A learned ceiling ends the run the same way — the
-		// next nightly import continues from its own fresh diff.
-		if (writesUsed >= ceiling) {
-			await this.finishRun(
-				`published ${this.storeKey()}; cards table ${synced}/${staged} rows synced (write ${fixed ? "budget" : "ceiling"} reached — completes over upcoming imports)`,
-			);
-			return;
-		}
-
-		const batchRows = sql
-			.exec(
-				"SELECT seq, count, bytes FROM row_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
-				Number(this.metaGet("cards_batch_done") ?? 0),
-				CARDS_SYNC_BATCHES,
-			)
-			.toArray();
-		let processed = 0;
-		const upserts: Record<string, unknown>[] = [];
-		for (const batch of batchRows) {
-			for (const blob of splitBatch(new Uint8Array(batch.bytes as ArrayBuffer))) {
-				const rowJson = new TextDecoder().decode(blob);
-				const row = JSON.parse(rowJson) as Record<string, unknown>;
-				const id = String(row.scryfall_id);
-				this.cardsSeen.add(id);
-				// Structural hash only: daily price/EDHREC churn is not a delta.
-				const hash = structuralHash(row);
-				if (this.cardsHashes.get(id) !== hash) {
-					upserts.push(cardsRowValues(row, hash));
-				}
-				processed++;
-			}
-		}
-		let writes = 0;
-		if (upserts.length > 0) {
-			try {
-				writes = await execCardsUpserts(db, upserts);
-			} catch (err) {
-				if (!fixed && isDailyLimitError(err)) {
-					// The probe found the free plan's daily limit. Remember it and
-					// finish cleanly — the table completes over upcoming imports,
-					// which pace under the learned ceiling and never error again.
-					await this.learnCeiling(writesUsed);
-					await this.finishRun(
-						`published ${this.storeKey()}; cards table ${synced}/${staged} rows synced (D1 daily write limit reached — learned pacing for upcoming imports)`,
-					);
-					return;
-				}
-				throw err;
-			}
-		}
-
-		const done = batchRows.length < CARDS_SYNC_BATCHES;
-		const upserted = Number(this.metaGet("cards_upserted") ?? 0) + upserts.length;
-		this.ctx.storage.transactionSync(() => {
-			this.metaSet("cards_batch_done", String(Number(this.metaGet("cards_batch_done") ?? 0) + batchRows.length));
-			this.metaSet("cards_synced", String(synced + processed));
-			this.metaSet("cards_writes_used", String(writesUsed + writes));
-			this.metaSet("cards_upserted", String(upserted));
-		});
-		// This phase was silent, which made a normal multi-minute sync look like
-		// a runaway alarm loop with nothing to explain it.
-		console.log(
-			`Cards sync slice: ${processed} rows examined (${synced + processed}/${staged}), ` +
-				`${upserts.length} upserted, ${writes} metered writes`,
-		);
-		if (!done) return;
-
-		// All rows examined: remove cards this import no longer carries, then
-		// mark the fallback complete for this store version.
-		let tailWrites = 0;
-		try {
-			const stale = await db.prepare("SELECT scryfall_id FROM cards").all<{ scryfall_id: string }>();
-			const deletions = (stale.results ?? []).map((r) => r.scryfall_id).filter((id) => !this.cardsSeen?.has(id));
-			for (let at = 0; at < deletions.length; at += 50) {
-				const slice = deletions.slice(at, at + 50);
-				const results = await db.batch(
-					slice.map((id) => db.prepare("DELETE FROM cards WHERE scryfall_id = ?").bind(id)),
-				);
-				tailWrites += meteredWrites(results, slice.length);
-			}
-			await db
-				.prepare("INSERT OR REPLACE INTO fallback_meta (id, store_key, complete, synced_rows) VALUES (1, ?, 1, ?)")
-				.bind(this.storeKey(), staged)
-				.run();
-		} catch (err) {
-			if (!fixed && isDailyLimitError(err)) {
-				await this.learnCeiling(writesUsed + writes + tailWrites);
-				await this.finishRun(
-					`published ${this.storeKey()}; cards table ${synced + processed}/${staged} rows synced (D1 daily write limit reached — learned pacing for upcoming imports)`,
-				);
-				return;
-			}
-			throw err;
-		}
-
-		// Queue the volatile-column refresh (prices, EDHREC — churn the
-		// structural sync never sees).
-		//
-		// A run must do a BOUNDED amount of this and then stop: the alarm chain
-		// is what wakes this Durable Object, so anything still queued here keeps
-		// it awake, burning CPU on a schedule nobody asked for. So:
-		//   - rows this run just upserted already carry today's prices; there is
-		//     nothing to refresh. A first import rewrites the whole corpus, so
-		//     its refresh target is zero and the run ends here.
-		//   - otherwise refresh at most one slice's worth, which rotates the
-		//     corpus over ~8 nightly runs (volatile_pos persists across runs).
-		// Cost of getting this wrong, before the cap: a paid-plan run refreshed
-		// all ~98k rows it had just written — a second full pass of D1 writes
-		// and ~9 extra alarms per night for no change in the data.
-		const used = writesUsed + writes + tailWrites;
-		const remaining = Number.isFinite(ceiling) ? Math.max(0, ceiling - used) : VOLATILE_REFRESH_ROWS;
-		const stale = Math.max(0, staged - upserted);
-		const target = Math.min(stale, VOLATILE_REFRESH_ROWS, remaining);
-		this.ctx.storage.transactionSync(() => {
-			this.metaSet("cards_writes_used", String(used));
-			this.metaSet("cards_volatile_left", String(target));
-		});
-		console.log(
-			`Cards sync complete: ${staged} rows, ${upserted} upserted this run; ` +
-				`price refresh queued for ${target} rows${target === 0 ? " (nothing stale — run ends)" : ""}`,
-		);
-		if (target <= 0) {
-			await this.finishRun(completeDetail());
-		}
-	}
-
-	/** Rotate volatile-column refreshes through the corpus, `budget` rows/call.
-	 * The rotation cursor lives in durable KV (not the meta table, which every
-	 * run clears) so the cycle genuinely advances across imports. */
-	private async refreshVolatile(budget: number, staged: number): Promise<{ rows: number; writes: number }> {
-		if (staged === 0) return { rows: 0, writes: 0 };
-		const start = ((await this.ctx.storage.get<number>("volatile_pos")) ?? 0) % staged;
-		const wanted = Math.min(budget, staged);
-		const picks: Record<string, unknown>[] = [];
-		let index = 0;
-		// Two passes cover the wrap; row_batches still hold this import's rows.
-		for (let pass = 0; pass < 2 && picks.length < wanted; pass++) {
-			index = 0;
-			for (const batch of this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM row_batches ORDER BY seq")) {
-				for (const blob of splitBatch(new Uint8Array(batch.bytes as ArrayBuffer))) {
-					const inWindow = pass === 0 ? index >= start : index < (start + wanted) % staged && start + wanted > staged;
-					if (inWindow && picks.length < wanted) {
-						picks.push(JSON.parse(new TextDecoder().decode(blob)) as Record<string, unknown>);
-					}
-					index++;
-				}
-				if (picks.length >= wanted && pass === 0 && start + wanted <= staged) break;
-			}
-			if (start + wanted <= staged) break; // no wrap needed
-		}
-		const writes = await execVolatileUpdates(this.env.STORE_DB, picks);
-		await this.ctx.storage.put("volatile_pos", (start + picks.length) % staged);
-		console.log(`Volatile refresh: ${picks.length} rows from position ${start}`);
-		return { rows: picks.length, writes };
-	}
-
-	/** In-memory diff basis for the cards sync (rebuilt if the DO evicts). */
-	private cardsHashes: Map<string, string> | null = null;
-	private cardsSeen: Set<string> | null = null;
-
-	private async finishRun(detail: string): Promise<void> {
-		const run = await this.getRun();
-		run.state = "done";
-		run.finishedAt = new Date().toISOString();
-		// What the run cost, in the log next to the run that spent it. Printed
-		// before resetStaging() wipes the counters — and printed at all because
-		// the only reason a day's allowance ever vanished unnoticed is that
-		// nothing had ever said what one import is supposed to cost.
-		this.flushMeters();
-		const read = Number(this.metaGet("do_rows_read") ?? 0);
-		const written = Number(this.metaGet("do_rows_written") ?? 0);
-		const storageCost =
-			`DO storage: ${read.toLocaleString()} rows read (${((100 * read) / MAX_RUN_ROWS_READ).toFixed(1)}% of budget), ` +
-			`${written.toLocaleString()} written (${((100 * written) / MAX_RUN_ROWS_WRITTEN).toFixed(1)}%)`;
-		console.log(`Import finished — ${storageCost}.`);
-		run.detail = `${detail} [${storageCost}]`;
-		this.ctx.storage.transactionSync(() => {
-			this.resetStaging();
+			this.metaSet("kv_store_history", JSON.stringify(history));
 			this.metaSet("phase", "idle");
+			this.metaSet("finished_at", String(Date.now()));
 		});
-		await this.ctx.storage.put("run", run);
-		// Cancel any alarm still pending. Nothing should re-arm after an idle
-		// phase, but an alarm outliving the run is what turns this DO from
-		// "asleep until the next trigger" into a standing CPU cost.
-		await this.ctx.storage.deleteAlarm();
-		this.cardsHashes = null;
-		this.cardsSeen = null;
-		console.log(`Import complete — alarms stopped until the next trigger: ${detail}`);
 	}
 
 	// ── staging helpers ────────────────────────────────────────────────────────

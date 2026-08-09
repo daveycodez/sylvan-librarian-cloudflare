@@ -5,7 +5,7 @@ declare module "sylvan-engine-wasm" {
 	export function __init_panic_hook(): void;
 	/** Preallocate the aligned store buffer (one allocation, no growth). */
 	export function begin_store_load(totalLen: number): void;
-	/** Append an archive chunk (stream D1 → wasm, no full JS-side copy). */
+	/** Append an archive chunk (stream KV → wasm, no full JS-side copy). */
 	export function store_load_chunk(chunk: Uint8Array): void;
 	/** Validate + atomically activate; previous store survives any error. */
 	export function finish_store_load(): void;

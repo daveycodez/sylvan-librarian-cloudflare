@@ -66,36 +66,10 @@ let latencyBreaches = 0;
 /** A just-opened shard awaiting its decision-time warm ping (see takeWarmTarget). */
 let pendingWarmShard: number | null = null;
 
-/** Seed-ahead fires when load crosses this fraction of the expansion bar. */
-const SEED_AT_FRACTION = 0.75;
-/** Re-request a seed for the same target at most this often (no-op if current). */
-const SEED_COOLDOWN_MS = 60_000;
-/** The next unopened shard awaiting a storage-only seed ping (see takeSeedTarget). */
-let pendingSeedShard: number | null = null;
-let lastSeedTarget = -1;
-let lastSeedAt = 0;
-
-/** Load has crossed ~75% of the expansion threshold: queue a seed for the
- * NEXT unopened shard so its SQLite copy exists before it's ever needed. */
-function requestSeed(): void {
-	if (activeShards >= configuredMax) return;
-	const target = activeShards;
-	const now = Date.now();
-	if (target === lastSeedTarget && now - lastSeedAt < SEED_COOLDOWN_MS) return;
-	lastSeedTarget = target;
-	lastSeedAt = now;
-	pendingSeedShard = target;
-}
-
 /** Feed one response's reported queue depth back into the controller. */
 export function reportEngineLoad(depth: number): void {
 	const now = Date.now();
-	if (depth >= 1) {
-		lastBusyAt = now;
-		// Any observed overlap means the fan-out is working hard: get the next
-		// shard's storage seeded before an expansion could need it.
-		requestSeed();
-	}
+	if (depth >= 1) lastBusyAt = now;
 	if (depth < EXPAND_DEPTH) return;
 	queuedAt.push(now);
 	queuedAt = queuedAt.filter((t) => now - t <= EXPAND_WINDOW_MS);
@@ -126,11 +100,6 @@ export function reportEngineLatency(rpcMs: number): void {
 	fastEwma = fastEwma === 0 ? rpcMs : fastEwma * 0.8 + rpcMs * 0.2;
 
 	const bar = Math.max(LATENCY_FLOOR_MULT * floorEwma, LATENCY_ABS_MS);
-	if (latencySamples >= LATENCY_MIN_SAMPLES && fastEwma > bar * SEED_AT_FRACTION) {
-		// Approaching the expansion bar: seed the next shard's storage now,
-		// while things are merely busy — never mid-spike.
-		requestSeed();
-	}
 	if (latencySamples < LATENCY_MIN_SAMPLES || fastEwma <= bar) {
 		latencyBreaches = 0;
 		return;
@@ -166,17 +135,6 @@ export function reportEngineLatency(rpcMs: number): void {
 export function takeWarmTarget(): number | null {
 	const target = pendingWarmShard;
 	pendingWarmShard = null;
-	return target;
-}
-
-/**
- * The next unopened shard queued for a storage-only seed ping, handed out
- * exactly once. The DO writes its SQLite copy and evicts — no engine load,
- * no residency, scale-to-zero intact.
- */
-export function takeSeedTarget(): number | null {
-	const target = pendingSeedShard;
-	pendingSeedShard = null;
 	return target;
 }
 
