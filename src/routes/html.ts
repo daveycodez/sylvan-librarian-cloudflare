@@ -4,15 +4,15 @@
 // and _minify_html.
 
 import {
-	APP_MIN_JS_HASH,
-	CARD_JS_HASH,
-	CSS_HTML,
-	FAVICON_HTML,
-	FONTS_HTML,
-	FOOTER_HTML,
-	PRECONNECTS_HTML,
-	STYLES_CSS_HASH,
+	appMinJsHash,
+	cardJsHash,
+	cssHtml,
+	faviconHtml,
+	fontsHtml,
+	footerHtml,
+	preconnectsHtml,
 	staticText,
+	stylesCssHash,
 } from "./assets";
 import { buildCriticalCss } from "./critical-css";
 
@@ -40,11 +40,11 @@ function replaceAllLiteral(haystack: string, needle: string, replacement: string
  * carries its own inner <!-- CRITICAL_CSS --> placeholder.
  */
 export function injectSharedFragments(html: string): string {
-	let out = replaceAllLiteral(html, "<!-- FAVICON -->", FAVICON_HTML);
-	out = replaceAllLiteral(out, "<!-- PRECONNECTS -->", PRECONNECTS_HTML);
-	out = replaceAllLiteral(out, "<!-- FONTS -->", FONTS_HTML);
-	out = replaceAllLiteral(out, "<!-- CSS -->", CSS_HTML);
-	return replaceAllLiteral(out, "<!-- FOOTER -->", FOOTER_HTML);
+	let out = replaceAllLiteral(html, "<!-- FAVICON -->", faviconHtml());
+	out = replaceAllLiteral(out, "<!-- PRECONNECTS -->", preconnectsHtml());
+	out = replaceAllLiteral(out, "<!-- FONTS -->", fontsHtml());
+	out = replaceAllLiteral(out, "<!-- CSS -->", cssHtml());
+	return replaceAllLiteral(out, "<!-- FOOTER -->", footerHtml());
 }
 
 /**
@@ -73,8 +73,8 @@ export function buildBaseHtml(criticalCss: string, siteName: string): string {
 	let html = staticText("index.html");
 	html = injectSharedFragments(html);
 	html = replaceAllLiteral(html, "<!-- CRITICAL_CSS -->", criticalCss);
-	html = replaceAllLiteral(html, "/static/styles.css", `/static/styles.css?v=${STYLES_CSS_HASH}`);
-	html = replaceAllLiteral(html, "/static/app.min.js", `/static/app.min.js?v=${APP_MIN_JS_HASH}`);
+	html = replaceAllLiteral(html, "/static/styles.css", `/static/styles.css?v=${stylesCssHash()}`);
+	html = replaceAllLiteral(html, "/static/app.min.js", `/static/app.min.js?v=${appMinJsHash()}`);
 	const built = minifyHtml(replaceAllLiteral(html, SITE_NAME_PLACEHOLDER, siteName));
 	if (baseHtmlCache.size >= BASE_HTML_CACHE_MAX) {
 		const oldest = baseHtmlCache.keys().next().value;
@@ -96,8 +96,8 @@ export function buildCardHtml(criticalCss: string): string {
 	let html = staticText("card.html");
 	html = injectSharedFragments(html);
 	html = replaceAllLiteral(html, "<!-- CRITICAL_CSS -->", criticalCss);
-	html = replaceAllLiteral(html, "/static/styles.css", `/static/styles.css?v=${STYLES_CSS_HASH}`);
-	html = replaceAllLiteral(html, "/static/card.js", `/static/card.js?v=${CARD_JS_HASH}`);
+	html = replaceAllLiteral(html, "/static/styles.css", `/static/styles.css?v=${stylesCssHash()}`);
+	html = replaceAllLiteral(html, "/static/card.js", `/static/card.js?v=${cardJsHash()}`);
 	cardHtmlCache = minifyHtml(html);
 	return cardHtmlCache;
 }

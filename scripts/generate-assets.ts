@@ -1,7 +1,7 @@
-// Regenerates src/routes/assets.gen.json from the vendored upstream static
+// Regenerates src/routes/assets.gen.txt from the vendored upstream static
 // assets (vendor/sylvan_librarian/api/static). Run with:
 //
-//   bun scripts/generate-assets.ts && bunx biome check --write src/routes/assets.gen.json
+//   bun scripts/generate-assets.ts
 //
 // Re-run whenever scripts/sync-upstream.sh updates anything under api/static.
 //
@@ -23,7 +23,7 @@ import { minify } from "terser";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const staticDir = join(repoRoot, "vendor/sylvan_librarian/api/static");
 const fragmentsDir = join(staticDir, "fragments");
-const outPath = join(repoRoot, "src/routes/assets.gen.json");
+const outPath = join(repoRoot, "src/routes/assets.gen.txt");
 
 function text(path: string): string {
 	return readFileSync(path, "utf8");
@@ -81,6 +81,12 @@ const out = {
 	},
 };
 
-writeFileSync(outPath, `${JSON.stringify(out, null, "\t")}\n`);
+// Emitted as TEXT, not as a JSON module, and compact rather than indented.
+// A JSON import is inlined by the bundler as a JS object literal, which every
+// isolate materialises at startup — 313KB of it, for a blob only the static
+// and HTML routes ever read. As text it stays a string until something calls
+// for it, and JSON.parse on a string is cheaper than evaluating the
+// equivalent literal besides.
+writeFileSync(outPath, JSON.stringify(out));
 console.log(`Wrote ${outPath}`);
 console.log(`hashes: ${JSON.stringify(out.hashes)}`);

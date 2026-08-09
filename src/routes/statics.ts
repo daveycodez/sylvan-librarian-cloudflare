@@ -1,7 +1,7 @@
 // Port of the static-file routes (api_resource.py:1604-1700): each serves the
 // vendored asset with upstream's exact content type and Cache-Control.
 
-import { FAVICON_ICO, SOCIAL_PREVIEW_WEBP, staticText } from "./assets";
+import { faviconIcoBytes, socialPreviewBytes, staticText } from "./assets";
 import { cacheHeader } from "./http";
 
 const DAY_SECONDS = 86_400;
@@ -19,12 +19,12 @@ function binaryResponse(body: Uint8Array, contentType: string, headers: Record<s
 
 /** favicon.ico + static/favicon.ico: image/vnd.microsoft.icon, cached 7 days. */
 export function faviconHandler(): Response {
-	return binaryResponse(FAVICON_ICO, "image/vnd.microsoft.icon", cacheHeader(7 * DAY_SECONDS));
+	return binaryResponse(faviconIcoBytes(), "image/vnd.microsoft.icon", cacheHeader(7 * DAY_SECONDS));
 }
 
 /** static/social-preview.webp: image/webp, cached 30 days. */
 export function socialPreviewHandler(): Response {
-	return binaryResponse(SOCIAL_PREVIEW_WEBP, "image/webp", cacheHeader(30 * DAY_SECONDS));
+	return binaryResponse(socialPreviewBytes(), "image/webp", cacheHeader(30 * DAY_SECONDS));
 }
 
 /** static/styles.css: text/css, cached 30 days. */
