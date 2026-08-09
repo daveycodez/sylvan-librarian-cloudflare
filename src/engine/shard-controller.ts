@@ -74,9 +74,25 @@ const CONTRACT_COOLDOWN_MS = 60_000;
  * SHARDS_MAX=0 opts into genuinely unbounded scaling. */
 const DEFAULT_MAX_SHARDS = 32;
 
-/** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing. */
+/** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing.
+ *
+ * MULT is the real rule and it is well placed. Service here is CPU-bound and
+ * near-deterministic, so M/D/1 applies: T/C = 1 + p/(2(1-p)). T/C = 3 puts
+ * expansion at p = 80% utilization, which is where a single-threaded server
+ * should fan out.
+ *
+ * ABS only exists as a noise floor — 3x of a 0.2ms query is 0.6ms, and no
+ * signal survives at that scale. It must stay SMALL or it silently replaces
+ * the rule: max() picks ABS whenever floor < ABS/MULT, and at 75ms that meant
+ * floor < 25ms, i.e. always, since a warm query is 0.2-3ms. The ratio rule was
+ * dead code and expansion actually fired at T/C = 25-75, or p = 98-99.3% —
+ * past the knee, where mean queue depth is already 24+ requests. 10ms keeps a
+ * real noise floor while letting MULT bind for any floor above ~3ms.
+ *
+ * Both numbers are still unverified: C has never been measured. scripts/
+ * load-test.ts exists to measure it (run it with SHARDS_MAX=1 first). */
 const LATENCY_FLOOR_MULT = 3;
-const LATENCY_ABS_MS = 75;
+const LATENCY_ABS_MS = 10;
 /** Consecutive breaching reports needed to step up (EWMA already smooths). */
 const LATENCY_BREACHES_TO_EXPAND = 5;
 /** Don't judge latency until the floor has seen this many samples. */
