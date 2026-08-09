@@ -22,6 +22,22 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# import-store.sh pins database_id into wrangler.jsonc so the deploy binds to
+# the database it published into. wrangler.jsonc is TRACKED, so on a developer's
+# machine that would leave the working tree dirty — and one account's database
+# id committed into a fork is the same 7404 the pinning exists to prevent, now
+# inherited by everyone who clones it. Restore the file once wrangler has read
+# it. (In Workers Builds the workspace is ephemeral and ci-postinstall.sh runs
+# the pin in a separate process from the deploy command, so this belongs here,
+# in the script that owns both steps.)
+CONFIG_BACKUP="$(mktemp)"
+cp wrangler.jsonc "$CONFIG_BACKUP"
+restore_config() {
+    cp "$CONFIG_BACKUP" wrangler.jsonc
+    rm -f "$CONFIG_BACKUP"
+}
+trap restore_config EXIT
+
 "$REPO_ROOT/scripts/import-store.sh"
 
 echo "==> Deploying Worker..."

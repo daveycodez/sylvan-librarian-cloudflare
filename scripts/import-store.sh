@@ -41,17 +41,39 @@ if [[ "${SKIP_IMPORT:-}" == "1" ]]; then
     exit 0
 fi
 
-# 3. Skip when a recent store is already live: without this every routine code
-#    push re-downloads ~450MB to republish an identical store. The nightly
+# 3. Decide whether to import at all.
+#
+#    Skip when a recent store is already live: without that, every routine code
+#    push re-downloads ~450MB to republish an identical store, and the nightly
 #    in-Worker refresh is what keeps it current between deploys.
-if [[ "${FORCE_IMPORT:-}" != "1" ]]; then
-    if age="$(bun scripts/store-age.ts 2>/dev/null)" && [[ -n "$age" ]]; then
-        echo "==> A store built $age is already live — skipping the import."
-        echo "    (FORCE_IMPORT=1 rebuilds it anyway.)"
-        exit 0
-    fi
-    echo "==> No current store published — running the full bulk import."
+#
+#    Skip on a PREVIEW build for the same reason but more urgently. Workers
+#    Builds runs non-production branches through `wrangler versions upload`, but
+#    it runs this script on EVERY branch and every branch shares one D1 — so a
+#    pull request would otherwise republish the production card index from
+#    unreviewed code. The exception is a deployment with no store at all: a
+#    fresh fork whose default branch is not `main` still has to get an index,
+#    and shipping nothing is worse than shipping a preview-built one. Override
+#    the branch name with PRODUCTION_BRANCH.
+STORE_AGE=""
+if age="$(bun scripts/store-age.ts 2>/dev/null)" && [[ -n "$age" ]]; then
+    STORE_AGE="$age"
 fi
+BRANCH="${WORKERS_CI_BRANCH:-}"
+PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-main}"
+
+if [[ -n "$STORE_AGE" && -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then
+    echo "==> Preview build on '$BRANCH' (production is '$PRODUCTION_BRANCH') and a store"
+    echo "    built $STORE_AGE is already live — leaving the shared card index alone."
+    exit 0
+fi
+
+if [[ "${FORCE_IMPORT:-}" != "1" && -n "$STORE_AGE" ]]; then
+    echo "==> A store built $STORE_AGE is already live — skipping the import."
+    echo "    (FORCE_IMPORT=1 rebuilds it anyway.)"
+    exit 0
+fi
+[[ -n "$STORE_AGE" ]] || echo "==> No current store published — running the full bulk import."
 
 # 4. Full native import. 8GB and 20 minutes in Workers Builds, versus a 128MB
 #    isolate and 30s alarms in the Worker runtime — which is why this lives in
