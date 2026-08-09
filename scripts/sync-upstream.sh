@@ -41,16 +41,29 @@ git -C "$WORK/upstream" worktree add --quiet "$WORK/base" "$BASE_SHA"
 # Files whose behavior is re-implemented in this repo. When one of these changes
 # upstream, the corresponding port must be re-reviewed (and parity fixtures
 # regenerated where applicable).
-declare -A PORTS=(
-    ["api/parsing/hand_parser.py"]="src/parser/ (TS port; regenerate fixtures: tests/parser/)"
-    ["api/parsing/rewrite.py"]="src/parser/rewrite.ts (TS port)"
-    ["api/parsing/nodes.py"]="src/parser/nodes.ts (TS port)"
-    ["api/card_processing.py"]="engine/builder/src/transform.rs (Rust port)"
-    ["api/tag_import.py"]="engine/builder/src/tags.rs (Rust port)"
-    ["api/scryfall_bulk_data_fetcher.py"]="engine/builder/src/bulk.rs (Rust port)"
-    ["api/api_resource.py"]="src/routes/ (TS port of user-facing routes)"
-    ["api/noscript_helpers.py"]="src/routes/root.ts (TS port)"
+#
+# One "upstream/path<TAB>port description" per line rather than an associative
+# array: macOS ships bash 3.2, where `declare -A` is a syntax the shell parses
+# as an indexed array and every subscript then explodes under `set -u`.
+PORTS=$(
+    cat <<'PORTS_EOF'
+api/parsing/hand_parser.py	src/parser/ (TS port; regenerate fixtures: tests/parser/)
+api/parsing/rewrite.py	src/parser/rewrite.ts (TS port)
+api/parsing/nodes.py	src/parser/nodes.ts (TS port)
+api/parsing/card_query_nodes.py	src/parser/card-query-nodes.ts (TS port)
+api/parsing/db_info.py	src/parser/db-info.ts (TS port; field aliases)
+api/card_processing.py	engine/builder/src/transform.rs (Rust port)
+api/tag_import.py	engine/builder/src/tags.rs (Rust port)
+api/scryfall_bulk_data_fetcher.py	engine/builder/src/bulk.rs (Rust port)
+api/api_resource.py	src/routes/ (TS port of user-facing routes)
+api/noscript_helpers.py	src/routes/root.ts (TS port)
+PORTS_EOF
 )
+
+# Echo the port description for an upstream path, or nothing if it has no port.
+port_for() {
+    printf '%s\n' "$PORTS" | awk -F'\t' -v key="$1" '$1 == key { print $2 }'
+}
 
 changed=()
 conflicts=()
@@ -72,8 +85,9 @@ while IFS= read -r -d '' rel; do
         elif ! git merge-file -L ours -L base -L upstream "$ours_f" "$base_f" "$theirs_f"; then
             conflicts+=("$rel")
         fi
-        if [[ -n "${PORTS[$rel]:-}" ]]; then
-            port_hits+=("$rel -> ${PORTS[$rel]}")
+        port=$(port_for "$rel")
+        if [[ -n "$port" ]]; then
+            port_hits+=("$rel -> $port")
         fi
     fi
 done < <(cd "$WORK/upstream" && find . -type f -not -path "./.git/*" -print0)
@@ -98,7 +112,10 @@ EOF
 
 echo
 echo "=== ${#changed[@]} upstream file(s) changed ==="
-printf '%s\n' "${changed[@]}"
+# Guarded: bash 3.2 expands "${empty[@]}" to an unbound-variable error under `set -u`.
+if ((${#changed[@]})); then
+    printf '%s\n' "${changed[@]}"
+fi
 if ((${#conflicts[@]})); then
     echo
     echo "=== CONFLICTS (fix conflict markers by hand) ==="
