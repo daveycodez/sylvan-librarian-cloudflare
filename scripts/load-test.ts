@@ -8,17 +8,24 @@
 //
 //   C  — per-request occupancy of a single SearchEngine DO. Profiling in
 //        d538c1f put the DO side near 0.65ms of CPU for a 26KB result, but the
-//        controller keys on RPC WALL TIME, which is that plus same-colo
-//        transport — an unmeasured term that decides whether the controller's
-//        ratio rule or its flat floor binds. A DO is single-threaded, so its
-//        ceiling is 1000/C req/s. Set SHARDS_MAX=1 on the target to measure it.
+//        controller keys on RPC WALL TIME, and production warm samples came
+//        back at 7-77ms (min 7, mean ~36). So the round trip costs 10-100x the
+//        query it carries, and transport, not the search, is what a /search
+//        actually spends against the engine. Confirming that under load — and
+//        finding where it inflects — is the point of the ramp. A DO is
+//        single-threaded, so its ceiling is 1000/C req/s. Set SHARDS_MAX=1 on
+//        the target to measure it.
 //   ρ  — where the latency knee sits. Service time is CPU-bound and close to
 //        deterministic, so M/D/1 applies: T/C = 1 + ρ/(2(1-ρ)). The controller's
 //        `3 x floor` rule targets T/C = 3, i.e. ρ = 80%, which is the right
-//        place to fan out. Whether LATENCY_ABS_MS (10ms) preempts it depends on
-//        that transport term. The ramp below shows which one actually fires;
-//        remote-engine.ts logs one warm RPC per 64, so the run also reports the
-//        floor directly.
+//        place to fan out. At the measured floor that rule already binds and
+//        LATENCY_ABS_MS is inert — so the open question is no longer which one
+//        fires, it is whether the VARIANCE breaks the rule: a 7ms fast tail
+//        against a ~36ms mean is a permanent breach of a 3x bar, which would
+//        expand a loaded colo to SHARDS_MAX on spread alone. If the ramp shows
+//        that spread persisting under load, LATENCY_FLOOR_MULT is what needs
+//        raising. remote-engine.ts summarizes warm RPCs into the log, so the
+//        run reports the distribution directly — read min against mean.
 //   the fan-out itself — x-sylvan-engine names the DO that answered
 //        (`do-<colo>` for shard 0, `do-<colo>-N` after), so the per-stage shard
 //        histogram is the controller converging, live.

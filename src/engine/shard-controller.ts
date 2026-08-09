@@ -116,18 +116,31 @@ const DEFAULT_MAX_SHARDS = 32;
  * expansion actually fired at p = 98-99.3% — past the knee, where mean queue
  * depth is already 24+ requests.
  *
- * HELD at 10 through the perf work of d538c1f onward, deliberately, because
- * the inference does not reach. (0cbcf75's minify was reverted in e7ec18d for
- * moving production p50/p90 by zero; only its catalog-aggregation fix stands,
- * and that is off the search path.) The two reasons:
+ * SETTLED at 10 by measurement, after being held there on argument. The open
+ * question was the transport term: this signal is RPC WALL TIME, not CPU, and
+ * whether ABS or MULT binds depends on DO CPU (~0.65ms) plus isolate-to-DO
+ * transport, which nothing had measured. Production warm samples on 2026-08-09
+ * answered it — 7, 8, 8, 28, 29, 33, 35, 44, 49, 51, 68, 77 ms.
  *
- *   - Those profiles measured CPU, but this signal is RPC WALL TIME — DO CPU
- *     (~0.65ms) plus same-colo RPC transport, which nothing has measured. If
- *     transport is ~0.5ms, floor lands near 1.2ms, MULT gives a 3.6ms bar, ABS
- *     wins at 10 and expansion fires at p = 94%: too late, argues for ~4.
- *     If transport is ~3ms, floor is ~3.7ms, MULT gives 11ms, the ratio rule
- *     already binds and lowering ABS would change nothing. The transport term
- *     decides the answer and it is exactly the term we do not have.
+ * floorEwma ratchets to the fast tail (0.7/0.3 down, 0.999/0.001 up), so it
+ * settles near 7-8ms. MULT then gives a ~24ms bar against ABS's 10, so THE
+ * RATIO RULE ALREADY BINDS and lowering ABS would change nothing. It would have
+ * to fall below ~3.3ms before ABS mattered again, and that is well under
+ * anything observed. Keep 10 as the floor-of-the-floor for a hypothetical
+ * much faster path; do not spend effort tuning it.
+ *
+ *   - Caveat on the sample: 12 points at ~0.1 req/s, each from a different
+ *     isolate serving exactly one request, so it is the sparse regime rather
+ *     than the loaded one. Under sustained load the distribution should tighten
+ *     and drop. The conclusion is robust to that — the margin is 2.4x — but the
+ *     MULT concern below is not.
+ *   - A REAL RISK this exposed: the spread is over 10x (7ms fast tail against a
+ *     ~36ms mean). Since floorEwma tracks the tail and fastEwma tracks the mean,
+ *     fastEwma would sit near 36 against a 24ms bar — a permanent breach, so a
+ *     colo past the rate gate would expand continuously to SHARDS_MAX on
+ *     variance alone. Whether that survives into the loaded regime is exactly
+ *     what the load test has to show; if it does, MULT is what needs raising,
+ *     not ABS lowering. Do not act on 12 sparse samples.
  *   - Below ~9ms the bar stops rejecting single outliers. One 100ms sample
  *     drives fastEwma to 20.8 against a 1ms floor, and the 0.2 weight decays it
  *     back under 9 only on the fifth sample after — so any lower bar turns one
