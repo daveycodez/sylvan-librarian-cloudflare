@@ -245,6 +245,32 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * Race the region against this colo's own attempt, and SAY WHICH WON.
+	 *
+	 * The winner is the whole point of the race and it is not inferable after
+	 * the fact — the load logs look identical either way, because the local
+	 * attempt runs regardless. Without this line "did the relay help?" can only
+	 * be answered by inference, which is how a day got lost.
+	 *
+	 * search/searchSerialized get the same line from relay(), which can read the
+	 * winner off the telemetry it already carries.
+	 */
+	private async raceRegion<T>(
+		hint: DurableObjectLocationHint,
+		what: string,
+		locally: Promise<T>,
+		viaRegion: Promise<T>,
+	): Promise<T> {
+		const started = Date.now();
+		const won = await firstToSucceed(
+			locally.then((value) => ({ value, from: "its own load" })),
+			viaRegion.then((value) => ({ value, from: `engine-${hint}` })),
+		);
+		console.log(`Cold colo answered ${what} from ${won.from} in ${Date.now() - started}ms`);
+		return won.value;
+	}
+
 	/** Both catalogs in one RPC (get_catalog needs both). */
 	async catalog(
 		fallbackHint?: DurableObjectLocationHint,
@@ -256,7 +282,7 @@ export class SearchEngine extends DurableObject<Env> {
 		if (this.shouldRelay(fallbackHint)) {
 			// See relay(): the local attempt IS the warm, so racing costs nothing
 			// and stops a cold region from making the caller wait for its load.
-			return firstToSucceed(local(), this.regionStub(fallbackHint).catalog());
+			return this.raceRegion(fallbackHint, "catalog", local(), this.regionStub(fallbackHint).catalog());
 		}
 		return local();
 	}
@@ -268,7 +294,12 @@ export class SearchEngine extends DurableObject<Env> {
 	): Promise<Record<string, unknown>[]> {
 		const local = async () => (await this.engine()).samplePreferred(numCards, fields);
 		if (this.shouldRelay(fallbackHint)) {
-			return firstToSucceed(local(), this.regionStub(fallbackHint).samplePreferred(numCards, fields));
+			return this.raceRegion(
+				fallbackHint,
+				"samplePreferred",
+				local(),
+				this.regionStub(fallbackHint).samplePreferred(numCards, fields),
+			);
 		}
 		return local();
 	}
@@ -299,7 +330,9 @@ export class SearchEngine extends DurableObject<Env> {
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<EngineSerializedResult> {
 		if (this.shouldRelay(fallbackHint)) {
-			return firstToSucceed(
+			return this.raceRegion(
+				fallbackHint,
+				"samplePreferred",
 				this.localSample(numCards, fields, shape),
 				this.regionStub(fallbackHint).samplePreferredSerialized(numCards, fields, shape),
 			);
