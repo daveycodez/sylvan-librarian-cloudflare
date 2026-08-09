@@ -84,8 +84,31 @@ export async function isTrustedRequest(env: Env, request: Request): Promise<bool
 
 /** Per-isolate cache of DO verdicts: ip -> blocked-until epoch ms. */
 const blockedUntil = new Map<string, number>();
-/** A 429'd IP stays blocked in this isolate for one full refill window. */
-const BLOCK_MS = PERIOD_SECONDS * 1000;
+/**
+ * How long a 429'd address stays blocked in this isolate.
+ *
+ * Deliberately LONGER than the refill window, which it used to equal. Async
+ * enforcement leaks one round trip of traffic per isolate per block cycle: when
+ * a block lapses the isolate serves optimistically until a fresh refusal lands,
+ * and with the verdict ~130ms behind at 8 concurrent that measured ~11 requests
+ * per isolate, ~105 across the ~10 isolates involved. Against 100 tokens per
+ * 10s that is where the overshoot comes from — measured against production on
+ * 2026-08-09 at 20.5/s steady state for a configured 10/s, a visible sawtooth
+ * on the cycle period.
+ *
+ * The grace is paid per CYCLE, so lengthening the block dilutes it: tokens
+ * accrue at the configured rate throughout while the leak is paid once. 30s
+ * models to ~1.35x where 10s measured 2.05x. It cannot reach 1.0x — only
+ * lease-based counting, where an isolate serves solely from a batch the DO
+ * already granted, removes the leak outright, and that is a rewrite this does
+ * not need.
+ *
+ * The cost is lockout duration for anything that does trip it. That is
+ * acceptable because only cache MISSES reach the limiter, and /search sits
+ * behind a 90s edge cache with a day of stale-while-revalidate — so sustaining
+ * this many DISTINCT searches is a script, not a person reading card results.
+ */
+const BLOCK_MS = 30_000;
 
 /**
  * Ceiling on the verdict cache, because the only other eviction is an IP
@@ -154,7 +177,10 @@ export function enforceRateLimit(
 				}),
 				{
 					status: 429,
-					headers: { "content-type": "application/json", "Retry-After": "10" },
+					// Derived, not written twice: a Retry-After that undershoots
+					// BLOCK_MS tells a well-behaved client to come back while it
+					// is still blocked, which reads to it as the limiter lying.
+					headers: { "content-type": "application/json", "Retry-After": String(Math.ceil(BLOCK_MS / 1000)) },
 				},
 			),
 		};

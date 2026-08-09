@@ -89,6 +89,25 @@ describe("verdict cache bound", () => {
 	});
 });
 
+describe("the 429", () => {
+	test("advertises a Retry-After that covers the whole block", async () => {
+		const env = envRefusing();
+		const ip = "203.0.113.9";
+		await hit(env, ip);
+		const pending: Promise<unknown>[] = [];
+		const { response } = enforceRateLimit(env, requestFrom(ip), (p) => pending.push(p));
+		await Promise.all(pending);
+		expect(response?.status).toBe(429);
+		// Undershooting BLOCK_MS would send a well-behaved client back while it
+		// is still blocked. Derived from the constant, so this pins the pairing
+		// rather than the number.
+		const retryAfter = Number(response?.headers.get("Retry-After"));
+		expect(retryAfter).toBeGreaterThanOrEqual(30);
+		const body = (await response?.json()) as { title: string };
+		expect(body.title).toBe("Too Many Requests");
+	});
+});
+
 describe("limited routes", () => {
 	test("covers the engine-computing routes only", () => {
 		expect(isRateLimitedRoute("search", {})).toBe(true);
