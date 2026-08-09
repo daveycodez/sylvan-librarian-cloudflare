@@ -51,7 +51,7 @@
 //                (param-binding.ts, upstream ParamBinder.bind), so it changes
 //                the cache key and nothing else. --cached opts out to measure
 //                the cache instead, which is a different and also useful run.
-//   Rate limit.  RATE_LIMIT_PER_10S defaults to 100 per 10s. Enforcement is
+//   Rate limit.  RATE_LIMIT_PER_10S defaults to 25 per 10s. Enforcement is
 //                asynchronous by design, so the effective ceiling runs ~2x the
 //                configured one: measured against production 2026-08-09 at 8
 //                concurrent for 60s, a 10/s configuration passed 20.5/s in

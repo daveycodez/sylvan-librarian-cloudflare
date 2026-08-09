@@ -26,9 +26,30 @@ import { DurableObject } from "cloudflare:workers";
 import { regionHint } from "../engine/region";
 import type { Env } from "../engine/types";
 
-/** Default allowance when RATE_LIMIT_PER_10S is unset: generous for many
- * people behind one shared IP, a wall for scripts. */
-const DEFAULT_LIMIT_PER_10S = 100;
+/**
+ * Default allowance when RATE_LIMIT_PER_10S is unset: generous for many people
+ * behind one shared IP, a wall for scripts.
+ *
+ * 25 per 10s, not the 100 it used to be, because enforcement is asynchronous
+ * and therefore LOOSE: requests are served while the verdict is still in
+ * flight, so the effective ceiling measured against production on 2026-08-09
+ * was ~2x the configured one (a 10/s setting passed 20.5/s in steady state).
+ * 25 lands near 5 requests per second in practice.
+ *
+ * That is half of what Scryfall — the API this mirrors — asks of its own
+ * consumers: they request sustained traffic stay under 10/s, 50-100ms between
+ * calls, and 429 anyone who ignores it. Half their ceiling is a defensible
+ * place for a mirror, and it is still far above any human, who produces a
+ * query every few seconds at most and whose repeats never reach the limiter
+ * at all (it only sees cache MISSES).
+ *
+ * It matters most on a free-plan deployment, where the daily request budget is
+ * shared ACCOUNT-WIDE: one unthrottled client can spend everyone's allowance
+ * and take the site down for the rest of the UTC day. A rate cap only shapes
+ * bursts and cannot fully prevent that — a per-IP DAILY budget would — but it
+ * moves the time-to-exhaust from minutes to hours.
+ */
+const DEFAULT_LIMIT_PER_10S = 25;
 const PERIOD_SECONDS = 10;
 
 /**

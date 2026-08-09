@@ -158,10 +158,12 @@ The complete list of intentional differences:
 - **`stale-while-revalidate=86400` on search responses**, so repeat queries
   never pay a cold start. Upstream sends plain `max-age=90`.
 - **Built-in per-IP rate limit** on the engine routes: a token bucket in a
-  tiny per-IP Durable Object, default 100 requests/10s, 429 + `Retry-After`.
-  Enforcement is asynchronous and costs zero request latency. **Off by
-  default** — see .env.example, including the `TRUSTED_API_KEY` bypass. Cache
-  hits never count.
+  tiny per-IP Durable Object, default 25 requests/10s, 429 + `Retry-After`.
+  Enforcement is asynchronous and costs zero request latency — which also makes
+  it loose, letting roughly 2x the configured number through, so 25 is about
+  5/s in practice. That is half of what Scryfall asks of its own consumers, and
+  far above any human. **Off by default** — see .env.example, including the
+  `TRUSTED_API_KEY` bypass. Cache hits never count.
 - **Static files are served by the CDN, not the Worker.** `/static/*`,
   `/favicon.ico`, `/robots.txt` and the tuner page come from `public/` and
   never invoke the Worker, which is what took cold start down to the platform
