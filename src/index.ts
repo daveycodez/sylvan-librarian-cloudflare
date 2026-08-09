@@ -2,7 +2,6 @@
 // _resolve_action (vendor/sylvan_librarian/api/api_resource.py:641-731), with
 // falcon's JSON error serializer shape for all HTTP errors.
 
-import { bootstrapPage } from "./engine/bootstrap-page";
 import { planShardCap } from "./engine/plan-hint";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
@@ -144,28 +143,13 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		return finish(response);
 	} catch (err) {
 		if (err instanceof Response) return finish(err); // redirects (HTTPMovedPermanently parity)
-		if (
-			err instanceof EngineUnavailableError &&
-			err.bootstrapping &&
-			(path === "_root" || path === "card" || path.startsWith("card/"))
-		) {
-			// Human-facing pages get the auto-refreshing "building index" page
-			// during first-deploy bootstrap; JSON endpoints keep upstream's 503.
-			return finish(await bootstrapPage(env));
-		}
 		if (err instanceof EngineUnavailableError) {
-			// The store is bootstrapping or failed to load. Loud, structured,
-			// never an empty result (the SQL fallback is built by the same
-			// import that hasn't produced a store yet, so it can't help here).
-			return finish(
-				httpError(
-					503,
-					"Service Unavailable",
-					err.bootstrapping
-						? "The card index is being built, please retry shortly."
-						: "Engine is not loaded, please try again later.",
-				),
-			);
+			// No "building the index" page any more: the index is built by the
+			// DEPLOY (scripts/import-store.sh), which fails rather than shipping a
+			// Worker without one. So if this Worker is serving at all, its store
+			// exists — and reaching here means something is actually wrong, which
+			// deserves upstream's structured 503 rather than a soothing spinner.
+			return finish(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));
 		}
 		console.error(`Error handling request for ${path}:`, err);
 		return finish(httpError(500, "Server Error", "An internal error occurred."));

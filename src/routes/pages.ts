@@ -3,7 +3,7 @@
 // prefer_score_tuner, and the legacy index → / redirect
 // (api_resource.py:1494-1602, 1702-1728).
 
-import { kickBootstrap, readManifest } from "../engine/manifest";
+import { readManifest } from "../engine/manifest";
 import { EngineUnavailableError } from "../engine/types";
 import { staticText } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
@@ -42,16 +42,17 @@ export async function rootHandler(
 
 	const searchQuery = (bound.query as string | null) || (bound.q as string | null);
 	if (!searchQuery) {
-		// The bare homepage renders without the engine, which would silently
-		// hide a first-deploy bootstrap (its client-side fetches just fail).
-		// One cheap manifest read: no store yet → show the live "building card
-		// index" page instead, and make sure a homepage-only visitor still
-		// kicks the bootstrap off. A D1 hiccup must never take the homepage
-		// down, so any read error falls through to the normal render.
+		// The bare homepage renders without the engine, so without this check it
+		// would look fine while every client-side fetch failed. One cheap
+		// manifest read turns that into an honest error page. It does NOT start
+		// an import: the deploy builds the index (scripts/deploy.sh) and fails
+		// if it cannot, so no store here means the deploy did not publish one —
+		// a visitor-triggered rebuild would just mask that. A D1 hiccup must
+		// never take the homepage down, so a read error falls through to the
+		// normal render.
 		try {
 			if ((await readManifest(ctx.env)) === null) {
-				ctx.waitUntil(kickBootstrap(ctx.env, "bootstrap-homepage"));
-				throw new EngineUnavailableError("No store manifest in D1; import has been triggered", true);
+				throw new EngineUnavailableError("No store manifest in D1; deploy has not published an index", false);
 			}
 		} catch (err) {
 			if (err instanceof EngineUnavailableError) throw err;

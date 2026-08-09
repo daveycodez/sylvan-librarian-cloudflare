@@ -22,6 +22,7 @@
 // paid; on free, skip it and let the nightly adaptive import fill the table.
 
 import { readFileSync } from "node:fs";
+import { d1Name } from "./project-config";
 
 const args = process.argv.slice(2);
 const withCards = args.includes("--with-cards");
@@ -66,19 +67,7 @@ async function execRemote(sqlPath: string): Promise<void> {
 	}
 	console.log(`Ingesting ${sqlPath}...`);
 	const proc = Bun.spawn(
-		[
-			"bunx",
-			"wrangler",
-			"d1",
-			"execute",
-			"sylvan-librarian",
-			"--remote",
-			"-y",
-			"-c",
-			"wrangler.jsonc",
-			"--file",
-			sqlPath,
-		],
+		["bunx", "wrangler", "d1", "execute", d1Name, "--remote", "-y", "-c", "wrangler.jsonc", "--file", sqlPath],
 		{ stdout: "inherit", stderr: "inherit" },
 	);
 	if ((await proc.exited) !== 0) {

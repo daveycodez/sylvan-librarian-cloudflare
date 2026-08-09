@@ -14,7 +14,7 @@
 // account. That biases towards running the import, which costs build minutes
 // but never leaves a deploy without an index.
 
-export {};
+import { d1Name } from "./project-config";
 
 const MAX_AGE_HOURS = 20;
 
@@ -24,7 +24,7 @@ const proc = Bun.spawn(
 		"wrangler",
 		"d1",
 		"execute",
-		"sylvan-librarian",
+		d1Name,
 		"--remote",
 		"-y",
 		"--json",

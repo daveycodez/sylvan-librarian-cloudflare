@@ -21,7 +21,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if ! bunx wrangler d1 execute sylvan-librarian --local -c wrangler.dev.jsonc \
+DB_NAME="$(bun scripts/project-config.ts d1)"
+if ! bunx wrangler d1 execute "$DB_NAME" --local -c wrangler.dev.jsonc \
         --command "SELECT 1 FROM store_manifest LIMIT 1" >/dev/null 2>&1; then
     if [[ "${DEV_BOOTSTRAP:-}" == "worker" ]]; then
         echo "DEV_BOOTSTRAP=worker — skipping the native seed. The Worker will"

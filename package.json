@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "scripts/dev.sh",
     "deploy": "scripts/deploy.sh",
+    "postinstall": "scripts/ci-postinstall.sh",
     "build": "bun run build:wasm && bun run build:wasm-import",
     "build:wasm": "cd engine/wasm && ../../scripts/with-rust.sh wasm-pack build --target bundler --release --out-dir pkg",
     "build:wasm-import": "scripts/with-rust.sh cargo rustc --release -p sylvan-wasm-import --target wasm32-unknown-unknown -- -C link-arg=--max-memory=117440512 && cp target/wasm32-unknown-unknown/release/sylvan_wasm_import.wasm engine/wasm-import/pkg/",

@@ -19,6 +19,7 @@
 import { Database } from "bun:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
 import { cardsRowValues, structuralHash } from "../src/fallback/cards-sync";
+import { d1Name } from "./project-config";
 
 const dir = process.argv[2];
 if (!dir) {
@@ -57,18 +58,7 @@ async function localD1Path(): Promise<string> {
 	if (files.length === 0) {
 		// Fresh checkout: let wrangler materialize the database file once.
 		const proc = Bun.spawn(
-			[
-				"bunx",
-				"wrangler",
-				"d1",
-				"execute",
-				"sylvan-librarian",
-				"--local",
-				"-c",
-				"wrangler.dev.jsonc",
-				"--command",
-				"SELECT 1",
-			],
+			["bunx", "wrangler", "d1", "execute", d1Name, "--local", "-c", "wrangler.dev.jsonc", "--command", "SELECT 1"],
 			{ stdout: "ignore", stderr: "inherit" },
 		);
 		if ((await proc.exited) !== 0) process.exit(1);

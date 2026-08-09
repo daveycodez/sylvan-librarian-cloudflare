@@ -9,7 +9,7 @@
 // per-invocation subrequest allowance.
 
 import * as wasm from "sylvan-engine-wasm";
-import { kickBootstrap, readManifest } from "./manifest";
+import { readManifest } from "./manifest";
 import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -66,7 +66,7 @@ class WasmEngine implements Engine {
 	}
 }
 
-export { kickBootstrap, readManifest } from "./manifest";
+export { readManifest } from "./manifest";
 
 /** D1 blob columns arrive as ArrayBuffer (or a number array on older paths). */
 function asBytes(value: unknown): Uint8Array {
@@ -200,8 +200,12 @@ async function loadStore(env: Env): Promise<Engine> {
 	lastManifestCheck = Date.now();
 
 	if (!manifest) {
-		kickBootstrap(env, "bootstrap-empty-database");
-		throw new EngineUnavailableError("No store manifest in D1; import has been triggered", true);
+		// Deliberately does NOT start an import. Building the card index is the
+		// deploy's job (scripts/deploy.sh), where there is 8GB and 20 minutes to
+		// do it in, and a failure fails the deploy. A request finding no store
+		// means the deploy did not publish one — kicking a 10-minute in-Worker
+		// rebuild here would hide that, and hide it once per visitor.
+		throw new EngineUnavailableError("No store manifest in D1; deploy has not published an index", false);
 	}
 
 	if (!manifest.store_bytes || !manifest.store_key.endsWith(".store")) {
