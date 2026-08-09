@@ -3,20 +3,78 @@
 // to run the bulk import: a routine code push should not re-download ~450MB
 // and republish an identical store.
 //
-//   bun scripts/store-age.ts        -> "2h ago" (exit 0) | nothing (exit 1)
+//   bun scripts/store-age.ts        -> "2h ago" (exit 0)
+//                                      exit 1: no usable store — an ANSWER
+//                                      exit 2: could not tell — a FAILURE
 //
 // "Usable" means a manifest that parses and carries a build time, a byte
-// count and a chunk count. A store older than MAX_AGE_HOURS is treated as
-// absent so a long-dormant deployment refreshes on its next deploy rather than
-// serving a stale index until the nightly cron happens to fire.
+// count and a chunk count, AND describes data Scryfall has not superseded.
 //
-// Every failure path exits 1 — unreadable manifest, no D1 access, ambiguous
-// account. That biases towards running the import, which costs build minutes
-// but never leaves a deploy without an index.
+// That last test is the real one: it asks upstream when it last regenerated
+// its dumps and compares against when this store was built. A store built
+// after the newest dump already contains it, however many hours ago that was;
+// a store built before it is stale, however recent. The clock-based window
+// this replaced could only approximate that, and got it wrong in both
+// directions — rebuilding an identical store every 20 hours, and serving one
+// built minutes before a Scryfall refresh until the next nightly cron.
+//
+// MAX_AGE_HOURS survives only as a backstop for what upstream timestamps
+// cannot see: a store format the deployed code no longer reads, or a build
+// that predates a change in this repo. It is deliberately loose, because the
+// upstream comparison is what should normally decide.
+//
+// Both non-zero exits make the caller import, which costs build minutes but
+// never leaves a deploy without an index. They are still kept apart, because
+// they mean opposite things about the deployment: 1 says the store really is
+// missing or stale, 2 says this script could not reach D1 — and a 2 reported
+// as a 1 is a broken query that presents as an eternally-empty database, which
+// is exactly the failure this split exists to make visible. Every path says
+// why on stderr; callers must show that text, not discard it.
 
 import { d1Name } from "./project-config";
 
-const MAX_AGE_HOURS = 20;
+/** Backstop only — see the header. A week covers "nothing upstream changed but
+ * this repo did", without reinstating a nightly rebuild of identical bytes. */
+const MAX_AGE_HOURS = 7 * 24;
+
+const BULK_DATA_URL = process.env.SCRYFALL_BULK_URL ?? "https://api.scryfall.com/bulk-data";
+/** The dumps an import actually reads; a refresh of any of them is a change. */
+const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags"];
+
+/**
+ * When Scryfall last regenerated the dumps this store is built from, as unix
+ * seconds — or null if upstream could not be asked.
+ *
+ * Null deliberately means "unknown", not "unchanged": the caller falls back to
+ * the age backstop rather than skipping an import on a guess. A deploy that
+ * cannot reach Scryfall is not evidence that Scryfall stood still.
+ */
+async function upstreamUpdatedAt(): Promise<number | null> {
+	try {
+		const res = await fetch(BULK_DATA_URL, {
+			// Scryfall rejects default UAs; mirror the Worker's convention.
+			headers: { "User-Agent": "sylvan-librarian-deploy/1.0", Accept: "application/json" },
+			signal: AbortSignal.timeout(15_000),
+		});
+		if (!res.ok) {
+			console.error(`store-age: ${BULK_DATA_URL} answered ${res.status} — falling back to the age backstop.`);
+			return null;
+		}
+		const listing = (await res.json()) as { data?: { type?: string; updated_at?: string }[] };
+		const stamps = (listing.data ?? [])
+			.filter((r) => r.type && DUMP_KINDS.includes(r.type))
+			.map((r) => Date.parse(r.updated_at ?? ""))
+			.filter((n) => Number.isFinite(n));
+		if (stamps.length === 0) {
+			console.error("store-age: /bulk-data listed no updated_at for the dumps we read — using the age backstop.");
+			return null;
+		}
+		return Math.floor(Math.max(...stamps) / 1000);
+	} catch (err) {
+		console.error(`store-age: could not reach Scryfall (${err}) — falling back to the age backstop.`);
+		return null;
+	}
+}
 
 const proc = Bun.spawn(
 	[
@@ -43,7 +101,7 @@ if ((await proc.exited) !== 0) {
 	// stdout rather than stderr, so fall back to whichever carried text.
 	const hint = (errText.trim() || out.trim() || "no output").split("\n").slice(-3).join(" ");
 	console.error(`store-age: could not read the manifest from D1 — ${hint}`);
-	process.exit(1);
+	process.exit(2);
 }
 
 // wrangler --json prints an array of result sets; a missing table is an error
@@ -53,23 +111,63 @@ try {
 	const parsed = JSON.parse(out.slice(out.indexOf("["))) as { results?: { json?: string }[] }[];
 	json = parsed[0]?.results?.[0]?.json;
 } catch {
+	// wrangler exited 0 but did not hand back the result shape we parse. That
+	// is this script failing to read D1, not D1 saying the store is missing.
+	console.error(`store-age: could not parse wrangler's output — ${out.trim().split("\n").slice(-3).join(" ")}`);
+	process.exit(2);
+}
+if (!json) {
+	console.error("store-age: store_manifest has no row — nothing has been published to this database yet.");
 	process.exit(1);
 }
-if (!json) process.exit(1);
 
 let manifest: { built_at?: string; store_bytes?: number; chunk_count?: number };
 try {
 	manifest = JSON.parse(json) as typeof manifest;
 } catch {
+	console.error("store-age: the published manifest is not valid JSON — treating the store as unusable.");
 	process.exit(1);
 }
 const builtAt = Number(manifest.built_at);
-if (!Number.isFinite(builtAt) || builtAt <= 0) process.exit(1);
-if (!manifest.store_bytes || !manifest.chunk_count) process.exit(1);
+if (!Number.isFinite(builtAt) || builtAt <= 0) {
+	console.error(`store-age: the manifest has no usable built_at (${JSON.stringify(manifest.built_at)}).`);
+	process.exit(1);
+}
+if (!manifest.store_bytes || !manifest.chunk_count) {
+	console.error(
+		`store-age: the manifest is incomplete (store_bytes=${manifest.store_bytes}, chunk_count=${manifest.chunk_count}).`,
+	);
+	process.exit(1);
+}
 
 const ageMs = Date.now() - builtAt * 1000;
-if (ageMs > MAX_AGE_HOURS * 3600_000) process.exit(1);
+const ago = (ms: number) => {
+	const hours = Math.floor(ms / 3600_000);
+	const mins = Math.floor((ms % 3600_000) / 60_000);
+	return hours > 0 ? `${hours}h ${mins}m ago` : `${mins}m ago`;
+};
 
-const hours = Math.floor(ageMs / 3600_000);
-const mins = Math.floor((ageMs % 3600_000) / 60_000);
-console.log(hours > 0 ? `${hours}h ${mins}m ago` : `${mins}m ago`);
+if (ageMs > MAX_AGE_HOURS * 3600_000) {
+	const hours = (ageMs / 3600_000).toFixed(1);
+	console.error(`store-age: the live store was built ${hours}h ago, past the ${MAX_AGE_HOURS}h backstop.`);
+	process.exit(1);
+}
+
+// The real freshness test. Scryfall regenerates its dumps roughly daily; a
+// store built after the newest one already contains everything upstream has.
+const upstream = await upstreamUpdatedAt();
+if (upstream !== null && builtAt < upstream) {
+	console.error(
+		`store-age: Scryfall refreshed its dumps ${ago(Date.now() - upstream * 1000)} ` +
+			`(${new Date(upstream * 1000).toISOString()}), after this store was built — rebuilding.`,
+	);
+	process.exit(1);
+}
+if (upstream !== null) {
+	console.error(
+		`store-age: Scryfall's newest dump is from ${new Date(upstream * 1000).toISOString()}, ` +
+			"already in the live store — no rebuild needed.",
+	);
+}
+
+console.log(ago(ageMs));

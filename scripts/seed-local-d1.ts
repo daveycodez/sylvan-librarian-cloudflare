@@ -18,6 +18,7 @@
 
 import { Database } from "bun:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
+import { chunkHash, splitStore } from "../src/engine/store-chunks";
 import { cardsRowValues, structuralHash } from "../src/fallback/cards-sync";
 import { d1Name } from "./project-config";
 
@@ -37,10 +38,14 @@ if (store.length !== manifest.store_bytes) {
 	throw new Error(`store file is ${store.length} bytes, manifest says ${manifest.store_bytes}`);
 }
 
-// Same chunk size the wasm import publishes (engine/wasm-import CHUNK_BYTES).
-const CHUNK_BYTES = 900_000;
-const chunkCount = Math.ceil(store.length / CHUNK_BYTES);
-(manifest as Record<string, unknown>).chunk_count = chunkCount;
+// The same grid and content addressing production publishes on. Local dev
+// deliberately gets the REAL format, not a simpler one: the content-addressed
+// read path would otherwise never run outside production, and "works locally"
+// would say nothing about the path that actually serves.
+const chunkBytes = splitStore(store);
+const chunkHashes = await Promise.all(chunkBytes.map(chunkHash));
+(manifest as Record<string, unknown>).chunk_count = chunkHashes.length;
+(manifest as Record<string, unknown>).chunks = chunkHashes;
 
 /** Locate miniflare's SQLite file for the one D1 binding; boot it if absent. */
 async function localD1Path(): Promise<string> {
@@ -75,28 +80,35 @@ console.log(`Seeding ${dbPath} directly...`);
 const db = new Database(dbPath);
 db.exec("PRAGMA journal_mode = WAL;");
 
-// ── store: chunks → history → manifest (manifest last = the commit point) ────
-db.exec(`CREATE TABLE IF NOT EXISTS store_chunks (store_key TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (store_key, seq));
+// ── store: blobs → history → manifest (manifest last = the commit point) ─────
+db.exec(`CREATE TABLE IF NOT EXISTS store_blobs (hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS store_manifest (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS store_history (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL);`);
+CREATE TABLE IF NOT EXISTS store_history (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS store_versions (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL, json TEXT NOT NULL);`);
 
+let inserted = 0;
 db.transaction(() => {
-	db.run("DELETE FROM store_chunks WHERE store_key = ?", [manifest.store_key]);
-	const insertChunk = db.prepare("INSERT INTO store_chunks (store_key, seq, bytes) VALUES (?, ?, ?)");
-	for (let seq = 0; seq < chunkCount; seq++) {
-		insertChunk.run(
-			manifest.store_key,
-			seq,
-			store.subarray(seq * CHUNK_BYTES, Math.min((seq + 1) * CHUNK_BYTES, store.length)),
-		);
+	// OR IGNORE gives the same incremental behaviour as production: re-seeding
+	// after a rebuild only writes the chunks that actually changed.
+	const insertBlob = db.prepare("INSERT OR IGNORE INTO store_blobs (hash, bytes) VALUES (?, ?)");
+	for (let i = 0; i < chunkHashes.length; i++) {
+		inserted += insertBlob.run(chunkHashes[i] as string, chunkBytes[i] as Uint8Array).changes;
 	}
+	const json = JSON.stringify(manifest);
 	db.run("INSERT OR REPLACE INTO store_history (store_key, published_at) VALUES (?, ?)", [
 		manifest.store_key,
 		Date.now(),
 	]);
-	db.run("INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, ?)", [JSON.stringify(manifest)]);
+	db.run("INSERT OR REPLACE INTO store_versions (store_key, published_at, json) VALUES (?, ?, ?)", [
+		manifest.store_key,
+		Date.now(),
+		json,
+	]);
+	db.run("INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, ?)", [json]);
 })();
-console.log(`Store seeded: ${manifest.store_key} (${chunkCount} chunks).`);
+console.log(
+	`Store seeded: ${manifest.store_key} (${chunkHashes.length} chunks, ${inserted} new, ${chunkHashes.length - inserted} reused).`,
+);
 
 // ── cards: the SQL-fallback table, from the rows the builder teed out ────────
 // Same cardsRowValues/structuralHash derivations the production cards phase

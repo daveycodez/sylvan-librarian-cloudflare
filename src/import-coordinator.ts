@@ -29,6 +29,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
+import { chunkHash, GridChunker } from "./engine/store-chunks";
 import type { Env } from "./engine/types";
 import {
 	cardsRowValues,
@@ -52,6 +53,24 @@ interface RunRecord {
 const STALE_RUN_MS = 90 * 60 * 1000;
 /** Transient-failure retries per run before the run is marked failed. */
 const MAX_RETRIES = 8;
+/**
+ * Consecutive attempts at one phase before the run is declared stuck.
+ *
+ * Sits above MAX_RETRIES because it counts a strictly larger set: every
+ * attempt, including the ones killed before they could fail. Its job is to
+ * put a ceiling on a loop that reports no errors at all, so it only has to be
+ * loose enough never to fire on genuine retry-and-recover.
+ */
+const MAX_PHASE_ATTEMPTS = 12;
+/**
+ * Times one run may lose its wasm heap to eviction and rewind to aggregation
+ * before it is called off. Three is generous — a healthy import survives with
+ * zero — and the cost of each one is most of an import.
+ */
+const MAX_WASM_REWINDS = 3;
+
+/** An import failure that retrying cannot fix, so the run stops at once. */
+class FatalImportError extends Error {}
 
 // Slice budgets — sized so a slice stays far under the 30s DO CPU allowance.
 /** Compressed dump bytes fetched per slice (network-bound, cheap CPU). */
@@ -87,6 +106,8 @@ const LINES_PER_CALL = 2_000;
  * version is enough for that; more just consumes the free plan's 500MB D1
  * ceiling, which a ~75MB store and a ~100MB cards table already share. */
 const KEEP_STORES = 2;
+/** D1's cap on bound parameters in one statement. */
+const D1_MAX_BOUND_PARAMS = 100;
 /** Row batches examined per cards-sync slice (~4k rows of JSON parsing). */
 const CARDS_SYNC_BATCHES = 4;
 /** Evictions tolerated before the cards sync gives up for this run: its diff
@@ -277,6 +298,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("phase", "listing");
 		});
 		await this.ctx.storage.put("run", record);
+		await this.ctx.storage.put("phase_attempts", 0);
 		await this.ctx.storage.setAlarm(Date.now());
 		return Response.json({ ok: true, run: record }, { status: 202 });
 	}
@@ -289,16 +311,62 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (run.state !== "running") return; // stale alarm from a finished run
 		const phase = (this.metaGet("phase") ?? "idle") as Phase;
 		if (phase === "idle") return;
+
+		// Count the attempt BEFORE running it, durably.
+		//
+		// MAX_RETRIES below only bounds failures this handler survives to catch.
+		// A slice killed by the runtime — CPU allowance exhausted mid-phase, the
+		// isolate reset under it — never reaches the catch, so nothing increments
+		// and nothing is written: the alarm is retried against exactly the same
+		// state and dies at exactly the same point, forever, with the retry
+		// counter reading zero the whole time. Each pass costs what the phase
+		// costs (a build attempt alone re-reads ~98k staged rows), so an
+		// invisible loop like that is also the single most expensive thing this
+		// Durable Object can do to the daily row budget.
+		//
+		// An awaited put is durable when it resolves, which is the point: it
+		// survives a kill that a metaSet in the same handler would not.
+		const attempts = ((await this.ctx.storage.get<number>("phase_attempts")) ?? 0) + 1;
+		await this.ctx.storage.put("phase_attempts", attempts);
+		if (attempts > MAX_PHASE_ATTEMPTS) {
+			console.error(
+				`Import phase ${phase} attempted ${attempts} times without completing a slice — ` +
+					"stopping. This is the signature of a slice the runtime keeps killing " +
+					"(CPU or memory), not of an error being retried.",
+			);
+			run.state = "failed";
+			run.finishedAt = new Date().toISOString();
+			run.detail = `${phase}: ${attempts} attempts with no progress — slice is being killed, not failing`;
+			this.metaSet("phase", "idle");
+			await this.ctx.storage.put("run", run);
+			await this.ctx.storage.deleteAlarm();
+			return;
+		}
+
 		try {
 			await this.step(phase);
 			// A slice that succeeded clears the retry state, so a recovered
 			// transient failure stops being reported as an ongoing problem.
 			this.metaSet("retries", "0");
+			// Only when something was actually being retried: attempts is always
+			// >= 1 here, so an unconditional reset would write a row on every
+			// healthy slice to clear a counter nothing had raised.
+			if (attempts > 1) await this.ctx.storage.put("phase_attempts", 0);
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
 			if (next !== "idle") {
 				await this.ctx.storage.setAlarm(Date.now());
 			}
 		} catch (err) {
+			if (err instanceof FatalImportError) {
+				console.error(`Import stopped in phase ${phase}: ${err.message}`);
+				run.state = "failed";
+				run.finishedAt = new Date().toISOString();
+				run.detail = `${phase}: ${err.message}`;
+				this.metaSet("phase", "idle");
+				await this.ctx.storage.put("run", run);
+				await this.ctx.storage.deleteAlarm();
+				return;
+			}
 			if (isDailyLimitError(err)) {
 				// D1's daily quota resets at 00:00 UTC — minutes of backoff can't
 				// clear it, so retrying is pure churn. Fail the run with the real
@@ -379,9 +447,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 			headers: { "User-Agent": userAgent(), Accept: "application/json" },
 		});
 		if (!res.ok) throw new Error(`${this.bulkDataUrl()} answered ${res.status}`);
-		const listing = (await res.json()) as { data?: { type?: string; jsonl_download_uri?: string }[] };
+		const listing = (await res.json()) as {
+			data?: { type?: string; jsonl_download_uri?: string; updated_at?: string }[];
+		};
 		const records = listing.data ?? [];
+		// Newest dump timestamp across everything this import reads, recorded
+		// into the manifest at publish time so a later deploy can ask "is the
+		// live store already built from current upstream data?" without
+		// downloading anything. Best-effort: a listing without updated_at just
+		// leaves the field off, and the deploy falls back to its age backstop.
+		const stamps = records
+			.filter((r) => r.type && (DUMP_KINDS as readonly string[]).includes(r.type))
+			.map((r) => Date.parse(r.updated_at ?? ""))
+			.filter((n) => Number.isFinite(n));
 		this.ctx.storage.transactionSync(() => {
+			if (stamps.length > 0) {
+				this.metaSet("source_updated_at", new Date(Math.max(...stamps)).toISOString());
+			}
 			for (const kind of DUMP_KINDS) {
 				const record = records.find((r) => r.type === kind);
 				// Mirrors bulk.rs download_uri_from_listing: a missing record or
@@ -758,11 +840,33 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private ensureWasmContinuity(): boolean {
 		const wasm = groupWasm();
 		if (this.metaGet("tags_nonce") === wasm.nonce) return true;
-		console.warn("Wasm state lost to eviction; rebuilding tags + aggregation from SQLite");
+		// A rewind is not a retry, and that is what makes it dangerous: it
+		// returns false, the caller returns cleanly, and the alarm chain
+		// counts the slice as a SUCCESS — clearing the retry and attempt
+		// counters that would otherwise bound it. Meanwhile it has thrown away
+		// every spilled row and sent the run back to `agg`, so the work from
+		// aggregation onwards is done again, including a build phase that
+		// re-reads ~98k staged rows. Evict often enough and the import never
+		// finishes while quietly re-spending the whole daily row budget, with
+		// no error anywhere to say so.
+		//
+		// So rewinds get their own ceiling. Hitting it means eviction is
+		// outrunning progress, which no amount of retrying fixes.
+		const rewinds = Number(this.metaGet("wasm_rewinds") ?? 0) + 1;
+		if (rewinds > MAX_WASM_REWINDS) {
+			throw new FatalImportError(
+				`wasm state was lost ${rewinds} times in one run — eviction is outpacing progress, ` +
+					"so the import is rewinding to aggregation faster than it can reach publish",
+			);
+		}
+		console.warn(
+			`Wasm state lost to eviction (${rewinds}/${MAX_WASM_REWINDS}); rebuilding tags + aggregation from SQLite`,
+		);
 		const fresh = newGroupWasm();
 		fresh.reset();
 		this.restoreTags(fresh);
 		this.ctx.storage.transactionSync(() => {
+			this.metaSet("wasm_rewinds", String(rewinds));
 			this.metaSet("tags_nonce", fresh.nonce);
 			this.metaSet("agg_batch_done", "0");
 			this.metaSet("agg_sealed", "0");
@@ -937,10 +1041,21 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		sql.exec("DELETE FROM chunk_staging");
 		let chunkSeq = -1;
+		// Stage on the SHARED grid, not on whatever sizes wasm hands back. The
+		// publish step content-addresses these rows, and a chunk only matches
+		// one the deploy-time seeder already uploaded if both were cut at the
+		// same offsets — wasm's ~900KB chunks are not a multiple of the grid, so
+		// bytes have to be carried across its boundaries. Costs ~1.7k extra DO
+		// row writes per import (of a 100k/day budget) and buys a publish that
+		// writes only what changed.
+		const grid = new GridChunker();
+		const stage = (b: Uint8Array) => {
+			sql.exec("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
+		};
 		wasm.setHandlers({
 			pullRow: lookup,
 			onChunk: (b) => {
-				sql.exec("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
+				for (const chunk of grid.push(b)) stage(chunk);
 			},
 			onStats: (s) => {
 				this.metaSet("build_card_count", String(s.card_count ?? 0));
@@ -951,6 +1066,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const buildStart = Date.now();
 		const totalBytes = wasm.buildStoreStream();
 		wasm.setHandlers({});
+		// The store's tail is almost never a whole grid chunk.
+		for (const chunk of grid.end()) stage(chunk);
 		const heap = wasm.heap();
 		console.log(
 			`Store built: ${totalBytes} bytes in ${chunkSeq + 1} chunks, ${Date.now() - buildStart}ms ` +
@@ -970,6 +1087,62 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return `card-store-v${groupWasm().formatVersion()}-${this.metaGet("built_at")}.store`;
 	}
 
+	/**
+	 * Content-address every staged chunk, in staging order.
+	 *
+	 * Read in small batches and materialised with toArray() rather than held
+	 * open across the awaits: a storage cursor spanning an await is exactly the
+	 * kind of thing that breaks when the isolate is reset mid-phase, and this
+	 * loop is long enough for that to matter.
+	 */
+	private async hashStagedChunks(): Promise<string[]> {
+		const sql = this.ctx.storage.sql;
+		const total = Number(this.metaGet("chunk_count") ?? 0);
+		const hashes: string[] = [];
+		const BATCH = 32;
+		for (let from = 0; from < total; from += BATCH) {
+			const rows = sql
+				.exec("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", from, BATCH)
+				.toArray();
+			if (rows.length === 0) break;
+			for (const row of rows) {
+				hashes.push(await chunkHash(new Uint8Array(row.bytes as ArrayBuffer)));
+			}
+		}
+		if (hashes.length !== total) {
+			throw new Error(`chunk staging is short: hashed ${hashes.length} of ${total}`);
+		}
+		return hashes;
+	}
+
+	/**
+	 * The staging seqs whose chunks D1 does not already hold — the upload list.
+	 *
+	 * Returns seqs rather than hashes because the bytes are addressed by seq in
+	 * staging, and dedupes by hash so a chunk repeated within one store is
+	 * uploaded once. Batched at D1_MAX_BOUND_PARAMS: D1 caps bound parameters
+	 * per statement, and the whole point is to ask about ~1.8k of them.
+	 */
+	private async missingFromD1(hashes: string[]): Promise<number[]> {
+		const db = this.env.STORE_DB;
+		const firstSeq = new Map<string, number>();
+		for (let seq = 0; seq < hashes.length; seq++) {
+			const hash = hashes[seq] as string;
+			if (!firstSeq.has(hash)) firstSeq.set(hash, seq);
+		}
+		const unique = [...firstSeq.keys()];
+		const present = new Set<string>();
+		for (let from = 0; from < unique.length; from += D1_MAX_BOUND_PARAMS) {
+			const batch = unique.slice(from, from + D1_MAX_BOUND_PARAMS);
+			const res = await db
+				.prepare(`SELECT hash FROM store_blobs WHERE hash IN (${batch.map(() => "?").join(",")})`)
+				.bind(...batch)
+				.all<{ hash: string }>();
+			for (const row of res.results ?? []) present.add(row.hash);
+		}
+		return unique.filter((h) => !present.has(h)).map((h) => firstSeq.get(h) as number);
+	}
+
 	private async stepPublish(): Promise<void> {
 		const db = this.env.STORE_DB;
 		const sql = this.ctx.storage.sql;
@@ -977,8 +1150,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const chunkCount = Number(this.metaGet("chunk_count") ?? 0);
 		const storeKey = this.storeKey();
 
-		if (published === 0) {
+		// Prepared once per run, tracked separately from upload progress: the
+		// first upload slice still has chunks_published === 0, so keying this
+		// off that counter would re-hash the whole store on every alarm.
+		if (this.metaGet("publish_prepared") !== "1") {
 			await db.batch([
+				db.prepare("CREATE TABLE IF NOT EXISTS store_blobs (hash TEXT PRIMARY KEY, bytes BLOB NOT NULL)"),
 				db.prepare(
 					"CREATE TABLE IF NOT EXISTS store_chunks (store_key TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (store_key, seq))",
 				),
@@ -988,45 +1165,66 @@ export class ImportCoordinator extends DurableObject<Env> {
 				db.prepare(
 					"CREATE TABLE IF NOT EXISTS store_history (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL)",
 				),
-				// A retried publish must not stack rows under the same key.
-				db.prepare("DELETE FROM store_chunks WHERE store_key = ?").bind(storeKey),
+				db.prepare(
+					"CREATE TABLE IF NOT EXISTS store_versions (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL, json TEXT NOT NULL)",
+				),
 			]);
-			this.metaSet("chunks_published", "0");
+			// Hash every staged chunk and ask D1 which it already holds. Done
+			// once, in its own slice, because both halves are bounded work that
+			// the upload slices should not repeat: ~1.8k hashes over 70MB of
+			// staged bytes (streamed a row at a time, so peak memory is one
+			// chunk), then a handful of lookup queries.
+			const hashes = await this.hashStagedChunks();
+			const missing = await this.missingFromD1(hashes);
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("chunk_hashes", JSON.stringify(hashes));
+				this.metaSet("publish_missing", JSON.stringify(missing));
+				this.metaSet("chunks_published", "0");
+				this.metaSet("publish_prepared", "1");
+			});
+			console.log(
+				`Publish: ${hashes.length} chunks, ${hashes.length - missing.length} already in D1 ` +
+					`(${((100 * (hashes.length - missing.length)) / Math.max(1, hashes.length)).toFixed(1)}% reused), ` +
+					`${missing.length} to upload.`,
+			);
+			if (missing.length > 0) return; // next alarm starts uploading
 		}
 
-		const rows = sql
-			.exec("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", published, PUBLISH_SLICE_CHUNKS)
-			.toArray();
+		const missing = JSON.parse(this.metaGet("publish_missing") ?? "[]") as number[];
+		const remaining = missing.slice(published);
 		// Trim the batch to PUBLISH_SLICE_BYTES of raw chunk data. Always send
 		// at least one chunk, so an oversized chunk fails loudly on its own
 		// rather than stalling the phase forever at zero progress.
-		const take: typeof rows = [];
+		const take: { seq: number; bytes: ArrayBuffer; hash: string }[] = [];
 		let takeBytes = 0;
-		for (const r of rows) {
-			const len = (r.bytes as ArrayBuffer).byteLength;
-			if (take.length > 0 && takeBytes + len > PUBLISH_SLICE_BYTES) break;
-			take.push(r);
-			takeBytes += len;
+		const hashList = JSON.parse(this.metaGet("chunk_hashes") ?? "[]") as string[];
+		for (const seq of remaining.slice(0, PUBLISH_SLICE_CHUNKS)) {
+			const row = sql.exec("SELECT bytes FROM chunk_staging WHERE seq = ?", seq).toArray()[0];
+			if (!row) throw new Error(`chunk staging is missing seq ${seq}`);
+			const bytes = row.bytes as ArrayBuffer;
+			if (take.length > 0 && takeBytes + bytes.byteLength > PUBLISH_SLICE_BYTES) break;
+			take.push({ seq, bytes, hash: hashList[seq] as string });
+			takeBytes += bytes.byteLength;
 		}
 		if (take.length > 0) {
-			// OR REPLACE, because the D1 write and the chunks_published marker
+			// OR IGNORE, because the D1 write and the chunks_published marker
 			// cannot commit together: D1 is external to this DO's storage, so a
 			// slice whose batch landed but whose marker rolled back (the alarm
-			// threw afterwards, the isolate went away) retries the same seqs.
-			// A plain INSERT turns that into a permanent UNIQUE violation on
-			// (store_key, seq) that no number of retries can clear — the chunk
-			// bytes are identical, so overwriting is exactly right.
-			const stmt = db.prepare("INSERT OR REPLACE INTO store_chunks (store_key, seq, bytes) VALUES (?, ?, ?)");
-			await db.batch(take.map((r) => stmt.bind(storeKey, r.seq, r.bytes as ArrayBuffer)));
+			// threw afterwards, the isolate went away) retries the same chunks.
+			// A plain INSERT turns that into a permanent UNIQUE violation on the
+			// hash that no number of retries can clear — and identical content
+			// under the same hash makes ignoring it exactly right.
+			const stmt = db.prepare("INSERT OR IGNORE INTO store_blobs (hash, bytes) VALUES (?, ?)");
+			await db.batch(take.map((c) => stmt.bind(c.hash, c.bytes)));
 			this.metaSet("chunks_published", String(published + take.length));
 			console.log(
 				`Publish slice: ${take.length} chunks (${(takeBytes / 1048576).toFixed(1)}MB), ` +
-					`${published + take.length}/${chunkCount} total`,
+					`${published + take.length}/${missing.length} uploaded`,
 			);
 			return; // next alarm continues
 		}
-		if (published < chunkCount) {
-			throw new Error(`chunk staging is short: ${published}/${chunkCount}`);
+		if (published < missing.length) {
+			throw new Error(`chunk staging is short: ${published}/${missing.length}`);
 		}
 
 		// Every chunk is in D1 — write the manifest LAST (the commit point),
@@ -1040,14 +1238,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 			format_version: groupWasm().formatVersion(),
 			store_bytes: Number(this.metaGet("build_store_bytes") ?? 0),
 			chunk_count: chunkCount,
+			chunks: hashList,
+			source_updated_at: this.metaGet("source_updated_at") ?? undefined,
 		};
+		const manifestJson = JSON.stringify(manifest);
+		const now = Date.now();
 		await db.batch([
-			db.prepare("INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, ?)").bind(JSON.stringify(manifest)),
+			db.prepare("INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, ?)").bind(manifestJson),
+			db.prepare("INSERT OR REPLACE INTO store_history (store_key, published_at) VALUES (?, ?)").bind(storeKey, now),
 			db
-				.prepare("INSERT OR REPLACE INTO store_history (store_key, published_at) VALUES (?, ?)")
-				.bind(storeKey, Date.now()),
+				.prepare("INSERT OR REPLACE INTO store_versions (store_key, published_at, json) VALUES (?, ?, ?)")
+				.bind(storeKey, now, manifestJson),
 		]);
-		// Prune stores older than the KEEP_STORES most recent.
+		// Prune stores older than the KEEP_STORES most recent. A blob survives
+		// while any kept version still lists it — that is what makes sharing
+		// safe, since the chunks this store has in common with its predecessor
+		// are one set of rows with two referents. The legacy seq-indexed
+		// store_chunks rows drain on the same schedule, as the versions that
+		// own them age out.
 		const old = await db
 			.prepare("SELECT store_key FROM store_history ORDER BY published_at DESC LIMIT -1 OFFSET ?")
 			.bind(KEEP_STORES)
@@ -1055,8 +1263,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		for (const row of old.results ?? []) {
 			await db.batch([
 				db.prepare("DELETE FROM store_chunks WHERE store_key = ?").bind(row.store_key),
+				db.prepare("DELETE FROM store_versions WHERE store_key = ?").bind(row.store_key),
 				db.prepare("DELETE FROM store_history WHERE store_key = ?").bind(row.store_key),
 			]);
+		}
+		if ((old.results ?? []).length > 0) {
+			await db
+				.prepare(
+					"DELETE FROM store_blobs WHERE hash NOT IN (SELECT je.value FROM store_versions v, json_each(v.json, '$.chunks') je)",
+				)
+				.run();
 		}
 
 		// The store is live. The engine no longer needs the wasm group; the

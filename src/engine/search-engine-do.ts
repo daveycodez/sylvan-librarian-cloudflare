@@ -334,7 +334,7 @@ export class SearchEngine extends DurableObject<Env> {
 			sql.exec("DELETE FROM store_meta");
 			sql.exec("DELETE FROM store_chunks");
 
-			const body = await openStoreStream(this.env, manifest.store_key, manifest.store_bytes, manifest.chunk_count ?? 0);
+			const body = await openStoreStream(this.env, manifest);
 			const reader = body.getReader();
 			let seq = 0;
 			let carry: Uint8Array<ArrayBufferLike> = new Uint8Array(0);

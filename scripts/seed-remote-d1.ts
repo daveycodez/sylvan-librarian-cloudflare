@@ -17,11 +17,20 @@
 // manifest the site reports an unavailable index; after it, the site
 // serves and the nightly import tops up whatever is missing.
 //
+// Step 1 uploads only the chunks D1 does not already hold (see
+// src/engine/store-chunks.ts). That makes this both incremental and
+// resumable, from one property: chunks are addressed by their content, so
+// "already there" is decided by what the bytes ARE, not by how far a previous
+// attempt got. A republish of an unchanged store uploads nothing; a rebuild
+// after a day of Scryfall churn uploads the part that changed; a run killed
+// halfway uploads the remainder rather than starting over.
+//
 // --with-cards also seeds the SQL-fallback cards table (~200k metered row
 // writes). That exceeds the FREE plan's ~100k/day D1 write limit — use it on
 // paid; on free, skip it and let the nightly adaptive import fill the table.
 
 import { readFileSync } from "node:fs";
+import { chunkHash, splitStore } from "../src/engine/store-chunks";
 import { d1Name } from "./project-config";
 
 const args = process.argv.slice(2);
@@ -42,20 +51,14 @@ if (store.length !== manifest.store_bytes) {
 	throw new Error(`store file is ${store.length} bytes, manifest says ${manifest.store_bytes}`);
 }
 
-// Bounded by D1's SQL statement limit, NOT by the in-Worker publisher's chunk
-// size. These rows are written as `INSERT ... X'<hex>'`, and hex doubles the
-// payload: at the wasm import's 900_000-byte chunks a single statement is
-// ~1.8MB against D1's documented 100,000-byte maximum, which fails with
-// "statement too long: SQLITE_TOOBIG" every time. 40_000 bytes → ~80KB of hex
-// plus statement text, comfortably inside the limit.
-//
-// The store loader accepts any chunking (it concatenates by seq and checks the
-// total against the manifest), so a different chunk size here is not a format
-// difference — but it does mean more, smaller rows, which is why the read path
-// batches by BYTES rather than by a fixed row count (see store.ts).
-const CHUNK_BYTES = 40_000;
-const chunkCount = Math.ceil(store.length / CHUNK_BYTES);
-(manifest as Record<string, unknown>).chunk_count = chunkCount;
+// The chunk grid and its hashing live in src/engine/store-chunks.ts, shared
+// with the in-Worker publisher and the reader — a publisher that chose its own
+// boundaries would share no chunks with the other one, and the whole delta
+// would evaporate at the first alternation between deploy and nightly import.
+const chunkBytes = splitStore(store);
+const chunkHashes = await Promise.all(chunkBytes.map(chunkHash));
+(manifest as Record<string, unknown>).chunk_count = chunkHashes.length;
+(manifest as Record<string, unknown>).chunks = chunkHashes;
 
 /** Published store versions kept. One previous version covers isolates mid-swap;
  * more just consumes the free plan's 500MB D1 ceiling (~75MB per version, and
@@ -93,6 +96,54 @@ async function execRemote(sqlPath: string): Promise<void> {
 	}
 }
 
+/**
+ * Which of `hashes` D1 already holds.
+ *
+ * Deliberately a real query rather than `INSERT OR IGNORE` on everything: OR
+ * IGNORE would make the writes cheap but still push every chunk's hex across
+ * the wire, which is the ~150MB and the minutes this step exists to avoid.
+ *
+ * A failure here is NOT fatal — it only costs the delta. Treating "cannot ask"
+ * as "D1 has nothing" re-uploads the whole store, which is exactly the old
+ * behaviour, so the publish stays correct while losing the optimisation.
+ */
+async function existingHashes(hashes: string[]): Promise<string[]> {
+	if (process.env.SEED_REMOTE_DRY || hashes.length === 0) return [];
+	const inList = hashes.map((h) => `'${h}'`).join(",");
+	const proc = Bun.spawn(
+		[
+			"bunx",
+			"wrangler",
+			"d1",
+			"execute",
+			d1Name,
+			"--remote",
+			"-y",
+			"--json",
+			"-c",
+			"wrangler.jsonc",
+			"--command",
+			`SELECT hash FROM store_blobs WHERE hash IN (${inList})`,
+		],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	const out = await new Response(proc.stdout).text();
+	const err = await new Response(proc.stderr).text();
+	if ((await proc.exited) !== 0) {
+		console.warn(
+			`Could not ask D1 which chunks it has (uploading all of them): ${(err.trim() || out.trim()).split("\n").slice(-2).join(" ")}`,
+		);
+		return [];
+	}
+	try {
+		const parsed = JSON.parse(out.slice(out.indexOf("["))) as { results?: { hash: string }[] }[];
+		return (parsed[0]?.results ?? []).map((r) => r.hash);
+	} catch {
+		console.warn("Could not parse D1's chunk list (uploading all of them).");
+		return [];
+	}
+}
+
 /** Write statements into sequentially numbered files of ~TARGET_FILE_BYTES. */
 async function writeSqlFiles(prefix: string, statements: Iterable<string>): Promise<string[]> {
 	const paths: string[] = [];
@@ -115,29 +166,67 @@ async function writeSqlFiles(prefix: string, statements: Iterable<string>): Prom
 	return paths;
 }
 
-// ── 1. store chunks ──────────────────────────────────────────────────────────
-function* chunkStatements(): Generator<string> {
-	yield "CREATE TABLE IF NOT EXISTS store_chunks (store_key TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (store_key, seq));";
-	yield "CREATE TABLE IF NOT EXISTS store_manifest (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);";
-	yield "CREATE TABLE IF NOT EXISTS store_history (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL);";
-	yield `DELETE FROM store_chunks WHERE store_key = '${sqlEscape(manifest.store_key)}';`;
-	for (let seq = 0; seq < chunkCount; seq++) {
-		const chunk = store.subarray(seq * CHUNK_BYTES, Math.min((seq + 1) * CHUNK_BYTES, store.length));
-		yield `INSERT INTO store_chunks (store_key, seq, bytes) VALUES ('${sqlEscape(manifest.store_key)}', ${seq}, X'${hex(chunk)}');`;
+// ── 1. store chunks — only the ones D1 does not already hold ─────────────────
+{
+	const schemaPath = `${dir}/seed-remote-schema.sql`;
+	await Bun.write(
+		schemaPath,
+		[
+			"CREATE TABLE IF NOT EXISTS store_blobs (hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);",
+			"CREATE TABLE IF NOT EXISTS store_manifest (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);",
+			"CREATE TABLE IF NOT EXISTS store_history (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL);",
+			// Carries each published version's chunk list, so pruning can tell
+			// which blobs are still referenced. store_history stays alongside it
+			// as the ordering both publishers agree on.
+			"CREATE TABLE IF NOT EXISTS store_versions (store_key TEXT PRIMARY KEY, published_at INTEGER NOT NULL, json TEXT NOT NULL);",
+			// Legacy seq-indexed chunks. Still created so the prune below can
+			// drain it on a database that predates content addressing, and so a
+			// fresh one does not fail on a missing table.
+			"CREATE TABLE IF NOT EXISTS store_chunks (store_key TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (store_key, seq));",
+		].join("\n"),
+	);
+	await execRemote(schemaPath);
+
+	// Ask D1 which of this store's chunks it already has. One statement: ~1.8k
+	// hashes at 12 chars is ~27KB of IN-list, well inside the 100,000-byte
+	// statement limit that sizes everything else here.
+	const unique = [...new Set(chunkHashes)];
+	const present = new Set(await existingHashes(unique));
+	const missing = unique.filter((h) => !present.has(h));
+	const reused = unique.length - missing.length;
+	console.log(
+		`Store ${manifest.store_key}: ${unique.length} chunks, ${reused} already in D1 (${((100 * reused) / unique.length).toFixed(1)}% reused), ${missing.length} to upload.`,
+	);
+
+	if (missing.length > 0) {
+		const byHash = new Map(chunkHashes.map((h, i) => [h, chunkBytes[i] as Uint8Array]));
+		function* blobStatements(): Generator<string> {
+			for (const hash of missing) {
+				// OR IGNORE, not plain INSERT: a previous attempt may have landed
+				// this blob after its SQL file was written but before the run died,
+				// and identical content under the same hash makes a retry a no-op
+				// rather than a UNIQUE violation nothing can clear.
+				yield `INSERT OR IGNORE INTO store_blobs (hash, bytes) VALUES ('${hash}', X'${hex(byHash.get(hash) as Uint8Array)}');`;
+			}
+		}
+		for (const path of await writeSqlFiles("seed-remote-chunks", blobStatements())) {
+			await execRemote(path);
+		}
+	} else {
+		console.log("Nothing to upload — D1 already holds every chunk of this store.");
 	}
-}
-for (const path of await writeSqlFiles("seed-remote-chunks", chunkStatements())) {
-	await execRemote(path);
 }
 
 // ── 2. the commit point: history + manifest — the site goes live here ────────
 {
 	const path = `${dir}/seed-remote-manifest.sql`;
+	const json = sqlEscape(JSON.stringify(manifest));
 	await Bun.write(
 		path,
 		[
 			`INSERT OR REPLACE INTO store_history (store_key, published_at) VALUES ('${sqlEscape(manifest.store_key)}', ${Date.now()});`,
-			`INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, '${sqlEscape(JSON.stringify(manifest))}');`,
+			`INSERT OR REPLACE INTO store_versions (store_key, published_at, json) VALUES ('${sqlEscape(manifest.store_key)}', ${Date.now()}, '${json}');`,
+			`INSERT OR REPLACE INTO store_manifest (id, json) VALUES (1, '${json}');`,
 		].join("\n"),
 	);
 	await execRemote(path);
@@ -146,10 +235,20 @@ for (const path of await writeSqlFiles("seed-remote-chunks", chunkStatements()))
 
 // ── 3. prune superseded store versions ───────────────────────────────────────
 //
-// Without this D1 grows by a whole store (~75MB) per publish and never shrinks:
-// step 1 only clears chunks for the key it is about to write. Observed on a real
-// deployment going 75MB → 150MB across two builds, against the FREE plan's
-// 500MB database ceiling — roughly six more deploys before publishes fail.
+// Without this D1 grows by a whole store (~75MB) per publish and never shrinks.
+// Observed on a real deployment going 75MB → 150MB across two builds, against
+// the FREE plan's 500MB database ceiling — roughly six more deploys before
+// publishes fail.
+//
+// A blob survives while ANY kept version still lists it, which is what makes
+// sharing safe: the chunks this store has in common with its predecessor are
+// one set of rows with two referents, and dropping the predecessor must not
+// take them with it.
+//
+// The legacy seq-indexed store_chunks table is drained on the same schedule.
+// Its rows belong to versions published before content addressing, so they
+// fall out naturally as those versions age past KEEP_STORES — never sooner,
+// because an isolate mid-swap may still be reading one of them.
 //
 // Runs AFTER the manifest is live, so a failure here leaves a serving site with
 // some extra rows, never a live manifest pointing at pruned chunks.
@@ -159,6 +258,8 @@ for (const path of await writeSqlFiles("seed-remote-chunks", chunkStatements()))
 	await Bun.write(
 		path,
 		[
+			`DELETE FROM store_versions WHERE store_key NOT IN (${keep});`,
+			"DELETE FROM store_blobs WHERE hash NOT IN (SELECT je.value FROM store_versions v, json_each(v.json, '$.chunks') je);",
 			`DELETE FROM store_chunks WHERE store_key NOT IN (${keep});`,
 			`DELETE FROM store_history WHERE store_key NOT IN (${keep});`,
 		].join("\n"),

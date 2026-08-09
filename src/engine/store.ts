@@ -12,7 +12,7 @@
 
 import * as wasm from "sylvan-engine-wasm";
 import { readManifest } from "./manifest";
-import type { Engine, EngineSearchOptions, EngineSearchResult, Env } from "./types";
+import type { Engine, EngineSearchOptions, EngineSearchResult, Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";
 
 // Wasm panics must land in console.error, not die silently with the isolate.
@@ -109,6 +109,58 @@ async function feedStore(
 	wasm.finish_store_load();
 }
 
+/**
+ * Stream a content-addressed store out of D1: the manifest gives the chunk
+ * order, `store_blobs` gives the bytes, and chunks shared with a previous
+ * store version are simply the same rows.
+ *
+ * Batched by hash rather than by seq range, so the same query shape works
+ * whether or not this version shares chunks with its predecessor. Rows come
+ * back unordered (and a hash repeated in the store comes back once), so the
+ * manifest's order is re-imposed here.
+ */
+function d1BlobStream(env: Env, storeKey: string, expectedBytes: number, hashes: string[]): ReadableStream<Uint8Array> {
+	const avgChunk = hashes.length > 0 ? Math.ceil(expectedBytes / hashes.length) : CHUNK_BYTES_PER_QUERY;
+	const perQuery = Math.max(1, Math.floor(CHUNK_BYTES_PER_QUERY / avgChunk));
+	let next = 0;
+	let seenBytes = 0;
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			if (next >= hashes.length) {
+				if (seenBytes !== expectedBytes) {
+					controller.error(
+						new EngineUnavailableError(`Store ${storeKey} incomplete in D1: ${seenBytes}/${expectedBytes} bytes`),
+					);
+					return;
+				}
+				controller.close();
+				return;
+			}
+			const want = hashes.slice(next, next + perQuery);
+			const unique = [...new Set(want)];
+			const res = await env.STORE_DB.prepare(
+				`SELECT hash, bytes FROM store_blobs WHERE hash IN (${unique.map(() => "?").join(",")})`,
+			)
+				.bind(...unique)
+				.all<{ hash: string; bytes: unknown }>();
+			const byHash = new Map((res.results ?? []).map((row) => [row.hash, asBytes(row.bytes)]));
+			for (const hash of want) {
+				const bytes = byHash.get(hash);
+				if (!bytes) {
+					// A manifest referencing a blob that is gone means a prune raced
+					// a publish, or the database was edited under us. Never serve a
+					// short store: fail the load and keep the previous engine.
+					controller.error(new EngineUnavailableError(`Store ${storeKey} is missing chunk ${hash} in D1`));
+					return;
+				}
+				seenBytes += bytes.length;
+				controller.enqueue(bytes);
+			}
+			next += want.length;
+		},
+	});
+}
+
 /** Stream the store's chunk rows out of D1, ~CHUNK_BYTES_PER_QUERY per query. */
 function d1StoreStream(
 	env: Env,
@@ -167,12 +219,18 @@ function d1StoreStream(
  * D1 chunk stream is written into the cache first (no JS-side buffering),
  * then read back — two sequential streams instead of one big resident buffer.
  */
-export async function openStoreStream(
-	env: Env,
-	storeKey: string,
-	expectedBytes: number,
-	chunkCount: number,
-): Promise<ReadableStream<Uint8Array>> {
+export async function openStoreStream(env: Env, manifest: StoreManifest): Promise<ReadableStream<Uint8Array>> {
+	const storeKey = manifest.store_key;
+	const expectedBytes = manifest.store_bytes;
+	// A manifest with a chunk list is content-addressed; one without predates
+	// that and still lives in store_chunks, keyed by seq. Both must load: the
+	// deploy publishes the store and the Worker separately, so a new Worker
+	// routinely meets a manifest an older publisher wrote.
+	const hashes = manifest.chunks;
+	const fromD1 = () =>
+		hashes
+			? d1BlobStream(env, storeKey, expectedBytes, hashes)
+			: d1StoreStream(env, storeKey, expectedBytes, manifest.chunk_count ?? 0);
 	const cacheKey = new Request(STORE_CACHE_URL + encodeURIComponent(storeKey));
 	const cache = caches.default;
 
@@ -189,16 +247,20 @@ export async function openStoreStream(
 
 	// Existence probe before caching: a manifest naming a store D1 no longer
 	// has must fail loudly, never serve a silently empty engine.
-	const probe = await env.STORE_DB.prepare("SELECT 1 AS one FROM store_chunks WHERE store_key = ? AND seq = 0")
-		.bind(storeKey)
-		.first();
+	const probe = hashes
+		? await env.STORE_DB.prepare("SELECT 1 AS one FROM store_blobs WHERE hash = ?")
+				.bind(hashes[0] ?? "")
+				.first()
+		: await env.STORE_DB.prepare("SELECT 1 AS one FROM store_chunks WHERE store_key = ? AND seq = 0")
+				.bind(storeKey)
+				.first();
 	if (!probe) {
 		throw new EngineUnavailableError(`Store ${storeKey} missing from D1 despite manifest`);
 	}
 
 	await cache.put(
 		cacheKey,
-		new Response(d1StoreStream(env, storeKey, expectedBytes, chunkCount), {
+		new Response(fromD1(), {
 			headers: {
 				"content-length": String(expectedBytes),
 				"Cache-Control": "public, max-age=604800, immutable", // keyed by store_key → content-addressed
@@ -209,7 +271,7 @@ export async function openStoreStream(
 	if (cached?.body) return cached.body;
 
 	// Cache eviction raced us; fall back to a fresh D1 read.
-	return d1StoreStream(env, storeKey, expectedBytes, chunkCount);
+	return fromD1();
 }
 
 async function loadStore(env: Env): Promise<Engine> {
@@ -233,7 +295,7 @@ async function loadStore(env: Env): Promise<Engine> {
 
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
-	const body = await openStoreStream(env, manifest.store_key, manifest.store_bytes, manifest.chunk_count ?? 0);
+	const body = await openStoreStream(env, manifest);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.

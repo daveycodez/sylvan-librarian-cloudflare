@@ -55,9 +55,29 @@ fi
 #    fresh fork whose default branch is not `main` still has to get an index,
 #    and shipping nothing is worse than shipping a preview-built one. Override
 #    the branch name with PRODUCTION_BRANCH.
+#    Whatever it decides, SAY WHY. This check used to run under `2>/dev/null`,
+#    which threw away the one line explaining itself — so a store-age query that
+#    could not reach D1 at all was indistinguishable, in the build log, from a
+#    database with nothing published in it, and every deploy re-ran a 450MB
+#    import announcing "no current store" while a two-minute-old store sat live.
+#    A skipped import is an optimisation; a wrong reason is a lie in the log.
 STORE_AGE=""
-if age="$(bun scripts/store-age.ts 2>/dev/null)" && [[ -n "$age" ]]; then
+STORE_AGE_ERR="$(mktemp)"
+trap 'rm -f "$STORE_AGE_ERR"' EXIT
+STORE_AGE_STATUS=0
+age="$(bun scripts/store-age.ts 2>"$STORE_AGE_ERR")" || STORE_AGE_STATUS=$?
+if [[ "$STORE_AGE_STATUS" -eq 0 && -n "$age" ]]; then
     STORE_AGE="$age"
+    # Says which upstream dump the live store already covers — the reason a
+    # skip is a skip, not just the fact of one.
+    sed 's/^/    /' "$STORE_AGE_ERR"
+else
+    # Exit 2+ is "could not tell", not "no store" — the state that silently
+    # costs a full rebuild on every deploy. Either way, print the reason.
+    if [[ "$STORE_AGE_STATUS" -ge 2 ]]; then
+        echo "!!! Could not determine whether a store is live — importing to be safe."
+    fi
+    sed 's/^/    /' "$STORE_AGE_ERR"
 fi
 BRANCH="${WORKERS_CI_BRANCH:-}"
 PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-main}"

@@ -126,15 +126,40 @@ evicted relays the query to the region's DO (engine-wnam, ...) while
 waking itself in the background — the store loads from the DO's local
 SQLite (never D1), and the wake duration is logged (`SearchEngine wake:
 ...`). Warm queries are sub-ms of DO CPU. The store is stored raw,
-deliberately: D1 meters rows (a chunk row is one row regardless of size)
-while decompress CPU would be metered on every load.
+deliberately: D1 meters rows (a chunk row is one row regardless of size —
+verified against a live database, where reading 146MB across 3,662 rows
+metered 3,662 rows read) while decompress CPU would be metered on every load.
+
+### Publishing a store is incremental
+
+The store is cut into 40,000-byte chunks on a fixed grid and stored by the
+hash of their contents ([store-chunks.ts](src/engine/store-chunks.ts)), with
+the ordered hash list carried in the manifest. A publish uploads only the
+chunks D1 does not already have, which makes three things fall out of one
+mechanism: an unchanged store costs no writes at all, a rebuild after a day
+of Scryfall churn costs the part that changed, and an interrupted publish
+resumes rather than restarting — "already uploaded" is a property of the
+bytes, not of how far the last attempt got. Two versions are kept, and they
+share every chunk they have in common.
+
+Both publishers cut on the same grid, which is the whole trick: the deploy
+seeder splits a 73MB buffer, the in-Worker import re-chunks a stream of
+~900KB wasm outputs, and they must agree byte-for-byte or a nightly import
+and a deploy would share nothing. Measured on two real builds of identical
+input, 1,551 of 1,831 chunks matched (84.7%), with every difference confined
+to one band of the archive.
+
+Deploys ask Scryfall when it last regenerated its dumps and compare that to
+the live store's build time, so a code push that changes no card data
+downloads nothing.
 
 ### Free-plan fit
 
 Serving reads zero SQL rows per query (in-memory engine) and the import
-writes ~1k SQLite rows + ~70 D1 rows per night (batched blobs), so the free
-tier's daily meters — 100k Worker requests, 100k DO requests, 5M rows read,
-100k rows written — bound *traffic*, not architecture. The per-colo shard
+writes ~1k SQLite rows plus a few hundred D1 rows per night (batched blobs,
+changed chunks only), so the free tier's daily meters — 100k Worker
+requests, 100k DO requests, 5M rows read, 100k rows written — bound
+*traffic*, not architecture. The per-colo shard
 cap is plan-aware automatically (1 on detected free — each warm shard pins
 a ~70MB store copy against the 5GB storage and daily duration allowances —
 8 on detected paid, 2 until the first import produces evidence), using the
