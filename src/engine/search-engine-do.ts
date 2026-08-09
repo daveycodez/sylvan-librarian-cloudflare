@@ -30,7 +30,21 @@ interface SearchTelemetry {
 	load: number;
 	rate: number;
 	relayed: boolean;
+	/** Widest fan-out any caller has reported lately — the rendezvous. */
+	shards: number;
 }
+
+/**
+ * How long the announced width survives without a caller re-reporting it.
+ *
+ * The announcement has to be a DECAYING max, not a running one. A plain max
+ * would ratchet: the controller's contraction step lowers an isolate's width,
+ * the isolate would immediately re-adopt the stale higher value from here, and
+ * scale-in could never happen. With a TTL, a width nobody is still reporting
+ * ages out and the announcement follows the callers back down. Sized to match
+ * CONTRACT_COOLDOWN_MS so decay and contraction step at the same pace.
+ */
+const WIDTH_TTL_MS = 60_000;
 
 /**
  * RPC error marker: workerd propagates only Error#message across RPC, so the
@@ -59,6 +73,33 @@ export class SearchEngine extends DurableObject<Env> {
 	 * Real saturation always shows both. */
 	private recentSearches: number[] = [];
 
+	/**
+	 * The fan-out rendezvous: widest width any caller has reported, with a TTL.
+	 *
+	 * activeShards is per-isolate state, and every new isolate starts at 1 — so
+	 * without somewhere to meet, an isolate that has not expanded sends all its
+	 * traffic to shard 0 and never learns better. Measured on production
+	 * 2026-08-09: four shards open, split stuck at ~73/17/10/5 across every
+	 * stage of a ramp, ~64% of isolates never expanding. This DO is the meeting
+	 * point, because the isolates that need convincing are exactly the ones
+	 * sending everything here.
+	 */
+	private announcedShards = 1;
+	private announcedAt = 0;
+
+	/** Fold a caller's width in and hand back the current announcement. */
+	private rendezvous(reported: number, now: number): number {
+		const width = Number.isFinite(reported) && reported >= 1 ? Math.floor(reported) : 1;
+		// Refresh on any report at or above the announcement — otherwise a
+		// stream of lower reports would keep a stale higher value alive forever
+		// and defeat the TTL.
+		if (width >= this.announcedShards || now - this.announcedAt > WIDTH_TTL_MS) {
+			this.announcedShards = width;
+			this.announcedAt = now;
+		}
+		return this.announcedShards;
+	}
+
 	/** Searches per second over the trailing window. */
 	private searchRate(now: number): number {
 		const windowMs = 10_000;
@@ -79,11 +120,12 @@ export class SearchEngine extends DurableObject<Env> {
 	async search(
 		opts: EngineSearchOptions,
 		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
 	): Promise<EngineSearchResult & SearchTelemetry> {
 		if (this.shouldRelay(fallbackHint)) {
 			return this.relay(fallbackHint, (region) => region.search(opts));
 		}
-		return this.instrumented((engine) => engine.search(opts));
+		return this.instrumented(reportedShards, (engine) => engine.search(opts));
 	}
 
 	/**
@@ -95,11 +137,12 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		if (this.shouldRelay(fallbackHint)) {
 			return this.relay(fallbackHint, (region) => region.searchSerialized(opts, shape));
 		}
-		return this.instrumented((engine) => engine.searchSerialized(opts, shape));
+		return this.instrumented(reportedShards, (engine) => engine.searchSerialized(opts, shape));
 	}
 
 	/**
@@ -126,9 +169,14 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/** Run a search against the local engine, carrying the autoscaler's signals. */
-	private async instrumented<T extends object>(run: (engine: Engine) => Promise<T>): Promise<T & SearchTelemetry> {
+	private async instrumented<T extends object>(
+		reportedShards: number | undefined,
+		run: (engine: Engine) => Promise<T>,
+	): Promise<T & SearchTelemetry> {
+		const now = Date.now();
 		const load = this.inFlightSearches;
-		const rate = this.searchRate(Date.now());
+		const rate = this.searchRate(now);
+		const shards = this.rendezvous(reportedShards ?? 1, now);
 		this.inFlightSearches += 1;
 		try {
 			// Time the engine acquisition (the KV load, when there is one) for
@@ -139,7 +187,7 @@ export class SearchEngine extends DurableObject<Env> {
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				return { ...(await run(engine)), acquireMs, load, rate, relayed: false };
+				return { ...(await run(engine)), acquireMs, load, rate, relayed: false, shards };
 			} catch (err) {
 				rethrowForRpc(err);
 			}

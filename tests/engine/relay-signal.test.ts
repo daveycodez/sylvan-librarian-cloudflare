@@ -18,11 +18,15 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 const reportEngineLoad = mock((_depth: number) => {});
 const reportEngineRate = mock((_rate: number) => {});
 const reportEngineLatency = mock((_ms: number) => {});
+const adoptShardWidth = mock((_width: number) => {});
+const currentShardWidth = mock(() => 1);
 
 mock.module("../../src/engine/shard-controller", () => ({
 	reportEngineLoad,
 	reportEngineRate,
 	reportEngineLatency,
+	adoptShardWidth,
+	currentShardWidth,
 }));
 
 mock.module("../../src/engine/search-engine-do", () => ({
@@ -51,6 +55,8 @@ beforeEach(() => {
 	reportEngineLoad.mockClear();
 	reportEngineRate.mockClear();
 	reportEngineLatency.mockClear();
+	adoptShardWidth.mockClear();
+	currentShardWidth.mockClear();
 });
 
 describe("relayed samples", () => {
@@ -89,6 +95,34 @@ describe("local samples", () => {
 		expect(reportEngineLoad).toHaveBeenCalledWith(0);
 		expect(reportEngineRate).toHaveBeenCalledWith(12);
 		expect(reportEngineLatency).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("the fan-out rendezvous", () => {
+	test("a local answer's announced width is adopted", async () => {
+		await search({ acquireMs: 0, load: 0, rate: 55, relayed: false, shards: 4 });
+		expect(adoptShardWidth).toHaveBeenCalledWith(4);
+	});
+
+	test("a relayed answer's width is ignored — it describes the region", async () => {
+		await search({ acquireMs: 0, load: 0, rate: 55, relayed: true, shards: 9 });
+		expect(adoptShardWidth).not.toHaveBeenCalled();
+	});
+
+	test("a wake-carrying local answer still adopts, since width is not a latency signal", async () => {
+		await search({ acquireMs: 800, load: 0, rate: 55, relayed: false, shards: 3 });
+		expect(adoptShardWidth).toHaveBeenCalledWith(3);
+		expect(reportEngineLatency).not.toHaveBeenCalled();
+	});
+
+	test("an old DO that sends no width is not treated as a width of zero", async () => {
+		await search({ acquireMs: 0, load: 0, rate: 55, relayed: false });
+		expect(adoptShardWidth).not.toHaveBeenCalled();
+	});
+
+	test("this isolate's width rides out on the RPC", async () => {
+		await search({ acquireMs: 0, load: 0, rate: 55, relayed: false, shards: 1 });
+		expect(currentShardWidth).toHaveBeenCalled();
 	});
 });
 

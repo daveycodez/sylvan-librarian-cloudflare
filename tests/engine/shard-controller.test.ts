@@ -194,6 +194,60 @@ describe("SHARDS_MAX", () => {
 	});
 });
 
+describe("the fan-out rendezvous", () => {
+	test("an isolate that never expanded adopts the colo's announced width", async () => {
+		const c = await freshController();
+		// This is the ~64% case a production ramp measured: on its own it would
+		// route 100% to shard 0 forever.
+		expect(observedWidth(c)).toBe(1);
+		c.adoptShardWidth(4);
+		expect(observedWidth(c)).toBe(4);
+	});
+
+	test("reports its own width so peers can adopt it", async () => {
+		const c = await freshController();
+		expect(c.currentShardWidth()).toBe(1);
+		c.reportEngineRate(60);
+		for (let i = 0; i < 3; i++) c.reportEngineLoad(3);
+		expect(c.currentShardWidth()).toBe(2);
+	});
+
+	test("raises only — a narrower announcement cannot undo local state", async () => {
+		const c = await freshController();
+		c.adoptShardWidth(4);
+		c.adoptShardWidth(2);
+		expect(observedWidth(c)).toBe(4);
+	});
+
+	test("cannot be used to escape SHARDS_MAX", async () => {
+		const c = await freshController();
+		c.pickShard(2);
+		c.adoptShardWidth(16);
+		expect(observedWidth(c)).toBe(2);
+	});
+
+	test("ignores nonsense without disturbing the current width", async () => {
+		const c = await freshController();
+		c.adoptShardWidth(3);
+		for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 0, -5]) c.adoptShardWidth(bad);
+		expect(observedWidth(c)).toBe(3);
+	});
+
+	test("an adopted width still contracts, so adoption is not a ratchet", async () => {
+		// The hazard this pairs with WIDTH_TTL_MS in the DO: if adoption could
+		// not be undone locally, scale-in would be dead. Contraction is driven by
+		// the idle clock and does not care where the width came from.
+		const c = await freshController();
+		c.reportEngineRate(60);
+		for (let i = 0; i < 3; i++) c.reportEngineLoad(3);
+		c.adoptShardWidth(3);
+		expect(observedWidth(c)).toBe(3);
+		advance(11 * 60_000);
+		c.pickShard();
+		expect(observedWidth(c)).toBe(2);
+	});
+});
+
 describe("contraction", () => {
 	test("folds back one step per cooldown once saturation stops", async () => {
 		const c = await freshController();

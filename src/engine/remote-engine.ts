@@ -2,12 +2,18 @@
 // serving path: isolates parse and RPC here, never loading the store.
 
 import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
-import { reportEngineLatency, reportEngineLoad, reportEngineRate } from "./shard-controller";
+import {
+	adoptShardWidth,
+	currentShardWidth,
+	reportEngineLatency,
+	reportEngineLoad,
+	reportEngineRate,
+} from "./shard-controller";
 import type { Engine, EngineSearchOptions, EngineSearchResult, EngineSerializedResult, ResultShape } from "./types";
 import { EngineUnavailableError } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
-type Telemetry = { acquireMs?: number; load?: number; rate?: number; relayed?: boolean };
+type Telemetry = { acquireMs?: number; load?: number; rate?: number; relayed?: boolean; shards?: number };
 
 /** Structural stub type: the SearchEngine DO's RPC surface. `acquireMs` and
  * `relayed` are optional only for one deploy's worth of rolling-update skew
@@ -15,11 +21,16 @@ type Telemetry = { acquireMs?: number; load?: number; rate?: number; relayed?: b
  * reads as false, which is the pre-existing behavior — the skew window keeps
  * the old contamination rather than inventing a new failure mode. */
 interface SearchEngineStub {
-	search(opts: EngineSearchOptions, fallbackHint?: DurableObjectLocationHint): Promise<EngineSearchResult & Telemetry>;
+	search(
+		opts: EngineSearchOptions,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<EngineSearchResult & Telemetry>;
 	searchSerialized(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
 	catalog(
 		fallbackHint?: DurableObjectLocationHint,
@@ -144,7 +155,7 @@ export class RemoteEngine implements Engine {
 	 */
 	private async searchRpc<T extends object>(call: () => Promise<T & Telemetry>): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, rate, relayed, ...result } = await withRetry(call);
+		const { acquireMs, load, rate, relayed, shards, ...result } = await withRetry(call);
 		if (acquireMs) {
 			// Wake observability: logged only when the DO that answered had to
 			// acquire its engine. Under a relay that DO is the regional one.
@@ -154,6 +165,9 @@ export class RemoteEngine implements Engine {
 			);
 		}
 		if (!relayed) {
+			// The rendezvous: adopt a fan-out this colo already reached, so an
+			// isolate that never expanded on its own stops pinning shard 0.
+			if (shards !== undefined) adoptShardWidth(shards);
 			if (load !== undefined) reportEngineLoad(load);
 			if (rate !== undefined) reportEngineRate(rate);
 			// Wake-carrying RPCs are excluded from the latency signal too: their
@@ -168,11 +182,11 @@ export class RemoteEngine implements Engine {
 	}
 
 	search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return this.searchRpc(() => this.stub.search(opts, this.fallbackHint));
+		return this.searchRpc(() => this.stub.search(opts, this.fallbackHint, currentShardWidth()));
 	}
 
 	searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.searchSerialized(opts, shape, this.fallbackHint));
+		return this.searchRpc(() => this.stub.searchSerialized(opts, shape, this.fallbackHint, currentShardWidth()));
 	}
 
 	private catalog() {

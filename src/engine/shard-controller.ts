@@ -25,12 +25,19 @@
 // the rest) precisely because it kept the majority share. The mechanism fires
 // correctly; the ROUTING does not follow it.
 //
-// The fix is a rendezvous these isolates do not currently have: carry the
-// fan-out width in the telemetry rider, have each DO remember the widest value
-// any caller has reported, and return it so callers adopt max(own, returned).
-// Shard 0 sees the expanded isolates' traffic anyway, so it converges the
-// unexpanded ones within a request. Not implemented yet — it is a protocol
-// addition, not a constant.
+// FIXED by giving them a rendezvous. Every search RPC now carries this
+// isolate's width out (currentShardWidth) and brings the colo's back in
+// (adoptShardWidth): the DO remembers the widest value any caller has reported
+// and returns it, so an isolate that never expands on its own still learns the
+// fan-out on its very next request. Shard 0 works as the meeting point for
+// free, because the isolates that need convincing are exactly the ones sending
+// all their traffic there.
+//
+// Adoption RAISES ONLY, and the DO's announcement decays (WIDTH_TTL_MS) rather
+// than ratcheting. Those two together are what keep scale-in alive: if adoption
+// could lower the width it would fight each isolate's own idle clock, and if
+// the announcement never decayed, a contracting isolate would re-adopt the
+// stale higher value on its next RPC and never get smaller.
 //
 // Expansion: sustained queue depth — several responses within a short window
 // reporting that >=2 searches were already executing when the request
@@ -305,6 +312,33 @@ export function takeWarmTarget(): number | null {
 /** Room to grow: SHARDS_MAX=0 means unbounded, so treat 0 as no ceiling. */
 function canExpand(): boolean {
 	return configuredMax === 0 || activeShards < configuredMax;
+}
+
+/** This isolate's current fan-out width, reported on every search RPC. */
+export function currentShardWidth(): number {
+	return activeShards;
+}
+
+/**
+ * Adopt a width some other isolate has already reached.
+ *
+ * The rendezvous half of the fix for the convergence defect in the header:
+ * activeShards is per-isolate and a new isolate starts at 1, so without this an
+ * isolate that never expands on its own keeps sending everything to shard 0. A
+ * production ramp measured the result — four shards open, traffic stuck at
+ * ~73/17/10/5, never converging.
+ *
+ * Raise only. Lowering here would fight contraction, which is a decision each
+ * isolate makes from its own idle clock; the DO's announcement decays instead
+ * (WIDTH_TTL_MS), so a width nobody still reports ages out at the source. The
+ * cap still applies: adopting must not be a way around SHARDS_MAX.
+ */
+export function adoptShardWidth(width: number): void {
+	if (!Number.isFinite(width) || width <= activeShards) return;
+	const capped = configuredMax === 0 ? Math.floor(width) : Math.min(Math.floor(width), configuredMax);
+	if (capped <= activeShards) return;
+	activeShards = capped;
+	console.log(`Shard controller: adopted ${activeShards} shards announced by the colo's DO`);
 }
 
 export function pickShard(maxShards?: number): number {
