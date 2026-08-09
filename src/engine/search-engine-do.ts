@@ -54,8 +54,20 @@ const PERSIST_CHUNK_BYTES = 1_900_000;
 const PERSIST_CHUNK_PAUSE_MS = 150;
 
 export class SearchEngine extends DurableObject<Env> {
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
+	/** Schema created once per instance — see ensureSchema. */
+	private schemaReady = false;
+
+	/**
+	 * Create the local store-copy schema. NOT in the constructor: DDL is a
+	 * storage write, and exceeding the Durable Objects free-tier daily
+	 * allowance blocks the entire storage API — so a constructor that writes
+	 * makes this DO unconstructable, and SEARCH GOES DOWN with it, even though
+	 * serving a query needs nothing from local storage (the store comes from
+	 * D1, a separate quota). Local persistence is a cold-start optimisation;
+	 * losing it must never cost availability.
+	 */
+	private ensureSchema(): void {
+		if (this.schemaReady) return;
 		this.ctx.storage.sql.exec(
 			`CREATE TABLE IF NOT EXISTS store_meta (
 				id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -67,6 +79,7 @@ export class SearchEngine extends DurableObject<Env> {
 			);
 			CREATE TABLE IF NOT EXISTS store_chunks (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);`,
 		);
+		this.schemaReady = true;
 	}
 
 	// ── RPC surface ────────────────────────────────────────────────────────────
@@ -245,10 +258,21 @@ export class SearchEngine extends DurableObject<Env> {
 
 	// ── SQLite persistence ─────────────────────────────────────────────────────
 
+	/** The local copy's metadata, or null when there is no usable local copy —
+	 * including when storage itself is unavailable (see ensureSchema). Callers
+	 * treat null as "no local copy" and fall back to loading from D1, which is
+	 * exactly the right behaviour for a blocked or empty local store. */
 	private sqliteMeta(): (AdoptableStoreMeta & { chunk_count: number }) | null {
-		const rows = this.ctx.storage.sql
-			.exec("SELECT store_key, store_bytes, card_count, built_at, chunk_count FROM store_meta WHERE id = 1")
-			.toArray();
+		let rows: Record<string, unknown>[];
+		try {
+			this.ensureSchema();
+			rows = this.ctx.storage.sql
+				.exec("SELECT store_key, store_bytes, card_count, built_at, chunk_count FROM store_meta WHERE id = 1")
+				.toArray();
+		} catch (err) {
+			console.warn(`Local store copy unavailable, will use D1: ${err}`);
+			return null;
+		}
 		const row = rows[0];
 		if (!row) return null;
 		return {
@@ -305,6 +329,7 @@ export class SearchEngine extends DurableObject<Env> {
 	 */
 	private async streamStoreToSqlite(manifest: StoreManifest): Promise<void> {
 		{
+			this.ensureSchema();
 			const sql = this.ctx.storage.sql;
 			sql.exec("DELETE FROM store_meta");
 			sql.exec("DELETE FROM store_chunks");

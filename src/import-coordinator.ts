@@ -318,17 +318,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async status(): Promise<Response> {
-		// The run record is a plain storage value, so it reads back even when
-		// SQL is unavailable — report it no matter what happens below.
-		const run = await this.getRun();
+		// Nothing here may assume storage is reachable. Exceeding the Durable
+		// Objects free-tier daily allowance blocks the WHOLE storage API, not
+		// just writes: `storage.get("run")` — a plain read of a single value —
+		// throws "Exceeded allowed rows written" exactly like a write does. So
+		// status degrades in two steps, and the outer one touches no storage at
+		// all, because a status endpoint that needs storage to say "storage is
+		// unavailable" can never deliver that message.
+		let run: RunRecord;
+		try {
+			run = await this.getRun();
+		} catch (err) {
+			console.error(`Status could not reach storage at all: ${err}`);
+			return Response.json({
+				run: { state: "unknown" },
+				builder: { state: "unknown", phase: "blocked", blocked: String(err) },
+			});
+		}
 		try {
 			return await this.statusFromSql(run);
 		} catch (err) {
-			// Storage is refusing to serve this DO: on the free tier that means
-			// the daily rows_written allowance is spent and every write —
-			// including CREATE TABLE IF NOT EXISTS — is rejected until 00:00
-			// UTC. Say so, rather than looking like a coordinator that never
-			// started; the bootstrap page turns `blocked` into an explanation.
+			// Storage answered for the run record but not for SQL (or the schema
+			// is not there yet). Report what we have plus the reason.
 			console.error(`Status could not read staging state: ${err}`);
 			return Response.json({
 				run,

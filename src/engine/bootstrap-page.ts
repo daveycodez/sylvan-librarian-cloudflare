@@ -75,15 +75,16 @@ export async function bootstrapPage(env: Env): Promise<Response> {
 		const nextReset = new Date(reset).toISOString().replace(".000Z", "Z");
 		body = `<div class="bad">!</div>
 <h1>Paused by a daily platform limit</h1>
-<p>The import coordinator's storage is refusing writes, so the build cannot
+<p>The import coordinator's storage is refusing operations, so the build cannot
 continue right now. It reported:</p>
 <pre>${esc(blocked)}</pre>
 <p>Durable Objects free-tier daily limits reset at 00:00 UTC. The next reset is
 <code>${esc(nextReset)}</code>, in ${when}. The build resumes on its own after
 that — progress already on disk is kept, so it continues rather than starting
 over.</p>
-<p class="dim">If that countdown is close to 24 hours, the window just reset
-and this should clear within a few minutes. This page rechecks every 5 minutes.</p>`;
+<p class="dim">If that countdown is close to 24 hours, the window has just reset
+and this should clear shortly — quota accounting can lag the reset by several
+minutes. This page rechecks every 5 minutes.</p>`;
 	} else if (failed) {
 		const reason = status.run?.detail ?? "no detail recorded";
 		const when = status.run?.finishedAt ? ` at ${esc(status.run.finishedAt)}` : "";
