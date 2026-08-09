@@ -79,27 +79,49 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Warm RPC wall time, sampled into the log.
+ * Warm RPC wall time, summarized into the log.
  *
- * This is the ONLY input to the shard controller's latency trigger, and until
- * now not one warm sample was observable: the wake log above fires only when
- * the answering DO had to acquire its engine, so production could show cold
- * RPCs and nothing else. That left floorEwma — which decides whether the
- * `MULT x floor` rule or the flat LATENCY_ABS_MS bar binds, and therefore what
- * utilization expansion actually fires at — unmeasurable from outside.
+ * This is the ONLY input to the shard controller's latency trigger, and none of
+ * it was observable before: the wake log above fires only when the answering DO
+ * had to acquire its engine, so production could show cold RPCs and nothing
+ * else. That left floorEwma — which decides whether the `MULT x floor` rule or
+ * the flat LATENCY_ABS_MS bar binds, and therefore what utilization expansion
+ * actually fires at — unmeasurable from outside.
  *
- * Sampled rather than logged outright because this is the hot path: one line
- * per 64 warm searches is enough to read a distribution off a load-test run
- * without turning the log into the workload.
+ * Windowed by TIME rather than by count, and the first warm RPC an isolate sees
+ * always emits. A 1-in-N counter is per-isolate state, so it only reports once
+ * one isolate has personally served N warm searches — which never happens at
+ * sparse traffic, and misses exactly the transition worth seeing: the first
+ * warm RPC after a cold colo finishes waking. Under load the window caps the
+ * cost instead.
+ *
+ * min is the number to read: floorEwma tracks the fast tail, so the minimum
+ * here is the closest thing to the value the controller is actually comparing
+ * against.
  */
-let warmRpcSeen = 0;
-const WARM_RPC_LOG_EVERY = 64;
+const WARM_RPC_WINDOW_MS = 2_000;
+let warmWindowStart = 0;
+let warmCount = 0;
+let warmMin = Number.POSITIVE_INFINITY;
+let warmMax = 0;
+let warmSum = 0;
 
 function sampleWarmRpc(rpcMs: number): void {
-	warmRpcSeen += 1;
-	if (warmRpcSeen % WARM_RPC_LOG_EVERY === 0) {
-		console.log(`Remote engine search: ${rpcMs}ms warm rpc (1-in-${WARM_RPC_LOG_EVERY} sample, n=${warmRpcSeen})`);
-	}
+	warmCount += 1;
+	warmSum += rpcMs;
+	if (rpcMs < warmMin) warmMin = rpcMs;
+	if (rpcMs > warmMax) warmMax = rpcMs;
+	const now = Date.now();
+	if (warmWindowStart !== 0 && now - warmWindowStart < WARM_RPC_WINDOW_MS) return;
+	console.log(
+		`Remote engine warm rpc: n=${warmCount} min=${warmMin}ms avg=${(warmSum / warmCount).toFixed(1)}ms ` +
+			`max=${warmMax}ms over ${warmWindowStart === 0 ? 0 : now - warmWindowStart}ms`,
+	);
+	warmWindowStart = now;
+	warmCount = 0;
+	warmMin = Number.POSITIVE_INFINITY;
+	warmMax = 0;
+	warmSum = 0;
 }
 
 export class RemoteEngine implements Engine {

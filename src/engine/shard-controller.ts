@@ -45,6 +45,20 @@
 //    the REGION's, not this colo's). Relays are the case that matters most:
 //    every shard this controller opens relays until it warms, so without the
 //    tag each expansion would inflate the very signal that triggers the next.
+//
+// A CONSEQUENCE WORTH KNOWING BEFORE DEBUGGING THIS: at sparse traffic the
+// controller receives nothing at all, and that is correct rather than broken.
+// Production logs on 2026-08-09 showed every engine RPC arriving as a cold
+// relay — 1457-1853ms wall, 382ms of it the regional DO's own store load —
+// because a colo whose DO has been evicted relays while it warms, and at ~0.1
+// req/s the DO is always evicted. Every one of those samples is dropped by the
+// rule above, so floorEwma never receives a sample, latencySamples never
+// reaches LATENCY_MIN_SAMPLES, and the latency trigger cannot fire by
+// construction. The controller wakes up only once traffic is dense enough to
+// keep a colo DO warm between requests, which is also the only regime where
+// sharding buys anything. Anything measuring this therefore needs sustained
+// traffic against a WARM colo DO; a burst at a cold one measures the relay
+// path and tells you nothing about the fan-out.
 
 /** Searches per second at the DO below which elevated latency is NOT read as
  * saturation. This sits far below the ceiling deliberately — it is a sanity

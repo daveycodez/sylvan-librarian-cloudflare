@@ -52,6 +52,15 @@
 //   Query memo. The engine memoizes (see vendor bench_text_memo.py). One
 //                repeated query measures the memo, not a search. The pool below
 //                is cycled per request for that reason.
+//   Cold DOs.    The big one, and the reason --warmup exists. A colo whose DO
+//                has been evicted relays to the regional DO while it wakes, and
+//                production logs at ~0.1 req/s show EVERY search arriving that
+//                way — 1457-1853ms wall, 382ms of it the regional store load.
+//                The shard controller drops relayed samples by design, so a run
+//                against cold DOs measures the relay path AND leaves the
+//                autoscaler blind throughout. --warmup discards a leading
+//                stretch; it defaults on, and turning it off is how you get a
+//                1.5s first stage that looks like a knee and is not one.
 //
 // Read TRUSTED_API_KEY from your own shell (`export TRUSTED_API_KEY=...`) or
 // pass --key. This script never reads .env.
@@ -195,6 +204,7 @@ const { values } = parseArgs({
 		out: { type: "string" },
 		cached: { type: "boolean", default: false },
 		shape: { type: "string", default: "rows" },
+		warmup: { type: "string", default: "30" },
 		"dry-run": { type: "boolean", default: false },
 	},
 });
@@ -225,6 +235,11 @@ if (!SHAPES.includes(shape)) {
 	console.error(`--shape must be one of ${SHAPES.join(", ")}, got ${shape}`);
 	process.exit(2);
 }
+const warmupMs = Number.parseFloat(values.warmup as string) * 1000;
+if (!Number.isFinite(warmupMs) || warmupMs < 0) {
+	console.error("--warmup must be 0 or more (seconds)");
+	process.exit(2);
+}
 
 const apiKey = values.key ?? process.env.TRUSTED_API_KEY;
 const headers: Record<string, string> = { "User-Agent": "sylvan-librarian-cloudflare-loadtest/1.0" };
@@ -239,12 +254,34 @@ console.error(`Cache:       ${values.cached ? "REUSED urls (measures the edge ca
 console.error(
 	`Rate limit:  ${apiKey ? "bypass key present" : "NO KEY — expect a wall at RATE_LIMIT_PER_10S/10 req/s"}`,
 );
-console.error(`Peak:        ${peak} in flight; total wall time ~${(stages.length * holdMs) / 1000}s`);
+console.error(
+	`Warmup:      ${warmupMs / 1000}s discarded${warmupMs === 0 ? " (DISABLED — stage 1 will measure the relay path)" : ""}`,
+);
+console.error(`Peak:        ${peak} in flight; total wall time ~${(warmupMs + stages.length * holdMs) / 1000}s`);
 console.error("");
 
 if (values["dry-run"]) {
 	console.error("--dry-run: nothing sent.");
 	process.exit(0);
+}
+
+// Discarded warm-up. A colo whose DO has been evicted relays to the regional
+// DO while it wakes, and production logs show that at low traffic EVERY search
+// arrives that way: 1457-1853ms wall, 382ms of it the regional store load. Both
+// DOs have to be warm before a single number here means anything, and the shard
+// controller drops relayed samples outright, so until this finishes it is not
+// receiving signal either. Measuring through it would put a ~1.5s first stage
+// in the table and read as a knee that is really just a cold start.
+if (warmupMs > 0) {
+	const warm = await runStage(base, 2, warmupMs, cfg);
+	const relayed = warm.samples.filter((s) => s.ms > 500).length;
+	console.error(
+		`warmup: ${warm.samples.length} requests discarded, ${relayed} over 500ms ` +
+			`(cold relays), last=${warm.samples.at(-1)?.ms ?? "-"}ms`,
+	);
+	if (relayed === warm.samples.length && warm.samples.length > 0) {
+		console.error("WARNING: every warmup request looked cold — the DO may not have stayed warm. Raise --warmup.");
+	}
 }
 
 const results: StageResult[] = [];
