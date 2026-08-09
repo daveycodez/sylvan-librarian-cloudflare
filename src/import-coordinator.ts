@@ -39,6 +39,16 @@ import {
 	type StagedRow,
 } from "./engine/store-kv";
 import type { Env } from "./engine/types";
+import {
+	blobBytes,
+	blobGroups,
+	exactBuffer,
+	lengthPrefixed,
+	orderedRowCursor,
+	reorderSlice,
+	spillIndex,
+	splitBatch,
+} from "./import-spill";
 
 interface RunRecord {
 	state: "idle" | "starting" | "running" | "done" | "failed";
@@ -131,6 +141,14 @@ const AGG_SLICE_BATCHES = 8;
  * tags+aggregates+interners (~90MB at full corpus) — small slices keep the
  * isolate total well under 128MB. */
 const FINALIZE_SLICE_BATCHES = 4;
+/**
+ * Build positions rewritten per reorder slice. Each slice indexes the spill and
+ * then reads the groups it needs, so it trades slice count against two
+ * whole-spill passes: 8 slices over ~98k rows is ~16 passes, ~400 reads against
+ * the 97,802 the random-seek build did. Sized for memory as much as reads —
+ * a slice's rows are copied out and held until its transaction commits.
+ */
+const REORDER_SLICE_ROWS = 12_500;
 /** Drafts per SQLite batch row (~1.5MB of draft JSON, under the 2MB value cap). */
 const DRAFTS_PER_BATCH = 1_000;
 /** SQLite blob row size for staged dumps and tag-data snapshots. */
@@ -158,6 +176,7 @@ type Phase =
 	| "tags"
 	| "agg"
 	| "finalize"
+	| "reorder"
 	| "build"
 	| "publish"
 	| "publish";
@@ -167,50 +186,6 @@ function userAgent(): string {
 	const d = new Date();
 	const stamp = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
 	return `sylvan-librarian-worker/${stamp}`;
-}
-
-function lengthPrefixed(blobs: Uint8Array[]): Uint8Array {
-	const total = blobs.reduce((n, b) => n + 4 + b.length, 0);
-	const out = new Uint8Array(total);
-	const dv = new DataView(out.buffer);
-	let at = 0;
-	for (const b of blobs) {
-		dv.setUint32(at, b.length, true);
-		out.set(b, at + 4);
-		at += 4 + b.length;
-	}
-	return out;
-}
-
-function splitBatch(batch: Uint8Array): Uint8Array[] {
-	const dv = new DataView(batch.buffer, batch.byteOffset, batch.byteLength);
-	const out: Uint8Array[] = [];
-	let at = 0;
-	while (at < batch.length) {
-		const len = dv.getUint32(at, true);
-		out.push(batch.subarray(at + 4, at + 4 + len));
-		at += 4 + len;
-	}
-	return out;
-}
-
-/** Coerce a SQLite blob column to bytes. `substr()` over a BLOB yields a BLOB,
- * but a silently different representation here would feed the store builder
- * garbage rather than failing, so unknown shapes are an error. */
-function blobBytes(value: unknown): Uint8Array {
-	if (value instanceof ArrayBuffer) return new Uint8Array(value);
-	if (ArrayBuffer.isView(value)) {
-		const v = value as ArrayBufferView;
-		return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-	}
-	throw new Error(`spill lookup returned unexpected blob type ${typeof value}`);
-}
-
-/** Copy to an exact ArrayBuffer: SQL blob params must not be views. */
-function exactBuffer(bytes: Uint8Array): ArrayBuffer {
-	const out = new ArrayBuffer(bytes.byteLength);
-	new Uint8Array(out).set(bytes);
-	return out;
 }
 
 export class ImportCoordinator extends DurableObject<Env> {
@@ -260,6 +235,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
+	 * Execute a statement that writes, adding what it cost to this run's totals.
+	 *
+	 * Every write must come through here. The counters used to live only in
+	 * sqlAll/sqlIter, while every INSERT and DELETE called `sql.exec` directly —
+	 * so `do_rows_written` read ZERO after an import that wrote hundreds of
+	 * rows, and the daily write-budget guard below could never fire. That guard
+	 * is the one thing standing between a looping import and a spent free-tier
+	 * allowance, and it was measuring nothing.
+	 *
+	 * A write cursor has no rows to drain, so its counters are final as soon as
+	 * exec returns.
+	 */
+	private sqlRun(query: string, ...bindings: unknown[]): void {
+		const cursor = this.ctx.storage.sql.exec(query, ...bindings);
+		this.rowsRead += cursor.rowsRead;
+		this.rowsWritten += cursor.rowsWritten;
+	}
+
+	/**
 	 * Create the staging schema. Deliberately NOT in the constructor: DDL is a
 	 * storage write, and the Durable Objects free tier blocks writes once the
 	 * daily rows_written allowance is spent. Writing in the constructor made
@@ -270,7 +264,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 */
 	private ensureSchema(): void {
 		if (this.schemaReady) return;
-		this.ctx.storage.sql.exec(
+		this.sqlRun(
 			`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 			CREATE TABLE IF NOT EXISTS stage_files (
 				kind TEXT PRIMARY KEY, uri TEXT NOT NULL, etag TEXT,
@@ -290,6 +284,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- whole groups — see the substr() lookup there.
 			CREATE TABLE IF NOT EXISTS spill_batches (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS row_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
+			-- The same spilled rows, rewritten in BUILD order (see stepReorder).
+			-- The build consumes rows sorted; finalize can only write them in add
+			-- order, and serving an arbitrary add-index meant a random seek per
+			-- row — 97,802 of them, which is what took the build past the
+			-- Durable Object CPU ceiling. Rewriting once, sequentially, lets the
+			-- build read straight through.
+			-- Keyed by BUILD POSITION, not an insertion counter, for the same
+			-- reason spill_batches is keyed by its own base: a retried slice then
+			-- rewrites its own groups instead of appending a second copy of
+			-- every row it already wrote.
+			CREATE TABLE IF NOT EXISTS ordered_rows (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);`,
 		);
@@ -480,7 +485,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// the interners that the retry would stage again. Marking the wasm
 				// group dirty makes ensureWasmContinuity rebuild it from SQLite
 				// before the retry, exactly like an eviction.
-				if (phase === "agg" || phase === "finalize" || phase === "build") {
+				if (phase === "agg" || phase === "finalize" || phase === "reorder" || phase === "build") {
 					this.metaSet("tags_nonce", "dirty");
 				}
 				await this.ctx.storage.setAlarm(Date.now() + backoffMs);
@@ -553,6 +558,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepAgg();
 			case "finalize":
 				return this.stepFinalize();
+			case "reorder":
+				return this.stepReorder();
 			case "build":
 				return this.stepBuild();
 			case "publish":
@@ -601,7 +608,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				if (!record?.jsonl_download_uri) {
 					throw new Error(`/bulk-data listing has no jsonl_download_uri for ${kind}`);
 				}
-				this.ctx.storage.sql.exec(
+				this.sqlRun(
 					"INSERT OR REPLACE INTO stage_files (kind, uri, etag, total_bytes, fetched_bytes, done) VALUES (?, ?, NULL, NULL, 0, 0)",
 					kind,
 					record.jsonl_download_uri,
@@ -614,8 +621,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ── phase: fetch (ranged, resumable, compressed-at-rest) ───────────────────
 
 	private async stepFetch(kind: DumpKind): Promise<void> {
-		const sql = this.ctx.storage.sql;
-		const file = sql.exec("SELECT uri, etag, fetched_bytes, done FROM stage_files WHERE kind = ?", kind).toArray()[0];
+		const file = this.sqlAll("SELECT uri, etag, fetched_bytes, done FROM stage_files WHERE kind = ?", kind)[0];
 		if (!file) throw new Error(`stage_files row missing for ${kind}`);
 		if (file.done) {
 			this.advanceFetch(kind);
@@ -635,8 +641,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Server replayed the whole file (dump rotated mid-download): restart.
 			console.warn(`Dump ${kind} rotated mid-fetch; restarting its download`);
 			this.ctx.storage.transactionSync(() => {
-				sql.exec("DELETE FROM stage_blobs WHERE kind = ?", kind);
-				sql.exec("UPDATE stage_files SET fetched_bytes = 0, etag = NULL WHERE kind = ?", kind);
+				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
+				this.sqlRun("UPDATE stage_files SET fetched_bytes = 0, etag = NULL WHERE kind = ?", kind);
 			});
 			await res.body?.cancel();
 			return;
@@ -685,12 +691,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		this.ctx.storage.transactionSync(() => {
 			let seq = Number(
-				sql.exec("SELECT COALESCE(MAX(seq), -1) AS m FROM stage_blobs WHERE kind = ?", kind).toArray()[0]?.m ?? -1,
+				this.sqlAll<{ m: number }>("SELECT COALESCE(MAX(seq), -1) AS m FROM stage_blobs WHERE kind = ?", kind)[0]?.m ??
+					-1,
 			);
 			for (const blob of blobs) {
-				sql.exec("INSERT INTO stage_blobs (kind, seq, bytes) VALUES (?, ?, ?)", kind, ++seq, blob);
+				this.sqlRun("INSERT INTO stage_blobs (kind, seq, bytes) VALUES (?, ?, ?)", kind, ++seq, blob);
 			}
-			sql.exec(
+			this.sqlRun(
 				"UPDATE stage_files SET fetched_bytes = ?, total_bytes = ?, etag = COALESCE(?, etag), done = ? WHERE kind = ?",
 				persistedBytes,
 				total || null,
@@ -843,14 +850,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		// Persist this slice's drafts + progress atomically: an eviction between
 		// the two would otherwise duplicate drafts on resume.
-		const sql = this.ctx.storage.sql;
 		this.ctx.storage.transactionSync(() => {
-			let seq = Number(sql.exec("SELECT COALESCE(MAX(seq), -1) AS m FROM draft_batches").toArray()[0]?.m ?? -1);
+			let seq = Number(this.sqlAll<{ m: number }>("SELECT COALESCE(MAX(seq), -1) AS m FROM draft_batches")[0]?.m ?? -1);
 			let pendingDrafts = this.takePendingDrafts();
 			pendingDrafts = pendingDrafts.concat(draftBuf);
 			while (pendingDrafts.length >= DRAFTS_PER_BATCH || (exhausted && pendingDrafts.length > 0)) {
 				const take = pendingDrafts.splice(0, DRAFTS_PER_BATCH);
-				sql.exec(
+				this.sqlRun(
 					"INSERT INTO draft_batches (seq, count, bytes) VALUES (?, ?, ?)",
 					++seq,
 					take.length,
@@ -884,16 +890,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * as the reserved seq -1 row (excluded from agg/finalize scans by `seq >= 0`
 	 * ... which start from a non-negative cursor). */
 	private takePendingDrafts(): Uint8Array[] {
-		const stored = this.ctx.storage.sql.exec("SELECT bytes FROM draft_batches WHERE seq = -1").toArray()[0];
+		const stored = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM draft_batches WHERE seq = -1")[0];
 		if (!stored) return [];
-		this.ctx.storage.sql.exec("DELETE FROM draft_batches WHERE seq = -1");
+		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
 		return splitBatch(new Uint8Array(stored.bytes as ArrayBuffer)).map((b) => b.slice());
 	}
 
 	private storePendingDrafts(drafts: Uint8Array[]): void {
-		this.ctx.storage.sql.exec("DELETE FROM draft_batches WHERE seq = -1");
+		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
 		if (drafts.length > 0) {
-			this.ctx.storage.sql.exec(
+			this.sqlRun(
 				"INSERT INTO draft_batches (seq, count, bytes) VALUES (-1, ?, ?)",
 				drafts.length,
 				exactBuffer(lengthPrefixed(drafts)),
@@ -930,13 +936,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
 		wasm.tagsExport();
 		wasm.setHandlers({});
-		const sql = this.ctx.storage.sql;
 		this.ctx.storage.transactionSync(() => {
-			sql.exec("DELETE FROM tagdata_blobs");
+			this.sqlRun("DELETE FROM tagdata_blobs");
 			let seq = -1;
 			for (const blob of tagBlobs) {
 				for (let at = 0; at < blob.length; at += STAGE_BLOB_BYTES) {
-					sql.exec(
+					this.sqlRun(
 						"INSERT INTO tagdata_blobs (seq, bytes) VALUES (?, ?)",
 						++seq,
 						exactBuffer(blob.subarray(at, Math.min(at + STAGE_BLOB_BYTES, blob.length))),
@@ -1003,9 +1008,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("agg_batch_done", "0");
 			this.metaSet("agg_sealed", "0");
 			// Any partially-spilled finalize output is invalid with a fresh heap.
-			this.ctx.storage.sql.exec("DELETE FROM spill_batches");
-			this.ctx.storage.sql.exec("DELETE FROM row_batches");
+			this.sqlRun("DELETE FROM spill_batches");
+			this.sqlRun("DELETE FROM row_batches");
 			this.metaSet("finalize_batch_done", "0");
+			// And so is anything reorder derived FROM that output. Leaving these
+			// behind would resume the rewritten spill part-written against rows
+			// that no longer exist, appending to stale blobs — a store that
+			// builds without error and is wrong.
+			this.sqlRun("DELETE FROM ordered_rows");
+			this.metaSet("reorder_done", "0");
 			this.metaSet("phase", "agg");
 		});
 		return false;
@@ -1042,27 +1053,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── phase: finalize ────────────────────────────────────────────────────────
 
-	/** Byte cap for a persisted blob group (safely under SQLite's 2MB value cap). */
-	private static readonly BLOB_GROUP_BYTES = 1_500_000;
-
-	/** Split blobs into groups whose length-prefixed encoding stays under the cap. */
-	private static blobGroups(blobs: Uint8Array[]): Uint8Array[][] {
-		const groups: Uint8Array[][] = [];
-		let group: Uint8Array[] = [];
-		let bytes = 0;
-		for (const b of blobs) {
-			if (group.length > 0 && bytes + 4 + b.length > ImportCoordinator.BLOB_GROUP_BYTES) {
-				groups.push(group);
-				group = [];
-				bytes = 0;
-			}
-			group.push(b);
-			bytes += 4 + b.length;
-		}
-		if (group.length > 0) groups.push(group);
-		return groups;
-	}
-
 	private async stepFinalize(): Promise<void> {
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
@@ -1086,13 +1076,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (finished) staged = wasm.finalizeEnd();
 		wasm.setHandlers({});
 
-		const sql = this.ctx.storage.sql;
 		this.ctx.storage.transactionSync(() => {
 			// Byte-capped groups keyed by their first row's index, so a retried
 			// slice overwrites its own groups instead of appending duplicates.
 			let base = Number(this.metaGet("spill_base") ?? 0);
-			for (const group of ImportCoordinator.blobGroups(spillBuf)) {
-				sql.exec(
+			for (const group of blobGroups(spillBuf)) {
+				this.sqlRun(
 					"INSERT OR REPLACE INTO spill_batches (base, count, bytes) VALUES (?, ?, ?)",
 					base,
 					group.length,
@@ -1101,9 +1090,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				base += group.length;
 			}
 			this.metaSet("spill_base", String(base));
-			let rowSeq = Number(sql.exec("SELECT COALESCE(MAX(seq), -1) AS m FROM row_batches").toArray()[0]?.m ?? -1);
-			for (const group of ImportCoordinator.blobGroups(rowBuf)) {
-				sql.exec(
+			let rowSeq = Number(
+				this.sqlAll<{ m: number }>("SELECT COALESCE(MAX(seq), -1) AS m FROM row_batches")[0]?.m ?? -1,
+			);
+			for (const group of blobGroups(rowBuf)) {
+				this.sqlRun(
 					"INSERT INTO row_batches (seq, count, bytes) VALUES (?, ?, ?)",
 					++rowSeq,
 					group.length,
@@ -1113,7 +1104,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("finalize_batch_done", String(done + rows.length));
 			if (finished) {
 				this.metaSet("staged_rows", String(staged));
-				this.metaSet("phase", "build");
+				this.metaSet("phase", "reorder");
 			}
 		});
 		console.log(`Finalize slice: ${rows.length} batches, ${staged} rows staged${finished ? " (done)" : ""}`);
@@ -1121,66 +1112,104 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── phase: build ───────────────────────────────────────────────────────────
 
+	/**
+	 * Rewrite the spilled rows in BUILD order, a contiguous range per slice.
+	 *
+	 * The build consumes rows sorted; finalize can only write them in add order,
+	 * because the sort key of the last row is not known until every row is in.
+	 * Serving the build's arbitrary add-index therefore meant a random seek per
+	 * row: 97,802 `substr` lookups, measured at 15.0s of a 17.4s build — roughly
+	 * 60s on an edge core against a 30s ceiling, which is why the nightly import
+	 * has never completed on either plan.
+	 *
+	 * So the order is fetched from wasm up front (`stagedOrder`) and the spill is
+	 * rewritten once to match it. Each slice claims a contiguous range of build
+	 * positions, reads each spill group holding one of those rows exactly once,
+	 * and writes them out in order. The build then reads straight through.
+	 *
+	 * Cost per slice: two passes over the spill groups — one to index the row
+	 * offsets, one to read the groups this slice needs — so ~2x25 reads a slice
+	 * and ~400 across the phase, against the 97,802 the random-seek build did.
+	 * Memory: this slice's own rows, which is why reorderSlice copies them out
+	 * rather than viewing into the group blobs.
+	 */
+	private async stepReorder(): Promise<void> {
+		if (!this.ensureWasmContinuity()) return;
+		const staged = Number(this.metaGet("staged_rows") ?? 0);
+		if (staged === 0) throw new FatalImportError("reorder: no staged rows");
+
+		const order = groupWasm().stagedOrder(staged);
+		if (order.length !== staged) {
+			throw new FatalImportError(`reorder: order has ${order.length} entries, expected ${staged}`);
+		}
+
+		const index = spillIndex(
+			(function* (rows) {
+				for (const row of rows) yield { base: Number(row.base), bytes: blobBytes(row.bytes) };
+			})(this.sqlIter("SELECT base, bytes FROM spill_batches ORDER BY base")),
+		);
+		const from = Number(this.metaGet("reorder_done") ?? 0);
+		const to = Math.min(from + REORDER_SLICE_ROWS, staged);
+
+		let groupsRead = 0;
+		const ordered = reorderSlice(order, index, from, to, (base) => {
+			const blob = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM spill_batches WHERE base = ?", base)[0];
+			if (!blob) return null;
+			groupsRead += 1;
+			return blobBytes(blob.bytes);
+		});
+
+		this.ctx.storage.transactionSync(() => {
+			// Keyed by the build position of the group's first row, so this
+			// slice's write is idempotent — see the schema note on ordered_rows.
+			let base = from;
+			for (const group of blobGroups(ordered)) {
+				this.sqlRun(
+					"INSERT OR REPLACE INTO ordered_rows (base, count, bytes) VALUES (?, ?, ?)",
+					base,
+					group.length,
+					exactBuffer(lengthPrefixed(group)),
+				);
+				base += group.length;
+			}
+			this.metaSet("reorder_done", String(to));
+			if (to >= staged) this.metaSet("phase", "build");
+		});
+		console.log(`Reorder slice: rows ${from}-${to} of ${staged} from ${groupsRead} spill groups`);
+	}
+
 	private async stepBuild(): Promise<void> {
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
-		const sql = this.ctx.storage.sql;
 
-		// The build asks for rows in card-sort order, unrelated to the order
-		// finalize spilled them: ~60% of ~98k lookups land in a different group
-		// than the previous one. Two things must hold at once on the free plan:
-		//   - few DO row writes (100k/day), so rows stay grouped, not per-row
-		//   - little CPU per lookup (30s/alarm), so a lookup must NOT pull its
-		//     whole group across into JS and re-split it — doing that measured
-		//     20.2s of pure lookup time and reset the DO mid-build
-		// So: walk each group once to record where every row sits (~1.2MB of
-		// typed arrays, bytes discarded as we go), then let SQLite return just
-		// the row's own bytes via substr(). Measured over the real captured
-		// lookup order: 20 row writes, 14ms to index, ~4s of lookups.
-		const groupSeq: number[] = [];
-		const rowGroup: number[] = [];
-		const rowOffset: number[] = [];
-		const rowLength: number[] = [];
-		for (const row of this.sqlIter("SELECT base, bytes FROM spill_batches ORDER BY base")) {
-			const base = Number(row.base);
-			const bytes = new Uint8Array(row.bytes as ArrayBuffer);
-			const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-			groupSeq.push(base);
-			let at = 0;
-			let n = 0;
-			while (at + 4 <= bytes.length) {
-				const len = dv.getUint32(at, true);
-				rowGroup[base + n] = base;
-				rowOffset[base + n] = at + 4;
-				rowLength[base + n] = len;
-				at += 4 + len;
-				n += 1;
-			}
+		// stepReorder rewrote the spill in the exact order build_store_stream
+		// pulls, so this is a cursor, not a lookup table. It used to be the
+		// latter: one `substr` per row, 97,802 random seeks, 15.0s of a 17.4s
+		// build — about 60s on an edge core against a 30s ceiling. Now one
+		// ordered blob is resident at a time and each pull is an array index.
+		//
+		// The order is re-derived here rather than trusted: it is the same
+		// deterministic permutation stepReorder laid the rows out in (the
+		// comparator ends on scryfall_id, so there are no ties to break
+		// differently), and orderedRowCursor checks every pull against it.
+		const staged = Number(this.metaGet("staged_rows") ?? 0);
+		const order = wasm.stagedOrder(staged);
+		if (order.length !== staged) {
+			throw new FatalImportError(`build: order has ${order.length} entries, expected ${staged}`);
 		}
-		const lookup = (index: number): Uint8Array | null => {
-			const group = rowGroup[index];
-			if (group === undefined) return null;
-			// substr is 1-based over the blob; only these bytes cross into JS.
-			const row = this.sqlAll(
-				"SELECT substr(bytes, ?, ?) AS b FROM spill_batches WHERE base = ?",
-				(rowOffset[index] as number) + 1,
-				rowLength[index] as number,
-				group,
+		const lookup = orderedRowCursor(order, (position) => {
+			const next = this.sqlAll<{ base: number; bytes: ArrayBuffer }>(
+				"SELECT base, bytes FROM ordered_rows WHERE base <= ? ORDER BY base DESC LIMIT 1",
+				position,
 			)[0];
-			if (!row) return null;
-			// A zero-length row is legitimately empty, not a missing lookup.
-			return (rowLength[index] as number) === 0 ? new Uint8Array(0) : blobBytes(row.b);
-		};
-		console.log(`Build: indexed ${rowLength.length} spilled rows across ${groupSeq.length} groups`);
-		// Charge the lookups now, not after. buildStoreStream() pulls each spilled
-		// row through `lookup` — one metered row read apiece, ~98k of them — in a
-		// single alarm that is the likeliest of all of them to be killed for CPU.
-		// Charged afterwards, a killed build would spend that every attempt while
-		// the counters read zero, which is exactly how a day's allowance
-		// disappeared with nothing in the logs to show for it.
-		this.prechargeReads(rowLength.length);
+			return next ? { base: Number(next.base), bytes: blobBytes(next.bytes) } : null;
+		});
+		console.log(`Build: streaming ${staged} rows from ordered_rows`);
+		// One metered read per ordered blob, not per row — charged up front so a
+		// killed build cannot spend the allowance invisibly.
+		this.prechargeReads(Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM ordered_rows")[0]?.n ?? 0));
 
-		sql.exec("DELETE FROM chunk_staging");
+		this.sqlRun("DELETE FROM chunk_staging");
 		let chunkSeq = -1;
 		// Stage on the STAGING grid — rows just under the DO's 2MB per-value
 		// cap, which is as large as they can be. Publishing to KV shares a grid
@@ -1189,7 +1218,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// 100k/day budget. At 1.9MB a 70MB store stages in ~37 rows.
 		const grid = new GridChunker();
 		const stage = (b: Uint8Array) => {
-			sql.exec("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
+			this.sqlRun("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
 		};
 		wasm.setHandlers({
 			pullRow: lookup,
@@ -1337,17 +1366,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ── staging helpers ────────────────────────────────────────────────────────
 
 	private resetStaging(): void {
-		const sql = this.ctx.storage.sql;
 		for (const table of [
 			"stage_files",
 			"stage_blobs",
 			"draft_batches",
 			"spill_batches",
+			"ordered_rows",
 			"row_batches",
 			"tagdata_blobs",
 			"chunk_staging",
 		]) {
-			sql.exec(`DELETE FROM ${table}`);
+			this.sqlRun(`DELETE FROM ${table}`);
 		}
 	}
 
@@ -1362,7 +1391,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const today = ImportCoordinator.dayKey();
 		// Plain positional `?` throughout: numbered parameters (?1) are not part
 		// of the storage API's binding contract.
-		this.ctx.storage.sql.exec(
+		this.sqlRun(
 			"DELETE FROM meta WHERE key NOT LIKE ? OR (key LIKE ? AND key NOT LIKE ?)",
 			`${DAY_PREFIX}%`,
 			`${DAY_PREFIX}%`,
@@ -1371,11 +1400,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private metaGet(key: string): string | null {
-		const row = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = ?", key).toArray()[0];
+		const row = this.sqlAll<{ value: string }>("SELECT value FROM meta WHERE key = ?", key)[0];
 		return row ? String(row.value) : null;
 	}
 
 	private metaSet(key: string, value: string): void {
-		this.ctx.storage.sql.exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", key, value);
+		this.sqlRun("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", key, value);
 	}
 }
