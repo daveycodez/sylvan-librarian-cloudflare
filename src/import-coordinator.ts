@@ -69,6 +69,25 @@ const MAX_PHASE_ATTEMPTS = 12;
  */
 const MAX_WASM_REWINDS = 3;
 
+/**
+ * What one import run may spend of the Durable Objects storage meters before
+ * it stops itself. The free plan allows 5,000,000 rows read and 100,000
+ * written per DAY, across everything — so these are deliberately a fraction of
+ * that, leaving the day's allowance for serving.
+ *
+ * A healthy run costs far less: roughly 150k reads, dominated by the build
+ * phase's ~98k row lookups, and a few thousand writes. Tripping this ceiling
+ * therefore does not mean "a big import"; it means the same work is being done
+ * repeatedly, which is exactly how 4.5M reads were once spent in a day —
+ * blocking the storage API account-wide and knocking every search DO onto a
+ * 15-second D1 fallback.
+ *
+ * Better to abandon a run and serve yesterday's index than to finish one and
+ * take search down until midnight UTC.
+ */
+const MAX_RUN_ROWS_READ = 1_000_000;
+const MAX_RUN_ROWS_WRITTEN = 40_000;
+
 /** An import failure that retrying cannot fix, so the run stops at once. */
 class FatalImportError extends Error {}
 
@@ -213,6 +232,48 @@ export class ImportCoordinator extends DurableObject<Env> {
 	/** Schema created once per instance — see ensureSchema. */
 	private schemaReady = false;
 
+	// ── metered storage ────────────────────────────────────────────────────────
+	//
+	// Durable Objects meter SQL rows read and written, and the free plan's
+	// ceilings (5M read, 100k written per day) are day-scoped: spend them and
+	// the storage API starts throwing for everything, which is how an import
+	// loop once took the search wake path down with it — every DO lost its
+	// local store copy at once and fell back to a 15s D1 load.
+	//
+	// So the import counts what it spends, out of the runtime's own accounting
+	// rather than an estimate of ours, and stops itself before it can spend a
+	// day's worth. The counters live on the instance and are flushed to storage
+	// each alarm, because eviction mid-run is normal here and a budget that
+	// resets on eviction would bound nothing.
+	private rowsRead = 0;
+	private rowsWritten = 0;
+
+	/** Execute and materialise, adding what it cost to this run's totals. */
+	private sqlAll<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: unknown[]): T[] {
+		const cursor = this.ctx.storage.sql.exec<T>(query, ...bindings);
+		const rows = cursor.toArray();
+		this.rowsRead += cursor.rowsRead;
+		this.rowsWritten += cursor.rowsWritten;
+		return rows;
+	}
+
+	/**
+	 * Execute and iterate lazily, metering once the cursor is exhausted.
+	 *
+	 * Needed wherever materialising would defeat the point: the spill scan walks
+	 * ~200MB of staged rows to build its offset index and discards the bytes as
+	 * it goes, so it must stay a stream.
+	 */
+	private *sqlIter<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: unknown[]): Generator<T> {
+		const cursor = this.ctx.storage.sql.exec<T>(query, ...bindings);
+		try {
+			for (const row of cursor) yield row;
+		} finally {
+			this.rowsRead += cursor.rowsRead;
+			this.rowsWritten += cursor.rowsWritten;
+		}
+	}
+
 	/**
 	 * Create the staging schema. Deliberately NOT in the constructor: DDL is a
 	 * storage write, and the Durable Objects free tier blocks writes once the
@@ -326,6 +387,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 		//
 		// An awaited put is durable when it resolves, which is the point: it
 		// survives a kill that a metaSet in the same handler would not.
+		// Spend check, before anything expensive. The counters are cumulative for
+		// the run and survive eviction (flushed below), so this bounds the whole
+		// import rather than one instance's share of it.
+		const spentRead = Number(this.metaGet("do_rows_read") ?? 0);
+		const spentWritten = Number(this.metaGet("do_rows_written") ?? 0);
+		if (spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN) {
+			console.error(
+				`Import stopped on its own storage budget in phase ${phase}: ` +
+					`${spentRead.toLocaleString()} rows read, ${spentWritten.toLocaleString()} written. ` +
+					"A single import costs a fraction of this, so exceeding it means work is being repeated.",
+			);
+			run.state = "failed";
+			run.finishedAt = new Date().toISOString();
+			run.detail =
+				`${phase}: storage budget exhausted (${spentRead.toLocaleString()} rows read, ` +
+				`${spentWritten.toLocaleString()} written) — stopped before spending the daily allowance`;
+			this.metaSet("phase", "idle");
+			await this.ctx.storage.put("run", run);
+			await this.ctx.storage.deleteAlarm();
+			return;
+		}
+
 		const attempts = ((await this.ctx.storage.get<number>("phase_attempts")) ?? 0) + 1;
 		await this.ctx.storage.put("phase_attempts", attempts);
 		if (attempts > MAX_PHASE_ATTEMPTS) {
@@ -406,7 +489,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("phase", "idle");
 			await this.ctx.storage.put("run", run);
 			await this.ctx.storage.deleteAlarm();
+		} finally {
+			// On EVERY exit from this alarm, including the early returns above and
+			// a thrown slice: what was spent has to be banked before the instance
+			// goes away, or the budget only ever measures the last alarm.
+			this.flushMeters();
 		}
+	}
+
+	/** Bank this instance's metered rows into the run's cumulative totals. */
+	private flushMeters(): void {
+		if (this.rowsRead === 0 && this.rowsWritten === 0) return;
+		const read = Number(this.metaGet("do_rows_read") ?? 0) + this.rowsRead;
+		const written = Number(this.metaGet("do_rows_written") ?? 0) + this.rowsWritten;
+		this.rowsRead = 0;
+		this.rowsWritten = 0;
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("do_rows_read", String(read));
+			this.metaSet("do_rows_written", String(written));
+		});
 	}
 
 	private async step(phase: Phase): Promise<void> {
@@ -581,11 +682,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/** Stream a staged dump's decompressed byte chunks. Detects gzip by magic. */
 	private async *stagedBytes(kind: DumpKind): AsyncGenerator<Uint8Array> {
-		const sql = this.ctx.storage.sql;
 		let seq = 0;
 		const raw = new ReadableStream<Uint8Array>({
-			pull(controller) {
-				const row = sql.exec("SELECT bytes FROM stage_blobs WHERE kind = ? AND seq = ?", kind, seq).toArray()[0];
+			// Arrow, not a method: `this` inside an underlying-source method is
+			// the source object, and these reads have to reach the coordinator's
+			// row meter.
+			pull: (controller) => {
+				const row = this.sqlAll("SELECT bytes FROM stage_blobs WHERE kind = ? AND seq = ?", kind, seq)[0];
 				if (!row) {
 					controller.close();
 					return;
@@ -594,7 +697,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				controller.enqueue(new Uint8Array(row.bytes as ArrayBuffer));
 			},
 		});
-		const first = sql.exec("SELECT bytes FROM stage_blobs WHERE kind = ? AND seq = 0", kind).toArray()[0];
+		const first = this.sqlAll("SELECT bytes FROM stage_blobs WHERE kind = ? AND seq = 0", kind)[0];
 		const head = first ? new Uint8Array(first.bytes as ArrayBuffer) : new Uint8Array(0);
 		const gzipped = head.length >= 2 && head[0] === 0x1f && head[1] === 0x8b;
 		const stream = gzipped ? raw.pipeThrough(new DecompressionStream("gzip")) : raw;
@@ -819,7 +922,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/** Restore in-wasm TagData from the SQLite snapshot (post-eviction). */
 	private restoreTags(wasm: ReturnType<typeof groupWasm>): void {
-		const rows = this.ctx.storage.sql.exec("SELECT bytes FROM tagdata_blobs ORDER BY seq").toArray();
+		const rows = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM tagdata_blobs ORDER BY seq");
 		if (rows.length === 0) throw new Error("tagdata snapshot missing; cannot restore tags");
 		const total = rows.reduce((n, r) => n + (r.bytes as ArrayBuffer).byteLength, 0);
 		const merged = new Uint8Array(total);
@@ -885,9 +988,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
 		const done = Number(this.metaGet("agg_batch_done") ?? 0);
-		const rows = this.ctx.storage.sql
-			.exec("SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?", done, AGG_SLICE_BATCHES)
-			.toArray();
+		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
+			"SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+			done,
+			AGG_SLICE_BATCHES,
+		);
 		for (const row of rows) {
 			wasm.aggDrafts(new Uint8Array(row.bytes as ArrayBuffer));
 		}
@@ -939,9 +1044,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 			onSpill: (b) => spillBuf.push(b),
 			onRow: (b) => rowBuf.push(b),
 		});
-		const rows = this.ctx.storage.sql
-			.exec("SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?", done, FINALIZE_SLICE_BATCHES)
-			.toArray();
+		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
+			"SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+			done,
+			FINALIZE_SLICE_BATCHES,
+		);
 		let staged = 0n;
 		for (const row of rows) {
 			staged = wasm.finalizeDrafts(new Uint8Array(row.bytes as ArrayBuffer));
@@ -1005,7 +1112,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const rowGroup: number[] = [];
 		const rowOffset: number[] = [];
 		const rowLength: number[] = [];
-		for (const row of sql.exec("SELECT base, bytes FROM spill_batches ORDER BY base")) {
+		for (const row of this.sqlIter("SELECT base, bytes FROM spill_batches ORDER BY base")) {
 			const base = Number(row.base);
 			const bytes = new Uint8Array(row.bytes as ArrayBuffer);
 			const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -1025,14 +1132,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const group = rowGroup[index];
 			if (group === undefined) return null;
 			// substr is 1-based over the blob; only these bytes cross into JS.
-			const row = sql
-				.exec(
-					"SELECT substr(bytes, ?, ?) AS b FROM spill_batches WHERE base = ?",
-					(rowOffset[index] as number) + 1,
-					rowLength[index] as number,
-					group,
-				)
-				.toArray()[0];
+			const row = this.sqlAll(
+				"SELECT substr(bytes, ?, ?) AS b FROM spill_batches WHERE base = ?",
+				(rowOffset[index] as number) + 1,
+				rowLength[index] as number,
+				group,
+			)[0];
 			if (!row) return null;
 			// A zero-length row is legitimately empty, not a missing lookup.
 			return (rowLength[index] as number) === 0 ? new Uint8Array(0) : blobBytes(row.b);
@@ -1096,14 +1201,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * loop is long enough for that to matter.
 	 */
 	private async hashStagedChunks(): Promise<string[]> {
-		const sql = this.ctx.storage.sql;
 		const total = Number(this.metaGet("chunk_count") ?? 0);
 		const hashes: string[] = [];
 		const BATCH = 32;
 		for (let from = 0; from < total; from += BATCH) {
-			const rows = sql
-				.exec("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", from, BATCH)
-				.toArray();
+			const rows = this.sqlAll("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", from, BATCH);
 			if (rows.length === 0) break;
 			for (const row of rows) {
 				hashes.push(await chunkHash(new Uint8Array(row.bytes as ArrayBuffer)));
@@ -1145,7 +1247,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	private async stepPublish(): Promise<void> {
 		const db = this.env.STORE_DB;
-		const sql = this.ctx.storage.sql;
 		const published = Number(this.metaGet("chunks_published") ?? 0);
 		const chunkCount = Number(this.metaGet("chunk_count") ?? 0);
 		const storeKey = this.storeKey();
@@ -1199,7 +1300,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		let takeBytes = 0;
 		const hashList = JSON.parse(this.metaGet("chunk_hashes") ?? "[]") as string[];
 		for (const seq of remaining.slice(0, PUBLISH_SLICE_CHUNKS)) {
-			const row = sql.exec("SELECT bytes FROM chunk_staging WHERE seq = ?", seq).toArray()[0];
+			const row = this.sqlAll("SELECT bytes FROM chunk_staging WHERE seq = ?", seq)[0];
 			if (!row) throw new Error(`chunk staging is missing seq ${seq}`);
 			const bytes = row.bytes as ArrayBuffer;
 			if (take.length > 0 && takeBytes + bytes.byteLength > PUBLISH_SLICE_BYTES) break;
@@ -1582,7 +1683,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// Two passes cover the wrap; row_batches still hold this import's rows.
 		for (let pass = 0; pass < 2 && picks.length < wanted; pass++) {
 			index = 0;
-			for (const batch of this.ctx.storage.sql.exec("SELECT bytes FROM row_batches ORDER BY seq").toArray()) {
+			for (const batch of this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM row_batches ORDER BY seq")) {
 				for (const blob of splitBatch(new Uint8Array(batch.bytes as ArrayBuffer))) {
 					const inWindow = pass === 0 ? index >= start : index < (start + wanted) % staged && start + wanted > staged;
 					if (inWindow && picks.length < wanted) {
@@ -1608,7 +1709,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const run = await this.getRun();
 		run.state = "done";
 		run.finishedAt = new Date().toISOString();
-		run.detail = detail;
+		// What the run cost, in the log next to the run that spent it. Printed
+		// before resetStaging() wipes the counters — and printed at all because
+		// the only reason a day's allowance ever vanished unnoticed is that
+		// nothing had ever said what one import is supposed to cost.
+		this.flushMeters();
+		const read = Number(this.metaGet("do_rows_read") ?? 0);
+		const written = Number(this.metaGet("do_rows_written") ?? 0);
+		const storageCost =
+			`DO storage: ${read.toLocaleString()} rows read (${((100 * read) / MAX_RUN_ROWS_READ).toFixed(1)}% of budget), ` +
+			`${written.toLocaleString()} written (${((100 * written) / MAX_RUN_ROWS_WRITTEN).toFixed(1)}%)`;
+		console.log(`Import finished — ${storageCost}.`);
+		run.detail = `${detail} [${storageCost}]`;
 		this.ctx.storage.transactionSync(() => {
 			this.resetStaging();
 			this.metaSet("phase", "idle");
