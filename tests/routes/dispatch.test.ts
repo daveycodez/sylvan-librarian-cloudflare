@@ -155,8 +155,8 @@ describe("Content-Security-Policy covers the font CDN", () => {
 
 		const hosts = new Set(
 			[...html.matchAll(/href="(https:\/\/[^/"]+)[^"]*"/g)]
-				.map((m) => m[1])
-				.filter((host) => html.includes(`${host}/cdn/fonts/`)),
+				.map((m) => m[1] ?? "")
+				.filter((host) => host !== "" && html.includes(`${host}/cdn/fonts/`)),
 		);
 		expect(hosts.size).toBeGreaterThan(0);
 		for (const host of hosts) {
