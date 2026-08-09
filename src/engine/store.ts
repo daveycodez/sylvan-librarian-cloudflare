@@ -1,12 +1,14 @@
-// Per-isolate store manager: loads the rkyv store from D1 into the wasm
-// engine, hot-swaps when the D1 manifest advances, and triggers the
-// self-bootstrap import when the database is empty.
+// Per-isolate store manager: loads the rkyv store from D1 into the wasm engine
+// and hot-swaps when the D1 manifest advances. It never starts an import — the
+// index is built by the deploy (scripts/import-store.sh), which fails rather
+// than shipping a Worker without one.
 //
 // Memory discipline: the store (~70MB) is streamed D1 → Cache API → wasm
-// linear memory in ~1MB chunks; no full-store JS buffer ever exists, keeping
-// peak isolate usage well inside the 128MB limit. Chunk reads are batched a
-// few rows per query, so a full load stays inside the free plan's
-// per-invocation subrequest allowance.
+// linear memory; no full-store JS buffer ever exists, keeping peak isolate
+// usage inside the 128MB limit (measured: 73.1MB resident with the real
+// corpus). Chunk reads are batched by BYTES, so a full load stays inside the
+// free plan's per-invocation subrequest allowance whatever chunk size the
+// publisher chose.
 
 import * as wasm from "sylvan-engine-wasm";
 import { readManifest } from "./manifest";
@@ -20,8 +22,15 @@ wasm.__init_panic_hook();
 // re-check. Nightly publishes mean sub-hour propagation is plenty.
 const MANIFEST_RECHECK_MS = 5 * 60 * 1000;
 const STORE_CACHE_URL = "https://sylvan-store.internal/";
-/** Chunk rows per D1 query while streaming the store (~2MB/query). */
-const CHUNK_ROWS_PER_QUERY = 2;
+/** Target bytes per D1 query while streaming the store.
+ *
+ * Batched by BYTES, not by a fixed row count: publishers choose different chunk
+ * sizes for their own reasons (the in-Worker import uses 900KB rows; the CI
+ * seeder must use ~40KB rows to stay inside D1's 100KB SQL statement limit),
+ * and a fixed row count would turn that into either oversized responses or
+ * hundreds of queries. Hundreds matters — a full load's queries all happen in
+ * one invocation, against the free plan's 50-subrequest budget. */
+const CHUNK_BYTES_PER_QUERY = 1_800_000;
 
 let current: { storeKey: string; engine: Engine } | null = null;
 let loading: Promise<Engine> | null = null;
@@ -100,8 +109,18 @@ async function feedStore(
 	wasm.finish_store_load();
 }
 
-/** Stream the store's chunk rows out of D1, a few rows per query. */
-function d1StoreStream(env: Env, storeKey: string, expectedBytes: number): ReadableStream<Uint8Array> {
+/** Stream the store's chunk rows out of D1, ~CHUNK_BYTES_PER_QUERY per query. */
+function d1StoreStream(
+	env: Env,
+	storeKey: string,
+	expectedBytes: number,
+	chunkCount: number,
+): ReadableStream<Uint8Array> {
+	// Rows per query derived from the store's own average chunk size, so the
+	// query count stays flat whatever the publisher chose. At least one row, so
+	// an unexpectedly huge chunk still makes progress.
+	const avgChunk = chunkCount > 0 ? Math.ceil(expectedBytes / chunkCount) : CHUNK_BYTES_PER_QUERY;
+	const rowsPerQuery = Math.max(1, Math.floor(CHUNK_BYTES_PER_QUERY / avgChunk));
 	let nextSeq = 0;
 	let seenBytes = 0;
 	let done = false;
@@ -111,7 +130,7 @@ function d1StoreStream(env: Env, storeKey: string, expectedBytes: number): Reada
 			const res = await env.STORE_DB.prepare(
 				"SELECT seq, bytes FROM store_chunks WHERE store_key = ? AND seq >= ? ORDER BY seq LIMIT ?",
 			)
-				.bind(storeKey, nextSeq, CHUNK_ROWS_PER_QUERY)
+				.bind(storeKey, nextSeq, rowsPerQuery)
 				.all<{ seq: number; bytes: unknown }>();
 			const rows = res.results ?? [];
 			if (rows.length === 0) {
@@ -155,6 +174,7 @@ export async function openStoreStream(
 	env: Env,
 	storeKey: string,
 	expectedBytes: number,
+	chunkCount: number,
 ): Promise<ReadableStream<Uint8Array>> {
 	const cacheKey = new Request(STORE_CACHE_URL + encodeURIComponent(storeKey));
 	const cache = caches.default;
@@ -181,7 +201,7 @@ export async function openStoreStream(
 
 	await cache.put(
 		cacheKey,
-		new Response(d1StoreStream(env, storeKey, expectedBytes), {
+		new Response(d1StoreStream(env, storeKey, expectedBytes, chunkCount), {
 			headers: {
 				"content-length": String(expectedBytes),
 				"Cache-Control": "public, max-age=604800, immutable", // keyed by store_key → content-addressed
@@ -192,7 +212,7 @@ export async function openStoreStream(
 	if (cached?.body) return cached.body;
 
 	// Cache eviction raced us; fall back to a fresh D1 read.
-	return d1StoreStream(env, storeKey, expectedBytes);
+	return d1StoreStream(env, storeKey, expectedBytes, chunkCount);
 }
 
 async function loadStore(env: Env): Promise<Engine> {
@@ -219,7 +239,7 @@ async function loadStore(env: Env): Promise<Engine> {
 
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
-	const body = await openStoreStream(env, manifest.store_key, manifest.store_bytes);
+	const body = await openStoreStream(env, manifest.store_key, manifest.store_bytes, manifest.chunk_count ?? 0);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.

@@ -42,8 +42,18 @@ if (store.length !== manifest.store_bytes) {
 	throw new Error(`store file is ${store.length} bytes, manifest says ${manifest.store_bytes}`);
 }
 
-// Same chunk size the wasm import publishes (engine/wasm-import CHUNK_BYTES).
-const CHUNK_BYTES = 900_000;
+// Bounded by D1's SQL statement limit, NOT by the in-Worker publisher's chunk
+// size. These rows are written as `INSERT ... X'<hex>'`, and hex doubles the
+// payload: at the wasm import's 900_000-byte chunks a single statement is
+// ~1.8MB against D1's documented 100,000-byte maximum, which fails with
+// "statement too long: SQLITE_TOOBIG" every time. 40_000 bytes → ~80KB of hex
+// plus statement text, comfortably inside the limit.
+//
+// The store loader accepts any chunking (it concatenates by seq and checks the
+// total against the manifest), so a different chunk size here is not a format
+// difference — but it does mean more, smaller rows, which is why the read path
+// batches by BYTES rather than by a fixed row count (see store.ts).
+const CHUNK_BYTES = 40_000;
 const chunkCount = Math.ceil(store.length / CHUNK_BYTES);
 (manifest as Record<string, unknown>).chunk_count = chunkCount;
 

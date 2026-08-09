@@ -49,16 +49,6 @@ interface RunRecord {
 
 /** A run older than this is considered lost and may be restarted. */
 const STALE_RUN_MS = 90 * 60 * 1000;
-/** How long a failed run's staged work stays worth resuming.
- *
- * Restarting a failed run from `listing` re-downloads ~450MB of dumps and
- * redoes the whole transform, even when the failure was in publish and the
- * built store is sitting in chunk_staging. Within this window the staged
- * dumps are still the same ones Scryfall is serving (they roll ~09:00 UTC
- * daily), so resuming is both faster and produces an identical store. Past
- * it, a fresh run is the honest choice — half-staged data from yesterday
- * would build an index that matches neither day. */
-const RESUME_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 /** Transient-failure retries per run before the run is marked failed. */
 const MAX_RETRIES = 8;
 
@@ -271,46 +261,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 			console.warn(`Import run stale after ${age}ms; restarting (reason=${reason})`);
 		}
 
-		// Resume a recently-failed run where it stopped rather than redoing the
-		// download and transform. A nightly cron run always starts fresh: it
-		// exists to pick up today's dumps, so inheriting yesterday's staged
-		// ones would defeat the point.
-		const resumePhase = this.metaGet("resume_phase");
-		const progressAt = Number(this.metaGet("progress_at") ?? 0);
-		const resumable =
-			reason !== "cron" && resumePhase !== null && resumePhase !== "" && Date.now() - progressAt < RESUME_MAX_AGE_MS;
-		if (resumable) {
-			const phase = resumePhase as Phase;
-			const record: RunRecord = {
-				state: "running",
-				reason: `${reason} (resumed at ${phase})`,
-				startedAt: new Date().toISOString(),
-			};
-			this.ctx.storage.transactionSync(() => {
-				this.metaSet("resume_phase", "");
-				this.metaSet("retries", "0");
-				this.metaSet("last_error", "");
-				this.metaSet("phase", phase);
-				// The tags/agg/finalize/build group's state lives in the wasm heap,
-				// which did not survive whatever ended the last run. Mark it dirty
-				// so ensureWasmContinuity rebuilds it from SQLite, exactly as after
-				// an eviction. publish and cards read only SQLite/D1 and resume as-is.
-				if (phase === "tags" || phase === "agg" || phase === "finalize" || phase === "build") {
-					this.metaSet("tags_nonce", "dirty");
-				}
-			});
-			await this.ctx.storage.put("run", record);
-			await this.ctx.storage.setAlarm(Date.now());
-			console.log(`Import resumed at phase ${phase} (reason=${reason})`);
-			return Response.json({ ok: true, resumedAt: phase, run: record }, { status: 202 });
-		}
-
+		// Always a fresh run. Resume-where-it-failed used to matter when a visitor
+		// hitting the bootstrap page could retrigger an import minutes later;
+		// the nightly cron is now the only trigger, and it exists precisely to
+		// pick up today's dumps, so inheriting yesterday's staged ones would
+		// defeat the point.
 		const record: RunRecord = { state: "running", reason, startedAt: new Date().toISOString() };
 		this.ctx.storage.transactionSync(() => {
 			this.resetStaging();
 			this.metaClear();
 			this.metaSet("phase", "listing");
-			this.metaSet("progress_at", String(Date.now()));
 		});
 		await this.ctx.storage.put("run", record);
 		await this.ctx.storage.setAlarm(Date.now());
@@ -402,8 +362,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// transient failure stops being reported as an ongoing problem.
 			this.metaSet("retries", "0");
 			this.metaSet("last_error", "");
-			// Freshness marker for resuming a failed run (see RESUME_MAX_AGE_MS).
-			this.metaSet("progress_at", String(Date.now()));
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
 			if (next !== "idle") {
 				await this.ctx.storage.setAlarm(Date.now());
@@ -420,7 +378,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				run.state = "failed";
 				run.finishedAt = new Date().toISOString();
 				run.detail = `${phase}: D1 daily write limit reached — the next scheduled import retries on fresh quota`;
-				this.metaSet("resume_phase", phase);
 				this.metaSet("phase", "idle");
 				await this.ctx.storage.put("run", run);
 				await this.ctx.storage.deleteAlarm();
@@ -450,10 +407,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			run.state = "failed";
 			run.finishedAt = new Date().toISOString();
 			run.detail = `${phase}: ${err}`;
-			// phase → idle stops the alarm chain; resume_phase remembers where to
-			// pick up so the next trigger does not redo the download and transform
-			// (see RESUME_MAX_AGE_MS in startImport).
-			this.metaSet("resume_phase", phase);
 			this.metaSet("phase", "idle");
 			await this.ctx.storage.put("run", run);
 			await this.ctx.storage.deleteAlarm();
@@ -1515,7 +1468,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			this.resetStaging();
 			this.metaSet("phase", "idle");
-			this.metaSet("resume_phase", "");
 		});
 		await this.ctx.storage.put("run", run);
 		// Cancel any alarm still pending. Nothing should re-arm after an idle
