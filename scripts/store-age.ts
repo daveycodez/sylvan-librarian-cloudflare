@@ -31,7 +31,7 @@
 // is exactly the failure this split exists to make visible. Every path says
 // why on stderr; callers must show that text, not discard it.
 
-import { MANIFEST_KEY } from "../src/engine/store-kv";
+import { chunkKey, MANIFEST_KEY } from "../src/engine/store-kv";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -129,7 +129,7 @@ if (!json) {
 	process.exit(1);
 }
 
-let manifest: { built_at?: string; store_bytes?: number; chunk_count?: number };
+let manifest: { built_at?: string; store_bytes?: number; chunk_count?: number; store_key?: string };
 try {
 	manifest = JSON.parse(json) as typeof manifest;
 } catch {
@@ -145,6 +145,31 @@ if (!manifest.store_bytes || !manifest.chunk_count) {
 	console.error(
 		`store-age: the manifest is incomplete (store_bytes=${manifest.store_bytes}, chunk_count=${manifest.chunk_count}).`,
 	);
+	process.exit(1);
+}
+
+// A manifest is a POINTER, and a pointer can outlive what it points at: empty
+// the namespace key by key and the manifest can be the last one standing (or
+// simply the last to propagate), at which point this script would report a
+// healthy store, skip the import, and leave every request 503ing on a missing
+// chunk. So prove the bytes are really there before believing the manifest.
+// One extra read, on the store's LAST chunk — a truncated upload loses the
+// tail first, so the last chunk is the one that catches a half-published
+// store as well as an emptied one.
+const lastChunk = chunkKey(manifest.store_key ?? "", (manifest.chunk_count ?? 1) - 1);
+const probe = Bun.spawnSync([
+	...wranglerArgv(),
+	"kv",
+	"key",
+	"get",
+	lastChunk,
+	"--namespace-id",
+	namespaceId,
+	"--remote",
+]);
+if (probe.exitCode !== 0) {
+	console.error(`store-age: the manifest names ${manifest.store_key} but ${lastChunk} is not in KV — the store is`);
+	console.error("           incomplete or was emptied. Treating it as no store at all, so the build rebuilds it.");
 	process.exit(1);
 }
 
