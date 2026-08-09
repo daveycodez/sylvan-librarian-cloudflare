@@ -25,15 +25,18 @@ import type { Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";
 
 /**
- * Bytes per KV chunk. KV's hard value cap is 25 MiB; 20MB leaves room for the
- * platform's own framing and keeps a ~70MB store at four chunks.
+ * Bytes per KV chunk: just under KV's 25 MiB (26,214,400 byte) value cap.
  *
- * Bigger is strictly better here until the cap: every chunk is one metered
- * read on load and one metered write on publish, and unlike the D1 grid there
- * is no dedup to preserve — a rebuilt store rewrites all of its chunks either
- * way, and four writes a night is nothing against the quota.
+ * Bigger is better until that cap — every chunk is one metered read on load
+ * and one metered write on publish, and there is no dedup to preserve, so a
+ * ~70MB store wants as few chunks as it can have (three, here).
+ *
+ * The binding constraint is NOT the cap, though: it is the 128MB isolate the
+ * nightly publisher assembles chunks in. That only leaves room for a value
+ * this large because the build now releases the wasm group (~75MB of linear
+ * memory that never shrinks) before publish runs.
  */
-export const KV_CHUNK_BYTES = 20_000_000;
+export const KV_CHUNK_BYTES = 25_000_000;
 
 /** The manifest key: the one mutable pointer in the namespace. */
 export const MANIFEST_KEY = "store:manifest";

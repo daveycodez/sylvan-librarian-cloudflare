@@ -1212,14 +1212,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 			`Store built: ${totalBytes} bytes in ${chunkSeq + 1} chunks, ${Date.now() - buildStart}ms ` +
 				`(wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB)`,
 		);
+		const formatVersion = wasm.formatVersion();
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("chunk_count", String(chunkSeq + 1));
 			this.metaSet("built_at", String(Math.floor(Date.now() / 1000)));
+			// Recorded HERE so publish never has to ask wasm for it — see the
+			// dropGroupWasm below.
+			this.metaSet("format_version", String(formatVersion));
 			this.metaSet("kv_chunks_published", "0");
 			this.metaSet("kv_cursor_seq", "0");
 			this.metaSet("kv_cursor_off", "0");
 			this.metaSet("phase", "publish");
 		});
+		// Release the wasm group NOW rather than after publish. Its linear
+		// memory peaks around 75MB and never shrinks, so holding it through
+		// publish left a ~20MB assembly buffer and ~15MB of staged rows sharing
+		// a 128MB isolate with it — about 111MB, on the one path that runs
+		// unattended at 11:17 UTC. Publish needs nothing from wasm now that the
+		// format version is in meta.
+		dropGroupWasm();
 	}
 
 	// ── phase: publish (KV) ────────────────────────────────────────────────────
@@ -1238,7 +1249,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// lands readers keep serving the previous store.
 
 	private storeKey(): string {
-		return `card-store-v${groupWasm().formatVersion()}-${this.metaGet("built_at")}.store`;
+		return `card-store-v${this.metaGet("format_version") ?? 0}-${this.metaGet("built_at")}.store`;
 	}
 
 	/** Staging-backed reader for assembleChunk (see src/engine/store-kv.ts). */
@@ -1285,7 +1296,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			card_count: Number(this.metaGet("build_card_count") ?? 0),
 			printing_count: Number(this.metaGet("build_printing_count") ?? 0),
 			upstream_commit: "vendored", // UPSTREAM.lock is a build-time concern; readers ignore this field
-			format_version: groupWasm().formatVersion(),
+			format_version: Number(this.metaGet("format_version") ?? 0),
 			store_bytes: storeBytes,
 			chunk_count: kvTotal,
 			source_updated_at: this.metaGet("source_updated_at") ?? undefined,
@@ -1315,7 +1326,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		// The store is live and the import is done — there is no phase after
 		// publish now that the SQL fallback is gone.
-		dropGroupWasm();
 		console.log(`Store published to KV: ${storeKey} (${manifest.card_count} cards, ${kvTotal} chunks)`);
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("kv_store_history", JSON.stringify(history));
