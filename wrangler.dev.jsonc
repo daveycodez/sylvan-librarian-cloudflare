@@ -1,5 +1,11 @@
 {
-	// LOCAL DEV config: kept in lockstep with wrangler.jsonc. With the import
+	// LOCAL DEV config: kept in lockstep with wrangler.jsonc, with ONE
+	// deliberate exception — "minify" is production-only, so dev keeps readable
+	// stack traces. Behaviour is verified identical either way: `wrangler dev
+	// --minify` serves byte-identical responses across both shapes, the error
+	// paths and the static routes.
+	//
+	// With the import
 	// running inside a Durable Object (wasm) against local simulated KV, dev
 	// is production-identical — wrangler dev emulates KV, DO SQLite, and
 	// alarms natively, so even the import pipeline runs locally unchanged. The KV id is a local placeholder: miniflare keys its

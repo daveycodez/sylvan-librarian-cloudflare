@@ -64,12 +64,35 @@ class WasmEngine implements Engine {
 		return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape) };
 	}
 
+	/**
+	 * The store's type/keyword catalogs, aggregated once per loaded store.
+	 *
+	 * The engine walks the whole archive to build these, so it is not a call to
+	 * repeat: /get_catalog needs both halves, and asking for them separately used
+	 * to run the aggregation AND parse its full JSON twice, keeping one half each
+	 * time (measured 15ms of DO CPU for one request). A loaded store is immutable
+	 * — a hot swap constructs a new WasmEngine — so the result is cached for the
+	 * life of this instance and invalidates by construction.
+	 */
+	private catalogOnce: { card_types: Record<string, number>; card_keywords: Record<string, number> } | null = null;
+
+	private catalog(): { card_types: Record<string, number>; card_keywords: Record<string, number> } {
+		const cached = this.catalogOnce;
+		if (cached) return cached;
+		const parsed = JSON.parse(wasm.catalog()) as {
+			card_types: Record<string, number>;
+			card_keywords: Record<string, number>;
+		};
+		this.catalogOnce = parsed;
+		return parsed;
+	}
+
 	async commonCardTypes(): Promise<Record<string, number>> {
-		return (JSON.parse(wasm.catalog()) as { card_types: Record<string, number> }).card_types;
+		return this.catalog().card_types;
 	}
 
 	async commonCardKeywords(): Promise<Record<string, number>> {
-		return (JSON.parse(wasm.catalog()) as { card_keywords: Record<string, number> }).card_keywords;
+		return this.catalog().card_keywords;
 	}
 
 	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
