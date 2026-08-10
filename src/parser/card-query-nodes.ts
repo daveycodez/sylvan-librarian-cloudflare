@@ -140,14 +140,33 @@ export function getKeywordsComparisonKeys(val: string): string[] {
 	return [pyLower(pyStrip(val))];
 }
 
+/**
+ * Normalize a written tag spelling to the slug form oracle and art tags are stored under.
+ *
+ * Every slug in both tag dumps matches `[a-z0-9]+(-[a-z0-9]+)*`, so folding runs of
+ * non-alphanumerics to a single hyphen can only turn a miss into the hit the searcher meant.
+ * Scryfall accepts the spaced spelling of a slug the same way — `art:"right facing"` and
+ * `art:right-facing` both find the `right-facing` tag — and this is also what makes aliases
+ * written with spaces reachable, since the tag import stores those slugified too.
+ *
+ * The character class is `[^a-z0-9]` and not `\W`: `\W` keeps underscores, and an underscore is
+ * not a slug character.
+ */
+export function slugifyTag(val: string): string {
+	// Python's str.strip("-") removes every leading and trailing hyphen, not just one.
+	return pyLower(pyStrip(val))
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+}
+
 /** get_oracle_tags_comparison_object(...).keys() */
 export function getOracleTagsComparisonKeys(val: string): string[] {
-	return [pyLower(pyStrip(val))];
+	return [slugifyTag(val)];
 }
 
 /** get_art_tags_comparison_object(...).keys() */
 export function getArtTagsComparisonKeys(val: string): string[] {
-	return [pyLower(pyStrip(val))];
+	return [slugifyTag(val)];
 }
 
 /** get_is_tags_comparison_object(...).keys() */

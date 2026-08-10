@@ -117,16 +117,48 @@ impl TagData {
     }
 }
 
+/// Normalize a written tag spelling to the slug form tags are stored under.
+///
+/// The twin of `slugify_tag` in api/parsing/card_query_nodes.py (ported to src/parser as
+/// `slugifyTag`). Both sides must agree exactly: the import stores alias keys through this, and the
+/// query side normalizes the search term through it, so a disagreement means `art:"open mouth"`
+/// silently finds nothing.
+///
+/// A hand loop rather than a regex, to keep the `regex` crate out of the builder.
+fn slugify_tag(val: &str) -> String {
+    let mut out = String::with_capacity(val.len());
+    let mut pending_hyphen = false;
+    for ch in val.trim().chars() {
+        let lowered = ch.to_ascii_lowercase();
+        if lowered.is_ascii_alphanumeric() {
+            if pending_hyphen && !out.is_empty() {
+                out.push('-');
+            }
+            pending_hyphen = false;
+            out.push(lowered);
+        } else {
+            // Runs of non-alphanumerics fold to ONE hyphen, and leading/trailing runs to none —
+            // Python's re.sub(r"[^a-z0-9]+", "-", ...).strip("-").
+            pending_hyphen = true;
+        }
+    }
+    out
+}
+
 /// The fields the import reads from one tag-dump record. Typed (rather than
 /// `serde_json::Value`) so parsing a line allocates only these strings —
-/// unknown fields (label, description, aliases, taggings' annotation/weight…)
-/// are skipped without allocating.
+/// unknown fields (label, description, taggings' annotation/weight…) are
+/// skipped without allocating. `aliases` moved out of that list with upstream
+/// #914, which made them searchable keys.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 struct TagRecord {
     id: Option<String>,
     slug: Option<String>,
     parent_ids: Vec<String>,
+    /// Alternate spellings Scryfall's tagger resolves to the tag before matching -- which is why
+    /// `art:flames` finds the `fire` tag there (upstream #914).
+    aliases: Vec<String>,
     taggings: Vec<TagTagging>,
 }
 
@@ -147,6 +179,11 @@ impl TagRecord {
             slug: tag_str(v, "slug"),
             parent_ids: v
                 .get("parent_ids")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default(),
+            aliases: v
+                .get("aliases")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
                 .unwrap_or_default(),
@@ -184,6 +221,12 @@ pub struct TagAccumulator {
     /// tagged id → direct (record) slug indices; deduped at finish.
     oracle: HashMap<String, Vec<u32>>,
     art: HashMap<String, Vec<u32>>,
+    /// slugified alias → the slugs claiming it. Resolved at finish, because an alias that lands on
+    /// a real slug or that two tags both claim is ambiguous and gets dropped (upstream #914's
+    /// `_build_slug_to_aliases`); neither can be decided until the whole dump is seen.
+    alias_claimants: HashMap<String, HashSet<String>>,
+    /// Every slug this dump declared, for the "alias collides with a real slug" test.
+    declared_slugs: HashSet<String>,
 }
 
 impl TagAccumulator {
@@ -229,10 +272,22 @@ impl TagAccumulator {
     }
 
     fn fold(&mut self, rec: TagRecord) {
-        let TagRecord { id, slug, parent_ids, taggings } = rec;
+        let TagRecord { id, slug, parent_ids, aliases, taggings } = rec;
         if let (Some(id), Some(slug)) = (id, slug.as_ref()) {
             self.uuid_to_slug.insert(id.clone(), slug.clone());
             self.parent_uuids.insert(id, parent_ids);
+        }
+        if let Some(slug) = slug.as_ref() {
+            self.declared_slugs.insert(slug.clone());
+            for alias in &aliases {
+                // Slugified on the way in, because half the art aliases are written with spaces
+                // ("open mouth" for `loose-lips`) and the query side slugifies the search term the
+                // same way — both spellings have to reach the same stored key.
+                let slugified = slugify_tag(alias);
+                if !slugified.is_empty() {
+                    self.alias_claimants.entry(slugified).or_default().insert(slug.clone());
+                }
+            }
         }
         // Upstream indexes tag["slug"] directly in the tagging loop (KeyError
         // aborts); a tag without a slug never occurs in the dumps, and skipping
@@ -277,6 +332,24 @@ impl TagAccumulator {
             slug_parents.insert(si, parents);
         }
 
+        // Aliases, resolved now that the whole dump is known. An alias that lands on a real slug,
+        // or that two tags both claim, is ambiguous and is dropped rather than guessed at — the
+        // slug always wins. Neither dump contains one today, so this guards upstream data changing.
+        let mut slug_to_aliases: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut dropped = 0usize;
+        for (alias, claimants) in &self.alias_claimants {
+            if self.declared_slugs.contains(alias) || claimants.len() > 1 {
+                dropped += 1;
+                continue;
+            }
+            if let Some(owner) = claimants.iter().next() {
+                slug_to_aliases.entry(owner.as_str()).or_default().push(alias.as_str());
+            }
+        }
+        if dropped > 0 {
+            eprintln!("tags: dropping {dropped} ambiguous alias(es)");
+        }
+
         // Per local slug: {self} ∪ ancestors, as indices into `data.slugs`.
         let data_idx: Vec<u32> = self.slugs.iter().map(|s| data.intern(s)).collect();
         let mut expanded: Vec<Vec<u32>> = Vec::with_capacity(self.slugs.len());
@@ -292,6 +365,18 @@ impl TagAccumulator {
                 if let Some(parents) = slug_parents.get(&current) {
                     queue.extend(parents.iter().copied().filter(|p| !visited.contains(p)));
                 }
+            }
+            // Aliases ride along on the ANCESTORS too, not just the tag itself: Scryfall resolves
+            // an alias to its tag BEFORE expanding the hierarchy, so `art:flames` returns exactly
+            // what `art:fire` does, descendants included.
+            let alias_keys: Vec<String> = visited
+                .iter()
+                .filter_map(|&idx| slug_to_aliases.get(self.slugs[idx as usize].as_str()))
+                .flatten()
+                .map(|a| (*a).to_owned())
+                .collect();
+            for alias in alias_keys {
+                out.push(data.intern(&alias));
             }
             expanded.push(out);
         }
@@ -340,6 +425,10 @@ mod tests {
 
     fn tag(id: &str, slug: &str, parent_ids: &[&str], taggings: Value) -> Value {
         json!({"id": id, "slug": slug, "parent_ids": parent_ids, "taggings": taggings})
+    }
+
+    fn tag_with_aliases(id: &str, slug: &str, parent_ids: &[&str], aliases: &[&str], taggings: Value) -> Value {
+        json!({"id": id, "slug": slug, "parent_ids": parent_ids, "aliases": aliases, "taggings": taggings})
     }
 
     fn build(tags: &[Value], kind: TagKind) -> TagData {
@@ -473,4 +562,70 @@ mod tests {
         restored.intern("parent");
         assert_eq!(restored.slugs.len(), before);
     }
+    #[test]
+    fn aliases_become_searchable_keys() {
+        // upstream #914: Scryfall's tagger resolves an alias to its tag before matching, which is
+        // why `art:flames` finds the `fire` tag there.
+        let tags = vec![tag_with_aliases("u1", "fire", &[], &["flames"], json!([{"oracle_id": "o-1"}]))];
+        let data = build(&tags, TagKind::Oracle);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["fire", "flames"]);
+    }
+
+    #[test]
+    fn spaced_aliases_are_slugified_to_the_stored_form() {
+        // Half the art aliases are written with spaces. The query side slugifies the search term
+        // the same way, so both spellings have to land on one key — if these two functions ever
+        // disagree, `art:"open mouth"` silently returns nothing.
+        let tags = vec![tag_with_aliases("u1", "loose-lips", &[], &["Open Mouth"], json!([{"oracle_id": "o-1"}]))];
+        let data = build(&tags, TagKind::Oracle);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["loose-lips", "open-mouth"]);
+    }
+
+    #[test]
+    fn aliases_ride_along_on_ancestors() {
+        // Scryfall resolves the alias BEFORE expanding the hierarchy, so an alias of a PARENT is
+        // reachable from a card tagged only with the child.
+        let tags = vec![
+            tag_with_aliases("u1", "fire", &[], &["flames"], json!([])),
+            tag("u2", "bolt", &["u1"], json!([{"oracle_id": "o-1"}])),
+        ];
+        let data = build(&tags, TagKind::Oracle);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["bolt", "fire", "flames"]);
+    }
+
+    #[test]
+    fn an_alias_that_is_also_a_real_slug_is_dropped() {
+        // Ambiguous: the slug always wins rather than the alias silently redirecting it.
+        let tags = vec![
+            tag_with_aliases("u1", "fire", &[], &["burn"], json!([{"oracle_id": "o-1"}])),
+            tag("u2", "burn", &[], json!([{"oracle_id": "o-2"}])),
+        ];
+        let data = build(&tags, TagKind::Oracle);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["fire"], "alias dropped, not attached");
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-2"), vec!["burn"]);
+    }
+
+    #[test]
+    fn an_alias_two_tags_both_claim_is_dropped() {
+        let tags = vec![
+            tag_with_aliases("u1", "fire", &[], &["hot"], json!([{"oracle_id": "o-1"}])),
+            tag_with_aliases("u2", "lava", &[], &["hot"], json!([{"oracle_id": "o-2"}])),
+        ];
+        let data = build(&tags, TagKind::Oracle);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["fire"]);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-2"), vec!["lava"]);
+    }
+
+    #[test]
+    fn slugify_tag_matches_the_query_sides_normalization() {
+        // The two halves of #914 are only useful if they agree character-for-character.
+        assert_eq!(slugify_tag("Open Mouth"), "open-mouth");
+        assert_eq!(slugify_tag("  right facing  "), "right-facing");
+        assert_eq!(slugify_tag("fire"), "fire");
+        assert_eq!(slugify_tag("a--b"), "a-b", "runs fold to one hyphen");
+        assert_eq!(slugify_tag("-lead-"), "lead", "leading/trailing runs fold to none");
+        assert_eq!(slugify_tag("A_B"), "a-b", "underscore is not a slug character");
+        assert_eq!(slugify_tag("!!!"), "");
+    }
+
 }
