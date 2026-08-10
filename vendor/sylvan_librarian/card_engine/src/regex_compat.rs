@@ -1,0 +1,179 @@
+//! Query-regex compilation: accepting the dialect the SQL path accepts.
+//!
+//! `o:/.../` is documented against PostgreSQL's `~*`
+//! (docs/changelog/2025-02-02-regex-search.md), and two things it accepts the
+//! `regex` crate does not:
+//!
+//! - **Lookaround.** `(?!…)`, `(?=…)`, `(?<=…)`, `(?<!…)`. The `regex` crate
+//!   omits these by design — they are what costs it its linear-time guarantee.
+//!   Lookahead is on the documented feature list.
+//! - **Word-boundary escapes.** ARE spells them `\y`/`\Y`/`\m`/`\M`, and ARE's
+//!   `\Z` is Rust's `\z`. `\y` and `\Z` have exact `regex`-crate spellings, so
+//!   they are rewritten in place; `\m`/`\M` have none and become lookaround.
+//!
+//! Both were engine *declines* — a `build_filter` error that
+//! `_search`'s blanket handler turned into a silent PostgreSQL fallback. That
+//! made the SQL path load-bearing for a documented feature rather than a
+//! crash net.
+//!
+//! A pattern the `regex` crate accepts still compiles on it, unchanged. The
+//! backtracking engine is entered only where the fast one cannot go, which
+//! keeps every existing optimization — most importantly the #734 trigram
+//! narrowing, whose `regex_syntax::parse` reads the same pattern string.
+
+use std::sync::Arc;
+
+use regex::Regex;
+
+/// Backtracking steps allowed for one `is_match` before `fancy_regex` gives up.
+///
+/// Only reachable from a pattern that already declined the linear engine, and
+/// only per candidate string. The ceiling matters because a lookaround pattern
+/// has no literal factor for the trigram narrow to read, so it is evaluated
+/// against the whole corpus: the bound is what keeps a pathological pattern
+/// from turning one request into a CPU sink. PostgreSQL's own regex engine
+/// backtracks under a comparable (memory-shaped) ceiling, so this is the same
+/// class of limit the SQL path already imposed, not a new one.
+const BACKTRACK_LIMIT: usize = 1_000_000;
+
+/// A compiled query regex, on whichever engine can express it.
+///
+/// `Clone` is cheap on both arms: `regex::Regex` is internally `Arc`-based, and
+/// the backtracking arm is behind an `Arc` here for the same reason — see
+/// `FilterExpr`'s `Clone` note.
+#[derive(Clone, Debug)]
+pub(crate) enum CompiledRegex {
+    /// The linear-time engine. Every pattern that can be, is.
+    Fast(Regex),
+    /// The backtracking engine: lookaround and backreferences only.
+    Backtrack(Arc<fancy_regex::Regex>),
+}
+
+impl CompiledRegex {
+    /// Compile a query pattern, case-insensitively (every query regex is
+    /// `(?i)` — see the `~*` operator the SQL path uses).
+    ///
+    /// The error string is the linear engine's, not the backtracking one's: if
+    /// both reject the pattern it is malformed rather than merely non-linear,
+    /// and the first message is the one that names the actual syntax problem.
+    pub(crate) fn new(pattern: &str) -> Result<Self, String> {
+        let translated = translate_are_escapes(pattern);
+        let cased = format!("(?i){translated}");
+        match Regex::new(&cased) {
+            Ok(re) => Ok(CompiledRegex::Fast(re)),
+            Err(linear_err) => match fancy_regex::RegexBuilder::new(&cased)
+                .backtrack_limit(BACKTRACK_LIMIT)
+                .build()
+            {
+                Ok(re) => Ok(CompiledRegex::Backtrack(Arc::new(re))),
+                Err(_) => Err(format!("invalid regex '{pattern}': {linear_err}")),
+            },
+        }
+    }
+
+    /// Does this pattern match anywhere in `haystack`?
+    ///
+    /// Exceeding `BACKTRACK_LIMIT` reads as "no match". That is a real
+    /// divergence from PostgreSQL, which raises instead — but the alternative
+    /// is threading a fallible result through per-card `Tri` evaluation, and
+    /// the limit is high enough that a pattern reaching it is pathological
+    /// rather than merely complex.
+    #[inline]
+    pub(crate) fn is_match(&self, haystack: &str) -> bool {
+        match self {
+            CompiledRegex::Fast(re) => re.is_match(haystack),
+            CompiledRegex::Backtrack(re) => re.is_match(haystack).unwrap_or(false),
+        }
+    }
+
+    /// The compiled pattern source, `(?i)` prefix included.
+    ///
+    /// Feeds `regex_tier` (cost) and the #734 literal-factor extraction. The
+    /// latter parses this with `regex_syntax`, which fails on a backtracking
+    /// pattern and yields no factors — so those patterns lose the trigram
+    /// narrow and scan, which is correct, just not fast.
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            CompiledRegex::Fast(re) => re.as_str(),
+            CompiledRegex::Backtrack(re) => re.as_str(),
+        }
+    }
+
+    /// True when this pattern needed the backtracking engine. Cost only.
+    #[inline]
+    pub(crate) fn is_backtracking(&self) -> bool {
+        matches!(self, CompiledRegex::Backtrack(_))
+    }
+}
+
+/// Rewrite PostgreSQL ARE escapes that the `regex` crate spells differently or
+/// cannot spell at all.
+///
+/// | ARE  | meaning              | rewritten to      |
+/// |------|----------------------|-------------------|
+/// | `\y` | word boundary        | `\b`              |
+/// | `\Y` | not a word boundary  | `\B`              |
+/// | `\m` | start of a word      | `(?<!\w)(?=\w)`   |
+/// | `\M` | end of a word        | `(?<=\w)(?!\w)`   |
+/// | `\Z` | end of string        | `\z`              |
+///
+/// `\y`/`\Y`/`\Z` have exact equivalents, so a pattern using only those stays
+/// on the linear engine. `\m`/`\M` do not, and their lookaround rewrite sends
+/// the pattern to the backtracking engine — correct, and rare enough to be
+/// worth the access path.
+///
+/// Bracket expressions are copied through untouched: inside `[…]` these are
+/// ordinary escapes, not constraints. A `]` in the first position of a class is
+/// literal (POSIX), so it does not close it.
+pub(crate) fn translate_are_escapes(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+    // Position within the current bracket expression, if any: `Some(n)` means
+    // n characters have been consumed since `[`, which is how the leading-`]`
+    // rule is applied without a second scan.
+    let mut class_pos: Option<usize> = None;
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            let Some(next) = chars.next() else {
+                out.push('\\');
+                break;
+            };
+            if class_pos.is_some() {
+                out.push('\\');
+                out.push(next);
+                class_pos = class_pos.map(|n| n + 2);
+                continue;
+            }
+            match next {
+                'y' => out.push_str(r"\b"),
+                'Y' => out.push_str(r"\B"),
+                'm' => out.push_str(r"(?<!\w)(?=\w)"),
+                'M' => out.push_str(r"(?<=\w)(?!\w)"),
+                'Z' => out.push_str(r"\z"),
+                other => {
+                    out.push('\\');
+                    out.push(other);
+                }
+            }
+            continue;
+        }
+
+        match class_pos {
+            None => {
+                if c == '[' {
+                    class_pos = Some(0);
+                }
+            }
+            // A leading `^` negates without occupying the first position, so
+            // `[^]…]` gets the same literal-`]` treatment as `[]…]`.
+            Some(0) if c == '^' => {}
+            // `[]…]`: a `]` in the first position is a literal member.
+            Some(0) if c == ']' => class_pos = Some(1),
+            Some(_) if c == ']' => class_pos = None,
+            Some(n) => class_pos = Some(n + 1),
+        }
+        out.push(c);
+    }
+    out
+}

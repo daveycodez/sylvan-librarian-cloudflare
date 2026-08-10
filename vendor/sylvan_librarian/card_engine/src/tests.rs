@@ -6665,7 +6665,7 @@ fn flavor_match_bind_eval_and_narrow() {
     }
     let mut rx = FilterExpr::TextRegex {
         field: super::TextField::FlavorTextLower,
-        regex: regex::Regex::new("qu.et").unwrap(),
+        regex: super::regex_compat::CompiledRegex::new("qu.et").unwrap(),
     };
     bound(&mut rx);
     assert!(rx.matches(card0, &archived.printings[1], &archived.strings));
@@ -10214,7 +10214,7 @@ fn contains_scan() -> FilterExpr {
 }
 
 fn machinery_regex() -> FilterExpr {
-    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: regex::Regex::new("draw .* cards?").unwrap() }
+    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: super::regex_compat::CompiledRegex::new("draw .* cards?").unwrap() }
 }
 
 // Pattern-shape cost classification: anchored literals are memcmp-cheap
@@ -11353,3 +11353,150 @@ fn arith_tuple_key_budget_catches_a_blown_domain() {
 /// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
 /// clears `10*sqrt(n)+32` by a wide margin.
 const ARITH_TUPLE_BLOWUP_CARDS: usize = 6_000;
+
+// ─── Regex dialect parity with the SQL path (see regex_compat.rs) ────────────
+
+/// Build the wire JSON for `<attr>:/<pattern>/`, the shape the Python parser
+/// emits for a regex leaf.
+fn regex_leaf(attr: &str, pattern: &str) -> serde_json::Value {
+    serde_json::json!({
+        "node_type": "CardBinaryOperatorNode",
+        "kwargs": {
+            "op": ":",
+            "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": attr, "original_attribute": attr}},
+            "rhs": {"node_type": "RegexValueNode", "kwargs": {"value": pattern}},
+        }
+    })
+}
+
+#[test]
+fn lookaround_compiles_instead_of_declining() {
+    // Each of these is accepted by PostgreSQL's `~*` and rejected by the
+    // `regex` crate; before CompiledRegex they were a build_filter error, which
+    // _search's blanket handler turned into a silent SQL fallback. Lookahead is
+    // on the documented feature list (docs/changelog/2025-02-02-regex-search.md).
+    for pattern in [r"draw (?!two)", r"(?=.*sacrifice)draw", r"(?<=draw )a card", r"(\w+) \1"] {
+        let re = super::regex_compat::CompiledRegex::new(pattern)
+            .unwrap_or_else(|e| panic!("{pattern:?} should compile, got {e}"));
+        assert!(re.is_backtracking(), "{pattern:?} needs the backtracking engine");
+    }
+}
+
+#[test]
+fn linear_patterns_do_not_reach_the_backtracking_engine() {
+    // The tiering is only worth having if ordinary patterns keep the linear
+    // engine — and with it their #734 trigram narrowing. A pattern that
+    // silently fell through to fancy_regex would lose the literal factor and
+    // scan, with nothing to signal it.
+    for pattern in ["flying", "^flying$", "draw .* cards?", r"\bizzet\b", "[aeiou]+", r"\s\+\d"] {
+        let re = super::regex_compat::CompiledRegex::new(pattern).unwrap();
+        assert!(!re.is_backtracking(), "{pattern:?} should stay on the linear engine");
+    }
+}
+
+#[test]
+fn lookaround_matches_what_it_should() {
+    let re = super::regex_compat::CompiledRegex::new(r"draw (?!two)").unwrap();
+    assert!(re.is_match("draw a card"));
+    assert!(!re.is_match("draw two cards"));
+    // (?i) is applied to every query regex, the same as the SQL path's ~*.
+    assert!(re.is_match("DRAW A CARD"));
+}
+
+#[test]
+fn are_word_boundary_escapes_translate() {
+    use super::regex_compat::translate_are_escapes;
+    // \y and \Z have exact regex-crate spellings, so these stay linear.
+    assert_eq!(translate_are_escapes(r"\yizzet\y"), r"\bizzet\b");
+    assert_eq!(translate_are_escapes(r"\Yizzet"), r"\Bizzet");
+    assert_eq!(translate_are_escapes(r"card\Z"), r"card\z");
+    // \m and \M have none, so they become lookaround (and thus backtracking).
+    assert_eq!(translate_are_escapes(r"\mdraw"), r"(?<!\w)(?=\w)draw");
+    assert_eq!(translate_are_escapes(r"draw\M"), r"draw(?<=\w)(?!\w)");
+    // Untouched: anything that already means the same thing in both dialects.
+    assert_eq!(translate_are_escapes(r"\bfoo\d+\s"), r"\bfoo\d+\s");
+    assert_eq!(translate_are_escapes(r"\\y"), r"\\y");
+
+    let boundary = super::regex_compat::CompiledRegex::new(r"\yizzet\y").unwrap();
+    assert!(!boundary.is_backtracking(), r"\y should translate to \b, not force backtracking");
+    assert!(boundary.is_match("the izzet guildmage"));
+    assert!(!boundary.is_match("niv-mizzet"));
+}
+
+#[test]
+fn are_escapes_are_literal_inside_bracket_expressions() {
+    use super::regex_compat::translate_are_escapes;
+    // Inside […] these are ordinary escapes, not constraints.
+    assert_eq!(translate_are_escapes(r"[\y\m]"), r"[\y\m]");
+    // A `]` in first position is a literal member (POSIX), so it does not close
+    // the class — the \y after it is still inside.
+    assert_eq!(translate_are_escapes(r"[]\y]"), r"[]\y]");
+    assert_eq!(translate_are_escapes(r"[^]\y]"), r"[^]\y]");
+    // ...and once the class really does close, translation resumes.
+    assert_eq!(translate_are_escapes(r"[abc]\y"), r"[abc]\b");
+}
+
+#[test]
+fn regex_builds_on_every_string_field_the_store_holds() {
+    // `~*` applies to all of these on the SQL path. Restricting the engine to
+    // name/oracle/flavor/artist made the rest declines, which is what kept the
+    // fallback load-bearing.
+    for (attr, field) in [
+        ("card_name", TextField::NameLower),
+        ("oracle_text", TextField::OracleTextLower),
+        ("flavor_text", TextField::FlavorTextLower),
+        ("card_artist", TextField::ArtistLower),
+        ("card_set_code", TextField::SetCode),
+        ("card_layout", TextField::Layout),
+        ("card_border", TextField::Border),
+        ("card_watermark", TextField::Watermark),
+        ("collector_number", TextField::CollectorNumber),
+        ("card_types", TextField::TypeLine),
+        ("card_subtypes", TextField::TypeLine),
+    ] {
+        let built = super::build_filter(&regex_leaf(attr, "^drag")).unwrap_or_else(|e| panic!("{attr} regex should build, got {e}"));
+        match built {
+            FilterExpr::TextRegex { field: got, .. } => assert_eq!(
+                std::mem::discriminant(&got),
+                std::mem::discriminant(&field),
+                "{attr} regex bound to the wrong TextField"
+            ),
+            other => panic!("{attr} regex built a {:?} node, not TextRegex", std::mem::discriminant(&other)),
+        }
+    }
+}
+
+#[test]
+fn backtracking_regex_outranks_every_linear_verify_tier() {
+    // The cost model's only lever on a lookaround pattern is ordering it last
+    // in an And — it has no literal factor for the trigram narrow to read, so
+    // whatever reaches it is scanned. Measured at 77x the linear engine
+    // (bench_backtrack_engine); the tier has to reflect that or a cheap
+    // sibling gets evaluated second.
+    let backtracking = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: super::regex_compat::CompiledRegex::new(r"draw (?!two)").unwrap(),
+    };
+    let linear = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: super::regex_compat::CompiledRegex::new("draw .* cards?").unwrap(),
+    };
+    let contains = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "draw".to_string() };
+
+    assert!(verify_cost_tier(&backtracking) > verify_cost_tier(&linear));
+    assert!(verify_cost_tier(&linear) > verify_cost_tier(&contains));
+}
+
+#[test]
+fn type_regex_no_longer_builds_a_vacuous_mask() {
+    // Regression for the silent-empty-result bug this fix closes: `t:/…/` used
+    // to reach the card_types branch, whose `rhs.as_array()` is None for a
+    // RegexValueNode, folding to `TypeCmp { mask: 0, op: Ge }` — false for
+    // every card. No error meant no fallback, so the query just returned
+    // nothing while the SQL path returned dragons.
+    let built = super::build_filter(&regex_leaf("card_types", "^drag")).unwrap();
+    assert!(
+        matches!(built, FilterExpr::TextRegex { field: TextField::TypeLine, .. }),
+        "t:/^drag/ must compile to a type-line regex, not a type mask"
+    );
+}

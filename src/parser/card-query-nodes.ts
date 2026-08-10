@@ -27,6 +27,7 @@ import {
 	NumericValueNode,
 	nodeToJson,
 	QueryNode,
+	RegexValueNode,
 	StringValueNode,
 	type ValueNode,
 } from "./nodes";
@@ -201,6 +202,18 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 		const fieldType = fieldInfos.length > 0 ? (fieldInfos[0] as FieldInfo).fieldType : null;
 
 		if (fieldType === FieldType.JSONB_ARRAY) {
+			// A regex is a pattern over the printed type line, not a member of the type/subtype
+			// arrays. The title-casing below would turn `t:/goblin|elf/` into the literal subtype
+			// "Goblin|Elf" and `t:/^drag/` into "^Drag", neither of which is a type any card has —
+			// the query then matches nothing, silently. Scryfall answers both as regexes, so pass
+			// the node through and let the engine run it against the type line.
+			const attrLower = pyLower(this.lhs.attributeName);
+			if (
+				this.rhs instanceof RegexValueNode &&
+				(attrLower === "card_types" || attrLower === "card_subtypes" || attrLower === "type")
+			) {
+				return { lhs: this.lhs.toJson(), op: this.operator, rhs: nodeToJson(this.rhs) };
+			}
 			// Resolve type vs subtype without mutating lhs — build lhs JSON explicitly.
 			const rhsVal = pyStrTitle(pyStrip(rhsStringValue(this.rhs)));
 			const attr = pyLower(this.lhs.attributeName);

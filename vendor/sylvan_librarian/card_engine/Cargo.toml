@@ -53,6 +53,7 @@ memmap2 = { version = "0.9", optional = true }
 libc = { version = "0.2", optional = true }
 rand = "0.10"
 uuid = "1.12"
+fancy-regex = "0.19.0"
 
 # LOCAL PATCH (Cloudflare port): the unit tests / bench harnesses in src/*.rs
 # mmap a real store file and are native-only, so they always get memmap2 even

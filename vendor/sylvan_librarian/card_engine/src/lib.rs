@@ -878,6 +878,7 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
 
 mod filter;
 use filter::*;
+mod regex_compat;
 mod planes;
 use planes::*;
 mod estimator;

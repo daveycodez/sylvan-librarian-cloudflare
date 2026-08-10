@@ -1,6 +1,6 @@
 use memchr::memmem;
-use regex::Regex;
 use serde_json::Value;
+use super::regex_compat::CompiledRegex;
 use super::{AOracleCard, APrinting, AStrings, str_at, mana_lane, lane_add, lanes_ge, LANES6_HI, LANES8_HI, mana_pip_counts, mana_cmc, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, OracleTextIndex, SortedTrigramIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
 
@@ -383,6 +383,7 @@ pub(crate) enum TextField {
     Border,
     Watermark,
     CollectorNumber,
+    TypeLine,
 }
 
 fn text_field_value<'a>(
@@ -402,6 +403,11 @@ fn text_field_value<'a>(
         TextField::Border          => printing.map_or(StrVal::PDep, |p| opt_sv(str_at(strings, u32::from(p.card_border_id)))),
         TextField::Watermark       => printing.map_or(StrVal::PDep, |p| opt_sv(str_at(strings, u32::from(p.card_watermark_id)))),
         TextField::CollectorNumber => printing.map_or(StrVal::PDep, |p| opt_sv(str_at(strings, u32::from(p.collector_number_id)))),
+        // Card-level, like Layout above: printings carry their own copy, but
+        // Scryfall's type line is oracle data, so the group's value answers for
+        // all of them — and reading it here keeps `t:/…/` card-invariant
+        // instead of forcing a printing walk.
+        TextField::TypeLine        => opt_sv(str_at(strings, u32::from(card.type_line_id))),
     }
 }
 
@@ -478,7 +484,7 @@ pub(crate) enum FilterExpr {
     },
     TextRegex {
         field: TextField,
-        regex: Regex,
+        regex: CompiledRegex,
     },
 
     ColorCmp {
@@ -587,6 +593,23 @@ pub(crate) const TEXT_SCAN_NS100: u32 = 2_300;
 ///   regex_tier() classification change, not just a constant recalibration).
 pub(crate) const REGEX_MACHINERY_NS100: u32 = 5_000;
 
+/// A pattern that needed the backtracking engine — lookaround or a
+/// backreference (`CompiledRegex::Backtrack`).
+///
+/// Measured at **77x** the linear engine's per-candidate cost on the same
+/// corpus (6,535 vs 85 ns/card, mean over negative lookahead / positive
+/// lookahead / lookbehind; `bench_backtrack_engine`). The engines themselves
+/// are the same speed — fancy_regex delegates to the `regex` crate whenever a
+/// pattern needs nothing extra, measured at 1.00x — so this prices lookaround,
+/// not the dispatch.
+///
+/// It dwarfs every other tier deliberately. These patterns are the one node
+/// kind the #734 trigram narrow cannot read a literal factor out of, so they
+/// scan the whole corpus; ordering them last in an And is the only lever the
+/// model has, and any candidate that a cheaper sibling can reject first is a
+/// candidate this never has to see.
+pub(crate) const REGEX_BACKTRACK_NS100: u32 = 380_000;
+
 /// Per-candidate verification cost of a node in the tri walk. Composites take
 /// the max of their children: their short-circuit may have to evaluate every
 /// child, so the most expensive child bounds the cost.
@@ -611,6 +634,7 @@ pub(crate) fn verify_cost_tier_unproven(f: &FilterExpr, proven: u64) -> u32 {
 
 pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
     match f {
+        FilterExpr::TextRegex { regex, .. } if regex.is_backtracking() => REGEX_BACKTRACK_NS100,
         FilterExpr::TextRegex { regex, .. } => regex_tier(regex.as_str()),
         FilterExpr::TextContains { .. } => TEXT_SCAN_NS100,
         FilterExpr::Devotion { .. } | FilterExpr::ManaCostCmp { .. } => SET_LOOKUP_NS100,
@@ -752,7 +776,7 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
             TextField::FlavorTextLower | TextField::SetCode | TextField::Border | TextField::Watermark | TextField::CollectorNumber => {
                 true
             }
-            TextField::NameLower | TextField::OracleTextLower | TextField::ArtistLower | TextField::Layout => false,
+            TextField::NameLower | TextField::OracleTextLower | TextField::ArtistLower | TextField::Layout | TextField::TypeLine => false,
         },
         // Exhaustive over CollField (no `matches!`), same reason as num_pdep.
         FilterExpr::CollectionCmp { field, .. } => match field {
@@ -1692,6 +1716,18 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
         return Ok(FilterExpr::NumericCmp { lhs: NumExpr::Field(num_field), op: cmp_op, rhs: rhs_expr });
     }
 
+    // A regex rhs is a text predicate whatever attribute it names, so it routes
+    // here rather than falling into the attribute branches below. Those all
+    // read their value with `rhs.as_array()`, which is `None` for a
+    // RegexValueNode: `t:/dragon/` used to fold an empty array into
+    // `TypeCmp { mask: 0, op: Ge }`, and `bits & 0 != 0` is false for every
+    // card — a silent empty result, not a decline, so the SQL fallback never
+    // saw it either. The SQL path answers the same query with
+    // `type_line ~* 'dragon'`.
+    if rhs["node_type"].as_str() == Some("RegexValueNode") {
+        return build_text_filter(attr, op, rhs);
+    }
+
     if attr == "released_at" {
         let val_str = rhs_value_str(rhs);
         if orig == "year" {
@@ -1829,13 +1865,26 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value) -> Result<FilterExpr, St
 
     if rhs_node_type == "RegexValueNode" {
         let pattern  = rhs["kwargs"]["value"].as_str().unwrap_or("");
-        let re = Regex::new(&format!("(?i){pattern}"))
-            .map_err(|e| format!("invalid regex '{pattern}': {e}"))?;
+        let re = CompiledRegex::new(pattern)?;
+        // Every field the store holds as a string can carry a regex: `~*`
+        // applies to all of them on the SQL path, and restricting the engine to
+        // the first four only sent the rest to that path as a decline. The
+        // printing-scoped ones (set code, collector number, watermark) resolve
+        // through the same StrVal::PDep path their exact-match twins use.
         let field = match attr {
-            "card_name"   => TextField::NameLower,
-            "oracle_text" => TextField::OracleTextLower,
-            "flavor_text" => TextField::FlavorTextLower,
-            "card_artist" => TextField::ArtistLower,
+            "card_name"        => TextField::NameLower,
+            "oracle_text"      => TextField::OracleTextLower,
+            "flavor_text"      => TextField::FlavorTextLower,
+            "card_artist"      => TextField::ArtistLower,
+            "card_set_code"    => TextField::SetCode,
+            "card_layout"      => TextField::Layout,
+            "card_border"      => TextField::Border,
+            "card_watermark"   => TextField::Watermark,
+            "collector_number" => TextField::CollectorNumber,
+            // `t:/…/` matches against the printed type line, the same string
+            // the SQL path's `type_line ~* …` reads — not the type/subtype
+            // bitmasks `t:goblin` compiles to, which cannot answer a regex.
+            "card_types" | "card_subtypes" => TextField::TypeLine,
             _ => return Err(format!("regex not supported on {attr}")),
         };
         return Ok(FilterExpr::TextRegex { field, regex: re });
