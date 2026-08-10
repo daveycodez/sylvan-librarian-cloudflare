@@ -36,6 +36,14 @@ export const RESULT_FIELD_NAMES: readonly string[] = [
 	"scryfall_id",
 	"price_usd",
 	"prefer_score",
+	// upstream #877. NOT added to DEFAULT_RESULT_FIELDS: `fields=None` resolves against Rust's
+	// DEFAULT_FIELDS, which is ungated and live here, so a name there that JSON_FIELD_TABLE does
+	// not carry would make every default /search 500 rather than just rejecting one field.
+	"layout",
+	"cmc",
+	"rarity",
+	"color_identity",
+	"legalities",
 ];
 
 // Pagination default: offset 0 everywhere it appears, extracted so the route

@@ -255,3 +255,63 @@ fn build_store_writes_archive_and_manifest_data() {
 
     std::fs::remove_dir_all(&out_dir).ok();
 }
+
+/// upstream #877's five result fields, proven to reach a RESPONSE and not merely to compile.
+///
+/// This is the test the port actually needs. `FIELD_TABLE` is pyo3-gated and not built here, so
+/// #877's five entries land in dead code: the patch merges clean, `cargo check` is clean, and
+/// `fields=layout` still 400s because `JSON_FIELD_TABLE` — the live table — never learned the name.
+/// Nothing in the TS suite can see that either, since the route tests run against a fake engine.
+/// Only a real store, queried for the real fields, distinguishes "ported" from "compiled".
+#[test]
+fn result_fields_reach_the_response() {
+    let mut builder = StoreBuilder::new();
+    for row in fixture_rows() {
+        builder.add_card(&row).expect("add_card");
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
+    let store = BufferStore::from_bytes(&bytes).expect("buffer load");
+
+    let opts = QueryOptions {
+        fields: Some(vec![
+            "name".to_owned(),
+            "layout".to_owned(),
+            "cmc".to_owned(),
+            "rarity".to_owned(),
+            "color_identity".to_owned(),
+            "legalities".to_owned(),
+        ]),
+        ..QueryOptions::default()
+    };
+    let out = store.query(r#"{"node_type": "TrueNode"}"#, &opts).expect("query with #877 fields");
+    let card = &out.rows[0];
+
+    // Values, not just presence: an extractor wired to the wrong source field returns null, which
+    // a presence-only assertion would happily accept.
+    assert_eq!(card["layout"], json!("normal"));
+    assert_eq!(card["cmc"], json!(1), "cmc is the stored integer, not a string");
+    assert_eq!(card["rarity"], json!("common"), "rarity_int 0 decodes to the word");
+    assert_eq!(card["color_identity"], json!(["R"]), "the identity bitmap decodes to WUBRG letters");
+    assert_eq!(
+        card["legalities"]["vintage"],
+        json!("restricted"),
+        "the packed legality word decodes per format — and 'restricted' proves the 2-bit code is \
+         read at the right shift, since legal/not_legal would survive an off-by-one"
+    );
+    assert_eq!(card["legalities"]["modern"], json!("legal"));
+}
+
+/// `fields=None` must keep working. DEFAULT_FIELDS is ungated and live, so a name added there but
+/// missing from JSON_FIELD_TABLE would make EVERY default search fail, not just one field.
+#[test]
+fn the_default_field_set_still_resolves() {
+    let mut builder = StoreBuilder::new();
+    for row in fixture_rows() {
+        builder.add_card(&row).expect("add_card");
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
+    let store = BufferStore::from_bytes(&bytes).expect("buffer load");
+    store.query(r#"{"node_type": "TrueNode"}"#, &QueryOptions::default()).expect("default fields");
+}

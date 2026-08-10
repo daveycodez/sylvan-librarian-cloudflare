@@ -28,8 +28,9 @@ use super::{
     CardData, CardRow, InlineStr, Interner, ManaCost, ManaVocabInterner, PERMANENT_TYPES,
     QueryCtx, QueryParams, VocabInterner, archive_header, build_card_data,
     card_types_list_to_bits, coll_str, color_list_to_mask, count_common_keywords,
-    count_common_types, format_shift_or_assign, lane_add, legality_code, mana_lane,
-    parse_uuid_or_hash, run_query_routed, sorted_strs, str_at, uuid_from_u128, write_archive,
+    count_common_types, format_shift_or_assign, identity_letters, lane_add, legality_bits_to_json,
+    legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text, run_query_routed, sorted_strs,
+    str_at, uuid_from_u128, write_archive,
     DEFAULT_FIELDS,
 };
 use rkyv::Archived;
@@ -984,6 +985,25 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("card_art_tags", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.card_art_tags))),
     ("card_is_tags", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.card_is_tags))),
     ("card_frame_data", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.card_frame_data))),
+    // Card-data fields in Scryfall's own shapes (upstream #877). FIELD_TABLE is pyo3-gated and not
+    // compiled here, so its five new entries would merge clean, build clean, and do nothing —
+    // `fields=layout` would 400 as an unknown field. These are their live twins.
+    ("layout", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.card_layout_id)))),
+    ("cmc", |c, _p, _s, _v| c.cmc.as_ref().copied().map(Value::from).unwrap_or(Value::Null)),
+    ("rarity", |_c, p, _s, _v| {
+        p.card_rarity_int
+            .as_ref()
+            .copied()
+            .and_then(|v| rarity_int_to_text(u8::from(v)))
+            .map(Value::from)
+            .unwrap_or(Value::Null)
+    }),
+    ("color_identity", |c, _p, _s, _v| str_vec_value(identity_letters(u8::from(c.card_color_identity)))),
+    ("legalities", |c, p, _s, _v| {
+        // Printing-level word only for the ~556 divergence cards, the same rule the filters use.
+        let bits = if c.legality_divergent { u64::from(p.card_legalities) } else { u64::from(c.card_legalities) };
+        legality_bits_to_json(bits)
+    }),
 ];
 
 /// Mirror of `resolve_fields`: dedupe repeats, reject unknown names, `None` →

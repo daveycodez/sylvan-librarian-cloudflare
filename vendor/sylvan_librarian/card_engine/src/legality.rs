@@ -74,6 +74,59 @@ pub(crate) fn jsonb_obj_to_legality_bits(d: &Bound<PyDict>, key: &str) -> u64 {
         .unwrap_or_default()
 }
 
+/// Decode a packed legality word into a `{format: status}` Python dict covering every
+/// format the registry knows, alphabetically — the field-extraction counterpart of
+/// `jsonb_obj_to_legality_bits`. A format absent from the imported JSONB round-trips
+/// as "not_legal", exactly as the encoder treated it.
+// LOCAL PATCH (Cloudflare port): gated, because this workspace builds card_engine WITHOUT pyo3 for
+// wasm32 and `Python`/`PyDict` do not exist there. Upstream has no `python` feature and its
+// FIELD_TABLE — the only caller — is ungated, so this attribute belongs here and NOT upstream:
+// there the cfg would be false, delete the function, and break the build. Same treatment as
+// FIELD_TABLE and jsonb_obj_to_legality_bits, whose live twin is legality_bits_to_json below.
+#[cfg(feature = "python")]
+pub(crate) fn legality_bits_to_pydict<'a>(py: Python<'a>, bits: u64) -> PyResult<pyo3::Bound<'a, PyDict>> {
+    let dict = PyDict::new(py);
+    if let Ok(shifts) = format_shifts().read() {
+        let mut entries: Vec<(String, u8)> = shifts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        entries.sort();
+        for (format, shift) in entries {
+            let word = match (bits >> shift) & 0b11 {
+                LEGALITY_LEGAL => "legal",
+                LEGALITY_RESTRICTED => "restricted",
+                LEGALITY_BANNED => "banned",
+                _ => "not_legal",
+            };
+            dict.set_item(format, word)?;
+        }
+    }
+    Ok(dict)
+}
+
+/// LOCAL PATCH (Cloudflare port): the JSON twin of `legality_bits_to_pydict`, for the wasm path.
+///
+/// `core_api.rs`'s mirror discipline in one function: FIELD_TABLE is pyo3-gated and therefore not
+/// compiled here, so JSON_FIELD_TABLE is the live table and needs a decoder that speaks
+/// `serde_json`. Same registry, same alphabetical order, same "absent format reads not_legal"
+/// rule as the pydict version above — they must agree word-for-word or the two builds answer
+/// `fields=legalities` differently.
+pub(crate) fn legality_bits_to_json(bits: u64) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Ok(shifts) = format_shifts().read() {
+        let mut entries: Vec<(String, u8)> = shifts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        entries.sort();
+        for (format, shift) in entries {
+            let word = match (bits >> shift) & 0b11 {
+                LEGALITY_LEGAL => "legal",
+                LEGALITY_RESTRICTED => "restricted",
+                LEGALITY_BANNED => "banned",
+                _ => "not_legal",
+            };
+            out.insert(format, serde_json::Value::from(word));
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
 /// Adopt the archive's format→shift assignments into this process's registry.
 /// Cheap no-op (one read lock) once the registry has caught up.
 pub(crate) fn sync_format_shifts(archived: &Archived<HashMap<String, u8>>) {
