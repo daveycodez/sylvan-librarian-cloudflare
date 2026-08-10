@@ -545,9 +545,22 @@ export class Parser {
 		throw new InternalParseError(`Expected string value, got ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
 
-	/** Parse a color value: a recognized color name or a combination of color letters. */
+	/** Parse a color value: a color name, a combination of color letters, or a bare integer count. */
 	parseColorValue(): QueryNode {
 		const tok = this.peek();
+		if (tok.type === TT.NUMBER) {
+			// Scryfall numeric color syntax: id>=3 / c=2 compare the NUMBER of colors in the
+			// field, so a bare integer is a valid color value.
+			const num = tok.value as PyNumber;
+			if (num.isFloat) {
+				// InternalParseError, not ParseError: upstream raises hand_parser's own ParseError
+				// here, which parse_query catches and re-raises as 'Failed to parse query: "…"'.
+				// The port's wrapper catches InternalParseError, so that is the equivalent type.
+				throw new InternalParseError(`Expected integer color count, got ${num.toString()} at position ${tok.pos}`);
+			}
+			this.consume();
+			return new NumericValueNode(num);
+		}
 		if (tok.type === TT.QUOTED) {
 			this.consume();
 			return new StringValueNode(pyStr(tok.value));

@@ -236,6 +236,19 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 		return { lhs: this.lhs.toJson(), op: this.operator, rhs: this.rhsToJson() };
 	}
 
+	/**
+	 * Serialize a numeric color-count rhs (id>=3 / c=2) for the Rust engine.
+	 *
+	 * Only the two real color fields support counting; produced_mana's C key is a genuine
+	 * producible value, not a color, so a count over it would be ambiguous.
+	 */
+	private numericColorRhsToJson(attr: string): FilterValue {
+		if (attr === "card_colors" || attr === "card_color_identity") {
+			return nodeToJson(this.rhs);
+		}
+		throw new ParseError(`Numeric comparison is not supported for ${attr}`);
+	}
+
 	/** Compute the JSON-serializable rhs for non-JSONB_ARRAY CardAttributeNode LHS (_rhs_to_json). */
 	private rhsToJson(): FilterValue {
 		const lhs = this.lhs as CardAttributeNode;
@@ -250,6 +263,11 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			// Mana cost and devotion: pass raw ManaValueNode for Rust to parse pip counts.
 			if (fieldInfo.parserClass === PC.MANA) {
 				return nodeToJson(this.rhs);
+			}
+			// Numeric color syntax (id>=3 / c=2): pass the raw NumericValueNode so the Rust engine
+			// builds a color-count comparison instead of a mask compare.
+			if (this.rhs instanceof NumericValueNode) {
+				return this.numericColorRhsToJson(attr);
 			}
 			const val = pyStrip(rhsStringValue(this.rhs));
 			if (attr === "card_colors" || attr === "card_color_identity" || attr === "produced_mana") {
