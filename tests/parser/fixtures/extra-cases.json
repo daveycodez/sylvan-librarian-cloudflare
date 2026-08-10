@@ -129,10 +129,7 @@
 	},
 	{
 		"query": "a,b",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"a,b\""
-		}
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"A,b\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "a:\"PETE VENTERS\"",

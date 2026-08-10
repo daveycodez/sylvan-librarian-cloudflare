@@ -80,6 +80,17 @@ function nameNode(value: string): CardBinaryOperatorNode {
 	return new CardBinaryOperatorNode(new CardAttributeNode("name", PC.TEXT), ":", new StringValueNode(value));
 }
 
+/**
+ * Implicit name filter for a BARE word, which sheds its natural-language commas.
+ *
+ * Scryfall filters "son," exactly as "son" (measured 2026-08-08: identical totals), so
+ * "rograkh, son of rograkh" finds the card. Quoted names stay verbatim — only bare words
+ * route here. Python's str.rstrip(",") strips every trailing comma, not just one.
+ */
+function bareNameNode(value: string): CardBinaryOperatorNode {
+	return nameNode(value.replace(/,+$/, ""));
+}
+
 /** Mirrors datetime.date(...) constructor validation (year already range-checked). */
 function isValidDate(year: number, month: number, day: number): boolean {
 	if (month < 1 || month > 12) return false;
@@ -292,7 +303,7 @@ export class Parser {
 			const lhs = this.spacedArithTail(new CardAttributeNode(wl, PC.NUMERIC));
 			if (lhs instanceof CardAttributeNode) {
 				// no arithmetic consumed → implicit name
-				return nameNode(word);
+				return bareNameNode(word);
 			}
 			if (this.peek().type === TT.OP) {
 				const op = this.consume().value as string;
@@ -437,7 +448,7 @@ export class Parser {
 			this.consume(); // MINUS
 			parts.push(pyStr(this.consume().value));
 		}
-		return nameNode(parts.join("-"));
+		return bareNameNode(parts.join("-"));
 	}
 
 	// ── value parsers ─────────────────────────────────────────────────────────

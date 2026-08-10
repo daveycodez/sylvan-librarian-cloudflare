@@ -36,6 +36,11 @@ const WORD_START = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 const WORD_CONT = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.");
 const DIGIT = new Set("0123456789");
 const SPACE = new Set(" \t\r\n");
+// A comma standing on its own is a natural-language separator, skipped like whitespace
+// (Scryfall: "rograkh , son" filters exactly as "rograkh son"). A comma ATTACHED to a word
+// stays part of that word's token — see scanWordEnd — so a field value keeps it verbatim
+// (Scryfall: "t:goblin," matches nothing) while a bare name sheds it in bareNameNode.
+const SKIPPED = new Set([...SPACE, ","]);
 
 /** ASCII identifier start, or any Unicode letter — accented card names, e.g. Éowyn (#649). */
 function isWordStart(c: string): boolean {
@@ -45,6 +50,24 @@ function isWordStart(c: string): boolean {
 /** ASCII identifier continuation, or any Unicode letter (#649). */
 function isWordCont(c: string): boolean {
 	return WORD_CONT.has(c) || isAlphaCp(c.codePointAt(0) as number);
+}
+
+/**
+ * Advance j past word-continuation characters and return the word's end.
+ *
+ * Beyond `isWordCont`, a word carries commas ("rograkh," — Scryfall keeps them on the token,
+ * and bare names shed them later in `bareNameNode`) and word-INTERNAL apostrophes ("urza's" —
+ * the lookahead keeps a leading quote of an actual quoted string, as in name:'power', lexing
+ * as a QUOTED token exactly as before).
+ */
+function scanWordEnd(src: string[], n: number, j: number): number {
+	while (j < n) {
+		const c = src[j] as string;
+		const internalApostrophe = c === "'" && j + 1 < n && isWordCont(src[j + 1] as string);
+		if (!(isWordCont(c) || c === "," || internalApostrophe)) break;
+		j += 1;
+	}
+	return j;
 }
 
 /** Lex a query string into a flat list of Tokens, terminated by an EOF token. */
@@ -62,8 +85,8 @@ export function tokenize(source: string): Token[] {
 
 	while (pos < n) {
 		const cur = src[pos] as string;
-		if (SPACE.has(cur)) {
-			while (pos < n && SPACE.has(src[pos] as string)) pos++;
+		if (SKIPPED.has(cur)) {
+			while (pos < n && SKIPPED.has(src[pos] as string)) pos++;
 			spaceBefore = true;
 			continue;
 		}
@@ -215,7 +238,7 @@ export function tokenize(source: string): Token[] {
 			}
 			const text = slice(pos, j);
 			if (j < n && isWordCont(src[j] as string)) {
-				while (j < n && isWordCont(src[j] as string)) j++;
+				j = scanWordEnd(src, n, j);
 				push(TT.WORD, slice(pos, j), start, sb);
 			} else if (text.includes(".")) {
 				push(TT.NUMBER, PyNumber.float(Number(text)), start, sb);
@@ -228,8 +251,7 @@ export function tokenize(source: string): Token[] {
 
 		// Word
 		if (isWordStart(c)) {
-			let j = pos + 1;
-			while (j < n && isWordCont(src[j] as string)) j++;
+			const j = scanWordEnd(src, n, pos + 1);
 			push(TT.WORD, slice(pos, j), start, sb);
 			pos = j;
 			continue;

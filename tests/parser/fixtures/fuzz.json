@@ -47,7 +47,7 @@
 		"query": "!\"creature\" or (-(cmc+1) + usd<=(cmc+1) tou>o'kagachi) or border>123",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"!\"creature\" or (-(cmc+1) + usd<=(cmc+1) tou>o'kagachi) or border>123\""
+			"message": "Failed to parse query: \"!\"creature\" or (-(cmc+1) + usd<=(cmc+1) tou>o'kagachi) or border>123\""
 		}
 	},
 	{
@@ -310,10 +310,7 @@
 	},
 	{
 		"query": "(!\"creature\") -o'kagachi 0 / 2.5:tou",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"(!\"creature\") -o'kagachi 0 / 2.5:tou\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"value\":\"creature\"},\"node_type\":\"ExactNameNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"O'Kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"value\":2.5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
 		"query": "(!\"o'kagachi\" (cmc+1)/2.5>power (is:10E-105 OR power+(cmc+1):2.5 OR mv=changeling))",
@@ -424,7 +421,7 @@
 		"query": "((border:vintage AND keyword<=o'kagachi) colorless c!='full art') rarity=modern -(x and (identity>OR OR !colorless OR -u) and mythic)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"((border:vintage AND keyword<=o'kagachi) colorless c!='full art') rarity=modern -(x and (identity>OR OR !colorless OR -u) and mythic)\""
+			"message": "Failed to parse query: \"((border:vintage AND keyword<=o'kagachi) colorless c!='full art') rarity=modern -(x and (identity>OR OR !colorless OR -u) and mythic)\""
 		}
 	},
 	{
@@ -1121,16 +1118,13 @@
 	},
 	{
 		"query": "(o'kagachi OR (-o<=AND AND banned<=old) OR usd * tou:0)",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"(o'kagachi OR (-o<=AND AND banned<=old) OR usd * tou:0)\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"O'Kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"oracle_text\",\"original_attribute\":\"o\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":\"AND\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"banned\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":[\"old\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"price_usd\",\"original_attribute\":\"usd\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"*\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
 	},
 	{
 		"query": "(o'kagachi or éclair=the or 3-tou!=0)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"(o'kagachi or éclair=the or 3-tou!=0)\""
+			"message": "Failed to parse query: \"(o'kagachi or éclair=the or 3-tou!=0)\""
 		}
 	},
 	{
@@ -1414,7 +1408,7 @@
 		"query": "-((format>will-o-the-wisp and 3 - 2.5>(cmc+1)) or -(-legal<o'kagachi) or tou+power>2.5) (-border:new) banned=10E-105",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"-((format>will-o-the-wisp and 3 - 2.5>(cmc+1)) or -(-legal<o'kagachi) or tou+power>2.5) (-border:new) banned=10E-105\""
+			"message": "Failed to parse query: \"-((format>will-o-the-wisp and 3 - 2.5>(cmc+1)) or -(-legal<o'kagachi) or tou+power>2.5) (-border:new) banned=10E-105\""
 		}
 	},
 	{
@@ -1699,7 +1693,7 @@
 		"query": "-and -((cn=vanilla) and -/dra(w|ws)/ and (name!=o'kagachi AND wm:old))",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"-and -((cn=vanilla) and -/dra(w|ws)/ and (name!=o'kagachi AND wm:old))\""
+			"message": "Failed to parse query: \"-and -((cn=vanilla) and -/dra(w|ws)/ and (name!=o'kagachi AND wm:old))\""
 		}
 	},
 	{
@@ -1760,10 +1754,7 @@
 	},
 	{
 		"query": "-cn<o'kagachi",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"-cn<o'kagachi\""
-		}
+		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"collector_number\",\"original_attribute\":\"cn\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"o'kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
 	},
 	{
 		"query": "-color<2015 AND set>=u AND !changeling",
@@ -2067,7 +2058,7 @@
 		"query": "-rarity=vanilla Naya:modern t!=o'kagachi",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"-rarity=vanilla Naya:modern t!=o'kagachi\""
+			"message": "Failed to parse query: \"-rarity=vanilla Naya:modern t!=o'kagachi\""
 		}
 	},
 	{
@@ -2561,10 +2552,7 @@
 	},
 	{
 		"query": "banned>o'kagachi",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"banned>o'kagachi\""
-		}
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"banned\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":[\"o'kagachi\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "border<2.5",
@@ -2600,7 +2588,7 @@
 		"query": "c AND (border>=o'kagachi and usd=the) AND date:vanilla",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"c AND (border>=o'kagachi and usd=the) AND date:vanilla\""
+			"message": "Failed to parse query: \"c AND (border>=o'kagachi and usd=the) AND date:vanilla\""
 		}
 	},
 	{
@@ -2794,7 +2782,7 @@
 		"query": "date>=o'kagachi or kw<=2024-02-29 or 'full art'",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"date>=o'kagachi or kw<=2024-02-29 or 'full art'\""
+			"message": "Failed to parse query: \"date>=o'kagachi or kw<=2024-02-29 or 'full art'\""
 		}
 	},
 	{
@@ -2813,10 +2801,7 @@
 	},
 	{
 		"query": "devotion=o'kagachi",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"devotion=o'kagachi\""
-		}
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"O'KAGACHI\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "devotion>=*",
@@ -2844,7 +2829,7 @@
 		"query": "dfc and ((-mv<=brawl and kw=new and !o'kagachi) OR (x AND unknownfield!='full art')) and o!=new",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"dfc and ((-mv<=brawl and kw=new and !o'kagachi) OR (x AND unknownfield!='full art')) and o!=new\""
+			"message": "Failed to parse query: \"dfc and ((-mv<=brawl and kw=new and !o'kagachi) OR (x AND unknownfield!='full art')) and o!=new\""
 		}
 	},
 	{
@@ -2856,10 +2841,7 @@
 	},
 	{
 		"query": "e:\"\" AND -o'kagachi AND a!=ǅungla",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"e:\"\" AND -o'kagachi AND a!=ǅungla\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_set_code\",\"original_attribute\":\"e\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"O'Kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_artist\",\"original_attribute\":\"a\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"Ǆungla\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
 		"query": "e:2015 OR ((keyword>dragon AND bolt AND éclair<2rr))",
@@ -2907,10 +2889,7 @@
 	},
 	{
 		"query": "f=o'kagachi",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"f=o'kagachi\""
-		}
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"f\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":[\"o'kagachi\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "fire",
@@ -3102,7 +3081,7 @@
 		"query": "identity!=123 -r<=o'kagachi",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"identity!=123 -r<=o'kagachi\""
+			"message": "Failed to parse query: \"identity!=123 -r<=o'kagachi\""
 		}
 	},
 	{
@@ -3235,7 +3214,7 @@
 		"query": "legal:/dra(w|ws)/ OR ((-devotion<=/sacrifice a/) usd>bolt o'kagachi)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"legal:/dra(w|ws)/ OR ((-devotion<=/sacrifice a/) usd>bolt o'kagachi)\""
+			"message": "Failed to parse query: \"legal:/dra(w|ws)/ OR ((-devotion<=/sacrifice a/) usd>bolt o'kagachi)\""
 		}
 	},
 	{
@@ -3521,17 +3500,11 @@
 	},
 	{
 		"query": "o'kagachi",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"o'kagachi\""
-		}
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"O'Kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "o'kagachi OR 007",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"o'kagachi OR 007\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"O'Kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"value\":7},\"node_type\":\"NumericValueNode\"}]},\"node_type\":\"OrNode\"}"
 	},
 	{
 		"query": "o<OR a!=rg ((rg))",
@@ -3655,7 +3628,7 @@
 		"query": "pow<=o'kagachi and (subtype:2.5 produces>=/dra(w|ws)/ loyalty-3<=tou)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"pow<=o'kagachi and (subtype:2.5 produces>=/dra(w|ws)/ loyalty-3<=tou)\""
+			"message": "Failed to parse query: \"pow<=o'kagachi and (subtype:2.5 produces>=/dra(w|ws)/ loyalty-3<=tou)\""
 		}
 	},
 	{
@@ -3669,7 +3642,7 @@
 		"query": "pow>=o'kagachi -wm>0.0",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"pow>=o'kagachi -wm>0.0\""
+			"message": "Failed to parse query: \"pow>=o'kagachi -wm>0.0\""
 		}
 	},
 	{
@@ -4118,10 +4091,7 @@
 	},
 	{
 		"query": "usd-cmc>0 or (ft!=o'kagachi)",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to lex query: \"usd-cmc>0 or (ft!=o'kagachi)\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"price_usd\",\"original_attribute\":\"usd\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"-\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"flavor_text\",\"original_attribute\":\"ft\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"o'kagachi\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
 	},
 	{
 		"query": "usd-usd>0 AND loyalty/loyalty:loyalty AND set=legendary",
@@ -4311,7 +4281,7 @@
 		"query": "éclair!=o'kagachi",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"éclair!=o'kagachi\""
+			"message": "Failed to parse query: \"éclair!=o'kagachi\""
 		}
 	},
 	{
