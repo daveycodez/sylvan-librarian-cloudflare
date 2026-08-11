@@ -31,15 +31,26 @@ if (!dir) {
 const manifest = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")) as {
 	store_key: string;
 	store_bytes: number;
+	compat_key: string;
+	compat_bytes: number;
 	[k: string]: unknown;
 };
 const store = new Uint8Array(readFileSync(`${dir}/${manifest.store_key}`));
 if (store.length !== manifest.store_bytes) {
 	throw new Error(`store file is ${store.length} bytes, manifest says ${manifest.store_bytes}`);
 }
+// The paired card-object archive (see CompatData in card_engine): the fields /search never reads,
+// kept out of the store so it stays at three chunks. Published alongside, never separately -- the
+// two share an index space and are meaningless apart.
+const compat = new Uint8Array(readFileSync(`${dir}/${manifest.compat_key}`));
+if (compat.length !== manifest.compat_bytes) {
+	throw new Error(`card-object archive is ${compat.length} bytes, manifest says ${manifest.compat_bytes}`);
+}
 
 const chunks = splitStore(store);
+const compatChunks = splitStore(compat);
 manifest.chunk_count = chunks.length;
+manifest.compat_chunk_count = compatChunks.length;
 // Stamped at publish time, not by the Rust builder: the generation describes
 // what this checkout's builder puts in a store, and one TS constant shared by
 // every publisher (here, the seed scripts, and the ImportCoordinator) cannot
@@ -79,15 +90,20 @@ async function namespaceId(): Promise<string> {
 
 // Chunks first: writing them before the manifest is what makes the manifest a
 // commit point. `--path` because a 20MB value cannot ride an argv string.
-for (let seq = 0; seq < chunks.length; seq++) {
-	const bytes = chunks[seq] as Uint8Array;
-	const tmp = join(tmpdir(), `sylvan-store-chunk-${seq}.bin`);
-	await writeFile(tmp, bytes);
-	try {
-		await kv(["key", "put", chunkKey(manifest.store_key, seq), "--path", tmp, "--remote"]);
-		console.log(`  chunk ${seq + 1}/${chunks.length} (${(bytes.length / 1048576).toFixed(1)}MB) uploaded`);
-	} finally {
-		await unlink(tmp).catch(() => {});
+for (const [label, key, pieces] of [
+	["chunk", manifest.store_key, chunks],
+	["card-object chunk", manifest.compat_key, compatChunks],
+] as const) {
+	for (let seq = 0; seq < pieces.length; seq++) {
+		const bytes = pieces[seq] as Uint8Array;
+		const tmp = join(tmpdir(), `sylvan-store-chunk-${seq}.bin`);
+		await writeFile(tmp, bytes);
+		try {
+			await kv(["key", "put", chunkKey(key, seq), "--path", tmp, "--remote"]);
+			console.log(`  ${label} ${seq + 1}/${pieces.length} (${(bytes.length / 1048576).toFixed(1)}MB) uploaded`);
+		} finally {
+			await unlink(tmp).catch(() => {});
+		}
 	}
 }
 
@@ -102,5 +118,6 @@ try {
 
 console.log(
 	`Store published to KV "${kvName}": ${manifest.store_key} ` +
-		`(${(store.length / 1048576).toFixed(1)}MB, ${chunks.length} chunks, expected ${chunkCountFor(store.length)}).`,
+		`(${(store.length / 1048576).toFixed(1)}MB, ${chunks.length} chunks, expected ${chunkCountFor(store.length)}) ` +
+		`+ ${manifest.compat_key} (${(compat.length / 1048576).toFixed(1)}MB, ${compatChunks.length} chunks).`,
 );
