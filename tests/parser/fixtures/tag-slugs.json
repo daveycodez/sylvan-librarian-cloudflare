@@ -1,0 +1,70 @@
+[
+	{
+		"input": "fire",
+		"slug": "fire"
+	},
+	{
+		"input": "Open Mouth",
+		"slug": "open-mouth"
+	},
+	{
+		"input": "  right facing  ",
+		"slug": "right-facing"
+	},
+	{
+		"input": "a--b",
+		"slug": "a-b"
+	},
+	{
+		"input": "-lead-",
+		"slug": "lead"
+	},
+	{
+		"input": "A_B",
+		"slug": "a-b"
+	},
+	{
+		"input": "!!!",
+		"slug": ""
+	},
+	{
+		"input": "",
+		"slug": ""
+	},
+	{
+		"input": "Multi   Space   Words",
+		"slug": "multi-space-words"
+	},
+	{
+		"input": "UPPER",
+		"slug": "upper"
+	},
+	{
+		"input": "trailing-",
+		"slug": "trailing"
+	},
+	{
+		"input": "with.dots.and-dashes",
+		"slug": "with-dots-and-dashes"
+	},
+	{
+		"input": "digits123",
+		"slug": "digits123"
+	},
+	{
+		"input": "123",
+		"slug": "123"
+	},
+	{
+		"input": "café",
+		"slug": "caf"
+	},
+	{
+		"input": "e—m dash",
+		"slug": "e-m-dash"
+	},
+	{
+		"input": "tab\tseparated",
+		"slug": "tab-separated"
+	}
+]

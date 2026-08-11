@@ -1040,3 +1040,63 @@ fn card_to_json(
     }
     Value::Object(m)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The legality word must survive encode → decode unchanged.
+    ///
+    /// This is the invariant that has already been broken once here: `format_shift_or_assign`
+    /// stores `(index * 2)`, so the shift IS the bit position, and a decoder that shifts by
+    /// `shift * 2` double-shifts and misreads every format past the first. A round trip catches
+    /// that; asserting one format does not, because format zero survives the bug.
+    #[test]
+    fn legality_bits_round_trip_through_json() {
+        let input = json!({
+            "card_legalities": {
+                "alchemy": "banned",
+                "commander": "legal",
+                "modern": "not_legal",
+                "pauper": "legal",
+                "standard": "restricted",
+                "vintage": "restricted",
+            }
+        });
+        let bits = jv_legality_bits(&input, "card_legalities");
+        let decoded = legality_bits_to_json(bits);
+
+        // Every status word, on every format, in both directions.
+        for (format, want) in input["card_legalities"].as_object().expect("object") {
+            assert_eq!(&decoded[format], want, "{format} did not survive the round trip");
+        }
+    }
+
+    /// A format the registry knows but the card never mentioned reads as not_legal, which is how
+    /// the encoder treated it — an absent key contributes no bits.
+    #[test]
+    fn a_format_absent_from_the_card_reads_not_legal() {
+        let seen = json!({ "card_legalities": { "modern": "legal", "legacy": "banned" } });
+        let bits = jv_legality_bits(&seen, "card_legalities");
+        let decoded = legality_bits_to_json(bits);
+        assert_eq!(decoded["modern"], json!("legal"));
+        assert_eq!(decoded["legacy"], json!("banned"));
+        // Registered by the round trip above, absent from this card.
+        assert_eq!(decoded["standard"], json!("not_legal"));
+    }
+
+    /// The decoder must not collapse distinct codes. legal/not_legal alone would survive an
+    /// off-by-one in the shift; restricted and banned are what pin the 2-bit layout.
+    #[test]
+    fn all_four_legality_codes_are_distinguishable() {
+        let input = json!({
+            "card_legalities": { "f0": "legal", "f1": "restricted", "f2": "banned", "f3": "not_legal" }
+        });
+        let decoded = legality_bits_to_json(jv_legality_bits(&input, "card_legalities"));
+        assert_eq!(decoded["f0"], json!("legal"));
+        assert_eq!(decoded["f1"], json!("restricted"));
+        assert_eq!(decoded["f2"], json!("banned"));
+        assert_eq!(decoded["f3"], json!("not_legal"));
+    }
+}

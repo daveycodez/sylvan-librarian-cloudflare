@@ -616,16 +616,22 @@ mod tests {
         assert_eq!(slugs(&data, TagKind::Oracle, "o-2"), vec!["lava"]);
     }
 
+    /// The slugifier exists three times — Python (upstream), TypeScript (src/parser) and here —
+    /// and a disagreement between any two makes `art:"open mouth"` silently return nothing.
+    ///
+    /// So the cases are not hand-written here: they are GENERATED from the vendored Python by
+    /// scripts/export-parser-fixtures.py, and tests/parser/tag-slugs.test.ts reads the same file.
+    /// Upstream is the single source of truth, and a change there fails both ports at once.
     #[test]
-    fn slugify_tag_matches_the_query_sides_normalization() {
-        // The two halves of #914 are only useful if they agree character-for-character.
-        assert_eq!(slugify_tag("Open Mouth"), "open-mouth");
-        assert_eq!(slugify_tag("  right facing  "), "right-facing");
-        assert_eq!(slugify_tag("fire"), "fire");
-        assert_eq!(slugify_tag("a--b"), "a-b", "runs fold to one hyphen");
-        assert_eq!(slugify_tag("-lead-"), "lead", "leading/trailing runs fold to none");
-        assert_eq!(slugify_tag("A_B"), "a-b", "underscore is not a slug character");
-        assert_eq!(slugify_tag("!!!"), "");
+    fn slugify_tag_matches_the_generated_python_expectations() {
+        let raw = include_str!("../../../tests/parser/fixtures/tag-slugs.json");
+        let cases: Vec<Value> = serde_json::from_str(raw).expect("tag-slugs fixture");
+        assert!(!cases.is_empty(), "fixture is empty — did the exporter run?");
+        for case in &cases {
+            let input = case["input"].as_str().expect("input");
+            let want = case["slug"].as_str().expect("slug");
+            assert_eq!(slugify_tag(input), want, "slugify_tag({input:?})");
+        }
     }
 
 }

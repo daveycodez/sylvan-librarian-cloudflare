@@ -76,6 +76,7 @@ sys.modules["api.utils.db_utils"] = _db_utils_stub
 import pytest  # noqa: E402
 
 from api.parsing.parsing_f import balance_partial_query, parse_scryfall_query  # noqa: E402
+from api.parsing.card_query_nodes import slugify_tag  # noqa: E402
 
 # ── query collection ─────────────────────────────────────────────────────────
 
@@ -464,6 +465,43 @@ def main() -> None:
         print(f"wrote {out_path.relative_to(REPO_ROOT)}: {len(entries)} cases")
 
     print(f"total: {total} cases ({trees} trees, {errors} error verdicts)")
+    export_tag_slugs()
+
+
+# Written spellings whose slug form the three implementations must agree on. `slugify_tag` exists
+# in Python (upstream), TypeScript (src/parser) and Rust (engine/builder) — the query side
+# normalizes the search term and the import side stores the key it has to land on, so a
+# disagreement makes `art:"open mouth"` silently return nothing. Generating the expectations from
+# the vendored Python makes upstream the single source of truth instead of three hand-written lists.
+_TAG_SLUG_CASES = [
+    "fire",
+    "Open Mouth",
+    "  right facing  ",
+    "a--b",
+    "-lead-",
+    "A_B",
+    "!!!",
+    "",
+    "Multi   Space   Words",
+    "UPPER",
+    "trailing-",
+    "with.dots.and-dashes",
+    "digits123",
+    "123",
+    "café",
+    "e—m dash",
+    "tab\tseparated",
+]
+
+
+def export_tag_slugs() -> None:
+    """Write the shared slugify expectations the TS and Rust ports are both tested against."""
+    entries = [{"input": case, "slug": slugify_tag(case)} for case in _TAG_SLUG_CASES]
+    out_path = FIXTURES_DIR / "tag-slugs.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=1)
+        f.write("\n")
+    print(f"wrote {out_path.relative_to(REPO_ROOT)}: {len(entries)} slug cases")
 
 
 if __name__ == "__main__":

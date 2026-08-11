@@ -20,7 +20,9 @@ interface FixtureCase {
 
 const FIXTURES_DIR = join(import.meta.dir, "fixtures");
 
-const fixtureFiles = readdirSync(FIXTURES_DIR).filter((f) => f.endsWith(".json"));
+// tag-slugs.json lives here because the same exporter writes it, but it holds slugify cases
+// rather than query/tree pairs — see tag-slugs.test.ts.
+const fixtureFiles = readdirSync(FIXTURES_DIR).filter((f) => f.endsWith(".json") && f !== "tag-slugs.json");
 
 test("fixture corpus is present and substantial", () => {
 	expect(fixtureFiles.length).toBeGreaterThan(0);
