@@ -93,8 +93,11 @@ a ~70MB store is four writes. Two versions are retained, so a reader
 mid-stream finishes and a bad build can be rolled back.
 
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
-page HTML carries no card data; `no-store` routes and error statuses are never
-cached; the cache is per-deploy-version.
+`/cards/*` carries Scryfall's own tiers (16h, `no-cache` for random, private for
+the collection POST); page HTML carries no card data; `no-store` routes are never
+cached, and neither are the dispatch-level errors (404/405/429/500/503), though
+`/cards/*` caches its OWN 400s and 404s on the route's tier, which is Scryfall's
+behaviour too; the cache is per-deploy-version.
 
 **Free-plan fit.** A store load is 4 KV reads, a publish 4 writes, and serving
 touches neither — so the daily meters (100k Worker requests, 100k KV reads, 1k

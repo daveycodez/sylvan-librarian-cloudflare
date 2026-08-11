@@ -27,10 +27,13 @@
 
 	// Workers Cache: regionally tiered cache in front of the Worker, honoring
 	// the Cache-Control headers the routes already mirror from upstream
-	// (statics 30d/1h, pages+catalog 1h, /search 90s). Hits skip the Worker —
-	// and therefore cold isolate starts — entirely. no-store responses
-	// (random_search, bootstrap page) and error statuses are never cached, so
-	// the honest-failure invariants hold. Per-version cache (default): each
+	// (statics 30d/1h, pages+catalog 1h, /search 90s, /cards/* 16h). Hits skip
+	// the Worker — and therefore cold isolate starts — entirely. no-store
+	// responses (random_search, bootstrap page) are never cached, and neither
+	// are the dispatch-level errors, which carry no cache header at all, so the
+	// honest-failure invariants hold. The exception is deliberate: /cards/*
+	// sends its own tier on its own 400s and 404s, because Scryfall does — a
+	// missing card is a stable fact. Per-version cache (default): each
 	// deploy starts fresh, so statics can't go stale across releases. Nightly
 	// imports need no purge: /search's 90s TTL is smaller than the isolates'
 	// own manifest-poll staleness, and page HTML carries no card data.
