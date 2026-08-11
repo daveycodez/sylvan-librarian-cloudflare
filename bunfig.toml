@@ -1,0 +1,14 @@
+# Scope `bun test` to this repo's own suite.
+#
+# Bare `bun test` walks the whole tree, which reaches vendor/sylvan_librarian --
+# upstream's Python checkout, carried for parity fixtures and reference. Upstream
+# ships a browser test there (api/static/app.test.js) that assumes a DOM, so it
+# throws `document is not defined` at module load and bun counts the file as both
+# a failure and an error. That is upstream's test, run by upstream's own CI; it is
+# not this repo's to pass.
+#
+# package.json's "test" script already passes `tests`, so `bun run test` was green
+# while bare `bun test` was red -- and with no CI here, bare `bun test` is what a
+# person or agent actually types. Setting the root makes both agree.
+[test]
+root = "tests"
