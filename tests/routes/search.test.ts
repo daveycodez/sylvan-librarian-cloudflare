@@ -15,7 +15,9 @@ describe("search param coercion", () => {
 		expect(res.status).toBe(400);
 		expect(await json(res)).toEqual({
 			title: "Invalid Parameter",
-			description: "Invalid value for 'direction': 'up' (expected one of: asc, desc)",
+			// `auto` joins the vocabulary with upstream #913 — it is a valid REQUEST value that is
+			// resolved to asc/desc before any search path sees it.
+			description: "Invalid value for 'direction': 'up' (expected one of: asc, desc, auto)",
 		});
 	});
 
@@ -24,7 +26,7 @@ describe("search param coercion", () => {
 		expect(res.status).toBe(400);
 		const body = await json(res);
 		expect(body.description).toBe(
-			"Invalid value for 'orderby': 'elo' (expected one of: cmc, cubecobra, edhrec, name, power, rarity, toughness, usd)",
+			"Invalid value for 'orderby': 'elo' (expected one of: artist, cmc, color, cubecobra, edhrec, eur, name, power, rarity, released, set, tix, toughness, usd)",
 		);
 	});
 

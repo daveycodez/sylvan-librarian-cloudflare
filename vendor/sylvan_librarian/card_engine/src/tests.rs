@@ -229,6 +229,8 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         flavor_text_lower_id: NONE_STR,
         card_artist_vid: ARTIST_NONE,
         card_set_code: InlineStr::from_str(""),
+        set_rank: 0,
+        artist_rank: 0,
         card_border_id: NONE_STR,
         card_watermark_id: NONE_STR,
         collector_number_id: NONE_STR,

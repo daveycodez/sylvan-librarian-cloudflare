@@ -11,7 +11,7 @@ import { EngineUnavailableError } from "../engine/types";
 import type { FilterValue } from "../parser";
 import { canonicalStringify } from "../parser";
 import type { CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn } from "./enums";
-import { CARD_ORDERING, PREFER_ORDER, RESPONSE_SHAPE, SORT_DIRECTION, UNIQUE_ON } from "./enums";
+import { CARD_ORDERING, PREFER_ORDER, RESPONSE_SHAPE, resolveDirection, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { explainWireTree } from "./explanation";
 import { httpError, jsonResponseText, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
@@ -198,7 +198,11 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 			unique: opts.unique,
 			prefer: opts.prefer,
 			orderby: opts.orderby,
-			direction: opts.direction,
+			// Resolved HERE, not at coercion: the engine has no `auto` arm, so an unresolved
+			// direction would fall through to its default and sort wrongly rather than failing.
+			// This is also the last point at which `orderby` is final — anything that can still
+			// change it (in-query directives, upstream #893) must fold before this line.
+			direction: resolveDirection(opts.direction, opts.orderby),
 			// limit=None means "no limit"; the engine requires an int (upstream parity)
 			limit: limit !== null ? limit : 1_000_000,
 			offset,
