@@ -14,7 +14,15 @@ import { routes } from "../../src/routes";
 
 const generated = JSON.parse(readFileSync(join(import.meta.dir, "../../src/routes/assets.gen.txt"), "utf8")) as {
 	hashes?: Record<string, string>;
+	paths?: Record<string, string>;
 };
+
+/** [logical name, the unhashed original inside public/] */
+const hashed: [name: string, file: string][] = [
+	["styles.css", "static/styles.css"],
+	["app.min.js", "static/app.min.js"],
+	["card.js", "static/card.js"],
+];
 
 const repoRoot = join(import.meta.dir, "../..");
 const publicDir = join(repoRoot, "public");
@@ -80,22 +88,37 @@ describe("CDN static assets", () => {
 		}
 	});
 
-	test("the hash-busted assets get a long max-age but are NOT immutable", () => {
+	test("content-addressed paths are immutable; the unhashed originals revalidate", () => {
 		const headers = readFileSync(join(publicDir, "_headers"), "utf8");
-		// This test used to assert `immutable`, on the reasoning that a ?v=<content hash> URL can
-		// never serve stale content because the URL changes first. That reasoning has a hole: the
-		// hash is written into the HTML by the WORKER, and the asset is uploaded to the CDN
-		// separately, so a request landing between the two deploy steps fetches the NEW url and
-		// gets the OLD bytes. `immutable` then pins that for the full year — it means "never
-		// revalidate, not even on an explicit reload" — with no recovery short of clearing site
-		// data. It happened, and the only cure was telling people to clear their cache.
+		const ruleFor = (path: string): string => {
+			const at = headers.indexOf(`\n${path}\n`);
+			expect(at, `_headers has no rule for ${path}`).toBeGreaterThan(-1);
+			return headers.slice(at + 1).split("\n")[1] ?? "";
+		};
+
+		// `immutable` is safe here and ONLY here. It means "never revalidate, not even on an
+		// explicit reload", so it is only ever correct on a URL that cannot change meaning — and
+		// under the old ?v=<hash> scheme the URL could, because Cloudflare's asset layer resolves
+		// by path and ignores the query. One object sat at /static/app.min.js and every ?v= was an
+		// alias for it, so a client asking for the new version during any window where the old
+		// bytes were still deployed got them, and `immutable` pinned them for a year. That is not
+		// hypothetical: a browser was found holding pre-fix app.min.js under ?v=2c8d03ce51b5.
+		// 885f2c5 removed `immutable` for that reason and was right to.
 		//
-		// The long max-age stays: it keeps normal navigation off the network. Dropping `immutable`
-		// costs one revalidation on reload, and buys back the escape hatch a bad deploy needs.
-		for (const p of ["/static/app.min.js", "/static/styles.css"]) {
-			const block = headers.slice(headers.indexOf(p));
-			expect(block.split("\n")[1]).toContain("max-age=31536000");
-			expect(block.split("\n")[1]).not.toContain("immutable");
+		// With the hash in the PATH the alias is gone: /static/app.<hash>.min.js is a distinct
+		// object whose name is derived from its bytes, so an asset store that lacks those bytes
+		// 404s (recoverable) rather than serving different ones under the same key.
+		for (const [name] of hashed) {
+			const path = generated.paths?.[name];
+			expect(path, `${name} has no hashed path`).toBeTruthy();
+			expect(ruleFor(path as string)).toBe("  Cache-Control: public, max-age=31536000, immutable");
+		}
+
+		// The unhashed originals stay published as a fallback for clients still holding markup
+		// that names them. They must revalidate: they are NOT content-addressed, so a long TTL
+		// on them would recreate exactly the bug above.
+		for (const p of ["/static/app.min.js", "/static/styles.css", "/static/card.js"]) {
+			expect(ruleFor(p)).toBe("  Cache-Control: public, max-age=0, must-revalidate");
 		}
 	});
 });
@@ -125,12 +148,6 @@ describe("cache-busting hashes", () => {
 	//
 	// Comparing the stored hash against the bytes actually shipped catches that, and catches the
 	// commoner version of it: regenerating public/ without committing assets.gen.txt, or the reverse.
-	const hashed: [string, string][] = [
-		["styles.css", "static/styles.css"],
-		["app.min.js", "static/app.min.js"],
-		["card.js", "static/card.js"],
-	];
-
 	for (const [name, file] of hashed) {
 		test(`${name}'s hash matches the bytes in public/`, () => {
 			const stored = generated.hashes?.[name];
@@ -144,6 +161,34 @@ describe("cache-busting hashes", () => {
 	test("every hash is a 12-char hex prefix", () => {
 		for (const [name] of hashed) {
 			expect(generated.hashes?.[name]).toMatch(/^[0-9a-f]{12}$/);
+		}
+	});
+
+	// The property that makes the URL trustworthy: the name is DERIVED from the bytes served
+	// under it, so a URL can never denote content that was not published at that URL. This is
+	// what ?v= could not give us — there, the name was fixed and the bytes were whatever the
+	// asset store currently held.
+	for (const [name, original] of hashed) {
+		test(`${name} is published at a path its own bytes hash to`, () => {
+			const path = generated.paths?.[name];
+			expect(path, `${name} has no hashed path — the asset would ship unversioned`).toBeTruthy();
+
+			const bytes = readFileSync(join(publicDir, (path as string).replace(/^\//, "")));
+			const hasher = new Bun.CryptoHasher("sha256");
+			hasher.update(bytes);
+			const digest = hasher.digest("hex").slice(0, 12);
+
+			// the hash embedded in the filename == the hash of the file's own bytes
+			expect(path).toContain(digest);
+			expect(generated.hashes?.[name]).toBe(digest);
+			// and it is the same file as the unhashed original, not a stale copy of it
+			expect(Buffer.compare(bytes, readFileSync(join(publicDir, original)))).toBe(0);
+		});
+	}
+
+	test("hashed paths live under /static/ and carry no query string", () => {
+		for (const [name] of hashed) {
+			expect(generated.paths?.[name]).toMatch(/^\/static\/[A-Za-z0-9.]+$/);
 		}
 	});
 });

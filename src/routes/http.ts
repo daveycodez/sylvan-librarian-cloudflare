@@ -73,6 +73,40 @@ export function searchCacheHeader(): Record<string, string> {
 	return { "Cache-Control": "public, max-age=90, stale-while-revalidate=86400" };
 }
 
+/**
+ * HTML documents: always revalidated by the browser, still cached at the edge.
+ *
+ * The pages are the only thing that names an asset URL, which makes them the
+ * pointer in a content-addressed scheme — and a stale pointer is indistinguishable
+ * from a stale asset from the user's side. Upstream sends `public, max-age=3600`
+ * here and this port copied it, which meant a browser could keep rendering an
+ * hour-old page naming an hour-old bundle: a frontend fix provably could not
+ * reach a user for that hour, no matter how correct the deploy was.
+ *
+ * `max-age=0, must-revalidate` is what Cloudflare's asset layer applies to HTML
+ * by default, and it is the half of the pair that earns `immutable` on the assets
+ * (see scripts/generate-assets.ts). `s-maxage` keeps the edge copy, so the Worker
+ * still does not run per navigation: browsers revalidate against Cloudflare, get
+ * a 304 from a cache the deploy already reset (Workers Caching partitions by
+ * Worker version), and pick up a new bundle on the first navigation after a
+ * deploy rather than up to an hour later.
+ */
+export function pageCacheHeader(edgeSeconds = 3600): Record<string, string> {
+	return { "Cache-Control": `public, max-age=0, must-revalidate, s-maxage=${edgeSeconds}` };
+}
+
+/**
+ * A page with search results embedded in it. Same always-revalidate rule as any
+ * other document — it names an asset URL too — over the search tier's shorter
+ * edge TTL and stale-while-revalidate. The SWR stays on the SHARED cache only:
+ * as a browser directive it let a client render a day-old document, and so a
+ * day-old bundle pointer. /search's JSON keeps searchCacheHeader() unchanged; it
+ * carries no asset URL.
+ */
+export function searchPageCacheHeader(): Record<string, string> {
+	return { "Cache-Control": "public, max-age=0, must-revalidate, s-maxage=90, stale-while-revalidate=86400" };
+}
+
 /** Upstream set_no_store_header. */
 export const NO_STORE_HEADER: Record<string, string> = { "Cache-Control": "no-store" };
 

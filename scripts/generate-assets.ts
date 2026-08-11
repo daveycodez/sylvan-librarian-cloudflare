@@ -81,28 +81,95 @@ const cdnAssets: [string, string][] = [
 	["prefer_score_tuner.html", join(staticDir, "prefer_score_tuner.html")],
 ];
 
-// Cache lifetimes, chosen for this deployment rather than copied from
-// upstream: the two files whose URLs the pages cache-bust with a content hash
-// can be held for a long time, and the rest for a day. Content types come from
-// the platform's own extension mapping.
+// ── Content-hashed filenames ─────────────────────────────────────────────────
 //
-// Deliberately NOT `immutable`, which was here and caused a real outage. `immutable` means "never
-// revalidate, not even on an explicit reload", so a browser that once stored the wrong bytes under
-// a hashed URL keeps them for the full year with no recovery short of clearing site data. That is
-// not hypothetical: a deploy updates the Worker (and so the HTML's ?v=) and the CDN assets
-// separately, so a request landing between the two fetches the NEW url and gets the OLD file — and
-// then pins it. Upstream sends a plain max-age for exactly this reason.
+// The hash lives in the FILENAME (app.<hash>.min.js), not in a query string
+// (app.min.js?v=<hash>). This is the one change that makes the whole class of
+// "the fix did not reach the user" bug impossible, and it is what Vite — and so
+// TanStack Start, and Cloudflare's own Vite plugin — emit: /assets/img.2d8efhg.png.
 //
-// Without `immutable` the long max-age still keeps normal navigation off the network; a reload
-// revalidates, which is the property that makes a bad deploy recoverable by the user rather than
-// by support instructions.
+// Why the query string could not work, demonstrated against the live deploy:
+//
+//   GET /static/app.min.js?v=deadbeef0000  ->  200, 25,599 bytes, current file
+//   GET /static/app.min.js?v=              ->  200, 25,599 bytes, current file
+//
+// Cloudflare's asset layer resolves by PATH and ignores the query entirely, and
+// _headers matches on path too. So `?v=` was never part of the asset's identity:
+// there is exactly ONE object at /static/app.min.js, and every version of the
+// URL — old, new, empty, garbage — is an alias for whatever that object happens
+// to be right now. A client that asked for ?v=<new hash> during any window where
+// the asset store still held the old bytes got the OLD FILE under the NEW KEY,
+// with a year-long max-age stamped on it. The version token could not fail
+// closed, because it was never read by anything.
+//
+// That is not a theory. A browser was found holding pre-fix app.min.js under
+// ?v=2c8d03ce51b5 — the hash OF the fixed build — while curl at the identical
+// URL returned the fixed bytes. It does not matter whether the window was opened
+// by wrangler skipping an upload ("No updated asset files to upload") or by
+// propagation inside Cloudflare: with a path-versioned URL neither can produce
+// it. /static/app.<newhash>.min.js is a DISTINCT OBJECT. An asset store that
+// does not have it yet returns 404 — which falls through to the Worker's 404 and
+// is not cached for a year — instead of silently serving a different file. The
+// failure mode changes from "wrong bytes, pinned until the user clears site
+// data" to "briefly missing, then correct".
+//
+// Because the URL is now content-addressed, `immutable` is safe again and is
+// what Cloudflare recommends for fingerprinted filenames. This reverses 885f2c5,
+// which removed it — correctly, at the time: under query versioning a poisoned
+// entry really was unrecoverable. `immutable` is only ever safe when a changed
+// byte changes the URL, and until now a changed byte did not.
+function hashedName(file: string, hash: string): string {
+	const dot = file.indexOf(".");
+	return `${file.slice(0, dot)}.${hash}${file.slice(dot)}`;
+}
+
+/** [logical name, file inside public/static, contents] */
+const hashedAssets: [name: string, source: string, bytes: Uint8Array | string][] = [
+	["styles.css", "styles.css", readFileSync(join(staticDir, "styles.css"))],
+	["app.min.js", "app.min.js", appMinJs],
+	["card.js", "card.js", readFileSync(join(staticDir, "card.js"))],
+];
+
+const hashes: Record<string, string> = {};
+const hashedPaths: Record<string, string> = {};
+/** [file inside public/, contents] for the content-addressed copies. */
+const hashedWrites: [file: string, bytes: Uint8Array | string][] = [];
+for (const [name, source, bytes] of hashedAssets) {
+	const hash = hash12(bytes);
+	const file = `static/${hashedName(source, hash)}`;
+	hashes[name] = hash;
+	hashedPaths[name] = `/${file}`;
+	hashedWrites.push([file, bytes]);
+}
+
+// Cache lifetimes. Two tiers, matching Cloudflare's guidance for Workers static
+// assets and the Vite/TanStack convention:
+//
+//   content-hashed paths   public, max-age=31536000, immutable
+//   everything else        public, max-age=0, must-revalidate  (the platform default)
+//
+// The unhashed originals stay published on must-revalidate. They are the
+// fallback for any client still holding HTML that points at them, and for
+// anything linking the upstream path directly; revalidating means such a client
+// gets current bytes rather than a 404 or a stale copy. Nothing this repo
+// renders points at them any more.
+//
+// The long-lived entries and the always-revalidated HTML are a MATCHED PAIR, not
+// two independent choices. `immutable` on the asset is only safe because the
+// document that names it is never served stale — see pageCacheHeader() in
+// src/routes/http.ts. Take one without the other and a browser can pin a
+// year-long asset from a pointer it read out of an hour-old cached page.
+const IMMUTABLE = "public, max-age=31536000, immutable";
+const REVALIDATE = "public, max-age=0, must-revalidate";
 const HEADERS = `# GENERATED by scripts/generate-assets.ts - do not edit.
-/static/app.min.js
-  Cache-Control: public, max-age=31536000
+${Object.values(hashedPaths)
+	.map((p) => `${p}\n  Cache-Control: ${IMMUTABLE}\n`)
+	.join("")}/static/app.min.js
+  Cache-Control: ${REVALIDATE}
 /static/styles.css
-  Cache-Control: public, max-age=31536000
+  Cache-Control: ${REVALIDATE}
 /static/card.js
-  Cache-Control: public, max-age=86400
+  Cache-Control: ${REVALIDATE}
 /static/app.js
   Cache-Control: public, max-age=86400
 /static/social-preview.webp
@@ -124,6 +191,14 @@ for (const [name, source] of cdnAssets) {
 // Built here, so it has no source file to copy.
 mkdirSync(join(publicDir, "static"), { recursive: true });
 writeFileSync(join(publicDir, "static/app.min.js"), appMinJs);
+
+// The content-addressed copies the pages actually link. Same bytes as the
+// unhashed original above — the hash is derived from exactly these bytes, so
+// the URL cannot name content that was never published under it.
+for (const [file, bytes] of hashedWrites) {
+	writeFileSync(join(publicDir, file), bytes);
+}
+
 writeFileSync(join(publicDir, "_headers"), HEADERS);
 
 // ── Worker-side fragments ────────────────────────────────────────────────────
@@ -151,11 +226,20 @@ const out = {
 	// Upstream computes these at import time from the files on disk
 	// (api_resource.py _static_hash). app.min.js hashes the terser output above,
 	// exactly as upstream hashes the terser output the makefile wrote to disk.
-	hashes: {
-		"styles.css": hash12(readFileSync(join(staticDir, "styles.css"))),
-		"app.min.js": hash12(appMinJs),
-		"card.js": hash12(readFileSync(join(staticDir, "card.js"))),
-	},
+	// Kept because the deploy verifier and the tests compare them against the
+	// bytes in public/; the pages themselves use `paths`.
+	hashes,
+	// What the Worker splices into the markup: a full, content-addressed path.
+	// Upstream appends ?v=<hash> to a fixed path instead. That is the one place
+	// this port deliberately departs from api_resource.py, and it has to: their
+	// WSGI app serves the file itself, so the bytes behind /static/app.min.js
+	// and the hash in the HTML always move together in one process. Here the
+	// asset lives on a CDN that resolves by path and ignores the query, so a
+	// query-versioned URL is an alias for whatever object currently sits at that
+	// path — which is exactly how a browser ended up pinning pre-fix bytes under
+	// the post-fix ?v=. Putting the hash in the path restores the invariant
+	// upstream gets for free: one URL, one set of bytes, forever.
+	paths: hashedPaths,
 };
 
 // Emitted as TEXT, not as a JSON module, and compact rather than indented: a

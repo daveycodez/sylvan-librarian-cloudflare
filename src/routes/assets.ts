@@ -22,6 +22,7 @@ interface GeneratedAssets {
 	text: Record<string, string>;
 	criticalCss: string;
 	hashes: Record<string, string>;
+	paths: Record<string, string>;
 }
 
 let parsed: GeneratedAssets | null = null;
@@ -48,40 +49,48 @@ export function criticalCss(): string {
 	return generated().criticalCss;
 }
 
-// Upstream _STYLES_CSS_HASH / _APP_MIN_JS_HASH / _CARD_JS_HASH
-// (api_resource.py:108-110): sha256 hex prefix of the file bytes.
+/** The three assets whose URLs carry a content hash. */
+export type HashedAsset = "styles.css" | "app.min.js" | "card.js";
+
 /**
- * A missing hash THROWS rather than falling back to "".
+ * The content-addressed path for an asset: `/static/app.<hash>.min.js`.
  *
- * `?? ""` looks harmless and is not. public/_headers serves /static/app.min.js as
- * `max-age=31536000, immutable`, and Cloudflare matches _headers on PATH, not query — so the
- * year-long immutable cache applies whether or not a version rides along. With an empty hash every
- * deploy serves the identical unversioned URL under that cache, which means a shipped JS bug is
- * unfixable for anyone who already loaded the page: their browser has no reason to ever refetch.
+ * A missing entry THROWS rather than falling back to the unhashed path.
  *
- * That happened. assets.gen.txt went stale against this generator and lost its `hashes` key
- * entirely, and nothing failed — the site just quietly stopped being able to ship frontend fixes.
- * A build that cannot bust its own cache should not boot.
+ * Upstream splices `?v=<hash>` onto a fixed path (api_resource.py:486-501) and can afford to: the
+ * same WSGI process serves the bytes, so URL and content cannot disagree. On Workers the asset is
+ * served by Cloudflare's asset layer, which resolves by PATH and ignores the query — verified
+ * against the live deploy, where `?v=deadbeef0000` and `?v=` both return the current file with a
+ * year-long max-age. A query-versioned URL is therefore an ALIAS for whatever object currently
+ * sits at that path, not a name for specific bytes, and any window in which the deployed asset
+ * lagged the deployed HTML handed clients the old file under the new key and let them pin it.
+ * That is how a browser came to hold pre-fix app.min.js under ?v=2c8d03ce51b5.
+ *
+ * With the hash in the path, an asset store that lacks these exact bytes has no such object and
+ * 404s — recoverable — instead of serving different ones. So a missing path here must be loud:
+ * silently emitting the unhashed URL would restore precisely the aliasing this removed.
  */
-function requiredHash(name: "styles.css" | "app.min.js" | "card.js"): string {
-	const value = generated().hashes?.[name];
+export function assetPath(name: HashedAsset): string {
+	const value = generated().paths?.[name];
 	if (!value) {
 		throw new Error(
-			`assets.gen.txt has no hash for ${name}. Run \`bun scripts/generate-assets.ts\` — shipping ` +
-				"without it serves an unversioned URL under a one-year immutable cache.",
+			`assets.gen.txt has no hashed path for ${name}. Run \`bun scripts/generate-assets.ts\` — ` +
+				"shipping without it serves an unversioned URL that cannot be cache-busted.",
 		);
 	}
 	return value;
 }
 
-export function stylesCssHash(): string {
-	return requiredHash("styles.css");
-}
-export function appMinJsHash(): string {
-	return requiredHash("app.min.js");
-}
-export function cardJsHash(): string {
-	return requiredHash("card.js");
+/**
+ * The bare content hash, for the deploy verifier (scripts/verify-deploy.sh) and the tests, which
+ * compare it against the bytes actually published. Pages use assetPath().
+ */
+export function assetHash(name: HashedAsset): string {
+	const value = generated().hashes?.[name];
+	if (!value) {
+		throw new Error(`assets.gen.txt has no hash for ${name}. Run \`bun scripts/generate-assets.ts\`.`);
+	}
+	return value;
 }
 
 // Shared fragments (api_resource.py:117-121), read on first use rather than at

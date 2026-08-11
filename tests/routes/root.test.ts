@@ -10,11 +10,11 @@ beforeEach(() => {
 });
 
 describe("_root without a query", () => {
-	test("serves the index page with placeholders intact, cached 1h", async () => {
+	test("serves the index page with placeholders intact, revalidated by the browser", async () => {
 		const res = await testDispatch(makeCtx(), "/");
 		expect(res.status).toBe(200);
 		expect(res.headers.get("content-type")).toBe("text/html");
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=3600");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate, s-maxage=3600");
 		const html = await res.text();
 		expect(html).toContain("<!-- SERVER_SIDE_RESULTS -->");
 		expect(html).toContain("<!-- SERVER_SIDE_RESULTS_COUNT -->");
@@ -33,13 +33,15 @@ describe("_root without a query", () => {
 		expect(await res.text()).toContain("<title>Sylvan Librarian - Magic: The Gathering Card Search</title>");
 	});
 
-	test("shared fragments and cache-busted asset URLs are spliced in", async () => {
+	test("shared fragments and content-addressed asset URLs are spliced in", async () => {
 		const html = await (await testDispatch(makeCtx(), "/")).text();
 		expect(html).not.toContain("<!-- FOOTER -->");
 		expect(html).not.toContain("<!-- CSS -->");
 		expect(html).toContain('<footer class="footer">');
-		expect(html).toMatch(/\/static\/styles\.css\?v=[0-9a-f]{12}/);
-		expect(html).toMatch(/\/static\/app\.min\.js\?v=[0-9a-f]{12}/);
+		expect(html).toMatch(/\/static\/styles\.[0-9a-f]{12}\.css/);
+		expect(html).toMatch(/\/static\/app\.[0-9a-f]{12}\.min\.js/);
+		// The query form is what let a browser pin pre-fix bytes under the post-fix URL.
+		expect(html).not.toContain("?v=");
 		// Critical CSS inlined into the <style> block.
 		expect(html).toContain(".results-container{");
 	});
@@ -49,7 +51,9 @@ describe("_root with a search query", () => {
 	test("embeds server-side results, count and envelope, cached 90s", async () => {
 		const res = await testDispatch(makeCtx(), "/?q=elf");
 		expect(res.status).toBe(200);
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
+		expect(res.headers.get("Cache-Control")).toBe(
+			"public, max-age=0, must-revalidate, s-maxage=90, stale-while-revalidate=86400",
+		);
 		const html = await res.text();
 		expect(html).not.toContain("<!-- SERVER_SIDE_RESULTS -->");
 		expect(html).not.toContain("<!-- SERVER_SIDE_EMBEDDED_DATA -->");
@@ -69,10 +73,10 @@ describe("_root with a search query", () => {
 		expect((await json(res)).title).toBe("Invalid Parameter");
 	});
 
-	test("parse failure serves the page without results, cached 1h", async () => {
+	test("parse failure serves the page without results, revalidated by the browser", async () => {
 		const res = await testDispatch(makeCtx(), "/?q=PARSE_FAIL((");
 		expect(res.status).toBe(200);
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=3600");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate, s-maxage=3600");
 		const html = await res.text();
 		expect(html).toContain("<!-- SERVER_SIDE_RESULTS -->");
 		expect(html).toContain("<!-- SERVER_SIDE_EMBEDDED_DATA -->");
@@ -85,15 +89,16 @@ describe("_root with a search query", () => {
 });
 
 describe("card page", () => {
-	test("serves the card shell for /card/{set}/{collector}, cached 1h", async () => {
+	test("serves the card shell for /card/{set}/{collector}, revalidated by the browser", async () => {
 		const res = await testDispatch(makeCtx(), "/card/m19/314");
 		expect(res.status).toBe(200);
 		expect(res.headers.get("content-type")).toBe("text/html");
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=3600");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate, s-maxage=3600");
 		const html = await res.text();
 		expect(html).toContain("Sylvan Librarian");
 		expect(html).not.toContain("%%%SITENAME%%%");
-		expect(html).toMatch(/\/static\/card\.js\?v=[0-9a-f]{12}/);
+		expect(html).toMatch(/\/static\/card\.[0-9a-f]{12}\.js/);
+		expect(html).not.toContain("?v=");
 	});
 
 	test("query param colliding with a path segment is upstream's TypeError 400", async () => {

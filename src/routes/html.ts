@@ -1,19 +1,14 @@
 // Port of the page-template plumbing in api_resource.py (~92-440):
 // _inject_shared_fragments, _build_base_html, _build_card_html, the
-// _STYLES_CSS_HASH/_APP_MIN_JS_HASH/_CARD_JS_HASH cache-busting query params,
-// and _minify_html.
+// _STYLES_CSS_HASH/_APP_MIN_JS_HASH/_CARD_JS_HASH cache busting, and
+// _minify_html.
+//
+// Upstream busts caches with a query param (/static/app.min.js?v=<hash>); this
+// port rewrites the whole path instead (/static/app.<hash>.min.js). See
+// assetPath() in ./assets for why the query form cannot work behind Cloudflare's
+// asset layer, which resolves by path and ignores the query.
 
-import {
-	appMinJsHash,
-	cardJsHash,
-	cssHtml,
-	faviconHtml,
-	fontsHtml,
-	footerHtml,
-	preconnectsHtml,
-	staticText,
-	stylesCssHash,
-} from "./assets";
+import { assetPath, cssHtml, faviconHtml, fontsHtml, footerHtml, preconnectsHtml, staticText } from "./assets";
 
 // Placeholder written into index.html/card.html wherever the site name belongs
 // (upstream _SITE_NAME_PLACEHOLDER).
@@ -67,8 +62,8 @@ export function buildBaseHtml(criticalCss: string, siteName: string): string {
 	let html = staticText("index.html");
 	html = injectSharedFragments(html);
 	html = replaceAllLiteral(html, "<!-- CRITICAL_CSS -->", criticalCss);
-	html = replaceAllLiteral(html, "/static/styles.css", `/static/styles.css?v=${stylesCssHash()}`);
-	html = replaceAllLiteral(html, "/static/app.min.js", `/static/app.min.js?v=${appMinJsHash()}`);
+	html = replaceAllLiteral(html, "/static/styles.css", assetPath("styles.css"));
+	html = replaceAllLiteral(html, "/static/app.min.js", assetPath("app.min.js"));
 	const built = minifyHtml(replaceAllLiteral(html, SITE_NAME_PLACEHOLDER, siteName));
 	if (baseHtmlCache.size >= BASE_HTML_CACHE_MAX) {
 		const oldest = baseHtmlCache.keys().next().value;
@@ -90,8 +85,8 @@ export function buildCardHtml(criticalCss: string): string {
 	let html = staticText("card.html");
 	html = injectSharedFragments(html);
 	html = replaceAllLiteral(html, "<!-- CRITICAL_CSS -->", criticalCss);
-	html = replaceAllLiteral(html, "/static/styles.css", `/static/styles.css?v=${stylesCssHash()}`);
-	html = replaceAllLiteral(html, "/static/card.js", `/static/card.js?v=${cardJsHash()}`);
+	html = replaceAllLiteral(html, "/static/styles.css", assetPath("styles.css"));
+	html = replaceAllLiteral(html, "/static/card.js", assetPath("card.js"));
 	cardHtmlCache = minifyHtml(html);
 	return cardHtmlCache;
 }

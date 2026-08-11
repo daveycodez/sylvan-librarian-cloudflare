@@ -7,7 +7,7 @@ import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
-import { cacheHeader, searchCacheHeader } from "./http";
+import { pageCacheHeader, searchPageCacheHeader } from "./http";
 import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
 import type { RouteContext } from "./registry";
@@ -35,8 +35,8 @@ export async function rootHandler(
 	const siteName = SITE_NAME;
 	let htmlContent = buildBaseHtml(criticalCss(), siteName);
 
-	// Cache for 1 hour unless a search is embedded below.
-	let headers: Record<string, string> = cacheHeader(3600);
+	// Revalidated by the browser on every navigation, cached an hour at the edge.
+	let headers: Record<string, string> = pageCacheHeader();
 
 	const searchQuery = (bound.query as string | null) || (bound.q as string | null);
 	if (!searchQuery) {
@@ -79,7 +79,7 @@ export async function rootHandler(
 			const embeddedData = `// Server-side embedded search results\n      window.EMBEDDED_SEARCH_RESULTS = ${searchResultsJson};\n      `;
 			htmlContent = replaceAllLiteral(htmlContent, "<!-- SERVER_SIDE_EMBEDDED_DATA -->", embeddedData);
 
-			headers = searchCacheHeader();
+			headers = searchPageCacheHeader();
 		} catch (err) {
 			// If search fails, just serve the page without embedded results.
 			// EngineQueryError lands here too: upstream would have recovered via
@@ -88,7 +88,7 @@ export async function rootHandler(
 			// propagates (upstream's 503 does the same).
 			if (err instanceof SearchBadRequest || err instanceof EngineQueryError) {
 				console.warn(`Failed to embed search results: ${err.message}`);
-				headers = cacheHeader(3600);
+				headers = pageCacheHeader();
 			} else {
 				throw err;
 			}
@@ -110,7 +110,7 @@ export function cardHandler(_ctx: RouteContext, positionalArgs: string[], params
 	bindParams("APIResource.card", CARD_SPEC, positionalArgs, params);
 	const siteName = SITE_NAME;
 	const html = replaceAllLiteral(buildCardHtml(criticalCss()), SITE_NAME_PLACEHOLDER, siteName);
-	return new Response(html, { headers: { "content-type": "text/html", ...cacheHeader(3600) } });
+	return new Response(html, { headers: { "content-type": "text/html", ...pageCacheHeader() } });
 }
 
 /** Return the prefer score tuner page (upstream prefer_score_tuner(); no cache header). */

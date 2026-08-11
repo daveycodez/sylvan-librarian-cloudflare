@@ -43,4 +43,13 @@ trap restore_config EXIT
 echo "==> Deploying Worker..."
 bunx wrangler deploy
 
-echo "==> Done: card index live and Worker deployed."
+# "Deployed" is not "users are running it". Walk the chain a browser walks —
+# page HTML -> the asset URLs IN that HTML -> the bytes behind them — and
+# require the bytes to hash to what is committed here. A check that compares the
+# local build against the CDN cannot see a bad pointer between the two, which is
+# exactly what shipped a frontend fix that could not reach anyone.
+sleep 5
+echo "==> Verifying the deploy reached users..."
+bun "$REPO_ROOT/scripts/verify-deploy.ts"
+
+echo "==> Done: card index live, Worker deployed, assets verified."
