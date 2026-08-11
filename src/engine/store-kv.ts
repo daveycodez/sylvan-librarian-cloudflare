@@ -129,8 +129,23 @@ export const MANIFEST_KEY = "store:manifest";
  *       rather than leaving the port dark until the nightly. Also carries
  *       upstream #913's `order=artist` fix, where an artistless printing sat at
  *       the wrong end descending.
+ *   8 — prefer_score's `extended_art` component goes +12 -> -6 (upstream #920),
+ *       so an extended-art printing scores BELOW the base printing of its set
+ *       instead of above it. That changes which printing represents a card
+ *       wherever the two differ, which was 2,800 cards.
+ *
+ *       Measured against Scryfall's own representative choice — its
+ *       `oracle_cards` bulk file is one card object per oracle_id, so it is
+ *       31,724 free external labels — agreement goes 66.2% -> 73.9%, and
+ *       66.4% -> 74.0% on a 30% holdout that was never fitted against.
+ *
+ *       NO format change: prefer_score is a stored VALUE, the layout is
+ *       untouched, and a generation-7 store still loads. Which is exactly why
+ *       this bump is load-bearing — nothing in the header can see that every
+ *       card's score moved, so without it store-age.ts would keep serving a
+ *       store whose representatives were chosen by the old weight.
  */
-export const STORE_CONTENT_GENERATION = 7;
+export const STORE_CONTENT_GENERATION = 8;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

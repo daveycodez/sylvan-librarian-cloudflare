@@ -770,8 +770,11 @@ fn prefer_score(draft: &RowDraft, art_tags: &[&str], illustration_count: u64) ->
         0.0
     };
 
-    // 'extended_art' ("extendedart".title() == "Extendedart")
-    total += if has_frame("Extendedart") { 12.0 } else { 0.0 };
+    // 'extended_art' ("extendedart".title() == "Extendedart"). NEGATIVE: an extended-art printing
+    // is a variant, not the version most people picture, so it scores below the base printing of
+    // the same set rather than above it. Was +12, which was the single largest disagreement with
+    // Scryfall's own representative choice — see upstream #920 for the corpus and the holdout.
+    total += if has_frame("Extendedart") { -6.0 } else { 0.0 };
 
     // 'highres_scan' (raw_card_blob ->> 'image_status')
     total += if draft.raw_image_status_highres { 16.0 } else { 0.0 };
@@ -1412,6 +1415,45 @@ mod tests {
         assert_eq!(rows[0]["prefer_score"].as_f64().unwrap(), expected);
         // Single distinct card_name → PERCENT_RANK 0 → cubecobra_score 0.
         assert_eq!(rows[0]["cubecobra_score"].as_f64().unwrap(), 0.0);
+    }
+
+    /// An extended-art printing must score BELOW an otherwise-identical base printing, so the
+    /// base is the one that represents the card.
+    ///
+    /// The weight had no test at all while it was +12 — the only mention of `Extendedart` in this
+    /// file was the title-casing helper — which is how a component ended up being the single
+    /// largest disagreement with Scryfall's own representative choice without anything noticing.
+    /// Asserted as a RELATION between two drafts rather than against a literal, so it keeps
+    /// meaning the same thing if any of the other components are retuned.
+    #[test]
+    fn extended_art_scores_below_the_base_printing() {
+        let mut base = minimal_card("Testcard");
+        base["frame_effects"] = json!([]);
+        let mut ext = minimal_card("Testcard");
+        ext["frame_effects"] = json!(["extendedart"]);
+
+        let rows: Vec<Value> = finalize(
+            vec![
+                transform(&base).unwrap().unwrap(),
+                {
+                    let mut d = transform(&ext).unwrap().unwrap();
+                    // Distinct id so the last-wins dedupe in `finalize` keeps both.
+                    d.scryfall_id = "00000000-0000-0000-0000-0000000000ff".to_string();
+                    d
+                },
+            ],
+            &TagData::default(),
+        )
+        .collect();
+
+        let base_score = rows[0]["prefer_score"].as_f64().unwrap();
+        let ext_score = rows[1]["prefer_score"].as_f64().unwrap();
+        assert!(
+            ext_score < base_score,
+            "extended art ({ext_score}) must score below the base printing ({base_score})",
+        );
+        // And by exactly the weight, so a change to it is a deliberate edit here too.
+        assert_eq!(base_score - ext_score, 6.0);
     }
 
     #[test]
