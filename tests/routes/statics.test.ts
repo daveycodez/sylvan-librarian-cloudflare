@@ -12,6 +12,10 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { routes } from "../../src/routes";
 
+const generated = JSON.parse(readFileSync(join(import.meta.dir, "../../src/routes/assets.gen.txt"), "utf8")) as {
+	hashes?: Record<string, string>;
+};
+
 const repoRoot = join(import.meta.dir, "../..");
 const publicDir = join(repoRoot, "public");
 const vendorStatic = join(repoRoot, "vendor/sylvan_librarian/api/static");
@@ -100,5 +104,37 @@ describe("the Worker no longer serves static files", () => {
 		// isolate startup, which every /search pays — see generate-assets.ts.
 		const bytes = statSync(join(repoRoot, "src/routes/assets.gen.txt")).size;
 		expect(bytes).toBeLessThan(40 * 1024);
+	});
+});
+
+describe("cache-busting hashes", () => {
+	// assets.gen.txt is GENERATED, and it went stale against its generator once already: it lost
+	// its `hashes` key entirely, so every asset URL was served as `?v=` with no value. _headers
+	// sets `max-age=31536000, immutable` on /static/app.min.js by PATH, and Cloudflare does not
+	// match query strings — so an unversioned URL under that header is permanently uncacheable-bust.
+	// A frontend fix could not reach anyone who had already loaded the page.
+	//
+	// Comparing the stored hash against the bytes actually shipped catches that, and catches the
+	// commoner version of it: regenerating public/ without committing assets.gen.txt, or the reverse.
+	const hashed: [string, string][] = [
+		["styles.css", "static/styles.css"],
+		["app.min.js", "static/app.min.js"],
+		["card.js", "static/card.js"],
+	];
+
+	for (const [name, file] of hashed) {
+		test(`${name}'s hash matches the bytes in public/`, () => {
+			const stored = generated.hashes?.[name];
+			expect(stored, `${name} has no hash — the asset would ship unversioned`).toBeTruthy();
+			const hasher = new Bun.CryptoHasher("sha256");
+			hasher.update(readFileSync(join(publicDir, file)));
+			expect(stored).toBe(hasher.digest("hex").slice(0, 12));
+		});
+	}
+
+	test("every hash is a 12-char hex prefix", () => {
+		for (const [name] of hashed) {
+			expect(generated.hashes?.[name]).toMatch(/^[0-9a-f]{12}$/);
+		}
 	});
 });

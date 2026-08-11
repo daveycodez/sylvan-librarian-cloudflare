@@ -50,14 +50,38 @@ export function criticalCss(): string {
 
 // Upstream _STYLES_CSS_HASH / _APP_MIN_JS_HASH / _CARD_JS_HASH
 // (api_resource.py:108-110): sha256 hex prefix of the file bytes.
+/**
+ * A missing hash THROWS rather than falling back to "".
+ *
+ * `?? ""` looks harmless and is not. public/_headers serves /static/app.min.js as
+ * `max-age=31536000, immutable`, and Cloudflare matches _headers on PATH, not query — so the
+ * year-long immutable cache applies whether or not a version rides along. With an empty hash every
+ * deploy serves the identical unversioned URL under that cache, which means a shipped JS bug is
+ * unfixable for anyone who already loaded the page: their browser has no reason to ever refetch.
+ *
+ * That happened. assets.gen.txt went stale against this generator and lost its `hashes` key
+ * entirely, and nothing failed — the site just quietly stopped being able to ship frontend fixes.
+ * A build that cannot bust its own cache should not boot.
+ */
+function requiredHash(name: "styles.css" | "app.min.js" | "card.js"): string {
+	const value = generated().hashes?.[name];
+	if (!value) {
+		throw new Error(
+			`assets.gen.txt has no hash for ${name}. Run \`bun scripts/generate-assets.ts\` — shipping ` +
+				"without it serves an unversioned URL under a one-year immutable cache.",
+		);
+	}
+	return value;
+}
+
 export function stylesCssHash(): string {
-	return generated().hashes["styles.css"] ?? "";
+	return requiredHash("styles.css");
 }
 export function appMinJsHash(): string {
-	return generated().hashes["app.min.js"] ?? "";
+	return requiredHash("app.min.js");
 }
 export function cardJsHash(): string {
-	return generated().hashes["card.js"] ?? "";
+	return requiredHash("card.js");
 }
 
 // Shared fragments (api_resource.py:117-121), read on first use rather than at
