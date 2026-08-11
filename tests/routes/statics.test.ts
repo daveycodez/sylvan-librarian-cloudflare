@@ -80,13 +80,22 @@ describe("CDN static assets", () => {
 		}
 	});
 
-	test("the hash-busted assets are cached immutably", () => {
+	test("the hash-busted assets get a long max-age but are NOT immutable", () => {
 		const headers = readFileSync(join(publicDir, "_headers"), "utf8");
-		// The page rewrites these two URLs with ?v=<content hash>, so a stale
-		// copy can never be served for changed content — the URL changes first.
+		// This test used to assert `immutable`, on the reasoning that a ?v=<content hash> URL can
+		// never serve stale content because the URL changes first. That reasoning has a hole: the
+		// hash is written into the HTML by the WORKER, and the asset is uploaded to the CDN
+		// separately, so a request landing between the two deploy steps fetches the NEW url and
+		// gets the OLD bytes. `immutable` then pins that for the full year — it means "never
+		// revalidate, not even on an explicit reload" — with no recovery short of clearing site
+		// data. It happened, and the only cure was telling people to clear their cache.
+		//
+		// The long max-age stays: it keeps normal navigation off the network. Dropping `immutable`
+		// costs one revalidation on reload, and buys back the escape hatch a bad deploy needs.
 		for (const p of ["/static/app.min.js", "/static/styles.css"]) {
 			const block = headers.slice(headers.indexOf(p));
-			expect(block.split("\n")[1]).toContain("immutable");
+			expect(block.split("\n")[1]).toContain("max-age=31536000");
+			expect(block.split("\n")[1]).not.toContain("immutable");
 		}
 	});
 });
