@@ -562,8 +562,6 @@ body {
   border-radius: 100%;
   background: #fff;
   color: #343242;
-  /* 30px inside the 44px disc, matching the icon Scryfall insets by 7px. */
-  font-size: 30px;
   line-height: 1;
   cursor: pointer;
   /* Always present, dimmed. Revealing on hover would make it undiscoverable on
@@ -593,6 +591,15 @@ body {
 .card-item .card-flip-button {
   top: calc(0.8em + 36.23cqw);
   left: calc(0.8em + 75cqw);
+}
+
+/* 30px inside the 44px disc, the same 7px inset Scryfall gives its icon.
+   display:block drops the inline baseline gap, which is what leaves an SVG
+   sitting a pixel or two high inside a flex-centred button. */
+.card-flip-button svg {
+  display: block;
+  width: 30px;
+  height: 30px;
 }
 
 .card-flip-button:hover,

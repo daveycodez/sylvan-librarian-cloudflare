@@ -797,7 +797,11 @@ class CardSearch {
   buildSrcset(card, face) {
     // The three widths Scryfall actually publishes, rather than four names for the
     // same bytes. `sizes` is unchanged: it describes the layout, not the sources.
-    return [['normal', 488], ['large', 672], ['png', 745]]
+    return [
+      ['normal', 488],
+      ['large', 672],
+      ['png', 745],
+    ]
       .map(([version, width]) => `${this.buildImageUrl(card, version, face)} ${width}w`)
       .join(', ');
   }
@@ -844,7 +848,11 @@ class CardSearch {
     button.title = 'Transform';
     button.setAttribute('aria-label', 'Show other face');
     button.setAttribute('aria-pressed', 'false');
-    button.textContent = '⟳';
+    // An SVG, not a text glyph: a glyph's ink box is not its em box, so no amount of
+    // flex centring puts it in the middle of the disc. currentColor means the inverted
+    // back-face state restyles it with no extra rule.
+    button.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" focusable="false"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>';
     button.addEventListener('click', event => {
       event.preventDefault();
       event.stopPropagation();
