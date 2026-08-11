@@ -141,13 +141,15 @@ describe("the Worker no longer serves static files", () => {
 
 describe("cache-busting hashes", () => {
 	// assets.gen.txt is GENERATED, and it went stale against its generator once already: it lost
-	// its `hashes` key entirely, so every asset URL was served as `?v=` with no value. _headers
-	// sets `max-age=31536000, immutable` on /static/app.min.js by PATH, and Cloudflare does not
-	// match query strings — so an unversioned URL under that header is permanently uncacheable-bust.
-	// A frontend fix could not reach anyone who had already loaded the page.
+	// its `hashes` key entirely, so every asset URL was served as `?v=` with no value. Back then
+	// _headers put `max-age=31536000, immutable` on /static/app.min.js by PATH — and Cloudflare
+	// does not match query strings — so an unversioned URL under that header could never be
+	// cache-busted. A frontend fix could not reach anyone who had already loaded the page.
 	//
-	// Comparing the stored hash against the bytes actually shipped catches that, and catches the
-	// commoner version of it: regenerating public/ without committing assets.gen.txt, or the reverse.
+	// The hash now lives in the path, which removes that failure entirely, but the check below is
+	// what keeps it removed: it is the only thing standing between a URL and the bytes it claims to
+	// name. It catches the commoner version too — regenerating public/ without committing
+	// assets.gen.txt, or the reverse.
 	for (const [name, file] of hashed) {
 		test(`${name}'s hash matches the bytes in public/`, () => {
 			const stored = generated.hashes?.[name];

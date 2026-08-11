@@ -168,6 +168,25 @@ The complete list of intentional differences:
   `src/routes/site-name.ts`.
 - **`stale-while-revalidate=86400` on search responses**, so repeat queries
   never pay a cold start. Upstream sends plain `max-age=90`.
+- **Assets are versioned by path, not by query.** Upstream appends
+  `?v=<content hash>` to a fixed path; here the hash is the filename
+  (`/static/app.<hash>.min.js`), as Vite and TanStack Start emit it. Upstream
+  can afford the query form because the same WSGI process serves the bytes and
+  renders the hash, so the two cannot disagree. Cloudflare's asset layer
+  resolves by path and ignores the query, which made `?v=` an alias for
+  whatever object currently sat at that path rather than a name for specific
+  bytes — a browser was found holding pre-fix `app.min.js` under the post-fix
+  `?v=`, pinned by a year-long `immutable`. A content-addressed path 404s when
+  the bytes are absent instead of serving different ones.
+- **HTML documents revalidate**: `max-age=0, must-revalidate, s-maxage=3600`
+  where upstream sends `max-age=3600`. The page is the only thing that names an
+  asset URL, so a stale page is indistinguishable from a stale asset — under
+  upstream's header a returning browser could render an hour-old document
+  naming an hour-old bundle, which by itself delays any frontend fix by up to
+  an hour. `s-maxage` keeps the edge copy, so the Worker still does not run per
+  navigation. This is the half that makes `immutable` safe on the assets above;
+  the two are a matched pair, not independent choices. `bun run verify-deploy`
+  asserts both against the live origins after every deploy.
 - **Built-in per-IP rate limit** on the engine routes: a token bucket in a
   tiny per-IP Durable Object, default 25 requests/10s, 429 + `Retry-After`.
   Enforcement is asynchronous and costs zero request latency — which also makes
