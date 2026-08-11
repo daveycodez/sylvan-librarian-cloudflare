@@ -57,8 +57,14 @@ export const MANIFEST_KEY = "store:manifest";
  *   1 — initial
  *   2 — keywords stored lowercase (upstream #869); card_is_tags carries the
  *       boolean-backed reserved/gamechanger (upstream #888)
+ *   3 — card_oracle_tags / card_art_tags carry alias keys, and aliases ride
+ *       along on ancestors (upstream #914). Bumped together with #913's
+ *       ARCHIVE_FORMAT_VERSION 2026080601 -> 2026080901 (Printing gains
+ *       set_rank/artist_rank), because they rebuild together: the format bump
+ *       makes the old store unloadable, and this makes store-age.ts FORCE the
+ *       rebuild at deploy rather than leaving the port dark until the nightly.
  */
-export const STORE_CONTENT_GENERATION = 2;
+export const STORE_CONTENT_GENERATION = 3;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
