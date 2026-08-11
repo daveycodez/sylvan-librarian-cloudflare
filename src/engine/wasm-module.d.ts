@@ -76,6 +76,17 @@ declare module "sylvan-engine-wasm" {
 	 * bytes to the response body rather than being decoded to UTF-16 and encoded back.
 	 */
 	export function query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
+	/**
+	 * A page of Scryfall card objects as `<total> <rowCount>\n<cards JSON array>` in UTF-8 bytes.
+	 * The objects are built in the engine, so the DO never materializes a card. Needs the residue
+	 * archive attached.
+	 */
+	export function scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
+	/**
+	 * One engine row as a Scryfall card object. Pure — needs no loaded store, which is what lets
+	 * tests/routes/card-object-parity.test.ts diff it against toScryfallCard. Not a request path.
+	 */
+	export function scryfall_card_from_row(rowJson: string, baseUrl: string): string;
 	/** {"card_types": {...}, "card_keywords": {...}} JSON. */
 	export function catalog(): string;
 	/** n sampled preferred printings; deterministic per seed. JSON array. */

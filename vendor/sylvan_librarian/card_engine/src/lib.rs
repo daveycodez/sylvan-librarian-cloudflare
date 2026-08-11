@@ -14283,6 +14283,7 @@ mod card_engine {
 
 #[cfg(test)]
 mod tests;
+pub mod card_object;
 #[cfg(test)]
 mod bench_card_object_build;
 #[cfg(test)]

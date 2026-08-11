@@ -1192,6 +1192,28 @@ impl BufferStore {
         Ok(QueryOutput { total, rows })
     }
 
+    /// A page of Scryfall card objects, encoded, as `<total> <row count>\n<cards JSON array>`.
+    ///
+    /// LOCAL ADDITION (Cloudflare port), the card-object twin of `into_total_and_rows_bytes`. The
+    /// caller used to receive engine ROWS and build the card objects itself: parse the rows out of
+    /// JSON, construct ~60 keys per card, re-encode. Measured, the Durable Object's CPU is very
+    /// nearly a pure function of payload bytes, so that round trip — not the construction — was
+    /// what a 175-card page spent its time on. Here the bytes are written once and go out as they
+    /// are. See `card_object::write_scryfall_card`.
+    pub fn scryfall_search_bytes(
+        &self,
+        filter_tree: &Value,
+        opts: &QueryOptions,
+        base_url: &str,
+    ) -> Result<Vec<u8>, EngineError> {
+        let out = self.query_value(filter_tree, opts)?;
+        let mut buf = Vec::with_capacity(out.rows.len() * 3072 + 24);
+        buf.extend_from_slice(format!("{} {}", out.total, out.rows.len()).as_bytes());
+        buf.push(b'\n');
+        crate::card_object::write_scryfall_cards(&mut buf, &out.rows, base_url);
+        Ok(buf)
+    }
+
     /// Mirror of the pyo3 `sample_preferred()`, with the RNG seed supplied by
     /// the caller instead of drawn from OS entropy — wasm32-unknown-unknown
     /// has no ambient entropy source, so the Worker passes one in.

@@ -207,22 +207,32 @@ class WasmEngine implements Engine {
 		return rows.map((row) => toScryfallCard(row, baseUrl));
 	}
 
+	/**
+	 * A page of Scryfall card objects, built in the ENGINE and never as JS values.
+	 *
+	 * This used to ask for rows, `JSON.parse` them, run `toScryfallCard` over all 175, and
+	 * `JSON.stringify` the result — four passes over a ~635KB payload to produce bytes the engine
+	 * could have written itself. Measured, the Durable Object's CPU is very nearly a pure function
+	 * of payload bytes (~15us/KB), while building a card object is ~16us per CARD, so those passes
+	 * were the cost and the construction was not.
+	 *
+	 * `toScryfallCard` remains the reference implementation, and
+	 * tests/routes/card-object-parity.test.ts holds the engine to it byte for byte — the route
+	 * splices these bytes into a response envelope without parsing them, so nothing downstream
+	 * would notice a divergence.
+	 */
 	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
 		await this.ensureCompat();
-		const result = this.query({ ...opts, fields: [...CARD_OBJECT_FIELDS] });
-		// Encoded here too: the route splices the string into its List envelope without ever
-		// materializing 175 card objects in the isolate. `rowCount` rides along for the same
-		// reason — see EngineSerializedResult; without it the route re-counts the encoded cards
-		// by walking the whole string.
-		return {
-			totalCards: result.total,
-			// Still built and encoded in JS, unlike searchSerialized above: the card objects are
-			// assembled here rather than in the engine, so there is a JS string to encode either
-			// way. Encoding it HERE still pays off, because it is the isolate that would otherwise
-			// do it, against the metered budget.
-			cardsBytes: encodeUtf8(JSON.stringify(this.toCards(result.rows, baseUrl))),
-			rowCount: result.rows.length,
-		};
+		const answer = wasm.scryfall_search(
+			opts.filterTreeJson,
+			this.optsJson({ ...opts, fields: [...CARD_OBJECT_FIELDS] }),
+			baseUrl,
+		);
+		// `<total> <rowCount>\n<cards>`, the same framing query_rows uses; only the short ASCII
+		// prefix is decoded and the cards stay bytes all the way to the response body.
+		const split = answer.indexOf(NEWLINE);
+		const [total = "0", rows = "0"] = new TextDecoder().decode(answer.subarray(0, split)).split(" ");
+		return { totalCards: Number(total), cardsBytes: answer.subarray(split + 1), rowCount: Number(rows) };
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

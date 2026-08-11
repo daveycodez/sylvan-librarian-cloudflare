@@ -252,6 +252,36 @@ pub fn query_rows(filter_tree_json: &str, opts_json: &str) -> Result<Vec<u8>, Js
     })
 }
 
+/// A page of Scryfall card objects as `<total> <row count>\n<cards JSON array>`, in UTF-8 bytes.
+///
+/// What /cards/search runs. The card objects are built HERE rather than by the caller, so the
+/// Durable Object no longer parses the engine's rows, constructs ~60 keys per card in JS, and
+/// re-encodes the result — it hands these bytes to the response. Requires the residue archive to
+/// be attached, like every other card-object entry point.
+#[wasm_bindgen]
+pub fn scryfall_search(filter_tree_json: &str, opts_json: &str, base_url: &str) -> Result<Vec<u8>, JsError> {
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    let tree: serde_json::Value = serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
+    with_store(|store| store.scryfall_search_bytes(&tree, &opts, base_url).map_err(js_err))
+}
+
+/// One engine row as a Scryfall card object, for the differential test that guards the port.
+///
+/// Needs NO store: the builder is a pure function of the row and the base URL, which is what lets
+/// `tests/routes/card-object-parity.test.ts` instantiate the engine and compare this against
+/// `toScryfallCard` byte for byte. Not on any request path — the routes go through
+/// `scryfall_search`, which writes a whole page at once.
+#[wasm_bindgen]
+pub fn scryfall_card_from_row(row_json: &str, base_url: &str) -> Result<String, JsError> {
+    let row: serde_json::Value = serde_json::from_str(row_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let serde_json::Value::Object(map) = row else {
+        return Err(JsError::new("row must be a JSON object"));
+    };
+    let mut out = Vec::with_capacity(2048);
+    card_engine::card_object::write_scryfall_card(&mut out, &map, base_url);
+    String::from_utf8(out).map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
 /// behind /get_catalog.
 #[wasm_bindgen]

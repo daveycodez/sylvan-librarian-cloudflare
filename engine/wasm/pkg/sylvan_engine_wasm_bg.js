@@ -512,6 +512,68 @@ export function random_search(n, seed, fields_json) {
 }
 
 /**
+ * One engine row as a Scryfall card object, for the differential test that guards the port.
+ *
+ * Needs NO store: the builder is a pure function of the row and the base URL, which is what lets
+ * `tests/routes/card-object-parity.test.ts` instantiate the engine and compare this against
+ * `toScryfallCard` byte for byte. Not on any request path — the routes go through
+ * `scryfall_search`, which writes a whole page at once.
+ * @param {string} row_json
+ * @param {string} base_url
+ * @returns {string}
+ */
+export function scryfall_card_from_row(row_json, base_url) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(row_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.scryfall_card_from_row(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * A page of Scryfall card objects as `<total> <row count>\n<cards JSON array>`, in UTF-8 bytes.
+ *
+ * What /cards/search runs. The card objects are built HERE rather than by the caller, so the
+ * Durable Object no longer parses the engine's rows, constructs ~60 keys per card in JS, and
+ * re-encodes the result — it hands these bytes to the response. Requires the residue archive to
+ * be attached, like every other card-object entry point.
+ * @param {string} filter_tree_json
+ * @param {string} opts_json
+ * @param {string} base_url
+ * @returns {Uint8Array}
+ */
+export function scryfall_search(filter_tree_json, opts_json, base_url) {
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.scryfall_search(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
+
+/**
  * Printing count of the loaded store (the upstream `size()` health number);
  * 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
  * @returns {number}

@@ -155,6 +155,26 @@ export function query_rows(filter_tree_json: string, opts_json: string): Uint8Ar
 export function random_search(n: number, seed: bigint, fields_json: string): string;
 
 /**
+ * One engine row as a Scryfall card object, for the differential test that guards the port.
+ *
+ * Needs NO store: the builder is a pure function of the row and the base URL, which is what lets
+ * `tests/routes/card-object-parity.test.ts` instantiate the engine and compare this against
+ * `toScryfallCard` byte for byte. Not on any request path — the routes go through
+ * `scryfall_search`, which writes a whole page at once.
+ */
+export function scryfall_card_from_row(row_json: string, base_url: string): string;
+
+/**
+ * A page of Scryfall card objects as `<total> <row count>\n<cards JSON array>`, in UTF-8 bytes.
+ *
+ * What /cards/search runs. The card objects are built HERE rather than by the caller, so the
+ * Durable Object no longer parses the engine's rows, constructs ~60 keys per card in JS, and
+ * re-encodes the result — it hands these bytes to the response. Requires the residue archive to
+ * be attached, like every other card-object entry point.
+ */
+export function scryfall_search(filter_tree_json: string, opts_json: string, base_url: string): Uint8Array;
+
+/**
  * Printing count of the loaded store (the upstream `size()` health number);
  * 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
  */
