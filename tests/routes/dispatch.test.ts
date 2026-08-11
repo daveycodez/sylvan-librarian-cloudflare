@@ -26,6 +26,16 @@ describe("404 routes listing", () => {
 			"backfill_cubecobra_scores",
 			"backfill_prefer_scores",
 			"card",
+			// The Scryfall-compatible surface (upstream #912). `cards` sorts before
+			// `discover_is_tags_from_syntax` the same way `card` does, and its five named
+			// sub-routes follow it: dir(cls) puts a class's attributes in name order, and the
+			// exact paths register consecutively behind the handler that declares them.
+			"cards",
+			"cards/search",
+			"cards/named",
+			"cards/autocomplete",
+			"cards/random",
+			"cards/collection",
 			"discover_is_tags_from_syntax",
 			"get_catalog",
 			"get_common_keywords",
@@ -37,6 +47,8 @@ describe("404 routes listing", () => {
 			"import_cards_by_search",
 			"import_data",
 			"import_oracle_tags",
+			// Postgres-only, so a 501 stub like the backfills; sorts here by attribute name.
+			"import_rulings",
 			"ingest_cubecobra",
 			"random_search",
 			"search",

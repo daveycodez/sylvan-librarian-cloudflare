@@ -90,6 +90,35 @@ export function card_by_external_id(namespace, external_id, fields_json) {
 }
 
 /**
+ * The best printing carrying this illustration id, or `null`.
+ * @param {string} illustration_id
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function card_by_illustration_id(illustration_id, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(illustration_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.card_by_illustration_id(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * One card by Scryfall id, or `null`.
  * @param {string} scryfall_id
  * @param {string} fields_json
@@ -158,6 +187,40 @@ export function cards_by_scryfall_ids(ids_json, fields_json) {
 }
 
 /**
+ * One card per distinct name containing EVERY word, best printing each, up to `limit`.
+ * The containment stage of `/cards/named?fuzzy=`; the caller asks for 2 and reads the count.
+ * @param {string} words_json
+ * @param {string} set_code
+ * @param {number} limit
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function cards_containing_all_words(words_json, set_code, limit, fields_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(words_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.cards_containing_all_words(ptr0, len0, ptr1, len1, limit, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
  * `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
  * behind /get_catalog.
  * @returns {string}
@@ -201,6 +264,42 @@ export function compat_load_chunk(chunk) {
 export function compat_loaded() {
     const ret = wasm.compat_loaded();
     return ret !== 0;
+}
+
+/**
+ * The best printing of a card whose FOLDED name matches exactly, or `null`.
+ *
+ * `folded` must already be lowercased and accent-folded by the caller (foldAccents in
+ * src/parser/pystr.ts), the same way `card_name_folded` was at import. `set_code` is "" for no
+ * set restriction.
+ * @param {string} folded
+ * @param {string} set_code
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function exact_card_by_name(folded, set_code, fields_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.exact_card_by_name(ptr0, len0, ptr1, len1, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
 }
 
 /**

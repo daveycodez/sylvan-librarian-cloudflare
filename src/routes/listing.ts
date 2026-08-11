@@ -133,6 +133,109 @@ export const LISTINGS = {
 
 	card_js: noParams(SERVE_FILE_DOC("card.js")),
 
+	// ── The Scryfall-compatible /cards/* surface (upstream #912) ──────────────
+	// Registered in upstream's own attribute order, which is where dir(cls) puts them: `cards`
+	// with the five named sub-routes after it, all between `card` and
+	// `discover_is_tags_from_syntax`.
+	cards: {
+		doc: `Serve every \`/cards/*\` route the five named sub-routes do not claim.
+
+        The path shapes, by segment count:
+
+        - \`/cards\` -- every card, paginated.
+        - \`/cards/:id\` -- one card by Scryfall id.
+        - \`/cards/:namespace/:id\` -- one card by multiverse, MTGO, Arena, TCGplayer or Cardmarket id.
+        - \`/cards/:code/:number\` -- one card by set code and collector number.
+        - \`/cards/:code/:number/:lang\` -- the same, in one language.
+
+        Rulings are not served by this deployment; a trailing \`rulings\` segment returns Scryfall's
+        404 error object.
+        `,
+		args: [],
+		kwargs: {
+			identifier: { type: "str", default: "" },
+			number: { type: "str", default: "" },
+			suffix: { type: "str", default: "" },
+			page: { type: "str", default: "1" },
+			format: { type: "str", default: "json" },
+			face: { type: "str", default: "front" },
+			version: { type: "str", default: "large" },
+			pretty: { type: "str", default: "false" },
+		},
+	},
+
+	"cards/search": {
+		doc: `Search for cards, paginated 175 at a time.
+
+        \`include_extras\`, \`include_multilingual\` and \`include_variations\` are accepted and have no
+        effect: the corpus holds no tokens, emblems or funny-set cards for \`include_extras\` to add,
+        and it holds every printing and language it has imported unconditionally.
+        `,
+		args: [],
+		kwargs: {
+			q: { type: "str | None", default: null },
+			unique: { type: "str", default: "cards" },
+			order: { type: "str", default: "name" },
+			dir: { type: "str", default: "auto" },
+			page: { type: "str", default: "1" },
+			format: { type: "str", default: "json" },
+			pretty: { type: "str", default: "false" },
+			include_extras: { type: "str", default: "false" },
+			include_multilingual: { type: "str", default: "false" },
+			include_variations: { type: "str", default: "false" },
+		},
+	},
+
+	"cards/named": {
+		doc: "Return one card by exact or fuzzy name.",
+		args: [],
+		kwargs: {
+			exact: { type: "str | None", default: null },
+			fuzzy: { type: "str | None", default: null },
+			set: { type: "str | None", default: null },
+			format: { type: "str", default: "json" },
+			face: { type: "str", default: "front" },
+			version: { type: "str", default: "large" },
+			pretty: { type: "str", default: "false" },
+		},
+	},
+
+	"cards/autocomplete": {
+		doc: "Return up to 20 card names matching a partial name.",
+		args: [],
+		kwargs: {
+			q: { type: "str | None", default: null },
+			pretty: { type: "str", default: "false" },
+			include_extras: { type: "str", default: "false" },
+		},
+	},
+
+	"cards/random": {
+		doc: "Return one random card, optionally restricted by a search query.",
+		args: [],
+		kwargs: {
+			q: { type: "str | None", default: null },
+			format: { type: "str", default: "json" },
+			face: { type: "str", default: "front" },
+			version: { type: "str", default: "large" },
+			pretty: { type: "str", default: "false" },
+		},
+	},
+
+	"cards/collection": {
+		doc: "Resolve up to 75 card identifiers in one request.",
+		args: [],
+		kwargs: { pretty: { type: "str", default: "false" } },
+	},
+
+	import_rulings: noParams(
+		`Load the bulk rulings file into magic.rulings.
+
+        Not implemented in this deployment: rulings come from Postgres upstream, and there is none
+        here. See the README's deviations list.
+        `,
+	),
+
 	card: {
 		doc: `Serve the per-card page for /card/{set_code}/{collector_number}.
 

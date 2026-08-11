@@ -22,6 +22,9 @@ import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 
 export const FIXTURE_CARDS: Record<string, unknown>[] = [
 	{
+		// `scryfall_id` is in DEFAULT_RESULT_FIELDS, so a real engine row always carries one — and
+		// the /cards/* surface addresses cards BY it.
+		scryfall_id: "aaaaaaaa-0000-0000-0000-000000000001",
 		name: "Llanowar Elves",
 		set_code: "m19",
 		collector_number: "314",
@@ -33,6 +36,7 @@ export const FIXTURE_CARDS: Record<string, unknown>[] = [
 		type_line: "Creature — Elf Druid",
 	},
 	{
+		scryfall_id: "aaaaaaaa-0000-0000-0000-000000000002",
 		name: "Elvish Mystic",
 		set_code: "m15",
 		collector_number: "18",
@@ -162,6 +166,34 @@ export class FakeEngine implements Engine {
 			.slice(0, limit);
 	}
 
+	/** Names the fake resolves exactly, folded; anything else is a miss. */
+	scryfallExactNames: string[] = FIXTURE_CARDS.map((c) => String(c.name).toLowerCase());
+
+	async scryfallExactName(folded: string, _setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		const at = this.scryfallExactNames.indexOf(folded);
+		return at < 0 ? null : this.fixtureCard(at, baseUrl);
+	}
+
+	async scryfallCardByIllustrationId(
+		_illustrationId: string,
+		baseUrl: string,
+	): Promise<Record<string, unknown> | null> {
+		return this.fixtureCard(0, baseUrl);
+	}
+
+	async scryfallNamesContaining(
+		words: string[],
+		_setCode: string,
+		limit: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown>[]> {
+		return FIXTURE_CARDS.map((_, at) => at)
+			.filter((at) => words.every((w) => String(FIXTURE_CARDS[at]?.name).toLowerCase().includes(w)))
+			.slice(0, limit)
+			.map((at) => this.fixtureCard(at, baseUrl))
+			.filter((c): c is Record<string, unknown> => c !== null);
+	}
+
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
 		return filterTreeJsons.map(() => this.fixtureCard(0, baseUrl));
 	}
@@ -201,11 +233,17 @@ export function installFakeParser(parse: (query: string) => unknown = fakeParse)
 export interface CtxOptions {
 	engine?: Engine | null;
 	requestHost?: string;
+	/** Override the request, for the one route that reads a body (POST /cards/collection). */
+	request?: Request;
 }
 
 /** RouteContext built by hand; engine: null simulates an unloaded store. */
 export function makeCtx(options: CtxOptions = {}): RouteContext {
-	const { engine = new FakeEngine(), requestHost = "sylvan-librarian.com" } = options;
+	const {
+		engine = new FakeEngine(),
+		requestHost = "sylvan-librarian.com",
+		request = new Request("https://sylvan-librarian.com/"),
+	} = options;
 	return {
 		env: {} as Env,
 		getEngine: async () => {
@@ -214,7 +252,7 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 			}
 			return engine;
 		},
-		request: new Request("https://sylvan-librarian.com/"),
+		request,
 		requestHost,
 		waitUntil: () => {},
 	};

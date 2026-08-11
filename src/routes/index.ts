@@ -11,6 +11,14 @@ import { getCatalogHandler, getPidHandler, notImplementedHandler } from "./misc"
 import { cardHandler, redirectToRootHandler, rootHandler } from "./pages";
 import { BindingTypeError, ParamCoercionError } from "./param-binding";
 import type { RouteEntry, RouteTable } from "./registry";
+import {
+	cardsAutocompleteHandler,
+	cardsCollectionHandler,
+	cardsHandler,
+	cardsNamedHandler,
+	cardsRandomHandler,
+	cardsSearchHandler,
+} from "./scryfall-compat/routes";
 import { randomSearchHandler, searchHandler } from "./search";
 
 const GET = ["GET", "HEAD"] as const;
@@ -62,6 +70,25 @@ export const routes: RouteTable = {
 	backfill_prefer_scores: stub("backfill_prefer_scores"),
 	// card
 	card: entry(cardHandler, LISTINGS.card, 2),
+	// The Scryfall-compatible /cards/* surface (upstream #912). Order matters: it serializes into
+	// the 404 routes listing and is pinned by tests/routes/dispatch.test.ts.
+	//
+	// `cards` absorbs up to THREE trailing segments -- /cards/:code/:number/:lang is the longest
+	// shape -- and the five named sub-routes register their exact paths, which resolveAction
+	// matches before it falls back to the first segment. That is what lets `cards/search` and
+	// `/cards/:id` coexist without a router.
+	cards: entry(cardsHandler, LISTINGS.cards, 3),
+	"cards/search": entry(cardsSearchHandler, LISTINGS["cards/search"]),
+	"cards/named": entry(cardsNamedHandler, LISTINGS["cards/named"]),
+	"cards/autocomplete": entry(cardsAutocompleteHandler, LISTINGS["cards/autocomplete"]),
+	"cards/random": entry(cardsRandomHandler, LISTINGS["cards/random"]),
+	// The one POST in the table; every other route is GET plus the implied HEAD.
+	"cards/collection": {
+		handler: withBindingErrors(cardsCollectionHandler),
+		methods: ["POST"],
+		positionalCapacity: 0,
+		listing: LISTINGS["cards/collection"],
+	},
 	discover_is_tags_from_syntax: stub("discover_is_tags_from_syntax"),
 	get_catalog: entry(getCatalogHandler, LISTINGS.get_catalog),
 	get_common_keywords: stub("get_common_keywords"),
@@ -73,6 +100,9 @@ export const routes: RouteTable = {
 	import_cards_by_search: stub("import_cards_by_search"),
 	import_data: stub("import_data"),
 	import_oracle_tags: stub("import_oracle_tags"),
+	// Postgres-only, like the backfills above: upstream loads the bulk rulings file into
+	// magic.rulings, and this deployment has no such table. See the README's deviations list.
+	import_rulings: stub("import_rulings"),
 	ingest_cubecobra: stub("ingest_cubecobra"),
 	random_search: entry(randomSearchHandler, LISTINGS.random_search),
 	search: entry(searchHandler, LISTINGS.search),

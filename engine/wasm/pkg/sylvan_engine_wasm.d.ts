@@ -32,6 +32,11 @@ export function begin_store_load(total_len: number): void;
 export function card_by_external_id(namespace: string, external_id: bigint, fields_json: string): string;
 
 /**
+ * The best printing carrying this illustration id, or `null`.
+ */
+export function card_by_illustration_id(illustration_id: string, fields_json: string): string;
+
+/**
  * One card by Scryfall id, or `null`.
  */
 export function card_by_scryfall_id(scryfall_id: string, fields_json: string): string;
@@ -48,6 +53,12 @@ export function card_count(): number;
 export function cards_by_scryfall_ids(ids_json: string, fields_json: string): string;
 
 /**
+ * One card per distinct name containing EVERY word, best printing each, up to `limit`.
+ * The containment stage of `/cards/named?fuzzy=`; the caller asks for 2 and reads the count.
+ */
+export function cards_containing_all_words(words_json: string, set_code: string, limit: number, fields_json: string): string;
+
+/**
  * `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
  * behind /get_catalog.
  */
@@ -62,6 +73,15 @@ export function compat_load_chunk(chunk: Uint8Array): void;
  * Whether the residue archive is attached to the active store.
  */
 export function compat_loaded(): boolean;
+
+/**
+ * The best printing of a card whose FOLDED name matches exactly, or `null`.
+ *
+ * `folded` must already be lowercased and accent-folded by the caller (foldAccents in
+ * src/parser/pystr.ts), the same way `card_name_folded` was at import. `set_code` is "" for no
+ * set restriction.
+ */
+export function exact_card_by_name(folded: string, set_code: string, fields_json: string): string;
 
 /**
  * Validate the streamed residue archive and attach it to the active store.

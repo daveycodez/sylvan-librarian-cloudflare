@@ -234,6 +234,35 @@ class WasmEngine implements Engine {
 		return JSON.parse(wasm.autocomplete(prefix, limit)) as string[];
 	}
 
+	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		await this.ensureCompat();
+		const row = JSON.parse(
+			wasm.exact_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as EngineRow | null;
+		return row === null ? null : toScryfallCard(row, baseUrl);
+	}
+
+	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		await this.ensureCompat();
+		const row = JSON.parse(
+			wasm.card_by_illustration_id(illustrationId, JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as EngineRow | null;
+		return row === null ? null : toScryfallCard(row, baseUrl);
+	}
+
+	async scryfallNamesContaining(
+		words: string[],
+		setCode: string,
+		limit: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown>[]> {
+		await this.ensureCompat();
+		const rows = JSON.parse(
+			wasm.cards_containing_all_words(JSON.stringify(words), setCode, limit, JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as EngineRow[];
+		return this.toCards(rows, baseUrl);
+	}
+
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
 		await this.ensureCompat();
 		return filterTreeJsons.map((filterTreeJson) => {

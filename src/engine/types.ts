@@ -111,6 +111,25 @@ export interface Engine {
 	/** Scryfall's autocomplete catalog: printed names, prefix matches first. */
 	scryfallAutocomplete(prefix: string, limit: number): Promise<string[]>;
 	/**
+	 * `/cards/named?exact=`: the best printing whose FOLDED name matches, or null.
+	 *
+	 * `folded` is lowercased and accent-folded by the caller. Matches either half of a
+	 * `Front // Back` name as well as the whole, which is what Scryfall does.
+	 */
+	scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null>;
+	/** `illustration_id`, one of the collection endpoint's identifiers; not a searchable field. */
+	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
+	/**
+	 * The containment stage of `/cards/named?fuzzy=`: one card per distinct name containing every
+	 * word. The caller asks for 2 — more than one distinct name is `ambiguous`, not a guess.
+	 */
+	scryfallNamesContaining(
+		words: string[],
+		setCode: string,
+		limit: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown>[]>;
+	/**
 	 * The first card matching each filter tree, in order — the query-shaped lookups
 	 * (`/cards/:code/:number`, and a collection POST's `set`+`collector_number` and `name`
 	 * identifiers). One RPC for the whole batch so 75 identifiers are not 75 round trips.

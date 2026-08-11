@@ -1,0 +1,746 @@
+// The Scryfall-compatible `/cards/*` routes. Port of api/scryfall_compat/routes.py (upstream #912).
+//
+// The point of this surface is that mtg-seeker can change one base URL and stop talking to
+// api.scryfall.com. `/search` is untouched and keeps this project's own response shape; everything
+// here answers with Scryfall's objects, Scryfall's 175-per-page pagination and Scryfall's error
+// bodies.
+//
+// Two deliberate deviations from upstream run through the whole file:
+//
+//   - **No SQL fallback.** Upstream tries the engine and falls back to Postgres, distinguishing
+//     "the engine could not serve" from "no such card" via an `_EngineMiss` sentinel. This
+//     deployment has no Postgres, so there is no second branch to select: a miss IS the 404, an
+//     engine failure IS a 500, and the sentinel has no counterpart. Recorded in the README.
+//   - **Rulings are not served.** Upstream loads them from `magic.rulings`, populated by
+//     `api/rulings_import.py` against Postgres. There is nothing here to serve them from, so a
+//     trailing `rulings` segment gets Scryfall's 404 error shape — NOT an empty list, which would
+//     claim "this card has no rulings" rather than "this deployment does not serve rulings", and
+//     NOT this port's routes-listing 404, which is not a Scryfall body at all.
+//
+// Every card object is built inside the Durable Object (see the Engine interface): `toScryfallCard`
+// assembles ~70 keys per card, up to 175 of them for a page, and the DO meters against 30s where
+// this isolate meters against 10ms.
+
+import type { Engine } from "../../engine/types";
+import { EngineUnavailableError } from "../../engine/types";
+import type { FilterValue } from "../../parser";
+import { canonicalStringify } from "../../parser";
+import { foldAccents } from "../../parser/pystr";
+import type { CardOrdering, SortDirection, UniqueOn } from "../enums";
+import { CARD_ORDERING, resolveDirection } from "../enums";
+import { NO_STORE_HEADER } from "../http";
+import { loadParser } from "../parser-bridge";
+import type { RouteContext } from "../registry";
+import {
+	badRequestError,
+	buildPageUrl,
+	cardList,
+	cardToText,
+	catalogObject,
+	DEFAULT_IMAGE_VERSION,
+	errorObject,
+	imageUri,
+	MAX_AUTOCOMPLETE_VALUES,
+	MAX_COLLECTION_IDENTIFIERS,
+	notFoundError,
+	PAGE_SIZE,
+	type ScryfallError,
+} from "./objects";
+import { cardName, setAndCollectorNumber, TRUE_TREE } from "./trees";
+
+/** Path segments that name an external id namespace rather than a set code. */
+const EXTERNAL_ID_NAMESPACES = ["multiverse", "mtgo", "arena", "tcgplayer", "cardmarket"] as const;
+
+/**
+ * Scryfall's `unique` vocabulary. This port's own spellings differ (`card`/`printing`/`artwork`
+ * against Scryfall's `cards`/`prints`/`art`), so the mapping is explicit rather than derived.
+ */
+const UNIQUE_MAP: Record<string, UniqueOn> = { cards: "card", art: "artwork", prints: "printing" };
+
+/**
+ * Scryfall's `order` vocabulary, derived from CARD_ORDERING rather than listed — an ordering added
+ * to the enum is accepted here without a second edit.
+ */
+const ORDER_MAP: Map<string, CardOrdering> = new Map(CARD_ORDERING.values.map((m) => [m, m]));
+
+/**
+ * The two Scryfall orders with no counterpart. `penny` needs penny_rank as a sort column (it is
+ * stored, but in the residue archive, which carries no sort permutations); `review` is
+ * Scryfall-internal with no public input and is not reproducible at all. Both fall back to `name`,
+ * which is what Scryfall does with an order it does not recognize, and add a warning saying so.
+ */
+const SCRYFALL_ONLY_ORDERS = ["penny", "review"];
+
+const DIRECTION_MAP: Record<string, SortDirection> = { asc: "asc", desc: "desc", auto: "auto" };
+
+/** Scryfall's own wording, down to the typographic apostrophe, so a client that string-matches on
+ * `details` behaves the same. */
+const NO_MATCH_DETAILS =
+	"Your query didn’t match any cards. Adjust your search terms or refer to the syntax guide " +
+	"at https://scryfall.com/docs/syntax";
+const EMPTY_QUERY_DETAILS = "You didn't enter anything to search for.";
+
+/** Upstream's generic not-found body, reused for every path that addresses nothing. */
+const NOT_FOUND_DETAILS =
+	"The requested object or REST method was not found. Please double-check your URI and try again.";
+
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** Spelled out rather than a shared constant: Scryfall sends the charset, and a client that
+ * compares content types sees the difference. */
+const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
+
+function isUuid(value: string): boolean {
+	return UUID_RE.test(value);
+}
+
+/** Parse a Scryfall boolean query parameter; anything but a true spelling is false. */
+function asBool(value: string | undefined, fallback = false): boolean {
+	if (value === undefined) return fallback;
+	return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+/** Parse an integer parameter or path segment; undefined when absent or unparseable. */
+function asInt(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	const n = Number.parseInt(value.trim(), 10);
+	return Number.isNaN(n) ? undefined : n;
+}
+
+// ─── responses ───────────────────────────────────────────────────────────────
+
+/** A Scryfall JSON body, carrying an error object's own status when it is one. */
+function scryfallJson(
+	payload: Record<string, unknown>,
+	pretty: boolean,
+	extraHeaders?: Record<string, string>,
+): Response {
+	const status = payload.object === "error" && typeof payload.status === "number" ? payload.status : 200;
+	return new Response(pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload), {
+		status,
+		headers: { "content-type": JSON_CONTENT_TYPE, ...extraHeaders },
+	});
+}
+
+/**
+ * A List whose `data` is already encoded (the DO built and encoded the cards).
+ *
+ * Spliced rather than parsed for the same reason `/search` splices its own: the point of building
+ * cards in the Durable Object is lost if the isolate parses them back into objects to re-encode.
+ */
+function scryfallListJson(
+	cardsJson: string,
+	opts: { totalCards?: number; hasMore: boolean; nextPage?: string; warnings?: string[] },
+	pretty: boolean,
+): Response {
+	// cardList with an empty data array, then the encoded cards spliced into it — keeping ONE
+	// definition of the envelope's key order rather than a second one written out here. `data` is
+	// always the LAST key (see cardList), so this is a tail replacement found by lastIndexOf
+	// rather than a regex: an anchored `$` does not match, because the closing brace follows.
+	const envelope = cardList([], opts);
+	const body = pretty ? JSON.stringify(envelope, null, 2) : JSON.stringify(envelope);
+	const key = pretty ? '"data": ' : '"data":';
+	const marker = `${key}[]`;
+	const at = body.lastIndexOf(marker);
+	if (at < 0) throw new Error("card list envelope did not end with an empty data array");
+	const spliced = `${body.slice(0, at)}${key}${cardsJson}${body.slice(at + marker.length)}`;
+	return new Response(spliced, { status: 200, headers: { "content-type": JSON_CONTENT_TYPE } });
+}
+
+function textResponse(body: string, contentType: string): Response {
+	return new Response(body, { status: 200, headers: { "content-type": contentType } });
+}
+
+/** Emit one card in the requested format: json, text, or a redirect to its image. */
+function renderCard(
+	card: Record<string, unknown>,
+	format: string,
+	face: string,
+	version: string,
+	pretty: boolean,
+): Response {
+	if (format === "text") return textResponse(cardToText(card), "text/plain; charset=utf-8");
+	if (format === "image") {
+		const location = imageUri(card, version, face);
+		if (!location) {
+			return scryfallJson(notFoundError("No image is available for this card in that version."), pretty);
+		}
+		return new Response(null, { status: 302, headers: { Location: location } });
+	}
+	return scryfallJson(card, pretty);
+}
+
+/** The absolute URL of a route on this host, for `next_page`. */
+function selfBaseUrl(ctx: RouteContext, path: string): string {
+	const url = new URL(ctx.request.url);
+	// The request's own scheme as corrected by the proxy that terminated TLS: a `next_page` a
+	// client cannot follow is worse than no pagination at all.
+	const scheme = ctx.request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+	return `${scheme}://${ctx.requestHost || url.host}${path}`;
+}
+
+/** The base URL every derived `*_uri` in a card object addresses. */
+function apiBaseUrl(ctx: RouteContext): string {
+	const url = new URL(ctx.request.url);
+	const scheme = ctx.request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+	return `${scheme}://${ctx.requestHost || url.host}`;
+}
+
+/**
+ * Engine failures are LOUD.
+ *
+ * Upstream falls back to SQL here. This port has none, so an engine that cannot answer must say
+ * so rather than 404 — a 404 would tell the client the card does not exist, which is a different
+ * and false statement. EngineUnavailableError propagates to dispatch's 503; anything else is a 500
+ * in Scryfall's error shape so the client still gets a body it can parse.
+ */
+function engineFailure(err: unknown, pretty: boolean): Response {
+	if (err instanceof EngineUnavailableError) throw err;
+	console.error("Scryfall compat route: engine failure", err);
+	return scryfallJson(errorObject("internal_error", 500, "The card engine could not answer this request."), pretty);
+}
+
+// ─── GET /cards/search ───────────────────────────────────────────────────────
+
+export async function cardsSearchHandler(
+	ctx: RouteContext,
+	_positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
+	const pretty = asBool(params.pretty);
+	const q = params.q;
+	if (!q?.trim()) return scryfallJson(badRequestError(EMPTY_QUERY_DETAILS), pretty);
+
+	// `|| 1` would swallow page=0 into page=1; an unparseable page defaults, a non-positive one is
+	// rejected.
+	const page = asInt(params.page) ?? 1;
+	if (page < 1) return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty);
+
+	const warnings: string[] = [];
+	const uniqueRaw = (params.unique ?? "cards").toLowerCase();
+	let unique = UNIQUE_MAP[uniqueRaw];
+	if (unique === undefined) {
+		warnings.push(`Unrecognized unique mode '${uniqueRaw}'; rolled up by card instead.`);
+		unique = "card";
+	}
+
+	const orderRaw = (params.order ?? "name").toLowerCase();
+	let orderby = ORDER_MAP.get(orderRaw);
+	if (orderby === undefined) {
+		warnings.push(
+			SCRYFALL_ONLY_ORDERS.includes(orderRaw)
+				? `This server cannot sort by '${orderRaw}' yet; sorted by name instead.`
+				: `Unrecognized order '${orderRaw}'; sorted by name instead.`,
+		);
+		orderby = "name";
+	}
+
+	// An unrecognized direction falls back to AUTO, which is also the default — Scryfall ignores
+	// one it does not know rather than erroring.
+	const direction = DIRECTION_MAP[(params.dir ?? "auto").toLowerCase()] ?? "auto";
+
+	const engine = await ctx.getEngine();
+	const parser = await loadParser();
+	let filterTree: unknown;
+	try {
+		filterTree = parser.parseWithDirectives(q).tree;
+	} catch (err) {
+		if (parser.isParseError(err)) {
+			return scryfallJson(badRequestError(`Failed to parse query: "${q}"`, warnings), pretty);
+		}
+		throw err;
+	}
+
+	let result: { totalCards: number; cardsJson: string };
+	try {
+		result = await engine.scryfallSearch(
+			{
+				filterTreeJson: canonicalStringify(filterTree as FilterValue),
+				unique,
+				prefer: "default",
+				orderby,
+				direction: resolveDirection(direction, orderby),
+				limit: PAGE_SIZE,
+				offset: (page - 1) * PAGE_SIZE,
+				fields: [],
+			},
+			apiBaseUrl(ctx),
+		);
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+
+	if (result.cardsJson === "[]") {
+		return scryfallJson(errorObject("not_found", 404, NO_MATCH_DETAILS, warnings), pretty);
+	}
+
+	const seen = (page - 1) * PAGE_SIZE + countCards(result.cardsJson);
+	const hasMore = seen < result.totalCards;
+	const nextPage = hasMore
+		? buildPageUrl(
+				selfBaseUrl(ctx, "/cards/search"),
+				{
+					dir: params.dir ?? "auto",
+					format: params.format ?? "json",
+					include_extras: String(asBool(params.include_extras)),
+					include_multilingual: String(asBool(params.include_multilingual)),
+					include_variations: String(asBool(params.include_variations)),
+					order: params.order ?? "name",
+					q,
+					unique: params.unique ?? "cards",
+				},
+				page + 1,
+			)
+		: undefined;
+
+	return scryfallListJson(result.cardsJson, { totalCards: result.totalCards, hasMore, nextPage, warnings }, pretty);
+}
+
+/**
+ * How many cards a pre-encoded array holds, without parsing it.
+ *
+ * Only ever asked of a page, so it is at most 175 objects; counting top-level `{` at depth 1 is
+ * cheaper than the parse the encoding exists to avoid. Strings are skipped so a `{` inside oracle
+ * text cannot be counted.
+ */
+function countCards(cardsJson: string): number {
+	let depth = 0;
+	let count = 0;
+	let inString = false;
+	let escaped = false;
+	for (const ch of cardsJson) {
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (inString) {
+			if (ch === "\\") escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === "{") {
+			if (depth === 0) count += 1;
+			depth += 1;
+		} else if (ch === "}") depth -= 1;
+	}
+	return count;
+}
+
+// ─── GET /cards/named ────────────────────────────────────────────────────────
+
+export async function cardsNamedHandler(
+	ctx: RouteContext,
+	_positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
+	const pretty = asBool(params.pretty);
+	const exact = params.exact;
+	const fuzzy = params.fuzzy;
+	if (!exact && !fuzzy) {
+		return scryfallJson(badRequestError("You must provide a fuzzy or exact name parameter."), pretty);
+	}
+	const format = (params.format ?? "json").toLowerCase();
+	const face = params.face ?? "front";
+	const version = params.version ?? DEFAULT_IMAGE_VERSION;
+	const setCode = params.set ?? "";
+	const engine = await ctx.getEngine();
+	const baseUrl = apiBaseUrl(ctx);
+
+	if (exact) {
+		// Folded here, matched against the stored `card_name_folded` — Scryfall's exact match
+		// ignores case AND diacritics, and resolves a single face of a "Front // Back" card.
+		let card: Record<string, unknown> | null;
+		try {
+			card = await engine.scryfallExactName(foldAccents(exact.trim().toLowerCase()), setCode, baseUrl);
+		} catch (err) {
+			return engineFailure(err, pretty);
+		}
+		if (!card) return scryfallJson(notFoundError(`No cards found matching “${exact}”`), pretty);
+		return renderCard(card, format, face, version, pretty);
+	}
+
+	return namedFuzzy(engine, fuzzy ?? "", setCode, baseUrl, { format, face, version, pretty });
+}
+
+/**
+ * Resolve a fuzzy name: exact, then all-words-present, then typo-tolerant similarity.
+ *
+ * The three stages mirror what Scryfall resolves in practice — `lightning bolt` exactly, `bolt` by
+ * containment, `lighning bolt` by trigram distance — and each stage that finds more than one
+ * distinct card name reports `ambiguous` rather than guessing between them.
+ */
+async function namedFuzzy(
+	engine: Engine,
+	fuzzy: string,
+	setCode: string,
+	baseUrl: string,
+	render: { format: string; face: string; version: string; pretty: boolean },
+): Promise<Response> {
+	const { pretty } = render;
+	const needle = foldAccents(fuzzy.trim().toLowerCase());
+	const words = needle.split(/[^\w']+/u).filter((w) => w.length > 0);
+	if (words.length === 0) {
+		return scryfallJson(badRequestError("You must provide a fuzzy or exact name parameter."), pretty);
+	}
+
+	try {
+		const exactHit = await engine.scryfallExactName(needle, setCode, baseUrl);
+		if (exactHit) return renderCard(exactHit, render.format, render.face, render.version, pretty);
+
+		// Two is all it takes to tell "one match" from "ambiguous"; asking for more would scan the
+		// same corpus to throw the rest away.
+		const contained = await engine.scryfallNamesContaining(words, setCode, 2, baseUrl);
+		if (contained.length > 1) return ambiguous(fuzzy, pretty);
+		const only = contained[0];
+		if (only) return renderCard(only, render.format, render.face, render.version, pretty);
+
+		const { status, card } = await engine.scryfallFuzzyName(needle, baseUrl);
+		if (status === "ambiguous") return ambiguous(fuzzy, pretty);
+		if (status === "hit" && card) return renderCard(card, render.format, render.face, render.version, pretty);
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty);
+}
+
+function ambiguous(name: string, pretty: boolean): Response {
+	return scryfallJson(
+		errorObject(
+			"ambiguous",
+			404,
+			`Too many cards match ambiguous name “${name}”. Add more words to refine your search.`,
+		),
+		pretty,
+	);
+}
+
+// ─── GET /cards/autocomplete ─────────────────────────────────────────────────
+
+export async function cardsAutocompleteHandler(
+	ctx: RouteContext,
+	_positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
+	const pretty = asBool(params.pretty);
+	const needle = (params.q ?? "").trim();
+	// Scryfall answers an empty catalog below two characters rather than scanning for one letter.
+	if (needle.length < 2) return scryfallJson(catalogObject([]), pretty);
+	const engine = await ctx.getEngine();
+	try {
+		const names = await engine.scryfallAutocomplete(needle, MAX_AUTOCOMPLETE_VALUES);
+		return scryfallJson(catalogObject(names), pretty);
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+}
+
+// ─── GET /cards/random ───────────────────────────────────────────────────────
+
+export async function cardsRandomHandler(
+	ctx: RouteContext,
+	_positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
+	const pretty = asBool(params.pretty);
+	const format = (params.format ?? "json").toLowerCase();
+	const engine = await ctx.getEngine();
+	const baseUrl = apiBaseUrl(ctx);
+	const q = params.q;
+
+	let filterTreeJson = TRUE_TREE;
+	if (q?.trim()) {
+		const parser = await loadParser();
+		try {
+			filterTreeJson = canonicalStringify(parser.parseWithDirectives(q).tree as FilterValue);
+		} catch (err) {
+			if (parser.isParseError(err)) {
+				return scryfallJson(badRequestError(`Failed to parse query: "${q}"`), pretty);
+			}
+			throw err;
+		}
+	}
+
+	try {
+		// Two passes, like upstream: count, then take one card at a random offset. A sort over the
+		// whole match set to keep one row would be the alternative, and it is strictly worse.
+		const counted = await engine.scryfallSearch(
+			{
+				filterTreeJson,
+				unique: "card",
+				prefer: "default",
+				orderby: "name",
+				direction: "asc",
+				limit: 1,
+				offset: 0,
+				fields: [],
+			},
+			baseUrl,
+		);
+		if (counted.totalCards === 0) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, NO_STORE_HEADER);
+
+		const offset = Math.floor(Math.random() * counted.totalCards);
+		const drawn = await engine.scryfallSearch(
+			{
+				filterTreeJson,
+				unique: "card",
+				prefer: "default",
+				orderby: "name",
+				direction: "asc",
+				limit: 1,
+				offset,
+				fields: [],
+			},
+			baseUrl,
+		);
+		const cards = JSON.parse(drawn.cardsJson) as Record<string, unknown>[];
+		const card = cards[0];
+		if (!card) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, NO_STORE_HEADER);
+		const response = renderCard(card, format, params.face ?? "front", params.version ?? DEFAULT_IMAGE_VERSION, pretty);
+		// Never cached, at either layer: a cached random card is one card forever.
+		response.headers.set("Cache-Control", "no-store");
+		return response;
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+}
+
+// ─── POST /cards/collection ──────────────────────────────────────────────────
+
+export async function cardsCollectionHandler(
+	ctx: RouteContext,
+	_positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
+	const pretty = asBool(params.pretty);
+	let body: unknown;
+	try {
+		body = await ctx.request.json();
+	} catch {
+		body = null;
+	}
+	const identifiers = (body as { identifiers?: unknown } | null)?.identifiers;
+	if (!Array.isArray(identifiers)) {
+		return scryfallJson(
+			errorObject("validation_error", 422, "The request body must be a JSON object with an `identifiers` array."),
+			pretty,
+		);
+	}
+	if (identifiers.length > MAX_COLLECTION_IDENTIFIERS) {
+		return scryfallJson(
+			errorObject(
+				"validation_error",
+				422,
+				`A maximum of ${MAX_COLLECTION_IDENTIFIERS} card references may be submitted at once.`,
+			),
+			pretty,
+		);
+	}
+
+	const engine = await ctx.getEngine();
+	const baseUrl = apiBaseUrl(ctx);
+	try {
+		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl);
+		const found: Record<string, unknown>[] = [];
+		const notFound: unknown[] = [];
+		const seen = new Set<string>();
+		for (let at = 0; at < identifiers.length; at++) {
+			const card = resolved[at];
+			if (!card) {
+				notFound.push(identifiers[at]);
+				continue;
+			}
+			const id = String(card.id);
+			if (seen.has(id)) continue;
+			seen.add(id);
+			found.push(card);
+		}
+		return scryfallJson(cardList(found, { notFound }), pretty);
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+}
+
+/**
+ * Resolve every collection identifier, batching by kind.
+ *
+ * Batched rather than looped because each lookup is a Durable Object RPC: 75 identifiers resolved
+ * one at a time would be 75 round trips. Every kind that is a query becomes a filter tree here and
+ * goes over in one call; the id-shaped kinds go over in one call each.
+ */
+async function resolveIdentifiers(
+	engine: Engine,
+	identifiers: unknown[],
+	baseUrl: string,
+): Promise<(Record<string, unknown> | null)[]> {
+	const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
+	const byScryfallId: { at: number; id: string }[] = [];
+	const byTree: { at: number; tree: string }[] = [];
+	// The remaining kinds each need their own engine entry point, so they are gathered per kind
+	// and awaited together rather than serialized.
+	const singles: Promise<void>[] = [];
+
+	for (let at = 0; at < identifiers.length; at++) {
+		const ident = identifiers[at];
+		if (typeof ident !== "object" || ident === null) continue;
+		const id = ident as Record<string, unknown>;
+		const put = (p: Promise<Record<string, unknown> | null>) => {
+			singles.push(
+				p.then((card) => {
+					out[at] = card;
+				}),
+			);
+		};
+
+		if (typeof id.id === "string" && isUuid(id.id)) {
+			byScryfallId.push({ at, id: id.id });
+		} else if (typeof id.oracle_id === "string" && isUuid(id.oracle_id)) {
+			put(engine.scryfallCardByOracleId(id.oracle_id, baseUrl));
+		} else if (typeof id.illustration_id === "string" && isUuid(id.illustration_id)) {
+			put(engine.scryfallCardByIllustrationId(id.illustration_id, baseUrl));
+		} else if (id.mtgo_id !== undefined) {
+			const n = asInt(String(id.mtgo_id));
+			if (n !== undefined) put(engine.scryfallCardByExternalId("mtgo", n, baseUrl));
+		} else if (id.multiverse_id !== undefined) {
+			const n = asInt(String(id.multiverse_id));
+			if (n !== undefined) put(engine.scryfallCardByExternalId("multiverse", n, baseUrl));
+		} else if (id.set !== undefined && id.collector_number !== undefined) {
+			byTree.push({ at, tree: setAndCollectorNumber(String(id.set), String(id.collector_number)) });
+		} else if (id.name !== undefined) {
+			byTree.push({ at, tree: cardName(String(id.name), id.set === undefined ? undefined : String(id.set)) });
+		}
+	}
+
+	if (byScryfallId.length > 0) {
+		singles.push(
+			engine
+				.scryfallCardsByIds(
+					byScryfallId.map((e) => e.id),
+					baseUrl,
+				)
+				.then((cards) => {
+					// The batch skips misses, so results are matched back BY ID rather than by position.
+					const byId = new Map(cards.map((c) => [String(c.id).toLowerCase(), c]));
+					for (const { at, id } of byScryfallId) out[at] = byId.get(id.toLowerCase()) ?? null;
+				}),
+		);
+	}
+	if (byTree.length > 0) {
+		singles.push(
+			engine
+				.scryfallFirstOfEach(
+					byTree.map((e) => e.tree),
+					baseUrl,
+				)
+				.then((cards) => {
+					for (let i = 0; i < byTree.length; i++) {
+						const entry = byTree[i];
+						if (entry) out[entry.at] = cards[i] ?? null;
+					}
+				}),
+		);
+	}
+
+	await Promise.all(singles);
+	return out;
+}
+
+// ─── GET /cards and /cards/... ───────────────────────────────────────────────
+
+/**
+ * Every `/cards/*` shape the five named sub-routes do not claim, dispatched by segment count:
+ *
+ *   - `/cards`                            every card, paginated
+ *   - `/cards/:id`                        one card by Scryfall id
+ *   - `/cards/:namespace/:id`             one card by multiverse/mtgo/arena/tcgplayer/cardmarket id
+ *   - `/cards/:code/:number`              one card by set code and collector number
+ *   - `/cards/:code/:number/:lang`        the same, in one language
+ *   - `.../rulings` on any of the above   Scryfall's 404 shape; see the module header
+ */
+export async function cardsHandler(
+	ctx: RouteContext,
+	positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
+	const pretty = asBool(params.pretty);
+	const [identifier = "", number = "", suffix = ""] = positionalArgs;
+
+	if (!identifier) return allCardsPage(ctx, params, pretty);
+
+	// A trailing `rulings` is recognized so it gets a SCRYFALL-shaped 404 rather than being read
+	// as a collector number or falling through to this port's routes-listing 404. Deliberately not
+	// an empty list: that would claim the card has no rulings, which is a different and false
+	// statement from "this deployment does not serve rulings".
+	if (number === "rulings" || suffix === "rulings") {
+		return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+	}
+
+	const engine = await ctx.getEngine();
+	const baseUrl = apiBaseUrl(ctx);
+	const format = (params.format ?? "json").toLowerCase();
+	const face = params.face ?? "front";
+	const version = params.version ?? DEFAULT_IMAGE_VERSION;
+
+	let card: Record<string, unknown> | null = null;
+	try {
+		if ((EXTERNAL_ID_NAMESPACES as readonly string[]).includes(identifier)) {
+			const externalId = asInt(number);
+			if (externalId === undefined) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+			card = await engine.scryfallCardByExternalId(identifier, externalId, baseUrl);
+		} else if (!number) {
+			if (!isUuid(identifier)) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+			card = await engine.scryfallCardById(identifier, baseUrl);
+		} else {
+			const [first] = await engine.scryfallFirstOfEach([setAndCollectorNumber(identifier, number)], baseUrl);
+			card = first ?? null;
+			// DELIBERATE DEVIATION: upstream filters the language in SQL. `lang` lives in the
+			// residue archive here and is not a filter field, so the card is resolved first and
+			// its OWN stored language checked — which uses the real value rather than assuming.
+			// Scryfall defaults the segment to English.
+			if (card && String(card.lang ?? "en") !== (suffix || "en")) card = null;
+		}
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+
+	if (!card) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+	return renderCard(card, format, face, version, pretty);
+}
+
+/** One page of the unfiltered `/cards` listing, ordered by name like Scryfall's. */
+async function allCardsPage(ctx: RouteContext, params: Record<string, string>, pretty: boolean): Promise<Response> {
+	const page = asInt(params.page) ?? 1;
+	if (page < 1) return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty);
+	const engine = await ctx.getEngine();
+	let result: { totalCards: number; cardsJson: string };
+	try {
+		result = await engine.scryfallSearch(
+			{
+				filterTreeJson: TRUE_TREE,
+				unique: "printing",
+				prefer: "default",
+				orderby: "name",
+				direction: "asc",
+				limit: PAGE_SIZE,
+				offset: (page - 1) * PAGE_SIZE,
+				fields: [],
+			},
+			apiBaseUrl(ctx),
+		);
+	} catch (err) {
+		return engineFailure(err, pretty);
+	}
+	if (result.cardsJson === "[]") return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty);
+	const hasMore = (page - 1) * PAGE_SIZE + countCards(result.cardsJson) < result.totalCards;
+	return scryfallListJson(
+		result.cardsJson,
+		{
+			totalCards: result.totalCards,
+			hasMore,
+			nextPage: hasMore ? buildPageUrl(selfBaseUrl(ctx, "/cards"), {}, page + 1) : undefined,
+		},
+		pretty,
+	);
+}
+
+export type { ScryfallError };

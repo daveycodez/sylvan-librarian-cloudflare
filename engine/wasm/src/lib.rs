@@ -352,6 +352,50 @@ pub fn fuzzy_card_by_name(name: &str, floor: f32, lead: f32, fields_json: &str) 
     })
 }
 
+/// The best printing of a card whose FOLDED name matches exactly, or `null`.
+///
+/// `folded` must already be lowercased and accent-folded by the caller (foldAccents in
+/// src/parser/pystr.ts), the same way `card_name_folded` was at import. `set_code` is "" for no
+/// set restriction.
+#[wasm_bindgen]
+pub fn exact_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    with_store(|store| {
+        let found = store.exact_card_by_name(folded, set, fields).map_err(js_err)?;
+        Ok(found.unwrap_or(serde_json::Value::Null).to_string())
+    })
+}
+
+/// The best printing carrying this illustration id, or `null`.
+#[wasm_bindgen]
+pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let found = store.card_by_illustration_id(illustration_id, fields).map_err(js_err)?;
+        Ok(found.unwrap_or(serde_json::Value::Null).to_string())
+    })
+}
+
+/// One card per distinct name containing EVERY word, best printing each, up to `limit`.
+/// The containment stage of `/cards/named?fuzzy=`; the caller asks for 2 and reads the count.
+#[wasm_bindgen]
+pub fn cards_containing_all_words(
+    words_json: &str,
+    set_code: &str,
+    limit: u32,
+    fields_json: &str,
+) -> Result<String, JsError> {
+    let words: Vec<String> =
+        serde_json::from_str(words_json).map_err(|e| JsError::new(&format!("bad words JSON: {e}")))?;
+    let fields = parse_fields(fields_json)?;
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    with_store(|store| {
+        let rows = store.cards_containing_all_words(&words, set, limit as usize, fields).map_err(js_err)?;
+        Ok(serde_json::Value::Array(rows).to_string())
+    })
+}
+
 /// Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
 #[wasm_bindgen]
 pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {

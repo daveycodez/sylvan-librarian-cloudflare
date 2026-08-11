@@ -41,6 +41,20 @@ declare module "sylvan-engine-wasm" {
 	export function fuzzy_card_by_name(name: string, floor: number, lead: number, fieldsJson: string): string;
 	/** Printed card names matching a partial name, prefix matches first. JSON array. */
 	export function autocomplete(prefix: string, limit: number): string;
+	/**
+	 * The best printing of a card whose FOLDED name matches exactly, or JSON `null`. `folded` is
+	 * already lowercased and accent-folded by the caller; `setCode` is "" for no restriction.
+	 */
+	export function exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
+	/** The best printing carrying this illustration id, or JSON `null`. */
+	export function card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
+	/** One card per distinct name containing every word, best printing each. JSON array. */
+	export function cards_containing_all_words(
+		wordsJson: string,
+		setCode: string,
+		limit: number,
+		fieldsJson: string,
+	): string;
 	/** Printing count (upstream size()); 0 = no store loaded. */
 	export function size(): number;
 	/** Oracle-card count of the loaded store. */

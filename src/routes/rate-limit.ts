@@ -82,6 +82,12 @@ export class RateLimiter extends DurableObject<Env> {
 /** Routes whose handlers run the engine; everything else is never limited. */
 export function isRateLimitedRoute(routeKey: string, params: Record<string, string>): boolean {
 	if (routeKey === "search" || routeKey === "random_search") return true;
+	// Every Scryfall-compatible route runs the engine, and most of them build card objects on top
+	// of it -- `cards/collection` resolves up to 75 in one request and `cards/named` scans the name
+	// vocabulary. A route that computes and is absent here does not get a smaller share of the
+	// limiter; it bypasses the limiter entirely, which is why this list is enumerated rather than
+	// inferred from the route table.
+	if (routeKey === "cards" || routeKey.startsWith("cards/")) return true;
 	// The SSR root only computes when a query is embedded.
 	return routeKey === "_root" && Boolean(params.q || params.query);
 }

@@ -99,6 +99,27 @@ interface SearchEngineStub {
 		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ names: string[] } & Telemetry>;
+	scryfallExactName(
+		folded: string,
+		setCode: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallCardByIllustrationId(
+		illustrationId: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallNamesContaining(
+		words: string[],
+		setCode: string,
+		limit: number,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ cards: Record<string, unknown>[] } & Telemetry>;
 	scryfallFirstOfEach(
 		filterTreeJsons: string[],
 		baseUrl: string,
@@ -327,6 +348,32 @@ export class RemoteEngine implements Engine {
 			this.stub.scryfallAutocomplete(prefix, limit, this.fallbackHint, currentShardWidth()),
 		);
 		return names;
+	}
+
+	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		const { card } = await this.searchRpc(() =>
+			this.stub.scryfallExactName(folded, setCode, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return card;
+	}
+
+	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		const { card } = await this.searchRpc(() =>
+			this.stub.scryfallCardByIllustrationId(illustrationId, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return card;
+	}
+
+	async scryfallNamesContaining(
+		words: string[],
+		setCode: string,
+		limit: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown>[]> {
+		const { cards } = await this.searchRpc(() =>
+			this.stub.scryfallNamesContaining(words, setCode, limit, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return cards;
 	}
 
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {

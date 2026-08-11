@@ -483,6 +483,51 @@ export class SearchEngine extends DurableObject<Env> {
 		);
 	}
 
+	async scryfallExactName(
+		folded: string,
+		setCode: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallExactName(folded, setCode, baseUrl),
+			async (engine) => ({ card: await engine.scryfallExactName(folded, setCode, baseUrl) }),
+		);
+	}
+
+	async scryfallCardByIllustrationId(
+		illustrationId: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallCardByIllustrationId(illustrationId, baseUrl),
+			async (engine) => ({ card: await engine.scryfallCardByIllustrationId(illustrationId, baseUrl) }),
+		);
+	}
+
+	async scryfallNamesContaining(
+		words: string[],
+		setCode: string,
+		limit: number,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardsReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallNamesContaining(words, setCode, limit, baseUrl),
+			async (engine) => ({ cards: await engine.scryfallNamesContaining(words, setCode, limit, baseUrl) }),
+		);
+	}
+
 	async scryfallFirstOfEach(
 		filterTreeJsons: string[],
 		baseUrl: string,

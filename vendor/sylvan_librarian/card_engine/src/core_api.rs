@@ -1388,6 +1388,161 @@ impl BufferStore {
         }
     }
 
+    /// The best printing of a card whose FOLDED name matches exactly, optionally within one set.
+    ///
+    /// LOCAL ADDITION (Cloudflare port). Upstream does this in SQL and has no engine equivalent,
+    /// so `/cards/named?exact=` would be the one route with nothing behind it here. The predicate
+    /// is upstream's, verbatim: the whole folded name, OR either half of a `Front // Back` name --
+    /// Scryfall resolves `exact=Delver of Secrets` to the two-faced card, and matching only the
+    /// combined name would 404 it.
+    ///
+    /// `folded` must already be lowercased and accent-folded by the caller, the same way
+    /// `card_name_folded` was at import (foldAccents in src/parser/pystr.ts). A scan, for the same
+    /// reason the fuzzy match is one: ~31,700 names, nothing stored, and it runs in the DO.
+    pub fn exact_card_by_name(
+        &self,
+        folded: &str,
+        set_code: Option<&str>,
+        fields: Option<Vec<String>>,
+    ) -> Result<Option<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
+        let data = self.data();
+        // Ranked on (whole-name match, prefer_score), in that order.
+        //
+        // DELIBERATE DIVERGENCE from upstream, which orders on prefer_score alone. On this corpus
+        // that returns `Emeritus of Conflict // Lightning Bolt` for `exact=Lightning Bolt`,
+        // because a two-faced card whose BACK face carries the name outscores the card actually
+        // named that. Scryfall returns the whole-name match. Matching a face is right -- Scryfall
+        // resolves `exact=Delver of Secrets` -- but it is a FALLBACK, not a peer.
+        let mut best: Option<(bool, f32, usize, usize)> = None;
+        for (cid, card) in data.cards.iter().enumerate() {
+            let stored = card.card_name_folded.as_str();
+            if !folded_name_matches(stored, folded) {
+                continue;
+            }
+            let whole = stored == folded;
+            let Some((pid, score)) = self.best_printing_of(cid, set_code) else {
+                continue;
+            };
+            if best.is_none_or(|(bw, bs, _, _)| (whole, score) > (bw, bs)) {
+                best = Some((whole, score, cid, pid));
+            }
+        }
+        let Some((_, _, cid, pid)) = best else { return Ok(None) };
+        Ok(Some(card_to_json(
+            &data.cards[cid],
+            &data.printings[pid],
+            &data.strings,
+            &data.coll_vocab,
+            self.residue_row(cid, pid).as_ref(),
+            &resolved_fields,
+        )))
+    }
+
+    /// One card per DISTINCT name whose folded name contains every one of `words`, best printing
+    /// each, up to `limit`.
+    ///
+    /// LOCAL ADDITION, same reasoning as `exact_card_by_name`: this is the containment stage of
+    /// `/cards/named?fuzzy=`, which upstream runs as a `DISTINCT ON (card_name)` with a LIKE per
+    /// word. The caller asks for 2 and reads the count: more than one distinct name is
+    /// `ambiguous`, which Scryfall reports rather than guessing between.
+    pub fn cards_containing_all_words(
+        &self,
+        words: &[String],
+        set_code: Option<&str>,
+        limit: usize,
+        fields: Option<Vec<String>>,
+    ) -> Result<Vec<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
+        let data = self.data();
+        // Best printing per distinct NAME, not per card: two cards sharing a name are one answer.
+        let mut by_name: Vec<(&str, f32, usize, usize)> = Vec::new();
+        for (cid, card) in data.cards.iter().enumerate() {
+            let name = card.card_name_folded.as_str();
+            if !words.iter().all(|w| name.contains(w.as_str())) {
+                continue;
+            }
+            let Some((pid, score)) = self.best_printing_of(cid, set_code) else {
+                continue;
+            };
+            match by_name.iter_mut().find(|(n, _, _, _)| *n == name) {
+                Some(slot) if score > slot.1 => *slot = (name, score, cid, pid),
+                Some(_) => {}
+                None => by_name.push((name, score, cid, pid)),
+            }
+            // One past the limit is enough to tell "one match" from "ambiguous"; the caller asks
+            // for 2 and never needs the rest.
+            if by_name.len() > limit {
+                break;
+            }
+        }
+        by_name.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        Ok(by_name
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, cid, pid)| {
+                card_to_json(
+                    &data.cards[cid],
+                    &data.printings[pid],
+                    &data.strings,
+                    &data.coll_vocab,
+                    self.residue_row(cid, pid).as_ref(),
+                    &resolved_fields,
+                )
+            })
+            .collect())
+    }
+
+    /// The best printing carrying this illustration id, or None.
+    ///
+    /// LOCAL ADDITION (Cloudflare port). `illustration_id` is one of the identifiers Scryfall's
+    /// collection endpoint accepts, and upstream answers it with a plain column predicate — but it
+    /// is not a searchable field in this port's query language, so there is no filter tree that
+    /// expresses it. A scan over ~95,000 printings comparing a u128, which is cheaper than the
+    /// index it would otherwise need and runs in the DO.
+    pub fn card_by_illustration_id(
+        &self,
+        illustration_id: &str,
+        fields: Option<Vec<String>>,
+    ) -> Result<Option<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
+        let data = self.data();
+        let needle = parse_uuid_or_hash(illustration_id);
+        if needle == 0 {
+            return Ok(None);
+        }
+        // Printings are stored in descending default-prefer order within each card, so the first
+        // match is the best printing of the first card to carry this art -- the representative
+        // every other by-artwork path shows.
+        let Some(pid) = (0..data.printings.len()).find(|&pid| u128::from(data.printings[pid].illustration_id) == needle)
+        else {
+            return Ok(None);
+        };
+        let cid = u32::from(data.indexes.printing_to_card[pid]) as usize;
+        Ok(Some(card_to_json(
+            &data.cards[cid],
+            &data.printings[pid],
+            &data.strings,
+            &data.coll_vocab,
+            self.residue_row(cid, pid).as_ref(),
+            &resolved_fields,
+        )))
+    }
+
+    /// A card's best printing and its score, optionally restricted to one set.
+    ///
+    /// Printings are stored in descending default-prefer order, so the first one that passes the
+    /// set filter IS the best -- the same representative every other by-name path shows.
+    fn best_printing_of(&self, cid: usize, set_code: Option<&str>) -> Option<(usize, f32)> {
+        let data = self.data();
+        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+        (start..end)
+            .find(|&pid| {
+                set_code.is_none_or(|s| data.printings[pid].card_set_code.as_str().eq_ignore_ascii_case(s))
+            })
+            .map(|pid| (pid, data.printings[pid].prefer_score.as_ref().map_or(f32::MIN, |v| f32::from(*v))))
+    }
+
     /// Mirror of the pyo3 `autocomplete()`, but returning the card's PRINTED name rather than the
     /// folded/lowered key it matched on.
     ///
@@ -1675,6 +1830,17 @@ fn opt_u32_value(v: Option<u32>) -> Value {
 /// Dollars from the stored integer cents, or `null` — the same conversion `price_usd` uses.
 fn opt_cents_value(v: Option<u32>) -> Value {
     v.map(|c| Value::from(f64::from(c) / 100.0)).unwrap_or(Value::Null)
+}
+
+/// Upstream's `exact=` predicate: the whole folded name, or either half of a `Front // Back` one.
+fn folded_name_matches(stored: &str, needle: &str) -> bool {
+    if stored == needle {
+        return true;
+    }
+    match stored.split_once(" // ") {
+        Some((front, back)) => front == needle || back == needle,
+        None => false,
+    }
 }
 
 /// JSON twin of `faces_to_pylist`: text from the oracle card, art from this printing.

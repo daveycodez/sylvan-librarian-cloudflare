@@ -162,7 +162,41 @@ The complete list of intentional differences:
 
 - **No SQL fallback.** Upstream quietly falls back to Postgres when the engine
   declines a query; the wasm engine is the only path here, so an engine
-  failure is a loud 500 rather than a silently different answer.
+  failure is a loud 500 rather than a silently different answer. On the
+  `/cards/*` surface this also removes upstream's `_EngineMiss` sentinel and its
+  five `except → fall back` sites: with no second branch to select, an engine
+  miss **is** the 404.
+- **Rulings are not served.** Upstream's come from `magic.rulings`, filled by
+  `api/rulings_import.py` against Postgres, which this deployment does not have.
+  A trailing `rulings` segment on any `/cards/*` path returns Scryfall's 404
+  error object, and `import_rulings` is a 501 stub like the other Postgres-only
+  admin routes. Deliberately **not** an empty `List`: upstream answers 200 with
+  `data: []` for a card with no rulings, and reusing that here would claim the
+  card has none rather than that this deployment serves none.
+- **The Scryfall card object is assembled from stored fields**, not unwrapped
+  from a `raw_card_blob` this port does not store — 29 columns, 12 derived keys
+  (every `*_uri` and `image_uris` are pure functions of the id, set, collector
+  number and oracle id) and a packed residue. Absent keys stay absent, because
+  Scryfall omits rather than nulls and a card that sprouts nulls differs from
+  Scryfall on every row. That residue lives in a **second KV archive** loaded
+  only when a `/cards/*` route needs it: inlining it took the store past its
+  three-chunk ceiling and the in-Worker import past its 112 MiB wasm cap, and
+  `/search` reads none of it.
+- **`/cards/:code/:number/:lang` checks the language after resolving**, where
+  upstream filters on it in SQL. `lang` lives in the residue archive and is not
+  a query field, so the printing is resolved by set and collector number and its
+  own stored language compared — which uses the real value rather than assuming
+  one. A mismatch is a 404, as it is upstream.
+- **`/cards/named?exact=` prefers a whole-name match to a face match.** Upstream
+  orders both by `prefer_score` alone, which on this corpus answers
+  `exact=Lightning Bolt` with *Emeritus of Conflict // Lightning Bolt* — a
+  two-faced card whose back face carries the name and whose score is higher.
+  Matching a face is right and Scryfall does it (`exact=Delver of Secrets`
+  resolves), but as a fallback rather than a peer. Reported upstream.
+- **`/cards/search?order=penny` falls back to name with a warning**, as an
+  unrecognized order does. `penny_rank` is stored, but in the residue archive,
+  which carries no sort permutations. `order=review` is Scryfall-internal and
+  not reproducible at all.
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
   That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
   Postgres and S3, neither of which this deployment has — so it was reading a

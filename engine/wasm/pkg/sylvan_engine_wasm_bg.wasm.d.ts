@@ -19,6 +19,9 @@ export const cards_by_scryfall_ids: (a: number, b: number, c: number, d: number)
 export const printings_of_oracle_id: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const card_by_external_id: (a: number, b: number, c: bigint, d: number, e: number) => [number, number, number, number];
 export const fuzzy_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const exact_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const card_by_illustration_id: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const cards_containing_all_words: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
 export const store_load_chunk: (a: number, b: number) => [number, number];
 export const size: () => number;
