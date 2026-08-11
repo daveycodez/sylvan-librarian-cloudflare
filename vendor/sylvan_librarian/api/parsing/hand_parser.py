@@ -497,11 +497,11 @@ class Parser:
         if val_tok.type in (TT.WORD, TT.QUOTED, TT.NUMBER):
             self.consume()
             value = str(val_tok.value)
-            # Glue hyphenated continuations, exactly as _text_value does. `-` is not a word
+            # Glue hyphenated continuations, exactly as parse_text_value does. `-` is not a word
             # character, so `usd-low` lexes as WORD MINUS WORD; consuming a single token stopped
             # at `usd` and left `-low` to fail the parse. That made the hyphenated spellings
-            # Scryfall accepts -- and that _DIRECTIVE_PREFER enumerates -- unreachable from
-            # inside a query by any input. A QUOTED value is already one token.
+            # Scryfall accepts -- and that _DIRECTIVE_PREFER in api_resource enumerates --
+            # unreachable from inside a query by any input. A QUOTED value is already one token.
             if val_tok.type is not TT.QUOTED:
                 while (
                     self.peek().type == TT.MINUS
