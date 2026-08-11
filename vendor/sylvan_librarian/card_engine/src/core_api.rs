@@ -1056,6 +1056,15 @@ impl BufferStore {
         Ok(())
     }
 
+    /// [`Self::attach_compat`] from a plain slice, the `from_bytes` twin of `from_aligned`.
+    /// Copies into a fresh aligned buffer; for callers that already hold the archive contiguously
+    /// (the native builder, tests) rather than streaming it in.
+    pub fn attach_compat_bytes(&mut self, bytes: &[u8]) -> Result<(), EngineError> {
+        let mut buf = AlignedVec::with_capacity(bytes.len());
+        buf.extend_from_slice(bytes);
+        self.attach_compat(buf)
+    }
+
     /// Whether the residue archive is attached.
     pub fn has_compat(&self) -> bool {
         self.compat.is_some()
@@ -1785,11 +1794,11 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
         p.card_rarity_int
             .as_ref()
             .copied()
-            .and_then(|v| rarity_int_to_text(u8::from(v)))
+            .and_then(|v| rarity_int_to_text(v))
             .map(Value::from)
             .unwrap_or(Value::Null)
     }),
-    ("color_identity", |c, _p, _s, _v| str_vec_value(identity_letters(u8::from(c.card_color_identity)))),
+    ("color_identity", |c, _p, _s, _v| str_vec_value(identity_letters(c.card_color_identity))),
     ("legalities", |c, p, _s, _v| {
         // Printing-level word only for the ~556 divergence cards, the same rule the filters use.
         let bits = if c.legality_divergent { u64::from(p.card_legalities) } else { u64::from(c.card_legalities) };
@@ -1800,7 +1809,7 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // in this port, so these hand-written twins are the live table. The residue fields are NOT
     // here — they moved to JSON_COMPAT_FIELD_TABLE below with the second archive.
     ("card_faces", |c, p, s, v| faces_to_json(c, p, s, v)),
-    ("colors", |c, _p, _s, _v| str_vec_value(identity_letters(u8::from(c.card_colors)))),
+    ("colors", |c, _p, _s, _v| str_vec_value(identity_letters(c.card_colors))),
     // See FIELD_TABLE's note: upstream emits `border_color: null` on every engine-served card and
     // omits `frame`, because neither had an accessor. Scryfall always sends both.
     ("border_color", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.card_border_id)))),
@@ -1869,10 +1878,10 @@ fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, v
                     "loyalty".to_owned(),
                     opt_str_value(str_at(strings, u32::from(face.planeswalker_loyalty_text_id))),
                 );
-                m.insert("colors".to_owned(), str_vec_value(identity_letters(u8::from(face.card_colors))));
+                m.insert("colors".to_owned(), str_vec_value(identity_letters(face.card_colors)));
                 m.insert(
                     "color_indicator".to_owned(),
-                    str_vec_value(identity_letters(u8::from(face.color_indicator))),
+                    str_vec_value(identity_letters(face.color_indicator)),
                 );
                 if let Some(art) = printing.faces.get(i) {
                     m.insert("artist".to_owned(), opt_str_value(coll_str_opt(vocab, u16::from(art.card_artist_vid))));
@@ -1905,25 +1914,25 @@ const JSON_COMPAT_FIELD_TABLE: &[(&str, JsonCompatExtractor)] = &[
     ("set_type", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.set_type_id)))),
     ("security_stamp", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.security_stamp_id)))),
     ("set_id", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.set_vid)))),
-    ("arena_id", |x| opt_u32_value(x.residue.compat.arena_id.as_ref().map(|v| u32::from(v.get())))),
-    ("mtgo_id", |x| opt_u32_value(x.residue.compat.mtgo_id.as_ref().map(|v| u32::from(v.get())))),
-    ("mtgo_foil_id", |x| opt_u32_value(x.residue.compat.mtgo_foil_id.as_ref().map(|v| u32::from(v.get())))),
-    ("tcgplayer_id", |x| opt_u32_value(x.residue.compat.tcgplayer_id.as_ref().map(|v| u32::from(v.get())))),
-    ("tcgplayer_etched_id", |x| opt_u32_value(x.residue.compat.tcgplayer_etched_id.as_ref().map(|v| u32::from(v.get())))),
-    ("cardmarket_id", |x| opt_u32_value(x.residue.compat.cardmarket_id.as_ref().map(|v| u32::from(v.get())))),
-    ("penny_rank", |x| opt_u32_value(x.residue.compat.penny_rank.as_ref().map(|v| u32::from(v.get())))),
-    ("image_updated_at", |x| opt_u32_value(x.residue.compat.image_updated_at.as_ref().map(|v| u32::from(v.get())))),
+    ("arena_id", |x| opt_u32_value(x.residue.compat.arena_id.as_ref().map(|v| v.get()))),
+    ("mtgo_id", |x| opt_u32_value(x.residue.compat.mtgo_id.as_ref().map(|v| v.get()))),
+    ("mtgo_foil_id", |x| opt_u32_value(x.residue.compat.mtgo_foil_id.as_ref().map(|v| v.get()))),
+    ("tcgplayer_id", |x| opt_u32_value(x.residue.compat.tcgplayer_id.as_ref().map(|v| v.get()))),
+    ("tcgplayer_etched_id", |x| opt_u32_value(x.residue.compat.tcgplayer_etched_id.as_ref().map(|v| v.get()))),
+    ("cardmarket_id", |x| opt_u32_value(x.residue.compat.cardmarket_id.as_ref().map(|v| v.get()))),
+    ("penny_rank", |x| opt_u32_value(x.residue.compat.penny_rank.as_ref().map(|v| v.get()))),
+    ("image_updated_at", |x| opt_u32_value(x.residue.compat.image_updated_at.as_ref().map(|v| v.get()))),
     // Dollars from integer cents, the same conversion price_usd uses.
-    ("price_usd_foil", |x| opt_cents_value(x.residue.compat.price_usd_foil.as_ref().map(|v| u32::from(v.get())))),
-    ("price_usd_etched", |x| opt_cents_value(x.residue.compat.price_usd_etched.as_ref().map(|v| u32::from(v.get())))),
-    ("price_eur_foil", |x| opt_cents_value(x.residue.compat.price_eur_foil.as_ref().map(|v| u32::from(v.get())))),
+    ("price_usd_foil", |x| opt_cents_value(x.residue.compat.price_usd_foil.as_ref().map(|v| v.get()))),
+    ("price_usd_etched", |x| opt_cents_value(x.residue.compat.price_usd_etched.as_ref().map(|v| v.get()))),
+    ("price_eur_foil", |x| opt_cents_value(x.residue.compat.price_eur_foil.as_ref().map(|v| v.get()))),
     ("multiverse_ids", |x| {
         Value::Array(x.residue.compat.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
     }),
     ("promo_types", |x| str_vec_value(sorted_strs(x.vocab, &x.residue.compat.promo_types))),
     ("frame_effects", |x| str_vec_value(sorted_strs(x.vocab, &x.residue.compat.frame_effects))),
-    ("games", |x| str_vec_value(bits_to_names(u8::from(x.residue.compat.games), GAME_NAMES))),
-    ("finishes", |x| str_vec_value(bits_to_names(u8::from(x.residue.compat.finishes), FINISH_NAMES))),
+    ("games", |x| str_vec_value(bits_to_names(x.residue.compat.games, GAME_NAMES))),
+    ("finishes", |x| str_vec_value(bits_to_names(x.residue.compat.finishes, FINISH_NAMES))),
     ("booster", |x| Value::from(compat_flag(x.residue.compat, COMPAT_BOOSTER))),
     ("digital", |x| Value::from(compat_flag(x.residue.compat, COMPAT_DIGITAL))),
     ("foil", |x| Value::from(compat_flag(x.residue.compat, COMPAT_FOIL))),

@@ -3172,11 +3172,10 @@ pub(crate) fn fuzzy_name_match(cards: &Archived<Vec<OracleCard>>, needle: &str, 
                 }
             }
             _ => {
-                if let Some((prev_score, _, prev_name)) = best {
-                    if prev_name != name && runner_up.is_none_or(|r| prev_score > r) {
+                if let Some((prev_score, _, prev_name)) = best
+                    && prev_name != name && runner_up.is_none_or(|r| prev_score > r) {
                         runner_up = Some(prev_score);
                     }
-                }
                 best = Some((score, cid as u32, name));
             }
         }

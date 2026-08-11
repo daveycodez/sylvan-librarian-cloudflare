@@ -106,6 +106,10 @@ pub extern "C" fn builder_new() {
 
 /// Parse a newline-delimited batch of finalized rows; stage + spill each one.
 /// Takes ownership of the buffer allocated by probe_alloc (frees it).
+// The host is the only caller and it passes a pointer this module handed it from `probe_alloc`;
+// clippy cannot see that contract across the C ABI, and marking the export `unsafe` would change
+// the ABI surface the driver links against.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 pub extern "C" fn builder_add_jsonl(ptr: *mut u8, len: usize) -> i64 {
     let buf = unsafe { Vec::from_raw_parts(ptr, len, len) };
@@ -194,7 +198,10 @@ pub extern "C" fn builder_finish() -> i64 {
 
     let mut w = ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0 };
     let expected = order.len();
-    match builder.finish_from_sorted(rows, &mut w) {
+    // No residue writer: this probe measures the SEARCH archive's build peak, which is the number
+    // the 112 MiB wasm cap binds. The card-object archive is written and dropped earlier in the
+    // same call (see CompatData), so `None` here discards it without changing what is measured.
+    match builder.finish_from_sorted(rows, &mut w, None) {
         Ok(stats) => {
             if let Some(idx) = failed {
                 report_err(&format!("pull_row failed at blob {idx}"));

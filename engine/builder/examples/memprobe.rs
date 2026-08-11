@@ -465,7 +465,9 @@ fn cmd_phases(rows_path: &Path, out_dir: &Path) {
         }
     }
     let mut w = CheckpointWriter { inner: BufWriter::with_capacity(1 << 20, out), at_first_write: None };
-    let stats = builder.finish_to_writer(&mut w).expect("finish");
+    // `None`: this probe measures the SEARCH archive's build peak, which is the number the wasm
+    // memory cap binds. The card-object archive is written and dropped earlier in the same call.
+    let stats = builder.finish_to_writer(&mut w, None).expect("finish");
     w.flush().expect("flush");
     let (card_data_current, card_data_peak) = w.at_first_write.expect("store was written");
     let finish_peak = PEAK.load(Ordering::Relaxed);
@@ -512,7 +514,7 @@ fn cmd_spill(rows_path: &Path, out_dir: &Path) {
     let out = std::fs::File::create(&store_path).expect("create store");
     let mut w = BufWriter::with_capacity(1 << 20, out);
     let stats = builder
-        .finish_from_sorted(order.iter().map(|&i| std::mem::take(&mut spilled[i as usize])), &mut w)
+        .finish_from_sorted(order.iter().map(|&i| std::mem::take(&mut spilled[i as usize])), &mut w, None)
         .expect("finish_from_sorted");
     w.flush().expect("flush");
 

@@ -834,7 +834,7 @@ fn round4(v: f64) -> f64 {
 /// Magic's high-fantasy look. Shared by the `art_style` component and by [`pin_applies`], so the
 /// score and the pin cannot disagree about what "off style" means.
 pub fn is_off_style(art_tags: &[&str]) -> bool {
-    let has = |t: &str| art_tags.iter().any(|x| *x == t);
+    let has = |t: &str| art_tags.contains(&t);
     (has("external-ip") && !(has("dungeons-and-dragons") || has("the-lord-of-the-rings")))
         || has("anime")
         || has("comic-style")
@@ -1031,9 +1031,10 @@ fn real_val(v: f64) -> Value {
 ///   3. the prefer-score backfill (backfill_prefer_scores.sql), whose
 ///      illustration_count component counts qualifying magic.cards rows sharing
 ///      (illustration_id, card_name),
-///   4. the cubecobra-score backfill (backfill_cubecobra_scores.sql),
-/// and yields one `serde_json::Value` object per row with exactly the
-/// ENGINE_COLUMNS key set, in the shape `card_from_pydict` consumes.
+///   4. the cubecobra-score backfill (backfill_cubecobra_scores.sql).
+///
+/// It yields one `serde_json::Value` object per row with exactly the ENGINE_COLUMNS key set, in
+/// the shape `card_from_pydict` consumes.
 ///
 /// Sequencing note: upstream's `_run_import_under_lock` computes prefer scores
 /// BEFORE importing tags, against the art tags left in the DB by the previous
@@ -1126,7 +1127,6 @@ pub fn finalize_row(
     pinned: bool,
 ) -> Value {
     {
-        let r = r;
         let prefer = prefer_score(&r, art_tags, illustration_count) + if pinned { PIN_BONUS } else { 0.0 };
 
         // Exactly ENGINE_COLUMNS (card_engine/card_engine/__init__.py lines

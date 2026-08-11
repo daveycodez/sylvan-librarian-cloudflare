@@ -11796,6 +11796,12 @@ fn representative(data: &CardData, prefer: &str, orderby: &str, direction: &str)
 }
 
 #[test]
+// Prices are integer CENTS, written `dollars_cents` so `1827_00` reads as $1827.00 at a
+// glance. clippy wants `182_700` and `50`; both are what the column holds and neither says
+// what the money is. The grouping is the documentation here, so the lints are allowed on
+// these three rather than the literals being flattened. Mirrors the same allow upstream
+// (#913), so the vendored tree and the branch stay byte-comparable.
+#[allow(clippy::inconsistent_digit_grouping, clippy::zero_prefixed_literal)]
 fn price_orderby_represents_the_card_by_its_cheapest_printing() {
     // id 1 is prefer-best; the cheapest is a different printing in each currency.
     let data = priced_store(&[
@@ -11820,6 +11826,12 @@ fn price_orderby_represents_the_card_by_its_cheapest_printing() {
 /// leaving the pick to `prefer_score` gave the card no USD price at all and dropped it out
 /// of a price sort entirely. A missing price must lose to any real one.
 #[test]
+// Prices are integer CENTS, written `dollars_cents` so `1827_00` reads as $1827.00 at a
+// glance. clippy wants `182_700` and `50`; both are what the column holds and neither says
+// what the money is. The grouping is the documentation here, so the lints are allowed on
+// these three rather than the literals being flattened. Mirrors the same allow upstream
+// (#913), so the vendored tree and the branch stay byte-comparable.
+#[allow(clippy::inconsistent_digit_grouping, clippy::zero_prefixed_literal)]
 fn price_orderby_skips_a_printing_with_no_price_in_that_currency() {
     let data = priced_store(&[
         (None, None, Some(1_00)),          // id 1 — prefer-best, but unpriced in USD and EUR
@@ -11845,6 +11857,12 @@ fn price_orderby_keeps_the_default_representative_when_no_printing_is_priced() {
 /// An explicit `prefer=` is the caller naming the printing they want, and it still wins —
 /// `prefer_for_sort` only fills in a pick for callers that did not make one.
 #[test]
+// Prices are integer CENTS, written `dollars_cents` so `1827_00` reads as $1827.00 at a
+// glance. clippy wants `182_700` and `50`; both are what the column holds and neither says
+// what the money is. The grouping is the documentation here, so the lints are allowed on
+// these three rather than the literals being flattened. Mirrors the same allow upstream
+// (#913), so the vendored tree and the branch stay byte-comparable.
+#[allow(clippy::inconsistent_digit_grouping, clippy::zero_prefixed_literal)]
 fn an_explicit_prefer_still_beats_the_price_orderby() {
     let data = priced_store(&[
         (Some(9_00), Some(1_00), Some(9_00)), // id 1 — prefer-best, dearest in USD
@@ -11929,9 +11947,9 @@ fn compat_fields_survive_the_archive_round_trip() {
     assert_eq!(a.multiverse_ids.len(), 3);
 
     // Bitsets are only useful if membership survives independently of each other.
-    assert_ne!(u8::from(a.games) & GAME_PAPER, 0);
-    assert_ne!(u8::from(a.games) & GAME_ARENA, 0);
-    assert_eq!(u8::from(a.games) & 0b0000_0010, 0, "mtgo was not set");
+    assert_ne!(a.games & GAME_PAPER, 0);
+    assert_ne!(a.games & GAME_ARENA, 0);
+    assert_eq!(a.games & 0b0000_0010, 0, "mtgo was not set");
     assert_ne!(u16::from(a.flags) & COMPAT_PROMO, 0);
     assert_ne!(u16::from(a.flags) & COMPAT_REPRINT, 0);
     assert_eq!(u16::from(a.flags) & COMPAT_TEXTLESS, 0, "textless was not set");
@@ -11952,7 +11970,7 @@ fn absent_compat_values_stay_absent() {
     assert_eq!(u16::from(a.lang_id), VOCAB_NONE, "absent lang is the sentinel, not vocab id 0");
     assert_eq!(u16::from(a.set_type_id), VOCAB_NONE);
     assert_eq!(u16::from(a.set_vid), VOCAB_NONE);
-    assert_eq!(u8::from(a.games), 0);
+    assert_eq!(a.games, 0);
     assert_eq!(u16::from(a.flags), 0);
     assert!(a.multiverse_ids.is_empty());
     assert!(a.promo_types.is_empty());

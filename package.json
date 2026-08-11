@@ -17,6 +17,7 @@
     "load-test": "bun run scripts/load-test.ts",
     "bench:cards-search": "bun run scripts/bench-cards-search.ts",
     "check": "biome check src scripts tests",
+    "clippy": "scripts/clippy.sh",
     "typecheck": "tsc --noEmit",
     "sync-upstream": "scripts/sync-upstream.sh",
     "seed:local": "scripts/seed-local.sh",

@@ -668,6 +668,10 @@ impl Write for ChunkWriter {
 /// seek into the spill — 97,802 of them for a real corpus, which is what took
 /// the build past the Durable Object CPU ceiling. Knowing the order up front
 /// turns that into a sequential scan.
+// The host is the only caller and `dest`/`cap` come from a buffer it allocated through this
+// module's own ABI; clippy cannot see that contract across the C boundary, and marking the
+// export `unsafe` would change the ABI surface the coordinator links against.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 pub extern "C" fn staged_order(dest: *mut u8, cap: usize) -> i64 {
     with_state(|s| {

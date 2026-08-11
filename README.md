@@ -338,6 +338,12 @@ bun run seed:remote     # push a natively-built store to PRODUCTION KV
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck
+bun run clippy          # the RUST gate. Pinned to 1.97.1 — the toolchain
+                        # upstream's CI pins — because clippy lints differ by
+                        # release and a locally-green fix can land red there.
+                        # CLIPPY_FORCE=1 cleans first: a repeat `cargo clippy`
+                        # over an unchanged crate prints nothing and exits 0,
+                        # which reads exactly like a clean pass
 bun run build:wasm          # rebuild query-engine wasm after touching Rust
 bun run build:wasm-import   # rebuild import wasm after touching Rust
 bun run cf-typegen      # regenerate types after wrangler.jsonc changes

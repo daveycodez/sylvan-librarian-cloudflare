@@ -1,3 +1,7 @@
+// serde_json's `json!` expands recursively and this fixture is one deep literal; the default
+// 128 is not enough for it once the compat residue is nested inside.
+#![recursion_limit = "512"]
+
 //! The critical-path feasibility test: build a store from handcrafted card
 //! rows, load it through the buffer (no-mmap) path, and query it — the exact
 //! pipeline the Cloudflare Worker runs, with no python, postgres, or mmap
@@ -78,6 +82,16 @@ fn card_row(
         "creature_toughness_text": null,
         "planeswalker_loyalty": null,
         "card_watermark": null,
+        // The residue Scryfall sends that no column holds — the second archive's whole content.
+        // Verbatim Scryfall keys, exactly as the importer snapshots them (see `_compat_blob`).
+        "card_compat_blob": {
+            "lang": "en",
+            "games": ["paper"],
+            "finishes": ["nonfoil"],
+            "set_id": "9d739461-c5ac-43a1-af41-3d5a585b5c8d",
+            "set_type": "core",
+            "multiverse_ids": [12345],
+        },
     })
 }
 
@@ -150,7 +164,8 @@ fn build_load_query_roundtrip() {
     assert_eq!(builder.staged_rows(), 3);
 
     let mut bytes: Vec<u8> = Vec::new();
-    let stats = builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
+    // `None`: this test is about the SEARCH archive, which is the one /search loads.
+    let stats = builder.finish_to_writer(&mut bytes, None).expect("finish_to_writer");
     assert_eq!(stats.card_count, 2, "two distinct oracle ids");
     assert_eq!(stats.printing_count, 3, "three printings staged");
     assert!(!bytes.is_empty());
@@ -270,12 +285,26 @@ fn result_fields_reach_the_response() {
         builder.add_card(&row).expect("add_card");
     }
     let mut bytes: Vec<u8> = Vec::new();
-    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
-    let store = BufferStore::from_bytes(&bytes).expect("buffer load");
+    let mut compat: Vec<u8> = Vec::new();
+    builder.finish_to_writer(&mut bytes, Some(&mut compat)).expect("finish_to_writer");
+    let mut store = BufferStore::from_bytes(&bytes).expect("buffer load");
+
+    // A residue field is unreadable until the SECOND archive is attached, and that failure is a
+    // clear error rather than a null — asserted here because "resolves to null" is precisely the
+    // shape a broken split would take, and it is indistinguishable from a card Scryfall sent no
+    // language for.
+    let before = QueryOptions { fields: Some(vec!["lang".to_owned()]), ..QueryOptions::default() };
+    assert!(
+        store.query(r#"{"node_type": "TrueNode"}"#, &before).is_err(),
+        "a residue field without the card-object archive must error, not answer null"
+    );
+    store.attach_compat_bytes(&compat).expect("attach the card-object archive");
 
     let opts = QueryOptions {
         fields: Some(vec![
             "name".to_owned(),
+            "lang".to_owned(),
+            "games".to_owned(),
             "layout".to_owned(),
             "cmc".to_owned(),
             "rarity".to_owned(),
@@ -300,6 +329,10 @@ fn result_fields_reach_the_response() {
          read at the right shift, since legal/not_legal would survive an off-by-one"
     );
     assert_eq!(card["legalities"]["modern"], json!("legal"));
+
+    // The residue half, from the second archive and through the same one query.
+    assert_eq!(card["lang"], json!("en"));
+    assert_eq!(card["games"], json!(["paper"]), "the games bitset decodes to Scryfall's names");
 }
 
 /// `fields=None` must keep working. DEFAULT_FIELDS is ungated and live, so a name added there but
@@ -311,7 +344,7 @@ fn the_default_field_set_still_resolves() {
         builder.add_card(&row).expect("add_card");
     }
     let mut bytes: Vec<u8> = Vec::new();
-    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
+    builder.finish_to_writer(&mut bytes, None).expect("finish_to_writer");
     let store = BufferStore::from_bytes(&bytes).expect("buffer load");
     store.query(r#"{"node_type": "TrueNode"}"#, &QueryOptions::default()).expect("default fields");
 }
