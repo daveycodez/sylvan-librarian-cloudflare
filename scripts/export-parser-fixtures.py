@@ -27,6 +27,10 @@ How queries are gathered:
   4. A supplementary list of edge-case queries defined below (unicode, float
      repr, big ints, invalid dates/colors/rarities, lex errors, ...).
 
+Format: json.dump writes one-space indent, which is not what biome enforces on
+tests/. Follow every run with `bunx biome check --write tests/parser/fixtures/`
+or `bun run check` fails on formatting alone, with a diff the size of the corpus.
+
 Environment: run with the repo venv (.venv) which needs pytest, pyparsing,
 cachebox and titlecase installed (`python3 -m venv .venv && .venv/bin/pip
 install pytest pyparsing cachebox titlecase`). Upstream does NOT install the

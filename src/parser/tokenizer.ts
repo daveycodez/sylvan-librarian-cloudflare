@@ -56,15 +56,23 @@ function isWordCont(c: string): boolean {
  * Advance j past word-continuation characters and return the word's end.
  *
  * Beyond `isWordCont`, a word carries commas ("rograkh," — Scryfall keeps them on the token,
- * and bare names shed them later in `bareNameNode`) and word-INTERNAL apostrophes ("urza's" —
- * the lookahead keeps a leading quote of an actual quoted string, as in name:'power', lexing
- * as a QUOTED token exactly as before).
+ * and bare names shed them later in `bareNameNode`) and apostrophes that are not opening a
+ * quoted string: "urza's", and "urza'" mid-type. The lookahead keeps a LEADING quote of an
+ * actual quoted string, as in name:'power', lexing as a QUOTED token exactly as before.
+ *
+ * End of input counts as "followed by more word", not as "followed by a quote". Without that,
+ * "urza'" — every typeahead keystroke on the way to "urza's" — was a lex error, and the only
+ * way the balancer could rescue it was to append a second apostrophe. That parsed, but as
+ * `urza` AND an empty quoted string, so the search silently widened to every card containing
+ * "urza" and the explanation rendered "the name contains Urza and " with nothing after the
+ * "and". Deliberately NOT "preceded by a word char", which would also swallow the first
+ * apostrophe of "urza''" and leave the second one opening a string that never closes.
  */
 function scanWordEnd(src: string[], n: number, j: number): number {
 	while (j < n) {
 		const c = src[j] as string;
-		const internalApostrophe = c === "'" && j + 1 < n && isWordCont(src[j + 1] as string);
-		if (!(isWordCont(c) || c === "," || internalApostrophe)) break;
+		const apostropheInWord = c === "'" && (j + 1 >= n || isWordCont(src[j + 1] as string));
+		if (!(isWordCont(c) || c === "," || apostropheInWord)) break;
 		j += 1;
 	}
 	return j;

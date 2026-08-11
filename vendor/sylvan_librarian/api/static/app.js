@@ -484,10 +484,13 @@ class CardSearch {
       ')': '(',
     };
     const quoteChars = new Set(["'", '"']);
-    // A word character either side of an apostrophe makes it part of the word, not an opening
-    // quote — the same rule _scan_word_end applies in the tokenizer. Without this the balancer
-    // "closes" the apostrophe in urza's, sending urza's' and turning a working search into a
-    // parse error: strictly worse than before commas and apostrophes were supported at all.
+    // An apostrophe preceded by a word character and followed by either another word character or
+    // NOTHING is part of the word, not an opening quote — the same rule _scan_word_end applies in
+    // the tokenizer, and the two must agree exactly or this sends something the API rejects.
+    // Without the "or nothing", typing "urza'" on the way to "urza's" sent "urza''", which parses
+    // as `urza` AND an empty quoted string: results silently widened to every card containing
+    // "urza", and the count line read "35 cards where the name contains Urza and " — a dangling
+    // conjunction, with the apostrophe the user typed dropped from the search entirely.
     const wordChar = /[\p{L}\p{N}_.]/u;
 
     const stack = [];
@@ -501,10 +504,9 @@ class CardSearch {
         !(stack.length > 0 && stack[stack.length - 1] === "'") &&
         i > 0 &&
         wordChar.test(query[i - 1]) &&
-        i + 1 < query.length &&
-        wordChar.test(query[i + 1])
+        (i + 1 >= query.length || wordChar.test(query[i + 1]))
       ) {
-        continue; // word-internal apostrophe
+        continue; // apostrophe inside a word, or trailing one mid-type
       }
 
       // When inside a quoted string, only the matching closing quote ends it.

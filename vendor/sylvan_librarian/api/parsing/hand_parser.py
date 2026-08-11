@@ -121,14 +121,26 @@ def _scan_word_end(src: str, n: int, j: int) -> int:
     """Advance j past word-continuation characters and return the word's end.
 
     Beyond `_is_word_cont`, a word carries commas ("rograkh," — Scryfall keeps them on the
-    token, and bare names shed them later in `_name_node`) and word-INTERNAL apostrophes
-    ("urza's" — the lookahead keeps a leading quote of an actual quoted string, as in
-    name:'power', lexing as a QUOTED token exactly as before).
+    token, and bare names shed them later in `_name_node`) and apostrophes that follow a word
+    character ("urza's", and "urza'" mid-type).
+
+    The apostrophe rule is "a word character BEFORE it", not "on both sides". Requiring a word
+    character after it too meant a TRAILING apostrophe ended the word and opened a quoted string,
+    so "urza'" — every typeahead keystroke on the way to "urza's" — was a lex error, and the
+    balancer's only way to rescue it was to append a second apostrophe. That parsed, but as
+    `urza` AND an empty quoted string: the search silently widened to every card containing
+    "urza" and the explanation rendered "the name contains Urza and " with nothing after the
+    "and". A leading quote is still a quote, because there is no word character before it —
+    name:'power' and 'hello' lex as QUOTED exactly as before.
     """
     while j < n:
         c = src[j]
-        internal_apostrophe = c == "'" and j + 1 < n and _is_word_cont(src[j + 1])
-        if not (_is_word_cont(c) or c == "," or internal_apostrophe):
+        # End of input counts as "followed by more word", not as "followed by a quote": it is a
+        # half-typed word, not a half-typed string. Deliberately NOT "preceded by a word char",
+        # which would also swallow the first apostrophe of "urza''" and leave the second one
+        # opening a string that never closes.
+        apostrophe_in_word = c == "'" and (j + 1 >= n or _is_word_cont(src[j + 1]))
+        if not (_is_word_cont(c) or c == "," or apostrophe_in_word):
             break
         j += 1
     return j

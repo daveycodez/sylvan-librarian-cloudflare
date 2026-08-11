@@ -234,10 +234,11 @@ def create_basic_parsers() -> dict[str, ParserElement]:
     # (Python 3 `re` treats `\w`/`\W` as Unicode-aware by default for str patterns), so
     # bare words can start with accented letters like "Éowyn" (#649) without also
     # allowing a leading digit.
-    # Start letter, then word chars / hyphens / commas / word-internal apostrophes ("urza's"),
-    # never ending on a hyphen or apostrophe (a trailing "-" is the next term's negation, and a
-    # trailing "'" opens a quoted string). Mirrors the hand tokenizer's _scan_word_end.
-    word = Regex(r"[^\W\d](?:(?:[\w\-,]|'(?=\w))*[\w,])?").set_parse_action(make_word)
+    # Start letter, then word chars / hyphens / commas / apostrophes that are not opening a quoted
+    # string ("urza's", and a trailing "urza'" mid-type). Never ends on a hyphen — a trailing "-" is
+    # the next term's negation — but MAY end on an apostrophe: at end of input that is a half-typed
+    # word, not a half-typed string. Mirrors the hand tokenizer's _scan_word_end.
+    word = Regex(r"[^\W\d](?:(?:[\w\-,]|'(?=\w))*[\w,])?(?:'(?=\Z))?").set_parse_action(make_word)
 
     literal_number = float_number | integer
     # Signed literals are wired into the right-hand side of a numeric comparison only (see
@@ -245,7 +246,7 @@ def create_basic_parsers() -> dict[str, ParserElement]:
     negative_float = Regex(r"-\d+\.\d*").set_parse_action(lambda t: float(t[0]))
     negative_integer = Regex(r"-\d+\b").set_parse_action(lambda t: int(t[0]))
     signed_literal_number = negative_float | negative_integer | literal_number
-    string_value_word = Regex(r"\w(?:[\w.\-,]|'(?=\w))*")
+    string_value_word = Regex(r"\w(?:[\w.\-,]|'(?=\w))*(?:'(?=\Z))?")
 
     return {
         "attrop": attrop,
@@ -612,8 +613,9 @@ def _get_implicit_and_tokenizer() -> ParserElement:
 
     float_tok = Regex(r"\b\d+\.\d*\b").set_parse_action(lambda t: t[0])
 
-    # Same word shape as the main grammar: commas ride along, apostrophes only word-internally.
-    string_value_tok = Regex(r"\w(?:(?:[\w.\-,]|'(?=\w))*[\w.,])?").set_parse_action(lambda t: t[0])
+    # Same word shape as the main grammar: commas ride along, and an apostrophe rides along when a
+    # word character follows it or when it ends the input ("urza's", and "urza'" mid-type).
+    string_value_tok = Regex(r"\w(?:(?:[\w.\-,]|'(?=\w))*[\w.,])?(?:'(?=\Z))?").set_parse_action(lambda t: t[0])
 
     curly_mana_symbol = Regex(r"\{[^}]+\}")
     simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")

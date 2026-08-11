@@ -31,11 +31,19 @@ def balance_partial_query(query: str) -> str:
                 current_stack.pop()
             continue
 
-        # A word character either side of an apostrophe makes it part of the word rather than an
-        # opening quote -- the same rule _scan_word_end applies in the tokenizer. Without this the
-        # balancer "closes" the apostrophe in urza's, producing urza's', which does not parse:
-        # strictly worse than before bare names accepted apostrophes at all.
-        if char == "'" and 0 < index < len(query) - 1 and _is_word_cont(query[index - 1]) and _is_word_cont(query[index + 1]):
+        # An apostrophe preceded by a word character and followed by either another word character
+        # or NOTHING is part of the word rather than an opening quote -- the same rule
+        # _scan_word_end applies in the tokenizer, and the two must agree exactly or this emits
+        # something the lexer rejects. Without the "or nothing", "urza'" balanced to "urza''",
+        # which parses as `urza` AND an empty quoted string: the search widened to every card
+        # containing "urza" and the explanation rendered "the name contains Urza and " with
+        # nothing after the "and".
+        if (
+            char == "'"
+            and index > 0
+            and _is_word_cont(query[index - 1])
+            and (index + 1 == len(query) or _is_word_cont(query[index + 1]))
+        ):
             continue
 
         mirrored_char = char_to_mirror.get(char)

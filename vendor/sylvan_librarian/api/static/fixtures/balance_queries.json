@@ -129,6 +129,22 @@
   },
   {
     "input": "urza's'",
+    "suffix": ""
+  },
+  {
+    "input": "urza'",
+    "suffix": ""
+  },
+  {
+    "input": "o'",
+    "suffix": ""
+  },
+  {
+    "input": "urza''",
+    "suffix": ""
+  },
+  {
+    "input": "urza' ",
     "suffix": "'"
   }
 ]

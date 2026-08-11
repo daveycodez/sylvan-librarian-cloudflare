@@ -58,9 +58,12 @@ export function balancePartialQuery(queryIn: string): string {
 	const unbalancedClosingChars = new Set([")"]);
 	const quoteChars = new Set(["'", '"']);
 
-	// A word character either side of an apostrophe makes it part of the word rather than an
-	// opening quote — the same rule scanWordEnd applies in the tokenizer. Without this the balancer
-	// "closes" the apostrophe in urza's, producing urza's', which does not parse.
+	// An apostrophe preceded by a word character and followed by either another word character or
+	// NOTHING is part of the word rather than an opening quote — the same rule scanWordEnd applies
+	// in the tokenizer, and the two must agree exactly or the balancer emits something the lexer
+	// rejects. Without the "or nothing", "urza'" balanced to "urza''", which parses as `urza` AND
+	// an empty quoted string: the search widened to every card containing "urza" and the
+	// explanation rendered "the name contains Urza and " with nothing after the "and".
 	const wordChar = /[\p{L}\p{N}_.]/u;
 
 	const currentStack: string[] = [];
@@ -79,10 +82,9 @@ export function balancePartialQuery(queryIn: string): string {
 			char === "'" &&
 			index > 0 &&
 			wordChar.test(chars[index - 1] as string) &&
-			index + 1 < chars.length &&
-			wordChar.test(chars[index + 1] as string)
+			(index + 1 >= chars.length || wordChar.test(chars[index + 1] as string))
 		) {
-			continue; // word-internal apostrophe
+			continue; // apostrophe inside a word, or trailing one mid-type
 		}
 
 		const mirroredChar = charToMirror[char];

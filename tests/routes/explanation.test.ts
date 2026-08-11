@@ -29,6 +29,34 @@ describe("explainWireTree", () => {
 		expect(explainWireTree({ node_type: "MysteryNode", kwargs: {} })).toBe("");
 	});
 
+	test("operands that explain to nothing contribute no clause and no connector", () => {
+		// An empty quoted string parses to a TrueNode, which explains to "". Joining it anyway
+		// produced a dangling conjunction: `urza''` rendered as "the name contains Urza and "
+		// with nothing after the "and", which is what a user saw in the results count line.
+		const trueNode = { node_type: "TrueNode", kwargs: {} };
+		const name = bin(attr("card_name"), ":", str("Urza"));
+
+		const and = { node_type: "AndNode", kwargs: { operands: [name, trueNode] } };
+		expect(explainWireTree(and)).toBe("the name contains Urza");
+
+		// ...from either side, and with nothing left over when every operand is empty.
+		expect(explainWireTree({ node_type: "AndNode", kwargs: { operands: [trueNode, name] } })).toBe(
+			"the name contains Urza",
+		);
+		expect(explainWireTree({ node_type: "AndNode", kwargs: { operands: [trueNode, trueNode] } })).toBe("");
+		expect(explainWireTree({ node_type: "OrNode", kwargs: { operands: [name, trueNode] } })).toBe(
+			"the name contains Urza",
+		);
+	});
+
+	test("a trailing apostrophe stays in the word instead of opening an empty string", () => {
+		// The whole chain: "urza'" must survive the balancer unchanged and explain as a single
+		// name clause. Before, it balanced to "urza''" and explained as "the name contains Urza
+		// and " — the apostrophe dropped from the search and the results silently widened.
+		expect(explainWireTree(parseScryfallQuery("urza'"))).toBe("the name contains Urza'");
+		expect(explainWireTree(parseScryfallQuery("urza's"))).toBe("the name contains Urza's");
+	});
+
 	test("special card-attribute phrasings", () => {
 		expect(explainWireTree(bin(attr("card_name"), ":", str("Bolt")))).toBe("the name contains Bolt");
 		expect(explainWireTree(bin(attr("oracle_text"), ":", str("draw a card")))).toBe(

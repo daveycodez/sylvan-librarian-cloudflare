@@ -308,6 +308,17 @@ class NaryOperatorNode(QueryNode):
                 explanation = f"({explanation})"
             parts.append(explanation)
 
+        # An operand that explains to "" is not a constraint and has no clause to contribute;
+        # joining it anyway leaves a dangling connector. A TrueNode is the common source -- an
+        # empty quoted string parses to one, so `urza''` rendered as "the name contains Urza and "
+        # with nothing after the "and". Filtering on the empty string rather than on TrueNode
+        # covers anything else that explains to nothing.
+        parts = [part for part in parts if part]
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            return parts[0]
+
         return self._join_explanations(parts)
 
     def _join_explanations(self: NaryOperatorNode, parts: list[str]) -> str:

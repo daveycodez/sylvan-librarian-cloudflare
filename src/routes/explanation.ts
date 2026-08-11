@@ -261,10 +261,23 @@ function explainNary(node: WireNode): string {
 		}
 		return explanation;
 	});
-	if (node.node_type === "OrNode") {
-		return `(${parts.join(" or ")})`;
+	// A TrueNode explains to "" — it is not a constraint, so it has no clause to
+	// contribute. Joining it anyway produced a dangling conjunction: an empty
+	// quoted string is a TrueNode, so `urza''` rendered as "the name contains
+	// Urza and " with nothing after the "and". Drop empty parts rather than
+	// special-casing TrueNode, so anything else that explains to nothing is
+	// covered too.
+	const clauses = parts.filter((part) => part !== "");
+	if (clauses.length === 0) {
+		return "";
 	}
-	return parts.join(" and ");
+	if (clauses.length === 1) {
+		return clauses[0] as string;
+	}
+	if (node.node_type === "OrNode") {
+		return `(${clauses.join(" or ")})`;
+	}
+	return clauses.join(" and ");
 }
 
 function explain(node: WireNode): string {
