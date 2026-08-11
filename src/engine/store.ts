@@ -111,7 +111,7 @@ class WasmEngine implements Engine {
 
 	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
 		const result = this.query(opts);
-		return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape) };
+		return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape), rowCount: result.rows.length };
 	}
 
 	/**
@@ -159,7 +159,7 @@ class WasmEngine implements Engine {
 		shape: ResultShape,
 	): Promise<EngineSerializedResult> {
 		const rows = await this.samplePreferred(numCards, fields);
-		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape) };
+		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape), rowCount: rows.length };
 	}
 
 	async size(): Promise<number> {
@@ -180,8 +180,14 @@ class WasmEngine implements Engine {
 		await this.ensureCompat();
 		const result = this.query({ ...opts, fields: [...CARD_OBJECT_FIELDS] });
 		// Encoded here too: the route splices the string into its List envelope without ever
-		// materializing 175 card objects in the isolate.
-		return { totalCards: result.total, cardsJson: JSON.stringify(this.toCards(result.rows, baseUrl)) };
+		// materializing 175 card objects in the isolate. `rowCount` rides along for the same
+		// reason — see EngineSerializedResult; without it the route re-counts the encoded cards
+		// by walking the whole string.
+		return {
+			totalCards: result.total,
+			cardsJson: JSON.stringify(this.toCards(result.rows, baseUrl)),
+			rowCount: result.rows.length,
+		};
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

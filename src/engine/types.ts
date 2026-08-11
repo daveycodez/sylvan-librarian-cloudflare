@@ -49,6 +49,24 @@ export interface EngineSerializedResult {
 	totalCards: number;
 	/** The envelope's `cards` value, already JSON-encoded in the asked-for shape. */
 	cardsJson: string;
+	/**
+	 * How many cards `cardsJson` actually holds — the PAGE's count, against
+	 * `totalCards`' unpaginated one.
+	 *
+	 * It rides along because the alternative was counting them again in the
+	 * isolate: /cards/search needs the page count for `has_more`, and the only
+	 * thing it had was the encoded string, so it walked the whole ~635KB
+	 * response one code point at a time to re-derive a number the DO threw away
+	 * one line earlier (`result.rows.length`). Measured against the free plan's
+	 * 10ms isolate budget that walk was most of the route's CPU.
+	 *
+	 * Not computed from `totalCards`, `offset` and the page size, though the
+	 * arithmetic looks obvious: that would assume every physical plan in the
+	 * engine returns exactly `min(limit, total - offset)` rows, which is an
+	 * invariant spread across a dozen executors in lib.rs and pinned by nothing.
+	 * `rows.length` is the count, by construction, wherever the rows came from.
+	 */
+	rowCount: number;
 }
 
 export interface EngineCatalog {

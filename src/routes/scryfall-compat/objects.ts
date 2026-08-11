@@ -47,6 +47,9 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 	border_crop: "jpg",
 };
 
+/** The same table pre-entried, because imageUris() walks it once per card and once per face. */
+const IMAGE_EXTENSION_ENTRIES: readonly (readonly [string, string])[] = Object.entries(IMAGE_EXTENSIONS);
+
 /**
  * Every field the engine must return for a card object to be assembled. Passed as `fields=` on
  * each lookup, so the engine emits exactly this and nothing is fetched that is never read.
@@ -173,7 +176,10 @@ export function imageUris(
 	const suffix = updatedAt ? `?${updatedAt}` : "";
 	const [first, second] = [scryfallId[0], scryfallId[1]];
 	const out: Record<string, string> = {};
-	for (const [size, ext] of Object.entries(IMAGE_EXTENSIONS)) {
+	// IMAGE_EXTENSION_ENTRIES, not Object.entries(IMAGE_EXTENSIONS): this runs once per card and
+	// again per face, so a /cards/search page called it 175+ times and allocated the same six
+	// pairs every time.
+	for (const [size, ext] of IMAGE_EXTENSION_ENTRIES) {
 		out[size] = `https://cards.scryfall.io/${size}/${face}/${first}/${second}/${scryfallId}.${ext}${suffix}`;
 	}
 	return out;

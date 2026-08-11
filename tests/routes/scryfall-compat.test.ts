@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
-import { FakeEngine, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, FIXTURE_CARDS, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
 
@@ -61,6 +61,19 @@ describe("GET /cards/search", () => {
 		expect(next.searchParams.get("page")).toBe("2");
 		expect(next.searchParams.get("unique")).toBe("cards");
 		expect(next.searchParams.get("order")).toBe("name");
+	});
+
+	// has_more's FALSE branch, which nothing pinned while the page count was recovered by walking
+	// the encoded cards. It is now `rowCount` off the engine result (EngineSerializedResult), so a
+	// producer that forgets to set it would silently report a last page as having a next one.
+	test("a result set that fits on one page has no next page", async () => {
+		const engine = new FakeEngine();
+		engine.totalCards = FIXTURE_CARDS.length;
+		const body = await json(await testDispatch(makeCtx({ engine }), "/cards/search?q=elf"));
+		expect(body.total_cards).toBe(FIXTURE_CARDS.length);
+		expect((body.data as unknown[]).length).toBe(FIXTURE_CARDS.length);
+		expect(body.has_more).toBe(false);
+		expect(body.next_page).toBeUndefined();
 	});
 });
 

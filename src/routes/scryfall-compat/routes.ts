@@ -21,7 +21,7 @@
 // assembles ~70 keys per card, up to 175 of them for a page, and the DO meters against 30s where
 // this isolate meters against 10ms.
 
-import type { Engine } from "../../engine/types";
+import type { Engine, EngineSerializedResult } from "../../engine/types";
 import { EngineUnavailableError } from "../../engine/types";
 import type { FilterValue } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -127,10 +127,13 @@ function isUuid(value: string): boolean {
 	return UUID_RE.test(value);
 }
 
+/** The spellings Scryfall reads as true; module-level so asBool does not rebuild it per call. */
+const TRUE_SPELLINGS = new Set(["1", "true", "yes", "on"]);
+
 /** Parse a Scryfall boolean query parameter; anything but a true spelling is false. */
 function asBool(value: string | undefined, fallback = false): boolean {
 	if (value === undefined) return fallback;
-	return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+	return TRUE_SPELLINGS.has(value.trim().toLowerCase());
 }
 
 /** Parse an integer parameter or path segment; undefined when absent or unparseable. */
@@ -292,7 +295,7 @@ export async function cardsSearchHandler(
 		throw err;
 	}
 
-	let result: { totalCards: number; cardsJson: string };
+	let result: EngineSerializedResult;
 	try {
 		result = await engine.scryfallSearch(
 			{
@@ -315,7 +318,7 @@ export async function cardsSearchHandler(
 		return scryfallJson(errorObject("not_found", 404, NO_MATCH_DETAILS, warnings), pretty, CARDS_CACHE);
 	}
 
-	const seen = (page - 1) * PAGE_SIZE + countCards(result.cardsJson);
+	const seen = (page - 1) * PAGE_SIZE + result.rowCount;
 	const hasMore = seen < result.totalCards;
 	const nextPage = hasMore
 		? buildPageUrl(
@@ -340,37 +343,6 @@ export async function cardsSearchHandler(
 		pretty,
 		CARDS_CACHE,
 	);
-}
-
-/**
- * How many cards a pre-encoded array holds, without parsing it.
- *
- * Only ever asked of a page, so it is at most 175 objects; counting top-level `{` at depth 1 is
- * cheaper than the parse the encoding exists to avoid. Strings are skipped so a `{` inside oracle
- * text cannot be counted.
- */
-function countCards(cardsJson: string): number {
-	let depth = 0;
-	let count = 0;
-	let inString = false;
-	let escaped = false;
-	for (const ch of cardsJson) {
-		if (escaped) {
-			escaped = false;
-			continue;
-		}
-		if (inString) {
-			if (ch === "\\") escaped = true;
-			else if (ch === '"') inString = false;
-			continue;
-		}
-		if (ch === '"') inString = true;
-		else if (ch === "{") {
-			if (depth === 0) count += 1;
-			depth += 1;
-		} else if (ch === "}") depth -= 1;
-	}
-	return count;
 }
 
 // ─── GET /cards/named ────────────────────────────────────────────────────────
@@ -769,7 +741,7 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 	if (page < 1)
 		return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty, CARDS_CACHE);
 	const engine = await ctx.getEngine();
-	let result: { totalCards: number; cardsJson: string };
+	let result: EngineSerializedResult;
 	try {
 		result = await engine.scryfallSearch(
 			{
@@ -788,7 +760,7 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 		return engineFailure(err, pretty);
 	}
 	if (result.cardsJson === "[]") return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, CARDS_CACHE);
-	const hasMore = (page - 1) * PAGE_SIZE + countCards(result.cardsJson) < result.totalCards;
+	const hasMore = (page - 1) * PAGE_SIZE + result.rowCount < result.totalCards;
 	return scryfallListJson(
 		result.cardsJson,
 		{

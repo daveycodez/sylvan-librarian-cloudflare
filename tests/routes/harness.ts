@@ -70,7 +70,7 @@ export class FakeEngine implements Engine {
 	// API bytes and one asserting on the page's data are checking one source.
 	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
 		const { totalCards, cards } = await this.search(opts);
-		return { totalCards, cardsJson: serializeCards(cards, shape) };
+		return { totalCards, cardsJson: serializeCards(cards, shape), rowCount: cards.length };
 	}
 
 	async commonCardTypes(): Promise<Record<string, number>> {
@@ -96,7 +96,7 @@ export class FakeEngine implements Engine {
 		shape: ResultShape,
 	): Promise<EngineSerializedResult> {
 		const rows = await this.samplePreferred(numCards, fields);
-		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape) };
+		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape), rowCount: rows.length };
 	}
 
 	async size(): Promise<number> {
@@ -125,7 +125,7 @@ export class FakeEngine implements Engine {
 		if (this.searchError) throw this.searchError;
 		this.scryfallBaseUrl = baseUrl;
 		const cards = this.cards.slice(0, opts.limit).map((row) => toScryfallCard(row, baseUrl));
-		return { totalCards: this.totalCards, cardsJson: JSON.stringify(cards) };
+		return { totalCards: this.totalCards, cardsJson: JSON.stringify(cards), rowCount: cards.length };
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
