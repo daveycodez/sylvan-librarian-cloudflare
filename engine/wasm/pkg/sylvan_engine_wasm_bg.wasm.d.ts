@@ -2,10 +2,14 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const init_store: (a: number, b: number) => [number, number];
+export const init_compat_store: (a: number, b: number) => [number, number];
 export const begin_store_load: (a: number) => [number, number];
-export const store_load_chunk: (a: number, b: number) => [number, number];
 export const finish_store_load: () => [number, number];
 export const store_loaded: () => number;
+export const begin_compat_load: (a: number) => [number, number];
+export const compat_load_chunk: (a: number, b: number) => [number, number];
+export const finish_compat_load: () => [number, number];
+export const compat_loaded: () => number;
 export const query: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const catalog: () => [number, number, number, number];
 export const store_version: () => number;
@@ -16,6 +20,7 @@ export const printings_of_oracle_id: (a: number, b: number, c: number, d: number
 export const card_by_external_id: (a: number, b: number, c: bigint, d: number, e: number) => [number, number, number, number];
 export const fuzzy_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
+export const store_load_chunk: (a: number, b: number) => [number, number];
 export const size: () => number;
 export const card_count: () => number;
 export const __init_panic_hook: () => void;

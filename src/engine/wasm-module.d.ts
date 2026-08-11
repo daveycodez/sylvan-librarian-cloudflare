@@ -18,6 +18,29 @@ declare module "sylvan-engine-wasm" {
 	/** Drop the active store ahead of a tight-memory hot swap. */
 	export function unload_store(): void;
 	export function store_loaded(): boolean;
+	/**
+	 * The paired residue archive: the Scryfall card-object fields `/search` never reads (see
+	 * CompatData in card_engine). Attached on demand by `/cards/*`, so a search-only isolate pays
+	 * neither its ~11MB of linear memory nor its KV read. Same streaming buffer as the store load,
+	 * so the two are never in flight at once.
+	 */
+	export function begin_compat_load(totalLen: number): void;
+	export function compat_load_chunk(chunk: Uint8Array): void;
+	export function finish_compat_load(): void;
+	/** One-shot residue attach for tests. */
+	export function init_compat_store(bytes: Uint8Array): void;
+	export function compat_loaded(): boolean;
+	// ── Single-card addressing (the /cards/* surface) ────────────────────────
+	// `fieldsJson` is a JSON list of field names, or "null" for the default set. A miss is JSON
+	// `null` — this port has no SQL behind it, so a miss IS the answer.
+	export function card_by_scryfall_id(scryfallId: string, fieldsJson: string): string;
+	export function cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
+	export function printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
+	export function card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
+	/** `{"status": "hit"|"ambiguous"|"miss", "card": ...}`. */
+	export function fuzzy_card_by_name(name: string, floor: number, lead: number, fieldsJson: string): string;
+	/** Printed card names matching a partial name, prefix matches first. JSON array. */
+	export function autocomplete(prefix: string, limit: number): string;
 	/** Printing count (upstream size()); 0 = no store loaded. */
 	export function size(): number;
 	/** Oracle-card count of the loaded store. */

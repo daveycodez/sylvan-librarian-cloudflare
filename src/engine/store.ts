@@ -17,8 +17,9 @@
 // for free, on immutable chunk keys, with none of that overhead.
 
 import * as wasm from "sylvan-engine-wasm";
+import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/scryfall-compat/objects";
 import { serializeCards } from "./columnar";
-import { kvStoreStream, readManifest } from "./store-kv";
+import { kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -26,6 +27,8 @@ import type {
 	EngineSerializedResult,
 	Env,
 	ResultShape,
+	ScryfallFuzzyResult,
+	StoreManifest,
 } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -33,11 +36,57 @@ import { EngineUnavailableError } from "./types";
 // re-check. Nightly publishes mean sub-hour propagation is plenty.
 const MANIFEST_RECHECK_MS = 5 * 60 * 1000;
 
-let current: { storeKey: string; engine: Engine } | null = null;
+/**
+ * Thresholds for the typo-tolerant stage of `?fuzzy=` (upstream routes.py).
+ *
+ * A candidate must score at least the floor, and the best must lead the next DISTINCT card name by
+ * at least the lead — closer than that and the query does not identify either card, so it is
+ * `ambiguous` rather than a guess. The floor sits deliberately above pg_trgm's default 0.3, which
+ * is what upstream's index-assisted prefilter relies on; here the engine scans, so the floor is
+ * simply the bar.
+ */
+const FUZZY_SIMILARITY_FLOOR = 0.4;
+const FUZZY_SIMILARITY_LEAD = 0.05;
+
+let current: { storeKey: string; engine: WasmEngine; manifest: StoreManifest } | null = null;
 let loading: Promise<Engine> | null = null;
 let lastManifestCheck = 0;
 
 class WasmEngine implements Engine {
+	/**
+	 * The residue archive is attached on FIRST /cards/* use, not at load.
+	 *
+	 * Single-flighted through this promise so concurrent card requests on a cold isolate stream it
+	 * once rather than racing four KV reads each. Held for the life of this instance, which is the
+	 * life of the loaded store — a hot swap constructs a new WasmEngine, so it invalidates by
+	 * construction, exactly like catalogOnce below.
+	 */
+	private compatOnce: Promise<void> | null = null;
+
+	constructor(
+		private readonly env: Env,
+		private readonly manifest: StoreManifest,
+	) {}
+
+	/** Attach the residue archive if it is not already; idempotent and single-flighted. */
+	private ensureCompat(): Promise<void> {
+		this.compatOnce ??= (async () => {
+			if (wasm.compat_loaded()) return;
+			const started = Date.now();
+			const pieces = await feedCompat(this.env, this.manifest);
+			console.log(
+				`Card-object archive attached: ${this.manifest.compat_key} ` +
+					`(${this.manifest.compat_bytes} bytes) in ${Date.now() - started}ms from ${pieces} pieces`,
+			);
+		})().catch((err) => {
+			// A failed attach must not be cached: the next /cards/* request should retry rather
+			// than inherit a transient KV failure for the life of the isolate.
+			this.compatOnce = null;
+			throw err;
+		});
+		return this.compatOnce;
+	}
+
 	private query(opts: EngineSearchOptions): { total: number; rows: Record<string, unknown>[] } {
 		return JSON.parse(
 			wasm.query(
@@ -116,6 +165,92 @@ class WasmEngine implements Engine {
 	async size(): Promise<number> {
 		return wasm.size();
 	}
+
+	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
+	//
+	// See the Engine interface: every card object here is BUILT in this Durable Object, never in
+	// the request isolate. Each entry point attaches the residue archive first.
+
+	/** Map engine rows to Scryfall card objects. Runs here, in the DO, for the reason above. */
+	private toCards(rows: Record<string, unknown>[], baseUrl: string): Record<string, unknown>[] {
+		return rows.map((row) => toScryfallCard(row, baseUrl));
+	}
+
+	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
+		await this.ensureCompat();
+		const result = this.query({ ...opts, fields: [...CARD_OBJECT_FIELDS] });
+		// Encoded here too: the route splices the string into its List envelope without ever
+		// materializing 175 card objects in the isolate.
+		return { totalCards: result.total, cardsJson: JSON.stringify(this.toCards(result.rows, baseUrl)) };
+	}
+
+	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		await this.ensureCompat();
+		const row = JSON.parse(
+			wasm.card_by_scryfall_id(scryfallId, JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as EngineRow | null;
+		return row === null ? null : toScryfallCard(row, baseUrl);
+	}
+
+	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
+		await this.ensureCompat();
+		const rows = JSON.parse(
+			wasm.cards_by_scryfall_ids(JSON.stringify(scryfallIds), JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as EngineRow[];
+		return this.toCards(rows, baseUrl);
+	}
+
+	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		await this.ensureCompat();
+		const rows = JSON.parse(wasm.printings_of_oracle_id(oracleId, JSON.stringify(CARD_OBJECT_FIELDS))) as EngineRow[];
+		// Printings are stored in descending default-prefer order, so the first is the
+		// representative printing every other by-name path shows.
+		const first = rows[0];
+		return first === undefined ? null : toScryfallCard(first, baseUrl);
+	}
+
+	async scryfallCardByExternalId(
+		namespace: string,
+		externalId: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown> | null> {
+		await this.ensureCompat();
+		const row = JSON.parse(
+			wasm.card_by_external_id(namespace, BigInt(externalId), JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as EngineRow | null;
+		return row === null ? null : toScryfallCard(row, baseUrl);
+	}
+
+	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
+		await this.ensureCompat();
+		const out = JSON.parse(
+			wasm.fuzzy_card_by_name(name, FUZZY_SIMILARITY_FLOOR, FUZZY_SIMILARITY_LEAD, JSON.stringify(CARD_OBJECT_FIELDS)),
+		) as { status: ScryfallFuzzyResult["status"]; card: EngineRow | null };
+		return { status: out.status, card: out.card === null ? null : toScryfallCard(out.card, baseUrl) };
+	}
+
+	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
+		// The only /cards/* route that needs NO residue: names live in the search archive.
+		return JSON.parse(wasm.autocomplete(prefix, limit)) as string[];
+	}
+
+	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
+		await this.ensureCompat();
+		return filterTreeJsons.map((filterTreeJson) => {
+			const result = this.query({
+				filterTreeJson,
+				unique: "printing",
+				prefer: "default",
+				orderby: "edhrec",
+				direction: "asc",
+				limit: 1,
+				offset: 0,
+				fields: [...CARD_OBJECT_FIELDS],
+			});
+			const row = result.rows[0];
+			return row === undefined ? null : toScryfallCard(row, baseUrl);
+		});
+	}
 }
 
 export { readManifest } from "./store-kv";
@@ -146,6 +281,38 @@ async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Pr
 		reader.releaseLock();
 	}
 	wasm.finish_store_load();
+	return pieces;
+}
+
+/**
+ * Stream the residue archive in and attach it (see StoreManifest.compat_key).
+ *
+ * Single-flighted per isolate and only ever called from a `/cards/*` path: `/search` reads none of
+ * these fields, so a search-only isolate never pays the ~11MB of linear memory or the extra KV
+ * read. Once attached it stays for the life of the loaded store, because the store is immutable
+ * and a hot swap constructs a new WasmEngine.
+ */
+async function feedCompat(env: Env, manifest: StoreManifest): Promise<number> {
+	const total = manifest.compat_bytes;
+	if (!total) {
+		throw new EngineUnavailableError(
+			`Store ${manifest.store_key} has no card-object archive; /cards/* needs one (rebuild the store)`,
+		);
+	}
+	wasm.begin_compat_load(total);
+	const reader = kvCompatStream(env, manifest).getReader();
+	let pieces = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			pieces += 1;
+			wasm.compat_load_chunk(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	wasm.finish_compat_load();
 	return pieces;
 }
 
@@ -187,8 +354,8 @@ async function loadStore(env: Env): Promise<Engine> {
 	// load — and CPU is the scarcer meter.
 	const pieces = await feedStore(body, manifest.store_bytes);
 
-	const engine = new WasmEngine();
-	current = { storeKey: manifest.store_key, engine };
+	const engine = new WasmEngine(env, manifest);
+	current = { storeKey: manifest.store_key, engine, manifest };
 	console.log(
 		`Store loaded from KV: ${manifest.store_key} (${manifest.card_count} cards, ` +
 			`${manifest.store_bytes} bytes, built ${manifest.built_at}) in ${Date.now() - started}ms ` +

@@ -13,6 +13,12 @@ export function __init_panic_hook(): void;
 export function autocomplete(prefix: string, limit: number): string;
 
 /**
+ * Start a chunked residue load. The active store must already be loaded: the residue shares its
+ * index space and string tables, so there is nothing to attach it to otherwise.
+ */
+export function begin_compat_load(total_len: number): void;
+
+/**
  * Start a chunked store load: preallocate the full aligned buffer up front
  * (one allocation, no growth reallocs while chunks stream in). Any previous
  * in-progress load is discarded; the ACTIVE store is untouched until
@@ -48,6 +54,21 @@ export function cards_by_scryfall_ids(ids_json: string, fields_json: string): st
 export function catalog(): string;
 
 /**
+ * Append one chunk of the residue archive.
+ */
+export function compat_load_chunk(chunk: Uint8Array): void;
+
+/**
+ * Whether the residue archive is attached to the active store.
+ */
+export function compat_loaded(): boolean;
+
+/**
+ * Validate the streamed residue archive and attach it to the active store.
+ */
+export function finish_compat_load(): void;
+
+/**
  * Validate the streamed archive and atomically swap it in as the active
  * store. On any error the in-progress buffer is dropped and the previously
  * active store (if any) keeps serving.
@@ -61,6 +82,11 @@ export function finish_store_load(): void;
  * tell the client the card does not exist.
  */
 export function fuzzy_card_by_name(name: string, floor: number, lead: number, fields_json: string): string;
+
+/**
+ * One-shot residue attach, the `init_store` twin.
+ */
+export function init_compat_store(bytes: Uint8Array): void;
 
 /**
  * One-shot load for callers that already hold the whole archive (tests,

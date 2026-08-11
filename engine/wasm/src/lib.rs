@@ -68,6 +68,18 @@ pub fn init_store(bytes: &[u8]) -> Result<(), JsError> {
     Ok(())
 }
 
+/// One-shot residue attach, the `init_store` twin.
+#[wasm_bindgen]
+pub fn init_compat_store(bytes: &[u8]) -> Result<(), JsError> {
+    let mut buf = AlignedVec::with_capacity(bytes.len());
+    buf.extend_from_slice(bytes);
+    STORE.with(|s| {
+        let mut guard = s.borrow_mut();
+        let store = guard.as_mut().ok_or_else(|| JsError::new("no store loaded"))?;
+        store.attach_compat(buf).map_err(js_err)
+    })
+}
+
 /// Start a chunked store load: preallocate the full aligned buffer up front
 /// (one allocation, no growth reallocs while chunks stream in). Any previous
 /// in-progress load is discarded; the ACTIVE store is untouched until
@@ -138,6 +150,59 @@ pub fn unload_store() {
 #[wasm_bindgen]
 pub fn store_loaded() -> bool {
     STORE.with(|s| s.borrow().is_some())
+}
+
+// ─── The residue archive ─────────────────────────────────────────────────────
+//
+// A SECOND archive holding the Scryfall card-object fields (see CompatData in card_engine).
+// Attached on demand, because `/search` reads none of it: an isolate that only ever serves
+// searches never pays the ~11MB of linear memory or the extra KV round trip. `/cards/*` attaches
+// it on first use and it stays for the life of the loaded store.
+//
+// It reuses the SAME streaming buffer as the search store's load, so the two can never be in
+// flight at once — which is correct, because a residue archive is only meaningful against the
+// store it was built with, and attaching happens after that store is active.
+
+/// Start a chunked residue load. The active store must already be loaded: the residue shares its
+/// index space and string tables, so there is nothing to attach it to otherwise.
+#[wasm_bindgen]
+pub fn begin_compat_load(total_len: u32) -> Result<(), JsError> {
+    if !store_loaded() {
+        return Err(JsError::new("begin_compat_load without a loaded store"));
+    }
+    begin_store_load(total_len)
+}
+
+/// Append one chunk of the residue archive.
+#[wasm_bindgen]
+pub fn compat_load_chunk(chunk: &[u8]) -> Result<(), JsError> {
+    store_load_chunk(chunk)
+}
+
+/// Validate the streamed residue archive and attach it to the active store.
+#[wasm_bindgen]
+pub fn finish_compat_load() -> Result<(), JsError> {
+    let (buf, total) = LOADING
+        .with(|l| l.borrow_mut().take())
+        .ok_or_else(|| JsError::new("finish_compat_load called without begin_compat_load"))?;
+    if buf.len() != total {
+        return Err(JsError::new(&format!(
+            "finish_compat_load: incomplete load ({} of declared {} bytes)",
+            buf.len(),
+            total
+        )));
+    }
+    STORE.with(|s| {
+        let mut guard = s.borrow_mut();
+        let store = guard.as_mut().ok_or_else(|| JsError::new("no store loaded"))?;
+        store.attach_compat(buf).map_err(js_err)
+    })
+}
+
+/// Whether the residue archive is attached to the active store.
+#[wasm_bindgen]
+pub fn compat_loaded() -> bool {
+    STORE.with(|s| s.borrow().as_ref().is_some_and(BufferStore::has_compat))
 }
 
 // ─── Queries / catalog / health ──────────────────────────────────────────────
@@ -324,7 +389,8 @@ mod tests {
         let mut builder = card_engine::StoreBuilder::new();
         builder.add_card(&row).expect("add_card");
         let mut bytes = Vec::new();
-        builder.finish_to_writer(&mut bytes).expect("finish");
+        let mut compat = Vec::new();
+        builder.finish_to_writer(&mut bytes, Some(&mut compat)).expect("finish");
 
         begin_store_load(bytes.len() as u32).expect("begin");
         for chunk in bytes.chunks(7) {
@@ -350,6 +416,12 @@ mod tests {
 
         // The /cards/* addressing surface, over the same loaded store. A hit and a miss each,
         // because a miss here IS the 404 — there is no SQL behind it to disagree.
+        //
+        // The residue archive attaches SEPARATELY, which is the point of the split: everything
+        // above answered without it.
+        assert!(!compat_loaded());
+        init_compat_store(&compat).expect("attach compat");
+        assert!(compat_loaded());
         let id = "cccccccc-0000-0000-0000-000000000001";
         let v: serde_json::Value =
             serde_json::from_str(&card_by_scryfall_id(id, "null").expect("by id")).expect("valid JSON");

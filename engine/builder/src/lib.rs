@@ -47,6 +47,11 @@ pub struct Manifest {
     /// Archive size in bytes (16-byte header included). The Worker
     /// preallocates its wasm-side buffer from this.
     pub store_bytes: u64,
+    /// Object key of the paired residue archive (see CompatData in card_engine): the Scryfall
+    /// card-object fields `/search` never reads, loaded only by `/cards/*`.
+    pub compat_key: String,
+    /// Residue archive size in bytes, header included.
+    pub compat_bytes: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -100,13 +105,23 @@ pub fn build_store(
     // CPU is metered per cold isolate — at scale, compression is a pure cost.
     let store_key = format!("card-store-v{format_version}-{built_at}.store");
     let store_path = out_dir.join(&store_key);
+    // The residue archive is a SECOND file, paired with the store by name. Keeping /cards/*'s
+    // fields out of the search archive is what holds the search store at three KV chunks and the
+    // in-Worker build under its 112 MiB cap -- see CompatData in card_engine.
+    let compat_key = format!("card-compat-v{format_version}-{built_at}.store");
+    let compat_path = out_dir.join(&compat_key);
 
     std::fs::create_dir_all(out_dir)?;
     let file = std::fs::File::create(&store_path)?;
+    let compat_file = std::fs::File::create(&compat_path)?;
+    let mut compat_counter =
+        CountingWriter { inner: BufWriter::with_capacity(1 << 20, compat_file), written: 0 };
     let mut counter = CountingWriter { inner: BufWriter::with_capacity(1 << 20, file), written: 0 };
-    let stats = builder.finish_to_writer(&mut counter)?;
+    let stats = builder.finish_to_writer(&mut counter, Some(&mut compat_counter))?;
     let store_bytes = counter.written;
+    let compat_bytes = compat_counter.written;
     counter.flush()?;
+    compat_counter.flush()?;
 
     Ok(Manifest {
         store_key,
@@ -116,6 +131,8 @@ pub fn build_store(
         upstream_commit: upstream_commit(),
         format_version,
         store_bytes,
+        compat_key,
+        compat_bytes,
     })
 }
 

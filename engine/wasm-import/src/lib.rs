@@ -24,6 +24,9 @@
 //!   6 finalized row json             ENGINE_COLUMNS row (D1 cards table feed)
 //!   7 tag-data blob                  serialized TagData snapshot (persist +
 //!                                    restore across DO evictions)
+//!   8 compat chunk                   residue-archive bytes, in order. Interleaves with kind 5:
+//!                                    the residue is written mid-build, before the search indexes
+//!                                    exist, which is what keeps the build's peak under the cap.
 //!
 //! Exports drive the phases in order; all buffers passed in are allocated
 //! with `alloc` and consumed (freed) by the callee:
@@ -106,6 +109,10 @@ const EMIT_SPILL: u32 = 4;
 const EMIT_CHUNK: u32 = 5;
 const EMIT_ROW: u32 = 6;
 const EMIT_TAGDATA: u32 = 7;
+/// The residue archive's chunk stream (see CompatData in card_engine). A second kind rather than
+/// a flag on EMIT_CHUNK so the host stages the two archives into separate tables without having to
+/// track which one is in flight -- they interleave, because the residue is written mid-build.
+const EMIT_COMPAT_CHUNK: u32 = 8;
 
 unsafe extern "C" {
     fn emit(kind: u32, ptr: *const u8, len: usize);
@@ -609,6 +616,8 @@ pub extern "C" fn finalize_end() -> i64 {
 struct ChunkWriter {
     buf: Vec<u8>,
     total: u64,
+    /// EMIT_CHUNK for the search store, EMIT_COMPAT_CHUNK for the residue archive.
+    kind: u32,
 }
 
 /// Sized for D1: comfortably under D1's per-value/response limits while
@@ -619,7 +628,7 @@ const PULL_CAP: usize = 64 * 1024;
 impl ChunkWriter {
     fn flush_chunk(&mut self) {
         if !self.buf.is_empty() {
-            emit_bytes(EMIT_CHUNK, &self.buf);
+            emit_bytes(self.kind, &self.buf);
             self.total += self.buf.len() as u64;
             self.buf.clear();
         }
@@ -706,8 +715,15 @@ pub extern "C" fn build_store_stream() -> i64 {
         Some(scratch[..n as usize].to_vec())
     });
 
-    let mut w = ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0 };
-    match builder.finish_from_sorted(rows, &mut w) {
+    let mut w = ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0, kind: EMIT_CHUNK };
+    // Written DURING the build, before the search indexes exist -- that ordering is what keeps the
+    // peak down, so the two chunk streams interleave and the host must stage them separately.
+    let mut compat_w =
+        ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0, kind: EMIT_COMPAT_CHUNK };
+    let result = builder.finish_from_sorted(rows, &mut w, Some(&mut compat_w));
+    let _ = compat_w.flush();
+    let compat_bytes = compat_w.total;
+    match result {
         Ok(stats) => {
             if let Some(idx) = failed {
                 log(&format!("build_store_stream: pull_row failed at blob {idx}"));
@@ -725,6 +741,7 @@ pub extern "C" fn build_store_stream() -> i64 {
                 "card_count": stats.card_count,
                 "printing_count": stats.printing_count,
                 "store_bytes": w.total,
+                "compat_bytes": compat_bytes,
             }));
             w.total as i64
         }

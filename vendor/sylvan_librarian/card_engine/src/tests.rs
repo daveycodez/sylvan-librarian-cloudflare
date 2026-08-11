@@ -224,7 +224,6 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         creature_power_text_id: NONE_STR,
         creature_toughness_text_id: NONE_STR,
         faces: Vec::new(),
-        all_parts: Vec::new(),
     }
 }
 
@@ -256,7 +255,6 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         card_frame_data: Vec::new(),
         artwork_group_id: 0, // placeholder; store_of overwrites via assign_artwork_groups
         faces: Vec::new(),
-        compat: CompatFields::default(),
     }
 }
 
@@ -6445,7 +6443,6 @@ fn bench_checked_vs_unchecked_access() {
         arith_tuple:    build_arith_tuple_index(&cards),
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
-        external_id_index:       build_external_id_index(&printings),
     };
     let data = CardData {
         cards,
@@ -11972,16 +11969,16 @@ fn the_compat_residue_stays_at_84_bytes_a_printing() {
 
 #[test]
 fn external_ids_resolve_to_their_printing() {
-    let mut a = stub_printing(1, 1, Some(1.0));
-    a.compat = CompatFields {
+    // Built from the RESIDUE, which is where these ids live now (see CompatData) -- index i is
+    // printing i in the search archive.
+    let a = CompatFields {
         multiverse_ids: vec![100, 101],
         mtgo_id: NonZeroU32::new(200),
         mtgo_foil_id: NonZeroU32::new(201),
         arena_id: NonZeroU32::new(300),
         ..CompatFields::default()
     };
-    let mut b = stub_printing(2, 2, Some(1.0));
-    b.compat = CompatFields {
+    let b = CompatFields {
         tcgplayer_id: NonZeroU32::new(400),
         tcgplayer_etched_id: NonZeroU32::new(401),
         ..CompatFields::default()
@@ -12013,10 +12010,8 @@ fn external_ids_resolve_to_their_printing() {
 fn a_shared_external_id_resolves_to_the_first_printing() {
     // Etched and nonfoil rows do collide on a TCGplayer id. Printings are stored in descending
     // prefer order, so the lowest index is the one the rest of the API would show.
-    let mut a = stub_printing(1, 1, Some(9.0));
-    a.compat = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
-    let mut b = stub_printing(2, 2, Some(1.0));
-    b.compat = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
+    let a = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
+    let b = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
 
     let idx = build_external_id_index(&[a, b]);
     let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
@@ -12029,32 +12024,29 @@ fn related_cards_stand_alone_without_the_referenced_card() {
     // The reason all_parts carries its own name and type line: a `token` component references a
     // card the import FILTERS OUT (preprocess_card drops Token type lines), so an index into our
     // cards would resolve to nothing. The reference has to be self-contained.
-    let mut vocab = VocabInterner::new();
-    let mut card = stub_card(1, 0, &[], &mut vocab);
-    card.all_parts = vec![
+    let all_parts: Vec<RelatedCard> = vec![
         RelatedCard { id: 0xAAAA, name_id: 10, type_line_id: 11, component_id: 1 },
         RelatedCard { id: 0xBBBB, name_id: 20, type_line_id: 21, component_id: 2 },
     ];
 
-    let bytes = rkyv::to_bytes::<Error>(&card).expect("serialize");
-    let a = rkyv::access::<Archived<OracleCard>, Error>(&bytes).expect("access");
+    let bytes = rkyv::to_bytes::<Error>(&all_parts).expect("serialize");
+    let a = rkyv::access::<Archived<Vec<RelatedCard>>, Error>(&bytes).expect("access");
 
-    assert_eq!(a.all_parts.len(), 2);
+    assert_eq!(a.len(), 2);
     // Order is meaningful for melds: the two parts, then the result.
-    assert_eq!(u128::from(a.all_parts[0].id), 0xAAAA);
-    assert_eq!(u128::from(a.all_parts[1].id), 0xBBBB);
-    assert_eq!(u32::from(a.all_parts[0].name_id), 10);
-    assert_eq!(u32::from(a.all_parts[0].type_line_id), 11);
-    assert_ne!(u16::from(a.all_parts[0].component_id), u16::from(a.all_parts[1].component_id));
+    assert_eq!(u128::from(a[0].id), 0xAAAA);
+    assert_eq!(u128::from(a[1].id), 0xBBBB);
+    assert_eq!(u32::from(a[0].name_id), 10);
+    assert_eq!(u32::from(a[0].type_line_id), 11);
+    assert_ne!(u16::from(a[0].component_id), u16::from(a[1].component_id));
 }
 
 #[test]
 fn cards_without_relations_carry_none() {
-    let mut vocab = VocabInterner::new();
-    let card = stub_card(1, 0, &[], &mut vocab);
-    let bytes = rkyv::to_bytes::<Error>(&card).expect("serialize");
-    let a = rkyv::access::<Archived<OracleCard>, Error>(&bytes).expect("access");
-    assert!(a.all_parts.is_empty(), "~59% of cards have no relations");
+    let empty: Vec<RelatedCard> = Vec::new();
+    let bytes = rkyv::to_bytes::<Error>(&empty).expect("serialize");
+    let a = rkyv::access::<Archived<Vec<RelatedCard>>, Error>(&bytes).expect("access");
+    assert!(a.is_empty(), "~59% of cards have no relations");
 }
 
 // ─── Fuzzy name matching ──────────────────────────────────────────────────────
@@ -12154,12 +12146,16 @@ fn autocomplete_is_prefix_matched_sorted_and_capped() {
 }
 
 #[test]
-fn a_printing_stays_at_256_bytes() {
+fn the_search_archive_carries_none_of_the_residue() {
     // The store ceiling is arithmetic on this number: 97,803 printings against a 78,000,000-byte
     // three-KV-chunk budget, so every byte here is ~98 KB of archive. Pinned alongside the
     // residue's own size because the header embeds it and a change silently invalidates every
     // built store rather than failing to compile.
-    assert_eq!(std::mem::size_of::<Archived<Printing>>(), 256);
+    // Back to the pre-#912 sizes: the residue is a SECOND archive now (see CompatData), so the
+    // search store -- the one on the /search hot path and the one the 78,000,000-byte three-chunk
+    // ceiling applies to -- carries none of it. 176 is what generation 9 shipped; 304 is what
+    // Unit 1's `faces` took OracleCard to, and #912 leaves it there.
+    assert_eq!(std::mem::size_of::<Archived<Printing>>(), 176);
     assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 304);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
 }

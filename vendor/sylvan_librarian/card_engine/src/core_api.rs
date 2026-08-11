@@ -26,9 +26,10 @@ use std::num::NonZeroU32;
 
 use super::{
     AOracleCard, APrinting, AStrings, ARCHIVE_FORMAT_VERSION, ARCHIVE_HEADER_LEN, ARTIST_NONE,
-    CardData, CardRow, CompatFields, FaceRow, InlineStr, Interner, ManaCost, ManaVocabInterner,
+    CardData, CardRow, CompatData, CompatFields, FaceRow, InlineStr, Interner, ManaCost, ManaVocabInterner,
     PERMANENT_TYPES, QueryCtx, QueryParams, RelatedCard, VocabInterner, archive_header,
     build_card_data, card_types_list_to_bits, coll_str, coll_str_opt, color_list_to_mask,
+    compat_archive_header,
     count_common_keywords, count_common_types, format_shift_or_assign, identity_letters, lane_add,
     legality_bits_to_json, legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text,
     frame_of, released_int_to_iso, run_query_routed, sorted_strs, str_at, uuid_from_u128, write_archive,
@@ -583,9 +584,13 @@ impl StoreBuilder {
     /// Sort, group, index, and serialize the staged rows: header + rkyv
     /// archive into `w`, flushed. The bytes are exactly what reload_commit()
     /// writes to the shm file, so any reader path (mmap or buffer) accepts them.
-    pub fn finish_to_writer<W: std::io::Write>(self, w: &mut W) -> Result<StoreStats, EngineError> {
+    pub fn finish_to_writer<W: std::io::Write>(
+        self,
+        w: &mut W,
+        residue: Option<&mut dyn std::io::Write>,
+    ) -> Result<StoreStats, EngineError> {
         let StoreBuilder { rows, interner, vocab, artists, mana } = self;
-        let built = build_card_data(rows, interner, vocab, artists, mana)?;
+        let built = build_card_data(rows, interner, vocab, artists, mana, residue)?;
         let stats = StoreStats {
             card_count: built.card_data.cards.len(),
             printing_count: built.card_data.printings.len(),
@@ -663,12 +668,15 @@ impl SpillingStoreBuilder {
         self,
         rows: impl Iterator<Item = Vec<u8>>,
         w: &mut W,
+        // The residue archive's writer; see CompatData. None discards it, which is only right for
+        // a caller that will never serve /cards/*.
+        residue: Option<&mut dyn std::io::Write>,
     ) -> Result<StoreStats, EngineError> {
         let SpillingStoreBuilder { interner, vocab, artists, mana, keys } = self;
         let expected = keys.len();
         drop(keys);
         let rows = rows.map(|bytes| decode_card_row(&bytes));
-        let built = crate::build_card_data_sorted(rows, expected, interner, vocab, artists, mana)?;
+        let built = crate::build_card_data_sorted(rows, expected, interner, vocab, artists, mana, residue)?;
         let stats = StoreStats {
             card_count: built.card_data.cards.len(),
             printing_count: built.card_data.printings.len(),
@@ -1014,6 +1022,10 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
 /// ARCHIVE_HEADER_LEN stays 16-aligned.
 pub struct BufferStore {
     bytes: AlignedVec,
+    /// The residue archive (see CompatData), loaded only when a `/cards/*` route needs it.
+    /// `/search` is the hot path and reads none of it, so a search-only isolate never pays for
+    /// the extra ~11 MB of linear memory or the extra KV round trips.
+    compat: Option<AlignedVec>,
 }
 
 impl BufferStore {
@@ -1028,7 +1040,25 @@ impl BufferStore {
                 "archive header mismatch (stale or foreign archive; rebuild the store with this engine version)",
             ));
         }
-        Ok(BufferStore { bytes })
+        Ok(BufferStore { bytes, compat: None })
+    }
+
+    /// Attach the residue archive. Rejected unless the header matches this build exactly, for the
+    /// same reason the search archive's is: the two share an index space and a string table, so a
+    /// mismatched pair would resolve every id against the wrong table and answer plausibly.
+    pub fn attach_compat(&mut self, bytes: AlignedVec) -> Result<(), EngineError> {
+        if bytes.len() < ARCHIVE_HEADER_LEN || bytes[..ARCHIVE_HEADER_LEN] != compat_archive_header() {
+            return Err(EngineError::runtime(
+                "card-object archive header mismatch (stale, foreign, or paired with a different store)",
+            ));
+        }
+        self.compat = Some(bytes);
+        Ok(())
+    }
+
+    /// Whether the residue archive is attached.
+    pub fn has_compat(&self) -> bool {
+        self.compat.is_some()
     }
 
     /// Copy `bytes` into a fresh aligned buffer and validate. Convenience for
@@ -1038,6 +1068,43 @@ impl BufferStore {
         let mut buf = AlignedVec::with_capacity(bytes.len());
         buf.extend_from_slice(bytes);
         Self::from_aligned(buf)
+    }
+
+    /// The residue archive, or None when it was never attached.
+    fn compat_data(&self) -> Option<&Archived<CompatData>> {
+        // Safety: the same trusted-write-path argument as data() below — these bytes came from
+        // write_compat_archive in this build, attach_compat checked the header, the buffer is
+        // immutable for the life of self, and AlignedVec plus the 16-byte header keeps the
+        // payload 16-aligned.
+        self.compat
+            .as_ref()
+            .map(|b| unsafe { rkyv::access_unchecked::<Archived<CompatData>>(&b[ARCHIVE_HEADER_LEN..]) })
+    }
+
+    /// One card's residue slice, by card and printing index.
+    fn residue_row(&self, cid: usize, pid: usize) -> Option<CompatRow<'_>> {
+        let d = self.compat_data()?;
+        Some(CompatRow { compat: d.compat.get(pid)?, all_parts: d.all_parts.get(cid)? })
+    }
+
+    /// The residue slice for a `(card, printing)` pair the query path handed back as references.
+    ///
+    /// `run_query_routed` returns references rather than indices, and CompatData is keyed by
+    /// index, so the index is recovered by offset from the start of each archived slice. Both are
+    /// contiguous (rkyv archives a Vec as one run of elements), so this is exact rather than a
+    /// heuristic — and it is what lets the residue live in a second archive without changing the
+    /// query path's return type, which every other caller depends on.
+    fn residue_of<'a>(
+        &'a self,
+        data: &Archived<CardData>,
+        card: &AOracleCard,
+        printing: &APrinting,
+    ) -> Option<CompatRow<'a>> {
+        let cid = (std::ptr::from_ref(card) as usize).checked_sub(data.cards.as_ptr() as usize)?
+            / std::mem::size_of::<AOracleCard>();
+        let pid = (std::ptr::from_ref(printing) as usize).checked_sub(data.printings.as_ptr() as usize)?
+            / std::mem::size_of::<APrinting>();
+        self.residue_row(cid, pid)
     }
 
     fn data(&self) -> &Archived<CardData> {
@@ -1083,7 +1150,8 @@ impl BufferStore {
 
     /// [`Self::query`] over an already parsed filter tree.
     pub fn query_value(&self, filter_tree: &Value, opts: &QueryOptions) -> Result<QueryOutput, EngineError> {
-        let resolved_fields = resolve_fields_json(opts.fields.clone())?;
+        let resolved_fields = resolve_fields_json(opts.fields.clone(), self.has_compat())?;
+        let needs_residue = wants_residue(&resolved_fields);
         let data = self.data();
         let params = QueryParams::from_strs(
             &opts.unique,
@@ -1107,7 +1175,10 @@ impl BufferStore {
 
         let rows: Vec<Value> = page
             .iter()
-            .map(|(c, p)| card_to_json(c, p, &data.strings, &data.coll_vocab, &resolved_fields))
+            .map(|(c, p)| {
+                let residue = if needs_residue { self.residue_of(data, c, p) } else { None };
+                card_to_json(c, p, &data.strings, &data.coll_vocab, residue.as_ref(), &resolved_fields)
+            })
             .collect();
         Ok(QueryOutput { total, rows })
     }
@@ -1116,7 +1187,7 @@ impl BufferStore {
     /// the caller instead of drawn from OS entropy — wasm32-unknown-unknown
     /// has no ambient entropy source, so the Worker passes one in.
     pub fn sample_preferred(&self, n: usize, seed: u64, fields: Option<Vec<String>>) -> Result<Vec<Value>, EngineError> {
-        let resolved_fields = resolve_fields_json(fields)?;
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
 
         let pool_len = data.cards.len();
@@ -1138,7 +1209,14 @@ impl BufferStore {
             .map(|&cid| {
                 let card = &data.cards[cid];
                 let preferred = u32::from(data.offsets[cid]) as usize;
-                card_to_json(card, &data.printings[preferred], &data.strings, &data.coll_vocab, &resolved_fields)
+                card_to_json(
+                    card,
+                    &data.printings[preferred],
+                    &data.strings,
+                    &data.coll_vocab,
+                    self.residue_row(cid, preferred).as_ref(),
+                    &resolved_fields,
+                )
             })
             .collect())
     }
@@ -1151,7 +1229,7 @@ impl BufferStore {
 
     /// Mirror of the pyo3 `card_by_scryfall_id()`.
     pub fn card_by_scryfall_id(&self, scryfall_id: &str, fields: Option<Vec<String>>) -> Result<Option<Value>, EngineError> {
-        let resolved_fields = resolve_fields_json(fields)?;
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
         let Some(pid) = super::find_printing_by_scryfall_id(
             &data.indexes.printing_by_scryfall_id,
@@ -1166,6 +1244,7 @@ impl BufferStore {
             &data.printings[pid as usize],
             &data.strings,
             &data.coll_vocab,
+            self.residue_row(cid, pid as usize).as_ref(),
             &resolved_fields,
         )))
     }
@@ -1180,7 +1259,7 @@ impl BufferStore {
         scryfall_ids: &[String],
         fields: Option<Vec<String>>,
     ) -> Result<Vec<Value>, EngineError> {
-        let resolved_fields = resolve_fields_json(fields)?;
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
         let mut out = Vec::with_capacity(scryfall_ids.len());
         for id in scryfall_ids {
@@ -1197,6 +1276,7 @@ impl BufferStore {
                 &data.printings[pid as usize],
                 &data.strings,
                 &data.coll_vocab,
+                self.residue_row(cid, pid as usize).as_ref(),
                 &resolved_fields,
             ));
         }
@@ -1210,7 +1290,7 @@ impl BufferStore {
         oracle_id: &str,
         fields: Option<Vec<String>>,
     ) -> Result<Vec<Value>, EngineError> {
-        let resolved_fields = resolve_fields_json(fields)?;
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
         let Some(cid) = super::find_oracle_by_oracle_id(
             &data.indexes.oracle_by_oracle_id,
@@ -1223,7 +1303,14 @@ impl BufferStore {
         let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
         Ok((start..end)
             .map(|pid| {
-                card_to_json(&data.cards[cid], &data.printings[pid], &data.strings, &data.coll_vocab, &resolved_fields)
+                card_to_json(
+                    &data.cards[cid],
+                    &data.printings[pid],
+                    &data.strings,
+                    &data.coll_vocab,
+                    self.residue_row(cid, pid).as_ref(),
+                    &resolved_fields,
+                )
             })
             .collect())
     }
@@ -1244,9 +1331,14 @@ impl BufferStore {
             "cardmarket" => EXT_CARDMARKET,
             other => return Err(EngineError::query(format!("unknown id namespace {other:?}"))),
         };
-        let resolved_fields = resolve_fields_json(fields)?;
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
-        let Some(pid) = find_printing_by_external_id(&data.indexes.external_id_index, ns, external_id) else {
+        // The external-id index rides in the residue archive: it is derived from the residue's own
+        // marketplace ids, and /search never addresses a card that way.
+        let Some(compat) = self.compat_data() else {
+            return Err(EngineError::query("addressing a card by external id needs the card-object archive"));
+        };
+        let Some(pid) = find_printing_by_external_id(&compat.external_id_index, ns, external_id) else {
             return Ok(None);
         };
         let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
@@ -1255,6 +1347,7 @@ impl BufferStore {
             &data.printings[pid as usize],
             &data.strings,
             &data.coll_vocab,
+            self.residue_row(cid, pid as usize).as_ref(),
             &resolved_fields,
         )))
     }
@@ -1271,7 +1364,7 @@ impl BufferStore {
         lead: f32,
         fields: Option<Vec<String>>,
     ) -> Result<(&'static str, Option<Value>), EngineError> {
-        let resolved_fields = resolve_fields_json(fields)?;
+        let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
         match fuzzy_name_match(&data.cards, name, floor, lead) {
             FuzzyOutcome::Miss => Ok(("miss", None)),
@@ -1287,6 +1380,7 @@ impl BufferStore {
                         &data.printings[preferred],
                         &data.strings,
                         &data.coll_vocab,
+                        self.residue_row(cid, preferred).as_ref(),
                         &resolved_fields,
                     )),
                 ))
@@ -1435,6 +1529,31 @@ impl QueryOutput {
 
 type JsonFieldExtractor = fn(&AOracleCard, &APrinting, &AStrings, &AStrings) -> Value;
 
+/// One card's slice of the residue archive: its printing's `CompatFields` and its card's
+/// `all_parts`, resolved from `CompatData` by the same indices the search archive uses.
+pub(crate) struct CompatRow<'a> {
+    pub compat: &'a Archived<CompatFields>,
+    pub all_parts: &'a Archived<Vec<RelatedCard>>,
+}
+
+/// Everything a residue field reads. The two string tables come from the SEARCH archive — the
+/// residue interns nothing of its own (see CompatData).
+pub(crate) struct RowCtx<'a> {
+    pub card: &'a AOracleCard,
+    pub printing: &'a APrinting,
+    pub strings: &'a AStrings,
+    pub vocab: &'a AStrings,
+    pub residue: &'a CompatRow<'a>,
+}
+
+type JsonCompatExtractor = fn(&RowCtx) -> Value;
+
+/// A field resolved against one of the two tables.
+enum ResolvedField {
+    Base(&'static str, JsonFieldExtractor),
+    Compat(&'static str, JsonCompatExtractor),
+}
+
 fn opt_str_value(s: Option<&str>) -> Value {
     match s {
         Some(s) => Value::String(s.to_owned()),
@@ -1521,65 +1640,11 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
         let bits = if c.legality_divergent { u64::from(p.card_legalities) } else { u64::from(c.card_legalities) };
         legality_bits_to_json(bits)
     }),
-    // ── The compat residue and the rest of a card object (upstream #912) ─────────────────────
-    // Same standing note as #877's five above: FIELD_TABLE's 40 additions compile to nothing in
-    // this port, so these hand-written twins are the live table. `null` here is how "Scryfall
-    // omitted this key" travels; `toScryfallCard` on the TypeScript side drops null-valued keys
-    // rather than emitting them, which is what keeps a reconstructed object shaped like
-    // Scryfall's instead of sprouting nulls Scryfall never sent.
-    ("lang", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.lang_id)))),
-    ("image_status", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.image_status_id)))),
-    ("set_type", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.set_type_id)))),
-    ("security_stamp", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.security_stamp_id)))),
-    ("set_id", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.set_vid)))),
-    ("arena_id", |_c, p, _s, _v| opt_u32_value(p.compat.arena_id.as_ref().map(|v| u32::from(v.get())))),
-    ("mtgo_id", |_c, p, _s, _v| opt_u32_value(p.compat.mtgo_id.as_ref().map(|v| u32::from(v.get())))),
-    ("mtgo_foil_id", |_c, p, _s, _v| opt_u32_value(p.compat.mtgo_foil_id.as_ref().map(|v| u32::from(v.get())))),
-    ("tcgplayer_id", |_c, p, _s, _v| opt_u32_value(p.compat.tcgplayer_id.as_ref().map(|v| u32::from(v.get())))),
-    ("tcgplayer_etched_id", |_c, p, _s, _v| opt_u32_value(p.compat.tcgplayer_etched_id.as_ref().map(|v| u32::from(v.get())))),
-    ("cardmarket_id", |_c, p, _s, _v| opt_u32_value(p.compat.cardmarket_id.as_ref().map(|v| u32::from(v.get())))),
-    ("penny_rank", |_c, p, _s, _v| opt_u32_value(p.compat.penny_rank.as_ref().map(|v| u32::from(v.get())))),
-    ("image_updated_at", |_c, p, _s, _v| opt_u32_value(p.compat.image_updated_at.as_ref().map(|v| u32::from(v.get())))),
-    // Dollars from integer cents, the same conversion price_usd uses.
-    ("price_usd_foil", |_c, p, _s, _v| opt_cents_value(p.compat.price_usd_foil.as_ref().map(|v| u32::from(v.get())))),
-    ("price_usd_etched", |_c, p, _s, _v| opt_cents_value(p.compat.price_usd_etched.as_ref().map(|v| u32::from(v.get())))),
-    ("price_eur_foil", |_c, p, _s, _v| opt_cents_value(p.compat.price_eur_foil.as_ref().map(|v| u32::from(v.get())))),
-    ("multiverse_ids", |_c, p, _s, _v| {
-        Value::Array(p.compat.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
-    }),
-    ("promo_types", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.compat.promo_types))),
-    ("frame_effects", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.compat.frame_effects))),
-    ("games", |_c, p, _s, _v| str_vec_value(bits_to_names(u8::from(p.compat.games), GAME_NAMES))),
-    ("finishes", |_c, p, _s, _v| str_vec_value(bits_to_names(u8::from(p.compat.finishes), FINISH_NAMES))),
-    ("booster", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_BOOSTER))),
-    ("digital", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_DIGITAL))),
-    ("foil", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_FOIL))),
-    ("nonfoil", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_NONFOIL))),
-    ("full_art", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_FULL_ART))),
-    ("highres_image", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_HIGHRES_IMAGE))),
-    ("oversized", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_OVERSIZED))),
-    ("promo", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_PROMO))),
-    ("reprint", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_REPRINT))),
-    ("story_spotlight", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_STORY_SPOTLIGHT))),
-    ("textless", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_TEXTLESS))),
-    ("variation", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_VARIATION))),
+    // ── The rest of a Scryfall card object that the SEARCH archive still holds (upstream #912) ──
+    // Same standing note as #877's five above: FIELD_TABLE is pyo3-gated and compiles to nothing
+    // in this port, so these hand-written twins are the live table. The residue fields are NOT
+    // here — they moved to JSON_COMPAT_FIELD_TABLE below with the second archive.
     ("card_faces", |c, p, s, v| faces_to_json(c, p, s, v)),
-    ("all_parts", |c, _p, s, v| {
-        Value::Array(
-            c.all_parts
-                .iter()
-                .map(|part| {
-                    let mut m = Map::with_capacity(5);
-                    m.insert("object".to_owned(), Value::from("related_card"));
-                    m.insert("id".to_owned(), uuid_value(u128::from(part.id)));
-                    m.insert("component".to_owned(), opt_str_value(coll_str_opt(v, u16::from(part.component_id))));
-                    m.insert("name".to_owned(), opt_str_value(str_at(s, u32::from(part.name_id))));
-                    m.insert("type_line".to_owned(), opt_str_value(str_at(s, u32::from(part.type_line_id))));
-                    Value::Object(m)
-                })
-                .collect(),
-        )
-    }),
     ("colors", |c, _p, _s, _v| str_vec_value(identity_letters(u8::from(c.card_colors)))),
     // See FIELD_TABLE's note: upstream emits `border_color: null` on every engine-served card and
     // omits `frame`, because neither had an accessor. Scryfall always sends both.
@@ -1654,9 +1719,83 @@ fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, v
     )
 }
 
+
+/// The residue half of the field vocabulary: everything that lives in `CompatData` rather than in
+/// the search archive. Split out because these are exactly the fields that need the second archive
+/// loaded, so "which fields require it" is a property of the table rather than a list to maintain.
+///
+/// `null` here is how "Scryfall omitted this key" travels; `toScryfallCard` on the TypeScript side
+/// drops null-valued keys rather than emitting them, which is what keeps a reconstructed object
+/// shaped like Scryfall's instead of sprouting nulls Scryfall never sent.
+const JSON_COMPAT_FIELD_TABLE: &[(&str, JsonCompatExtractor)] = &[
+    // ── The compat residue and the rest of a card object (upstream #912) ─────────────────────
+    // Same standing note as #877's five above: FIELD_TABLE's 40 additions compile to nothing in
+    // this port, so these hand-written twins are the live table. `null` here is how "Scryfall
+    // omitted this key" travels; `toScryfallCard` on the TypeScript side drops null-valued keys
+    // rather than emitting them, which is what keeps a reconstructed object shaped like
+    // Scryfall's instead of sprouting nulls Scryfall never sent.
+    ("lang", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.lang_id)))),
+    ("image_status", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.image_status_id)))),
+    ("set_type", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.set_type_id)))),
+    ("security_stamp", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.security_stamp_id)))),
+    ("set_id", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.set_vid)))),
+    ("arena_id", |x| opt_u32_value(x.residue.compat.arena_id.as_ref().map(|v| u32::from(v.get())))),
+    ("mtgo_id", |x| opt_u32_value(x.residue.compat.mtgo_id.as_ref().map(|v| u32::from(v.get())))),
+    ("mtgo_foil_id", |x| opt_u32_value(x.residue.compat.mtgo_foil_id.as_ref().map(|v| u32::from(v.get())))),
+    ("tcgplayer_id", |x| opt_u32_value(x.residue.compat.tcgplayer_id.as_ref().map(|v| u32::from(v.get())))),
+    ("tcgplayer_etched_id", |x| opt_u32_value(x.residue.compat.tcgplayer_etched_id.as_ref().map(|v| u32::from(v.get())))),
+    ("cardmarket_id", |x| opt_u32_value(x.residue.compat.cardmarket_id.as_ref().map(|v| u32::from(v.get())))),
+    ("penny_rank", |x| opt_u32_value(x.residue.compat.penny_rank.as_ref().map(|v| u32::from(v.get())))),
+    ("image_updated_at", |x| opt_u32_value(x.residue.compat.image_updated_at.as_ref().map(|v| u32::from(v.get())))),
+    // Dollars from integer cents, the same conversion price_usd uses.
+    ("price_usd_foil", |x| opt_cents_value(x.residue.compat.price_usd_foil.as_ref().map(|v| u32::from(v.get())))),
+    ("price_usd_etched", |x| opt_cents_value(x.residue.compat.price_usd_etched.as_ref().map(|v| u32::from(v.get())))),
+    ("price_eur_foil", |x| opt_cents_value(x.residue.compat.price_eur_foil.as_ref().map(|v| u32::from(v.get())))),
+    ("multiverse_ids", |x| {
+        Value::Array(x.residue.compat.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
+    }),
+    ("promo_types", |x| str_vec_value(sorted_strs(x.vocab, &x.residue.compat.promo_types))),
+    ("frame_effects", |x| str_vec_value(sorted_strs(x.vocab, &x.residue.compat.frame_effects))),
+    ("games", |x| str_vec_value(bits_to_names(u8::from(x.residue.compat.games), GAME_NAMES))),
+    ("finishes", |x| str_vec_value(bits_to_names(u8::from(x.residue.compat.finishes), FINISH_NAMES))),
+    ("booster", |x| Value::from(compat_flag(x.residue.compat, COMPAT_BOOSTER))),
+    ("digital", |x| Value::from(compat_flag(x.residue.compat, COMPAT_DIGITAL))),
+    ("foil", |x| Value::from(compat_flag(x.residue.compat, COMPAT_FOIL))),
+    ("nonfoil", |x| Value::from(compat_flag(x.residue.compat, COMPAT_NONFOIL))),
+    ("full_art", |x| Value::from(compat_flag(x.residue.compat, COMPAT_FULL_ART))),
+    ("highres_image", |x| Value::from(compat_flag(x.residue.compat, COMPAT_HIGHRES_IMAGE))),
+    ("oversized", |x| Value::from(compat_flag(x.residue.compat, COMPAT_OVERSIZED))),
+    ("promo", |x| Value::from(compat_flag(x.residue.compat, COMPAT_PROMO))),
+    ("reprint", |x| Value::from(compat_flag(x.residue.compat, COMPAT_REPRINT))),
+    ("story_spotlight", |x| Value::from(compat_flag(x.residue.compat, COMPAT_STORY_SPOTLIGHT))),
+    ("textless", |x| Value::from(compat_flag(x.residue.compat, COMPAT_TEXTLESS))),
+    ("variation", |x| Value::from(compat_flag(x.residue.compat, COMPAT_VARIATION))),
+    ("all_parts", |x| {
+        Value::Array(
+            x.residue.all_parts
+                .iter()
+                .map(|part| {
+                    let mut m = Map::with_capacity(5);
+                    m.insert("object".to_owned(), Value::from("related_card"));
+                    m.insert("id".to_owned(), uuid_value(u128::from(part.id)));
+                    m.insert("component".to_owned(), opt_str_value(coll_str_opt(x.vocab, u16::from(part.component_id))));
+                    m.insert("name".to_owned(), opt_str_value(str_at(x.strings, u32::from(part.name_id))));
+                    m.insert("type_line".to_owned(), opt_str_value(str_at(x.strings, u32::from(part.type_line_id))));
+                    Value::Object(m)
+                })
+                .collect(),
+        )
+    }),
+];
+
 /// Mirror of `resolve_fields`: dedupe repeats, reject unknown names, `None` →
 /// DEFAULT_FIELDS. Same error message shape as the pyo3 UnknownFieldError.
-fn resolve_fields_json(fields: Option<Vec<String>>) -> Result<Vec<(&'static str, JsonFieldExtractor)>, EngineError> {
+///
+/// `residue_loaded` decides whether the residue half of the vocabulary is available. Asking for
+/// `lang` without the second archive is rejected HERE, once, with a message that says which
+/// archive is missing — rather than answering `null` and looking like a card Scryfall sent no
+/// language for. That distinction is the whole reason the residue exists.
+fn resolve_fields_json(fields: Option<Vec<String>>, residue_loaded: bool) -> Result<Vec<ResolvedField>, EngineError> {
     let requested: Vec<&str> = match &fields {
         Some(v) => v.iter().map(String::as_str).collect(),
         None => DEFAULT_FIELDS.to_vec(),
@@ -1667,12 +1806,26 @@ fn resolve_fields_json(fields: Option<Vec<String>>) -> Result<Vec<(&'static str,
         if !seen.insert(name) {
             continue;
         }
-        match JSON_FIELD_TABLE.iter().find(|(n, _)| *n == name) {
-            Some(entry) => resolved.push(*entry),
-            None => return Err(EngineError::unknown_field(format!("unknown field: {name:?}"))),
+        if let Some((n, f)) = JSON_FIELD_TABLE.iter().find(|(n, _)| *n == name) {
+            resolved.push(ResolvedField::Base(n, *f));
+        } else if let Some((n, f)) = JSON_COMPAT_FIELD_TABLE.iter().find(|(n, _)| *n == name) {
+            if !residue_loaded {
+                return Err(EngineError::query(format!(
+                    "field {name:?} needs the card-object archive, which is not loaded"
+                )));
+            }
+            resolved.push(ResolvedField::Compat(n, *f));
+        } else {
+            return Err(EngineError::unknown_field(format!("unknown field: {name:?}")));
         }
     }
     Ok(resolved)
+}
+
+/// True when any resolved field needs the residue archive — so a caller can skip looking one up
+/// per row for a plain `/search`, which is every request on the hot path.
+fn wants_residue(fields: &[ResolvedField]) -> bool {
+    fields.iter().any(|f| matches!(f, ResolvedField::Compat(..)))
 }
 
 fn card_to_json(
@@ -1680,11 +1833,24 @@ fn card_to_json(
     printing: &APrinting,
     strings: &AStrings,
     vocab: &AStrings,
-    fields: &[(&'static str, JsonFieldExtractor)],
+    residue: Option<&CompatRow>,
+    fields: &[ResolvedField],
 ) -> Value {
     let mut m = Map::with_capacity(fields.len());
-    for (name, extractor) in fields {
-        m.insert((*name).to_owned(), extractor(card, printing, strings, vocab));
+    for field in fields {
+        match field {
+            ResolvedField::Base(name, extractor) => {
+                m.insert((*name).to_owned(), extractor(card, printing, strings, vocab));
+            }
+            ResolvedField::Compat(name, extractor) => {
+                // resolve_fields_json refuses a residue field when the archive is absent, so a
+                // None here would be a bug in the caller rather than a request we should answer.
+                let Some(residue) = residue else {
+                    continue;
+                };
+                m.insert((*name).to_owned(), extractor(&RowCtx { card, printing, strings, vocab, residue }));
+            }
+        }
     }
     Value::Object(m)
 }
@@ -1704,9 +1870,15 @@ mod tests {
     #[test]
     fn every_price_field_resolves() {
         let names = ["price_usd", "price_eur", "price_tix"];
-        let resolved = resolve_fields_json(Some(names.iter().map(|n| (*n).to_string()).collect()))
+        let resolved = resolve_fields_json(Some(names.iter().map(|n| (*n).to_string()).collect()), false)
             .expect("every currency the orderby vocabulary sorts by must be readable");
-        assert_eq!(resolved.iter().map(|(n, _)| *n).collect::<Vec<_>>(), names);
+        let got: Vec<&str> = resolved
+            .iter()
+            .map(|f| match f {
+                ResolvedField::Base(n, _) | ResolvedField::Compat(n, _) => *n,
+            })
+            .collect();
+        assert_eq!(got, names);
     }
 
     /// The legality word must survive encode → decode unchanged.

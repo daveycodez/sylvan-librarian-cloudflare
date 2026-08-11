@@ -5,12 +5,20 @@
 // are wasm/DO-backed). No network, no wasm.
 
 import { serializeCards } from "../../src/engine/columnar";
-import type { Engine, EngineSearchOptions, EngineSerializedResult, Env, ResultShape } from "../../src/engine/types";
+import type {
+	Engine,
+	EngineSearchOptions,
+	EngineSerializedResult,
+	Env,
+	ResultShape,
+	ScryfallFuzzyResult,
+} from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
 import { buildRoutesListing, routes } from "../../src/routes";
 import { httpError, securityHeaders } from "../../src/routes/http";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
+import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 
 export const FIXTURE_CARDS: Record<string, unknown>[] = [
 	{
@@ -89,6 +97,73 @@ export class FakeEngine implements Engine {
 
 	async size(): Promise<number> {
 		return this.totalCards;
+	}
+
+	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
+	//
+	// Built from the SAME FIXTURE_CARDS the search half returns, through the same
+	// `toScryfallCard` the real engine uses, so a route test asserting on a card object and one
+	// asserting on a search row are checking one source. Only the lookup is faked.
+
+	scryfallBaseUrl: string | null = null;
+	/** Ids the fake resolves; anything else is a genuine miss, which IS the 404. */
+	scryfallKnownIds: string[] = FIXTURE_CARDS.map((c) => String(c.scryfall_id));
+	scryfallFuzzyStatus: ScryfallFuzzyResult["status"] = "hit";
+	lastAutocomplete: { prefix: string; limit: number } | null = null;
+
+	private fixtureCard(index: number, baseUrl: string): Record<string, unknown> | null {
+		const row = FIXTURE_CARDS[index];
+		return row === undefined ? null : toScryfallCard(row, baseUrl);
+	}
+
+	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
+		this.lastSearch = opts;
+		if (this.searchError) throw this.searchError;
+		this.scryfallBaseUrl = baseUrl;
+		const cards = this.cards.slice(0, opts.limit).map((row) => toScryfallCard(row, baseUrl));
+		return { totalCards: this.totalCards, cardsJson: JSON.stringify(cards) };
+	}
+
+	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		const at = this.scryfallKnownIds.indexOf(scryfallId);
+		return at < 0 ? null : this.fixtureCard(at, baseUrl);
+	}
+
+	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
+		const out: Record<string, unknown>[] = [];
+		for (const id of scryfallIds) {
+			const card = await this.scryfallCardById(id, baseUrl);
+			if (card) out.push(card);
+		}
+		return out;
+	}
+
+	async scryfallCardByOracleId(_oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		return this.fixtureCard(0, baseUrl);
+	}
+
+	async scryfallCardByExternalId(
+		_namespace: string,
+		_externalId: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown> | null> {
+		return this.fixtureCard(0, baseUrl);
+	}
+
+	async scryfallFuzzyName(_name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
+		const status = this.scryfallFuzzyStatus;
+		return { status, card: status === "hit" ? this.fixtureCard(0, baseUrl) : null };
+	}
+
+	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
+		this.lastAutocomplete = { prefix, limit };
+		return FIXTURE_CARDS.map((c) => String(c.name))
+			.filter((n) => n.toLowerCase().startsWith(prefix.toLowerCase()))
+			.slice(0, limit);
+	}
+
+	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
+		return filterTreeJsons.map(() => this.fixtureCard(0, baseUrl));
 	}
 }
 

@@ -9,7 +9,14 @@ import {
 	reportEngineLoad,
 	reportEngineRate,
 } from "./shard-controller";
-import type { Engine, EngineSearchOptions, EngineSearchResult, EngineSerializedResult, ResultShape } from "./types";
+import type {
+	Engine,
+	EngineSearchOptions,
+	EngineSearchResult,
+	EngineSerializedResult,
+	ResultShape,
+	ScryfallFuzzyResult,
+} from "./types";
 import { EngineUnavailableError } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
@@ -47,6 +54,57 @@ interface SearchEngineStub {
 		fallbackHint?: DurableObjectLocationHint,
 	): Promise<EngineSerializedResult>;
 	size(fallbackHint?: DurableObjectLocationHint): Promise<number>;
+	// Every `/cards/*` reply carries the same shard-controller riders search does, and wraps its
+	// payload so a null card has something to carry them on.
+	scryfallSearch(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<EngineSerializedResult & Telemetry>;
+	scryfallCardById(
+		scryfallId: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallCardsByIds(
+		scryfallIds: string[],
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ cards: Record<string, unknown>[] } & Telemetry>;
+	scryfallCardByOracleId(
+		oracleId: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallCardByExternalId(
+		namespace: string,
+		externalId: number,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallFuzzyName(
+		name: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallFuzzyResult & Telemetry>;
+	scryfallAutocomplete(
+		prefix: string,
+		limit: number,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ names: string[] } & Telemetry>;
+	scryfallFirstOfEach(
+		filterTreeJsons: string[],
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
 }
 
 /** Decode the DO's EngineUnavailableError marker back into the real type. */
@@ -212,5 +270,69 @@ export class RemoteEngine implements Engine {
 
 	size(): Promise<number> {
 		return withRetry(() => this.stub.size(this.fallbackHint));
+	}
+
+	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
+	//
+	// Through `searchRpc`, exactly like search(), so these calls FEED THE AUTOSCALER rather than
+	// being invisible to it. mtg-seeker points at `/cards/*`; if this went through plain
+	// `withRetry` the shard controller would see only `/search` depth, rate and latency, and would
+	// sit at one shard while the traffic that actually arrives saturated it. Same reason they pass
+	// `fallbackHint` and `currentShardWidth()`: the cold-colo relay race and the shard rendezvous
+	// are the two mechanisms scale-out depends on, and a second serving surface has to join both
+	// rather than route around them.
+
+	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
+		return this.searchRpc(() => this.stub.scryfallSearch(opts, baseUrl, this.fallbackHint, currentShardWidth()));
+	}
+
+	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		const { card } = await this.searchRpc(() =>
+			this.stub.scryfallCardById(scryfallId, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return card;
+	}
+
+	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
+		const { cards } = await this.searchRpc(() =>
+			this.stub.scryfallCardsByIds(scryfallIds, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return cards;
+	}
+
+	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+		const { card } = await this.searchRpc(() =>
+			this.stub.scryfallCardByOracleId(oracleId, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return card;
+	}
+
+	async scryfallCardByExternalId(
+		namespace: string,
+		externalId: number,
+		baseUrl: string,
+	): Promise<Record<string, unknown> | null> {
+		const { card } = await this.searchRpc(() =>
+			this.stub.scryfallCardByExternalId(namespace, externalId, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return card;
+	}
+
+	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
+		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, this.fallbackHint, currentShardWidth()));
+	}
+
+	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
+		const { names } = await this.searchRpc(() =>
+			this.stub.scryfallAutocomplete(prefix, limit, this.fallbackHint, currentShardWidth()),
+		);
+		return names;
+	}
+
+	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
+		const { cards } = await this.searchRpc(() =>
+			this.stub.scryfallFirstOfEach(filterTreeJsons, baseUrl, this.fallbackHint, currentShardWidth()),
+		);
+		return cards;
 	}
 }

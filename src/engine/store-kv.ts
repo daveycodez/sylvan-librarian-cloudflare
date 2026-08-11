@@ -324,9 +324,32 @@ export async function readManifest(env: Env): Promise<StoreManifest | null> {
  * loads from its own cache without a metered read.
  */
 export function kvStoreStream(env: Env, manifest: StoreManifest): ReadableStream<Uint8Array> {
-	const storeKey = manifest.store_key;
-	const expected = manifest.store_bytes;
-	const total = manifest.chunk_count ?? chunkCountFor(expected);
+	return kvArchiveStream(env, manifest.store_key, manifest.store_bytes, manifest.chunk_count);
+}
+
+/**
+ * The same stream over the paired residue archive (see StoreManifest.compat_key).
+ *
+ * Separate keys, same immutable-chunk contract. A manifest without one is a store built before
+ * the split: `/cards/*` reports the archive as unavailable rather than answering with every
+ * residue field missing, which would look like a card Scryfall sent no language or prices for.
+ */
+export function kvCompatStream(env: Env, manifest: StoreManifest): ReadableStream<Uint8Array> {
+	if (!manifest.compat_key || !manifest.compat_bytes) {
+		throw new EngineUnavailableError(
+			`Store ${manifest.store_key} has no card-object archive; /cards/* needs one (rebuild the store)`,
+		);
+	}
+	return kvArchiveStream(env, manifest.compat_key, manifest.compat_bytes, manifest.compat_chunk_count);
+}
+
+function kvArchiveStream(
+	env: Env,
+	storeKey: string,
+	expected: number,
+	chunkCount?: number,
+): ReadableStream<Uint8Array> {
+	const total = chunkCount ?? chunkCountFor(expected);
 	let seq = 0;
 	let seen = 0;
 	return new ReadableStream<Uint8Array>({

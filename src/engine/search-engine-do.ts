@@ -22,8 +22,26 @@ import type {
 	EngineSerializedResult,
 	Env,
 	ResultShape,
+	ScryfallFuzzyResult,
 } from "./types";
 import { EngineUnavailableError } from "./types";
+
+/**
+ * `/cards/*` replies, wrapped so `instrumented` has an object to spread telemetry over. A bare
+ * `null` card — the genuine miss that becomes a Scryfall 404 — cannot carry riders on its own.
+ */
+interface ScryfallCardReply {
+	card: Record<string, unknown> | null;
+}
+interface ScryfallCardsReply {
+	cards: Record<string, unknown>[];
+}
+interface ScryfallMaybeCardsReply {
+	cards: (Record<string, unknown> | null)[];
+}
+interface ScryfallNamesReply {
+	names: string[];
+}
 
 /** Shard-controller riders every search RPC carries back (see RemoteEngine). */
 interface SearchTelemetry {
@@ -351,6 +369,145 @@ export class SearchEngine extends DurableObject<Env> {
 			console.log(`samplePreferred acquired its engine in ${acquireMs}ms (cold isolate) for n=${numCards}`);
 		}
 		return result;
+	}
+
+	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
+	//
+	// Routed EXACTLY like search/searchSerialized: same relay-race on a cold colo, same
+	// `instrumented` telemetry, same shard rendezvous. That is not symmetry for its own sake —
+	// mtg-seeker points at `/cards/*`, so this is the traffic the deployment actually has to scale
+	// under. Bypassing `instrumented` would leave the shard controller reading only `/search`
+	// depth and rate, and it would decline to open a shard while `/cards/*` saturated the one it
+	// had.
+	//
+	// Every result is wrapped in an object because `instrumented` spreads its telemetry over the
+	// return value, and a bare `null` (a genuine card miss) has nothing to spread onto.
+	// RemoteEngine unwraps on the other side, so the Engine interface keeps the plain shapes.
+
+	async scryfallSearch(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<EngineSerializedResult & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallSearch(opts, baseUrl),
+			(engine) => engine.scryfallSearch(opts, baseUrl),
+		);
+	}
+
+	async scryfallCardById(
+		scryfallId: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallCardById(scryfallId, baseUrl),
+			async (engine) => ({ card: await engine.scryfallCardById(scryfallId, baseUrl) }),
+		);
+	}
+
+	async scryfallCardsByIds(
+		scryfallIds: string[],
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardsReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallCardsByIds(scryfallIds, baseUrl),
+			async (engine) => ({ cards: await engine.scryfallCardsByIds(scryfallIds, baseUrl) }),
+		);
+	}
+
+	async scryfallCardByOracleId(
+		oracleId: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallCardByOracleId(oracleId, baseUrl),
+			async (engine) => ({ card: await engine.scryfallCardByOracleId(oracleId, baseUrl) }),
+		);
+	}
+
+	async scryfallCardByExternalId(
+		namespace: string,
+		externalId: number,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallCardReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallCardByExternalId(namespace, externalId, baseUrl),
+			async (engine) => ({ card: await engine.scryfallCardByExternalId(namespace, externalId, baseUrl) }),
+		);
+	}
+
+	async scryfallFuzzyName(
+		name: string,
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallFuzzyResult & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallFuzzyName(name, baseUrl),
+			(engine) => engine.scryfallFuzzyName(name, baseUrl),
+		);
+	}
+
+	async scryfallAutocomplete(
+		prefix: string,
+		limit: number,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallNamesReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallAutocomplete(prefix, limit),
+			async (engine) => ({ names: await engine.scryfallAutocomplete(prefix, limit) }),
+		);
+	}
+
+	async scryfallFirstOfEach(
+		filterTreeJsons: string[],
+		baseUrl: string,
+		fallbackHint?: DurableObjectLocationHint,
+		reportedShards?: number,
+	): Promise<ScryfallMaybeCardsReply & SearchTelemetry> {
+		return this.routeScryfall(
+			fallbackHint,
+			reportedShards,
+			(region) => region.scryfallFirstOfEach(filterTreeJsons, baseUrl),
+			async (engine) => ({ cards: await engine.scryfallFirstOfEach(filterTreeJsons, baseUrl) }),
+		);
+	}
+
+	/** relay-or-instrument, the one shape every `/cards/*` entry point above uses. */
+	private routeScryfall<T extends object>(
+		fallbackHint: DurableObjectLocationHint | undefined,
+		reportedShards: number | undefined,
+		viaRegion: (region: SearchEngine) => Promise<T & SearchTelemetry>,
+		locally: (engine: Engine) => Promise<T>,
+	): Promise<T & SearchTelemetry> {
+		if (this.shouldRelay(fallbackHint)) {
+			return this.relay(fallbackHint, viaRegion, locally, reportedShards);
+		}
+		return this.instrumented(reportedShards, locally);
 	}
 
 	async size(fallbackHint?: DurableObjectLocationHint): Promise<number> {
