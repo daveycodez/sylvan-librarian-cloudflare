@@ -253,6 +253,10 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"A\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"B\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "(cmc=5 prefer:oldest) (cmc=4 prefer:newest)",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":4},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+	},
+	{
 		"query": "(foo bar) baz",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Foo\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Bar\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Baz\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
@@ -337,6 +341,10 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"toughness\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_color_identity\",\"original_attribute\":\"id\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":[\"G\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"f\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":[\"modern\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "(t:elf or unique:\"prints\") direction:desc",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Elf\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "(t:goblin c:r) or (t:beast c:g",
 		"error": {
 			"type": "ValueError",
@@ -346,6 +354,10 @@
 	{
 		"query": "(t:goblin c:r) or (t:beast c:g)",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_colors\",\"original_attribute\":\"c\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"R\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Beast\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_colors\",\"original_attribute\":\"c\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"G\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}]},\"node_type\":\"OrNode\"}"
+	},
+	{
+		"query": "(t:goblin or t:elf) sort:edhrec",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Elf\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
 	},
 	{
 		"query": "(urza's",
@@ -438,6 +450,10 @@
 	{
 		"query": "-type:creature",
 		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"type\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
+	},
+	{
+		"query": "-unique:art t:goblin",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "/foo/ /bar/",
@@ -604,6 +620,10 @@
 	{
 		"query": "Type:creature",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"type\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "UNIQUE:\"Art\" t:elf",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Elf\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "a",
@@ -1000,6 +1020,10 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "cmc=5 cmc=4",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":4},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+	},
+	{
 		"query": "cmc>-1",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":-1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -1292,6 +1316,14 @@
 	{
 		"query": "devotion>{B}",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"{B}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "dire",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Dire\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "direct",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Direct\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "don't",
@@ -3099,6 +3131,14 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Some-Word\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Other\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "sort:edhrec t:goblin",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "sorting",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Sorting\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "t!=creature",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -3147,6 +3187,30 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Elf\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Archer\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "t:goblin",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin dir:asc",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin dir:auto",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin dir:desc",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin direction:asc",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin direction:desc",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "t:goblin frame:2003",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_frame_data\",\"original_attribute\":\"frame\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"2003\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
@@ -3159,8 +3223,58 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Cleric\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Rogue\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Warrior\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Wizard\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"changeling\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "t:goblin or unique:art",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin order:name",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin prefer:oldest",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin sort:",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"t:goblin sort:\""
+		}
+	},
+	{
+		"query": "t:goblin sort:\"edhrec\"",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin sort:edhrec",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "t:goblin t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Cleric\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Rogue\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Warrior\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Wizard\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"changeling\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}]},\"node_type\":\"AndNode\"}"
+	},
+	{
+		"query": "t:goblin unique:",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"t:goblin unique:\""
+		}
+	},
+	{
+		"query": "t:goblin unique:art",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin unique:art sort:usd",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin unique:art sort:usd unique:cards",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "t:goblin unique:prints",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Goblin\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "t:goblin,",
@@ -3181,6 +3295,10 @@
 	{
 		"query": "t:legendary or t:artifact or t:saga",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Legendary\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Artifact\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Saga\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+	},
+	{
+		"query": "t:planeswalker f:commander sort:edhrec",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Planeswalker\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"f\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"commander\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
 		"query": "t:siege",
@@ -3267,6 +3385,14 @@
 			"type": "ValueError",
 			"message": "Failed to parse query: \"type:instant /unclosed\""
 		}
+	},
+	{
+		"query": "unique:art",
+		"tree": "{\"kwargs\":{},\"node_type\":\"TrueNode\"}"
+	},
+	{
+		"query": "uniquely",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Uniquely\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "urza'",

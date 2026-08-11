@@ -10,6 +10,8 @@ import { CardAttributeNode } from "./card-query-nodes";
 import {
 	AndNode,
 	BinaryOperatorNode,
+	type DirectiveFound,
+	DirectiveNode,
 	flattenNestedOperations,
 	NotNode,
 	OrNode,
@@ -17,6 +19,7 @@ import {
 	type QueryNode,
 	RegexValueNode,
 	StringValueNode,
+	TrueNode,
 	type ValueNode,
 } from "./nodes";
 import { parseQuery } from "./parser";
@@ -220,14 +223,79 @@ export function expandDerivedPredicates(query: Query): Query {
 	return flattenNestedOperations(new Query(root));
 }
 
+/** One directive as found in the query: name, value, and whether it was nested. */
+/**
+ * Remove directive leaves, appending them to `found` in source order.
+ *
+ * Returns null when the node vanishes entirely (it WAS a directive, or a
+ * compound made only of directives). A directive is removed as if never
+ * written: inside an Or it does not make the Or true, and a negated directive
+ * is still just a directive — Scryfall ignores the negation, so `-unique:art`
+ * dedups by artwork exactly as `unique:art` does.
+ *
+ * `nested` marks directives under an Or or a negation. A directive always
+ * applies to the WHOLE search, so one written inside such a group LOOKS scoped
+ * and is not; the route layer turns the flag into an explicit warning rather
+ * than a silent surprise. Parenthesised AND groups do not count — conjunction
+ * is flat, so `(t:goblin sort:x) t:elf` means exactly `t:goblin sort:x t:elf`.
+ */
+function stripDirectives(node: QueryNode, found: DirectiveFound[], nested: boolean): QueryNode | null {
+	if (node instanceof DirectiveNode) {
+		found.push({ name: node.name, value: node.value, nested });
+		return null;
+	}
+	if (node instanceof AndNode || node instanceof OrNode) {
+		const innerNested = nested || node instanceof OrNode;
+		const ops = node.operands.map((op) => stripDirectives(op, found, innerNested));
+		const kept = ops.filter((op): op is QueryNode => op !== null);
+		if (kept.length === 0) {
+			return null;
+		}
+		if (kept.length === 1) {
+			return kept[0] as QueryNode;
+		}
+		const unchanged = kept.length === node.operands.length && kept.every((op, i) => op === node.operands[i]);
+		if (unchanged) {
+			return node;
+		}
+		return node instanceof AndNode ? new AndNode(kept) : new OrNode(kept);
+	}
+	if (node instanceof NotNode) {
+		const inner = stripDirectives(node.operand, found, true);
+		if (inner === null) {
+			return null;
+		}
+		return inner === node.operand ? node : new NotNode(inner);
+	}
+	return node;
+}
+
+/**
+ * Strip result-shape directives from the filter tree, returning them alongside it.
+ *
+ * A query that is nothing but directives filters as the empty query does.
+ */
+export function extractDirectives(query: Query): { query: Query; directives: DirectiveFound[] } {
+	const found: DirectiveFound[] = [];
+	const root = stripDirectives(query.root, found, false);
+	if (found.length === 0) {
+		return { query, directives: [] };
+	}
+	return { query: new Query(root ?? new TrueNode()), directives: found };
+}
+
 // The post-parse rewrite pipeline, applied in order at the shared parse seam.
 const REWRITE_PASSES: ReadonlyArray<(q: Query) => Query> = [expandDerivedPredicates, lowerLiteralRegexes];
 
 /** Apply every post-parse AST rewrite, in order. The single seam both parsers call. */
 export function rewriteQuery(queryIn: Query): Query {
-	let query = queryIn;
+	// Strip first: a directive is not a filter, so no pass should ever see one.
+	// The pairs are attached AFTER, because each pass returns a fresh Query.
+	const { query: stripped, directives } = extractDirectives(queryIn);
+	let query = stripped;
 	for (const rewritePass of REWRITE_PASSES) {
 		query = rewritePass(query);
 	}
+	query.directives = directives;
 	return query;
 }

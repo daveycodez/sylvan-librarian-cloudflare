@@ -116,6 +116,9 @@ export function fakeParse(query: string): unknown {
 export function installFakeParser(parse: (query: string) => unknown = fakeParse): void {
 	setParserForTests({
 		parseScryfallQuery: parse,
+		// The fake parser knows nothing of directives; route tests that care about
+		// them install a parser that does.
+		parseWithDirectives: (query: string) => ({ tree: parse(query), directives: [] }),
 		isParseError: (err) => err instanceof FakeParseError,
 	});
 }

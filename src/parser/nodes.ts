@@ -146,9 +146,58 @@ export class TrueNode extends QueryNode {
 	}
 }
 
+/**
+ * The directive names both parsers recognise, longest spelling first so an
+ * alternation built from this list matches `direction` outright rather than
+ * leaning on a lookahead to reject the `dir` prefix.
+ *
+ * `sort`/`order` and `direction`/`dir` are two spellings of one parameter each;
+ * api.scryfall.com accepts both inline.
+ */
+/** One directive as found in the query: name, value, and whether it was nested. */
+export interface DirectiveFound {
+	name: string;
+	value: string;
+	/** True when it sat under an OR or a negation — see stripDirectives in rewrite.ts. */
+	nested: boolean;
+}
+
+export const DIRECTIVE_NAMES: readonly string[] = ["unique", "sort", "order", "direction", "dir", "prefer"];
+
+/**
+ * A result-shape directive written inside the query string (`unique:art`, `sort:usd`).
+ *
+ * Carries the name and value so `extractDirectives` can record them on the Query
+ * and strip the node from the filter tree — a directive constrains PRESENTATION,
+ * not membership, so one must never reach the engine. Without the strip it would
+ * serialize as a vestigial residue and make `t:goblin sort:edhrec` compare
+ * unequal to `t:goblin` despite filtering identically.
+ */
+export class DirectiveNode extends QueryNode {
+	override readonly nodeType: string = "DirectiveNode";
+
+	constructor(
+		readonly name: string,
+		readonly value: string,
+	) {
+		super();
+	}
+
+	override kwargs(): Record<string, FilterValue> {
+		return {};
+	}
+}
+
 /** Top-level query container node; to_json delegates to the root. */
 export class Query extends QueryNode {
 	override readonly nodeType: string = "Query";
+
+	/**
+	 * Result-shape directives the query carried, in source order. Attached by
+	 * `rewriteQuery` after the passes run, exactly as upstream does — each pass
+	 * returns a fresh Query, so this cannot be set before them.
+	 */
+	directives: readonly DirectiveFound[] = [];
 
 	constructor(readonly root: QueryNode) {
 		super();

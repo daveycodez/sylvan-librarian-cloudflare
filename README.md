@@ -174,6 +174,11 @@ The complete list of intentional differences:
   parameter for the page to ask for it), and the srcset advertises Scryfall's
   three real widths — 488/672/745 — rather than upstream's four renditions.
   Fonts still come from upstream's CDN, which is why the CSP keeps naming it.
+- **`warnings` on a search envelope.** Present only when an in-query directive
+  said something worth reporting — an unknown value that was ignored, or one
+  written inside an OR or a negation where it looks scoped but applies to the
+  whole search. Absent otherwise, so a query without directives has the envelope
+  it always had.
 - **Fixed site title**: pages always say "Sylvan Librarian" instead of
   upstream's hostname-derived name. The derivation port stays tested in
   `src/routes/site-name.ts`.

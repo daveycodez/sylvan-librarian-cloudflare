@@ -11,6 +11,8 @@ import { InternalParseError, LexError, ParseError } from "./errors";
 import {
 	AndNode,
 	BinaryOperatorNode,
+	DIRECTIVE_NAMES,
+	DirectiveNode,
 	flattenNestedOperations,
 	ManaValueNode,
 	NotNode,
@@ -267,6 +269,45 @@ export class Parser {
 
 	// ── word dispatch ─────────────────────────────────────────────────────────
 
+	/**
+	 * Consume a result-shape directive, or return null when this is not one.
+	 *
+	 * Scryfall accepts these inside the query string itself; they constrain
+	 * presentation, not membership, so a directive parses to a DirectiveNode and
+	 * `extractDirectives` strips it from the filter tree and hands it to the
+	 * route layer. `dir` is Scryfall's short spelling of `direction` and sets the
+	 * same parameter. Matching is on the WHOLE word, so `direct:` is unaffected.
+	 */
+	parseDirectivePrimary(word: string, wl: string, nextTok: Token): QueryNode | null {
+		if (!DIRECTIVE_NAMES.includes(wl) || nextTok.type !== TT.OP || nextTok.value !== ":") {
+			return null;
+		}
+		this.consume(); // ':'
+		const valTok = this.peek();
+		if (valTok.type === TT.WORD || valTok.type === TT.QUOTED || valTok.type === TT.NUMBER) {
+			this.consume();
+			let value = pyStr(valTok.value);
+			// Glue hyphenated continuations, exactly as parseTextValue does. Without
+			// this `prefer:usd-low` stops at `usd` and the dangling `-low` fails the
+			// parse — which would make the hyphenated spellings Scryfall accepts, and
+			// which _DIRECTIVE_PREFER enumerates, unreachable from inside a query.
+			// A quoted value is already one token and needs no gluing.
+			if (valTok.type !== TT.QUOTED) {
+				while (
+					this.peek().type === TT.MINUS &&
+					!this.peek().spaceBefore &&
+					(this.peek(1).type === TT.WORD || this.peek(1).type === TT.NUMBER) &&
+					!this.peek(1).spaceBefore
+				) {
+					this.consume();
+					value += `-${pyStr(this.consume().value)}`;
+				}
+			}
+			return new DirectiveNode(wl, pyLower(value));
+		}
+		throw new InternalParseError(`Expected value after '${word}:' at position ${valTok.pos}`);
+	}
+
 	parseWordPrimary(word: string): QueryNode {
 		const wl = pyLower(word);
 		if (wl === "and" || wl === "or") {
@@ -275,6 +316,12 @@ export class Parser {
 
 		const pc = ALIAS_TO_PC.get(wl);
 		const nextTok = this.peek();
+
+		// ── result-shape directive (unique: / sort: / order: / direction: / dir: / prefer:) ──
+		const directive = this.parseDirectivePrimary(word, wl, nextTok);
+		if (directive !== null) {
+			return directive;
+		}
 
 		// ── dual-class alias (cn / number): dispatch on value shape ──
 		if (DUAL_NUM_TEXT.has(wl) && nextTok.type === TT.OP) {

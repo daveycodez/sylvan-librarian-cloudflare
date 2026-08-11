@@ -13,12 +13,12 @@
  */
 
 import { ParseError } from "./errors";
-import type { FilterTree, Query } from "./nodes";
+import type { DirectiveFound, FilterTree, Query } from "./nodes";
 import { parseQuery } from "./parser";
 import { rewriteQuery } from "./rewrite";
 
 export { ParseError } from "./errors";
-export type { FilterTree, FilterValue } from "./nodes";
+export type { DirectiveFound, FilterTree, FilterValue } from "./nodes";
 export { parseQuery } from "./parser";
 export { PyNumber } from "./pystr";
 export { rewriteQuery } from "./rewrite";
@@ -41,6 +41,21 @@ export function parseScryfallQueryAst(query: string | null | undefined): Query {
  */
 export function parseScryfallQuery(query: string | null | undefined): FilterTree {
 	return parseScryfallQueryAst(query).toJson();
+}
+
+/**
+ * Parse to the wire tree AND the in-query directives it carried (upstream #893).
+ *
+ * The stripping happens inside `rewriteQuery`, so `parseScryfallQuery` already
+ * returns a tree with no directive leaves — this only additionally hands back
+ * what was stripped, for the route layer to fold into the search parameters.
+ */
+export function parseScryfallQueryWithDirectives(query: string | null | undefined): {
+	tree: FilterTree;
+	directives: readonly DirectiveFound[];
+} {
+	const parsed = parseScryfallQueryAst(query);
+	return { tree: parsed.toJson(), directives: parsed.directives };
 }
 
 /**

@@ -8,10 +8,18 @@
 
 import type { Engine, EngineSearchOptions } from "../engine/types";
 import { EngineUnavailableError } from "../engine/types";
-import type { FilterValue } from "../parser";
+import type { DirectiveFound, FilterValue } from "../parser";
 import { canonicalStringify } from "../parser";
 import type { CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn } from "./enums";
-import { CARD_ORDERING, PREFER_ORDER, RESPONSE_SHAPE, resolveDirection, SORT_DIRECTION, UNIQUE_ON } from "./enums";
+import {
+	CARD_ORDERING,
+	DIRECTIVE_TABLES,
+	PREFER_ORDER,
+	RESPONSE_SHAPE,
+	resolveDirection,
+	SORT_DIRECTION,
+	UNIQUE_ON,
+} from "./enums";
 import { explainWireTree } from "./explanation";
 import { httpError, jsonResponseText, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
@@ -81,6 +89,51 @@ export const DEFAULT_RESULT_FIELDS: readonly string[] = [
 	"scryfall_id",
 ];
 
+/** The four search parameters a directive can set. */
+interface DirectiveTargets {
+	unique: UniqueOn;
+	prefer: PreferOrder;
+	orderby: CardOrdering;
+	direction: SortDirection;
+}
+
+/**
+ * Fold in-query directives over the query parameters (upstream #893).
+ *
+ * Scryfall's semantics, which upstream measured: a directive OVERRIDES its query
+ * parameter (so `sort:name` beats the order dropdown), the LAST repeat wins, and
+ * an unknown value warns and is ignored rather than failing the search — a typo
+ * in one directive should not cost the user their results.
+ *
+ * A nested directive also warns. It still applies to the whole search, because
+ * that is all a directive can do; the warning exists because writing it inside
+ * an OR or a negation makes it LOOK scoped.
+ */
+export function applyDirectives(
+	directives: readonly DirectiveFound[],
+	base: DirectiveTargets,
+): DirectiveTargets & { warnings: string[] } {
+	const out: DirectiveTargets & { warnings: string[] } = { ...base, warnings: [] };
+	for (const { name, value, nested } of directives) {
+		const spec = DIRECTIVE_TABLES.get(name);
+		if (spec === undefined) {
+			continue; // unreachable: the parser only produces DIRECTIVE_NAMES
+		}
+		const resolved = spec.table.get(value);
+		if (resolved === undefined) {
+			out.warnings.push(`Ignored unknown ${spec.label} ${pyRepr(value)} in ${name}:${value}.`);
+			continue;
+		}
+		if (nested) {
+			out.warnings.push(`${name}:${value} applies to the whole search, not just the group it appears in.`);
+		}
+		// Each table only ever yields values valid for its own parameter, which the
+		// type system cannot see through the name->table indirection.
+		(out as unknown as Record<string, unknown>)[spec.param] = resolved;
+	}
+	return out;
+}
+
 /** A falcon.HTTPBadRequest-shaped failure raised inside the search core. */
 export class SearchBadRequest extends Error {
 	constructor(
@@ -142,6 +195,8 @@ export interface SearchEnvelope {
 	query: string;
 	query_explanation: string;
 	total_cards: number;
+	/** Directive warnings, absent when there are none (upstream #893). */
+	warnings?: string[];
 	[key: string]: unknown;
 }
 
@@ -171,10 +226,12 @@ interface SearchMetadata {
 	query: string;
 	query_explanation: string;
 	total_cards: number;
+	warnings?: string[];
 }
 
 interface PreparedSearch {
 	engine: Engine;
+	warnings: string[];
 	engineOpts: EngineSearchOptions;
 	timer: Timer;
 	query: string;
@@ -199,8 +256,11 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 	const query = opts.query || "";
 	const parser = await loadParser();
 	let filterTree: unknown;
+	let directives: readonly DirectiveFound[] = [];
 	try {
-		filterTree = timer.time("parse", () => parser.parseScryfallQuery(query));
+		const parsed = timer.time("parse", () => parser.parseWithDirectives(query));
+		filterTree = parsed.tree;
+		directives = parsed.directives;
 	} catch (err) {
 		if (parser.isParseError(err)) {
 			throw new SearchBadRequest("Invalid Search Query", `Failed to parse query: "${query}"`);
@@ -208,19 +268,30 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 		throw err;
 	}
 
+	// Fold the in-query directives BEFORE resolveDirection, which is the last
+	// point at which orderby is final — `dir:auto` has to resolve against the
+	// ordering a `sort:` directive may just have changed.
+	const folded = applyDirectives(directives, {
+		unique: opts.unique,
+		prefer: opts.prefer,
+		orderby: opts.orderby,
+		direction: opts.direction,
+	});
+
 	return {
 		engine,
 		queryExplanation: query ? explainWireTree(filterTree) : "",
+		warnings: folded.warnings,
 		engineOpts: {
 			filterTreeJson: canonicalStringify(filterTree as FilterValue),
-			unique: opts.unique,
-			prefer: opts.prefer,
-			orderby: opts.orderby,
+			unique: folded.unique,
+			prefer: folded.prefer,
+			orderby: folded.orderby,
 			// Resolved HERE, not at coercion: the engine has no `auto` arm, so an unresolved
 			// direction would fall through to its default and sort wrongly rather than failing.
 			// This is also the last point at which `orderby` is final — anything that can still
 			// change it (in-query directives, upstream #893) must fold before this line.
-			direction: resolveDirection(opts.direction, opts.orderby),
+			direction: resolveDirection(folded.direction, folded.orderby),
 			// limit=None means "no limit"; the engine requires an int (upstream parity)
 			limit: limit !== null ? limit : 1_000_000,
 			offset,
@@ -252,6 +323,11 @@ function metadataFor(prep: PreparedSearch, totalCards: number): SearchMetadata {
 		query: prep.query,
 		query_explanation: prep.queryExplanation,
 		total_cards: totalCards,
+		// Only present when a directive said something worth reporting: an unknown
+		// value that was ignored, or one written inside a group where it looks
+		// scoped but is not. Omitted entirely otherwise, so a query without
+		// directives has the envelope it always had.
+		...(prep.warnings.length > 0 ? { warnings: prep.warnings } : {}),
 	};
 }
 
