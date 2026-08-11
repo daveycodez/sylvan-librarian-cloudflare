@@ -90,6 +90,39 @@ const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
  * compares content types sees the difference. */
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 
+// ─── cache tiers ─────────────────────────────────────────────────────────────
+//
+// api.scryfall.com's own, measured against it rather than guessed:
+//
+//   /cards/search, /cards/:id, /cards/:set/:number, /cards/:ns/:id, /cards/autocomplete
+//                                     public, max-age=57600      (16 hours)
+//   /cards/named, INCLUDING its 404   public, max-age=172800     (48 hours)
+//   /cards/random                     no-cache
+//   POST /cards/collection            max-age=0, private, must-revalidate
+//
+// Matched, because cache behaviour is part of what a client observes and this surface exists so
+// mtg-seeker can change one base URL and nothing else. Note these are Scryfall's, NOT /search's
+// `max-age=90, stale-while-revalidate=86400`: /search answers this project's own shape to its own
+// frontend, and the two surfaces have no reason to agree.
+//
+// ONE DEVIATION: `named` gets the SAME 16 hours as everything else, not Scryfall's 48. A card
+// object embeds `prices` and this deployment rebuilds its store once a night, so no cached
+// response should outlive the data it was built from by more than one import cycle — 48 hours
+// lets a client hold prices from two imports ago with nothing in the response to say so. And
+// `named` returns the same card object every other route here does, so there was never a reason
+// for it to be the one route with a different lifetime.
+//
+// The tier rides on ERROR responses too, which is Scryfall's behaviour as well — an empty-query
+// 400 comes back with the route's own max-age, and a `named` miss with the route's own tier.
+//
+// NOT matched: Scryfall's `Vary: Accept`. Its responses negotiate on the header; ours select their
+// format from the `format=` query parameter, which is already part of the cache key. Sending it
+// would split the edge cache per Accept value and buy nothing.
+const CARDS_CACHE: Record<string, string> = { "Cache-Control": "public, max-age=57600" };
+/** Not `no-store`: Scryfall sends `no-cache`, which permits storing and requires revalidation. */
+const RANDOM_CACHE: Record<string, string> = { "Cache-Control": "no-cache" };
+const COLLECTION_CACHE: Record<string, string> = { "Cache-Control": "max-age=0, private, must-revalidate" };
+
 function isUuid(value: string): boolean {
 	return UUID_RE.test(value);
 }
@@ -110,15 +143,11 @@ function asInt(value: string | undefined): number | undefined {
 // ─── responses ───────────────────────────────────────────────────────────────
 
 /** A Scryfall JSON body, carrying an error object's own status when it is one. */
-function scryfallJson(
-	payload: Record<string, unknown>,
-	pretty: boolean,
-	extraHeaders?: Record<string, string>,
-): Response {
+function scryfallJson(payload: Record<string, unknown>, pretty: boolean, cache: Record<string, string>): Response {
 	const status = payload.object === "error" && typeof payload.status === "number" ? payload.status : 200;
 	return new Response(pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload), {
 		status,
-		headers: { "content-type": JSON_CONTENT_TYPE, ...extraHeaders },
+		headers: { "content-type": JSON_CONTENT_TYPE, ...cache },
 	});
 }
 
@@ -132,6 +161,7 @@ function scryfallListJson(
 	cardsJson: string,
 	opts: { totalCards?: number; hasMore: boolean; nextPage?: string; warnings?: string[] },
 	pretty: boolean,
+	cache: Record<string, string>,
 ): Response {
 	// cardList with an empty data array, then the encoded cards spliced into it — keeping ONE
 	// definition of the envelope's key order rather than a second one written out here. `data` is
@@ -144,11 +174,11 @@ function scryfallListJson(
 	const at = body.lastIndexOf(marker);
 	if (at < 0) throw new Error("card list envelope did not end with an empty data array");
 	const spliced = `${body.slice(0, at)}${key}${cardsJson}${body.slice(at + marker.length)}`;
-	return new Response(spliced, { status: 200, headers: { "content-type": JSON_CONTENT_TYPE } });
+	return new Response(spliced, { status: 200, headers: { "content-type": JSON_CONTENT_TYPE, ...cache } });
 }
 
-function textResponse(body: string, contentType: string): Response {
-	return new Response(body, { status: 200, headers: { "content-type": contentType } });
+function textResponse(body: string, contentType: string, cache: Record<string, string>): Response {
+	return new Response(body, { status: 200, headers: { "content-type": contentType, ...cache } });
 }
 
 /** Emit one card in the requested format: json, text, or a redirect to its image. */
@@ -158,16 +188,19 @@ function renderCard(
 	face: string,
 	version: string,
 	pretty: boolean,
+	cache: Record<string, string>,
 ): Response {
-	if (format === "text") return textResponse(cardToText(card), "text/plain; charset=utf-8");
+	if (format === "text") return textResponse(cardToText(card), "text/plain; charset=utf-8", cache);
 	if (format === "image") {
 		const location = imageUri(card, version, face);
 		if (!location) {
-			return scryfallJson(notFoundError("No image is available for this card in that version."), pretty);
+			return scryfallJson(notFoundError("No image is available for this card in that version."), pretty, cache);
 		}
-		return new Response(null, { status: 302, headers: { Location: location } });
+		// The redirect carries the tier too: the Location is a pure function of the card's id, so
+		// an uncached 302 would be a Worker invocation per image load.
+		return new Response(null, { status: 302, headers: { Location: location, ...cache } });
 	}
-	return scryfallJson(card, pretty);
+	return scryfallJson(card, pretty, cache);
 }
 
 /** The absolute URL of a route on this host, for `next_page`. */
@@ -197,7 +230,14 @@ function apiBaseUrl(ctx: RouteContext): string {
 function engineFailure(err: unknown, pretty: boolean): Response {
 	if (err instanceof EngineUnavailableError) throw err;
 	console.error("Scryfall compat route: engine failure", err);
-	return scryfallJson(errorObject("internal_error", 500, "The card engine could not answer this request."), pretty);
+	// `no-store`, NOT the route's tier. Every other status here is deterministic in the URL and
+	// safe to cache for hours, but a 500 means the engine failed on this attempt -- caching that
+	// alongside the answers would pin a transient outage into every edge for 16 hours.
+	return scryfallJson(
+		errorObject("internal_error", 500, "The card engine could not answer this request."),
+		pretty,
+		NO_STORE_HEADER,
+	);
 }
 
 // ─── GET /cards/search ───────────────────────────────────────────────────────
@@ -209,12 +249,13 @@ export async function cardsSearchHandler(
 ): Promise<Response> {
 	const pretty = asBool(params.pretty);
 	const q = params.q;
-	if (!q?.trim()) return scryfallJson(badRequestError(EMPTY_QUERY_DETAILS), pretty);
+	if (!q?.trim()) return scryfallJson(badRequestError(EMPTY_QUERY_DETAILS), pretty, CARDS_CACHE);
 
 	// `|| 1` would swallow page=0 into page=1; an unparseable page defaults, a non-positive one is
 	// rejected.
 	const page = asInt(params.page) ?? 1;
-	if (page < 1) return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty);
+	if (page < 1)
+		return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty, CARDS_CACHE);
 
 	const warnings: string[] = [];
 	const uniqueRaw = (params.unique ?? "cards").toLowerCase();
@@ -246,7 +287,7 @@ export async function cardsSearchHandler(
 		filterTree = parser.parseWithDirectives(q).tree;
 	} catch (err) {
 		if (parser.isParseError(err)) {
-			return scryfallJson(badRequestError(`Failed to parse query: "${q}"`, warnings), pretty);
+			return scryfallJson(badRequestError(`Failed to parse query: "${q}"`, warnings), pretty, CARDS_CACHE);
 		}
 		throw err;
 	}
@@ -271,7 +312,7 @@ export async function cardsSearchHandler(
 	}
 
 	if (result.cardsJson === "[]") {
-		return scryfallJson(errorObject("not_found", 404, NO_MATCH_DETAILS, warnings), pretty);
+		return scryfallJson(errorObject("not_found", 404, NO_MATCH_DETAILS, warnings), pretty, CARDS_CACHE);
 	}
 
 	const seen = (page - 1) * PAGE_SIZE + countCards(result.cardsJson);
@@ -293,7 +334,12 @@ export async function cardsSearchHandler(
 			)
 		: undefined;
 
-	return scryfallListJson(result.cardsJson, { totalCards: result.totalCards, hasMore, nextPage, warnings }, pretty);
+	return scryfallListJson(
+		result.cardsJson,
+		{ totalCards: result.totalCards, hasMore, nextPage, warnings },
+		pretty,
+		CARDS_CACHE,
+	);
 }
 
 /**
@@ -338,7 +384,7 @@ export async function cardsNamedHandler(
 	const exact = params.exact;
 	const fuzzy = params.fuzzy;
 	if (!exact && !fuzzy) {
-		return scryfallJson(badRequestError("You must provide a fuzzy or exact name parameter."), pretty);
+		return scryfallJson(badRequestError("You must provide a fuzzy or exact name parameter."), pretty, CARDS_CACHE);
 	}
 	const format = (params.format ?? "json").toLowerCase();
 	const face = params.face ?? "front";
@@ -356,8 +402,8 @@ export async function cardsNamedHandler(
 		} catch (err) {
 			return engineFailure(err, pretty);
 		}
-		if (!card) return scryfallJson(notFoundError(`No cards found matching “${exact}”`), pretty);
-		return renderCard(card, format, face, version, pretty);
+		if (!card) return scryfallJson(notFoundError(`No cards found matching “${exact}”`), pretty, CARDS_CACHE);
+		return renderCard(card, format, face, version, pretty, CARDS_CACHE);
 	}
 
 	return namedFuzzy(engine, fuzzy ?? "", setCode, baseUrl, { format, face, version, pretty });
@@ -381,27 +427,28 @@ async function namedFuzzy(
 	const needle = foldAccents(fuzzy.trim().toLowerCase());
 	const words = needle.split(/[^\w']+/u).filter((w) => w.length > 0);
 	if (words.length === 0) {
-		return scryfallJson(badRequestError("You must provide a fuzzy or exact name parameter."), pretty);
+		return scryfallJson(badRequestError("You must provide a fuzzy or exact name parameter."), pretty, CARDS_CACHE);
 	}
 
 	try {
 		const exactHit = await engine.scryfallExactName(needle, setCode, baseUrl);
-		if (exactHit) return renderCard(exactHit, render.format, render.face, render.version, pretty);
+		if (exactHit) return renderCard(exactHit, render.format, render.face, render.version, pretty, CARDS_CACHE);
 
 		// Two is all it takes to tell "one match" from "ambiguous"; asking for more would scan the
 		// same corpus to throw the rest away.
 		const contained = await engine.scryfallNamesContaining(words, setCode, 2, baseUrl);
 		if (contained.length > 1) return ambiguous(fuzzy, pretty);
 		const only = contained[0];
-		if (only) return renderCard(only, render.format, render.face, render.version, pretty);
+		if (only) return renderCard(only, render.format, render.face, render.version, pretty, CARDS_CACHE);
 
 		const { status, card } = await engine.scryfallFuzzyName(needle, baseUrl);
 		if (status === "ambiguous") return ambiguous(fuzzy, pretty);
-		if (status === "hit" && card) return renderCard(card, render.format, render.face, render.version, pretty);
+		if (status === "hit" && card)
+			return renderCard(card, render.format, render.face, render.version, pretty, CARDS_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
-	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty);
+	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty, CARDS_CACHE);
 }
 
 function ambiguous(name: string, pretty: boolean): Response {
@@ -412,6 +459,7 @@ function ambiguous(name: string, pretty: boolean): Response {
 			`Too many cards match ambiguous name “${name}”. Add more words to refine your search.`,
 		),
 		pretty,
+		CARDS_CACHE,
 	);
 }
 
@@ -425,11 +473,11 @@ export async function cardsAutocompleteHandler(
 	const pretty = asBool(params.pretty);
 	const needle = (params.q ?? "").trim();
 	// Scryfall answers an empty catalog below two characters rather than scanning for one letter.
-	if (needle.length < 2) return scryfallJson(catalogObject([]), pretty);
+	if (needle.length < 2) return scryfallJson(catalogObject([]), pretty, CARDS_CACHE);
 	const engine = await ctx.getEngine();
 	try {
 		const names = await engine.scryfallAutocomplete(needle, MAX_AUTOCOMPLETE_VALUES);
-		return scryfallJson(catalogObject(names), pretty);
+		return scryfallJson(catalogObject(names), pretty, CARDS_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
@@ -455,7 +503,7 @@ export async function cardsRandomHandler(
 			filterTreeJson = canonicalStringify(parser.parseWithDirectives(q).tree as FilterValue);
 		} catch (err) {
 			if (parser.isParseError(err)) {
-				return scryfallJson(badRequestError(`Failed to parse query: "${q}"`), pretty);
+				return scryfallJson(badRequestError(`Failed to parse query: "${q}"`), pretty, RANDOM_CACHE);
 			}
 			throw err;
 		}
@@ -477,7 +525,7 @@ export async function cardsRandomHandler(
 			},
 			baseUrl,
 		);
-		if (counted.totalCards === 0) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, NO_STORE_HEADER);
+		if (counted.totalCards === 0) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, RANDOM_CACHE);
 
 		const offset = Math.floor(Math.random() * counted.totalCards);
 		const drawn = await engine.scryfallSearch(
@@ -495,11 +543,17 @@ export async function cardsRandomHandler(
 		);
 		const cards = JSON.parse(drawn.cardsJson) as Record<string, unknown>[];
 		const card = cards[0];
-		if (!card) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, NO_STORE_HEADER);
-		const response = renderCard(card, format, params.face ?? "front", params.version ?? DEFAULT_IMAGE_VERSION, pretty);
-		// Never cached, at either layer: a cached random card is one card forever.
-		response.headers.set("Cache-Control", "no-store");
-		return response;
+		if (!card) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, RANDOM_CACHE);
+		// RANDOM_CACHE carries Scryfall's `no-cache` -- a cached random card is one card forever,
+		// and every draw has to reach the engine.
+		return renderCard(
+			card,
+			format,
+			params.face ?? "front",
+			params.version ?? DEFAULT_IMAGE_VERSION,
+			pretty,
+			RANDOM_CACHE,
+		);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
@@ -524,6 +578,7 @@ export async function cardsCollectionHandler(
 		return scryfallJson(
 			errorObject("validation_error", 422, "The request body must be a JSON object with an `identifiers` array."),
 			pretty,
+			COLLECTION_CACHE,
 		);
 	}
 	if (identifiers.length > MAX_COLLECTION_IDENTIFIERS) {
@@ -534,6 +589,7 @@ export async function cardsCollectionHandler(
 				`A maximum of ${MAX_COLLECTION_IDENTIFIERS} card references may be submitted at once.`,
 			),
 			pretty,
+			COLLECTION_CACHE,
 		);
 	}
 
@@ -555,7 +611,7 @@ export async function cardsCollectionHandler(
 			seen.add(id);
 			found.push(card);
 		}
-		return scryfallJson(cardList(found, { notFound }), pretty);
+		return scryfallJson(cardList(found, { notFound }), pretty, COLLECTION_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
@@ -672,7 +728,7 @@ export async function cardsHandler(
 	// an empty list: that would claim the card has no rulings, which is a different and false
 	// statement from "this deployment does not serve rulings".
 	if (number === "rulings" || suffix === "rulings") {
-		return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+		return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
 	}
 
 	const engine = await ctx.getEngine();
@@ -685,10 +741,10 @@ export async function cardsHandler(
 	try {
 		if ((EXTERNAL_ID_NAMESPACES as readonly string[]).includes(identifier)) {
 			const externalId = asInt(number);
-			if (externalId === undefined) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+			if (externalId === undefined) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
 			card = await engine.scryfallCardByExternalId(identifier, externalId, baseUrl);
 		} else if (!number) {
-			if (!isUuid(identifier)) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
+			if (!isUuid(identifier)) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
 			card = await engine.scryfallCardById(identifier, baseUrl);
 		} else {
 			const [first] = await engine.scryfallFirstOfEach([setAndCollectorNumber(identifier, number)], baseUrl);
@@ -703,14 +759,15 @@ export async function cardsHandler(
 		return engineFailure(err, pretty);
 	}
 
-	if (!card) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty);
-	return renderCard(card, format, face, version, pretty);
+	if (!card) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
+	return renderCard(card, format, face, version, pretty, CARDS_CACHE);
 }
 
 /** One page of the unfiltered `/cards` listing, ordered by name like Scryfall's. */
 async function allCardsPage(ctx: RouteContext, params: Record<string, string>, pretty: boolean): Promise<Response> {
 	const page = asInt(params.page) ?? 1;
-	if (page < 1) return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty);
+	if (page < 1)
+		return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty, CARDS_CACHE);
 	const engine = await ctx.getEngine();
 	let result: { totalCards: number; cardsJson: string };
 	try {
@@ -730,7 +787,7 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
-	if (result.cardsJson === "[]") return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty);
+	if (result.cardsJson === "[]") return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, CARDS_CACHE);
 	const hasMore = (page - 1) * PAGE_SIZE + countCards(result.cardsJson) < result.totalCards;
 	return scryfallListJson(
 		result.cardsJson,
@@ -740,6 +797,7 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 			nextPage: hasMore ? buildPageUrl(selfBaseUrl(ctx, "/cards"), {}, page + 1) : undefined,
 		},
 		pretty,
+		CARDS_CACHE,
 	);
 }
 

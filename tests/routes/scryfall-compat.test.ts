@@ -126,10 +126,66 @@ describe("GET /cards/autocomplete", () => {
 });
 
 describe("GET /cards/random", () => {
-	test("is never cached — a cached random card is one card forever", async () => {
+	test("carries Scryfall's no-cache — a cached random card is one card forever", async () => {
 		const res = await testDispatch(ctx, "/cards/random");
 		expect(res.status).toBe(200);
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+	});
+});
+
+describe("cache headers", () => {
+	// Measured against api.scryfall.com rather than guessed. This surface exists so a client can
+	// change one base URL, and how long it may reuse a response is part of what it observes — an
+	// uncached /cards/* would also put every request through the Worker and the Durable Object,
+	// against a 100k/day allowance, on the surface mtg-seeker actually calls.
+	test.each([
+		["/cards/search?q=elf", "public, max-age=57600"],
+		["/cards/aaaaaaaa-0000-0000-0000-000000000001", "public, max-age=57600"],
+		["/cards/m15/165", "public, max-age=57600"],
+		["/cards/multiverse/12345", "public, max-age=57600"],
+		["/cards/autocomplete?q=llan", "public, max-age=57600"],
+		["/cards", "public, max-age=57600"],
+	])("%s is Scryfall's 16-hour tier", async (path, expected) => {
+		expect((await testDispatch(ctx, path)).headers.get("Cache-Control")).toBe(expected);
+	});
+
+	test("named gets the same tier, not Scryfall's 48 hours", async () => {
+		// A card object embeds `prices` and this store rebuilds nightly, so 172800 would let a
+		// client hold prices from two imports ago with nothing in the response to say so — and
+		// `named` returns the same object every other route here does.
+		const res = await testDispatch(ctx, "/cards/named?exact=Llanowar%20Elves");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=57600");
+	});
+
+	test("the tier rides on error responses, as Scryfall's does", async () => {
+		// Measured: an empty-query 400 comes back with the route's own max-age, and a `named` miss
+		// with the full tier rather than no-store.
+		expect((await testDispatch(ctx, "/cards/search")).headers.get("Cache-Control")).toBe("public, max-age=57600");
+		expect((await testDispatch(ctx, "/cards/named?exact=Nope")).headers.get("Cache-Control")).toBe(
+			"public, max-age=57600",
+		);
+	});
+
+	test("a 500 is no-store, unlike every other status here", async () => {
+		// Deterministic-in-the-URL answers are safe to cache for hours; an engine failure is not.
+		// Caching it alongside them would pin a transient outage into every edge for 16 hours.
+		const engine = new FakeEngine();
+		engine.searchError = new Error("wasm trap");
+		const res = await testDispatch(makeCtx({ engine }), "/cards/search?q=elf");
+		expect(res.status).toBe(500);
 		expect(res.headers.get("Cache-Control")).toBe("no-store");
+	});
+
+	test("the collection POST is private and must-revalidate", async () => {
+		// A shared cache keys on the URL, and this route's answer depends entirely on the BODY.
+		const res = await testDispatch(postCtx({ identifiers: [] }), "/cards/collection", "POST");
+		expect(res.headers.get("Cache-Control")).toBe("max-age=0, private, must-revalidate");
+	});
+
+	test("/search keeps its own tier — the two surfaces have no reason to agree", async () => {
+		expect((await testDispatch(ctx, "/search?q=elf")).headers.get("Cache-Control")).toBe(
+			"public, max-age=90, stale-while-revalidate=86400",
+		);
 	});
 });
 

@@ -193,6 +193,22 @@ The complete list of intentional differences:
   two-faced card whose back face carries the name and whose score is higher.
   Matching a face is right and Scryfall does it (`exact=Delver of Secrets`
   resolves), but as a fallback rather than a peer. Reported upstream.
+- **`/cards/*` cache headers are Scryfall's own**, measured against
+  `api.scryfall.com` rather than inherited from `/search`: `public,
+  max-age=57600` on the cacheable routes, `no-cache` on `/cards/random`, and
+  `max-age=0, private, must-revalidate` on the collection POST. The tier rides
+  on error responses too, as Scryfall's does. Upstream sends no cache header at
+  all here and leans on an internal response cache this deployment has no
+  equivalent of, which would have put every `/cards/*` request through the
+  Worker and the Durable Object against a 100k/day allowance — on the surface
+  mtg-seeker actually calls. Two differences from Scryfall: `/cards/named` gets
+  the same 16 hours as everything else rather than Scryfall's 48, because a card
+  object embeds `prices` and this store rebuilds nightly, so no cached response
+  should outlive the data it was built from by more than one import cycle; and a
+  500 is `no-store`, because caching a transient engine failure beside answers
+  that are deterministic in the URL would pin an outage into every edge.
+  `Vary: Accept` is not sent — our responses select their format from the
+  `format=` query parameter, which is already part of the cache key.
 - **`/cards/search?order=penny` falls back to name with a warning**, as an
   unrecognized order does. `penny_rank` is stored, but in the residue archive,
   which carries no sort permutations. `order=review` is Scryfall-internal and
