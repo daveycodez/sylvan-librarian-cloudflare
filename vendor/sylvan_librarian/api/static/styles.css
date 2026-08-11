@@ -356,11 +356,16 @@ body {
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  position: relative; /* anchors the injected .card-flip-button over the image */
   height: 100%;
   width: 100%;
   min-width: 0;
   overflow: hidden;
+  /* Anchors the injected .card-flip-button, and makes the tile a query container
+     so that button can be placed against the ARTWORK rather than against the
+     tile. The two differ: the tile is the image PLUS the name, type and text
+     rows, so a percentage offset measured from it lands well below the art. */
+  position: relative;
+  container-type: inline-size;
 }
 
 .card-item:hover {
@@ -539,8 +544,9 @@ body {
   position: absolute;
   /* NOT a corner. Scryfall places it over the right edge of the artwork about a
      quarter of the way down — roughly where the transform icon sits on the
-     printed card. Percentages, so it tracks the image at every grid density
-     instead of drifting as the card resizes. */
+     printed card. These percentages are correct wherever the containing block
+     is the image alone (the modal); the grid overrides them below, because
+     there the containing block is the whole tile. */
   top: 26%;
   left: 75%;
   z-index: 2;
@@ -556,7 +562,8 @@ body {
   border-radius: 100%;
   background: #fff;
   color: #343242;
-  font-size: 24px;
+  /* 30px inside the 44px disc, matching the icon Scryfall insets by 7px. */
+  font-size: 30px;
   line-height: 1;
   cursor: pointer;
   /* Always present, dimmed. Revealing on hover would make it undiscoverable on
@@ -574,6 +581,18 @@ body {
   background: #343242;
   border-color: #fff;
   color: #fff;
+}
+
+/* In the results grid the containing block is the whole tile, so a plain
+   percentage would measure the image PLUS the text rows and drop the button
+   into the card body. A Magic card's art has a fixed 488x680 aspect, so the
+   image's height is 1.3934x the tile's content width — which container units
+   can express exactly: 26% of that height is 36.23cqw, and 0.8em is the tile's
+   padding. The modal keeps the plain percentages above, because its wrapper
+   holds the image and nothing else. */
+.card-item .card-flip-button {
+  top: calc(0.8em + 36.23cqw);
+  left: calc(0.8em + 75cqw);
 }
 
 .card-flip-button:hover,
