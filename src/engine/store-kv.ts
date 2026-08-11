@@ -8,13 +8,20 @@
 // the free plan's daily quota.
 //
 // KV removes the constraint that created all of it. A 25 MiB value cap means a
-// ~70MB store is FOUR chunks, so:
+// ~75MB store is THREE chunks, so:
 //
-//   - a full publish is 5 writes against a 1,000/day free allowance — no
+//   - a full publish is 4 writes against a 1,000/day free allowance — no
 //     incremental publish, no dedup, no resume bookkeeping
-//   - a full load is 5 reads against 100,000/day
-//   - one copy serves every colo, instead of one 70MB SQLite copy per
+//   - a full load is 4 reads against 100,000/day
+//   - one copy serves every colo, instead of one 75MB SQLite copy per
 //     Durable Object against a 5GB pool
+//
+// Chunk count is not cosmetic. The loader below pulls chunks STRICTLY IN
+// SEQUENCE, one awaited get each (and must — see kvStoreStream), so a chunk is
+// a serialized network round trip on the cold path, not just a meter tick.
+// Crossing a boundary is a latency change: generation 3 added 6.25MB of tag
+// alias keys, went 3 chunks to 4, and the production median store load went
+// 337ms to 691ms. Generation 4 took them back out.
 //
 // Chunks are keyed by the store key, which is unique per build, so a publish
 // never overwrites bytes a reader might still be streaming. Retention is
@@ -29,14 +36,27 @@ import { EngineUnavailableError } from "./types";
  *
  * Bigger is better until that cap — every chunk is one metered read on load
  * and one metered write on publish, and there is no dedup to preserve, so a
- * ~70MB store wants as few chunks as it can have (three, here).
+ * ~75MB store wants as few chunks as it can have (three, here).
  *
  * The binding constraint is NOT the cap, though: it is the 128MB isolate the
  * nightly publisher assembles chunks in. That only leaves room for a value
  * this large because the build now releases the wasm group (~75MB of linear
  * memory that never shrinks) before publish runs.
+ *
+ * RAISED from 25,000,000 with generation 4, and the reason is headroom rather
+ * than throughput. Chunk count is `ceil(store_bytes / this)`, so the number
+ * that matters is the 3-chunk ceiling it implies. Dropping the alias keys puts
+ * the store at 74.8MB, which cleared the old 75,000,000 ceiling by 184,272
+ * bytes — and two same-format builds a day apart differ by ~19KB, so that
+ * margin was about ten days of ordinary Scryfall drift before the 4th chunk
+ * came back. At 26,000,000 the ceiling is 78,000,000 and the margin is 3.2MB.
+ *
+ * Do not read the remaining 214,400 bytes of cap as free: a chunk is
+ * materialised whole as an ArrayBuffer during load, on top of wasm linear
+ * memory that already holds the store, and that sum is what the 128MB limit
+ * actually governs.
  */
-export const KV_CHUNK_BYTES = 25_000_000;
+export const KV_CHUNK_BYTES = 26_000_000;
 
 /** The manifest key: the one mutable pointer in the namespace. */
 export const MANIFEST_KEY = "store:manifest";
@@ -63,8 +83,15 @@ export const MANIFEST_KEY = "store:manifest";
  *       set_rank/artist_rank), because they rebuild together: the format bump
  *       makes the old store unloadable, and this makes store-age.ts FORCE the
  *       rebuild at deploy rather than leaving the port dark until the nightly.
+ *   4 — the alias keys from 3 are GONE again, resolved at query time instead
+ *       (src/parser/tag-aliases.gen.ts). They cost 6,252,880 bytes and bought
+ *       the store a 4th chunk; see KV_CHUNK_BYTES. No format change — the
+ *       layout is identical and generation 3 stores still load, they just
+ *       carry duplicate keys nothing asks for any more. That is what makes
+ *       this rollout safe in either order: the new parser resolves `flames`
+ *       to `fire`, and `fire` is present in both generations.
  */
-export const STORE_CONTENT_GENERATION = 3;
+export const STORE_CONTENT_GENERATION = 4;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

@@ -101,6 +101,20 @@ echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes
 "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
 ./target/fast-native/sylvan-store-builder --out store-build
 
+# 4. Regenerate the parser's alias map from the SAME build.
+#
+#    This port resolves tag aliases at query time instead of stamping them into the store (see
+#    TagData::oracle_aliases), which makes these two artifacts halves of one thing: the store holds
+#    only canonical slugs, and this map is what still lets `art:flames` reach `fire`. Regenerating
+#    here — between the build and the publish, from that build's own tag-aliases.json — is what
+#    keeps them describing the same dumps. Deploy order does the rest: import-then-deploy means
+#    wrangler bundles this file after it is written.
+#
+#    Nothing regenerates it when the import is skipped, which is correct — a skipped import means
+#    the live store did not change either.
+echo "==> Regenerating the parser's tag alias map..."
+bun scripts/generate-tag-aliases.ts store-build
+
 echo "==> Publishing the store to KV..."
 bun scripts/seed-remote-kv.ts store-build
 

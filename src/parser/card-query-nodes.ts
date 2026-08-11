@@ -32,6 +32,7 @@ import {
 	type ValueNode,
 } from "./nodes";
 import { foldAccents, PyNumber, pyLower, pyStrip, pyStrTitle } from "./pystr";
+import { ART_TAG_ALIASES, ORACLE_TAG_ALIASES } from "./tag-aliases.gen";
 import { titlecase } from "./titlecase";
 
 export { foldAccents };
@@ -159,14 +160,33 @@ export function slugifyTag(val: string): string {
 		.replace(/^-+|-+$/g, "");
 }
 
+/**
+ * Resolve a slugified tag through a dump's alias map, or return it unchanged.
+ *
+ * PORT-LOCAL, and the half that makes the store smaller. Upstream #914 resolves aliases at import
+ * by stamping each one as an extra key beside the slug and every ancestor, so query time stays an
+ * exact match. Here that costs 6,252,880 bytes of archive — 1,024,204 duplicate entries, each
+ * costing 2 bytes forward plus a 4-byte inverted TagIndex posting — which crossed the 25MB KV
+ * chunk grid from 3 values to 4 and put a fourth serialized read on every cold store load. So the
+ * mapping is carried once (~78KB, tag-aliases.gen.ts) and folded in here instead.
+ *
+ * The substitution is exact, not approximate: the builder attaches alias `a` to slug `s` under
+ * precisely the condition it attaches `s` itself, so `art:flames` and `art:fire` were always the
+ * same row set. An unknown value passes through untouched, which is what keeps a plain slug — and
+ * a typo — behaving exactly as before.
+ */
+function resolveTagAlias(slug: string, aliases: ReadonlyMap<string, string>): string {
+	return aliases.get(slug) ?? slug;
+}
+
 /** get_oracle_tags_comparison_object(...).keys() */
 export function getOracleTagsComparisonKeys(val: string): string[] {
-	return [slugifyTag(val)];
+	return [resolveTagAlias(slugifyTag(val), ORACLE_TAG_ALIASES)];
 }
 
 /** get_art_tags_comparison_object(...).keys() */
 export function getArtTagsComparisonKeys(val: string): string[] {
-	return [slugifyTag(val)];
+	return [resolveTagAlias(slugifyTag(val), ART_TAG_ALIASES)];
 }
 
 /** get_is_tags_comparison_object(...).keys() */

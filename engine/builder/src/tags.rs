@@ -70,6 +70,28 @@ pub struct TagData {
     pub oracle: HashMap<String, Vec<u32>>,
     /// illustration_id → slug indices (incl. ancestors) for `card_art_tags`.
     pub art: HashMap<String, Vec<u32>>,
+    /// Slugified alias → the canonical slug it stands for, from the oracle dump.
+    ///
+    /// THIS PORT DIVERGES FROM UPSTREAM HERE, deliberately. Upstream #914 resolves aliases at
+    /// import by stamping them as extra keys next to the slug and its ancestors, so query time
+    /// stays a dumb exact match. That is the right trade on Postgres and the wrong one here: the
+    /// keys cost 6,252,880 bytes in the archive (measured — two builds off the same dumps, alias
+    /// stamping on and off), which pushed the store from 74.8MB to 81.1MB and across the 25MB
+    /// chunk grid from 3 KV values to 4. Every cold load then pays a fourth serialized read; the
+    /// production median went 337ms to 691ms.
+    ///
+    /// An alias key carries no information the slug key does not. `slug_to_aliases` attaches
+    /// alias `a` to slug `s`, and `finish_into` pushes `a` under exactly the condition it pushes
+    /// `s` — `s` in the visited set. So `art:flames` and `art:fire` select the identical rows by
+    /// construction, and the 1,024,204 stamped entries are pure duplication of a 2,150-entry map.
+    ///
+    /// Resolving at query time instead costs ~51KB carried once. See src/parser/tag-aliases.gen.ts
+    /// for the generated map and getArtTagsComparisonKeys for the resolution.
+    pub oracle_aliases: HashMap<String, String>,
+    /// The same, from the art dump. Kept separate because the two dumps are separate namespaces:
+    /// nothing guarantees an art alias means anything in oracle space, and merging them would let
+    /// one dump's spelling silently answer for the other's.
+    pub art_aliases: HashMap<String, String>,
     /// slug → index, lazily (re)built by `intern` — not part of the snapshot.
     #[serde(skip)]
     index: HashMap<String, u32>,
@@ -335,19 +357,32 @@ impl TagAccumulator {
         // Aliases, resolved now that the whole dump is known. An alias that lands on a real slug,
         // or that two tags both claim, is ambiguous and is dropped rather than guessed at — the
         // slug always wins. Neither dump contains one today, so this guards upstream data changing.
-        let mut slug_to_aliases: HashMap<&str, Vec<&str>> = HashMap::new();
-        let mut dropped = 0usize;
-        for (alias, claimants) in &self.alias_claimants {
-            if self.declared_slugs.contains(alias) || claimants.len() > 1 {
-                dropped += 1;
-                continue;
+        //
+        // Recorded as alias → slug for the query side to resolve through, rather than stamped onto
+        // the expanded lists below the way upstream does it. See TagData::oracle_aliases.
+        //
+        // Scoped so the &mut borrow of `data` ends before `data.intern` is called below.
+        {
+            let aliases = match kind {
+                TagKind::Oracle => &mut data.oracle_aliases,
+                TagKind::Art => &mut data.art_aliases,
+            };
+            // finish_into REPLACES this dump's half of `data`, so a second run over the same
+            // TagData must not inherit the first run's aliases.
+            aliases.clear();
+            let mut dropped = 0usize;
+            for (alias, claimants) in &self.alias_claimants {
+                if self.declared_slugs.contains(alias) || claimants.len() > 1 {
+                    dropped += 1;
+                    continue;
+                }
+                if let Some(owner) = claimants.iter().next() {
+                    aliases.insert(alias.clone(), owner.clone());
+                }
             }
-            if let Some(owner) = claimants.iter().next() {
-                slug_to_aliases.entry(owner.as_str()).or_default().push(alias.as_str());
+            if dropped > 0 {
+                eprintln!("tags: dropping {dropped} ambiguous alias(es)");
             }
-        }
-        if dropped > 0 {
-            eprintln!("tags: dropping {dropped} ambiguous alias(es)");
         }
 
         // Per local slug: {self} ∪ ancestors, as indices into `data.slugs`.
@@ -366,18 +401,11 @@ impl TagAccumulator {
                     queue.extend(parents.iter().copied().filter(|p| !visited.contains(p)));
                 }
             }
-            // Aliases ride along on the ANCESTORS too, not just the tag itself: Scryfall resolves
-            // an alias to its tag BEFORE expanding the hierarchy, so `art:flames` returns exactly
-            // what `art:fire` does, descendants included.
-            let alias_keys: Vec<String> = visited
-                .iter()
-                .filter_map(|&idx| slug_to_aliases.get(self.slugs[idx as usize].as_str()))
-                .flatten()
-                .map(|a| (*a).to_owned())
-                .collect();
-            for alias in alias_keys {
-                out.push(data.intern(&alias));
-            }
+            // No alias keys are stamped here — see TagData::oracle_aliases for why this port
+            // resolves them at query time instead. Upstream pushes them onto every visited slug at
+            // this point, which is what makes them ride along on the ancestors; the query-side map
+            // gets the same reach for free, because resolving `flames` to `fire` happens before the
+            // stored `fire` key (already denormalized onto descendants above) is matched.
             expanded.push(out);
         }
 
@@ -563,34 +591,83 @@ mod tests {
         assert_eq!(restored.slugs.len(), before);
     }
     #[test]
-    fn aliases_become_searchable_keys() {
+    fn aliases_are_recorded_as_a_map_and_never_stamped_as_keys() {
         // upstream #914: Scryfall's tagger resolves an alias to its tag before matching, which is
-        // why `art:flames` finds the `fire` tag there.
+        // why `art:flames` finds the `fire` tag there. Upstream stamps `flames` next to `fire` on
+        // every tagging; this port records the mapping once and resolves at query time instead
+        // (see TagData::oracle_aliases). The stored keys must therefore stay canonical.
         let tags = vec![tag_with_aliases("u1", "fire", &[], &["flames"], json!([{"oracle_id": "o-1"}]))];
         let data = build(&tags, TagKind::Oracle);
-        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["fire", "flames"]);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["fire"], "alias must not be stamped");
+        assert_eq!(data.oracle_aliases.get("flames").map(String::as_str), Some("fire"));
     }
 
     #[test]
-    fn spaced_aliases_are_slugified_to_the_stored_form() {
+    fn spaced_aliases_are_slugified_into_the_map() {
         // Half the art aliases are written with spaces. The query side slugifies the search term
-        // the same way, so both spellings have to land on one key — if these two functions ever
-        // disagree, `art:"open mouth"` silently returns nothing.
+        // the same way, so both spellings have to land on one map key — if those two functions
+        // ever disagree, `art:"open mouth"` silently returns nothing.
         let tags = vec![tag_with_aliases("u1", "loose-lips", &[], &["Open Mouth"], json!([{"oracle_id": "o-1"}]))];
         let data = build(&tags, TagKind::Oracle);
-        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["loose-lips", "open-mouth"]);
+        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["loose-lips"]);
+        assert_eq!(data.oracle_aliases.get("open-mouth").map(String::as_str), Some("loose-lips"));
     }
 
     #[test]
-    fn aliases_ride_along_on_ancestors() {
-        // Scryfall resolves the alias BEFORE expanding the hierarchy, so an alias of a PARENT is
-        // reachable from a card tagged only with the child.
+    fn an_alias_of_an_ancestor_resolves_to_that_ancestor() {
+        // Scryfall resolves the alias BEFORE expanding the hierarchy, so an alias of a PARENT has
+        // to reach a card tagged only with the child. Upstream buys that by stamping the parent's
+        // alias onto the child's taggings; here it falls out of the map for free, because the
+        // ancestor slug is already denormalized onto the child and `flames` resolves to it.
         let tags = vec![
             tag_with_aliases("u1", "fire", &[], &["flames"], json!([])),
             tag("u2", "bolt", &["u1"], json!([{"oracle_id": "o-1"}])),
         ];
         let data = build(&tags, TagKind::Oracle);
-        assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["bolt", "fire", "flames"]);
+        let stored = slugs(&data, TagKind::Oracle, "o-1");
+        assert_eq!(stored, vec!["bolt", "fire"]);
+        // The resolution the query side will perform, and the reach it buys: `flames` -> `fire`,
+        // and `fire` is present on a card tagged only `bolt`.
+        let resolved = data.oracle_aliases.get("flames").map(String::as_str).unwrap();
+        assert_eq!(resolved, "fire");
+        assert!(stored.iter().any(|s| s == resolved));
+    }
+
+    #[test]
+    fn a_second_finish_into_replaces_rather_than_accumulates_aliases() {
+        // finish_into replaces its half of TagData. The alias map has to follow that, or a
+        // re-import would leave a retired alias resolving forever.
+        let mut data = TagData::default();
+        let first = vec![tag_with_aliases("u1", "fire", &[], &["flames"], json!([{"oracle_id": "o-1"}]))];
+        let mut acc = TagAccumulator::default();
+        for t in &first {
+            acc.add_line(t.to_string().as_bytes());
+        }
+        acc.finish_into(TagKind::Oracle, &mut data);
+        assert!(data.oracle_aliases.contains_key("flames"));
+
+        let second = vec![tag_with_aliases("u1", "fire", &[], &["blaze"], json!([{"oracle_id": "o-1"}]))];
+        let mut acc = TagAccumulator::default();
+        for t in &second {
+            acc.add_line(t.to_string().as_bytes());
+        }
+        acc.finish_into(TagKind::Oracle, &mut data);
+        assert_eq!(data.oracle_aliases.get("blaze").map(String::as_str), Some("fire"));
+        assert!(!data.oracle_aliases.contains_key("flames"), "retired alias must not survive");
+    }
+
+    #[test]
+    fn the_two_dumps_keep_separate_alias_namespaces() {
+        // An art spelling must not answer for an oracle one, and vice versa.
+        let art = vec![tag_with_aliases("u1", "fire", &[], &["flames"], json!([{"illustration_id": "i-1"}]))];
+        let mut data = TagData::default();
+        let mut acc = TagAccumulator::default();
+        for t in &art {
+            acc.add_line(t.to_string().as_bytes());
+        }
+        acc.finish_into(TagKind::Art, &mut data);
+        assert_eq!(data.art_aliases.get("flames").map(String::as_str), Some("fire"));
+        assert!(data.oracle_aliases.is_empty());
     }
 
     #[test]

@@ -76,6 +76,23 @@ fn run_import(out_dir: &std::path::Path) -> Result<(), String> {
     }
     let manifest_path = out_dir.join("manifest.json");
     std::fs::write(&manifest_path, manifest.to_json().to_string()).map_err(|e| format!("write manifest: {e}"))?;
+
+    // The alias → slug maps this build resolved, for the query side to fold search terms through.
+    // This port does not stamp alias keys into the store (see TagData::oracle_aliases), so this
+    // file is the OTHER half of that decision: without it every alias spelling stops resolving.
+    // scripts/generate-tag-aliases.ts turns it into the committed parser module.
+    let aliases_path = out_dir.join("tag-aliases.json");
+    let aliases = serde_json::json!({
+        "oracle": tag_data.oracle_aliases,
+        "art": tag_data.art_aliases,
+    });
+    std::fs::write(&aliases_path, aliases.to_string()).map_err(|e| format!("write tag-aliases: {e}"))?;
+    eprintln!(
+        "wrote {} ({} oracle + {} art aliases)",
+        aliases_path.display(),
+        tag_data.oracle_aliases.len(),
+        tag_data.art_aliases.len()
+    );
     eprintln!(
         "built {} ({} cards, {} printings)",
         manifest.store_key, manifest.card_count, manifest.printing_count

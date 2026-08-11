@@ -206,6 +206,20 @@ The complete list of intentional differences:
   `is:gamechanger`, which come off booleans the bulk cards already carry. The
   `CUSTOM_IS_TAGS` need a per-tag Scryfall search sweep that upstream's
   *automated* import does not run either, so they are absent on both sides.
+- **Tag aliases resolve at query time, not at import.** Scryfall's tagger keeps
+  alternate spellings for a tag (`art:flames` means `art:fire`), and upstream
+  #914 reproduces that by stamping every alias into `card_oracle_tags` /
+  `card_art_tags` as an extra key beside the slug and all its ancestors, so
+  query time stays an exact match. That costs 6,252,880 bytes here — measured,
+  two builds off the same dumps — which took the store from 74.8MB to 81.1MB
+  and across the KV chunk grid from 3 values to 4, putting a fourth serialized
+  read on every cold load. So the store keeps only canonical slugs and the
+  parser folds the search term through a generated map
+  (`src/parser/tag-aliases.gen.ts`, 2,150 entries, ~78KB). Results are
+  identical, because the alias key was never more than a duplicate: the builder
+  attached alias `a` under exactly the condition it attached slug `s`. Upstream
+  keeps its design — 10MB of JSONB does not bite on Postgres, and its parser has
+  no seam to resolve through; the corrected cost is recorded in that PR.
 - HTML minification is off (upstream's own default).
 - Engine timing fields read `0` on wasm (Workers freeze clocks during CPU work).
 
