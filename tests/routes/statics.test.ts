@@ -194,3 +194,52 @@ describe("cache-busting hashes", () => {
 		}
 	});
 });
+
+// Content-hashing made `immutable` safe; deleting the superseded file made stale
+// HTML fatal, which is the same bug from the other side. Pages go out
+// `max-age=0, must-revalidate`, so a BROWSER never holds a stale one — but they
+// also carry `stale-while-revalidate=86400`, so for up to a day the EDGE can
+// answer a revalidation with a page built before the last deploy, naming
+// /static/app.<oldhash>.min.js. Measured against production right after a
+// deploy, that URL 404d. A 404 on the script is not a flicker: nothing
+// hydrates, and the server-rendered HTML is all the user gets until they reload.
+describe("superseded builds stay published", () => {
+	const generatedManifest = generated as unknown as {
+		hashes: Record<string, string>;
+		retiredHashes?: Record<string, string[]>;
+	};
+	const RETAINED_BUILDS = 5;
+	/** Same shape generate-assets.ts writes: app.min.js -> app.<hash>.min.js */
+	const hashedName = (file: string, hash: string) =>
+		`${file.slice(0, file.indexOf("."))}.${hash}${file.slice(file.indexOf("."))}`;
+
+	test("the manifest records what was retired", () => {
+		expect(generatedManifest.retiredHashes, "generate-assets.ts must record retention").toBeDefined();
+		for (const name of Object.keys(generatedManifest.hashes)) {
+			expect(Array.isArray(generatedManifest.retiredHashes?.[name])).toBe(true);
+		}
+	});
+
+	test("every retired hash still has its file, served immutable", () => {
+		const headers = readFileSync(join(publicDir, "_headers"), "utf8");
+		for (const [name, hashes] of Object.entries(generatedManifest.retiredHashes ?? {})) {
+			for (const hash of hashes) {
+				const file = `static/${hashedName(name, hash)}`;
+				expect(statSync(join(publicDir, file)).size, `${file} is named but missing`).toBeGreaterThan(0);
+				const at = headers.indexOf(`\n/${file}\n`);
+				expect(at, `_headers has no rule for the retained /${file}`).toBeGreaterThan(-1);
+				expect(headers.slice(at + 1).split("\n")[1]).toContain("immutable");
+			}
+		}
+	});
+
+	test("a retired hash is never the current one, and retention is capped", () => {
+		for (const [name, hashes] of Object.entries(generatedManifest.retiredHashes ?? {})) {
+			// Unbounded retention would grow public/ forever; one build of grace
+			// would not survive an evening with several deploys inside one window.
+			expect(hashes.length).toBeLessThanOrEqual(RETAINED_BUILDS);
+			expect(new Set(hashes).size, "retired hashes must be deduped").toBe(hashes.length);
+			expect(hashes).not.toContain(generatedManifest.hashes[name]);
+		}
+	});
+});

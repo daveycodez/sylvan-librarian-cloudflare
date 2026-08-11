@@ -26,6 +26,18 @@ function attachFlipButton(container, card) {
   probe.onload = () => {
     const wrapper = container.querySelector('.modal-image-wrapper');
     if (!wrapper || wrapper.querySelector('.card-flip-button')) return;
+    // A frame that hugs the image, so the button's percentage offsets resolve
+    // against the picture rather than the flex area around it. See app.js.
+    const img = wrapper.querySelector('.modal-image');
+    if (!img) return;
+    let frame = wrapper.querySelector('.card-image-frame');
+    if (!frame) {
+      const node = img.closest('a') || img;
+      frame = document.createElement('div');
+      frame.className = 'card-image-frame';
+      node.parentNode.insertBefore(frame, node);
+      frame.appendChild(node);
+    }
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'card-flip-button';
@@ -54,7 +66,7 @@ function attachFlipButton(container, card) {
         img.classList.remove('card-image-flipping');
       }, 150);
     });
-    wrapper.appendChild(button);
+    frame.appendChild(button);
   };
   probe.src = buildImageUrl(card, 'normal', 2);
 }

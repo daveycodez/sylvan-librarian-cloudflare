@@ -360,12 +360,6 @@ body {
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  /* Anchors the injected .card-flip-button, and makes the tile a query container
-     so that button can be placed against the ARTWORK rather than against the
-     tile. The two differ: the tile is the image PLUS the name, type and text
-     rows, so a percentage offset measured from it lands well below the art. */
-  position: relative;
-  container-type: inline-size;
 }
 
 .card-item:hover {
@@ -544,9 +538,8 @@ body {
   position: absolute;
   /* NOT a corner. Scryfall places it over the right edge of the artwork about a
      quarter of the way down — roughly where the transform icon sits on the
-     printed card. These percentages are correct wherever the containing block
-     is the image alone (the modal); the grid overrides them below, because
-     there the containing block is the whole tile. */
+     printed card. Percentages OF .card-image-frame, which hugs the image, so
+     they mean the same thing in a grid tile and in a full-size modal. */
   top: 26%;
   left: 75%;
   z-index: 2;
@@ -579,18 +572,6 @@ body {
   background: #343242;
   border-color: #fff;
   color: #fff;
-}
-
-/* In the results grid the containing block is the whole tile, so a plain
-   percentage would measure the image PLUS the text rows and drop the button
-   into the card body. A Magic card's art has a fixed 488x680 aspect, so the
-   image's height is 1.3934x the tile's content width — which container units
-   can express exactly: 26% of that height is 36.23cqw, and 0.8em is the tile's
-   padding. The modal keeps the plain percentages above, because its wrapper
-   holds the image and nothing else. */
-.card-item .card-flip-button {
-  top: calc(0.8em + 36.23cqw);
-  left: calc(0.8em + 75cqw);
 }
 
 /* 22px inside the 44px disc. Scryfall insets its icon by 7px, but its artwork
@@ -628,6 +609,20 @@ body {
 
 .card-image-flipping {
   transform: rotateY(90deg);
+}
+
+/* Hugs the card image so the flip button can be positioned as a percentage OF
+   THE IMAGE. Injected by JS alongside the button, never present in the server
+   render. Neither natural parent works: a grid tile also contains the name,
+   type and text rows, and the modal's image wrapper is a flex area much wider
+   than the picture — which is how the button ended up beside a large card
+   rather than on it. fit-content makes the box the image's box in both. */
+.card-image-frame {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+  line-height: 0;
 }
 
 .card-image,

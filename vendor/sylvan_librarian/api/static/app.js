@@ -841,6 +841,33 @@ class CardSearch {
     }
   }
 
+  // The button is positioned as a percentage of the CARD IMAGE, so it needs a
+  // containing block that is exactly the image's box. Neither natural parent is:
+  // a grid tile is the image plus the name/type/text rows, and the modal's image
+  // wrapper is a flex area far wider than the picture inside it — which is how
+  // the button ended up floating in the margin beside a large card.
+  //
+  // The frame cannot be the <a> that already wraps the image: a <button> inside
+  // an <a> is interactive content nested in interactive content, which is invalid
+  // and breaks keyboard traversal. So JS inserts a plain <div> around the link.
+  // Injecting it here rather than in the server markup keeps the no-JS render —
+  // and its parity fixture — untouched, and the frame only ever exists on the
+  // cards that actually get a button.
+  frameFor(container, imageSelector) {
+    const existing = container.querySelector('.card-image-frame');
+    if (existing) return existing;
+    const img = container.querySelector(imageSelector);
+    if (!img) return null;
+    // Frame the link if the image is wrapped in one, so the whole clickable area
+    // stays inside the frame; otherwise frame the bare image.
+    const node = img.closest('a') || img;
+    const frame = document.createElement('div');
+    frame.className = 'card-image-frame';
+    node.parentNode.insertBefore(frame, node);
+    frame.appendChild(node);
+    return frame;
+  }
+
   createFlipButton(onFlip) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -867,8 +894,12 @@ class CardSearch {
     if (!item || item.querySelector('.card-flip-button')) {
       return;
     }
-    item.appendChild(
-      this.createFlipButton(() => this.flipCardImage(item.querySelector('.card-image'), card, item, 'normal', true))
+    const frame = this.frameFor(item, '.card-image');
+    if (!frame) {
+      return;
+    }
+    frame.appendChild(
+      this.createFlipButton(() => this.flipCardImage(item.querySelector('.card-image'), card, frame, 'normal', true))
     );
   }
 
@@ -1071,9 +1102,13 @@ class CardSearch {
       if (!wrapper || wrapper.querySelector('.card-flip-button')) {
         return;
       }
-      wrapper.appendChild(
+      const frame = this.frameFor(wrapper, '.modal-image');
+      if (!frame) {
+        return;
+      }
+      frame.appendChild(
         this.createFlipButton(() =>
-          this.flipCardImage(wrapper.querySelector('.modal-image'), card, wrapper, 'png', false)
+          this.flipCardImage(wrapper.querySelector('.modal-image'), card, frame, 'png', false)
         )
       );
     });
