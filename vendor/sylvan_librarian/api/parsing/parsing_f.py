@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from api.parsing.hand_parser import _is_word_cont
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.rewrite import rewrite_query
 
@@ -23,11 +24,18 @@ def balance_partial_query(query: str) -> str:
     quote_chars = {"'", '"'}
 
     current_stack = []
-    for char in query:
+    for index, char in enumerate(query):
         # When inside a quoted string, only the matching closing quote ends it.
         if current_stack and current_stack[-1] in quote_chars:
             if char == current_stack[-1]:
                 current_stack.pop()
+            continue
+
+        # A word character either side of an apostrophe makes it part of the word rather than an
+        # opening quote -- the same rule _scan_word_end applies in the tokenizer. Without this the
+        # balancer "closes" the apostrophe in urza's, producing urza's', which does not parse:
+        # strictly worse than before bare names accepted apostrophes at all.
+        if char == "'" and 0 < index < len(query) - 1 and _is_word_cont(query[index - 1]) and _is_word_cont(query[index + 1]):
             continue
 
         mirrored_char = char_to_mirror.get(char)

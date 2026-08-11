@@ -58,8 +58,14 @@ export function balancePartialQuery(queryIn: string): string {
 	const unbalancedClosingChars = new Set([")"]);
 	const quoteChars = new Set(["'", '"']);
 
+	// A word character either side of an apostrophe makes it part of the word rather than an
+	// opening quote — the same rule scanWordEnd applies in the tokenizer. Without this the balancer
+	// "closes" the apostrophe in urza's, producing urza's', which does not parse.
+	const wordChar = /[\p{L}\p{N}_.]/u;
+
 	const currentStack: string[] = [];
-	for (const char of query) {
+	const chars = [...query];
+	for (const [index, char] of chars.entries()) {
 		// When inside a quoted string, only the matching closing quote ends it.
 		const top = currentStack[currentStack.length - 1];
 		if (top !== undefined && quoteChars.has(top)) {
@@ -67,6 +73,16 @@ export function balancePartialQuery(queryIn: string): string {
 				currentStack.pop();
 			}
 			continue;
+		}
+
+		if (
+			char === "'" &&
+			index > 0 &&
+			wordChar.test(chars[index - 1] as string) &&
+			index + 1 < chars.length &&
+			wordChar.test(chars[index + 1] as string)
+		) {
+			continue; // word-internal apostrophe
 		}
 
 		const mirroredChar = charToMirror[char];

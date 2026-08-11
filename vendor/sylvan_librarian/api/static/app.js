@@ -484,12 +484,28 @@ class CardSearch {
       ')': '(',
     };
     const quoteChars = new Set(["'", '"']);
+    // A word character either side of an apostrophe makes it part of the word, not an opening
+    // quote — the same rule _scan_word_end applies in the tokenizer. Without this the balancer
+    // "closes" the apostrophe in urza's, sending urza's' and turning a working search into a
+    // parse error: strictly worse than before commas and apostrophes were supported at all.
+    const wordChar = /[\p{L}\p{N}_.]/u;
 
     const stack = [];
 
     // Process each character in the query
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
+
+      if (
+        char === "'" &&
+        !(stack.length > 0 && stack[stack.length - 1] === "'") &&
+        i > 0 &&
+        wordChar.test(query[i - 1]) &&
+        i + 1 < query.length &&
+        wordChar.test(query[i + 1])
+      ) {
+        continue; // word-internal apostrophe
+      }
 
       // When inside a quoted string, only the matching closing quote ends it.
       // All other characters (including other quote types and parentheses) are ignored.
