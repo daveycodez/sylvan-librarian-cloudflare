@@ -1,3 +1,19 @@
+<!--
+  LOCAL PATCH (Cloudflare port): preload each font stylesheet and the woff2 it
+  names. The stylesheets below load with media="print" and flip to "all" on
+  load, so nothing they style is right at first paint — and a mana symbol is a
+  <span> with no text of its own, so it has no glyph at all until the font
+  lands. Without these, the browser could not even begin fetching a font until
+  it had parsed the stylesheet naming it. Connection warming lives in
+  fragments/preconnects.html. crossorigin is required on font preloads.
+-->
+<link
+  rel="preload"
+  as="font"
+  type="font/woff2"
+  href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.woff2"
+  crossorigin
+/>
 <link
   rel="preload"
   as="font"
@@ -5,6 +21,18 @@
   href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.woff2"
   crossorigin
 />
+<link
+  rel="preload"
+  as="font"
+  type="font/woff2"
+  href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin/mplantin-subset.woff2"
+  crossorigin
+/>
+
+<link rel="preload" as="style" href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css" />
+<link rel="preload" as="style" href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css" />
+<link rel="preload" as="style" href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin/mplantin-subset.css" />
+
 <link
   href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css"
   rel="stylesheet"

@@ -166,3 +166,50 @@ describe("card images come from Scryfall, derived from scryfall_id", () => {
 		expect(html).toContain("745w");
 	});
 });
+
+// The mana font is the one that flashes visibly: a mana symbol is
+// <span class="ms ms-g"> with no text of its own, so before the font arrives
+// there is no glyph at all, and it pops in afterwards. The font stylesheets
+// deliberately load with media="print" to stay off the critical path, which
+// means the browser cannot discover the woff2 until it has parsed the CSS —
+// unless it is preloaded. Pinned because losing a preload costs nothing at
+// build time and shows up only as a flicker on someone else's machine.
+describe("font loading hints", () => {
+	const FONTS = ["mana/mana-subset", "beleren/beleren-subset", "mplantin/mplantin-subset"];
+	const CDN = "https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts";
+
+	/** Each <link> as its own chunk — the markup is prettier-wrapped across lines. */
+	const links = (html: string) => html.split("<link").map((chunk) => chunk.replace(/\s+/g, " "));
+
+	test("every font stylesheet and its woff2 are preloaded", async () => {
+		const all = links(await (await testDispatch(makeCtx(), "/")).text());
+		for (const font of FONTS) {
+			expect(
+				all.some((l) => l.includes('as="font"') && l.includes(`${CDN}/${font}.woff2`)),
+				`${font}.woff2 must be preloaded, or the browser cannot start fetching it until the CSS is parsed`,
+			).toBe(true);
+			expect(
+				all.some((l) => l.includes('as="style"') && l.includes(`${CDN}/${font}.css`)),
+				`${font}.css must be preloaded`,
+			).toBe(true);
+		}
+	});
+
+	test("font preloads carry crossorigin, without which they are fetched twice", async () => {
+		const all = links(await (await testDispatch(makeCtx(), "/")).text());
+		const fontPreloads = all.filter((l) => l.includes('as="font"'));
+		expect(fontPreloads.length).toBe(FONTS.length);
+		for (const link of fontPreloads) {
+			expect(link, "a font preload without crossorigin is discarded and refetched").toContain("crossorigin");
+		}
+	});
+
+	test("the connection is warmed in both credential modes", async () => {
+		const all = links(await (await testDispatch(makeCtx(), "/")).text());
+		const preconnects = all.filter((l) => l.includes('rel="preconnect"'));
+		// A preconnect's crossorigin flag is part of its identity, so the anonymous
+		// connection the fonts need is not the one the stylesheets use.
+		expect(preconnects.some((l) => !l.includes("crossorigin"))).toBe(true);
+		expect(preconnects.some((l) => l.includes("crossorigin"))).toBe(true);
+	});
+});
