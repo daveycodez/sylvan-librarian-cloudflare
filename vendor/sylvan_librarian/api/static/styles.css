@@ -593,13 +593,16 @@ body {
   left: calc(0.8em + 75cqw);
 }
 
-/* 30px inside the 44px disc, the same 7px inset Scryfall gives its icon.
-   display:block drops the inline baseline gap, which is what leaves an SVG
-   sitting a pixel or two high inside a flex-centred button. */
+/* 22px inside the 44px disc. Scryfall insets its icon by 7px, but its artwork
+   carries padding inside its own viewBox; this outline stroke runs to the edge
+   of the 24-unit box, so matching their inset makes a visibly bigger mark.
+   Matching the resulting INK is what makes it read the same.
+   display:block drops the inline baseline gap, which is what otherwise leaves
+   an SVG sitting a pixel or two high in a flex-centred button. */
 .card-flip-button svg {
   display: block;
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
 }
 
 .card-flip-button:hover,
