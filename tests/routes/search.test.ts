@@ -82,6 +82,20 @@ describe("search fields", () => {
 		expect(await json(res)).toEqual({ title: "Invalid Fields", description: "Unknown field: 'bogus'" });
 	});
 
+	test("the two currencies orderby sorts by are readable, and stay out of the defaults", async () => {
+		// upstream #913. Accepting the name is only half the gate: RESULT_FIELD_NAMES gets it
+		// past the 400, and JSON_FIELD_TABLE (asserted in core_api.rs) is what stops it being
+		// a 500. Neither belongs in the defaults — see DEFAULT_RESULT_FIELDS' comment.
+		const engine = new FakeEngine();
+		const res = await testDispatch(makeCtx({ engine }), "/search?q=elf&fields=name,price_eur,price_tix");
+		expect(res.status).toBe(200);
+		expect(engine.lastSearch?.fields).toEqual(["name", "price_eur", "price_tix"]);
+
+		await testDispatch(makeCtx({ engine }), "/search?q=elf");
+		expect(engine.lastSearch?.fields).not.toContain("price_eur");
+		expect(engine.lastSearch?.fields).not.toContain("price_tix");
+	});
+
 	test("fields are deduped and forwarded; default is upstream's 9 plus scryfall_id", async () => {
 		const engine = new FakeEngine();
 		await testDispatch(makeCtx({ engine }), "/search?q=elf&fields=name,name,set_code");

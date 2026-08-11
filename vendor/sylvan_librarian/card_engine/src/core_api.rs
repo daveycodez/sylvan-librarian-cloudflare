@@ -1064,6 +1064,18 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
             .map(|v| Value::from(f64::from(u32::from(*v)) / 100.0))
             .unwrap_or(Value::Null)
     }),
+    ("price_eur", |_c, p, _s, _v| {
+        p.price_eur
+            .as_ref()
+            .map(|v| Value::from(f64::from(u32::from(*v)) / 100.0))
+            .unwrap_or(Value::Null)
+    }),
+    ("price_tix", |_c, p, _s, _v| {
+        p.price_tix
+            .as_ref()
+            .map(|v| Value::from(f64::from(u32::from(*v)) / 100.0))
+            .unwrap_or(Value::Null)
+    }),
     ("prefer_score", |_c, p, _s, _v| {
         p.prefer_score.as_ref().map(|v| Value::from(f32::from(*v))).unwrap_or(Value::Null)
     }),
@@ -1138,6 +1150,20 @@ mod tests {
     use super::*;
     use crate::NONE_STR;
     use serde_json::json;
+
+    /// The LIVE gate for a result field in this port. A name that reaches
+    /// `RESULT_FIELD_NAMES` but not `JSON_FIELD_TABLE` passes the TS validator and then
+    /// comes back as a 500 from the engine rather than a 400 — so the two tables agreeing
+    /// is what makes `fields=price_eur` a working request instead of an error. FIELD_TABLE
+    /// is pyo3-gated and compiled out here, so it cannot be compared against directly;
+    /// this asserts the half that is actually reachable.
+    #[test]
+    fn every_price_field_resolves() {
+        let names = ["price_usd", "price_eur", "price_tix"];
+        let resolved = resolve_fields_json(Some(names.iter().map(|n| (*n).to_string()).collect()))
+            .expect("every currency the orderby vocabulary sorts by must be readable");
+        assert_eq!(resolved.iter().map(|(n, _)| *n).collect::<Vec<_>>(), names);
+    }
 
     /// The legality word must survive encode → decode unchanged.
     ///

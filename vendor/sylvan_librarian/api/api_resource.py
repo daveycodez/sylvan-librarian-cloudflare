@@ -303,6 +303,11 @@ RESULT_FIELD_COLUMNS: dict[str, str] = {
     "illustration_id": "illustration_id",
     "scryfall_id": "scryfall_id",
     "price_usd": "price_usd",
+    # The other two currencies CardOrdering already sorts by (see the sql_orderby map's
+    # EUR/TIX entries). Without these a caller can rank a page by EUR or TIX and then have
+    # no way to read the number it was ranked on. Both are real magic.cards columns.
+    "price_eur": "price_eur",
+    "price_tix": "price_tix",
     "prefer_score": "prefer_score",
     # Card-data fields consumers need to run their own downstream filtering
     # (Scryfall JSON names and shapes): layout and rarity are plain text,

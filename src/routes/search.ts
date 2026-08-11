@@ -43,6 +43,11 @@ export const RESULT_FIELD_NAMES: readonly string[] = [
 	"illustration_id",
 	"scryfall_id",
 	"price_usd",
+	// upstream #913. The two currencies `orderby=` already sorts by: without these a caller can
+	// rank a page by EUR or TIX and then have no way to read the number it was ranked on. Same
+	// DEFAULT_RESULT_FIELDS exclusion as the #877 names below, for the same reason.
+	"price_eur",
+	"price_tix",
 	"prefer_score",
 	// upstream #877. NOT added to DEFAULT_RESULT_FIELDS: `fields=None` resolves against Rust's
 	// DEFAULT_FIELDS, which is ungated and live here, so a name there that JSON_FIELD_TABLE does
