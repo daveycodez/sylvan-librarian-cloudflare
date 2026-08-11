@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     AOracleCard, APrinting, AStrings, ARCHIVE_FORMAT_VERSION, ARCHIVE_HEADER_LEN, ARTIST_NONE,
-    CardData, CardRow, InlineStr, Interner, ManaCost, ManaVocabInterner, PERMANENT_TYPES,
+    CardData, CardRow, FaceRow, InlineStr, Interner, ManaCost, ManaVocabInterner, PERMANENT_TYPES,
     QueryCtx, QueryParams, VocabInterner, archive_header, build_card_data,
     card_types_list_to_bits, coll_str, color_list_to_mask, count_common_keywords,
     count_common_types, format_shift_or_assign, identity_letters, lane_add, legality_bits_to_json,
@@ -213,6 +213,55 @@ fn jv_legality_bits(d: &Value, key: &str) -> u64 {
         .unwrap_or_default()
 }
 
+/// Mirror of `str_list_color_mask`: colors as Scryfall spells them on a FACE —
+/// a plain list (`["W"]`), not the row columns' jsonb object. Same mask either way.
+fn jv_str_list_color_mask(d: &Value, key: &str) -> u8 {
+    let colors = jv_str_list(d, key);
+    color_list_to_mask(&colors.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// Mirror of `faces_from_pydict`: the card's faces, front first; empty for the
+/// ~82% of cards with one face.
+///
+/// Keys are Scryfall's own (`_FACE_OBJECT_FIELDS` in api/card_processing.py), not the row's
+/// column names, because a face record is a snapshot of what Scryfall sent for that face.
+///
+/// The distinction that matters: `intern_opt(None)` yields `NONE_STR`, not the id of `""`.
+/// Scryfall OMITS a key rather than sending null, so an absent key has to stay absent — a
+/// transform back face has no `mana_cost` at all, which is different from having an empty one.
+/// The three non-optional ids (name, type_line, oracle_text) use `unwrap_or_default()` to match
+/// the pydict twin exactly, so both sides agree key-for-key.
+fn jv_faces(d: &Value, it: &mut Interner, artists: &mut VocabInterner) -> Result<Vec<FaceRow>, EngineError> {
+    let Some(list) = d.get("card_faces").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut faces = Vec::with_capacity(list.len());
+    for face in list {
+        if !face.is_object() {
+            continue;
+        }
+        let card_artist_vid = match jv_opt_str(face, "artist") {
+            Some(a) => artists.intern(a.to_lowercase())?,
+            None => ARTIST_NONE,
+        };
+        faces.push(FaceRow {
+            card_name_id: it.intern(jv_opt_str(face, "name").unwrap_or_default()),
+            mana_cost_text_id: it.intern_opt(jv_opt_str(face, "mana_cost")),
+            type_line_id: it.intern(jv_opt_str(face, "type_line").unwrap_or_default()),
+            oracle_text_id: it.intern(jv_opt_str(face, "oracle_text").unwrap_or_default()),
+            creature_power_text_id: it.intern_opt(jv_opt_str(face, "power")),
+            creature_toughness_text_id: it.intern_opt(jv_opt_str(face, "toughness")),
+            planeswalker_loyalty_text_id: it.intern_opt(jv_opt_str(face, "loyalty")),
+            card_colors: jv_str_list_color_mask(face, "colors"),
+            color_indicator: jv_str_list_color_mask(face, "color_indicator"),
+            illustration_id: jv_opt_str(face, "illustration_id").map_or(0, |s| parse_uuid_or_hash(&s)),
+            card_artist_vid,
+            flavor_text_id: it.intern_opt(jv_opt_str(face, "flavor_text")),
+        });
+    }
+    Ok(faces)
+}
+
 /// Mirror of `mana_cost_from_pydict`: mana_cost_jsonb is an object whose keys
 /// are mana symbols and whose values are lists; a symbol's count is its list's
 /// length (capped at 127), 0 for a non-list value.
@@ -336,6 +385,8 @@ pub(crate) fn card_from_json(
 
         creature_power_text_id: it.intern_opt(jv_opt_str(d, "creature_power_text")),
         creature_toughness_text_id: it.intern_opt(jv_opt_str(d, "creature_toughness_text")),
+
+        card_faces: jv_faces(d, it, artists)?,
     })
 }
 
@@ -616,6 +667,25 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.f32v(r.mana_cost.cmc);
     e.u32v(r.creature_power_text_id);
     e.u32v(r.creature_toughness_text_id);
+    // Faces ride the spill too. This codec has no upstream twin — it exists because the Worker
+    // build is alarm-chained and rows are spilled between invocations to fit a 30s alarm — so
+    // nothing upstream would catch faces being dropped here. A face that does not survive the
+    // spill is a face missing from every store this port builds in production.
+    e.u16v(r.card_faces.len() as u16);
+    for f in &r.card_faces {
+        e.u32v(f.card_name_id);
+        e.u32v(f.mana_cost_text_id);
+        e.u32v(f.type_line_id);
+        e.u32v(f.oracle_text_id);
+        e.u32v(f.creature_power_text_id);
+        e.u32v(f.creature_toughness_text_id);
+        e.u32v(f.planeswalker_loyalty_text_id);
+        e.u8v(f.card_colors);
+        e.u8v(f.color_indicator);
+        e.u128v(f.illustration_id);
+        e.u16v(f.card_artist_vid);
+        e.u32v(f.flavor_text_id);
+    }
     e.0
 }
 
@@ -675,6 +745,28 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         },
         creature_power_text_id: d.u32v(),
         creature_toughness_text_id: d.u32v(),
+        // Must stay LAST and in exactly the encoder's field order: these initializers are
+        // evaluated top-to-bottom and each one consumes from the same cursor. The length check
+        // below is what turns any drift between the two halves into a loud error.
+        card_faces: {
+            let n = d.u16v() as usize;
+            (0..n)
+                .map(|_| FaceRow {
+                    card_name_id: d.u32v(),
+                    mana_cost_text_id: d.u32v(),
+                    type_line_id: d.u32v(),
+                    oracle_text_id: d.u32v(),
+                    creature_power_text_id: d.u32v(),
+                    creature_toughness_text_id: d.u32v(),
+                    planeswalker_loyalty_text_id: d.u32v(),
+                    card_colors: d.u8v(),
+                    color_indicator: d.u8v(),
+                    illustration_id: d.u128v(),
+                    card_artist_vid: d.u16v(),
+                    flavor_text_id: d.u32v(),
+                })
+                .collect()
+        },
     };
     if d.at != buf.len() {
         return Err(EngineError::runtime(format!(
@@ -1044,6 +1136,7 @@ fn card_to_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NONE_STR;
     use serde_json::json;
 
     /// The legality word must survive encode → decode unchanged.
@@ -1077,12 +1170,21 @@ mod tests {
     /// the encoder treated it — an absent key contributes no bits.
     #[test]
     fn a_format_absent_from_the_card_reads_not_legal() {
+        // Registers the format itself rather than relying on a sibling test having done it.
+        // `format_shifts()` is a process-global registry, so depending on another test to
+        // populate it made this pass or fail on test ORDER: it failed whenever it was run
+        // alone (`cargo test <name>`) and raced the round-trip test in a full parallel run.
+        // The assertion below is about an absent KEY, not about who registered the format.
+        let registered =
+            json!({ "card_legalities": { "standard": "legal", "modern": "legal", "legacy": "legal" } });
+        let _ = jv_legality_bits(&registered, "card_legalities");
+
         let seen = json!({ "card_legalities": { "modern": "legal", "legacy": "banned" } });
         let bits = jv_legality_bits(&seen, "card_legalities");
         let decoded = legality_bits_to_json(bits);
         assert_eq!(decoded["modern"], json!("legal"));
         assert_eq!(decoded["legacy"], json!("banned"));
-        // Registered by the round trip above, absent from this card.
+        // Known to the registry, absent from this card.
         assert_eq!(decoded["standard"], json!("not_legal"));
     }
 
@@ -1098,5 +1200,97 @@ mod tests {
         assert_eq!(decoded["f1"], json!("restricted"));
         assert_eq!(decoded["f2"], json!("banned"));
         assert_eq!(decoded["f3"], json!("not_legal"));
+    }
+
+    /// A face Scryfall sent without a key must read as ABSENT, not as an empty string.
+    ///
+    /// `intern_opt(None)` yields NONE_STR; `intern("")` yields a real id pointing at "". Both
+    /// build clean and both look like "nothing" in a debugger, but only the first round-trips
+    /// back to a missing key. A transform back face genuinely has no `mana_cost`, which is a
+    /// different statement from having an empty one — and `/cards/*` will re-emit the difference.
+    #[test]
+    fn an_absent_face_key_stays_absent_rather_than_becoming_empty() {
+        let mut it = Interner::new();
+        let mut artists = VocabInterner::new();
+        let d = json!({
+            "card_faces": [
+                { "name": "Delver of Secrets", "mana_cost": "{U}", "type_line": "Creature",
+                  "oracle_text": "", "power": "1", "toughness": "1", "colors": ["U"] },
+                // A transform back: no mana_cost key at all, and an empty flavor_text that IS
+                // present. The two must not collapse into the same stored value.
+                { "name": "Insectile Aberration", "type_line": "Creature",
+                  "oracle_text": "Flying", "flavor_text": "", "colors": ["U"] },
+            ]
+        });
+        let faces = jv_faces(&d, &mut it, &mut artists).expect("faces");
+        assert_eq!(faces.len(), 2);
+
+        // Front: mana_cost present.
+        assert_ne!(faces[0].mana_cost_text_id, NONE_STR);
+        // Back: mana_cost absent entirely.
+        assert_eq!(faces[1].mana_cost_text_id, NONE_STR, "an omitted key must be NONE_STR");
+        // Back: flavor_text PRESENT but empty — an id, not the sentinel.
+        assert_ne!(faces[1].flavor_text_id, NONE_STR, "an empty-but-present key is not absent");
+        // Neither face is a planeswalker, so loyalty is absent on both.
+        assert_eq!(faces[0].planeswalker_loyalty_text_id, NONE_STR);
+        assert_eq!(faces[1].planeswalker_loyalty_text_id, NONE_STR);
+        // Face colors arrive as a plain list, not the row columns' jsonb object.
+        assert_eq!(faces[0].card_colors, faces[1].card_colors);
+        assert_ne!(faces[0].card_colors, 0);
+        // color_indicator is absent on both, which is a clear mask rather than a wrong one.
+        assert_eq!(faces[0].color_indicator, 0);
+    }
+
+    /// Faces must survive the spill codec.
+    ///
+    /// This codec has no upstream twin — it exists because the Worker build is alarm-chained and
+    /// rows are spilled between invocations to fit a 30s alarm — so nothing upstream would catch
+    /// faces being dropped in it. A face that does not round-trip here is a face missing from
+    /// every store this port builds in production, with no compile error and no failing import.
+    #[test]
+    fn faces_survive_the_spill_round_trip() {
+        let mut it = Interner::new();
+        let mut artists = VocabInterner::new();
+        let d = json!({
+            "card_faces": [
+                { "name": "Front", "mana_cost": "{U}", "type_line": "Creature", "oracle_text": "a",
+                  "power": "1", "toughness": "2", "colors": ["U"],
+                  "illustration_id": "1c2fee9b-89ea-4ab1-a751-451c3cd65a88", "artist": "Nils Hamm" },
+                { "name": "Back", "type_line": "Creature", "oracle_text": "b", "loyalty": "4",
+                  "color_indicator": ["G"],
+                  "illustration_id": "c2b5f731-771b-4949-90f3-0ad40d676100", "artist": "Nils Hamm" },
+            ]
+        });
+        let faces = jv_faces(&d, &mut it, &mut artists).expect("faces");
+
+        let mut row = decode_card_row(&encode_card_row(&CardRow {
+            card_faces: faces,
+            ..empty_card_row()
+        }))
+        .expect("round trip");
+
+        assert_eq!(row.card_faces.len(), 2);
+        let back = row.card_faces.pop().expect("back");
+        let front = row.card_faces.remove(0);
+        // The front's mana cost survives as a real interned id; the back's absence
+        // survives as the sentinel. Both halves of that distinction have to cross
+        // the spill, which is the whole point of this test.
+        assert_ne!(front.mana_cost_text_id, NONE_STR);
+        assert_eq!(back.mana_cost_text_id, NONE_STR);
+        assert_ne!(front.illustration_id, back.illustration_id);
+        assert_eq!(front.card_artist_vid, back.card_artist_vid); // same artist interned once
+        assert_ne!(back.planeswalker_loyalty_text_id, NONE_STR);
+        assert_ne!(back.color_indicator, 0);
+        assert_eq!(front.color_indicator, 0);
+    }
+
+    /// A CardRow with every scalar at its zero value, for tests that care about one field.
+    fn empty_card_row() -> CardRow {
+        let mut it = Interner::new();
+        let mut vocab = VocabInterner::new();
+        let mut artists = VocabInterner::new();
+        let mut mana = ManaVocabInterner::new();
+        card_from_json(&json!({}), &mut it, &mut vocab, &mut artists, &mut mana)
+            .expect("an empty object yields an all-defaults row")
     }
 }

@@ -90,8 +90,18 @@ export const MANIFEST_KEY = "store:manifest";
  *       carry duplicate keys nothing asks for any more. That is what makes
  *       this rollout safe in either order: the new parser resolves `flames`
  *       to `fire`, and `fire` is present in both generations.
+ *   5 — the card-face merge (upstream #400/#873). A multi-face card is now ONE
+ *       row carrying every face's searchable data (type/subtype/colour/keyword
+ *       unions, joined oracle text) instead of silently being its BACK face,
+ *       and each face is stored structurally besides. Paired with
+ *       ARCHIVE_FORMAT_VERSION 2026080901 -> 2026081001, so the old store is
+ *       unloadable and the rebuild is forced rather than deferred to the
+ *       nightly. Two visible consequences: `t:battle` matches for the first
+ *       time (every battle is a transform front), and a multi-face card's
+ *       illustration_id is now its FRONT face's, which shifts prefer_score's
+ *       artwork-set component and so which printing represents such a card.
  */
-export const STORE_CONTENT_GENERATION = 4;
+export const STORE_CONTENT_GENERATION = 5;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

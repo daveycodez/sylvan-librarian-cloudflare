@@ -45,6 +45,8 @@ ENGINE_COLUMNS: list[str] = [
     "card_border",
     "card_color_identity",
     "card_colors",
+    "card_compat_blob",
+    "card_faces",
     "card_frame_data",
     "card_is_tags",
     "card_keywords",

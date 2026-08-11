@@ -219,6 +219,7 @@ export const CARD_SUPERTYPES: ReadonlySet<string> = new Set(["Basic", "Legendary
 
 export const CARD_TYPES: ReadonlySet<string> = new Set([
 	"Artifact",
+	"Battle", // reaches the corpus once faces merge (#400): every battle is a transform front
 	"Conspiracy",
 	"Creature",
 	"Enchantment",

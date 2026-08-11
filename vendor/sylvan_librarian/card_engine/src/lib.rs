@@ -298,6 +298,39 @@ struct ManaCost {
     cmc: f32,
 }
 
+/// One face's own text, for the ~18% of cards that have faces.
+///
+/// The merged row (see api/card_processing.py's face-merge policy) is what filters run against:
+/// unions and joined texts, so any face satisfies a card-level predicate. That is deliberately
+/// lossy about WHICH face said what — right for searching, not enough to answer with a card
+/// object. These records carry the per-face values, so a face is something the engine can read
+/// rather than something only a JSONB column remembers.
+///
+/// Text is oracle-level (every printing of a card prints the same faces), so it lives here and the
+/// per-printing art lives on `PrintingFace`.
+#[derive(Archive, Serialize, Deserialize)]
+struct OracleFace {
+    card_name_id: u32,
+    mana_cost_text_id: u32,
+    type_line_id: u32,
+    oracle_text_id: u32,
+    creature_power_text_id: u32,
+    creature_toughness_text_id: u32,
+    planeswalker_loyalty_text_id: u32,
+    card_colors: u8,
+    // Scryfall's color_indicator: the printed dot for a face whose color is not implied by its mana
+    // cost (a transform back has no mana cost at all). Same WUBRGC bit layout as card_colors.
+    color_indicator: u8,
+}
+
+/// One face's art and flavor, which vary per printing where `OracleFace`'s text does not.
+#[derive(Archive, Serialize, Deserialize)]
+struct PrintingFace {
+    illustration_id: u128,
+    card_artist_vid: u16,
+    flavor_text_id: u32,
+}
+
 #[derive(Archive, Serialize, Deserialize)]
 struct OracleCard {
     // Hot fields first — fits in the first cache lines for fast filter short-circuiting.
@@ -354,6 +387,9 @@ struct OracleCard {
 
     creature_power_text_id: u32,
     creature_toughness_text_id: u32,
+
+    // Empty for the ~82% of cards with a single face. Front first, in Scryfall's own order.
+    faces: Vec<OracleFace>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -412,6 +448,10 @@ struct Printing {
     // #629's replacement for comparing/deduping on the full illustration_id UUID
     // in the artwork-mode match-count and emission hot paths.
     artwork_group_id: u16,
+
+    // Parallel to the owning OracleCard's `faces`, so index i is the same face in both. Empty for
+    // single-faced cards, and empty when a multi-face card's printing carries no per-face art.
+    faces: Vec<PrintingFace>,
 }
 
 /// Parse-time row: one DB row (= one printing) with every field, before the
@@ -470,6 +510,27 @@ struct CardRow {
 
     creature_power_text_id: u32,
     creature_toughness_text_id: u32,
+
+    // Both halves of each face, together, until the commit pass splits them the same way it splits
+    // the row itself: text to the OracleCard, art to the Printing.
+    card_faces: Vec<FaceRow>,
+}
+
+/// Parse-time face: `OracleFace` and `PrintingFace` before the commit pass separates them.
+/// Never archived.
+struct FaceRow {
+    card_name_id: u32,
+    mana_cost_text_id: u32,
+    type_line_id: u32,
+    oracle_text_id: u32,
+    creature_power_text_id: u32,
+    creature_toughness_text_id: u32,
+    planeswalker_loyalty_text_id: u32,
+    card_colors: u8,
+    color_indicator: u8,
+    illustration_id: u128,
+    card_artist_vid: u16,
+    flavor_text_id: u32,
 }
 
 // Type aliases for the archived (mmap-backed) store types
@@ -806,6 +867,62 @@ fn mana_cost_from_pydict(d: &Bound<PyDict>, cmc_val: Option<f32>, mana_vocab: &m
     Ok(ManaCost { core, hybrids, devotion, cmc: cmc_val.unwrap_or(0.0) })
 }
 
+/// Colors as Scryfall spells them on a FACE: a plain list (`["W"]`), not the row columns'
+/// jsonb object. Same mask either way.
+///
+/// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`. Upstream has no such feature and
+/// leaves this ungated; this workspace compiles card_engine WITHOUT pyo3, so an ungated
+/// `Bound<PyDict>` is a build error here. The JSON twin is `jv_str_list_color_mask` in core_api.rs.
+#[cfg(feature = "python")]
+fn str_list_color_mask(d: &Bound<PyDict>, key: &str) -> u8 {
+    let colors = str_list(d, key);
+    color_list_to_mask(&colors.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The card's faces, front first; empty for the ~82% of cards with one face.
+///
+/// Keys here are Scryfall's own (see `_FACE_OBJECT_FIELDS` in api/card_processing.py), not the
+/// row's column names, because a face record is a snapshot of what Scryfall sent for that face.
+/// A face that is missing a key keeps the interner's NONE_STR, which is how "Scryfall omitted it"
+/// round-trips back to an absent key rather than a null.
+///
+/// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`, for the reason on
+/// `str_list_color_mask` above. The JSON twin is `jv_faces` in core_api.rs.
+#[cfg(feature = "python")]
+fn faces_from_pydict(d: &Bound<PyDict>, it: &mut Interner, artists: &mut VocabInterner) -> PyResult<Vec<FaceRow>> {
+    let Some(value) = d.get_item("card_faces").ok().flatten() else {
+        return Ok(Vec::new());
+    };
+    let Ok(list) = value.cast::<PyList>() else {
+        return Ok(Vec::new());
+    };
+    let mut faces = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        let Ok(face) = item.cast::<PyDict>() else {
+            continue;
+        };
+        let card_artist_vid = match opt_str(&face, "artist") {
+            Some(a) => artists.intern(a.to_lowercase())?,
+            None => ARTIST_NONE,
+        };
+        faces.push(FaceRow {
+            card_name_id: it.intern(opt_str(&face, "name").unwrap_or_default()),
+            mana_cost_text_id: it.intern_opt(opt_str(&face, "mana_cost")),
+            type_line_id: it.intern(opt_str(&face, "type_line").unwrap_or_default()),
+            oracle_text_id: it.intern(opt_str(&face, "oracle_text").unwrap_or_default()),
+            creature_power_text_id: it.intern_opt(opt_str(&face, "power")),
+            creature_toughness_text_id: it.intern_opt(opt_str(&face, "toughness")),
+            planeswalker_loyalty_text_id: it.intern_opt(opt_str(&face, "loyalty")),
+            card_colors: str_list_color_mask(&face, "colors"),
+            color_indicator: str_list_color_mask(&face, "color_indicator"),
+            illustration_id: opt_str(&face, "illustration_id").map_or(0, |s| parse_uuid_or_hash(&s)),
+            card_artist_vid,
+            flavor_text_id: it.intern_opt(opt_str(&face, "flavor_text")),
+        });
+    }
+    Ok(faces)
+}
+
 #[cfg(feature = "python")]
 fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInterner, artists: &mut VocabInterner, mana: &mut ManaVocabInterner) -> PyResult<CardRow> {
     let released_at = opt_date_str(d, "released_at").unwrap_or_default();
@@ -878,6 +995,8 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
 
         creature_power_text_id: it.intern_opt(opt_str(d, "creature_power_text")),
         creature_toughness_text_id: it.intern_opt(opt_str(d, "creature_toughness_text")),
+
+        card_faces: faces_from_pydict(d, it, artists)?,
     })
 }
 
@@ -2545,6 +2664,56 @@ fn partition_point(len: usize, pred: impl Fn(usize) -> bool) -> usize {
     lo
 }
 
+/// Printing ids ordered by `scryfall_id`, for binary search.
+///
+/// A permutation rather than a `(id, index)` table: the ids are already stored on the printings, so
+/// duplicating them would cost 16 bytes a row to save one indirection on a lookup that happens once
+/// per request. Ids are unique (Scryfall's primary key), so the order is total.
+fn build_printing_by_scryfall_id(printings: &[Printing]) -> Vec<u32> {
+    let mut ids: Vec<u32> = (0..printings.len() as u32).collect();
+    ids.sort_unstable_by_key(|&i| printings[i as usize].scryfall_id);
+    ids
+}
+
+/// Card ids ordered by `oracle_id`, the same shape as `build_printing_by_scryfall_id`.
+fn build_oracle_by_oracle_id(cards: &[OracleCard]) -> Vec<u32> {
+    let mut ids: Vec<u32> = (0..cards.len() as u32).collect();
+    ids.sort_unstable_by_key(|&i| cards[i as usize].oracle_id);
+    ids
+}
+
+/// Binary search a permutation built by one of the two builders above.
+///
+/// `key_of` reads the id the permutation is ordered by. Returns the index into the ORIGINAL array
+/// (the permutation's payload), not the position within the permutation.
+fn find_by_sorted_id(perm: &Archived<Vec<u32>>, id: u128, key_of: impl Fn(u32) -> u128) -> Option<u32> {
+    // 0 is parse_uuid_or_hash's null, and no real id maps to it, so a missing/absent id can never
+    // collide with a stored one.
+    if id == 0 {
+        return None;
+    }
+    let found = perm.binary_search_by(|probe| key_of(u32::from(*probe)).cmp(&id)).ok()?;
+    Some(u32::from(perm[found]))
+}
+
+/// The printing with this Scryfall id, or None. O(log n) against a full scan.
+pub(crate) fn find_printing_by_scryfall_id(
+    perm: &Archived<Vec<u32>>,
+    printings: &Archived<Vec<Printing>>,
+    id: u128,
+) -> Option<u32> {
+    find_by_sorted_id(perm, id, |i| u128::from(printings[i as usize].scryfall_id))
+}
+
+/// The oracle card with this oracle id, or None. Backs `oracleid:` and prints-of-this-card.
+pub(crate) fn find_oracle_by_oracle_id(
+    perm: &Archived<Vec<u32>>,
+    cards: &Archived<Vec<OracleCard>>,
+    id: u128,
+) -> Option<u32> {
+    find_by_sorted_id(perm, id, |i| u128::from(cards[i as usize].oracle_id))
+}
+
 fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     // Purely card-space now: the printings/offsets arguments existed only to read the first stored
     // printing's prefer_score, which is no longer a sort key (see the closure below).
@@ -3797,6 +3966,16 @@ struct CardIndexes {
     name_unigrams:  NameUnigramIndex,          // card space: exact 1-byte name containment (#858)
     legal_divergent: Vec<u16>,                // card space: ids with divergent legality (#630 phase 2), postings not a plane — see build_divergent_ids
     arith_tuple:    ArithTupleIndex,           // card space: joint (cmc,power,toughness,loyalty) postings for arith predicates (#743)
+    // Lookup by id, which is the one addressing mode the store has never had. `Printing.scryfall_id`
+    // and `OracleCard.oracle_id` are already the UUID's exact bits (parse_uuid_or_hash keeps them,
+    // and the comment on that field says the reason is "so future lookup-by-id can match
+    // Scryfall's") — they were simply not findable except by scanning. These are permutations, not
+    // copies: 4 bytes per row, ~390 KB and ~127 KB at corpus scale, binary searched.
+    //
+    // Without them, every /cards/:id, /cards/collection and prints-of-this-card request is a full
+    // scan, which is what pushed that whole surface onto SQL.
+    printing_by_scryfall_id: Vec<u32>,        // printing space, ordered by scryfall_id
+    oracle_by_oracle_id:     Vec<u32>,        // card space, ordered by oracle_id
 }
 
 
@@ -11868,10 +12047,14 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
-// `NameUnigramIndex` (#858) is a new archived type, so a store built before it must fail the header
-// check and be rebuilt rather than be read as garbage. Dated 2026-08-06, patch 01; the check is
-// EQUALITY, so the invariant is only that a value is never reused for a different layout.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026080901;
+// The check is EQUALITY, so the invariant is only that a value is never reused for a different
+// layout. Dated YYYYMMDD + a two-digit patch. History of what each value covers:
+//   2026080601 — `NameUnigramIndex` (#858), a new archived type, so a store built before it must
+//                fail the header check and be rebuilt rather than be read as garbage.
+//   2026080901 — `Printing` gains set_rank/artist_rank (#913).
+//   2026081001 — `OracleCard` gains `faces`, `Printing` gains `faces`; `OracleFace` and
+//                `PrintingFace` are new archived types (the card-face merge, #400/#873).
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081001;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -12277,6 +12460,24 @@ fn build_card_data_sorted(
                 mana_cost: row.mana_cost.clone(),
                 creature_power_text_id: row.creature_power_text_id,
                 creature_toughness_text_id: row.creature_toughness_text_id,
+                // Face TEXT is the same on every printing of a card, so the group's first row
+                // supplies it, exactly like the scalars above. Borrowed rather than taken:
+                // the Printing below still needs the art half of the same faces.
+                faces: row
+                    .card_faces
+                    .iter()
+                    .map(|f| OracleFace {
+                        card_name_id: f.card_name_id,
+                        mana_cost_text_id: f.mana_cost_text_id,
+                        type_line_id: f.type_line_id,
+                        oracle_text_id: f.oracle_text_id,
+                        creature_power_text_id: f.creature_power_text_id,
+                        creature_toughness_text_id: f.creature_toughness_text_id,
+                        planeswalker_loyalty_text_id: f.planeswalker_loyalty_text_id,
+                        card_colors: f.card_colors,
+                        color_indicator: f.color_indicator,
+                    })
+                    .collect(),
             });
         } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
             cards.last_mut().unwrap().legality_divergent = true;
@@ -12308,6 +12509,17 @@ fn build_card_data_sorted(
             // assign_set_ranks / assign_artist_ranks below (upstream #913).
             set_rank: 0,
             artist_rank: 0,
+            // The art half of the same faces the OracleCard took the text from, so index i is
+            // the same face in both. Art and flavor differ per printing where the text does not.
+            faces: row
+                .card_faces
+                .into_iter()
+                .map(|f| PrintingFace {
+                    illustration_id: f.illustration_id,
+                    card_artist_vid: f.card_artist_vid,
+                    flavor_text_id: f.flavor_text_id,
+                })
+                .collect(),
         });
     }
     offsets.push(printings.len() as u32);
@@ -12465,6 +12677,12 @@ fn build_card_data_sorted(
         name_unigrams:  name_unigrams_idx,
         legal_divergent: build_divergent_ids(&cards),
         arith_tuple:    arith_tuple_idx,
+        // LOCAL PLACEMENT (Cloudflare port): upstream #400's `8bc8968` builds these two in
+        // reload_commit; this workspace moved that body into build_card_data, so they go here.
+        // Both are sorted-id permutations over the finished vectors, so they must come after
+        // grouping — which is where they are.
+        printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
+        oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
     };
 
     #[cfg(feature = "alloc-counter")]
@@ -12962,6 +13180,74 @@ impl QueryEngine {
                 let card = &data.cards[cid];
                 let preferred = u32::from(data.offsets[cid]) as usize;
                 card_to_pydict(py, card, &data.printings[preferred], &data.strings, &data.coll_vocab, &resolved_fields)
+            })
+            .collect::<PyResult<_>>()?;
+        PyList::new(py, dicts)
+    }
+
+    /// The printing with this Scryfall id, or None.
+    ///
+    /// Addressing one card by id is the mode the store has never had: the id was stored
+    /// (`Printing.scryfall_id` keeps the UUID's exact bits, deliberately) but only findable by
+    /// scanning every printing. `printing_by_scryfall_id` makes it O(log n), which is what lets a
+    /// by-id route be answered from memory instead of from Postgres.
+    #[pyo3(signature = (scryfall_id, fields=None))]
+    fn card_by_scryfall_id<'py>(
+        &self,
+        py: Python<'py>,
+        scryfall_id: &str,
+        fields: Option<Vec<String>>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let resolved_fields = resolve_fields(fields)?;
+        let mmap = self.get_mmap()?;
+        // Safety: see the access_unchecked justification in query().
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        let Some(pid) = find_printing_by_scryfall_id(
+            &data.indexes.printing_by_scryfall_id,
+            &data.printings,
+            parse_uuid_or_hash(scryfall_id),
+        ) else {
+            return Ok(None);
+        };
+        let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+        let dict = card_to_pydict(
+            py,
+            &data.cards[cid],
+            &data.printings[pid as usize],
+            &data.strings,
+            &data.coll_vocab,
+            &resolved_fields,
+        )?;
+        Ok(Some(dict))
+    }
+
+    /// Every printing of the card with this oracle id, in stored (descending default-prefer) order.
+    ///
+    /// This is what `unique=prints` over one card asks for, and the shape a prints-of-this-card
+    /// link resolves to. Empty list when the oracle id is unknown.
+    #[pyo3(signature = (oracle_id, fields=None))]
+    fn printings_of_oracle_id<'py>(
+        &self,
+        py: Python<'py>,
+        oracle_id: &str,
+        fields: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let resolved_fields = resolve_fields(fields)?;
+        let mmap = self.get_mmap()?;
+        // Safety: see the access_unchecked justification in query().
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        let Some(cid) =
+            find_oracle_by_oracle_id(&data.indexes.oracle_by_oracle_id, &data.cards, parse_uuid_or_hash(oracle_id))
+        else {
+            return Ok(PyList::empty(py));
+        };
+        let cid = cid as usize;
+        let start = u32::from(data.offsets[cid]) as usize;
+        let end = u32::from(data.offsets[cid + 1]) as usize;
+        let card = &data.cards[cid];
+        let dicts: Vec<Bound<PyDict>> = (start..end)
+            .map(|pid| {
+                card_to_pydict(py, card, &data.printings[pid], &data.strings, &data.coll_vocab, &resolved_fields)
             })
             .collect::<PyResult<_>>()?;
         PyList::new(py, dicts)

@@ -115,6 +115,52 @@ pub struct RowDraft {
     pub raw_finish_nonfoil: bool,
     pub raw_finish_foil: bool,
     pub raw_finish_etched: bool,
+
+    // ── per-face snapshots (upstream `_face_records`) ───────────────────────
+    // Each entry carries only the `_FACE_OBJECT_FIELDS` keys the face actually
+    // has, verbatim from Scryfall. Absent stays absent: Scryfall OMITS a key
+    // rather than sending null, and `jv_faces` in core_api.rs relies on that to
+    // round-trip a missing key back to NONE_STR instead of an empty string.
+    // Empty for the ~82% of cards with a single face.
+    pub card_faces: Vec<Map<String, Value>>,
+}
+
+/// What `card_faces` stores per face, in Scryfall's own key names and value
+/// shapes (upstream `_FACE_OBJECT_FIELDS`).
+///
+/// `object` is the constant "card_face" and `image_uris` is a pure function of
+/// the card's id and the face's position, so neither is stored.
+const FACE_OBJECT_FIELDS: [&str; 13] = [
+    "name",
+    "mana_cost",
+    "type_line",
+    "oracle_text",
+    "power",
+    "toughness",
+    "loyalty",
+    "colors",
+    "color_indicator",
+    "flavor_text",
+    "artist",
+    "artist_id",
+    "illustration_id",
+];
+
+/// Upstream `_face_records`: snapshot each face's own fields, front first.
+///
+/// Only the keys the face actually has — a face missing a key must stay missing
+/// so a reconstructed face agrees with Scryfall key-for-key.
+fn face_records(card_faces: &[Value]) -> Vec<Map<String, Value>> {
+    card_faces
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|face| {
+            FACE_OBJECT_FIELDS
+                .iter()
+                .filter_map(|&field| face.get(field).map(|v| (field.to_string(), v.clone())))
+                .collect()
+        })
+        .collect()
 }
 
 // ─── helpers ported from card_processing.py ──────────────────────────────────
@@ -504,19 +550,123 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         price_usd,
         price_eur,
         price_tix,
+        // Filled by `transform` after the per-face drafts merge; a single-faced
+        // card has none, which is the ~82% case.
+        card_faces: Vec::new(),
     })
 }
 
-/// `preprocess_card` for one bulk card object, collapsed through the
-/// `scryfall_id` last-wins dedupe.
+/// Joins face texts. `"\n"` so substring/regex matches cannot span faces in
+/// practice (`.` does not cross newlines), `"//"` because that is the face
+/// separator Scryfall itself renders.
+const FACE_TEXT_SEPARATOR: &str = "\n//\n";
+
+/// Order-preserving union: extend `into` with values it does not already hold.
+fn union_list(into: &mut Vec<String>, from: &[String]) {
+    for value in from {
+        if !into.contains(value) {
+            into.push(value.clone());
+        }
+    }
+}
+
+/// Upstream's `_FACE_JOINED_TEXTS` rule for one field.
 ///
-/// Upstream returns a list (one dict per surviving face) and the upsert then
-/// keeps exactly one row per scryfall_id, later rows overwriting earlier ones
-/// (`_dedupe_rows`, asserted by `test_duplicate_scryfall_id_in_batch_last_wins`).
-/// All faces of a card share the parent's `id`, so the database row — and the
-/// engine row — is the LAST face that survives preprocessing. This function
-/// returns that row directly; `Ok(None)` means every face (or the card itself)
-/// was filtered, mirroring upstream's empty list.
+/// Python filters on truthiness (`if part`), so an EMPTY string is dropped just
+/// like an absent one — which is why `flavor_text` (normalised to `""` when
+/// absent) never contributes a bare separator.
+fn join_face_text(a: &str, b: &str, separator: &str) -> String {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => b.to_string(),
+        (false, true) => a.to_string(),
+        (false, false) => format!("{a}{separator}{b}"),
+    }
+}
+
+/// Upstream `_merge_processed_faces`: collapse fully-processed per-face rows
+/// into the card's single searchable row.
+///
+/// Scryfall ANDs search predicates at the CARD level, each satisfiable by any
+/// face — `t:sorcery t:land` returns the MDFC lands even though no single face
+/// is both. One row per printing carrying any-face unions reproduces that;
+/// one row per face would break every cross-face conjunction.
+///
+/// The front face supplies the row and with it every identity and display
+/// scalar (illustration, prices, collector number). Later faces fold in by
+/// four policies, and everything not named here stays the front's.
+fn merge_face_drafts(drafts: Vec<RowDraft>) -> RowDraft {
+    let mut it = drafts.into_iter();
+    let mut merged = it.next().expect("merge_face_drafts requires at least one face");
+
+    for face in it {
+        // _FACE_LIST_UNIONS: order-preserving union.
+        union_list(&mut merged.card_types, &face.card_types);
+        union_list(&mut merged.card_subtypes, &face.card_subtypes);
+
+        // _FACE_FLAG_UNIONS: set union. These are {key: true} objects upstream,
+        // so `dict.update` is a union; the port holds them as ordered Vecs and
+        // finalize_row emits the same objects, making union_list equivalent.
+        union_list(&mut merged.card_colors, &face.card_colors);
+        union_list(&mut merged.card_keywords, &face.card_keywords);
+        union_list(&mut merged.produced_mana, &face.produced_mana);
+
+        // _FACE_JOINED_TEXTS. type_line uses " // "; the rest use the newline form.
+        merged.oracle_text = {
+            let joined = join_face_text(
+                merged.oracle_text.as_deref().unwrap_or(""),
+                face.oracle_text.as_deref().unwrap_or(""),
+                FACE_TEXT_SEPARATOR,
+            );
+            // Stays None when neither face had text, so `oracle_text IS NULL`
+            // keeps meaning "no text" rather than "empty text".
+            if joined.is_empty() { None } else { Some(joined) }
+        };
+        merged.flavor_text =
+            join_face_text(&merged.flavor_text, &face.flavor_text, FACE_TEXT_SEPARATOR);
+        merged.type_line = {
+            let joined = join_face_text(
+                merged.type_line.as_deref().unwrap_or(""),
+                face.type_line.as_deref().unwrap_or(""),
+                " // ",
+            );
+            if joined.is_empty() { None } else { Some(joined) }
+        };
+
+        // _FACE_STAT_GROUPS: copied per GROUP from the first face that has any
+        // of the group, so a numeric column and its _text twin always describe
+        // the same face (the schema's check constraints couple them).
+        let power_group_empty = merged.creature_power.is_none()
+            && merged.creature_toughness.is_none()
+            && merged.creature_power_text.is_none()
+            && merged.creature_toughness_text.is_none();
+        let face_has_power = face.creature_power.is_some()
+            || face.creature_toughness.is_some()
+            || face.creature_power_text.is_some()
+            || face.creature_toughness_text.is_some();
+        if power_group_empty && face_has_power {
+            merged.creature_power = face.creature_power;
+            merged.creature_toughness = face.creature_toughness;
+            merged.creature_power_text = face.creature_power_text;
+            merged.creature_toughness_text = face.creature_toughness_text;
+        }
+        // Upstream's second group is (planeswalker_loyalty, planeswalker_loyalty_text).
+        // This port has no loyalty _text column — the engine stores loyalty text only
+        // per FACE (FaceRow.planeswalker_loyalty_text_id) — so the group is one field.
+        if merged.planeswalker_loyalty.is_none() && face.planeswalker_loyalty.is_some() {
+            merged.planeswalker_loyalty = face.planeswalker_loyalty;
+        }
+    }
+
+    merged
+}
+
+/// `preprocess_card` for one bulk card object.
+///
+/// A multi-face card (transform, MDFC, split, adventure, flip) becomes ONE row
+/// carrying the front face's identity and every face's searchable data — see
+/// [`merge_face_drafts`]. `Ok(None)` means every face (or the card itself) was
+/// filtered, mirroring upstream's empty list.
 pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> {
     let card = bulk_card
         .as_object()
@@ -529,15 +679,15 @@ pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> 
     // Line 134: lift the full card name before face processing.
     let card_name = required_str(card, s(card, "name").unwrap_or_default().as_str(), "name")?;
 
-    // Lines 139-153: faces are the parent dict overlaid with face data
-    // (precedence: face overrides parent), each re-run through the filters.
+    // Faces are the parent dict overlaid with face data (precedence: face
+    // overrides parent), each run through the full pipeline, then collapsed.
     if let Some(faces) = card.get("card_faces").and_then(Value::as_array) {
-        let mut last: Option<RowDraft> = None;
+        let mut drafts: Vec<RowDraft> = Vec::with_capacity(faces.len());
         for face in faces {
             let Some(face_obj) = face.as_object() else { continue };
             let mut merged = card.clone();
-            merged.remove("card_faces"); // line 150: don't keep recursing
-            // Lines 142-144 pop creature_* keys from the parent before merging;
+            merged.remove("card_faces"); // don't keep recursing
+            // Upstream pops the creature_* keys from the parent before merging;
             // those keys never exist on raw bulk objects, so nothing to do.
             for (k, v) in face_obj {
                 merged.insert(k.clone(), v.clone());
@@ -545,9 +695,16 @@ pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> 
             if !passes_filters(&merged)? {
                 continue;
             }
-            last = Some(build_draft(&merged, &card_name)?);
+            drafts.push(build_draft(&merged, &card_name)?);
         }
-        return Ok(last);
+        if drafts.is_empty() {
+            return Ok(None);
+        }
+        let mut row = merge_face_drafts(drafts);
+        // The engine's copy of the faces. Upstream also re-attaches them to
+        // raw_card_blob for its image sync; this port stores no blob.
+        row.card_faces = face_records(faces);
+        return Ok(Some(row));
     }
 
     Ok(Some(build_draft(card, &card_name)?))
@@ -833,7 +990,7 @@ pub fn finalize_row(
         // 40-84); columns the engine never reads (raw_card_blob, devotion,
         // face_name/face_idx, planeswalker_loyalty_text, rarity text,
         // prefer_score_components, cubecobra_* raw columns) are not emitted.
-        let mut m = Map::with_capacity(43);
+        let mut m = Map::with_capacity(44);
         m.insert("scryfall_id".into(), Value::String(r.scryfall_id));
         m.insert("oracle_id".into(), Value::String(r.oracle_id));
         m.insert("illustration_id".into(), opt_str_val(&r.illustration_id));
@@ -894,6 +1051,12 @@ pub fn finalize_row(
         m.insert(
             "cubecobra_score".into(),
             cubecobra_score.map_or(Value::Null, real_val),
+        );
+        // Read back by `jv_faces` in card_engine's core_api.rs, which expects
+        // Scryfall's own key names and relies on an absent key staying absent.
+        m.insert(
+            "card_faces".into(),
+            Value::Array(r.card_faces.into_iter().map(Value::Object).collect()),
         );
         Value::Object(m)
     }
@@ -1012,26 +1175,64 @@ mod tests {
     }
 
     #[test]
-    fn dfc_last_face_wins() {
-        // Upstream's scryfall_id last-wins dedupe means the stored row for a
-        // transform card is its BACK face, under the full "A // B" card_name.
+    fn dfc_faces_merge_into_one_row() {
+        // REPLACES `dfc_last_face_wins`. Both faces now fold into one row: the
+        // front supplies identity and display scalars, later faces contribute
+        // unions and joined texts. The old behaviour — the stored row IS the
+        // back face — is exactly what upstream's face merge (#400/#873) fixes.
         let card = fixture("delver_of_secrets");
         let draft = transform(&card).unwrap().unwrap();
         assert_eq!(draft.card_name, "Delver of Secrets // Insectile Aberration");
         assert_eq!(draft.card_name_folded, "delver of secrets // insectile aberration");
-        // Face 2 (Insectile Aberration) data:
-        assert_eq!(draft.type_line.as_deref(), Some("Creature \u{2014} Human Insect"));
-        assert_eq!(draft.creature_power, Some(3));
-        assert_eq!(draft.creature_toughness, Some(2));
-        assert!(draft.mana_cost_jsonb.is_empty()); // back face has no mana cost
-        // Face-level illustration id, not the parent's (parent has none).
-        let face2_ill = card["card_faces"][1]["illustration_id"].as_str().unwrap();
-        assert_eq!(draft.illustration_id.as_deref(), Some(face2_ill));
-        // Card-level fields flow through the merge:
+
+        // Joined texts, front first.
+        assert_eq!(
+            draft.type_line.as_deref(),
+            Some("Creature \u{2014} Human Wizard // Creature \u{2014} Human Insect")
+        );
+        let oracle = draft.oracle_text.as_deref().unwrap();
+        assert!(oracle.starts_with("At the beginning of your upkeep"));
+        assert!(oracle.ends_with("\n//\nFlying"), "faces join with the newline separator: {oracle:?}");
+
+        // Unions: one Creature entry, every face's subtypes in front-first order.
+        assert_eq!(draft.card_types, vec!["Creature"]);
+        assert_eq!(draft.card_subtypes, vec!["Human", "Wizard", "Insect"]);
+
+        // Stat group comes from the FRONT face, whole — 1/1, not the back's 3/2,
+        // and never a mix of the two.
+        assert_eq!(draft.creature_power, Some(1));
+        assert_eq!(draft.creature_toughness, Some(1));
+        assert_eq!(draft.creature_power_text.as_deref(), Some("1"));
+        assert_eq!(draft.creature_toughness_text.as_deref(), Some("1"));
+
+        // Front-face display scalars. The illustration id moving from the back
+        // to the front is what shifts prefer_score's artwork-set component for
+        // multi-faced cards.
+        assert_eq!(draft.mana_cost_jsonb, vec![("U".to_string(), 1)]);
+        let front_ill = card["card_faces"][0]["illustration_id"].as_str().unwrap();
+        assert_eq!(draft.illustration_id.as_deref(), Some(front_ill));
+
+        // Card-level fields are untouched by the merge.
         assert_eq!(draft.scryfall_id, card["id"].as_str().unwrap());
         assert_eq!(draft.oracle_id, card["oracle_id"].as_str().unwrap());
         assert_eq!(draft.card_color_identity, vec!["U"]);
         assert_eq!(draft.card_keywords, vec!["flying", "transform"]);
+
+        // And the per-face snapshots ride along, front first, carrying only the
+        // keys each face actually has.
+        assert_eq!(draft.card_faces.len(), 2);
+        assert_eq!(draft.card_faces[0]["name"], "Delver of Secrets");
+        assert_eq!(draft.card_faces[1]["name"], "Insectile Aberration");
+        assert_eq!(draft.card_faces[1]["type_line"], "Creature \u{2014} Human Insect");
+        // Scryfall omits `loyalty` on a creature face; it must stay omitted, because
+        // core_api's jv_faces maps absent to NONE_STR and present-but-empty to "".
+        assert!(!draft.card_faces[0].contains_key("loyalty"));
+    }
+
+    #[test]
+    fn single_faced_cards_carry_no_faces() {
+        let draft = transform(&minimal_card("Shock")).unwrap().unwrap();
+        assert!(draft.card_faces.is_empty());
     }
 
     fn minimal_card(name: &str) -> Value {
@@ -1130,7 +1331,7 @@ mod tests {
             "mana_cost_text", "oracle_text", "planeswalker_loyalty", "price_eur",
             "price_tix", "price_usd", "produced_mana", "released_at",
             "creature_power_text", "creature_toughness_text", "set_name", "type_line",
-            "prefer_score", "cubecobra_score",
+            "prefer_score", "cubecobra_score", "card_faces",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);
