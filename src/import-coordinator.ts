@@ -151,7 +151,13 @@ const FINALIZE_SLICE_BATCHES = 4;
  */
 const REORDER_SLICE_ROWS = 12_500;
 /** Drafts per SQLite batch row (~1.5MB of draft JSON, under the 2MB value cap). */
-const DRAFTS_PER_BATCH = 1_000;
+// Draft batching is by BYTES (BLOB_GROUP_BYTES, via blobGroups) rather than by draft count.
+//
+// It was `DRAFTS_PER_BATCH = 1_000`, which silently made the SQLite row size a function of how fat
+// a draft happens to be — and Durable Object SQLite rejects a value over 2 MB with SQLITE_TOOBIG.
+// Adding the Scryfall compat residue to `RowDraft` (generation 10) grew each draft enough to cross
+// that, and the import failed in the transform phase with nothing to say a size limit was what it
+// hit. The spill and row batches were already byte-capped; drafts were the one that was not.
 /** SQLite blob row size for staged dumps and tag-data snapshots. */
 const STAGE_BLOB_BYTES = 1_900_000;
 /** Lines per wasm transform call within a slice. */
@@ -857,18 +863,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// the two would otherwise duplicate drafts on resume.
 		this.ctx.storage.transactionSync(() => {
 			let seq = Number(this.sqlAll<{ m: number }>("SELECT COALESCE(MAX(seq), -1) AS m FROM draft_batches")[0]?.m ?? -1);
-			let pendingDrafts = this.takePendingDrafts();
-			pendingDrafts = pendingDrafts.concat(draftBuf);
-			while (pendingDrafts.length >= DRAFTS_PER_BATCH || (exhausted && pendingDrafts.length > 0)) {
-				const take = pendingDrafts.splice(0, DRAFTS_PER_BATCH);
+			// Byte-capped rows, the same `blobGroups` the spill and row batches below already use.
+			// The last group is partial unless this slice reached the end of the dump, so it goes
+			// back into the pending row rather than being written undersized once per slice.
+			const groups = blobGroups(this.takePendingDrafts().concat(draftBuf));
+			for (const group of exhausted ? groups : groups.slice(0, -1)) {
 				this.sqlRun(
 					"INSERT INTO draft_batches (seq, count, bytes) VALUES (?, ?, ?)",
 					++seq,
-					take.length,
-					exactBuffer(lengthPrefixed(take)),
+					group.length,
+					exactBuffer(lengthPrefixed(group)),
 				);
 			}
-			this.storePendingDrafts(pendingDrafts);
+			this.storePendingDrafts(exhausted ? [] : (groups.at(-1) ?? []));
 			this.metaSet("lines_done", String(seen));
 			for (const [k, v] of Object.entries(stats)) {
 				if (k === "total_bytes" || k === "parsed_bytes" || k === "parsed" || k === "skipped" || k === "drafts") {
@@ -1261,7 +1268,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const heap = wasm.heap();
 		console.log(
 			`Store built: ${totalBytes} bytes in ${chunkSeq + 1} chunks, ${Date.now() - buildStart}ms ` +
-				`(wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB)`,
+				`(wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB, linear memory ${(heap.linear / 1048576).toFixed(1)}MB)`,
 		);
 		const formatVersion = wasm.formatVersion();
 		this.ctx.storage.transactionSync(() => {

@@ -162,8 +162,11 @@ export class ImportWasm {
 		return this.ex.format_version();
 	}
 
-	heap(): { current: number; peak: number } {
-		return { current: this.ex.current_alloc(), peak: this.ex.peak_alloc() };
+	heap(): { current: number; peak: number; linear: number } {
+		// `linear` is wasm LINEAR MEMORY, which is what --max-memory caps and what the 128MB
+		// isolate limit actually governs. The allocator's own peak undercounts it: linear memory
+		// never shrinks, and the allocator cannot see the pages it already grew into.
+		return { current: this.ex.current_alloc(), peak: this.ex.peak_alloc(), linear: this.ex.memory.buffer.byteLength };
 	}
 
 	private sendBytes(bytes: Uint8Array, call: (ptr: number, len: number) => bigint, label: string): bigint {
