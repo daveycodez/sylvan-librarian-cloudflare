@@ -56,6 +56,14 @@ pub struct Manifest {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Manifest {
+    /// The manifest as the publishers read it.
+    ///
+    /// Hand-written rather than derived, and therefore a SECOND definition of this struct that
+    /// can drift from the first — which it did: `compat_key` and `compat_bytes` were added to the
+    /// struct and not here, so `build_store` wrote the card-object archive to disk and then
+    /// published a manifest that never mentioned it, and the deploy died on
+    /// `store-build/undefined`. `every_field_reaches_the_json` below is what stops that
+    /// happening again.
     pub fn to_json(&self) -> Value {
         serde_json::json!({
             "store_key": self.store_key,
@@ -65,7 +73,50 @@ impl Manifest {
             "upstream_commit": self.upstream_commit,
             "format_version": self.format_version,
             "store_bytes": self.store_bytes,
+            "compat_key": self.compat_key,
+            "compat_bytes": self.compat_bytes,
         })
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod manifest_tests {
+    use super::Manifest;
+
+    /// Every field of `Manifest` reaches `to_json`.
+    ///
+    /// The serializer is hand-written, so a field added to the struct is not added to the wire by
+    /// the compiler. This is a `Debug` comparison rather than a key list because `Debug` is
+    /// derived: it grows with the struct on its own, where a hand-maintained list would need the
+    /// same discipline that failed in the first place.
+    #[test]
+    fn every_field_reaches_the_json() {
+        let manifest = Manifest {
+            store_key: "card-store-v1-2.store".to_owned(),
+            built_at: "2".to_owned(),
+            card_count: 3,
+            printing_count: 4,
+            upstream_commit: "abc".to_owned(),
+            format_version: 5,
+            store_bytes: 6,
+            compat_key: "card-compat-v1-2.store".to_owned(),
+            compat_bytes: 7,
+        };
+        let json = manifest.to_json();
+        let object = json.as_object().expect("an object");
+        // Debug renders `field: value` for every field, so the field NAMES come from the struct
+        // itself rather than from a list here that would need the same upkeep as to_json.
+        let debug = format!("{manifest:?}");
+        let fields: Vec<&str> = debug
+            .trim_start_matches("Manifest {")
+            .trim_end_matches('}')
+            .split(", ")
+            .filter_map(|part| part.split_once(": ").map(|(name, _)| name.trim()))
+            .collect();
+        for field in &fields {
+            assert!(object.contains_key(*field), "Manifest.{field} never reaches to_json()");
+        }
+        assert_eq!(object.len(), fields.len(), "to_json emits a key that is not a Manifest field");
     }
 }
 
