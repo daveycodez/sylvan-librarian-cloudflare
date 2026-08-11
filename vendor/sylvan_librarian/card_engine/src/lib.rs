@@ -2569,16 +2569,48 @@ fn bound_from_cmp(op: CmpOp, v: f64) -> SortBound {
 }
 
 /// The permutation's PRIMARY key: the sort column's value, direction folded in by negation, absent
-/// sorting last. One function because two places must agree on it exactly — `build_sort_permutations`
-/// orders by it, and `walk_bounds` binary-searches for it to find where a value interval starts and
-/// ends in that order. A divergence between those two would not be a slow walk, it would be a walk
-/// that starts past real matches and silently returns the wrong page.
+/// sorting as the LOWEST value. One function because three places must agree on it exactly —
+/// `build_sort_permutations` orders by it, `sort_key_bits` builds every gathered plan's key from it,
+/// and `walk_bounds` binary-searches for it to find where a value interval starts and ends in that
+/// order. A divergence between those would not be a slow walk, it would be a walk that starts past
+/// real matches and silently returns the wrong page.
 ///
-/// `u32::MAX` for absent is what makes a numeric bound safe to search for: a card with no value in the
-/// column sorts past every finite key in BOTH directions, and `numeric_cmp_tri` answers `Tri::Null` for
-/// it, so it can never be a match of a comparison against that column either.
+/// # Absent sorts lowest, not last
+///
+/// Measured against api.scryfall.com on 2026-08-11: `set:m10 order=power dir=asc` leads with the
+/// null-power cards and `dir=desc` trails with them, and `t:creature order=usd dir=asc` leads with
+/// the unpriced Alchemy cards. So a missing value behaves like a value below every real one, and
+/// the direction genuinely moves it — it is not pinned to either end.
+///
+/// This is a change of SHAPE, not of constant. The old sentinel was `u32::MAX` on both directions,
+/// which put absent past every finite key either way precisely BECAUSE it did not participate in
+/// the direction reflection. Now it does.
+///
+/// The clamp is belt-and-braces rather than decoration: `f32_sort_bits` maps only a negative NaN
+/// with an all-ones mantissa to `u32::MAX`, and the corpus minimum (`-f32::MAX`) to `0x0080_0000`,
+/// so no real value can collide with either sentinel today. The clamp makes that a property of the
+/// function instead of a property of the data, and it is applied identically wherever the key is
+/// computed, so the binary search and the permutation cannot disagree at the boundary.
+///
+/// What this does NOT change: `numeric_cmp_tri` still answers `Tri::Null` for an absent operand, so
+/// a null can never satisfy a comparison against its own column. That is the half of the old
+/// argument still doing the work — `walk_bounds` stays correct because a null-bearing card cannot
+/// match the bound, not because the null sits at a particular end.
 fn perm_primary_key(value: Option<f32>, descending: bool) -> u32 {
-    value.map_or(u32::MAX, |v| f32_sort_bits(if descending { -v } else { v }))
+    match value {
+        None => {
+            if descending {
+                u32::MAX
+            } else {
+                0
+            }
+        }
+        Some(v) => {
+            let k = f32_sort_bits(if descending { -v } else { v });
+            debug_assert!(k != 0 && k != u32::MAX, "a real value collided with the absent sentinel");
+            if descending { k.min(u32::MAX - 1) } else { k.max(1) }
+        }
+    }
 }
 
 /// The sort column's value for one archived card, in the same units `build_sort_permutations` sorted
@@ -5837,9 +5869,22 @@ fn sort_key_bits(card: &AOracleCard, p: &APrinting, sort_col: SortCol, descendin
         // Dense ranks assigned post-load; the stored code and artist id do not sort alphabetically
         // on their own (see assign_set_ranks / assign_artist_ranks).
         SortCol::Set        => Some(u32::from(p.set_rank) as f32),
-        SortCol::Artist     => Some(u32::from(p.artist_rank) as f32),
+        // Nullable, unlike `Set` beside it: `card_set_code` is non-null but an artist is not, and
+        // `assign_artist_ranks` puts the artistless printings in a trailing rank block keyed on
+        // `(name.is_none(), name)`. Reporting that block as a VALUE made `order=artist` the one
+        // ordering whose absent side moved with the direction in the wrong sense — artistless
+        // sorted last ascending (right) but FIRST descending (wrong), because a real rank reflects
+        // and the absent sentinel does not. Returning None puts it back under the same rule as
+        // every other column. No change to `assign_artist_ranks`: its trailing block is disjoint
+        // from every named rank, so it simply stops being read. 7 printings on the production
+        // corpus, so this is a correctness tidy rather than a visible reshuffle.
+        SortCol::Artist     => (p.card_artist_vid != ARTIST_NONE).then(|| u32::from(p.artist_rank) as f32),
     };
-    let pk = primary.map_or(u32::MAX, |v| f32_sort_bits(if descending { -v } else { v }));
+    // The SAME encoder `build_sort_permutations` orders by and `walk_bounds` binary-searches
+    // with. It was written out longhand here as a second copy of that one-liner; two copies of a
+    // sentinel is exactly the kind of thing that drifts, and a drift between them is not a slow
+    // walk but a walk that starts past real matches and silently returns the wrong page.
+    let pk = perm_primary_key(primary, descending);
     let e = card.edhrec_rank.as_ref().map(|v| u32::from(*v)).unwrap_or(u32::MAX);
     let sc = p.prefer_score.as_ref().map_or(u32::MAX, |v| f32_sort_bits(-f32::from(*v)));
     ((pk as u128) << 64) | ((e as u128) << 32) | (sc as u128)
@@ -7688,8 +7733,38 @@ fn compose_printing_estimate(
 /// The two used to differ in *structure* — a pair vec against planes/postings — and so had a walk
 /// each. They now share one layout and one walk (`walk_value_orderby_page`), which is what makes this
 /// predicate mean exactly "there is a value index to walk".
-fn orderby_walk_available(sort_col: SortCol) -> bool {
-    matches!(sort_col, SortCol::PriceUsd | SortCol::Rarity)
+///
+/// # Why ascending needs the index to be total
+///
+/// A null-valued printing is ABSENT from the value index by construction, so the walk can only ever
+/// enumerate non-null rows. It handles the leftovers by declining — `seen < want && seen < total` —
+/// and that is a SUFFIX test: it detects "there are rows I could not place, and they sort after
+/// everything I did". With absent sorting LOWEST (see `perm_primary_key`), on ascending the rows it
+/// cannot place sort BEFORE everything it emits, so the test never fires: the walk fills the page
+/// from real values, exits via its `seen == want` break, and returns a confidently wrong page 0.
+/// Not a fallback — a silently wrong answer.
+///
+/// So ascending is only offered when the index covers every printing, i.e. the column has no nulls
+/// anywhere in this store and "nulls first" is vacuous. `len()` is the indexed-printing count, so the
+/// comparison is exact and — this is the part that matters for the router — it is a STORE-level
+/// constant available identically to `compose_paging_with_total`'s prediction and to the fastpath
+/// itself, so the two cannot disagree about which branch will run.
+///
+/// `card_rarity_int` is non-null across the production corpus, so `order=rarity` keeps its walk in
+/// both directions; only `order=usd dir=asc` falls to the gather, which is the direction where most
+/// rows are null and the walk would have declined on most pages anyway.
+///
+/// Kept separate from `orderby_walk_beats_gather`, which answers a COST question. A cost heuristic
+/// that is wrong picks a slower plan; a correctness gate that is wrong returns wrong rows. They must
+/// not share a predicate.
+fn orderby_walk_available(sort_col: SortCol, descending: bool, indexes: &Archived<CardIndexes>) -> bool {
+    let idx = match sort_col {
+        SortCol::PriceUsd => &indexes.price_usd,
+        SortCol::Rarity => &indexes.rarity_printing_ordered,
+        _ => return false,
+    };
+    //  is one entry per printing, so its length IS the corpus printing count.
+    descending || idx.len() == indexes.printing_to_card.len()
 }
 
 /// The routed path's time, split into DISJOINT phases that cover all of `run_query_routed`.
@@ -7941,6 +8016,16 @@ fn walk_value_orderby_page<'a>(
 ) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, descending, limit, page_offset, .. } = *params;
+    // The walk enumerates only index-resident rows and detects leftovers with a SUFFIX test, so on
+    // ascending it is correct only when the index covers every printing (see
+    // `orderby_walk_available`, which is the gate production routes through). Asserted here as well
+    // because the gate lives at the call site and a future caller reaching the walk directly would
+    // otherwise get silently wrong ascending pages rather than a decline.
+    debug_assert!(
+        descending || idx.len() == indexes.printing_to_card.len(),
+        "walk_value_orderby_page on an ascending page over a column with nulls returns a wrong \
+         page, not a decline — route through orderby_walk_available",
+    );
     let printing_to_card = &indexes.printing_to_card;
     let want = page_offset + limit;
     let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
@@ -8318,7 +8403,7 @@ fn printing_compose_fastpath<'a>(
     // compose that produces it. This one is PERMISSIVE: skip the gather's gates whenever a walk might
     // run at all, since their premise ("broad => not worth composing") is backwards for the walk. The
     // real choice is `walk_col` below, and the gather's gates are honoured again if it says gather.
-    let walk_possible = perm.is_none() && orderby_walk_available(sort_col);
+    let walk_possible = perm.is_none() && orderby_walk_available(sort_col, descending, indexes);
     if !walk_possible && let Some(reason) = gather_declines {
         note_paging_taken(reason);
         return None;
@@ -10320,7 +10405,7 @@ fn compose_paging_with_total(
             return ComposePaging::Decline;
         }
         ComposePaging::Perm
-    } else if orderby_walk_available(sort_col)
+    } else if orderby_walk_available(sort_col, descending, indexes)
         && result_total.is_some_and(|t| orderby_walk_beats_gather(mode, filter, t))
     {
         // The same `orderby_walk_beats_gather` the fastpath applies, on this side's ESTIMATE of the
@@ -12103,7 +12188,13 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //   2026080901 — `Printing` gains set_rank/artist_rank (#913).
 //   2026081001 — `OracleCard` gains `faces`, `Printing` gains `faces`; `OracleFace` and
 //                `PrintingFace` are new archived types (the card-face merge, #400/#873).
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081001;
+//   2026081101 — a missing sort value now sorts LOWEST rather than last (#919), which changes the
+//                stored bytes of the ASCENDING sort permutations for the five nullable permuted
+//                columns (cmc, power, toughness, cubecobra, edhrec) and their inverses — 10 arrays.
+//                No struct size moves, so the two sizes in the header cannot catch it and this
+//                constant is the only thing that forces the rebuild. `name` is unaffected, which is
+//                the evidence that only the ascending side moved.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081101;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

@@ -1669,7 +1669,20 @@ class APIResource:
         )
         _select_cols = "".join(f"\n                    {col}," for col in _cte_columns)
         _result_cols = ",\n                    ".join(f"{RESULT_FIELD_COLUMNS[name]} AS {name}" for name in resolved_fields)
-        _order_by = f"""sort_value {sql_direction} NULLS LAST,
+        # A missing sort value sorts as the LOWEST value, so the direction moves it: FIRST
+        # ascending, LAST descending. Measured against api.scryfall.com on 2026-08-11 --
+        # `set:m10 order=power dir=asc` leads with the null-power cards and `dir=desc` trails with
+        # them, and `t:creature order=usd dir=asc` leads with the unpriced ones.
+        #
+        # The clause has to stay explicit and simply invert: Postgres' DEFAULT is the OPPOSITE of
+        # this (NULLS LAST for ASC, NULLS FIRST for DESC, i.e. nulls treated as the HIGHEST value),
+        # so dropping it would silently restore the behaviour this is fixing.
+        #
+        # The two tiebreaks below keep NULLS LAST unconditionally. `dir` does not apply to them --
+        # they are not the user's sort column, and card_engine's sort key encodes the same
+        # asymmetry (`sort_key_bits` negates only the primary).
+        _sort_value_nulls = "FIRST" if sql_direction == "ASC" else "LAST"
+        _order_by = f"""sort_value {sql_direction} NULLS {_sort_value_nulls},
                     edhrec_rank ASC NULLS LAST,
                     prefer_score DESC NULLS LAST"""
         _count_nulls = ",\n                    ".join(f"null AS {name}" for name in resolved_fields)

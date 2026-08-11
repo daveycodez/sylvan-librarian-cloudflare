@@ -119,8 +119,18 @@ export const MANIFEST_KEY = "store:manifest";
  *
  *       The deviation it buys: `set:cei` and its 98 siblings return nothing
  *       here, where Scryfall returns them. See README's deviations list.
+ *   7 — a missing sort value sorts LOWEST rather than last (upstream #919), so
+ *       `order=power dir=asc` leads with the null-power cards instead of
+ *       trailing with them, matching Scryfall. Paired with
+ *       ARCHIVE_FORMAT_VERSION 2026081001 -> 2026081101, because the stored
+ *       ASCENDING sort permutations for the five nullable permuted columns
+ *       encode the old polarity: the format bump makes the old store
+ *       unloadable and this makes store-age.ts FORCE the rebuild at deploy
+ *       rather than leaving the port dark until the nightly. Also carries
+ *       upstream #913's `order=artist` fix, where an artistless printing sat at
+ *       the wrong end descending.
  */
-export const STORE_CONTENT_GENERATION = 6;
+export const STORE_CONTENT_GENERATION = 7;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
