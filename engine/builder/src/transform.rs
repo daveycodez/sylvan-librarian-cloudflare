@@ -735,6 +735,37 @@ fn round4(v: f64) -> f64 {
     (v * 10_000.0).round() / 10_000.0
 }
 
+/// Upstream's `art_style` predicate: licensed-crossover or stylistic-departure art.
+///
+/// `external-ip` is the Scryfall tagger's parent tag over ~57 licensed franchises;
+/// `dungeons-and-dragons` and `the-lord-of-the-rings` are exempt because their art matches
+/// Magic's high-fantasy look. Shared by the `art_style` component and by [`pin_applies`], so the
+/// score and the pin cannot disagree about what "off style" means.
+pub fn is_off_style(art_tags: &[&str]) -> bool {
+    let has = |t: &str| art_tags.iter().any(|x| *x == t);
+    (has("external-ip") && !(has("dungeons-and-dragons") || has("the-lord-of-the-rings")))
+        || has("anime")
+        || has("comic-style")
+        || has("line-art")
+        || has("word-art-title")
+}
+
+/// Added to the printing Scryfall's `oracle_cards` file names as a card's representative.
+///
+/// UNCONDITIONAL here, and that is a deliberate divergence from upstream. This port's whole
+/// purpose is to answer like Scryfall, so where Scryfall has named a representative that answer
+/// wins outright — including on the 213 cards where its pick is licensed-crossover art (Marvel
+/// Super Heroes Commander for Birds of Paradise, Harmonize, Shock, Skullclamp) that upstream's
+/// `art_style` component deliberately demotes. Upstream optimises "the version that looks like
+/// Magic" and is right to keep that veto; this port optimises "what Scryfall would have said".
+///
+/// Large enough to dominate every real component sum (scores land in ~130-220), because this is a
+/// PIN rather than another weight: where the label exists and applies, it decides. `prefer_score`
+/// still ranks everything underneath it, which is what the ~3.4% of cards with no usable label,
+/// the per-artwork-group representatives `unique=artwork` needs, and every filtered query fall
+/// back on.
+pub const PIN_BONUS: f64 = 1000.0;
+
 /// backfill_prefer_scores.sql, one row: every component of
 /// `prefer_score_components`, summed into `prefer_score`.
 /// `illustration_count` is the number of qualifying rows sharing this row's
@@ -808,13 +839,7 @@ fn prefer_score(draft: &RowDraft, art_tags: &[&str], illustration_count: u64) ->
     };
 
     // 'art_style': licensed-crossover / stylistic-departure art gets no bonus.
-    let has_tag = |t: &str| art_tags.iter().any(|x| *x == t);
-    let off_style = (has_tag("external-ip") && !(has_tag("dungeons-and-dragons") || has_tag("the-lord-of-the-rings")))
-        || has_tag("anime")
-        || has_tag("comic-style")
-        || has_tag("line-art")
-        || has_tag("word-art-title");
-    total += if off_style { 0.0 } else { 14.0 };
+    total += if is_off_style(art_tags) { 0.0 } else { 14.0 };
 
     total
 }
@@ -971,7 +996,8 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
             .copied()
             .unwrap_or(0);
         let cubecobra_score = cubecobra.get(&r.card_name).copied();
-        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score)
+        let pinned = tags.labels.contains(&r.scryfall_id);
+        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned)
     })
 }
 
@@ -1001,10 +1027,15 @@ pub fn finalize_row(
     art_tags: &[&str],
     illustration_count: u64,
     cubecobra_score: Option<f64>,
+    // This printing is the one Scryfall's `oracle_cards` file names as the card's representative,
+    // AND `pin_applies` allowed the pin. Decided by the CALLER because it needs a per-card fact
+    // (does an on-style alternative exist), and both import paths already make a per-card pass —
+    // keeping the decision there is what stops the two drifting.
+    pinned: bool,
 ) -> Value {
     {
         let r = r;
-        let prefer = prefer_score(&r, art_tags, illustration_count);
+        let prefer = prefer_score(&r, art_tags, illustration_count) + if pinned { PIN_BONUS } else { 0.0 };
 
         // Exactly ENGINE_COLUMNS (card_engine/card_engine/__init__.py lines
         // 40-84); columns the engine never reads (raw_card_blob, devotion,
@@ -1442,7 +1473,7 @@ mod tests {
                     d
                 },
             ],
-            &TagData::default(),
+    &TagData::default()
         )
         .collect();
 
@@ -1454,6 +1485,43 @@ mod tests {
         );
         // And by exactly the weight, so a change to it is a deliberate edit here too.
         assert_eq!(base_score - ext_score, 6.0);
+    }
+
+    /// Scryfall's label pins its printing as the card's representative, unconditionally.
+    ///
+    /// Unconditional is the point on this port: it exists to answer like Scryfall, so where
+    /// Scryfall named a representative that answer wins outright — including where its pick is
+    /// licensed-crossover art that upstream's `art_style` component demotes. Upstream keeps that
+    /// veto; see PIN_BONUS.
+    #[test]
+    fn a_scryfall_label_pins_its_printing() {
+        let mk = |id: &str| {
+            let mut c = minimal_card("Pinme");
+            c["id"] = json!(id);
+            c
+        };
+        const ID_A: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+        const ID_B: &str = "aaaaaaaa-0000-0000-0000-000000000002";
+        let drafts = || vec![transform(&mk(ID_A)).unwrap().unwrap(), transform(&mk(ID_B)).unwrap().unwrap()];
+        let score_of = |rows: &[Value], id: &str| {
+            rows.iter().find(|r| r["scryfall_id"] == json!(id)).expect("row present")["prefer_score"]
+                .as_f64()
+                .unwrap()
+        };
+
+        // Labelled printing wins by the pin, not by a component margin.
+        let mut tagged = TagData::default();
+        tagged.labels.insert(ID_B.to_string());
+        let rows: Vec<Value> = finalize(drafts(), &tagged).collect();
+        assert!(
+            score_of(&rows, ID_B) - score_of(&rows, ID_A) > 900.0,
+            "the labelled printing must be pinned above every ordinary score",
+        );
+
+        // No labels: scores exactly as before. This is what keeps the second bulk file an
+        // OPTIONAL input — an import that cannot fetch it still produces a correct store.
+        let rows: Vec<Value> = finalize(drafts(), &TagData::default()).collect();
+        assert!(score_of(&rows, ID_A) < 900.0 && score_of(&rows, ID_B) < 900.0, "no label, no pin");
     }
 
     #[test]
@@ -1526,7 +1594,7 @@ mod tests {
         // 14: prefer drops by exactly 14 versus the untagged run.
         let untagged: Vec<Value> = finalize(
             vec![transform(&fixture("llanowar_elves")).unwrap().unwrap()],
-            &TagData::default(),
+            &TagData::default()
         )
         .collect();
         let diff = untagged[0]["prefer_score"].as_f64().unwrap() - rows[0]["prefer_score"].as_f64().unwrap();

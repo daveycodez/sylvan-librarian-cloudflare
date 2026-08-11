@@ -35,6 +35,7 @@ interface ImportExports {
 	tags_restore(ptr: number, len: number): bigint;
 	agg_drafts(ptr: number, len: number): bigint;
 	agg_finish(): bigint;
+	labels_add_lines(ptr: number, len: number): bigint;
 	finalize_begin(): bigint;
 	finalize_drafts(ptr: number, len: number): bigint;
 	finalize_end(): bigint;
@@ -194,6 +195,16 @@ export class ImportWasm {
 		const rc = this.ex.tags_finish(kind);
 		if (rc < 0n) throw new Error("wasm-import tags_finish failed");
 		return rc;
+	}
+
+	/**
+	 * Feed `oracle_cards` JSONL; wasm keeps each line's `id` as a representative label.
+	 *
+	 * Lands in the same `TagData` the tags phase builds, so it rides the existing
+	 * export/restore across DO evictions instead of needing its own continuity.
+	 */
+	labelsAddLines(lines: string): bigint {
+		return this.sendBytes(encoder.encode(lines), (p, l) => this.ex.labels_add_lines(p, l), "labels_add_lines");
 	}
 
 	tagsExport(): void {

@@ -166,7 +166,11 @@ const PARSE_COVERAGE_THRESHOLD = 0.8;
 
 /** Overridable for tests and self-hosted mirrors (SCRYFALL_BULK_URL var). */
 const BULK_DATA_URL = "https://api.scryfall.com/bulk-data";
-const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags"] as const;
+// `oracle_cards` is one card object per oracle_id, and that object IS Scryfall's chosen
+// representative printing — it pins ours (see transform.rs PIN_BONUS). ~24MB against
+// default_cards' ~450MB. Last in the list so the phase chain reaches it after the dumps the store
+// cannot be built without: a failure here should cost the pin, not the import.
+const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags", "oracle_cards"] as const;
 type DumpKind = (typeof DUMP_KINDS)[number];
 
 type Phase =
@@ -933,6 +937,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const mapped = wasm.tagsFinish(code);
 			console.log(`Tags ${kind}: ${mapped} ids mapped`);
 		}
+		// Representative labels, into the SAME TagData the tag dumps just filled — so the export
+		// below carries them across DO evictions with no second persistence path to drift.
+		// Non-fatal by construction: a staged file that is missing or unreadable yields zero
+		// labels, and zero labels means every row scores exactly as it did before the pin existed.
+		let labelBatch: string[] = [];
+		let labelCount = 0n;
+		for await (const line of this.stagedLines("oracle_cards")) {
+			if (line.trim().length === 0) continue;
+			labelBatch.push(line);
+			if (labelBatch.length >= LINES_PER_CALL) {
+				labelCount += wasm.labelsAddLines(labelBatch.join("\n"));
+				labelBatch = [];
+			}
+		}
+		if (labelBatch.length > 0) labelCount += wasm.labelsAddLines(labelBatch.join("\n"));
+		console.log(`Representative labels: ${labelCount}`);
+
 		const tagBlobs: Uint8Array[] = [];
 		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
 		wasm.tagsExport();

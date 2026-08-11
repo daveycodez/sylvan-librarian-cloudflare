@@ -144,8 +144,36 @@ export const MANIFEST_KEY = "store:manifest";
  *       this bump is load-bearing — nothing in the header can see that every
  *       card's score moved, so without it store-age.ts would keep serving a
  *       store whose representatives were chosen by the old weight.
+ *   9 — the printing Scryfall's `oracle_cards` dump names as a card's
+ *       representative is now PINNED as ours (+1000 to prefer_score; see
+ *       transform.rs PIN_BONUS). That dump is one card object per oracle_id and
+ *       that object IS Scryfall's chosen printing, so it is ~38k free external
+ *       labels rather than a heuristic.
+ *
+ *       Representative agreement with Scryfall goes 73.9% -> 96.6% (measured on
+ *       the rebuild, 30,658 of 31,724). The ceiling is the ~3.4% of labels
+ *       naming a printing this corpus does not import (format-legal only, no
+ *       memorabilia). prefer_score still ranks everything beneath the pin,
+ *       which is what those cards, the per-artwork-group representatives
+ *       `unique=artwork` needs, and every filtered query fall back on.
+ *
+ *       DELIBERATELY UNCONDITIONAL, unlike the version proposed upstream: on
+ *       213 cards Scryfall's pick is licensed-crossover art that upstream's
+ *       `art_style` component demotes on purpose. Upstream optimises "the
+ *       version that looks like Magic"; this port optimises "what Scryfall
+ *       would have said", so here the label wins outright.
+ *
+ *       Both import paths carry it: the native builder fetches the dump
+ *       directly, and the Durable Object import stages it as a fourth
+ *       DUMP_KIND and feeds it into the same TagData the tag dumps fill — which
+ *       is what gives it export/restore continuity across DO evictions without
+ *       a second persistence path that could drift.
+ *
+ *       NO format change: prefer_score is a stored VALUE. Which is exactly why
+ *       this bump is load-bearing — nothing in the header can see the scores
+ *       moved, so without it the nightly would keep serving unpinned rows.
  */
-export const STORE_CONTENT_GENERATION = 8;
+export const STORE_CONTENT_GENERATION = 9;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

@@ -44,8 +44,31 @@ fn run_import(out_dir: &std::path::Path) -> Result<(), String> {
         }
     }
 
+    // Scryfall's own representative choice, used to PIN ours. Deliberately non-fatal: this is an
+    // optional input, and an import that cannot reach it should still produce a store scored the
+    // way it always was rather than no store at all.
+    eprintln!("downloading representative labels...");
+    let mut labels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    match client.stream(bulk::ORACLE_CARDS) {
+        Ok(iter) => {
+            for card in iter {
+                match card {
+                    Ok(c) => {
+                        if let Some(id) = c.get("id").and_then(|v| v.as_str()) {
+                            labels.insert(id.to_string());
+                        }
+                    }
+                    Err(e) => eprintln!("  warning: oracle_cards read: {e}"),
+                }
+            }
+            eprintln!("  {} representative labels", labels.len());
+        }
+        Err(e) => eprintln!("  warning: no representative labels ({e}); scoring without the pin"),
+    }
+
     eprintln!("downloading tags...");
-    let tag_data = tags::fetch_tag_data(&client).map_err(|e| format!("tags: {e}"))?;
+    let mut tag_data = tags::fetch_tag_data(&client).map_err(|e| format!("tags: {e}"))?;
+    tag_data.labels = labels;
 
     eprintln!("computing scores and finalizing rows...");
     let rows = transform::finalize(drafts, &tag_data);

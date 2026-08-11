@@ -325,6 +325,36 @@ pub extern "C" fn tags_finish(kind: u32) -> i64 {
     })
 }
 
+/// Feed `oracle_cards` JSONL lines; keep each line's `id` as a representative label.
+///
+/// Lands in `TagData.labels` rather than its own state so it inherits the export/restore the tags
+/// already have — the import is alarm-chained and the wasm is re-instantiated between phases, so a
+/// second persistence path here would be a second thing that can drift from it.
+///
+/// Junk lines are skipped rather than fatal, same posture as the bulk stream: labels are an
+/// OPTIONAL input, and an import that cannot read them must still produce a correctly scored
+/// store rather than no store.
+#[unsafe(no_mangle)]
+pub extern "C" fn labels_add_lines(ptr: *mut u8, len: usize) -> i64 {
+    let buf = take_buf(ptr, len);
+    let mut added = 0i64;
+    with_state(|s| {
+        for line in buf.split(|&b| b == b'\n') {
+            let trimmed = trim_ascii(line);
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_slice::<Value>(trimmed) else { continue };
+            if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                if s.tags.labels.insert(id.to_string()) {
+                    added += 1;
+                }
+            }
+        }
+    });
+    added
+}
+
 /// Serialize the accumulated TagData for host-side persistence (survives DO
 /// eviction between the tags phase and finalize).
 #[unsafe(no_mangle)]
@@ -534,7 +564,12 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
                 .copied()
                 .unwrap_or(0);
             let cubecobra_score = s.agg.cubecobra.get(&draft.card_name).copied();
-            let row = finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score);
+            // Same source of truth as the native builder: `TagData.labels`, which the tags
+            // export/restore already carries across DO evictions. Unconditional, matching
+            // transform.rs's PIN_BONUS doc — this port answers like Scryfall.
+            let pinned = s.tags.labels.contains(&draft.scryfall_id);
+            let row =
+                finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned);
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");
             match builder.add_card(&row) {

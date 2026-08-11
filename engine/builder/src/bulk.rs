@@ -37,6 +37,10 @@ use serde_json::Value;
 
 /// Bulk data types this pipeline consumes (subset of upstream's `BulkDataKey`).
 pub const DEFAULT_CARDS: &str = "default_cards";
+/// One card object per oracle_id, and that object IS Scryfall's chosen representative printing —
+/// which is what pins ours. ~24MB compressed against default_cards' ~450MB, so a second pass over
+/// the listing is cheap. Optional: a fetch failure degrades to "no labels", not to a failed import.
+pub const ORACLE_CARDS: &str = "oracle_cards";
 pub const ORACLE_TAGS: &str = "oracle_tags";
 pub const ART_TAGS: &str = "art_tags";
 

@@ -64,6 +64,14 @@ pub enum TagKind {
 /// engine/wasm-import); the private lookup index is rebuilt on demand.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TagData {
+    /// scryfall_ids Scryfall's `oracle_cards` dump names as a card's representative printing.
+    ///
+    /// Not a tag, and it rides here for one concrete reason: `TagData` is what the Durable Object
+    /// import exports and restores across evictions (`tags_export`/`tags_restore`), so carrying the
+    /// labels inside it gives them that continuity for free instead of a second, parallel
+    /// persistence path that could drift from it. `#[serde(default)]` on the struct means a blob
+    /// written before this field restores as "no labels", which scores exactly as it always did.
+    pub labels: std::collections::HashSet<String>,
     /// Shared slug table; the maps' values index into it.
     pub slugs: Vec<String>,
     /// oracle_id → slug indices (incl. ancestors) for `card_oracle_tags`.
