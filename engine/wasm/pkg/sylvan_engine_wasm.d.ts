@@ -130,15 +130,20 @@ export function printings_of_oracle_id(oracle_id: string, fields_json: string): 
 export function query(filter_tree_json: string, opts_json: string): string;
 
 /**
- * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>`.
+ * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>` IN BYTES.
  *
  * For the caller that wants the rows ENCODED rather than as objects — which is /search, whose
  * whole path was `wasm.query` -> `JSON.parse` -> `JSON.stringify`, producing the same bytes it
- * started with. See `QueryOutput::into_total_and_rows_json`. `query` is kept for the callers that
- * genuinely need the rows as values (the columnar shape, and the card-object routes until those
- * build their objects here too).
+ * started with. See `QueryOutput::into_total_and_rows_bytes`. `query` is kept for the callers
+ * that genuinely need the rows as values (the columnar shape, and the card-object routes until
+ * those build their objects here too).
+ *
+ * Returns `Vec<u8>`, so wasm-bindgen hands JS a `Uint8Array` by copying the linear-memory slice.
+ * A `String` return would instead `TextDecoder.decode` it into a UTF-16 JS string, which the
+ * Durable Object RPC would UTF-8 encode straight back on the way out — two full passes over the
+ * payload, both charged to CPU budgets, to arrive at the bytes written here.
  */
-export function query_rows(filter_tree_json: string, opts_json: string): string;
+export function query_rows(filter_tree_json: string, opts_json: string): Uint8Array;
 
 /**
  * `n` randomly sampled oracle cards, each as its default-preferred printing —

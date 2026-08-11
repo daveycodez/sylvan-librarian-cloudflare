@@ -6,7 +6,8 @@
 // loud 500 and an empty/unloaded store is an EngineUnavailableError (dispatch
 // answers 503) — never a silent empty result.
 
-import type { Engine, EngineSearchOptions } from "../engine/types";
+import { encodeUtf8, jsonBytesResponse } from "../engine/bytes";
+import type { Engine, EngineSearchOptions, EngineSerializedResult } from "../engine/types";
 import { EngineUnavailableError } from "../engine/types";
 import type { DirectiveFound, FilterValue } from "../parser";
 import { canonicalStringify } from "../parser";
@@ -21,7 +22,7 @@ import {
 	UNIQUE_ON,
 } from "./enums";
 import { explainWireTree } from "./explanation";
-import { httpError, jsonResponseText, NO_STORE_HEADER, searchCacheHeader } from "./http";
+import { httpError, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
 import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from "./param-binding";
 import { loadParser } from "./parser-bridge";
@@ -357,17 +358,26 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 }
 
 /**
- * The same search, returning the envelope as JSON TEXT.
+ * The same search, returning the envelope as UTF-8 BYTES.
  *
  * The engine hands back `cards` already encoded in the requested shape, and it
  * splices in here without ever being parsed: `cards` is the envelope's first
  * key upstream, so the bytes are identical to JSON.stringify({cards, ...rest})
  * — one encode, done in the Durable Object, where CPU is not metered against
  * the free plan's 10ms per request.
+ *
+ * Bytes rather than a string, because a string here would undo that. The rows
+ * arrive as bytes; interpolating them into a template literal would decode the
+ * whole payload to UTF-16, and building the Response would encode it back. Two
+ * passes over a payload that can be a megabyte, both on the metered side.
  */
-export async function runSearchJson(ctx: RouteContext, opts: RunSearchOptions, shape: ResponseShape): Promise<string> {
+export async function runSearchJson(
+	ctx: RouteContext,
+	opts: RunSearchOptions,
+	shape: ResponseShape,
+): Promise<Uint8Array[]> {
 	const prep = await prepareSearch(ctx, opts);
-	let result: { totalCards: number; cardsJson: string };
+	let result: EngineSerializedResult;
 	try {
 		result = await prep.timer.time("engine_query", () => prep.engine.searchSerialized(prep.engineOpts, shape));
 	} catch (err) {
@@ -376,7 +386,10 @@ export async function runSearchJson(ctx: RouteContext, opts: RunSearchOptions, s
 	// Upstream's engine_collect span materialized the row list; nothing is
 	// materialized here, but the span still has to appear in the timings tree.
 	prep.timer.time("engine_collect", () => {});
-	return `{"cards":${result.cardsJson},${JSON.stringify(metadataFor(prep, result.totalCards)).slice(1)}`;
+	// The metadata is built AFTER the query, so its timings tree includes the
+	// spans above — which is why this cannot be encoded before the payload.
+	const tail = JSON.stringify(metadataFor(prep, result.totalCards)).slice(1);
+	return [encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,${tail}`)];
 }
 
 // Keyword parameters of search(), in signature order (binding reports the
@@ -419,7 +432,7 @@ export async function searchHandler(
 			},
 			bound.shape as ResponseShape,
 		);
-		return jsonResponseText(body, cache);
+		return jsonBytesResponse(body, cache);
 	} catch (err) {
 		if (err instanceof SearchBadRequest) {
 			return httpError(400, err.title, err.description, cache);
@@ -455,5 +468,8 @@ export async function randomSearchHandler(
 		[...DEFAULT_RESULT_FIELDS],
 		bound.shape as ResponseShape,
 	);
-	return jsonResponseText(`{"cards":${result.cardsJson},"total_cards":${result.totalCards}}`, NO_STORE_HEADER);
+	return jsonBytesResponse(
+		[encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,"total_cards":${result.totalCards}}`)],
+		NO_STORE_HEADER,
+	);
 }

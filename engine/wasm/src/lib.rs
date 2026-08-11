@@ -229,21 +229,26 @@ pub fn query(filter_tree_json: &str, opts_json: &str) -> Result<String, JsError>
     })
 }
 
-/// The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>`.
+/// The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>` IN BYTES.
 ///
 /// For the caller that wants the rows ENCODED rather than as objects — which is /search, whose
 /// whole path was `wasm.query` -> `JSON.parse` -> `JSON.stringify`, producing the same bytes it
-/// started with. See `QueryOutput::into_total_and_rows_json`. `query` is kept for the callers that
-/// genuinely need the rows as values (the columnar shape, and the card-object routes until those
-/// build their objects here too).
+/// started with. See `QueryOutput::into_total_and_rows_bytes`. `query` is kept for the callers
+/// that genuinely need the rows as values (the columnar shape, and the card-object routes until
+/// those build their objects here too).
+///
+/// Returns `Vec<u8>`, so wasm-bindgen hands JS a `Uint8Array` by copying the linear-memory slice.
+/// A `String` return would instead `TextDecoder.decode` it into a UTF-16 JS string, which the
+/// Durable Object RPC would UTF-8 encode straight back on the way out — two full passes over the
+/// payload, both charged to CPU budgets, to arrive at the bytes written here.
 #[wasm_bindgen]
-pub fn query_rows(filter_tree_json: &str, opts_json: &str) -> Result<String, JsError> {
+pub fn query_rows(filter_tree_json: &str, opts_json: &str) -> Result<Vec<u8>, JsError> {
     let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
     with_store(|store| {
         let out = store.query(filter_tree_json, &opts).map_err(js_err)?;
         // Not `js_err`: this is a serde_json::Error, not an EngineError. It cannot actually
         // happen -- serializing Values into a Vec has no fallible sink -- but the type is real.
-        out.into_total_and_rows_json().map_err(|e| JsError::new(&e.to_string()))
+        out.into_total_and_rows_bytes().map_err(|e| JsError::new(&e.to_string()))
     })
 }
 

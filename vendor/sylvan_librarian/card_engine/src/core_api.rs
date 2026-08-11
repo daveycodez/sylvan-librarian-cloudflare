@@ -1688,7 +1688,8 @@ impl QueryOutput {
         Value::Object(m)
     }
 
-    /// `<total> <row count>\n<rows as a JSON array>` — the same answer, without the round trip.
+    /// `<total> <row count>\n<rows as a JSON array>`, as bytes — the same answer, without the
+    /// round trip and without ever becoming a JS string.
     ///
     /// LOCAL ADDITION (Cloudflare port). `to_json` above exists to be re-serialized and then
     /// PARSED BACK by the Durable Object, which reads `total` and hands `rows` on to be encoded
@@ -1710,18 +1711,22 @@ impl QueryOutput {
     /// an encoded array, which is exactly the walk over the whole payload this avoids.
     ///
     /// A newline separator rather than JSON because the point is that the reader does not parse:
-    /// the prefix is `slice(0, indexOf("\n"))` and the rows are the rest, both O(1) in V8's sliced
-    /// strings. Neither a newline nor a space can appear in the prefix, and serde_json escapes any
-    /// newline inside the rows.
-    pub fn into_total_and_rows_json(self) -> Result<String, serde_json::Error> {
+    /// the prefix ends at the first `\n` and the rows are the rest. Neither a newline nor a space
+    /// can appear in the prefix, and serde_json escapes any newline inside the rows.
+    ///
+    /// BYTES, not a `String`, and that is the whole point on this path. A `String` return would
+    /// make wasm-bindgen `TextDecoder.decode` the payload into a UTF-16 JS string, and the
+    /// Durable Object RPC would then UTF-8 encode it straight back — two full passes over a
+    /// megabyte to hand back the bytes written here. The isolate's metered CPU pays for both.
+    /// These bytes reach the response body as they are.
+    pub fn into_total_and_rows_bytes(self) -> Result<Vec<u8>, serde_json::Error> {
         // Serialized straight into the prefixed buffer: `to_string` then concatenation would copy
         // the whole payload a second time, which is the cost this method exists to avoid.
         let mut buf = Vec::with_capacity(self.rows.len() * 512 + 24);
         buf.extend_from_slice(format!("{} {}", self.total, self.rows.len()).as_bytes());
         buf.push(b'\n');
         serde_json::to_writer(&mut buf, &self.rows)?;
-        // serde_json emits UTF-8 and the prefix is ASCII, so this validates rather than copies.
-        Ok(String::from_utf8(buf).expect("serde_json emits valid UTF-8"))
+        Ok(buf)
     }
 }
 
@@ -2257,7 +2262,8 @@ mod tests {
         let wrapped = out.to_json();
         let want_rows = wrapped.get("rows").expect("rows key").to_string();
 
-        let answer = out.into_total_and_rows_json().expect("serialize");
+        let bytes = out.into_total_and_rows_bytes().expect("serialize");
+        let answer = String::from_utf8(bytes).expect("valid UTF-8");
         let newline = answer.find('\n').expect("prefix is newline-terminated");
         let prefix: Vec<&str> = answer[..newline].split(' ').collect();
 
@@ -2272,7 +2278,8 @@ mod tests {
     /// An empty page still carries a well-formed prefix and an empty array, not "" or "null".
     #[test]
     fn total_and_rows_json_handles_an_empty_page() {
-        let answer = QueryOutput { total: 0, rows: Vec::new() }.into_total_and_rows_json().expect("serialize");
+        let bytes = QueryOutput { total: 0, rows: Vec::new() }.into_total_and_rows_bytes().expect("serialize");
+        let answer = String::from_utf8(bytes).expect("valid UTF-8");
         assert_eq!(answer, "0 0\n[]");
     }
 

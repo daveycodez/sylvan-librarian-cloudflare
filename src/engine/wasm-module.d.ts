@@ -68,13 +68,14 @@ declare module "sylvan-engine-wasm" {
 	 */
 	export function query(filterTreeJson: string, optsJson: string): string;
 	/**
-	 * The same query, answered as `<total> <rowCount>\n<rows JSON array>`.
+	 * The same query, answered as `<total> <rowCount>\n<rows JSON array>` in UTF-8 BYTES.
 	 *
 	 * For callers that want the rows ENCODED rather than as values — which is /search, whose whole
 	 * path was query → JSON.parse → JSON.stringify, rebuilding the bytes it was handed. The two
-	 * counts ride in the prefix so reaching them costs no parse either.
+	 * counts ride in the prefix so reaching them costs no parse either, and the payload stays
+	 * bytes to the response body rather than being decoded to UTF-16 and encoded back.
 	 */
-	export function query_rows(filterTreeJson: string, optsJson: string): string;
+	export function query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
 	/** {"card_types": {...}, "card_keywords": {...}} JSON. */
 	export function catalog(): string;
 	/** n sampled preferred printings; deterministic per seed. JSON array. */

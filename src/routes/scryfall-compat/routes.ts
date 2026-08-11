@@ -21,6 +21,7 @@
 // assembles ~70 keys per card, up to 175 of them for a page, and the DO meters against 30s where
 // this isolate meters against 10ms.
 
+import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
 import type { Engine, EngineSerializedResult } from "../../engine/types";
 import { EngineUnavailableError } from "../../engine/types";
 import type { FilterValue } from "../../parser";
@@ -161,7 +162,7 @@ function scryfallJson(payload: Record<string, unknown>, pretty: boolean, cache: 
  * cards in the Durable Object is lost if the isolate parses them back into objects to re-encode.
  */
 function scryfallListJson(
-	cardsJson: string,
+	cardsBytes: Uint8Array,
 	opts: { totalCards?: number; hasMore: boolean; nextPage?: string; warnings?: string[] },
 	pretty: boolean,
 	cache: Record<string, string>,
@@ -176,8 +177,15 @@ function scryfallListJson(
 	const marker = `${key}[]`;
 	const at = body.lastIndexOf(marker);
 	if (at < 0) throw new Error("card list envelope did not end with an empty data array");
-	const spliced = `${body.slice(0, at)}${key}${cardsJson}${body.slice(at + marker.length)}`;
-	return new Response(spliced, { status: 200, headers: { "content-type": JSON_CONTENT_TYPE, ...cache } });
+	// The envelope is a couple of hundred bytes and the cards can be 635KB, so only the envelope
+	// is encoded here; the payload is copied once, as bytes, into the buffer that becomes the
+	// response. Interpolating it into a template literal instead would decode the whole thing to
+	// UTF-16 and encode it back — the two passes this path exists to avoid.
+	const head = encodeUtf8(`${body.slice(0, at)}${key}`);
+	const tail = encodeUtf8(body.slice(at + marker.length));
+	// content-type explicitly: this surface answers `; charset=utf-8`, which Scryfall sends and
+	// tests pin, where the shared helper's default is the bare type /search uses.
+	return jsonBytesResponse([head, cardsBytes, tail], { "content-type": JSON_CONTENT_TYPE, ...cache });
 }
 
 function textResponse(body: string, contentType: string, cache: Record<string, string>): Response {
@@ -314,7 +322,8 @@ export async function cardsSearchHandler(
 		return engineFailure(err, pretty);
 	}
 
-	if (result.cardsJson === "[]") {
+	// rowCount rather than inspecting the encoded bytes for "[]" — the engine counted the rows.
+	if (result.rowCount === 0) {
 		return scryfallJson(errorObject("not_found", 404, NO_MATCH_DETAILS, warnings), pretty, CARDS_CACHE);
 	}
 
@@ -338,7 +347,7 @@ export async function cardsSearchHandler(
 		: undefined;
 
 	return scryfallListJson(
-		result.cardsJson,
+		result.cardsBytes,
 		{ totalCards: result.totalCards, hasMore, nextPage, warnings },
 		pretty,
 		CARDS_CACHE,
@@ -513,7 +522,10 @@ export async function cardsRandomHandler(
 			},
 			baseUrl,
 		);
-		const cards = JSON.parse(drawn.cardsJson) as Record<string, unknown>[];
+		// The one place this surface genuinely needs the card as an object: /cards/random reshapes a
+		// single card into text or an image redirect. One card, so decoding it costs nothing that
+		// matters -- unlike a 175-card page, which is why the list routes never do this.
+		const cards = JSON.parse(new TextDecoder().decode(drawn.cardsBytes)) as Record<string, unknown>[];
 		const card = cards[0];
 		if (!card) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, RANDOM_CACHE);
 		// RANDOM_CACHE carries Scryfall's `no-cache` -- a cached random card is one card forever,
@@ -759,10 +771,10 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
-	if (result.cardsJson === "[]") return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, CARDS_CACHE);
+	if (result.rowCount === 0) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, CARDS_CACHE);
 	const hasMore = (page - 1) * PAGE_SIZE + result.rowCount < result.totalCards;
 	return scryfallListJson(
-		result.cardsJson,
+		result.cardsBytes,
 		{
 			totalCards: result.totalCards,
 			hasMore,

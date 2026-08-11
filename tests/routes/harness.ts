@@ -4,6 +4,7 @@
 // imported here: it pulls in the engine store and import coordinator, which
 // are wasm/DO-backed). No network, no wasm.
 
+import { encodeUtf8 } from "../../src/engine/bytes";
 import { serializeCards } from "../../src/engine/columnar";
 import type {
 	Engine,
@@ -70,7 +71,7 @@ export class FakeEngine implements Engine {
 	// API bytes and one asserting on the page's data are checking one source.
 	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
 		const { totalCards, cards } = await this.search(opts);
-		return { totalCards, cardsJson: serializeCards(cards, shape), rowCount: cards.length };
+		return { totalCards, cardsBytes: encodeUtf8(serializeCards(cards, shape)), rowCount: cards.length };
 	}
 
 	async commonCardTypes(): Promise<Record<string, number>> {
@@ -96,7 +97,7 @@ export class FakeEngine implements Engine {
 		shape: ResultShape,
 	): Promise<EngineSerializedResult> {
 		const rows = await this.samplePreferred(numCards, fields);
-		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape), rowCount: rows.length };
+		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
 	}
 
 	async size(): Promise<number> {
@@ -125,7 +126,7 @@ export class FakeEngine implements Engine {
 		if (this.searchError) throw this.searchError;
 		this.scryfallBaseUrl = baseUrl;
 		const cards = this.cards.slice(0, opts.limit).map((row) => toScryfallCard(row, baseUrl));
-		return { totalCards: this.totalCards, cardsJson: JSON.stringify(cards), rowCount: cards.length };
+		return { totalCards: this.totalCards, cardsBytes: encodeUtf8(JSON.stringify(cards)), rowCount: cards.length };
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

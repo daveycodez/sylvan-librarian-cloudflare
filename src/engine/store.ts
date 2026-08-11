@@ -18,6 +18,7 @@
 
 import * as wasm from "sylvan-engine-wasm";
 import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/scryfall-compat/objects";
+import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
 import { kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
 import type {
@@ -129,13 +130,19 @@ class WasmEngine implements Engine {
 	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
 		if (shape === "columnar") {
 			const result = this.query(opts);
-			return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape), rowCount: result.rows.length };
+			return {
+				totalCards: result.total,
+				cardsBytes: encodeUtf8(serializeCards(result.rows, shape)),
+				rowCount: result.rows.length,
+			};
 		}
 		const answer = wasm.query_rows(opts.filterTreeJson, this.optsJson(opts));
-		// `<total> <rowCount>\n<rows>`; both slices are O(1) in V8, which is the point.
-		const split = answer.indexOf("\n");
-		const [total = "0", rows = "0"] = answer.slice(0, split).split(" ");
-		return { totalCards: Number(total), cardsJson: answer.slice(split + 1), rowCount: Number(rows) };
+		// `<total> <rowCount>\n<rows>`. Only the prefix is decoded -- a handful of ASCII digits --
+		// and the rows stay bytes all the way to the response body. `subarray` is a view, not a
+		// copy, so nothing here is proportional to the payload.
+		const split = answer.indexOf(NEWLINE);
+		const [total = "0", rows = "0"] = new TextDecoder().decode(answer.subarray(0, split)).split(" ");
+		return { totalCards: Number(total), cardsBytes: answer.subarray(split + 1), rowCount: Number(rows) };
 	}
 
 	/**
@@ -183,7 +190,7 @@ class WasmEngine implements Engine {
 		shape: ResultShape,
 	): Promise<EngineSerializedResult> {
 		const rows = await this.samplePreferred(numCards, fields);
-		return { totalCards: rows.length, cardsJson: serializeCards(rows, shape), rowCount: rows.length };
+		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
 	}
 
 	async size(): Promise<number> {
@@ -209,7 +216,11 @@ class WasmEngine implements Engine {
 		// by walking the whole string.
 		return {
 			totalCards: result.total,
-			cardsJson: JSON.stringify(this.toCards(result.rows, baseUrl)),
+			// Still built and encoded in JS, unlike searchSerialized above: the card objects are
+			// assembled here rather than in the engine, so there is a JS string to encode either
+			// way. Encoding it HERE still pays off, because it is the isolate that would otherwise
+			// do it, against the metered budget.
+			cardsBytes: encodeUtf8(JSON.stringify(this.toCards(result.rows, baseUrl))),
 			rowCount: result.rows.length,
 		};
 	}

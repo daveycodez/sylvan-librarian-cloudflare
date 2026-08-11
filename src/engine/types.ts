@@ -47,8 +47,18 @@ export type ResultShape = "rows" | "columnar";
  */
 export interface EngineSerializedResult {
 	totalCards: number;
-	/** The envelope's `cards` value, already JSON-encoded in the asked-for shape. */
-	cardsJson: string;
+	/**
+	 * The envelope's `cards` value, already JSON-encoded in the asked-for shape — as UTF-8 BYTES.
+	 *
+	 * Bytes rather than a string because every hop between the engine and the socket wants bytes,
+	 * and a JS string forces two conversions to get back to them: wasm-bindgen decodes the
+	 * engine's output into UTF-16, and the RPC re-encodes it to UTF-8 on the way to the isolate.
+	 * The isolate then pays a third pass flattening and encoding its response body. Measured, the
+	 * Durable Object's CPU is very nearly a pure function of payload size (~15us/KB after the
+	 * round trip came out), so passes over the payload are the cost -- and the isolate's share of
+	 * them is charged against the free plan's 10ms per request.
+	 */
+	cardsBytes: Uint8Array;
 	/**
 	 * How many cards `cardsJson` actually holds — the PAGE's count, against
 	 * `totalCards`' unpaginated one.

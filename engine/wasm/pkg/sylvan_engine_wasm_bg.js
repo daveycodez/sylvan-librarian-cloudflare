@@ -449,38 +449,34 @@ export function query(filter_tree_json, opts_json) {
 }
 
 /**
- * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>`.
+ * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>` IN BYTES.
  *
  * For the caller that wants the rows ENCODED rather than as objects — which is /search, whose
  * whole path was `wasm.query` -> `JSON.parse` -> `JSON.stringify`, producing the same bytes it
- * started with. See `QueryOutput::into_total_and_rows_json`. `query` is kept for the callers that
- * genuinely need the rows as values (the columnar shape, and the card-object routes until those
- * build their objects here too).
+ * started with. See `QueryOutput::into_total_and_rows_bytes`. `query` is kept for the callers
+ * that genuinely need the rows as values (the columnar shape, and the card-object routes until
+ * those build their objects here too).
+ *
+ * Returns `Vec<u8>`, so wasm-bindgen hands JS a `Uint8Array` by copying the linear-memory slice.
+ * A `String` return would instead `TextDecoder.decode` it into a UTF-16 JS string, which the
+ * Durable Object RPC would UTF-8 encode straight back on the way out — two full passes over the
+ * payload, both charged to CPU budgets, to arrive at the bytes written here.
  * @param {string} filter_tree_json
  * @param {string} opts_json
- * @returns {string}
+ * @returns {Uint8Array}
  */
 export function query_rows(filter_tree_json, opts_json) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.query_rows(ptr0, len0, ptr1, len1);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
-        if (ret[3]) {
-            ptr3 = 0; len3 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.query_rows(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
     }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
 }
 
 /**
@@ -581,6 +577,11 @@ export function __wbindgen_init_externref_table() {
     table.set(offset + 2, true);
     table.set(offset + 3, false);
 }
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
