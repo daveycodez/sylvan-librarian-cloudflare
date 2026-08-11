@@ -67,6 +67,14 @@ declare module "sylvan-engine-wasm" {
 	 * Returns {"total": n, "rows": [...]} JSON.
 	 */
 	export function query(filterTreeJson: string, optsJson: string): string;
+	/**
+	 * The same query, answered as `<total> <rowCount>\n<rows JSON array>`.
+	 *
+	 * For callers that want the rows ENCODED rather than as values — which is /search, whose whole
+	 * path was query → JSON.parse → JSON.stringify, rebuilding the bytes it was handed. The two
+	 * counts ride in the prefix so reaching them costs no parse either.
+	 */
+	export function query_rows(filterTreeJson: string, optsJson: string): string;
 	/** {"card_types": {...}, "card_keywords": {...}} JSON. */
 	export function catalog(): string;
 	/** n sampled preferred printings; deterministic per seed. JSON array. */

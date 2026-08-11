@@ -130,6 +130,17 @@ export function printings_of_oracle_id(oracle_id: string, fields_json: string): 
 export function query(filter_tree_json: string, opts_json: string): string;
 
 /**
+ * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>`.
+ *
+ * For the caller that wants the rows ENCODED rather than as objects — which is /search, whose
+ * whole path was `wasm.query` -> `JSON.parse` -> `JSON.stringify`, producing the same bytes it
+ * started with. See `QueryOutput::into_total_and_rows_json`. `query` is kept for the callers that
+ * genuinely need the rows as values (the columnar shape, and the card-object routes until those
+ * build their objects here too).
+ */
+export function query_rows(filter_tree_json: string, opts_json: string): string;
+
+/**
  * `n` randomly sampled oracle cards, each as its default-preferred printing —
  * the engine behind /random_search. `seed` comes from the caller (JS
  * `crypto.getRandomValues` or per-request entropy): the sampling itself is

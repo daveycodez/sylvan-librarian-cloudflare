@@ -87,21 +87,24 @@ class WasmEngine implements Engine {
 		return this.compatOnce;
 	}
 
+	/** The engine's options object, shared by both query entry points. */
+	private optsJson(opts: EngineSearchOptions): string {
+		return JSON.stringify({
+			unique: opts.unique,
+			prefer: opts.prefer,
+			orderby: opts.orderby,
+			direction: opts.direction,
+			limit: opts.limit,
+			offset: opts.offset,
+			fields: opts.fields,
+		});
+	}
+
 	private query(opts: EngineSearchOptions): { total: number; rows: Record<string, unknown>[] } {
-		return JSON.parse(
-			wasm.query(
-				opts.filterTreeJson,
-				JSON.stringify({
-					unique: opts.unique,
-					prefer: opts.prefer,
-					orderby: opts.orderby,
-					direction: opts.direction,
-					limit: opts.limit,
-					offset: opts.offset,
-					fields: opts.fields,
-				}),
-			),
-		) as { total: number; rows: Record<string, unknown>[] };
+		return JSON.parse(wasm.query(opts.filterTreeJson, this.optsJson(opts))) as {
+			total: number;
+			rows: Record<string, unknown>[];
+		};
 	}
 
 	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
@@ -109,9 +112,30 @@ class WasmEngine implements Engine {
 		return { totalCards: result.total, cards: result.rows };
 	}
 
+	/**
+	 * The engine's own encoding of the rows, spliced rather than rebuilt.
+	 *
+	 * The `rows` shape used to go wasm -> `JSON.parse` -> `JSON.stringify`, which produced the
+	 * bytes it started with: the rows arrive already encoded, and `serializeCards(rows, "rows")`
+	 * is `JSON.stringify(rows)`. Measured against the live deployment, the Durable Object's CPU is
+	 * very nearly a pure function of payload size -- ~29us per KB across a 17x range, so a
+	 * megabyte-scale /search spent most of its 34ms handling the same bytes four times over.
+	 * `query_rows` hands them back once. Field selection already happened in the engine, so the
+	 * encoded array is exactly the answer.
+	 *
+	 * `columnar` still parses, because inverting rows into per-field arrays genuinely needs the
+	 * values -- and it is the shape almost nothing asks for.
+	 */
 	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		const result = this.query(opts);
-		return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape), rowCount: result.rows.length };
+		if (shape === "columnar") {
+			const result = this.query(opts);
+			return { totalCards: result.total, cardsJson: serializeCards(result.rows, shape), rowCount: result.rows.length };
+		}
+		const answer = wasm.query_rows(opts.filterTreeJson, this.optsJson(opts));
+		// `<total> <rowCount>\n<rows>`; both slices are O(1) in V8, which is the point.
+		const split = answer.indexOf("\n");
+		const [total = "0", rows = "0"] = answer.slice(0, split).split(" ");
+		return { totalCards: Number(total), cardsJson: answer.slice(split + 1), rowCount: Number(rows) };
 	}
 
 	/**

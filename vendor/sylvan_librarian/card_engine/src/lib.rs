@@ -14284,6 +14284,8 @@ mod card_engine {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod bench_card_object_build;
+#[cfg(test)]
 mod bench_mana;
 #[cfg(test)]
 mod bench_verify_cost;

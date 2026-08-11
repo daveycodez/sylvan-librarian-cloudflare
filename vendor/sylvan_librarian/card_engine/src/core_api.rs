@@ -1687,6 +1687,42 @@ impl QueryOutput {
         m.insert("rows".to_owned(), Value::Array(self.rows.clone()));
         Value::Object(m)
     }
+
+    /// `<total> <row count>\n<rows as a JSON array>` — the same answer, without the round trip.
+    ///
+    /// LOCAL ADDITION (Cloudflare port). `to_json` above exists to be re-serialized and then
+    /// PARSED BACK by the Durable Object, which reads `total` and hands `rows` on to be encoded
+    /// again — so the same bytes are built, decoded, parsed and re-encoded before anything looks
+    /// at them. Measured against the live deployment, the DO's CPU is very nearly a pure function
+    /// of payload size (~29us per KB across a 17x range, 67KB->1134KB), so those extra passes are
+    /// most of what a large result costs; the row construction underneath is ~16us per CARD.
+    ///
+    /// This hands back the rows already encoded, so the DO can splice the string into its envelope
+    /// and never materialize a card. Two costs go away rather than one:
+    ///
+    ///   - the `self.rows.clone()` in `to_json`, a deep clone of the whole tree, which that method
+    ///     needs only because it borrows and its one caller drops `self` immediately after;
+    ///   - the wrapper object, so the two numbers ride as a decimal prefix instead of forcing the
+    ///     reader to parse an object to reach them.
+    ///
+    /// The row count is in the prefix because the caller needs it (`has_more` is derived from it)
+    /// and it is `rows.len()` here — where recovering it downstream would mean counting objects in
+    /// an encoded array, which is exactly the walk over the whole payload this avoids.
+    ///
+    /// A newline separator rather than JSON because the point is that the reader does not parse:
+    /// the prefix is `slice(0, indexOf("\n"))` and the rows are the rest, both O(1) in V8's sliced
+    /// strings. Neither a newline nor a space can appear in the prefix, and serde_json escapes any
+    /// newline inside the rows.
+    pub fn into_total_and_rows_json(self) -> Result<String, serde_json::Error> {
+        // Serialized straight into the prefixed buffer: `to_string` then concatenation would copy
+        // the whole payload a second time, which is the cost this method exists to avoid.
+        let mut buf = Vec::with_capacity(self.rows.len() * 512 + 24);
+        buf.extend_from_slice(format!("{} {}", self.total, self.rows.len()).as_bytes());
+        buf.push(b'\n');
+        serde_json::to_writer(&mut buf, &self.rows)?;
+        // serde_json emits UTF-8 and the prefix is ASCII, so this validates rather than copies.
+        Ok(String::from_utf8(buf).expect("serde_json emits valid UTF-8"))
+    }
 }
 
 // ─── JSON result field selection (mirror of FIELD_TABLE) ─────────────────────
@@ -2199,6 +2235,45 @@ mod tests {
         assert_ne!(back.planeswalker_loyalty_text_id, NONE_STR);
         assert_ne!(back.color_indicator, 0);
         assert_eq!(front.color_indicator, 0);
+    }
+
+    /// `into_total_and_rows_json` must be the SAME ANSWER as the `to_json` path it replaces.
+    ///
+    /// The Durable Object splices its output into a response envelope without parsing it, so a
+    /// divergence here is not caught by anything downstream -- it ships as a malformed body. The
+    /// equivalence is asserted against `to_json`'s own `rows`, so the two cannot drift.
+    #[test]
+    fn total_and_rows_json_matches_the_wrapper_path() {
+        let rows = vec![
+            json!({"name": "Llanowar Elves", "cmc": 1.0, "colors": ["G"]}),
+            // The characters that would break a naive prefix scheme or a hand-rolled encoder:
+            // a newline and a quote inside a value, and non-ASCII that must not be escaped
+            // differently by the two paths.
+            json!({"name": "Æther \"Vial\"\nSecond line", "oracle_text": "Draw a card.\nThen discard."}),
+            json!({"name": "Jötun Grunt", "power": null}),
+        ];
+        let out = QueryOutput { total: 4242, rows: rows.clone() };
+
+        let wrapped = out.to_json();
+        let want_rows = wrapped.get("rows").expect("rows key").to_string();
+
+        let answer = out.into_total_and_rows_json().expect("serialize");
+        let newline = answer.find('\n').expect("prefix is newline-terminated");
+        let prefix: Vec<&str> = answer[..newline].split(' ').collect();
+
+        assert_eq!(prefix, ["4242", "3"], "prefix is `<total> <row count>`");
+        assert_eq!(&answer[newline + 1..], want_rows, "rows are byte-identical to the wrapper's");
+
+        // And the tail really is a JSON array, whatever the values contained.
+        let reparsed: Value = serde_json::from_str(&answer[newline + 1..]).expect("tail parses");
+        assert_eq!(reparsed, Value::Array(rows));
+    }
+
+    /// An empty page still carries a well-formed prefix and an empty array, not "" or "null".
+    #[test]
+    fn total_and_rows_json_handles_an_empty_page() {
+        let answer = QueryOutput { total: 0, rows: Vec::new() }.into_total_and_rows_json().expect("serialize");
+        assert_eq!(answer, "0 0\n[]");
     }
 
     /// A CardRow with every scalar at its zero value, for tests that care about one field.

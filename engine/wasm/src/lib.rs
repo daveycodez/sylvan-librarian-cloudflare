@@ -229,6 +229,24 @@ pub fn query(filter_tree_json: &str, opts_json: &str) -> Result<String, JsError>
     })
 }
 
+/// The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>`.
+///
+/// For the caller that wants the rows ENCODED rather than as objects — which is /search, whose
+/// whole path was `wasm.query` -> `JSON.parse` -> `JSON.stringify`, producing the same bytes it
+/// started with. See `QueryOutput::into_total_and_rows_json`. `query` is kept for the callers that
+/// genuinely need the rows as values (the columnar shape, and the card-object routes until those
+/// build their objects here too).
+#[wasm_bindgen]
+pub fn query_rows(filter_tree_json: &str, opts_json: &str) -> Result<String, JsError> {
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    with_store(|store| {
+        let out = store.query(filter_tree_json, &opts).map_err(js_err)?;
+        // Not `js_err`: this is a serde_json::Error, not an EngineError. It cannot actually
+        // happen -- serializing Values into a Vec has no fallible sink -- but the type is real.
+        out.into_total_and_rows_json().map_err(|e| JsError::new(&e.to_string()))
+    })
+}
+
 /// `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
 /// behind /get_catalog.
 #[wasm_bindgen]

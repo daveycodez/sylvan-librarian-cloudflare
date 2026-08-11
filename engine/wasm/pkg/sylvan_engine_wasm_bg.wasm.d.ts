@@ -11,6 +11,7 @@ export const compat_load_chunk: (a: number, b: number) => [number, number];
 export const finish_compat_load: () => [number, number];
 export const compat_loaded: () => number;
 export const query: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const query_rows: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const catalog: () => [number, number, number, number];
 export const store_version: () => number;
 export const random_search: (a: number, b: bigint, c: number, d: number) => [number, number, number, number];
