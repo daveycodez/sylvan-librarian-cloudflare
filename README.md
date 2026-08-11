@@ -218,8 +218,23 @@ The complete list of intentional differences:
   `application/javascript`) and cache lifetimes are set for this deployment in
   `public/_headers`. Parity is kept where it matters, on the query endpoints.
 - Postgres-only admin/import routes answer `501`. `get_pid` returns `0`.
-- `card_is_tags` carries only upstream's `BOOLEAN_IS_TAGS` — `is:reserved` and
-  `is:gamechanger`, which come off booleans the bulk cards already carry. The
+- **`set:` on a memorabilia set returns nothing.** Upstream #918 stops importing
+  `set_type: memorabilia` printings — World Championship decks, Collectors'
+  Edition, 30th Anniversary, the oversized promos, 99 sets in all — because
+  Scryfall hides them from every search that does not name their set, and
+  importing them made ordinary queries disagree: they supplied the *cheapest*
+  printing for 184 cards, which is exactly the printing a price ordering
+  returns. Scryfall does still serve them when you ask by name (`set:cei`
+  returns its Ancestral Recall); this port has nothing to serve. **No card is
+  lost** — 0 of 31,724 cards are printed only in memorabilia sets — so it
+  changes which printing represents a card, never whether the card is findable.
+  Filtering at query time instead would have been exact, and was measured and
+  rejected: a conjunct on every query breaks four of the six physical plans
+  (`PlanePopcountOrder`, `CardRangePopcount`, `PrintingRangeScan`, and
+  `all_match_known`'s constant-count arms), costing +59–115 µs per query.
+- `card_is_tags` carries only upstream's `BOOLEAN_IS_TAGS` — `is:reserved`,
+  `is:gamechanger` and `is:oversized`, which come off booleans the bulk cards
+  already carry. The
   `CUSTOM_IS_TAGS` need a per-tag Scryfall search sweep that upstream's
   *automated* import does not run either, so they are absent on both sides.
 - **Tag aliases resolve at query time, not at import.** Scryfall's tagger keeps

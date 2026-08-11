@@ -354,6 +354,11 @@ DEFAULT_RESULT_FIELDS: tuple[str, ...] = (
 BOOLEAN_IS_TAGS: dict[str, str] = {
     "reserved": "reserved",
     "gamechanger": "game_changer",
+    # Low cardinality -- memorabilia and the oversized promo sets, ~2.7% of printings -- so it
+    # does not carry the foil/promo/reprint concern above. It is also one of the filters that
+    # turns OFF default visibility (see _unhides_extras), which is only expressible at all once
+    # the tag exists.
+    "oversized": "oversized",
 }
 
 _SYNC_BOOLEAN_IS_TAGS_SQL = """

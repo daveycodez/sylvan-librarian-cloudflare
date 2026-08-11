@@ -100,8 +100,27 @@ export const MANIFEST_KEY = "store:manifest";
  *       time (every battle is a transform front), and a multi-face card's
  *       illustration_id is now its FRONT face's, which shifts prefer_score's
  *       artwork-set component and so which printing represents such a card.
+ *   6 — memorabilia printings are no longer imported, and `is:oversized` joins
+ *       the boolean-backed is: tags (upstream #918). Scryfall hides
+ *       `set_type: memorabilia` — World Championship decks, Collectors'
+ *       Edition, 30th Anniversary, the oversized promos, 99 sets — from any
+ *       search that does not name their set, and importing them made ordinary
+ *       queries disagree: they supplied the CHEAPEST printing for 184 cards,
+ *       which is exactly the printing a price ordering returns. 2,672 of
+ *       97,803 printings go away and the store SHRINKS; no card is lost (0 of
+ *       31,724 are printed only in memorabilia sets), so this changes which
+ *       printing represents a card, never whether the card is findable.
+ *
+ *       NO format change — the layout is untouched and a generation-5 store
+ *       still loads. That is what makes the rollout safe in either order, and
+ *       it is also why this bump is load-bearing on its own: nothing in the
+ *       header can see that the VALUES changed, so without it store-age.ts
+ *       would keep serving a store that still carries the memorabilia rows.
+ *
+ *       The deviation it buys: `set:cei` and its 98 siblings return nothing
+ *       here, where Scryfall returns them. See README's deviations list.
  */
-export const STORE_CONTENT_GENERATION = 5;
+export const STORE_CONTENT_GENERATION = 6;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

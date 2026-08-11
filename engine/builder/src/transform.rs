@@ -40,7 +40,12 @@ use crate::tags::TagData;
 /// `(card_is_tags key, raw blob key)`. Mirrors api_resource.BOOLEAN_IS_TAGS.
 /// foil/promo/reprint are deliberately NOT here yet (higher cardinality,
 /// upstream wants a memory check first).
-const BOOLEAN_IS_TAGS: &[(&str, &str)] = &[("reserved", "reserved"), ("gamechanger", "game_changer")];
+const BOOLEAN_IS_TAGS: &[(&str, &str)] =
+    &[("reserved", "reserved"), ("gamechanger", "game_changer"), ("oversized", "oversized")];
+
+/// Scryfall's set_type for products that are collectible objects rather than tournament-legal
+/// printings. Mirrors api/card_processing.py's MEMORABILIA_SET_TYPE.
+const MEMORABILIA_SET_TYPE: &str = "memorabilia";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransformError {
@@ -345,6 +350,18 @@ fn passes_filters(card: &Map<String, Value>) -> Result<bool, TransformError> {
     }
     // Line 110: un-sets and other joke products.
     if s(card, "set_type").as_deref() == Some("funny") {
+        return Ok(false);
+    }
+    // Line 117: memorabilia -- World Championship decks, Collectors' Edition, 30th Anniversary,
+    // the oversized promos. Scryfall hides these from any search that does not name their set, so
+    // importing them makes ordinary queries disagree with it; they were supplying the CHEAPEST
+    // printing for 184 cards, which is the printing a price ordering returns. See upstream's
+    // card_processing.py for why this is an IMPORT filter and not a query-time one -- the short
+    // version is that a conjunct on every query breaks four of the six physical plans.
+    //
+    // 2,672 of this store's 97,803 printings (2.73%), and 0 of its 31,724 cards are printed only
+    // in memorabilia sets, so no card is lost.
+    if s(card, "set_type").as_deref() == Some(MEMORABILIA_SET_TYPE) {
         return Ok(false);
     }
     // Lines 114-118: unplayable "Card"/"Token" type lines.
@@ -1284,6 +1301,17 @@ mod tests {
         let mut c = minimal_card("Funny");
         c["set_type"] = json!("funny");
         assert!(transform(&c).unwrap().is_none());
+        // Memorabilia set → skipped (line 117). The LITERAL, not MEMORABILIA_SET_TYPE: driving
+        // both sides off the same constant makes the assertion self-referential and it then holds
+        // with the constant set to anything at all.
+        let mut c = minimal_card("WorldChampionship");
+        c["set_type"] = json!("memorabilia");
+        assert!(transform(&c).unwrap().is_none());
+        // ...and an ordinary expansion is untouched, so a predicate that dropped EVERYTHING would
+        // fail here rather than looking like a working filter.
+        let mut c = minimal_card("Ordinary");
+        c["set_type"] = json!("expansion");
+        assert!(transform(&c).unwrap().is_some());
         // Token type line → skipped (lines 114-118).
         let mut c = minimal_card("Token");
         c["type_line"] = json!("Token Creature \u{2014} Goblin");

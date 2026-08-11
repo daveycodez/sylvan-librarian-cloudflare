@@ -7,7 +7,7 @@ import pathlib
 import uuid
 from typing import Any
 
-from api.card_processing import preprocess_card
+from api.card_processing import MEMORABILIA_SET_TYPE, preprocess_card
 from api.parsing.card_query_nodes import extract_frame_data_from_raw_card
 
 # Project root directory for accessing sample data
@@ -212,6 +212,27 @@ class TestCardProcessing:
 
         result = preprocess_card(invalid_card)
         assert result == []
+
+    def test_preprocess_card_filters_memorabilia_sets(self) -> None:
+        """Memorabilia printings are not imported.
+
+        Scryfall hides them from any search that does not name their set, so importing them makes
+        ordinary queries disagree with it. Measured 2026-08-11: `!"Ancestral Recall"` returns 9 of its 18 printings on Scryfall, and
+        the 9 it omits are exactly the memorabilia ones (30a, ced, cei, ovnt) plus a digital set.
+        """
+        # The LITERAL, not MEMORABILIA_SET_TYPE: driving both sides off the same constant makes the
+        # test self-referential, and it then passes with the constant set to anything at all.
+        assert preprocess_card(create_test_card(set_type="memorabilia")) == []
+        # Pinned separately, so the constant is still what names the Scryfall set_type.
+        assert MEMORABILIA_SET_TYPE == "memorabilia"
+
+    def test_preprocess_card_keeps_ordinary_sets(self) -> None:
+        """The exclusion is on set_type alone — a normal expansion is untouched.
+
+        Paired with the test above so a predicate that accidentally dropped everything (an `in`
+        against the wrong operand, say) fails here rather than looking like a working filter.
+        """
+        assert len(preprocess_card(create_test_card(set_type="expansion"))) == 1
 
     def test_preprocess_card_filters_card_type(self) -> None:
         """Test preprocess_card filters out cards with Card type."""
