@@ -128,6 +128,89 @@ pub struct RowDraft {
     // round-trip a missing key back to NONE_STR instead of an empty string.
     // Empty for the ~82% of cards with a single face.
     pub card_faces: Vec<Map<String, Value>>,
+
+    // ── the compat residue (upstream `_compat_blob`) ────────────────────────
+    // Every Scryfall key that no column holds and no derivation recovers, kept
+    // verbatim. Read back by `jv_compat` and `jv_all_parts` in core_api.rs.
+    pub compat_blob: Map<String, Value>,
+}
+
+/// Keys that do NOT go in the compat residue, because a column already holds them or they are a
+/// pure function of one (upstream `_COMPAT_BLOB_EXCLUDED`).
+///
+/// Kept SUBTRACTIVE, exactly as upstream keeps it: the residue is "whatever is left", so a
+/// Scryfall key nobody has seen yet lands in the blob by default instead of being silently dropped
+/// the first time it appears.
+///
+/// `prices` is deliberately absent even though price_usd/eur/tix are columns — usd_foil,
+/// usd_etched and eur_foil are not, and keeping the object whole costs a few bytes against losing
+/// three fields.
+const COMPAT_BLOB_EXCLUDED: [&str; 48] = [
+    // stored in a column of their own
+    "id",
+    "oracle_id",
+    "name",
+    "released_at",
+    "layout",
+    "mana_cost",
+    "cmc",
+    "type_line",
+    "oracle_text",
+    "power",
+    "toughness",
+    "loyalty",
+    "colors",
+    "color_identity",
+    "keywords",
+    "set",
+    "set_name",
+    "collector_number",
+    "rarity",
+    "flavor_text",
+    "artist",
+    "illustration_id",
+    "border_color",
+    "edhrec_rank",
+    "legalities",
+    "produced_mana",
+    "watermark",
+    "reserved",
+    "game_changer",
+    "frame",
+    // pure functions of id / set / collector_number / oracle_id, re-emitted on read
+    "object",
+    "uri",
+    "scryfall_uri",
+    "image_uris",
+    "rulings_uri",
+    "prints_search_uri",
+    "set_uri",
+    "set_search_uri",
+    "scryfall_set_uri",
+    "card_back_id",
+    "related_uris",
+    "purchase_uris",
+    "resource_id",
+    // its own column
+    "card_faces",
+    // Added by upstream's importer before it snapshots the residue. Raw bulk JSON never carries
+    // them, so these four are inert here — kept so the two exclusion lists stay comparable
+    // line-for-line when upstream's changes are synced.
+    "card_name",
+    "face_name",
+    "face_idx",
+    "scryfall_id",
+];
+
+/// Upstream `_compat_blob`: the Scryfall keys that no column holds and no derivation recovers.
+///
+/// Taken from the card as Scryfall sent it, before any face merging — a merged row's identity
+/// scalars come from the front face, but the residue belongs to the printing as a whole.
+fn compat_blob(card: &Map<String, Value>) -> Map<String, Value> {
+    card.iter()
+        .filter(|(key, _)| !COMPAT_BLOB_EXCLUDED.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 /// What `card_faces` stores per face, in Scryfall's own key names and value
@@ -570,6 +653,9 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         // Filled by `transform` after the per-face drafts merge; a single-faced
         // card has none, which is the ~82% case.
         card_faces: Vec::new(),
+        // Also filled by `transform`, from the card as Scryfall sent it rather than from the
+        // per-face overlay this function may have been handed.
+        compat_blob: Map::new(),
     })
 }
 
@@ -721,10 +807,16 @@ pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> 
         // The engine's copy of the faces. Upstream also re-attaches them to
         // raw_card_blob for its image sync; this port stores no blob.
         row.card_faces = face_records(faces);
+        // From `card`, not from any face overlay: upstream takes the residue from the card as
+        // Scryfall sent it on both paths, and every key in it (ids, prices, finishes, set
+        // metadata) belongs to the printing rather than to one of its faces.
+        row.compat_blob = compat_blob(card);
         return Ok(Some(row));
     }
 
-    Ok(Some(build_draft(card, &card_name)?))
+    let mut row = build_draft(card, &card_name)?;
+    row.compat_blob = compat_blob(card);
+    Ok(Some(row))
 }
 
 // ─── cross-card aggregation: tag attach + score backfills ───────────────────
@@ -1041,7 +1133,7 @@ pub fn finalize_row(
         // 40-84); columns the engine never reads (raw_card_blob, devotion,
         // face_name/face_idx, planeswalker_loyalty_text, rarity text,
         // prefer_score_components, cubecobra_* raw columns) are not emitted.
-        let mut m = Map::with_capacity(44);
+        let mut m = Map::with_capacity(45);
         m.insert("scryfall_id".into(), Value::String(r.scryfall_id));
         m.insert("oracle_id".into(), Value::String(r.oracle_id));
         m.insert("illustration_id".into(), opt_str_val(&r.illustration_id));
@@ -1109,6 +1201,9 @@ pub fn finalize_row(
             "card_faces".into(),
             Value::Array(r.card_faces.into_iter().map(Value::Object).collect()),
         );
+        // Read back by `jv_compat` and `jv_all_parts` in card_engine's core_api.rs. Verbatim
+        // Scryfall keys, and absent stays absent for the same reason `card_faces` above does.
+        m.insert("card_compat_blob".into(), Value::Object(r.compat_blob));
         Value::Object(m)
     }
 }
@@ -1393,7 +1488,7 @@ mod tests {
             "mana_cost_text", "oracle_text", "planeswalker_loyalty", "price_eur",
             "price_tix", "price_usd", "produced_mana", "released_at",
             "creature_power_text", "creature_toughness_text", "set_name", "type_line",
-            "prefer_score", "cubecobra_score", "card_faces",
+            "prefer_score", "cubecobra_score", "card_faces", "card_compat_blob",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);
@@ -1402,6 +1497,26 @@ mod tests {
         assert_eq!(row["mana_cost_jsonb"], json!({"G": [1]}));
         assert_eq!(row["card_is_tags"], json!({}));
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
+    }
+
+    #[test]
+    fn the_compat_residue_is_whatever_no_column_holds() {
+        let row = &finalize(
+            vec![transform(&fixture("llanowar_elves")).unwrap().unwrap()],
+            &TagData::default(),
+        )
+        .collect::<Vec<Value>>()[0];
+        let blob = row["card_compat_blob"].as_object().unwrap();
+        // Present because no column holds them — these are exactly what CompatFields reads.
+        for key in ["lang", "set_id", "set_type", "games", "finishes", "prices", "multiverse_ids"] {
+            assert!(blob.contains_key(key), "{key} should be in the residue");
+        }
+        // Absent because a column holds them, or because they are derived on read. A key that
+        // slipped through here would be stored twice; one that fell out of the excluded list
+        // would be stored ~98,000 times.
+        for key in ["id", "name", "oracle_id", "cmc", "legalities", "image_uris", "uri", "card_faces"] {
+            assert!(!blob.contains_key(key), "{key} should not be in the residue");
+        }
     }
 
     #[test]

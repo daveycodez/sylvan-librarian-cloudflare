@@ -22,6 +22,8 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::types::{PyDate, PyDateAccess, PyDict, PyList, PyTuple};
 use rkyv::{Archive, Archived, Deserialize, Serialize};
+use rkyv::niche::niching::Zero;
+use rkyv::with::NicheInto;
 #[cfg(any(feature = "mmap-store", test))]
 use memmap2::Mmap;
 use memchr::memmem;
@@ -29,6 +31,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 #[cfg(feature = "python")]
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 use std::io::Write as IoWrite;
 #[cfg(feature = "python")]
 use std::path::PathBuf;
@@ -323,12 +326,142 @@ struct OracleFace {
     color_indicator: u8,
 }
 
+/// One entry of Scryfall's `all_parts`: a card this one is related to.
+///
+/// Carries the reference's own id, name and type line rather than an index into our cards, because
+/// most of these point OUTSIDE the corpus -- `preprocess_card` filters Token and Card type lines,
+/// and tokens are exactly what a `token` component references. An index would resolve to nothing
+/// for them, so the reference has to stand alone.
+#[derive(Archive, Serialize, Deserialize)]
+struct RelatedCard {
+    id: u128,
+    name_id: u32,
+    type_line_id: u32,
+    // Interned rather than an enum: Scryfall has added components before (meld_part, meld_result,
+    // combo_piece, token) and an unknown one should pass through, not fail the import.
+    component_id: u16,
+}
+
 /// One face's art and flavor, which vary per printing where `OracleFace`'s text does not.
 #[derive(Archive, Serialize, Deserialize)]
 struct PrintingFace {
     illustration_id: u128,
     card_artist_vid: u16,
     flavor_text_id: u32,
+}
+
+// Bit positions in `CompatFields.flags`. Twelve booleans Scryfall sends on every card object; a
+// word rather than twelve bools because they are only ever read together, when rebuilding one.
+const COMPAT_BOOSTER: u16 = 1 << 0;
+const COMPAT_DIGITAL: u16 = 1 << 1;
+const COMPAT_FOIL: u16 = 1 << 2;
+const COMPAT_NONFOIL: u16 = 1 << 3;
+const COMPAT_FULL_ART: u16 = 1 << 4;
+const COMPAT_HIGHRES_IMAGE: u16 = 1 << 5;
+const COMPAT_OVERSIZED: u16 = 1 << 6;
+const COMPAT_PROMO: u16 = 1 << 7;
+const COMPAT_REPRINT: u16 = 1 << 8;
+const COMPAT_STORY_SPOTLIGHT: u16 = 1 << 9;
+const COMPAT_TEXTLESS: u16 = 1 << 10;
+const COMPAT_VARIATION: u16 = 1 << 11;
+
+// `games` and `finishes` bitsets. Closed vocabularies, so a byte each beats a Vec of interned ids.
+const GAME_PAPER: u8 = 1 << 0;
+const GAME_MTGO: u8 = 1 << 1;
+const GAME_ARENA: u8 = 1 << 2;
+const FINISH_NONFOIL: u8 = 1 << 0;
+const FINISH_FOIL: u8 = 1 << 1;
+const FINISH_ETCHED: u8 = 1 << 2;
+const FINISH_GLOSSY: u8 = 1 << 3;
+
+/// The Scryfall fields that no column holds and no derivation recovers — the `card_compat_blob`
+/// residue, packed.
+///
+/// Measured on a real card object: 66 keys and 5,881 bytes, of which 25 are already columns and 15
+/// are pure functions of the card's id, set or oracle id. What is left is this, and packed it is
+/// 128 bytes a printing rather than the ~5.9 KB a whole blob would cost. That ratio is the reason
+/// the store can answer a card-shaped question at all: blobs at corpus scale are ~575 MB, and this
+/// is ~12.5 MB.
+#[derive(Archive, Serialize, Deserialize)]
+struct CompatFields {
+    // Marketplace and client ids. Sparse -- most printings carry two to four of the six -- and
+    // NonZeroU32 rather than u32 so rkyv niches the None into the value itself: an Option<u32>
+    // archives as 8 bytes (tag plus payload), an Option<NonZeroU32> as 4. Eleven of them, on every
+    // printing, so the niche is worth 44 bytes a row on its own. None of these ids is ever 0.
+    #[rkyv(with = NicheInto<Zero>)]
+    arena_id: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    mtgo_id: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    mtgo_foil_id: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    tcgplayer_id: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    tcgplayer_etched_id: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    cardmarket_id: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    penny_rank: Option<NonZeroU32>,
+    // The cache-buster Scryfall appends to every image_uris entry; without it the derived URLs are
+    // reachable but not byte-identical to what Scryfall serves.
+    #[rkyv(with = NicheInto<Zero>)]
+    image_updated_at: Option<NonZeroU32>,
+    // Integer cents, exactly like the three price columns. These three have no column.
+    #[rkyv(with = NicheInto<Zero>)]
+    price_usd_foil: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    price_usd_etched: Option<NonZeroU32>,
+    #[rkyv(with = NicheInto<Zero>)]
+    price_eur_foil: Option<NonZeroU32>,
+    // Small closed vocabularies interned into coll_vocab: ~10 languages, ~6 image statuses,
+    // ~20 set types, ~5 security stamps -- and the SET, which is why set_id is not the raw u128
+    // UUID. There are ~1,000 sets against ~98,000 printings, so interning it costs a vocab entry
+    // each and 2 bytes a row instead of 16. It also removes the only 16-byte-aligned member of
+    // this struct, and with it the padding that alignment forced on every printing.
+    // The UUID is reconstructed on read from the vocab string.
+    set_vid: u16,
+    lang_id: u16,
+    image_status_id: u16,
+    set_type_id: u16,
+    security_stamp_id: u16,
+    games: u8,
+    finishes: u8,
+    flags: u16,
+    multiverse_ids: Vec<u32>,
+    promo_types: Vec<u16>,
+    frame_effects: Vec<u16>,
+}
+
+/// Hand-written rather than derived, because `#[derive(Default)]` zeroes the interned ids and
+/// vocab id 0 is a REAL string. A card with no `lang` would then report whatever happens to sit at
+/// slot 0. Absent has to be the sentinel.
+impl Default for CompatFields {
+    fn default() -> Self {
+        Self {
+            arena_id: None,
+            mtgo_id: None,
+            mtgo_foil_id: None,
+            tcgplayer_id: None,
+            tcgplayer_etched_id: None,
+            cardmarket_id: None,
+            penny_rank: None,
+            image_updated_at: None,
+            price_usd_foil: None,
+            price_usd_etched: None,
+            price_eur_foil: None,
+            set_vid: VOCAB_NONE,
+            lang_id: VOCAB_NONE,
+            image_status_id: VOCAB_NONE,
+            set_type_id: VOCAB_NONE,
+            security_stamp_id: VOCAB_NONE,
+            games: 0,
+            finishes: 0,
+            flags: 0,
+            multiverse_ids: Vec::new(),
+            promo_types: Vec::new(),
+            frame_effects: Vec::new(),
+        }
+    }
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -390,6 +523,10 @@ struct OracleCard {
 
     // Empty for the ~82% of cards with a single face. Front first, in Scryfall's own order.
     faces: Vec<OracleFace>,
+
+    // Scryfall's all_parts, on ~41% of cards. Oracle-level: a card's relations do not vary by
+    // printing, so this hangs off the card exactly as face TEXT does.
+    all_parts: Vec<RelatedCard>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -452,6 +589,10 @@ struct Printing {
     // Parallel to the owning OracleCard's `faces`, so index i is the same face in both. Empty for
     // single-faced cards, and empty when a multi-face card's printing carries no per-face art.
     faces: Vec<PrintingFace>,
+
+    // The card_compat_blob residue, packed. Printing-level: every field here varies by printing
+    // (ids, prices, finishes) or is set-level and therefore constant across a set's printings.
+    compat: CompatFields,
 }
 
 /// Parse-time row: one DB row (= one printing) with every field, before the
@@ -514,6 +655,9 @@ struct CardRow {
     // Both halves of each face, together, until the commit pass splits them the same way it splits
     // the row itself: text to the OracleCard, art to the Printing.
     card_faces: Vec<FaceRow>,
+    all_parts: Vec<RelatedCard>,
+
+    compat: CompatFields,
 }
 
 /// Parse-time face: `OracleFace` and `PrintingFace` before the commit pass separates them.
@@ -546,6 +690,11 @@ const NONE_STR: u32 = u32::MAX;
 
 /// Sentinel for a printing with no artist (see Printing.card_artist_vid).
 pub(crate) const ARTIST_NONE: u16 = u16::MAX;
+
+/// Sentinel for an absent coll_vocab id, same convention as ARTIST_NONE. The compat fields need
+/// one because Scryfall OMITS a key rather than sending null, so a reconstructed card object has
+/// to tell "was not there" from "was empty".
+pub(crate) const VOCAB_NONE: u16 = u16::MAX;
 
 /// Resolve an interned id against the archived string table; None for absent.
 pub(crate) fn str_at(strings: &AStrings, id: u32) -> Option<&str> {
@@ -867,6 +1016,144 @@ fn mana_cost_from_pydict(d: &Bound<PyDict>, cmc_val: Option<f32>, mana_vocab: &m
     Ok(ManaCost { core, hybrids, devotion, cmc: cmc_val.unwrap_or(0.0) })
 }
 
+/// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]` on this and every helper down to
+/// `all_parts_from_pydict`. Upstream has no such feature and leaves them ungated; this workspace
+/// compiles card_engine WITHOUT pyo3, so an ungated `Bound<PyDict>` is a build error here. The
+/// JSON twins are `jv_opt_bool`, `jv_str_set_bits`, `jv_compat` and `jv_all_parts` in core_api.rs.
+#[cfg(feature = "python")]
+fn opt_bool(d: &Bound<PyDict>, key: &str) -> bool {
+    d.get_item(key).ok().flatten().and_then(|v| v.extract::<bool>().ok()).unwrap_or(false)
+}
+
+/// Set a bit per member present in a string list, for a closed vocabulary.
+#[cfg(feature = "python")]
+fn str_set_bits(d: &Bound<PyDict>, key: &str, table: &[(&str, u8)]) -> u8 {
+    let present = str_list(d, key);
+    table
+        .iter()
+        .filter(|(name, _)| present.iter().any(|p| p == name))
+        .fold(0u8, |acc, (_, bit)| acc | bit)
+}
+
+/// Like `opt_u32`, but into a NonZeroU32 so rkyv can niche the None. A 0 reads as absent, which
+/// is right for every field this is used on: an id or a price of 0 is not a value Scryfall sends.
+#[cfg(feature = "python")]
+fn opt_nonzero_u32(d: &Bound<PyDict>, key: &str) -> Option<NonZeroU32> {
+    opt_u32(d, key).and_then(NonZeroU32::new)
+}
+
+/// The residue Scryfall sends that no column holds, read out of `card_compat_blob`.
+///
+/// Absent keys stay at their zero value: `VOCAB_NONE` for interned ids, `None` for the optionals,
+/// clear bits for the flags. That matters for round-tripping, because Scryfall OMITS a key rather
+/// than sending null, so "zero" has to mean "was not there".
+#[cfg(feature = "python")]
+fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<CompatFields> {
+    let Some(blob) = d.get_item("card_compat_blob").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok()) else {
+        return Ok(CompatFields::default());
+    };
+    let prices = blob.get_item("prices").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok());
+    let price = |key: &str| prices.as_ref().and_then(|p| opt_price_cents(p, key));
+
+    let mut flags = 0u16;
+    for (key, bit) in [
+        ("booster", COMPAT_BOOSTER),
+        ("digital", COMPAT_DIGITAL),
+        ("foil", COMPAT_FOIL),
+        ("nonfoil", COMPAT_NONFOIL),
+        ("full_art", COMPAT_FULL_ART),
+        ("highres_image", COMPAT_HIGHRES_IMAGE),
+        ("oversized", COMPAT_OVERSIZED),
+        ("promo", COMPAT_PROMO),
+        ("reprint", COMPAT_REPRINT),
+        ("story_spotlight", COMPAT_STORY_SPOTLIGHT),
+        ("textless", COMPAT_TEXTLESS),
+        ("variation", COMPAT_VARIATION),
+    ] {
+        if opt_bool(&blob, key) {
+            flags |= bit;
+        }
+    }
+
+    let intern_opt = |vocab: &mut VocabInterner, value: Option<String>| -> PyResult<u16> {
+        match value {
+            Some(v) => vocab.intern(v).map_err(PyErr::from),
+            None => Ok(VOCAB_NONE),
+        }
+    };
+
+    Ok(CompatFields {
+        arena_id: opt_nonzero_u32(&blob, "arena_id"),
+        mtgo_id: opt_nonzero_u32(&blob, "mtgo_id"),
+        mtgo_foil_id: opt_nonzero_u32(&blob, "mtgo_foil_id"),
+        tcgplayer_id: opt_nonzero_u32(&blob, "tcgplayer_id"),
+        tcgplayer_etched_id: opt_nonzero_u32(&blob, "tcgplayer_etched_id"),
+        cardmarket_id: opt_nonzero_u32(&blob, "cardmarket_id"),
+        penny_rank: opt_nonzero_u32(&blob, "penny_rank"),
+        image_updated_at: opt_nonzero_u32(&blob, "image_updated_at"),
+        price_usd_foil: price("usd_foil").and_then(NonZeroU32::new),
+        price_usd_etched: price("usd_etched").and_then(NonZeroU32::new),
+        price_eur_foil: price("eur_foil").and_then(NonZeroU32::new),
+        set_vid: intern_opt(vocab, opt_str(&blob, "set_id"))?,
+        lang_id: intern_opt(vocab, opt_str(&blob, "lang"))?,
+        image_status_id: intern_opt(vocab, opt_str(&blob, "image_status"))?,
+        set_type_id: intern_opt(vocab, opt_str(&blob, "set_type"))?,
+        security_stamp_id: intern_opt(vocab, opt_str(&blob, "security_stamp"))?,
+        games: str_set_bits(&blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
+        finishes: str_set_bits(
+            &blob,
+            "finishes",
+            &[
+                ("nonfoil", FINISH_NONFOIL),
+                ("foil", FINISH_FOIL),
+                ("etched", FINISH_ETCHED),
+                ("glossy", FINISH_GLOSSY),
+            ],
+        ),
+        flags,
+        multiverse_ids: blob
+            .get_item("multiverse_ids")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<Vec<u32>>().ok())
+            .unwrap_or_default(),
+        promo_types: str_list_to_ids(&blob, "promo_types", vocab)?,
+        frame_effects: str_list_to_ids(&blob, "frame_effects", vocab)?,
+    })
+}
+
+/// Scryfall's `all_parts`, read out of the compat blob.
+///
+/// Kept in Scryfall's order: it is meaningful for melds (the two parts, then the result).
+#[cfg(feature = "python")]
+fn all_parts_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInterner) -> PyResult<Vec<RelatedCard>> {
+    let Some(blob) = d.get_item("card_compat_blob").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok()) else {
+        return Ok(Vec::new());
+    };
+    let Some(value) = blob.get_item("all_parts").ok().flatten() else {
+        return Ok(Vec::new());
+    };
+    let Ok(list) = value.cast::<PyList>() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        let Ok(part) = item.cast::<PyDict>() else {
+            continue;
+        };
+        out.push(RelatedCard {
+            id: opt_str(&part, "id").map_or(0, |s| parse_uuid_or_hash(&s)),
+            name_id: it.intern(opt_str(&part, "name").unwrap_or_default()),
+            type_line_id: it.intern(opt_str(&part, "type_line").unwrap_or_default()),
+            component_id: match opt_str(&part, "component") {
+                Some(c) => vocab.intern(c).map_err(PyErr::from)?,
+                None => VOCAB_NONE,
+            },
+        });
+    }
+    Ok(out)
+}
+
 /// Colors as Scryfall spells them on a FACE: a plain list (`["W"]`), not the row columns'
 /// jsonb object. Same mask either way.
 ///
@@ -997,6 +1284,8 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         creature_toughness_text_id: it.intern_opt(opt_str(d, "creature_toughness_text")),
 
         card_faces: faces_from_pydict(d, it, artists)?,
+        all_parts: all_parts_from_pydict(d, it, vocab)?,
+        compat: compat_from_pydict(d, vocab)?,
     })
 }
 
@@ -2696,6 +2985,204 @@ fn partition_point(len: usize, pred: impl Fn(usize) -> bool) -> usize {
     lo
 }
 
+// Namespaces in `external_id_index`. Scryfall routes /cards/{namespace}/:id for each of these, and
+// MTGO/TCGplayer each match two ids (the foil and etched variants resolve to the same printing).
+pub(crate) const EXT_MULTIVERSE: u8 = 0;
+pub(crate) const EXT_MTGO: u8 = 1;
+pub(crate) const EXT_ARENA: u8 = 2;
+pub(crate) const EXT_TCGPLAYER: u8 = 3;
+pub(crate) const EXT_CARDMARKET: u8 = 4;
+
+/// One namespace's worth of `(external id, printing)`, sorted, plus the CSR boundaries that carve
+/// `entries` into the five namespaces — the index behind the /cards/{namespace}/:id routes.
+///
+/// Sparse pairs rather than five dense columns: most printings carry two to four of the seven ids,
+/// and a multiverse id is a LIST, so one printing can contribute several entries.
+///
+/// LOCAL PATCH (Cloudflare port): upstream stores `Vec<(u8, u64, u32)>`. The `u64` forces 8-byte
+/// alignment on a 13-byte payload, so rkyv archives each entry as **24 bytes** — measured, against
+/// upstream's "~350 KB at corpus scale" estimate for what is really 347,625 entries and 8.34 MB.
+/// Every external id Scryfall issues fits in a u32 (the largest live value is ~1.1M), and the
+/// namespace is a property of the BLOCK rather than of each entry, so both are hoisted out: 8
+/// bytes an entry, 5.56 MB back. Losslessly — the same triples are representable, just not stored
+/// one padded tuple at a time. This matters here and not upstream because the archive is served
+/// from KV in 26 MB chunks and Postgres has no such ceiling.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct ExternalIdIndex {
+    /// `(external id, printing)`, sorted, namespace blocks laid end to end in EXT_* order.
+    entries: Vec<(u32, u32)>,
+    /// Start of each namespace's block, plus a terminator: block `ns` is `[starts[ns], starts[ns+1])`.
+    starts: [u32; 6],
+}
+
+/// mtgo_foil_id and tcgplayer_etched_id are folded into their base namespace on purpose -- Scryfall
+/// resolves /cards/mtgo/:id against either mtgo_id or mtgo_foil_id, and the answer is the same
+/// printing either way.
+fn build_external_id_index(printings: &[Printing]) -> ExternalIdIndex {
+    let mut buckets: [Vec<(u32, u32)>; 5] = Default::default();
+    for (pid, p) in printings.iter().enumerate() {
+        let pid = pid as u32;
+        for mv in &p.compat.multiverse_ids {
+            buckets[EXT_MULTIVERSE as usize].push((*mv, pid));
+        }
+        for (ns, id) in [
+            (EXT_MTGO, p.compat.mtgo_id),
+            (EXT_MTGO, p.compat.mtgo_foil_id),
+            (EXT_ARENA, p.compat.arena_id),
+            (EXT_TCGPLAYER, p.compat.tcgplayer_id),
+            (EXT_TCGPLAYER, p.compat.tcgplayer_etched_id),
+            (EXT_CARDMARKET, p.compat.cardmarket_id),
+        ] {
+            if let Some(v) = id {
+                buckets[ns as usize].push((v.get(), pid));
+            }
+        }
+    }
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    let mut starts = [0u32; 6];
+    for (ns, bucket) in buckets.iter_mut().enumerate() {
+        starts[ns] = entries.len() as u32;
+        // Sorting by the whole pair keeps it deterministic when two printings share an external id
+        // (etched and nonfoil TCGplayer entries do collide); the lowest printing id wins, which is
+        // the store's preferred printing because printings are stored in descending prefer order.
+        bucket.sort_unstable();
+        entries.append(bucket);
+    }
+    starts[5] = entries.len() as u32;
+    ExternalIdIndex { entries, starts }
+}
+
+/// The printing for an external id, or None.
+pub(crate) fn find_printing_by_external_id(
+    index: &Archived<ExternalIdIndex>,
+    namespace: u8,
+    id: u64,
+) -> Option<u32> {
+    // Out of u32 range cannot be a stored id, so it is a miss rather than a truncation.
+    let id = u32::try_from(id).ok()?;
+    let (from, to) = (u32::from(index.starts[namespace as usize]) as usize, u32::from(index.starts[namespace as usize + 1]) as usize);
+    let block = &index.entries[from..to];
+    let found = block.binary_search_by(|probe| u32::from(probe.0).cmp(&id)).ok()?;
+    // binary_search lands on ANY match; walk back to the first so a shared id resolves to the
+    // lowest printing rather than whichever the search happened to hit.
+    let mut i = found;
+    while i > 0 && u32::from(block[i - 1].0) == id {
+        i -= 1;
+    }
+    Some(u32::from(block[i].1))
+}
+
+// ─── Fuzzy name matching ─────────────────────────────────────────────────────
+// A reimplementation of pg_trgm's similarity(), because upstream's SQL path is a FALLBACK and the
+// engine has to answer `?fuzzy=` itself. Matching pg_trgm exactly matters there: if the two paths
+// scored differently, the same query would resolve to different cards depending on which one
+// served it. In this port the engine is the ONLY path, so exactness buys parity with upstream's
+// answers rather than internal consistency — same reason, one step removed.
+//
+// pg_trgm's algorithm: split on non-alphanumerics, pad each word with two leading spaces and one
+// trailing, take every 3-byte window, deduplicate, and score |intersection| / |union|.
+//
+// Nothing is stored for this. The name vocabulary is ~31,700 oracle names, so scoring the whole
+// corpus per request is a few milliseconds -- cheaper than carrying a trigram index for a route
+// that is a small fraction of traffic. It runs in the Durable Object (30 s), never the isolate.
+
+/// Every distinct trigram of `s`, pg_trgm's way.
+fn trigrams(s: &str) -> std::collections::BTreeSet<[u8; 3]> {
+    let mut out = std::collections::BTreeSet::new();
+    for word in s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+        // pg_trgm pads "  word " and windows over the bytes.
+        let mut padded = Vec::with_capacity(word.len() + 3);
+        padded.extend_from_slice(b"  ");
+        padded.extend_from_slice(word.as_bytes());
+        padded.push(b' ');
+        for w in padded.windows(3) {
+            out.insert([w[0], w[1], w[2]]);
+        }
+    }
+    out
+}
+
+/// pg_trgm's `similarity(a, b)`: Jaccard over trigram sets. 0.0 when both are empty.
+pub(crate) fn trigram_similarity(a: &str, b: &str) -> f32 {
+    let (ta, tb) = (trigrams(a), trigrams(b));
+    if ta.is_empty() || tb.is_empty() {
+        return 0.0;
+    }
+    let shared = ta.intersection(&tb).count();
+    let union = ta.len() + tb.len() - shared;
+    if union == 0 { 0.0 } else { shared as f32 / union as f32 }
+}
+
+/// What a `?fuzzy=` lookup resolved to.
+pub(crate) enum FuzzyOutcome {
+    /// The card index that won outright.
+    Hit(u32),
+    /// Two distinct names scored too close to choose between; Scryfall answers `ambiguous`.
+    Ambiguous,
+    /// Nothing cleared the floor.
+    Miss,
+}
+
+/// The typo-tolerant name match, with Scryfall's thresholds.
+///
+/// A candidate must clear `floor`, and the best must lead the next DISTINCT name by `lead`. The
+/// distinctness matters: several printings of one card would otherwise look like a tie with
+/// themselves and report ambiguous.
+pub(crate) fn fuzzy_name_match(cards: &Archived<Vec<OracleCard>>, needle: &str, floor: f32, lead: f32) -> FuzzyOutcome {
+    let needle = needle.to_lowercase();
+    let mut best: Option<(f32, u32, &str)> = None;
+    let mut runner_up: Option<f32> = None;
+    for (cid, card) in cards.iter().enumerate() {
+        let name = card.card_name_folded.as_str();
+        let score = trigram_similarity(name, &needle);
+        if score < floor {
+            continue;
+        }
+        match best {
+            Some((best_score, _, best_name)) if score <= best_score => {
+                // Only a DIFFERENT name can be the runner-up; other printings of the same card are
+                // the same answer, not a competing one.
+                if name != best_name && runner_up.is_none_or(|r| score > r) {
+                    runner_up = Some(score);
+                }
+            }
+            _ => {
+                if let Some((prev_score, _, prev_name)) = best {
+                    if prev_name != name && runner_up.is_none_or(|r| prev_score > r) {
+                        runner_up = Some(prev_score);
+                    }
+                }
+                best = Some((score, cid as u32, name));
+            }
+        }
+    }
+    match (best, runner_up) {
+        (None, _) => FuzzyOutcome::Miss,
+        (Some((score, _, _)), Some(second)) if score - second < lead => FuzzyOutcome::Ambiguous,
+        (Some((_, cid, _)), _) => FuzzyOutcome::Hit(cid),
+    }
+}
+
+/// Card names beginning with `prefix`, case-insensitively, up to `limit`, sorted.
+///
+/// Scryfall's autocomplete catalog. A scan for the same reason fuzzy is: ~31,700 names is small,
+/// and a prefix index would cost archive space for one low-traffic route.
+pub(crate) fn autocomplete_names<'a>(cards: &'a Archived<Vec<OracleCard>>, prefix: &str, limit: usize) -> Vec<&'a str> {
+    let prefix = prefix.to_lowercase();
+    let mut out: Vec<&str> = Vec::new();
+    for card in cards.iter() {
+        if card.card_name_lower.as_str().starts_with(&prefix) {
+            let name = card.card_name_lower.as_str();
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.truncate(limit);
+    out
+}
+
 /// Printing ids ordered by `scryfall_id`, for binary search.
 ///
 /// A permutation rather than a `(id, index)` table: the ids are already stored on the printings, so
@@ -4008,6 +4495,9 @@ struct CardIndexes {
     // scan, which is what pushed that whole surface onto SQL.
     printing_by_scryfall_id: Vec<u32>,        // printing space, ordered by scryfall_id
     oracle_by_oracle_id:     Vec<u32>,        // card space, ordered by oracle_id
+    // (namespace, external id) -> printing, sorted. Answers /cards/multiverse|mtgo|arena|tcgplayer
+    // |cardmarket/:id, none of which the store could address before.
+    external_id_index:       ExternalIdIndex,
 }
 
 
@@ -12086,6 +12576,89 @@ const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
         let bits = if c.legality_divergent { u64::from(p.card_legalities) } else { u64::from(c.card_legalities) };
         Ok(legality_bits_to_pydict(py, bits)?.into_any())
     }),
+    // ── The compat residue, in Scryfall's own field names ────────────────────────────────────
+    // Each is requestable on its own, like every entry above, and together they are what a
+    // reconstructed card object needs beyond the columns and the derived URLs. Absent stays
+    // absent: these emit None rather than a zero value, because Scryfall OMITS a key it has no
+    // value for, and a card that sprouts nulls Scryfall never sent differs from Scryfall on
+    // every row.
+    ("lang", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.lang_id)).into_pyobject(py)?.into_any())),
+    ("image_status", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.image_status_id)).into_pyobject(py)?.into_any())),
+    ("set_type", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.set_type_id)).into_pyobject(py)?.into_any())),
+    ("security_stamp", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.security_stamp_id)).into_pyobject(py)?.into_any())),
+    ("set_id", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.set_vid)).into_pyobject(py)?.into_any())),
+    ("arena_id", |py, _c, p, _s, _v| Ok(p.compat.arena_id.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("mtgo_id", |py, _c, p, _s, _v| Ok(p.compat.mtgo_id.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("mtgo_foil_id", |py, _c, p, _s, _v| Ok(p.compat.mtgo_foil_id.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("tcgplayer_id", |py, _c, p, _s, _v| Ok(p.compat.tcgplayer_id.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("tcgplayer_etched_id", |py, _c, p, _s, _v| Ok(p.compat.tcgplayer_etched_id.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("cardmarket_id", |py, _c, p, _s, _v| Ok(p.compat.cardmarket_id.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("penny_rank", |py, _c, p, _s, _v| Ok(p.compat.penny_rank.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    ("image_updated_at", |py, _c, p, _s, _v| Ok(p.compat.image_updated_at.as_ref().map(|v| v.get()).into_pyobject(py)?.into_any())),
+    // Dollars from integer cents, the same conversion price_usd uses.
+    ("price_usd_foil", |py, _c, p, _s, _v| Ok(p.compat.price_usd_foil.as_ref().map(|v| f64::from(v.get()) / 100.0).into_pyobject(py)?.into_any())),
+    ("price_usd_etched", |py, _c, p, _s, _v| Ok(p.compat.price_usd_etched.as_ref().map(|v| f64::from(v.get()) / 100.0).into_pyobject(py)?.into_any())),
+    ("price_eur_foil", |py, _c, p, _s, _v| Ok(p.compat.price_eur_foil.as_ref().map(|v| f64::from(v.get()) / 100.0).into_pyobject(py)?.into_any())),
+    ("multiverse_ids", |py, _c, p, _s, _v| {
+        let ids: Vec<u32> = p.compat.multiverse_ids.iter().map(|v| u32::from(*v)).collect();
+        Ok(ids.into_pyobject(py)?.into_any())
+    }),
+    ("promo_types", |py, _c, p, _s, v| Ok(sorted_strs(v, &p.compat.promo_types).into_pyobject(py)?.into_any())),
+    ("frame_effects", |py, _c, p, _s, v| Ok(sorted_strs(v, &p.compat.frame_effects).into_pyobject(py)?.into_any())),
+    ("games", |py, _c, p, _s, _v| Ok(bits_to_names(u8::from(p.compat.games), GAME_NAMES).into_pyobject(py)?.into_any())),
+    ("finishes", |py, _c, p, _s, _v| Ok(bits_to_names(u8::from(p.compat.finishes), FINISH_NAMES).into_pyobject(py)?.into_any())),
+    ("booster", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_BOOSTER).into_pyobject(py)?.to_owned().into_any())),
+    ("digital", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_DIGITAL).into_pyobject(py)?.to_owned().into_any())),
+    ("foil", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_FOIL).into_pyobject(py)?.to_owned().into_any())),
+    ("nonfoil", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_NONFOIL).into_pyobject(py)?.to_owned().into_any())),
+    ("full_art", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_FULL_ART).into_pyobject(py)?.to_owned().into_any())),
+    ("highres_image", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_HIGHRES_IMAGE).into_pyobject(py)?.to_owned().into_any())),
+    ("oversized", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_OVERSIZED).into_pyobject(py)?.to_owned().into_any())),
+    ("promo", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_PROMO).into_pyobject(py)?.to_owned().into_any())),
+    ("reprint", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_REPRINT).into_pyobject(py)?.to_owned().into_any())),
+    ("story_spotlight", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_STORY_SPOTLIGHT).into_pyobject(py)?.to_owned().into_any())),
+    ("textless", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_TEXTLESS).into_pyobject(py)?.to_owned().into_any())),
+    ("variation", |py, _c, p, _s, _v| Ok(compat_flag(p, COMPAT_VARIATION).into_pyobject(py)?.to_owned().into_any())),
+    // Each face as its own dict, front first, in Scryfall's key names. Empty list for a
+    // single-faced card, which is how Scryfall omits card_faces entirely.
+    ("card_faces", |py, c, p, s, v| Ok(faces_to_pylist(py, c, p, s, v)?.into_any())),
+    // Scryfall's related-card list. Each entry carries its own id/name/type_line because most
+    // point outside the corpus -- a `token` component references a card the import filters out.
+    ("all_parts", |py, c, _p, s, v| {
+        let mut out: Vec<Bound<PyDict>> = Vec::with_capacity(c.all_parts.len());
+        for part in c.all_parts.iter() {
+            let d = PyDict::new(py);
+            d.set_item("object", "related_card")?;
+            d.set_item("id", uuid_from_u128(u128::from(part.id)))?;
+            d.set_item("component", coll_str_opt(v, u16::from(part.component_id)))?;
+            d.set_item("name", str_at(s, u32::from(part.name_id)))?;
+            d.set_item("type_line", str_at(s, u32::from(part.type_line_id)))?;
+            out.push(d);
+        }
+        Ok(PyList::new(py, out)?.into_any())
+    }),
+    // `colors` is this PR's addition; #877 already supplies layout, cmc, rarity,
+    // color_identity and legalities, so those are not repeated here.
+    ("colors", |py, c, _p, _s, _v| Ok(identity_letters(c.card_colors).into_pyobject(py)?.into_any())),
+    // LOCAL ADDITION (Cloudflare port), reported upstream: `to_scryfall_card` emits
+    // `border_color` from a `card_border` key and `frame` from the frame vocabulary, but neither
+    // is in CARD_OBJECT_FIELDS and neither has a FIELD_TABLE entry — so on the ENGINE path
+    // upstream emits `"border_color": null` on every card and omits `frame` entirely, while
+    // Scryfall always sends both. Both values are already stored; only the accessors were missing.
+    ("border_color", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.card_border_id)).into_pyobject(py)?.into_any())),
+    ("frame", |py, _c, p, _s, v| Ok(frame_of(p, v).into_pyobject(py)?.into_any())),
+    // ── The remaining fields a card object needs ─────────────────────────────────────────────
+    ("oracle_id", |py, c, _p, _s, _v| Ok(uuid_from_u128(u128::from(c.oracle_id)).into_pyobject(py)?.into_any())),
+    ("flavor_text", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.flavor_text_id)).into_pyobject(py)?.into_any())),
+    ("artist", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.card_artist_vid)).into_pyobject(py)?.into_any())),
+    ("watermark", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.card_watermark_id)).into_pyobject(py)?.into_any())),
+    ("edhrec_rank", |py, c, _p, _s, _v| Ok(c.edhrec_rank.as_ref().copied().map(u32::from).into_pyobject(py)?.into_any())),
+    ("price_eur", |py, _c, p, _s, _v| Ok(p.price_eur.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).into_pyobject(py)?.into_any())),
+    ("price_tix", |py, _c, p, _s, _v| Ok(p.price_tix.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).into_pyobject(py)?.into_any())),
+    // ISO date, the shape Scryfall sends and JSON can carry. The store holds it as an int.
+    ("released_at", |py, _c, p, _s, _v| {
+        Ok(p.released_at_int.as_ref().copied().map(u32::from).map(released_int_to_iso).into_pyobject(py)?.into_any())
+    }),
 ];
 
 /// Mirror of magic.rarity_int_to_text -- the import stores 0-5, Scryfall speaks words.
@@ -12101,13 +12674,96 @@ fn rarity_int_to_text(value: u8) -> Option<&'static str> {
     }
 }
 
-/// Decode an identity bitmap into Scryfall's WUBRG-ordered letter list.
-fn identity_letters(mask: u8) -> Vec<&'static str> {
+/// Decode a colour bitmap into Scryfall's WUBRG-ordered letter list (C last, as Scryfall lists it).
+///
+/// Used for color_identity, a card's own colors, and each face's colors and colour indicator.
+/// #877 introduced it; #912 widened its visibility rather than adding a second function with
+/// the same body under a different name.
+pub(crate) fn identity_letters(mask: u8) -> Vec<&'static str> {
     [("W", 1u8), ("U", 2), ("B", 4), ("R", 8), ("G", 16), ("C", 32)]
         .iter()
         .filter(|(_, bit)| mask & bit != 0)
         .map(|(letter, _)| *letter)
         .collect()
+}
+
+/// Scryfall's `frame`, recovered from `card_frame_data`.
+///
+/// The import folds Scryfall's `frame` and its `frame_effects` into one title-cased collection
+/// (see transform.rs), so the frame is whichever member belongs to Scryfall's closed frame
+/// vocabulary rather than "the first one" — a card with no frame but an effect would otherwise
+/// report the effect as its frame.
+pub(crate) fn frame_of(p: &APrinting, vocab: &AStrings) -> Option<&'static str> {
+    const FRAMES: [(&str, &str); 5] =
+        [("1993", "1993"), ("1997", "1997"), ("2003", "2003"), ("2015", "2015"), ("Future", "future")];
+    p.card_frame_data.iter().find_map(|id| {
+        let name = coll_str(vocab, u16::from(*id));
+        FRAMES.iter().find(|(titled, _)| *titled == name).map(|(_, scryfall)| *scryfall)
+    })
+}
+
+/// `20200101` -> `"2020-01-01"`. The store packs the date as an int; Scryfall sends ISO.
+pub(crate) fn released_int_to_iso(value: u32) -> String {
+    format!("{:04}-{:02}-{:02}", value / 10_000, (value / 100) % 100, value % 100)
+}
+
+/// Bitset member names, in the order Scryfall lists them.
+pub(crate) const GAME_NAMES: &[(&str, u8)] = &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)];
+pub(crate) const FINISH_NAMES: &[(&str, u8)] =
+    &[("nonfoil", FINISH_NONFOIL), ("foil", FINISH_FOIL), ("etched", FINISH_ETCHED), ("glossy", FINISH_GLOSSY)];
+
+pub(crate) fn bits_to_names(bits: u8, table: &[(&'static str, u8)]) -> Vec<&'static str> {
+    table.iter().filter(|(_, bit)| bits & bit != 0).map(|(name, _)| *name).collect()
+}
+
+pub(crate) fn compat_flag(p: &APrinting, bit: u16) -> bool {
+    u16::from(p.compat.flags) & bit != 0
+}
+
+/// A compat vocab id, or None when the key was absent. Distinct from `coll_str`, which has no
+/// absent case: every collection element is a real entry, while a compat field routinely is not.
+pub(crate) fn coll_str_opt(vocab: &AStrings, id: u16) -> Option<&str> {
+    if id == VOCAB_NONE { None } else { Some(coll_str(vocab, id)) }
+}
+
+/// The card's faces as Scryfall shapes them: text from the oracle card, art from this printing.
+///
+/// `object` and `image_uris` are omitted deliberately -- the first is the constant "card_face" and
+/// the second is a pure function of the card's id and the face's position, so both are re-emitted
+/// by the caller rather than stored.
+///
+/// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`. The JSON twin is `jv_faces_to_json`
+/// in core_api.rs.
+#[cfg(feature = "python")]
+fn faces_to_pylist<'py>(
+    py: Python<'py>,
+    card: &AOracleCard,
+    printing: &APrinting,
+    strings: &AStrings,
+    vocab: &AStrings,
+) -> PyResult<Bound<'py, PyList>> {
+    let mut out: Vec<Bound<PyDict>> = Vec::with_capacity(card.faces.len());
+    for (i, face) in card.faces.iter().enumerate() {
+        let d = PyDict::new(py);
+        d.set_item("name", str_at(strings, u32::from(face.card_name_id)))?;
+        d.set_item("mana_cost", str_at(strings, u32::from(face.mana_cost_text_id)))?;
+        d.set_item("type_line", str_at(strings, u32::from(face.type_line_id)))?;
+        d.set_item("oracle_text", str_at(strings, u32::from(face.oracle_text_id)))?;
+        d.set_item("power", str_at(strings, u32::from(face.creature_power_text_id)))?;
+        d.set_item("toughness", str_at(strings, u32::from(face.creature_toughness_text_id)))?;
+        d.set_item("loyalty", str_at(strings, u32::from(face.planeswalker_loyalty_text_id)))?;
+        d.set_item("colors", identity_letters(u8::from(face.card_colors)))?;
+        d.set_item("color_indicator", identity_letters(u8::from(face.color_indicator)))?;
+        // Art is per printing, and a printing may carry fewer face-art records than the card has
+        // faces; those faces simply have no art rather than borrowing the wrong face's.
+        if let Some(art) = printing.faces.get(i) {
+            d.set_item("artist", coll_str_opt(vocab, u16::from(art.card_artist_vid)))?;
+            d.set_item("illustration_id", uuid_from_u128(u128::from(art.illustration_id)))?;
+            d.set_item("flavor_text", str_at(strings, u32::from(art.flavor_text_id)))?;
+        }
+        out.push(d);
+    }
+    PyList::new(py, out)
 }
 
 /// Resolve one interned collection-element id against the archived vocab table.
@@ -12194,7 +12850,12 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                No struct size moves, so the two sizes in the header cannot catch it and this
 //                constant is the only thing that forces the rebuild. `name` is unaffected, which is
 //                the evidence that only the ascending side moved.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081101;
+//   2026081102 — the Scryfall card-object surface (#912). `Printing` gains `compat: CompatFields`
+//                (176 -> 304 bytes), `OracleCard` gains `all_parts` (288 -> 304), `CompatFields`
+//                and `RelatedCard` are new archived types, and `CardIndexes` gains
+//                `external_id_index`. Both struct sizes move, so the header would catch this on
+//                its own; the constant moves too because the index addition would not.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081102;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -12618,6 +13279,7 @@ fn build_card_data_sorted(
                         color_indicator: f.color_indicator,
                     })
                     .collect(),
+                all_parts: std::mem::take(&mut row.all_parts),
             });
         } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
             cards.last_mut().unwrap().legality_divergent = true;
@@ -12660,6 +13322,8 @@ fn build_card_data_sorted(
                     flavor_text_id: f.flavor_text_id,
                 })
                 .collect(),
+
+            compat: row.compat,
         });
     }
     offsets.push(printings.len() as u32);
@@ -12823,6 +13487,7 @@ fn build_card_data_sorted(
         // grouping — which is where they are.
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
+        external_id_index:       build_external_id_index(&printings),
     };
 
     #[cfg(feature = "alloc-counter")]
@@ -13347,6 +14012,94 @@ impl QueryEngine {
             &data.printings,
             parse_uuid_or_hash(scryfall_id),
         ) else {
+            return Ok(None);
+        };
+        let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+        let dict = card_to_pydict(
+            py,
+            &data.cards[cid],
+            &data.printings[pid as usize],
+            &data.strings,
+            &data.coll_vocab,
+            &resolved_fields,
+        )?;
+        Ok(Some(dict))
+    }
+
+    /// Scryfall's `?fuzzy=` name lookup, typo-tolerant.
+    ///
+    /// Returns `(status, card)` where status is "hit", "ambiguous" or "miss". Ambiguous is a
+    /// distinct answer rather than a miss: Scryfall reports it with the candidates it could not
+    /// separate, and collapsing it to "not found" would tell the client the card does not exist.
+    #[pyo3(signature = (name, floor, lead, fields=None))]
+    fn fuzzy_card_by_name<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        floor: f32,
+        lead: f32,
+        fields: Option<Vec<String>>,
+    ) -> PyResult<(String, Option<Bound<'py, PyDict>>)> {
+        let resolved_fields = resolve_fields(fields)?;
+        let mmap = self.get_mmap()?;
+        // Safety: see the access_unchecked justification in query().
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        match fuzzy_name_match(&data.cards, name, floor, lead) {
+            FuzzyOutcome::Miss => Ok(("miss".to_string(), None)),
+            FuzzyOutcome::Ambiguous => Ok(("ambiguous".to_string(), None)),
+            FuzzyOutcome::Hit(cid) => {
+                let cid = cid as usize;
+                // The card's default-preferred printing, the same one every other by-name path shows.
+                let preferred = u32::from(data.offsets[cid]) as usize;
+                let dict = card_to_pydict(
+                    py,
+                    &data.cards[cid],
+                    &data.printings[preferred],
+                    &data.strings,
+                    &data.coll_vocab,
+                    &resolved_fields,
+                )?;
+                Ok(("hit".to_string(), Some(dict)))
+            }
+        }
+    }
+
+    /// Card names beginning with `prefix`, up to `limit`. Scryfall's autocomplete catalog.
+    #[pyo3(signature = (prefix, limit))]
+    fn autocomplete(&self, prefix: &str, limit: usize) -> PyResult<Vec<String>> {
+        let mmap = self.get_mmap()?;
+        // Safety: see the access_unchecked justification in query().
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        Ok(autocomplete_names(&data.cards, prefix, limit).into_iter().map(str::to_string).collect())
+    }
+
+    /// The printing carrying this external id, or None.
+    ///
+    /// `namespace` is Scryfall's own path segment. mtgo also matches mtgo_foil_id and tcgplayer
+    /// also matches tcgplayer_etched_id, because Scryfall resolves those to the same printing.
+    #[pyo3(signature = (namespace, external_id, fields=None))]
+    fn card_by_external_id<'py>(
+        &self,
+        py: Python<'py>,
+        namespace: &str,
+        external_id: u64,
+        fields: Option<Vec<String>>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let ns = match namespace {
+            "multiverse" => EXT_MULTIVERSE,
+            "mtgo" => EXT_MTGO,
+            "arena" => EXT_ARENA,
+            "tcgplayer" => EXT_TCGPLAYER,
+            "cardmarket" => EXT_CARDMARKET,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!("unknown id namespace {other:?}")));
+            }
+        };
+        let resolved_fields = resolve_fields(fields)?;
+        let mmap = self.get_mmap()?;
+        // Safety: see the access_unchecked justification in query().
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        let Some(pid) = find_printing_by_external_id(&data.indexes.external_id_index, ns, external_id) else {
             return Ok(None);
         };
         let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;

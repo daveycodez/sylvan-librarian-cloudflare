@@ -172,8 +172,39 @@ export const MANIFEST_KEY = "store:manifest";
  *       NO format change: prefer_score is a stored VALUE. Which is exactly why
  *       this bump is load-bearing — nothing in the header can see the scores
  *       moved, so without it the nightly would keep serving unpinned rows.
+ *  10 — the Scryfall card-object surface (upstream #912). Every printing now
+ *       carries the `card_compat_blob` residue packed into 128 bytes
+ *       (marketplace ids, the three extra prices, lang/image_status/set_type/
+ *       security_stamp/set_id interned, games/finishes/twelve booleans as
+ *       bitsets, multiverse_ids/promo_types/frame_effects), every card carries
+ *       Scryfall's `all_parts`, and a sparse (namespace, id) -> printing index
+ *       answers the five external-id routes. Together they are what lets
+ *       `/cards/*` answer with a Scryfall card object instead of a row.
+ *
+ *       Paired with ARCHIVE_FORMAT_VERSION 2026081101 -> 2026081102: both
+ *       archived struct sizes move (Printing 176 -> 256, OracleCard 288 ->
+ *       304), so the header rejects a generation-9 store outright and the
+ *       rebuild is forced at deploy rather than deferred to the nightly.
+ *
+ *       THIS IS THE STORE THAT BUYS THE 4TH CHUNK. 76,571,408 -> 87,989,816
+ *       bytes, measured, against the 78,000,000-byte three-chunk ceiling. A
+ *       4th chunk is one extra sequential KV round trip on cold load; it is
+ *       not a meter tick and not a failure, and it was taken deliberately
+ *       rather than arrived at by drift. Two lossless compactions already ran
+ *       first, worth 10,128,264 bytes together, and without them the store is
+ *       98,118,080 and the in-Worker nightly import no longer fits its 112 MiB
+ *       cap at all:
+ *         - the eleven sparse marketplace/price ids are niched with
+ *           `NicheInto<Zero>` (CompatFields 128 -> 84 bytes). rkyv 0.8 does
+ *           NOT niche an `Option<NonZeroU32>` on its own — measured at 8 bytes
+ *           without the attribute — so upstream #912's own "8 becomes 4"
+ *           reasoning does not hold on this rkyv version.
+ *         - the external-id index drops from `(u8, u64, u32)` triples, which
+ *           rkyv pads to 24 bytes each, to `(u32, u32)` pairs plus a
+ *           five-entry namespace offset table: 8 bytes an entry over 347,625
+ *           entries.
  */
-export const STORE_CONTENT_GENERATION = 9;
+export const STORE_CONTENT_GENERATION = 10;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

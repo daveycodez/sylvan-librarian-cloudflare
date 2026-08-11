@@ -8,6 +8,11 @@
 export function __init_panic_hook(): void;
 
 /**
+ * Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
+ */
+export function autocomplete(prefix: string, limit: number): string;
+
+/**
  * Start a chunked store load: preallocate the full aligned buffer up front
  * (one allocation, no growth reallocs while chunks stream in). Any previous
  * in-progress load is discarded; the ACTIVE store is untouched until
@@ -16,9 +21,25 @@ export function __init_panic_hook(): void;
 export function begin_store_load(total_len: number): void;
 
 /**
+ * One card by a marketplace or client id, or `null`. `namespace` is Scryfall's own path segment.
+ */
+export function card_by_external_id(namespace: string, external_id: bigint, fields_json: string): string;
+
+/**
+ * One card by Scryfall id, or `null`.
+ */
+export function card_by_scryfall_id(scryfall_id: string, fields_json: string): string;
+
+/**
  * Oracle-card count of the loaded store; 0 when no store is loaded.
  */
 export function card_count(): number;
+
+/**
+ * Cards by Scryfall id, in the order given, skipping misses. One boundary crossing for the whole
+ * batch: `POST /cards/collection` resolves up to 175 identifiers.
+ */
+export function cards_by_scryfall_ids(ids_json: string, fields_json: string): string;
 
 /**
  * `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
@@ -34,11 +55,24 @@ export function catalog(): string;
 export function finish_store_load(): void;
 
 /**
+ * Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
+ *
+ * `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
+ * tell the client the card does not exist.
+ */
+export function fuzzy_card_by_name(name: string, floor: number, lead: number, fields_json: string): string;
+
+/**
  * One-shot load for callers that already hold the whole archive (tests,
  * small stores). Copies `bytes` into an aligned buffer; prefer the chunked
  * API for production-size stores to avoid a second full-size JS-side copy.
  */
 export function init_store(bytes: Uint8Array): void;
+
+/**
+ * Every printing of one oracle card, representative first. Empty array for an unknown id.
+ */
+export function printings_of_oracle_id(oracle_id: string, fields_json: string): string;
 
 /**
  * Run a query. `filter_tree_json` is the filter-tree JSON (TrueNode /

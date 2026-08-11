@@ -216,6 +216,83 @@ pub fn random_search(n: u32, seed: u64, fields_json: &str) -> Result<String, JsE
     })
 }
 
+// ─── Single-card addressing (the Scryfall-compatible /cards/* surface) ───────
+//
+// Every one of these runs inside the Durable Object, where CPU is metered against 30 s rather than
+// the isolate's 10 ms. `fields_json` is a JSON list of field names, or "null"/"" for the default
+// set, exactly like `random_search` above. A miss is JSON `null`, which the caller turns into
+// Scryfall's 404 error object — this port has no SQL to fall back to, so a miss IS the answer.
+
+/// Parse the shared `fields_json` argument.
+fn parse_fields(fields_json: &str) -> Result<Option<Vec<String>>, JsError> {
+    if fields_json.is_empty() || fields_json == "null" {
+        return Ok(None);
+    }
+    serde_json::from_str(fields_json).map_err(|e| JsError::new(&format!("bad fields JSON: {e}")))
+}
+
+/// One card by Scryfall id, or `null`.
+#[wasm_bindgen]
+pub fn card_by_scryfall_id(scryfall_id: &str, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let found = store.card_by_scryfall_id(scryfall_id, fields).map_err(js_err)?;
+        Ok(found.unwrap_or(serde_json::Value::Null).to_string())
+    })
+}
+
+/// Cards by Scryfall id, in the order given, skipping misses. One boundary crossing for the whole
+/// batch: `POST /cards/collection` resolves up to 175 identifiers.
+#[wasm_bindgen]
+pub fn cards_by_scryfall_ids(ids_json: &str, fields_json: &str) -> Result<String, JsError> {
+    let ids: Vec<String> =
+        serde_json::from_str(ids_json).map_err(|e| JsError::new(&format!("bad ids JSON: {e}")))?;
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let rows = store.cards_by_scryfall_ids(&ids, fields).map_err(js_err)?;
+        Ok(serde_json::Value::Array(rows).to_string())
+    })
+}
+
+/// Every printing of one oracle card, representative first. Empty array for an unknown id.
+#[wasm_bindgen]
+pub fn printings_of_oracle_id(oracle_id: &str, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let rows = store.printings_of_oracle_id(oracle_id, fields).map_err(js_err)?;
+        Ok(serde_json::Value::Array(rows).to_string())
+    })
+}
+
+/// One card by a marketplace or client id, or `null`. `namespace` is Scryfall's own path segment.
+#[wasm_bindgen]
+pub fn card_by_external_id(namespace: &str, external_id: u64, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let found = store.card_by_external_id(namespace, external_id, fields).map_err(js_err)?;
+        Ok(found.unwrap_or(serde_json::Value::Null).to_string())
+    })
+}
+
+/// Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
+///
+/// `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
+/// tell the client the card does not exist.
+#[wasm_bindgen]
+pub fn fuzzy_card_by_name(name: &str, floor: f32, lead: f32, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let (status, card) = store.fuzzy_card_by_name(name, floor, lead, fields).map_err(js_err)?;
+        Ok(serde_json::json!({ "status": status, "card": card }).to_string())
+    })
+}
+
+/// Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
+#[wasm_bindgen]
+pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
+    with_store(|store| Ok(serde_json::to_string(&store.autocomplete(prefix, limit as usize)).unwrap_or_else(|_| "[]".into())))
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -270,6 +347,36 @@ mod tests {
         let sampled = random_search(3, 7, "null").expect("random_search");
         let v: serde_json::Value = serde_json::from_str(&sampled).expect("valid sample JSON");
         assert_eq!(v.as_array().unwrap().len(), 1);
+
+        // The /cards/* addressing surface, over the same loaded store. A hit and a miss each,
+        // because a miss here IS the 404 — there is no SQL behind it to disagree.
+        let id = "cccccccc-0000-0000-0000-000000000001";
+        let v: serde_json::Value =
+            serde_json::from_str(&card_by_scryfall_id(id, "null").expect("by id")).expect("valid JSON");
+        assert_eq!(v["name"], "Chunk Test");
+        let v: serde_json::Value =
+            serde_json::from_str(&card_by_scryfall_id("cccccccc-0000-0000-0000-00000000ffff", "null").expect("miss"))
+                .expect("valid JSON");
+        assert!(v.is_null());
+
+        let v: serde_json::Value =
+            serde_json::from_str(&cards_by_scryfall_ids(&format!("[{id:?}]"), "null").expect("batch")).expect("valid JSON");
+        assert_eq!(v.as_array().unwrap().len(), 1);
+
+        let v: serde_json::Value = serde_json::from_str(
+            &printings_of_oracle_id("33333333-3333-3333-3333-333333333333", "null").expect("prints"),
+        )
+        .expect("valid JSON");
+        assert_eq!(v.as_array().unwrap().len(), 1);
+
+        let v: serde_json::Value =
+            serde_json::from_str(&fuzzy_card_by_name("chunk test", 0.4, 0.05, "null").expect("fuzzy")).expect("valid JSON");
+        assert_eq!(v["status"], "hit");
+        assert_eq!(v["card"]["name"], "Chunk Test");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&autocomplete("chun", 20).expect("autocomplete")).expect("valid JSON");
+        assert_eq!(v, serde_json::json!(["Chunk Test"]), "the PRINTED name, not the folded key");
 
         unload_store();
         assert!(!store_loaded());

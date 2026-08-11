@@ -7,6 +7,33 @@ export function __init_panic_hook() {
 }
 
 /**
+ * Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
+ * @param {string} prefix
+ * @param {number} limit
+ * @returns {string}
+ */
+export function autocomplete(prefix, limit) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.autocomplete(ptr0, len0, limit);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Start a chunked store load: preallocate the full aligned buffer up front
  * (one allocation, no growth reallocs while chunks stream in). Any previous
  * in-progress load is discarded; the ACTIVE store is untouched until
@@ -21,12 +48,101 @@ export function begin_store_load(total_len) {
 }
 
 /**
+ * One card by a marketplace or client id, or `null`. `namespace` is Scryfall's own path segment.
+ * @param {string} namespace
+ * @param {bigint} external_id
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function card_by_external_id(namespace, external_id, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(namespace, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.card_by_external_id(ptr0, len0, external_id, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * One card by Scryfall id, or `null`.
+ * @param {string} scryfall_id
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function card_by_scryfall_id(scryfall_id, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(scryfall_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.card_by_scryfall_id(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Oracle-card count of the loaded store; 0 when no store is loaded.
  * @returns {number}
  */
 export function card_count() {
     const ret = wasm.card_count();
     return ret >>> 0;
+}
+
+/**
+ * Cards by Scryfall id, in the order given, skipping misses. One boundary crossing for the whole
+ * batch: `POST /cards/collection` resolves up to 175 identifiers.
+ * @param {string} ids_json
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function cards_by_scryfall_ids(ids_json, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.cards_by_scryfall_ids(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
 }
 
 /**
@@ -66,6 +182,40 @@ export function finish_store_load() {
 }
 
 /**
+ * Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
+ *
+ * `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
+ * tell the client the card does not exist.
+ * @param {string} name
+ * @param {number} floor
+ * @param {number} lead
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function fuzzy_card_by_name(name, floor, lead, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.fuzzy_card_by_name(ptr0, len0, floor, lead, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * One-shot load for callers that already hold the whole archive (tests,
  * small stores). Copies `bytes` into an aligned buffer; prefer the chunked
  * API for production-size stores to avoid a second full-size JS-side copy.
@@ -77,6 +227,35 @@ export function init_store(bytes) {
     const ret = wasm.init_store(ptr0, len0);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Every printing of one oracle card, representative first. Empty array for an unknown id.
+ * @param {string} oracle_id
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function printings_of_oracle_id(oracle_id, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(oracle_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.printings_of_oracle_id(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 

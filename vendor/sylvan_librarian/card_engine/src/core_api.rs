@@ -22,16 +22,26 @@
 
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU32;
 
 use super::{
     AOracleCard, APrinting, AStrings, ARCHIVE_FORMAT_VERSION, ARCHIVE_HEADER_LEN, ARTIST_NONE,
-    CardData, CardRow, FaceRow, InlineStr, Interner, ManaCost, ManaVocabInterner, PERMANENT_TYPES,
-    QueryCtx, QueryParams, VocabInterner, archive_header, build_card_data,
-    card_types_list_to_bits, coll_str, color_list_to_mask, count_common_keywords,
-    count_common_types, format_shift_or_assign, identity_letters, lane_add, legality_bits_to_json,
-    legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text, run_query_routed, sorted_strs,
-    str_at, uuid_from_u128, write_archive,
+    CardData, CardRow, CompatFields, FaceRow, InlineStr, Interner, ManaCost, ManaVocabInterner,
+    PERMANENT_TYPES, QueryCtx, QueryParams, RelatedCard, VocabInterner, archive_header,
+    build_card_data, card_types_list_to_bits, coll_str, coll_str_opt, color_list_to_mask,
+    count_common_keywords, count_common_types, format_shift_or_assign, identity_letters, lane_add,
+    legality_bits_to_json, legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text,
+    frame_of, released_int_to_iso, run_query_routed, sorted_strs, str_at, uuid_from_u128, write_archive,
     DEFAULT_FIELDS,
+    // The compat residue's flag bits and bitset vocabularies, shared with FIELD_TABLE's twins.
+    COMPAT_BOOSTER, COMPAT_DIGITAL, COMPAT_FOIL, COMPAT_FULL_ART, COMPAT_HIGHRES_IMAGE,
+    COMPAT_NONFOIL, COMPAT_OVERSIZED, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_STORY_SPOTLIGHT,
+    COMPAT_TEXTLESS, COMPAT_VARIATION, FINISH_ETCHED, FINISH_FOIL, FINISH_GLOSSY, FINISH_NONFOIL,
+    FINISH_NAMES, GAME_ARENA, GAME_MTGO, GAME_NAMES, GAME_PAPER, VOCAB_NONE, bits_to_names,
+    compat_flag,
+    // The engine surface #912 adds: external-id addressing, fuzzy name match, autocomplete.
+    EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER, FuzzyOutcome,
+    find_printing_by_external_id, fuzzy_name_match,
 };
 use rkyv::Archived;
 use rkyv::util::AlignedVec;
@@ -262,6 +272,135 @@ fn jv_faces(d: &Value, it: &mut Interner, artists: &mut VocabInterner) -> Result
     Ok(faces)
 }
 
+/// Mirror of `opt_bool`: a missing key, a null and a non-bool all read false.
+fn jv_opt_bool(d: &Value, key: &str) -> bool {
+    d.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Mirror of `str_set_bits`: one bit per member present in a string list.
+fn jv_str_set_bits(d: &Value, key: &str, table: &[(&str, u8)]) -> u8 {
+    let present = jv_str_list(d, key);
+    table
+        .iter()
+        .filter(|(name, _)| present.iter().any(|p| p == name))
+        .fold(0u8, |acc, (_, bit)| acc | bit)
+}
+
+/// Mirror of `opt_nonzero_u32`: a 0 reads as absent, which is right for every field this is used
+/// on — an id or a price of 0 is not a value Scryfall sends.
+fn jv_opt_nonzero_u32(d: &Value, key: &str) -> Option<NonZeroU32> {
+    jv_opt_u32(d, key).and_then(NonZeroU32::new)
+}
+
+/// Mirror of `compat_from_pydict`: the residue Scryfall sends that no column holds, read out of
+/// `card_compat_blob`.
+///
+/// Absent keys stay at their sentinel: `VOCAB_NONE` for interned ids, `None` for the optionals,
+/// clear bits for the flags. Scryfall OMITS a key rather than sending null, so "zero" has to mean
+/// "was not there" or a reconstructed card object sprouts nulls Scryfall never sent.
+fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<CompatFields, EngineError> {
+    let Some(blob) = d.get("card_compat_blob").filter(|v| v.is_object()) else {
+        return Ok(CompatFields::default());
+    };
+    let prices = blob.get("prices").filter(|v| v.is_object());
+    let price = |key: &str| prices.and_then(|p| jv_opt_price_cents(p, key)).and_then(NonZeroU32::new);
+
+    let mut flags = 0u16;
+    for (key, bit) in [
+        ("booster", COMPAT_BOOSTER),
+        ("digital", COMPAT_DIGITAL),
+        ("foil", COMPAT_FOIL),
+        ("nonfoil", COMPAT_NONFOIL),
+        ("full_art", COMPAT_FULL_ART),
+        ("highres_image", COMPAT_HIGHRES_IMAGE),
+        ("oversized", COMPAT_OVERSIZED),
+        ("promo", COMPAT_PROMO),
+        ("reprint", COMPAT_REPRINT),
+        ("story_spotlight", COMPAT_STORY_SPOTLIGHT),
+        ("textless", COMPAT_TEXTLESS),
+        ("variation", COMPAT_VARIATION),
+    ] {
+        if jv_opt_bool(blob, key) {
+            flags |= bit;
+        }
+    }
+
+    let intern_opt = |vocab: &mut VocabInterner, value: Option<String>| -> Result<u16, EngineError> {
+        match value {
+            Some(v) => vocab.intern(v),
+            None => Ok(VOCAB_NONE),
+        }
+    };
+
+    Ok(CompatFields {
+        arena_id: jv_opt_nonzero_u32(blob, "arena_id"),
+        mtgo_id: jv_opt_nonzero_u32(blob, "mtgo_id"),
+        mtgo_foil_id: jv_opt_nonzero_u32(blob, "mtgo_foil_id"),
+        tcgplayer_id: jv_opt_nonzero_u32(blob, "tcgplayer_id"),
+        tcgplayer_etched_id: jv_opt_nonzero_u32(blob, "tcgplayer_etched_id"),
+        cardmarket_id: jv_opt_nonzero_u32(blob, "cardmarket_id"),
+        penny_rank: jv_opt_nonzero_u32(blob, "penny_rank"),
+        image_updated_at: jv_opt_nonzero_u32(blob, "image_updated_at"),
+        price_usd_foil: price("usd_foil"),
+        price_usd_etched: price("usd_etched"),
+        price_eur_foil: price("eur_foil"),
+        set_vid: intern_opt(vocab, jv_opt_str(blob, "set_id"))?,
+        lang_id: intern_opt(vocab, jv_opt_str(blob, "lang"))?,
+        image_status_id: intern_opt(vocab, jv_opt_str(blob, "image_status"))?,
+        set_type_id: intern_opt(vocab, jv_opt_str(blob, "set_type"))?,
+        security_stamp_id: intern_opt(vocab, jv_opt_str(blob, "security_stamp"))?,
+        games: jv_str_set_bits(blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
+        finishes: jv_str_set_bits(
+            blob,
+            "finishes",
+            &[
+                ("nonfoil", FINISH_NONFOIL),
+                ("foil", FINISH_FOIL),
+                ("etched", FINISH_ETCHED),
+                ("glossy", FINISH_GLOSSY),
+            ],
+        ),
+        flags,
+        // The pydict twin's `extract::<Vec<u32>>` is all-or-nothing: one non-integer element makes
+        // the whole list read as absent, so the filter_map here would diverge. `collect::<Option>`
+        // keeps the two agreeing.
+        multiverse_ids: blob
+            .get("multiverse_ids")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.iter().map(|v| v.as_u64().map(|n| n as u32)).collect::<Option<Vec<_>>>())
+            .unwrap_or_default(),
+        promo_types: jv_str_list_to_ids(blob, "promo_types", vocab)?,
+        frame_effects: jv_str_list_to_ids(blob, "frame_effects", vocab)?,
+    })
+}
+
+/// Mirror of `all_parts_from_pydict`: Scryfall's related-card list, in Scryfall's order (which is
+/// meaningful for melds — the two parts, then the result).
+fn jv_all_parts(d: &Value, it: &mut Interner, vocab: &mut VocabInterner) -> Result<Vec<RelatedCard>, EngineError> {
+    let Some(blob) = d.get("card_compat_blob").filter(|v| v.is_object()) else {
+        return Ok(Vec::new());
+    };
+    let Some(list) = blob.get("all_parts").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for part in list {
+        if !part.is_object() {
+            continue;
+        }
+        out.push(RelatedCard {
+            id: jv_opt_str(part, "id").map_or(0, |s| parse_uuid_or_hash(&s)),
+            name_id: it.intern(jv_opt_str(part, "name").unwrap_or_default()),
+            type_line_id: it.intern(jv_opt_str(part, "type_line").unwrap_or_default()),
+            component_id: match jv_opt_str(part, "component") {
+                Some(c) => vocab.intern(c)?,
+                None => VOCAB_NONE,
+            },
+        });
+    }
+    Ok(out)
+}
+
 /// Mirror of `mana_cost_from_pydict`: mana_cost_jsonb is an object whose keys
 /// are mana symbols and whose values are lists; a symbol's count is its list's
 /// length (capped at 127), 0 for a non-list value.
@@ -387,6 +526,8 @@ pub(crate) fn card_from_json(
         creature_toughness_text_id: it.intern_opt(jv_opt_str(d, "creature_toughness_text")),
 
         card_faces: jv_faces(d, it, artists)?,
+        all_parts: jv_all_parts(d, it, vocab)?,
+        compat: jv_compat(d, vocab)?,
     })
 }
 
@@ -580,6 +721,17 @@ impl RowEnc {
             self.u16v(x);
         }
     }
+    fn vec_u32(&mut self, v: &[u32]) {
+        self.u16v(v.len() as u16);
+        for &x in v {
+            self.u32v(x);
+        }
+    }
+    /// A niched id: 0 IS the absent case, exactly as `Option<NonZeroU32>` archives it, so this
+    /// costs 4 bytes rather than the tag-plus-payload 5 that `opt` would.
+    fn nonzero_u32(&mut self, v: &Option<NonZeroU32>) {
+        self.u32v(v.map_or(0, NonZeroU32::get));
+    }
 }
 
 struct RowDec<'a> {
@@ -609,6 +761,13 @@ impl<'a> RowDec<'a> {
     fn vec_u16(&mut self) -> Vec<u16> {
         let n = self.u16v() as usize;
         (0..n).map(|_| self.u16v()).collect()
+    }
+    fn vec_u32(&mut self) -> Vec<u32> {
+        let n = self.u16v() as usize;
+        (0..n).map(|_| self.u32v()).collect()
+    }
+    fn nonzero_u32(&mut self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.u32v())
     }
 }
 
@@ -686,6 +845,38 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
         e.u16v(f.card_artist_vid);
         e.u32v(f.flavor_text_id);
     }
+    // The related-card list and the compat residue ride the spill for the same reason the faces
+    // do, and with the same exposure: no upstream twin, no compile error if a field is forgotten,
+    // and the only symptom is that field being absent from every card object this port serves.
+    e.u16v(r.all_parts.len() as u16);
+    for part in &r.all_parts {
+        e.u128v(part.id);
+        e.u32v(part.name_id);
+        e.u32v(part.type_line_id);
+        e.u16v(part.component_id);
+    }
+    e.nonzero_u32(&r.compat.arena_id);
+    e.nonzero_u32(&r.compat.mtgo_id);
+    e.nonzero_u32(&r.compat.mtgo_foil_id);
+    e.nonzero_u32(&r.compat.tcgplayer_id);
+    e.nonzero_u32(&r.compat.tcgplayer_etched_id);
+    e.nonzero_u32(&r.compat.cardmarket_id);
+    e.nonzero_u32(&r.compat.penny_rank);
+    e.nonzero_u32(&r.compat.image_updated_at);
+    e.nonzero_u32(&r.compat.price_usd_foil);
+    e.nonzero_u32(&r.compat.price_usd_etched);
+    e.nonzero_u32(&r.compat.price_eur_foil);
+    e.u16v(r.compat.set_vid);
+    e.u16v(r.compat.lang_id);
+    e.u16v(r.compat.image_status_id);
+    e.u16v(r.compat.set_type_id);
+    e.u16v(r.compat.security_stamp_id);
+    e.u8v(r.compat.games);
+    e.u8v(r.compat.finishes);
+    e.u16v(r.compat.flags);
+    e.vec_u32(&r.compat.multiverse_ids);
+    e.vec_u16(&r.compat.promo_types);
+    e.vec_u16(&r.compat.frame_effects);
     e.0
 }
 
@@ -745,9 +936,10 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         },
         creature_power_text_id: d.u32v(),
         creature_toughness_text_id: d.u32v(),
-        // Must stay LAST and in exactly the encoder's field order: these initializers are
-        // evaluated top-to-bottom and each one consumes from the same cursor. The length check
-        // below is what turns any drift between the two halves into a loud error.
+        // These three must stay LAST, in this order, and in exactly the encoder's field order:
+        // struct-literal initializers are evaluated top-to-bottom and each one consumes from the
+        // same cursor. The length check below is what turns any drift between the two halves into
+        // a loud error.
         card_faces: {
             let n = d.u16v() as usize;
             (0..n)
@@ -766,6 +958,41 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
                     flavor_text_id: d.u32v(),
                 })
                 .collect()
+        },
+        all_parts: {
+            let n = d.u16v() as usize;
+            (0..n)
+                .map(|_| RelatedCard {
+                    id: d.u128v(),
+                    name_id: d.u32v(),
+                    type_line_id: d.u32v(),
+                    component_id: d.u16v(),
+                })
+                .collect()
+        },
+        compat: CompatFields {
+            arena_id: d.nonzero_u32(),
+            mtgo_id: d.nonzero_u32(),
+            mtgo_foil_id: d.nonzero_u32(),
+            tcgplayer_id: d.nonzero_u32(),
+            tcgplayer_etched_id: d.nonzero_u32(),
+            cardmarket_id: d.nonzero_u32(),
+            penny_rank: d.nonzero_u32(),
+            image_updated_at: d.nonzero_u32(),
+            price_usd_foil: d.nonzero_u32(),
+            price_usd_etched: d.nonzero_u32(),
+            price_eur_foil: d.nonzero_u32(),
+            set_vid: d.u16v(),
+            lang_id: d.u16v(),
+            image_status_id: d.u16v(),
+            set_type_id: d.u16v(),
+            security_stamp_id: d.u16v(),
+            games: d.u8v(),
+            finishes: d.u8v(),
+            flags: d.u16v(),
+            multiverse_ids: d.vec_u32(),
+            promo_types: d.vec_u16(),
+            frame_effects: d.vec_u16(),
         },
     };
     if d.at != buf.len() {
@@ -914,6 +1141,192 @@ impl BufferStore {
                 card_to_json(card, &data.printings[preferred], &data.strings, &data.coll_vocab, &resolved_fields)
             })
             .collect())
+    }
+
+    // ─── Single-card addressing (mirrors of the #[pymethods] of the same names) ──────────────
+    //
+    // Upstream reaches these through pyo3 and falls back to SQL when the engine cannot answer.
+    // This port has no SQL, so a None here IS the 404 — see the module comment and the README's
+    // "Deviations from upstream". Every one of them runs in the Durable Object, never the isolate.
+
+    /// Mirror of the pyo3 `card_by_scryfall_id()`.
+    pub fn card_by_scryfall_id(&self, scryfall_id: &str, fields: Option<Vec<String>>) -> Result<Option<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        let Some(pid) = super::find_printing_by_scryfall_id(
+            &data.indexes.printing_by_scryfall_id,
+            &data.printings,
+            parse_uuid_or_hash(scryfall_id),
+        ) else {
+            return Ok(None);
+        };
+        let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+        Ok(Some(card_to_json(
+            &data.cards[cid],
+            &data.printings[pid as usize],
+            &data.strings,
+            &data.coll_vocab,
+            &resolved_fields,
+        )))
+    }
+
+    /// [`Self::card_by_scryfall_id`] over many ids at once, in the order given, skipping misses.
+    ///
+    /// A batch rather than a loop of wasm calls: `POST /cards/collection` resolves up to 175
+    /// identifiers, and crossing the JS/wasm boundary once with the whole list keeps that one
+    /// serialization instead of 175.
+    pub fn cards_by_scryfall_ids(
+        &self,
+        scryfall_ids: &[String],
+        fields: Option<Vec<String>>,
+    ) -> Result<Vec<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        let mut out = Vec::with_capacity(scryfall_ids.len());
+        for id in scryfall_ids {
+            let Some(pid) = super::find_printing_by_scryfall_id(
+                &data.indexes.printing_by_scryfall_id,
+                &data.printings,
+                parse_uuid_or_hash(id),
+            ) else {
+                continue;
+            };
+            let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+            out.push(card_to_json(
+                &data.cards[cid],
+                &data.printings[pid as usize],
+                &data.strings,
+                &data.coll_vocab,
+                &resolved_fields,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Mirror of the pyo3 `printings_of_oracle_id()`: every printing of one card, in stored
+    /// (descending default-prefer) order, so the first is the representative printing.
+    pub fn printings_of_oracle_id(
+        &self,
+        oracle_id: &str,
+        fields: Option<Vec<String>>,
+    ) -> Result<Vec<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        let Some(cid) = super::find_oracle_by_oracle_id(
+            &data.indexes.oracle_by_oracle_id,
+            &data.cards,
+            parse_uuid_or_hash(oracle_id),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let cid = cid as usize;
+        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+        Ok((start..end)
+            .map(|pid| {
+                card_to_json(&data.cards[cid], &data.printings[pid], &data.strings, &data.coll_vocab, &resolved_fields)
+            })
+            .collect())
+    }
+
+    /// Mirror of the pyo3 `card_by_external_id()`. An unknown namespace is a query error rather
+    /// than a miss, so a typo in the path reads as a bad request instead of "no such card".
+    pub fn card_by_external_id(
+        &self,
+        namespace: &str,
+        external_id: u64,
+        fields: Option<Vec<String>>,
+    ) -> Result<Option<Value>, EngineError> {
+        let ns = match namespace {
+            "multiverse" => EXT_MULTIVERSE,
+            "mtgo" => EXT_MTGO,
+            "arena" => EXT_ARENA,
+            "tcgplayer" => EXT_TCGPLAYER,
+            "cardmarket" => EXT_CARDMARKET,
+            other => return Err(EngineError::query(format!("unknown id namespace {other:?}"))),
+        };
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        let Some(pid) = find_printing_by_external_id(&data.indexes.external_id_index, ns, external_id) else {
+            return Ok(None);
+        };
+        let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+        Ok(Some(card_to_json(
+            &data.cards[cid],
+            &data.printings[pid as usize],
+            &data.strings,
+            &data.coll_vocab,
+            &resolved_fields,
+        )))
+    }
+
+    /// Mirror of the pyo3 `fuzzy_card_by_name()`: `("hit", card)`, `("ambiguous", None)` or
+    /// `("miss", None)`.
+    ///
+    /// Ambiguous stays distinct from a miss because Scryfall reports it, and answering 404 would
+    /// tell the client the card does not exist.
+    pub fn fuzzy_card_by_name(
+        &self,
+        name: &str,
+        floor: f32,
+        lead: f32,
+        fields: Option<Vec<String>>,
+    ) -> Result<(&'static str, Option<Value>), EngineError> {
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        match fuzzy_name_match(&data.cards, name, floor, lead) {
+            FuzzyOutcome::Miss => Ok(("miss", None)),
+            FuzzyOutcome::Ambiguous => Ok(("ambiguous", None)),
+            FuzzyOutcome::Hit(cid) => {
+                let cid = cid as usize;
+                // The card's default-preferred printing, the same one every other by-name path shows.
+                let preferred = u32::from(data.offsets[cid]) as usize;
+                Ok((
+                    "hit",
+                    Some(card_to_json(
+                        &data.cards[cid],
+                        &data.printings[preferred],
+                        &data.strings,
+                        &data.coll_vocab,
+                        &resolved_fields,
+                    )),
+                ))
+            }
+        }
+    }
+
+    /// Mirror of the pyo3 `autocomplete()`, but returning the card's PRINTED name rather than the
+    /// folded/lowered key it matched on.
+    ///
+    /// DELIBERATE DEVIATION from the pyo3 twin, which returns `card_name_lower`. Scryfall's
+    /// autocomplete catalog is a list of names a client can hand straight back to
+    /// `/cards/named?exact=`, and `"lightning bolt"` is not the name Scryfall prints. Upstream's
+    /// route never called the engine method (it went to SQL, which selected `card_name`), so the
+    /// lowercase return was never on the wire there; here it would be.
+    pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
+        let data = self.data();
+        let needle = prefix.to_lowercase();
+        // Upstream's `ORDER BY rank, length(card_name), card_name` with rank 0 for a prefix match
+        // and 1 for a bare substring. Sorted whole rather than short-circuited: the ordering is by
+        // LENGTH, so a shorter name later in the corpus outranks a longer one already found, and
+        // stopping at `limit` matches would answer with the wrong ones. ~31,700 names is a scan
+        // measured in single-digit milliseconds, and it runs in the DO's 30 s, not the isolate's.
+        let mut hits: Vec<(u8, usize, &str)> = Vec::new();
+        for card in data.cards.iter() {
+            let lower = card.card_name_lower.as_str();
+            let rank = if lower.starts_with(&needle) {
+                0u8
+            } else if lower.contains(&needle) {
+                1u8
+            } else {
+                continue;
+            };
+            let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(lower);
+            hits.push((rank, printed.len(), printed));
+        }
+        hits.sort_unstable();
+        // One entry per distinct printed name: several printings of one card are one suggestion.
+        hits.dedup_by(|a, b| a.2 == b.2);
+        hits.into_iter().take(limit).map(|(_, _, name)| name.to_owned()).collect()
     }
 }
 
@@ -1108,7 +1521,138 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
         let bits = if c.legality_divergent { u64::from(p.card_legalities) } else { u64::from(c.card_legalities) };
         legality_bits_to_json(bits)
     }),
+    // ── The compat residue and the rest of a card object (upstream #912) ─────────────────────
+    // Same standing note as #877's five above: FIELD_TABLE's 40 additions compile to nothing in
+    // this port, so these hand-written twins are the live table. `null` here is how "Scryfall
+    // omitted this key" travels; `toScryfallCard` on the TypeScript side drops null-valued keys
+    // rather than emitting them, which is what keeps a reconstructed object shaped like
+    // Scryfall's instead of sprouting nulls Scryfall never sent.
+    ("lang", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.lang_id)))),
+    ("image_status", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.image_status_id)))),
+    ("set_type", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.set_type_id)))),
+    ("security_stamp", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.security_stamp_id)))),
+    ("set_id", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.set_vid)))),
+    ("arena_id", |_c, p, _s, _v| opt_u32_value(p.compat.arena_id.as_ref().map(|v| u32::from(v.get())))),
+    ("mtgo_id", |_c, p, _s, _v| opt_u32_value(p.compat.mtgo_id.as_ref().map(|v| u32::from(v.get())))),
+    ("mtgo_foil_id", |_c, p, _s, _v| opt_u32_value(p.compat.mtgo_foil_id.as_ref().map(|v| u32::from(v.get())))),
+    ("tcgplayer_id", |_c, p, _s, _v| opt_u32_value(p.compat.tcgplayer_id.as_ref().map(|v| u32::from(v.get())))),
+    ("tcgplayer_etched_id", |_c, p, _s, _v| opt_u32_value(p.compat.tcgplayer_etched_id.as_ref().map(|v| u32::from(v.get())))),
+    ("cardmarket_id", |_c, p, _s, _v| opt_u32_value(p.compat.cardmarket_id.as_ref().map(|v| u32::from(v.get())))),
+    ("penny_rank", |_c, p, _s, _v| opt_u32_value(p.compat.penny_rank.as_ref().map(|v| u32::from(v.get())))),
+    ("image_updated_at", |_c, p, _s, _v| opt_u32_value(p.compat.image_updated_at.as_ref().map(|v| u32::from(v.get())))),
+    // Dollars from integer cents, the same conversion price_usd uses.
+    ("price_usd_foil", |_c, p, _s, _v| opt_cents_value(p.compat.price_usd_foil.as_ref().map(|v| u32::from(v.get())))),
+    ("price_usd_etched", |_c, p, _s, _v| opt_cents_value(p.compat.price_usd_etched.as_ref().map(|v| u32::from(v.get())))),
+    ("price_eur_foil", |_c, p, _s, _v| opt_cents_value(p.compat.price_eur_foil.as_ref().map(|v| u32::from(v.get())))),
+    ("multiverse_ids", |_c, p, _s, _v| {
+        Value::Array(p.compat.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
+    }),
+    ("promo_types", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.compat.promo_types))),
+    ("frame_effects", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.compat.frame_effects))),
+    ("games", |_c, p, _s, _v| str_vec_value(bits_to_names(u8::from(p.compat.games), GAME_NAMES))),
+    ("finishes", |_c, p, _s, _v| str_vec_value(bits_to_names(u8::from(p.compat.finishes), FINISH_NAMES))),
+    ("booster", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_BOOSTER))),
+    ("digital", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_DIGITAL))),
+    ("foil", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_FOIL))),
+    ("nonfoil", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_NONFOIL))),
+    ("full_art", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_FULL_ART))),
+    ("highres_image", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_HIGHRES_IMAGE))),
+    ("oversized", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_OVERSIZED))),
+    ("promo", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_PROMO))),
+    ("reprint", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_REPRINT))),
+    ("story_spotlight", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_STORY_SPOTLIGHT))),
+    ("textless", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_TEXTLESS))),
+    ("variation", |_c, p, _s, _v| Value::from(compat_flag(p, COMPAT_VARIATION))),
+    ("card_faces", |c, p, s, v| faces_to_json(c, p, s, v)),
+    ("all_parts", |c, _p, s, v| {
+        Value::Array(
+            c.all_parts
+                .iter()
+                .map(|part| {
+                    let mut m = Map::with_capacity(5);
+                    m.insert("object".to_owned(), Value::from("related_card"));
+                    m.insert("id".to_owned(), uuid_value(u128::from(part.id)));
+                    m.insert("component".to_owned(), opt_str_value(coll_str_opt(v, u16::from(part.component_id))));
+                    m.insert("name".to_owned(), opt_str_value(str_at(s, u32::from(part.name_id))));
+                    m.insert("type_line".to_owned(), opt_str_value(str_at(s, u32::from(part.type_line_id))));
+                    Value::Object(m)
+                })
+                .collect(),
+        )
+    }),
+    ("colors", |c, _p, _s, _v| str_vec_value(identity_letters(u8::from(c.card_colors)))),
+    // See FIELD_TABLE's note: upstream emits `border_color: null` on every engine-served card and
+    // omits `frame`, because neither had an accessor. Scryfall always sends both.
+    ("border_color", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.card_border_id)))),
+    ("frame", |_c, p, _s, v| opt_str_value(frame_of(p, v))),
+    ("oracle_id", |c, _p, _s, _v| uuid_value(u128::from(c.oracle_id))),
+    ("flavor_text", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.flavor_text_id)))),
+    ("artist", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.card_artist_vid)))),
+    ("watermark", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.card_watermark_id)))),
+    ("edhrec_rank", |c, _p, _s, _v| {
+        c.edhrec_rank.as_ref().copied().map(|v| Value::from(u32::from(v))).unwrap_or(Value::Null)
+    }),
+    ("released_at", |_c, p, _s, _v| {
+        p.released_at_int
+            .as_ref()
+            .copied()
+            .map(|v| Value::String(released_int_to_iso(u32::from(v))))
+            .unwrap_or(Value::Null)
+    }),
 ];
+
+/// A niched optional id as JSON. The residue stores the eleven sparse ids as `Option<NonZeroU32>`
+/// so rkyv can put the None in the value itself; absent is `null` here, never `0`.
+fn opt_u32_value(v: Option<u32>) -> Value {
+    v.map(Value::from).unwrap_or(Value::Null)
+}
+
+/// Dollars from the stored integer cents, or `null` — the same conversion `price_usd` uses.
+fn opt_cents_value(v: Option<u32>) -> Value {
+    v.map(|c| Value::from(f64::from(c) / 100.0)).unwrap_or(Value::Null)
+}
+
+/// JSON twin of `faces_to_pylist`: text from the oracle card, art from this printing.
+///
+/// `object` and `image_uris` are omitted deliberately -- the first is the constant "card_face",
+/// the second a pure function of the card's id and the face's position, so the caller re-emits
+/// both. A printing carrying fewer face-art records than the card has faces leaves those faces
+/// without art rather than borrowing the wrong face's, exactly as the pydict twin does.
+fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, vocab: &AStrings) -> Value {
+    Value::Array(
+        card.faces
+            .iter()
+            .enumerate()
+            .map(|(i, face)| {
+                let mut m = Map::with_capacity(12);
+                m.insert("name".to_owned(), opt_str_value(str_at(strings, u32::from(face.card_name_id))));
+                m.insert("mana_cost".to_owned(), opt_str_value(str_at(strings, u32::from(face.mana_cost_text_id))));
+                m.insert("type_line".to_owned(), opt_str_value(str_at(strings, u32::from(face.type_line_id))));
+                m.insert("oracle_text".to_owned(), opt_str_value(str_at(strings, u32::from(face.oracle_text_id))));
+                m.insert("power".to_owned(), opt_str_value(str_at(strings, u32::from(face.creature_power_text_id))));
+                m.insert(
+                    "toughness".to_owned(),
+                    opt_str_value(str_at(strings, u32::from(face.creature_toughness_text_id))),
+                );
+                m.insert(
+                    "loyalty".to_owned(),
+                    opt_str_value(str_at(strings, u32::from(face.planeswalker_loyalty_text_id))),
+                );
+                m.insert("colors".to_owned(), str_vec_value(identity_letters(u8::from(face.card_colors))));
+                m.insert(
+                    "color_indicator".to_owned(),
+                    str_vec_value(identity_letters(u8::from(face.color_indicator))),
+                );
+                if let Some(art) = printing.faces.get(i) {
+                    m.insert("artist".to_owned(), opt_str_value(coll_str_opt(vocab, u16::from(art.card_artist_vid))));
+                    m.insert("illustration_id".to_owned(), uuid_value(u128::from(art.illustration_id)));
+                    m.insert("flavor_text".to_owned(), opt_str_value(str_at(strings, u32::from(art.flavor_text_id))));
+                }
+                Value::Object(m)
+            })
+            .collect(),
+    )
+}
 
 /// Mirror of `resolve_fields`: dedupe repeats, reject unknown names, `None` →
 /// DEFAULT_FIELDS. Same error message shape as the pyo3 UnknownFieldError.
