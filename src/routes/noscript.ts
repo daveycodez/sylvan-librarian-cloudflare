@@ -193,10 +193,41 @@ export function formatOracleText(oracleText: string, isModal = false): string {
 	return convertManaSymbols(oracleText, isModal).replaceAll("\n", "<br>");
 }
 
-/** Build the CloudFront URL for a card image. */
-export function buildImageUrl(card: CardRow, size: string): string {
-	const face = card.face_idx ?? 1;
-	return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${face}/${size}.webp`;
+/**
+ * DELIBERATE DEVIATION from upstream: card images come from Scryfall's own CDN,
+ * not upstream's CloudFront mirror.
+ *
+ * That mirror is populated by scripts/copy_images_to_s3.py against upstream's
+ * Postgres and S3. This deployment has neither, so it was reading from a bucket
+ * it cannot write to and does not control — and getting the wrong bytes: for
+ * every transform/MDFC card the mirror's face-1 object is the BACK face's art
+ * (measured: img/bot/6/1/*.webp is Slicer, High-Speed Antagonist), and no face-2
+ * object exists at all. Fixed upstream separately; this port stops depending on
+ * the mirror either way.
+ *
+ * Scryfall's path is a pure function of the card's id and the face side, so
+ * nothing extra needs storing — which is also why upstream's own
+ * `to_scryfall_card` re-emits `image_uris` rather than keeping them.
+ *
+ * `version` is one of Scryfall's names, not a pixel width: `normal` is 488px
+ * wide, `large` 672, and `png` 745 (the only lossless one, and the only one with
+ * a transparent rounded corner).
+ */
+const SCRYFALL_IMAGE_HOST = "https://cards.scryfall.io";
+
+export function scryfallImageUrl(scryfallId: string, version: string, back = false): string {
+	// Scryfall shards on the first two hex characters of the id.
+	return `${SCRYFALL_IMAGE_HOST}/${version}/${back ? "back" : "front"}/${scryfallId[0]}/${scryfallId[1]}/${scryfallId}.${
+		version === "png" ? "png" : "jpg"
+	}`;
+}
+
+/** Build the image URL for a card row (front face; the no-JS render never flips). */
+export function buildImageUrl(card: CardRow, version: string): string {
+	const id = typeof card.scryfall_id === "string" ? card.scryfall_id : "";
+	// No id means no derivable URL. Returning "" yields an empty src rather than a
+	// URL that 404s on every size in the srcset.
+	return id ? scryfallImageUrl(id, version) : "";
 }
 
 function str(value: unknown): string {
@@ -225,21 +256,20 @@ function buildAltText(card: CardRow): string {
 export function createCardHtml(card: CardRow, index: number): string {
 	const cardId = String(index);
 
-	// Build image URLs for srcset - using 4 sizes uniformly spread between 280 and 745
-	const image280 = buildImageUrl(card, "280");
-	const image388 = buildImageUrl(card, "388");
-	const image538 = buildImageUrl(card, "538");
-	const image745 = buildImageUrl(card, "745");
+	// Scryfall publishes three widths rather than upstream's four, so the srcset
+	// carries the widths that actually exist instead of four names for the same
+	// bytes. The default src stays the middle one, as it was at 388.
+	const imageNormal = buildImageUrl(card, "normal"); // 488w jpg
+	const imageLarge = buildImageUrl(card, "large"); // 672w jpg
+	const imagePng = buildImageUrl(card, "png"); // 745w png, lossless
 
 	const altText = buildAltText(card);
 
-	// Build srcset and sizes for responsive images; sizes breakpoints are one
-	// below the CSS grid min-width thresholds (see upstream comment).
+	// sizes breakpoints are one below the CSS grid min-width thresholds
+	// (see upstream comment) and are unchanged: they describe the LAYOUT, not
+	// the image sources, so they stay correct across a different set of widths.
 	const srcset =
-		`${escapeHtml(image280)} 280w, ` +
-		`${escapeHtml(image388)} 388w, ` +
-		`${escapeHtml(image538)} 538w, ` +
-		`${escapeHtml(image745)} 745w`;
+		`${escapeHtml(imageNormal)} 488w, ` + `${escapeHtml(imageLarge)} 672w, ` + `${escapeHtml(imagePng)} 745w`;
 	const sizes =
 		"(max-width: 409px) calc(100vw - 3.6em), " +
 		"(max-width: 749px) calc(50vw - 2.6em - 7.5px), " +
@@ -252,7 +282,7 @@ export function createCardHtml(card: CardRow, index: number): string {
 	const lazyAttr = index < EAGER_LOAD_COUNT ? "" : ' loading="lazy"';
 	const imgTag =
 		`<img class="card-image" ` +
-		`src="${escapeHtml(image388)}" ` +
+		`src="${escapeHtml(imageNormal)}" ` +
 		`srcset="${srcset}" ` +
 		`sizes="${sizes}" ` +
 		`alt="${altText}" title="${altText}"${priorityAttr}${lazyAttr} />`;

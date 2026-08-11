@@ -50,7 +50,24 @@ export const RESULT_FIELD_NAMES: readonly string[] = [
 // and the internal search default can never drift apart (upstream DEFAULT_OFFSET).
 export const DEFAULT_OFFSET = 0;
 
-// `fields=None` resolves to these 9 (upstream DEFAULT_RESULT_FIELDS).
+// `fields=None` resolves to these. Upstream's DEFAULT_RESULT_FIELDS is the first
+// nine.
+//
+// DELIBERATE DEVIATION: `scryfall_id` is this port's tenth. Card images here come
+// from Scryfall's CDN rather than upstream's CloudFront mirror (see
+// noscript.ts's buildImageUrl), and Scryfall's image path is a pure function of
+// the card's id — so without the id in the default response, neither the no-JS
+// render nor app.js can build an image URL at all.
+//
+// It has to be a DEFAULT rather than something the page asks for explicitly:
+// `/random_search` accepts only `num_cards` and `shape` (RANDOM_SEARCH_SPEC), so
+// there is no `fields` parameter for the front page to pass. Adding one would be
+// a wider deviation than adding the field.
+//
+// Safe to add because `scryfall_id` is already in JSON_FIELD_TABLE — the live,
+// non-pyo3 table in core_api.rs. A name in the defaults WITHOUT a twin there is
+// what breaks every default search; that is why #877's five fields are in
+// RESULT_FIELD_NAMES but not here.
 export const DEFAULT_RESULT_FIELDS: readonly string[] = [
 	"name",
 	"set_code",
@@ -61,6 +78,7 @@ export const DEFAULT_RESULT_FIELDS: readonly string[] = [
 	"oracle_text",
 	"set_name",
 	"type_line",
+	"scryfall_id",
 ];
 
 /** A falcon.HTTPBadRequest-shaped failure raised inside the search core. */

@@ -533,30 +533,68 @@ body {
 
 /* Flip button for double-faced cards, injected by JS when a back-face image exists.
    Sits over the card image's top-right corner, like Scryfall's transform button. */
+/* Geometry, colours and timing taken from Scryfall's own
+   .card-grid-item-transform-button, so the control reads as the same control. */
 .card-flip-button {
   position: absolute;
-  top: 1.6em;
-  right: 1.6em;
+  /* NOT a corner. Scryfall places it over the right edge of the artwork about a
+     quarter of the way down — roughly where the transform icon sits on the
+     printed card. Percentages, so it tracks the image at every grid density
+     instead of drifting as the card resizes. */
+  top: 26%;
+  left: 75%;
   z-index: 2;
-  width: 2.2em;
-  height: 2.2em;
-  border: none;
-  border-radius: 50%;
-  background: var(--color-card-background);
-  color: var(--color-text-primary);
-  box-shadow: 0 2px 8px var(--color-shadow-dark);
-  font-size: 1em;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* White disc, dark ring — it has to read against both a black card border and
+     bright artwork, and inverting to a dark fill loses it against the border. */
+  border: 2px solid #343242;
+  border-radius: 100%;
+  background: #fff;
+  color: #343242;
+  font-size: 24px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.85;
+  /* Always present, dimmed. Revealing on hover would make it undiscoverable on
+     touch, where there is no hover at all — and Scryfall does not hide it either. */
+  opacity: 0.6;
   transition:
-    opacity 0.15s ease,
-    transform 0.15s ease;
+    background-color 200ms linear,
+    opacity 50ms linear;
 }
 
-.card-flip-button:hover {
+/* Inverted while the BACK face is showing (Scryfall's `.spooky`). The button is
+   the only thing on screen that says which face you are looking at once the art
+   has changed, so it carries the state rather than just the action. */
+.card-flip-button.showing-back {
+  background: #343242;
+  border-color: #fff;
+  color: #fff;
+}
+
+.card-flip-button:hover,
+.card-flip-button:active,
+.card-flip-button:focus-visible {
   opacity: 1;
-  transform: rotate(180deg);
+}
+
+.card-flip-button:focus-visible {
+  outline: 2px solid #343242;
+  outline-offset: 2px;
+}
+
+.card-flip-button.showing-back:focus-visible {
+  outline-color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-flip-button {
+    transition: none;
+  }
 }
 
 .card-image-flipping {

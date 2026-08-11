@@ -7,9 +7,14 @@ function escapeHtml(str) {
   return String(str).replace(HTML_ESCAPE_RE, c => HTML_ESCAPE_MAP[c]);
 }
 
-function buildImageUrl(card, size, face) {
-  const resolvedFace = face || card.face_idx || 1;
-  return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${resolvedFace}/${size}.webp`;
+// LOCAL PATCH (Cloudflare port): Scryfall's CDN, not upstream's CloudFront mirror.
+// See the same function in app.js for why. `version` is a Scryfall name, not a
+// pixel width: normal = 488w, large = 672w, png = 745w and lossless.
+function buildImageUrl(card, version, face) {
+  if (!card.scryfall_id) return '';
+  const side = Number(face) === 2 ? 'back' : 'front';
+  const ext = version === 'png' ? 'png' : 'jpg';
+  return `https://cards.scryfall.io/${version}/${side}/${card.scryfall_id[0]}/${card.scryfall_id[1]}/${card.scryfall_id}.${ext}`;
 }
 
 // Flip button for double-faced cards, mirroring the search page's progressive enhancement:
@@ -26,6 +31,7 @@ function attachFlipButton(container, card) {
     button.className = 'card-flip-button';
     button.title = 'Transform';
     button.setAttribute('aria-label', 'Show other face');
+    button.setAttribute('aria-pressed', 'false');
     button.textContent = '⟳';
     button.addEventListener('click', event => {
       event.preventDefault();
@@ -34,15 +40,19 @@ function attachFlipButton(container, card) {
       if (!img) return;
       const nextFace = wrapper.dataset.shownFace === '2' ? 1 : 2;
       wrapper.dataset.shownFace = String(nextFace);
+      // Inverted while the back is showing (Scryfall's `.spooky`), toggled now
+      // rather than after the transition so the control answers the click.
+      button.classList.toggle('showing-back', nextFace === 2);
+      button.setAttribute('aria-pressed', nextFace === 2 ? 'true' : 'false');
       img.classList.add('card-image-flipping');
       setTimeout(() => {
-        img.src = buildImageUrl(card, '745', nextFace);
+        img.src = buildImageUrl(card, 'png', nextFace);
         img.classList.remove('card-image-flipping');
       }, 150);
     });
     wrapper.appendChild(button);
   };
-  probe.src = buildImageUrl(card, '280', 2);
+  probe.src = buildImageUrl(card, 'normal', 2);
 }
 
 const MANA_SYMBOLS = new Map([
@@ -127,7 +137,7 @@ function formatOracleText(text) {
 }
 
 function renderCardFace(card) {
-  const imageLarge = buildImageUrl(card, '745');
+  const imageLarge = buildImageUrl(card, 'png');
   const imgTag = `<img class="modal-image" src="${escapeHtml(imageLarge)}" width="745" height="1040" alt="${escapeHtml(card.name || '')}" />`;
   let imageHtml;
   if (card.set_code && card.collector_number) {
@@ -199,7 +209,7 @@ function groupPrintingsByArt(cards) {
 function renderPrintingsStrip(groups) {
   return groups
     .map(({ representative: card, count }) => {
-      const thumb = buildImageUrl(card, '280');
+      const thumb = buildImageUrl(card, 'normal');
       const url = `/card/${card.set_code}/${card.collector_number}`;
       const label = escapeHtml(`${card.set_name || card.set_code || ''}${formatUsd(card.price_usd)}`);
       const badge = count > 1 ? `<span class="printing-thumb-count">+${count - 1}</span>` : '';

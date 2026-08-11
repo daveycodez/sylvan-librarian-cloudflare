@@ -163,6 +163,17 @@ The complete list of intentional differences:
 - **No SQL fallback.** Upstream quietly falls back to Postgres when the engine
   declines a query; the wasm engine is the only path here, so an engine
   failure is a loud 500 rather than a silently different answer.
+- **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
+  That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
+  Postgres and S3, neither of which this deployment has — so it was reading a
+  bucket it cannot write to, and getting the wrong bytes: for every
+  transform/MDFC card the mirror's face-1 object is the **back** face's art, and
+  no face-2 object exists at all (fixed upstream separately). Scryfall's path is
+  a pure function of the card's id, so nothing extra is stored. Two consequences:
+  `scryfall_id` is a tenth default result field (`/random_search` has no `fields`
+  parameter for the page to ask for it), and the srcset advertises Scryfall's
+  three real widths — 488/672/745 — rather than upstream's four renditions.
+  Fonts still come from upstream's CDN, which is why the CSP keeps naming it.
 - **Fixed site title**: pages always say "Sylvan Librarian" instead of
   upstream's hostname-derived name. The derivation port stays tested in
   `src/routes/site-name.ts`.

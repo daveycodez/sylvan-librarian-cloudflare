@@ -3,6 +3,7 @@
 // index redirects.
 
 import { beforeEach, describe, expect, test } from "bun:test";
+import { buildImageUrl, createCardHtml, scryfallImageUrl } from "../../src/routes/noscript";
 import { installFakeParser, json, makeCtx, testDispatch } from "./harness";
 
 beforeEach(() => {
@@ -124,4 +125,44 @@ describe("legacy index redirects", () => {
 			expect(res.headers.get("Location")).toBe("/");
 		});
 	}
+});
+
+// Card images are a DELIBERATE DEVIATION: Scryfall's CDN, not upstream's CloudFront
+// mirror. The port has no pipeline to populate that mirror, and the mirror is wrong
+// for exactly the cards this matters for — its face-1 object is the BACK face's art
+// for every transform/MDFC card, and it has no face-2 object at all.
+//
+// Worth pinning rather than trusting: an image URL that silently 404s looks like a
+// missing image, not like a bug, and nothing else in the suite would notice.
+describe("card images come from Scryfall, derived from scryfall_id", () => {
+	const ID = "9d9a9350-4734-4cc1-986d-467e6715199f";
+
+	test("the front URL shards on the first two characters of the id", () => {
+		expect(scryfallImageUrl(ID, "normal")).toBe(`https://cards.scryfall.io/normal/front/9/d/${ID}.jpg`);
+	});
+
+	test("png is the lossless version and carries the matching extension", () => {
+		expect(scryfallImageUrl(ID, "png")).toBe(`https://cards.scryfall.io/png/front/9/d/${ID}.png`);
+		expect(scryfallImageUrl(ID, "large")).toEndWith(".jpg");
+	});
+
+	test("the back face is a side, not a face index", () => {
+		expect(scryfallImageUrl(ID, "normal", true)).toContain("/back/");
+		expect(scryfallImageUrl(ID, "normal", false)).toContain("/front/");
+	});
+
+	test("a row without scryfall_id yields no URL rather than a 404-ing one", () => {
+		expect(buildImageUrl({ name: "Whatever", set_code: "bot", collector_number: "6" }, "normal")).toBe("");
+	});
+
+	test("a rendered card names Scryfall and never the CloudFront mirror", () => {
+		const html = createCardHtml({ name: "Slicer, Hired Muscle", scryfall_id: ID }, 0);
+		expect(html).toContain("cards.scryfall.io");
+		expect(html).not.toContain("cloudfront.net");
+		// The srcset advertises the widths Scryfall actually publishes. Claiming a
+		// width the CDN does not serve makes the browser pick the wrong source.
+		expect(html).toContain("488w");
+		expect(html).toContain("672w");
+		expect(html).toContain("745w");
+	});
 });

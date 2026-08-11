@@ -82,7 +82,7 @@ describe("search fields", () => {
 		expect(await json(res)).toEqual({ title: "Invalid Fields", description: "Unknown field: 'bogus'" });
 	});
 
-	test("fields are deduped and forwarded; default is the usual 9", async () => {
+	test("fields are deduped and forwarded; default is upstream's 9 plus scryfall_id", async () => {
 		const engine = new FakeEngine();
 		await testDispatch(makeCtx({ engine }), "/search?q=elf&fields=name,name,set_code");
 		expect(engine.lastSearch?.fields).toEqual(["name", "set_code"]);
@@ -98,6 +98,10 @@ describe("search fields", () => {
 			"oracle_text",
 			"set_name",
 			"type_line",
+			// DELIBERATE DEVIATION, pinned here so it cannot be dropped by accident:
+			// card images are derived from this id (see noscript.ts buildImageUrl), and
+			// /random_search has no `fields` parameter for the page to ask for it.
+			"scryfall_id",
 		]);
 	});
 });

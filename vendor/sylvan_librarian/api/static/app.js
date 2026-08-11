@@ -778,13 +778,28 @@ class CardSearch {
     this.resultsContainer.style.gridTemplateColumns = `repeat(${actualColumns}, 1fr)`;
   }
 
-  buildImageUrl(card, size, face) {
-    const resolvedFace = face || card.face_idx || 1;
-    return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${resolvedFace}/${size}.webp`;
+  // LOCAL PATCH (Cloudflare port): images come from Scryfall's CDN, not upstream's
+  // CloudFront mirror. That mirror is populated by scripts/copy_images_to_s3.py against
+  // upstream's Postgres and S3; this deployment has neither, so it was reading a bucket it
+  // cannot write to and getting the wrong bytes — for every transform/MDFC card the face-1
+  // object is the BACK face's art, and no face-2 object exists. Scryfall's path is a pure
+  // function of the card's id, so face 2 needs nothing stored and nothing uploaded.
+  //
+  // `version` is a Scryfall name, not a pixel width: normal = 488w, large = 672w,
+  // png = 745w and lossless. Face is a side, not an index — Scryfall has exactly two.
+  buildImageUrl(card, version, face) {
+    if (!card.scryfall_id) return '';
+    const side = Number(face) === 2 ? 'back' : 'front';
+    const ext = version === 'png' ? 'png' : 'jpg';
+    return `https://cards.scryfall.io/${version}/${side}/${card.scryfall_id[0]}/${card.scryfall_id[1]}/${card.scryfall_id}.${ext}`;
   }
 
   buildSrcset(card, face) {
-    return ['280', '388', '538', '745'].map(size => `${this.buildImageUrl(card, size, face)} ${size}w`).join(', ');
+    // The three widths Scryfall actually publishes, rather than four names for the
+    // same bytes. `sizes` is unchanged: it describes the layout, not the sources.
+    return [['normal', 488], ['large', 672], ['png', 745]]
+      .map(([version, width]) => `${this.buildImageUrl(card, version, face)} ${width}w`)
+      .join(', ');
   }
 
   // ── Double-faced cards: flip button (progressive enhancement) ──
@@ -813,7 +828,7 @@ class CardSearch {
       onExists();
     };
     probe.onerror = () => this.backFaceKeys.set(key, false);
-    probe.src = this.buildImageUrl(card, '280', 2);
+    probe.src = this.buildImageUrl(card, 'normal', 2);
   }
 
   enhanceDoubleFacedCards() {
@@ -828,6 +843,7 @@ class CardSearch {
     button.className = 'card-flip-button';
     button.title = 'Transform';
     button.setAttribute('aria-label', 'Show other face');
+    button.setAttribute('aria-pressed', 'false');
     button.textContent = '⟳';
     button.addEventListener('click', event => {
       event.preventDefault();
@@ -844,7 +860,7 @@ class CardSearch {
       return;
     }
     item.appendChild(
-      this.createFlipButton(() => this.flipCardImage(item.querySelector('.card-image'), card, item, '388', true))
+      this.createFlipButton(() => this.flipCardImage(item.querySelector('.card-image'), card, item, 'normal', true))
     );
   }
 
@@ -854,6 +870,15 @@ class CardSearch {
     }
     const nextFace = faceHolder.dataset.shownFace === '2' ? 1 : 2;
     faceHolder.dataset.shownFace = String(nextFace);
+    // The button inverts while the back is showing (Scryfall's `.spooky`): once the
+    // art has changed it is the only thing that still says which face this is.
+    // Toggled immediately, not inside the timeout, so the control answers the click
+    // rather than appearing to lag it.
+    const flipButton = faceHolder.querySelector('.card-flip-button');
+    if (flipButton) {
+      flipButton.classList.toggle('showing-back', nextFace === 2);
+      flipButton.setAttribute('aria-pressed', nextFace === 2 ? 'true' : 'false');
+    }
     img.classList.add('card-image-flipping');
     setTimeout(() => {
       img.src = this.buildImageUrl(card, size, nextFace);
@@ -867,11 +892,10 @@ class CardSearch {
   createCardHTML(card, index, isFirstRow = false) {
     const cardId = index.toString();
 
-    // Build image URLs for srcset - using 4 sizes uniformly spread between 280 and 745
-    const image280 = this.buildImageUrl(card, '280');
-    const image388 = this.buildImageUrl(card, '388');
-    const image538 = this.buildImageUrl(card, '538');
-    const image745 = this.buildImageUrl(card, '745');
+    // LOCAL PATCH (Cloudflare port): Scryfall's three published widths, not
+    // upstream's four CloudFront renditions. See buildImageUrl.
+    const imageNormal = this.buildImageUrl(card, 'normal');
+    const imageSrcset = this.buildSrcset(card);
 
     // Debug logging
     console.debug('Creating card HTML for:', card);
@@ -909,7 +933,7 @@ class CardSearch {
     // - 750-1370px: 3 columns (33.33vw minus gap/padding)
     // - 1370-2500px: 4 columns (25vw minus gap/padding)
     // - >= 2500px: 5 columns (20vw minus gap/padding)
-    const srcset = `${this.escapeHtml(image280)} 280w, ${this.escapeHtml(image388)} 388w, ${this.escapeHtml(image538)} 538w, ${this.escapeHtml(image745)} 745w`;
+    const srcset = imageSrcset;
     const sizes =
       '(max-width: 409px) calc(100vw - 3.6em), (max-width: 749px) calc(50vw - 2.6em - 7.5px), (max-width: 1369px) calc(33.33vw - 2.27em - 10px), (max-width: 2499px) calc(25vw - 2.1em - 11.25px), calc(20vw - 2em - 12px)';
 
@@ -918,7 +942,7 @@ class CardSearch {
     // Add loading="lazy" for non-first-row images to improve initial load
     const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
     const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
-    const imgTag = `<img class="card-image" src="${this.escapeHtml(image388)}" srcset="${srcset}" sizes="${sizes}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
+    const imgTag = `<img class="card-image" src="${this.escapeHtml(imageNormal)}" srcset="${srcset}" sizes="${sizes}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
     const imageHtml =
       card.set_code && card.collector_number
         ? `<a href="/card/${this.escapeHtml(card.set_code)}/${this.escapeHtml(card.collector_number)}" class="card-page-link">${imgTag}</a>`
@@ -993,7 +1017,7 @@ class CardSearch {
     const modalContent = document.getElementById('modalContent');
 
     // Create modal content
-    const imageLarge = this.buildImageUrl(card, '745');
+    const imageLarge = this.buildImageUrl(card, 'png');
     // Build image element
     let imageHtml = '';
     if (imageLarge) {
@@ -1041,7 +1065,7 @@ class CardSearch {
       }
       wrapper.appendChild(
         this.createFlipButton(() =>
-          this.flipCardImage(wrapper.querySelector('.modal-image'), card, wrapper, '745', false)
+          this.flipCardImage(wrapper.querySelector('.modal-image'), card, wrapper, 'png', false)
         )
       );
     });
