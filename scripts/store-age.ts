@@ -1,9 +1,21 @@
-// Print how recently the live store was built, or exit non-zero if there is
-// no usable store. Used by scripts/deploy.sh to decide whether a deploy needs
-// to run the bulk import: a routine code push should not re-download ~450MB
-// and republish an identical store.
+// Print how recently the store was built, or exit non-zero if there is no
+// usable store. Two callers, one question:
+//
+//   scripts/import-store.sh  — the live store, deciding whether a deploy needs
+//     the bulk import. A routine code push should not re-download ~450MB and
+//     republish identical bytes.
+//   scripts/dev.sh (--local) — the seeded dev store, deciding whether
+//     `bun dev` needs to rebuild before it starts serving.
+//
+// Dev deliberately runs the SAME script rather than a lighter local variant.
+// It used to ask only whether a manifest existed, which meant a builder change
+// that forced a rebuild before a deploy was silently ignored locally, and
+// `bun dev` came up serving from a store the code could no longer read. Two
+// implementations of one question drift; one implementation with a flag
+// cannot.
 //
 //   bun scripts/store-age.ts        -> "2h ago" (exit 0)
+//   bun scripts/store-age.ts --local   same, against the dev namespace
 //                                      exit 1: no usable store — an ANSWER
 //                                      exit 2: could not tell — a FAILURE
 //
@@ -78,33 +90,52 @@ async function upstreamUpdatedAt(): Promise<number | null> {
 	}
 }
 
+// `--local` reads the dev namespace instead of the deployed one. Everything
+// after this point is shared, deliberately: `bun dev` has to gate on exactly
+// what a deploy gates on, or the two drift and dev serves from a store the
+// deploy would have rebuilt. That drift is not hypothetical — dev.sh used to
+// ask only whether a manifest EXISTED, so a builder-generation change forced a
+// rebuild before a deploy and was silently ignored locally.
+const LOCAL = process.argv.includes("--local");
+const WHERE = LOCAL ? "the local dev store" : "KV";
+
 // Read the manifest straight out of KV. `kv key get` exits non-zero when the
 // key is absent, which is the "nothing published yet" answer rather than a
 // failure to ask — the two are kept apart below because they mean opposite
 // things about the deployment.
-const nsProc = Bun.spawn([...wranglerArgv(), "kv", "namespace", "list"], { stdout: "pipe", stderr: "pipe" });
-const nsOut = await new Response(nsProc.stdout).text();
-if ((await nsProc.exited) !== 0) {
-	console.error(`store-age: could not list KV namespaces —\n  ${nsOut.trim()}`);
-	process.exit(2);
-}
-let namespaceId: string | undefined;
-try {
-	const all = JSON.parse(nsOut.slice(nsOut.indexOf("["))) as { id?: string; title?: string }[];
-	namespaceId = all.find((n) => n.title === kvName)?.id;
-} catch {
-	console.error(`store-age: could not parse the KV namespace list —\n  ${nsOut.trim()}`);
-	process.exit(2);
-}
-if (!namespaceId) {
-	console.error(`store-age: no KV namespace named "${kvName}" — nothing has ever been published.`);
-	process.exit(1);
+// Resolve the KV target ONCE, then read every key through it. Both reads —
+// the manifest here and the chunk probe at the bottom — must hit the same
+// namespace; building each argv separately is how `--local` would end up
+// inspecting production for one of them.
+let kvTarget: string[];
+if (LOCAL) {
+	kvTarget = ["--binding", "STORE_KV", "--local", "-c", "wrangler.dev.jsonc"];
+} else {
+	const nsProc = Bun.spawn([...wranglerArgv(), "kv", "namespace", "list"], { stdout: "pipe", stderr: "pipe" });
+	const nsOut = await new Response(nsProc.stdout).text();
+	if ((await nsProc.exited) !== 0) {
+		console.error(`store-age: could not list KV namespaces —\n  ${nsOut.trim()}`);
+		process.exit(2);
+	}
+	let namespaceId: string | undefined;
+	try {
+		const all = JSON.parse(nsOut.slice(nsOut.indexOf("["))) as { id?: string; title?: string }[];
+		namespaceId = all.find((n) => n.title === kvName)?.id;
+	} catch {
+		console.error(`store-age: could not parse the KV namespace list —\n  ${nsOut.trim()}`);
+		process.exit(2);
+	}
+	if (!namespaceId) {
+		console.error(`store-age: no KV namespace named "${kvName}" — nothing has ever been published.`);
+		process.exit(1);
+	}
+	kvTarget = ["--namespace-id", namespaceId, "--remote"];
 }
 
-const proc = Bun.spawn(
-	[...wranglerArgv(), "kv", "key", "get", MANIFEST_KEY, "--namespace-id", namespaceId, "--remote"],
-	{ stdout: "pipe", stderr: "pipe" },
-);
+/** `wrangler kv key get <key>` against whichever namespace this run targets. */
+const kvGetArgv = (key: string): string[] => [...wranglerArgv(), "kv", "key", "get", key, ...kvTarget];
+
+const proc = Bun.spawn(kvGetArgv(MANIFEST_KEY), { stdout: "pipe", stderr: "pipe" });
 const out = await new Response(proc.stdout).text();
 const errText = await new Response(proc.stderr).text();
 if ((await proc.exited) !== 0) {
@@ -117,15 +148,15 @@ if ((await proc.exited) !== 0) {
 	// A namespace that has never been published to simply has no manifest key.
 	// That is an ANSWER — "nothing here yet" — not a failure to ask.
 	if (/not found|does not exist|no value/i.test(detail)) {
-		console.error("store-age: KV holds no manifest — nothing has ever been published.");
+		console.error(`store-age: ${WHERE} holds no manifest — nothing has ever been published.`);
 		process.exit(1);
 	}
-	console.error(`store-age: could not read the manifest from KV —\n  ${detail}`);
+	console.error(`store-age: could not read the manifest from ${WHERE} —\n  ${detail}`);
 	process.exit(2);
 }
 const json = out.trim();
 if (!json) {
-	console.error("store-age: KV holds no manifest — nothing has been published yet.");
+	console.error(`store-age: ${WHERE} holds no manifest — nothing has been seeded yet.`);
 	process.exit(1);
 }
 
@@ -178,18 +209,11 @@ if (!manifest.store_bytes || !manifest.chunk_count) {
 // tail first, so the last chunk is the one that catches a half-published
 // store as well as an emptied one.
 const lastChunk = chunkKey(manifest.store_key ?? "", (manifest.chunk_count ?? 1) - 1);
-const probe = Bun.spawnSync([
-	...wranglerArgv(),
-	"kv",
-	"key",
-	"get",
-	lastChunk,
-	"--namespace-id",
-	namespaceId,
-	"--remote",
-]);
+const probe = Bun.spawnSync(kvGetArgv(lastChunk));
 if (probe.exitCode !== 0) {
-	console.error(`store-age: the manifest names ${manifest.store_key} but ${lastChunk} is not in KV — the store is`);
+	console.error(
+		`store-age: the manifest names ${manifest.store_key} but ${lastChunk} is not in ${WHERE} — the store is`,
+	);
 	console.error("           incomplete or was emptied. Treating it as no store at all, so the build rebuilds it.");
 	process.exit(1);
 }

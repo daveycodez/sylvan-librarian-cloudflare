@@ -13,18 +13,25 @@
 # bootstrap in-Worker exactly as a fresh production deploy would
 # (~10-20 minutes), which is how you exercise that pipeline itself.
 #
-# Unlike deploy, an existing local store is never considered stale: re-importing
-# on every `bun dev` would be intolerable. Delete .wrangler state (or run the
-# seed by hand) to refresh it.
+# Staleness is decided by `scripts/store-age.ts --local`: the SAME script, and
+# therefore the same question, that a deploy runs against the live store. It
+# used to ask only whether a manifest EXISTED, so a builder-generation change
+# forced a rebuild before a deploy and was silently ignored here — dev started
+# and served from a store the code could not read. A check that exists on one
+# path and not on its twin is the failure this repo keeps rediscovering, so
+# there is now one implementation with a flag rather than two that can drift.
+#
+# It therefore rebuilds for everything a deploy rebuilds for: a generation
+# mismatch, a manifest whose chunks are missing, a store past the age backstop,
+# and a store Scryfall has since superseded.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Local dev is seeded when the store is in local KV — that is the index, and
-# the only thing that gates serving.
-if ! bunx wrangler kv key get store:manifest --binding STORE_KV --local \
-        -c wrangler.dev.jsonc >/dev/null 2>&1; then
+# Says WHY on stderr either way — a rebuild that looks unexplained is how the
+# "just delete .wrangler" folklore starts.
+if ! bun "$REPO_ROOT/scripts/store-age.ts" --local; then
     if [[ "${DEV_BOOTSTRAP:-}" == "worker" ]]; then
         echo "DEV_BOOTSTRAP=worker — skipping the native seed. The Worker will"
         echo "self-bootstrap from Scryfall bulk data via the in-Worker import"
@@ -37,7 +44,7 @@ if ! bunx wrangler kv key get store:manifest --binding STORE_KV --local \
         # KV. No toolchain check: with-rust.sh installs
         # rustup if this machine has no Rust, exactly as it does in CI, so
         # "first run works" does not depend on what happens to be installed.
-        echo "==> No local card store yet — running the full bulk import first"
+        echo "==> Rebuilding the local card store (see the reason above)"
         echo "    (~2-3 minutes, mostly download). The dev server starts after."
         "$REPO_ROOT/scripts/seed-local.sh"
     fi

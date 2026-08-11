@@ -7,6 +7,8 @@
 // next nightly cron, as an index that silently stops updating.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	assembleChunk,
 	chunkCountFor,
@@ -270,5 +272,43 @@ describe("readManifest", () => {
 			},
 		} as unknown as Env;
 		expect(readManifest(env)).rejects.toThrow(/KV binding is not available/);
+	});
+});
+
+// The deploy and dev paths must gate the store on the SAME question. They
+// drifted once: store-age.ts rebuilt the live store on a content_generation
+// mismatch, while dev.sh asked only whether a manifest existed, so a builder
+// change that forced a rebuild before a deploy left `bun dev` serving from a
+// store the code could no longer read. The fix was one script with a --local
+// flag rather than two implementations; these pin that, because a second
+// implementation is exactly how the drift comes back.
+describe("the dev and deploy staleness gates are the same gate", () => {
+	const read = (p: string) => readFileSync(join(import.meta.dir, "../../scripts", p), "utf8");
+
+	test("dev.sh defers to store-age.ts rather than asking its own question", () => {
+		const devSh = read("dev.sh");
+		expect(devSh).toMatch(/store-age\.ts["']?\s+--local/);
+		// The old existence-only check. If it returns, dev runs on whatever is seeded.
+		expect(devSh).not.toMatch(/kv key get store:manifest/);
+	});
+
+	test("store-age.ts resolves one KV target and reads every key through it", () => {
+		const src = read("store-age.ts");
+		expect(src).toContain('process.argv.includes("--local")');
+		// The manifest read and the chunk probe must hit the SAME namespace. A
+		// second hand-built argv is how one of them ends up on production while
+		// the other is on the dev namespace, so `kv key get` is spelled once.
+		expect(src.match(/"kv", "key", "get"/g)?.length ?? 0).toBe(1);
+		expect(src).toMatch(/kvGetArgv\(MANIFEST_KEY\)/);
+		expect(src).toMatch(/kvGetArgv\(lastChunk\)/);
+		// And the target itself is chosen exactly once, by the flag.
+		expect(src.match(/"--remote"/g)?.length ?? 0).toBe(1);
+	});
+
+	test("the generation comparison lives in the one shared script", () => {
+		const src = read("store-age.ts");
+		expect(src).toContain("STORE_CONTENT_GENERATION");
+		expect(src).toMatch(/!==\s*STORE_CONTENT_GENERATION/);
+		expect(src).toMatch(/!manifest\.store_bytes\s*\|\|\s*!manifest\.chunk_count/);
 	});
 });
