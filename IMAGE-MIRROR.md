@@ -131,7 +131,7 @@ Cache lifetime can be long — the key changes when the art changes, because `im
 **One optional env var, and no R2 binding on the Worker.**
 
 ```
-IMAGE_MIRROR_BASE_URL=https://images.example.com   # unset = Scryfall's CDN
+IMAGE_BASE_URL=https://images.example.com   # unset = Scryfall's CDN
 ```
 
 That is the whole deployment-facing surface. It follows the precedent already in this codebase: `SCRYFALL_BULK_URL` is documented as "overridable for tests and self-hosted mirrors" and falls back to a constant when unset, and `RATE_LIMIT_ENABLED` treats unset as off. Same shape, same reason — a fork that does nothing gets today's behaviour, and the free plan stays a real target because there is nothing to provision.
