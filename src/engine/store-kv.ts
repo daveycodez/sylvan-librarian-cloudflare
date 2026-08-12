@@ -60,6 +60,11 @@
 // Note also what is NOT the cause, so it is not retried: the piece count. Gzip
 // took production from 3 pieces to 18,713 (DecompressionStream emits 4KB), and
 // 58cfbe7 gathered those back into 19 blocks with no change in cold CPU at all.
+//
+// What IS now measured is the I/O side: a cold load reading the DECOMPRESSED
+// archive out of store-cache.ts waits 124ms to acquire its engine, against
+// 2596-3543ms from KV. The CPU half is still only indicated, not measured — see
+// store-cache.ts for why the obvious comparison is confounded.
 
 import type { Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";

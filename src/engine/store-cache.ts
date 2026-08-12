@@ -11,16 +11,23 @@
 // way. Storing the archive already decompressed removes that step; the bytes go straight from a
 // local blob into linear memory.
 //
-// HOW BIG THAT STEP IS HAS NOT BEEN MEASURED DIRECTLY, and the honest version is worth writing
-// down rather than the tidy one. Cold DO CPU went 322ms -> 1252ms at the median across the deploy
-// that introduced compression (2026-08-12), so something in that change costs ~930ms. Blocking the
-// wasm-bindgen crossings was the first suspect and is now ruled out: 58cfbe7 took the store from
-// 18,713 crossings to 19 and moved cold CPU not at all. Decompression is what is left standing,
-// which is an inference from one refuted alternative, not a measurement of gunzip itself.
+// MEASURED 2026-08-12, on the first production cold load to hit this cache. The like-for-like
+// number is I/O WAIT, because both sides of it come from the same instrument — `acquireMs` and the
+// load line are Date.now() deltas, and Workers freeze the clock during synchronous execution, so
+// they see waiting and not compute:
 //
-// The measurement that would settle it falls out of this cache once deployed: in any region, the
-// first cold load fills from KV and the second reads locally, and the difference between those two
-// invocations IS the decompression cost, isolated. Read it before quoting a number here.
+//   from KV       acquire 2596-3543ms   "in 2596ms ... from 18715 pieces"
+//   from here     acquire      124ms    "in 0ms ... from 52 pieces"
+//
+// So the network and the gunzip together were essentially all of the wait, and reading 52 local
+// SQLite rows instead is ~20x cheaper on that axis.
+//
+// WHAT THIS DOES NOT YET SETTLE is the CPU. That cold load billed 445ms of DO CPU against a ~1250ms
+// median for cold KV loads, which looks like ~800ms and would line up neatly with the ~930ms step
+// across the compression deploy — but it is one invocation of one route on the PAID account against
+// a mixed-route median on the FREE one, so it is an indication, not a measurement. The controlled
+// version is two cold loads of the same route in the same region, one before this cache is filled
+// and one after; take that before quoting a CPU figure.
 //
 // Sizing, against the Workers Free plan's Durable Objects limits (5GB stored, 5M row reads/day,
 // 100k row writes/day):
