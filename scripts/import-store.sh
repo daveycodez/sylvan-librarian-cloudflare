@@ -26,6 +26,35 @@ if [[ "${SKIP_IMPORT:-}" == "1" ]]; then
     exit 0
 fi
 
+# 1b. The KV data that is NOT in the store: rulings, and the /sets, /catalog/*
+#     and /symbology mirrors. Neither comes out of the bulk store build —
+#     rulings hang off oracle_id rather than a printing, and the reference data
+#     is fetched from api.scryfall.com rather than derived from the corpus — so
+#     without this step a deploy leaves those routes answering 503 until the
+#     first nightly cron.
+#
+#     BEFORE the store-age gate below, deliberately: the common deploy skips the
+#     store import entirely because a recent store is already live, and "the
+#     store is current" says nothing about whether these were ever published.
+#
+#     `--if-missing` makes each a single KV read when the data is already there,
+#     which is the same trade the store gate makes: the deploy guarantees the
+#     data EXISTS, the nightly import keeps it CURRENT. FORCE_IMPORT=1
+#     republishes them along with the store.
+#
+#     Never fatal. The store is the index; these back three routes that fail
+#     honestly (503) when absent, and losing a deploy because api.scryfall.com
+#     was briefly unhappy would be the worse trade — the same call the in-Worker
+#     pipeline makes for both of these phases.
+IF_MISSING="--if-missing"
+if [[ "${FORCE_IMPORT:-}" == "1" ]]; then
+    IF_MISSING=""
+fi
+echo "==> Publishing rulings to KV..."
+bun scripts/seed-rulings.ts --remote $IF_MISSING || echo "!!! Rulings publish failed — /cards/*/rulings answers 503 until the nightly import."
+echo "==> Publishing sets, catalogs and symbology to KV..."
+bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publish failed — /sets, /catalog/* and /symbology answer 503 until the nightly import."
+
 # 2. Decide whether to import at all.
 #
 #    Skip when a recent store is already live: without that, every routine code

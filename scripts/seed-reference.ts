@@ -31,17 +31,44 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "../src/engine/reference-kv";
+import { kvHasCurrent } from "./kv-published";
+import { kvTargetArgs } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
 
 const remote = process.argv.includes("--remote");
+/** Deploy-path mode: make sure the data is THERE, and leave keeping it current to the cron. */
+const ifMissing = process.argv.includes("--if-missing");
 const API = process.env.SCRYFALL_API_URL ?? "https://api.scryfall.com";
 const userAgent = `sylvan-librarian-seed/${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`;
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
+/**
+ * Milliseconds between requests to api.scryfall.com.
+ *
+ * Scryfall asks for 50-100ms of delay between requests and rate-limits callers who ignore it; this
+ * script makes twenty-two in a row (the set list, twenty catalogs, the symbol list), which is
+ * exactly the shape that would otherwise arrive as a burst. The conservative end of their range,
+ * because the whole run still costs ~2s and nothing is waiting on it.
+ */
+const SCRYFALL_DELAY_MS = 100;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let firstRequest = true;
+
 async function fetchJson(path: string): Promise<Record<string, unknown>> {
+	// Before the request rather than after it, so the pacing holds however the callers are ordered
+	// and no path can skip it by returning early.
+	if (!firstRequest) await sleep(SCRYFALL_DELAY_MS);
+	firstRequest = false;
 	const res = await fetch(`${API}/${path}`, { headers: { "User-Agent": userAgent, Accept: "application/json" } });
 	if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
 	return (await res.json()) as Record<string, unknown>;
+}
+
+if (ifMissing && (await kvHasCurrent(REFERENCE_META_KEY, REFERENCE_FORMAT_VERSION, remote))) {
+	console.log(`Reference data v${REFERENCE_FORMAT_VERSION} is already published — leaving it to the nightly import.`);
+	process.exit(0);
 }
 
 const entries: { key: string; value: string }[] = [];
@@ -99,17 +126,7 @@ entries.push({ key: REFERENCE_META_KEY, value: JSON.stringify(meta) });
 const bulkFile = join(tmpdir(), "sylvan-reference-bulk.json");
 await writeFile(bulkFile, JSON.stringify(entries));
 try {
-	const argv = [
-		...wranglerArgv(),
-		"kv",
-		"bulk",
-		"put",
-		bulkFile,
-		"--binding",
-		"STORE_KV",
-		remote ? "--remote" : "--local",
-	];
-	if (!remote) argv.push("-c", "wrangler.dev.jsonc");
+	const argv = [...wranglerArgv(), "kv", "bulk", "put", bulkFile, ...(await kvTargetArgs(remote))];
 	const proc = Bun.spawn(argv, { stdout: "inherit", stderr: "inherit" });
 	if ((await proc.exited) !== 0) throw new Error("kv bulk put failed");
 } finally {

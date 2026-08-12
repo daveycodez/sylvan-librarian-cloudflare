@@ -36,9 +36,18 @@ import {
 	rulingsBucketKey,
 	rulingsBucketOf,
 } from "../src/engine/rulings-kv";
+import { kvHasCurrent } from "./kv-published";
+import { kvTargetArgs } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
 
 const remote = process.argv.includes("--remote");
+/** Deploy-path mode: make sure the data is THERE, and leave keeping it current to the cron. */
+const ifMissing = process.argv.includes("--if-missing");
+
+if (ifMissing && (await kvHasCurrent(RULINGS_META_KEY, RULINGS_FORMAT_VERSION, remote))) {
+	console.log(`Rulings v${RULINGS_FORMAT_VERSION} are already published — leaving them to the nightly import.`);
+	process.exit(0);
+}
 const BULK_DATA_URL = process.env.SCRYFALL_BULK_URL ?? "https://api.scryfall.com/bulk-data";
 const userAgent = `sylvan-librarian-seed/${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`;
 
@@ -105,17 +114,7 @@ entries.push({ key: RULINGS_META_KEY, value: JSON.stringify(meta) });
 const bulkFile = join(tmpdir(), "sylvan-rulings-bulk.json");
 await writeFile(bulkFile, JSON.stringify(entries));
 try {
-	const argv = [
-		...wranglerArgv(),
-		"kv",
-		"bulk",
-		"put",
-		bulkFile,
-		"--binding",
-		"STORE_KV",
-		remote ? "--remote" : "--local",
-	];
-	if (!remote) argv.push("-c", "wrangler.dev.jsonc");
+	const argv = [...wranglerArgv(), "kv", "bulk", "put", bulkFile, ...(await kvTargetArgs(remote))];
 	const proc = Bun.spawn(argv, { stdout: "inherit", stderr: "inherit" });
 	if ((await proc.exited) !== 0) throw new Error("kv bulk put failed");
 } finally {

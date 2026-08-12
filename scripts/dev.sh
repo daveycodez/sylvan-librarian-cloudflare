@@ -50,4 +50,20 @@ if ! bun "$REPO_ROOT/scripts/store-age.ts" --local; then
     fi
 fi
 
+# The KV data that is NOT in the store, on the same terms the deploy publishes it
+# (scripts/import-store.sh step 1b): rulings, and the /sets, /catalog/* and
+# /symbology mirrors. Neither comes out of the store build, so the check above
+# cannot speak for them — a store that is perfectly current says nothing about
+# whether these were ever seeded, and without them `bun dev` serves 503 on those
+# routes while production serves data.
+#
+# `--if-missing` is one local KV read when they are already there, so this costs
+# nothing on the common path. FORCE_IMPORT=1 reseeds them, matching the deploy.
+IF_MISSING="--if-missing"
+if [[ "${FORCE_IMPORT:-}" == "1" ]]; then
+    IF_MISSING=""
+fi
+bun "$REPO_ROOT/scripts/seed-rulings.ts" $IF_MISSING
+bun "$REPO_ROOT/scripts/seed-reference.ts" $IF_MISSING
+
 exec bunx wrangler dev -c wrangler.dev.jsonc

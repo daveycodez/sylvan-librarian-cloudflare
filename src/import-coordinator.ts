@@ -284,6 +284,15 @@ const BULK_DATA_URL = "https://api.scryfall.com/bulk-data";
  * and a deployment that mirrors dumps locally has no reason to also mirror the API.
  */
 const SCRYFALL_API_URL = "https://api.scryfall.com";
+/**
+ * Milliseconds to wait before each api.scryfall.com request in the reference phase.
+ *
+ * Scryfall's documented ask is 50-100ms between requests; this takes the conservative end, because
+ * the whole phase is twenty-two requests and nothing waits on it. The dump downloads are not paced
+ * by this — they are one ranged request per slice against data.scryfall.io, already spread across
+ * alarms.
+ */
+const SCRYFALL_REQUEST_DELAY_MS = 100;
 // `oracle_cards` is one card object per oracle_id, and that object IS Scryfall's chosen
 // representative printing — it pins ours (see transform.rs PIN_BONUS). ~24MB against
 // default_cards' ~450MB. Last in the list so the phase chain reaches it after the dumps the store
@@ -1841,8 +1850,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 		else this.metaSet("phase", "purge");
 	}
 
-	/** GET one api.scryfall.com endpoint as JSON. */
+	/**
+	 * GET one api.scryfall.com endpoint as JSON, paced.
+	 *
+	 * Scryfall asks for 50-100ms between requests and rate-limits callers who ignore it. The
+	 * catalogs step makes twenty in a row, which is exactly the burst that ask exists for — and a
+	 * 429 here would cost a catalog its refresh for the night. The delay goes BEFORE the request
+	 * rather than after, so no caller can skip it by returning early, and the first call in a slice
+	 * pays it too: slices are separate alarm invocations, and this object cannot see how recently
+	 * the previous one finished.
+	 */
 	private async fetchScryfallJson(path: string): Promise<Record<string, unknown>> {
+		await scheduler.wait(SCRYFALL_REQUEST_DELAY_MS);
 		const base = (this.env as { SCRYFALL_API_URL?: string }).SCRYFALL_API_URL ?? SCRYFALL_API_URL;
 		const res = await fetch(`${base}/${path}`, {
 			headers: { "User-Agent": userAgent(), Accept: "application/json" },
