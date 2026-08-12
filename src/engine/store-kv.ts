@@ -367,8 +367,21 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       reader has always looped over it, so a two-chunk store and a three-chunk
  *       store load through the identical path. Nothing would have broken by
  *       waiting; this only makes it immediate.
+ *  14 — again NO CONTENT CHANGE, and again the bump is being used as a re-publish
+ *       trigger rather than as a description of contents (see 13).
+ *
+ *       This one exists to force a fresh store key so the next cold load in every
+ *       region MISSES the archive cache, which is the only way to exercise — and
+ *       measure — the tee that now fills it during the load instead of re-fetching
+ *       the archive a second time under waitUntil. A cache HIT measures the path
+ *       that did not change.
+ *
+ *       It also fires the publish `notify` phase in production for the first time.
+ *       That phase has never run outside tests, and it WILL run at the next
+ *       nightly regardless, so running it now — while someone is watching the
+ *       logs — is strictly safer than discovering a fault at 17:11 unattended.
  */
-export const STORE_CONTENT_GENERATION = 13;
+export const STORE_CONTENT_GENERATION = 14;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

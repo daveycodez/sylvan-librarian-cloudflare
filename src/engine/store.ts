@@ -110,10 +110,32 @@ class WasmEngine implements Engine {
 	constructor(
 		private readonly env: Env,
 		private readonly manifest: StoreManifest,
-		/** The load context that built this engine, so a later residue attach can reach the same
-		 * local cache. Undefined outside a Durable Object, where the attach goes to KV as before. */
-		private readonly ctx?: LoadContext,
+		/** The context of the call currently using this engine — see useContext. */
+		private ctx?: LoadContext,
 	) {}
+
+	/**
+	 * Re-point this engine at the caller that is using it RIGHT NOW.
+	 *
+	 * `current` is isolate-global while `ctx.storage` belongs to ONE Durable Object instance, and a
+	 * single isolate can host several of them (engine-wnam and engine-wnam-1, say). The engine used
+	 * to keep whichever context happened to load it, so a DIFFERENT instance hitting `/cards/*`
+	 * later would attach the residue through the FIRST instance's storage handle. workerd rejects
+	 * that outright:
+	 *
+	 *   Cannot perform I/O on behalf of a different Durable Object.  (I/O type: ActorCacheInterface)
+	 *
+	 * Observed in production 2026-08-12: every residue attach failed its cache read AND its fill,
+	 * fell back to KV, and so the card-object archive was never cached at all.
+	 *
+	 * Only the residue attach was exposed, because it is the one thing that happens long after the
+	 * load rather than during it — everything else uses the context it was handed. getEngine calls
+	 * this on every acquisition, so the engine always holds the storage of the object actually
+	 * serving.
+	 */
+	useContext(ctx: LoadContext): void {
+		this.ctx = ctx;
+	}
 
 	/** Attach the residue archive if it is not already; idempotent and single-flighted. */
 	private ensureCompat(): Promise<void> {
@@ -568,6 +590,30 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// synchronous execution, so it cannot see the decompression or the copy into
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
 	// linear-memory figure is the honest one here, and is a high-water mark.
+	// PRE-CACHE THE RESIDUE, without attaching it.
+	//
+	// It is attached lazily on first `/cards/*` use so a search-only region never carries its
+	// ~11.8MB of linear memory — that stays true. But the CACHE ROWS are a different resource from
+	// linear memory, and not filling them here meant the first card request after every wake paid a
+	// full KV fetch and gunzip in front of a user. Since `/cards/*` is the traffic this deployment
+	// actually serves, that was the common case rather than the rare one.
+	//
+	// Filling it now costs one KV read of an 11.8MB archive on a path that has just done a 76.6MB
+	// one, and it is deliberately NOT awaited into the load's critical section beyond that: the
+	// store is already resident and serving by the time this matters.
+	if (ctx?.storage && !cached && manifest.compat_key && manifest.compat_bytes) {
+		try {
+			const rows = await fillCache(
+				ctx.storage,
+				manifest.compat_key,
+				kvCompatStream(env, manifest),
+				manifest.compat_bytes,
+			);
+			console.log(`${tag(ctx)}pre-cached the card archive (${rows} rows) so the first /cards/* wake reads locally`);
+		} catch (err) {
+			console.warn(`${tag(ctx)}could not pre-cache the card archive (it will attach from KV): ${err}`);
+		}
+	}
 	console.log(
 		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
 			`${manifest.store_bytes} bytes${!cached && manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
@@ -644,7 +690,12 @@ export async function refreshNow(env: Env, ctx: LoadContext, known?: StoreManife
 export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 	// No manifest re-check on the warm path: a publish reaches this isolate by
 	// being pushed to it, so the hot path does no KV read at all.
-	if (current) return current.engine;
+	if (current) {
+		// Re-point at THIS caller before handing the engine over: the engine is
+		// isolate-global and its storage handle is not (see useContext).
+		current.engine.useContext(ctx);
+		return current.engine;
+	}
 	if (!loading) {
 		loading = loadStore(env, ctx).finally(() => {
 			loading = null;
