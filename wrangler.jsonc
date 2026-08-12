@@ -6,26 +6,6 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
-	// Minify the Worker bundle. Not for upload size — for ISOLATE STARTUP, which
-	// on the free plan is charged against a 10ms-per-request CPU budget that
-	// /cards/search was measured touching (9-12ms). Source is parsed on every
-	// cold isolate, and minifying takes index.js from 385,932 to 230,859 bytes:
-	// 40% less to parse, for a config line.
-	//
-	// The same reasoning already moved a 313KB text module out to public/ (see
-	// the assets note below), which was measured at 10-13ms -> 7ms. What that
-	// rule does NOT cover is structure: 2,152 Map-literal entries cost 0.75ms to
-	// EVALUATE against 0.16ms to scan the same data as a string, which is why
-	// src/parser/tag-aliases.gen.ts is a lazily-parsed JSON string rather than a
-	// smaller literal. Bytes and structure are separate costs; this handles bytes.
-	//
-	// Source maps stay uploaded so a minified stack trace is still readable in
-	// Workers Logs. They are not part of the executed script and cost the isolate
-	// nothing — losing honest diagnostics to save parse time would be a bad trade
-	// in a codebase that leans on its own logs this hard.
-	"minify": true,
-	"upload_source_maps": true,
-
 	// Static assets, served straight from Cloudflare's CDN out of public/ —
 	// app.js, app.min.js, card.js, styles.css, the icons, robots.txt and the
 	// tuner page. A request matching one of these NEVER invokes the Worker: no
