@@ -20,6 +20,11 @@
 //   build     spilled rows in build order → rkyv archive → chunk staging
 //   publish   ~4 chunks + manifest to KV (manifest LAST — it is the commit
 //             point readers act on), prune old stores, clear staging
+//   rulings   the rulings dump → 256 KV buckets for /cards/:id/rulings; after
+//             publish and unable to fail the run, because nothing but that one
+//             route reads them
+//   reference api.scryfall.com's /sets, /catalog/* and /symbology → KV, for the
+//             routes of the same names; same posture as rulings
 //   purge     drop the Worker's edge cache, twice, once the engine DOs have
 //             picked the new manifest up — deliberately NOT at the commit point
 //
@@ -31,6 +36,32 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
+import {
+	CATALOG_NAMES,
+	catalogKey,
+	encodeCountedArray,
+	REFERENCE_FORMAT_VERSION,
+	REFERENCE_META_KEY,
+	type ReferenceMeta,
+	renderCatalog,
+	renderSets,
+	renderSymbology,
+	SETS_BUCKET_COUNT,
+	setsBucketKey,
+	setsListKey,
+	symbologyKey,
+} from "./engine/reference-kv";
+import {
+	encodeRulingsBucket,
+	parseRulingLine,
+	RULINGS_BUCKET_COUNT,
+	RULINGS_FORMAT_VERSION,
+	RULINGS_META_KEY,
+	type RulingRow,
+	type RulingsMeta,
+	rulingsBucketKey,
+	rulingsBucketOf,
+} from "./engine/rulings-kv";
 import { GridChunker } from "./engine/store-chunks";
 import {
 	assembleChunk,
@@ -220,14 +251,49 @@ const KEEP_STORES = 2;
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
 const PARSE_COVERAGE_THRESHOLD = 0.8;
+/**
+ * Rulings buckets built per slice.
+ *
+ * Every slice re-streams the whole rulings dump and keeps only the entries whose bucket falls in
+ * its range, so this trades passes over a 25.7MB decode (cheap: ~0.5s) against how much of it a
+ * slice holds at once. 64 of 256 buckets is a quarter of the corpus — ~6.5MB of comments — where
+ * building all 256 in one pass would hold the lot as JS strings, at two bytes a character.
+ */
+const RULINGS_SLICE_BUCKETS = 64;
+/** KV puts issued at once within a rulings slice. */
+const RULINGS_PUT_CONCURRENCY = 8;
+/**
+ * Attempts at the rulings phase before the run gives up on it and moves ON.
+ *
+ * Below MAX_RETRIES on purpose: this phase runs AFTER the store is published, so letting it fail
+ * the run would strand a live store with no `purge` — the edge would keep serving answers built
+ * from the store this run replaced, for up to 16 hours. Upstream takes the same position from the
+ * other end (rulings_import logs its failures rather than raising, "rulings are the only thing in
+ * the import sequence nothing else reads"), and the cost of moving on is that yesterday's rulings
+ * stay served, which is what the stable bucket keys guarantee.
+ */
+const RULINGS_MAX_ATTEMPTS = 3;
 
 /** Overridable for tests and self-hosted mirrors (SCRYFALL_BULK_URL var). */
 const BULK_DATA_URL = "https://api.scryfall.com/bulk-data";
+/**
+ * The API root the reference phase mirrors from (SCRYFALL_API_URL var).
+ *
+ * A separate constant from the bulk listing URL even though both point at api.scryfall.com today:
+ * the two are different kinds of endpoint — one lists dumps to download, the other IS the data —
+ * and a deployment that mirrors dumps locally has no reason to also mirror the API.
+ */
+const SCRYFALL_API_URL = "https://api.scryfall.com";
 // `oracle_cards` is one card object per oracle_id, and that object IS Scryfall's chosen
 // representative printing — it pins ours (see transform.rs PIN_BONUS). ~24MB against
 // default_cards' ~450MB. Last in the list so the phase chain reaches it after the dumps the store
 // cannot be built without: a failure here should cost the pin, not the import.
-const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags", "oracle_cards"] as const;
+// `rulings` backs /cards/:id/rulings and its two sibling addressings, and nothing else reads it —
+// which is why it sits after `oracle_cards` at the end: the fetch chain reaches it last, so a dump
+// that is unavailable or malformed costs the rulings refresh rather than the store. ~5.3MB
+// compressed, 25.7MB of JSONL, and it is published to its own KV keys (see stepRulings), not built
+// into the store.
+const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags", "oracle_cards", "rulings"] as const;
 type DumpKind = (typeof DUMP_KINDS)[number];
 
 type Phase =
@@ -241,7 +307,15 @@ type Phase =
 	| "reorder"
 	| "build"
 	| "publish"
+	| "rulings"
+	| "reference"
 	| "purge";
+
+/** Content hash of one published bucket, for "have these bytes changed since last night?". */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource);
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 /** `sylvan-librarian-worker/<YYYYMMDD>` — Scryfall rejects default UAs. */
 function userAgent(): string {
@@ -359,7 +433,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS ordered_rows (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
-			CREATE TABLE IF NOT EXISTS compat_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);`,
+			CREATE TABLE IF NOT EXISTS compat_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
+			-- What the last import left in each published rulings bucket. CROSS-RUN state, unlike
+			-- every table above it: it is what lets a night publish only the buckets whose bytes
+			-- actually moved, so it is neither in resetStaging nor covered by metaClear.
+			CREATE TABLE IF NOT EXISTS rulings_buckets (
+				bucket INTEGER PRIMARY KEY, hash TEXT NOT NULL, rulings INTEGER NOT NULL
+			);
+			-- What the last import left in each published reference value. Cross-run, like
+			-- rulings_buckets and for the same reason: it is what lets a night write only what moved.
+			CREATE TABLE IF NOT EXISTS reference_values (key TEXT PRIMARY KEY, hash TEXT NOT NULL);`,
 		);
 		this.schemaReady = true;
 	}
@@ -632,6 +715,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepBuild();
 			case "publish":
 				return this.stepPublish();
+			case "rulings":
+				return this.stepRulings();
+			case "reference":
+				return this.stepReference();
 			case "purge":
 				return this.stepPurge();
 			default: {
@@ -1560,10 +1647,287 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("kv_store_history", JSON.stringify(history));
-			this.metaSet("phase", "purge");
+			this.metaSet("phase", "rulings");
+			this.metaSet("rulings_bucket_cursor", "0");
+			this.metaSet("rulings_attempts", "0");
+			this.metaSet("reference_step", "sets");
 			this.metaSet("purges_done", "0");
+			// The purge deadline is set HERE, not when the rulings phase hands over: it counts from
+			// the manifest landing, which is the moment the engine DOs begin picking the new store
+			// up. Rulings run inside that wait rather than after it.
 			this.metaSet("purge_at", String(Date.now() + PURGE_DELAY_MS));
 		});
+	}
+
+	// ── phase: rulings (KV) ────────────────────────────────────────────────────
+	//
+	// The rulings dump becomes 256 KV buckets of pre-rendered Ruling objects, keyed by the first
+	// byte of the oracle id — the layout, and why it is a layout rather than a table, is in
+	// src/engine/rulings-kv.ts. This phase is the only writer.
+	//
+	// It runs AFTER publish and cannot fail the run (see RULINGS_MAX_ATTEMPTS). Bucket keys are
+	// stable across imports, so "this night's rulings did not land" degrades to "last night's are
+	// still served" rather than to a hole.
+	//
+	// Only buckets whose bytes MOVED are written. Rulings drift slowly — new cards and the
+	// occasional retraction — so a normal night is a handful of writes against the free plan's
+	// 1,000/day, where rewriting the set unconditionally would spend a quarter of the day's
+	// allowance every night to republish bytes KV already holds.
+
+	private async stepRulings(): Promise<void> {
+		try {
+			await this.rulingsSlice();
+		} catch (err) {
+			const attempts = Number(this.metaGet("rulings_attempts") ?? 0) + 1;
+			this.metaSet("rulings_attempts", String(attempts));
+			// A daily KV write quota is the one failure this phase can plausibly cause: a first
+			// publish is 256 writes. Backoff cannot clear it before midnight, and rethrowing would
+			// take the alarm chain's quota branch, which FAILS THE RUN — stranding a store that is
+			// already live with its `purge` unrun, so the edge would keep serving the previous
+			// store's answers for up to 16 hours. Give up on the rulings instead.
+			if (attempts < RULINGS_MAX_ATTEMPTS && !isQuotaError(err)) throw err; // ordinary retry
+			console.error(
+				`Rulings publish gave up after ${attempts} attempt(s); the previously published buckets ` +
+					`stay served and the next import retries: ${err}`,
+			);
+			this.metaSet("phase", "reference");
+		}
+	}
+
+	/** One slice: build and publish RULINGS_SLICE_BUCKETS buckets, then advance the cursor. */
+	private async rulingsSlice(): Promise<void> {
+		const from = Number(this.metaGet("rulings_bucket_cursor") ?? 0);
+		if (from === 0) await this.resetRulingsIfUnpublished();
+		const to = Math.min(from + RULINGS_SLICE_BUCKETS, RULINGS_BUCKET_COUNT);
+
+		const inRange = new Map<number, RulingRow[]>();
+		let lines = 0;
+		let valid = 0;
+		for await (const line of this.stagedLines("rulings")) {
+			if (line.trim().length === 0) continue;
+			lines += 1;
+			const row = parseRulingLine(line);
+			if (row === null) continue;
+			valid += 1;
+			const bucket = rulingsBucketOf(row.oracle_id);
+			if (bucket === null || bucket < from || bucket >= to) continue;
+			const group = inRange.get(bucket);
+			if (group) group.push(row);
+			else inRange.set(bucket, [row]);
+		}
+
+		// Coverage check, in the spirit of the transform phase's: entries that carry every field
+		// upstream's `_valid_rulings` requires are dropped silently one at a time, so a renamed key
+		// would otherwise publish 256 empty buckets and read as "no card has any rulings".
+		if (lines > 0 && valid < PARSE_COVERAGE_THRESHOLD * lines) {
+			throw new Error(`rulings dump: only ${valid} of ${lines} entries are usable; format changed?`);
+		}
+
+		let written = 0;
+		let unchanged = 0;
+		const pending: (() => Promise<void>)[] = [];
+		for (let bucket = from; bucket < to; bucket++) {
+			const { bytes, rulingCount } = encodeRulingsBucket(inRange.get(bucket) ?? []);
+			const hash = await sha256Hex(bytes);
+			const known = this.sqlAll<{ hash: string }>("SELECT hash FROM rulings_buckets WHERE bucket = ?", bucket)[0];
+			if (known && String(known.hash) === hash) {
+				unchanged += 1;
+				continue;
+			}
+			written += 1;
+			pending.push(async () => {
+				await this.env.STORE_KV.put(rulingsBucketKey(bucket), bytes);
+				// AFTER the put, never with it: a hash recorded for bytes that never reached KV would
+				// make every later import skip the bucket it most needs to write.
+				this.sqlRun(
+					"INSERT OR REPLACE INTO rulings_buckets (bucket, hash, rulings) VALUES (?, ?, ?)",
+					bucket,
+					hash,
+					rulingCount,
+				);
+			});
+		}
+		for (let at = 0; at < pending.length; at += RULINGS_PUT_CONCURRENCY) {
+			await Promise.all(pending.slice(at, at + RULINGS_PUT_CONCURRENCY).map((put) => put()));
+		}
+
+		console.log(
+			`Rulings slice: buckets ${from}-${to - 1}, ${written} written, ${unchanged} already current ` +
+				`(${valid}/${lines} entries usable)`,
+		);
+
+		if (to < RULINGS_BUCKET_COUNT) {
+			this.metaSet("rulings_bucket_cursor", String(to));
+			return; // next alarm continues
+		}
+
+		// The set is complete — record it. Written LAST, like the store manifest, and for the same
+		// reason: it is what a later run reads to decide the published set is really there.
+		const total = Number(
+			this.sqlAll<{ n: number }>("SELECT COALESCE(SUM(rulings), 0) AS n FROM rulings_buckets")[0]?.n ?? 0,
+		);
+		const meta: RulingsMeta = {
+			format_version: RULINGS_FORMAT_VERSION,
+			bucket_count: RULINGS_BUCKET_COUNT,
+			built_at: this.metaGet("built_at") ?? "",
+			ruling_count: total,
+		};
+		await this.env.STORE_KV.put(RULINGS_META_KEY, JSON.stringify(meta));
+		this.metaSet("phase", "reference");
+		console.log(`Rulings published to KV: ${total} rulings across ${RULINGS_BUCKET_COUNT} buckets`);
+	}
+
+	/**
+	 * Forget every recorded bucket hash unless KV still describes the set they belong to.
+	 *
+	 * The hashes are an optimization built on an assumption — that KV still holds what this DO last
+	 * put there — and a recreated namespace (which the deploy repairs by id, see
+	 * scripts/align-kv-binding.ts) or a format bump breaks it. Both show up as a missing or
+	 * mismatched meta key, and both want the same answer: publish all 256 again.
+	 */
+	private async resetRulingsIfUnpublished(): Promise<void> {
+		const published = (await this.env.STORE_KV.get(RULINGS_META_KEY, "json")) as RulingsMeta | null;
+		if (
+			published &&
+			published.format_version === RULINGS_FORMAT_VERSION &&
+			published.bucket_count === RULINGS_BUCKET_COUNT
+		) {
+			return;
+		}
+		const known = Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM rulings_buckets")[0]?.n ?? 0);
+		this.sqlRun("DELETE FROM rulings_buckets");
+		if (known > 0) {
+			console.warn(`Rulings: KV holds no current bucket set; republishing all ${RULINGS_BUCKET_COUNT}`);
+		}
+	}
+
+	// ── phase: reference (KV) ──────────────────────────────────────────────────
+	//
+	// The `/sets`, `/catalog/*` and `/symbology` data (upstream #922). Unlike everything above it,
+	// this is NOT bulk data: Scryfall publishes it as ordinary API responses, small enough to fetch
+	// whole — 1,047 sets, twenty catalogs, 84 symbols, ~1.65MB rendered. So this phase talks to
+	// api.scryfall.com directly rather than to the dump mirror, and renders response bodies into KV
+	// (see src/engine/reference-kv.ts).
+	//
+	// Same posture as `rulings`, for the same reason: it runs after the store is published, nothing
+	// else reads what it writes, and it cannot fail the run. Upstream draws the line in the same two
+	// places — a failure between the three steps still lets the others run, and a single catalog
+	// that fails keeps its previous value rather than being written empty, because nineteen fresh
+	// catalogs and one stale one beats one that claims Magic has no creature types.
+	//
+	// One slice per step (sets, catalogs, symbology), so no invocation holds more than one dataset
+	// or runs long enough to be cut off.
+
+	private async stepReference(): Promise<void> {
+		const step = this.metaGet("reference_step") ?? "sets";
+		try {
+			if (step === "sets") await this.referenceSets();
+			else if (step === "catalogs") await this.referenceCatalogs();
+			else await this.referenceSymbology();
+		} catch (err) {
+			// Per STEP, not per phase: a failed `sets` fetch must not cost the catalogs their
+			// refresh. The step is marked done either way and the chain moves on; what it wrote
+			// last import stays served.
+			console.error(`Reference ${step} failed; the previously published values stay served: ${err}`);
+			this.advanceReference(step);
+			return;
+		}
+	}
+
+	/** Move to the next reference step, or out of the phase when there is none. */
+	private advanceReference(step: string): void {
+		if (step === "sets") this.metaSet("reference_step", "catalogs");
+		else if (step === "catalogs") this.metaSet("reference_step", "symbology");
+		else this.metaSet("phase", "purge");
+	}
+
+	/** GET one api.scryfall.com endpoint as JSON. */
+	private async fetchScryfallJson(path: string): Promise<Record<string, unknown>> {
+		const base = (this.env as { SCRYFALL_API_URL?: string }).SCRYFALL_API_URL ?? SCRYFALL_API_URL;
+		const res = await fetch(`${base}/${path}`, {
+			headers: { "User-Agent": userAgent(), Accept: "application/json" },
+		});
+		if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
+		return (await res.json()) as Record<string, unknown>;
+	}
+
+	/**
+	 * Put one reference value, unless KV already holds these exact bytes.
+	 *
+	 * Same hash table as the rulings buckets and the same reasoning: these change rarely — a set
+	 * list moves when a set is announced, a catalog when a card is spoiled — so writing all 38
+	 * values nightly would spend the free plan's KV budget republishing bytes KV already has.
+	 */
+	private async putReferenceValue(key: string, value: string | Uint8Array): Promise<boolean> {
+		const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+		const hash = await sha256Hex(bytes);
+		const known = this.sqlAll<{ hash: string }>("SELECT hash FROM reference_values WHERE key = ?", key)[0];
+		if (known && String(known.hash) === hash) return false;
+		await this.env.STORE_KV.put(key, bytes);
+		this.sqlRun("INSERT OR REPLACE INTO reference_values (key, hash) VALUES (?, ?)", key, hash);
+		return true;
+	}
+
+	private async referenceSets(): Promise<void> {
+		const payload = await this.fetchScryfallJson("sets");
+		const sets = (payload.data ?? []) as Record<string, unknown>[];
+		if (!Array.isArray(sets) || sets.length === 0) throw new Error("/sets answered no data");
+		const { list, buckets, setCount } = renderSets(sets);
+		let written = (await this.putReferenceValue(setsListKey(), list)) ? 1 : 0;
+		for (let bucket = 0; bucket < buckets.length; bucket++) {
+			if (await this.putReferenceValue(setsBucketKey(bucket), buckets[bucket] as Uint8Array)) written += 1;
+		}
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("reference_set_count", String(setCount));
+			this.advanceReference("sets");
+		});
+		console.log(`Reference sets: ${setCount} sets, ${written} of ${buckets.length + 1} values written`);
+	}
+
+	private async referenceCatalogs(): Promise<void> {
+		const counts: Record<string, number> = JSON.parse(this.metaGet("reference_catalogs") ?? "{}");
+		let written = 0;
+		let failed = 0;
+		for (const name of CATALOG_NAMES) {
+			try {
+				const payload = await this.fetchScryfallJson(`catalog/${name}`);
+				const values = payload.data;
+				if (!Array.isArray(values)) throw new Error("no data array");
+				const { json, count } = renderCatalog(values);
+				if (await this.putReferenceValue(catalogKey(name), encodeCountedArray(json, count))) written += 1;
+				counts[name] = count;
+			} catch (err) {
+				// Upstream's rule: one catalog that cannot be fetched keeps its previous value.
+				console.warn(`Reference catalog ${name} could not be fetched; keeping the previous one: ${err}`);
+				failed += 1;
+			}
+		}
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("reference_catalogs", JSON.stringify(counts));
+			this.advanceReference("catalogs");
+		});
+		console.log(`Reference catalogs: ${written} written, ${failed} kept from last import`);
+	}
+
+	private async referenceSymbology(): Promise<void> {
+		const payload = await this.fetchScryfallJson("symbology");
+		const symbols = (payload.data ?? []) as Record<string, unknown>[];
+		if (!Array.isArray(symbols) || symbols.length === 0) throw new Error("/symbology answered no data");
+		const { json, count } = renderSymbology(symbols);
+		const written = await this.putReferenceValue(symbologyKey(), json);
+
+		// The meta key last, as everywhere else here: it is what says the published set is real.
+		const meta: ReferenceMeta = {
+			format_version: REFERENCE_FORMAT_VERSION,
+			bucket_count: SETS_BUCKET_COUNT,
+			built_at: this.metaGet("built_at") ?? "",
+			set_count: Number(this.metaGet("reference_set_count") ?? 0),
+			symbol_count: count,
+			catalogs: JSON.parse(this.metaGet("reference_catalogs") ?? "{}"),
+		};
+		await this.env.STORE_KV.put(REFERENCE_META_KEY, JSON.stringify(meta));
+		this.metaSet("phase", "purge");
+		console.log(`Reference symbology: ${count} symbols${written ? " (written)" : " (already current)"}`);
 	}
 
 	/**

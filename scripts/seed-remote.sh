@@ -31,3 +31,12 @@ if [[ "$REUSE" != "1" ]]; then
 fi
 
 bun scripts/seed-remote-kv.ts "$OUT_DIR"
+
+# Rulings ride on their own keys rather than in the store (see scripts/seed-rulings.ts), and the
+# nightly import republishes them anyway — this just means a fresh deployment does not answer 503
+# on /cards/:id/rulings until the first cron fires. 256 KV writes.
+bun scripts/seed-rulings.ts --remote
+
+# The /sets, /catalog/* and /symbology mirrors, on the same terms: the nightly import refreshes
+# them anyway, this just spares a fresh deployment a day of 503s. 38 KV writes.
+bun scripts/seed-reference.ts --remote

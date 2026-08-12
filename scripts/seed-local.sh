@@ -25,4 +25,15 @@ fi
 echo "Seeding local KV..."
 bun scripts/seed-local-store.ts "$OUT_DIR"
 
+# Rulings are not part of the store build (they hang off oracle_id, not off a printing, and only
+# /cards/:id/rulings reads them), so they are fetched and published on their own. Without this the
+# rulings routes are the one /cards/* surface that works in production and 503s in dev.
+echo "Seeding local rulings..."
+bun scripts/seed-rulings.ts
+
+# Same story for the reference data behind /sets, /catalog/* and /symbology: mirrored off
+# api.scryfall.com rather than built from the bulk dumps, so the store build does not produce it.
+echo "Seeding local reference data..."
+bun scripts/seed-reference.ts
+
 echo "Done. Run: bun dev"

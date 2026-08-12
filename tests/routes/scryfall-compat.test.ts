@@ -3,8 +3,10 @@
 // miss is a Scryfall-shaped 404 rather than this port's routes listing.
 
 import { describe, expect, test } from "bun:test";
+import { encodeRulingsBucket, type RulingRow, rulingsBucketKey, rulingsBucketOf } from "../../src/engine/rulings-kv";
+import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
-import { FakeEngine, FIXTURE_CARDS, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, FakeKV, FIXTURE_CARDS, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
 
@@ -280,23 +282,151 @@ describe("GET /cards and /cards/...", () => {
 		expect(res.status).toBe(404);
 	});
 
-	test("a trailing rulings segment is Scryfall's 404, not an empty list and not the routes listing", async () => {
-		for (const path of ["/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings", "/cards/m15/165/rulings"]) {
-			const res = await testDispatch(ctx, path);
-			expect(res.status).toBe(404);
-			const body = await json(res);
-			// An empty List would claim the card HAS no rulings; this deployment does not serve
-			// them at all, which is a different statement. And `description.routes` would be this
-			// port's own 404, which is not a Scryfall body.
-			expect(body.object).toBe("error");
-			expect(body.code).toBe("not_found");
-			expect(body.description).toBeUndefined();
+	test("import_rulings is a 501 stub like the other Postgres-only routes", async () => {
+		// Upstream's admin route loads the bulk file into Postgres; here the nightly import
+		// publishes rulings to KV, so the route it replaced stays a stub even though the data
+		// it used to load is now served.
+		const res = await testDispatch(ctx, "/import_rulings");
+		expect(res.status).toBe(501);
+	});
+});
+
+describe("GET /cards/:id/rulings", () => {
+	const ORACLE_ID = "bbbbbbbb-0000-0000-0000-000000000002";
+	const OTHER_ORACLE_ID = "cccccccc-0000-0000-0000-000000000003";
+
+	/** The fixture cards, with an oracle id — which is what rulings hang off. */
+	class RulingsEngine extends FakeEngine {
+		oracleId = ORACLE_ID;
+
+		private withOracle(card: Record<string, unknown> | null): Record<string, unknown> | null {
+			return card === null ? null : { ...card, oracle_id: this.oracleId };
+		}
+
+		override async scryfallCardById(id: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+			return this.withOracle(await super.scryfallCardById(id, baseUrl));
+		}
+
+		override async scryfallCardByExternalId(
+			namespace: string,
+			externalId: number,
+			baseUrl: string,
+		): Promise<Record<string, unknown> | null> {
+			return this.withOracle(await super.scryfallCardByExternalId(namespace, externalId, baseUrl));
+		}
+
+		override async scryfallFirstOfEach(trees: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
+			return (await super.scryfallFirstOfEach(trees, baseUrl)).map((card) => this.withOracle(card));
+		}
+	}
+
+	const RULINGS: RulingRow[] = [
+		{ oracle_id: ORACLE_ID, source: "wotc", published_at: "2019-07-12", comment: "The second ruling." },
+		{ oracle_id: ORACLE_ID, source: "wotc", published_at: "2014-07-18", comment: "The first ruling." },
+		{ oracle_id: OTHER_ORACLE_ID, source: "scryfall", published_at: "2020-01-01", comment: "Another card's." },
+	];
+
+	/** A context whose KV holds the bucket each of those oracle ids belongs in. */
+	function rulingsCtx(rows: RulingRow[] = RULINGS): { ctx: RouteContext; kv: FakeKV } {
+		const kv = new FakeKV();
+		for (const bucket of new Set(rows.map((row) => rulingsBucketOf(row.oracle_id) as number))) {
+			const inBucket = rows.filter((row) => rulingsBucketOf(row.oracle_id) === bucket);
+			kv.put(rulingsBucketKey(bucket), encodeRulingsBucket(inBucket).bytes);
+		}
+		return { ctx: makeCtx({ engine: new RulingsEngine(), kv }), kv };
+	}
+
+	test("answers a List of Ruling objects for the card's oracle id", async () => {
+		const res = await testDispatch(rulingsCtx().ctx, "/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+		const body = await json(res);
+		expect(body.object).toBe("list");
+		expect(body.has_more).toBe(false);
+		// Scryfall's rulings List carries no total_cards — it is not a card list.
+		expect(body.total_cards).toBeUndefined();
+		const data = body.data as Record<string, unknown>[];
+		expect(data.length).toBe(2);
+		expect(data[0]).toEqual({
+			object: "ruling",
+			oracle_id: ORACLE_ID,
+			source: "wotc",
+			published_at: "2019-07-12",
+			comment: "The second ruling.",
+		});
+		// Newest date first, which is Scryfall's order — NOT upstream's ascending one. See
+		// encodeRulingsBucket and the README's deviations list.
+		expect(data[1]?.published_at).toBe("2014-07-18");
+	});
+
+	test("the same rulings answer every way the card can be addressed", async () => {
+		for (const path of [
+			"/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings",
+			"/cards/multiverse/12345/rulings",
+			"/cards/m15/165/rulings",
+		]) {
+			const body = await json(await testDispatch(rulingsCtx().ctx, path));
+			expect(body.object).toBe("list");
+			expect((body.data as unknown[]).length).toBe(2);
 		}
 	});
 
-	test("import_rulings is a 501 stub like the other Postgres-only routes", async () => {
-		const res = await testDispatch(ctx, "/import_rulings");
-		expect(res.status).toBe(501);
+	test("a card with no rulings is an empty list, not a 404", async () => {
+		// The 404 is about the CARD. A card the corpus holds and Scryfall has never ruled on
+		// answers 200 with data: [], which is what Scryfall itself does.
+		const engine = new RulingsEngine();
+		engine.oracleId = "dddddddd-0000-0000-0000-000000000004";
+		const kv = new FakeKV();
+		kv.put(rulingsBucketKey(rulingsBucketOf(engine.oracleId) as number), encodeRulingsBucket([]).bytes);
+		const res = await testDispatch(makeCtx({ engine, kv }), "/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings");
+		expect(res.status).toBe(200);
+		const body = await json(res);
+		expect(body.object).toBe("list");
+		expect(body.data).toEqual([]);
+	});
+
+	test("rulings for a card this deployment does not hold are the card's 404", async () => {
+		const res = await testDispatch(rulingsCtx().ctx, "/cards/aaaaaaaa-0000-0000-0000-00000000dead/rulings");
+		expect(res.status).toBe(404);
+		const body = await json(res);
+		expect(body.object).toBe("error");
+		expect(body.code).toBe("not_found");
+		// Not this port's routes-listing 404, which is not a Scryfall body at all.
+		expect(body.description).toBeUndefined();
+	});
+
+	test("a bucket that was never published is a 503, not an empty list", async () => {
+		// An empty list would claim the card has no rulings; the honest statement is that this
+		// deployment has not published any yet. It is also the one rulings answer that must not
+		// be cached for 16 hours — the next import fixes it.
+		const res = await testDispatch(
+			makeCtx({ engine: new RulingsEngine(), kv: new FakeKV() }),
+			"/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings",
+		);
+		expect(res.status).toBe(503);
+		const body = await json(res);
+		expect(body.object).toBe("error");
+		expect(body.code).toBe("service_unavailable");
+		expect(res.headers.get("cache-control")).toBe("no-store");
+	});
+
+	test("a KV read failure is a 500 that says so, never an empty list", async () => {
+		const { ctx: failing, kv } = rulingsCtx();
+		kv.failOn.add(rulingsBucketKey(rulingsBucketOf(ORACLE_ID) as number));
+		const res = await testDispatch(failing, "/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings");
+		expect(res.status).toBe(500);
+		expect((await json(res)).code).toBe("internal_error");
+		expect(res.headers.get("cache-control")).toBe("no-store");
+	});
+
+	test("rulings carry the same 16-hour tier as every other /cards/* answer", async () => {
+		const res = await testDispatch(rulingsCtx().ctx, "/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings");
+		expect(res.headers.get("cache-control")).toBe("public, max-age=57600");
+	});
+
+	test("pretty indents the envelope", async () => {
+		const res = await testDispatch(rulingsCtx().ctx, "/cards/aaaaaaaa-0000-0000-0000-000000000001/rulings?pretty=1");
+		expect(await res.text()).toContain('\n  "data": ');
 	});
 });
 

@@ -51,6 +51,14 @@ describe("404 routes listing", () => {
 			"import_rulings",
 			"ingest_cubecobra",
 			"random_search",
+			// The reference surface (upstream #922). Four separate handlers, so they sort by
+			// attribute name — scryfall_catalog, scryfall_parse_mana, scryfall_sets,
+			// scryfall_symbology — which is why parse-mana lands between catalog and sets rather
+			// than behind symbology the way the cards sub-routes sit behind `cards`.
+			"catalog",
+			"symbology/parse-mana",
+			"sets",
+			"symbology",
 			"search",
 			"setup_schema",
 		]);

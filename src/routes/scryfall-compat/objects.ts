@@ -434,9 +434,24 @@ export function cardList(cards: unknown[], opts: CardListOptions = {}): Record<s
 	return result;
 }
 
-/** Scryfall's Catalog object. */
-export function catalogObject(values: string[]): Record<string, unknown> {
-	return { object: "catalog", total_values: values.length, data: values };
+/**
+ * Scryfall's Catalog object.
+ *
+ * `uri` is present IFF the caller passes one, and the two callers genuinely differ — measured
+ * against api.scryfall.com on 2026-08-12: `/catalog/battle-types` answers
+ * `{"object":"catalog","uri":"…","total_values":1,"data":["Siege"]}` while `/cards/autocomplete`
+ * answers the same object with no `uri` at all. Upstream's `catalog_object` takes no uri, so its
+ * `/catalog/*` responses are missing the key; reported against #922.
+ *
+ * The uri points at api.scryfall.com rather than at this host, which is the rule the card objects
+ * already follow: a self-referencing URI is part of the payload, not pagination.
+ */
+export function catalogObject(values: string[], uri?: string): Record<string, unknown> {
+	const result: Record<string, unknown> = { object: "catalog" };
+	if (uri !== undefined) result.uri = uri;
+	result.total_values = values.length;
+	result.data = values;
+	return result;
 }
 
 /**

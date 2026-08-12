@@ -13,6 +13,12 @@ A faithful mirror of upstream's user-facing surface: the web UI, `/search`
 (full Scryfall-style query syntax via the same Rust engine, compiled to wasm),
 `/card`, `/get_catalog`, `/random_search`, and all static assets. No additions.
 
+It also carries upstream's **Scryfall-compatible API** in full — every
+`/cards/*` route including rulings (#912), plus `/sets`, `/catalog/*` and
+`/symbology` (#922) — so a Scryfall client can change one base URL and nothing
+else. What that surface answers differently, and why, is in the deviations list
+below.
+
 ## Deploy
 
 1. Cloudflare dashboard → Workers → Create → connect this git repository
@@ -219,13 +225,77 @@ The complete list of intentional differences:
   `/cards/*` surface this also removes upstream's `_EngineMiss` sentinel and its
   five `except → fall back` sites: with no second branch to select, an engine
   miss **is** the 404.
-- **Rulings are not served.** Upstream's come from `magic.rulings`, filled by
-  `api/rulings_import.py` against Postgres, which this deployment does not have.
-  A trailing `rulings` segment on any `/cards/*` path returns Scryfall's 404
-  error object, and `import_rulings` is a 501 stub like the other Postgres-only
-  admin routes. Deliberately **not** an empty `List`: upstream answers 200 with
-  `data: []` for a card with no rulings, and reusing that here would claim the
-  card has none rather than that this deployment serves none.
+- **Rulings live in KV and are read by the request isolate**, where upstream's
+  come from `magic.rulings` (filled by `api/rulings_import.py`) and are selected
+  by `oracle_id`. The nightly import publishes them as 256 buckets of
+  pre-rendered `Ruling` objects keyed by the first byte of the oracle id
+  ([src/engine/rulings-kv.ts](src/engine/rulings-kv.ts)); the route reads one
+  bucket, binary-searches its index and splices one byte range into the `List`
+  envelope, so it never parses the ~104KB value it read. They are deliberately
+  **not** in the card store: rulings hang off `oracle_id` rather than off a
+  printing, only this route reads them, and 26MB in the search archive or the
+  residue would be paid for by every `/search` and every other `/cards/*` load.
+  `import_rulings` stays a 501 stub, like the other Postgres-backed admin
+  routes — the nightly import replaced it, not this endpoint.
+  Two consequences worth knowing: a deployment that has never run the rulings
+  phase answers **503** on these routes rather than an empty `List` (an empty
+  list would be a claim about the card), which
+  [scripts/seed-rulings.ts](scripts/seed-rulings.ts) closes for a fresh deploy
+  and for `bun dev`; and the phase runs **after** the store is published and
+  cannot fail the run, so a bad night leaves the previous rulings served rather
+  than a hole.
+- **Rulings are served newest-date-first, which is Scryfall's order and not
+  upstream's.** Upstream sorts `ORDER BY published_at, comment` — oldest first —
+  and measurement says that is backwards: of 16 sampled cards whose rulings span
+  more than one date, api.scryfall.com returned 16 newest-first and 0
+  oldest-first (2026-08-12). Following upstream here would invert every
+  multi-date card's rulings for a client that changed nothing but its base URL,
+  so this port follows Scryfall. Reported upstream against #912.
+  **Within a single date the order still cannot be matched**: Scryfall orders
+  same-date rulings by an internal ruling id, and the bulk file carries no id —
+  none of the file's own order, that order reversed, comment ascending or
+  comment descending reproduced it on any of 10 sampled cards. `comment`
+  ascending is used as a deterministic stand-in. This affects 13,847 of the
+  19,770 cards that have rulings; the other 5,923 (one ruling, or one per date)
+  match Scryfall exactly. End to end against api.scryfall.com over 19 cards with
+  rulings: same set 19/19, same `published_at` sequence 19/19, byte-identical
+  order 8/19 — the remainder differ only in the sequence within one date.
+- **`/sets`, `/catalog/*` and `/symbology` are mirrored into KV**, where
+  upstream mirrors them into Postgres (#922). Same decision, different store:
+  the corpus cannot answer them (a Set object carries eight fields no card
+  carries, `card_count` counts Scryfall's printings rather than this corpus's
+  deliberate subset, and a card symbol has no card), so the nightly import
+  fetches them from api.scryfall.com — 1,047 sets, twenty catalogs, 84 symbols,
+  ~1.65MB across 38 KV values — and renders the response bodies at import time
+  ([src/engine/reference-kv.ts](src/engine/reference-kv.ts)). `parse-mana` reads
+  nothing: it is a pure function of its parameter and answers before any import.
+  As with rulings, a value that has never been published is a **503**, not an
+  empty List, and [scripts/seed-reference.ts](scripts/seed-reference.ts) closes
+  that for a fresh deploy and for `bun dev`.
+- **Four things on that surface are Scryfall's rather than upstream's**, each
+  measured against api.scryfall.com on 2026-08-12 and each reported upstream:
+  a Catalog carries a `uri` key (upstream's `catalog_object` omits it, though
+  `/cards/autocomplete`'s catalog genuinely has none); a `/sets` miss says
+  "No Magic set found for the given code or ID" rather than the cards surface's
+  generic body; a `/catalog/<unknown>` miss uses that generic sentence **without**
+  its "Please double-check your URI and try again." tail; and `parse-mana`
+  answers an unparseable cost with code `validation_error`, where upstream sends
+  `bad_request` with the same 422. End to end, 35 of 36 sampled responses are
+  byte-identical to api.scryfall.com — every catalog, the whole set list, the
+  symbol list and eight parse-mana costs.
+- **A shared TCGplayer id resolves to the first set in Scryfall's order**, which
+  is not always the set Scryfall picks. Six group ids are claimed by more than
+  one set (id 62 by all twenty-one Judge Gift Cards sets), and Scryfall's choice
+  is not derivable from the data: id 62 answers `g03`, which is neither first
+  nor last by position, release date or code. Upstream has the same gap from the
+  other side — its lookup is a `LIMIT 1` with no `ORDER BY`.
+- **A single-set lookup reports the `card_count` the `/sets` list carries**,
+  which for a few sets is not the one `/sets/:code` returns upstream at
+  Scryfall. Scryfall disagrees with itself here: sampled 30 sets across the
+  list, 29 matched its own single-set endpoint exactly and one (`znr`) differed
+  by one card, always in `card_count` alone. Mirroring the list is what makes
+  `/sets` itself exact, and fetching 1,047 single endpoints per import to
+  reconcile the rest is not a trade worth making.
 - **The Scryfall card object is assembled from stored fields**, not unwrapped
   from a `raw_card_blob` this port does not store — 29 columns, 12 derived keys
   (every `*_uri` and `image_uris` are pure functions of the id, set, collector

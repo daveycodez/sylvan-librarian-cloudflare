@@ -11,6 +11,7 @@ import { getCatalogHandler, getPidHandler, notImplementedHandler } from "./misc"
 import { cardHandler, redirectToRootHandler, rootHandler } from "./pages";
 import { BindingTypeError, ParamCoercionError } from "./param-binding";
 import type { RouteEntry, RouteTable } from "./registry";
+import { catalogHandler, parseManaHandler, setsHandler, symbologyHandler } from "./scryfall-compat/reference-routes";
 import {
 	cardsAutocompleteHandler,
 	cardsCollectionHandler,
@@ -105,6 +106,17 @@ export const routes: RouteTable = {
 	import_rulings: stub("import_rulings"),
 	ingest_cubecobra: stub("ingest_cubecobra"),
 	random_search: entry(randomSearchHandler, LISTINGS.random_search),
+	// The reference half of the Scryfall surface (upstream #922). These sort HERE, and in this
+	// order, because the listing follows upstream attribute names — `scryfall_catalog`,
+	// `scryfall_parse_mana`, `scryfall_sets`, `scryfall_symbology` — and all four sort between
+	// `random_search` and `search`. Hence `symbology/parse-mana` sitting apart from `symbology`:
+	// it is its own handler, not a path registered behind that one, which is the difference from
+	// the `cards` block above.
+	catalog: entry(catalogHandler, LISTINGS.catalog, 1),
+	"symbology/parse-mana": entry(parseManaHandler, LISTINGS["symbology/parse-mana"]),
+	// Two trailing segments: /sets/tcgplayer/:id is the longest shape.
+	sets: entry(setsHandler, LISTINGS.sets, 2),
+	symbology: entry(symbologyHandler, LISTINGS.symbology),
 	search: entry(searchHandler, LISTINGS.search),
 	// setup_schema takes *args upstream, so any number of trailing segments resolves
 	setup_schema: stub("setup_schema", Number.POSITIVE_INFINITY),

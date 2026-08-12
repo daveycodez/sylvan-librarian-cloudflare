@@ -11,17 +11,19 @@
 //     "the engine could not serve" from "no such card" via an `_EngineMiss` sentinel. This
 //     deployment has no Postgres, so there is no second branch to select: a miss IS the 404, an
 //     engine failure IS a 500, and the sentinel has no counterpart. Recorded in the README.
-//   - **Rulings are not served.** Upstream loads them from `magic.rulings`, populated by
-//     `api/rulings_import.py` against Postgres. There is nothing here to serve them from, so a
-//     trailing `rulings` segment gets Scryfall's 404 error shape — NOT an empty list, which would
-//     claim "this card has no rulings" rather than "this deployment does not serve rulings", and
-//     NOT this port's routes-listing 404, which is not a Scryfall body at all.
+//   - **Rulings come out of KV, not out of the engine.** Upstream loads them into `magic.rulings`
+//     (`api/rulings_import.py`) and selects by `oracle_id`. Here the nightly import publishes them
+//     as 256 KV buckets of pre-rendered Ruling objects (src/engine/rulings-kv.ts) and THIS ISOLATE
+//     reads one bucket and slices one card's rulings out of it as bytes. It is the only `/cards/*`
+//     answer the Durable Object has no part in, because it is the only one that needs no card
+//     object assembled — just the right bytes.
 //
 // Every card object is built inside the Durable Object (see the Engine interface): `toScryfallCard`
 // assembles ~70 keys per card, up to 175 of them for a page, and the DO meters against 30s where
 // this isolate meters against 10ms.
 
-import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
+import { encodeUtf8 } from "../../engine/bytes";
+import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
 import type { Engine, EngineSerializedResult } from "../../engine/types";
 import { EngineUnavailableError } from "../../engine/types";
 import type { FilterValue } from "../../parser";
@@ -47,6 +49,7 @@ import {
 	PAGE_SIZE,
 	type ScryfallError,
 } from "./objects";
+import { asBool, scryfallJson, scryfallListJson } from "./respond";
 import { cardName, setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
@@ -87,10 +90,6 @@ const NOT_FOUND_DETAILS =
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-/** Spelled out rather than a shared constant: Scryfall sends the charset, and a client that
- * compares content types sees the difference. */
-const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
-
 // ─── cache tiers ─────────────────────────────────────────────────────────────
 //
 // api.scryfall.com's own, measured against it rather than guessed:
@@ -128,64 +127,11 @@ function isUuid(value: string): boolean {
 	return UUID_RE.test(value);
 }
 
-/** The spellings Scryfall reads as true; module-level so asBool does not rebuild it per call. */
-const TRUE_SPELLINGS = new Set(["1", "true", "yes", "on"]);
-
-/** Parse a Scryfall boolean query parameter; anything but a true spelling is false. */
-function asBool(value: string | undefined, fallback = false): boolean {
-	if (value === undefined) return fallback;
-	return TRUE_SPELLINGS.has(value.trim().toLowerCase());
-}
-
 /** Parse an integer parameter or path segment; undefined when absent or unparseable. */
 function asInt(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
 	const n = Number.parseInt(value.trim(), 10);
 	return Number.isNaN(n) ? undefined : n;
-}
-
-// ─── responses ───────────────────────────────────────────────────────────────
-
-/** A Scryfall JSON body, carrying an error object's own status when it is one. */
-function scryfallJson(payload: Record<string, unknown>, pretty: boolean, cache: Record<string, string>): Response {
-	const status = payload.object === "error" && typeof payload.status === "number" ? payload.status : 200;
-	return new Response(pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload), {
-		status,
-		headers: { "content-type": JSON_CONTENT_TYPE, ...cache },
-	});
-}
-
-/**
- * A List whose `data` is already encoded (the DO built and encoded the cards).
- *
- * Spliced rather than parsed for the same reason `/search` splices its own: the point of building
- * cards in the Durable Object is lost if the isolate parses them back into objects to re-encode.
- */
-function scryfallListJson(
-	cardsBytes: Uint8Array,
-	opts: { totalCards?: number; hasMore: boolean; nextPage?: string; warnings?: string[] },
-	pretty: boolean,
-	cache: Record<string, string>,
-): Response {
-	// cardList with an empty data array, then the encoded cards spliced into it — keeping ONE
-	// definition of the envelope's key order rather than a second one written out here. `data` is
-	// always the LAST key (see cardList), so this is a tail replacement found by lastIndexOf
-	// rather than a regex: an anchored `$` does not match, because the closing brace follows.
-	const envelope = cardList([], opts);
-	const body = pretty ? JSON.stringify(envelope, null, 2) : JSON.stringify(envelope);
-	const key = pretty ? '"data": ' : '"data":';
-	const marker = `${key}[]`;
-	const at = body.lastIndexOf(marker);
-	if (at < 0) throw new Error("card list envelope did not end with an empty data array");
-	// The envelope is a couple of hundred bytes and the cards can be 635KB, so only the envelope
-	// is encoded here; the payload is copied once, as bytes, into the buffer that becomes the
-	// response. Interpolating it into a template literal instead would decode the whole thing to
-	// UTF-16 and encode it back — the two passes this path exists to avoid.
-	const head = encodeUtf8(`${body.slice(0, at)}${key}`);
-	const tail = encodeUtf8(body.slice(at + marker.length));
-	// content-type explicitly: this surface answers `; charset=utf-8`, which Scryfall sends and
-	// tests pin, where the shared helper's default is the bare type /search uses.
-	return jsonBytesResponse([head, cardsBytes, tail], { "content-type": JSON_CONTENT_TYPE, ...cache });
 }
 
 function textResponse(body: string, contentType: string, cache: Record<string, string>): Response {
@@ -695,7 +641,8 @@ async function resolveIdentifiers(
  *   - `/cards/:namespace/:id`             one card by multiverse/mtgo/arena/tcgplayer/cardmarket id
  *   - `/cards/:code/:number`              one card by set code and collector number
  *   - `/cards/:code/:number/:lang`        the same, in one language
- *   - `.../rulings` on any of the above   Scryfall's 404 shape; see the module header
+ *   - `/cards/:id/rulings`, `/cards/:namespace/:id/rulings`, `/cards/:code/:number/rulings`
+ *                                        that card's rulings, as a List of Ruling objects
  */
 export async function cardsHandler(
 	ctx: RouteContext,
@@ -707,44 +654,121 @@ export async function cardsHandler(
 
 	if (!identifier) return allCardsPage(ctx, params, pretty);
 
-	// A trailing `rulings` is recognized so it gets a SCRYFALL-shaped 404 rather than being read
-	// as a collector number or falling through to this port's routes-listing 404. Deliberately not
-	// an empty list: that would claim the card has no rulings, which is a different and false
-	// statement from "this deployment does not serve rulings".
-	if (number === "rulings" || suffix === "rulings") {
-		return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
-	}
+	// The rulings variants address a card exactly the way every other shape here does, so the
+	// segment is consumed and the rest resolved as a plain card address. The card still has to be
+	// found: rulings for a card this deployment does not hold are Scryfall's 404, not an empty
+	// list, which would be a claim about the card rather than about the corpus.
+	const wantsRulings = number === "rulings" || suffix === "rulings";
 
-	const engine = await ctx.getEngine();
-	const baseUrl = apiBaseUrl(ctx);
-	const format = (params.format ?? "json").toLowerCase();
-	const face = params.face ?? "front";
-	const version = params.version ?? DEFAULT_IMAGE_VERSION;
-
-	let card: Record<string, unknown> | null = null;
+	let card: Record<string, unknown> | null;
 	try {
-		if ((EXTERNAL_ID_NAMESPACES as readonly string[]).includes(identifier)) {
-			const externalId = asInt(number);
-			if (externalId === undefined) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
-			card = await engine.scryfallCardByExternalId(identifier, externalId, baseUrl);
-		} else if (!number) {
-			if (!isUuid(identifier)) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
-			card = await engine.scryfallCardById(identifier, baseUrl);
-		} else {
-			const [first] = await engine.scryfallFirstOfEach([setAndCollectorNumber(identifier, number)], baseUrl);
-			card = first ?? null;
-			// DELIBERATE DEVIATION: upstream filters the language in SQL. `lang` lives in the
-			// residue archive here and is not a filter field, so the card is resolved first and
-			// its OWN stored language checked — which uses the real value rather than assuming.
-			// Scryfall defaults the segment to English.
-			if (card && String(card.lang ?? "en") !== (suffix || "en")) card = null;
-		}
+		card = await resolvePathCard(ctx, identifier, number, suffix, wantsRulings);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
 
 	if (!card) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
-	return renderCard(card, format, face, version, pretty, CARDS_CACHE);
+	if (wantsRulings) return rulingsForCard(ctx, card, pretty);
+	return renderCard(
+		card,
+		(params.format ?? "json").toLowerCase(),
+		params.face ?? "front",
+		params.version ?? DEFAULT_IMAGE_VERSION,
+		pretty,
+		CARDS_CACHE,
+	);
+}
+
+/**
+ * The card a `/cards/...` path addresses, or null when it addresses nothing — an unparseable id,
+ * a language that is not the card's, or a genuine miss, all of which are the same 404.
+ *
+ * Split out because the rulings variants resolve their card through it too, which is upstream's
+ * `_resolve_path_card` and matters for more than tidiness: the rulings routes accept exactly the
+ * addressings the card routes do, and one resolver is what keeps that true.
+ */
+async function resolvePathCard(
+	ctx: RouteContext,
+	identifier: string,
+	number: string,
+	suffix: string,
+	wantsRulings: boolean,
+): Promise<Record<string, unknown> | null> {
+	// Drop the trailing `rulings` so the rest reads as a plain card address. When it was the
+	// SECOND segment the path was `/cards/:id/rulings`, and there is no third segment to keep.
+	if (wantsRulings) {
+		if (suffix === "rulings") suffix = "";
+		else number = suffix = "";
+	}
+
+	const engine = await ctx.getEngine();
+	const baseUrl = apiBaseUrl(ctx);
+
+	if ((EXTERNAL_ID_NAMESPACES as readonly string[]).includes(identifier)) {
+		const externalId = asInt(number);
+		if (externalId === undefined) return null;
+		return engine.scryfallCardByExternalId(identifier, externalId, baseUrl);
+	}
+	if (!number) {
+		if (!isUuid(identifier)) return null;
+		return engine.scryfallCardById(identifier, baseUrl);
+	}
+	const [first] = await engine.scryfallFirstOfEach([setAndCollectorNumber(identifier, number)], baseUrl);
+	const card = first ?? null;
+	// DELIBERATE DEVIATION: upstream filters the language in SQL. `lang` lives in the residue
+	// archive here and is not a filter field, so the card is resolved first and its OWN stored
+	// language checked — which uses the real value rather than assuming. Scryfall defaults the
+	// segment to English.
+	if (card && String(card.lang ?? "en") !== (suffix || "en")) return null;
+	return card;
+}
+
+/** `[]` as bytes: the `data` of a card that has no rulings, which is a 200 rather than a miss. */
+const EMPTY_DATA = encodeUtf8("[]");
+
+/** Scryfall's own wording is not available for this one — it never has to say it. */
+const RULINGS_UNPUBLISHED_DETAILS =
+	"This server has not published its rulings data yet. Try again after the next import.";
+const RULINGS_UNREADABLE_DETAILS = "The rulings store could not be read.";
+
+/**
+ * One card's rulings, as a List of Ruling objects.
+ *
+ * Rulings hang off `oracle_id`, so every printing of a card answers with the same list — which is
+ * why they are stored by oracle id rather than per printing. The bucket that holds them is read
+ * from KV and SLICED, never parsed: see src/engine/rulings-kv.ts for the layout and for why this
+ * is the one `/cards/*` answer the Durable Object has no part in.
+ */
+async function rulingsForCard(ctx: RouteContext, card: Record<string, unknown>, pretty: boolean): Promise<Response> {
+	const oracleId = typeof card.oracle_id === "string" ? card.oracle_id : "";
+	const bucket = oracleId ? rulingsBucketOf(oracleId) : null;
+	// A card carrying no usable oracle id has no rulings to find. Upstream answers the same empty
+	// List rather than a miss — the card itself resolved, so the 404 would be about the wrong thing.
+	if (bucket === null) return scryfallListJson(EMPTY_DATA, { hasMore: false }, pretty, CARDS_CACHE);
+
+	let value: ArrayBuffer | null;
+	try {
+		value = await ctx.env.STORE_KV.get(rulingsBucketKey(bucket), "arrayBuffer");
+	} catch (err) {
+		console.error("Rulings: KV read failed", err);
+		return scryfallJson(errorObject("internal_error", 500, RULINGS_UNREADABLE_DETAILS), pretty, NO_STORE_HEADER);
+	}
+	// Every bucket is published, empty ones included, so a MISSING bucket means no import has put
+	// rulings in this namespace yet — not that the card has none. Saying so is the honest answer;
+	// `data: []` would be a claim about the card, and a 404 a claim about its existence.
+	if (value === null) {
+		return scryfallJson(errorObject("service_unavailable", 503, RULINGS_UNPUBLISHED_DETAILS), pretty, NO_STORE_HEADER);
+	}
+
+	let data: Uint8Array;
+	try {
+		data = rulingsSlice(new Uint8Array(value), oracleId) ?? EMPTY_DATA;
+	} catch (err) {
+		if (!(err instanceof RulingsFormatError)) throw err;
+		console.error(`Rulings: ${rulingsBucketKey(bucket)} is not readable as a bucket`, err);
+		return scryfallJson(errorObject("internal_error", 500, RULINGS_UNREADABLE_DETAILS), pretty, NO_STORE_HEADER);
+	}
+	return scryfallListJson(data, { hasMore: false }, pretty, CARDS_CACHE);
 }
 
 /** One page of the unfiltered `/cards` listing, ordered by name like Scryfall's. */

@@ -145,11 +145,11 @@ export const LISTINGS = {
         - \`/cards\` -- every card, paginated.
         - \`/cards/:id\` -- one card by Scryfall id.
         - \`/cards/:namespace/:id\` -- one card by multiverse, MTGO, Arena, TCGplayer or Cardmarket id.
+        - \`/cards/:id/rulings\` -- the rulings for one card.
         - \`/cards/:code/:number\` -- one card by set code and collector number.
         - \`/cards/:code/:number/:lang\` -- the same, in one language.
-
-        Rulings are not served by this deployment; a trailing \`rulings\` segment returns Scryfall's
-        404 error object.
+        - \`/cards/:namespace/:id/rulings\` and \`/cards/:code/:number/rulings\` -- rulings, addressed
+          the same two ways.
         `,
 		args: [],
 		kwargs: {
@@ -224,6 +224,53 @@ export const LISTINGS = {
 
 	"cards/collection": {
 		doc: "Resolve up to 75 card identifiers in one request.",
+		args: [],
+		kwargs: { pretty: { type: "str", default: "false" } },
+	},
+
+	// The reference half of the Scryfall surface (upstream #922): sets, catalogs and symbols,
+	// mirrored off api.scryfall.com rather than derived from the corpus.
+	catalog: {
+		doc: `Return one catalog.
+
+        The twenty names Scryfall documents; anything else is a 404 rather than an empty catalog.
+        `,
+		args: [],
+		kwargs: {
+			name: { type: "str", default: "" },
+			pretty: { type: "str", default: "false" },
+		},
+	},
+
+	"symbology/parse-mana": {
+		doc: `Parse a mana cost into Scryfall's ManaCost object.
+
+        The one route on this surface that reads no stored data: it is a pure function of \`cost\`,
+        so it answers the same before the first import as after it.
+        `,
+		args: [],
+		kwargs: {
+			cost: { type: "str | None", default: null },
+			pretty: { type: "str", default: "false" },
+		},
+	},
+
+	sets: {
+		doc: `Answer every \`/sets\` shape.
+
+        Covers \`/sets\`, \`/sets/:code\`, \`/sets/:id\` and \`/sets/tcgplayer/:id\` — one handler
+        because the router hands trailing segments to whichever route claims the first one.
+        `,
+		args: [],
+		kwargs: {
+			identifier: { type: "str", default: "" },
+			second: { type: "str", default: "" },
+			pretty: { type: "str", default: "false" },
+		},
+	},
+
+	symbology: {
+		doc: "Return every card symbol.",
 		args: [],
 		kwargs: { pretty: { type: "str", default: "false" } },
 	},

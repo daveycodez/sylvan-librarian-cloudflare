@@ -231,11 +231,36 @@ export function installFakeParser(parse: (query: string) => unknown = fakeParse)
 	});
 }
 
+/**
+ * Enough of a KVNamespace for the one route that reads KV in the isolate: `/cards/*`'s rulings
+ * variants. Everything else here reaches KV only from a Durable Object.
+ */
+export class FakeKV {
+	readonly values = new Map<string, Uint8Array>();
+	/** Reads that should fail, for the "KV is down" branch. */
+	failOn = new Set<string>();
+
+	put(key: string, value: Uint8Array | string): void {
+		this.values.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value);
+	}
+
+	async get(key: string, type?: string): Promise<ArrayBuffer | unknown | null> {
+		if (this.failOn.has(key)) throw new Error(`KV get ${key} failed`);
+		const value = this.values.get(key);
+		if (value === undefined) return null;
+		if (type === "json") return JSON.parse(new TextDecoder().decode(value));
+		if (type === "arrayBuffer") return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+		return new TextDecoder().decode(value);
+	}
+}
+
 export interface CtxOptions {
 	engine?: Engine | null;
 	requestHost?: string;
 	/** Override the request, for the one route that reads a body (POST /cards/collection). */
 	request?: Request;
+	/** STORE_KV, for the rulings routes. Absent means the binding is never touched. */
+	kv?: FakeKV;
 }
 
 /** RouteContext built by hand; engine: null simulates an unloaded store. */
@@ -244,9 +269,10 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 		engine = new FakeEngine(),
 		requestHost = "sylvan-librarian.com",
 		request = new Request("https://sylvan-librarian.com/"),
+		kv,
 	} = options;
 	return {
-		env: {} as Env,
+		env: (kv ? { STORE_KV: kv } : {}) as unknown as Env,
 		getEngine: async () => {
 			if (!engine) {
 				throw new EngineUnavailableError("Engine is not loaded, please try again later.");
