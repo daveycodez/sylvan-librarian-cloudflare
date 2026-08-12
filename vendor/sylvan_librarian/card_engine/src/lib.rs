@@ -12915,11 +12915,14 @@ const COMPAT_ARCHIVE_MAGIC: [u8; 8] = *b"ATCOMPAT";
 //                `OracleCard.cmc` and `CardRow.cmc` go `Option<u8>` -> `Option<f32>`,
 //                `NumericIndex`'s key goes `i16` -> `f32`, `ArithTupleKey` holds cmc as
 //                `f32::to_bits`, and `BucketBounds` widens to f32 so a fractional observation
-//                cannot round its way into an unsound bucket verdict. `OracleCard` grows (304 ->
-//                320 bytes here) so the header's own size check would also catch it, but only by
-//                luck of that struct moving: the three INDEX types are not measured by the header
-//                at all, and a change confined to them would pass it. Reading an old store under
-//                the new layout would reinterpret integer cmc bytes as float bits.
+//                cannot round its way into an unsound bucket verdict. THE HEADER CANNOT CATCH
+//                THIS ONE: `size_of::<AOracleCard>` measures 304 both before and after (176 for
+//                `APrinting`, also unchanged), because the 6 extra bytes of `Option<f32>` over
+//                `Option<u8>` fit in padding this port's own added fields already introduced --
+//                measured, not assumed, and it differs from upstream, where the same change
+//                moves the struct 288 -> 304. So this constant is the ONLY thing standing
+//                between a generation-11 store and a reader that would interpret its integer
+//                cmc bytes as float bits and answer nonsense.
 const ARCHIVE_FORMAT_VERSION: u32 = 2026081104;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
