@@ -164,31 +164,38 @@ export function cachedArchiveStream(
 }
 
 /**
- * Write `body` into the cache under `key`, then drop every other archive's rows.
+ * A synchronous sink that turns archive bytes into cache rows as they go past.
  *
- * Runs in the BACKGROUND, off the request that triggered it (see the loader's `waitUntil`), because
- * this is the write burst that made the previous design pay for itself on the very path it was
- * meant to speed up. Here the request has already been answered from KV before a row is written.
+ * Exists so the load path can TEE into it: the bytes are already decompressed and in hand on their
+ * way into wasm, so writing them here costs one pass over local storage instead of a second KV
+ * fetch and a second gunzip. The fill used to re-stream from KV precisely to keep those writes off
+ * the request — but `waitUntil` bills to the same invocation AND occupies the single-threaded
+ * object, so the work was never actually off the request, and the second decompression is worth far
+ * more than the writes: measured 2026-08-12, a cold KV read costs 3466-4204ms of DO CPU while
+ * reading the same archive out of local SQLite costs 0ms of wait.
  *
- * Rows are accumulated to `BLOB_GROUP_BYTES` rather than written as they arrive: the source hands
- * over ~4KB gzip pieces, and one row per piece would be ~18,700 rows against a 100,000/day write
- * allowance — a single colo's fill would spend a fifth of the daily budget.
+ * Rows are accumulated to BLOB_GROUP_BYTES rather than written as they arrive: a gzipped source
+ * hands over ~4KB pieces, and one row each would be ~18,700 rows against a 100,000/day write
+ * allowance — a single region's fill would spend a fifth of the daily budget.
  *
- * Returns the number of rows written. Partial failure leaves no meta row, so the copy stays
- * unreadable and the next cold load refills it.
+ * `commit()` writes the meta row LAST, which is what makes a half-written copy unreadable rather
+ * than subtly short. A load that dies partway simply never commits, and the next one refills.
  */
-export async function fillCache(
-	storage: ArchiveCacheStorage,
-	key: string,
-	body: ReadableStream<Uint8Array>,
-	expectedBytes: number,
-): Promise<number> {
+export interface CacheWriter {
+	/** Take one run of archive bytes. Must be called with the archive in order. */
+	write(bytes: Uint8Array): void;
+	/** Flush the tail and publish the copy. Returns rows written, or 0 if the length disagreed. */
+	commit(): number;
+	/** Abandon a partial copy without publishing it. */
+	abort(): void;
+}
+
+export function cacheWriter(storage: ArchiveCacheStorage, key: string, expectedBytes: number): CacheWriter {
 	ensureCacheSchema(storage);
 	// A previous partial attempt under this same key would collide on the primary key.
 	exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
 	exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 
-	const reader = body.getReader();
 	const group = new Uint8Array(BLOB_GROUP_BYTES);
 	let filled = 0;
 	let seq = 0;
@@ -200,14 +207,12 @@ export async function fillCache(
 		written += bytes.byteLength;
 	};
 
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
+	return {
+		write(bytes: Uint8Array): void {
 			let off = 0;
-			while (off < value.length) {
-				const take = Math.min(BLOB_GROUP_BYTES - filled, value.length - off);
-				group.set(value.subarray(off, off + take), filled);
+			while (off < bytes.length) {
+				const take = Math.min(BLOB_GROUP_BYTES - filled, bytes.length - off);
+				group.set(bytes.subarray(off, off + take), filled);
 				filled += take;
 				off += take;
 				if (filled === BLOB_GROUP_BYTES) {
@@ -215,25 +220,63 @@ export async function fillCache(
 					filled = 0;
 				}
 			}
+		},
+		commit(): number {
+			if (filled > 0) {
+				flush(group.subarray(0, filled));
+				filled = 0;
+			}
+			if (written !== expectedBytes) {
+				// Never leave a readable short copy. No meta row means the next load goes to KV.
+				exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
+				return 0;
+			}
+			exec(
+				storage,
+				"INSERT INTO archive_cache_meta (archive_key, total_bytes, row_count) VALUES (?, ?, ?)",
+				key,
+				expectedBytes,
+				seq,
+			);
+			return seq;
+		},
+		abort(): void {
+			exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
+			exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
+		},
+	};
+}
+
+/**
+ * Fill the cache by draining `body` — the standalone path, for a prefetch that has no load to tee
+ * into (see refreshNow, which fills under the OLD store before swapping).
+ *
+ * The load path does NOT use this: it tees into a cacheWriter instead, so it reads and decompresses
+ * once rather than twice.
+ */
+export async function fillCache(
+	storage: ArchiveCacheStorage,
+	key: string,
+	body: ReadableStream<Uint8Array>,
+	expectedBytes: number,
+): Promise<number> {
+	const writer = cacheWriter(storage, key, expectedBytes);
+	const reader = body.getReader();
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			writer.write(value);
 		}
+	} catch (err) {
+		writer.abort();
+		throw err;
 	} finally {
 		reader.releaseLock();
 	}
-	if (filled > 0) flush(group.subarray(0, filled));
-
-	if (written !== expectedBytes) {
-		// Never leave a readable short copy. No meta row means the next load goes to KV and refills.
-		exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
-		throw new Error(`archive cache fill for ${key} wrote ${written} of ${expectedBytes} bytes`);
-	}
-	exec(
-		storage,
-		"INSERT INTO archive_cache_meta (archive_key, total_bytes, row_count) VALUES (?, ?, ?)",
-		key,
-		expectedBytes,
-		seq,
-	);
-	return seq;
+	const rows = writer.commit();
+	if (rows === 0) throw new Error(`archive cache fill for ${key} did not match ${expectedBytes} bytes`);
+	return rows;
 }
 
 /**

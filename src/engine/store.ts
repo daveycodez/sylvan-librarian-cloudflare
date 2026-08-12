@@ -27,7 +27,15 @@ import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/sc
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
-import { type ArchiveCacheStorage, cachedArchiveStream, ensureCacheSchema, fillCache, pruneCache } from "./store-cache";
+import {
+	type ArchiveCacheStorage,
+	type CacheWriter,
+	cachedArchiveStream,
+	cacheWriter,
+	ensureCacheSchema,
+	fillCache,
+	pruneCache,
+} from "./store-cache";
 import { kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
 import type {
 	Engine,
@@ -373,9 +381,16 @@ class WasmEngine implements Engine {
 export { readManifest } from "./store-kv";
 
 /** Stream the store bytes into wasm memory, in blocks (see load-blocks.ts for why). */
-async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Promise<FeedCounts> {
+async function feedStore(
+	body: ReadableStream<Uint8Array>,
+	totalLen: number,
+	sink: CacheWriter | null,
+): Promise<FeedCounts> {
 	wasm.begin_store_load(totalLen);
-	const counts = await feedBlocks(body, (block) => wasm.store_load_chunk(block));
+	const counts = await feedBlocks(body, (block) => {
+		wasm.store_load_chunk(block);
+		sink?.write(block);
+	});
 	wasm.finish_store_load();
 	return counts;
 }
@@ -404,37 +419,39 @@ async function feedCompat(
 	// cold path where the store has usually just been loaded, so both decompressions bill to one
 	// request. The archives are cached under separate keys because they are attached at different
 	// times — a search-only colo never pays for this one.
-	const { body, cached } = archiveBytes(
-		ctx,
-		manifest.compat_key,
-		total,
-		() => kvCompatStream(env, manifest),
-		() => [manifest.store_key, manifest.compat_key as string],
-	);
-	const counts = await feedBlocks(body, (block) => wasm.compat_load_chunk(block));
+	const { body, cached, sink } = archiveBytes(ctx, manifest.compat_key, total, () => kvCompatStream(env, manifest));
+	const counts = await feedBlocks(body, (block) => {
+		wasm.compat_load_chunk(block);
+		sink?.write(block);
+	});
 	wasm.finish_compat_load();
+	// Committed only once wasm has accepted the archive, so a failed attach caches nothing.
+	commitSink(ctx, sink, manifest.compat_key, [manifest.store_key, manifest.compat_key]);
 	return { ...counts, cached };
 }
 
 /**
- * The archive's bytes, from the local cache when it holds a complete copy and from KV otherwise —
- * and, when it came from KV, a background fill so the next wake in this colo does not.
+ * The archive's bytes, and — on a miss — a sink that caches them AS THEY GO PAST.
  *
- * The fill re-streams from KV rather than tapping the bytes on their way into wasm. That costs a
- * second read and a second decompression, and buys the thing this whole change is about: the
- * REQUEST pays neither. A tap would put ~52 SQLite writes inside the cold load it is meant to make
- * faster, which is precisely how the previous local-copy design earned its removal.
+ * The fill used to re-stream the archive from KV under `waitUntil`, which meant a cold load that
+ * missed the cache fetched and decompressed the same ~76.6MB TWICE. That was justified on the
+ * grounds that the request paid neither, and that was wrong twice over: `waitUntil` bills to the
+ * same invocation, and a Durable Object is single-threaded, so a background fill occupies the
+ * object against every request behind it. It is what took cold CPU to 4756ms.
+ *
+ * Teeing costs one pass over local storage instead. The numbers make that lopsided — a cold KV read
+ * is 3466-4204ms of DO CPU while the local rows are 0ms of wait — and the writes happen either way,
+ * only sooner.
  *
  * Every failure here is swallowed. The cache is an optimisation over a source of truth that is
- * still KV, so a fill that fails must never fail the load that triggered it.
+ * still KV, so a fault on this side must never fail the load that triggered it.
  */
 function archiveBytes(
 	ctx: LoadContext | undefined,
 	key: string,
 	expected: number,
 	fromKv: () => ReadableStream<Uint8Array>,
-	keepAfterFill: () => readonly string[],
-): { body: ReadableStream<Uint8Array>; cached: boolean } {
+): { body: ReadableStream<Uint8Array>; cached: boolean; sink: CacheWriter | null } {
 	const storage = ctx?.storage;
 	if (storage) {
 		try {
@@ -442,7 +459,7 @@ function archiveBytes(
 			// Object is exactly when it does not — reading a table that has never been created throws.
 			ensureCacheSchema(storage);
 			const local = cachedArchiveStream(storage, key, expected);
-			if (local) return { body: local, cached: true };
+			if (local) return { body: local, cached: true, sink: null };
 		} catch (err) {
 			// A cache that cannot be read is a cache miss, never a failed load. This catch is what
 			// makes "KV is the source of truth" true in the code and not just in the comments: every
@@ -450,22 +467,44 @@ function archiveBytes(
 			console.warn(`${tag(ctx)}local archive cache unreadable for ${key} (falling back to KV): ${err}`);
 		}
 	}
-	if (storage && ctx) {
-		ctx.waitUntil(
-			(async () => {
-				const started = Date.now();
-				const rows = await fillCache(storage, key, fromKv(), expected);
-				const dropped = pruneCache(storage, keepAfterFill());
-				console.log(
-					`${tag(ctx)}archive cached locally: ${key} (${expected} bytes in ${rows} rows) in ${Date.now() - started}ms` +
-						`${dropped.length ? `, dropped ${dropped.length} stale (${dropped.join(", ")})` : ""}`,
-				);
-			})().catch((err) =>
-				console.warn(`${tag(ctx)}local archive cache fill failed for ${key} (KV still serves): ${err}`),
-			),
-		);
+	let sink: CacheWriter | null = null;
+	if (storage) {
+		try {
+			sink = cacheWriter(storage, key, expected);
+		} catch (err) {
+			console.warn(`${tag(ctx)}local archive cache unwritable for ${key} (serving from KV anyway): ${err}`);
+		}
 	}
-	return { body: fromKv(), cached: false };
+	return { body: fromKv(), cached: false, sink };
+}
+
+/**
+ * Publish a tee'd copy, or discard it — called once the archive is known good.
+ *
+ * Committed only AFTER the wasm side has accepted the bytes, so a load that dies mid-stream leaves
+ * an uncommitted copy that no reader can see, and the next cold load refills.
+ */
+function commitSink(
+	ctx: LoadContext | undefined,
+	sink: CacheWriter | null,
+	key: string,
+	keep: readonly string[],
+): void {
+	if (!sink) return;
+	try {
+		const rows = sink.commit();
+		if (rows === 0) {
+			console.warn(`${tag(ctx)}archive cache for ${key} did not match its manifest length; not cached`);
+			return;
+		}
+		const dropped = ctx?.storage ? pruneCache(ctx.storage, keep) : [];
+		console.log(
+			`${tag(ctx)}cached ${key} locally while loading it (${rows} rows)` +
+				`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
+		);
+	} catch (err) {
+		console.warn(`${tag(ctx)}could not cache ${key} locally (KV still serves): ${err}`);
+	}
 }
 
 async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Promise<Engine> {
@@ -495,15 +534,10 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
 	const started = Date.now();
-	// Local first (decompressed, no network); KV otherwise, with a background fill behind it. Both
-	// archives are named as survivors so the fill's prune does not drop the residue this store is
-	// paired with — they are cached under separate keys but retired together.
-	const { body, cached } = archiveBytes(
-		ctx,
-		manifest.store_key,
-		manifest.store_bytes,
-		() => kvStoreStream(env, manifest),
-		() => [manifest.store_key, ...(manifest.compat_key ? [manifest.compat_key] : [])],
+	// Local first (decompressed, no network); KV otherwise, teeing into the cache as it streams so
+	// the archive is read and decompressed exactly once.
+	const { body, cached, sink } = archiveBytes(ctx, manifest.store_key, manifest.store_bytes, () =>
+		kvStoreStream(env, manifest),
 	);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
@@ -520,7 +554,13 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// ~190ms of DecompressionStream per load in workerd — which is why this is a
 	// trade, not a free win, and why `store_gzip_bytes` is a flag the reader can
 	// still see absent.
-	const { pieces, blocks } = await feedStore(body, manifest.store_bytes);
+	const { pieces, blocks } = await feedStore(body, manifest.store_bytes, sink);
+	// Both archives survive the prune: they are cached under separate keys but retired together, so
+	// naming only the store here would drop the residue this build is paired with.
+	commitSink(ctx, sink, manifest.store_key, [
+		manifest.store_key,
+		...(manifest.compat_key ? [manifest.compat_key] : []),
+	]);
 
 	const engine = new WasmEngine(env, manifest, ctx);
 	current = { storeKey: manifest.store_key, engine, manifest };

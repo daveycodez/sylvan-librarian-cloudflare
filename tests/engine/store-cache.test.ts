@@ -143,7 +143,7 @@ describe("archive cache", () => {
 		const store = fakeStorage();
 		const source = ramp(1000);
 		// The manifest says more bytes than the stream carries — a truncated KV read.
-		expect(fillCache(store, KEY, streamOf(source, 256), 2000)).rejects.toThrow("wrote 1000 of 2000");
+		expect(fillCache(store, KEY, streamOf(source, 256), 2000)).rejects.toThrow("did not match 2000 bytes");
 		await Promise.resolve();
 		expect(isCached(store, KEY, 2000)).toBe(false);
 		expect(cachedArchiveStream(store, KEY, 2000)).toBeNull();
