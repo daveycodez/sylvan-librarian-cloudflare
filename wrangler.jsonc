@@ -15,6 +15,18 @@
 	// roughly 1.5ms per 100KB — a cost every /search was paying to carry files
 	// it never reads (measured: 313KB 10-13ms, 0.5KB 7ms, empty Worker 5ms).
 	//
+	// DO NOT EXTRAPOLATE THAT RULE TO NEW WORK WITHOUT RE-MEASURING. It was true
+	// when taken and is why this block exists, but it no longer predicts anything
+	// here. Three attempts to buy isolate CPU with a smaller script all measured
+	// ZERO: dropping 1,340,656 bytes of import-only wasm (-0.14ms, 95% CI
+	// -0.72..+0.44), minifying 40% of the source (p90/p95 identical across
+	// versions), and the floor itself — `GET /nope`, the router's 404, costs p50
+	// 1ms against a 3.7MB script. Cloudflare compiles and snapshots the script at
+	// DEPLOY, so a starting isolate does not re-parse it. What still costs is
+	// STRUCTURE evaluated at module load, not bytes parsed: see
+	// src/parser/tag-aliases.gen.ts, where 2,152 Map literals were 0.75ms an
+	// isolate and the same data as a string is 0.16ms.
+	//
 	// html_handling "none" so nothing is rewritten under this Worker's own
 	// paths, and not_found_handling "none" so anything that is not an asset
 	// falls through to the router, which owns the 404.
