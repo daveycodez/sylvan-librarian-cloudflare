@@ -61,10 +61,12 @@
 // took production from 3 pieces to 18,713 (DecompressionStream emits 4KB), and
 // 58cfbe7 gathered those back into 19 blocks with no change in cold CPU at all.
 //
-// What IS now measured is the I/O side: a cold load reading the DECOMPRESSED
-// archive out of store-cache.ts waits 124ms to acquire its engine, against
-// 2596-3543ms from KV. The CPU half is still only indicated, not measured — see
-// store-cache.ts for why the obvious comparison is confounded.
+// Both halves are now measured, same account and window: a cold load reading the
+// DECOMPRESSED archive out of store-cache.ts costs 445ms of DO CPU and waits
+// 124ms, against 3466-4204ms of CPU and 2596-3543ms of wait from KV. Note those
+// KV figures are the COLD-KV-cache case (they followed a republish); against a
+// warm colo cache the gap narrows to roughly the decompression alone. See
+// store-cache.ts.
 
 import type { Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";

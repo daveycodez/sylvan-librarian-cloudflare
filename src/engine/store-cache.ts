@@ -11,23 +11,32 @@
 // way. Storing the archive already decompressed removes that step; the bytes go straight from a
 // local blob into linear memory.
 //
-// MEASURED 2026-08-12, on the first production cold load to hit this cache. The like-for-like
-// number is I/O WAIT, because both sides of it come from the same instrument — `acquireMs` and the
-// load line are Date.now() deltas, and Workers freeze the clock during synchronous execution, so
-// they see waiting and not compute:
+// MEASURED 2026-08-12 on the paid deployment, cold invocations (cpuTimeMs > 200) in one window:
+//
+//   default.searchCardsAsJson    3823-4204ms CPU   store read from KV
+//   default.catalog                    3466ms CPU   store read from KV
+//   default.randomCardsAsJson           445ms CPU   store read from HERE
+//
+// and on the I/O side, which is a separate instrument (`acquireMs` and the load line are Date.now()
+// deltas, and Workers freeze the clock during synchronous execution, so they see waiting only):
 //
 //   from KV       acquire 2596-3543ms   "in 2596ms ... from 18715 pieces"
 //   from here     acquire      124ms    "in 0ms ... from 52 pieces"
 //
-// So the network and the gunzip together were essentially all of the wait, and reading 52 local
-// SQLite rows instead is ~20x cheaper on that axis.
+// THE SAVING IS NOT ONE NUMBER, and the spread is the useful part. Those KV loads all followed a
+// republish, so KV's per-colo cache was cold and every chunk came from origin. Against a WARM KV
+// colo cache the same comparison is much narrower — the free deployment's cold loads sat at a
+// ~1250ms median — because then the only thing this cache removes is the gunzip.
 //
-// WHAT THIS DOES NOT YET SETTLE is the CPU. That cold load billed 445ms of DO CPU against a ~1250ms
-// median for cold KV loads, which looks like ~800ms and would line up neatly with the ~930ms step
-// across the compression deploy — but it is one invocation of one route on the PAID account against
-// a mixed-route median on the FREE one, so it is an indication, not a measurement. The controlled
-// version is two cold loads of the same route in the same region, one before this cache is filled
-// and one after; take that before quoting a CPU figure.
+//   KV colo cache warm   this saves roughly the decompression      ~800ms
+//   KV colo cache cold   it also saves the origin fetch          ~3000ms+
+//
+// So it pays off hardest exactly when every region is loading at once, which is the minute after a
+// nightly publish. That is the opposite of a marginal optimisation, and it is why the publish
+// notify prefetches into here before swapping rather than letting each region rediscover KV.
+//
+// An earlier version of this comment guessed ~800ms flat, from the step across the compression
+// deploy. That guess was the warm-KV case only, and it understated the cold-KV case by ~4x.
 //
 // Sizing, against the Workers Free plan's Durable Objects limits (5GB stored, 5M row reads/day,
 // 100k row writes/day):
