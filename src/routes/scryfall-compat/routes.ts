@@ -84,9 +84,20 @@ const NO_MATCH_DETAILS =
 	"at https://scryfall.com/docs/syntax";
 const EMPTY_QUERY_DETAILS = "You didn't enter anything to search for.";
 
-/** Upstream's generic not-found body, reused for every path that addresses nothing. */
-const NOT_FOUND_DETAILS =
-	"The requested object or REST method was not found. Please double-check your URI and try again.";
+// Scryfall's three not-found bodies, measured against api.scryfall.com on 2026-08-12. Upstream
+// answers all of them with one generic string, and that string is not one of these — it carries a
+// "Please double-check your URI and try again." tail Scryfall does not send. Reported against #912.
+//
+//   /cards/<not-an-id>, /cards/<namespace>       the generic one: the path addresses nothing
+//   /cards/<id>, /cards/<ns>/<id>, /cards/<code>/<number>(/<lang>)
+//                                                a card miss: the address is well-formed
+//   the rulings variants                         a card miss, worded for the routes that accept
+//                                                a multiverse id as well
+//
+// `&` rather than `and` in the rulings one, and `multiverse ID` only there, are both Scryfall's.
+const NOT_FOUND_DETAILS = "The requested object or REST method was not found.";
+const CARD_NOT_FOUND_DETAILS = "No card found with the given ID or set code and collector number.";
+const RULINGS_NOT_FOUND_DETAILS = "No card found with the given ID, multiverse ID, or set code & collector number.";
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -660,6 +671,20 @@ export async function cardsHandler(
 	// list, which would be a claim about the card rather than about the corpus.
 	const wantsRulings = number === "rulings" || suffix === "rulings";
 
+	// Which miss body this path gets if nothing resolves — Scryfall words them by SHAPE, not by
+	// outcome, so it is decided from the segments rather than from the lookup.
+	//
+	// `/cards/<x>/rulings` where x is not an id is the subtle one: Scryfall reads it as a set code
+	// and a collector number called "rulings", so it answers the CARD miss rather than the rulings
+	// one. Measured, both ways.
+	const addressesNothing = !number && !isUuid(identifier);
+	const rulingsShape = (number === "rulings" && isUuid(identifier)) || suffix === "rulings";
+	const missDetails = addressesNothing
+		? NOT_FOUND_DETAILS
+		: rulingsShape
+			? RULINGS_NOT_FOUND_DETAILS
+			: CARD_NOT_FOUND_DETAILS;
+
 	let card: Record<string, unknown> | null;
 	try {
 		card = await resolvePathCard(ctx, identifier, number, suffix, wantsRulings);
@@ -667,7 +692,7 @@ export async function cardsHandler(
 		return engineFailure(err, pretty);
 	}
 
-	if (!card) return scryfallJson(notFoundError(NOT_FOUND_DETAILS), pretty, CARDS_CACHE);
+	if (!card) return scryfallJson(notFoundError(missDetails), pretty, CARDS_CACHE);
 	if (wantsRulings) return rulingsForCard(ctx, card, pretty);
 	return renderCard(
 		card,

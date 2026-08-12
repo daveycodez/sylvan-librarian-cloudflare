@@ -282,6 +282,54 @@ describe("GET /cards and /cards/...", () => {
 		expect(res.status).toBe(404);
 	});
 
+	test("a miss carries the body Scryfall words for that SHAPE, not one generic string", async () => {
+		// Measured against api.scryfall.com on 2026-08-12. Upstream answers all of these with one
+		// generic body, and that body is not even the generic one Scryfall sends — it carries a
+		// "Please double-check your URI and try again." tail Scryfall does not.
+		const cases: [string, string][] = [
+			// The path addresses nothing at all.
+			["/cards/not-a-uuid", "The requested object or REST method was not found."],
+			["/cards/multiverse", "The requested object or REST method was not found."],
+			// A well-formed address that resolves to no card.
+			[
+				"/cards/aaaaaaaa-0000-0000-0000-00000000dead",
+				"No card found with the given ID or set code and collector number.",
+			],
+			["/cards/multiverse/99999999", "No card found with the given ID or set code and collector number."],
+			// `/cards/<x>/rulings` where x is not an id reads as a set code and a collector number
+			// called "rulings", so Scryfall answers the CARD miss rather than the rulings one.
+			["/cards/not-a-uuid/rulings", "No card found with the given ID or set code and collector number."],
+			// The rulings shapes, worded for the routes that take a multiverse id too.
+			[
+				"/cards/aaaaaaaa-0000-0000-0000-00000000dead/rulings",
+				"No card found with the given ID, multiverse ID, or set code & collector number.",
+			],
+			[
+				"/cards/multiverse/99999999/rulings",
+				"No card found with the given ID, multiverse ID, or set code & collector number.",
+			],
+		];
+		// Nothing resolves, so every one of these is a miss — including the external-id and
+		// set/collector-number lookups, which the plain fake answers unconditionally.
+		class MissEngine extends FakeEngine {
+			override async scryfallCardById(): Promise<null> {
+				return null;
+			}
+			override async scryfallCardByExternalId(): Promise<null> {
+				return null;
+			}
+			override async scryfallFirstOfEach(trees: string[]): Promise<null[]> {
+				return trees.map(() => null);
+			}
+		}
+		const missCtx = makeCtx({ engine: new MissEngine() });
+		for (const [path, details] of cases) {
+			const res = await testDispatch(missCtx, path);
+			expect(res.status).toBe(404);
+			expect((await json(res)).details).toBe(details);
+		}
+	});
+
 	test("import_rulings is a 501 stub like the other Postgres-only routes", async () => {
 		// Upstream's admin route loads the bulk file into Postgres; here the nightly import
 		// publishes rulings to KV, so the route it replaced stays a stub even though the data
