@@ -32,7 +32,7 @@ import {
 	symbologyKey,
 } from "../src/engine/reference-kv";
 import { kvHasCurrent } from "./kv-published";
-import { kvTargetArgs } from "./kv-target";
+import { kvTargetArgs, requireDeployEnvironment } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
 
 const remote = process.argv.includes("--remote");
@@ -123,6 +123,7 @@ entries.push({ key: REFERENCE_META_KEY, value: JSON.stringify(meta) });
 
 // ── write ────────────────────────────────────────────────────────────────────
 
+if (remote) requireDeployEnvironment();
 const bulkFile = join(tmpdir(), "sylvan-reference-bulk.json");
 await writeFile(bulkFile, JSON.stringify(entries));
 try {

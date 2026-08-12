@@ -52,3 +52,30 @@ export async function kvTargetArgs(remote: boolean): Promise<string[]> {
 		? ["--namespace-id", await namespaceId(), "--remote"]
 		: ["--binding", "STORE_KV", "--local", "-c", "wrangler.dev.jsonc"];
 }
+
+/**
+ * Refuse to WRITE production KV from anywhere but the deploy.
+ *
+ * PRODUCTION DATA HAS EXACTLY TWO WRITERS: the deploy (a push to main, where Workers Builds runs
+ * import-store.sh) and the nightly cron (the in-Worker import). A development machine is not one of
+ * them, and "be careful" is not a mechanism — the guard is here, in the one place every remote call
+ * goes through, so it cannot be forgotten by the next caller.
+ *
+ * The reason is not tidiness. A hand-run seed writes production data from a working tree that may
+ * not be what is deployed, spends a metered daily allowance nothing is accounting for, and — as
+ * happened — can appear to succeed while writing somewhere else entirely. The deploy path is
+ * reproducible, logged, and tied to the commit that is actually serving.
+ *
+ * READS are deliberately not gated: verifying what production holds must stay possible from
+ * anywhere, and being able to look is what makes it obvious when a write went somewhere else.
+ *
+ * WORKERS_CI is Workers Builds' own marker, the same one ci-postinstall.sh gates on.
+ */
+export function requireDeployEnvironment(): void {
+	if (process.env.WORKERS_CI === "1") return;
+	throw new Error(
+		"refusing to write production KV from outside a deploy.\n" +
+			"  Production data has two writers: a push to main (Workers Builds runs import-store.sh)\n" +
+			"  and the nightly cron. Push the change instead of seeding by hand.",
+	);
+}

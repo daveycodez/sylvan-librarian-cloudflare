@@ -47,6 +47,17 @@ rebuilds anyway; `SKIP_IMPORT=1` deploys code only.
 A nightly cron (11:17 UTC) then keeps the index current from inside the
 Worker; isolates hot-swap to each new version without dropping queries.
 
+**Three writers, and only three.** `bun dev` seeds everything local, the deploy
+seeds everything on production, and the cron refreshes it nightly — where
+"everything" is the card store, the rulings buckets and the `/sets`,
+`/catalog/*` and `/symbology` mirrors, the last two of which come from
+api.scryfall.com rather than the bulk store build. Publishing production data
+from a development machine is refused rather than discouraged
+([scripts/kv-target.ts](scripts/kv-target.ts)): a hand-run seed writes from a
+working tree that may not be what is deployed, spends a metered daily allowance
+nothing is accounting for, and — as happened once — can report success while
+writing to local storage, because `wrangler kv` defaults to it without saying so.
+
 Optional knobs (rate limiting, API-key bypass, shard cap) are in
 [.env.example](.env.example).
 
@@ -464,9 +475,8 @@ bun dev                 # full site at localhost. First run does the FULL import
                         # server starts, refusing to start if it fails. Later
                         # runs start instantly. DEV_BOOTSTRAP=worker skips the
                         # seed and exercises the in-Worker pipeline instead
-bun run seed:local      # the native build + seed, on its own
+bun run seed:local      # the native build + local seed, on its own
 bun run deploy          # publish the index, then deploy the Worker
-bun run seed:remote     # push a natively-built store to PRODUCTION KV
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck

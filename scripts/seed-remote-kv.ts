@@ -29,6 +29,7 @@ import {
 	STORE_CONTENT_GENERATION,
 	splitStore,
 } from "../src/engine/store-kv";
+import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -83,6 +84,10 @@ manifest.content_generation = STORE_CONTENT_GENERATION;
 // Content hashes were a D1-era field; nothing reads them now, and leaving a
 // stale one in the manifest would be a lie about how the store is addressed.
 manifest.chunks = undefined;
+
+// The store is production data like any other: written by the deploy and by the nightly cron, and
+// by nothing else. See requireDeployEnvironment.
+requireDeployEnvironment();
 
 /** Run a wrangler KV command, failing loudly with its own message. */
 async function kv(args: string[]): Promise<void> {
