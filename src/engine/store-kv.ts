@@ -302,6 +302,15 @@ export function chunkKey(storeKey: string, seq: number): string {
 }
 
 /**
+ * Store builds kept in KV: the live one and its predecessor.
+ *
+ * The predecessor stays addressable so a reader that started streaming it finishes, and so a bad
+ * build can be rolled back by republishing the older manifest. More than that is storage nobody
+ * reads — at ~38MB a build against a 1GB namespace, which is what made a broken sweep expensive.
+ */
+export const KEEP_STORES_IN_KV = 2;
+
+/**
  * The store keys that retention should delete: everything but the newest `keep` BUILDS.
  *
  * Derived from the key names rather than from recorded history, and that is the fix rather than an

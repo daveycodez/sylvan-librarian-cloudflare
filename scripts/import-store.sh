@@ -55,6 +55,13 @@ bun scripts/seed-rulings.ts --remote $IF_MISSING || echo "!!! Rulings publish fa
 echo "==> Publishing sets, catalogs and symbology to KV..."
 bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publish failed — /sets, /catalog/* and /symbology answer 503 until the nightly import."
 
+#     And retire superseded store builds, whether or not this deploy publishes one. Cleanup is not
+#     part of publishing: the sweep used to live inside the store publisher, so the common deploy —
+#     which skips the import because a recent store is already live — skipped the cleanup too, and
+#     KV reached 15 builds (~510MB of a 1GB namespace) against a policy of 2.
+echo "==> Retiring superseded store builds..."
+bun scripts/prune-kv.ts --remote || echo "!!! Store retention failed — superseded builds stay in KV until the next import."
+
 # 2. Decide whether to import at all.
 #
 #    Skip when a recent store is already live: without that, every routine code

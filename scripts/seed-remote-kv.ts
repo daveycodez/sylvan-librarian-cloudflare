@@ -24,6 +24,7 @@ import { gzipSync } from "node:zlib";
 import {
 	chunkCountFor,
 	chunkKey,
+	KEEP_STORES_IN_KV,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
 	STORE_CONTENT_GENERATION,
@@ -33,9 +34,6 @@ import { pruneOldStores } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
-
-/** Builds kept in KV, matching the importer's KEEP_STORES: the live one and its predecessor. */
-const KEEP_REMOTE_STORES = 2;
 
 const dir = process.argv.slice(2).find((a) => !a.startsWith("--"));
 if (!dir) {
@@ -148,7 +146,7 @@ try {
 	// AFTER the manifest, which is the commit point: the newest build is live, so every build older
 	// than the retention policy is now unreachable. See scripts/kv-prune.ts — retention used to be
 	// driven by a history list the importer wiped every run, so nothing was ever deleted.
-	const prunedChunks = await pruneOldStores(KEEP_REMOTE_STORES, String(manifest.built_at ?? ""), true);
+	const prunedChunks = await pruneOldStores(KEEP_STORES_IN_KV, String(manifest.built_at ?? ""), true);
 	if (prunedChunks > 0) console.log(`Retention: dropped ${prunedChunks} chunk(s) from superseded store builds.`);
 } finally {
 	await unlink(manifestPath).catch(() => {});

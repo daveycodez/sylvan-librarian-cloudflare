@@ -32,7 +32,8 @@ use super::{
     compat_archive_header,
     count_common_keywords, count_common_types, format_shift_or_assign, identity_letters, lane_add,
     legality_bits_to_json, legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text,
-    frame_of, released_int_to_iso, run_query_routed, sorted_strs, str_at, uuid_from_u128, write_archive,
+    frame_of, released_int_to_iso, run_query_routed, sorted_strs, str_at, sync_format_shifts, uuid_from_u128,
+    write_archive,
     DEFAULT_FIELDS,
     // The compat residue's flag bits and bitset vocabularies, shared with FIELD_TABLE's twins.
     COMPAT_BOOSTER, COMPAT_DIGITAL, COMPAT_FOIL, COMPAT_FULL_ART, COMPAT_HIGHRES_IMAGE,
@@ -1046,7 +1047,17 @@ impl BufferStore {
                 "archive header mismatch (stale or foreign archive; rebuild the store with this engine version)",
             ));
         }
-        Ok(BufferStore { bytes, compat: None })
+        let store = BufferStore { bytes, compat: None };
+        // Adopt the archive's legality shifts HERE, at load, rather than leaving it to the first
+        // filter query. `legality_bits_to_json` decodes against the process-global FORMAT_SHIFTS
+        // registry and reports an EMPTY object when it is unpopulated -- not an error -- and the
+        // only other caller of sync_format_shifts is bind_and_split_filter_value, on the filter
+        // path. So every route that resolves a card WITHOUT filtering (/cards/named, /cards/:id,
+        // /cards/collection) answered `legalities: {}` on any isolate that had not yet served a
+        // search, and /cards/* is cached for 16 hours, which pinned that empty object for the card
+        // it happened to. Syncing at load makes the registry a property of having a store rather
+        // than of what the isolate has been asked so far.
+        Ok(store)
     }
 
     /// Attach the residue archive. Rejected unless the header matches this build exactly, for the

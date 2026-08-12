@@ -76,6 +76,7 @@ import {
 	chunkCountFor,
 	chunkKey,
 	gzipBytes,
+	KEEP_STORES_IN_KV,
 	KV_CHUNK_BYTES,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
@@ -253,10 +254,8 @@ const REORDER_SLICE_ROWS = 12_500;
 const STAGE_BLOB_BYTES = 1_900_000;
 /** Lines per wasm transform call within a slice. */
 const LINES_PER_CALL = 2_000;
-/** Published store versions kept in KV for readers mid-stream and rollback.
- * One previous version covers both; more just consumes the free plan's 1GB
- * KV ceiling at ~70MB apiece. */
-const KEEP_STORES = 2;
+// Store retention lives in src/engine/store-kv.ts (KEEP_STORES_IN_KV), shared with the deploy
+// path so one policy governs both writers.
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
 const PARSE_COVERAGE_THRESHOLD = 0.8;
@@ -1631,7 +1630,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		};
 		await this.env.STORE_KV.put(MANIFEST_KEY, JSON.stringify(manifest));
 
-		// Retention: keep the newest KEEP_STORES builds, decided from the keys that are actually in
+		// Retention: keep the newest KEEP_STORES_IN_KV builds, decided from the keys that are actually in
 		// KV. The predecessor stays addressable so a reader mid-stream finishes and a bad build can
 		// be rolled back by republishing the older manifest.
 		//
@@ -1850,7 +1849,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
-	 * Delete every store build but the newest KEEP_STORES, plus the one just published.
+	 * Delete every store build but the newest KEEP_STORES_IN_KV, plus the one just published.
 	 *
 	 * One list operation and however many deletes are owed; best effort, because a chunk that will
 	 * not delete costs storage and gets another chance next publish, and losing a completed publish
@@ -1867,7 +1866,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			} while (cursor);
 
 			let removed = 0;
-			for (const key of staleStoreKeys(names, KEEP_STORES, currentBuiltAt)) {
+			for (const key of staleStoreKeys(names, KEEP_STORES_IN_KV, currentBuiltAt)) {
 				await this.env.STORE_KV.delete(key);
 				removed += 1;
 			}
