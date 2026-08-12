@@ -20,6 +20,7 @@ import * as wasm from "sylvan-engine-wasm";
 import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/scryfall-compat/objects";
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
+import { type FeedCounts, feedBlocks } from "./load-blocks";
 import { kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
 import type {
 	Engine,
@@ -74,12 +75,12 @@ class WasmEngine implements Engine {
 		this.compatOnce ??= (async () => {
 			if (wasm.compat_loaded()) return;
 			const started = Date.now();
-			const pieces = await feedCompat(this.env, this.manifest);
+			const { pieces, blocks } = await feedCompat(this.env, this.manifest);
 			console.log(
 				`Card-object archive attached: ${this.manifest.compat_key} ` +
 					`(${this.manifest.compat_bytes} bytes` +
 					`${this.manifest.compat_gzip_bytes ? ` from ${this.manifest.compat_gzip_bytes} gzipped` : ""}) ` +
-					`in ${Date.now() - started}ms from ${pieces} pieces ` +
+					`in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
 					`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 			);
 		})().catch((err) => {
@@ -338,33 +339,12 @@ class WasmEngine implements Engine {
 
 export { readManifest } from "./store-kv";
 
-/**
- * Stream the store bytes into wasm memory, returning how many pieces the
- * source delivered.
- *
- * The count is logged because it is not knowable from this side — it depends
- * entirely on how KV hands the bytes over, and that differs sharply between
- * wrangler dev's simulated KV (17,880 pieces of ~4KB for a ~70MB store) and
- * the network. Gathering small pieces into larger blocks before crossing into
- * wasm was tried and removed: at 17,880 pieces it measured no better than
- * passing them straight through, so the crossings are not the cost.
- */
-async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Promise<number> {
+/** Stream the store bytes into wasm memory, in blocks (see load-blocks.ts for why). */
+async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Promise<FeedCounts> {
 	wasm.begin_store_load(totalLen);
-	const reader = body.getReader();
-	let pieces = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			pieces += 1;
-			wasm.store_load_chunk(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
+	const counts = await feedBlocks(body, (block) => wasm.store_load_chunk(block));
 	wasm.finish_store_load();
-	return pieces;
+	return counts;
 }
 
 /**
@@ -375,7 +355,7 @@ async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Pr
  * read. Once attached it stays for the life of the loaded store, because the store is immutable
  * and a hot swap constructs a new WasmEngine.
  */
-async function feedCompat(env: Env, manifest: StoreManifest): Promise<number> {
+async function feedCompat(env: Env, manifest: StoreManifest): Promise<FeedCounts> {
 	const total = manifest.compat_bytes;
 	if (!total) {
 		throw new EngineUnavailableError(
@@ -383,20 +363,12 @@ async function feedCompat(env: Env, manifest: StoreManifest): Promise<number> {
 		);
 	}
 	wasm.begin_compat_load(total);
-	const reader = kvCompatStream(env, manifest).getReader();
-	let pieces = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			pieces += 1;
-			wasm.compat_load_chunk(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
+	// Blocked exactly like the store's load, and for the same measurement: gzip took this archive
+	// from 1 piece to 2,891, and it is attached on the `/cards/*` cold path where the store has
+	// usually just been loaded — so the two costs land on the same request.
+	const counts = await feedBlocks(kvCompatStream(env, manifest), (block) => wasm.compat_load_chunk(block));
 	wasm.finish_compat_load();
-	return pieces;
+	return counts;
 }
 
 async function loadStore(env: Env): Promise<Engine> {
@@ -441,7 +413,7 @@ async function loadStore(env: Env): Promise<Engine> {
 	// ~190ms of DecompressionStream per load in workerd — which is why this is a
 	// trade, not a free win, and why `store_gzip_bytes` is a flag the reader can
 	// still see absent.
-	const pieces = await feedStore(body, manifest.store_bytes);
+	const { pieces, blocks } = await feedStore(body, manifest.store_bytes);
 
 	const engine = new WasmEngine(env, manifest);
 	current = { storeKey: manifest.store_key, engine, manifest };
@@ -452,7 +424,7 @@ async function loadStore(env: Env): Promise<Engine> {
 	console.log(
 		`Store loaded from KV: ${manifest.store_key} (${manifest.card_count} cards, ` +
 			`${manifest.store_bytes} bytes${manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
-			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces ` +
+			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 	);
 	return engine;
