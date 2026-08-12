@@ -17,6 +17,36 @@ the site keeps working, just slowly, for one region, forever.
 
 This file is how that is prevented, how it is checked, and what to do if it ever happened.
 
+## 0. What it said when we first asked (2026-08-12)
+
+Both accounts, within minutes of the probe going live:
+
+```
+[engine-wnam]  placement: colo=LAX loc=US          # daveycodez (free) and DeckGen (paid)
+[wnam@LAX]     warm engine rpc: n=1 min=10ms ...   # paid; the calling isolate was also in LAX
+```
+
+`engine-wnam` is in Los Angeles on both deployments — western North America, which is what the name
+claims. The paid account's isolate was in LAX too, and its warm RPC to the object measured **10ms**,
+which is the same-colo case rather than merely the same-region one. Combined with the audit in §1
+(the coordinator's nine-region fan-out existed for 92 minutes on 2026-08-12 and never ran, because it
+lives in the nightly alarm chain and no cron fell inside the window), placement is **confirmed
+correct, not merely undisputed**.
+
+Two things worth knowing for the next person who runs this:
+
+- **The free account never produces a warm sample.** Three requests over ten minutes produced three
+  cold loads: it has too little traffic to keep an object resident, so every request is a wake and
+  `warm engine rpc` never fires there. Read its placement line, not its latency.
+- **Observability ingestion lags by a minute or two.** Filtered queries returned empty for lines that
+  a later unfiltered group-by found. If a line you expect is missing, widen the window and re-run
+  before concluding it was never emitted.
+
+Also observed, and it cuts against the caution in §2: the free account's object **evicted within ten
+minutes of a probe**, so the "an outbound request pins a DO for up to ~15 minutes" figure did not
+bind here. One observation is not a rule — the throttle stays — but the cost is likely lower than the
+worst case assumed below.
+
 ## 1. Prevention: one module may create an engine object
 
 `src/engine/engine-namespace.ts` is the only place a `SEARCH_ENGINE` stub is constructed, and it
