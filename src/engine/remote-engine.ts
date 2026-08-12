@@ -1,4 +1,4 @@
-// Engine implementation backed by the colo's SearchEngine DO — the only
+// Engine implementation backed by the region's SearchEngine DO — the only
 // serving path: isolates parse and RPC here, never loading the store.
 
 import {

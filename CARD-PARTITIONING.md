@@ -155,7 +155,7 @@ KV writes go from ~5 per publish to ~9 (26 MB chunks) or ~25 (4 MB chunks), agai
 
 **This does not exist today and is the one genuinely new correctness problem.**
 
-Today one object holds the whole store, so a hot swap is atomic from any reader's point of view: `refreshIfStale` polls the manifest, `loadStore` swaps, and a query sees one generation or the other.
+Today one object holds the whole store, so a hot swap is atomic from any reader's point of view: the publisher pushes to every region (`notifyPublish`), `loadStore` swaps, and a query sees one generation or the other.
 
 With partitions, each partition object polls and swaps **independently**. During a nightly publish, partition 0 may be on build B while partition 1 is still on build A, and a fan-out query mixes both.
 
@@ -193,7 +193,7 @@ Per-route notes:
 
 - **`total_cards`** — sum the per-partition counts from phase 1. Stays the unpaginated count, as `EngineSearchOptions` requires.
 - **`catalog()`** — sum the type and keyword histograms. Cacheable per loaded store exactly as `catalogOnce` does today.
-- **`random_search` / `samplePreferred`** — pick one partition weighted by card count and sample within it. No fan-out. Seed handling stays per-request.
+- **`random_search` / `randomCardsAsJson`** — pick one partition weighted by card count and sample within it. No fan-out. Seed handling stays per-request.
 - **`autocomplete` and `fuzzy_card_by_name`** — genuinely need fan-out plus a merge, since name order is global. Small result sets, so naive scatter-gather is fine.
 - **Single-card routes** — route directly to the owning partition, as in §3.
 
@@ -268,5 +268,5 @@ Land it in stages, each independently revertable, with the unpartitioned path in
 2. **What is the real `/cards/*` latency distribution?** Production p90/p99 are polluted by the nightly import's alarm chain (whole-service p50 wall 70 ms, p50 CPU 4 ms, but p99 wall 7.5 s is the importer). Filter to user-facing `/cards/*` invocations only. The spread decides whether tail amplification is tolerable.
 3. **How deep does real pagination go?** If ~all traffic is page 1, the deep-page analysis is theoretical and a cap costs nothing. If clients walk result sets, phase 1 sizing matters a lot.
 4. **What is `PARTITION_COUNT`?** Fewer partitions means a smaller tail penalty and a bigger memory footprint each. Pick against the measured distribution from (2), not from first principles — and remember changing it later is a migration (§5.7).
-5. **How long is the mixed-generation window in practice?** `MANIFEST_RECHECK_MS` is 5 minutes, so partitions could disagree for up to that long each night. Measure before deciding whether §5.7 needs the pinned-generation mitigation or just a note in the runbook.
+5. **How long is the mixed-generation window in practice?** It used to be bounded by a 5-minute manifest poll; convergence is now pushed (the coordinator's `notify` phase waits for every region to acknowledge), so the window is the fan-out itself. Partitions would still swap independently within it. Measure before deciding whether §5.7 needs the pinned-generation mitigation or just a note in the runbook.
 6. **Does the card-count growth rate hold?** 3-4k new oracle cards/year drives the runway estimate, and printings grow faster than cards — 95,131 printings against 31,724 cards today. Reprints inflate the store without adding a card, so per-card density is an average that assumes the ratio holds.

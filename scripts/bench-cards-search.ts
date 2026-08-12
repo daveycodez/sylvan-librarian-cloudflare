@@ -197,7 +197,7 @@ function parseArgs(argv: string[]): {
 			console.log("  --base URL   target (default https://sylvan-library.daveycodez.workers.dev)");
 			console.log("  --key K      X-API-Key, to bypass the per-IP limiter (or $TRUSTED_API_KEY)");
 			console.log("  --delay MS   pause between requests (default 450, to stay under the limiter)");
-			console.log("  --warmup N   discarded requests that wake the colo's DO (default 3)");
+			console.log("  --warmup N   discarded requests that wake the region's DO (default 3)");
 			console.log("  --queries N  use only the first N of the 10 queries");
 			console.log("  --out FILE   where the raw samples land (JSON)");
 			process.exit(0);
