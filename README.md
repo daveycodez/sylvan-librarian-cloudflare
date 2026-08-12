@@ -158,8 +158,23 @@ that were measured, and the conclusion is that this axis does not move startup.)
 
 Moving the browser's files to the CDN did move it, because it removed a ~313KB
 text module the script had to carry: **10/12/13ms → 5/6/9ms**, against that 5ms
-floor. Script size costs startup at roughly 1.5ms per 100KB, so the rule is to
-keep out of the script anything a request does not read.
+floor. That worked out to roughly 1.5ms per 100KB, and it is why the `assets`
+block in [wrangler.jsonc](wrangler.jsonc) exists.
+
+**Do not extrapolate that rate to new work without re-measuring.** It was real
+when taken, and it no longer predicts anything here. Three later attempts to buy
+startup CPU with a smaller script all measured zero: dropping 1,340,656 bytes of
+import-only wasm (−0.14ms, 95% CI −0.72..+0.44), minifying 40% of the source
+(p90/p95 identical across versions), and the floor itself — `GET /nope`, the
+router's own 404, costs p50 1ms against a 3.7MB script. One mechanism explains
+all three: Cloudflare compiles and snapshots the script at **deploy**, so a
+starting isolate does not re-parse it.
+
+What still costs is *structure evaluated at module load*, not bytes parsed. The
+tag alias table (`src/parser/tag-aliases.gen.ts`) was 0.75ms an isolate as 2,152
+`Map` literals and is 0.16ms as a string parsed on first use — same bytes, same
+data. So the rule that survives is about module scope, not script size: keep out
+of it anything a request does not build.
 
 Request work itself is that 1–2ms, and the engine encodes results inside the
 Durable Object so the isolate never parses, clones and re-encodes the same
