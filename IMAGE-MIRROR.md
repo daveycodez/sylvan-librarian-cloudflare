@@ -30,7 +30,7 @@ It also decouples us from an **undocumented** path. The WebP variant names below
 | Sample-of-one sizing is wrong | Low | Totals could move ±20%. At $0.26/month the decision does not turn on it — but measure the real distribution during Phase 1 before quoting a number anywhere else. |
 | Faces collapsed into one object | **High** | §4. This is the failure upstream's mirror actually shipped. |
 | Crawl looks like abuse | Medium | §5's pacing. Scryfall asks for 50–100 ms between requests; this is ~13 hours of politeness, not a burst. |
-| Mirror is missing an image a client asks for | Low | §7's fallback: a miss serves Scryfall's URL rather than a broken image. |
+| Mirror is missing an image a client asks for | Low | §8's fallback: a miss serves Scryfall's URL rather than a broken image. |
 
 ---
 
@@ -76,7 +76,7 @@ https://cards.scryfall.io/<variant>/<face>/<a>/<b>/<id>.<ext>
 
 Mixing them 404s in both directions (*measured*): `large/....webp` is a 404, and `display/....jpg` is a 404.
 
-URLs on Scryfall's site carry a `?<timestamp>` cache-buster — e.g. `.../display/front/e/e/<id>.webp?1783930164`. That value is the printing's `image_updated_at`, which this port already stores in `CompatFields` and already appends in `imageUris`. It is what makes §8's delta re-crawl possible instead of a full refetch.
+URLs on Scryfall's site carry a `?<timestamp>` cache-buster — e.g. `.../display/front/e/e/<id>.webp?1783930164`. That value is the printing's `image_updated_at`, which this port already stores in `CompatFields` and already appends in `imageUris`. It is what makes §9's delta re-crawl possible instead of a full refetch.
 
 ---
 
@@ -109,7 +109,7 @@ Sizing (*estimated*): 95,131 printings × 5 variants ≈ 476k objects, plus back
 Requirements:
 
 - **Resumable.** Persist progress keyed by `(id, face, variant)` so an interrupted run continues. A crawl that must restart from zero will never finish.
-- **Idempotent.** Skip keys already present with the current `image_updated_at`. This is what makes the nightly delta cheap (§8).
+- **Idempotent.** Skip keys already present with the current `image_updated_at`. This is what makes the nightly delta cheap (§9).
 - **Politely paced**, with backoff on 429/5xx. Re-check Scryfall's current rate guidance before the first run rather than trusting the figure above.
 - **A real User-Agent.** Scryfall rejects library defaults; `SCRYFALL_USER_AGENT` in mtg-seeker exists for exactly this reason.
 - **Loud on partial failure.** A mirror that is 98% complete and reports success is worse than one that fails — the missing 2% becomes broken images discovered by users.
@@ -126,7 +126,52 @@ Cache lifetime can be long — the key changes when the art changes, because `im
 
 ---
 
-## 7. Integration, and the fallback
+## 7. Configuration
+
+**One optional env var, and no R2 binding on the Worker.**
+
+```
+IMAGE_MIRROR_BASE_URL=https://images.example.com   # unset = Scryfall's CDN
+```
+
+That is the whole deployment-facing surface. It follows the precedent already in this codebase: `SCRYFALL_BULK_URL` is documented as "overridable for tests and self-hosted mirrors" and falls back to a constant when unset, and `RATE_LIMIT_ENABLED` treats unset as off. Same shape, same reason — a fork that does nothing gets today's behaviour, and the free plan stays a real target because there is nothing to provision.
+
+### Why not a binding, and why not auto-detection
+
+The tempting version is "bind the bucket and mirror if it's there". Three reasons not to:
+
+**The Worker never touches R2 at request time.** §6 serves images from the bucket's own custom domain, so the request path is browser → R2, with no isolate in it. A binding would exist solely to be checked for truthiness, which is a config flag wearing a costume.
+
+**A binding's presence is the wrong signal.** It tells you a bucket exists, not that it is *populated*. Detecting a binding and switching URLs would point every client at an empty bucket the moment someone provisions one — strictly worse than not mirroring, and it fails at exactly the point where the crawl has not run yet. A base URL is an operator asserting "the mirror is live", which is the precondition that actually matters.
+
+**Auto-triggering the crawl on detected credentials is worse still.** §5 is ~476k third-party requests over ~13 hours. That is an operator action, not a deploy side effect — and the deploy already publishes a store, so bolting a half-day crawl onto it would be a bad trade twice over.
+
+### Crawler credentials are separate, and never reach the Worker
+
+The crawler (§5) runs as a script against the S3 API, the way mtg-seeker's `upload-cards-to-r2.ts` already does:
+
+```
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET=
+```
+
+These belong to the operator's shell or CI, not to `wrangler.jsonc`, and the Worker never sees them. Keeping write credentials out of the runtime is the point: the deployment that *serves* mirrored images needs no permission to *write* them.
+
+### The URLs do not go in the store
+
+They are a pure function of `(id, face, variant)` and the base URL, computed at read time by `imageUris` — which is already how the Scryfall URLs work today. Baking resolved URLs into the archive would:
+
+- couple a store build to one deployment's hostname, so the same bytes could not serve `daveycodez` and `deckgen` (let alone a fork) — the property that lets one published store answer from every colo
+- grow the store for data that is derivable, against a three-chunk ceiling with ~1.36 MB of margin
+- make changing the mirror's domain a full rebuild-and-republish instead of a variable change
+
+Store the id; derive the URL. `image_updated_at` is the one image-related thing that *is* stored, because it is a fact about the art rather than about where the art is hosted.
+
+---
+
+## 8. Integration, and the fallback
 
 One function. `imageUris` in `src/routes/scryfall-compat/objects.ts` builds every URL:
 
@@ -144,7 +189,7 @@ mtg-seeker's `scryfallImageUrl` (`src/lib/card-image.ts`) derives its URLs the s
 
 ---
 
-## 8. Staying current
+## 9. Staying current
 
 The nightly import already knows which printings are new or changed. `image_updated_at` moves when Scryfall re-renders art, so the delta is:
 
@@ -155,25 +200,25 @@ Both come out of the store build for free. Expected volume is a few hundred obje
 
 ---
 
-## 9. Failure modes
+## 10. Failure modes
 
 | Symptom | Cause | Response |
 |---|---|---|
 | Wrong art on double-faced cards only | `(id, face)` collapsed | Full re-crawl. §4 exists to prevent this. |
-| Broken images for recent cards | Mirror behind the store | §7's fallback covers it until the next delta run. |
+| Broken images for recent cards | Mirror behind the store | §8's fallback covers it until the next delta run. |
 | All images broken after a deploy | Variant name map wrong in `imageUris` | Single-function revert. |
 | Crawl stalls at the same object | Scryfall 404 for a variant that does not exist for that printing | Expected for back faces; record and skip, do not retry. |
 | Storage grows without bound | Old `image_updated_at` copies never pruned | Prune on delta, or accept it — at $0.015/GB the wrong answer is cheap. |
 
 ---
 
-## 10. Phases
+## 11. Phases
 
 **Phase 1 — measure, do not guess.** Crawl a few hundred printings across rarities, frames and full-art treatments; record the real byte distribution per variant. §2's totals are one card multiplied by 95,131 and should not survive contact with a real sample. Cheap, and it sizes everything after it.
 
 **Phase 2 — the crawler.** Resumable, idempotent, paced, loud on partial failure. Writes objects and a manifest of mirrored keys. Runs to completion once.
 
-**Phase 3 — serve and switch.** Custom domain, cache rule, then `imageUris` and `scryfallImageUrl` point at it with the §7 fallback in place. Reversible in one function.
+**Phase 3 — serve and switch.** Custom domain, cache rule, then `imageUris` and `scryfallImageUrl` point at it with the §8 fallback in place. Reversible in one function.
 
 **Phase 4 — the nightly delta**, wired into the existing import.
 
