@@ -14,7 +14,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { firstToSucceed } from "./first-to-succeed";
-import { getEngine, tryGetLoadedEngine } from "./store";
+import { compatAttached, getEngine, tryGetLoadedEngine } from "./store";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -549,7 +549,7 @@ export class SearchEngine extends DurableObject<Env> {
 		viaRegion: (region: SearchEngine) => Promise<T & SearchTelemetry>,
 		locally: (engine: Engine) => Promise<T>,
 	): Promise<T & SearchTelemetry> {
-		if (this.shouldRelay(fallbackHint)) {
+		if (this.shouldRelayScryfall(fallbackHint)) {
 			return this.relay(fallbackHint, viaRegion, locally, reportedShards);
 		}
 		return this.instrumented(reportedShards, locally);
@@ -569,6 +569,23 @@ export class SearchEngine extends DurableObject<Env> {
 	/** Cold (no engine in this isolate) and permitted to relay. */
 	private shouldRelay(hint?: DurableObjectLocationHint): hint is DurableObjectLocationHint {
 		return hint !== undefined && tryGetLoadedEngine() === null;
+	}
+
+	/**
+	 * The same question for a `/cards/*` query, which needs the residue archive as well.
+	 *
+	 * A DO can be fully warm for `/search` and still ~250-350ms of CPU away from a card object,
+	 * because the residue is attached only on first `/cards/*` use — deliberately, so a
+	 * search-only colo never carries its ~11.8MB. `shouldRelay` asked only about the store, so
+	 * that attach was NOT hidden by the relay the store's own cold start has always used: the
+	 * first card request to reach a warm colo paid all of it, in front of the user.
+	 *
+	 * Relaying makes it a race instead. The regional DO answers from its own attached archive
+	 * while this one attaches in the background, and `firstToSucceed` takes whichever lands first
+	 * — so the attach costs the request nothing it was not already spending on the round trip.
+	 */
+	private shouldRelayScryfall(hint?: DurableObjectLocationHint): hint is DurableObjectLocationHint {
+		return hint !== undefined && (tryGetLoadedEngine() === null || !compatAttached());
 	}
 
 	/** The regional fallback engine's stub, typed like RemoteEngine's. */

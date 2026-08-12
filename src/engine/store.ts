@@ -493,6 +493,20 @@ export function tryGetLoadedEngine(): Engine | null {
 	return current?.engine ?? null;
 }
 
+/**
+ * Whether the residue archive is attached, i.e. whether a `/cards/*` query can be answered here
+ * WITHOUT first pulling ~11.8MB out of KV and copying it into wasm.
+ *
+ * Separate from the store being loaded, because the two are loaded at different times by design:
+ * the store on first query of any kind, the residue only on first `/cards/*` use, so a
+ * search-only colo never pays for it. That means a DO can be fully warm for `/search` and still
+ * ~250-350ms of CPU away from answering a card object — which is a cold start the store's own
+ * relay was already built to hide, and did not, because it only ever asked about the store.
+ */
+export function compatAttached(): boolean {
+	return current !== null && wasm.compat_loaded();
+}
+
 /** Called from the cron handler so isolates converge on a fresh publish fast. */
 export async function manifestPollAlarm(env: Env): Promise<void> {
 	lastManifestCheck = 0;

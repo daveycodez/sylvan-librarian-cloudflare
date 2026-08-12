@@ -38,6 +38,10 @@ const fakeEngine = {
 mock.module("../../src/engine/store", () => ({
 	getEngine: async () => fakeEngine,
 	tryGetLoadedEngine: () => fakeEngine,
+	// Attached, so the /cards/* relay condition behaves like the store-only one here: this suite is
+	// about the shard rendezvous, and a relay would answer from a region stub these tests do not
+	// build. Every case below goes through `search`, which does not consult it anyway.
+	compatAttached: () => true,
 }));
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
