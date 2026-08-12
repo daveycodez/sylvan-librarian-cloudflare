@@ -36,9 +36,19 @@ async function namespaceId(): Promise<string> {
 	return found;
 }
 
-/** The `wrangler kv` arguments that select this deployment's namespace. */
+/**
+ * The `wrangler kv` arguments that select this deployment's namespace.
+ *
+ * `--remote` IS LOAD-BEARING and is the reason this helper exists. wrangler defaults these
+ * commands to LOCAL storage, and it does so silently: `kv bulk put --namespace-id <production id>`
+ * without it reports "Success!" having written to the miniflare state directory, and
+ * `kv key list --namespace-id <production id>` answers from there too. A seeding run looked
+ * perfect, the routes kept answering 503, and reading the namespace back "confirmed" data that was
+ * only ever on this laptop. seed-remote-kv.ts has always passed it (`kv key put ... --remote`),
+ * which is why the store publishes and nothing else did.
+ */
 export async function kvTargetArgs(remote: boolean): Promise<string[]> {
 	return remote
-		? ["--namespace-id", await namespaceId()]
+		? ["--namespace-id", await namespaceId(), "--remote"]
 		: ["--binding", "STORE_KV", "--local", "-c", "wrangler.dev.jsonc"];
 }
