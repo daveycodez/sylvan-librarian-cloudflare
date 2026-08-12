@@ -1057,6 +1057,7 @@ impl BufferStore {
         // search, and /cards/* is cached for 16 hours, which pinned that empty object for the card
         // it happened to. Syncing at load makes the registry a property of having a store rather
         // than of what the isolate has been asked so far.
+        sync_format_shifts(&store.data().format_shifts);
         Ok(store)
     }
 
