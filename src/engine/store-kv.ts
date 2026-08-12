@@ -65,44 +65,61 @@ import type { Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";
 
 /**
- * Bytes per KV chunk: just under KV's 25 MiB (26,214,400 byte) value cap.
+ * Bytes per KV chunk — the RAW cut, whose gzip member is what KV actually stores.
  *
- * Bigger is better until that cap — every chunk is one metered read on load
- * and one metered write on publish, and there is no dedup to preserve, so a
- * ~75MB store wants as few chunks as it can have (three, here).
+ * Chunk count is `ceil(store_bytes / this)`, and a chunk is a SERIALIZED NETWORK
+ * ROUND TRIP on the cold path (the loader pulls them strictly in sequence, one
+ * awaited get each — see kvStoreStream), so the count is a latency number, not
+ * just a meter tick. Measured in the other direction: generation 3 added 6.25MB,
+ * went 3 chunks to 4, and the production median store load went 337ms to 691ms.
  *
- * The binding constraint is NOT the cap, though: it is the 128MB isolate the
- * nightly publisher assembles chunks in. That only leaves room for a value
- * this large because the build now releases the wasm group (~75MB of linear
- * memory that never shrinks) before publish runs.
+ * RAISED from 26,000,000 to take the 76.6MB store from three chunks to two.
  *
- * RAISED from 25,000,000 with generation 4, and the reason is headroom rather
- * than throughput. Chunk count is `ceil(store_bytes / this)`, so the number
- * that matters is the 3-chunk ceiling it implies. Dropping the alias keys puts
- * the store at 74.8MB, which cleared the old 75,000,000 ceiling by 184,272
- * bytes — and two same-format builds a day apart differ by ~19KB, so that
- * margin was about ten days of ordinary Scryfall drift before the 4th chunk
- * came back. At 26,000,000 the ceiling is 78,000,000.
+ * WHAT THE OLD VALUE GUARANTEED, AND WHAT THIS ONE DOES NOT. 26,000,000 was the
+ * largest cut that could not exceed KV_VALUE_CAP_BYTES *even if the data were
+ * entirely incompressible* — gzip's worst case is ~0.02% expansion plus a header,
+ * so ~26,005,000 against a 26,214,400 cap. It needed no assumption about the
+ * data. This value does: it is safe only while the store compresses better than
+ * 1.46x. Measured on the generation-12 build, by region:
  *
- * MARGIN TODAY IS 1,363,536 BYTES. The live generation-10 store is 76,636,464
- * bytes (production logs it loading "from 3 pieces"), so at ~19KB/day of drift
- * that is roughly ten weeks, not the 3.2MB this comment used to claim against
- * the smaller generation-4 store.
+ *   raw 26.0MB -> 8.5MB stored   3.06x
+ *   raw 26.0MB -> 8.3MB stored   3.13x
+ *   raw 24.6MB -> 14.5MB stored  1.70x   <- the tail is the least compressible
+ *   whole store                  2.45x
  *
- * This is a RAW cut, and the value KV holds is its gzip member — so the 25 MiB
- * cap is no longer what this constant is pressed against. What it still governs
- * is the 128MB isolate: one chunk is materialised whole during load, on top of
- * wasm linear memory that already holds the store, and that sum is the real
- * ceiling. Compressed, the materialised chunk is ~13MB rather than 26MB, which
- * took peak from ~102.6MB to ~89.6MB.
+ * A two-way cut puts ~12.4MB and ~18.9MB in KV, so the binding chunk sits at 72%
+ * of the cap with 28% headroom, and the whole archive would have to compress
+ * worse than its worst quarter currently does before it breached.
  *
- * That is also why this constant should not simply be RAISED now that the stored
- * value is smaller. A bigger raw cut means a bigger COMPRESSED chunk resident
- * during load: cutting to fill 26MB compressed needs ~55-60MB raw, whose member
- * is ~24MB, and peak goes back to ~100MB. The chunk-count headroom that would
- * buy is real but costs the memory this change exists for.
+ * THE FAILURE MODE IS LOUD AND NON-CORRUPTING, which is what makes the trade
+ * acceptable. Every publisher compresses and then checks against
+ * KV_VALUE_CAP_BYTES before writing, so a build that compressed badly cannot
+ * truncate a store — and both publishers fall back to KV_CHUNK_BYTES_SAFE and
+ * republish rather than failing the run. The cost of being wrong is a slower
+ * publish, not a broken one.
+ *
+ * The 128MB isolate no longer constrains this the way it did. The old comment
+ * here argued against raising it because a bigger raw cut meant a bigger scratch
+ * allocation inside wasm — but the loader now feeds wasm in fixed 4MB blocks
+ * (load-blocks.ts) regardless of chunk size, so the only size that scales with
+ * this constant is the compressed chunk resident in the JS heap: ~14.5MB before,
+ * ~18.9MB now, against 78.7MB of linear memory. Peak goes ~93MB -> ~98MB.
+ *
+ * Growth is not the thing to watch. Holding these ratios the store would have to
+ * reach ~99.6MB to fill the cap, against ~19KB/day of Scryfall drift. What to
+ * watch is a FORMAT CHANGE that adds poorly-compressing data in bulk — which is
+ * exactly what generation 3 did.
  */
-export const KV_CHUNK_BYTES = 26_000_000;
+export const KV_CHUNK_BYTES = 38_400_000;
+
+/**
+ * The cut that needs no assumption about the data: safe even if incompressible.
+ *
+ * Publishers fall back to this when a chunk cut at KV_CHUNK_BYTES compresses past
+ * the cap, so the ambitious value above can never cost more than one wasted
+ * compression pass.
+ */
+export const KV_CHUNK_BYTES_SAFE = 26_000_000;
 
 /**
  * KV's own per-value cap, 25 MiB. `KV_CHUNK_BYTES` sits below it with margin;
@@ -327,8 +344,24 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       bumping the format alone would deploy a Worker whose only store in KV is
  *       one it cannot load — dark until the nightly cron. Same reasoning as
  *       generations 7 and 11.
+ *  13 — NO CONTENT CHANGE AT ALL, and that is the point worth writing down. Every
+ *       value a generation-13 store holds is byte-identical to what 12 held; what
+ *       changed is how the archive is CUT across KV values (KV_CHUNK_BYTES
+ *       26,000,000 -> 38,400,000, three chunks to two).
+ *
+ *       The bump is therefore a deliberate use of this constant as a re-publish
+ *       trigger rather than as a description of contents. Chunking is applied at
+ *       PUBLISH time, so a store already in KV keeps its old cut until something
+ *       republishes it, and store-age.ts forces a rebuild on a generation
+ *       mismatch — which is the only lever that makes the new cut take effect at
+ *       deploy instead of waiting for the nightly cron.
+ *
+ *       Safe in either direction: chunk_count rides in the manifest and the
+ *       reader has always looped over it, so a two-chunk store and a three-chunk
+ *       store load through the identical path. Nothing would have broken by
+ *       waiting; this only makes it immediate.
  */
-export const STORE_CONTENT_GENERATION = 12;
+export const STORE_CONTENT_GENERATION = 13;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
@@ -374,17 +407,50 @@ export function staleStoreKeys(names: string[], keep: number, currentBuiltAt?: s
 }
 
 /** How many chunks a store of this size occupies on the grid. */
-export function chunkCountFor(storeBytes: number): number {
-	return Math.ceil(storeBytes / KV_CHUNK_BYTES);
+export function chunkCountFor(storeBytes: number, cut: number = KV_CHUNK_BYTES): number {
+	return Math.ceil(storeBytes / cut);
 }
 
 /** Split a whole store buffer onto the KV grid. */
-export function splitStore(store: Uint8Array): Uint8Array[] {
+export function splitStore(store: Uint8Array, cut: number = KV_CHUNK_BYTES): Uint8Array[] {
 	const chunks: Uint8Array[] = [];
-	for (let at = 0; at < store.length; at += KV_CHUNK_BYTES) {
-		chunks.push(store.subarray(at, Math.min(at + KV_CHUNK_BYTES, store.length)));
+	for (let at = 0; at < store.length; at += cut) {
+		chunks.push(store.subarray(at, Math.min(at + cut, store.length)));
 	}
 	return chunks;
+}
+
+/**
+ * Cut an in-memory archive into gzipped KV values, backing off if any of them
+ * would exceed the cap.
+ *
+ * The ambitious cut (KV_CHUNK_BYTES) is safe only while the store compresses,
+ * so the check is not an assertion about a belief — it is the mechanism. Try the
+ * cut, compress, and if any member is over the cap, redo the whole thing at
+ * KV_CHUNK_BYTES_SAFE, which cannot be over it for any input. The caller gets a
+ * publishable set of chunks either way and never has to reason about ratios.
+ *
+ * Only the in-memory publishers can do this — the Durable Object assembles one
+ * chunk per alarm from staged rows and cannot re-cut what it has already
+ * written, so it detects the same condition and restarts its publish phase
+ * instead (see stepPublish).
+ */
+export function chunkForKv(
+	archive: Uint8Array,
+	gzip: (bytes: Uint8Array) => Uint8Array,
+): { chunks: Uint8Array[]; cut: number } {
+	for (const cut of [KV_CHUNK_BYTES, KV_CHUNK_BYTES_SAFE]) {
+		const chunks = splitStore(archive, cut).map(gzip);
+		const worst = chunks.reduce((n, c) => Math.max(n, c.length), 0);
+		if (worst <= KV_VALUE_CAP_BYTES) return { chunks, cut };
+		console.warn(
+			`A ${cut}-byte cut compressed to ${worst} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap — ` +
+				`re-cutting at ${KV_CHUNK_BYTES_SAFE}. This store compresses worse than KV_CHUNK_BYTES assumes.`,
+		);
+	}
+	// Unreachable for any real input: a KV_CHUNK_BYTES_SAFE cut cannot exceed the
+	// cap even if gzip expanded it. Throwing beats returning a store KV will reject.
+	throw new Error(`archive of ${archive.length} bytes cannot be cut under KV's ${KV_VALUE_CAP_BYTES} value cap`);
 }
 
 /** One staged row as the publisher hands it over. */

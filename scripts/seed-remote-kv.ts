@@ -23,12 +23,11 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
 	chunkCountFor,
+	chunkForKv,
 	chunkKey,
 	KEEP_STORES_IN_KV,
-	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
 	STORE_CONTENT_GENERATION,
-	splitStore,
 } from "../src/engine/store-kv";
 import { pruneOldStores } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
@@ -65,13 +64,10 @@ if (compat.length !== manifest.compat_bytes) {
 // this runs in the deploy with a real CPU and no alarm budget, where the Worker
 // gets whatever CompressionStream gives it (~level 1); gzip is gzip, so the two
 // load through the identical path and only the stored size differs.
-const chunks = splitStore(store).map((c) => gzipSync(c, { level: 9 }));
-const compatChunks = splitStore(compat).map((c) => gzipSync(c, { level: 9 }));
-for (const c of [...chunks, ...compatChunks]) {
-	if (c.length > KV_VALUE_CAP_BYTES) {
-		throw new Error(`a chunk compressed to ${c.length} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`);
-	}
-}
+const gzip = (c: Uint8Array) => gzipSync(c, { level: 9 });
+const { chunks, cut } = chunkForKv(store, gzip);
+const { chunks: compatChunks } = chunkForKv(compat, gzip);
+console.log(`  cut at ${cut} raw bytes -> ${chunks.length} store chunk(s), ${compatChunks.length} residue chunk(s)`);
 manifest.chunk_count = chunks.length;
 manifest.compat_chunk_count = compatChunks.length;
 // Present iff compressed: this is the flag the reader keys off, not a hint.

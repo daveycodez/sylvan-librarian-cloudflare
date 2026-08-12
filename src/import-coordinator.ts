@@ -78,6 +78,7 @@ import {
 	gzipBytes,
 	KEEP_STORES_IN_KV,
 	KV_CHUNK_BYTES,
+	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
 	STORE_CONTENT_GENERATION,
@@ -1516,7 +1517,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const storeKey = this.storeKey();
 		const storeBytes = Number(this.metaGet("build_store_bytes") ?? 0);
 		if (!storeBytes) throw new Error("publish: the build recorded no store size");
-		const kvTotal = chunkCountFor(storeBytes);
+		// The cut lives in meta, not in a constant, so a fallback survives the
+		// alarm boundary: every later slice of this run must use the same cut the
+		// earlier ones did or the chunks would not reassemble.
+		const cut = Number(this.metaGet("kv_chunk_cut") ?? 0) || KV_CHUNK_BYTES;
+		const kvTotal = chunkCountFor(storeBytes, cut);
 		let published = Number(this.metaGet("kv_chunks_published") ?? 0);
 
 		// A publish that began under the RAW publisher and was interrupted by a
@@ -1541,7 +1546,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// key with the same bytes on retry — keys are stable per store, so the
 		// write is idempotent and needs no reconciliation.
 		if (published < kvTotal) {
-			const want = Math.min(KV_CHUNK_BYTES, storeBytes - published * KV_CHUNK_BYTES);
+			const want = Math.min(cut, storeBytes - published * cut);
 			const { bytes, cursor } = assembleChunk(
 				want,
 				{ seq: Number(this.metaGet("kv_cursor_seq") ?? 0), off: Number(this.metaGet("kv_cursor_off") ?? 0) },
@@ -1553,6 +1558,31 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// cut to the same key, which is the idempotence the raw path already had.
 			const stored = await gzipBytes(bytes);
 			if (stored.byteLength > KV_VALUE_CAP_BYTES) {
+				// KV_CHUNK_BYTES is the ambitious cut and is safe only while the store
+				// compresses; this is the branch where it did not. Unlike the in-memory
+				// publishers there is no re-cutting what is already written, so the whole
+				// publish restarts at the cut that needs no assumption about the data.
+				// Chunk keys are stable per store, so re-putting from zero is the same
+				// idempotent write the retry path already relies on, and the earlier
+				// chunks are simply overwritten by their re-cut replacements.
+				//
+				// Falling back rather than failing keeps the nightly alive: a store that
+				// compresses badly should cost an extra publish pass, not a dark site.
+				if (cut !== KV_CHUNK_BYTES_SAFE) {
+					console.warn(
+						`Publish: chunk ${published} compressed to ${stored.byteLength} bytes, over KV's ` +
+							`${KV_VALUE_CAP_BYTES} cap at a ${cut}-byte cut — restarting the publish at ` +
+							`${KV_CHUNK_BYTES_SAFE}. This store compresses worse than KV_CHUNK_BYTES assumes.`,
+					);
+					this.ctx.storage.transactionSync(() => {
+						this.metaSet("kv_chunk_cut", String(KV_CHUNK_BYTES_SAFE));
+						this.metaSet("kv_chunks_published", "0");
+						this.metaSet("kv_cursor_seq", "0");
+						this.metaSet("kv_cursor_off", "0");
+						this.metaSet("kv_gzip_bytes", "0");
+					});
+					return; // next alarm re-publishes from chunk 0 at the safe cut
+				}
 				throw new Error(
 					`publish: chunk ${published} compressed to ${stored.byteLength} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`,
 				);
@@ -1578,10 +1608,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const compatKey = this.compatKey();
 		const compatBytes = Number(this.metaGet("build_compat_bytes") ?? 0);
 		if (!compatBytes) throw new Error("publish: the build recorded no card-object archive size");
-		const compatTotal = chunkCountFor(compatBytes);
+		const compatTotal = chunkCountFor(compatBytes, cut);
 		const compatPublished = Number(this.metaGet("kv_compat_published") ?? 0);
 		if (compatPublished < compatTotal) {
-			const want = Math.min(KV_CHUNK_BYTES, compatBytes - compatPublished * KV_CHUNK_BYTES);
+			const want = Math.min(cut, compatBytes - compatPublished * cut);
 			const { bytes, cursor } = assembleChunk(
 				want,
 				{ seq: Number(this.metaGet("kv_compat_seq") ?? 0), off: Number(this.metaGet("kv_compat_off") ?? 0) },

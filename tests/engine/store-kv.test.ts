@@ -12,9 +12,11 @@ import { join } from "node:path";
 import {
 	assembleChunk,
 	chunkCountFor,
+	chunkForKv,
 	chunkKey,
 	gzipBytes,
 	KV_CHUNK_BYTES,
+	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	kvStoreStream,
 	MANIFEST_KEY,
@@ -165,8 +167,27 @@ describe("the chunk grid", () => {
 		}
 	});
 
-	test("chunks stay under KV's 25 MiB value cap", () => {
-		expect(KV_CHUNK_BYTES).toBeLessThan(25 * 1024 * 1024);
+	test("the SAFE cut stays under KV's value cap even if gzip expanded it", () => {
+		// This is the invariant KV_CHUNK_BYTES used to carry and deliberately no
+		// longer does. gzip's worst case is ~0.02% expansion plus a header, so a
+		// cut this size cannot produce an over-cap value for ANY input — which is
+		// what makes it a sound fallback rather than a smaller guess.
+		expect(KV_CHUNK_BYTES_SAFE * 1.0002 + 64).toBeLessThan(KV_VALUE_CAP_BYTES);
+	});
+
+	test("the ambitious cut is bigger than the cap, and that is the trade", () => {
+		// It relies on the store compressing. Written as a test so the assumption
+		// is visible rather than buried in a constant: if someone lowers this back
+		// under the cap they should do it knowingly.
+		expect(KV_CHUNK_BYTES).toBeGreaterThan(KV_VALUE_CAP_BYTES);
+		expect(KV_CHUNK_BYTES).toBeGreaterThan(KV_CHUNK_BYTES_SAFE);
+	});
+
+	test("the live store's two-way cut is what the ambitious value is sized for", () => {
+		// 76,655,728 bytes, measured on the generation-12 build.
+		expect(chunkCountFor(76_655_728)).toBe(2);
+		// And the safe fallback still produces a publishable store, just more of it.
+		expect(chunkCountFor(76_655_728, KV_CHUNK_BYTES_SAFE)).toBe(3);
 	});
 
 	test("chunk keys are namespaced per store, so publishes never collide", () => {
@@ -344,18 +365,25 @@ describe("gzipped chunks", () => {
 		expect(await drain(kvStoreStream(env, manifest))).toEqual(store);
 	});
 
-	test("a full-size raw chunk still fits KV's value cap once gzipped", async () => {
-		// Incompressible input is the worst case the publisher's guard exists for:
-		// gzip must not expand a full KV_CHUNK_BYTES cut past the 25 MiB cap.
+	test("a full-size SAFE chunk still fits KV's value cap once gzipped", async () => {
+		// Incompressible input is the worst case the fallback exists for: gzip must
+		// not expand a full KV_CHUNK_BYTES_SAFE cut past the 25 MiB cap. This is
+		// what makes the fallback terminal — chunkForKv can stop there and know the
+		// result is publishable for ANY input.
+		//
+		// It is deliberately NOT asserted for KV_CHUNK_BYTES. That cut is larger
+		// than the cap on purpose and is safe only while the store compresses;
+		// chunkForKv detects the miss and re-cuts here instead.
+		//
 		// Real CSPRNG bytes, not an LCG — a cheap generator leaves enough
 		// structure that gzip SHRINKS it (a 31-bit LCG here compressed 26MB to
 		// 248KB), which would make this test assert nothing.
-		const noise = new Uint8Array(new ArrayBuffer(KV_CHUNK_BYTES));
+		const noise = new Uint8Array(new ArrayBuffer(KV_CHUNK_BYTES_SAFE));
 		for (let at = 0; at < noise.length; at += 65536) {
 			crypto.getRandomValues(noise.subarray(at, Math.min(at + 65536, noise.length)));
 		}
 		const gz = await gzipBytes(noise);
-		expect(gz.byteLength).toBeGreaterThan(KV_CHUNK_BYTES); // it really is incompressible
+		expect(gz.byteLength).toBeGreaterThan(KV_CHUNK_BYTES_SAFE); // it really is incompressible
 		expect(gz.byteLength).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
 	});
 });
@@ -471,5 +499,71 @@ describe("staleStoreKeys", () => {
 		const others = ["store:manifest", "rulings:v2:00", "reference:v2:sets:list", "rulings:meta"];
 		const withStores = [...others, "store:card-store-v11-1.store:0", "store:card-store-v11-2.store:0"];
 		expect(staleStoreKeys(withStores, 1, "2")).toEqual(["store:card-store-v11-1.store:0"]);
+	});
+});
+
+describe("chunkForKv", () => {
+	/** Compressible: gzip collapses a repeating pattern to almost nothing. */
+	const compressible = (n: number) => new Uint8Array(n).fill(0x41);
+
+	/** Incompressible: a byte pattern gzip cannot shrink, so the cut binds. */
+	function incompressible(n: number): Uint8Array<ArrayBuffer> {
+		const out = new Uint8Array(n);
+		// A xorshift PRNG, not Math.random, so a failure reproduces exactly.
+		let x = 0x9e3779b9;
+		for (let i = 0; i < n; i++) {
+			x ^= x << 13;
+			x ^= x >>> 17;
+			x ^= x << 5;
+			out[i] = x & 0xff;
+		}
+		return out;
+	}
+
+	/** Stand-in for gzipSync: shrinks runs, leaves noise alone. */
+	function fakeGzip(bytes: Uint8Array): Uint8Array {
+		let runs = 1;
+		for (let i = 1; i < bytes.length; i++) if (bytes[i] !== bytes[i - 1]) runs += 1;
+		// Roughly "one output byte per run", floored so it is never zero-length.
+		return new Uint8Array(Math.max(1, Math.min(bytes.length, runs)));
+	}
+
+	test("takes the ambitious cut when the data compresses", () => {
+		const { chunks, cut } = chunkForKv(compressible(KV_CHUNK_BYTES * 2), fakeGzip);
+		expect(cut).toBe(KV_CHUNK_BYTES);
+		expect(chunks.length).toBe(2);
+	});
+
+	test("falls back to the safe cut when a member would exceed the cap", () => {
+		// Incompressible input: at the ambitious cut every member is over the cap,
+		// so the only publishable answer is the smaller one.
+		const { chunks, cut } = chunkForKv(incompressible(KV_CHUNK_BYTES + 1_000), fakeGzip);
+		expect(cut).toBe(KV_CHUNK_BYTES_SAFE);
+		for (const c of chunks) expect(c.length).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
+	});
+
+	test("no chunk it returns is ever over the cap, whichever cut it chose", () => {
+		for (const archive of [compressible(5_000_000), incompressible(5_000_000), compressible(KV_CHUNK_BYTES * 3)]) {
+			const { chunks } = chunkForKv(archive, fakeGzip);
+			for (const c of chunks) expect(c.length).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
+		}
+	});
+
+	test("the chunks reassemble to the original archive", () => {
+		// The whole point: a cut is only correct if concatenating the pieces in
+		// order reproduces the input, which is what the reader does.
+		const archive = incompressible(3_000_000);
+		const { chunks } = chunkForKv(archive, (b) => b); // identity "gzip"
+		const joined = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+		let at = 0;
+		for (const c of chunks) {
+			joined.set(c, at);
+			at += c.length;
+		}
+		expect(joined).toEqual(archive);
+	});
+
+	test("a tiny archive is one chunk", () => {
+		expect(chunkForKv(compressible(1_000), fakeGzip).chunks.length).toBe(1);
 	});
 });
