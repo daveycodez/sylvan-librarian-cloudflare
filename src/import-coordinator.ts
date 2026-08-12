@@ -34,7 +34,9 @@ import {
 	assembleChunk,
 	chunkCountFor,
 	chunkKey,
+	gzipBytes,
 	KV_CHUNK_BYTES,
+	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
 	STORE_CONTENT_GENERATION,
 	type StagedRow,
@@ -1355,7 +1357,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const storeBytes = Number(this.metaGet("build_store_bytes") ?? 0);
 		if (!storeBytes) throw new Error("publish: the build recorded no store size");
 		const kvTotal = chunkCountFor(storeBytes);
-		const published = Number(this.metaGet("kv_chunks_published") ?? 0);
+		let published = Number(this.metaGet("kv_chunks_published") ?? 0);
+
+		// A publish that began under the RAW publisher and was interrupted by a
+		// deploy would otherwise finish under this one, leaving chunk 0 raw and the
+		// rest gzipped — a store no reader can load, described by a manifest whose
+		// gzip total counts only the compressed ones. The counter being set while
+		// the gzip total is not is exactly that straddle, and the fix is to publish
+		// the whole thing again: chunk keys are stable per store, so re-putting
+		// from zero is the same idempotent write the retry path already relies on.
+		if (published > 0 && this.metaGet("kv_gzip_bytes") === undefined) {
+			console.warn(`Publish: ${published} chunk(s) were written uncompressed before a code change; republishing all`);
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("kv_chunks_published", "0");
+				this.metaSet("kv_cursor_seq", "0");
+				this.metaSet("kv_cursor_off", "0");
+			});
+			published = 0;
+		}
 
 		// One chunk per slice. A put that lands but whose marker rolls back (the
 		// alarm threw afterwards, the isolate went away) simply re-puts the same
@@ -1368,14 +1387,27 @@ export class ImportCoordinator extends DurableObject<Env> {
 				{ seq: Number(this.metaGet("kv_cursor_seq") ?? 0), off: Number(this.metaGet("kv_cursor_off") ?? 0) },
 				(fromSeq, limit) => this.stagedRows(fromSeq, limit),
 			);
-			await this.env.STORE_KV.put(chunkKey(storeKey, published), bytes);
+			// Compressed HERE, inside the slice that publishes it, so the
+			// compression unit is the publish unit and the phase stays resumable
+			// across alarms with no extra state: a retry recompresses the same raw
+			// cut to the same key, which is the idempotence the raw path already had.
+			const stored = await gzipBytes(bytes);
+			if (stored.byteLength > KV_VALUE_CAP_BYTES) {
+				throw new Error(
+					`publish: chunk ${published} compressed to ${stored.byteLength} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`,
+				);
+			}
+			const gzipSoFar = Number(this.metaGet("kv_gzip_bytes") ?? 0) + stored.byteLength;
+			await this.env.STORE_KV.put(chunkKey(storeKey, published), stored);
 			this.ctx.storage.transactionSync(() => {
 				this.metaSet("kv_chunks_published", String(published + 1));
 				this.metaSet("kv_cursor_seq", String(cursor.seq));
 				this.metaSet("kv_cursor_off", String(cursor.off));
+				this.metaSet("kv_gzip_bytes", String(gzipSoFar));
 			});
 			console.log(
-				`Publish slice: KV chunk ${published + 1}/${kvTotal} (${(want / 1048576).toFixed(1)}MB) for ${storeKey}`,
+				`Publish slice: KV chunk ${published + 1}/${kvTotal} (${(want / 1048576).toFixed(1)}MB raw -> ` +
+					`${(stored.byteLength / 1048576).toFixed(1)}MB gzip) for ${storeKey}`,
 			);
 			return; // next alarm continues
 		}
@@ -1395,15 +1427,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 				{ seq: Number(this.metaGet("kv_compat_seq") ?? 0), off: Number(this.metaGet("kv_compat_off") ?? 0) },
 				(fromSeq, limit) => this.stagedCompatRows(fromSeq, limit),
 			);
-			await this.env.STORE_KV.put(chunkKey(compatKey, compatPublished), bytes);
+			const stored = await gzipBytes(bytes);
+			if (stored.byteLength > KV_VALUE_CAP_BYTES) {
+				throw new Error(
+					`publish: card-object chunk ${compatPublished} compressed to ${stored.byteLength} bytes, ` +
+						`over KV's ${KV_VALUE_CAP_BYTES} cap`,
+				);
+			}
+			const compatGzipSoFar = Number(this.metaGet("kv_compat_gzip_bytes") ?? 0) + stored.byteLength;
+			await this.env.STORE_KV.put(chunkKey(compatKey, compatPublished), stored);
 			this.ctx.storage.transactionSync(() => {
 				this.metaSet("kv_compat_published", String(compatPublished + 1));
 				this.metaSet("kv_compat_seq", String(cursor.seq));
 				this.metaSet("kv_compat_off", String(cursor.off));
+				this.metaSet("kv_compat_gzip_bytes", String(compatGzipSoFar));
 			});
 			console.log(
 				`Publish slice: card-object chunk ${compatPublished + 1}/${compatTotal} ` +
-					`(${(want / 1048576).toFixed(1)}MB) for ${compatKey}`,
+					`(${(want / 1048576).toFixed(1)}MB raw -> ${(stored.byteLength / 1048576).toFixed(1)}MB gzip) for ${compatKey}`,
 			);
 			return; // next alarm continues
 		}
@@ -1418,9 +1459,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			format_version: Number(this.metaGet("format_version") ?? 0),
 			content_generation: STORE_CONTENT_GENERATION,
 			store_bytes: storeBytes,
+			// Present iff compressed (see StoreManifest) — the flag the reader keys off.
+			store_gzip_bytes: Number(this.metaGet("kv_gzip_bytes") ?? 0),
 			chunk_count: kvTotal,
 			compat_key: compatKey,
 			compat_bytes: compatBytes,
+			compat_gzip_bytes: Number(this.metaGet("kv_compat_gzip_bytes") ?? 0),
 			compat_chunk_count: compatTotal,
 			source_updated_at: this.metaGet("source_updated_at") ?? undefined,
 		};
@@ -1461,6 +1505,21 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("phase", "idle");
 			this.metaSet("finished_at", String(Date.now()));
 		});
+		// The RUN RECORD has to be retired too, not just the phase. It used to be
+		// left saying "running" forever: the phase went idle, so the alarm chain
+		// stopped, but `startImport` kept reading state === "running" and taking
+		// its already-running branch — re-arming an alarm that returns in 1ms
+		// because the phase is idle. Every trigger for the next STALE_RUN_MS (90
+		// minutes) was therefore a silent no-op.
+		//
+		// The daily cron never noticed, because 24h is well past that window. What
+		// it broke is any attempt to RUN the import twice in an hour and a half,
+		// which is exactly what testing this pipeline requires.
+		await this.ctx.storage.put("run", {
+			...(await this.getRun()),
+			state: "done",
+			finishedAt: new Date().toISOString(),
+		} satisfies RunRecord);
 	}
 
 	// ── staging helpers ────────────────────────────────────────────────────────

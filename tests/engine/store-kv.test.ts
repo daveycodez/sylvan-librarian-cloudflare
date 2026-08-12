@@ -13,7 +13,9 @@ import {
 	assembleChunk,
 	chunkCountFor,
 	chunkKey,
+	gzipBytes,
 	KV_CHUNK_BYTES,
+	KV_VALUE_CAP_BYTES,
 	kvStoreStream,
 	MANIFEST_KEY,
 	readManifest,
@@ -249,6 +251,111 @@ describe("kvStoreStream", () => {
 		const manifest = { ...manifestFor(store), store_bytes: 2000, chunk_count: 1 };
 		const env = { STORE_KV: fakeKv({ [chunkKey(manifest.store_key, 0)]: store }) } as Env;
 		expect(drain(kvStoreStream(env, manifest))).rejects.toThrow(/incomplete/);
+	});
+});
+
+/**
+ * The gzipped grid. These matter more than the raw ones now: the raw path is
+ * what a store published before this change still uses, and the compressed path
+ * is what every new publish takes — so a break here is a break in the only path
+ * production actually reads.
+ */
+describe("gzipped chunks", () => {
+	/** Publish a store the way the publisher does: cut RAW, gzip each cut. */
+	async function publishGzipped(store: Uint8Array, key = "card-store-v1-123.store") {
+		const raw = splitStore(store);
+		const stored = await Promise.all(raw.map((c) => gzipBytes(c)));
+		const entries: Record<string, Uint8Array> = {};
+		stored.forEach((chunk, seq) => {
+			entries[chunkKey(key, seq)] = chunk;
+		});
+		const manifest: StoreManifest = {
+			store_key: key,
+			built_at: "123",
+			card_count: 1,
+			printing_count: 1,
+			upstream_commit: "vendored",
+			format_version: 1,
+			store_bytes: store.length,
+			store_gzip_bytes: stored.reduce((n, c) => n + c.byteLength, 0),
+			chunk_count: raw.length,
+		};
+		return { entries, manifest, stored };
+	}
+
+	test("a gzipped store streams back byte-for-byte", async () => {
+		const store = syntheticStore(3_000_000);
+		const { entries, manifest } = await publishGzipped(store);
+		const env = { STORE_KV: fakeKv(entries) } as Env;
+		expect(await drain(kvStoreStream(env, manifest))).toEqual(store);
+	});
+
+	test("round-trips across a multi-chunk store, where each chunk is its own member", async () => {
+		// Larger than one chunk, so the reader must open a fresh
+		// DecompressionStream per chunk — workerd rejects members concatenated
+		// into a single stream, which is what makes this the load-bearing case.
+		const store = syntheticStore(KV_CHUNK_BYTES + 1_500_000);
+		const { entries, manifest, stored } = await publishGzipped(store);
+		expect(stored.length).toBe(2);
+		const env = { STORE_KV: fakeKv(entries) } as Env;
+		expect(await drain(kvStoreStream(env, manifest))).toEqual(store);
+	});
+
+	test("still one get per chunk — compression does not add reads", async () => {
+		const store = syntheticStore(KV_CHUNK_BYTES + 1_500_000);
+		const { entries, manifest } = await publishGzipped(store);
+		const gets: string[] = [];
+		const env = { STORE_KV: fakeKv(entries, (k) => gets.push(k)) } as Env;
+		await drain(kvStoreStream(env, manifest));
+		expect(gets.length).toBe(manifest.chunk_count ?? 0);
+	});
+
+	test("the integrity check counts STORED bytes, so a truncated value fails loudly", async () => {
+		const store = syntheticStore(3_000_000);
+		const { entries, manifest } = await publishGzipped(store);
+		// Claim more compressed bytes than KV holds — a publish cut short.
+		const env = { STORE_KV: fakeKv(entries) } as Env;
+		const lying = { ...manifest, store_gzip_bytes: (manifest.store_gzip_bytes ?? 0) + 1 };
+		expect(drain(kvStoreStream(env, lying))).rejects.toThrow(/incomplete/);
+	});
+
+	test("a compressed manifest without chunk_count is refused, not guessed at", async () => {
+		// The count is derivable from neither byte figure once compressed, so
+		// guessing it would mean silently reading a short store.
+		const store = syntheticStore(3_000_000);
+		const { entries, manifest } = await publishGzipped(store);
+		const env = { STORE_KV: fakeKv(entries) } as Env;
+		const { chunk_count, ...withoutCount } = manifest;
+		expect(() => kvStoreStream(env, withoutCount as StoreManifest)).toThrow(EngineUnavailableError);
+	});
+
+	test("an uncompressed manifest still loads — the flag is store_gzip_bytes' absence", async () => {
+		// A store published before this change must keep loading, or the change
+		// is not revertible and a rollback serves nothing.
+		const store = syntheticStore(3_000_000);
+		const entries: Record<string, Uint8Array> = {};
+		splitStore(store).forEach((chunk, seq) => {
+			entries[chunkKey("raw.store", seq)] = chunk;
+		});
+		const manifest = { ...manifestFor(store, "raw.store") };
+		expect(manifest.store_gzip_bytes).toBeUndefined();
+		const env = { STORE_KV: fakeKv(entries) } as Env;
+		expect(await drain(kvStoreStream(env, manifest))).toEqual(store);
+	});
+
+	test("a full-size raw chunk still fits KV's value cap once gzipped", async () => {
+		// Incompressible input is the worst case the publisher's guard exists for:
+		// gzip must not expand a full KV_CHUNK_BYTES cut past the 25 MiB cap.
+		// Real CSPRNG bytes, not an LCG — a cheap generator leaves enough
+		// structure that gzip SHRINKS it (a 31-bit LCG here compressed 26MB to
+		// 248KB), which would make this test assert nothing.
+		const noise = new Uint8Array(new ArrayBuffer(KV_CHUNK_BYTES));
+		for (let at = 0; at < noise.length; at += 65536) {
+			crypto.getRandomValues(noise.subarray(at, Math.min(at + 65536, noise.length)));
+		}
+		const gz = await gzipBytes(noise);
+		expect(gz.byteLength).toBeGreaterThan(KV_CHUNK_BYTES); // it really is incompressible
+		expect(gz.byteLength).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
 	});
 });
 

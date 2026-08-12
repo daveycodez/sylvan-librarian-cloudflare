@@ -6,6 +6,9 @@ declare module "sylvan-engine-wasm" {
 	 * (src/engine/wasm-shim.ts), not by wasm-bindgen: instantiation is lazy so
 	 * request isolates, which never query, never pay for it. */
 	export function ensureEngine(): void;
+	/** Wasm linear memory reserved, in bytes — a high-water mark, since it never
+	 * shrinks. Provided by the Workers shim, not wasm-bindgen. */
+	export function linearMemoryBytes(): number;
 	export function __init_panic_hook(): void;
 	/** Preallocate the aligned store buffer (one allocation, no growth). */
 	export function begin_store_load(totalLen: number): void;

@@ -66,6 +66,15 @@ bench_service() { # service base_url extra_curl_args...
   echo "$service done" >&2
 }
 
-bench_service ours     "https://sylvan.mtgseeker.com/search"
+# The deployment under test. Overridable because this port runs in two places
+# and they answer different questions: the paid custom domain is the headline
+# the README quotes, and the free workers.dev host is where the free-plan
+# ceilings (30s DO CPU, 128MB isolate) actually bite — so a change justified by
+# those ceilings has to be measured there.
+#
+#   BENCH_OURS=https://sylvan-librarian.daveycodez.workers.dev/search scripts/bench.sh out.tsv
+BENCH_OURS="${BENCH_OURS:-https://sylvan.mtgseeker.com/search}"
+
+bench_service ours     "$BENCH_OURS"
 bench_service upstream "https://sylvan-librarian.com/search"
 bench_service scryfall "https://api.scryfall.com/cards/search" --rate 1/s

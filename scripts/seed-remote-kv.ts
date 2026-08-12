@@ -3,8 +3,10 @@
 //
 //   bun scripts/seed-remote-kv.ts <store-build-dir>
 //
-// The whole publish is `chunk_count + 1` writes: ~4 chunks of ~20MB, then the
-// manifest. The manifest goes LAST and is the commit point — until it lands,
+// The whole publish is `chunk_count + 1` writes: three ~25MB search chunks and
+// the residue archive's one, each gzipped to roughly 43% of that before it is
+// written, then the manifest. The manifest goes LAST and is the commit point —
+// until it lands,
 // readers keep serving whatever was published before, so a failure at any
 // point leaves the deployment in a valid state rather than a half-swapped one.
 //
@@ -18,7 +20,15 @@ import { readFileSync } from "node:fs";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunkCountFor, chunkKey, MANIFEST_KEY, STORE_CONTENT_GENERATION, splitStore } from "../src/engine/store-kv";
+import { gzipSync } from "node:zlib";
+import {
+	chunkCountFor,
+	chunkKey,
+	KV_VALUE_CAP_BYTES,
+	MANIFEST_KEY,
+	STORE_CONTENT_GENERATION,
+	splitStore,
+} from "../src/engine/store-kv";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -47,10 +57,23 @@ if (compat.length !== manifest.compat_bytes) {
 	throw new Error(`card-object archive is ${compat.length} bytes, manifest says ${manifest.compat_bytes}`);
 }
 
-const chunks = splitStore(store);
-const compatChunks = splitStore(compat);
+// Cut on RAW bytes, then gzip each cut as its own member — the format the
+// reader expects and the ImportCoordinator also publishes. Level 9 here because
+// this runs in the deploy with a real CPU and no alarm budget, where the Worker
+// gets whatever CompressionStream gives it (~level 1); gzip is gzip, so the two
+// load through the identical path and only the stored size differs.
+const chunks = splitStore(store).map((c) => gzipSync(c, { level: 9 }));
+const compatChunks = splitStore(compat).map((c) => gzipSync(c, { level: 9 }));
+for (const c of [...chunks, ...compatChunks]) {
+	if (c.length > KV_VALUE_CAP_BYTES) {
+		throw new Error(`a chunk compressed to ${c.length} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`);
+	}
+}
 manifest.chunk_count = chunks.length;
 manifest.compat_chunk_count = compatChunks.length;
+// Present iff compressed: this is the flag the reader keys off, not a hint.
+manifest.store_gzip_bytes = chunks.reduce((n, c) => n + c.length, 0);
+manifest.compat_gzip_bytes = compatChunks.reduce((n, c) => n + c.length, 0);
 // Stamped at publish time, not by the Rust builder: the generation describes
 // what this checkout's builder puts in a store, and one TS constant shared by
 // every publisher (here, the seed scripts, and the ImportCoordinator) cannot
@@ -116,8 +139,10 @@ try {
 	await unlink(manifestPath).catch(() => {});
 }
 
+const mb = (n: number) => `${(n / 1048576).toFixed(1)}MB`;
 console.log(
 	`Store published to KV "${kvName}": ${manifest.store_key} ` +
-		`(${(store.length / 1048576).toFixed(1)}MB, ${chunks.length} chunks, expected ${chunkCountFor(store.length)}) ` +
-		`+ ${manifest.compat_key} (${(compat.length / 1048576).toFixed(1)}MB, ${compatChunks.length} chunks).`,
+		`(${mb(store.length)} raw -> ${mb(manifest.store_gzip_bytes as number)} gzip, ${chunks.length} chunks, ` +
+		`expected ${chunkCountFor(store.length)}) + ${manifest.compat_key} ` +
+		`(${mb(compat.length)} raw -> ${mb(manifest.compat_gzip_bytes as number)} gzip, ${compatChunks.length} chunks).`,
 );

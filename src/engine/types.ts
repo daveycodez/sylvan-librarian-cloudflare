@@ -198,7 +198,29 @@ export interface StoreManifest {
 	content_generation?: number;
 	/** Uncompressed archive size; the wasm buffer is preallocated from this. */
 	store_bytes: number;
-	/** KV chunks the store occupies; readers validate the total byte count. */
+	/**
+	 * Bytes KV actually holds, when the chunks were published gzipped.
+	 *
+	 * PRESENT IFF COMPRESSED — this field is the format flag, not a size hint.
+	 * `store_bytes` stays the DECOMPRESSED length either way, so
+	 * `begin_store_load` is unchanged and `finish_store_load` still validates the
+	 * archive by filling a buffer preallocated to exactly that. What needed a new
+	 * number is the reader's integrity check, which counts what KV handed over.
+	 *
+	 * Absent on every store published before compression, which is what lets one
+	 * reader serve both formats and makes reverting the change code-only: the
+	 * previous raw store is still addressable (KEEP_STORES), and a rolled-back
+	 * reader meeting a compressed manifest fails its byte check and keeps serving
+	 * whatever it already had, rather than loading something it cannot read.
+	 */
+	store_gzip_bytes?: number;
+	/**
+	 * KV chunks the store occupies; readers validate the total byte count.
+	 *
+	 * Load-bearing once compressed: the cut is on RAW bytes while the stored
+	 * values are smaller, so the count is derivable from neither size and the
+	 * reader refuses a compressed manifest without it.
+	 */
 	chunk_count?: number;
 	/**
 	 * The paired residue archive: the Scryfall card-object fields `/search` never reads, kept out
@@ -211,6 +233,8 @@ export interface StoreManifest {
 	compat_key?: string;
 	/** Uncompressed residue-archive size; the wasm buffer is preallocated from this. */
 	compat_bytes?: number;
+	/** The residue archive's `store_gzip_bytes` twin; same present-iff-compressed contract. */
+	compat_gzip_bytes?: number;
 	/** KV chunks the residue archive occupies. */
 	compat_chunk_count?: number;
 	/**

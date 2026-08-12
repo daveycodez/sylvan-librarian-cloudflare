@@ -11,7 +11,14 @@ import { readFileSync } from "node:fs";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunkKey, MANIFEST_KEY, STORE_CONTENT_GENERATION, splitStore } from "../src/engine/store-kv";
+import { gzipSync } from "node:zlib";
+import {
+	chunkKey,
+	KV_VALUE_CAP_BYTES,
+	MANIFEST_KEY,
+	STORE_CONTENT_GENERATION,
+	splitStore,
+} from "../src/engine/store-kv";
 import { wranglerArgv } from "./wrangler-cmd";
 
 /** Write one key into miniflare's local KV for the STORE_KV binding. */
@@ -60,14 +67,23 @@ if (compat.length !== manifest.compat_bytes) {
 	throw new Error(`card-object archive is ${compat.length} bytes, manifest says ${manifest.compat_bytes}`);
 }
 
-// The same ~20MB KV grid production publishes on. Local dev deliberately gets
-// the REAL format, not a simpler one: the chunked read path would otherwise
-// never run outside production, and "works locally" would say nothing about
-// the path that actually serves.
-const chunkBytes = splitStore(store);
-const compatChunks = splitStore(compat);
+// The same KV grid production publishes on: cut on RAW bytes, each cut gzipped
+// as its own member. Local dev deliberately gets the REAL format, not a simpler
+// one — the chunked, per-chunk-decompressing read path would otherwise never run
+// outside production, and "works locally" would say nothing about the path that
+// actually serves.
+const chunkBytes = splitStore(store).map((c) => gzipSync(c, { level: 9 }));
+const compatChunks = splitStore(compat).map((c) => gzipSync(c, { level: 9 }));
+for (const c of [...chunkBytes, ...compatChunks]) {
+	if (c.length > KV_VALUE_CAP_BYTES) {
+		throw new Error(`a chunk compressed to ${c.length} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`);
+	}
+}
 (manifest as Record<string, unknown>).chunk_count = chunkBytes.length;
 (manifest as Record<string, unknown>).compat_chunk_count = compatChunks.length;
+// Present iff compressed — the flag the reader keys off (see StoreManifest).
+(manifest as Record<string, unknown>).store_gzip_bytes = chunkBytes.reduce((n, c) => n + c.length, 0);
+(manifest as Record<string, unknown>).compat_gzip_bytes = compatChunks.reduce((n, c) => n + c.length, 0);
 (manifest as Record<string, unknown>).chunks = undefined;
 // See the note in seed-remote-kv.ts: the generation is stamped by whoever
 // publishes, from the one shared constant.

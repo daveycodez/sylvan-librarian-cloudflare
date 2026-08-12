@@ -23,6 +23,7 @@ import * as bg from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";
 import wasmModule from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.wasm";
 
 let instantiated = false;
+let engineMemory: WebAssembly.Memory | null = null;
 
 /**
  * Instantiate the engine, once per isolate, on first use.
@@ -37,9 +38,25 @@ export function ensureEngine(): void {
 		"./sylvan_engine_wasm_bg.js": bg,
 	});
 	bg.__wbg_set_wasm(instance.exports);
+	engineMemory = (instance.exports as { memory?: WebAssembly.Memory }).memory ?? null;
 	(instance.exports as { __wbindgen_start?: () => void }).__wbindgen_start?.();
 	// Wasm panics must land in console.error, not die silently with the isolate.
 	bg.__init_panic_hook();
+}
+
+/**
+ * Wasm LINEAR MEMORY currently reserved, in bytes — the same number
+ * `src/engine/import-wasm.ts` reports as `linear` for the import module, and the
+ * one the 128MB isolate limit actually governs.
+ *
+ * Linear memory NEVER SHRINKS, so this is a high-water mark for the isolate's
+ * life, not a live gauge: after a store load it is the load's peak. That is
+ * exactly what makes it the right instrument for the question it exists to
+ * answer — whether streaming a gzipped chunk really does keep the whole
+ * decompressed chunk out of the heap. Zero before `ensureEngine`.
+ */
+export function linearMemoryBytes(): number {
+	return engineMemory?.buffer.byteLength ?? 0;
 }
 
 export * from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";

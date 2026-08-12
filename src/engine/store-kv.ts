@@ -29,6 +29,22 @@
 // never overwrites bytes a reader might still be streaming. Retention is
 // handled by deleting the previous store's chunks once a newer manifest has
 // been live long enough (see the publisher).
+//
+// CHUNKS ARE GZIPPED. The cut is still on RAW bytes at KV_CHUNK_BYTES, and each
+// cut is then compressed as its own gzip member, so the chunk COUNT is what it
+// always was and the value KV holds is ~43% of it. Two things bought that, and
+// neither is the meter:
+//
+//   - the cold path is I/O-bound, not read-count-bound. Measured on production
+//     over 3 days (n=121 cold loads): wall p50 915ms against DO CPU p50 164ms,
+//     so ~750ms of a cold load was waiting for 76.6MB to arrive.
+//   - a chunk is materialised whole while it is copied into wasm, and that sum
+//     against 128MB is the real ceiling. Holding the ~13MB compressed chunk
+//     instead of the 26MB raw one takes peak from ~102.6MB to ~89.6MB.
+//
+// It is not free: decompression costs ~190ms of DO CPU per cold load. The trade
+// is recorded here because the number that would undo it — wall time failing to
+// pay for the CPU — is the one to re-measure, not re-argue.
 
 import type { Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";
@@ -58,16 +74,64 @@ import { EngineUnavailableError } from "./types";
  * that is roughly ten weeks, not the 3.2MB this comment used to claim against
  * the smaller generation-4 store.
  *
- * Do not read the remaining 214,400 bytes of cap as free: a chunk is
- * materialised whole as an ArrayBuffer during load, on top of wasm linear
- * memory that already holds the store, and that sum is what the 128MB limit
- * actually governs — measured at ~102.6MB of peak (76.6MB of linear memory
- * plus one 26MB chunk), which is what leaves so little room for a lookahead.
+ * This is a RAW cut, and the value KV holds is its gzip member — so the 25 MiB
+ * cap is no longer what this constant is pressed against. What it still governs
+ * is the 128MB isolate: one chunk is materialised whole during load, on top of
+ * wasm linear memory that already holds the store, and that sum is the real
+ * ceiling. Compressed, the materialised chunk is ~13MB rather than 26MB, which
+ * took peak from ~102.6MB to ~89.6MB.
+ *
+ * That is also why this constant should not simply be RAISED now that the stored
+ * value is smaller. A bigger raw cut means a bigger COMPRESSED chunk resident
+ * during load: cutting to fill 26MB compressed needs ~55-60MB raw, whose member
+ * is ~24MB, and peak goes back to ~100MB. The chunk-count headroom that would
+ * buy is real but costs the memory this change exists for.
  */
 export const KV_CHUNK_BYTES = 26_000_000;
 
+/**
+ * KV's own per-value cap, 25 MiB. `KV_CHUNK_BYTES` sits below it with margin;
+ * this is the hard number a STORED value is checked against, which matters now
+ * that a stored value is a gzip member rather than the raw cut itself.
+ *
+ * A 26,000,000-byte raw chunk cannot exceed this even if it were incompressible:
+ * gzip's worst case is ~0.02% expansion plus a small header, so ~26,005,000
+ * bytes against 26,214,400. The publisher asserts it anyway — the day that stops
+ * being true is the day a publish must fail loudly rather than truncate.
+ */
+export const KV_VALUE_CAP_BYTES = 26_214_400;
+
 /** The manifest key: the one mutable pointer in the namespace. */
 export const MANIFEST_KEY = "store:manifest";
+
+/** A one-shot stream over bytes already in memory, without a Blob's extra copy. */
+function bytesStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(bytes);
+			controller.close();
+		},
+	});
+}
+
+/**
+ * gzip one chunk for storage.
+ *
+ * `CompressionStream` takes NO level parameter, so this is whatever Workers'
+ * zlib is configured for — measured at 33,342,732 bytes over the 76,636,456-byte
+ * store, which is fractionally worse than native `gzip -1` (33,163,964) and far
+ * off `-6` (31,088,463). That is not a knob this code can turn, and it does not
+ * want to: `-6` costs 2.67s against `-1`'s 0.65s natively for ~7% fewer bytes,
+ * and the chunk count is the same either way.
+ *
+ * The Node/Bun publishers (scripts/seed-*.ts) are free to use any zlib level —
+ * gzip is gzip, and a deploy-published store and a nightly-published one load
+ * through the identical path.
+ */
+export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
+	const out = new Response(bytesStream(bytes).pipeThrough(new CompressionStream("gzip")));
+	return new Uint8Array(await out.arrayBuffer());
+}
 
 /**
  * What the BUILDER puts in the archive, versioned separately from
@@ -335,7 +399,13 @@ export async function readManifest(env: Env): Promise<StoreManifest | null> {
  * loads from its own cache without a metered read.
  */
 export function kvStoreStream(env: Env, manifest: StoreManifest): ReadableStream<Uint8Array> {
-	return kvArchiveStream(env, manifest.store_key, manifest.store_bytes, manifest.chunk_count);
+	return kvArchiveStream(
+		env,
+		manifest.store_key,
+		manifest.store_bytes,
+		manifest.chunk_count,
+		manifest.store_gzip_bytes,
+	);
 }
 
 /**
@@ -351,42 +421,101 @@ export function kvCompatStream(env: Env, manifest: StoreManifest): ReadableStrea
 			`Store ${manifest.store_key} has no card-object archive; /cards/* needs one (rebuild the store)`,
 		);
 	}
-	return kvArchiveStream(env, manifest.compat_key, manifest.compat_bytes, manifest.compat_chunk_count);
+	return kvArchiveStream(
+		env,
+		manifest.compat_key,
+		manifest.compat_bytes,
+		manifest.compat_chunk_count,
+		manifest.compat_gzip_bytes,
+	);
 }
 
+/**
+ * The chunk sequence as one continuous stream of ARCHIVE bytes.
+ *
+ * `expected` is always the archive's decompressed length — what the wasm buffer
+ * is preallocated from. `gzipBytes` is what KV actually holds, and it is present
+ * exactly when the archive was published compressed; that presence IS the format
+ * flag, which is what lets one reader serve both and makes a revert a code-only
+ * change with no data migration.
+ *
+ * Each chunk is its own gzip member with its OWN DecompressionStream, because
+ * workerd rejects members concatenated into one stream ("Trailing bytes after
+ * end of compressed data") where the gunzip CLI accepts them. That per-chunk
+ * shape is also what keeps the publisher resumable: a chunk is compressed and
+ * put inside a single alarm, so the compression unit equals the publish unit.
+ *
+ * ONE PIECE PER PULL, deliberately. Decompressing a whole chunk and enqueueing
+ * its pieces at once would put the full 26MB decompressed chunk back in the JS
+ * heap and throw away the reason for doing this: only the ~13MB COMPRESSED chunk
+ * is resident, and the decompressed pieces flow into wasm and are released as
+ * they arrive. Peak goes ~102.6MB -> ~89.6MB against the 128MB isolate.
+ */
 function kvArchiveStream(
 	env: Env,
 	storeKey: string,
 	expected: number,
 	chunkCount?: number,
+	gzipBytes?: number,
 ): ReadableStream<Uint8Array> {
+	const compressed = gzipBytes !== undefined;
+	// Bytes KV holds, which is what the integrity check can actually count.
+	const expectedStored = gzipBytes ?? expected;
+	// A compressed archive's chunk count cannot be derived from either byte
+	// count — the cut is on RAW bytes and the stored values are smaller — so the
+	// manifest must carry it. Every publisher writes it; only pre-generation
+	// manifests omit it, and those are uncompressed by construction.
+	if (compressed && chunkCount === undefined) {
+		throw new EngineUnavailableError(`Store ${storeKey} is gzipped but its manifest carries no chunk_count`);
+	}
 	const total = chunkCount ?? chunkCountFor(expected);
 	let seq = 0;
 	let seen = 0;
+	let current: ReadableStreamDefaultReader<Uint8Array> | null = null;
 	return new ReadableStream<Uint8Array>({
 		async pull(controller) {
-			if (seq >= total) {
-				if (seen !== expected) {
-					controller.error(new EngineUnavailableError(`Store ${storeKey} incomplete in KV: ${seen}/${expected} bytes`));
+			for (;;) {
+				if (current) {
+					const { done, value } = await current.read();
+					if (!done) {
+						controller.enqueue(value);
+						return;
+					}
+					current = null;
+				}
+				if (seq >= total) {
+					if (seen !== expectedStored) {
+						controller.error(
+							new EngineUnavailableError(`Store ${storeKey} incomplete in KV: ${seen}/${expectedStored} bytes`),
+						);
+						return;
+					}
+					controller.close();
 					return;
 				}
-				controller.close();
-				return;
+				const key = chunkKey(storeKey, seq);
+				const body = await env.STORE_KV.get(key, { type: "arrayBuffer", cacheTtl: 604_800 });
+				if (!body) {
+					// A manifest naming chunks KV does not have means a publish was
+					// interrupted between chunks and manifest, or retention deleted a
+					// store still referenced. Never serve a short store: fail the load
+					// and leave the previously loaded engine in place.
+					controller.error(new EngineUnavailableError(`Store ${storeKey} is missing chunk ${seq} in KV`));
+					return;
+				}
+				const bytes = new Uint8Array(body);
+				// Counted BEFORE decompression: `seen` measures what KV handed over,
+				// so the check catches a truncated or missing value. The decompressed
+				// total is checked independently, and better, by finish_store_load —
+				// it fills a buffer preallocated to exactly `expected`.
+				seen += bytes.byteLength;
+				seq += 1;
+				if (!compressed) {
+					controller.enqueue(bytes);
+					return;
+				}
+				current = bytesStream(bytes).pipeThrough(new DecompressionStream("gzip")).getReader();
 			}
-			const key = chunkKey(storeKey, seq);
-			const body = await env.STORE_KV.get(key, { type: "arrayBuffer", cacheTtl: 604_800 });
-			if (!body) {
-				// A manifest naming chunks KV does not have means a publish was
-				// interrupted between chunks and manifest, or retention deleted a
-				// store still referenced. Never serve a short store: fail the load
-				// and leave the previously loaded engine in place.
-				controller.error(new EngineUnavailableError(`Store ${storeKey} is missing chunk ${seq} in KV`));
-				return;
-			}
-			const bytes = new Uint8Array(body);
-			seen += bytes.byteLength;
-			seq += 1;
-			controller.enqueue(bytes);
 		},
 	});
 }

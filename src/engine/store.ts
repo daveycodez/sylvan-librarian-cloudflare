@@ -77,7 +77,10 @@ class WasmEngine implements Engine {
 			const pieces = await feedCompat(this.env, this.manifest);
 			console.log(
 				`Card-object archive attached: ${this.manifest.compat_key} ` +
-					`(${this.manifest.compat_bytes} bytes) in ${Date.now() - started}ms from ${pieces} pieces`,
+					`(${this.manifest.compat_bytes} bytes` +
+					`${this.manifest.compat_gzip_bytes ? ` from ${this.manifest.compat_gzip_bytes} gzipped` : ""}) ` +
+					`in ${Date.now() - started}ms from ${pieces} pieces ` +
+					`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 			);
 		})().catch((err) => {
 			// A failed attach must not be cached: the next /cards/* request should retry rather
@@ -429,24 +432,28 @@ async function loadStore(env: Env): Promise<Engine> {
 		current = null;
 		wasm.unload_store();
 	}
-	// Raw bytes, uncompressed. The METER argument for this is sound — KV reads
-	// are charged per read, not per byte — but it is not what the cold path is
-	// bound by, so do not repeat it as if it settled the question. Measured on
-	// production over 3 days (n=121 cold loads): wall p50 915ms against DO CPU
-	// p50 164ms, i.e. ~750ms of pure I/O wait for 76.6MB. gzip halves the bytes
-	// (76,636,456 -> 33,342,732 through Workers' own CompressionStream, which
-	// gives no level control and lands near gzip -1) and drops peak memory from
-	// ~102.6MB to ~88MB, against ~190ms of DecompressionStream CPU per load
-	// measured in workerd. That is a real trade, not a free win, and it is
-	// unmade only because the latency half of it is unproven.
+	// GZIPPED in KV (see StoreManifest.store_gzip_bytes), decompressed per chunk
+	// as it streams. The meter argument against this was sound but answered the
+	// wrong question: KV reads are charged per read rather than per byte, yet the
+	// cold path is bound by neither. Measured on production over 3 days (n=121
+	// cold loads): wall p50 915ms against DO CPU p50 164ms, so ~750ms was pure
+	// I/O wait for 76.6MB. Compression buys that back and costs CPU for it —
+	// ~190ms of DecompressionStream per load in workerd — which is why this is a
+	// trade, not a free win, and why `store_gzip_bytes` is a flag the reader can
+	// still see absent.
 	const pieces = await feedStore(body, manifest.store_bytes);
 
 	const engine = new WasmEngine(env, manifest);
 	current = { storeKey: manifest.store_key, engine, manifest };
+	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
+	// synchronous execution, so it cannot see the decompression or the copy into
+	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
+	// linear-memory figure is the honest one here, and is a high-water mark.
 	console.log(
 		`Store loaded from KV: ${manifest.store_key} (${manifest.card_count} cards, ` +
-			`${manifest.store_bytes} bytes, built ${manifest.built_at}) in ${Date.now() - started}ms ` +
-			`from ${pieces} pieces`,
+			`${manifest.store_bytes} bytes${manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
+			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces ` +
+			`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 	);
 	return engine;
 }
