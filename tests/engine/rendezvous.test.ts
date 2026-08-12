@@ -38,25 +38,21 @@ const fakeEngine = {
 mock.module("../../src/engine/store", () => ({
 	getEngine: async () => fakeEngine,
 	tryGetLoadedEngine: () => fakeEngine,
-	// Attached, so the /cards/* relay condition behaves like the store-only one here: this suite is
-	// about the shard rendezvous, and a relay would answer from a region stub these tests do not
-	// build. Every case below goes through `search`, which does not consult it anyway.
-	compatAttached: () => true,
 }));
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
 
 type Do = {
-	search: (opts: unknown, hint?: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
+	search: (opts: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
 };
 
 function makeDo(): Do {
 	return new SearchEngine({ waitUntil: () => {} } as never, {} as never) as unknown as Do;
 }
 
-/** One local search (no fallback hint, so no relay), returning the announcement. */
+/** One search, returning the announcement it carries back. */
 async function report(engine: Do, width?: number): Promise<number> {
-	const result = await engine.search({ limit: 1 }, undefined, width);
+	const result = await engine.search({ limit: 1 }, width);
 	return result.shards;
 }
 
@@ -112,7 +108,7 @@ describe("the arrival-rate meter", () => {
 	/** Fire n searches inside one second and return the last reported rate. */
 	async function burst(engine: Do, n: number): Promise<number> {
 		let rate = 0;
-		for (let i = 0; i < n; i++) rate = (await engine.search({ limit: 1 }, undefined, 1)).rate;
+		for (let i = 0; i < n; i++) rate = (await engine.search({ limit: 1 }, 1)).rate;
 		return rate;
 	}
 

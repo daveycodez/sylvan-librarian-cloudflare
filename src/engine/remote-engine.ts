@@ -1,7 +1,6 @@
 // Engine implementation backed by the colo's SearchEngine DO — the only
 // serving path: isolates parse and RPC here, never loading the store.
 
-import { ENGINE_UNAVAILABLE_MARKER } from "./search-engine-do";
 import {
 	adoptShardWidth,
 	currentShardWidth,
@@ -17,99 +16,69 @@ import type {
 	ResultShape,
 	ScryfallFuzzyResult,
 } from "./types";
-import { EngineUnavailableError } from "./types";
+import { ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
-type Telemetry = { acquireMs?: number; load?: number; rate?: number; relayed?: boolean; shards?: number };
+type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: number };
 
-/** Structural stub type: the SearchEngine DO's RPC surface. `acquireMs` and
- * `relayed` are optional only for one deploy's worth of rolling-update skew
- * (new isolate, old DO); current DO code always sets them. A missing `relayed`
- * reads as false, which is the pre-existing behavior — the skew window keeps
- * the old contamination rather than inventing a new failure mode. */
+/** Structural stub type: the SearchEngine DO's RPC surface. The riders are
+ * optional only for one deploy's worth of rolling-update skew (new isolate, old
+ * DO); current DO code always sets them, and a missing one is simply not
+ * reported to the autoscaler. */
 interface SearchEngineStub {
-	search(
-		opts: EngineSearchOptions,
-		fallbackHint?: DurableObjectLocationHint,
-		reportedShards?: number,
-	): Promise<EngineSearchResult & Telemetry>;
+	search(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & Telemetry>;
 	searchSerialized(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
-	catalog(
-		fallbackHint?: DurableObjectLocationHint,
-	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
-	samplePreferred(
-		numCards: number,
-		fields: string[],
-		fallbackHint?: DurableObjectLocationHint,
-	): Promise<Record<string, unknown>[]>;
-	samplePreferredSerialized(
-		numCards: number,
-		fields: string[],
-		shape: ResultShape,
-		fallbackHint?: DurableObjectLocationHint,
-	): Promise<EngineSerializedResult>;
-	size(fallbackHint?: DurableObjectLocationHint): Promise<number>;
+	catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
+	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
+	samplePreferredSerialized(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
+	size(): Promise<number>;
 	// Every `/cards/*` reply carries the same shard-controller riders search does, and wraps its
 	// payload so a null card has something to carry them on.
 	scryfallSearch(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
 	scryfallCardById(
 		scryfallId: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
 	scryfallCardsByIds(
 		scryfallIds: string[],
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ cards: Record<string, unknown>[] } & Telemetry>;
 	scryfallCardByOracleId(
 		oracleId: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
 	scryfallCardByExternalId(
 		namespace: string,
 		externalId: number,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
-	scryfallFuzzyName(
-		name: string,
-		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
-		reportedShards?: number,
-	): Promise<ScryfallFuzzyResult & Telemetry>;
+	scryfallFuzzyName(name: string, baseUrl: string, reportedShards?: number): Promise<ScryfallFuzzyResult & Telemetry>;
 	scryfallAutocomplete(
 		prefix: string,
 		limit: number,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ names: string[] } & Telemetry>;
 	scryfallExactName(
 		folded: string,
 		setCode: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
 	scryfallCardByIllustrationId(
 		illustrationId: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
 	scryfallNamesContaining(
@@ -117,13 +86,11 @@ interface SearchEngineStub {
 		setCode: string,
 		limit: number,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ cards: Record<string, unknown>[] } & Telemetry>;
 	scryfallFirstOfEach(
 		filterTreeJsons: string[],
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
 }
@@ -221,7 +188,10 @@ export class RemoteEngine implements Engine {
 	constructor(
 		private readonly stub: SearchEngineStub,
 		/** Region of the calling request: where a COLD colo DO relays to. */
-		private readonly fallbackHint?: DurableObjectLocationHint,
+		/** Which region's DO this stub addresses — the key the shard controller
+		 * keeps its state under, since one isolate can serve both sides of a
+		 * longitude split and therefore address two regions. */
+		private readonly region: string,
 	) {}
 
 	/**
@@ -234,42 +204,38 @@ export class RemoteEngine implements Engine {
 	 */
 	private async searchRpc<T extends object>(call: () => Promise<T & Telemetry>): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, rate, relayed, shards, ...result } = await withRetry(call);
+		const { acquireMs, load, rate, shards, ...result } = await withRetry(call);
 		if (acquireMs) {
 			// Wake observability: logged only when the DO that answered had to
-			// acquire its engine. Under a relay that DO is the regional one.
-			console.log(
-				`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO` +
-					(relayed ? " (relayed)" : ""),
-			);
+			// acquire its engine.
+			console.log(`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO`);
 		}
-		if (!relayed) {
-			// The rendezvous: adopt a fan-out this colo already reached, so an
-			// isolate that never expanded on its own stops pinning shard 0.
-			if (shards !== undefined) adoptShardWidth(shards);
-			if (load !== undefined) reportEngineLoad(load);
-			if (rate !== undefined) reportEngineRate(rate);
-			// Wake-carrying RPCs are excluded from the latency signal too: their
-			// wall time is legitimately inflated by the load.
-			if (!acquireMs) {
-				const rpcMs = Date.now() - rpcStart;
-				reportEngineLatency(rpcMs);
-				sampleWarmRpc(rpcMs);
-			}
+		// The rendezvous: adopt a fan-out this region already reached, so an
+		// isolate that never expanded on its own stops pinning shard 0.
+		if (shards !== undefined) adoptShardWidth(this.region, shards);
+		if (load !== undefined) reportEngineLoad(this.region, load);
+		if (rate !== undefined) reportEngineRate(this.region, rate);
+		// Wake-carrying RPCs are excluded from the latency signal: their wall time
+		// is legitimately inflated by the load, so reporting them would let every
+		// expansion argue for the next.
+		if (!acquireMs) {
+			const rpcMs = Date.now() - rpcStart;
+			reportEngineLatency(this.region, rpcMs);
+			sampleWarmRpc(rpcMs);
 		}
 		return result as Omit<T, keyof Telemetry>;
 	}
 
 	search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return this.searchRpc(() => this.stub.search(opts, this.fallbackHint, currentShardWidth()));
+		return this.searchRpc(() => this.stub.search(opts, currentShardWidth(this.region)));
 	}
 
 	searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.searchSerialized(opts, shape, this.fallbackHint, currentShardWidth()));
+		return this.searchRpc(() => this.stub.searchSerialized(opts, shape, currentShardWidth(this.region)));
 	}
 
 	private catalog() {
-		this.catalogOnce ??= withRetry(() => this.stub.catalog(this.fallbackHint));
+		this.catalogOnce ??= withRetry(() => this.stub.catalog());
 		return this.catalogOnce;
 	}
 
@@ -282,15 +248,15 @@ export class RemoteEngine implements Engine {
 	}
 
 	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return withRetry(() => this.stub.samplePreferred(numCards, fields, this.fallbackHint));
+		return withRetry(() => this.stub.samplePreferred(numCards, fields));
 	}
 
 	samplePreferredSerialized(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		return withRetry(() => this.stub.samplePreferredSerialized(numCards, fields, shape, this.fallbackHint));
+		return withRetry(() => this.stub.samplePreferredSerialized(numCards, fields, shape));
 	}
 
 	size(): Promise<number> {
-		return withRetry(() => this.stub.size(this.fallbackHint));
+		return withRetry(() => this.stub.size());
 	}
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
@@ -299,31 +265,30 @@ export class RemoteEngine implements Engine {
 	// being invisible to it. mtg-seeker points at `/cards/*`; if this went through plain
 	// `withRetry` the shard controller would see only `/search` depth, rate and latency, and would
 	// sit at one shard while the traffic that actually arrives saturated it. Same reason they pass
-	// `fallbackHint` and `currentShardWidth()`: the cold-colo relay race and the shard rendezvous
-	// are the two mechanisms scale-out depends on, and a second serving surface has to join both
-	// rather than route around them.
+	// `currentShardWidth(this.region)`: the shard rendezvous is what scale-out depends on, and a
+	// second serving surface has to join it rather than route around it.
 
 	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.scryfallSearch(opts, baseUrl, this.fallbackHint, currentShardWidth()));
+		return this.searchRpc(() => this.stub.scryfallSearch(opts, baseUrl, currentShardWidth(this.region)));
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardById(scryfallId, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallCardById(scryfallId, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
 	}
 
 	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
 		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallCardsByIds(scryfallIds, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallCardsByIds(scryfallIds, baseUrl, currentShardWidth(this.region)),
 		);
 		return cards;
 	}
 
 	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardByOracleId(oracleId, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallCardByOracleId(oracleId, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
 	}
@@ -334,32 +299,32 @@ export class RemoteEngine implements Engine {
 		baseUrl: string,
 	): Promise<Record<string, unknown> | null> {
 		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardByExternalId(namespace, externalId, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallCardByExternalId(namespace, externalId, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
 	}
 
 	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
-		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, this.fallbackHint, currentShardWidth()));
+		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, currentShardWidth(this.region)));
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
 		const { names } = await this.searchRpc(() =>
-			this.stub.scryfallAutocomplete(prefix, limit, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallAutocomplete(prefix, limit, currentShardWidth(this.region)),
 		);
 		return names;
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallExactName(folded, setCode, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallExactName(folded, setCode, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
 	}
 
 	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardByIllustrationId(illustrationId, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallCardByIllustrationId(illustrationId, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
 	}
@@ -371,14 +336,14 @@ export class RemoteEngine implements Engine {
 		baseUrl: string,
 	): Promise<Record<string, unknown>[]> {
 		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallNamesContaining(words, setCode, limit, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallNamesContaining(words, setCode, limit, baseUrl, currentShardWidth(this.region)),
 		);
 		return cards;
 	}
 
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
 		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallFirstOfEach(filterTreeJsons, baseUrl, this.fallbackHint, currentShardWidth()),
+			this.stub.scryfallFirstOfEach(filterTreeJsons, baseUrl, currentShardWidth(this.region)),
 		);
 		return cards;
 	}

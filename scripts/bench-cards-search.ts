@@ -48,11 +48,13 @@
 //                query index), and each sample records `pos`, its position
 //                within that query's round, so the analysis can check whether
 //                position moved the number instead of assuming it did not.
-//   Cold DOs.   A colo whose SearchEngine DO has been evicted relays to the
-//                regional DO while it wakes — production logs show ~1.5-1.8s
+//   Cold DOs.   A region whose SearchEngine DO has been evicted loads ~76.6MB
+//                from KV before it can answer — production logs show ~1.5-1.8s
 //                for that path. --warmup requests (default 3) wake it before
 //                anything is recorded; x-sylvan-engine names the DO that
-//                answered, and it is carried on every sample.
+//                answered, and it is carried on every sample. Note the colo
+//                parsed off CF-Ray no longer identifies the DO: many colos map
+//                to one region, so `colo` and `engine` are separate columns.
 //
 // Rate limiting is opt-in on the target (RATE_LIMIT_ENABLED=true), and BOTH
 // routes are limited — isRateLimitedRoute covers `search` and every `cards/*`
@@ -135,11 +137,13 @@ interface Sample {
 	rep: number;
 	url: string;
 	status: number;
-	/** Ray id, and the colo parsed off its tail — the join key for observability. */
+	/** Ray id, and the colo parsed off its tail. Still the join key for
+	 * observability, but no longer a proxy for which DO answered: engine DOs are
+	 * named per region, so many colos share one. */
 	cfRay: string;
 	colo: string;
 	cacheStatus: string;
-	/** x-sylvan-engine: which DO answered (`do-<colo>`, `do-<colo>-N`), empty on a cache hit. */
+	/** x-sylvan-engine: which DO answered (`do-<region>`, `do-<region>-N`), empty on a cache hit. */
 	engine: string;
 	/** x-sylvan-rl: the limiter's verdict (`off`, `allowed`, `limited`, …). */
 	rl: string;
@@ -444,9 +448,9 @@ async function main(): Promise<void> {
 		}
 	}
 
-	// Wake the colo's DO before anything is recorded. A relayed cold hit is
-	// ~1.5s and lands on whichever variant happens to go first, which would be a
-	// difference between the routes that is not about the routes.
+	// Wake the region's DO before anything is recorded. A cold hit is ~1.5s and
+	// lands on whichever variant happens to go first, which would be a difference
+	// between the routes that is not about the routes.
 	for (let i = 0; i < opts.warmup; i += 1) {
 		const variant = VARIANTS[i % VARIANTS.length] as Variant;
 		const url = buildUrl(opts.base, variant, "t:goblin", `${runId}-warm-${i}`);

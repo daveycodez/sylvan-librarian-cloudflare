@@ -55,25 +55,27 @@ Shrinking `KV_CHUNK_BYTES` and fetching several chunks concurrently is far less 
 
 This is the easiest thing to get wrong, because this codebase already uses both obvious words for other things.
 
-**"shard" means replica.** `src/engine/shard-controller.ts` implements replica sharding: N Durable Objects per colo, each holding a *complete copy* of the store, with `pickShard()` spreading requests across them by `Math.random()`. It spreads CPU load and does nothing for memory — every replica holds the whole 91 MB. Names are built in `src/index.ts`:
+**"shard" means replica.** `src/engine/shard-controller.ts` implements replica sharding: N Durable Objects per region, each holding a *complete copy* of the store, with `pickShard()` spreading requests across them by `Math.random()`. It spreads CPU load and does nothing for memory — every replica holds the whole 91 MB. Names are built in `src/index.ts`:
 
 ```
-shard 0  ->  engine-<colo>
-shard n  ->  engine-<colo>-<n>
+shard 0  ->  engine-<region>
+shard n  ->  engine-<region>-<n>
 ```
+
+`<region>` is one of the nine `DurableObjectLocationHint` values (`wnam`, `enam`, `weur`, `eeur`, `apac`, `oc`, `sam`, `afr`, `me`), chosen by `regionHint()` in `src/engine/region.ts`. It used to be `<colo>`; see the routing comment in `src/index.ts` for why that changed.
 
 **"slice" means one alarm's unit of work.** `src/import-coordinator.ts` uses it throughout for a single alarm invocation's step, including in log lines you will read in production: `Publish slice: KV chunk 1/3`, and error text like *"a slice is being killed, not failing"*.
 
-So this document uses **partition** for a subset of the card data, and `PARTITION_COUNT` for how many there are. Replicas spread load; partitions spread *data*. They multiply: `replicas × partitions` objects per colo.
+So this document uses **partition** for a subset of the card data, and `PARTITION_COUNT` for how many there are. Replicas spread load; partitions spread *data*. They multiply: `replicas × partitions` objects per region.
 
 Do not overload `activeShards`, `pickShard`, `currentShardWidth`, or `adoptShardWidth`. Those are the replica autoscaler and its rendezvous protocol, and it took a production ramp and a real fix (the 73/17/10/5 imbalance documented at the top of `shard-controller.ts`) to get them right. Adding a second meaning will break that.
 
 Suggested naming, keeping the existing scheme intact:
 
 ```
-replica 0, partition 0  ->  engine-<colo>-p0
-replica 0, partition k  ->  engine-<colo>-p<k>
-replica n, partition k  ->  engine-<colo>-<n>-p<k>
+replica 0, partition 0  ->  engine-<region>-p0
+replica 0, partition k  ->  engine-<region>-p<k>
+replica n, partition k  ->  engine-<region>-<n>-p<k>
 ```
 
 ---
@@ -213,7 +215,7 @@ This is smaller than textbook max-of-N math implies, because every query hits ev
 
 **Two round trips on the hot path.** Phase 2 is small and parallel, but it is a second hop on the main `/cards/*` path.
 
-**Operational surface.** `replicas × partitions` objects per colo. More to warm, more to observe, more that can be individually evicted — plus the mixed-generation window in §5.7.
+**Operational surface.** `replicas × partitions` objects per region. More to warm, more to observe, more that can be individually evicted — plus the mixed-generation window in §5.7.
 
 ## 8. What gets better
 
@@ -249,7 +251,7 @@ Land it in stages, each independently revertable, with the unpartitioned path in
 | `src/import-coordinator.ts` | staging, alarm chain, KV publish, retention | per-partition cursors, N-wide publish, manifest last, retention over N×2 families |
 | `src/engine/store-kv.ts` | chunking, manifest, `KV_CHUNK_BYTES` | per-partition keys, `partition_count` |
 | `src/engine/store.ts` | per-isolate store load, `ensureCompat` | load one partition |
-| `src/engine/search-engine-do.ts` | the per-colo DO, RPC surface | phase-1 / phase-2 RPCs |
+| `src/engine/search-engine-do.ts` | the per-region DO, RPC surface | phase-1 / phase-2 RPCs |
 | `src/engine/remote-engine.ts` | isolate-side client | fan-out + merge coordinator |
 | `src/index.ts` | builds DO names, picks replica | add the partition axis to naming |
 | `src/engine/shard-controller.ts` | **replica** autoscaler | ideally untouched — see §2 |

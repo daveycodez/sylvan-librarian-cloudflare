@@ -6,7 +6,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
-import { pickShard, takeWarmTarget } from "./engine/shard-controller";
+import { markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
 import { manifestPollAlarm } from "./engine/store";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
@@ -17,17 +17,25 @@ import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } f
 
 export { ImportCoordinator, RateLimiter, SearchEngine };
 
-// Engine routing: one SearchEngine DO per colo, named by the colo the request
-// landed in and created there (per-colo naming needs no location hint — the
-// DO is placed near its first caller). Isolates never load the store or serve
-// engine queries themselves: they parse, RPC out, and stay tiny. Sharding
-// therefore tracks the traffic distribution (each colo's DO carries that
-// colo's load), and idle colos evict their DO — scale to zero. The request's
-// REGION rides along as the fallback hint: a cold colo DO relays to the
-// regional DO (engine-wnam, ...) while waking in the background, so an
-// evicted colo never makes a user wait on the ~1s store wake.
-// A colo whose lone shard reports sustained queue depth fans out to
-// engine-<colo>-1, -2, ... (shard 0 keeps the plain name, so single-shard
+// Engine routing: one SearchEngine DO per REGION, named by the location hint
+// the request maps to (engine-wnam, engine-weur, ...) and created there.
+// Isolates never load the store or serve engine queries themselves: they parse,
+// RPC out, and stay tiny. Idle regions evict their DO — scale to zero.
+//
+// This was per-COLO, with the regional DO existing only as a relay target for a
+// cold colo. The colo string was never a placement control, only a partition
+// key — `idFromName` was called with no location hint, so the object was placed
+// wherever Cloudflare chose near its first caller, which is regional anyway. So
+// the fan-out bought nothing and cost a great deal: measured on 2026-08-12,
+// production ran three objects (engine-LAX, engine-SJC, engine-wnam) for traffic
+// that was 1,697 + 442 requests over two days and entirely within one region.
+// Each loaded its own ~76.6MB archive, and a cold /cards/search paid TWO of them
+// at once (2.38s + 1.41s of DO CPU) because the relay raced the local load
+// against the region's. One request every ~80s cannot keep three objects warm;
+// it comfortably keeps one warm.
+//
+// A region whose lone shard reports sustained queue depth fans out to
+// engine-<region>-1, -2, ... (shard 0 keeps the plain name, so single-shard
 // steady state is byte-identical to unsharded routing); see shard-controller.
 // The cap needs no plan detection any more: a shard holds the store only in
 // memory (streamed from KV), so an extra shard costs no storage at all — the
@@ -39,29 +47,41 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // DurableObjectId, which is a plain value, measured flat: the cost here is in
 // `get()`, not in hashing the name.
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
-	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
+	const region = regionHint(request);
 	// SHARDS_MAX="0" is meaningful (unbounded), so an explicit 0 must survive —
 	// hence the NaN check rather than `|| undefined`, which would swallow it.
 	const configured = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10);
 	const maxShards = Number.isNaN(configured) ? undefined : configured;
-	const shard = pickShard(maxShards);
-	const name = shard === 0 ? `engine-${colo}` : `engine-${colo}-${shard}`;
+	const shard = pickShard(region, maxShards);
+	const name = shard === 0 ? `engine-${region}` : `engine-${region}-${shard}`;
 	source.tag = `do-${name.slice("engine-".length)}`;
-	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name));
-	// Decision-time warm ping for a shard the controller just opened: start
-	// its wake NOW rather than at its first real request (the ping's relay
-	// also touches/wakes the regional fallback). Fire-and-forget — routing
-	// never waits on it.
-	const warmTarget = takeWarmTarget();
+	// The hint only applies at CREATION, so passing it on every get() is free and
+	// makes placement explicit rather than "wherever the first caller happened to
+	// be" — which is all the old per-colo naming ever gave.
+	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name), { locationHint: region });
+	// Decision-time warm ping for a shard the controller just opened: start its
+	// wake NOW rather than at its first real request, and — the part that is new
+	// — REPORT THE OUTCOME, because the shard takes no traffic until this
+	// resolves. `size()` loads the store on a cold DO, so its resolution is
+	// exactly "this shard can serve"; a failure gives the slot back rather than
+	// stranding it. Routing never waits on any of it: existing shards carry the
+	// load throughout.
+	const warmTarget = takeWarmTarget(region);
 	if (warmTarget !== null) {
-		const warmStub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${colo}-${warmTarget}`));
+		const warmStub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${region}-${warmTarget}`), {
+			locationHint: region,
+		});
 		ctx.waitUntil(
-			new RemoteEngine(warmStub, regionHint(request)).size().catch((err) => {
-				console.warn(`Warm ping for shard ${warmTarget} failed: ${err}`);
-			}),
+			new RemoteEngine(warmStub, region)
+				.size()
+				.then(() => markShardReady(region, warmTarget))
+				.catch((err) => {
+					unmarkPending(region);
+					console.warn(`Warm ping for ${region} shard ${warmTarget} failed (slot released): ${err}`);
+				}),
 		);
 	}
-	return Promise.resolve(new RemoteEngine(stub, regionHint(request)));
+	return Promise.resolve(new RemoteEngine(stub, region));
 }
 
 // Upstream DISALLOWED_QUERY_ARGS: these names are reserved for internal

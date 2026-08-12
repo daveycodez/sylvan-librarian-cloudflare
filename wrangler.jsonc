@@ -58,14 +58,21 @@
 	// the better part of a day.
 	"cache": { "enabled": true },
 
-	// The engine store lives here: three ~25.5MB search chunks, the ~11.8MB
-	// card-object residue archive in one more, and a manifest — written by the
-	// deploy and the nightly cron, read by every SearchEngine DO. One copy
-	// serves every colo (KV caches it per-colo on immutable chunk keys), where
-	// the previous design kept a 70MB SQLite copy per Durable Object against
-	// the 5GB DO pool. A cold `/search` load is 4 metered reads and a cold
-	// `/cards/*` load 5 (it alone attaches the residue); a full publish is 5
-	// writes, against free-tier allowances of 100k reads and 1k writes per day.
+	// The engine store lives here, and this is the SOURCE OF TRUTH for it: three
+	// ~25.5MB search chunks, the ~11.8MB card-object residue archive in one more,
+	// and a manifest — written by the deploy and the nightly cron, read by every
+	// SearchEngine DO. One copy serves everywhere (KV caches it per-colo on
+	// immutable chunk keys), where an earlier design kept a 70MB SQLite copy per
+	// Durable Object against the 5GB DO pool. A cold `/search` load is 4 metered
+	// reads and a cold `/cards/*` load 5 (it alone attaches the residue); a full
+	// publish is 5 writes, against free-tier allowances of 100k reads and 1k
+	// writes per day.
+	//
+	// Each engine DO now ALSO keeps the decompressed archive in its own SQLite as
+	// a read-through cache (src/engine/store-cache.ts), so a wake usually skips
+	// both the network and the gunzip. That is not a return to the old design:
+	// nothing there is authoritative, any miss or fault falls back to these keys,
+	// and it is bounded by the nine regions rather than by every colo.
 	// Nothing to fill in by hand: the deploy creates the namespace if absent
 	// and pins its id (scripts/align-kv-binding.ts) before wrangler reads this
 	// file, which also repairs the binding after a namespace is deleted and

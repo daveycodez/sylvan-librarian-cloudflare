@@ -86,10 +86,10 @@ export interface EngineCatalog {
 }
 
 /**
- * What the routes need from an engine. Async because the engine may be local
- * (warm isolate: wasm call, resolves immediately) or remote (cold isolate:
- * RPC to the regional SearchEngine Durable Object while this isolate warms
- * itself in the background).
+ * What the routes need from an engine. Async because every implementation is
+ * remote from the route's point of view: an isolate RPCs to its region's
+ * SearchEngine Durable Object (RemoteEngine) and never loads the store itself.
+ * Inside that Durable Object the same interface is served locally by WasmEngine.
  */
 export interface Engine {
 	/** Row objects — for the server-rendered page, which needs them as data. */
@@ -170,6 +170,22 @@ export interface ScryfallFuzzyResult {
 	status: "hit" | "ambiguous" | "miss";
 	card: Record<string, unknown> | null;
 }
+
+/**
+ * RPC error marker: workerd propagates only Error#message across RPC, so the
+ * EngineUnavailableError contract (routes turn it into upstream's exact 503 /
+ * the bootstrap page) is encoded into the message by the Durable Object and
+ * decoded by RemoteEngine.
+ *
+ * It lives HERE, beside the error it encodes, rather than in search-engine-do.ts
+ * where it was defined. Importing it from there made remote-engine.ts — which a
+ * plain Worker isolate loads on every request — depend on the whole Durable
+ * Object module, dragging in `cloudflare:workers` and the wasm-backed store for
+ * one string. Tests had to mock that module away to exercise the client at all,
+ * and because `mock.module` is process-global in bun, doing so broke any other
+ * suite that wanted the real SearchEngine.
+ */
+export const ENGINE_UNAVAILABLE_MARKER = "__ENGINE_UNAVAILABLE__";
 
 /**
  * Thrown when the engine cannot answer. Routes translate this to a loud

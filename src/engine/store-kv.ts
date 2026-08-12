@@ -42,9 +42,24 @@
 //     against 128MB is the real ceiling. Holding the ~13MB compressed chunk
 //     instead of the 26MB raw one takes peak from ~102.6MB to ~89.6MB.
 //
-// It is not free: decompression costs ~190ms of DO CPU per cold load. The trade
-// is recorded here because the number that would undo it — wall time failing to
-// pay for the CPU — is the one to re-measure, not re-argue.
+// It is not free, and the ~190ms this comment used to budget for decompression
+// was WRONG BY ROUGHLY 5x. Measured across the deploy that introduced it
+// (2026-08-12), cold DO CPU went 322ms -> 1252ms at the median and 1050ms ->
+// 2504ms at the max, and cold wall time went 1606ms -> 2263ms — so compression
+// did not buy back the I/O it cost in CPU, which is exactly the number this
+// comment named as the one that would undo the trade.
+//
+// It stands anyway, for a reason that has nothing to do with the original
+// argument: the fix was to stop paying it so often rather than to stop paying
+// it. Engine DOs are now named per REGION rather than per colo, so the ~45 cold
+// loads a day that made this expensive collapse to a handful, and store-cache.ts
+// holds the DECOMPRESSED archive locally so most of the remaining wakes skip it
+// too. Reverting to uncompressed chunks would cost ~13MB of the 128MB isolate
+// (the resident chunk doubles) to save a cost that is now rare.
+//
+// Note also what is NOT the cause, so it is not retried: the piece count. Gzip
+// took production from 3 pieces to 18,713 (DecompressionStream emits 4KB), and
+// 58cfbe7 gathered those back into 19 blocks with no change in cold CPU at all.
 
 import type { Env, StoreManifest } from "./types";
 import { EngineUnavailableError } from "./types";

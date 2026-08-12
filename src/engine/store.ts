@@ -3,9 +3,12 @@
 // index is built by the deploy (scripts/import-store.sh) and refreshed by the
 // nightly cron, either of which fails loudly rather than shipping no index.
 //
-// Memory discipline: the store (~70MB) is streamed KV → wasm linear memory one
-// ~20MB chunk at a time; no full-store JS buffer ever exists, keeping peak
-// isolate usage inside the 128MB limit.
+// Memory discipline: the store (~76.6MB) is streamed KV → wasm linear memory in
+// 4MB blocks (see load-blocks.ts); no full-store JS buffer ever exists, keeping
+// peak isolate usage inside the 128MB limit. The block size is chosen
+// independently of however KV and DecompressionStream cut the bytes up, which is
+// what keeps the wasm-side scratch allocation small — it used to be one whole
+// 26MB KV chunk, and peak linear memory 99.4MB instead of 78.7MB.
 //
 // The wasm engine is instantiated lazily (wasm-shim.ts): only a DO that
 // actually loads a store pays for it, never a plain request isolate.
@@ -14,13 +17,17 @@
 // architecture wrote the store through `caches.default` and read it back, and
 // that double-stream measured 0.6-1.3s of billed CPU per load — the single
 // largest cost in the old system. KV's own `cacheTtl` gives colo-level caching
-// for free, on immutable chunk keys, with none of that overhead.
+// for free, on immutable chunk keys, with none of that overhead. What sits in
+// front of KV instead is the Durable Object's own SQLite, holding the archive
+// already DECOMPRESSED — see store-cache.ts, and note it is a read-through cache
+// over a source of truth that is still KV, not a second copy of record.
 
 import * as wasm from "sylvan-engine-wasm";
 import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/scryfall-compat/objects";
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
+import { type ArchiveCacheStorage, cachedArchiveStream, ensureCacheSchema, fillCache, pruneCache } from "./store-cache";
 import { kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
 import type {
 	Engine,
@@ -54,6 +61,20 @@ let current: { storeKey: string; engine: WasmEngine; manifest: StoreManifest } |
 let loading: Promise<Engine> | null = null;
 let lastManifestCheck = 0;
 
+/**
+ * What a loader needs from its caller beyond the environment: somewhere to put background work, and
+ * — only inside a Durable Object — the local storage that caches decompressed archives.
+ *
+ * `storage` is optional because the loader runs in two places with different capabilities. A
+ * SearchEngine DO has SQLite and wants the cache; anything else (tests, a direct isolate load) has
+ * neither and must keep working without it. Absent storage simply means every load goes to KV,
+ * which is exactly the behaviour that predates the cache.
+ */
+export interface LoadContext {
+	waitUntil(p: Promise<unknown>): void;
+	storage?: ArchiveCacheStorage;
+}
+
 class WasmEngine implements Engine {
 	/**
 	 * The residue archive is attached on FIRST /cards/* use, not at load.
@@ -68,6 +89,9 @@ class WasmEngine implements Engine {
 	constructor(
 		private readonly env: Env,
 		private readonly manifest: StoreManifest,
+		/** The load context that built this engine, so a later residue attach can reach the same
+		 * local cache. Undefined outside a Durable Object, where the attach goes to KV as before. */
+		private readonly ctx?: LoadContext,
 	) {}
 
 	/** Attach the residue archive if it is not already; idempotent and single-flighted. */
@@ -75,11 +99,11 @@ class WasmEngine implements Engine {
 		this.compatOnce ??= (async () => {
 			if (wasm.compat_loaded()) return;
 			const started = Date.now();
-			const { pieces, blocks } = await feedCompat(this.env, this.manifest);
+			const { pieces, blocks, cached } = await feedCompat(this.env, this.manifest, this.ctx);
 			console.log(
-				`Card-object archive attached: ${this.manifest.compat_key} ` +
+				`Card-object archive attached from ${cached ? "local cache" : "KV"}: ${this.manifest.compat_key} ` +
 					`(${this.manifest.compat_bytes} bytes` +
-					`${this.manifest.compat_gzip_bytes ? ` from ${this.manifest.compat_gzip_bytes} gzipped` : ""}) ` +
+					`${!cached && this.manifest.compat_gzip_bytes ? ` from ${this.manifest.compat_gzip_bytes} gzipped` : ""}) ` +
 					`in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
 					`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 			);
@@ -355,23 +379,85 @@ async function feedStore(body: ReadableStream<Uint8Array>, totalLen: number): Pr
  * read. Once attached it stays for the life of the loaded store, because the store is immutable
  * and a hot swap constructs a new WasmEngine.
  */
-async function feedCompat(env: Env, manifest: StoreManifest): Promise<FeedCounts> {
+async function feedCompat(
+	env: Env,
+	manifest: StoreManifest,
+	ctx?: LoadContext,
+): Promise<FeedCounts & { cached: boolean }> {
 	const total = manifest.compat_bytes;
-	if (!total) {
+	if (!total || !manifest.compat_key) {
 		throw new EngineUnavailableError(
 			`Store ${manifest.store_key} has no card-object archive; /cards/* needs one (rebuild the store)`,
 		);
 	}
 	wasm.begin_compat_load(total);
-	// Blocked exactly like the store's load, and for the same measurement: gzip took this archive
-	// from 1 piece to 2,891, and it is attached on the `/cards/*` cold path where the store has
-	// usually just been loaded — so the two costs land on the same request.
-	const counts = await feedBlocks(kvCompatStream(env, manifest), (block) => wasm.compat_load_chunk(block));
+	// Cached and fed exactly like the store, and for the same reason: this lands on the `/cards/*`
+	// cold path where the store has usually just been loaded, so both decompressions bill to one
+	// request. The archives are cached under separate keys because they are attached at different
+	// times — a search-only colo never pays for this one.
+	const { body, cached } = archiveBytes(
+		ctx,
+		manifest.compat_key,
+		total,
+		() => kvCompatStream(env, manifest),
+		() => [manifest.store_key, manifest.compat_key as string],
+	);
+	const counts = await feedBlocks(body, (block) => wasm.compat_load_chunk(block));
 	wasm.finish_compat_load();
-	return counts;
+	return { ...counts, cached };
 }
 
-async function loadStore(env: Env): Promise<Engine> {
+/**
+ * The archive's bytes, from the local cache when it holds a complete copy and from KV otherwise —
+ * and, when it came from KV, a background fill so the next wake in this colo does not.
+ *
+ * The fill re-streams from KV rather than tapping the bytes on their way into wasm. That costs a
+ * second read and a second decompression, and buys the thing this whole change is about: the
+ * REQUEST pays neither. A tap would put ~52 SQLite writes inside the cold load it is meant to make
+ * faster, which is precisely how the previous local-copy design earned its removal.
+ *
+ * Every failure here is swallowed. The cache is an optimisation over a source of truth that is
+ * still KV, so a fill that fails must never fail the load that triggered it.
+ */
+function archiveBytes(
+	ctx: LoadContext | undefined,
+	key: string,
+	expected: number,
+	fromKv: () => ReadableStream<Uint8Array>,
+	keepAfterFill: () => readonly string[],
+): { body: ReadableStream<Uint8Array>; cached: boolean } {
+	const storage = ctx?.storage;
+	if (storage) {
+		try {
+			// The schema has to exist before the first SELECT, and the first load on a fresh Durable
+			// Object is exactly when it does not — reading a table that has never been created throws.
+			ensureCacheSchema(storage);
+			const local = cachedArchiveStream(storage, key, expected);
+			if (local) return { body: local, cached: true };
+		} catch (err) {
+			// A cache that cannot be read is a cache miss, never a failed load. This catch is what
+			// makes "KV is the source of truth" true in the code and not just in the comments: every
+			// fault on this side — no schema, corrupt row, storage unavailable — falls through to KV.
+			console.warn(`Local archive cache unreadable for ${key} (falling back to KV): ${err}`);
+		}
+	}
+	if (storage && ctx) {
+		ctx.waitUntil(
+			(async () => {
+				const started = Date.now();
+				const rows = await fillCache(storage, key, fromKv(), expected);
+				const dropped = pruneCache(storage, keepAfterFill());
+				console.log(
+					`Archive cached locally: ${key} (${expected} bytes in ${rows} rows) in ${Date.now() - started}ms` +
+						`${dropped.length ? `, dropped ${dropped.length} stale (${dropped.join(", ")})` : ""}`,
+				);
+			})().catch((err) => console.warn(`Local archive cache fill failed for ${key} (KV still serves): ${err}`)),
+		);
+	}
+	return { body: fromKv(), cached: false };
+}
+
+async function loadStore(env: Env, ctx?: LoadContext): Promise<Engine> {
 	// The one place wasm is first touched, so the one place that has to bring
 	// it up. Isolates that only parse and RPC never reach here and never pay
 	// the instantiation — see the header of wasm-shim.ts.
@@ -397,7 +483,16 @@ async function loadStore(env: Env): Promise<Engine> {
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
 	const started = Date.now();
-	const body = kvStoreStream(env, manifest);
+	// Local first (decompressed, no network); KV otherwise, with a background fill behind it. Both
+	// archives are named as survivors so the fill's prune does not drop the residue this store is
+	// paired with — they are cached under separate keys but retired together.
+	const { body, cached } = archiveBytes(
+		ctx,
+		manifest.store_key,
+		manifest.store_bytes,
+		() => kvStoreStream(env, manifest),
+		() => [manifest.store_key, ...(manifest.compat_key ? [manifest.compat_key] : [])],
+	);
 	if (current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
@@ -415,15 +510,15 @@ async function loadStore(env: Env): Promise<Engine> {
 	// still see absent.
 	const { pieces, blocks } = await feedStore(body, manifest.store_bytes);
 
-	const engine = new WasmEngine(env, manifest);
+	const engine = new WasmEngine(env, manifest, ctx);
 	current = { storeKey: manifest.store_key, engine, manifest };
 	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
 	// synchronous execution, so it cannot see the decompression or the copy into
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
 	// linear-memory figure is the honest one here, and is a high-water mark.
 	console.log(
-		`Store loaded from KV: ${manifest.store_key} (${manifest.card_count} cards, ` +
-			`${manifest.store_bytes} bytes${manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
+		`Store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
+			`${manifest.store_bytes} bytes${!cached && manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
 			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 	);
@@ -431,13 +526,13 @@ async function loadStore(env: Env): Promise<Engine> {
 }
 
 /** Background manifest re-check; swaps the store if a new version published. */
-async function refreshIfStale(env: Env): Promise<void> {
+async function refreshIfStale(env: Env, ctx?: LoadContext): Promise<void> {
 	if (Date.now() - lastManifestCheck < MANIFEST_RECHECK_MS) return;
 	lastManifestCheck = Date.now();
 	try {
 		const manifest = await readManifest(env);
 		if (manifest && current && manifest.store_key !== current.storeKey) {
-			loading = loadStore(env).finally(() => {
+			loading = loadStore(env, ctx).finally(() => {
 				loading = null;
 			});
 			await loading;
@@ -447,50 +542,22 @@ async function refreshIfStale(env: Env): Promise<void> {
 	}
 }
 
-export async function getEngine(env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<Engine> {
+export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 	if (current) {
-		ctx.waitUntil(refreshIfStale(env));
+		ctx.waitUntil(refreshIfStale(env, ctx));
 		return current.engine;
 	}
 	if (!loading) {
-		loading = loadStore(env).finally(() => {
+		loading = loadStore(env, ctx).finally(() => {
 			loading = null;
 		});
 	}
 	return loading;
 }
 
-/** The loaded store's key, or null. */
-export function currentStoreKey(): string | null {
-	return current?.storeKey ?? null;
-}
-
-/** Force a manifest read + load now (single-flight). */
-export function reloadStore(env: Env): Promise<Engine> {
-	if (loading) return loading;
-	loading = loadStore(env).finally(() => {
-		loading = null;
-	});
-	return loading;
-}
-
 /** Non-blocking: the local engine if this isolate is already warm, else null. */
 export function tryGetLoadedEngine(): Engine | null {
 	return current?.engine ?? null;
-}
-
-/**
- * Whether the residue archive is attached, i.e. whether a `/cards/*` query can be answered here
- * WITHOUT first pulling ~11.8MB out of KV and copying it into wasm.
- *
- * Separate from the store being loaded, because the two are loaded at different times by design:
- * the store on first query of any kind, the residue only on first `/cards/*` use, so a
- * search-only colo never pays for it. That means a DO can be fully warm for `/search` and still
- * ~250-350ms of CPU away from answering a card object — which is a cold start the store's own
- * relay was already built to hide, and did not, because it only ever asked about the store.
- */
-export function compatAttached(): boolean {
-	return current !== null && wasm.compat_loaded();
 }
 
 /** Called from the cron handler so isolates converge on a fresh publish fast. */

@@ -1,8 +1,24 @@
-// Per-colo warm-engine Durable Object — the only thing that serves engine
+// Per-region warm-engine Durable Object — the only thing that serves engine
 // queries. Worker isolates parse and RPC here; they never load the store.
-// One DO per colo (engine-LAX, engine-SEA, ...), created in the colo that
-// first names it, so sharding tracks the traffic distribution. No alarms, no
-// standing cost: idle colos evict their DO and cost nothing (scale to zero).
+// One DO per region (engine-wnam, engine-weur, ...), placed by location hint.
+// No alarms, no standing cost: idle regions evict their DO and cost nothing
+// (scale to zero).
+//
+// THERE IS NO RELAY TIER, and its removal is why this file is much smaller than
+// it was. Objects used to be named per COLO, with the regional DO existing only
+// as a fallback: a cold colo raced its own store load against a relay to the
+// region, and BOTH loaded the ~76.6MB archive for one request. Measured on
+// 2026-08-12 that was 2.38s + 1.41s of DO CPU on a single cold /cards/search.
+//
+// The colo was never a placement control, only a partition key — see the
+// routing comment in src/index.ts — so the fan-out bought no locality and cost
+// an extra object per colo, each too rarely used to stay warm. With one object
+// per region there is no cold-colo case to hide, so a cold region simply loads.
+//
+// It must never relay to another region either: that would reintroduce both the
+// cross-region hop and the double load. Note the name would now collide anyway —
+// `engine-<hint>` IS this object, so a surviving relay would recurse into its
+// own stub.
 //
 // The DO keeps NO local copy of the store. It used to persist all ~70MB into
 // its own SQLite so wakes avoided the origin, which cost a 70MB write burst on
@@ -13,8 +29,7 @@
 // colo-cached chunks, so the local copy earned nothing it cost.
 
 import { DurableObject } from "cloudflare:workers";
-import { firstToSucceed } from "./first-to-succeed";
-import { compatAttached, getEngine, tryGetLoadedEngine } from "./store";
+import { getEngine, tryGetLoadedEngine } from "./store";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -24,7 +39,7 @@ import type {
 	ResultShape,
 	ScryfallFuzzyResult,
 } from "./types";
-import { EngineUnavailableError } from "./types";
+import { ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
 
 /**
  * `/cards/*` replies, wrapped so `instrumented` has an object to spread telemetry over. A bare
@@ -48,7 +63,6 @@ interface SearchTelemetry {
 	acquireMs: number;
 	load: number;
 	rate: number;
-	relayed: boolean;
 	/** Widest fan-out any caller has reported lately — the rendezvous. */
 	shards: number;
 }
@@ -68,13 +82,6 @@ const WIDTH_TTL_MS = 60_000;
 /** One-second buckets behind the arrival-rate meter; also its window in
  * seconds, since each bucket holds exactly one. */
 const RATE_BUCKETS = 10;
-
-/**
- * RPC error marker: workerd propagates only Error#message across RPC, so the
- * EngineUnavailableError contract (routes turn it into upstream's exact 503 /
- * the bootstrap page) is encoded into the message and decoded by RemoteEngine.
- */
-export const ENGINE_UNAVAILABLE_MARKER = "__ENGINE_UNAVAILABLE__";
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
@@ -152,87 +159,24 @@ export class SearchEngine extends DurableObject<Env> {
 
 	// ── RPC surface ────────────────────────────────────────────────────────────
 	//
-	// Every method takes an optional fallbackHint: when this DO is COLD and a
-	// hint is present, it relays the call to the region's DO (engine-<hint>)
-	// and warms itself in the background — the caller never waits on a load.
-	// The relay passes NO hint, so a cold regional DO answers after its own
-	// load rather than relaying further (recursion depth 1 by construction).
+	// Every method runs locally. There is no fallbackHint and no relay: this DO
+	// is the region, so there is nowhere better to ask. A cold one loads.
 
-	async search(
-		opts: EngineSearchOptions,
-		fallbackHint?: DurableObjectLocationHint,
-		reportedShards?: number,
-	): Promise<EngineSearchResult & SearchTelemetry> {
-		if (this.shouldRelay(fallbackHint)) {
-			return this.relay(
-				fallbackHint,
-				(region) => region.search(opts),
-				(engine) => engine.search(opts),
-				reportedShards,
-			);
-		}
+	async search(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, (engine) => engine.search(opts));
 	}
 
 	/**
-	 * The API path: identical routing and telemetry, but the cards come back
-	 * already encoded, so no card ever becomes a JS object in the isolate that
-	 * serves the request. See EngineSerializedResult.
+	 * The API path: identical telemetry, but the cards come back already encoded,
+	 * so no card ever becomes a JS object in the isolate that serves the request.
+	 * See EngineSerializedResult.
 	 */
 	async searchSerialized(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		if (this.shouldRelay(fallbackHint)) {
-			return this.relay(
-				fallbackHint,
-				(region) => region.searchSerialized(opts, shape),
-				(engine) => engine.searchSerialized(opts, shape),
-				reportedShards,
-			);
-		}
 		return this.instrumented(reportedShards, (engine) => engine.searchSerialized(opts, shape));
-	}
-
-	/**
-	 * Answer from whichever is ready first: the region's already-warm store, or
-	 * this colo's own load.
-	 *
-	 * It used to relay unconditionally and warm in the background. That is right
-	 * only while the region is WARM. Every deploy resets every Durable Object,
-	 * so the first request in each colo found the region cold too — and then
-	 * relaying was strictly worse than doing nothing clever: the region loaded
-	 * the whole ~70MB store just to answer one request, this colo loaded it as
-	 * well, and the user waited for the slower of the two plus a cross-colo hop.
-	 * Measured on one such request: two loads, 865ms + 465ms of DO CPU, 2.4s of
-	 * wall, for a page that needed twelve random cards.
-	 *
-	 * Racing fixes that without giving up the case the relay exists for. The
-	 * local attempt is not extra work — this DO has to end up warm regardless,
-	 * and `instrumented` is what starts that load, so the race simply keeps its
-	 * answer instead of discarding it. A warm region still wins on a
-	 * cross-colo hop; a cold region no longer costs the user anything.
-	 *
-	 * Telemetry stays honest either way: a relayed answer carries the REGION's
-	 * acquireMs/load/rate and is flagged `relayed` so the shard controller drops
-	 * it, while a locally-won answer carries this colo's own.
-	 */
-	private async relay<T extends object>(
-		hint: DurableObjectLocationHint,
-		viaRegion: (region: SearchEngine) => Promise<T & SearchTelemetry>,
-		locally: (engine: Engine) => Promise<T>,
-		reportedShards?: number,
-	): Promise<T & SearchTelemetry> {
-		const started = Date.now();
-		const local = this.instrumented(reportedShards, locally);
-		const relayed = viaRegion(this.regionStub(hint)).then((result) => ({ ...result, relayed: true }));
-		const answer = await firstToSucceed<T & SearchTelemetry>(local, relayed);
-		console.log(
-			`Cold colo answered ${answer.relayed ? `via engine-${hint}` : "from its own load"} in ${Date.now() - started}ms`,
-		);
-		return answer;
 	}
 
 	/** Run a search against the local engine, carrying the autoscaler's signals. */
@@ -254,7 +198,7 @@ export class SearchEngine extends DurableObject<Env> {
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				return { ...(await run(engine)), acquireMs, load, rate, relayed: false, shards };
+				return { ...(await run(engine)), acquireMs, load, rate, shards };
 			} catch (err) {
 				rethrowForRpc(err);
 			}
@@ -263,63 +207,14 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 	}
 
-	/**
-	 * Race the region against this colo's own attempt, and SAY WHICH WON.
-	 *
-	 * The winner is the whole point of the race and it is not inferable after
-	 * the fact — the load logs look identical either way, because the local
-	 * attempt runs regardless. Without this line "did the relay help?" can only
-	 * be answered by inference, which is how a day got lost.
-	 *
-	 * search/searchSerialized get the same line from relay(), which can read the
-	 * winner off the telemetry it already carries.
-	 */
-	private async raceRegion<T>(
-		hint: DurableObjectLocationHint,
-		what: string,
-		locally: Promise<T>,
-		viaRegion: Promise<T>,
-	): Promise<T> {
-		const started = Date.now();
-		const won = await firstToSucceed(
-			locally.then((value) => ({ value, from: "its own load" })),
-			viaRegion.then((value) => ({ value, from: `engine-${hint}` })),
-		);
-		console.log(`Cold colo answered ${what} from ${won.from} in ${Date.now() - started}ms`);
-		return won.value;
-	}
-
 	/** Both catalogs in one RPC (get_catalog needs both). */
-	async catalog(
-		fallbackHint?: DurableObjectLocationHint,
-	): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
-		const local = async () => {
-			const engine = await this.engine();
-			return { types: await engine.commonCardTypes(), keywords: await engine.commonCardKeywords() };
-		};
-		if (this.shouldRelay(fallbackHint)) {
-			// See relay(): the local attempt IS the warm, so racing costs nothing
-			// and stops a cold region from making the caller wait for its load.
-			return this.raceRegion(fallbackHint, "catalog", local(), this.regionStub(fallbackHint).catalog());
-		}
-		return local();
+	async catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+		const engine = await this.engine();
+		return { types: await engine.commonCardTypes(), keywords: await engine.commonCardKeywords() };
 	}
 
-	async samplePreferred(
-		numCards: number,
-		fields: string[],
-		fallbackHint?: DurableObjectLocationHint,
-	): Promise<Record<string, unknown>[]> {
-		const local = async () => (await this.engine()).samplePreferred(numCards, fields);
-		if (this.shouldRelay(fallbackHint)) {
-			return this.raceRegion(
-				fallbackHint,
-				"samplePreferred",
-				local(),
-				this.regionStub(fallbackHint).samplePreferred(numCards, fields),
-			);
-		}
-		return local();
+	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+		return (await this.engine()).samplePreferred(numCards, fields);
 	}
 
 	/**
@@ -345,21 +240,7 @@ export class SearchEngine extends DurableObject<Env> {
 		numCards: number,
 		fields: string[],
 		shape: ResultShape,
-		fallbackHint?: DurableObjectLocationHint,
 	): Promise<EngineSerializedResult> {
-		if (this.shouldRelay(fallbackHint)) {
-			return this.raceRegion(
-				fallbackHint,
-				"samplePreferred",
-				this.localSample(numCards, fields, shape),
-				this.regionStub(fallbackHint).samplePreferredSerialized(numCards, fields, shape),
-			);
-		}
-		return this.localSample(numCards, fields, shape);
-	}
-
-	/** samplePreferredSerialized against THIS colo's engine, loading if needed. */
-	private async localSample(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
 		const warm = tryGetLoadedEngine() !== null;
 		const acquireStart = Date.now();
 		const engine = await this.engine();
@@ -373,143 +254,111 @@ export class SearchEngine extends DurableObject<Env> {
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
 	//
-	// Routed EXACTLY like search/searchSerialized: same relay-race on a cold colo, same
-	// `instrumented` telemetry, same shard rendezvous. That is not symmetry for its own sake —
-	// mtg-seeker points at `/cards/*`, so this is the traffic the deployment actually has to scale
-	// under. Bypassing `instrumented` would leave the shard controller reading only `/search`
-	// depth and rate, and it would decline to open a shard while `/cards/*` saturated the one it
-	// had.
+	// Instrumented EXACTLY like search/searchSerialized: same telemetry, same shard rendezvous. That
+	// is not symmetry for its own sake — mtg-seeker points at `/cards/*`, so this is the traffic the
+	// deployment actually has to scale under. Bypassing `instrumented` would leave the shard
+	// controller reading only `/search` depth and rate, and it would decline to open a shard while
+	// `/cards/*` saturated the one it had.
 	//
 	// Every result is wrapped in an object because `instrumented` spreads its telemetry over the
 	// return value, and a bare `null` (a genuine card miss) has nothing to spread onto.
 	// RemoteEngine unwraps on the other side, so the Engine interface keeps the plain shapes.
+	//
+	// THE RESIDUE ATTACH IS NOW PAID IN FRONT OF THE USER, and that is an accepted consequence of
+	// dropping the relay. A DO can be fully warm for `/search` and still ~250-350ms of CPU away from
+	// a card object, because the residue archive is attached only on first `/cards/*` use — so a
+	// search-only region never carries its ~11.8MB. `shouldRelayScryfall` used to hide that behind a
+	// race with the regional DO. With one tier there is nothing to race, so the first card request
+	// after a wake pays it. Two things make that acceptable: the local archive cache turns the attach
+	// into a same-machine read (store-cache.ts), and a region-scale DO wakes far less often than a
+	// colo-scale one did.
 
 	async scryfallSearch(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallSearch(opts, baseUrl),
-			(engine) => engine.scryfallSearch(opts, baseUrl),
-		);
+		return this.instrumented(reportedShards, (engine) => engine.scryfallSearch(opts, baseUrl));
 	}
 
 	async scryfallCardById(
 		scryfallId: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallCardById(scryfallId, baseUrl),
-			async (engine) => ({ card: await engine.scryfallCardById(scryfallId, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			card: await engine.scryfallCardById(scryfallId, baseUrl),
+		}));
 	}
 
 	async scryfallCardsByIds(
 		scryfallIds: string[],
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardsReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallCardsByIds(scryfallIds, baseUrl),
-			async (engine) => ({ cards: await engine.scryfallCardsByIds(scryfallIds, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			cards: await engine.scryfallCardsByIds(scryfallIds, baseUrl),
+		}));
 	}
 
 	async scryfallCardByOracleId(
 		oracleId: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallCardByOracleId(oracleId, baseUrl),
-			async (engine) => ({ card: await engine.scryfallCardByOracleId(oracleId, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			card: await engine.scryfallCardByOracleId(oracleId, baseUrl),
+		}));
 	}
 
 	async scryfallCardByExternalId(
 		namespace: string,
 		externalId: number,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallCardByExternalId(namespace, externalId, baseUrl),
-			async (engine) => ({ card: await engine.scryfallCardByExternalId(namespace, externalId, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			card: await engine.scryfallCardByExternalId(namespace, externalId, baseUrl),
+		}));
 	}
 
 	async scryfallFuzzyName(
 		name: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallFuzzyResult & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallFuzzyName(name, baseUrl),
-			(engine) => engine.scryfallFuzzyName(name, baseUrl),
-		);
+		return this.instrumented(reportedShards, (engine) => engine.scryfallFuzzyName(name, baseUrl));
 	}
 
 	async scryfallAutocomplete(
 		prefix: string,
 		limit: number,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallNamesReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallAutocomplete(prefix, limit),
-			async (engine) => ({ names: await engine.scryfallAutocomplete(prefix, limit) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			names: await engine.scryfallAutocomplete(prefix, limit),
+		}));
 	}
 
 	async scryfallExactName(
 		folded: string,
 		setCode: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallExactName(folded, setCode, baseUrl),
-			async (engine) => ({ card: await engine.scryfallExactName(folded, setCode, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			card: await engine.scryfallExactName(folded, setCode, baseUrl),
+		}));
 	}
 
 	async scryfallCardByIllustrationId(
 		illustrationId: string,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallCardByIllustrationId(illustrationId, baseUrl),
-			async (engine) => ({ card: await engine.scryfallCardByIllustrationId(illustrationId, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			card: await engine.scryfallCardByIllustrationId(illustrationId, baseUrl),
+		}));
 	}
 
 	async scryfallNamesContaining(
@@ -517,92 +366,34 @@ export class SearchEngine extends DurableObject<Env> {
 		setCode: string,
 		limit: number,
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallCardsReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallNamesContaining(words, setCode, limit, baseUrl),
-			async (engine) => ({ cards: await engine.scryfallNamesContaining(words, setCode, limit, baseUrl) }),
-		);
+		return this.instrumented(reportedShards, async (engine) => ({
+			cards: await engine.scryfallNamesContaining(words, setCode, limit, baseUrl),
+		}));
 	}
 
 	async scryfallFirstOfEach(
 		filterTreeJsons: string[],
 		baseUrl: string,
-		fallbackHint?: DurableObjectLocationHint,
 		reportedShards?: number,
 	): Promise<ScryfallMaybeCardsReply & SearchTelemetry> {
-		return this.routeScryfall(
-			fallbackHint,
-			reportedShards,
-			(region) => region.scryfallFirstOfEach(filterTreeJsons, baseUrl),
-			async (engine) => ({ cards: await engine.scryfallFirstOfEach(filterTreeJsons, baseUrl) }),
-		);
-	}
-
-	/** relay-or-instrument, the one shape every `/cards/*` entry point above uses. */
-	private routeScryfall<T extends object>(
-		fallbackHint: DurableObjectLocationHint | undefined,
-		reportedShards: number | undefined,
-		viaRegion: (region: SearchEngine) => Promise<T & SearchTelemetry>,
-		locally: (engine: Engine) => Promise<T>,
-	): Promise<T & SearchTelemetry> {
-		if (this.shouldRelayScryfall(fallbackHint)) {
-			return this.relay(fallbackHint, viaRegion, locally, reportedShards);
-		}
-		return this.instrumented(reportedShards, locally);
-	}
-
-	async size(fallbackHint?: DurableObjectLocationHint): Promise<number> {
-		if (this.shouldRelay(fallbackHint)) {
-			this.warmInBackground();
-			return this.regionStub(fallbackHint).size();
-		}
-		const engine = await this.engine();
-		return engine.size();
-	}
-
-	// ── Cold relay ─────────────────────────────────────────────────────────────
-
-	/** Cold (no engine in this isolate) and permitted to relay. */
-	private shouldRelay(hint?: DurableObjectLocationHint): hint is DurableObjectLocationHint {
-		return hint !== undefined && tryGetLoadedEngine() === null;
+		return this.instrumented(reportedShards, async (engine) => ({
+			cards: await engine.scryfallFirstOfEach(filterTreeJsons, baseUrl),
+		}));
 	}
 
 	/**
-	 * The same question for a `/cards/*` query, which needs the residue archive as well.
+	 * The store's card count, and the readiness probe a freshly opened shard is warmed with.
 	 *
-	 * A DO can be fully warm for `/search` and still ~250-350ms of CPU away from a card object,
-	 * because the residue is attached only on first `/cards/*` use — deliberately, so a
-	 * search-only colo never carries its ~11.8MB. `shouldRelay` asked only about the store, so
-	 * that attach was NOT hidden by the relay the store's own cold start has always used: the
-	 * first card request to reach a warm colo paid all of it, in front of the user.
-	 *
-	 * Relaying makes it a race instead. The regional DO answers from its own attached archive
-	 * while this one attaches in the background, and `firstToSucceed` takes whichever lands first
-	 * — so the attach costs the request nothing it was not already spending on the round trip.
+	 * `src/index.ts` pings this on a shard the controller has just opened and admits the shard to
+	 * routing only when it resolves, so on a cold DO this call IS the store load. Deliberately not
+	 * instrumented: it is not a user request and its wall time is a wake, so feeding it to the
+	 * autoscaler would let every expansion argue for the next.
 	 */
-	private shouldRelayScryfall(hint?: DurableObjectLocationHint): hint is DurableObjectLocationHint {
-		return hint !== undefined && (tryGetLoadedEngine() === null || !compatAttached());
-	}
-
-	/** The regional fallback engine's stub, typed like RemoteEngine's. */
-	private regionStub(hint: DurableObjectLocationHint) {
-		return this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(`engine-${hint}`), {
-			locationHint: hint,
-		}) as unknown as SearchEngine;
-	}
-
-	/** Single-flighted load under waitUntil; failures logged, never thrown. */
-	private warmInBackground(): void {
-		this.ctx.waitUntil(
-			this.engine().then(
-				() => {},
-				(err) => console.warn(`Background colo warm failed (still relaying): ${err}`),
-			),
-		);
+	async size(): Promise<number> {
+		const engine = await this.engine();
+		return engine.size();
 	}
 
 	// ── Engine acquisition ─────────────────────────────────────────────────────

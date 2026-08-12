@@ -22,12 +22,12 @@
 //        LATENCY_ABS_MS is inert — so the open question is no longer which one
 //        fires, it is whether the VARIANCE breaks the rule: a 7ms fast tail
 //        against a ~36ms mean is a permanent breach of a 3x bar, which would
-//        expand a loaded colo to SHARDS_MAX on spread alone. If the ramp shows
+//        expand a loaded region to SHARDS_MAX on spread alone. If the ramp shows
 //        that spread persisting under load, LATENCY_FLOOR_MULT is what needs
 //        raising. remote-engine.ts summarizes warm RPCs into the log, so the
 //        run reports the distribution directly — read min against mean.
 //   the fan-out itself — x-sylvan-engine names the DO that answered
-//        (`do-<colo>` for shard 0, `do-<colo>-N` after), so the per-stage shard
+//        (`do-<region>` for shard 0, `do-<region>-N` after), so the per-stage shard
 //        histogram is the controller converging, live.
 //
 // TWO-PHASE EXPERIMENT. Run both; the pair is the point.
@@ -65,23 +65,21 @@
 //   Query memo. The engine memoizes (see vendor bench_text_memo.py). One
 //                repeated query measures the memo, not a search. The pool below
 //                is cycled per request for that reason.
-//   Cold DOs.    The big one, and the reason --warmup exists. A colo whose DO
-//                has been evicted relays to the regional DO while it wakes, and
-//                production logs at ~0.1 req/s show EVERY search arriving that
-//                way — 1457-1853ms wall, 382ms of it the regional store load.
-//                The shard controller drops relayed samples by design, so a run
-//                against cold DOs measures the relay path AND leaves the
-//                autoscaler blind throughout. --warmup discards a leading
-//                stretch; it defaults on, and turning it off is how you get a
-//                1.5s first stage that looks like a knee and is not one.
+//   Cold DOs.    The big one, and the reason --warmup exists. A region whose DO
+//                has been evicted loads ~76.6MB from KV before it can answer,
+//                and the shard controller excludes wake-carrying samples by
+//                design — so a run against a cold DO measures the wake AND
+//                leaves the autoscaler blind throughout. --warmup discards a
+//                leading stretch; it defaults on, and turning it off is how you
+//                get a 1.5s first stage that looks like a knee and is not one.
 //
 // A REFERENCE RUN, so a future one has something to differ from. Local
 // `bun run dev`, rows shape, 15s warmup discarded, 10s per stage:
 //
-//   conc=  1  rps=398.7  p50= 2ms  p90= 3ms  p99=  8ms  | do-LAX
-//   conc=  2  rps=419.7  p50= 4ms  p90= 6ms  p99= 15ms  | do-LAX
-//   conc=  4  rps=449.5  p50= 8ms  p90=11ms  p99= 22ms  | do-LAX
-//   conc=  8  rps=449.7  p50=16ms  p90=21ms  p99= 40ms  | do-LAX + do-LAX-1
+//   conc=  1  rps=398.7  p50= 2ms  p90= 3ms  p99=  8ms  | do-wnam
+//   conc=  2  rps=419.7  p50= 4ms  p90= 6ms  p99= 15ms  | do-wnam
+//   conc=  4  rps=449.5  p50= 8ms  p90=11ms  p99= 22ms  | do-wnam
+//   conc=  8  rps=449.7  p50=16ms  p90=21ms  p99= 40ms  | do-wnam + do-wnam-1
 //   conc= 16  rps=446.7  p50=33ms  p90=40ms  p99=183ms  | both
 //   conc= 32  rps=464.0  p50=65ms  p90=82ms  p99=104ms  | both
 //
@@ -173,7 +171,7 @@ interface Sample {
 	t: number;
 	ms: number;
 	status: number;
-	/** x-sylvan-engine: which DO answered (do-<colo>, do-<colo>-N). */
+	/** x-sylvan-engine: which DO answered (do-<region>, do-<region>-N). */
 	shard: string;
 	/** cf-cache-status: HIT here means the run is measuring the edge cache. */
 	cache: string;
@@ -355,19 +353,21 @@ if (values["dry-run"]) {
 	process.exit(0);
 }
 
-// Discarded warm-up. A colo whose DO has been evicted relays to the regional
-// DO while it wakes, and production logs show that at low traffic EVERY search
-// arrives that way: 1457-1853ms wall, 382ms of it the regional store load. Both
-// DOs have to be warm before a single number here means anything, and the shard
-// controller drops relayed samples outright, so until this finishes it is not
-// receiving signal either. Measuring through it would put a ~1.5s first stage
-// in the table and read as a knee that is really just a cold start.
+// Discarded warm-up. A region whose DO has been evicted loads the whole store
+// before it can answer, and the shard controller excludes wake-carrying samples
+// outright, so until this finishes it is not receiving signal either. Measuring
+// through it would put a ~1.5s first stage in the table and read as a knee that
+// is really just a cold start.
+//
+// It also covers the OTHER wake this bench can trip: a shard the controller
+// opens mid-run is warmed before it takes traffic, so its first requests do not
+// appear here as a cluster of slow samples the way they used to.
 if (warmupMs > 0) {
 	const warm = await runStage(base, 2, warmupMs, cfg);
 	const relayed = warm.samples.filter((s) => s.ms > 500).length;
 	console.error(
 		`warmup: ${warm.samples.length} requests discarded, ${relayed} over 500ms ` +
-			`(cold relays), last=${warm.samples.at(-1)?.ms ?? "-"}ms`,
+			`(cold wakes), last=${warm.samples.at(-1)?.ms ?? "-"}ms`,
 	);
 	if (relayed === warm.samples.length && warm.samples.length > 0) {
 		console.error("WARNING: every warmup request looked cold — the DO may not have stayed warm. Raise --warmup.");

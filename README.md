@@ -80,19 +80,22 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
         ──▶ Workers Cache (regional edge cache; hits skip the Worker entirely)
         └─▶ Worker isolate (thin: parses, RPCs)
               ├─ TS parser: Scryfall syntax → filter tree (port of hand_parser.py)
-              ├─ engine queries: RPC to the colo's SearchEngine Durable Object
-              │   (engine-<colo>, created in the colo that first names it), so
-              │   sharding tracks the traffic distribution and idle colos evict
-              │   their DO — scale to zero. The x-sylvan-engine response header
-              │   says which DO answered
-              ├─ SearchEngine DO: wasm card_engine + ~70MB rkyv store in memory,
-              │   streamed from KV as 3 immutable chunks; no local copy, and it
-              │   hot-swaps when the KV manifest advances. Results come back
-              │   already JSON-encoded in the requested shape, so no card ever
-              │   becomes an object in the isolate serving the request
-              └─ autoscaling: fan-out to engine-<colo>-1..N when the DO reports
+              ├─ engine queries: RPC to the region's SearchEngine Durable Object
+              │   (engine-<region>, one per location hint — wnam, weur, apac …),
+              │   placed there by location hint; idle regions evict their DO —
+              │   scale to zero. The x-sylvan-engine response header says which
+              │   DO answered
+              ├─ SearchEngine DO: wasm card_engine + ~76.6MB rkyv store in memory,
+              │   streamed from KV as 3 immutable chunks in 4MB blocks, and cached
+              │   DECOMPRESSED in the DO's own SQLite so later wakes skip both the
+              │   network and the gunzip. It hot-swaps when the KV manifest
+              │   advances. Results come back already JSON-encoded in the requested
+              │   shape, so no card ever becomes an object in the isolate serving
+              │   the request
+              └─ autoscaling: fan-out to engine-<region>-1..N when the DO reports
                   sustained load AND the isolate sees sustained slowness, with
-                  idle fold-back — see src/engine/shard-controller.ts
+                  idle fold-back. A new shard takes no traffic until its warm
+                  ping resolves — see src/engine/shard-controller.ts
 
 cron (nightly refresh; the deploy does the first build)
         ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
@@ -108,9 +111,17 @@ cron (nightly refresh; the deploy does the first build)
 The wasm engine is the only query path. A query it cannot answer returns a
 structured error, never a silently empty result.
 
-**Cold starts.** A colo whose DO has evicted relays the query to the region's
-DO while loading itself in the background, so users never wait on a store
-load. There is deliberately no Cache API layer in front of KV: writing the
+**Cold starts.** The engine tier is sharded by REGION, and that is the main
+thing keeping stores warm. It used to be sharded per colo with the regional DO
+as a relay target for a cold colo — but the colo name was only ever a partition
+key (the DO was created with no location hint, so placement was regional
+anyway), so the fan-out bought no locality and cost an object per colo, each too
+rarely used to stay warm. Measured on 2026-08-12: three objects for two colos in
+one region, ~45 store loads in two days, and a cold `/cards/search` paying
+2.38s + 1.41s of DO CPU because the relay raced two loads of the same archive.
+One object per region turns that traffic into one warm store. What remains of
+the cold path is cached decompressed in the DO's own SQLite, so a wake usually
+skips the network and the gunzip both. There is deliberately no Cache API layer in front of KV: writing the
 store through `caches.default` and reading it back measured 0.6–1.3s of billed
 CPU per load, and KV's own `cacheTtl` gives the same colo-level caching for
 free on immutable chunk keys. That argument rules out a Cache API layer, and it
@@ -538,7 +549,7 @@ numbers are the same number. Scryfall's miss is 867ms and its worst case 1.3s;
 its 54ms warm is its own CDN.
 
 That 6799ms worst case is one request of the twenty — the first query of the
-first run, landing on a colo whose `SearchEngine` had been evicted, so it paid
+first run, landing on a region whose `SearchEngine` had been evicted, so it paid
 a full store load out of KV before it could answer. It is the same wake the
 store loader is built around (~915ms of Durable Object wall time at the
 median, of which only ~164ms is CPU), and it is not the median's problem: the
