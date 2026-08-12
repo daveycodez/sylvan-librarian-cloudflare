@@ -174,6 +174,53 @@ pub fn build_store(
     counter.flush()?;
     compat_counter.flush()?;
 
+    // WHERE THE ARCHIVE'S BYTES GO. The store dominates every cost the Cloudflare
+    // port has -- cold DO CPU is near-linear in it (~240MB/s to materialise into a
+    // wasm heap), as are the KV chunk count, the per-region cache rows and peak
+    // isolate memory -- so "shrink the store" is the one lever with real headroom
+    // left. It was unactionable while roughly half the archive sat in a bucket no
+    // source file could size, which is what this prints.
+    //
+    // `indexes + padding` is the REMAINDER rather than a measurement, so it absorbs
+    // the index structures and rkyv's alignment slack instead of claiming a
+    // precision it does not have.
+    {
+        let named = stats.cards_bytes
+            + stats.printings_bytes
+            + stats.strings_bytes
+            + stats.vocab_bytes
+            + stats.direct_arrays_bytes;
+        let pct = |n: usize| 100.0 * n as f64 / store_bytes as f64;
+        let mb = |n: usize| n as f64 / 1_048_576.0;
+        eprintln!("    archive {:.1}MB in {} sections:", mb(store_bytes as usize), 6);
+        eprintln!(
+            "      printings          {:>6.1}MB  {:>4.1}%   ({} x {}B)",
+            mb(stats.printings_bytes),
+            pct(stats.printings_bytes),
+            stats.printing_count,
+            stats.printings_bytes.checked_div(stats.printing_count.max(1)).unwrap_or(0)
+        );
+        eprintln!(
+            "      cards              {:>6.1}MB  {:>4.1}%   ({} x {}B)",
+            mb(stats.cards_bytes),
+            pct(stats.cards_bytes),
+            stats.card_count,
+            stats.cards_bytes.checked_div(stats.card_count.max(1)).unwrap_or(0)
+        );
+        eprintln!("      strings            {:>6.1}MB  {:>4.1}%", mb(stats.strings_bytes), pct(stats.strings_bytes));
+        eprintln!("      vocabs             {:>6.1}MB  {:>4.1}%", mb(stats.vocab_bytes), pct(stats.vocab_bytes));
+        eprintln!(
+            "      direct arrays      {:>6.1}MB  {:>4.1}%",
+            mb(stats.direct_arrays_bytes),
+            pct(stats.direct_arrays_bytes)
+        );
+        eprintln!(
+            "      indexes + padding  {:>6.1}MB  {:>4.1}%   (remainder)",
+            mb((store_bytes as usize).saturating_sub(named)),
+            pct((store_bytes as usize).saturating_sub(named))
+        );
+    }
+
     Ok(Manifest {
         store_key,
         built_at: built_at.to_owned(),

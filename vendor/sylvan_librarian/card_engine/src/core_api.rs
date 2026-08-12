@@ -538,6 +538,45 @@ pub(crate) fn card_from_json(
     })
 }
 
+// ─── Archive section sizing (LOCAL PATCH) ────────────────────────────────────
+
+/// Where a finished archive's bytes go, by section.
+///
+/// Arithmetic over the assembled sections, taken at the one moment they are all
+/// in hand and still typed — after this they are an opaque contiguous buffer
+/// whose field offsets no caller can recover. Deliberately not implemented by
+/// re-serialising each section: that would double the build's peak memory, and
+/// this same code runs inside a 128MB isolate.
+///
+/// A `Vec<T>` archives as a contiguous run of `Archived<T>`, so `len *
+/// size_of::<Archived<T>>()` is exact for the fixed-width sections. A
+/// `Vec<String>` is a run of relative pointers plus the character bytes, so it
+/// is the pointer run plus the summed lengths.
+fn archive_section_stats(d: &CardData) -> StoreStats {
+    let strings_bytes: usize = d.strings.iter().map(|s| s.len()).sum::<usize>()
+        + d.strings.len() * std::mem::size_of::<rkyv::string::ArchivedString>();
+    let vocab_bytes: usize = d.coll_vocab.iter().map(|s| s.len()).sum::<usize>()
+        + d.artist_vocab.iter().map(|s| s.len()).sum::<usize>()
+        + d.mana_vocab.iter().map(|s| s.len()).sum::<usize>()
+        + (d.coll_vocab.len() + d.artist_vocab.len() + d.mana_vocab.len())
+            * std::mem::size_of::<rkyv::string::ArchivedString>()
+        + d.coll_vocab_sorted.len() * 2;
+    let direct_arrays_bytes = d.offsets.len() * 4
+        + d.indexes.printing_to_card.len() * 4
+        + d.indexes.artwork_base.len() * 4
+        + d.indexes.artwork_groups.len() * 2
+        + d.indexes.artwork_group_col.len() * 2;
+    StoreStats {
+        card_count: d.cards.len(),
+        printing_count: d.printings.len(),
+        cards_bytes: d.cards.len() * std::mem::size_of::<AOracleCard>(),
+        printings_bytes: d.printings.len() * std::mem::size_of::<APrinting>(),
+        strings_bytes,
+        vocab_bytes,
+        direct_arrays_bytes,
+    }
+}
+
 // ─── Store builder ───────────────────────────────────────────────────────────
 
 /// Counts of what a finished store contains, returned by
@@ -548,6 +587,27 @@ pub struct StoreStats {
     pub card_count: usize,
     /// Printings (the pre-grouping row count; what the pyo3 `size()` reports).
     pub printing_count: usize,
+    /// LOCAL PATCH (sylvan-librarian-cloudflare): where the archive's bytes go.
+    ///
+    /// The store dominates every cost the Cloudflare port has — cold CPU is a
+    /// near-linear function of it (~240MB/s to materialise into a wasm heap),
+    /// as are the KV chunk count, the per-region cache rows, and peak isolate
+    /// memory. "Shrink the store" was the one remaining lever with real
+    /// headroom, and it was unactionable because nobody could say what the
+    /// bytes ARE: roughly half sat in a bucket no source file could size.
+    ///
+    /// Computed by arithmetic over the sections rather than by re-serialising
+    /// them, so it costs microseconds and adds no memory — which matters
+    /// because this path also runs inside a 128MB isolate.
+    ///
+    /// `indexes_bytes` is the REMAINDER (archive total minus everything named),
+    /// so it absorbs the index structures and any rkyv padding rather than
+    /// pretending to a precision it does not have.
+    pub cards_bytes: usize,
+    pub printings_bytes: usize,
+    pub strings_bytes: usize,
+    pub vocab_bytes: usize,
+    pub direct_arrays_bytes: usize,
 }
 
 /// Non-python twin of the pyo3 staged-reload surface: `new()` ≙ reload_begin
@@ -597,10 +657,7 @@ impl StoreBuilder {
     ) -> Result<StoreStats, EngineError> {
         let StoreBuilder { rows, interner, vocab, artists, mana } = self;
         let built = build_card_data(rows, interner, vocab, artists, mana, residue)?;
-        let stats = StoreStats {
-            card_count: built.card_data.cards.len(),
-            printing_count: built.card_data.printings.len(),
-        };
+        let stats = archive_section_stats(&built.card_data);
         write_archive(&built.card_data, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
         Ok(stats)
@@ -683,10 +740,7 @@ impl SpillingStoreBuilder {
         drop(keys);
         let rows = rows.map(|bytes| decode_card_row(&bytes));
         let built = crate::build_card_data_sorted(rows, expected, interner, vocab, artists, mana, residue)?;
-        let stats = StoreStats {
-            card_count: built.card_data.cards.len(),
-            printing_count: built.card_data.printings.len(),
-        };
+        let stats = archive_section_stats(&built.card_data);
         write_archive(&built.card_data, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
         Ok(stats)
