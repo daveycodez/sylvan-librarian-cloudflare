@@ -122,6 +122,14 @@ export function isCatalogName(name: string): name is CatalogName {
 	return CATALOG_NAME_SET.has(name);
 }
 
+/** Every key this dataset has ever owned, across layout versions. */
+export const REFERENCE_KEY_PREFIX = "reference:v";
+
+/** The prefix the CURRENT layout writes under; anything else under REFERENCE_KEY_PREFIX is stale. */
+export function referenceCurrentPrefix(): string {
+	return `reference:v${REFERENCE_FORMAT_VERSION}:`;
+}
+
 /** The `data` array for `GET /sets`, rendered whole. */
 export function setsListKey(): string {
 	return `reference:v${REFERENCE_FORMAT_VERSION}:sets:list`;

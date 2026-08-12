@@ -31,12 +31,15 @@ import {
 	RULINGS_BUCKET_COUNT,
 	RULINGS_CONTENT_GENERATION,
 	RULINGS_FORMAT_VERSION,
+	RULINGS_KEY_PREFIX,
 	RULINGS_META_KEY,
 	type RulingRow,
 	type RulingsMeta,
 	rulingsBucketKey,
 	rulingsBucketOf,
+	rulingsCurrentPrefix,
 } from "../src/engine/rulings-kv";
+import { pruneOldKeys } from "./kv-prune";
 import { kvHasCurrent } from "./kv-published";
 import { kvTargetArgs, requireDeployEnvironment } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -126,6 +129,11 @@ try {
 } finally {
 	await unlink(bulkFile).catch(() => {});
 }
+
+// The meta key has landed, so the set is complete — anything left under an older layout version
+// is now unreachable. See scripts/kv-prune.ts.
+const pruned = await pruneOldKeys(RULINGS_KEY_PREFIX, rulingsCurrentPrefix(), remote);
+if (pruned > 0) console.log(`Retention: dropped ${pruned} rulings key(s) from an older layout.`);
 
 console.log(
 	`Rulings seeded into ${remote ? "production" : "local"} KV: ${rulings} rulings ` +

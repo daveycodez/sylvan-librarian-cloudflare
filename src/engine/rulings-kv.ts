@@ -110,6 +110,14 @@ export interface RulingRow {
 /** Index key width: a Scryfall UUID with its dashes taken out. */
 const ID_HEX_BYTES = 32;
 
+/** Every key this dataset has ever owned, across layout versions. */
+export const RULINGS_KEY_PREFIX = "rulings:v";
+
+/** The prefix the CURRENT layout writes under; anything else under RULINGS_KEY_PREFIX is stale. */
+export function rulingsCurrentPrefix(): string {
+	return `rulings:v${RULINGS_FORMAT_VERSION}:`;
+}
+
 /** The KV key one bucket lives at. */
 export function rulingsBucketKey(bucket: number): string {
 	return `rulings:v${RULINGS_FORMAT_VERSION}:${bucket.toString(16).padStart(2, "0")}`;

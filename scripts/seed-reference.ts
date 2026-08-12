@@ -22,9 +22,11 @@ import {
 	encodeCountedArray,
 	REFERENCE_CONTENT_GENERATION,
 	REFERENCE_FORMAT_VERSION,
+	REFERENCE_KEY_PREFIX,
 	REFERENCE_META_KEY,
 	type ReferenceMeta,
 	rawArrayElements,
+	referenceCurrentPrefix,
 	renderCatalog,
 	renderSets,
 	renderSymbology,
@@ -33,6 +35,7 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "../src/engine/reference-kv";
+import { pruneOldKeys } from "./kv-prune";
 import { kvHasCurrent } from "./kv-published";
 import { kvTargetArgs, requireDeployEnvironment } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -150,6 +153,11 @@ try {
 } finally {
 	await unlink(bulkFile).catch(() => {});
 }
+
+// The meta key has landed, so the set is complete — anything left under an older layout version
+// is now unreachable. See scripts/kv-prune.ts.
+const pruned = await pruneOldKeys(REFERENCE_KEY_PREFIX, referenceCurrentPrefix(), remote);
+if (pruned > 0) console.log(`Retention: dropped ${pruned} reference key(s) from an older layout.`);
 
 console.log(
 	`Reference data seeded into ${remote ? "production" : "local"} KV: ${setCount} sets, ` +

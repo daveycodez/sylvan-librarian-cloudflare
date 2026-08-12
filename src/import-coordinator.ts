@@ -36,15 +36,18 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
+import { staleKeys } from "./engine/kv-versions";
 import {
 	CATALOG_NAMES,
 	catalogKey,
 	encodeCountedArray,
 	REFERENCE_CONTENT_GENERATION,
 	REFERENCE_FORMAT_VERSION,
+	REFERENCE_KEY_PREFIX,
 	REFERENCE_META_KEY,
 	type ReferenceMeta,
 	rawArrayElements,
+	referenceCurrentPrefix,
 	renderCatalog,
 	renderSets,
 	renderSymbology,
@@ -59,11 +62,13 @@ import {
 	RULINGS_BUCKET_COUNT,
 	RULINGS_CONTENT_GENERATION,
 	RULINGS_FORMAT_VERSION,
+	RULINGS_KEY_PREFIX,
 	RULINGS_META_KEY,
 	type RulingRow,
 	type RulingsMeta,
 	rulingsBucketKey,
 	rulingsBucketOf,
+	rulingsCurrentPrefix,
 } from "./engine/rulings-kv";
 import { GridChunker } from "./engine/store-chunks";
 import {
@@ -1786,6 +1791,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			ruling_count: total,
 		};
 		await this.env.STORE_KV.put(RULINGS_META_KEY, JSON.stringify(meta));
+		await this.pruneOldKeys(RULINGS_KEY_PREFIX, rulingsCurrentPrefix(), "rulings");
 		this.metaSet("phase", "reference");
 		console.log(`Rulings published to KV: ${total} rulings across ${RULINGS_BUCKET_COUNT} buckets`);
 	}
@@ -1854,6 +1860,36 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (step === "sets") this.metaSet("reference_step", "catalogs");
 		else if (step === "catalogs") this.metaSet("reference_step", "symbology");
 		else this.metaSet("phase", "purge");
+	}
+
+	/**
+	 * Delete the keys a previous LAYOUT version of a dataset left behind.
+	 *
+	 * Called after the meta key, which is the commit point: pruning first would leave a window in
+	 * which neither version is complete. Best effort — a key that will not delete costs a few KB of
+	 * a 1GB namespace and gets another chance next publish, and losing a finished publish over
+	 * cleanup would be the worse trade.
+	 */
+	private async pruneOldKeys(prefix: string, currentPrefix: string, label: string): Promise<void> {
+		try {
+			let cursor: string | undefined;
+			let removed = 0;
+			do {
+				const page = await this.env.STORE_KV.list({ prefix, cursor });
+				for (const key of staleKeys(
+					page.keys.map((k) => k.name),
+					prefix,
+					currentPrefix,
+				)) {
+					await this.env.STORE_KV.delete(key);
+					removed += 1;
+				}
+				cursor = page.list_complete ? undefined : page.cursor;
+			} while (cursor);
+			if (removed > 0) console.log(`Retention: dropped ${removed} ${label} key(s) from an older layout`);
+		} catch (err) {
+			console.warn(`Retention: could not prune old ${label} keys: ${err}`);
+		}
 	}
 
 	/**
@@ -1956,6 +1992,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			catalogs: JSON.parse(this.metaGet("reference_catalogs") ?? "{}"),
 		};
 		await this.env.STORE_KV.put(REFERENCE_META_KEY, JSON.stringify(meta));
+		await this.pruneOldKeys(REFERENCE_KEY_PREFIX, referenceCurrentPrefix(), "reference");
 		this.metaSet("phase", "purge");
 		console.log(`Reference symbology: ${count} symbols${written ? " (written)" : " (already current)"}`);
 	}
