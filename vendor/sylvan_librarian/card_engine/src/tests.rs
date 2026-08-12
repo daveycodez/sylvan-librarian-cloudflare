@@ -11629,6 +11629,7 @@ fn two_faces() -> (Vec<OracleFace>, Vec<PrintingFace>) {
             creature_power_text_id: 5,
             creature_toughness_text_id: 6,
             planeswalker_loyalty_text_id: NONE_STR,
+            defense_text_id: NONE_STR,
             card_colors: 0b0000_0001, // W
             color_indicator: 0,
         },
@@ -11640,6 +11641,7 @@ fn two_faces() -> (Vec<OracleFace>, Vec<PrintingFace>) {
             creature_power_text_id: 15,
             creature_toughness_text_id: 16,
             planeswalker_loyalty_text_id: NONE_STR,
+            defense_text_id: NONE_STR,
             card_colors: 0b0000_1000, // R
             color_indicator: 0b0000_1000,
         },

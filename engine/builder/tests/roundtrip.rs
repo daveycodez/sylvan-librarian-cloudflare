@@ -91,6 +91,9 @@ fn card_row(
             "set_id": "9d739461-c5ac-43a1-af41-3d5a585b5c8d",
             "set_type": "core",
             "multiverse_ids": [12345],
+            // A printed loyalty this port keeps ONLY here: the `planeswalker_loyalty` column above
+            // is the integer `loy:` filters on, and "X" is why the text cannot be derived from it.
+            "loyalty": "X",
         },
     })
 }
@@ -310,6 +313,7 @@ fn result_fields_reach_the_response() {
             "rarity".to_owned(),
             "color_identity".to_owned(),
             "legalities".to_owned(),
+            "loyalty".to_owned(),
         ]),
         ..QueryOptions::default()
     };
@@ -333,6 +337,12 @@ fn result_fields_reach_the_response() {
     // The residue half, from the second archive and through the same one query.
     assert_eq!(card["lang"], json!("en"));
     assert_eq!(card["games"], json!(["paper"]), "the games bitset decodes to Scryfall's names");
+    assert_eq!(
+        card["loyalty"],
+        json!("X"),
+        "loyalty comes back as the printed string through the archive — an integer column could \
+         not have carried this value at all, which is the whole reason it lives in the residue"
+    );
 }
 
 /// `fields=None` must keep working. DEFAULT_FIELDS is ungated and live, so a name added there but

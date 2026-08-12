@@ -263,6 +263,7 @@ fn jv_faces(d: &Value, it: &mut Interner, artists: &mut VocabInterner) -> Result
             creature_power_text_id: it.intern_opt(jv_opt_str(face, "power")),
             creature_toughness_text_id: it.intern_opt(jv_opt_str(face, "toughness")),
             planeswalker_loyalty_text_id: it.intern_opt(jv_opt_str(face, "loyalty")),
+            defense_text_id: it.intern_opt(jv_opt_str(face, "defense")),
             card_colors: jv_str_list_color_mask(face, "colors"),
             color_indicator: jv_str_list_color_mask(face, "color_indicator"),
             illustration_id: jv_opt_str(face, "illustration_id").map_or(0, |s| parse_uuid_or_hash(&s)),
@@ -350,6 +351,7 @@ fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<CompatFields, Engin
         image_status_id: intern_opt(vocab, jv_opt_str(blob, "image_status"))?,
         set_type_id: intern_opt(vocab, jv_opt_str(blob, "set_type"))?,
         security_stamp_id: intern_opt(vocab, jv_opt_str(blob, "security_stamp"))?,
+        loyalty_id: intern_opt(vocab, jv_opt_str(blob, "loyalty"))?,
         games: jv_str_set_bits(blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
         finishes: jv_str_set_bits(
             blob,
@@ -847,6 +849,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
         e.u32v(f.creature_power_text_id);
         e.u32v(f.creature_toughness_text_id);
         e.u32v(f.planeswalker_loyalty_text_id);
+        e.u32v(f.defense_text_id);
         e.u8v(f.card_colors);
         e.u8v(f.color_indicator);
         e.u128v(f.illustration_id);
@@ -879,6 +882,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u16v(r.compat.image_status_id);
     e.u16v(r.compat.set_type_id);
     e.u16v(r.compat.security_stamp_id);
+    e.u16v(r.compat.loyalty_id);
     e.u8v(r.compat.games);
     e.u8v(r.compat.finishes);
     e.u16v(r.compat.flags);
@@ -959,6 +963,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
                     creature_power_text_id: d.u32v(),
                     creature_toughness_text_id: d.u32v(),
                     planeswalker_loyalty_text_id: d.u32v(),
+                    defense_text_id: d.u32v(),
                     card_colors: d.u8v(),
                     color_indicator: d.u8v(),
                     illustration_id: d.u128v(),
@@ -995,6 +1000,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
             image_status_id: d.u16v(),
             set_type_id: d.u16v(),
             security_stamp_id: d.u16v(),
+            loyalty_id: d.u16v(),
             games: d.u8v(),
             finishes: d.u8v(),
             flags: d.u16v(),
@@ -1941,6 +1947,7 @@ fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, v
                     "loyalty".to_owned(),
                     opt_str_value(str_at(strings, u32::from(face.planeswalker_loyalty_text_id))),
                 );
+                m.insert("defense".to_owned(), opt_str_value(str_at(strings, u32::from(face.defense_text_id))));
                 m.insert("colors".to_owned(), str_vec_value(identity_letters(face.card_colors)));
                 m.insert(
                     "color_indicator".to_owned(),
@@ -1976,6 +1983,7 @@ const JSON_COMPAT_FIELD_TABLE: &[(&str, JsonCompatExtractor)] = &[
     ("image_status", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.image_status_id)))),
     ("set_type", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.set_type_id)))),
     ("security_stamp", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.security_stamp_id)))),
+    ("loyalty", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.loyalty_id)))),
     ("set_id", |x| opt_str_value(coll_str_opt(x.vocab, u16::from(x.residue.compat.set_vid)))),
     ("arena_id", |x| opt_u32_value(x.residue.compat.arena_id.as_ref().map(|v| v.get()))),
     ("mtgo_id", |x| opt_u32_value(x.residue.compat.mtgo_id.as_ref().map(|v| v.get()))),

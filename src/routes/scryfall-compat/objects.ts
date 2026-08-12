@@ -69,6 +69,7 @@ export const CARD_OBJECT_FIELDS: readonly string[] = [
 	"oracle_text",
 	"power",
 	"toughness",
+	"loyalty",
 	"colors",
 	"color_identity",
 	"card_keywords",
@@ -353,6 +354,10 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	const optional: [string, unknown][] = [
 		["power", str(row, "power")],
 		["toughness", str(row, "toughness")],
+		// Where Scryfall puts it, right after the creature stats it is the planeswalker analogue of.
+		// A STRING, because "X" and "1+*" are real printed loyalties — the `planeswalker_loyalty`
+		// column that answers `loy:` is the integer parse of this and cannot round-trip either.
+		["loyalty", str(row, "loyalty")],
 		["flavor_text", str(row, "flavor_text")],
 		["watermark", str(row, "watermark")],
 		["frame", str(row, "frame")],

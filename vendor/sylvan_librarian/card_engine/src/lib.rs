@@ -320,6 +320,9 @@ struct OracleFace {
     creature_power_text_id: u32,
     creature_toughness_text_id: u32,
     planeswalker_loyalty_text_id: u32,
+    // Battles print their defense on the FACE, never at top level -- every battle so far is a
+    // transform card, so without this the number is simply lost (Invasion of Alara's `defense: 7`).
+    defense_text_id: u32,
     card_colors: u8,
     // Scryfall's color_indicator: the printed dot for a face whose color is not implied by its mana
     // cost (a transform back has no mana cost at all). Same WUBRGC bit layout as card_colors.
@@ -424,6 +427,12 @@ struct CompatFields {
     image_status_id: u16,
     set_type_id: u16,
     security_stamp_id: u16,
+    // Printed starting loyalty, as the STRING Scryfall sends -- "3", but also "X" (Nissa, Steward
+    // of Elements) and "1+*". A column would have to be the numeric `planeswalker_loyalty` the
+    // query planner filters on, which cannot represent those, so this is the text and the column
+    // stays the number. Interned because the whole vocabulary is ~25 values across ~98,000
+    // printings: 2 bytes a row against a string each.
+    loyalty_id: u16,
     games: u8,
     finishes: u8,
     flags: u16,
@@ -454,6 +463,7 @@ impl Default for CompatFields {
             image_status_id: VOCAB_NONE,
             set_type_id: VOCAB_NONE,
             security_stamp_id: VOCAB_NONE,
+            loyalty_id: VOCAB_NONE,
             games: 0,
             finishes: 0,
             flags: 0,
@@ -662,6 +672,7 @@ struct FaceRow {
     creature_power_text_id: u32,
     creature_toughness_text_id: u32,
     planeswalker_loyalty_text_id: u32,
+    defense_text_id: u32,
     card_colors: u8,
     color_indicator: u8,
     illustration_id: u128,
@@ -12878,7 +12889,11 @@ const COMPAT_ARCHIVE_MAGIC: [u8; 8] = *b"ATCOMPAT";
 //                and `RelatedCard` are new archived types, and `CardIndexes` gains
 //                `external_id_index`. Both struct sizes move, so the header would catch this on
 //                its own; the constant moves too because the index addition would not.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081102;
+//   2026081103 — `loyalty` and `defense` reach the card object (#912 follow-up). `CompatFields`
+//                gains `loyalty_id` and `OracleFace` gains `defense_text_id`, so both a printing's
+//                residue and an oracle face grow. `OracleFace` is behind a Vec, so its size is not
+//                one of the two the header records — this constant is what forces the rebuild.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081103;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 /// The residue archive's header. Distinct magic so a residue archive can never be accepted as a
@@ -13320,6 +13335,7 @@ fn build_card_data_sorted(
                         creature_power_text_id: f.creature_power_text_id,
                         creature_toughness_text_id: f.creature_toughness_text_id,
                         planeswalker_loyalty_text_id: f.planeswalker_loyalty_text_id,
+                        defense_text_id: f.defense_text_id,
                         card_colors: f.card_colors,
                         color_indicator: f.color_indicator,
                     })

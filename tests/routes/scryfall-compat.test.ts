@@ -332,6 +332,24 @@ describe("the card object", () => {
 		expect("penny_rank" in card).toBe(false);
 		expect("promo_types" in card).toBe(false);
 		expect("flavor_text" in card).toBe(false);
+		// A creature has no loyalty, and must not sprout one.
+		expect("loyalty" in card).toBe(false);
+	});
+
+	test("a planeswalker's loyalty is the printed STRING, beside power/toughness", () => {
+		// The integer `planeswalker_loyalty` column answers `loy:` and cannot hold "X" or "1+*",
+		// so the card object reads the text out of the residue instead. Emitting nothing at all
+		// is what left mtg-seeker's verifier reading a planeswalker with no loyalty.
+		const walker = toScryfallCard({ ...row, name: "Jace Beleren", loyalty: "3" });
+		expect(walker.loyalty).toBe("3");
+
+		// Scryfall's own key order: loyalty sits with the creature stats it is the analogue of.
+		const keys = Object.keys(walker);
+		expect(keys.indexOf("loyalty")).toBeGreaterThan(keys.indexOf("type_line"));
+
+		// "X" is a real printed loyalty (Nissa, Steward of Elements) and must survive verbatim
+		// rather than being coerced through the integer column.
+		expect(toScryfallCard({ ...row, loyalty: "X" }).loyalty).toBe("X");
 	});
 
 	test("every derived URI is a pure function of the ids", () => {

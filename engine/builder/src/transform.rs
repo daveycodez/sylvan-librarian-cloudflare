@@ -145,7 +145,15 @@ pub struct RowDraft {
 /// `prices` is deliberately absent even though price_usd/eur/tix are columns — usd_foil,
 /// usd_etched and eur_foil are not, and keeping the object whole costs a few bytes against losing
 /// three fields.
-const COMPAT_BLOB_EXCLUDED: [&str; 48] = [
+/// ONE ENTRY SHORT OF UPSTREAM'S, deliberately: upstream excludes `loyalty` because it has a
+/// `planeswalker_loyalty_text` column, and this port does not. Its `planeswalker_loyalty` column is
+/// the INTEGER the query planner filters `loy:` on, which cannot hold "X" or "1+*", and promoting
+/// the text to a card-level column would put it in the main store — the one with the three-chunk
+/// ceiling — for a field only `/cards/*` ever reads. So loyalty stays in the residue, where it
+/// costs 2 interned bytes a printing in the archive that is already loaded for exactly those
+/// routes. Excluding it here while no column held it is what silently dropped it from every
+/// planeswalker's card object.
+const COMPAT_BLOB_EXCLUDED: [&str; 47] = [
     // stored in a column of their own
     "id",
     "oracle_id",
@@ -158,7 +166,6 @@ const COMPAT_BLOB_EXCLUDED: [&str; 48] = [
     "oracle_text",
     "power",
     "toughness",
-    "loyalty",
     "colors",
     "color_identity",
     "keywords",
@@ -218,7 +225,7 @@ fn compat_blob(card: &Map<String, Value>) -> Map<String, Value> {
 ///
 /// `object` is the constant "card_face" and `image_uris` is a pure function of
 /// the card's id and the face's position, so neither is stored.
-const FACE_OBJECT_FIELDS: [&str; 13] = [
+const FACE_OBJECT_FIELDS: [&str; 14] = [
     "name",
     "mana_cost",
     "type_line",
@@ -226,6 +233,9 @@ const FACE_OBJECT_FIELDS: [&str; 13] = [
     "power",
     "toughness",
     "loyalty",
+    // Not in upstream's list, which loses every battle's defense: Scryfall prints it on the FACE
+    // (Invasion of Alara's front face is `defense: 7`) and no column holds it.
+    "defense",
     "colors",
     "color_indicator",
     "flavor_text",
@@ -1517,6 +1527,45 @@ mod tests {
         for key in ["id", "name", "oracle_id", "cmc", "legalities", "image_uris", "uri", "card_faces"] {
             assert!(!blob.contains_key(key), "{key} should not be in the residue");
         }
+    }
+
+    #[test]
+    fn a_planeswalkers_printed_loyalty_survives_into_the_residue() {
+        // Upstream excludes `loyalty` from the residue because it has a loyalty TEXT column; this
+        // port only has the integer one the query planner filters `loy:` on, so excluding it here
+        // dropped the key from every planeswalker's card object. It has to reach the blob, and as
+        // the printed STRING — the integer column cannot represent "X" or "1+*".
+        let row = &finalize(
+            vec![transform(&fixture("jace_the_mind_sculptor")).unwrap().unwrap()],
+            &TagData::default(),
+        )
+        .collect::<Vec<Value>>()[0];
+        assert_eq!(row["card_compat_blob"]["loyalty"], json!("3"));
+        // The numeric column still answers `loy:`, and is still a number.
+        assert_eq!(row["planeswalker_loyalty"], json!(3));
+
+        // A card with no loyalty keeps the key ABSENT rather than null: Scryfall omits it, and a
+        // reconstructed object that carries `"loyalty": null` differs from Scryfall on every
+        // non-planeswalker.
+        let bolt = &finalize(vec![transform(&fixture("lightning_bolt")).unwrap().unwrap()], &TagData::default())
+            .collect::<Vec<Value>>()[0];
+        assert!(!bolt["card_compat_blob"].as_object().unwrap().contains_key("loyalty"));
+    }
+
+    #[test]
+    fn a_battle_face_keeps_its_defense() {
+        // Scryfall prints defense on the FACE — every battle so far is a transform card, so a face
+        // field list without `defense` loses the number outright.
+        let mut card = minimal_card("Invasion of Test");
+        card["layout"] = json!("transform");
+        card["card_faces"] = json!([
+            {"name": "Invasion of Test", "type_line": "Battle \u{2014} Siege", "oracle_text": "x", "defense": "7"},
+            {"name": "Test, Reclaimed", "type_line": "Creature \u{2014} Elf", "oracle_text": "y", "power": "3", "toughness": "3"},
+        ]);
+        let draft = transform(&card).unwrap().unwrap();
+        assert_eq!(draft.card_faces[0]["defense"], json!("7"));
+        // Absent on the face that has none, for the same reason as loyalty above.
+        assert!(!draft.card_faces[1].contains_key("defense"));
     }
 
     #[test]

@@ -220,6 +220,18 @@ The complete list of intentional differences:
   only when a `/cards/*` route needs it: inlining it took the store past its
   three-chunk ceiling and the in-Worker import past its 112 MiB wasm cap, and
   `/search` reads none of it.
+- **`loyalty` rides in the residue, where upstream has a column for it.**
+  Upstream stores both `planeswalker_loyalty` (the integer `loy:` filters on)
+  and `planeswalker_loyalty_text` (what Scryfall prints), and so excludes
+  `loyalty` from the residue. This port kept only the integer — which cannot
+  hold `X` (Nissa, Steward of Elements) or `1+*` — while still excluding the
+  key, so every planeswalker's card object came back with no `loyalty` at all.
+  It is now one interned residue field: ~2 bytes a printing, in the archive
+  `/cards/*` already loads, rather than a card-level column in the main store
+  that only `/cards/*` would ever read. `defense` is the same story on the face
+  side — Scryfall prints it on a battle's front face and upstream's face field
+  list omits it, so `Invasion of Alara`'s `defense: 7` was dropped outright.
+  Both are reported upstream against #912.
 - **`/cards/:code/:number/:lang` checks the language after resolving**, where
   upstream filters on it in SQL. `lang` lives in the residue archive and is not
   a query field, so the printing is resolved by set and collector number and its

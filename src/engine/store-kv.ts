@@ -278,8 +278,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *           rkyv pads to 24 bytes each, to `(u32, u32)` pairs plus a
  *           five-entry namespace offset table: 8 bytes an entry over 347,625
  *           entries.
+ *  11 — `loyalty` and `defense` reach the card object. Upstream excludes
+ *       `loyalty` from the residue because it holds a loyalty TEXT column; this
+ *       port kept only the integer `planeswalker_loyalty` that `loy:` filters
+ *       on, so the key was excluded from the blob AND held by no column, and
+ *       every planeswalker's card object came back without it. It is now an
+ *       interned `CompatFields.loyalty_id`. `defense` is the face-side twin:
+ *       Scryfall prints it on a battle's front face, upstream's
+ *       `_FACE_OBJECT_FIELDS` omits it, so `OracleFace` gains `defense_text_id`
+ *       and the builder's face list gains the key.
+ *
+ *       Paired with ARCHIVE_FORMAT_VERSION 2026081102 -> 2026081103. Note the
+ *       header alone would NOT catch the face half: `OracleFace` sits behind a
+ *       Vec, so its size is not one of the two the header records. The version
+ *       constant is what forces the rebuild, and this generation is what makes
+ *       the deploy notice the stored VALUES changed.
  */
-export const STORE_CONTENT_GENERATION = 10;
+export const STORE_CONTENT_GENERATION = 11;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
