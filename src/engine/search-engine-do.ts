@@ -30,6 +30,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { getEngine, type LoadContext, refreshNow, tryGetLoadedEngine } from "./store";
+import { recordLiveManifest } from "./store-cache";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -441,6 +442,16 @@ export class SearchEngine extends DurableObject<Env> {
 	 * object every isolate in the region reports to.
 	 */
 	async notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }> {
+		// Record it even with nothing loaded. A cold object costs nothing to tell — it wakes, writes
+		// one row and evicts again without reading an archive — and this is precisely what lets its
+		// NEXT cold start skip the KV manifest read: the publisher already told it what is live.
+		if (manifest) {
+			try {
+				recordLiveManifest(this.ctx.storage, manifest);
+			} catch (err) {
+				console.warn(`[${this.label}] could not record the live manifest (it will read KV): ${err}`);
+			}
+		}
 		if (tryGetLoadedEngine() === null) return { swapped: false, shards: this.announcedShards };
 		const swapped = await refreshNow(this.env, this.loadContext(), manifest);
 		console.log(`[${this.label}] publish notify: ${swapped ? "swapped to the new store" : "already current"}`);

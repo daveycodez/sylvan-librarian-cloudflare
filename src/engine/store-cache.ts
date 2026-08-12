@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS archive_cache_meta (
 	archive_key TEXT PRIMARY KEY,
 	total_bytes INTEGER NOT NULL,
 	row_count INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS live_manifest (
+	id INTEGER PRIMARY KEY,
+	json TEXT NOT NULL
 );`;
 
 /** `sql.exec` with the binding types this module actually uses, and rows as plain records. */
@@ -295,4 +299,33 @@ export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]
 		exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
 	}
 	return stale;
+}
+
+/**
+ * Remember which store the publisher says is live.
+ *
+ * PUSHED STATE, not a cache. The publisher writes this into every region during the notify phase —
+ * including regions that are COLD, which cost nothing to tell: the object wakes, writes one row,
+ * and evicts again without loading a byte. That is what makes it trustworthy enough to start a cold
+ * load from, and it is why notifyPublish records it even when it has no engine to swap.
+ *
+ * It exists to take KV off the cold path entirely. Reading the manifest from KV was the last
+ * network I/O a cold start did — measured at 124-129ms, against 0ms for everything else once the
+ * archive is cached locally.
+ */
+export function recordLiveManifest(storage: ArchiveCacheStorage, manifest: unknown): void {
+	ensureCacheSchema(storage);
+	exec(storage, "INSERT OR REPLACE INTO live_manifest (id, json) VALUES (0, ?)", JSON.stringify(manifest));
+}
+
+/** The last manifest the publisher pushed here, or null if it has never been told. */
+export function readLiveManifest(storage: ArchiveCacheStorage): unknown | null {
+	try {
+		ensureCacheSchema(storage);
+		const row = exec(storage, "SELECT json FROM live_manifest WHERE id = 0")[0];
+		return row ? JSON.parse(String(row.json)) : null;
+	} catch {
+		// Never a reason to fail a load: no local manifest simply means reading KV.
+		return null;
+	}
 }

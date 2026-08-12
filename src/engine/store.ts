@@ -35,8 +35,9 @@ import {
 	ensureCacheSchema,
 	fillCache,
 	pruneCache,
+	readLiveManifest,
 } from "./store-cache";
-import { kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
+import { kvCompatStream, kvStoreStream, REGION_LIVE_PREFIX, readManifest } from "./store-kv";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -534,9 +535,28 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// it up. Isolates that only parse and RPC never reach here and never pay
 	// the instantiation — see the header of wasm-shim.ts.
 	wasm.ensureEngine();
-	// Supplied by refreshNow when the publisher handed one over; read from KV on a
-	// genuine cold start, which is the one case where nothing knows the key yet.
-	const manifest = known ?? (await readManifest(env));
+	// Three sources, in order of what they cost.
+	//
+	// `known` is the publisher handing it over during a swap. Otherwise the object may already have
+	// been TOLD what is live (recordLiveManifest, written by notifyPublish even when this object was
+	// cold), and starting from that takes the last KV round trip off the cold path — ~124-129ms,
+	// against 0ms for everything else once the archive is cached locally.
+	//
+	// A pushed manifest is not blindly trusted. Its one failure mode is a publish this object was
+	// never told about — a deploy publishes without notifying, and a notify can exhaust its
+	// retries — so KV is read CONCURRENTLY and checked before the engine is committed. That
+	// overlaps the round trip with the load instead of serving anything stale: the cost of being
+	// wrong is one discarded load, not one wrong answer.
+	let manifest = known;
+	let confirm: Promise<StoreManifest | null> | null = null;
+	if (!manifest && ctx?.storage) {
+		const pushed = readLiveManifest(ctx.storage) as StoreManifest | null;
+		if (pushed?.store_bytes) {
+			manifest = pushed;
+			confirm = readManifest(env).catch(() => null);
+		}
+	}
+	if (!manifest) manifest = (await readManifest(env)) ?? undefined;
 
 	if (!manifest) {
 		// Deliberately does NOT start an import. Building the card index is the
@@ -577,12 +597,40 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// trade, not a free win, and why `store_gzip_bytes` is a flag the reader can
 	// still see absent.
 	const { pieces, blocks } = await feedStore(body, manifest.store_bytes, sink);
+
+	// The confirmation, awaited only now: it has had the whole load to arrive, so in the common case
+	// this costs nothing. A mismatch means the pushed manifest was stale, and the load just done is
+	// discarded rather than served.
+	if (confirm) {
+		const truth = await confirm;
+		if (truth?.store_bytes && truth.store_key !== manifest.store_key) {
+			console.warn(
+				`${tag(ctx)}the pushed manifest named ${manifest.store_key} but KV says ${truth.store_key}; reloading`,
+			);
+			sink?.abort();
+			wasm.unload_store();
+			return loadStore(env, ctx, truth);
+		}
+	}
 	// Both archives survive the prune: they are cached under separate keys but retired together, so
 	// naming only the store here would drop the residue this build is paired with.
 	commitSink(ctx, sink, manifest.store_key, [
 		manifest.store_key,
 		...(manifest.compat_key ? [manifest.compat_key] : []),
 	]);
+
+	// Announce this object to the publisher, so the notify fan-out reaches it without having to
+	// GUESS which objects exist — guessing means creating them, and creation is what fixes an
+	// object's region. See REGION_LIVE_PREFIX. Fire-and-forget on a path that already did far more
+	// I/O, and only on a cold load.
+	if (ctx?.label) {
+		const name = ctx.label;
+		ctx.waitUntil(
+			env.STORE_KV.put(`${REGION_LIVE_PREFIX}${name}`, "1").catch((err) =>
+				console.warn(`${tag(ctx)}could not announce itself to the publisher: ${err}`),
+			),
+		);
+	}
 
 	const engine = new WasmEngine(env, manifest, ctx);
 	current = { storeKey: manifest.store_key, engine, manifest };

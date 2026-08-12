@@ -56,7 +56,6 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "./engine/reference-kv";
-import { REGION_HINTS } from "./engine/region";
 import {
 	encodeRulingsBucket,
 	parseRulingLine,
@@ -71,7 +70,6 @@ import {
 	rulingsBucketOf,
 	rulingsCurrentPrefix,
 } from "./engine/rulings-kv";
-import { DEFAULT_MAX_SHARDS } from "./engine/shard-controller";
 import { GridChunker } from "./engine/store-chunks";
 import {
 	assembleChunk,
@@ -83,6 +81,7 @@ import {
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
+	REGION_LIVE_PREFIX,
 	STORE_CONTENT_GENERATION,
 	type StagedRow,
 	staleStoreKeys,
@@ -1694,59 +1693,75 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * `swapped: false`, and releasing an empty cache does nothing.
 	 */
 	private async stepNotify(): Promise<void> {
-		// Hand the manifest over rather than making nine regions each read it back
-		// out of KV. That read is ~124ms and it is paid IN FRONT OF whatever
-		// requests arrive during the swap, for a value this phase just wrote — the
-		// one piece of the cold path that is pure waste rather than unavoidable
-		// work. A region that is handed nothing falls back to reading it itself.
+		// Hand the manifest over rather than making each object read it back out of KV. That read is
+		// ~124ms and it is paid IN FRONT OF whatever requests arrive during the swap, for a value
+		// this phase just wrote.
 		const published = JSON.parse((await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null");
-		const stubFor = (name: string, region: DurableObjectLocationHint) =>
-			this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(name), {
-				locationHint: region,
-			}) as unknown as {
+
+		// ONLY OBJECTS THAT ALREADY EXIST. An engine announces itself under
+		// REGION_LIVE_PREFIX when it loads a store, so this set is exactly the objects a real
+		// request has created — at the edge, in the right region.
+		//
+		// The alternative was walking every possible name, which CREATES the ones that do not exist
+		// yet, from inside this Durable Object. `locationHint` fixes an object's region at creation,
+		// so that would place engine-apac relative to a hint the coordinator supplied rather than by
+		// a request from apac. Honoured, it is merely wasteful; not honoured, it is permanent.
+		const live = (await this.env.STORE_KV.list({ prefix: REGION_LIVE_PREFIX })).keys.map((k) =>
+			k.name.slice(REGION_LIVE_PREFIX.length),
+		);
+		if (live.length === 0) {
+			// Nothing has ever loaded a store, so there is nobody to tell. Not an error: it is the
+			// state of a fresh deployment, and the first real request will read the manifest from KV.
+			console.log("Publish notify: no live engine objects to notify");
+			this.metaSet("phase", "rulings");
+			return;
+		}
+
+		const stubFor = (name: string) =>
+			this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(name)) as unknown as {
 				notifyPublish(m?: unknown): Promise<{ swapped: boolean; shards: number }>;
 				releaseCache(): Promise<unknown>;
 			};
 
+		// Deliberately NO locationHint: every name here belongs to an object that already exists, so
+		// the hint would be ignored anyway, and omitting it makes it impossible for this phase to
+		// place anything.
 		const results = await Promise.allSettled(
-			REGION_HINTS.map(async (region) => {
-				// Shard 0 is the rendezvous every isolate in the region reports to, so
-				// it is the only object that knows the current fan-out.
-				const head = await stubFor(`engine-${region}`, region).notifyPublish(published);
-				const width = Math.max(1, Math.floor(head.shards));
-				// Sweep at least the default cap, and further if SHARDS_MAX raised the
-				// fan-out past it — otherwise a shard opened above the default would
-				// keep its ~88MB forever, which is the leak this exists to prevent.
-				const sweepTo = Math.max(DEFAULT_MAX_SHARDS, width);
-
-				// Live shards converge with it...
-				const shards = await Promise.all(
-					Array.from({ length: width - 1 }, (_, i) => stubFor(`engine-${region}-${i + 1}`, region).notifyPublish()),
-				);
-
-				// ...and everything above the fan-out gives its storage back. Calling
-				// a shard that was never opened costs one trivial RPC against an
-				// object with nothing stored, which Cloudflare then reclaims.
-				await Promise.all(
-					Array.from({ length: sweepTo - width }, (_, i) =>
-						stubFor(`engine-${region}-${width + i}`, region).releaseCache(),
-					),
-				);
-				return { region, width, swapped: head.swapped || shards.some((s) => s.swapped) };
-			}),
+			live.map(async (name) => ({ name, ...(await stubFor(name).notifyPublish(published)) })),
 		);
 
 		const failed = results.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : []));
-		const swapped = results.flatMap((r) => (r.status === "fulfilled" && r.value.swapped ? [r.value.region] : []));
 		if (failed.length > 0) {
-			// Thrown, so the phase retries: the purge below MUST NOT run while a
-			// reader might still be serving the old store, or it empties the cache
-			// straight into a stale answer with a 16-hour TTL.
-			throw new Error(`notify: ${failed.length}/${REGION_HINTS.length} region(s) failed: ${failed.join("; ")}`);
+			// Thrown, so the phase retries: the purge below MUST NOT run while a reader might still be
+			// serving the old store, or it empties the cache straight into a stale answer that then
+			// stands for up to 16 hours.
+			throw new Error(`notify: ${failed.length}/${live.length} object(s) failed: ${failed.join("; ")}`);
 		}
+		const acked = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+
+		// Widths are reported by each region's shard 0, which is the rendezvous every isolate in that
+		// region reports to and therefore the only object that knows the fan-out.
+		const widthOf = new Map<string, number>();
+		for (const a of acked) {
+			if (!a.name.includes("-", "engine-".length)) widthOf.set(a.name, Math.max(1, Math.floor(a.shards)));
+		}
+
+		// Shards at or above their region's fan-out give their cached archives back. Scale-in is
+		// eviction, which was free while a shard held nothing in storage; with the archive cache an
+		// abandoned engine-wnam-3 would keep ~88MB forever, and its own prune never runs again
+		// because it never loads again.
+		const stale = acked.filter((a) => {
+			const dash = a.name.lastIndexOf("-");
+			const idx = dash > "engine".length ? Number(a.name.slice(dash + 1)) : Number.NaN;
+			if (!Number.isInteger(idx)) return false;
+			return idx >= (widthOf.get(a.name.slice(0, dash)) ?? 1);
+		});
+		const released = await Promise.allSettled(stale.map((a) => stubFor(a.name).releaseCache()));
+
 		console.log(
-			`Publish notified ${REGION_HINTS.length} regions; ${swapped.length} had a warm store to swap` +
-				`${swapped.length ? ` (${swapped.join(", ")})` : ""}`,
+			`Publish notified ${acked.length} live engine object(s); ` +
+				`${acked.filter((a) => a.swapped).length} swapped, ` +
+				`${released.filter((r) => r.status === "fulfilled").length}/${stale.length} released stale storage`,
 		);
 		this.metaSet("phase", "rulings");
 	}

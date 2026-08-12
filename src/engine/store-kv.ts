@@ -140,6 +140,22 @@ export const KV_CHUNK_BYTES_SAFE = 26_000_000;
  */
 export const KV_VALUE_CAP_BYTES = 26_214_400;
 
+/**
+ * Prefix under which a live engine object records its own name.
+ *
+ * The publisher needs to know WHICH objects exist, and there is no API to ask. Without this it
+ * would have to guess — notifying every possible region name, which CREATES the ones that do not
+ * exist yet. That is the part worth avoiding: `locationHint` places an object at creation, so an
+ * object created by the coordinator is placed relative to a hint the coordinator supplied rather
+ * than by a real request at the edge. If the hint were ever not honoured, the object would be
+ * permanently misplaced and every request from that region would cross the planet to reach it.
+ *
+ * So objects announce themselves instead. An engine writes this key when it loads a store — a rare
+ * event, off the request path — and the publisher notifies exactly the set that answers. Creation
+ * stays where it belongs: with the isolate serving a real user, in that user's region.
+ */
+export const REGION_LIVE_PREFIX = "engine:live:";
+
 /** The manifest key: the one mutable pointer in the namespace. */
 export const MANIFEST_KEY = "store:manifest";
 
