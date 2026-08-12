@@ -44,9 +44,9 @@ function cut(source: Uint8Array, sizes: number[]): Uint8Array[] {
 /**
  * Collect what wasm would receive.
  *
- * COPIES each block, because feedBlocks deliberately reuses one buffer — holding the references
- * would collect N views of the same final contents. That reuse is the contract, so this also
- * doubles as the check that a synchronous consumer sees the right bytes at the time it is called.
+ * Still COPIES each block. feedBlocks no longer reuses a buffer, so retaining the views would be
+ * safe now — but copying keeps this honest if the accumulation ever comes back, and it is what a
+ * real consumer (the wasm-bindgen crossing) effectively does anyway.
  */
 async function collect(stream: ReadableStream<Uint8Array>, blockBytes?: number) {
 	const got: Uint8Array<ArrayBuffer>[] = [];
@@ -66,7 +66,10 @@ describe("feedBlocks", () => {
 		const { counts, joined } = await collect(streamOf(cut(source, Array(9).fill(4096))), 8192);
 		expect(joined).toEqual(source);
 		expect(counts.pieces).toBe(10);
-		expect(counts.blocks).toBe(5); // 40,000 / 8,192 = 4 full + a 7,232-byte tail
+		// One crossing per piece: pieces under the cap pass straight through rather
+		// than being accumulated. Coalescing them was measured to buy nothing while
+		// costing a full extra copy of the archive (see the module header).
+		expect(counts.blocks).toBe(10);
 	});
 
 	test("splits a piece far larger than a block, the shape an uncompressed KV chunk produces", async () => {
@@ -86,11 +89,23 @@ describe("feedBlocks", () => {
 		expect(counts.blocks).toBe(2);
 	});
 
-	test("every block is full except the last", async () => {
-		const source = ramp(10_000);
-		const { blocks } = await collect(streamOf(cut(source, Array(100).fill(100))), 3000);
-		expect(blocks.slice(0, -1).map((b) => b.length)).toEqual([3000, 3000, 3000]);
-		expect(blocks.at(-1)?.length).toBe(1000);
+	test("no crossing ever exceeds the cap, whatever the source pieces look like", async () => {
+		// The ceiling is the property worth keeping: wasm-bindgen allocates a
+		// scratch buffer inside linear memory per crossing, and a 26MB one took
+		// peak from ~78.7MB to ~102.6MB.
+		const source = ramp(10_000_000);
+		for (const pieceSizes of [[10_000_000], [4_000_000, 6_000_000], Array(100).fill(100_000)]) {
+			const { blocks, joined } = await collect(streamOf(cut(source, pieceSizes)), 4096);
+			expect(joined).toEqual(source);
+			for (const b of blocks) expect(b.length).toBeLessThanOrEqual(4096);
+		}
+	});
+
+	test("a small piece is passed through untouched, not copied into a buffer", async () => {
+		const source = ramp(1_000);
+		const { blocks } = await collect(streamOf([source]), 4096);
+		expect(blocks.length).toBe(1);
+		expect(blocks[0]?.length).toBe(1_000);
 	});
 
 	test("an archive that is an exact multiple of the block size emits no empty tail", async () => {
@@ -123,9 +138,12 @@ describe("feedBlocks", () => {
 		expect(collect(failing, 4096)).rejects.toThrow("chunk 2 missing in KV");
 	});
 
-	test("the production block size holds the store's crossings to three figures", async () => {
-		// The regression this exists for: 76.6MB in 4KB pieces was 18,713 crossings.
-		const storeBytes = 76_642_320;
-		expect(Math.ceil(storeBytes / LOAD_BLOCK_BYTES)).toBe(19);
+	test("the production cap bounds a whole KV chunk to a sane scratch allocation", async () => {
+		// Not about crossing COUNT — that was measured to be free. It is about the
+		// per-crossing scratch buffer wasm-bindgen allocates inside linear memory:
+		// an uncompressed 38.4MB KV chunk crossed whole would allocate 38.4MB there.
+		const kvChunkBytes = 38_400_000;
+		expect(Math.ceil(kvChunkBytes / LOAD_BLOCK_BYTES)).toBe(10);
+		expect(LOAD_BLOCK_BYTES).toBeLessThan(8 * 1024 * 1024);
 	});
 });

@@ -35,17 +35,30 @@ export interface FeedCounts {
 }
 
 /**
- * Drain `body` into `push`, gathering source pieces into `blockBytes`-sized blocks.
+ * Drain `body` into `push`, never crossing into wasm with more than `blockBytes` at a time.
  *
- * `push` MUST consume the block synchronously, because the same buffer is refilled and pushed
- * again — which is the point, since a fresh allocation per block would put the garbage back that
- * blocking exists to avoid. The wasm-bindgen crossing copies into linear memory before returning,
- * so it satisfies that; anything that retained the reference would see it overwritten.
+ * IT DOES NOT COALESCE, and used to. The original version accumulated small pieces into one reused
+ * `blockBytes` buffer, on the theory that the 18,713 crossings a gzipped store produces were
+ * expensive. 58cfbe7 shipped that and measured the theory false: crossings went 18,713 -> 19 and
+ * cold DO CPU did not move. So the accumulation bought nothing while costing a full extra pass over
+ * the archive — a 76.6MB memcpy on every single load, purely to rearrange bytes that were about to
+ * be copied again anyway.
+ *
+ * What was worth keeping is the CEILING, not the floor: no single crossing may be large, because
+ * wasm-bindgen allocates a scratch buffer inside linear memory for each one and that allocation is
+ * what the 128MB isolate actually feels. A 26MB KV chunk crossed whole took peak linear memory to
+ * ~102.6MB; capped at 4MB it is ~78.7MB.
+ *
+ * Both properties now hold with ZERO copies on this side. A piece at or under the cap crosses as
+ * it arrived; a larger one is handed over as `subarray` VIEWS, which allocate nothing. The only
+ * copy left is the one wasm-bindgen makes into linear memory, which happens regardless.
+ *
+ * A consequence worth stating: `push` no longer receives a reused buffer, so it is free to retain
+ * what it is given. The old contract required synchronous consumption.
  *
  * Both counts are returned and both are logged by the caller. `pieces` is not knowable from this
  * side — it depends entirely on how KV and any DecompressionStream hand the bytes over — and it is
- * the number that made the regression above visible, so it stays observable even though the loader
- * no longer lets it drive anything.
+ * the number that made the original regression visible, so it stays observable.
  */
 export async function feedBlocks(
 	body: ReadableStream<Uint8Array>,
@@ -53,8 +66,6 @@ export async function feedBlocks(
 	blockBytes: number = LOAD_BLOCK_BYTES,
 ): Promise<FeedCounts> {
 	const reader = body.getReader();
-	const block = new Uint8Array(blockBytes);
-	let filled = 0;
 	let pieces = 0;
 	let blocks = 0;
 	try {
@@ -62,29 +73,23 @@ export async function feedBlocks(
 			const { done, value } = await reader.read();
 			if (done) break;
 			pieces += 1;
-			// A piece may straddle any number of block boundaries — an uncompressed 26MB KV chunk
-			// fills six and a bit — so this loops rather than assuming a piece fits in what is left.
-			let off = 0;
-			while (off < value.length) {
-				const take = Math.min(blockBytes - filled, value.length - off);
-				block.set(value.subarray(off, off + take), filled);
-				filled += take;
-				off += take;
-				if (filled === blockBytes) {
-					push(block);
-					blocks += 1;
-					filled = 0;
-				}
+			if (value.length <= blockBytes) {
+				// Already small enough to cross as-is. No copy, no accumulation: the
+				// piece IS the block.
+				push(value);
+				blocks += 1;
+				continue;
+			}
+			// Too big for one crossing, so hand it over in `blockBytes` slices.
+			// `subarray` is a VIEW — the only copy is the one wasm-bindgen makes on
+			// the far side, which happens whatever we do here.
+			for (let off = 0; off < value.length; off += blockBytes) {
+				push(value.subarray(off, Math.min(off + blockBytes, value.length)));
+				blocks += 1;
 			}
 		}
 	} finally {
 		reader.releaseLock();
-	}
-	// The tail, which is almost every load: an archive is not a multiple of the block size.
-	// `subarray` is a view, so the crossing copies only the bytes actually filled.
-	if (filled > 0) {
-		push(block.subarray(0, filled));
-		blocks += 1;
 	}
 	return { pieces, blocks };
 }
