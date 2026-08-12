@@ -27,6 +27,7 @@ import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/sc
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
+import { probePlacement } from "./placement";
 import {
 	type ArchiveCacheStorage,
 	type CacheWriter,
@@ -630,6 +631,10 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 				console.warn(`${tag(ctx)}could not announce itself to the publisher: ${err}`),
 			),
 		);
+		// And report WHERE it is, which nothing else can: a cold load is the one moment an object may
+		// have just been created, and creation is when its region was fixed forever. Throttled and
+		// fire-and-forget; see placement.ts for why this must never move onto the request path.
+		probePlacement(ctx);
 	}
 
 	const engine = new WasmEngine(env, manifest, ctx);

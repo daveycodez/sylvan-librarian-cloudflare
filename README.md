@@ -119,7 +119,11 @@ anyway), so the fan-out bought no locality and cost an object per colo, each too
 rarely used to stay warm. Measured on 2026-08-12: three objects for two colos in
 one region, ~45 store loads in two days, and a cold `/cards/search` paying
 2.38s + 1.41s of DO CPU because the relay raced two loads of the same archive.
-One object per region turns that traffic into one warm store. What remains of
+One object per region turns that traffic into one warm store. That makes the
+location hint load-bearing rather than decorative, and a hint applies only at
+CREATION — so `src/engine/engine-namespace.ts` confines object creation to edge
+isolates serving real requests, and `ENGINE-PLACEMENT.md` covers how to check
+where an object actually is and what to do if one is wrong. What remains of
 the cold path is cached decompressed in the DO's own SQLite, so a wake usually
 skips the network and the gunzip both. There is deliberately no Cache API layer in front of KV: writing the
 store through `caches.default` and reading it back measured 0.6–1.3s of billed

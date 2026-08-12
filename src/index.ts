@@ -3,6 +3,7 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { engineName, placeEngineStub } from "./engine/engine-namespace";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
@@ -47,17 +48,26 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // `get()`, not in hashing the name.
 function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
 	const region = regionHint(request);
+	// The colo THIS isolate is running in, carried into the warm-RPC log line.
+	// It is the other half of the placement join: a colo that shows up serving
+	// `wnam` traffic is, by definition, a colo wnam traffic arrives at, so the
+	// set of them is the ground truth to check `engine-wnam`'s own self-reported
+	// colo against — with no table to keep current. See ENGINE-PLACEMENT.md.
+	const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "?";
 	// SHARDS_MAX="0" is meaningful (unbounded), so an explicit 0 must survive —
 	// hence the NaN check rather than `|| undefined`, which would swallow it.
 	const configured = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10);
 	const maxShards = Number.isNaN(configured) ? undefined : configured;
 	const shard = pickShard(region, maxShards);
-	const name = shard === 0 ? `engine-${region}` : `engine-${region}-${shard}`;
-	source.tag = `do-${name.slice("engine-".length)}`;
-	// The hint only applies at CREATION, so passing it on every get() is free and
-	// makes placement explicit rather than "wherever the first caller happened to
-	// be" — which is all the old per-colo naming ever gave.
-	const stub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name), { locationHint: region });
+	source.tag = `do-${engineName(region, shard).slice("engine-".length)}`;
+	// THIS IS THE ONLY PLACE IN THE DEPLOYMENT THAT MAY CREATE AN ENGINE OBJECT,
+	// and the reason it may is that this line runs in an isolate serving a real
+	// user — already in that user's region, so the hint it supplies is where the
+	// traffic is. `locationHint` applies at creation and never again, so an object
+	// created anywhere else is misplaced permanently and silently. See
+	// engine-namespace.ts, which is where the rule is enforced rather than
+	// described.
+	const stub = placeEngineStub(env, region, shard);
 	// Decision-time warm ping for a shard the controller just opened: start its
 	// wake NOW rather than at its first real request, and — the part that is new
 	// — REPORT THE OUTCOME, because the shard takes no traffic until this
@@ -67,11 +77,9 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 	// load throughout.
 	const warmTarget = takeWarmTarget(region);
 	if (warmTarget !== null) {
-		const warmStub = env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(`engine-${region}-${warmTarget}`), {
-			locationHint: region,
-		});
+		const warmStub = placeEngineStub(env, region, warmTarget);
 		ctx.waitUntil(
-			new RemoteEngine(warmStub, region)
+			new RemoteEngine(warmStub, region, colo)
 				.cardCount()
 				.then(() => markShardReady(region, warmTarget))
 				.catch((err) => {
@@ -80,7 +88,7 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 				}),
 		);
 	}
-	return Promise.resolve(new RemoteEngine(stub, region));
+	return Promise.resolve(new RemoteEngine(stub, region, colo));
 }
 
 // Upstream DISALLOWED_QUERY_ARGS: these names are reserved for internal

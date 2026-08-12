@@ -35,6 +35,7 @@
 // its SQLite inputs — minutes of redone compute, never a wrong store.
 
 import { DurableObject } from "cloudflare:workers";
+import { addressAnnouncedEngine } from "./engine/engine-namespace";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import { staleKeys } from "./engine/kv-versions";
 import {
@@ -1717,15 +1718,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return;
 		}
 
+		// `addressAnnouncedEngine` is the half of the engine namespace that has no power to place an
+		// object: it passes no locationHint, so even a name that turned out not to exist would be
+		// created wherever the platform chose rather than somewhere this Durable Object named. Every
+		// name here belongs to an object that announced itself, so the hint would be ignored anyway;
+		// the point is that this phase could not misplace one if the live set were wrong.
 		const stubFor = (name: string) =>
-			this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(name)) as unknown as {
+			addressAnnouncedEngine(this.env, name) as unknown as {
 				notifyPublish(m?: unknown): Promise<{ swapped: boolean; shards: number }>;
 				releaseCache(): Promise<unknown>;
 			};
 
-		// Deliberately NO locationHint: every name here belongs to an object that already exists, so
-		// the hint would be ignored anyway, and omitting it makes it impossible for this phase to
-		// place anything.
 		const results = await Promise.allSettled(
 			live.map(async (name) => ({ name, ...(await stubFor(name).notifyPublish(published)) })),
 		);

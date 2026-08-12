@@ -157,28 +157,73 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
  * against.
  */
 const WARM_RPC_WINDOW_MS = 2_000;
-let warmWindowStart = 0;
-let warmCount = 0;
-let warmMin = Number.POSITIVE_INFINITY;
-let warmMax = 0;
-let warmSum = 0;
 
-function sampleWarmRpc(rpcMs: number): void {
-	warmCount += 1;
-	warmSum += rpcMs;
-	if (rpcMs < warmMin) warmMin = rpcMs;
-	if (rpcMs > warmMax) warmMax = rpcMs;
+/**
+ * A window's worth of warm samples, kept PER REGION.
+ *
+ * It used to be one set of module globals, which was wrong for the same reason
+ * the shard controller keys its state by region: `regionHint` splits NA and EU
+ * by longitude, so one isolate near -100° serves users on both sides of it and
+ * addresses both `wnam` and `enam`. Pooling their samples produced a line that
+ * described neither — and the whole use for this line now is comparing regions
+ * against each other, which a pooled number cannot support.
+ */
+interface WarmWindow {
+	start: number;
+	count: number;
+	min: number;
+	max: number;
+	sum: number;
+}
+const warmWindows = new Map<string, WarmWindow>();
+
+/**
+ * A warm RPC whose MINIMUM is this slow reads as distance rather than work.
+ *
+ * The number is chosen to be un-triggerable by ordinary load. A same-region warm
+ * call is 20-70ms in production, dominated by payload serialization; a call to
+ * an object on the far side of the planet cannot be faster than its round trip,
+ * which is 150ms+ before any work happens. Sitting the bar at 250ms on the
+ * window's MINIMUM — not its average, not a single sample — means queueing,
+ * a large `/cards/search` payload, or a slow neighbour do not reach it, while a
+ * misplaced object cannot avoid it.
+ *
+ * This is the detection half of placement: the trace probe (placement.ts) says
+ * where an object is when someone reads its log line, and this says something is
+ * wrong without anyone looking. It is a WARNING, not proof — read it as "go run
+ * the placement query in ENGINE-PLACEMENT.md", not as "the object has moved".
+ */
+const WARM_RPC_FAR_MS = 250;
+
+function sampleWarmRpc(region: string, colo: string, rpcMs: number): void {
+	const w = warmWindows.get(region) ?? { start: 0, count: 0, min: Number.POSITIVE_INFINITY, max: 0, sum: 0 };
+	warmWindows.set(region, w);
+	w.count += 1;
+	w.sum += rpcMs;
+	if (rpcMs < w.min) w.min = rpcMs;
+	if (rpcMs > w.max) w.max = rpcMs;
 	const now = Date.now();
-	if (warmWindowStart !== 0 && now - warmWindowStart < WARM_RPC_WINDOW_MS) return;
+	if (w.start !== 0 && now - w.start < WARM_RPC_WINDOW_MS) return;
+	// `[wnam@SJC]` — the region this isolate routed to, and the colo it routed
+	// FROM. The colo is what makes the line checkable: the colos that appear here
+	// under a region are the colos that region's traffic actually arrives at, so
+	// they are what an object's self-reported colo has to sit among.
+	const prefix = `[${region}@${colo}]`;
 	console.log(
-		`warm engine rpc: n=${warmCount} min=${warmMin}ms avg=${(warmSum / warmCount).toFixed(1)}ms ` +
-			`max=${warmMax}ms over ${warmWindowStart === 0 ? 0 : now - warmWindowStart}ms`,
+		`${prefix} warm engine rpc: n=${w.count} min=${w.min}ms avg=${(w.sum / w.count).toFixed(1)}ms ` +
+			`max=${w.max}ms over ${w.start === 0 ? 0 : now - w.start}ms`,
 	);
-	warmWindowStart = now;
-	warmCount = 0;
-	warmMin = Number.POSITIVE_INFINITY;
-	warmMax = 0;
-	warmSum = 0;
+	if (w.min >= WARM_RPC_FAR_MS) {
+		console.warn(
+			`${prefix} warm engine rpc floor is ${w.min}ms — engine-${region} may not be in ${region}; ` +
+				`check its placement line (see ENGINE-PLACEMENT.md)`,
+		);
+	}
+	w.start = now;
+	w.count = 0;
+	w.min = Number.POSITIVE_INFINITY;
+	w.max = 0;
+	w.sum = 0;
 }
 
 export class RemoteEngine implements Engine {
@@ -192,6 +237,9 @@ export class RemoteEngine implements Engine {
 		 * keeps its state under, since one isolate can serve both sides of a
 		 * longitude split and therefore address two regions. */
 		private readonly region: string,
+		/** The colo THIS isolate is in, for the warm-RPC line. Defaults for the
+		 * tests and tooling that construct engines outside a request. */
+		private readonly colo: string = "?",
 	) {}
 
 	/**
@@ -223,7 +271,7 @@ export class RemoteEngine implements Engine {
 		if (!acquireMs) {
 			const rpcMs = Date.now() - rpcStart;
 			reportEngineLatency(this.region, rpcMs);
-			sampleWarmRpc(rpcMs);
+			sampleWarmRpc(this.region, this.colo, rpcMs);
 		}
 		return result as Omit<T, keyof Telemetry>;
 	}

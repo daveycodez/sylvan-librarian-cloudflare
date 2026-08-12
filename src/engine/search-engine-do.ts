@@ -29,6 +29,7 @@
 // colo-cached chunks, so the local copy earned nothing it cost.
 
 import { DurableObject } from "cloudflare:workers";
+import { probePlacement } from "./placement";
 import { getEngine, type LoadContext, refreshNow, tryGetLoadedEngine } from "./store";
 import { recordLiveManifest } from "./store-cache";
 import type {
@@ -453,6 +454,12 @@ export class SearchEngine extends DurableObject<Env> {
 			}
 		}
 		if (tryGetLoadedEngine() === null) return { swapped: false, shards: this.announcedShards };
+		// Deliberately BELOW the cold early-return. A publish is the one recurring, off-request moment
+		// to re-check where this object is, but a probe holds an object open for as long as its
+		// outbound connection is pooled — and "a cold object wakes, writes one row and evicts again"
+		// is a property this fan-out depends on. A warm object is already alive and already paying
+		// duration, so it is the only one this costs nothing to ask.
+		probePlacement(this.loadContext());
 		const swapped = await refreshNow(this.env, this.loadContext(), manifest);
 		console.log(`[${this.label}] publish notify: ${swapped ? "swapped to the new store" : "already current"}`);
 		return { swapped, shards: this.announcedShards };
