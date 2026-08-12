@@ -38,7 +38,7 @@ import {
 	pruneCache,
 	readLiveManifest,
 } from "./store-cache";
-import { kvCompatStream, kvStoreStream, REGION_LIVE_PREFIX, readManifest } from "./store-kv";
+import { announceSelf, kvCompatStream, kvStoreStream, readManifest } from "./store-kv";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -576,6 +576,11 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 
 	if (current && current.storeKey === manifest.store_key) return current.engine;
 
+	// Started here rather than after the load, so the write has the whole archive fetch to complete
+	// in. Awaited below, before the engine is committed — see announceSelf for why a dropped
+	// announcement is a correctness problem and not a missing log line.
+	const announced = announceSelf(env, ctx?.label);
+
 	const started = Date.now();
 	// Local first (decompressed, no network); KV otherwise, teeing into the cache as it streams so
 	// the archive is read and decompressed exactly once.
@@ -620,17 +625,13 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		...(manifest.compat_key ? [manifest.compat_key] : []),
 	]);
 
-	// Announce this object to the publisher, so the notify fan-out reaches it without having to
-	// GUESS which objects exist — guessing means creating them, and creation is what fixes an
-	// object's region. See REGION_LIVE_PREFIX. Fire-and-forget on a path that already did far more
-	// I/O, and only on a cold load.
+	// The announcement started before the load must have LANDED before this object starts answering
+	// from the store it just loaded: the fan-out reaches exactly the objects in that set, and guessing
+	// the set instead would mean creating objects, which is what fixes an object's region forever.
+	// See REGION_LIVE_PREFIX and announceSelf. In the common case this has long since resolved.
+	await announced;
+
 	if (ctx?.label) {
-		const name = ctx.label;
-		ctx.waitUntil(
-			env.STORE_KV.put(`${REGION_LIVE_PREFIX}${name}`, "1").catch((err) =>
-				console.warn(`${tag(ctx)}could not announce itself to the publisher: ${err}`),
-			),
-		);
 		// And report WHERE it is, which nothing else can: a cold load is the one moment an object may
 		// have just been created, and creation is when its region was fixed forever. Throttled and
 		// fire-and-forget; see placement.ts for why this must never move onto the request path.

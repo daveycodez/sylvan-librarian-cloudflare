@@ -156,6 +156,45 @@ export const KV_VALUE_CAP_BYTES = 26_214_400;
  */
 export const REGION_LIVE_PREFIX = "engine:live:";
 
+/**
+ * Put an engine object into the publisher's live set, and make sure the write actually lands.
+ *
+ * Visibility is the entire basis of the notify contract. `stepNotify` fans out to exactly the
+ * objects under this prefix, an object missing from it is never notified, and `refreshNow` has ONE
+ * caller — `notifyPublish`. With the manifest poll deleted there is no other path by which a warm
+ * object learns a publish happened, so an object that fails to announce keeps serving the old store
+ * while `stepPurge` empties the edge cache in front of it. The next request refills that cache with
+ * a stale answer and `/cards/*` holds it for 16 hours. Nothing raises.
+ *
+ * The repair for a dropped announcement is the next cold load, so the exposure window is "failed
+ * announce -> next deploy or eviction". The nightly cron publish lands inside that window and
+ * involves no deploy, so deploy frequency does not close it.
+ *
+ * Hence the shape at the call site: `loadStore` starts this BEFORE the archive fetch and awaits it
+ * after, so the write overlaps seconds of I/O and costs nothing measurable, but the engine is never
+ * committed on the strength of an announcement still in flight. One retry covers a transient KV
+ * failure. Exhausting it is an ERROR rather than a warning, because the object is then in the one
+ * state this design cannot see — and it deliberately does not throw, since refusing to serve would
+ * turn a stale-answer risk into an outage.
+ */
+export async function announceSelf(env: Env, label?: string): Promise<void> {
+	if (!label) return;
+	for (let attempt = 1; attempt <= 2; attempt++) {
+		try {
+			await env.STORE_KV.put(`${REGION_LIVE_PREFIX}${label}`, "1");
+			return;
+		} catch (err) {
+			if (attempt === 2) {
+				console.error(
+					`[${label}] COULD NOT ANNOUNCE ITSELF to the publisher after ${attempt} attempts: ${err}. ` +
+						`This object is invisible to the publish fan-out and will serve its current store ` +
+						`until it reloads, even across a publish.`,
+				);
+			}
+		}
+	}
+}
+
 /** The manifest key: the one mutable pointer in the namespace. */
 export const MANIFEST_KEY = "store:manifest";
 
