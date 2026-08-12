@@ -62,7 +62,7 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 	// Decision-time warm ping for a shard the controller just opened: start its
 	// wake NOW rather than at its first real request, and — the part that is new
 	// — REPORT THE OUTCOME, because the shard takes no traffic until this
-	// resolves. `size()` loads the store on a cold DO, so its resolution is
+	// resolves. `cardCount()` loads the store on a cold DO, so its resolution is
 	// exactly "this shard can serve"; a failure gives the slot back rather than
 	// stranding it. Routing never waits on any of it: existing shards carry the
 	// load throughout.
@@ -73,7 +73,7 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 		});
 		ctx.waitUntil(
 			new RemoteEngine(warmStub, region)
-				.size()
+				.cardCount()
 				.then(() => markShardReady(region, warmTarget))
 				.catch((err) => {
 					unmarkPending(region);

@@ -42,18 +42,18 @@ const { RemoteEngine } = await import("../../src/engine/remote-engine");
 
 type Stub = ConstructorParameters<typeof RemoteEngine>[0];
 
-/** A DO stub whose search() returns the given riders alongside a result. */
+/** A DO stub whose searchCardsAsObjects() returns the given riders alongside a result. */
 function stubReturning(riders: Record<string, unknown>): Stub {
 	return {
-		search: async () => ({ totalCards: 2, cards: [{ name: "Llanowar Elves" }], ...riders }),
-		catalog: async () => ({ types: {}, keywords: {} }),
-		samplePreferred: async () => [],
-		size: async () => 2,
+		searchCardsAsObjects: async () => ({ totalCards: 2, cards: [{ name: "Llanowar Elves" }], ...riders }),
+		typeAndKeywordCounts: async () => ({ types: {}, keywords: {} }),
+		randomCardsAsObjects: async () => [],
+		cardCount: async () => 2,
 	} as unknown as Stub;
 }
 
 const search = (riders: Record<string, unknown>, region = "wnam") =>
-	new RemoteEngine(stubReturning(riders), region).search({ limit: 10 } as never);
+	new RemoteEngine(stubReturning(riders), region).searchCardsAsObjects({ limit: 10 } as never);
 
 beforeEach(() => {
 	reportEngineLoad.mockClear();

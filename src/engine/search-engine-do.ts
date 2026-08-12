@@ -178,8 +178,11 @@ export class SearchEngine extends DurableObject<Env> {
 	// Every method runs locally. There is no fallbackHint and no relay: this DO
 	// is the region, so there is nowhere better to ask. A cold one loads.
 
-	async search(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, (engine) => engine.search(opts));
+	async searchCardsAsObjects(
+		opts: EngineSearchOptions,
+		reportedShards?: number,
+	): Promise<EngineSearchResult & SearchTelemetry> {
+		return this.instrumented(reportedShards, (engine) => engine.searchCardsAsObjects(opts));
 	}
 
 	/**
@@ -187,12 +190,12 @@ export class SearchEngine extends DurableObject<Env> {
 	 * so no card ever becomes a JS object in the isolate that serves the request.
 	 * See EngineSerializedResult.
 	 */
-	async searchSerialized(
+	async searchCardsAsJson(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, (engine) => engine.searchSerialized(opts, shape));
+		return this.instrumented(reportedShards, (engine) => engine.searchCardsAsJson(opts, shape));
 	}
 
 	/** Run a search against the local engine, carrying the autoscaler's signals. */
@@ -224,13 +227,13 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/** Both catalogs in one RPC (get_catalog needs both). */
-	async catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+	async typeAndKeywordCounts(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
 		const engine = await this.engine();
-		return { types: await engine.commonCardTypes(), keywords: await engine.commonCardKeywords() };
+		return { types: await engine.cardTypeCounts(), keywords: await engine.cardKeywordCounts() };
 	}
 
-	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return (await this.engine()).samplePreferred(numCards, fields);
+	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+		return (await this.engine()).randomCardsAsObjects(numCards, fields);
 	}
 
 	/**
@@ -252,25 +255,23 @@ export class SearchEngine extends DurableObject<Env> {
 	 * Logged only when it actually acquired, matching RemoteEngine.searchRpc —
 	 * a warm call is the boring case and says nothing worth a log line.
 	 */
-	async samplePreferredSerialized(
-		numCards: number,
-		fields: string[],
-		shape: ResultShape,
-	): Promise<EngineSerializedResult> {
+	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
 		const warm = tryGetLoadedEngine() !== null;
 		const acquireStart = Date.now();
 		const engine = await this.engine();
 		const acquireMs = Date.now() - acquireStart;
-		const result = await engine.samplePreferredSerialized(numCards, fields, shape);
+		const result = await engine.randomCardsAsJson(numCards, fields, shape);
 		if (!warm) {
-			console.log(`[${this.label}] samplePreferred acquired its engine in ${acquireMs}ms (cold) for n=${numCards}`);
+			console.log(
+				`[${this.label}] randomCardsAsObjects acquired its engine in ${acquireMs}ms (cold) for n=${numCards}`,
+			);
 		}
 		return result;
 	}
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
 	//
-	// Instrumented EXACTLY like search/searchSerialized: same telemetry, same shard rendezvous. That
+	// Instrumented EXACTLY like search/searchCardsAsJson: same telemetry, same shard rendezvous. That
 	// is not symmetry for its own sake — mtg-seeker points at `/cards/*`, so this is the traffic the
 	// deployment actually has to scale under. Bypassing `instrumented` would leave the shard
 	// controller reading only `/search` depth and rate, and it would decline to open a shard while
@@ -407,9 +408,9 @@ export class SearchEngine extends DurableObject<Env> {
 	 * instrumented: it is not a user request and its wall time is a wake, so feeding it to the
 	 * autoscaler would let every expansion argue for the next.
 	 */
-	async size(): Promise<number> {
+	async cardCount(): Promise<number> {
 		const engine = await this.engine();
-		return engine.size();
+		return engine.cardCount();
 	}
 
 	// ── Engine acquisition ─────────────────────────────────────────────────────

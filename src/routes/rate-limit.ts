@@ -62,7 +62,7 @@ export class RateLimiter extends DurableObject<Env> {
 	private lastRefillMs = 0;
 
 	/** Returns true when the request is allowed. */
-	async check(limit: number): Promise<boolean> {
+	async rateLimit(limit: number): Promise<boolean> {
 		const now = Date.now();
 		if (Number.isNaN(this.tokens)) {
 			this.tokens = limit;
@@ -220,7 +220,7 @@ export function enforceRateLimit(
 	const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(ip), { locationHint: regionHint(request) });
 	waitUntil(
 		stub
-			.check(limit)
+			.rateLimit(limit)
 			.then((allowed) => {
 				if (!allowed) rememberBlock(ip, Date.now() + BLOCK_MS);
 			})

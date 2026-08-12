@@ -26,16 +26,16 @@ type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: nu
  * DO); current DO code always sets them, and a missing one is simply not
  * reported to the autoscaler. */
 interface SearchEngineStub {
-	search(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & Telemetry>;
-	searchSerialized(
+	searchCardsAsObjects(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & Telemetry>;
+	searchCardsAsJson(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
-	catalog(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
-	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
-	samplePreferredSerialized(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
-	size(): Promise<number>;
+	typeAndKeywordCounts(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
+	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
+	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
+	cardCount(): Promise<number>;
 	// Every `/cards/*` reply carries the same shard-controller riders search does, and wraps its
 	// payload so a null card has something to carry them on.
 	scryfallSearch(
@@ -228,37 +228,37 @@ export class RemoteEngine implements Engine {
 		return result as Omit<T, keyof Telemetry>;
 	}
 
-	search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return this.searchRpc(() => this.stub.search(opts, currentShardWidth(this.region)));
+	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
+		return this.searchRpc(() => this.stub.searchCardsAsObjects(opts, currentShardWidth(this.region)));
 	}
 
-	searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.searchSerialized(opts, shape, currentShardWidth(this.region)));
+	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
+		return this.searchRpc(() => this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region)));
 	}
 
 	private catalog() {
-		this.catalogOnce ??= withRetry(() => this.stub.catalog());
+		this.catalogOnce ??= withRetry(() => this.stub.typeAndKeywordCounts());
 		return this.catalogOnce;
 	}
 
-	async commonCardTypes(): Promise<Record<string, number>> {
+	async cardTypeCounts(): Promise<Record<string, number>> {
 		return (await this.catalog()).types;
 	}
 
-	async commonCardKeywords(): Promise<Record<string, number>> {
+	async cardKeywordCounts(): Promise<Record<string, number>> {
 		return (await this.catalog()).keywords;
 	}
 
-	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return withRetry(() => this.stub.samplePreferred(numCards, fields));
+	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+		return withRetry(() => this.stub.randomCardsAsObjects(numCards, fields));
 	}
 
-	samplePreferredSerialized(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		return withRetry(() => this.stub.samplePreferredSerialized(numCards, fields, shape));
+	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
+		return withRetry(() => this.stub.randomCardsAsJson(numCards, fields, shape));
 	}
 
-	size(): Promise<number> {
-		return withRetry(() => this.stub.size());
+	cardCount(): Promise<number> {
+		return withRetry(() => this.stub.cardCount());
 	}
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────

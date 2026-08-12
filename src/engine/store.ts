@@ -154,7 +154,7 @@ class WasmEngine implements Engine {
 		};
 	}
 
-	async search(opts: EngineSearchOptions): Promise<EngineSearchResult> {
+	async searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
 		const result = this.query(opts);
 		return { totalCards: result.total, cards: result.rows };
 	}
@@ -173,7 +173,7 @@ class WasmEngine implements Engine {
 	 * `columnar` still parses, because inverting rows into per-field arrays genuinely needs the
 	 * values -- and it is the shape almost nothing asks for.
 	 */
-	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
+	async searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
 		if (shape === "columnar") {
 			const result = this.query(opts);
 			return {
@@ -214,15 +214,15 @@ class WasmEngine implements Engine {
 		return parsed;
 	}
 
-	async commonCardTypes(): Promise<Record<string, number>> {
+	async cardTypeCounts(): Promise<Record<string, number>> {
 		return this.catalog().card_types;
 	}
 
-	async commonCardKeywords(): Promise<Record<string, number>> {
+	async cardKeywordCounts(): Promise<Record<string, number>> {
 		return this.catalog().card_keywords;
 	}
 
-	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
 		// Engine sampling is deterministic per seed; per-request entropy keeps
 		// /random_search random, mirroring upstream's process-side RNG.
 		const seedBytes = crypto.getRandomValues(new BigUint64Array(1));
@@ -230,16 +230,12 @@ class WasmEngine implements Engine {
 		return JSON.parse(wasm.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
 	}
 
-	async samplePreferredSerialized(
-		numCards: number,
-		fields: string[],
-		shape: ResultShape,
-	): Promise<EngineSerializedResult> {
-		const rows = await this.samplePreferred(numCards, fields);
+	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
+		const rows = await this.randomCardsAsObjects(numCards, fields);
 		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
 	}
 
-	async size(): Promise<number> {
+	async cardCount(): Promise<number> {
 		return wasm.size();
 	}
 

@@ -25,14 +25,14 @@ function sortedByKey(entries: Record<string, number>): Record<string, number> {
  */
 export async function getCatalogHandler(ctx: RouteContext): Promise<Response> {
 	const engine = await ctx.getEngine();
-	const typeCounts: Record<string, number> = { ...(await engine.commonCardTypes()) };
+	const typeCounts: Record<string, number> = { ...(await engine.cardTypeCounts()) };
 	// tribal is the old name for kindred
 	const kindredCount = typeCounts.Kindred ?? 0;
 	if (kindredCount) {
 		typeCounts.Tribal = kindredCount;
 	}
 	const keywordCatalog: Record<string, number> = {};
-	for (const [keyword, count] of Object.entries(await engine.commonCardKeywords())) {
+	for (const [keyword, count] of Object.entries(await engine.cardKeywordCounts())) {
 		keywordCatalog[keyword.toLowerCase()] = count;
 	}
 	// Sorted keys compress smaller and make the payload deterministic; sorting

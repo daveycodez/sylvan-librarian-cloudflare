@@ -93,17 +93,17 @@ export interface EngineCatalog {
  */
 export interface Engine {
 	/** Row objects — for the server-rendered page, which needs them as data. */
-	search(opts: EngineSearchOptions): Promise<EngineSearchResult>;
+	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult>;
 	/** Pre-encoded cards — for the JSON API, which only ever needs the bytes. */
-	searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
-	commonCardTypes(): Promise<Record<string, number>>;
-	commonCardKeywords(): Promise<Record<string, number>>;
+	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
+	cardTypeCounts(): Promise<Record<string, number>>;
+	cardKeywordCounts(): Promise<Record<string, number>>;
 	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
-	samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
-	/** The same sample, pre-encoded (see searchSerialized). */
-	samplePreferredSerialized(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
+	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
+	/** The same sample, pre-encoded (see searchCardsAsJson). */
+	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
 	/** Number of cards in the store; 0 means "not loaded" upstream — here a loaded engine is never empty. */
-	size(): Promise<number>;
+	cardCount(): Promise<number>;
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
 	//

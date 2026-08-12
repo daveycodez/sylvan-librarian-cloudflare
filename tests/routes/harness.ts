@@ -59,7 +59,9 @@ export class FakeEngine implements Engine {
 	types: Record<string, number> = { Creature: 100, Kindred: 5, Land: 42 };
 	keywords: Record<string, number> = { Flying: 10, Haste: 3 };
 
-	async search(opts: EngineSearchOptions): Promise<{ totalCards: number; cards: Record<string, unknown>[] }> {
+	async searchCardsAsObjects(
+		opts: EngineSearchOptions,
+	): Promise<{ totalCards: number; cards: Record<string, unknown>[] }> {
 		this.lastSearch = opts;
 		if (this.searchError) {
 			throw this.searchError;
@@ -69,20 +71,20 @@ export class FakeEngine implements Engine {
 
 	// Encodes from the same rows search() returns, so a test asserting on the
 	// API bytes and one asserting on the page's data are checking one source.
-	async searchSerialized(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		const { totalCards, cards } = await this.search(opts);
+	async searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
+		const { totalCards, cards } = await this.searchCardsAsObjects(opts);
 		return { totalCards, cardsBytes: encodeUtf8(serializeCards(cards, shape)), rowCount: cards.length };
 	}
 
-	async commonCardTypes(): Promise<Record<string, number>> {
+	async cardTypeCounts(): Promise<Record<string, number>> {
 		return { ...this.types };
 	}
 
-	async commonCardKeywords(): Promise<Record<string, number>> {
+	async cardKeywordCounts(): Promise<Record<string, number>> {
 		return { ...this.keywords };
 	}
 
-	async samplePreferred(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
 		this.lastSampleArgs = { numCards, fields };
 		const out: Record<string, unknown>[] = [];
 		for (let i = 0; i < Math.min(numCards, this.cards.length); i++) {
@@ -91,16 +93,12 @@ export class FakeEngine implements Engine {
 		return out;
 	}
 
-	async samplePreferredSerialized(
-		numCards: number,
-		fields: string[],
-		shape: ResultShape,
-	): Promise<EngineSerializedResult> {
-		const rows = await this.samplePreferred(numCards, fields);
+	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
+		const rows = await this.randomCardsAsObjects(numCards, fields);
 		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
 	}
 
-	async size(): Promise<number> {
+	async cardCount(): Promise<number> {
 		return this.totalCards;
 	}
 

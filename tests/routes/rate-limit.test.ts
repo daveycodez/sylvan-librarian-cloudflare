@@ -27,7 +27,7 @@ function envRefusing(allowed = false): Env {
 		RATE_LIMIT_PER_10S: "100",
 		RATE_LIMITER: {
 			idFromName: (name: string) => name,
-			get: () => ({ check: async () => allowed }),
+			get: () => ({ rateLimit: async () => allowed }),
 		},
 	} as unknown as Env;
 }

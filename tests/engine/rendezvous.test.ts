@@ -30,8 +30,8 @@ mock.module("cloudflare:workers", () => ({
 }));
 
 const fakeEngine = {
-	search: async () => ({ totalCards: 1, cards: [] }),
-	searchSerialized: async () => ({ totalCards: 1, cards: "[]" }),
+	searchCardsAsObjects: async () => ({ totalCards: 1, cards: [] }),
+	searchCardsAsJson: async () => ({ totalCards: 1, cards: "[]" }),
 };
 
 // The real store is wasm-backed; the rendezvous does not touch it.
@@ -43,7 +43,7 @@ mock.module("../../src/engine/store", () => ({
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
 
 type Do = {
-	search: (opts: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
+	searchCardsAsObjects: (opts: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
 };
 
 function makeDo(): Do {
@@ -52,7 +52,7 @@ function makeDo(): Do {
 
 /** One search, returning the announcement it carries back. */
 async function report(engine: Do, width?: number): Promise<number> {
-	const result = await engine.search({ limit: 1 }, width);
+	const result = await engine.searchCardsAsObjects({ limit: 1 }, width);
 	return result.shards;
 }
 
@@ -108,7 +108,7 @@ describe("the arrival-rate meter", () => {
 	/** Fire n searches inside one second and return the last reported rate. */
 	async function burst(engine: Do, n: number): Promise<number> {
 		let rate = 0;
-		for (let i = 0; i < n; i++) rate = (await engine.search({ limit: 1 }, 1)).rate;
+		for (let i = 0; i < n; i++) rate = (await engine.searchCardsAsObjects({ limit: 1 }, 1)).rate;
 		return rate;
 	}
 

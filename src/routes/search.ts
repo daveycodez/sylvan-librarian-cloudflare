@@ -347,7 +347,7 @@ export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Prom
 	let totalCards: number;
 	let rawCards: CardRow[];
 	try {
-		const result = await prep.timer.time("engine_query", () => prep.engine.search(prep.engineOpts));
+		const result = await prep.timer.time("engine_query", () => prep.engine.searchCardsAsObjects(prep.engineOpts));
 		totalCards = result.totalCards;
 		rawCards = result.cards;
 	} catch (err) {
@@ -379,7 +379,7 @@ export async function runSearchJson(
 	const prep = await prepareSearch(ctx, opts);
 	let result: EngineSerializedResult;
 	try {
-		result = await prep.timer.time("engine_query", () => prep.engine.searchSerialized(prep.engineOpts, shape));
+		result = await prep.timer.time("engine_query", () => prep.engine.searchCardsAsJson(prep.engineOpts, shape));
 	} catch (err) {
 		engineFailure(prep.query, err);
 	}
@@ -463,11 +463,7 @@ export async function randomSearchHandler(
 	// no store-less mode, so an unloaded engine is a 503 (see module comment).
 	const engine = await ctx.getEngine();
 	// Pre-encoded next to the store, like /search — see runSearchJson.
-	const result = await engine.samplePreferredSerialized(
-		numCards,
-		[...DEFAULT_RESULT_FIELDS],
-		bound.shape as ResponseShape,
-	);
+	const result = await engine.randomCardsAsJson(numCards, [...DEFAULT_RESULT_FIELDS], bound.shape as ResponseShape);
 	return jsonBytesResponse(
 		[encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,"total_cards":${result.totalCards}}`)],
 		NO_STORE_HEADER,
