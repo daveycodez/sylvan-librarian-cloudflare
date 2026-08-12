@@ -30,9 +30,12 @@ interface FakeObject {
 function fakeNamespace(live: Record<string, number>, failOn = new Set<string>()) {
 	const calls = new Map<string, FakeObject>();
 	const addressed = new Set<string>();
+	/** Announcement keys, which must be retired alongside the storage they name. */
+	const announced = new Set<string>(Object.keys(live));
 	return {
 		calls,
 		addressed,
+		announced,
 		get: (id: { name: string }) => {
 			addressed.add(id.name);
 			const o = calls.get(id.name) ?? { notified: 0, released: 0, shards: live[id.name] ?? 1 };
@@ -78,7 +81,12 @@ async function fanOut(ns: ReturnType<typeof fakeNamespace>, liveNames: string[])
 		if (!Number.isInteger(idx)) return false;
 		return idx >= (widthOf.get(a.name.slice(0, dash)) ?? 1);
 	});
-	await Promise.allSettled(stale.map((a) => stub(a.name).releaseCache()));
+	await Promise.allSettled(
+		stale.map(async (a) => {
+			await stub(a.name).releaseCache();
+			ns.announced.delete(a.name);
+		}),
+	);
 	return { acked, stale: stale.map((s) => s.name) };
 }
 
@@ -161,6 +169,24 @@ describe("failure gates the purge", () => {
 		const ns = fakeNamespace({ "engine-wnam": 1, "engine-weur": 1 }, new Set(["engine-weur"]));
 		await fanOut(ns, ["engine-wnam", "engine-weur"]).catch(() => {});
 		expect(ns.calls.get("engine-wnam")?.notified).toBe(1);
+	});
+
+	test("a released shard is un-announced, so the next publish does not recreate it", async () => {
+		// The trap this closes: releaseCache wipes the object's storage, but the
+		// announcement lives in KV and would survive. The next publish would find the
+		// name in the live set, address it — CREATING it — and it would record a
+		// manifest row, gain storage, and stop being reclaimable. That is the
+		// "publisher creates objects" property this fan-out exists to prevent,
+		// re-entering through the announcement rather than through a name list.
+		const live = { "engine-wnam": 1, "engine-wnam-1": 1 };
+		const ns = fakeNamespace(live);
+		await fanOut(ns, Object.keys(live));
+		expect([...ns.announced]).toEqual(["engine-wnam"]);
+
+		// Second publish walks the announcements that remain, and never touches it.
+		const ns2 = fakeNamespace({ "engine-wnam": 1 });
+		await fanOut(ns2, [...ns.announced]);
+		expect(ns2.addressed.has("engine-wnam-1")).toBe(false);
 	});
 
 	test("retrying is safe, because both calls are idempotent", async () => {

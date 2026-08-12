@@ -1756,7 +1756,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (!Number.isInteger(idx)) return false;
 			return idx >= (widthOf.get(a.name.slice(0, dash)) ?? 1);
 		});
-		const released = await Promise.allSettled(stale.map((a) => stubFor(a.name).releaseCache()));
+		// Release the storage AND retire the announcement together. Deleting only the
+		// storage would leave `engine:live:<name>` behind, so the next publish would
+		// find the name in the live set, address it, and RECREATE the object — which
+		// is precisely the "the publisher creates objects" property this fan-out was
+		// rewritten to remove, reintroduced through the announcement instead of the
+		// name list. A resurrected shard would then record a manifest row, gain
+		// storage, and stop being reclaimable.
+		const released = await Promise.allSettled(
+			stale.map(async (a) => {
+				await stubFor(a.name).releaseCache();
+				await this.env.STORE_KV.delete(`${REGION_LIVE_PREFIX}${a.name}`);
+			}),
+		);
 
 		console.log(
 			`Publish notified ${acked.length} live engine object(s); ` +
