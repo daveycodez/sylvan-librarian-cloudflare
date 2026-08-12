@@ -22,10 +22,10 @@
 //!   - It is faster, which is the point: no intermediate tree, and no freshly allocated `String`
 //!     key per field per card.
 //!
-//! Key order follows the port's `toScryfallCard`, which agrees with upstream's dict literal
-//! everywhere except `security_stamp` — 6th in the optional tail there, 14th upstream. Cosmetic,
-//! but the two should not disagree; the port's position is kept here and upstream's moves to match
-//! when this lands there.
+//! Key order follows UPSTREAM's dict literal. The port's `toScryfallCard` agreed with it
+//! everywhere except `security_stamp`, which sat 6th in the optional tail there and 14th upstream —
+//! cosmetic, but the two should not disagree, and upstream is the reference for a port, so the port
+//! moved to match this rather than the other way round.
 
 use serde_json::{Map, Value};
 
@@ -413,7 +413,6 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
         ("flavor_text", str_of(row, "flavor_text")),
         ("watermark", str_of(row, "watermark")),
         ("frame", str_of(row, "frame")),
-        ("security_stamp", str_of(row, "security_stamp")),
     ] {
         if let Some(v) = value {
             write_key(out, &mut first, key);
@@ -433,6 +432,12 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
         if let Some(v) = num_of(row, key) {
             write_value(out, &mut first, key, v);
         }
+    }
+    // After the ids, matching upstream's dict literal. The port's TypeScript had it up with the
+    // other strings; upstream is the reference for a port, so the port moved rather than this.
+    if let Some(v) = str_of(row, "security_stamp") {
+        write_key(out, &mut first, "security_stamp");
+        write_json_str(out, v);
     }
     for key in ["promo_types", "frame_effects", "all_parts"] {
         if let Some(a) = list_of(row, key).filter(|a| !a.is_empty()) {
@@ -461,4 +466,145 @@ pub fn write_scryfall_cards(out: &mut Vec<u8>, rows: &[Value], base_url: &str) {
         }
     }
     out.push(b']');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn build(row: serde_json::Value) -> serde_json::Value {
+        let serde_json::Value::Object(map) = row else { panic!("row must be an object") };
+        let mut out = Vec::new();
+        write_scryfall_card(&mut out, &map, "https://api.example/v1");
+        serde_json::from_slice(&out).expect("the writer must emit valid JSON")
+    }
+
+    /// Absent stays absent. A card without a watermark omits the key; it does not send null.
+    #[test]
+    fn optional_keys_are_omitted_rather_than_nulled() {
+        let card = build(json!({"name": "Llanowar Elves", "scryfall_id": "ab000000-0000-0000-0000-000000000001"}));
+        for absent in ["power", "toughness", "flavor_text", "watermark", "frame", "security_stamp", "legalities"] {
+            assert!(card.get(absent).is_none(), "{absent} should be omitted when the row has none");
+        }
+        // ... while the keys Scryfall always sends are present, even when empty.
+        assert_eq!(card["object"], "card");
+        assert_eq!(card["colors"], json!([]));
+        assert_eq!(card["set_uri"], serde_json::Value::Null);
+        assert_eq!(card["card_back_id"], CARD_BACK_ID);
+    }
+
+    /// A single-faced card carries the text and image_uris; a multi-faced one carries neither, and
+    /// each face gets its own front/back CDN URLs.
+    #[test]
+    fn faces_replace_the_top_level_text_they_stand_in_for() {
+        let base = json!({
+            "name": "Delver of Secrets // Insectile Aberration",
+            "scryfall_id": "cd000000-0000-0000-0000-000000000002",
+            "mana_cost": "{U}", "oracle_text": "top level",
+        });
+
+        let single = build(base.clone());
+        assert_eq!(single["mana_cost"], "{U}");
+        assert!(single.get("card_faces").is_none());
+        assert!(single["image_uris"]["small"].as_str().unwrap().contains("/front/"));
+
+        let mut two = base.clone();
+        two["card_faces"] = json!([
+            {"name": "Delver of Secrets", "mana_cost": "{U}"},
+            {"name": "Insectile Aberration", "mana_cost": "", "colors": []},
+        ]);
+        let card = build(two);
+        assert!(card.get("mana_cost").is_none(), "a multi-faced card has no top-level mana_cost");
+        assert!(card.get("image_uris").is_none(), "...and no top-level image_uris");
+        let faces = card["card_faces"].as_array().expect("faces");
+        assert_eq!(faces[0]["object"], "card_face");
+        assert!(faces[0]["image_uris"]["png"].as_str().unwrap().contains("/front/"));
+        assert!(faces[1]["image_uris"]["png"].as_str().unwrap().contains("/back/"));
+        // Empty values inside a face are absent, not empty.
+        assert!(faces[1].get("mana_cost").is_none());
+        assert!(faces[1].get("colors").is_none());
+    }
+
+    /// Prices format to two decimals; a missing price is null rather than "0.00", and zero is a
+    /// price like any other.
+    #[test]
+    fn prices_are_two_decimals_or_null() {
+        let card = build(json!({"name": "x", "scryfall_id": "ef000000-0000-0000-0000-000000000003",
+            "price_usd": 1, "price_eur": 0.005, "price_tix": 0}));
+        assert_eq!(card["prices"]["usd"], "1.00");
+        assert_eq!(card["prices"]["eur"], "0.01");
+        assert_eq!(card["prices"]["tix"], "0.00");
+        assert_eq!(card["prices"]["usd_foil"], serde_json::Value::Null);
+    }
+
+    /// The slug and quote_plus paths, which are where a reimplementation drifts.
+    #[test]
+    fn slug_and_quote_plus_match_their_python_originals() {
+        assert_eq!(slug("Lightning Bolt"), "lightning-bolt");
+        assert_eq!(slug("  Fire  //  Ice  "), "fire-ice");
+        assert_eq!(slug("!!! ??? ---"), "");
+        assert_eq!(slug("Æther Vial"), "æther-vial", "isalnum() is Unicode-aware");
+        assert_eq!(slug("Jötun Grunt"), "jötun-grunt");
+
+        assert_eq!(quote_plus("Lightning Bolt"), "Lightning+Bolt");
+        assert_eq!(quote_plus("Æther Vial"), "%C3%86ther+Vial");
+        assert_eq!(quote_plus("Fire // Ice"), "Fire+%2F%2F+Ice");
+        // The safe set is the thing that has to match: `~` is left alone, `!*'()` are not.
+        assert_eq!(quote_plus("a~b"), "a~b");
+        assert_eq!(quote_plus("Yawgmoth's (Alt!)*"), "Yawgmoth%27s+%28Alt%21%29%2A");
+    }
+
+    /// `purchase_uris` carries only the marketplaces the card is actually on, and a zero id is not
+    /// an id.
+    #[test]
+    fn purchase_uris_skip_missing_and_zero_ids() {
+        let none = build(json!({"name": "x", "scryfall_id": "01000000-0000-0000-0000-000000000004"}));
+        assert_eq!(none["purchase_uris"], json!({}));
+
+        let zero = build(json!({"name": "x", "scryfall_id": "01000000-0000-0000-0000-000000000004",
+            "tcgplayer_id": 0, "mtgo_id": 0, "cardmarket_id": 0}));
+        assert_eq!(zero["purchase_uris"], json!({}));
+
+        let some = build(json!({"name": "x", "scryfall_id": "01000000-0000-0000-0000-000000000004",
+            "tcgplayer_id": 42, "mtgo_id": 7}));
+        assert_eq!(some["purchase_uris"]["tcgplayer"], "https://www.tcgplayer.com/product/42?page=1");
+        assert_eq!(some["purchase_uris"]["cardhoarder"], "https://www.cardhoarder.com/cards/7");
+        assert!(some["purchase_uris"].get("cardmarket").is_none());
+    }
+
+    /// `reserved` is a tag, not a column — the reserved list is a property of the card and the
+    /// engine stores it in the same is-tag set as everything else.
+    #[test]
+    fn reserved_comes_from_the_is_tag_set() {
+        let plain = build(json!({"name": "x", "scryfall_id": "01000000-0000-0000-0000-000000000005"}));
+        assert_eq!(plain["reserved"], false);
+        let listed = build(json!({"name": "x", "scryfall_id": "01000000-0000-0000-0000-000000000005",
+            "card_is_tags": ["reprint", "reserved"]}));
+        assert_eq!(listed["reserved"], true);
+    }
+
+    /// The written bytes are key-ORDERED, which a `Value` round trip cannot show: parsing sorts
+    /// them. Asserted against the encoded text, since that is what a client receives.
+    #[test]
+    fn keys_are_written_in_order_not_sorted() {
+        let serde_json::Value::Object(map) = json!({
+            "name": "Llanowar Elves", "scryfall_id": "01000000-0000-0000-0000-000000000006",
+            "security_stamp": "oval", "cardmarket_id": 9, "watermark": "set",
+        }) else {
+            panic!()
+        };
+        let mut out = Vec::new();
+        write_scryfall_card(&mut out, &map, "https://api.example/v1");
+        let text = String::from_utf8(out).expect("utf-8");
+
+        assert!(text.starts_with(r#"{"object":"card","id":"#), "object and id lead: {}", &text[..40]);
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
+        // `name` before `prices` before the optional tail, and `security_stamp` AFTER the ids —
+        // upstream's order, which alphabetical sorting would not produce for any of these.
+        assert!(at(r#""name":"#) < at(r#""prices":"#));
+        assert!(at(r#""prices":"#) < at(r#""watermark":"#));
+        assert!(at(r#""watermark":"#) < at(r#""cardmarket_id":"#));
+        assert!(at(r#""cardmarket_id":"#) < at(r#""security_stamp":"#));
+    }
 }

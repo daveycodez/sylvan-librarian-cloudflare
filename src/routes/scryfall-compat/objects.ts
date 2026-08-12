@@ -356,7 +356,6 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		["flavor_text", str(row, "flavor_text")],
 		["watermark", str(row, "watermark")],
 		["frame", str(row, "frame")],
-		["security_stamp", str(row, "security_stamp")],
 		["edhrec_rank", num(row, "edhrec_rank")],
 		["penny_rank", num(row, "penny_rank")],
 		["arena_id", num(row, "arena_id")],
@@ -365,6 +364,10 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		["tcgplayer_id", num(row, "tcgplayer_id")],
 		["tcgplayer_etched_id", num(row, "tcgplayer_etched_id")],
 		["cardmarket_id", num(row, "cardmarket_id")],
+		// After the ids, where upstream's dict literal puts it. This sat up with the other strings
+		// here, which made the two implementations disagree on key order for every card that has a
+		// security stamp — cosmetic, but upstream is the reference for a port, so this moved.
+		["security_stamp", str(row, "security_stamp")],
 		["promo_types", listOrAbsent(row, "promo_types")],
 		["frame_effects", listOrAbsent(row, "frame_effects")],
 		["all_parts", listOrAbsent(row, "all_parts")],
