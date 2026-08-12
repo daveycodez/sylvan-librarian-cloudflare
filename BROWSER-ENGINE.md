@@ -1,6 +1,6 @@
 # Browser Engine — shipping the card store to the client as an npm package
 
-Status: **proposal. Phase 0 done, nothing shipped.** Written 2026-08-11. Numbers marked *measured* were taken against real artifacts on this machine; numbers marked *estimated* are arithmetic on top of them and are only as good as the stated assumptions.
+Status: **proposal. Phase 0 done; the server side landed independently.** Written 2026-08-11, revised after `8909a96` gzipped the KV chunks for the Durable Object — which turned out to supply the browser artifact too, so §7 no longer proposes a publish step. Numbers marked *measured* were taken against real artifacts on this machine; numbers marked *estimated* are arithmetic on top of them and are only as good as the stated assumptions.
 
 The idea: an npm package that answers Scryfall-compatible card queries on the client. It starts by proxying to this port's HTTP API, downloads the compiled store in the background, and once the store is resident it answers every subsequent query from wasm in the tab — no network, no cap, no round trip.
 
@@ -33,7 +33,7 @@ It also deletes result truncation. Any client that paginates the API caps itself
 | Parser and store generation drift apart | Medium | Lockstep versioning + parity CI, §11 |
 | Storage eviction (Safari/iOS especially) | Medium | Always degrade to remote, §13 |
 | ~~`finish_store_load` validation cost is unmeasured~~ | — | **Resolved.** 0.1 ms; whole warm-up is ~14 ms of CPU, §2 |
-| 28–35 MB download on a phone | Low–Medium | Deferred trigger, `saveData` respect, §8.1 |
+| 33–38 MB download on a phone | Low–Medium | Deferred trigger, `saveData` respect, §8.1 |
 
 None of these is disqualifying. The first two are design constraints that shape the package; the rest are degradation paths.
 
@@ -58,20 +58,20 @@ Decompression to the full 76,636,456 bytes, native, three runs: brotli q6 **0.18
 
 **Either format decompresses natively in the browser** — `Content-Encoding` is handled by the browser's own decoder during the fetch, with no JS, no `DecompressionStream`, and no intermediate buffer. So brotli's ~2× decompression cost is irrelevant on the client, and the only thing separating the two formats there is 6.7 MB over the wire.
 
-On merit brotli wins for the browser and gzip wins for the Durable Object, whose `DecompressionStream` is gzip-only and whose CPU is the constrained resource. But **a Worker cannot produce brotli at all** (`CompressionStream` is gzip-only too), which turns a preference into a build-infrastructure question. §7 works through it; the short version is that gzip is the realistic first version and brotli is a clean later upgrade.
+On merit brotli wins for the browser and gzip wins for the Durable Object, whose `DecompressionStream` is gzip-only and whose CPU is the constrained resource. But **a Worker cannot produce brotli at all** (`CompressionStream` is gzip-only too), which turned a preference into a build-infrastructure question — and then `8909a96` settled it from the backend side by gzipping the KV chunks for the DO's own cold load. The browser reads those. §7.
 
 ### Download budget
 
 A consumer that uses the `/cards/*` Scryfall card-object surface needs the residue archive as well as the search store; one that only searches does not.
 
-| Surface | brotli q6 | gzip -6 | Linear memory |
-|---|---:|---:|---:|
-| Search only | 24,385,474 | 31,088,463 | **79.30 MB** |
-| Search + `/cards/*` card objects | **27,971,078** | ~35.4 MB | **91.16 MB** |
+| Surface | **gzip, per chunk (shipping)** | gzip, whole stream | brotli q6 | Linear memory |
+|---|---:|---:|---:|---:|
+| Search only | **33,345,526** | 31,088,463 | 24,385,474 | **79.30 MB** |
+| Search + `/cards/*` card objects | **37,929,253** | ~35.4 MB | 27,971,078 | **91.16 MB** |
 
 All *measured*. Linear-memory figures come from `CARD-PARTITIONING.md` §1, by reading `WebAssembly.Memory.buffer.byteLength` after load; Phase 0 independently measured 87.75 MB for the full surface (see below).
 
-Which column applies is decided in §7 — a Worker cannot produce brotli, so the gzip figures are the realistic first version.
+**The first column is what a client actually downloads today**, because `8909a96` gzipped the KV chunks for the Durable Object's cold load and the browser reads those same values (§7). It is ~2.3 MB worse than a single gzip over the whole archive, since each chunk compresses against its own window — the cost of a shape chosen for a resumable publisher and a chunked reader. Brotli remains a 6.7 MB upgrade needing out-of-band compression, and is now an optimization rather than a prerequisite.
 
 ### Time to usable
 
@@ -79,8 +79,8 @@ Phase 0 ran: the committed wasm driven from Bun against `card-store-v2026081102-
 
 | Stage | 100 Mbps | 25 Mbps | Notes |
 |---|---:|---:|---|
-| Download (28 MB br / 35 MB gz) | ~2.3–2.9 s | ~9–11 s | *Estimated.* Overlaps remote-phase queries |
-| Native brotli decompress | ~0.2 s | ~0.2 s | *Estimated* from §2's 0.16 s native measurement |
+| Download 38 MB (gzipped KV chunks) | ~3.2 s | ~12 s | *Estimated.* Overlaps remote-phase queries |
+| Native gzip decompress | ~0.1 s | ~0.1 s | *Estimated* from §2's 0.09 s native measurement; per response, overlaps download |
 | — | | | |
 | `WebAssembly.compile` | **4.3 ms** | | 1.92 MB module |
 | `WebAssembly.Instance` | **0.7 ms** | | linear memory 1.50 MB |
@@ -235,36 +235,38 @@ Small JSON, short TTL. The one mutable pointer.
   "built_at": "2026-08-11T04:53:00Z",
   "format_version": 2026081102,     // must equal wasm store_version()
   "content_generation": 10,         // must equal the package's pinned generation
-  "store_bytes": 76636456,          // DECOMPRESSED — begin_store_load needs this
-  "store_url": "/store/card-store-v2026081102-1786449226.gz",
-  "store_compressed_bytes": 24385474,
-  "compat_key": "card-compat-v2026081102-1786452390",
-  "compat_bytes": 11839272,
-  "compat_url": "/store/card-compat-v2026081102-1786452390.gz",
-  "compat_compressed_bytes": 3209163,
+  "store_bytes": 76642312,          // DECOMPRESSED — begin_store_load needs this
+  "store_gzip_bytes": 33345526,     // PRESENT IFF COMPRESSED; the format flag
+  "compat_bytes": 11839464,
+  "compat_gzip_bytes": 4583727,
+  "chunks": 3,                      // store chunk count; compat is always 1
   "card_count": 31724,
-  "printing_count": 97803
+  "printing_count": 95131
 }
 ```
 
-Everything here except the three `*_url` and `*_compressed_bytes` fields already exists on `StoreManifest` in `src/engine/types.ts`. This route is mostly a projection of it.
+**Every field here already exists on `StoreManifest`** — `store_gzip_bytes` and `compat_gzip_bytes` arrived with `8909a96`, which gzipped the KV chunks for the Durable Object's cold load. This route is a pure projection of the manifest, with no browser-specific fields at all. That is a better position than this document originally assumed, and §7's publishing section below is rewritten around it.
+
+Note `store_gzip_bytes` is *present iff compressed* — it is a format flag, not a size hint — and `store_bytes` remains the decompressed length, so `begin_store_load` is unaffected either way.
 
 `Cache-Control: public, max-age=300` — short enough that a nightly rebuild propagates within minutes, long enough that a page load does not always pay for it.
 
-### `GET /store/<key>.<gz|br>`
+### `GET /store/<key>/<seq>`
 
-The compressed artifact, brotli q6.
+One gzipped KV chunk, passed straight through. The route reads the chunk it is named for and returns those exact bytes — no decompression, no re-framing.
 
 ```js
-new Response(brotliBytes, {
+new Response(gzippedChunkFromKV, {
   encodeBody: "manual",          // REQUIRED — see below
   headers: {
-    "Content-Encoding": "br",
+    "Content-Encoding": "gzip",
     "Content-Type": "application/octet-stream",
     "Cache-Control": "public, max-age=31536000, immutable",
   },
 })
 ```
+
+The client fetches `chunks` of these plus one for the residue, and pipes each into `store_load_chunk` — the same sequence the Durable Object already performs, with `fetch` where it has a KV read.
 
 **`encodeBody: "manual"` is a correctness requirement, not a tuning knob.** Verified against the real Cloudflare edge on 2026-08-11 with a deployed throwaway Worker serving 512,000 bytes of actual store data:
 
@@ -280,16 +282,39 @@ Local `wrangler dev` and the deployed edge behaved identically, so this is runti
 
 Keys are immutable — `store_key` already embeds format version and build timestamp, so a rebuild produces a new key and never invalidates an old URL. That is what makes `immutable` honest and lets both the HTTP cache and Cache Storage hold it indefinitely.
 
-### Publishing the artifact — the unresolved part
+### Publishing — resolved by `8909a96`, and there is nothing to publish
 
-**A Worker cannot produce brotli.** `CompressionStream` accepts `"gzip" | "deflate" | "deflate-raw"` — the same gzip-only set as `DecompressionStream`. So the nightly importer, which runs in-Worker, cannot compress the store to brotli no matter how much CPU budget it has. Four ways out, measured where measurable:
+This section previously weighed four ways to produce a compressed browser artifact. It has been overtaken: **the store is already gzipped in KV**, per chunk, as of `8909a96`. There is no browser artifact to build, because the bytes the browser wants are the bytes the Durable Object already reads.
 
-| Option | Browser download | KV values | What it costs |
-|---|---:|---:|---|
-| **1. gzip in the importer** | 31,088,463 | 2 | Nothing new — `CompressionStream('gzip')` is native and streams |
-| **2. brotli q6, precompressed out-of-band** | 24,385,474 | **1** | CI that does not exist in this repo yet |
-| 3. brotli via a wasm encoder in the importer | 24,385,474 | 1 | Real Rust work, against a 112 MiB `--max-memory` cap |
-| 4. Serve raw, let the edge compress | ~26.5 MB | 3 (raw, as today) | A dishonest `Content-Type`; see below |
+Measured by that change, on the real import pipeline:
+
+| | raw | gzipped | ratio |
+|---|---:|---:|---:|
+| store chunk 1/3 | 24.8 MB | 8.6 MB | 34.7% |
+| store chunk 2/3 | 24.8 MB | 8.4 MB | 33.9% |
+| store chunk 3/3 | 23.5 MB | 14.7 MB | 62.6% |
+| residue 1/1 | 11.3 MB | 4.4 MB | 38.9% |
+| **store total** | 76,642,312 | **33,345,526** | 43.5% |
+| **residue total** | 11,839,464 | **4,583,727** | 38.7% |
+
+So the browser route is a passthrough of existing KV values, and the publishing question disappears. Three consequences worth carrying.
+
+**Per-chunk gzip is worse than whole-stream gzip, and that is the price of the shape.** 33,345,526 against the 31,088,463 this document measured for a single gzip over the whole archive — about 2.3 MB, because each chunk compresses against its own window with no cross-chunk redundancy. Chunk 3/3 at 62.6% is doing most of the damage.
+
+**Concatenating the chunks is not available as a fix.** workerd's `DecompressionStream` *rejects* concatenated gzip members — "Trailing bytes after end of compressed data" — where the `gunzip` CLI accepts them. So a route cannot simply stream the three chunks back to back under one `Content-Encoding: gzip` and let the client sort it out. Per-chunk is forced, and the client must decode each chunk as its own response. (Whether browser `DecompressionStream` implementations are equally strict is untested and does not matter here, since the browser decodes per response via `Content-Encoding` rather than concatenating anything.)
+
+**The single-KV-value property is gone, and it was worth less than it looked.** This document made much of brotli q6 fitting one value. The chunk grid is staying regardless — it is what the DO reads and what makes the publisher resumable, one chunk per alarm — so the browser fetching four responses instead of one is the normal case, not a degradation. Immutable keys mean all four cache independently.
+
+Brotli is still a real 6.7 MB upgrade over per-chunk gzip, and still needs out-of-band compression this repo has no CI for. It is now clearly a *later* optimization against a working baseline rather than a decision blocking v1.
+
+For the record, the four options this section used to weigh, since the reasoning still applies if brotli is revisited:
+
+| Option | Browser download | What it costs |
+|---|---:|---|
+| **Passthrough of the gzipped KV chunks** | 33,345,526 | **Nothing — it exists** |
+| brotli q6, precompressed out-of-band | 24,385,474 | CI that does not exist in this repo |
+| brotli via a wasm encoder in the importer | 24,385,474 | Real Rust work, against a 112 MiB `--max-memory` cap |
+| Serve raw, let the edge compress | ~26.5 MB | A dishonest `Content-Type`; see below |
 
 **Option 4 does not work honestly.** Cloudflare's edge auto-compression is content-type gated, verified 2026-08-11 against a deployed Worker returning 512,000 raw store bytes:
 
@@ -302,11 +327,9 @@ Keys are immutable — `store_key` already embeds format version and build times
 
 The honest type for this artifact is `application/octet-stream`, and that is exactly the one the edge skips — reasonably, since octet-stream is assumed to be already-compressed binary. Getting edge compression means declaring the store to be wasm, which it is not. The edge's on-the-fly brotli is also ~9% worse than q6 (263,070 vs 241,051), because it runs at a low quality level, and it burns edge CPU on every cache miss. (On a custom domain, Compression Rules could force it honestly by path. On workers.dev there are no zone rules.)
 
-**Recommendation: option 1, and share the artifact with the Durable Object.** The separate backend evaluation is weighing gzip for the DO's cold load, and if that lands, the same compressed store serves both — the importer compresses once, the DO reads it through `DecompressionStream('gzip')`, and browsers get the identical bytes passed through with `encodeBody: "manual"`. One artifact, one publish step, no new infrastructure, and the API already exists.
+**The DO and the browser now want the same bytes for opposite reasons**, which is why the passthrough is not a compromise. `8909a96` gzipped the chunks to cut ~750 ms of transfer off a cold DO load — measured at wall p50 915 ms against cpu p50 164 ms over 121 cold loads, so the cold path was waiting on bytes, not computing. The browser wants those same bytes for the same reason, over a slower link. One compression step, decided on the backend's evidence, serves both.
 
-The bill for that is **31,088,463 instead of 24,385,474** — 27% more, about 2 extra seconds on a 25 Mbps connection — and losing the single-KV-value property, since gzip exceeds the 26,214,400 cap and needs two. Option 2 buys those back and is a clean upgrade later, but it means standing up CI first, so it should not gate the first version.
-
-Worth stating plainly: the brotli store at 24,385,474 bytes *would* fit a single KV value, and that property is genuinely nice — one key, one read, one fetch, none of the `splitStore` / `chunkKey` grid. It is the main thing option 2 is worth buying.
+The asymmetry that made brotli attractive for the client is unchanged and unexploited: the DO must use gzip because `DecompressionStream` is gzip-only, while a browser would decode either natively at no cost to us. That is what the 6.7 MB is still sitting on the table for. It is just no longer a decision anyone has to make before v1.
 
 ---
 
@@ -523,10 +546,10 @@ The permanent-for-this-session rule on version and load failures matters: a clie
 Ordered by how much they change the design.
 
 1. ~~**What does `finish_store_load` cost over 76 MB?**~~ **Answered by Phase 0, 2026-08-11: 0.1 ms**, and the whole non-download warm-up is ~14 ms. See §2 for the numbers and for what that speed implies about how much validation is actually happening. The remaining question this opens is smaller and not blocking: whether the package should do its own integrity check on a downloaded artifact — a length check is free, a hash is not — given that `finish_store_load` will not catch corruption past the header.
-2. ~~**Does Cloudflare pass a Worker-set `Content-Encoding: br` through untouched?**~~ **Answered 2026-08-11, against the real edge: yes — but only with `encodeBody: "manual"`.** Byte-identical passthrough with it; silent double-encoding without it. The gzip fallback is not needed, so the brotli artifact and its single-KV-value property stand. Full result and the failure mode in §7.
-3. ~~**What does the residue archive compress to at q6?**~~ **Answered: 3,585,604 bytes in 0.35 s.** Full-surface download is 24,385,474 + 3,585,604 = **27,971,078 bytes**, so the "~28 MB" carried through this document was right. One oddity worth knowing: q8 produces a *larger* residue (3,622,695) than q6. Brotli quality is not monotonic in output size, so pick a quality by measuring, not by assuming higher is smaller.
-4. ~~**Does brotli q6 fit an importer alarm's CPU budget in-Worker?**~~ **Wrong question — brotli cannot be produced in a Worker at all.** `CompressionStream` takes `"gzip" | "deflate" | "deflate-raw"`, the same gzip-only set as `DecompressionStream`. There is no CPU budget to fit because there is no API. §7 evaluates what to do instead.
-5. **Is the parser cleanly extractable from this repo?** It is pure TypeScript with no Worker dependencies, which is promising, but `tag-aliases.gen.ts` is generated and `pystr.ts` implements Python string semantics. Whether it vendors, or becomes a shared package both this Worker and `sylvan-browser` depend on, decides how §10's lockstep actually works.
+2. ~~**Does Cloudflare pass a Worker-set `Content-Encoding: br` through untouched?**~~ **Answered 2026-08-11, against the real edge: yes — but only with `encodeBody: "manual"`.** Byte-identical passthrough with it; silent double-encoding without it. The same holds for gzip, which is what shipped — the flag, not the format, is the load-bearing part. Full result and the failure mode in §7.
+3. ~~**What does the residue archive compress to at q6?**~~ **Answered: 3,585,604 bytes in 0.35 s**, for a 27,971,078-byte full-surface download at brotli. That is no longer the shipping number — the residue goes over the wire gzipped at 4,583,727 (§7), for 37,929,253 total — but it is what brotli would buy if it is ever revisited. One oddity worth knowing: q8 produces a *larger* residue (3,622,695) than q6. Brotli quality is not monotonic in output size, so pick a quality by measuring, not by assuming higher is smaller.
+4. ~~**Does brotli q6 fit an importer alarm's CPU budget in-Worker?**~~ **Wrong question — brotli cannot be produced in a Worker at all.** `CompressionStream` takes `"gzip" | "deflate" | "deflate-raw"`, the same gzip-only set as `DecompressionStream`. There is no CPU budget to fit because there is no API. Resolved from the other direction by `8909a96`, which gzipped the KV chunks for the Durable Object's own cold load; the browser reads those same values and there is no browser artifact to publish at all (§7).
+5. **Is the parser cleanly extractable from this repo?** It is pure TypeScript with no Worker dependencies, and it got easier while this document was being written: `9b42560` collapsed `tag-aliases.gen.ts` from 2,152 map literals to a single string parsed on first use, so the generated file is now 38 lines instead of ~2,180. What remains is that the file is still *generated* — from `tag-aliases.json`, alongside the store — and that `pystr.ts` implements Python string semantics the engine depends on matching. Whether the parser vendors into the package or becomes a shared dependency both this Worker and `sylvan-browser` import still decides how §10's lockstep works, and it is now the largest open design question here.
 6. **How does a consumer handle the completeness change?** Local results are uncapped where remote ones are paginated. That is the feature, but it means a UI built around 175-card pages meets a 6,732-card answer. An app-level concern, worth naming in the README.
 7. **How does the store artifact reach a packaged app?** (§8.2) Size is no longer the question — 28 MB clears every platform limit, verified. What is open is the mechanism: plain bundling (simple, goes stale at the app's release cadence) versus Background Assets / Play Asset Delivery (smaller binary, independently refreshable, platform-specific build work). And whether this package ships a build-time helper that fetches the artifact and pins its generation, or leaves that to each consumer's bundler — that choice is what makes the §10 gate a build check rather than a runtime one.
 
