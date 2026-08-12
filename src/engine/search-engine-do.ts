@@ -38,6 +38,7 @@ import type {
 	Env,
 	ResultShape,
 	ScryfallFuzzyResult,
+	StoreManifest,
 } from "./types";
 import { ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
 
@@ -439,9 +440,9 @@ export class SearchEngine extends DurableObject<Env> {
 	 * too — it cannot know the fan-out any other way, and shard 0 is exactly the
 	 * object every isolate in the region reports to.
 	 */
-	async notifyPublish(): Promise<{ swapped: boolean; shards: number }> {
+	async notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }> {
 		if (tryGetLoadedEngine() === null) return { swapped: false, shards: this.announcedShards };
-		const swapped = await refreshNow(this.env, this.loadContext());
+		const swapped = await refreshNow(this.env, this.loadContext(), manifest);
 		console.log(`[${this.label}] publish notify: ${swapped ? "swapped to the new store" : "already current"}`);
 		return { swapped, shards: this.announcedShards };
 	}

@@ -1694,11 +1694,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * `swapped: false`, and releasing an empty cache does nothing.
 	 */
 	private async stepNotify(): Promise<void> {
+		// Hand the manifest over rather than making nine regions each read it back
+		// out of KV. That read is ~124ms and it is paid IN FRONT OF whatever
+		// requests arrive during the swap, for a value this phase just wrote — the
+		// one piece of the cold path that is pure waste rather than unavoidable
+		// work. A region that is handed nothing falls back to reading it itself.
+		const published = JSON.parse((await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null");
 		const stubFor = (name: string, region: DurableObjectLocationHint) =>
 			this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(name), {
 				locationHint: region,
 			}) as unknown as {
-				notifyPublish(): Promise<{ swapped: boolean; shards: number }>;
+				notifyPublish(m?: unknown): Promise<{ swapped: boolean; shards: number }>;
 				releaseCache(): Promise<unknown>;
 			};
 
@@ -1706,7 +1712,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			REGION_HINTS.map(async (region) => {
 				// Shard 0 is the rendezvous every isolate in the region reports to, so
 				// it is the only object that knows the current fan-out.
-				const head = await stubFor(`engine-${region}`, region).notifyPublish();
+				const head = await stubFor(`engine-${region}`, region).notifyPublish(published);
 				const width = Math.max(1, Math.floor(head.shards));
 				// Sweep at least the default cap, and further if SHARDS_MAX raised the
 				// fan-out past it — otherwise a shard opened above the default would

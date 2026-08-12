@@ -468,12 +468,14 @@ function archiveBytes(
 	return { body: fromKv(), cached: false };
 }
 
-async function loadStore(env: Env, ctx?: LoadContext): Promise<Engine> {
+async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Promise<Engine> {
 	// The one place wasm is first touched, so the one place that has to bring
 	// it up. Isolates that only parse and RPC never reach here and never pay
 	// the instantiation — see the header of wasm-shim.ts.
 	wasm.ensureEngine();
-	const manifest = await readManifest(env);
+	// Supplied by refreshNow when the publisher handed one over; read from KV on a
+	// genuine cold start, which is the one case where nothing knows the key yet.
+	const manifest = known ?? (await readManifest(env));
 
 	if (!manifest) {
 		// Deliberately does NOT start an import. Building the card index is the
@@ -555,8 +557,13 @@ async function loadStore(env: Env, ctx?: LoadContext): Promise<Engine> {
  * Returns whether it actually swapped, so the caller can distinguish "converged"
  * from "was already current".
  */
-export async function refreshNow(env: Env, ctx: LoadContext): Promise<boolean> {
-	const manifest = await readManifest(env);
+export async function refreshNow(env: Env, ctx: LoadContext, known?: StoreManifest): Promise<boolean> {
+	// `known` is the manifest the PUBLISHER just wrote and is holding. Taking it
+	// skips a KV round trip that is pure waste on this path: measured at ~124ms,
+	// paid by every region, for a value the caller already has in hand. It is only
+	// ever supplied over RPC by our own coordinator, and loadStore re-validates the
+	// shape below regardless, so a bad one fails the load rather than being served.
+	const manifest = known ?? (await readManifest(env));
 	if (!manifest?.store_bytes) return false;
 	if (current?.storeKey === manifest.store_key) return false;
 
@@ -587,7 +594,7 @@ export async function refreshNow(env: Env, ctx: LoadContext): Promise<boolean> {
 		}
 	}
 
-	loading = loadStore(env, ctx).finally(() => {
+	loading = loadStore(env, ctx, manifest).finally(() => {
 		loading = null;
 	});
 	await loading;
