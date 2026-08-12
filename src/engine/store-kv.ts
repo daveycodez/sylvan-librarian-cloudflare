@@ -293,8 +293,27 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       Vec, so its size is not one of the two the header records. The version
  *       constant is what forces the rebuild, and this generation is what makes
  *       the deploy notice the stored VALUES changed.
+ *  12 — a mana value is a DECIMAL, and half of one rounded to zero (upstream
+ *       #923). `TransformedRow.cmc` goes `Option<i64>` -> `Option<f64>` and the
+ *       cast that fills it goes `maybe_int` -> `maybe_float`, mirroring
+ *       upstream's `integer` -> `real` column change; the engine stores it as an
+ *       `Option<f32>` instead of an `Option<u8>`.
+ *
+ *       CAPABILITY, NOT CORPUS. transform.rs still drops `set_type: "funny"`,
+ *       so the one card in all of Scryfall with a fractional mana value (Little
+ *       Girl, `{HW}`, cmc 0.5) is still not imported, and every value a
+ *       generation-12 store actually holds is numerically identical to what
+ *       generation 11 held. What changes is that the TYPE is no longer the thing
+ *       that would lose the fraction if the corpus filter ever moved.
+ *
+ *       Paired with ARCHIVE_FORMAT_VERSION 2026081103 -> 2026081104, and that
+ *       pairing is the load-bearing part rather than a formality: store-age.ts
+ *       forces a rebuild on a GENERATION mismatch, not on a format mismatch, so
+ *       bumping the format alone would deploy a Worker whose only store in KV is
+ *       one it cannot load — dark until the nightly cron. Same reasoning as
+ *       generations 7 and 11.
  */
-export const STORE_CONTENT_GENERATION = 11;
+export const STORE_CONTENT_GENERATION = 12;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

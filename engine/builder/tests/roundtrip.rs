@@ -323,7 +323,11 @@ fn result_fields_reach_the_response() {
     // Values, not just presence: an extractor wired to the wrong source field returns null, which
     // a presence-only assertion would happily accept.
     assert_eq!(card["layout"], json!("normal"));
-    assert_eq!(card["cmc"], json!(1), "cmc is the stored integer, not a string");
+    // A DECIMAL, deliberately: cmc is `Option<f32>` in the engine and `Option<f64>` in the row,
+    // because Scryfall types the field Decimal and {HW} makes that real (0.5). `json!(1)` and
+    // `json!(1.0)` are different serde_json numbers, so this assertion is what pins which one the
+    // extractor yields -- and the decimal is the one card_object.rs writes to the wire.
+    assert_eq!(card["cmc"], json!(1.0), "cmc is the stored decimal, not an integer or a string");
     assert_eq!(card["rarity"], json!("common"), "rarity_int 0 decodes to the word");
     assert_eq!(card["color_identity"], json!(["R"]), "the identity bitmap decodes to WUBRG letters");
     assert_eq!(

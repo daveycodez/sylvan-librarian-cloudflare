@@ -502,7 +502,10 @@ pub(crate) fn card_from_json(
         card_color_identity: jv_color_bits(d, "card_color_identity"),
         produced_mana: jv_color_bits(d, "produced_mana"),
 
-        cmc: jv_opt_u8(d, "cmc"), // Un-set cards have fractional cmc, but we don't load those into the dataset
+        // Read as f32, not truncated: `mana_cost` below already asks for the same key as an
+        // f32, so an integer cmc here was the only place the two disagreed. Mirrors
+        // `card_from_pydict` in lib.rs, which this exists to be the non-pyo3 twin of.
+        cmc: jv_opt_f32(d, "cmc"),
         creature_power: jv_opt_i8(d, "creature_power"),
         creature_toughness: jv_opt_i8(d, "creature_toughness"),
         planeswalker_loyalty: jv_opt_u8(d, "planeswalker_loyalty"),
@@ -808,7 +811,11 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u32v(r.type_line_id);
     e.u32v(r.set_name_id);
     e.opt(&r.released_at_int, |e, &v| e.u32v(v));
-    e.opt(&r.cmc, |e, &v| e.u8v(v));
+    // 4 bytes rather than 1: cmc is fractional (Scryfall types it Decimal -- {HW} is 0.5).
+    // Encoder and decoder are the two halves of ONE run's spill, both from the same wasm
+    // build, so the widening needs no compatibility shim -- but they must move together, and
+    // the decoder's matching `f32v` is the only other place that reads these bytes.
+    e.opt(&r.cmc, |e, &v| e.f32v(v));
     e.opt(&r.creature_power, |e, &v| e.u8v(v as u8));
     e.opt(&r.creature_toughness, |e, &v| e.u8v(v as u8));
     e.opt(&r.planeswalker_loyalty, |e, &v| e.u8v(v));
@@ -920,7 +927,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         type_line_id: d.u32v(),
         set_name_id: d.u32v(),
         released_at_int: d.opt(|d| d.u32v()),
-        cmc: d.opt(|d| d.u8v()),
+        cmc: d.opt(|d| d.f32v()), // 4 bytes -- see encode_card_row's note
         creature_power: d.opt(|d| d.u8v() as i8),
         creature_toughness: d.opt(|d| d.u8v() as i8),
         planeswalker_loyalty: d.opt(|d| d.u8v()),
@@ -1870,7 +1877,10 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // compiled here, so its five new entries would merge clean, build clean, and do nothing —
     // `fields=layout` would 400 as an unknown field. These are their live twins.
     ("layout", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.card_layout_id)))),
-    ("cmc", |c, _p, _s, _v| c.cmc.as_ref().copied().map(Value::from).unwrap_or(Value::Null)),
+    // Through `f32::from` because the archived scalar is an endian wrapper, and out as a JSON
+    // number that keeps its fraction: this is the value card_object.rs writes as the decimal
+    // `"cmc"` Scryfall answers with.
+    ("cmc", |c, _p, _s, _v| c.cmc.as_ref().copied().map(|v| Value::from(f32::from(v))).unwrap_or(Value::Null)),
     ("rarity", |_c, p, _s, _v| {
         p.card_rarity_int
             .as_ref()

@@ -96,7 +96,12 @@ pub struct RowDraft {
     pub card_legalities: Map<String, Value>,
     pub card_frame_data: Vec<String>,
     pub mana_cost_jsonb: Vec<(String, u32)>,
-    pub cmc: Option<i64>,
+    /// A DECIMAL, not an integer. Scryfall types cmc Decimal and means it -- the half-mana
+    /// symbol {HW} gives Little Girl a mana value of exactly 0.5 -- and this field is where the
+    /// Postgres `cmc` column sits in upstream's shape, so it is where an integer would silently
+    /// round it to 0. Upstream made the same change in the column type (#923,
+    /// api/db/2026-08-12-01-fractional-mana-value.sql: `integer` -> `real`).
+    pub cmc: Option<f64>,
     pub creature_power: Option<i64>,
     pub creature_toughness: Option<i64>,
     pub creature_power_text: Option<String>,
@@ -583,9 +588,12 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     // Lines 242-243: folded name (#649).
     let card_name_folded = fold_accents(&card_name.to_lowercase());
 
-    // Line 246 / 249: artist, truncated cmc.
+    // Line 246 / 249: artist, cmc. NOT truncated -- maybe_float, mirroring upstream's own
+    // switch away from maybe_int (#923). The corpus filter above still drops funny sets, so
+    // every value this actually sees today is integral; what changes is that a fraction would
+    // now survive rather than being rounded on the way in.
     let card_artist = s(card, "artist");
-    let cmc = maybe_int(card.get("cmc"));
+    let cmc = maybe_float(card.get("cmc"));
 
     // Lines 251-255: rarity only when non-empty.
     let rarity = s(card, "rarity").unwrap_or_default().to_lowercase();
@@ -1175,7 +1183,7 @@ pub fn finalize_row(
             Value::Array(r.card_types.into_iter().map(Value::String).collect()),
         );
         m.insert("card_watermark".into(), opt_str_val(&r.card_watermark));
-        m.insert("cmc".into(), opt_i64_val(r.cmc));
+        m.insert("cmc".into(), opt_f64_val(r.cmc));
         m.insert("collector_number".into(), opt_str_val(&r.collector_number));
         m.insert("collector_number_int".into(), opt_i64_val(r.collector_number_int));
         m.insert("creature_power".into(), opt_i64_val(r.creature_power));
@@ -1298,13 +1306,39 @@ mod tests {
         assert!(mana_cost_str_to_counts("{3}").is_empty());
     }
 
+    /// Scryfall types cmc Decimal: /cards/named?exact=Little+Girl answers "mana_cost":"{HW}",
+    /// "cmc":0.5, the only fractional mana value in the whole corpus. The cast here used to be
+    /// `maybe_int`, which is `int(float(v))` in upstream's shape and turned that into 0 -- the
+    /// same value a zero-cost card has.
+    ///
+    /// Little Girl itself is still filtered out by the funny-set rule above; this builds a card
+    /// that reaches the transform so the CAST is what is under test, not the corpus.
+    #[test]
+    fn a_fractional_mana_value_is_not_rounded() {
+        let mut card = minimal_card("Little Girl");
+        card["cmc"] = json!(0.5);
+        card["mana_cost"] = json!("{HW}");
+        let draft = transform(&card).unwrap().unwrap();
+        assert_eq!(draft.cmc, Some(0.5));
+    }
+
+    /// The funny-set filter is NOT relaxed by the change above: this is a capability, not a
+    /// corpus decision, and the one card with a fractional mana value stays out either way.
+    #[test]
+    fn a_funny_set_is_still_dropped() {
+        let mut card = minimal_card("Unfunny");
+        card["set_type"] = json!("funny");
+        card["cmc"] = json!(0.5);
+        assert!(transform(&card).unwrap().is_none(), "set_type funny must still be filtered out");
+    }
+
     #[test]
     fn lightning_bolt_transforms() {
         let draft = transform(&fixture("lightning_bolt")).unwrap().unwrap();
         assert_eq!(draft.card_name, "Lightning Bolt");
         assert_eq!(draft.card_types, vec!["Instant"]);
         assert_eq!(draft.card_colors, vec!["R"]);
-        assert_eq!(draft.cmc, Some(1));
+        assert_eq!(draft.cmc, Some(1.0));
         assert_eq!(draft.creature_power, None);
         assert_eq!(draft.creature_power_text, None);
         assert_eq!(draft.mana_cost_jsonb, vec![("R".to_string(), 1)]);

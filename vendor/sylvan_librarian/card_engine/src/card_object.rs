@@ -338,10 +338,10 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     // the engine at odds with `toScryfallCard`, which carries the same value as a decimal. The two
     // must agree byte for byte: tests/routes/card-object-parity.test.ts holds them to it.
     //
-    // This is FORMATTING, not precision. The stored value is a u8 (`opt_u8(d, "cmc")` in lib.rs,
-    // with upstream's own note that fractional-cmc cards are not loaded), so Little Girl's 0.5
-    // could not be represented even if funny sets were imported; that needs an archive change and
-    // a format bump.
+    // The PRECISION behind the formatting is now real too: the stored value is an `Option<f32>`
+    // (`opt_f32(d, "cmc")` in lib.rs, `jv_opt_f32` in core_api.rs), so Little Girl's 0.5 survives
+    // the archive and arrives here as 0.5 rather than 0. The corpus still excludes funny sets --
+    // this is the capability, not a decision to import them.
     match num_of(row, "cmc").and_then(serde_json::Value::as_f64) {
         Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
         None => out.extend_from_slice(b"null"),

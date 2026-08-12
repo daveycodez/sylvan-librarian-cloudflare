@@ -318,20 +318,19 @@ fn name_bigram_count(indexes: &Archived<CardIndexes>, bg: [u8; 2], n_cards: u32)
 /// WITHOUT materializing the id vec (mirrors `numeric_candidates`). None for
 /// Ne (not selective).
 fn numeric_count(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Option<u32> {
+    // No fractional-threshold shortcut, for the reason numeric_candidates dropped its own: an
+    // estimate of 0 for a predicate that matches a card would misplan the query.
     let (start, end) = match op {
         CmpOp::Ne => return None,
         CmpOp::Eq => {
-            if val.fract() != 0.0 {
-                return Some(0);
-            }
-            let s = idx.partition_point(|p| (i16::from(p.0) as f64) < val);
-            let e = idx.partition_point(|p| (i16::from(p.0) as f64) <= val);
+            let s = idx.partition_point(|p| (f32::from(p.0) as f64) < val);
+            let e = idx.partition_point(|p| (f32::from(p.0) as f64) <= val);
             (s, e)
         }
-        CmpOp::Lt => (0, idx.partition_point(|p| (i16::from(p.0) as f64) < val)),
-        CmpOp::Le => (0, idx.partition_point(|p| (i16::from(p.0) as f64) <= val)),
-        CmpOp::Gt => (idx.partition_point(|p| (i16::from(p.0) as f64) <= val), idx.len()),
-        CmpOp::Ge => (idx.partition_point(|p| (i16::from(p.0) as f64) < val), idx.len()),
+        CmpOp::Lt => (0, idx.partition_point(|p| (f32::from(p.0) as f64) < val)),
+        CmpOp::Le => (0, idx.partition_point(|p| (f32::from(p.0) as f64) <= val)),
+        CmpOp::Gt => (idx.partition_point(|p| (f32::from(p.0) as f64) <= val), idx.len()),
+        CmpOp::Ge => (idx.partition_point(|p| (f32::from(p.0) as f64) < val), idx.len()),
     };
     Some((end - start) as u32)
 }

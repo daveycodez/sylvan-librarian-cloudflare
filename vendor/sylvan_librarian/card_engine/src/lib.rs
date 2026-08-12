@@ -504,7 +504,12 @@ struct OracleCard {
     mana_cost_text_id: u32,
     type_line_id: u32,
 
-    cmc: Option<u8>,                  // always an integer; max ~16 in practice
+    // Mana value. Scryfall types this field Decimal, not Integer, and means it: the
+    // half-mana symbol {HW} gives Little Girl (Unhinged) a cmc of exactly 0.5. Whole numbers
+    // up to 2^24 and every half step are exact in f32. The corpus filter still drops funny
+    // sets, so today every stored value is integral and this only stops the TYPE from being
+    // the thing that loses the fraction.
+    cmc: Option<f32>,
     creature_power: Option<i8>,       // can be negative (e.g. Char-Rumbler)
     creature_toughness: Option<i8>,
     planeswalker_loyalty: Option<u8>, // always 1-12
@@ -628,7 +633,7 @@ struct CardRow {
     set_name_id: u32,
     released_at_int: Option<u32>,
 
-    cmc: Option<u8>,
+    cmc: Option<f32>,
     creature_power: Option<i8>,
     creature_toughness: Option<i8>,
     planeswalker_loyalty: Option<u8>,
@@ -1259,7 +1264,9 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         card_color_identity: jsonb_color_to_bits(d, "card_color_identity"),
         produced_mana: jsonb_color_to_bits(d, "produced_mana"),
 
-        cmc: opt_u8(d, "cmc"), // Un-set cards have fractional cmc, but we don't load those into the dataset
+        // Read as f32, not truncated: `mana_cost` below already asks for the same key as an
+        // f32, so an integer cmc here was the only place the two disagreed.
+        cmc: opt_f32(d, "cmc"),
         creature_power: opt_i8(d, "creature_power"),
         creature_toughness: opt_i8(d, "creature_toughness"),
         planeswalker_loyalty: opt_u8(d, "planeswalker_loyalty"),
@@ -2095,19 +2102,26 @@ fn union_sorted(a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
 }
 
 // ─── Numeric index ────────────────────────────────────────────────────────────
-// Sorted Vec<(i16, u32)> maps field value -> card index for cmc/power/toughness.
-// i16 covers both u8 (cmc: 0-255) and i8 (power/toughness: -128-127) without loss.
+// Sorted Vec<(f32, u32)> maps field value -> card index for cmc/power/toughness.
+// f32 was i16 until cmc became fractional (Scryfall types it Decimal -- {HW} is 0.5): the key
+// has to hold what the field holds, or `cmc=0.5` can only ever answer nothing. Widening costs
+// no memory -- (i16, u32) was already padded to 8 bytes for the u32's alignment, and (f32, u32)
+// is 8 bytes with none -- and no precision: power/toughness are i8, all exact in f32.
 // Binary search gives the candidate slice; sort by card index for intersection.
 
-type NumericIndex = Vec<(i16, u32)>;
+type NumericIndex = Vec<(f32, u32)>;
 
-fn build_numeric_index(cards: &[OracleCard], get_val: impl Fn(&OracleCard) -> Option<i16>) -> NumericIndex {
+fn build_numeric_index(cards: &[OracleCard], get_val: impl Fn(&OracleCard) -> Option<f32>) -> NumericIndex {
     let mut idx: NumericIndex = cards
         .iter()
         .enumerate()
         .filter_map(|(i, c)| get_val(c).map(|v| (v, i as u32)))
         .collect();
-    idx.sort_unstable();
+    // total_cmp rather than a derived Ord, which f32 doesn't have. No value in here is NaN
+    // (each is a number the builder stored), so the total order and the numeric order agree on
+    // everything present. Ties break on card index so the slice stays ascending in id -- the
+    // invariant `sort_unstable` on a (key, id) tuple used to give for free.
+    idx.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     idx
 }
 
@@ -2149,18 +2163,20 @@ fn negate_op(op: CmpOp) -> CmpOp {
 /// `n_cards` is the id DOMAIN, which is not `idx.len()`: the numeric indexes are nullable (a card with
 /// no power has no entry), so ids run past the index's length and a bitmap sized from it would panic.
 fn numeric_candidates(idx: &Archived<NumericIndex>, op: CmpOp, val: f64, n_cards: usize) -> Option<Vec<u32>> {
+    // No `val.fract() != 0.0 => empty` shortcut for Eq any more: it was only sound while every
+    // indexed value was an integer, and `cmc=0.5` is exactly the query it would answer wrongly.
+    // Binary search needs no special case -- a threshold no card holds gives an empty range.
     let (start, end) = match op {
         CmpOp::Ne => return None,
         CmpOp::Eq => {
-            if val.fract() != 0.0 { return Some(Vec::new()); }
-            let s = idx.partition_point(|p| (i16::from(p.0) as f64) < val);
-            let e = idx.partition_point(|p| (i16::from(p.0) as f64) <= val);
+            let s = idx.partition_point(|p| (f32::from(p.0) as f64) < val);
+            let e = idx.partition_point(|p| (f32::from(p.0) as f64) <= val);
             (s, e)
         }
-        CmpOp::Lt => (0, idx.partition_point(|p| (i16::from(p.0) as f64) < val)),
-        CmpOp::Le => (0, idx.partition_point(|p| (i16::from(p.0) as f64) <= val)),
-        CmpOp::Gt => (idx.partition_point(|p| (i16::from(p.0) as f64) <= val), idx.len()),
-        CmpOp::Ge => (idx.partition_point(|p| (i16::from(p.0) as f64) < val), idx.len()),
+        CmpOp::Lt => (0, idx.partition_point(|p| (f32::from(p.0) as f64) < val)),
+        CmpOp::Le => (0, idx.partition_point(|p| (f32::from(p.0) as f64) <= val)),
+        CmpOp::Gt => (idx.partition_point(|p| (f32::from(p.0) as f64) <= val), idx.len()),
+        CmpOp::Ge => (idx.partition_point(|p| (f32::from(p.0) as f64) < val), idx.len()),
     };
     // Card space, so the domain is `n_cards` -- `MATERIALIZE_BITMAP_RATIO` reads the domain rather than
     // assuming printing space, which is the whole reason it is a ratio.
@@ -2184,7 +2200,7 @@ fn numeric_candidates(idx: &Archived<NumericIndex>, op: CmpOp, val: f64, n_cards
 /// matches field_num's own widening exactly (the differential test asserts this).
 #[derive(Archive, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
 struct ArithTupleKey {
-    cmc: Option<u8>,
+    cmc_bits: Option<u32>,
     power: Option<i8>,
     toughness: Option<i8>,
     loyalty: Option<u8>,
@@ -2242,7 +2258,7 @@ fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
     let mut postings: Vec<Vec<u32>> = Vec::new();
     for (i, c) in cards.iter().enumerate() {
         let key = ArithTupleKey {
-            cmc: c.cmc,
+            cmc_bits: c.cmc.map(f32::to_bits),
             power: c.creature_power,
             toughness: c.creature_toughness,
             loyalty: c.planeswalker_loyalty,
@@ -2288,7 +2304,9 @@ fn arith_tuple_narrow(filter: &FilterExpr, idx: &Archived<ArithTupleIndex>, n_ca
         // Widen exactly as field_num does (see ArithTupleKey's doc): u8/i8 → f64 is lossless and
         // matches field_num's `_ as f32 as f64` for these domains. The archived Option<u8>/<i8>
         // store their scalars natively (no endian wrapper), so `f64::from(*v)` reads them directly.
-        let cmc = key.cmc.as_ref().map(|v| f64::from(*v));
+        // cmc goes back through `from_bits` first -- the same round trip `to_bits` made at
+        // build time, so the key and the card widen from the identical f32.
+        let cmc = key.cmc_bits.as_ref().map(|v| f64::from(f32::from_bits(u32::from(*v))));
         let power = key.power.as_ref().map(|v| f64::from(*v));
         let toughness = key.toughness.as_ref().map(|v| f64::from(*v));
         let loyalty = key.loyalty.as_ref().map(|v| f64::from(*v));
@@ -3299,7 +3317,7 @@ fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     };
     let (edhrec, edhrec_inv) = both(&|c| c.edhrec_rank.map(|v| v as f32));
     let (cubecobra, cubecobra_inv) = both(&|c| c.cubecobra_score);
-    let (cmc, cmc_inv) = both(&|c| c.cmc.map(|v| v as f32));
+    let (cmc, cmc_inv) = both(&|c| c.cmc);
     let (power, power_inv) = both(&|c| c.creature_power.map(|v| v as f32));
     let (toughness, toughness_inv) = both(&|c| c.creature_toughness.map(|v| v as f32));
     let (name, name_inv) = both(&|c| Some(c.name_rank as f32));
@@ -12893,7 +12911,16 @@ const COMPAT_ARCHIVE_MAGIC: [u8; 8] = *b"ATCOMPAT";
 //                gains `loyalty_id` and `OracleFace` gains `defense_text_id`, so both a printing's
 //                residue and an oracle face grow. `OracleFace` is behind a Vec, so its size is not
 //                one of the two the header records — this constant is what forces the rebuild.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081103;
+//   2026081104 — a mana value is a DECIMAL, and half of one rounded to zero (upstream #923).
+//                `OracleCard.cmc` and `CardRow.cmc` go `Option<u8>` -> `Option<f32>`,
+//                `NumericIndex`'s key goes `i16` -> `f32`, `ArithTupleKey` holds cmc as
+//                `f32::to_bits`, and `BucketBounds` widens to f32 so a fractional observation
+//                cannot round its way into an unsound bucket verdict. `OracleCard` grows (304 ->
+//                320 bytes here) so the header's own size check would also catch it, but only by
+//                luck of that struct moving: the three INDEX types are not measured by the header
+//                at all, and a change confined to them would pass it. Reading an old store under
+//                the new layout would reinterpret integer cmc bytes as float bits.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081104;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 /// The residue archive's header. Distinct magic so a residue archive can never be accepted as a
@@ -13490,9 +13517,9 @@ fn build_card_data_sorted(
     let indexes = CardIndexes {
         name_trigram,
         oracle_trigram,
-        cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
-        power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
-        toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
+        cmc:            build_numeric_index(&cards, |c| c.cmc),
+        power:          build_numeric_index(&cards, |c| c.creature_power.map(f32::from)),
+        toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(f32::from)),
         rarity:         build_rarity_index(&printings, &offsets),
         subtypes:       subtypes_idx,
         keywords:       keywords_idx,
