@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { encodeRulingsBucket, type RulingRow, rulingsBucketKey, rulingsBucketOf } from "../../src/engine/rulings-kv";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
 import { FakeEngine, FakeKV, FIXTURE_CARDS, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
@@ -528,6 +529,21 @@ describe("the card object", () => {
 		// "X" is a real printed loyalty (Nissa, Steward of Elements) and must survive verbatim
 		// rather than being coerced through the integer column.
 		expect(toScryfallCard({ ...row, loyalty: "X" }).loyalty).toBe("X");
+	});
+
+	test("cmc is a decimal, as Scryfall types it", () => {
+		// api.scryfall.com answers `"cmc":1.0`, not `"cmc":1`
+		// (https://api.scryfall.com/cards/named?exact=Lightning+Bolt). The field is decimal because
+		// fractional mana values are real: Little Girl costs {HW} and answers `"cmc":0.5`. A
+		// whole-numbered mana value therefore still carries its decimal point, and JavaScript —
+		// which has one number type and writes `JSON.stringify(1.0)` as `"1"` — cannot express that
+		// without help. See stringifyScryfall.
+		const body = stringifyScryfall(toScryfallCard({ ...row, cmc: 1 }));
+		expect(body).toContain('"cmc":1.0');
+		// A half mana value passes through untouched, for the day funny sets are imported.
+		expect(stringifyScryfall({ cmc: 0.5 })).toBe('{"cmc":0.5}');
+		// And a card with no mana value still says so.
+		expect(stringifyScryfall(toScryfallCard({ ...row, cmc: null }))).toContain('"cmc":null');
 	});
 
 	test("every derived URI is a pure function of the ids", () => {

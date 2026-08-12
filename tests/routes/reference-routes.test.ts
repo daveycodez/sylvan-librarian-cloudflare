@@ -45,12 +45,23 @@ const SYMBOLS = [
 /** A context whose KV holds the reference values, rendered exactly as the import renders them. */
 function referenceCtx(): { ctx: ReturnType<typeof makeCtx>; kv: FakeKV } {
 	const kv = new FakeKV();
-	const { list, buckets } = renderSets(SETS);
+	// The raw text a mirror stores; JSON.stringify is exact for these fixtures, and the real
+	// publisher passes Scryfall's own bytes.
+	const { list, buckets } = renderSets(
+		SETS,
+		SETS.map((set) => JSON.stringify(set)),
+	);
 	kv.put(setsListKey(), list);
 	for (let bucket = 0; bucket < buckets.length; bucket++) kv.put(setsBucketKey(bucket), buckets[bucket] as Uint8Array);
 	const creatureTypes = renderCatalog(["Elf", "Goblin", "Druid"]);
 	kv.put(catalogKey("creature-types"), encodeCountedArray(creatureTypes.json, creatureTypes.count));
-	kv.put(symbologyKey(), renderSymbology(SYMBOLS).json);
+	kv.put(
+		symbologyKey(),
+		renderSymbology(
+			SYMBOLS,
+			SYMBOLS.map((symbol) => JSON.stringify(symbol)),
+		).json,
+	);
 	return { ctx: makeCtx({ kv }), kv };
 }
 

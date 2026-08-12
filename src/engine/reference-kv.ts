@@ -175,13 +175,76 @@ export function setsBucketOf(key: string): number {
 }
 
 /**
+ * The raw JSON text of each element of a response's `data` array.
+ *
+ * The mirrored routes serve what api.scryfall.com sent, and "what it sent" includes how it wrote
+ * the numbers: a symbol's `mana_value` is DECIMAL there, so `0` arrives as `0.0`. Re-serializing
+ * through `JSON.parse` and `JSON.stringify` silently drops that — JavaScript has one number type
+ * and cannot write `0.0` — and it would also drop any field Scryfall adds that this port does not
+ * know to keep. Copying the bytes keeps both.
+ *
+ * A scanner rather than a regex: elements are objects containing braces, brackets and escaped
+ * quotes, and only depth tracking with string awareness finds their boundaries.
+ */
+export function rawArrayElements(responseText: string, arrayKey = "data"): string[] {
+	const keyAt = responseText.indexOf(`"${arrayKey}"`);
+	if (keyAt < 0) return [];
+	const open = responseText.indexOf("[", keyAt);
+	if (open < 0) return [];
+
+	const elements: string[] = [];
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let start = -1;
+	for (let i = open; i < responseText.length; i++) {
+		const c = responseText[i] as string;
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (c === "\\") escaped = true;
+			else if (c === '"') inString = false;
+			continue;
+		}
+		if (c === '"') {
+			inString = true;
+			if (depth === 1 && start < 0) start = i; // a bare string element, e.g. a catalog value
+			continue;
+		}
+		if (c === "[" || c === "{") {
+			depth += 1;
+			if (depth === 2 && start < 0) start = i;
+			continue;
+		}
+		if (c === "]" || c === "}") {
+			depth -= 1;
+			if (depth === 1 && start >= 0) {
+				elements.push(responseText.slice(start, i + 1));
+				start = -1;
+			}
+			if (depth === 0) break; // the array closed
+			continue;
+		}
+		if (depth === 1 && c === "," && start >= 0) {
+			elements.push(responseText.slice(start, i).trim());
+			start = -1;
+			continue;
+		}
+		if (depth === 1 && start < 0 && !/[\s,]/.test(c)) start = i; // a number or literal element
+	}
+	return elements;
+}
+
+/**
  * Render the reference values from what api.scryfall.com answered.
  *
  * Pure: the caller does the fetching and the writing, so the same rendering runs in the nightly
  * import (inside a Durable Object) and in the seeding script (inside bun), and neither can drift
  * from the other.
  */
-export function renderSets(sets: Record<string, unknown>[]): {
+export function renderSets(
+	sets: Record<string, unknown>[],
+	raw: string[],
+): {
 	list: string;
 	buckets: Uint8Array[];
 	setCount: number;
@@ -189,9 +252,10 @@ export function renderSets(sets: Record<string, unknown>[]): {
 	// Upstream keeps only entries carrying both an id and a code, and stores them in the order
 	// Scryfall returned — which is `released_at` descending with same-day sets in an order nothing
 	// in the object reproduces, so the sequence itself is the data.
-	const usable = sets.filter(
-		(entry) => typeof entry.id === "string" && entry.id && typeof entry.code === "string" && entry.code,
-	);
+	// Paired by index with the raw text, so each set is stored exactly as Scryfall wrote it.
+	const usable = sets
+		.map((entry, at) => ({ entry, json: raw[at] ?? JSON.stringify(entry) }))
+		.filter(({ entry }) => typeof entry.id === "string" && entry.id && typeof entry.code === "string" && entry.code);
 	// A TCGplayer group id is NOT unique across sets, which the live data is the only way to learn:
 	// on 2026-08-12, six ids were shared by two or more sets, one of them (62) by all twenty-one
 	// Judge Gift Cards sets. So a key can be claimed twice, and the first set in Scryfall's own
@@ -206,8 +270,7 @@ export function renderSets(sets: Record<string, unknown>[]): {
 	// the README's deviations list.
 	const claimed = new Set<string>();
 	const perBucket: KeyedEntry[][] = Array.from({ length: SETS_BUCKET_COUNT }, () => []);
-	for (const set of usable) {
-		const json = JSON.stringify(set);
+	for (const { entry: set, json } of usable) {
 		for (const key of setLookupKeys(set)) {
 			if (claimed.has(key)) continue;
 			claimed.add(key);
@@ -215,16 +278,19 @@ export function renderSets(sets: Record<string, unknown>[]): {
 		}
 	}
 	return {
-		list: `[${usable.map((set) => JSON.stringify(set)).join(",")}]`,
+		list: `[${usable.map(({ json }) => json).join(",")}]`,
 		buckets: perBucket.map((entries) => encodeKeyedBlob(entries, SET_KEY_WIDTH)),
 		setCount: usable.length,
 	};
 }
 
 /** The `data` array for one catalog, from the strings Scryfall answered with. */
-export function renderCatalog(values: unknown[]): { json: string; count: number } {
+export function renderCatalog(values: unknown[], raw?: string[]): { json: string; count: number } {
 	const strings = values.filter((value): value is string => typeof value === "string");
-	return { json: JSON.stringify(strings), count: strings.length };
+	// Catalogs are arrays of strings, so re-serializing is lossless — but the raw text is used when
+	// it is available, so all three mirrors answer with the bytes Scryfall sent.
+	const json = raw && raw.length === strings.length ? `[${raw.join(",")}]` : JSON.stringify(strings);
+	return { json, count: strings.length };
 }
 
 // ── the counted-array value ──────────────────────────────────────────────────
@@ -282,8 +348,11 @@ export function readCountedArray(value: Uint8Array): { count: number; data: Uint
 }
 
 /** The `data` array for `/symbology`, from what Scryfall answered with. */
-export function renderSymbology(symbols: Record<string, unknown>[]): { json: string; count: number } {
-	// Upstream keeps the entries that carry a symbol, in Scryfall's order.
-	const usable = symbols.filter((entry) => typeof entry.symbol === "string" && entry.symbol);
-	return { json: `[${usable.map((entry) => JSON.stringify(entry)).join(",")}]`, count: usable.length };
+export function renderSymbology(symbols: Record<string, unknown>[], raw: string[]): { json: string; count: number } {
+	// Upstream keeps the entries that carry a symbol, in Scryfall's order; the bytes are Scryfall's
+	// own, which is what keeps `"mana_value":0.0` a decimal.
+	const usable = symbols
+		.map((entry, at) => ({ entry, json: raw[at] ?? JSON.stringify(entry) }))
+		.filter(({ entry }) => typeof entry.symbol === "string" && entry.symbol);
+	return { json: `[${usable.map(({ json }) => json).join(",")}]`, count: usable.length };
 }

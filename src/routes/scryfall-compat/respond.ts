@@ -26,6 +26,59 @@ export function asBool(value: string | undefined, fallback = false): boolean {
 	return TRUE_SPELLINGS.has(value.trim().toLowerCase());
 }
 
+// ─── decimal fields ──────────────────────────────────────────────────────────
+//
+// Scryfall types `cmc` and a symbol's `mana_value` as DECIMAL, and its JSON says so: Lightning Bolt
+// is `"cmc":1.0`, not `"cmc":1` (api.scryfall.com/cards/named?exact=Lightning+Bolt). The field is
+// decimal because fractional mana values are real — Little Girl costs {HW} and has `"cmc":0.5` —
+// so a whole-numbered mana value still serializes with its decimal point.
+//
+// JavaScript cannot express that. It has one number type, and `JSON.stringify(1.0)` is `"1"`, so
+// every card object this port serialized was one byte short of Scryfall's on a field a strictly
+// typed client can notice. Python, where upstream lives, has no such problem: 1.0 is a float and
+// `json.dumps` writes `1.0`.
+//
+// So the number is carried through `JSON.stringify` as a marked STRING and unquoted afterwards.
+// The marker is a per-isolate UUID rather than a fixed token: the unquoting is a text substitution
+// over the whole body, and a card's own oracle text must not be able to spell it.
+const DECIMAL_FIELDS: ReadonlySet<string> = new Set(["cmc", "mana_value"]);
+
+// The marker is built ON FIRST USE, not at module load. Workers forbid generating random values in
+// global scope — "Disallowed operation called within global scope" — and a `crypto.randomUUID()`
+// here does not fail at the request that needs it, it fails the whole isolate at startup, so every
+// route 500s. `bun dev` refused to boot at all, which is the only reason this was cheap to find.
+let decimalMark: { mark: string; pattern: RegExp } | null = null;
+
+function decimalMarker(): { mark: string; pattern: RegExp } {
+	decimalMark ??= (() => {
+		const mark = `@@decimal-${crypto.randomUUID()}:`;
+		return { mark, pattern: new RegExp(`"${mark}([-0-9.eE+]+)"`, "g") };
+	})();
+	return decimalMark;
+}
+
+/** A decimal-typed number as Scryfall writes it: `1` becomes `1.0`, `0.5` stays `0.5`. */
+function decimalText(value: number): string {
+	return Number.isInteger(value) ? `${value}.0` : String(value);
+}
+
+/**
+ * `JSON.stringify` for Scryfall objects, with decimal-typed fields written as decimals.
+ *
+ * Every Scryfall-shaped body this port emits goes through here, so the rule lives in one place —
+ * and the engine, which writes card objects itself in Rust, is held to the same bytes by
+ * tests/routes/card-object-parity.test.ts.
+ */
+export function stringifyScryfall(value: unknown, pretty = false): string {
+	const { mark, pattern } = decimalMarker();
+	const marked = JSON.stringify(
+		value,
+		(key, raw) => (DECIMAL_FIELDS.has(key) && typeof raw === "number" ? `${mark}${decimalText(raw)}` : raw),
+		pretty ? 2 : undefined,
+	);
+	return marked.replace(pattern, "$1");
+}
+
 /** One Scryfall object as a response. An error object's own `status` becomes the HTTP status. */
 export function scryfallJson(
 	payload: Record<string, unknown>,
@@ -33,7 +86,7 @@ export function scryfallJson(
 	cache: Record<string, string>,
 ): Response {
 	const status = payload.object === "error" && typeof payload.status === "number" ? payload.status : 200;
-	return new Response(pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload), {
+	return new Response(stringifyScryfall(payload, pretty), {
 		status,
 		headers: { "content-type": JSON_CONTENT_TYPE, ...cache },
 	});
@@ -58,7 +111,7 @@ function spliceData(
 	pretty: boolean,
 	cache: Record<string, string>,
 ): Response {
-	const body = pretty ? JSON.stringify(envelope, null, 2) : JSON.stringify(envelope);
+	const body = stringifyScryfall(envelope, pretty);
 	const key = pretty ? '"data": ' : '"data":';
 	const marker = `${key}[]`;
 	const at = body.lastIndexOf(marker);

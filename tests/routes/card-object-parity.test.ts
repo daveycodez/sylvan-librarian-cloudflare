@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import * as bg from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
 
 // Instantiated here rather than through src/engine/wasm-shim.ts: that shim's `.wasm` import
 // resolves to a WebAssembly.Module only under wrangler's CompiledWasm rule, and Bun hands back
@@ -189,7 +190,10 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 	test.each(CASES)("%s", (_label, row) => {
 		const clean = asRow(row);
 		const fromRust = scryfall_card_from_row(JSON.stringify(clean), BASE);
-		const fromTs = JSON.stringify(toScryfallCard(clean, BASE));
+		// `stringifyScryfall`, not `JSON.stringify`: the routes serialize card objects through it,
+		// and it is what writes `cmc` as the DECIMAL Scryfall types it as. Comparing against a plain
+		// stringify would hold the engine to bytes this port never actually sends.
+		const fromTs = stringifyScryfall(toScryfallCard(clean, BASE));
 		expect(fromRust).toBe(fromTs);
 	});
 

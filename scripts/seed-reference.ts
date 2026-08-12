@@ -23,6 +23,7 @@ import {
 	REFERENCE_FORMAT_VERSION,
 	REFERENCE_META_KEY,
 	type ReferenceMeta,
+	rawArrayElements,
 	renderCatalog,
 	renderSets,
 	renderSymbology,
@@ -56,14 +57,22 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let firstRequest = true;
 
-async function fetchJson(path: string): Promise<Record<string, unknown>> {
+/**
+ * One endpoint, as BOTH the parsed payload and its raw text.
+ *
+ * The raw text is what actually gets stored: these routes serve what Scryfall sent, down to how it
+ * wrote the numbers (`"mana_value":0.0` is a decimal there, and JavaScript cannot re-emit that).
+ * The parsed copy is only used to derive lookup keys.
+ */
+async function fetchJson(path: string): Promise<{ payload: Record<string, unknown>; raw: string[] }> {
 	// Before the request rather than after it, so the pacing holds however the callers are ordered
 	// and no path can skip it by returning early.
 	if (!firstRequest) await sleep(SCRYFALL_DELAY_MS);
 	firstRequest = false;
 	const res = await fetch(`${API}/${path}`, { headers: { "User-Agent": userAgent, Accept: "application/json" } });
 	if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
-	return (await res.json()) as Record<string, unknown>;
+	const text = await res.text();
+	return { payload: JSON.parse(text) as Record<string, unknown>, raw: rawArrayElements(text) };
 }
 
 if (ifMissing && (await kvHasCurrent(REFERENCE_META_KEY, REFERENCE_FORMAT_VERSION, remote))) {
@@ -76,10 +85,10 @@ const entries: { key: string; value: string }[] = [];
 // ── sets ─────────────────────────────────────────────────────────────────────
 
 console.log("Fetching /sets ...");
-const setsPayload = await fetchJson("sets");
+const { payload: setsPayload, raw: setsRaw } = await fetchJson("sets");
 const setsData = setsPayload.data;
 if (!Array.isArray(setsData) || setsData.length === 0) throw new Error("/sets answered no data");
-const { list, buckets, setCount } = renderSets(setsData as Record<string, unknown>[]);
+const { list, buckets, setCount } = renderSets(setsData as Record<string, unknown>[], setsRaw);
 entries.push({ key: setsListKey(), value: list });
 for (let bucket = 0; bucket < buckets.length; bucket++) {
 	// Decoded strictly: a value that is not valid UTF-8 would be mangled by bulk put's string path,
@@ -91,10 +100,10 @@ for (let bucket = 0; bucket < buckets.length; bucket++) {
 
 const catalogCounts: Record<string, number> = {};
 for (const name of CATALOG_NAMES) {
-	const payload = await fetchJson(`catalog/${name}`);
+	const { payload, raw } = await fetchJson(`catalog/${name}`);
 	const values = payload.data;
 	if (!Array.isArray(values)) throw new Error(`/catalog/${name} answered no data array`);
-	const { json, count } = renderCatalog(values);
+	const { json, count } = renderCatalog(values, raw);
 	catalogCounts[name] = count;
 	entries.push({ key: catalogKey(name), value: encodeCountedArray(json, count) });
 }
@@ -104,10 +113,10 @@ console.log(
 
 // ── symbology ────────────────────────────────────────────────────────────────
 
-const symbologyPayload = await fetchJson("symbology");
+const { payload: symbologyPayload, raw: symbologyRaw } = await fetchJson("symbology");
 const symbolsData = symbologyPayload.data;
 if (!Array.isArray(symbolsData) || symbolsData.length === 0) throw new Error("/symbology answered no data");
-const symbology = renderSymbology(symbolsData as Record<string, unknown>[]);
+const symbology = renderSymbology(symbolsData as Record<string, unknown>[], symbologyRaw);
 entries.push({ key: symbologyKey(), value: symbology.json });
 
 const meta: ReferenceMeta = {

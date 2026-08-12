@@ -43,6 +43,7 @@ import {
 	REFERENCE_FORMAT_VERSION,
 	REFERENCE_META_KEY,
 	type ReferenceMeta,
+	rawArrayElements,
 	renderCatalog,
 	renderSets,
 	renderSymbology,
@@ -1860,14 +1861,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * pays it too: slices are separate alarm invocations, and this object cannot see how recently
 	 * the previous one finished.
 	 */
-	private async fetchScryfallJson(path: string): Promise<Record<string, unknown>> {
+	private async fetchScryfallJson(path: string): Promise<{ payload: Record<string, unknown>; raw: string[] }> {
 		await scheduler.wait(SCRYFALL_REQUEST_DELAY_MS);
 		const base = (this.env as { SCRYFALL_API_URL?: string }).SCRYFALL_API_URL ?? SCRYFALL_API_URL;
 		const res = await fetch(`${base}/${path}`, {
 			headers: { "User-Agent": userAgent(), Accept: "application/json" },
 		});
 		if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
-		return (await res.json()) as Record<string, unknown>;
+		// The raw text is what gets stored: these routes serve what Scryfall sent, down to how it
+		// wrote its numbers (`"mana_value":0.0` is a decimal, and JavaScript cannot re-emit that).
+		// The parsed copy only supplies the lookup keys.
+		const text = await res.text();
+		return { payload: JSON.parse(text) as Record<string, unknown>, raw: rawArrayElements(text) };
 	}
 
 	/**
@@ -1888,10 +1893,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async referenceSets(): Promise<void> {
-		const payload = await this.fetchScryfallJson("sets");
+		const { payload, raw } = await this.fetchScryfallJson("sets");
 		const sets = (payload.data ?? []) as Record<string, unknown>[];
 		if (!Array.isArray(sets) || sets.length === 0) throw new Error("/sets answered no data");
-		const { list, buckets, setCount } = renderSets(sets);
+		const { list, buckets, setCount } = renderSets(sets, raw);
 		let written = (await this.putReferenceValue(setsListKey(), list)) ? 1 : 0;
 		for (let bucket = 0; bucket < buckets.length; bucket++) {
 			if (await this.putReferenceValue(setsBucketKey(bucket), buckets[bucket] as Uint8Array)) written += 1;
@@ -1909,10 +1914,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		let failed = 0;
 		for (const name of CATALOG_NAMES) {
 			try {
-				const payload = await this.fetchScryfallJson(`catalog/${name}`);
+				const { payload, raw } = await this.fetchScryfallJson(`catalog/${name}`);
 				const values = payload.data;
 				if (!Array.isArray(values)) throw new Error("no data array");
-				const { json, count } = renderCatalog(values);
+				const { json, count } = renderCatalog(values, raw);
 				if (await this.putReferenceValue(catalogKey(name), encodeCountedArray(json, count))) written += 1;
 				counts[name] = count;
 			} catch (err) {
@@ -1929,10 +1934,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async referenceSymbology(): Promise<void> {
-		const payload = await this.fetchScryfallJson("symbology");
+		const { payload, raw } = await this.fetchScryfallJson("symbology");
 		const symbols = (payload.data ?? []) as Record<string, unknown>[];
 		if (!Array.isArray(symbols) || symbols.length === 0) throw new Error("/symbology answered no data");
-		const { json, count } = renderSymbology(symbols);
+		const { json, count } = renderSymbology(symbols, raw);
 		const written = await this.putReferenceValue(symbologyKey(), json);
 
 		// The meta key last, as everywhere else here: it is what says the published set is real.

@@ -332,8 +332,18 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_bool(out, &mut first, "highres_image", bool_of(row, "highres_image"));
     write_str_or_null(out, &mut first, "image_status", str_of(row, "image_status"));
     write_key(out, &mut first, "cmc");
-    match num_of(row, "cmc") {
-        Some(v) => serde_json::to_writer(&mut *out, v).expect("number"),
+    // As a DECIMAL, which is what api.scryfall.com answers with: `"cmc":1.0`, not `"cmc":1` (see
+    // https://api.scryfall.com/cards/named?exact=Lightning+Bolt). Writing the stored number
+    // directly emits `1`, because the engine holds cmc as an integer -- and that would also put
+    // the engine at odds with `toScryfallCard`, which carries the same value as a decimal. The two
+    // must agree byte for byte: tests/routes/card-object-parity.test.ts holds them to it.
+    //
+    // This is FORMATTING, not precision. The stored value is a u8 (`opt_u8(d, "cmc")` in lib.rs,
+    // with upstream's own note that fractional-cmc cards are not loaded), so Little Girl's 0.5
+    // could not be represented even if funny sets were imported; that needs an archive change and
+    // a format bump.
+    match num_of(row, "cmc").and_then(serde_json::Value::as_f64) {
+        Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
         None => out.extend_from_slice(b"null"),
     }
     write_str_or_null(out, &mut first, "type_line", str_of(row, "type_line"));
