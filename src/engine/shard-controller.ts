@@ -343,7 +343,7 @@ function expand(state: RegionState, region: string, now: number, why: string): v
 	state.queuedAt = [];
 	state.pendingWarmShard = state.targetShards - 1;
 	console.log(
-		`Shard controller: ${region} expanding to ${state.targetShards} shards (${why}); ` +
+		`[${region}] shard controller: expanding to ${state.targetShards} shards (${why}); ` +
 			`shard ${state.pendingWarmShard} takes no traffic until it is warm`,
 	);
 }
@@ -437,7 +437,7 @@ export function markShardReady(region: string, shard: number): void {
 	const admitted = Math.min(Math.max(state.readyShards, shard + 1), state.targetShards);
 	if (admitted === state.readyShards) return;
 	state.readyShards = admitted;
-	console.log(`Shard controller: ${region} shard ${shard} is warm; now routing across ${state.readyShards}`);
+	console.log(`[${region}] shard controller: shard ${shard} is warm; now routing across ${state.readyShards}`);
 }
 
 /**
@@ -452,7 +452,7 @@ export function unmarkPending(region: string): void {
 	const state = stateFor(region);
 	if (state.targetShards <= state.readyShards) return;
 	state.targetShards = state.readyShards;
-	console.log(`Shard controller: ${region} warm-up failed; back to ${state.targetShards} shards`);
+	console.log(`[${region}] shard controller: warm-up failed; back to ${state.targetShards} shards`);
 }
 
 /**
@@ -493,7 +493,7 @@ export function adoptShardWidth(region: string, width: number): void {
 	if (capped <= state.readyShards) return;
 	state.readyShards = capped;
 	if (state.targetShards < capped) state.targetShards = capped;
-	console.log(`Shard controller: ${region} adopted ${state.readyShards} shards announced by the region's DO`);
+	console.log(`[${region}] shard controller: adopted ${state.readyShards} shards announced by the region's DO`);
 }
 
 /**
@@ -521,7 +521,7 @@ export function pickShard(region: string, maxShards?: number): number {
 		if (state.readyShards > state.targetShards) state.readyShards = state.targetShards;
 		state.lastContractAt = now;
 		console.log(
-			`Shard controller: ${region} contracted to ${state.targetShards} shards ` +
+			`[${region}] shard controller: contracted to ${state.targetShards} shards ` +
 				`(no saturation for ${CONTRACT_IDLE_MS / 60_000}m — not necessarily idle)`,
 		);
 	}

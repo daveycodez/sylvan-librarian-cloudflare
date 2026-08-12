@@ -128,7 +128,7 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
 			if (err instanceof EngineUnavailableError) throw err;
 			const flags = err as { retryable?: boolean; overloaded?: boolean };
 			if (attempt >= 2 || flags.retryable !== true || flags.overloaded === true) throw err;
-			console.warn(`Retryable engine RPC failure (attempt ${attempt + 1}): ${err}`);
+			console.warn(`retryable engine RPC failure (attempt ${attempt + 1}): ${err}`);
 			// The reset completes in well under a second; brief linear backoff.
 			await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
 		}
@@ -171,7 +171,7 @@ function sampleWarmRpc(rpcMs: number): void {
 	const now = Date.now();
 	if (warmWindowStart !== 0 && now - warmWindowStart < WARM_RPC_WINDOW_MS) return;
 	console.log(
-		`Remote engine warm rpc: n=${warmCount} min=${warmMin}ms avg=${(warmSum / warmCount).toFixed(1)}ms ` +
+		`warm engine rpc: n=${warmCount} min=${warmMin}ms avg=${(warmSum / warmCount).toFixed(1)}ms ` +
 			`max=${warmMax}ms over ${warmWindowStart === 0 ? 0 : now - warmWindowStart}ms`,
 	);
 	warmWindowStart = now;
@@ -208,7 +208,9 @@ export class RemoteEngine implements Engine {
 		if (acquireMs) {
 			// Wake observability: logged only when the DO that answered had to
 			// acquire its engine.
-			console.log(`Remote engine search: ${Date.now() - rpcStart}ms rpc, ${acquireMs}ms engine acquisition in the DO`);
+			console.log(
+				`[${this.region}] engine rpc took ${Date.now() - rpcStart}ms, of which ${acquireMs}ms was the DO acquiring its store`,
+			);
 		}
 		// The rendezvous: adopt a fan-out this region already reached, so an
 		// isolate that never expanded on its own stops pinning shard 0.

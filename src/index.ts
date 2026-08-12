@@ -77,7 +77,7 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 				.then(() => markShardReady(region, warmTarget))
 				.catch((err) => {
 					unmarkPending(region);
-					console.warn(`Warm ping for ${region} shard ${warmTarget} failed (slot released): ${err}`);
+					console.warn(`[${region}] warm ping for shard ${warmTarget} failed (slot released): ${err}`);
 				}),
 		);
 	}

@@ -73,6 +73,24 @@ let lastManifestCheck = 0;
 export interface LoadContext {
 	waitUntil(p: Promise<unknown>): void;
 	storage?: ArchiveCacheStorage;
+	/**
+	 * Who to blame in the logs — the Durable Object's own name (`engine-wnam`,
+	 * `engine-wnam-2`).
+	 *
+	 * This module is isolate-global and has no idea which object it is running
+	 * inside, so without it every load line reads identically no matter which
+	 * shard, region, or build emitted it. That is not hypothetical: during the
+	 * region cutover, `engine-LAX` on the old build and `engine-wnam` on the new
+	 * one logged byte-identical "Store loaded from KV" lines, and telling them
+	 * apart needed a version join that the log itself should have made
+	 * unnecessary.
+	 */
+	label?: string;
+}
+
+/** `[engine-wnam] ` for logs, or an empty prefix outside a Durable Object. */
+function tag(ctx?: LoadContext): string {
+	return ctx?.label ? `[${ctx.label}] ` : "";
 }
 
 class WasmEngine implements Engine {
@@ -101,7 +119,7 @@ class WasmEngine implements Engine {
 			const started = Date.now();
 			const { pieces, blocks, cached } = await feedCompat(this.env, this.manifest, this.ctx);
 			console.log(
-				`Card-object archive attached from ${cached ? "local cache" : "KV"}: ${this.manifest.compat_key} ` +
+				`${tag(this.ctx)}card archive attached from ${cached ? "local cache" : "KV"}: ${this.manifest.compat_key} ` +
 					`(${this.manifest.compat_bytes} bytes` +
 					`${!cached && this.manifest.compat_gzip_bytes ? ` from ${this.manifest.compat_gzip_bytes} gzipped` : ""}) ` +
 					`in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
@@ -438,7 +456,7 @@ function archiveBytes(
 			// A cache that cannot be read is a cache miss, never a failed load. This catch is what
 			// makes "KV is the source of truth" true in the code and not just in the comments: every
 			// fault on this side — no schema, corrupt row, storage unavailable — falls through to KV.
-			console.warn(`Local archive cache unreadable for ${key} (falling back to KV): ${err}`);
+			console.warn(`${tag(ctx)}local archive cache unreadable for ${key} (falling back to KV): ${err}`);
 		}
 	}
 	if (storage && ctx) {
@@ -448,10 +466,12 @@ function archiveBytes(
 				const rows = await fillCache(storage, key, fromKv(), expected);
 				const dropped = pruneCache(storage, keepAfterFill());
 				console.log(
-					`Archive cached locally: ${key} (${expected} bytes in ${rows} rows) in ${Date.now() - started}ms` +
+					`${tag(ctx)}archive cached locally: ${key} (${expected} bytes in ${rows} rows) in ${Date.now() - started}ms` +
 						`${dropped.length ? `, dropped ${dropped.length} stale (${dropped.join(", ")})` : ""}`,
 				);
-			})().catch((err) => console.warn(`Local archive cache fill failed for ${key} (KV still serves): ${err}`)),
+			})().catch((err) =>
+				console.warn(`${tag(ctx)}local archive cache fill failed for ${key} (KV still serves): ${err}`),
+			),
 		);
 	}
 	return { body: fromKv(), cached: false };
@@ -517,7 +537,7 @@ async function loadStore(env: Env, ctx?: LoadContext): Promise<Engine> {
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
 	// linear-memory figure is the honest one here, and is a high-water mark.
 	console.log(
-		`Store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
+		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
 			`${manifest.store_bytes} bytes${!cached && manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
 			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
@@ -538,7 +558,7 @@ async function refreshIfStale(env: Env, ctx?: LoadContext): Promise<void> {
 			await loading;
 		}
 	} catch (err) {
-		console.error("Manifest refresh failed (serving current store):", err);
+		console.error(`${tag(ctx)}manifest refresh failed (serving current store):`, err);
 	}
 }
 

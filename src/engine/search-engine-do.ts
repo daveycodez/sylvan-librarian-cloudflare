@@ -127,6 +127,22 @@ export class SearchEngine extends DurableObject<Env> {
 	private announcedShards = 1;
 	private announcedAt = 0;
 
+	/**
+	 * This object's own name, for logs: `engine-wnam`, `engine-wnam-2`.
+	 *
+	 * `DurableObjectId.name` is populated whenever the id came from `idFromName`,
+	 * which is the only way this class is ever addressed. Worth carrying into
+	 * every line because the store loader is isolate-global and cannot know it:
+	 * without this, a load line is identical whichever region, shard or build
+	 * emitted it, which during the region cutover made `engine-LAX` on the old
+	 * build indistinguishable from `engine-wnam` on the new one.
+	 */
+	private get label(): string {
+		// `id?` because tests construct this class with a stub state that has no
+		// id, and a logging accessor must never be the thing that throws.
+		return this.ctx.id?.name ?? "engine-?";
+	}
+
 	/** Fold a caller's width in and hand back the current announcement. */
 	private rendezvous(reported: number, now: number): number {
 		const width = Number.isFinite(reported) && reported >= 1 ? Math.floor(reported) : 1;
@@ -247,7 +263,7 @@ export class SearchEngine extends DurableObject<Env> {
 		const acquireMs = Date.now() - acquireStart;
 		const result = await engine.samplePreferredSerialized(numCards, fields, shape);
 		if (!warm) {
-			console.log(`samplePreferred acquired its engine in ${acquireMs}ms (cold isolate) for n=${numCards}`);
+			console.log(`[${this.label}] samplePreferred acquired its engine in ${acquireMs}ms (cold) for n=${numCards}`);
 		}
 		return result;
 	}
@@ -403,7 +419,18 @@ export class SearchEngine extends DurableObject<Env> {
 			// getEngine is single-flighted and returns immediately when this
 			// isolate already holds the store; otherwise it streams the store in
 			// from KV (~4 immutable, colo-cached reads).
-			return await getEngine(this.env, this.ctx);
+			// Built field by field, NOT spread from this.ctx: `waitUntil` lives on
+			// DurableObjectState's prototype, so `{...this.ctx}` type-checks and
+			// then drops it at runtime, and the archive cache's background fill
+			// would throw on every load.
+			//
+			// `label` rides along so the isolate-global loader can name this object
+			// in its own log lines; `storage` is what the archive cache lives in.
+			return await getEngine(this.env, {
+				waitUntil: (p) => this.ctx.waitUntil(p),
+				storage: this.ctx.storage,
+				label: this.label,
+			});
 		} catch (err) {
 			rethrowForRpc(err);
 		}
