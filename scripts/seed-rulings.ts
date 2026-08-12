@@ -29,6 +29,7 @@ import {
 	encodeRulingsBucket,
 	parseRulingLine,
 	RULINGS_BUCKET_COUNT,
+	RULINGS_CONTENT_GENERATION,
 	RULINGS_FORMAT_VERSION,
 	RULINGS_META_KEY,
 	type RulingRow,
@@ -44,8 +45,11 @@ const remote = process.argv.includes("--remote");
 /** Deploy-path mode: make sure the data is THERE, and leave keeping it current to the cron. */
 const ifMissing = process.argv.includes("--if-missing");
 
-if (ifMissing && (await kvHasCurrent(RULINGS_META_KEY, RULINGS_FORMAT_VERSION, remote))) {
-	console.log(`Rulings v${RULINGS_FORMAT_VERSION} are already published — leaving them to the nightly import.`);
+if (ifMissing && (await kvHasCurrent(RULINGS_META_KEY, RULINGS_FORMAT_VERSION, RULINGS_CONTENT_GENERATION, remote))) {
+	console.log(
+		`Rulings v${RULINGS_FORMAT_VERSION} generation ${RULINGS_CONTENT_GENERATION} are already published — ` +
+			"leaving them to the nightly import.",
+	);
 	process.exit(0);
 }
 const BULK_DATA_URL = process.env.SCRYFALL_BULK_URL ?? "https://api.scryfall.com/bulk-data";
@@ -101,6 +105,7 @@ for (let bucket = 0; bucket < RULINGS_BUCKET_COUNT; bucket++) {
 }
 const meta: RulingsMeta = {
 	format_version: RULINGS_FORMAT_VERSION,
+	content_generation: RULINGS_CONTENT_GENERATION,
 	bucket_count: RULINGS_BUCKET_COUNT,
 	built_at: String(Math.floor(Date.now() / 1000)),
 	ruling_count: rulings,

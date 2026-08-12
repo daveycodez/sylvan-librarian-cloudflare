@@ -15,11 +15,17 @@ import { wranglerArgv } from "./wrangler-cmd";
 /**
  * Whether KV holds a meta key describing the format this build publishes.
  *
- * A missing key, an unreadable one, or one written by a different format version all answer false
+ * A missing key, an unreadable one, or one written by a different layout or generation all answer
+ * false
  * — the caller then publishes, which is the safe direction: publishing over a current set costs
  * writes, and skipping over an absent one costs a 503 on every request until the next cron.
  */
-export async function kvHasCurrent(key: string, formatVersion: number, remote: boolean): Promise<boolean> {
+export async function kvHasCurrent(
+	key: string,
+	formatVersion: number,
+	contentGeneration: number,
+	remote: boolean,
+): Promise<boolean> {
 	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", key, ...(await kvTargetArgs(remote))], {
 		stdout: "pipe",
 		stderr: "pipe",
@@ -28,8 +34,14 @@ export async function kvHasCurrent(key: string, formatVersion: number, remote: b
 	if ((await proc.exited) !== 0) return false; // absent, or could not be read: publish either way
 	try {
 		// wrangler prints its own banner before the value; the JSON starts at the first brace.
-		const meta = JSON.parse(out.slice(out.indexOf("{"))) as { format_version?: number };
-		return meta.format_version === formatVersion;
+		const meta = JSON.parse(out.slice(out.indexOf("{"))) as {
+			format_version?: number;
+			content_generation?: number;
+		};
+		// BOTH numbers, because they fail differently: a stale layout means the reader cannot read
+		// what is there, and a stale generation means it can read bytes this build would not have
+		// written. A set published before generations existed has none, which counts as stale.
+		return meta.format_version === formatVersion && meta.content_generation === contentGeneration;
 	} catch {
 		return false;
 	}

@@ -57,6 +57,20 @@ import { encodeKeyedBlob, KeyedBlobError, type KeyedEntry, keyedBlobLookup } fro
  */
 export const RULINGS_FORMAT_VERSION = 2;
 
+/**
+ * What the buckets HOLD, against RULINGS_FORMAT_VERSION's how they are arranged.
+ *
+ * Two numbers because they answer different questions, exactly as the store's `format_version` and
+ * `content_generation` do. A LAYOUT change mints a new key namespace, so a running reader keeps
+ * reading the keys it understands while the new ones land. A CONTENT change — the same keys
+ * rendered differently, say a field whose formatting was wrong — must overwrite in place, and all
+ * it needs is for the publisher to notice it is stale.
+ *
+ * Bump this when the bytes change for the same layout. `--if-missing` compares both, so a deploy
+ * republishes rather than skipping over data it would render differently.
+ */
+export const RULINGS_CONTENT_GENERATION = 1;
+
 /** Buckets in the set; see the sizing note above. Must divide the first byte's 256 values evenly. */
 export const RULINGS_BUCKET_COUNT = 256;
 
@@ -72,6 +86,8 @@ export const RULINGS_META_KEY = "rulings:meta";
 /** What the publisher records about the set it last wrote. */
 export interface RulingsMeta {
 	format_version: number;
+	/** See RULINGS_CONTENT_GENERATION. Absent on sets published before it existed. */
+	content_generation?: number;
 	bucket_count: number;
 	/** Epoch seconds, matching the store manifest's `built_at`. */
 	built_at: string;

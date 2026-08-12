@@ -40,6 +40,7 @@ import {
 	CATALOG_NAMES,
 	catalogKey,
 	encodeCountedArray,
+	REFERENCE_CONTENT_GENERATION,
 	REFERENCE_FORMAT_VERSION,
 	REFERENCE_META_KEY,
 	type ReferenceMeta,
@@ -56,6 +57,7 @@ import {
 	encodeRulingsBucket,
 	parseRulingLine,
 	RULINGS_BUCKET_COUNT,
+	RULINGS_CONTENT_GENERATION,
 	RULINGS_FORMAT_VERSION,
 	RULINGS_META_KEY,
 	type RulingRow,
@@ -1778,6 +1780,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		const meta: RulingsMeta = {
 			format_version: RULINGS_FORMAT_VERSION,
+			content_generation: RULINGS_CONTENT_GENERATION,
 			bucket_count: RULINGS_BUCKET_COUNT,
 			built_at: this.metaGet("built_at") ?? "",
 			ruling_count: total,
@@ -1793,13 +1796,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * The hashes are an optimization built on an assumption — that KV still holds what this DO last
 	 * put there — and a recreated namespace (which the deploy repairs by id, see
 	 * scripts/align-kv-binding.ts) or a format bump breaks it. Both show up as a missing or
-	 * mismatched meta key, and both want the same answer: publish all 256 again.
+	 * mismatched meta key, and so does a content generation this build no longer renders — all
+	 * three want the same answer: publish all 256 again.
 	 */
 	private async resetRulingsIfUnpublished(): Promise<void> {
 		const published = (await this.env.STORE_KV.get(RULINGS_META_KEY, "json")) as RulingsMeta | null;
 		if (
 			published &&
 			published.format_version === RULINGS_FORMAT_VERSION &&
+			published.content_generation === RULINGS_CONTENT_GENERATION &&
 			published.bucket_count === RULINGS_BUCKET_COUNT
 		) {
 			return;
@@ -1943,6 +1948,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// The meta key last, as everywhere else here: it is what says the published set is real.
 		const meta: ReferenceMeta = {
 			format_version: REFERENCE_FORMAT_VERSION,
+			content_generation: REFERENCE_CONTENT_GENERATION,
 			bucket_count: SETS_BUCKET_COUNT,
 			built_at: this.metaGet("built_at") ?? "",
 			set_count: Number(this.metaGet("reference_set_count") ?? 0),

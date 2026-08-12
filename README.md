@@ -47,6 +47,17 @@ rebuilds anyway; `SKIP_IMPORT=1` deploys code only.
 A nightly cron (11:17 UTC) then keeps the index current from inside the
 Worker; isolates hot-swap to each new version without dropping queries.
 
+**Two numbers decide whether a deploy republishes.** Each dataset carries a
+LAYOUT version and a CONTENT generation, the same pair the store has
+(`format_version` / `STORE_CONTENT_GENERATION`), and they fail differently: a
+layout change mints a new key namespace so a running reader keeps reading keys
+it understands, while a content change — the same layout rendered differently —
+must overwrite in place rather than orphan the old values. The deploy compares
+both against what KV says it published, so "the data is there" is never mistaken
+for "the data is what this build would write". Getting that wrong is not
+hypothetical: the mirrors shipped one release serving bytes the build no longer
+rendered, because only existence was checked.
+
 **Three writers, and only three.** `bun dev` seeds everything local, the deploy
 seeds everything on production, and the cron refreshes it nightly — where
 "everything" is the card store, the rulings buckets and the `/sets`,

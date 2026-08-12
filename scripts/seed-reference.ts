@@ -20,6 +20,7 @@ import {
 	CATALOG_NAMES,
 	catalogKey,
 	encodeCountedArray,
+	REFERENCE_CONTENT_GENERATION,
 	REFERENCE_FORMAT_VERSION,
 	REFERENCE_META_KEY,
 	type ReferenceMeta,
@@ -75,8 +76,14 @@ async function fetchJson(path: string): Promise<{ payload: Record<string, unknow
 	return { payload: JSON.parse(text) as Record<string, unknown>, raw: rawArrayElements(text) };
 }
 
-if (ifMissing && (await kvHasCurrent(REFERENCE_META_KEY, REFERENCE_FORMAT_VERSION, remote))) {
-	console.log(`Reference data v${REFERENCE_FORMAT_VERSION} is already published — leaving it to the nightly import.`);
+if (
+	ifMissing &&
+	(await kvHasCurrent(REFERENCE_META_KEY, REFERENCE_FORMAT_VERSION, REFERENCE_CONTENT_GENERATION, remote))
+) {
+	console.log(
+		`Reference data v${REFERENCE_FORMAT_VERSION} generation ${REFERENCE_CONTENT_GENERATION} is already ` +
+			"published — leaving it to the nightly import.",
+	);
 	process.exit(0);
 }
 
@@ -121,6 +128,7 @@ entries.push({ key: symbologyKey(), value: symbology.json });
 
 const meta: ReferenceMeta = {
 	format_version: REFERENCE_FORMAT_VERSION,
+	content_generation: REFERENCE_CONTENT_GENERATION,
 	bucket_count: SETS_BUCKET_COUNT,
 	built_at: String(Math.floor(Date.now() / 1000)),
 	set_count: setCount,

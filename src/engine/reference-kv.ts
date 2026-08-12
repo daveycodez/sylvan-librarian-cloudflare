@@ -36,14 +36,26 @@ import { encodeKeyedBlob, type KeyedEntry } from "./keyed-blob";
  * Layout version, in every key this module owns. Bump on any change to what the values mean, so a
  * new publisher writes a new namespace rather than over the one a running reader is using.
  *
- * v2: the values hold SCRYFALL'S OWN BYTES rather than a re-serialization of the parsed objects.
- * Same shape, different content — `"mana_value":0.0` survives now — and the bump is what makes a
- * deploy republish them. Without it, `--if-missing` sees a published set and skips, which is
- * correct for "is it there?" and wrong for "is it the format this build serves": production kept
- * answering v1 bytes from a build that renders v2 ones, and only the nightly cron would have
- * healed it.
+ * This is the LAYOUT — what the keys are and how a value is arranged. What a value HOLDS rides
+ * REFERENCE_CONTENT_GENERATION instead, and the two are separate for the reason the store's
+ * `format_version` and `content_generation` are: a layout change has to mint a new key namespace so
+ * a running reader keeps reading keys it understands, while a content change must overwrite in
+ * place rather than orphan 39 values nothing prunes.
+ *
+ * v2 minted new keys for a change that was really the second kind — the values went from a
+ * re-serialization to Scryfall's own bytes — which is what made the distinction worth having.
  */
 export const REFERENCE_FORMAT_VERSION = 2;
+
+/**
+ * What the values HOLD. Bump when the same layout renders different bytes.
+ *
+ * Generation 2 is Scryfall's raw bytes rather than a re-serialization: JavaScript cannot re-emit
+ * `"mana_value":0.0`, so a parsed-and-restringified mirror was one byte short of the API it
+ * mirrors. `--if-missing` compares this as well as the layout version, so a deploy republishes
+ * instead of skipping over data it would now render differently.
+ */
+export const REFERENCE_CONTENT_GENERATION = 2;
 
 /**
  * Buckets the single-set lookups are spread over.
@@ -60,6 +72,8 @@ export const REFERENCE_META_KEY = "reference:meta";
 /** What the publisher records about the reference data it last wrote. */
 export interface ReferenceMeta {
 	format_version: number;
+	/** See REFERENCE_CONTENT_GENERATION. Absent on sets published before it existed. */
+	content_generation?: number;
 	bucket_count: number;
 	/** Epoch seconds. */
 	built_at: string;
