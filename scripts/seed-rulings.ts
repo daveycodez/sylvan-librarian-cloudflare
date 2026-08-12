@@ -53,6 +53,10 @@ if (ifMissing && (await kvHasCurrent(RULINGS_META_KEY, RULINGS_FORMAT_VERSION, R
 		`Rulings v${RULINGS_FORMAT_VERSION} generation ${RULINGS_CONTENT_GENERATION} are already published — ` +
 			"leaving them to the nightly import.",
 	);
+	// Sweep first: an older layout's keys are unreachable whether or not this run publishes, and
+	// skipping the publish must not mean skipping the cleanup.
+	const orphans = await pruneOldKeys(RULINGS_KEY_PREFIX, rulingsCurrentPrefix(), remote);
+	if (orphans > 0) console.log(`Retention: dropped ${orphans} rulings key(s) from an older layout.`);
 	process.exit(0);
 }
 const BULK_DATA_URL = process.env.SCRYFALL_BULK_URL ?? "https://api.scryfall.com/bulk-data";

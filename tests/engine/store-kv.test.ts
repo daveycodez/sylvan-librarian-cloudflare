@@ -21,6 +21,7 @@ import {
 	readManifest,
 	type StagedRow,
 	splitStore,
+	staleStoreKeys,
 } from "../../src/engine/store-kv";
 import type { Env, StoreManifest } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
@@ -417,5 +418,58 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 		expect(src).toContain("STORE_CONTENT_GENERATION");
 		expect(src).toMatch(/!==\s*STORE_CONTENT_GENERATION/);
 		expect(src).toMatch(/!manifest\.store_bytes\s*\|\|\s*!manifest\.chunk_count/);
+	});
+});
+
+describe("staleStoreKeys", () => {
+	// Retention used to read a history list out of the coordinator's `meta` table, which
+	// `metaClear()` wipes at the start of every run — so the list was always empty, nothing was ever
+	// deleted, and production reached 15 store builds and 3 residue builds (~510MB of a 1GB
+	// namespace) against a policy of 2. Deriving the sweep from the keys themselves is what makes it
+	// unable to drift, so these pin the derivation.
+	const keys = [
+		"store:card-store-v11-1000.store:0",
+		"store:card-store-v11-1000.store:1",
+		"store:card-compat-v11-1000.store:0",
+		"store:card-store-v11-2000.store:0",
+		"store:card-compat-v11-2000.store:0",
+		"store:card-store-v11-3000.store:0",
+		"store:card-compat-v11-3000.store:0",
+	];
+
+	test("keeps the newest builds and retires the rest", () => {
+		expect(staleStoreKeys(keys, 2, "3000").sort()).toEqual([
+			"store:card-compat-v11-1000.store:0",
+			"store:card-store-v11-1000.store:0",
+			"store:card-store-v11-1000.store:1",
+		]);
+	});
+
+	test("retires a build's residue archive with it", () => {
+		// The residue is keyed by its own name, so a sweep that only knew about `card-store-` would
+		// leave every `card-compat-` behind — which is its own slow leak.
+		const stale = staleStoreKeys(keys, 1, "3000");
+		expect(stale).toContain("store:card-compat-v11-1000.store:0");
+		expect(stale).toContain("store:card-compat-v11-2000.store:0");
+		expect(stale).not.toContain("store:card-compat-v11-3000.store:0");
+	});
+
+	test("never retires the build the manifest points at", () => {
+		// Even when its timestamp is not the newest — a republished older manifest is a rollback,
+		// and a sweep that deleted the live store would take the site down rather than tidy it.
+		expect(staleStoreKeys(keys, 1, "1000")).not.toContain("store:card-store-v11-1000.store:0");
+	});
+
+	test("a namespace holding only the current build has nothing to retire", () => {
+		expect(staleStoreKeys(["store:card-store-v11-3000.store:0"], 2, "3000")).toEqual([]);
+	});
+
+	test("leaves keys that are not store chunks alone", () => {
+		// The manifest especially: it is the commit point, and the other datasets share the
+		// namespace. Two builds so there is genuinely something to retire, or the assertion would
+		// pass on a sweep that retires nothing at all.
+		const others = ["store:manifest", "rulings:v2:00", "reference:v2:sets:list", "rulings:meta"];
+		const withStores = [...others, "store:card-store-v11-1.store:0", "store:card-store-v11-2.store:0"];
+		expect(staleStoreKeys(withStores, 1, "2")).toEqual(["store:card-store-v11-1.store:0"]);
 	});
 });

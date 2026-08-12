@@ -29,9 +29,13 @@ import {
 	STORE_CONTENT_GENERATION,
 	splitStore,
 } from "../src/engine/store-kv";
+import { pruneOldStores } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
+
+/** Builds kept in KV, matching the importer's KEEP_STORES: the live one and its predecessor. */
+const KEEP_REMOTE_STORES = 2;
 
 const dir = process.argv.slice(2).find((a) => !a.startsWith("--"));
 if (!dir) {
@@ -140,6 +144,12 @@ const manifestPath = join(tmpdir(), "sylvan-store-manifest.json");
 await writeFile(manifestPath, JSON.stringify(manifest));
 try {
 	await kv(["key", "put", MANIFEST_KEY, "--path", manifestPath, "--remote"]);
+
+	// AFTER the manifest, which is the commit point: the newest build is live, so every build older
+	// than the retention policy is now unreachable. See scripts/kv-prune.ts — retention used to be
+	// driven by a history list the importer wiped every run, so nothing was ever deleted.
+	const prunedChunks = await pruneOldStores(KEEP_REMOTE_STORES, String(manifest.built_at ?? ""), true);
+	if (prunedChunks > 0) console.log(`Retention: dropped ${prunedChunks} chunk(s) from superseded store builds.`);
 } finally {
 	await unlink(manifestPath).catch(() => {});
 }

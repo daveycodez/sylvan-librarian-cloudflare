@@ -87,6 +87,10 @@ if (
 		`Reference data v${REFERENCE_FORMAT_VERSION} generation ${REFERENCE_CONTENT_GENERATION} is already ` +
 			"published — leaving it to the nightly import.",
 	);
+	// Sweep first: an older layout's keys are unreachable whether or not this run publishes, and
+	// skipping the publish must not mean skipping the cleanup.
+	const orphans = await pruneOldKeys(REFERENCE_KEY_PREFIX, referenceCurrentPrefix(), remote);
+	if (orphans > 0) console.log(`Retention: dropped ${orphans} reference key(s) from an older layout.`);
 	process.exit(0);
 }
 

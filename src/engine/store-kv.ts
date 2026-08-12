@@ -301,6 +301,35 @@ export function chunkKey(storeKey: string, seq: number): string {
 	return `store:${storeKey}:${seq}`;
 }
 
+/**
+ * The store keys that retention should delete: everything but the newest `keep` BUILDS.
+ *
+ * Derived from the key names rather than from recorded history, and that is the fix rather than an
+ * implementation detail. Retention used to read a `kv_store_history` list out of the coordinator's
+ * `meta` table — which `metaClear()` wipes at the start of every run, so `previous` was always
+ * empty, nothing was ever retired, and each night added another ~38MB. Production was holding 15
+ * store builds and 3 residue builds, ~510MB of a 1GB namespace, against a policy of 2.
+ *
+ * A key name carries everything the decision needs (`store:card-store-v<format>-<built_at>.store:<n>`),
+ * so the sweep is a pure function of what is actually in KV. It cannot drift from reality, it
+ * self-heals a namespace that already leaked, and it costs one list operation.
+ *
+ * Both families go together: a build's residue archive is keyed by its own name, so a sweep that
+ * only knew about `card-store-` would leave every `card-compat-` behind.
+ */
+export function staleStoreKeys(names: string[], keep: number, currentBuiltAt?: string): string[] {
+	const parsed = names.flatMap((name) => {
+		const at = /^store:card-(?:store|compat)-v\d+-(\d+)\.store:\d+$/.exec(name);
+		return at ? [{ name, builtAt: at[1] as string }] : [];
+	});
+	const builds = [...new Set(parsed.map((k) => k.builtAt))].sort((a, b) => Number(b) - Number(a));
+	// The live build is kept whatever its age says — the manifest points at it, and a sweep that
+	// deleted it would take the site down rather than tidy it.
+	const keptBuilds = new Set(builds.slice(0, Math.max(keep, 1)));
+	if (currentBuiltAt) keptBuilds.add(currentBuiltAt);
+	return parsed.filter((k) => !keptBuilds.has(k.builtAt)).map((k) => k.name);
+}
+
 /** How many chunks a store of this size occupies on the grid. */
 export function chunkCountFor(storeBytes: number): number {
 	return Math.ceil(storeBytes / KV_CHUNK_BYTES);

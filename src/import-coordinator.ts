@@ -81,6 +81,7 @@ import {
 	MANIFEST_KEY,
 	STORE_CONTENT_GENERATION,
 	type StagedRow,
+	staleStoreKeys,
 } from "./engine/store-kv";
 import type { Env } from "./engine/types";
 import {
@@ -1630,29 +1631,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		};
 		await this.env.STORE_KV.put(MANIFEST_KEY, JSON.stringify(manifest));
 
-		// Retention: keep this store and the one before it. The predecessor
-		// stays addressable so a reader that started streaming it finishes, and
-		// so one bad build can be rolled back by republishing the older
-		// manifest. History lives in this DO's own storage — one row, and no
-		// metered KV list operations.
-		const previous = JSON.parse(this.metaGet("kv_store_history") ?? "[]") as string[];
-		const history = [storeKey, ...previous].filter((key, at, all) => all.indexOf(key) === at).slice(0, KEEP_STORES);
-		// Both archives, or the residue's chunks leak: they are keyed by their own name, so the
-		// store's retention sweep would never touch them.
-		const retired = previous.filter((k) => !history.includes(k));
-		for (const key of retired.flatMap((k) => [k, k.replace("card-store-v", "card-compat-v")])) {
-			// Best effort: a chunk that fails to delete costs 20MB of a 1GB
-			// allowance and gets another chance next publish. Never fail a
-			// completed publish over cleanup.
-			for (let seq = 0; seq < kvTotal + 2; seq++) {
-				try {
-					await this.env.STORE_KV.delete(chunkKey(key, seq));
-				} catch (err) {
-					console.warn(`Retention: could not delete ${chunkKey(key, seq)}: ${err}`);
-				}
-			}
-			console.log(`Retention: dropped ${key} from KV`);
-		}
+		// Retention: keep the newest KEEP_STORES builds, decided from the keys that are actually in
+		// KV. The predecessor stays addressable so a reader mid-stream finishes and a bad build can
+		// be rolled back by republishing the older manifest.
+		//
+		// This used to read a history list out of `meta` — which `metaClear()` wipes at the start of
+		// every run, so the list was always empty and NOTHING was ever deleted. Production reached 15
+		// store builds and 3 residue builds, ~510MB of a 1GB namespace, before anyone counted. A
+		// sweep derived from the keys themselves cannot drift from what is there, and it heals a
+		// namespace that already leaked.
+		await this.pruneOldStores(this.metaGet("built_at") ?? undefined);
 
 		// The store is LIVE from here — every reader that reads the manifest from
 		// now on gets it. What is left is the edge cache, which still holds
@@ -1663,7 +1651,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				`+ ${compatKey} (${compatTotal} chunks)`,
 		);
 		this.ctx.storage.transactionSync(() => {
-			this.metaSet("kv_store_history", JSON.stringify(history));
 			this.metaSet("phase", "rulings");
 			this.metaSet("rulings_bucket_cursor", "0");
 			this.metaSet("rulings_attempts", "0");
@@ -1860,6 +1847,34 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (step === "sets") this.metaSet("reference_step", "catalogs");
 		else if (step === "catalogs") this.metaSet("reference_step", "symbology");
 		else this.metaSet("phase", "purge");
+	}
+
+	/**
+	 * Delete every store build but the newest KEEP_STORES, plus the one just published.
+	 *
+	 * One list operation and however many deletes are owed; best effort, because a chunk that will
+	 * not delete costs storage and gets another chance next publish, and losing a completed publish
+	 * over cleanup would be the worse trade.
+	 */
+	private async pruneOldStores(currentBuiltAt: string | undefined): Promise<void> {
+		try {
+			const names: string[] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await this.env.STORE_KV.list({ prefix: "store:card-", cursor });
+				names.push(...page.keys.map((k) => k.name));
+				cursor = page.list_complete ? undefined : page.cursor;
+			} while (cursor);
+
+			let removed = 0;
+			for (const key of staleStoreKeys(names, KEEP_STORES, currentBuiltAt)) {
+				await this.env.STORE_KV.delete(key);
+				removed += 1;
+			}
+			if (removed > 0) console.log(`Retention: dropped ${removed} chunk(s) from superseded store builds`);
+		} catch (err) {
+			console.warn(`Retention: could not prune old store builds: ${err}`);
+		}
 	}
 
 	/**
