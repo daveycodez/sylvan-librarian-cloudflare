@@ -1,6 +1,6 @@
 # Browser Engine — shipping the card store to the client as an npm package
 
-Status: **proposal, nothing built.** Written 2026-08-11. Numbers marked *measured* were taken against real artifacts on this machine; numbers marked *estimated* are arithmetic on top of them and are only as good as the stated assumptions.
+Status: **proposal. Phase 0 done, nothing shipped.** Written 2026-08-11. Numbers marked *measured* were taken against real artifacts on this machine; numbers marked *estimated* are arithmetic on top of them and are only as good as the stated assumptions.
 
 The idea: an npm package that answers Scryfall-compatible card queries on the client. It starts by proxying to this port's HTTP API, downloads the compiled store in the background, and once the store is resident it answers every subsequent query from wasm in the tab — no network, no cap, no round trip.
 
@@ -22,7 +22,7 @@ Two targets, sharing one engine. On the **web** the network is assumed present a
 
 The measured API latency for an uncached query is **177–298 ms TTFB** against **61–104 ms warm** (*measured*, from a laptop, so absolute numbers include client network latency — the ~100–200 ms delta is the server-side cost). A local query is sub-millisecond. That difference is the entire argument for search-as-you-type and for interactive refinement.
 
-It also deletes result truncation. Any client that paginates the API caps itself somewhere — a broad-but-structured query like `c:w` matches 7,037 cards, and a UI showing 175-card pages shows an arbitrary slice of a popularity-ordered list because moving card JSON costs something. Locally it costs nothing, so completeness stops being a budget decision.
+It also deletes result truncation. Any client that paginates the API caps itself somewhere — a broad-but-structured query like `c:w` matches 6,732 cards (measured), and a UI showing 175-card pages shows an arbitrary slice of a popularity-ordered list because moving card JSON costs something. Locally it costs nothing, so completeness stops being a budget decision.
 
 ### The honest risks
 
@@ -32,7 +32,7 @@ It also deletes result truncation. Any client that paginates the API caps itself
 | 76–91 MB of linear memory *per tab* | **High** | SharedWorker, §5.3 |
 | Parser and store generation drift apart | Medium | Lockstep versioning + parity CI, §11 |
 | Storage eviction (Safari/iOS especially) | Medium | Always degrade to remote, §13 |
-| `finish_store_load` validation cost is unmeasured | Medium | Measure before committing to a warm-up budget, §15 |
+| ~~`finish_store_load` validation cost is unmeasured~~ | — | **Resolved.** 0.1 ms; whole warm-up is ~14 ms of CPU, §2 |
 | 28 MB download on a phone | Low–Medium | Deferred trigger, `saveData` respect, §8.1 |
 
 None of these is disqualifying. The first two are design constraints that shape the package; the rest are degradation paths.
@@ -67,17 +67,39 @@ A consumer that uses the `/cards/*` Scryfall card-object surface needs the resid
 
 Linear memory figures are *measured*, from `CARD-PARTITIONING.md` §1, by reading `WebAssembly.Memory.buffer.byteLength` after load.
 
-### Time to usable (*estimated*)
+### Time to usable
+
+Phase 0 ran: the committed wasm driven from Bun against `card-store-v2026081102-1786452390` (76,636,464 bytes) and its paired residue archive. Everything below the rule is *measured*, 2026-08-11.
 
 | Stage | 100 Mbps | 25 Mbps | Notes |
 |---|---:|---:|---|
-| Download 28 MB | ~2.3 s | ~9 s | Parallel with remote-phase queries |
-| Native brotli decompress | ~0.2 s | ~0.2 s | Streaming, overlaps download |
-| `store_load_chunk` memcpy | ~0.05 s | ~0.05 s | 88 MB of copies |
-| `finish_store_load` validation | **unknown** | **unknown** | §15 — the one real gap |
-| wasm instantiate | ~0.02 s | ~0.02 s | 1.9 MB module |
+| Download 28 MB | ~2.3 s | ~9 s | *Estimated.* Overlaps remote-phase queries |
+| Native brotli decompress | ~0.2 s | ~0.2 s | *Estimated* from §2's 0.16 s native measurement |
+| — | | | |
+| `WebAssembly.compile` | **4.3 ms** | | 1.92 MB module |
+| `WebAssembly.Instance` | **0.7 ms** | | linear memory 1.50 MB |
+| `begin_store_load` | **0.1 ms** | | preallocates 74.63 MB |
+| `store_load_chunk` × 41 | **7.7 ms** | | 1.9 MB chunks, 76.6 MB copied |
+| `finish_store_load` | **0.1 ms** | | |
+| residue attach (all three calls) | **1.1 ms** | | 11.8 MB |
 
-Everything except validation is small or overlapped. Validation is the number that decides whether warm-up is "a few seconds" or "unpleasant," and it is measurable outside a browser entirely.
+**Total non-download warm-up: ~14 ms.** Hydration is entirely download-bound, and every CPU stage is noise beside it.
+
+`finish_store_load` at 0.1 ms answers the open question and disposes of the risk, but state what it actually means: at that speed it is plainly *not* walking 76 MB of structure. rkyv is zero-copy, so the archive is usable in place and "validate" here is a header and format-version check followed by a pointer swap — not a `bytecheck` pass over every field. Corrupt bytes past the header would therefore surface at query time rather than at load. That is the same bargain the Durable Object already takes in production, so it is not a new risk, but it is not the guarantee the function name suggests either.
+
+Measured peak linear memory with both archives resident: **87.75 MB** — under `CARD-PARTITIONING.md`'s 91.16 MB, because streaming from subarray views never materializes a separate chunk buffer. Which is the loader-side saving the compressed-store work is chasing, demonstrated.
+
+Local query latency, same run, full 175-row pages:
+
+| Query | Time | Matches |
+|---|---:|---:|
+| `c:w t:creature` | 2.2 ms | 4,231 |
+| `o:trample cmc=4` | 2.0 ms | 317 |
+| `t:artifact r:mythic year>2019` | 1.0 ms | 264 |
+| `c:w` | 0.4 ms | 6,732 |
+| `lightning bolt` | 0.5 ms | 2 |
+
+Against the 75–200 ms server-side cost of an uncached query (§1), that is **50–150×**. This is the entire argument for the package, and it is now measured rather than asserted.
 
 ---
 
@@ -446,19 +468,19 @@ The permanent-for-this-session rule on version and load failures matters: a clie
 
 Ordered by how much they change the design.
 
-1. **What does `finish_store_load` cost over 76 MB?** rkyv validation is the one warm-up stage with no measurement behind it, and it is a plausible multi-second stall. **Measure this first** — it needs no browser, just Bun driving the committed wasm with a real store, and it gates whether the whole warm-up story is pleasant.
+1. ~~**What does `finish_store_load` cost over 76 MB?**~~ **Answered by Phase 0, 2026-08-11: 0.1 ms**, and the whole non-download warm-up is ~14 ms. See §2 for the numbers and for what that speed implies about how much validation is actually happening. The remaining question this opens is smaller and not blocking: whether the package should do its own integrity check on a downloaded artifact — a length check is free, a hash is not — given that `finish_store_load` will not catch corruption past the header.
 2. **Does Cloudflare pass a Worker-set `Content-Encoding: br` through untouched?** If not, the fallback is gzip at 30.8 MB, which also exceeds the single-KV-value cap and reintroduces chunking for the browser path. Cheap to test.
 3. **What does the residue archive compress to at q6?** Only q11 (3,209,163) was measured. Affects the `surface: "full"` download budget, not the design.
 4. **Does brotli q6 fit an importer alarm's CPU budget in-Worker?** 1.8 s on a Mac is promising but not decisive. If not, CI compression (§7).
 5. **Is the parser cleanly extractable from this repo?** It is pure TypeScript with no Worker dependencies, which is promising, but `tag-aliases.gen.ts` is generated and `pystr.ts` implements Python string semantics. Whether it vendors, or becomes a shared package both this Worker and `sylvan-browser` depend on, decides how §10's lockstep actually works.
-6. **How does a consumer handle the completeness change?** Local results are uncapped where remote ones are paginated. That is the feature, but it means a UI built around 175-card pages meets a 7,037-card answer. An app-level concern, worth naming in the README.
+6. **How does a consumer handle the completeness change?** Local results are uncapped where remote ones are paginated. That is the feature, but it means a UI built around 175-card pages meets a 6,732-card answer. An app-level concern, worth naming in the README.
 7. **How does the store artifact reach a packaged app?** (§8.2) Size is no longer the question — 28 MB clears every platform limit, verified. What is open is the mechanism: plain bundling (simple, goes stale at the app's release cadence) versus Background Assets / Play Asset Delivery (smaller binary, independently refreshable, platform-specific build work). And whether this package ships a build-time helper that fetches `/store/<key>.br` and pins its generation, or leaves that to each consumer's bundler — that choice is what makes the §10 gate a build check rather than a runtime one.
 
 ---
 
 ## 15. Phases
 
-**Phase 0 — prove it off-Cloudflare.** Drive the committed wasm from Bun: instantiate, stream-load a real store, run queries, time every stage. Answers open question 1 and de-risks everything downstream. No package, no browser, no new code in this repo.
+**Phase 0 — prove it off-Cloudflare. ✅ Done 2026-08-11.** The committed wasm, driven from Bun, instantiated and stream-loaded a real store and answered queries with no Cloudflare runtime involved: ~14 ms of warm-up CPU, 0.4–2.2 ms queries, 87.75 MB peak. Numbers in §2. The engine needs nothing it does not already have to run outside a Worker, which is the assumption every phase below rests on.
 
 **Phase 1 — serve the artifacts.** `/store/manifest` and `/store/<key>.br` on this Worker, plus the publish step that produces the compressed copy. Independently useful and independently testable with `curl`.
 
