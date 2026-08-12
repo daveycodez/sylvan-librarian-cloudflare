@@ -35,8 +35,15 @@ import { encodeKeyedBlob, type KeyedEntry } from "./keyed-blob";
 /**
  * Layout version, in every key this module owns. Bump on any change to what the values mean, so a
  * new publisher writes a new namespace rather than over the one a running reader is using.
+ *
+ * v2: the values hold SCRYFALL'S OWN BYTES rather than a re-serialization of the parsed objects.
+ * Same shape, different content — `"mana_value":0.0` survives now — and the bump is what makes a
+ * deploy republish them. Without it, `--if-missing` sees a published set and skips, which is
+ * correct for "is it there?" and wrong for "is it the format this build serves": production kept
+ * answering v1 bytes from a build that renders v2 ones, and only the nightly cron would have
+ * healed it.
  */
-export const REFERENCE_FORMAT_VERSION = 1;
+export const REFERENCE_FORMAT_VERSION = 2;
 
 /**
  * Buckets the single-set lookups are spread over.
