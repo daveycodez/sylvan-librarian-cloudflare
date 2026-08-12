@@ -25,12 +25,12 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalStringify, ParseError, parseScryfallQuery } from "../../src/parser";
-import { ART_TAG_ALIASES, ORACLE_TAG_ALIASES } from "../../src/parser/tag-aliases.gen";
+import { artTagAliases, oracleTagAliases } from "../../src/parser/tag-aliases.gen";
 
 /** The two attributes this port resolves aliases for, and the dump each draws on. */
 const TAG_ALIAS_MAPS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
-	["card_oracle_tags", ORACLE_TAG_ALIASES],
-	["card_art_tags", ART_TAG_ALIASES],
+	["card_oracle_tags", oracleTagAliases()],
+	["card_art_tags", artTagAliases()],
 ]);
 
 /** A complete JSON string token, backslash escapes included. */

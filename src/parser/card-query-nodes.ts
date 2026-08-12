@@ -32,7 +32,7 @@ import {
 	type ValueNode,
 } from "./nodes";
 import { foldAccents, PyNumber, pyLower, pyStrip, pyStrTitle } from "./pystr";
-import { ART_TAG_ALIASES, ORACLE_TAG_ALIASES } from "./tag-aliases.gen";
+import { artTagAliases, oracleTagAliases } from "./tag-aliases.gen";
 import { titlecase } from "./titlecase";
 
 export { foldAccents };
@@ -181,12 +181,12 @@ function resolveTagAlias(slug: string, aliases: ReadonlyMap<string, string>): st
 
 /** get_oracle_tags_comparison_object(...).keys() */
 export function getOracleTagsComparisonKeys(val: string): string[] {
-	return [resolveTagAlias(slugifyTag(val), ORACLE_TAG_ALIASES)];
+	return [resolveTagAlias(slugifyTag(val), oracleTagAliases())];
 }
 
 /** get_art_tags_comparison_object(...).keys() */
 export function getArtTagsComparisonKeys(val: string): string[] {
-	return [resolveTagAlias(slugifyTag(val), ART_TAG_ALIASES)];
+	return [resolveTagAlias(slugifyTag(val), artTagAliases())];
 }
 
 /** get_is_tags_comparison_object(...).keys() */

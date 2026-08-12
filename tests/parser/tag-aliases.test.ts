@@ -13,11 +13,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { getArtTagsComparisonKeys, getOracleTagsComparisonKeys, slugifyTag } from "../../src/parser/card-query-nodes";
-import { ART_TAG_ALIASES, ORACLE_TAG_ALIASES } from "../../src/parser/tag-aliases.gen";
+import { artTagAliases, oracleTagAliases } from "../../src/parser/tag-aliases.gen";
 
 const MAPS = [
-	["oracle", ORACLE_TAG_ALIASES],
-	["art", ART_TAG_ALIASES],
+	["oracle", oracleTagAliases()],
+	["art", artTagAliases()],
 ] as const;
 
 describe("the generated alias map is well formed", () => {
@@ -77,8 +77,8 @@ describe("tag values resolve through the map", () => {
 	test("the two dumps keep separate namespaces", () => {
 		// An art spelling must not answer in oracle space. `flames` is an art alias; asking for it
 		// as an oracle tag has to stay unresolved rather than borrowing the art dump's mapping.
-		expect(ART_TAG_ALIASES.has("flames")).toBe(true);
-		expect(ORACLE_TAG_ALIASES.has("flames")).toBe(false);
+		expect(artTagAliases().has("flames")).toBe(true);
+		expect(oracleTagAliases().has("flames")).toBe(false);
 		expect(getOracleTagsComparisonKeys("flames")).toEqual(["flames"]);
 	});
 
