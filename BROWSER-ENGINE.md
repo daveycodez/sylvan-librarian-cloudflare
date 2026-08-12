@@ -242,11 +242,28 @@ Everything here except the three `*_url` and `*_compressed_bytes` fields already
 
 The compressed artifact, brotli q6.
 
+```js
+new Response(brotliBytes, {
+  encodeBody: "manual",          // REQUIRED — see below
+  headers: {
+    "Content-Encoding": "br",
+    "Content-Type": "application/octet-stream",
+    "Cache-Control": "public, max-age=31536000, immutable",
+  },
+})
 ```
-Content-Encoding: br
-Content-Type: application/octet-stream
-Cache-Control: public, max-age=31536000, immutable
-```
+
+**`encodeBody: "manual"` is a correctness requirement, not a tuning knob.** Verified against the real Cloudflare edge on 2026-08-11 with a deployed throwaway Worker serving 512,000 bytes of actual store data:
+
+| Response | Bytes to client | One brotli decode yields |
+|---|---:|---|
+| `encodeBody: "manual"` | 241,051 — byte-identical to the file | **the original 512,000 bytes** |
+| header set, no `encodeBody` | 241,056 | **the inner `.br` stream** |
+| gzip + `encodeBody: "manual"` | 266,112 — byte-identical | the original 512,000 bytes |
+
+Without the flag the runtime treats an already-compressed body as *unencoded* and brotli-compresses it a second time, while leaving the `Content-Encoding: br` header you set in place. The +5 bytes is what brotli costs on incompressible input. Nothing errors: the header is right, the size looks right, and the client decodes exactly once and gets a brotli stream where the archive should be. Given that `finish_store_load` only checks a header (§2), that surfaces as a confusing rejection rather than a clear one.
+
+Local `wrangler dev` and the deployed edge behaved identically, so this is runtime behaviour rather than an edge compression rule, and it is reproducible without deploying. One incidental tell: the double-encoded response omits `Content-Length`, because the runtime is compressing on the fly and no longer knows the size. A missing `Content-Length` on this route means the flag was dropped.
 
 Keys are immutable — `store_key` already embeds format version and build timestamp, so a rebuild produces a new key and never invalidates an old URL. That is what makes `immutable` honest and lets both the HTTP cache and Cache Storage hold it indefinitely.
 
@@ -469,7 +486,7 @@ The permanent-for-this-session rule on version and load failures matters: a clie
 Ordered by how much they change the design.
 
 1. ~~**What does `finish_store_load` cost over 76 MB?**~~ **Answered by Phase 0, 2026-08-11: 0.1 ms**, and the whole non-download warm-up is ~14 ms. See §2 for the numbers and for what that speed implies about how much validation is actually happening. The remaining question this opens is smaller and not blocking: whether the package should do its own integrity check on a downloaded artifact — a length check is free, a hash is not — given that `finish_store_load` will not catch corruption past the header.
-2. **Does Cloudflare pass a Worker-set `Content-Encoding: br` through untouched?** If not, the fallback is gzip at 30.8 MB, which also exceeds the single-KV-value cap and reintroduces chunking for the browser path. Cheap to test.
+2. ~~**Does Cloudflare pass a Worker-set `Content-Encoding: br` through untouched?**~~ **Answered 2026-08-11, against the real edge: yes — but only with `encodeBody: "manual"`.** Byte-identical passthrough with it; silent double-encoding without it. The gzip fallback is not needed, so the brotli artifact and its single-KV-value property stand. Full result and the failure mode in §7.
 3. **What does the residue archive compress to at q6?** Only q11 (3,209,163) was measured. Affects the `surface: "full"` download budget, not the design.
 4. **Does brotli q6 fit an importer alarm's CPU budget in-Worker?** 1.8 s on a Mac is promising but not decisive. If not, CI compression (§7).
 5. **Is the parser cleanly extractable from this repo?** It is pure TypeScript with no Worker dependencies, which is promising, but `tag-aliases.gen.ts` is generated and `pystr.ts` implements Python string semantics. Whether it vendors, or becomes a shared package both this Worker and `sylvan-browser` depend on, decides how §10's lockstep actually works.
