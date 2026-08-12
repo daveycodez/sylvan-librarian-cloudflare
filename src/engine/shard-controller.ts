@@ -191,7 +191,7 @@ const CONTRACT_COOLDOWN_MS = 60_000;
  * Raising it is a measurement — run scripts/load-test.ts — not a guess, so it
  * stays at 8 until something measures the ceiling. Raise it with SHARDS_MAX
  * where a region genuinely needs more. */
-const DEFAULT_MAX_SHARDS = 8;
+export const DEFAULT_MAX_SHARDS = 8;
 
 /** Sustained RPC wall time above max(MULT × floor, ABS) reads as queuing.
  *

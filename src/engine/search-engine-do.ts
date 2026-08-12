@@ -29,7 +29,7 @@
 // colo-cached chunks, so the local copy earned nothing it cost.
 
 import { DurableObject } from "cloudflare:workers";
-import { getEngine, tryGetLoadedEngine } from "./store";
+import { getEngine, type LoadContext, refreshNow, tryGetLoadedEngine } from "./store";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -413,25 +413,83 @@ export class SearchEngine extends DurableObject<Env> {
 		return engine.cardCount();
 	}
 
+	// ── Publish convergence ────────────────────────────────────────────────────
+	//
+	// The publisher calls these directly rather than every reader polling for a
+	// manifest change. That is only possible because objects are named per REGION:
+	// there are nine of them and the list is a constant, where colo names were
+	// unknowable (`engine-LAX` exists only if LAX saw traffic, no registry, ~330
+	// locations) and polling was the only option.
+
+	/**
+	 * A new store has been published — converge on it now.
+	 *
+	 * A COLD object does nothing and says so. That is what keeps the fan-out cheap
+	 * enough to send to all nine regions unconditionally: constructing a Durable
+	 * Object is just a constructor, and it is the ~76.6MB load that costs, so an
+	 * idle region answers instantly and evicts again rather than being woken into
+	 * holding a store it has no traffic for. It will load the (already current)
+	 * manifest whenever its next real request arrives.
+	 *
+	 * A WARM one prefetches the new archives into local storage and then swaps,
+	 * so the unavoidable unload/reload window is a local read rather than a KV
+	 * fetch plus a decompression.
+	 *
+	 * Reports its announced shard width so the publisher can reach expanded shards
+	 * too — it cannot know the fan-out any other way, and shard 0 is exactly the
+	 * object every isolate in the region reports to.
+	 */
+	async notifyPublish(): Promise<{ swapped: boolean; shards: number }> {
+		if (tryGetLoadedEngine() === null) return { swapped: false, shards: this.announcedShards };
+		const swapped = await refreshNow(this.env, this.loadContext());
+		console.log(`[${this.label}] publish notify: ${swapped ? "swapped to the new store" : "already current"}`);
+		return { swapped, shards: this.announcedShards };
+	}
+
+	/**
+	 * Drop this object's cached archives — called on shards above the fan-out.
+	 *
+	 * Scale-in is eviction, which was free while a shard held nothing in storage.
+	 * With the archive cache it is not: an abandoned `engine-wnam-3` would keep
+	 * ~88MB of rows forever, and its own prune never runs again because it never
+	 * loads again. Left alone, every transient spike would permanently consume a
+	 * slice of the 5GB pool.
+	 *
+	 * Safe unconditionally: the cache is an optimisation over KV, so the worst a
+	 * mistaken release can do is make one later load slower. Cloudflare reclaims a
+	 * Durable Object once its storage is empty, so this releases the object too,
+	 * not just its rows.
+	 */
+	async releaseCache(): Promise<{ released: boolean }> {
+		await this.ctx.storage.deleteAll();
+		console.log(`[${this.label}] released its cached archives (shard is above the fan-out)`);
+		return { released: true };
+	}
+
 	// ── Engine acquisition ─────────────────────────────────────────────────────
+
+	/**
+	 * The loader's view of this object.
+	 *
+	 * Built field by field, NOT spread from `this.ctx`: `waitUntil` lives on
+	 * DurableObjectState's prototype, so `{...this.ctx}` type-checks and then
+	 * drops it at runtime, and the archive cache's background fill would throw on
+	 * every load.
+	 */
+	private loadContext(): LoadContext {
+		return {
+			waitUntil: (p) => this.ctx.waitUntil(p),
+			storage: this.ctx.storage,
+			label: this.label,
+		};
+	}
 
 	private async engine(): Promise<Engine> {
 		try {
 			// getEngine is single-flighted and returns immediately when this
 			// isolate already holds the store; otherwise it streams the store in
 			// from KV (~4 immutable, colo-cached reads).
-			// Built field by field, NOT spread from this.ctx: `waitUntil` lives on
-			// DurableObjectState's prototype, so `{...this.ctx}` type-checks and
-			// then drops it at runtime, and the archive cache's background fill
-			// would throw on every load.
-			//
-			// `label` rides along so the isolate-global loader can name this object
-			// in its own log lines; `storage` is what the archive cache lives in.
-			return await getEngine(this.env, {
-				waitUntil: (p) => this.ctx.waitUntil(p),
-				storage: this.ctx.storage,
-				label: this.label,
-			});
+			return await getEngine(this.env, this.loadContext());
 		} catch (err) {
 			rethrowForRpc(err);
 		}

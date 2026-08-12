@@ -28,6 +28,28 @@ export const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 	SA: "sam",
 };
 
+/**
+ * Every region an engine DO can exist in — the fan-out list the publish notify
+ * walks.
+ *
+ * This list is the whole reason push-notify is possible at all. Colo-named
+ * objects could not be notified: `engine-LAX` exists only if LAX saw traffic,
+ * there is no registry, and Cloudflare has ~330 locations, so a publisher had no
+ * way to enumerate its readers and they had to poll instead. Nine names can just
+ * be walked.
+ */
+export const REGION_HINTS: readonly DurableObjectLocationHint[] = [
+	"wnam",
+	"enam",
+	"weur",
+	"eeur",
+	"apac",
+	"oc",
+	"sam",
+	"afr",
+	"me",
+];
+
 export function regionHint(request: Request): DurableObjectLocationHint {
 	const cf = request.cf as { continent?: string; longitude?: string } | undefined;
 	const continent = cf?.continent ?? "NA";

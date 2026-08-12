@@ -41,10 +41,6 @@ import type {
 } from "./types";
 import { EngineUnavailableError } from "./types";
 
-// How stale an isolate's view of the manifest may get before a background
-// re-check. Nightly publishes mean sub-hour propagation is plenty.
-const MANIFEST_RECHECK_MS = 5 * 60 * 1000;
-
 /**
  * Thresholds for the typo-tolerant stage of `?fuzzy=` (upstream routes.py).
  *
@@ -59,7 +55,6 @@ const FUZZY_SIMILARITY_LEAD = 0.05;
 
 let current: { storeKey: string; engine: WasmEngine; manifest: StoreManifest } | null = null;
 let loading: Promise<Engine> | null = null;
-let lastManifestCheck = 0;
 
 /**
  * What a loader needs from its caller beyond the environment: somewhere to put background work, and
@@ -479,7 +474,6 @@ async function loadStore(env: Env, ctx?: LoadContext): Promise<Engine> {
 	// the instantiation — see the header of wasm-shim.ts.
 	wasm.ensureEngine();
 	const manifest = await readManifest(env);
-	lastManifestCheck = Date.now();
 
 	if (!manifest) {
 		// Deliberately does NOT start an import. Building the card index is the
@@ -541,28 +535,69 @@ async function loadStore(env: Env, ctx?: LoadContext): Promise<Engine> {
 	return engine;
 }
 
-/** Background manifest re-check; swaps the store if a new version published. */
-async function refreshIfStale(env: Env, ctx?: LoadContext): Promise<void> {
-	if (Date.now() - lastManifestCheck < MANIFEST_RECHECK_MS) return;
-	lastManifestCheck = Date.now();
-	try {
-		const manifest = await readManifest(env);
-		if (manifest && current && manifest.store_key !== current.storeKey) {
-			loading = loadStore(env, ctx).finally(() => {
-				loading = null;
-			});
-			await loading;
+/**
+ * Pick up a newly published store NOW: prefetch it locally, then swap.
+ *
+ * Called by the publisher through SearchEngine.notifyPublish, which is the ONLY
+ * way a warm reader learns about a publish. There used to be a 5-minute manifest
+ * re-check on the warm path instead, and the whole shape of the publish pipeline
+ * was built around not being able to see when readers had converged — a 10-minute
+ * purge delay sized to outlast the poll, and a second purge pass to catch colos
+ * that had not polled yet. Push makes convergence an event, so all of that is
+ * gone rather than tuned.
+ *
+ * THE PREFETCH IS THE POINT, not an optimisation. `loadStore` must unload the old
+ * store before loading the new one — two ~76.6MB archives do not fit in a 128MB
+ * isolate — so requests arriving during the swap wait for the whole load. Filling
+ * the local cache FIRST, while the old store is still serving, turns that wait
+ * from a KV fetch plus a decompression into a read from local SQLite.
+ *
+ * Returns whether it actually swapped, so the caller can distinguish "converged"
+ * from "was already current".
+ */
+export async function refreshNow(env: Env, ctx: LoadContext): Promise<boolean> {
+	const manifest = await readManifest(env);
+	if (!manifest?.store_bytes) return false;
+	if (current?.storeKey === manifest.store_key) return false;
+
+	// Prefetch under the OLD store, which keeps serving throughout. Failures here
+	// are not fatal: the swap below falls back to reading from KV, which is what
+	// it did before this cache existed.
+	if (ctx.storage) {
+		const keep = [manifest.store_key, ...(manifest.compat_key ? [manifest.compat_key] : [])];
+		try {
+			ensureCacheSchema(ctx.storage);
+			const rows = await fillCache(ctx.storage, manifest.store_key, kvStoreStream(env, manifest), manifest.store_bytes);
+			let compatRows = 0;
+			if (manifest.compat_key && manifest.compat_bytes) {
+				compatRows = await fillCache(
+					ctx.storage,
+					manifest.compat_key,
+					kvCompatStream(env, manifest),
+					manifest.compat_bytes,
+				);
+			}
+			const dropped = pruneCache(ctx.storage, keep);
+			console.log(
+				`${tag(ctx)}prefetched ${manifest.store_key} (${rows} rows) + residue (${compatRows} rows) before swapping` +
+					`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
+			);
+		} catch (err) {
+			console.warn(`${tag(ctx)}prefetch failed, swapping straight from KV: ${err}`);
 		}
-	} catch (err) {
-		console.error(`${tag(ctx)}manifest refresh failed (serving current store):`, err);
 	}
+
+	loading = loadStore(env, ctx).finally(() => {
+		loading = null;
+	});
+	await loading;
+	return true;
 }
 
 export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
-	if (current) {
-		ctx.waitUntil(refreshIfStale(env, ctx));
-		return current.engine;
-	}
+	// No manifest re-check on the warm path: a publish reaches this isolate by
+	// being pushed to it, so the hot path does no KV read at all.
+	if (current) return current.engine;
 	if (!loading) {
 		loading = loadStore(env, ctx).finally(() => {
 			loading = null;
@@ -574,10 +609,4 @@ export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 /** Non-blocking: the local engine if this isolate is already warm, else null. */
 export function tryGetLoadedEngine(): Engine | null {
 	return current?.engine ?? null;
-}
-
-/** Called from the cron handler so isolates converge on a fresh publish fast. */
-export async function manifestPollAlarm(env: Env): Promise<void> {
-	lastManifestCheck = 0;
-	if (current) await refreshIfStale(env);
 }

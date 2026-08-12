@@ -56,6 +56,7 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "./engine/reference-kv";
+import { REGION_HINTS } from "./engine/region";
 import {
 	encodeRulingsBucket,
 	parseRulingLine,
@@ -70,6 +71,7 @@ import {
 	rulingsBucketOf,
 	rulingsCurrentPrefix,
 } from "./engine/rulings-kv";
+import { DEFAULT_MAX_SHARDS } from "./engine/shard-controller";
 import { GridChunker } from "./engine/store-chunks";
 import {
 	assembleChunk,
@@ -126,51 +128,26 @@ const MAX_PHASE_ATTEMPTS = 12;
 const MAX_WASM_REWINDS = 3;
 
 /**
- * How long the `purge` phase waits before each pass at the Worker's edge cache.
+ * Passes the `purge` phase makes. ONE, now that convergence is an event.
  *
- * The delay is the whole point of the phase, not an incidental politeness.
- * Purging at the commit point would be actively WORSE than not purging: a
- * request arriving in the gap between the manifest landing and a SearchEngine
- * DO noticing it is answered from yesterday's store and then cached fresh — and
- * `/cards/*` caches for 16 hours, so one such request pins yesterday's card
- * objects for most of a day. The stale entries this is supposed to clear at
- * least expire on schedule.
+ * This was 2, with a 10-minute PURGE_DELAY_MS in front of each, and both numbers
+ * existed for the same reason: nothing could observe when the engine DOs had
+ * picked up the new store. The delay was sized to outlast the two things that
+ * bounded it — a 5-minute manifest re-check in store.ts plus KV's 60s cache on
+ * the manifest read — and the second pass covered the hole the first could not:
+ * convergence was lazy AND deferred, so a colo with no traffic during the first
+ * pass would swap only on its next request, and that request wrote a stale answer
+ * straight back into a cache that had just been emptied. For `/cards/*` that
+ * entry then stood for 16 hours.
  *
- * So it has to outlast reader convergence, which is bounded by two things in
- * store.ts and store-kv.ts: a loaded engine re-reads the manifest at most every
- * MANIFEST_RECHECK_MS (5 minutes), and the manifest read itself may come from a
- * colo KV cache up to `cacheTtl` (60s) old. Six minutes is the worst case; ten
- * is that with room, and still far inside STALE_RUN_MS.
- *
- * A DO that is evicted rather than converging costs nothing here — it loads the
- * current manifest from cold on its next request, which is already fresh.
+ * The `notify` phase removes the premise. It pushes the new store to every region
+ * and does not advance until they have all acknowledged, so by the time this runs
+ * there is no reader left holding the old store and nothing to refill the cache
+ * with a stale answer. Purging once, immediately, is now correct — and strictly
+ * better than waiting, because every second between the publish and the purge is
+ * a second of old answers still being served from the edge.
  */
-const PURGE_DELAY_MS = 10 * 60 * 1000;
-
-/**
- * Passes the `purge` phase makes, PURGE_DELAY_MS apart. Two, and the second one
- * is not belt-and-braces — it closes a hole the first cannot.
- *
- * Convergence in store.ts is lazy AND deferred: `getEngine` hands back the
- * store it already has and re-checks the manifest under `waitUntil`, so the
- * request that trips the recheck gate is itself answered from the OLD store. A
- * colo that saw no traffic at all between the publish and the first pass has
- * therefore not converged when that pass runs, and its next request — now after
- * the purge — writes a stale answer straight back into a cache that was just
- * emptied. For `/cards/*` that entry then stands for 16 hours, which is the
- * exact failure the delay exists to prevent.
- *
- * What saves it is that the same request STARTS the swap. That colo is serving
- * the new store within a second or two of poisoning the cache, so a second pass
- * one full recheck cycle later deletes that entry and nothing refills it.
- *
- * The alternative was making the triggering request block on the swap, which
- * fixes it at the source. It was rejected: it puts a manifest read on the hot
- * path every 5 minutes and makes one user per colo per night wait ~1s on a
- * store load, and "users never wait on a store load" is a rule the cold-start
- * relay was built to keep.
- */
-const PURGE_PASSES = 2;
+const PURGE_PASSES = 1;
 
 /**
  * What one import run may spend of the Durable Objects storage meters before
@@ -325,6 +302,7 @@ type Phase =
 	| "reorder"
 	| "build"
 	| "publish"
+	| "notify"
 	| "rulings"
 	| "reference"
 	| "purge";
@@ -612,14 +590,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// healthy slice to clear a counter nothing had raised.
 			if (attempts > 1) await this.ctx.storage.put("phase_attempts", 0);
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
-			if (next !== "idle") {
-				// Every phase but `purge` is CPU-bound work with nothing to wait for,
-				// so the chain runs itself as fast as the runtime allows. `purge`
-				// alone is a deadline rather than a slice — see PURGE_DELAY_MS — and
-				// carries the timestamp it may not run before.
-				const at = Number(this.metaGet("purge_at") ?? 0);
-				await this.ctx.storage.setAlarm(next === "purge" && at > Date.now() ? at : Date.now());
-			}
+			// Every phase is now work with nothing to wait for, so the chain runs
+			// itself as fast as the runtime allows. `purge` used to be a DEADLINE
+			// instead of a slice, carrying a timestamp it could not run before,
+			// because it had to outlast readers noticing the publish on their own.
+			// `notify` tells them instead, so there is nothing left to wait out.
+			if (next !== "idle") await this.ctx.storage.setAlarm(Date.now());
 		} catch (err) {
 			if (err instanceof FatalImportError) {
 				console.error(`Import stopped in phase ${phase}: ${err.message}`);
@@ -733,6 +709,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepBuild();
 			case "publish":
 				return this.stepPublish();
+			case "notify":
+				return this.stepNotify();
 			case "rulings":
 				return this.stepRulings();
 			case "reference":
@@ -1680,16 +1658,91 @@ export class ImportCoordinator extends DurableObject<Env> {
 				`+ ${compatKey} (${compatTotal} chunks)`,
 		);
 		this.ctx.storage.transactionSync(() => {
-			this.metaSet("phase", "rulings");
+			// `notify` comes FIRST, before rulings and reference: it is what puts the
+			// readers on the new store, and everything after it is additional KV data
+			// rather than a reason to keep serving the old archive.
+			this.metaSet("phase", "notify");
 			this.metaSet("rulings_bucket_cursor", "0");
 			this.metaSet("rulings_attempts", "0");
 			this.metaSet("reference_step", "sets");
 			this.metaSet("purges_done", "0");
-			// The purge deadline is set HERE, not when the rulings phase hands over: it counts from
-			// the manifest landing, which is the moment the engine DOs begin picking the new store
-			// up. Rulings run inside that wait rather than after it.
-			this.metaSet("purge_at", String(Date.now() + PURGE_DELAY_MS));
 		});
+	}
+
+	// ── phase: notify (push the new store to every region) ─────────────────────
+
+	/**
+	 * Tell every region's engine DO that a new store is live, and release the
+	 * storage held by shards that are no longer in the fan-out.
+	 *
+	 * This replaces readers polling. Convergence used to be a 5-minute manifest
+	 * re-check inside each live DO, which nothing could observe — so the purge
+	 * phase was built around not being able to see it: a 10-minute delay sized to
+	 * outlast the poll plus KV's 60s manifest cache, and then a SECOND pass to
+	 * catch a colo that had not polled during the first. Both are gone. Pushing
+	 * makes convergence an event, and the run advances when the event has happened
+	 * rather than when a clock says it probably has.
+	 *
+	 * ALL NINE REGIONS ARE NOTIFIED UNCONDITIONALLY, in parallel. A cold one
+	 * answers instantly without loading anything (see SearchEngine.notifyPublish),
+	 * so this does not wake idle regions into holding a ~76.6MB store, and
+	 * scale-to-zero survives. The coordinator's own CPU here is negligible: the
+	 * work happens inside the objects being called.
+	 *
+	 * A failure re-runs the whole phase. That is safe because both RPCs are
+	 * idempotent — notifying a DO that already swapped is a no-op that reports
+	 * `swapped: false`, and releasing an empty cache does nothing.
+	 */
+	private async stepNotify(): Promise<void> {
+		const stubFor = (name: string, region: DurableObjectLocationHint) =>
+			this.env.SEARCH_ENGINE.get(this.env.SEARCH_ENGINE.idFromName(name), {
+				locationHint: region,
+			}) as unknown as {
+				notifyPublish(): Promise<{ swapped: boolean; shards: number }>;
+				releaseCache(): Promise<unknown>;
+			};
+
+		const results = await Promise.allSettled(
+			REGION_HINTS.map(async (region) => {
+				// Shard 0 is the rendezvous every isolate in the region reports to, so
+				// it is the only object that knows the current fan-out.
+				const head = await stubFor(`engine-${region}`, region).notifyPublish();
+				const width = Math.max(1, Math.floor(head.shards));
+				// Sweep at least the default cap, and further if SHARDS_MAX raised the
+				// fan-out past it — otherwise a shard opened above the default would
+				// keep its ~88MB forever, which is the leak this exists to prevent.
+				const sweepTo = Math.max(DEFAULT_MAX_SHARDS, width);
+
+				// Live shards converge with it...
+				const shards = await Promise.all(
+					Array.from({ length: width - 1 }, (_, i) => stubFor(`engine-${region}-${i + 1}`, region).notifyPublish()),
+				);
+
+				// ...and everything above the fan-out gives its storage back. Calling
+				// a shard that was never opened costs one trivial RPC against an
+				// object with nothing stored, which Cloudflare then reclaims.
+				await Promise.all(
+					Array.from({ length: sweepTo - width }, (_, i) =>
+						stubFor(`engine-${region}-${width + i}`, region).releaseCache(),
+					),
+				);
+				return { region, width, swapped: head.swapped || shards.some((s) => s.swapped) };
+			}),
+		);
+
+		const failed = results.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : []));
+		const swapped = results.flatMap((r) => (r.status === "fulfilled" && r.value.swapped ? [r.value.region] : []));
+		if (failed.length > 0) {
+			// Thrown, so the phase retries: the purge below MUST NOT run while a
+			// reader might still be serving the old store, or it empties the cache
+			// straight into a stale answer with a 16-hour TTL.
+			throw new Error(`notify: ${failed.length}/${REGION_HINTS.length} region(s) failed: ${failed.join("; ")}`);
+		}
+		console.log(
+			`Publish notified ${REGION_HINTS.length} regions; ${swapped.length} had a warm store to swap` +
+				`${swapped.length ? ` (${swapped.join(", ")})` : ""}`,
+		);
+		this.metaSet("phase", "rulings");
 	}
 
 	// ── phase: rulings (KV) ────────────────────────────────────────────────────
@@ -2045,31 +2098,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * Drop the Worker's edge cache, which is the last thing still serving the
 	 * store this run replaced.
 	 *
-	 * Reached PURGE_DELAY_MS after the manifest landed — that wait is the
-	 * correctness condition, and its reasoning lives on the constant. The purge
-	 * itself has to run inside the default Worker entrypoint, because Workers
-	 * Cache scopes a purge to the entrypoint that issues one and this Durable
-	 * Object is not an entrypoint at all; `ctx.exports` is the loopback that
-	 * gets us there. See SylvanLibrarian.purgeCache in src/index.ts.
+	 * Reached once `notify` has confirmed every region is serving the new store,
+	 * which is the correctness condition — purging while a reader still holds the
+	 * old one empties the cache straight into a stale answer that then stands for
+	 * up to 16 hours. That used to be bought with a ten-minute wait and a second
+	 * pass; it is now bought with an acknowledgement, so this runs immediately and
+	 * once.
 	 *
-	 * Runs PURGE_PASSES times, PURGE_DELAY_MS apart — see that constant for why
-	 * one pass is not enough.
+	 * The purge itself has to run inside the default Worker entrypoint, because
+	 * Workers Cache scopes a purge to the entrypoint that issues one and this
+	 * Durable Object is not an entrypoint at all; `ctx.exports` is the loopback
+	 * that gets us there. See SylvanLibrarian.purgeCache in src/index.ts.
 	 *
-	 * A failed purge does not fail the run, and does not buy an extra pass
-	 * either. The store has been live for ten minutes by now, and the fallback is
-	 * the behaviour this deployment had before the phase existed: cached answers
-	 * age out on their own TTL, at worst 16 hours for a `/cards/*` object. Losing
-	 * a completed import over a cache call would be the worse trade, so this only
-	 * ever logs.
+	 * A failed purge does not fail the run: the fallback is the behaviour this
+	 * deployment had before the phase existed — cached answers age out on their
+	 * own TTL, at worst 16 hours for a `/cards/*` object. Losing a completed
+	 * import over a cache call would be the worse trade, so this only ever logs.
 	 */
 	private async stepPurge(): Promise<void> {
-		// The deadline is checked here as well as in the re-arm, because the one
-		// thing that drops a pending alarm — a deploy or dev reload mid-run — is
-		// answered by startImport re-arming for `now`, which would land this phase
-		// early and cache a pre-swap answer for the next 16 hours. Returning
-		// without clearing the phase puts the re-arm back on `purge_at`.
-		if (Number(this.metaGet("purge_at") ?? 0) > Date.now()) return;
-
 		const pass = Number(this.metaGet("purges_done") ?? 0) + 1;
 		try {
 			const result = await this.ctx.exports.default.purgeCache();
@@ -2087,14 +2133,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				`Edge cache purge pass ${pass}/${PURGE_PASSES} could not be issued ` +
 					`(cached answers will expire on their own TTL): ${err}`,
 			);
-		}
-
-		if (pass < PURGE_PASSES) {
-			this.ctx.storage.transactionSync(() => {
-				this.metaSet("purges_done", String(pass));
-				this.metaSet("purge_at", String(Date.now() + PURGE_DELAY_MS));
-			});
-			return; // phase stays "purge"; the re-arm reads the new deadline
 		}
 
 		this.ctx.storage.transactionSync(() => {

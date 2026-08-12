@@ -7,7 +7,6 @@ import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
 import { markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
-import { manifestPollAlarm } from "./engine/store";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
@@ -198,8 +197,10 @@ export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
 	override async scheduled(_controller: ScheduledController): Promise<void> {
 		const coordinator = this.env.IMPORT_COORDINATOR.get(this.env.IMPORT_COORDINATOR.idFromName("singleton"));
 		this.ctx.waitUntil(coordinator.fetch("https://coordinator/start-import?reason=cron"));
-		// Also refresh this isolate's view of the manifest so hot-swap lag stays bounded.
-		this.ctx.waitUntil(manifestPollAlarm(this.env));
+		// Nothing to poll here any more. This used to also kick manifestPollAlarm to
+		// bound hot-swap lag, which was inert anyway (it ran in a Worker isolate,
+		// where no store is ever loaded) and is now unnecessary: the coordinator
+		// pushes the new store to every region's DO in its own `notify` phase.
 	}
 
 	/**

@@ -38,6 +38,8 @@ const fakeEngine = {
 mock.module("../../src/engine/store", () => ({
 	getEngine: async () => fakeEngine,
 	tryGetLoadedEngine: () => fakeEngine,
+	// Imported by search-engine-do for notifyPublish; no case here publishes.
+	refreshNow: async () => false,
 }));
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
