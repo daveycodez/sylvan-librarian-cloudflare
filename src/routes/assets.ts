@@ -6,8 +6,11 @@
 // icons, robots.txt — are NOT here. They are served straight from Cloudflare's
 // CDN out of public/, so a request for one never starts an isolate. See the
 // header of scripts/generate-assets.ts for the measurements that motivated the
-// split; this blob went from ~313KB to ~20KB, and script size costs isolate
-// startup at roughly 1.5ms per 100KB.
+// split; this blob went from ~313KB to ~20KB, which measured roughly 1.5ms of
+// isolate startup per 100KB at the time. That rate is no longer predictive of
+// new work — see the README's startup section before reasoning from it. What
+// still costs is what the next comment describes: structure evaluated at
+// module load, not bytes parsed.
 
 import rawGenerated from "./assets.gen.txt";
 

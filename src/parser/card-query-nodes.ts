@@ -168,7 +168,7 @@ export function slugifyTag(val: string): string {
  * exact match. Here that costs 6,252,880 bytes of archive — 1,024,204 duplicate entries, each
  * costing 2 bytes forward plus a 4-byte inverted TagIndex posting — which crossed the 25MB KV
  * chunk grid from 3 values to 4 and put a fourth serialized read on every cold store load. So the
- * mapping is carried once (~78KB, tag-aliases.gen.ts) and folded in here instead.
+ * mapping is carried once (~68KB, tag-aliases.gen.ts) and folded in here instead.
  *
  * The substitution is exact, not approximate: the builder attaches alias `a` to slug `s` under
  * precisely the condition it attaches `s` itself, so `art:flames` and `art:fire` were always the

@@ -14,12 +14,18 @@
 //     assets.gen.txt   page HTML, plus the cache-busting hashes.
 //
 // The split is a cold-start fix, measured. Everything used to be one ~313KB
-// text module inside the script, and script size costs isolate startup at
-// about 1.5ms per 100KB — which every /search paid, because at this traffic
+// text module inside the script, and at the time that measured about 1.5ms of
+// isolate startup per 100KB — which every /search paid, because at this traffic
 // isolates rarely survive between requests:
 //
 //   blob in script   313KB -> 10,12,13ms startup   149KB -> 10,9ms
 //                    0.5KB -> 7,7ms               (empty Worker floor: 5ms)
+//
+// The split stands on those numbers, which are its own evidence. The RATE does
+// not generalise: later attempts to buy startup with a smaller script measured
+// zero, because Cloudflare compiles and snapshots the script at deploy. See the
+// README's startup section and the note in wrangler.jsonc before extrapolating
+// it to anything new.
 //
 // Only ~17KB is genuinely Worker-side, so the rest moves to the CDN.
 //
