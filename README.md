@@ -72,8 +72,9 @@ cron (nightly refresh; the deploy does the first build)
                    fetch → transform → tags → aggregate → finalize → build
                    (the SAME Rust the native builder runs, compiled to wasm;
                     intermediates spill to DO SQLite, never to memory)
-                   publish: 3 chunks + manifest to KV, manifest LAST (the
-                   commit point readers act on); the store before last dropped
+                   publish: 3 store chunks + the residue archive's one, each
+                   gzipped, + manifest to KV, manifest LAST (the commit point
+                   readers act on); the store before last dropped
 ```
 
 The wasm engine is the only query path. A query it cannot answer returns a
@@ -84,12 +85,32 @@ DO while loading itself in the background, so users never wait on a store
 load. There is deliberately no Cache API layer in front of KV: writing the
 store through `caches.default` and reading it back measured 0.6–1.3s of billed
 CPU per load, and KV's own `cacheTtl` gives the same colo-level caching for
-free on immutable chunk keys. The store is stored raw for the same reason — KV
-meters reads, not bytes, so compression would buy only decompress CPU.
+free on immutable chunk keys. That argument rules out a Cache API layer, and it
+rules out a "holder" Durable Object other DOs pull the store from for the same
+reason twice over: DO CPU tracks bytes handled at roughly 15µs/KB, so moving
+the store through an RPC bills it on both ends, and a DO lives in one place
+where KV caches per colo.
 
-**Publishing** is `chunk_count + 1` writes: ~25MB chunks (just under KV's 25
-MiB value cap) keyed by store key, then the manifest as the commit point — so
-a ~70MB store is four writes. Two versions are retained, so a reader
+The store *is* gzipped, though, which is a different question — the meter was
+never what the cold path was bound by. A load-carrying invocation measures wall
+p50 915ms against DO CPU p50 164ms, so ~750ms of it was waiting for 76.6MB to
+arrive. Compressed, the chunks are 40% of that (8.5 + 8.3 + 12.5MB, cut on RAW
+bytes and each gzipped as its own member).
+
+The memory win is bigger than the transfer one and comes from a different
+place. wasm-bindgen marshals a `&[u8]` by COPYING it into linear memory, so a
+whole ~25MB raw chunk used to land there as scratch on top of the store itself.
+Decompressed, the pieces arrive ~4KB at a time and that scratch effectively
+vanishes: peak linear memory measured 99.4MB before and 74.6MB after — the
+~25MB is the chunk that is no longer copied whole, not the ~12MB the smaller
+KV value saves. Against a 128MB isolate that is the difference that matters.
+
+It is not free: decompression costs ~190ms of DO CPU per load, and that trade
+is the thing to re-measure before undoing it.
+
+**Publishing** is five writes: three store chunks and the residue archive's
+one, each cut just under KV's 25 MiB value cap and gzipped before the put, then
+the manifest as the commit point. Two versions are retained, so a reader
 mid-stream finishes and a bad build can be rolled back.
 
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
@@ -97,7 +118,20 @@ mid-stream finishes and a bad build can be rolled back.
 the collection POST); page HTML carries no card data; `no-store` routes are never
 cached, and neither are the dispatch-level errors (404/405/429/500/503), though
 `/cards/*` caches its OWN 400s and 404s on the route's tier, which is Scryfall's
-behaviour too; the cache is per-deploy-version.
+behaviour too; the cache is per-deploy-version, so a deploy starts cold. An
+import is not a deploy, so the nightly rebuild purges the cache itself, rather
+than leaving a `/cards/*` object sitting on yesterday's prices for 16 hours.
+
+The timing is the whole trick. The purge waits ten minutes after the manifest
+lands, because purging at the commit point is worse than not purging at all — a
+request served in the gap before the engine DOs swap stores gets cached on the
+OLD store, and pins it for the full 16 hours. Ten minutes clears the two things
+that bound convergence: a 5-minute manifest recheck and a 60s KV cache on the
+manifest read. Then it purges a *second* time, ten minutes later, because
+convergence is deferred as well as lazy — the request that trips the recheck
+gate is itself answered from the old store, so a colo that was idle across the
+first window refills the cache right after it is emptied. That same request
+starts the swap, so one more pass is enough to clear it for good.
 
 **Free-plan fit.** A store load is 4 KV reads (5 on `/cards/*`, which alone
 attaches the residue archive), a publish 5 writes, and serving touches neither

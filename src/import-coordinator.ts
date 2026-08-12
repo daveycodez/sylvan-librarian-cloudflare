@@ -20,6 +20,8 @@
 //   build     spilled rows in build order → rkyv archive → chunk staging
 //   publish   ~4 chunks + manifest to KV (manifest LAST — it is the commit
 //             point readers act on), prune old stores, clear staging
+//   purge     drop the Worker's edge cache, twice, once the engine DOs have
+//             picked the new manifest up — deliberately NOT at the commit point
 //
 // Restart safety: every phase's inputs live in this DO's SQLite, and phase
 // progress commits transactionally with its outputs. Phases whose state lives
@@ -80,6 +82,53 @@ const MAX_PHASE_ATTEMPTS = 12;
  * zero — and the cost of each one is most of an import.
  */
 const MAX_WASM_REWINDS = 3;
+
+/**
+ * How long the `purge` phase waits before each pass at the Worker's edge cache.
+ *
+ * The delay is the whole point of the phase, not an incidental politeness.
+ * Purging at the commit point would be actively WORSE than not purging: a
+ * request arriving in the gap between the manifest landing and a SearchEngine
+ * DO noticing it is answered from yesterday's store and then cached fresh — and
+ * `/cards/*` caches for 16 hours, so one such request pins yesterday's card
+ * objects for most of a day. The stale entries this is supposed to clear at
+ * least expire on schedule.
+ *
+ * So it has to outlast reader convergence, which is bounded by two things in
+ * store.ts and store-kv.ts: a loaded engine re-reads the manifest at most every
+ * MANIFEST_RECHECK_MS (5 minutes), and the manifest read itself may come from a
+ * colo KV cache up to `cacheTtl` (60s) old. Six minutes is the worst case; ten
+ * is that with room, and still far inside STALE_RUN_MS.
+ *
+ * A DO that is evicted rather than converging costs nothing here — it loads the
+ * current manifest from cold on its next request, which is already fresh.
+ */
+const PURGE_DELAY_MS = 10 * 60 * 1000;
+
+/**
+ * Passes the `purge` phase makes, PURGE_DELAY_MS apart. Two, and the second one
+ * is not belt-and-braces — it closes a hole the first cannot.
+ *
+ * Convergence in store.ts is lazy AND deferred: `getEngine` hands back the
+ * store it already has and re-checks the manifest under `waitUntil`, so the
+ * request that trips the recheck gate is itself answered from the OLD store. A
+ * colo that saw no traffic at all between the publish and the first pass has
+ * therefore not converged when that pass runs, and its next request — now after
+ * the purge — writes a stale answer straight back into a cache that was just
+ * emptied. For `/cards/*` that entry then stands for 16 hours, which is the
+ * exact failure the delay exists to prevent.
+ *
+ * What saves it is that the same request STARTS the swap. That colo is serving
+ * the new store within a second or two of poisoning the cache, so a second pass
+ * one full recheck cycle later deletes that entry and nothing refills it.
+ *
+ * The alternative was making the triggering request block on the swap, which
+ * fixes it at the source. It was rejected: it puts a manifest read on the hot
+ * path every 5 minutes and makes one user per colo per night wait ~1s on a
+ * store load, and "users never wait on a store load" is a rule the cold-start
+ * relay was built to keep.
+ */
+const PURGE_PASSES = 2;
 
 /**
  * What one import run may spend of the Durable Objects storage meters before
@@ -192,7 +241,7 @@ type Phase =
 	| "reorder"
 	| "build"
 	| "publish"
-	| "publish";
+	| "purge";
 
 /** `sylvan-librarian-worker/<YYYYMMDD>` — Scryfall rejects default UAs. */
 function userAgent(): string {
@@ -463,7 +512,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (attempts > 1) await this.ctx.storage.put("phase_attempts", 0);
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
 			if (next !== "idle") {
-				await this.ctx.storage.setAlarm(Date.now());
+				// Every phase but `purge` is CPU-bound work with nothing to wait for,
+				// so the chain runs itself as fast as the runtime allows. `purge`
+				// alone is a deadline rather than a slice — see PURGE_DELAY_MS — and
+				// carries the timestamp it may not run before.
+				const at = Number(this.metaGet("purge_at") ?? 0);
+				await this.ctx.storage.setAlarm(next === "purge" && at > Date.now() ? at : Date.now());
 			}
 		} catch (err) {
 			if (err instanceof FatalImportError) {
@@ -578,6 +632,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepBuild();
 			case "publish":
 				return this.stepPublish();
+			case "purge":
+				return this.stepPurge();
 			default: {
 				if (phase.startsWith("fetch:")) {
 					return this.stepFetch(phase.slice("fetch:".length) as DumpKind);
@@ -1494,14 +1550,80 @@ export class ImportCoordinator extends DurableObject<Env> {
 			console.log(`Retention: dropped ${key} from KV`);
 		}
 
-		// The store is live and the import is done — there is no phase after
-		// publish now that the SQL fallback is gone.
+		// The store is LIVE from here — every reader that reads the manifest from
+		// now on gets it. What is left is the edge cache, which still holds
+		// answers computed from the store this one replaced; `purge` clears them
+		// once the readers have caught up.
 		console.log(
 			`Store published to KV: ${storeKey} (${manifest.card_count} cards, ${kvTotal} chunks) ` +
 				`+ ${compatKey} (${compatTotal} chunks)`,
 		);
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("kv_store_history", JSON.stringify(history));
+			this.metaSet("phase", "purge");
+			this.metaSet("purges_done", "0");
+			this.metaSet("purge_at", String(Date.now() + PURGE_DELAY_MS));
+		});
+	}
+
+	/**
+	 * Drop the Worker's edge cache, which is the last thing still serving the
+	 * store this run replaced.
+	 *
+	 * Reached PURGE_DELAY_MS after the manifest landed — that wait is the
+	 * correctness condition, and its reasoning lives on the constant. The purge
+	 * itself has to run inside the default Worker entrypoint, because Workers
+	 * Cache scopes a purge to the entrypoint that issues one and this Durable
+	 * Object is not an entrypoint at all; `ctx.exports` is the loopback that
+	 * gets us there. See SylvanLibrarian.purgeCache in src/index.ts.
+	 *
+	 * Runs PURGE_PASSES times, PURGE_DELAY_MS apart — see that constant for why
+	 * one pass is not enough.
+	 *
+	 * A failed purge does not fail the run, and does not buy an extra pass
+	 * either. The store has been live for ten minutes by now, and the fallback is
+	 * the behaviour this deployment had before the phase existed: cached answers
+	 * age out on their own TTL, at worst 16 hours for a `/cards/*` object. Losing
+	 * a completed import over a cache call would be the worse trade, so this only
+	 * ever logs.
+	 */
+	private async stepPurge(): Promise<void> {
+		// The deadline is checked here as well as in the re-arm, because the one
+		// thing that drops a pending alarm — a deploy or dev reload mid-run — is
+		// answered by startImport re-arming for `now`, which would land this phase
+		// early and cache a pre-swap answer for the next 16 hours. Returning
+		// without clearing the phase puts the re-arm back on `purge_at`.
+		if (Number(this.metaGet("purge_at") ?? 0) > Date.now()) return;
+
+		const pass = Number(this.metaGet("purges_done") ?? 0) + 1;
+		try {
+			const result = await this.ctx.exports.default.purgeCache();
+			if (result.success) {
+				console.log(`Edge cache purged after publish (pass ${pass}/${PURGE_PASSES})`);
+			} else {
+				console.warn(
+					`Edge cache purge pass ${pass}/${PURGE_PASSES} did not succeed ` +
+						`(cached answers will expire on their own TTL): ` +
+						`${result.errors.map((e) => `${e.code} ${e.message}`).join("; ")}`,
+				);
+			}
+		} catch (err) {
+			console.warn(
+				`Edge cache purge pass ${pass}/${PURGE_PASSES} could not be issued ` +
+					`(cached answers will expire on their own TTL): ${err}`,
+			);
+		}
+
+		if (pass < PURGE_PASSES) {
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("purges_done", String(pass));
+				this.metaSet("purge_at", String(Date.now() + PURGE_DELAY_MS));
+			});
+			return; // phase stays "purge"; the re-arm reads the new deadline
+		}
+
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("purges_done", String(pass));
 			this.metaSet("phase", "idle");
 			this.metaSet("finished_at", String(Date.now()));
 		});

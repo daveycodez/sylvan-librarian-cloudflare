@@ -2,6 +2,7 @@
 // _resolve_action (vendor/sylvan_librarian/api/api_resource.py:641-731), with
 // falcon's JSON error serializer shape for all HTTP errors.
 
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
@@ -161,17 +162,62 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	}
 }
 
-export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		return handle(request, env, ctx);
-	},
+/**
+ * A class rather than the plain `{ fetch, scheduled }` object it used to be,
+ * for exactly one reason: `purgeCache` below has to be callable as an RPC
+ * method ON THIS ENTRYPOINT, and a plain object export exposes only the
+ * handlers the runtime knows about.
+ */
+export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
+	override fetch(request: Request): Promise<Response> {
+		return handle(request, this.env, this.ctx);
+	}
 
 	// Nightly store rebuild (wrangler.jsonc triggers.crons). The coordinator DO
 	// serializes runs; a run already in flight makes this a no-op.
-	async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		const coordinator = env.IMPORT_COORDINATOR.get(env.IMPORT_COORDINATOR.idFromName("singleton"));
-		ctx.waitUntil(coordinator.fetch("https://coordinator/start-import?reason=cron"));
+	override async scheduled(_controller: ScheduledController): Promise<void> {
+		const coordinator = this.env.IMPORT_COORDINATOR.get(this.env.IMPORT_COORDINATOR.idFromName("singleton"));
+		this.ctx.waitUntil(coordinator.fetch("https://coordinator/start-import?reason=cron"));
 		// Also refresh this isolate's view of the manifest so hot-swap lag stays bounded.
-		ctx.waitUntil(manifestPollAlarm(env));
-	},
-} satisfies ExportedHandler<Env>;
+		this.ctx.waitUntil(manifestPollAlarm(this.env));
+	}
+
+	/**
+	 * Drop every response this Worker has cached (wrangler.jsonc `cache`).
+	 * Called over RPC by ImportCoordinator once a nightly rebuild is live and
+	 * the engine DOs have had time to pick it up — see that file's `purge` phase
+	 * for the timing, which is the subtle half of this.
+	 *
+	 * It has to live HERE, on the default entrypoint, because a Workers Cache
+	 * purge is scoped to the entrypoint that issues it, and every cached
+	 * response this deployment holds was stored by this one. The coordinator is
+	 * a Durable Object — never an entrypoint, never itself cached — so a purge
+	 * issued from inside it would reach nothing.
+	 *
+	 * `purgeEverything` rather than a path list, because "the tiers that carry
+	 * card data" is very nearly everything: `/search`, `/catalog` and all of
+	 * `/cards/*`, plus the root page, which embeds search results. What is left
+	 * is page HTML on an hour of edge TTL, and re-rendering one of those costs a
+	 * template fill. Static assets never enter this cache at all — they are
+	 * served by the assets layer without invoking the Worker.
+	 *
+	 * Never throws. By the time this runs the store is already published, and a
+	 * purge that fails just leaves the pre-purge behaviour: stale answers expire
+	 * on their own TTL. Failing the run over it would be strictly worse, so the
+	 * result comes back as a value for the caller to log.
+	 */
+	async purgeCache(): Promise<CachePurgeResult> {
+		// Optional in the runtime types because a Worker can be deployed without
+		// `cache.enabled`; treated as a reportable failure rather than a crash so
+		// turning caching off never takes the nightly import down with it.
+		const cache = this.ctx.cache;
+		if (!cache) {
+			return { success: false, errors: [{ code: 0, message: "Workers Cache is not enabled for this Worker" }] };
+		}
+		try {
+			return await cache.purge({ purgeEverything: true });
+		} catch (err) {
+			return { success: false, errors: [{ code: 0, message: String(err) }] };
+		}
+	}
+}

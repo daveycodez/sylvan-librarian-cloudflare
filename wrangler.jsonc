@@ -45,10 +45,17 @@
 	// are the dispatch-level errors, which carry no cache header at all, so the
 	// honest-failure invariants hold. The exception is deliberate: /cards/*
 	// sends its own tier on its own 400s and 404s, because Scryfall does — a
-	// missing card is a stable fact. Per-version cache (default): each
-	// deploy starts fresh, so statics can't go stale across releases. Nightly
-	// imports need no purge: /search's 90s TTL is smaller than the isolates'
-	// own manifest-poll staleness, and page HTML carries no card data.
+	// missing card is a stable fact.
+	//
+	// Per-version cache (default): each DEPLOY starts fresh, so statics can't go
+	// stale across releases. A nightly IMPORT is not a deploy and so does not
+	// reset anything, which is why it purges explicitly — see the coordinator's
+	// `purge` phase (which is mostly about WHEN, and runs twice) and
+	// SylvanLibrarian.purgeCache. /search would have survived without one (90s,
+	// and its stale-while-revalidate refreshes in the background), but /cards/*
+	// holds Scryfall's 16 hours with no revalidation at all, so a card object
+	// cached shortly before an import outlived the prices it was built from by
+	// the better part of a day.
 	"cache": { "enabled": true },
 
 	// The engine store lives here: three ~25.5MB search chunks, the ~11.8MB
