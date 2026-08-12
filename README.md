@@ -99,10 +99,11 @@ cached, and neither are the dispatch-level errors (404/405/429/500/503), though
 `/cards/*` caches its OWN 400s and 404s on the route's tier, which is Scryfall's
 behaviour too; the cache is per-deploy-version.
 
-**Free-plan fit.** A store load is 4 KV reads, a publish 4 writes, and serving
-touches neither — so the daily meters (100k Worker requests, 100k KV reads, 1k
-KV writes) bound *traffic*, not architecture. Storage is one ~70MB copy per
-retained version against KV's 1GB.
+**Free-plan fit.** A store load is 4 KV reads (5 on `/cards/*`, which alone
+attaches the residue archive), a publish 5 writes, and serving touches neither
+— so the daily meters (100k Worker requests, 100k KV reads, 1k KV writes) bound
+*traffic*, not architecture. Storage is one ~88MB copy per retained version
+(76.6MB search store plus the 11.8MB residue) against KV's 1GB.
 
 The meter worth watching is the free plan's **10ms CPU per request**, and
 almost all of what a `/search` spends there is **cold isolate startup, not the
@@ -359,7 +360,10 @@ Same 10 queries against this deployment, upstream's own
 [Scryfall API](https://api.scryfall.com) — one residential vantage in Southern
 California, one **cold** request per query then the median of two immediate
 **warm** repeats, every service on its own production caching, one reused
-HTTP/2 connection each. Times are total wall-clock ms, door to door.
+HTTP/2 connection each. Times are total wall-clock ms, door to door. Two runs
+pooled, so each column below is the median of 20 cold samples per service;
+upstream is read in the same runs as the ambient-network control, and moved
+0.97× between them, so neither run is contaminated.
 
 ```bash
 scripts/bench.sh results.tsv
@@ -367,19 +371,34 @@ scripts/bench.sh results.tsv
 
 | | cold (cache miss) | warm (repeat) | payload |
 |---|---|---|---|
-| **this port (Cloudflare)** | 139ms | **21ms** | **~34 KB** |
-| sylvan-librarian.com | **114ms** — 0.8× | 111ms — 5.2× slower | ~34 KB |
-| Scryfall API | 928ms — 6.7× slower | 43ms — 2.0× slower | ~813 KB — 24× larger |
+| **this port (Cloudflare)** | 184ms | **30ms** | ~39 KB |
+| sylvan-librarian.com | **107ms** — 0.58× | 104ms — 3.5× slower | **~34 KB** |
+| Scryfall API | 867ms — 4.7× slower | 54ms — 1.8× slower | ~813 KB — 21× larger |
 
-Worst single request: **this port 260ms** · upstream 482ms · Scryfall 4037ms.
+Worst single request: **this port 6799ms** · upstream 527ms · Scryfall 1302ms.
 
 Upstream is FASTER than this port on a genuine cache miss, and that is the
 honest shape of the trade: they run a warm process that is always resident,
 while a miss here goes through an isolate and a Durable Object that may both
-be cold. What this port buys instead is the repeat — 21ms against their 111ms,
+be cold. What this port buys instead is the repeat — 30ms against their 104ms,
 because they front `/search` with no edge cache at all and their cold and warm
-numbers are the same number. Scryfall's miss is 928ms and its worst case four
-seconds; its 43ms warm is its own CDN.
+numbers are the same number. Scryfall's miss is 867ms and its worst case 1.3s;
+its 54ms warm is its own CDN.
+
+That 6799ms worst case is one request of the twenty — the first query of the
+first run, landing on a colo whose `SearchEngine` had been evicted, so it paid
+a full store load out of KV before it could answer. It is the same wake the
+store loader is built around (~915ms of Durable Object wall time at the
+median, of which only ~164ms is CPU), and it is not the median's problem: the
+other nineteen cold samples span 84–262ms. Nothing about it is hidden by
+averaging, which is why the worst case is printed next to the median rather
+than in place of it.
+
+The payload is ~39 KB against upstream's ~34 KB because `scryfall_id` is this
+port's tenth default result field where upstream sends nine — card images here
+come from Scryfall's CDN rather than upstream's CloudFront mirror, and that
+path is a pure function of the id, so the no-JS renderer cannot build an image
+URL without it.
 
 Every URL carries a per-run nonce, so the cold column measures a real miss.
 Without it the fixed query set collides with `/search`'s own

@@ -10,9 +10,11 @@
 // KV removes the constraint that created all of it. A 25 MiB value cap means a
 // ~75MB store is THREE chunks, so:
 //
-//   - a full publish is 4 writes against a 1,000/day free allowance — no
+//   - a full publish is 5 writes against a 1,000/day free allowance — three
+//     store chunks, the residue archive's one, and the manifest — with no
 //     incremental publish, no dedup, no resume bookkeeping
-//   - a full load is 4 reads against 100,000/day
+//   - a cold `/search` load is 4 reads against 100,000/day (manifest + three
+//     store chunks); `/cards/*` adds the residue archive's one, for 5
 //   - one copy serves every colo, instead of one 75MB SQLite copy per
 //     Durable Object against a 5GB pool
 //
@@ -49,12 +51,18 @@ import { EngineUnavailableError } from "./types";
  * the store at 74.8MB, which cleared the old 75,000,000 ceiling by 184,272
  * bytes — and two same-format builds a day apart differ by ~19KB, so that
  * margin was about ten days of ordinary Scryfall drift before the 4th chunk
- * came back. At 26,000,000 the ceiling is 78,000,000 and the margin is 3.2MB.
+ * came back. At 26,000,000 the ceiling is 78,000,000.
+ *
+ * MARGIN TODAY IS 1,363,536 BYTES. The live generation-10 store is 76,636,464
+ * bytes (production logs it loading "from 3 pieces"), so at ~19KB/day of drift
+ * that is roughly ten weeks, not the 3.2MB this comment used to claim against
+ * the smaller generation-4 store.
  *
  * Do not read the remaining 214,400 bytes of cap as free: a chunk is
  * materialised whole as an ArrayBuffer during load, on top of wasm linear
  * memory that already holds the store, and that sum is what the 128MB limit
- * actually governs.
+ * actually governs — measured at ~102.6MB of peak (76.6MB of linear memory
+ * plus one 26MB chunk), which is what leaves so little room for a lookahead.
  */
 export const KV_CHUNK_BYTES = 26_000_000;
 
@@ -186,14 +194,17 @@ export const MANIFEST_KEY = "store:manifest";
  *       304), so the header rejects a generation-9 store outright and the
  *       rebuild is forced at deploy rather than deferred to the nightly.
  *
- *       THIS IS THE STORE THAT BUYS THE 4TH CHUNK. 76,571,408 -> 87,989,816
- *       bytes, measured, against the 78,000,000-byte three-chunk ceiling. A
- *       4th chunk is one extra sequential KV round trip on cold load; it is
- *       not a meter tick and not a failure, and it was taken deliberately
- *       rather than arrived at by drift. Two lossless compactions already ran
- *       first, worth 10,128,264 bytes together, and without them the store is
- *       98,118,080 and the in-Worker nightly import no longer fits its 112 MiB
- *       cap at all:
+ *       THE SEARCH STORE STAYS AT THREE CHUNKS, because the residue does not
+ *       live in it. Inlined it measured 76,571,408 -> 87,989,816 bytes, past
+ *       the 78,000,000-byte three-chunk ceiling AND 15.3 MiB past the import's
+ *       112 MiB wasm cap, where the build phase died outright. So the residue
+ *       became a second archive instead (0d19d29): search store 76,636,456
+ *       bytes in 3 chunks, residue 11,839,272 bytes in 1. The 4th KV value is
+ *       real, but it is the residue's own chunk and only `/cards/*` reads it —
+ *       a search-only colo still pays three sequential round trips, not four.
+ *       Two lossless compactions ran before the split was reached for, worth
+ *       10,128,264 bytes together, and without them the inlined store is
+ *       98,118,080:
  *         - the eleven sparse marketplace/price ids are niched with
  *           `NicheInto<Zero>` (CompatFields 128 -> 84 bytes). rkyv 0.8 does
  *           NOT niche an `Option<NonZeroU32>` on its own — measured at 8 bytes

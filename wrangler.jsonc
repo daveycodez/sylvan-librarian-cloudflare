@@ -39,16 +39,18 @@
 	// own manifest-poll staleness, and page HTML carries no card data.
 	"cache": { "enabled": true },
 
-	// The engine store lives here: ~4 chunks of ~20MB plus a manifest, written
-	// by the deploy and the nightly cron, read by every SearchEngine DO. One
-	// copy serves every colo (KV caches it per-colo on immutable chunk keys),
-	// where the previous design kept a 70MB SQLite copy per Durable Object
-	// against the 5GB DO pool. A full load is ~5 metered reads and a full
-	// publish ~5 writes, against free-tier allowances of 100k reads and 1k
-	// writes per day. Nothing to fill in by hand: the deploy creates the
-	// namespace if absent and pins its id (scripts/align-kv-binding.ts) before
-	// wrangler reads this file, which also repairs the binding after a
-	// namespace is deleted and recreated.
+	// The engine store lives here: three ~25.5MB search chunks, the ~11.8MB
+	// card-object residue archive in one more, and a manifest — written by the
+	// deploy and the nightly cron, read by every SearchEngine DO. One copy
+	// serves every colo (KV caches it per-colo on immutable chunk keys), where
+	// the previous design kept a 70MB SQLite copy per Durable Object against
+	// the 5GB DO pool. A cold `/search` load is 4 metered reads and a cold
+	// `/cards/*` load 5 (it alone attaches the residue); a full publish is 5
+	// writes, against free-tier allowances of 100k reads and 1k writes per day.
+	// Nothing to fill in by hand: the deploy creates the namespace if absent
+	// and pins its id (scripts/align-kv-binding.ts) before wrangler reads this
+	// file, which also repairs the binding after a namespace is deleted and
+	// recreated.
 	"kv_namespaces": [
 		{
 			"binding": "STORE_KV",

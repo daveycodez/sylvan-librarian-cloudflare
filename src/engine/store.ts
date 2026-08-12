@@ -429,9 +429,16 @@ async function loadStore(env: Env): Promise<Engine> {
 		current = null;
 		wasm.unload_store();
 	}
-	// Raw bytes, deliberately uncompressed: KV reads are metered per read, not
-	// per byte, so compression would buy nothing but decompress CPU on every
-	// load — and CPU is the scarcer meter.
+	// Raw bytes, uncompressed. The METER argument for this is sound — KV reads
+	// are charged per read, not per byte — but it is not what the cold path is
+	// bound by, so do not repeat it as if it settled the question. Measured on
+	// production over 3 days (n=121 cold loads): wall p50 915ms against DO CPU
+	// p50 164ms, i.e. ~750ms of pure I/O wait for 76.6MB. gzip halves the bytes
+	// (76,636,456 -> 33,342,732 through Workers' own CompressionStream, which
+	// gives no level control and lands near gzip -1) and drops peak memory from
+	// ~102.6MB to ~88MB, against ~190ms of DecompressionStream CPU per load
+	// measured in workerd. That is a real trade, not a free win, and it is
+	// unmade only because the latency half of it is unproven.
 	const pieces = await feedStore(body, manifest.store_bytes);
 
 	const engine = new WasmEngine(env, manifest);
