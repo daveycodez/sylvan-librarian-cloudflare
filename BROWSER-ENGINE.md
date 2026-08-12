@@ -33,7 +33,7 @@ It also deletes result truncation. Any client that paginates the API caps itself
 | Parser and store generation drift apart | Medium | Lockstep versioning + parity CI, §11 |
 | Storage eviction (Safari/iOS especially) | Medium | Always degrade to remote, §13 |
 | ~~`finish_store_load` validation cost is unmeasured~~ | — | **Resolved.** 0.1 ms; whole warm-up is ~14 ms of CPU, §2 |
-| 28 MB download on a phone | Low–Medium | Deferred trigger, `saveData` respect, §8.1 |
+| 28–35 MB download on a phone | Low–Medium | Deferred trigger, `saveData` respect, §8.1 |
 
 None of these is disqualifying. The first two are design constraints that shape the package; the rest are degradation paths.
 
@@ -45,27 +45,33 @@ All against `store-build/card-store-v2026081102-*` (content generation 10, forma
 
 ### Artifact sizes
 
-| Artifact | Raw | gzip -9 | brotli q6 | brotli q11 |
-|---|---:|---:|---:|---:|
-| Search store | 76,636,456 | 30,790,072 | 24,385,474 | 20,392,105 |
-| Residue archive | 11,839,272 | not measured | not measured | 3,209,163 |
+| Artifact | Raw | gzip -6 | gzip -9 | brotli q6 | brotli q11 |
+|---|---:|---:|---:|---:|---:|
+| Search store | 76,636,456 | 31,088,463 | 30,790,072 | 24,385,474 | 20,392,105 |
+| Residue archive | 11,839,272 | — | 4,333,377 | 3,585,604 | 3,209,163 |
 
-*Measured.* Compression time for the search store: gzip -9 8.5 s, brotli q6 1.8 s, brotli q11 101.6 s (M-series Mac).
+*Measured.* Compression time for the search store: gzip -9 8.5 s, brotli q6 1.8 s, brotli q11 101.6 s (M-series Mac); the residue takes 0.35 s at q6 and 23.9 s at q11.
+
+Brotli quality is **not monotonic in output size** on this data — the residue is 3,585,604 at q6 and *larger* at q8 (3,622,695). Measure the quality you plan to ship rather than assuming higher is smaller.
 
 Decompression to the full 76,636,456 bytes, native, three runs: brotli q6 **0.18 / 0.17 / 0.14 s** (~480 MB/s); gzip -9 **0.08 / 0.09 / 0.09 s** (~880 MB/s). *Measured.*
 
-**Brotli for the browser.** The browser decompresses `Content-Encoding: br` in its own native decoder during the fetch — no JS, no `DecompressionStream`, no intermediate buffer. Brotli's ~2× decompression cost lands on a client with CPU to spare, and buys 6.4 MB less over the wire. (This is the opposite of the right answer for the Durable Object, where `DecompressionStream` is gzip-only and CPU is the constrained resource. See the separate backend evaluation.)
+**Either format decompresses natively in the browser** — `Content-Encoding` is handled by the browser's own decoder during the fetch, with no JS, no `DecompressionStream`, and no intermediate buffer. So brotli's ~2× decompression cost is irrelevant on the client, and the only thing separating the two formats there is 6.7 MB over the wire.
+
+On merit brotli wins for the browser and gzip wins for the Durable Object, whose `DecompressionStream` is gzip-only and whose CPU is the constrained resource. But **a Worker cannot produce brotli at all** (`CompressionStream` is gzip-only too), which turns a preference into a build-infrastructure question. §7 works through it; the short version is that gzip is the realistic first version and brotli is a clean later upgrade.
 
 ### Download budget
 
 A consumer that uses the `/cards/*` Scryfall card-object surface needs the residue archive as well as the search store; one that only searches does not.
 
-| Surface | Compressed download | Linear memory |
-|---|---:|---:|
-| Search only | ~24.4 MB | **79.30 MB** |
-| Search + `/cards/*` card objects | ~28 MB (*estimated*, residue q6 unmeasured) | **91.16 MB** |
+| Surface | brotli q6 | gzip -6 | Linear memory |
+|---|---:|---:|---:|
+| Search only | 24,385,474 | 31,088,463 | **79.30 MB** |
+| Search + `/cards/*` card objects | **27,971,078** | ~35.4 MB | **91.16 MB** |
 
-Linear memory figures are *measured*, from `CARD-PARTITIONING.md` §1, by reading `WebAssembly.Memory.buffer.byteLength` after load.
+All *measured*. Linear-memory figures come from `CARD-PARTITIONING.md` §1, by reading `WebAssembly.Memory.buffer.byteLength` after load; Phase 0 independently measured 87.75 MB for the full surface (see below).
+
+Which column applies is decided in §7 — a Worker cannot produce brotli, so the gzip figures are the realistic first version.
 
 ### Time to usable
 
@@ -73,7 +79,7 @@ Phase 0 ran: the committed wasm driven from Bun against `card-store-v2026081102-
 
 | Stage | 100 Mbps | 25 Mbps | Notes |
 |---|---:|---:|---|
-| Download 28 MB | ~2.3 s | ~9 s | *Estimated.* Overlaps remote-phase queries |
+| Download (28 MB br / 35 MB gz) | ~2.3–2.9 s | ~9–11 s | *Estimated.* Overlaps remote-phase queries |
 | Native brotli decompress | ~0.2 s | ~0.2 s | *Estimated* from §2's 0.16 s native measurement |
 | — | | | |
 | `WebAssembly.compile` | **4.3 ms** | | 1.92 MB module |
@@ -105,15 +111,22 @@ Against the 75–200 ms server-side cost of an uncached query (§1), that is **5
 
 ## 3. Naming
 
-**Recommended: `sylvan-browser`**, one package, with subpath exports.
+**Recommended: `sylvan-browser`**, one package, plain TypeScript, no framework dependency of any kind.
 
 ```
-sylvan-browser           core, framework-agnostic
-sylvan-browser/react     TanStack Query bindings
+sylvan-browser           the client
 sylvan-browser/worker    worker entry (referenced, not usually imported)
 ```
 
-One package rather than two: subpath exports give the same peer-dependency isolation and lazy-chunk boundaries as a split, without a second release to keep in version lockstep with the first — and lockstep is already load-bearing here (§10).
+**No React layer, no TanStack binding, not even as an optional subpath.** The package exposes async methods; a query library wraps them in one line at the call site:
+
+```ts
+useQuery({ queryKey: ["cards", q], queryFn: () => sylvan.search(q) })
+```
+
+There is nothing a `useCardSearch` hook could add to that except a React peer dependency, a second API surface to document, and a version to keep in lockstep. The same one-liner works for Svelte Query, Vue Query, solid-query, or a bare `await` — and framework-agnostic is the honest description of a package whose entire job is answering a query string.
+
+The one thing a binding layer would genuinely have provided is reacting to the remote→local transition, and that is served by a plain subscription (§8) which any framework can adapt in a few lines.
 
 ### On the `sylvan-librarian-*` shape
 
@@ -159,7 +172,7 @@ Under `offline-first` (§8.2) the same machine runs with the first state removed
 
 | Component | Thread | Loaded |
 |---|---|---|
-| Query router, state machine, TanStack bindings | Main | Eagerly (small) |
+| Query router, state machine, subscriptions | Main | Eagerly (small) |
 | Parser (`src/parser` port) | Worker | With the engine chunk |
 | wasm engine + store | Worker | Lazily, on hydration |
 | Cache Storage I/O | Worker | With the engine chunk |
@@ -223,11 +236,11 @@ Small JSON, short TTL. The one mutable pointer.
   "format_version": 2026081102,     // must equal wasm store_version()
   "content_generation": 10,         // must equal the package's pinned generation
   "store_bytes": 76636456,          // DECOMPRESSED — begin_store_load needs this
-  "store_url": "/store/card-store-v2026081102-1786449226.br",
+  "store_url": "/store/card-store-v2026081102-1786449226.gz",
   "store_compressed_bytes": 24385474,
   "compat_key": "card-compat-v2026081102-1786452390",
   "compat_bytes": 11839272,
-  "compat_url": "/store/card-compat-v2026081102-1786452390.br",
+  "compat_url": "/store/card-compat-v2026081102-1786452390.gz",
   "compat_compressed_bytes": 3209163,
   "card_count": 31724,
   "printing_count": 97803
@@ -238,7 +251,7 @@ Everything here except the three `*_url` and `*_compressed_bytes` fields already
 
 `Cache-Control: public, max-age=300` — short enough that a nightly rebuild propagates within minutes, long enough that a page load does not always pay for it.
 
-### `GET /store/<key>.br`
+### `GET /store/<key>.<gz|br>`
 
 The compressed artifact, brotli q6.
 
@@ -267,9 +280,33 @@ Local `wrangler dev` and the deployed edge behaved identically, so this is runti
 
 Keys are immutable — `store_key` already embeds format version and build timestamp, so a rebuild produces a new key and never invalidates an old URL. That is what makes `immutable` honest and lets both the HTTP cache and Cache Storage hold it indefinitely.
 
-**Publishing.** brotli q6 is 1.8 s of compression, which likely fits an importer alarm; q11 is 101.6 s and certainly does not. If in-Worker compression turns out not to fit, compress out-of-band in CI against the published store and write the browser copy back under its own key — the browser artifact lagging the nightly by minutes is harmless, because the manifest is not updated until the artifact exists.
+### Publishing the artifact — the unresolved part
 
-Note that the brotli store at 24,385,474 bytes fits in a **single KV value** (cap 26,214,400), so the browser copy needs none of the `splitStore` / `chunkKey` grid the raw store requires. One key, one read, one fetch.
+**A Worker cannot produce brotli.** `CompressionStream` accepts `"gzip" | "deflate" | "deflate-raw"` — the same gzip-only set as `DecompressionStream`. So the nightly importer, which runs in-Worker, cannot compress the store to brotli no matter how much CPU budget it has. Four ways out, measured where measurable:
+
+| Option | Browser download | KV values | What it costs |
+|---|---:|---:|---|
+| **1. gzip in the importer** | 31,088,463 | 2 | Nothing new — `CompressionStream('gzip')` is native and streams |
+| **2. brotli q6, precompressed out-of-band** | 24,385,474 | **1** | CI that does not exist in this repo yet |
+| 3. brotli via a wasm encoder in the importer | 24,385,474 | 1 | Real Rust work, against a 112 MiB `--max-memory` cap |
+| 4. Serve raw, let the edge compress | ~26.5 MB | 3 (raw, as today) | A dishonest `Content-Type`; see below |
+
+**Option 4 does not work honestly.** Cloudflare's edge auto-compression is content-type gated, verified 2026-08-11 against a deployed Worker returning 512,000 raw store bytes:
+
+| `Content-Type` | Bytes to client | Encoding |
+|---|---:|---|
+| `application/octet-stream` | 512,000 | none |
+| `application/x-sylvan-store` | 512,000 | none |
+| `application/wasm` | 263,070 | br |
+| `application/json` | 263,067 | br |
+
+The honest type for this artifact is `application/octet-stream`, and that is exactly the one the edge skips — reasonably, since octet-stream is assumed to be already-compressed binary. Getting edge compression means declaring the store to be wasm, which it is not. The edge's on-the-fly brotli is also ~9% worse than q6 (263,070 vs 241,051), because it runs at a low quality level, and it burns edge CPU on every cache miss. (On a custom domain, Compression Rules could force it honestly by path. On workers.dev there are no zone rules.)
+
+**Recommendation: option 1, and share the artifact with the Durable Object.** The separate backend evaluation is weighing gzip for the DO's cold load, and if that lands, the same compressed store serves both — the importer compresses once, the DO reads it through `DecompressionStream('gzip')`, and browsers get the identical bytes passed through with `encodeBody: "manual"`. One artifact, one publish step, no new infrastructure, and the API already exists.
+
+The bill for that is **31,088,463 instead of 24,385,474** — 27% more, about 2 extra seconds on a 25 Mbps connection — and losing the single-KV-value property, since gzip exceeds the 26,214,400 cap and needs two. Option 2 buys those back and is a clean upgrade later, but it means standing up CI first, so it should not gate the first version.
+
+Worth stating plainly: the brotli store at 24,385,474 bytes *would* fit a single KV value, and that property is genuinely nice — one key, one read, one fetch, none of the `splitStore` / `chunkKey` grid. It is the main thing option 2 is worth buying.
 
 ---
 
@@ -361,7 +398,7 @@ Four things change under `offline-first`.
 
 **Queries before ready queue, they do not proxy.** In `web` mode a query arriving during hydration goes over HTTP. Here it awaits `ready()` instead. Proxying to an endpoint that may be unreachable turns a two-second wait into a network timeout, and silently reintroduces a network dependency into an app that advertises working without one.
 
-**The store should ship with the app.** `source: { type: "bundled" }` points at the compressed artifact packaged alongside — an `asar`-relative path in Electron, a public asset in Capacitor. First run then costs a local read and a decompress rather than a 28 MB download, and the app works offline from the moment it installs. The build pulls the artifact from `/store/<key>.br` at package time, which also pins the store generation at build time, where the §10 version gate becomes a build check rather than a runtime one.
+**The store should ship with the app.** `source: { type: "bundled" }` points at the compressed artifact packaged alongside — an `asar`-relative path in Electron, a public asset in Capacitor. First run then costs a local read and a decompress rather than a 28 MB download, and the app works offline from the moment it installs. The build pulls the artifact from `/store/<key>.<gz|br>` at package time, which also pins the store generation at build time, where the §10 version gate becomes a build check rather than a runtime one.
 
 28 MB clears every store limit comfortably (*verified 2026-08-11*):
 
@@ -372,7 +409,7 @@ Four things change under `offline-first`.
 | iOS cellular download threshold | 200 MB, user-overridable since iOS 13 | ~14%, non-blocking |
 | Google Play AAB compressed download | 200 MB | ~14%, non-blocking warning only above it |
 
-The 80 MB row is the one worth being explicit about, because it is the limit people find first and misread: it governs `__TEXT` in the compiled binary, not bundled resources. A `.br` file is a resource.
+The 80 MB row is the one worth being explicit about, because it is the limit people find first and misread: it governs `__TEXT` in the compiled binary, not bundled resources. A compressed archive is a resource.
 
 **Consider platform asset delivery instead of the bundle proper.** Both platforms have a mechanism built for exactly this shape — [Background Assets](https://developer.apple.com/documentation/backgroundassets) on iOS, [Play Asset Delivery](https://developer.android.com/guide/playcore/asset-delivery) with install-time or fast-follow on Android. Both keep the IPA/AAB small while still having the store present before first launch, and Background Assets can refresh independently of app releases. That last property matters here: a store baked into the binary goes stale at the app's release cadence, which for a nightly-rebuilt dataset means the `endpoint` update check below is doing the real work anyway. Asset delivery gets the freshness without the bundle weight, at the cost of platform-specific build integration.
 
@@ -384,29 +421,29 @@ One platform caveat: `SharedWorker` (§5.3) is well supported in Electron's rend
 
 ---
 
-## 9. React / TanStack layer
+## 9. Using it with a query library
 
-The elegant part of the original idea, preserved: **the query key does not change, the resolver underneath it does.**
+The package ships no bindings, but the design has one property worth stating because consumers should rely on it: **the query key never changes, only the resolver underneath it does.**
 
-```tsx
-import { SylvanProvider, useCardSearch, useSylvanStatus } from "sylvan-browser/react"
-
-<SylvanProvider client={sylvan}>
-  <App />
-</SylvanProvider>
-
-function Results({ q }) {
-  const { data, isPending } = useCardSearch(q, { order: "name" })
-  const { status, progress } = useSylvanStatus()
-  // ...
-}
+```ts
+useQuery({ queryKey: ["cards", q], queryFn: () => sylvan.search(q) })
 ```
 
-`useCardSearch` is a thin `useQuery` whose `queryFn` calls `sylvan.search`. Components never learn which phase served them.
+That is the whole integration, in any query library. The `queryFn` routes remote or local by itself (§6), so the key is stable across the transition and nothing above it needs to know which engine answered. Swap `useQuery` for `createQuery`, `useSWR`, or a bare `await` and it is the same line.
 
-**Do not invalidate on transition to local, by default.** If parity holds, re-resolving cached queries locally produces identical data and buys nothing but renders. New queries route locally on their own. Expose `revalidateOnReady: true` for the one case where it does matter — a consumer that deliberately wants the *uncapped* local result to replace a truncated remote one.
+For status, subscribe:
 
-**SSR must no-op.** No wasm, no download, no Cache Storage on the server. `createSylvanClient` detects a non-browser environment and pins itself to `remote` permanently. This is required for any server-rendered consumer: SSR renders through the API, and the client hydrates afterward without the two disagreeing about which engine is live.
+```ts
+useSyncExternalStore(sylvan.subscribe, () => sylvan.status)
+```
+
+Three rules for consumers, none of which need a package to enforce.
+
+**Do not invalidate on transition to local.** If parity holds, re-resolving cached queries locally produces identical data and buys nothing but renders. New queries route locally on their own. The exception is deliberate: a consumer that wants the *uncapped* local result to replace a truncated remote one should invalidate, and should know that is why.
+
+**Key on the query string, not on the engine.** Adding `sylvan.status` to a query key looks like good hygiene and is actively wrong — it refetches everything on transition, which is the cost the design exists to avoid.
+
+**SSR must no-op.** No wasm, no download, no Cache Storage on the server. `createSylvanClient` detects a non-browser environment and pins itself to `remote` permanently, so a server render and the client hydration that follows never disagree about which engine is live.
 
 ---
 
@@ -487,11 +524,11 @@ Ordered by how much they change the design.
 
 1. ~~**What does `finish_store_load` cost over 76 MB?**~~ **Answered by Phase 0, 2026-08-11: 0.1 ms**, and the whole non-download warm-up is ~14 ms. See §2 for the numbers and for what that speed implies about how much validation is actually happening. The remaining question this opens is smaller and not blocking: whether the package should do its own integrity check on a downloaded artifact — a length check is free, a hash is not — given that `finish_store_load` will not catch corruption past the header.
 2. ~~**Does Cloudflare pass a Worker-set `Content-Encoding: br` through untouched?**~~ **Answered 2026-08-11, against the real edge: yes — but only with `encodeBody: "manual"`.** Byte-identical passthrough with it; silent double-encoding without it. The gzip fallback is not needed, so the brotli artifact and its single-KV-value property stand. Full result and the failure mode in §7.
-3. **What does the residue archive compress to at q6?** Only q11 (3,209,163) was measured. Affects the `surface: "full"` download budget, not the design.
-4. **Does brotli q6 fit an importer alarm's CPU budget in-Worker?** 1.8 s on a Mac is promising but not decisive. If not, CI compression (§7).
+3. ~~**What does the residue archive compress to at q6?**~~ **Answered: 3,585,604 bytes in 0.35 s.** Full-surface download is 24,385,474 + 3,585,604 = **27,971,078 bytes**, so the "~28 MB" carried through this document was right. One oddity worth knowing: q8 produces a *larger* residue (3,622,695) than q6. Brotli quality is not monotonic in output size, so pick a quality by measuring, not by assuming higher is smaller.
+4. ~~**Does brotli q6 fit an importer alarm's CPU budget in-Worker?**~~ **Wrong question — brotli cannot be produced in a Worker at all.** `CompressionStream` takes `"gzip" | "deflate" | "deflate-raw"`, the same gzip-only set as `DecompressionStream`. There is no CPU budget to fit because there is no API. §7 evaluates what to do instead.
 5. **Is the parser cleanly extractable from this repo?** It is pure TypeScript with no Worker dependencies, which is promising, but `tag-aliases.gen.ts` is generated and `pystr.ts` implements Python string semantics. Whether it vendors, or becomes a shared package both this Worker and `sylvan-browser` depend on, decides how §10's lockstep actually works.
 6. **How does a consumer handle the completeness change?** Local results are uncapped where remote ones are paginated. That is the feature, but it means a UI built around 175-card pages meets a 6,732-card answer. An app-level concern, worth naming in the README.
-7. **How does the store artifact reach a packaged app?** (§8.2) Size is no longer the question — 28 MB clears every platform limit, verified. What is open is the mechanism: plain bundling (simple, goes stale at the app's release cadence) versus Background Assets / Play Asset Delivery (smaller binary, independently refreshable, platform-specific build work). And whether this package ships a build-time helper that fetches `/store/<key>.br` and pins its generation, or leaves that to each consumer's bundler — that choice is what makes the §10 gate a build check rather than a runtime one.
+7. **How does the store artifact reach a packaged app?** (§8.2) Size is no longer the question — 28 MB clears every platform limit, verified. What is open is the mechanism: plain bundling (simple, goes stale at the app's release cadence) versus Background Assets / Play Asset Delivery (smaller binary, independently refreshable, platform-specific build work). And whether this package ships a build-time helper that fetches the artifact and pins its generation, or leaves that to each consumer's bundler — that choice is what makes the §10 gate a build check rather than a runtime one.
 
 ---
 
@@ -499,13 +536,11 @@ Ordered by how much they change the design.
 
 **Phase 0 — prove it off-Cloudflare. ✅ Done 2026-08-11.** The committed wasm, driven from Bun, instantiated and stream-loaded a real store and answered queries with no Cloudflare runtime involved: ~14 ms of warm-up CPU, 0.4–2.2 ms queries, 87.75 MB peak. Numbers in §2. The engine needs nothing it does not already have to run outside a Worker, which is the assumption every phase below rests on.
 
-**Phase 1 — serve the artifacts.** `/store/manifest` and `/store/<key>.br` on this Worker, plus the publish step that produces the compressed copy. Independently useful and independently testable with `curl`.
+**Phase 1 — serve the artifacts.** `/store/manifest` and `/store/<key>.<gz|br>` on this Worker, plus the publish step that produces the compressed copy. Independently useful and independently testable with `curl`.
 
-**Phase 2 — core package.** `sylvan-browser` with the router, the state machine, the SharedWorker, Cache Storage, and the version gate. No React. Validated by the parity harness.
+**Phase 2 — the package.** `sylvan-browser`: the router, the state machine, the SharedWorker, Cache Storage, the version gate, and the SSR no-op. Plain TypeScript, no framework dependency. Validated by the parity harness. This is the whole package — there is no framework phase after it (§3).
 
-**Phase 3 — React layer.** `sylvan-browser/react`, TanStack bindings, SSR no-op.
-
-**Phase 4 — first consumer integration.** This should *follow* that consumer moving its existing card-data path onto this port's HTTP API, not accompany it. Adopting the API is most of the value at none of the 28 MB, and it proves the consumer's query strings round-trip cleanly before any wasm ships. A consumer that cannot get correct answers over HTTP will not get them locally either.
+**Phase 3 — first consumer integration.** This should *follow* that consumer moving its existing card-data path onto this port's HTTP API, not accompany it. Adopting the API is most of the value at none of the 28 MB, and it proves the consumer's query strings round-trip cleanly before any wasm ships. A consumer that cannot get correct answers over HTTP will not get them locally either.
 
 ---
 
