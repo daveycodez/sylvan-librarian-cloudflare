@@ -64,30 +64,25 @@ export function jsonStreamResponse(
 	headers?: Record<string, string>,
 ): Response {
 	const { head, payload, payloadLength, tail } = parts;
-	// PIPED, not pulled. The first version of this read the payload with a `pull` callback and
-	// re-enqueued each chunk, which put a JS call on every chunk of a 652KB page IN THE METERED
-	// ISOLATE — measured at ~13ms mean against the free plan's 10ms budget. `pipeTo` moves the same
-	// bytes inside the runtime with no JS in the loop, so only the two small ends are touched here.
-	// A bare TransformStream rather than workerd's IdentityTransformStream: the identity one is a
-	// runtime global that does not exist under `bun test`, and this path is covered by route tests.
-	// Neither has a JS transform function, so neither puts a callback in the chunk loop.
-	const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-	void (async () => {
-		const writer = writable.getWriter();
-		try {
-			await writer.write(head);
-		} finally {
-			writer.releaseLock();
-		}
-		await payload.pipeTo(writable, { preventClose: true });
-		const closer = writable.getWriter();
-		await closer.write(tail);
-		await closer.close();
-	})().catch(() => {
-		// A client that hangs up mid-body aborts the pipe; there is nothing to answer with by then,
-		// and an unhandled rejection here would take the isolate down rather than the request.
+	const reader = payload.getReader();
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(head);
+		},
+		async pull(controller) {
+			const { done, value } = await reader.read();
+			if (done) {
+				controller.enqueue(tail);
+				controller.close();
+				return;
+			}
+			controller.enqueue(value);
+		},
+		cancel(reason) {
+			return reader.cancel(reason);
+		},
 	});
-	return new Response(readable, {
+	return new Response(body, {
 		headers: {
 			"content-type": "application/json",
 			"content-length": String(head.byteLength + payloadLength + tail.byteLength),
