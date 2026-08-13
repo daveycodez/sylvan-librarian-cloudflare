@@ -727,11 +727,11 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
         .sample_preferred(200, 42, f(&["scryfall_id", "oracle_id", "illustration_id", "name"]))
         .expect("sample");
     let get = |i: usize, k: &str| sample[i].get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
-    let (sid, oid, ill, name) = (get(0, "scryfall_id"), get(0, "oracle_id"), get(0, "illustration_id"), get(0, "name"));
+    let (sid, oid, name) = (get(0, "scryfall_id"), get(0, "oracle_id"), get(0, "name"));
     let ids: Vec<String> = (0..75.min(sample.len())).map(|i| get(i, "scryfall_id")).collect();
     let folded = name.to_lowercase();
 
-    let mut time = |label: &str, mut run: Box<dyn FnMut() -> String + '_>| {
+    let time = |label: &str, mut run: Box<dyn FnMut() -> String + '_>| {
         let note = run();
         let mut best = u128::MAX;
         for _ in 0..iters {
@@ -857,6 +857,97 @@ fn cmd_namecheck(store_path: &Path) {
         }
     }
     println!("namecheck {} probes, digest {h:016x}", lines.len());
+}
+
+/// The `/search` FILTER surface, timed leaf by leaf.
+///
+/// `tagbench` covers collection leaves, `textbench` the text tiers, `routebench` the nine
+/// non-search entry points. What none of them touch is the rest of the filter language -- mana,
+/// legality, ranges, colour, negation, boolean composition, and the sorts that are not by name.
+/// That gap is the reason this exists: every large win tonight came from putting a clock on
+/// something nobody had, and three of them sat behind routes that looked unremarkable.
+///
+/// The trees are REAL PARSER OUTPUT, generated from `src/parser`'s `parseScryfallQuery` and pasted
+/// verbatim rather than hand-written, because a hand-built tree tests the bench author's memory of
+/// the wire format and not the engine.
+///
+/// Read it looking for OUTLIERS, not absolutes: ~100-200us is the norm on this corpus, and the 1ms
+/// flag is the threshold that separated the 25.8ms fuzzy scan and the two ~900us name routes from
+/// everything around them.
+fn cmd_querybench(store_path: &Path, iters: usize) {
+    use card_engine::{BufferStore, QueryOptions};
+    use std::time::Instant;
+
+    let bytes = std::fs::read(store_path).expect("read store");
+    let store = BufferStore::from_bytes(&bytes).expect("load store");
+
+    const FILTERS: &[(&str, &str, &str)] = &[
+    ("mana: exact cost", "mana:{2}{R}", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"mana_cost_jsonb","original_attribute":"mana"}},"op":":","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"{2}{R}"}}}}"#),
+    ("mana>= superset", "mana>={W}{U}", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"mana_cost_jsonb","original_attribute":"mana"}},"op":">=","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"{W}{U}"}}}}"#),
+    ("devotion>=3", "devotion>=3", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"devotion","original_attribute":"devotion"}},"op":">=","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"3"}}}}"#),
+    ("legal:modern", "legal:modern", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"legal"}},"op":":","rhs":["modern"]}}"#),
+    ("banned:legacy", "banned:legacy", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"banned"}},"op":":","rhs":["legacy"]}}"#),
+    ("restricted:vintage", "restricted:vintage", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"restricted"}},"op":":","rhs":["vintage"]}}"#),
+    ("cmc>=5", "cmc>=5", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"cmc","original_attribute":"cmc"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":5}}}}"#),
+    ("usd<0.5", "usd<0.5", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"price_usd","original_attribute":"usd"}},"op":"<","rhs":{"node_type":"NumericValueNode","kwargs":{"value":0.5}}}}"#),
+    ("power>=4", "power>=4", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"creature_power","original_attribute":"power"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":4}}}}"#),
+    ("year>=2020", "year>=2020", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"released_at","original_attribute":"year"}},"op":">=","rhs":{"node_type":"StringValueNode","kwargs":{"value":"2020"}}}}"#),
+    ("cn>200", "cn>200", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"collector_number_int","original_attribute":"cn"}},"op":">","rhs":{"node_type":"NumericValueNode","kwargs":{"value":200}}}}"#),
+    ("c:wu", "c:wu", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_colors","original_attribute":"c"}},"op":":","rhs":["W","U"]}}"#),
+    ("id<=wubrg", "id<=wubrg", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_color_identity","original_attribute":"id"}},"op":"<=","rhs":["W","U","B","R","G"]}}"#),
+    ("c>=3 (colour count)", "c>=3", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_colors","original_attribute":"c"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":3}}}}"#),
+    ("NOT t:creature", "-t:creature", r#"{"node_type":"NotNode","kwargs":{"operand":{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_types","original_attribute":"t"}},"op":":","rhs":["Creature"]}}}}"#),
+    ("NOT legal:modern", "-legal:modern", r#"{"node_type":"NotNode","kwargs":{"operand":{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"legal"}},"op":":","rhs":["modern"]}}}}"#),
+    ("And of three leaves", "t:creature c:r cmc>=4", r#"{"node_type":"AndNode","kwargs":{"operands":[{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_types","original_attribute":"t"}},"op":":","rhs":["Creature"]}},{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_colors","original_attribute":"c"}},"op":":","rhs":["R"]}},{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"cmc","original_attribute":"cmc"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":4}}}}]}}"#),
+    ("Or of two broad leaves", "cmc>=5 or usd<0.5", r#"{"node_type":"OrNode","kwargs":{"operands":[{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"cmc","original_attribute":"cmc"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":5}}}},{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"price_usd","original_attribute":"usd"}},"op":"<","rhs":{"node_type":"NumericValueNode","kwargs":{"value":0.5}}}}]}}"#),
+    ];
+
+    let time = |tree: &str, opts: &QueryOptions| -> (u128, usize) {
+        let warm = store.query(tree, opts).expect("query");
+        let mut best = u128::MAX;
+        for _ in 0..iters {
+            let t = Instant::now();
+            let r = store.query(tree, opts).expect("query");
+            best = best.min(t.elapsed().as_micros());
+            std::hint::black_box(r.total);
+        }
+        (best, warm.total)
+    };
+
+    let flag = |us: u128| if us > 1000 { "  <-- OVER 1ms" } else { "" };
+
+    println!("{:<26} {:<24} {:>10} {:>10}", "case", "query", "us", "matches");
+    let default = QueryOptions { limit: 175, ..QueryOptions::default() };
+    for (label, query, tree) in FILTERS {
+        let (us, n) = time(tree, &default);
+        println!("{:<26} {:<24} {:>10} {:>10}{}", label, query, us, n, flag(us));
+    }
+
+    // Sorting: a different plan per column, and the streamed walk only pays off where the column has
+    // a stored permutation. `released`/`rarity`/`artist`/`set` have none (see SortPermutations), so
+    // those rows are the ones that fall back to a general sort.
+    println!();
+    let true_node = r#"{"node_type": "TrueNode"}"#;
+    for col in ["edhrec", "usd", "released", "rarity", "artist", "set", "cmc", "power"] {
+        for (tag, offset) in [("offset 0", 0usize), ("offset 9000", 9000)] {
+            let opts =
+                QueryOptions { limit: 175, offset, orderby: col.to_owned(), ..QueryOptions::default() };
+            let (us, n) = time(true_node, &opts);
+            println!("{:<26} {:<24} {:>10} {:>10}{}", format!("order={col}"), tag, us, n, flag(us));
+        }
+    }
+
+    // Artwork mode over a real predicate, rather than the bare TrueNode `routebench` already covers.
+    println!();
+    for (label, tree) in [("unique=artwork + cmc>=5", FILTERS[6].2), ("unique=artwork + c:wu", FILTERS[11].2)] {
+        let opts = QueryOptions { limit: 175, unique: "artwork".to_owned(), ..QueryOptions::default() };
+        let (us, n) = time(tree, &opts);
+        println!("{:<26} {:<24} {:>10} {:>10}{}", label, "", us, n, flag(us));
+    }
+
+    // The floor, so every row above reads as "what did this predicate cost on top of paging".
+    let (us, n) = time(true_node, &default);
+    println!("\n{:<26} {:<24} {:>10} {:>10}", "control TrueNode", "", us, n);
 }
 
 /// Semantic parity gate between two store files. Archive bytes are
@@ -985,6 +1076,10 @@ fn main() {
             cmd_textbench(&arg(&args, "store"), iters);
         }
         "namecheck" => cmd_namecheck(&arg(&args, "store")),
+        "querybench" => {
+            let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
+            cmd_querybench(&arg(&args, "store"), iters);
+        }
         "routebench" => {
             let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
             cmd_routebench(&arg(&args, "store"), iters);
