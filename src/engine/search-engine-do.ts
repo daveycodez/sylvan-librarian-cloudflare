@@ -29,6 +29,9 @@
 // colo-cached chunks, so the local copy earned nothing it cost.
 
 import { DurableObject } from "cloudflare:workers";
+import { cardList, errorObject } from "../routes/scryfall-compat/objects";
+import { JSON_CONTENT_TYPE, scryfallJson, spliceMarkers } from "../routes/scryfall-compat/respond";
+import { concatBytes } from "./bytes";
 import { probePlacement } from "./placement";
 import { getEngine, type LoadContext, refreshNow, tryGetLoadedEngine } from "./store";
 import { recordLiveManifest } from "./store-cache";
@@ -233,6 +236,24 @@ export class SearchEngine extends DurableObject<Env> {
 			shape?: ResultShape;
 			baseUrl?: string;
 			shards?: number;
+			/**
+			 * The envelope this object should wrap the payload in, so the ISOLATE never touches a byte.
+			 *
+			 * Splicing `<head><payload><tail>` in the isolate meant reading and re-enqueuing every
+			 * chunk of a 652KB page there — measured 2026-08-13 at ~13ms mean, over the free plan's
+			 * 10ms metered budget. Built here, the isolate returns this response verbatim and its cost
+			 * stops scaling with the payload at all. Everything needed is small and known before the
+			 * query; only the counts are not, and this object has those.
+			 */
+			envelope?: {
+				pretty: boolean;
+				warnings?: string[];
+				nextPageUrl?: string;
+				pageOffset: number;
+				/** Scryfall's own no-match wording, passed in so its text stays with the other route copy. */
+				noMatchDetails: string;
+			};
+			cache?: Record<string, string>;
 		};
 		let result: EngineSerializedResult & SearchTelemetry;
 		try {
@@ -249,15 +270,48 @@ export class SearchEngine extends DurableObject<Env> {
 			const message = err instanceof Error ? err.message : String(err);
 			return new Response(message, { status: 503, headers: { "x-engine-error": name } });
 		}
-		return new Response(result.cardsBytes, {
+		const telemetry = {
+			"x-total-cards": String(result.totalCards),
+			"x-row-count": String(result.rowCount),
+			"x-acquire-ms": String(result.acquireMs),
+			"x-load": String(result.load),
+			"x-rate": String(result.rate),
+			"x-shards": String(result.shards),
+		};
+		const envelope = body.envelope;
+		if (envelope === undefined) {
+			// Raw payload: the caller splices its own envelope (the rows path still does).
+			return new Response(result.cardsBytes, {
+				headers: { "content-length": String(result.cardsBytes.byteLength), ...telemetry },
+			});
+		}
+		// THE WHOLE RESPONSE, headers and status included, so the isolate can return it verbatim.
+		const cache = body.cache ?? {};
+		if (result.rowCount === 0) {
+			const miss = scryfallJson(
+				errorObject("not_found", 404, envelope.noMatchDetails, envelope.warnings),
+				envelope.pretty,
+				cache,
+			);
+			for (const [k, v] of Object.entries(telemetry)) miss.headers.set(k, v);
+			return miss;
+		}
+		const hasMore = envelope.pageOffset + result.rowCount < result.totalCards;
+		const { head, tail } = spliceMarkers(
+			cardList([], {
+				totalCards: result.totalCards,
+				hasMore,
+				nextPage: hasMore ? envelope.nextPageUrl : undefined,
+				warnings: envelope.warnings,
+			}),
+			envelope.pretty,
+		);
+		return new Response(concatBytes([head, result.cardsBytes, tail]), {
 			headers: {
-				"content-length": String(result.cardsBytes.byteLength),
-				"x-total-cards": String(result.totalCards),
-				"x-row-count": String(result.rowCount),
-				"x-acquire-ms": String(result.acquireMs),
-				"x-load": String(result.load),
-				"x-rate": String(result.rate),
-				"x-shards": String(result.shards),
+				"content-type": JSON_CONTENT_TYPE,
+				"content-length": String(head.byteLength + result.cardsBytes.byteLength + tail.byteLength),
+				...cache,
+				...telemetry,
 			},
 		});
 	}

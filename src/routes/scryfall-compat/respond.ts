@@ -112,7 +112,10 @@ export function scryfallJson(
  * MUST agree byte for byte — they answer the same routes and the same cached URLs, so a divergence
  * here would be a difference no test on either path alone could see.
  */
-function spliceMarkers(envelope: Record<string, unknown>, pretty: boolean): { head: Uint8Array; tail: Uint8Array } {
+export function spliceMarkers(
+	envelope: Record<string, unknown>,
+	pretty: boolean,
+): { head: Uint8Array; tail: Uint8Array } {
 	const body = stringifyScryfall(envelope, pretty);
 	const key = pretty ? '"data": ' : '"data":';
 	const marker = `${key}[]`;

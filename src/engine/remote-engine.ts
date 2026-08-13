@@ -346,6 +346,57 @@ export class RemoteEngine implements Engine {
 		};
 	}
 
+	/**
+	 * `/cards/search`'s WHOLE response — envelope, headers and status — built in the Durable Object.
+	 *
+	 * The isolate's only job on this route is choosing the shard and handing this back. Splicing the
+	 * envelope here instead meant reading and re-enqueuing every chunk of a 652KB page in the
+	 * metered isolate, measured at ~13ms mean against the free plan's 10ms budget; passing the body
+	 * through costs nothing that scales with it. The riders are read off the headers first, so the
+	 * autoscaler is fed exactly as it is on every other path.
+	 */
+	async scryfallSearchPage(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		envelope: {
+			pretty: boolean;
+			warnings?: string[];
+			nextPageUrl?: string;
+			pageOffset: number;
+			noMatchDetails: string;
+		},
+		cache: Record<string, string>,
+	): Promise<Response> {
+		const rpcStart = Date.now();
+		const res = await this.stub.fetch(
+			new Request(`https://engine${ENGINE_STREAM_PATH}`, {
+				method: "POST",
+				body: JSON.stringify({
+					call: "cards",
+					opts,
+					baseUrl,
+					envelope,
+					cache,
+					shards: currentShardWidth(this.region),
+				}),
+			}),
+		);
+		if (res.status === 503 && res.headers.get("x-engine-error") === "EngineUnavailableError") {
+			throw new EngineUnavailableError(await res.text());
+		}
+		const num = (name: string): number | undefined => {
+			const raw = res.headers.get(name);
+			return raw === null ? undefined : Number(raw);
+		};
+		this.feedAutoscaler(rpcStart, {
+			acquireMs: num("x-acquire-ms"),
+			load: num("x-load"),
+			rate: num("x-rate"),
+			shards: num("x-shards"),
+		});
+		return res;
+	}
+
 	/** `/search`'s rows, streamed. Same transport as the cards page — see streamPayload. */
 	searchRowsStream(
 		opts: EngineSearchOptions,

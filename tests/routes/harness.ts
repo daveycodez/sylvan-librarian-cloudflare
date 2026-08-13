@@ -19,7 +19,8 @@ import { buildRoutesListing, routes } from "../../src/routes";
 import { httpError, securityHeaders } from "../../src/routes/http";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
-import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import { errorObject, toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import { scryfallJson, scryfallListJson } from "../../src/routes/scryfall-compat/respond";
 
 export const FIXTURE_CARDS: Record<string, unknown>[] = [
 	{
@@ -144,6 +145,41 @@ export class FakeEngine implements Engine {
 				},
 			}),
 		};
+	}
+
+	/** In-process: the same envelope, spliced here because there is no boundary to keep it off. */
+	async scryfallSearchPage(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		envelope: {
+			pretty: boolean;
+			warnings?: string[];
+			nextPageUrl?: string;
+			pageOffset: number;
+			noMatchDetails: string;
+		},
+		cache: Record<string, string>,
+	): Promise<Response> {
+		const r = await this.scryfallSearch(opts, baseUrl);
+		if (r.rowCount === 0) {
+			return scryfallJson(
+				errorObject("not_found", 404, envelope.noMatchDetails, envelope.warnings),
+				envelope.pretty,
+				cache,
+			);
+		}
+		const hasMore = envelope.pageOffset + r.rowCount < r.totalCards;
+		return scryfallListJson(
+			r.cardsBytes,
+			{
+				totalCards: r.totalCards,
+				hasMore,
+				nextPage: hasMore ? envelope.nextPageUrl : undefined,
+				warnings: envelope.warnings,
+			},
+			envelope.pretty,
+			cache,
+		);
 	}
 
 	/** The streamed shape, over the same fixture bytes — so route tests exercise the real splice. */

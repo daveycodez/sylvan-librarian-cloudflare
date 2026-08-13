@@ -265,12 +265,14 @@ export async function cardsSearchHandler(
 		return scryfallJson(badRequestError(arithmeticNotComparedMessage(q), warnings), pretty, CARDS_CACHE);
 	}
 
-	// STREAMED, not returned: the page is piped from the Durable Object to the socket rather than
-	// crossing the boundary as an RPC value. Measured 2026-08-13, that serialization was the single
-	// largest term in this route's DO CPU — the engine itself is only 2.6ms of it.
-	let result: { totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> };
+	// THE DURABLE OBJECT BUILDS THE WHOLE RESPONSE and this returns it. Splicing the envelope here
+	// meant re-enqueuing every chunk of a 652KB page in the metered isolate — ~13ms mean against the
+	// free plan's 10ms budget. The only thing left on this side is choosing the shard.
+	//
+	// next_page is computed up front because it does not depend on the counts: the DO drops it when
+	// has_more is false, which is the one fact it needs the counts for.
 	try {
-		result = await engine.scryfallSearchStream(
+		return await engine.scryfallSearchPage(
 			{
 				filterTreeJson: canonicalStringify(filterTree as FilterValue),
 				unique,
@@ -282,41 +284,31 @@ export async function cardsSearchHandler(
 				fields: [],
 			},
 			apiBaseUrl(ctx),
+			{
+				pretty,
+				warnings,
+				pageOffset: (page - 1) * PAGE_SIZE,
+				noMatchDetails: NO_MATCH_DETAILS,
+				nextPageUrl: buildPageUrl(
+					selfBaseUrl(ctx, "/cards/search"),
+					{
+						dir: params.dir ?? "auto",
+						format: params.format ?? "json",
+						include_extras: String(asBool(params.include_extras)),
+						include_multilingual: String(asBool(params.include_multilingual)),
+						include_variations: String(asBool(params.include_variations)),
+						order: params.order ?? "name",
+						q,
+						unique: params.unique ?? "cards",
+					},
+					page + 1,
+				),
+			},
+			CARDS_CACHE,
 		);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
-
-	// rowCount rather than inspecting the encoded bytes for "[]" — the engine counted the rows.
-	if (result.rowCount === 0) {
-		return scryfallJson(errorObject("not_found", 404, NO_MATCH_DETAILS, warnings), pretty, CARDS_CACHE);
-	}
-
-	const seen = (page - 1) * PAGE_SIZE + result.rowCount;
-	const hasMore = seen < result.totalCards;
-	const nextPage = hasMore
-		? buildPageUrl(
-				selfBaseUrl(ctx, "/cards/search"),
-				{
-					dir: params.dir ?? "auto",
-					format: params.format ?? "json",
-					include_extras: String(asBool(params.include_extras)),
-					include_multilingual: String(asBool(params.include_multilingual)),
-					include_variations: String(asBool(params.include_variations)),
-					order: params.order ?? "name",
-					q,
-					unique: params.unique ?? "cards",
-				},
-				page + 1,
-			)
-		: undefined;
-
-	return scryfallListStream(
-		result,
-		{ totalCards: result.totalCards, hasMore, nextPage, warnings },
-		pretty,
-		CARDS_CACHE,
-	);
 }
 
 // ─── GET /cards/named ────────────────────────────────────────────────────────

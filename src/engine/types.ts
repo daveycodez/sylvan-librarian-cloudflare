@@ -141,6 +141,25 @@ export interface Engine {
 		opts: EngineSearchOptions,
 		baseUrl: string,
 	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }>;
+	/**
+	 * `/cards/search`'s WHOLE response — envelope, headers and status — built where the payload is.
+	 *
+	 * The isolate that serves the request only picks the shard and returns this, so its CPU stops
+	 * scaling with the page at all. Splicing the envelope in the isolate instead measured ~13ms mean
+	 * on a 652KB page, over the free plan's 10ms metered budget.
+	 */
+	scryfallSearchPage(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		envelope: {
+			pretty: boolean;
+			warnings?: string[];
+			nextPageUrl?: string;
+			pageOffset: number;
+			noMatchDetails: string;
+		},
+		cache: Record<string, string>,
+	): Promise<Response>;
 	/** One card object by Scryfall id, or null for a genuine miss (which IS the 404 here). */
 	scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/** Card objects for these ids, in the order given, skipping misses. */

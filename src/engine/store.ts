@@ -23,7 +23,8 @@
 // over a source of truth that is still KV, not a second copy of record.
 
 import * as wasm from "sylvan-engine-wasm";
-import { CARD_OBJECT_FIELDS, type EngineRow, toScryfallCard } from "../routes/scryfall-compat/objects";
+import { CARD_OBJECT_FIELDS, type EngineRow, errorObject, toScryfallCard } from "../routes/scryfall-compat/objects";
+import { scryfallJson, scryfallListJson } from "../routes/scryfall-compat/respond";
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
@@ -332,6 +333,41 @@ class WasmEngine implements Engine {
 				},
 			}),
 		};
+	}
+
+	/** In-process: the same envelope, spliced here because there is no boundary to keep it off. */
+	async scryfallSearchPage(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		envelope: {
+			pretty: boolean;
+			warnings?: string[];
+			nextPageUrl?: string;
+			pageOffset: number;
+			noMatchDetails: string;
+		},
+		cache: Record<string, string>,
+	): Promise<Response> {
+		const r = await this.scryfallSearch(opts, baseUrl);
+		if (r.rowCount === 0) {
+			return scryfallJson(
+				errorObject("not_found", 404, envelope.noMatchDetails, envelope.warnings),
+				envelope.pretty,
+				cache,
+			);
+		}
+		const hasMore = envelope.pageOffset + r.rowCount < r.totalCards;
+		return scryfallListJson(
+			r.cardsBytes,
+			{
+				totalCards: r.totalCards,
+				hasMore,
+				nextPage: hasMore ? envelope.nextPageUrl : undefined,
+				warnings: envelope.warnings,
+			},
+			envelope.pretty,
+			cache,
+		);
 	}
 
 	/**
