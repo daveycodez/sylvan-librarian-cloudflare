@@ -1727,7 +1727,14 @@ impl BufferStore {
                 continue;
             };
             let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(folded);
-            hits.push((rank, printed.len(), printed));
+            // CHARACTERS, not bytes. The SQL orders by `length(card_name)`, which Postgres counts in
+        // characters, and this function's contract is to answer alike. `str::len()` is bytes, so
+        // "Éowyn, Shieldmaiden" measured 20 here against 19 there -- harmless while it shifted every
+        // accented name equally, and not harmless at a tie: "Éa" (2 chars, 3 bytes) sorts before
+        // "Aaa" (3 chars, 3 bytes) in SQL, and tied-then-alphabetical after it here. Only reachable
+        // at all since the catalog started matching folded names, which is what put accented names
+        // in front of a client.
+        hits.push((rank, printed.chars().count(), printed));
         }
         hits.sort_unstable();
         // One entry per distinct printed name: several printings of one card are one suggestion.
