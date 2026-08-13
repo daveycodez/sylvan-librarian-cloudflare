@@ -11,8 +11,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	assembleChunk,
+	CHUNK_HEADROOM_WARN_BYTES,
 	chunkCountFor,
 	chunkForKv,
+	chunkHeadroom,
+	chunkHeadroomWarning,
 	chunkKey,
 	gzipBytes,
 	KV_CHUNK_BYTES,
@@ -446,6 +449,62 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 		expect(src).toContain("STORE_CONTENT_GENERATION");
 		expect(src).toMatch(/!==\s*STORE_CONTENT_GENERATION/);
 		expect(src).toMatch(/!manifest\.store_bytes\s*\|\|\s*!manifest\.chunk_count/);
+	});
+});
+
+// Growing past `n * cut` costs every cold load another KV read and says nothing:
+// splitStore is a bare ceil loop, and chunkForKv's fallback answers a different
+// question (one gzipped member against KV's per-VALUE cap). The manifest has always
+// recorded chunk_count and nothing has ever compared it. These pin the warning that
+// closes that, and the arithmetic it rests on.
+describe("chunk headroom", () => {
+	test("headroom is measured to the next boundary, not the last one", () => {
+		// The 2026-08-12 production measurement: two chunks, and 143,640 bytes left.
+		const h = chunkHeadroom(76_656_360, KV_CHUNK_BYTES);
+		expect(h.chunks).toBe(2);
+		expect(h.nextBoundary).toBe(2 * KV_CHUNK_BYTES);
+		expect(h.headroomBytes).toBe(143_640);
+		// Relative to the store, so it reads as the 0.19% that was reported, not as
+		// the roomier 0.37% the same bytes make of a 38.4MB cut.
+		expect(h.headroomPct).toBeCloseTo(0.187, 3);
+	});
+
+	test("a store exactly on a boundary has a full chunk of room, not none", () => {
+		// `ceil` has already handed it the chunk it fills, so the next boundary is
+		// the one after. Reporting 0 here would cry wolf on every exact multiple.
+		const h = chunkHeadroom(2 * KV_CHUNK_BYTES, KV_CHUNK_BYTES);
+		expect(h.chunks).toBe(2);
+		expect(h.headroomBytes).toBe(0);
+		expect(chunkHeadroom(2 * KV_CHUNK_BYTES - 1).chunks).toBe(2);
+		expect(chunkHeadroom(2 * KV_CHUNK_BYTES + 1).chunks).toBe(3);
+	});
+
+	test("one byte past the ceiling is a silent extra chunk — which is the point", () => {
+		expect(chunkCountFor(2 * KV_CHUNK_BYTES)).toBe(2);
+		expect(chunkCountFor(2 * KV_CHUNK_BYTES + 1)).toBe(3);
+		// splitStore agrees, without complaint: this is the regression being guarded.
+		expect(splitStore(new Uint8Array(2 * 8 + 1), 8)).toHaveLength(3);
+	});
+
+	test("the warning fires only when the margin is thin, and names the numbers", () => {
+		expect(chunkHeadroomWarning(76_656_360)).toContain("143640");
+		expect(chunkHeadroomWarning(76_656_360)).toContain("becomes 3");
+		// Comfortably inside two chunks: nothing to say.
+		expect(chunkHeadroomWarning(50_000_000)).toBeNull();
+	});
+
+	test("the threshold is the boundary between quiet and loud", () => {
+		const boundary = 2 * KV_CHUNK_BYTES;
+		expect(chunkHeadroomWarning(boundary - CHUNK_HEADROOM_WARN_BYTES)).toBeNull();
+		expect(chunkHeadroomWarning(boundary - CHUNK_HEADROOM_WARN_BYTES + 1)).not.toBeNull();
+	});
+
+	test("the safe cut is measured against its own grid", () => {
+		// A fallback publish cuts at KV_CHUNK_BYTES_SAFE, so headroom must follow the
+		// cut actually used rather than the constant the ambitious path prefers.
+		const h = chunkHeadroom(76_656_360, KV_CHUNK_BYTES_SAFE);
+		expect(h.chunks).toBe(3);
+		expect(h.nextBoundary).toBe(3 * KV_CHUNK_BYTES_SAFE);
 	});
 });
 

@@ -75,6 +75,7 @@ import { GridChunker } from "./engine/store-chunks";
 import {
 	assembleChunk,
 	chunkCountFor,
+	chunkHeadroomWarning,
 	chunkKey,
 	gzipBytes,
 	KEEP_STORES_IN_KV,
@@ -1501,6 +1502,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const cut = Number(this.metaGet("kv_chunk_cut") ?? 0) || KV_CHUNK_BYTES;
 		const kvTotal = chunkCountFor(storeBytes, cut);
 		let published = Number(this.metaGet("kv_chunks_published") ?? 0);
+		// Say so while there is still room to act. Publish is the one moment that
+		// knows the finished size, and a crossing is otherwise invisible — see
+		// chunkHeadroom. The publish phase resumes across alarms, so this is gated
+		// on the first slice to keep it one line per publish rather than one per chunk.
+		if (published === 0) {
+			const warning = chunkHeadroomWarning(storeBytes, cut);
+			if (warning) console.warn(warning);
+		}
 
 		// A publish that began under the RAW publisher and was interrupted by a
 		// deploy would otherwise finish under this one, leaving chunk 0 raw and the

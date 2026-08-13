@@ -524,6 +524,69 @@ export function chunkCountFor(storeBytes: number, cut: number = KV_CHUNK_BYTES):
 	return Math.ceil(storeBytes / cut);
 }
 
+/**
+ * How close the store is to needing one more chunk.
+ *
+ * CROSSING A BOUNDARY IS SILENT. `splitStore` is a bare `ceil` loop, and the only
+ * check anywhere near it — `chunkForKv`'s fallback to `KV_CHUNK_BYTES_SAFE` —
+ * asks whether a single gzipped member exceeds KV's per-VALUE cap, which is a
+ * different question from how many members there are. So a store that grows past
+ * `n * cut` simply becomes n+1 chunks: no throw, no warning, no failed publish,
+ * and every cold load quietly pays another KV read. The manifest records
+ * `chunk_count`, but nothing has ever compared it to the last one.
+ *
+ * That is worth a guard because the margin is thin and growth is lumpy. Measured
+ * 2026-08-12, the store was 76,656,360 bytes against a two-chunk ceiling of
+ * 76,800,000 — 143,640 bytes, 0.19%. Scryfall drift is ~19KB/day, so the trend
+ * alone gives about a week; a single set release (~300 printings and ~280 new
+ * oracle cards, roughly 500KB once their text and index entries land) crosses it
+ * in one nightly import.
+ */
+export function chunkHeadroom(
+	storeBytes: number,
+	cut: number = KV_CHUNK_BYTES,
+): { chunks: number; nextBoundary: number; headroomBytes: number; headroomPct: number } {
+	const chunks = chunkCountFor(storeBytes, cut);
+	// A store sitting exactly on a boundary has a full chunk of room, not zero:
+	// `ceil` has already given it the chunk it fills.
+	const nextBoundary = Math.max(chunks, 1) * cut;
+	const headroomBytes = nextBoundary - storeBytes;
+	// Relative to the STORE, not to a chunk: the question this answers is "how much
+	// more store can we afford", and growth arrives as cards, not as a fraction of
+	// the cut. 143,640 bytes on a 76.6MB store reads as 0.19%, which is the shape of
+	// the problem; the same bytes over the 38.4MB cut would read as a roomier 0.37%.
+	return {
+		chunks,
+		nextBoundary,
+		headroomBytes,
+		headroomPct: storeBytes > 0 ? (100 * headroomBytes) / storeBytes : 0,
+	};
+}
+
+/**
+ * Headroom below which a publish says so.
+ *
+ * ~4 set releases at the ~500KB apiece the 2026-08-12 corpus measurement implies,
+ * or ~100 days of ordinary drift — enough notice to land a reduction before the
+ * boundary arrives rather than reading about it afterwards in a latency chart.
+ */
+export const CHUNK_HEADROOM_WARN_BYTES = 2_000_000;
+
+/**
+ * The line a publish logs about its chunk count, or `null` when there is nothing
+ * to say. Separated from the publisher so the wording is testable without a
+ * Durable Object, and so the thresholds live beside the constants they compare.
+ */
+export function chunkHeadroomWarning(storeBytes: number, cut: number = KV_CHUNK_BYTES): string | null {
+	const { chunks, headroomBytes, headroomPct } = chunkHeadroom(storeBytes, cut);
+	if (headroomBytes >= CHUNK_HEADROOM_WARN_BYTES) return null;
+	return (
+		`Store chunking: ${storeBytes} bytes is ${chunks} chunk(s) at a ${cut}-byte cut, with only ` +
+		`${headroomBytes} bytes (${headroomPct.toFixed(2)}%) before it becomes ${chunks + 1}. ` +
+		`Crossing is SILENT — every cold load would just start paying another KV read.`
+	);
+}
+
 /** Split a whole store buffer onto the KV grid. */
 export function splitStore(store: Uint8Array, cut: number = KV_CHUNK_BYTES): Uint8Array[] {
 	const chunks: Uint8Array[] = [];
