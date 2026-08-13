@@ -16,7 +16,7 @@ import type {
 	ResultShape,
 	ScryfallFuzzyResult,
 } from "./types";
-import { ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
+import { ENGINE_STREAM_PATH, ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
 type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: number };
@@ -26,6 +26,10 @@ type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: nu
  * DO); current DO code always sets them, and a missing one is simply not
  * reported to the autoscaler. */
 interface SearchEngineStub {
+	/** The payload transport (ENGINE_STREAM_PATH). A response body streams down the stub's pipe
+	 * instead of being serialized as an RPC value, which is the DO-CPU term that dominates the
+	 * large payloads — see the DO's `fetch` handler. */
+	fetch(request: Request): Promise<Response>;
 	searchCardsAsObjects(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & Telemetry>;
 	searchCardsAsJson(
 		opts: EngineSearchOptions,
@@ -262,6 +266,19 @@ export class RemoteEngine implements Engine {
 	private async searchRpc<T extends object>(call: () => Promise<T & Telemetry>): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
 		const { acquireMs, load, rate, shards, ...result } = await withRetry(call);
+		this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards });
+		return result as Omit<T, keyof Telemetry>;
+	}
+
+	/**
+	 * Hand one call's riders to the shard controller.
+	 *
+	 * Shared by BOTH transports rather than reimplemented per path. The autoscaler is fed only from
+	 * here, so a route that moves between RPC and the payload stream cannot quietly stop reporting
+	 * — which for /cards/search would mean the controller losing sight of the very route whose
+	 * ceiling DO_CEILING_RATE is calibrated against.
+	 */
+	private feedAutoscaler(rpcStart: number, { acquireMs, load, rate, shards }: Telemetry): void {
 		if (acquireMs) {
 			// Wake observability: logged only when the DO that answered had to
 			// acquire its engine.
@@ -274,7 +291,7 @@ export class RemoteEngine implements Engine {
 		if (shards !== undefined) adoptShardWidth(this.region, shards);
 		if (load !== undefined) reportEngineLoad(this.region, load);
 		if (rate !== undefined) reportEngineRate(this.region, rate);
-		// Wake-carrying RPCs are excluded from the latency signal: their wall time
+		// Wake-carrying calls are excluded from the latency signal: their wall time
 		// is legitimately inflated by the load, so reporting them would let every
 		// expansion argue for the next.
 		if (!acquireMs) {
@@ -282,7 +299,59 @@ export class RemoteEngine implements Engine {
 			reportEngineLatency(this.region, rpcMs);
 			sampleWarmRpc(this.region, this.colo, rpcMs);
 		}
-		return result as Omit<T, keyof Telemetry>;
+	}
+
+	/**
+	 * A payload as a STREAM rather than an RPC return value.
+	 *
+	 * The counts come back in headers so the caller can build its envelope without touching the
+	 * bytes, which is the same trade `EngineSerializedResult.rowCount` makes — the engine already
+	 * counted, so nothing downstream parses a 646KB array to learn its length.
+	 */
+	private async streamPayload(
+		call: "rows" | "cards",
+		opts: EngineSearchOptions,
+		extra: { shape?: ResultShape; baseUrl?: string },
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
+		const rpcStart = Date.now();
+		const res = await this.stub.fetch(
+			new Request(`https://engine${ENGINE_STREAM_PATH}`, {
+				method: "POST",
+				body: JSON.stringify({ call, opts, ...extra, shards: currentShardWidth(this.region) }),
+			}),
+		);
+		if (!res.ok || res.body === null) {
+			// Rebuild the error CLASS, not just its text: the routes branch on
+			// EngineUnavailableError to answer 503 "still loading" rather than 500.
+			const message = await res.text();
+			throw res.headers.get("x-engine-error") === "EngineUnavailableError"
+				? new EngineUnavailableError(message)
+				: new Error(message || `engine stream failed (${res.status})`);
+		}
+		const num = (name: string): number | undefined => {
+			const raw = res.headers.get(name);
+			return raw === null ? undefined : Number(raw);
+		};
+		this.feedAutoscaler(rpcStart, {
+			acquireMs: num("x-acquire-ms"),
+			load: num("x-load"),
+			rate: num("x-rate"),
+			shards: num("x-shards"),
+		});
+		return {
+			totalCards: num("x-total-cards") ?? 0,
+			rowCount: num("x-row-count") ?? 0,
+			byteLength: num("content-length") ?? 0,
+			body: res.body,
+		};
+	}
+
+	/** `/cards/search`'s page, streamed. See streamPayload. */
+	scryfallSearchStream(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
+		return this.streamPayload("cards", opts, { baseUrl });
 	}
 
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {

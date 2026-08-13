@@ -127,6 +127,25 @@ export class FakeEngine implements Engine {
 		return { totalCards: this.totalCards, cardsBytes: encodeUtf8(JSON.stringify(cards)), rowCount: cards.length };
 	}
 
+	/** The streamed shape, over the same fixture bytes — so route tests exercise the real splice. */
+	async scryfallSearchStream(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
+		const result = await this.scryfallSearch(opts, baseUrl);
+		return {
+			totalCards: result.totalCards,
+			rowCount: result.rowCount,
+			byteLength: result.cardsBytes.byteLength,
+			body: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(result.cardsBytes);
+					controller.close();
+				},
+			}),
+		};
+	}
+
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const at = this.scryfallKnownIds.indexOf(scryfallId);
 		return at < 0 ? null : this.fixtureCard(at, baseUrl);

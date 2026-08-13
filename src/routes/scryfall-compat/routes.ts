@@ -50,7 +50,7 @@ import {
 	PAGE_SIZE,
 	type ScryfallError,
 } from "./objects";
-import { asBool, scryfallJson, scryfallListJson } from "./respond";
+import { asBool, scryfallJson, scryfallListJson, scryfallListStream } from "./respond";
 import { cardName, setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
@@ -265,9 +265,12 @@ export async function cardsSearchHandler(
 		return scryfallJson(badRequestError(arithmeticNotComparedMessage(q), warnings), pretty, CARDS_CACHE);
 	}
 
-	let result: EngineSerializedResult;
+	// STREAMED, not returned: the page is piped from the Durable Object to the socket rather than
+	// crossing the boundary as an RPC value. Measured 2026-08-13, that serialization was the single
+	// largest term in this route's DO CPU — the engine itself is only 2.6ms of it.
+	let result: { totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> };
 	try {
-		result = await engine.scryfallSearch(
+		result = await engine.scryfallSearchStream(
 			{
 				filterTreeJson: canonicalStringify(filterTree as FilterValue),
 				unique,
@@ -308,8 +311,8 @@ export async function cardsSearchHandler(
 			)
 		: undefined;
 
-	return scryfallListJson(
-		result.cardsBytes,
+	return scryfallListStream(
+		result,
 		{ totalCards: result.totalCards, hasMore, nextPage, warnings },
 		pretty,
 		CARDS_CACHE,

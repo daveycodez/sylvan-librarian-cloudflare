@@ -119,6 +119,19 @@ export interface Engine {
 
 	/** A Scryfall-shaped search: card objects, pre-encoded. `cardsJson` is a JSON array. */
 	scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult>;
+
+	/**
+	 * The same page, as a stream the caller pipes rather than a buffer it holds.
+	 *
+	 * On the serving path (RemoteEngine) this avoids serializing the payload across the isolate/DO
+	 * boundary, which measurement puts at the largest single term in /cards/search's DO CPU. On the
+	 * in-process implementation there is no boundary to avoid, so it wraps the bytes it already has
+	 * — the interface carries the SHAPE, not the saving.
+	 */
+	scryfallSearchStream(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }>;
 	/** One card object by Scryfall id, or null for a genuine miss (which IS the 404 here). */
 	scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/** Card objects for these ids, in the order given, skipping misses. */
@@ -186,6 +199,20 @@ export interface ScryfallFuzzyResult {
  * suite that wanted the real SearchEngine.
  */
 export const ENGINE_UNAVAILABLE_MARKER = "__ENGINE_UNAVAILABLE__";
+
+/**
+ * The one path the SearchEngine DO answers over `fetch` — the payload transport.
+ *
+ * The host is arbitrary and never resolved: a Durable Object stub's `fetch` is a direct pipe, so
+ * only the path is read.
+ *
+ * LIVES HERE, with the shared types, rather than beside the handler that serves it. Exporting it
+ * from search-engine-do.ts pulled `cloudflare:workers` into every module that imports RemoteEngine,
+ * which is most of the engine — and outside workerd that import cannot resolve at all, so the unit
+ * tests stopped loading. A protocol constant is shared by definition; it does not belong in either
+ * end's implementation.
+ */
+export const ENGINE_STREAM_PATH = "/engine/payload";
 
 /**
  * Thrown when the engine cannot answer. Routes translate this to a loud

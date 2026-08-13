@@ -42,7 +42,7 @@ import type {
 	ScryfallFuzzyResult,
 	StoreManifest,
 } from "./types";
-import { ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
+import { ENGINE_STREAM_PATH, ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
 
 /**
  * `/cards/*` replies, wrapped so `instrumented` has an object to spread telemetry over. A bare
@@ -199,6 +199,67 @@ export class SearchEngine extends DurableObject<Env> {
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, (engine) => engine.searchCardsAsJson(opts, shape));
+	}
+
+	/**
+	 * The same two payloads as the RPCs above, delivered as a RESPONSE BODY instead of a return
+	 * value.
+	 *
+	 * WHY THIS EXISTS. An RPC return crosses the isolate/DO boundary as a serialized value, and that
+	 * serialization is charged to this object's CPU. Measured 2026-08-13, DO CPU is 16.9us/KB in
+	 * production while the engine itself accounts for only 4.2us/KB (`bench_card_object_build`:
+	 * 2.613ms for a 175-card page) and the two memcpys in the path are ~0.2ms each — a 646KB
+	 * `concatBytes` removal measured as exactly zero. The remainder is this hop. A `fetch` response
+	 * streams down the same pipe instead of being cloned into it, which is the one term left worth
+	 * attacking on /cards/search's 11.66ms.
+	 *
+	 * GENERIC ON PURPOSE. `/search` has the identical shape and the same per-KB cost — its payload
+	 * is just 15x smaller — so it moves onto this transport too rather than keeping a second one
+	 * alive. `call` picks the engine method; nothing else differs.
+	 *
+	 * THE TELEMETRY RIDES IN HEADERS, and that is load-bearing rather than incidental. The shard
+	 * autoscaler is fed entirely by riders on the search RPCs (see RemoteEngine.searchRpc), so a
+	 * route that moved to `fetch` and dropped them would silently stop reporting the rate the
+	 * controller now expands on — and /cards/search is the route whose ceiling that constant is
+	 * calibrated to.
+	 */
+	override async fetch(request: Request): Promise<Response> {
+		if (new URL(request.url).pathname !== ENGINE_STREAM_PATH) {
+			return new Response("not found", { status: 404 });
+		}
+		const body = (await request.json()) as {
+			call: "rows" | "cards";
+			opts: EngineSearchOptions;
+			shape?: ResultShape;
+			baseUrl?: string;
+			shards?: number;
+		};
+		let result: EngineSerializedResult & SearchTelemetry;
+		try {
+			result = await this.instrumented(body.shards, (engine) =>
+				body.call === "cards"
+					? engine.scryfallSearch(body.opts, body.baseUrl ?? "")
+					: engine.searchCardsAsJson(body.opts, body.shape ?? "rows"),
+			);
+		} catch (err) {
+			// The RPC path has `rethrowForRpc` to keep error IDENTITY across the boundary; a fetch
+			// carries a status line instead, so the class is named explicitly and rebuilt client-side.
+			// Losing EngineUnavailableError here would turn a 503 "still loading" into a 500.
+			const name = err instanceof Error ? err.name : "Error";
+			const message = err instanceof Error ? err.message : String(err);
+			return new Response(message, { status: 503, headers: { "x-engine-error": name } });
+		}
+		return new Response(result.cardsBytes, {
+			headers: {
+				"content-length": String(result.cardsBytes.byteLength),
+				"x-total-cards": String(result.totalCards),
+				"x-row-count": String(result.rowCount),
+				"x-acquire-ms": String(result.acquireMs),
+				"x-load": String(result.load),
+				"x-rate": String(result.rate),
+				"x-shards": String(result.shards),
+			},
+		});
 	}
 
 	/** Run a search against the local engine, carrying the autoscaler's signals. */

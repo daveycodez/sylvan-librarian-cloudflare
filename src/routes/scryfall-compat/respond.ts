@@ -105,19 +105,29 @@ export function scryfallJson(
  * interpolating it into a template literal instead would decode the whole thing to UTF-16 and
  * encode it back.
  */
+/**
+ * Split a rendered envelope at its empty `data` array, giving the bytes either side of the payload.
+ *
+ * The one implementation of where the splice happens, because the buffered and streamed responses
+ * MUST agree byte for byte — they answer the same routes and the same cached URLs, so a divergence
+ * here would be a difference no test on either path alone could see.
+ */
+function spliceMarkers(envelope: Record<string, unknown>, pretty: boolean): { head: Uint8Array; tail: Uint8Array } {
+	const body = stringifyScryfall(envelope, pretty);
+	const key = pretty ? '"data": ' : '"data":';
+	const marker = `${key}[]`;
+	const at = body.lastIndexOf(marker);
+	if (at < 0) throw new Error("envelope did not end with an empty data array");
+	return { head: encodeUtf8(`${body.slice(0, at)}${key}`), tail: encodeUtf8(body.slice(at + marker.length)) };
+}
+
 function spliceData(
 	envelope: Record<string, unknown>,
 	dataBytes: Uint8Array,
 	pretty: boolean,
 	cache: Record<string, string>,
 ): Response {
-	const body = stringifyScryfall(envelope, pretty);
-	const key = pretty ? '"data": ' : '"data":';
-	const marker = `${key}[]`;
-	const at = body.lastIndexOf(marker);
-	if (at < 0) throw new Error("envelope did not end with an empty data array");
-	const head = encodeUtf8(`${body.slice(0, at)}${key}`);
-	const tail = encodeUtf8(body.slice(at + marker.length));
+	const { head, tail } = spliceMarkers(envelope, pretty);
 	return jsonBytesResponse([head, dataBytes, tail], { "content-type": JSON_CONTENT_TYPE, ...cache });
 }
 
@@ -129,6 +139,52 @@ export function scryfallListJson(
 	cache: Record<string, string>,
 ): Response {
 	return spliceData(cardList([], opts), dataBytes, pretty, cache);
+}
+
+/**
+ * The same List, with `data` arriving as a STREAM the engine is still writing.
+ *
+ * Byte-for-byte identical to `scryfallListJson` — same envelope, same splice point, same order —
+ * but the payload is never a `Uint8Array` in this isolate at all: it is piped from the Durable
+ * Object straight to the socket. That is the whole point, since the measured cost of these routes
+ * is handling the bytes rather than producing them.
+ *
+ * `dataLength` is the engine's own count, so `content-length` is still exact and these responses
+ * stay cacheable on Scryfall's 16-hour tier exactly as before. A streamed body without it would go
+ * out chunked, which is a behaviour change the payload win does not justify.
+ */
+export function scryfallListStream(
+	data: { body: ReadableStream<Uint8Array>; byteLength: number },
+	opts: { totalCards?: number; hasMore: boolean; nextPage?: string; warnings?: string[] },
+	pretty: boolean,
+	cache: Record<string, string>,
+): Response {
+	const { head, tail } = spliceMarkers(cardList([], opts), pretty);
+	const reader = data.body.getReader();
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(head);
+		},
+		async pull(controller) {
+			const { done, value } = await reader.read();
+			if (done) {
+				controller.enqueue(tail);
+				controller.close();
+				return;
+			}
+			controller.enqueue(value);
+		},
+		cancel(reason) {
+			return reader.cancel(reason);
+		},
+	});
+	return new Response(body, {
+		headers: {
+			"content-type": JSON_CONTENT_TYPE,
+			"content-length": String(head.byteLength + data.byteLength + tail.byteLength),
+			...cache,
+		},
+	});
 }
 
 /**
