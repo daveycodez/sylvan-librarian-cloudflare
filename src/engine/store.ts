@@ -33,8 +33,10 @@ import {
 	type CacheWriter,
 	cachedArchiveStream,
 	cacheWriter,
+	dropCached,
 	ensureCacheSchema,
 	fillCache,
+	isCached,
 	pruneCache,
 	readLiveManifest,
 } from "./store-cache";
@@ -460,19 +462,49 @@ async function feedCompat(
 	const filling = residueFills.get(manifest.compat_key);
 	if (filling) await filling.catch(() => {});
 
+	try {
+		return await attachResidue(env, manifest, total, ctx);
+	} catch (err) {
+		// The local copy is the only thing that can be wrong here in a way KV cannot: KV is the
+		// source of truth, so a bad archive means a bad CACHE. Left alone this is permanent — the
+		// retry reads the same rows and fails identically, which is how one object's /cards/* stayed
+		// down until the store key next changed. Drop the copy and go to KV once.
+		if (!ctx?.storage || !isCached(ctx.storage, manifest.compat_key, total)) throw err;
+		console.error(
+			`${tag(ctx)}the locally cached card archive ${manifest.compat_key} did not load (${err}); ` +
+				`dropping it and re-reading from KV. This copy was readable but not the bytes it claimed.`,
+		);
+		dropCached(ctx.storage, manifest.compat_key);
+		return await attachResidue(env, manifest, total, ctx);
+	}
+}
+
+/**
+ * One attempt at attaching the residue, from wherever the bytes are.
+ *
+ * Separated so the caller can retry it after invalidating a bad cache: `begin_compat_load` starts a
+ * fresh buffer, so re-entering here discards whatever a failed attempt had fed in.
+ */
+async function attachResidue(
+	env: Env,
+	manifest: StoreManifest,
+	total: number,
+	ctx?: LoadContext,
+): Promise<FeedCounts & { cached: boolean }> {
 	wasm.begin_compat_load(total);
 	// Cached and fed exactly like the store, and for the same reason: this lands on the `/cards/*`
 	// cold path where the store has usually just been loaded, so both decompressions bill to one
 	// request. The archives are cached under separate keys because they are attached at different
 	// times — a search-only colo never pays for this one.
-	const { body, cached, sink } = archiveBytes(ctx, manifest.compat_key, total, () => kvCompatStream(env, manifest));
+	const compatKey = manifest.compat_key as string;
+	const { body, cached, sink } = archiveBytes(ctx, compatKey, total, () => kvCompatStream(env, manifest));
 	const counts = await feedBlocks(body, (block) => {
 		wasm.compat_load_chunk(block);
 		sink?.write(block);
 	});
 	wasm.finish_compat_load();
 	// Committed only once wasm has accepted the archive, so a failed attach caches nothing.
-	commitSink(ctx, sink, manifest.compat_key, [manifest.store_key, manifest.compat_key]);
+	commitSink(ctx, sink, compatKey, [manifest.store_key, compatKey]);
 	return { ...counts, cached };
 }
 

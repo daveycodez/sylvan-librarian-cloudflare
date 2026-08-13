@@ -455,8 +455,26 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       ceiling — 0.19% — and crossing it silently yields 3 chunks with no
  *       warning, quietly restoring the KV round trip that was taken off the cold
  *       path. Nothing in the publisher compares the count.
+ *  16 — NO CONTENT CHANGE. A repair, not a description.
+ *
+ *       Generation 15's publish exposed a race between the residue pre-cache and
+ *       the attach on the same cold request: two writers on one cache key, rows
+ *       deleted and re-inserted under each other, and both counting a full
+ *       archive so `commit()` wrote a meta row over the mixture. The result was a
+ *       copy that was READABLE and wrong, which `isCached` then answered yes to
+ *       forever — every `/cards/*` on that object 500'd, permanently, because the
+ *       retry read the same rows.
+ *
+ *       The race is fixed (residueFills) and the trap is fixed (dropCached, and
+ *       an attach that invalidates a copy that fails to load). But a cache
+ *       already poisoned on a live object is only repaired by a reader noticing —
+ *       and a new store key repairs it outright, since the bad rows are keyed by
+ *       the OLD archive name and get pruned. That is what this bump is for.
+ *
+ *       It also re-exercises the path that broke, on a genuine KV cold load,
+ *       which is the only way to prove the fix rather than assert it.
  */
-export const STORE_CONTENT_GENERATION = 15;
+export const STORE_CONTENT_GENERATION = 16;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

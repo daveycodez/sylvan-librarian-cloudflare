@@ -11,6 +11,7 @@ import {
 	type ArchiveCacheStorage,
 	cachedArchiveStream,
 	cacheWriter,
+	dropCached,
 	ensureCacheSchema,
 	fillCache,
 	isCached,
@@ -225,6 +226,42 @@ describe("archive cache", () => {
 		// The first, resuming, writes seq 1 — which the second already holds. This is the
 		// production 500: the loser's insert violates the primary key.
 		expect(() => first.write(source.subarray(1_500_000, 3_000_000))).toThrow("UNIQUE constraint failed");
+	});
+
+	test("dropCached invalidates one archive so a poisoned copy is not permanent", async () => {
+		// The escape hatch the cache had no way to reach. A copy that is readable but WRONG — two
+		// writers interleaving rows under one meta row — makes isCached answer yes forever, so every
+		// attach feeds wasm the same bad archive and /cards/* stays down until the store key changes.
+		// KV is the source of truth, so throwing the copy away is always safe.
+		const store = fakeStorage();
+		const other = "card-compat-v2026081104-1786533595.store";
+		await fillCache(store, KEY, streamOf(ramp(1000), 500), 1000);
+		await fillCache(store, other, streamOf(ramp(1000), 500), 1000);
+
+		dropCached(store, KEY);
+		expect(isCached(store, KEY, 1000)).toBe(false);
+		expect(cachedArchiveStream(store, KEY, 1000)).toBeNull();
+		expect(store.rows.has(KEY)).toBe(false);
+		// Its neighbour is untouched: the store archive must survive dropping the residue.
+		expect(isCached(store, other, 1000)).toBe(true);
+	});
+
+	test("dropping an archive that was never cached is a no-op", async () => {
+		const store = fakeStorage();
+		ensureCacheSchema(store);
+		expect(() => dropCached(store, KEY)).not.toThrow();
+		expect(isCached(store, KEY, 1000)).toBe(false);
+	});
+
+	test("a refill after dropCached produces a clean, readable copy", async () => {
+		// The point of dropping: the next load repairs it from KV.
+		const store = fakeStorage();
+		const source = ramp(3000);
+		await fillCache(store, KEY, streamOf(source, 500), source.length);
+		dropCached(store, KEY);
+		await fillCache(store, KEY, streamOf(source, 500), source.length);
+		const stream = cachedArchiveStream(store, KEY, source.length) as ReadableStream<Uint8Array>;
+		expect(await drain(stream)).toEqual(source);
 	});
 
 	test("prune keeping everything drops nothing", async () => {

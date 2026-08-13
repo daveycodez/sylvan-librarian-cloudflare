@@ -291,6 +291,25 @@ export async function fillCache(
  * leak that let production hold 15 store builds in KV under a policy of 2 (see staleStoreKeys).
  * Called after a fill, when the replacement is known good.
  */
+/**
+ * Throw away one cached archive, because it turned out not to be the bytes it claimed.
+ *
+ * The cache's whole safety argument is that it can only ever be a FASTER way to get the SAME bytes,
+ * and every guard here defends the write side: meta last, length checked, no readable short copy.
+ * None of that helps once a copy is readable and wrong — which happened on 2026-08-13, when two
+ * writers on one key interleaved their rows and both counted a full archive, so `commit()` wrote a
+ * meta row over a mixture. `isCached` then answered yes forever and every attach fed wasm the same
+ * corrupt archive, so `/cards/*` on that object 500'd permanently: the retry re-read the same copy.
+ *
+ * A cache that cannot be invalidated by its own reader is a trap, so this is the escape hatch. It is
+ * always safe: KV is the source of truth and the next load refills from it.
+ */
+export function dropCached(storage: ArchiveCacheStorage, key: string): void {
+	ensureCacheSchema(storage);
+	exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
+	exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
+}
+
 export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]): string[] {
 	const keys = exec(storage, "SELECT archive_key FROM archive_cache_meta").map((r) => String(r.archive_key));
 	const stale = keys.filter((k) => !keep.includes(k));
