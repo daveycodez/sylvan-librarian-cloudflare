@@ -155,6 +155,15 @@ class WasmEngine implements Engine {
 					`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 			);
 		})().catch((err) => {
+			// SAY WHY. This used to rethrow silently, and the caller turns it into
+			// ENGINE_UNAVAILABLE_MARKER, so the only trace a failed attach left anywhere was the
+			// request-side "Scryfall compat route: engine failure" with a stack that stops at the RPC
+			// boundary. On 2026-08-13 that meant a /cards/* outage whose cause could not be read out
+			// of production at all — every hypothesis had to be tested by changing something.
+			console.error(
+				`${tag(this.ctx)}could not attach the card archive ${this.manifest.compat_key} ` +
+					`(${this.manifest.compat_bytes} bytes): ${err}`,
+			);
 			// A failed attach must not be cached: the next /cards/* request should retry rather
 			// than inherit a transient KV failure for the life of the isolate.
 			this.compatOnce = null;
