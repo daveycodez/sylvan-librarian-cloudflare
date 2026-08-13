@@ -33,6 +33,7 @@ import type { CardOrdering, SortDirection, UniqueOn } from "../enums";
 import { CARD_ORDERING, resolveDirection } from "../enums";
 import { NO_STORE_HEADER } from "../http";
 import { loadParser } from "../parser-bridge";
+import { arithmeticNotComparedMessage, usesValueAsPredicate } from "../query-validation";
 import type { RouteContext } from "../registry";
 import {
 	badRequestError,
@@ -259,6 +260,10 @@ export async function cardsSearchHandler(
 		}
 		throw err;
 	}
+	// Parses, but is a value rather than a filter — see query-validation.ts.
+	if (usesValueAsPredicate(filterTree)) {
+		return scryfallJson(badRequestError(arithmeticNotComparedMessage(q), warnings), pretty, CARDS_CACHE);
+	}
 
 	let result: EngineSerializedResult;
 	try {
@@ -442,14 +447,20 @@ export async function cardsRandomHandler(
 	let filterTreeJson = TRUE_TREE;
 	if (q?.trim()) {
 		const parser = await loadParser();
+		let tree: unknown;
 		try {
-			filterTreeJson = canonicalStringify(parser.parseWithDirectives(q).tree as FilterValue);
+			tree = parser.parseWithDirectives(q).tree;
 		} catch (err) {
 			if (parser.isParseError(err)) {
 				return scryfallJson(badRequestError(`Failed to parse query: "${q}"`), pretty, RANDOM_CACHE);
 			}
 			throw err;
 		}
+		// Parses, but is a value rather than a filter — see query-validation.ts.
+		if (usesValueAsPredicate(tree)) {
+			return scryfallJson(badRequestError(arithmeticNotComparedMessage(q)), pretty, RANDOM_CACHE);
+		}
+		filterTreeJson = canonicalStringify(tree as FilterValue);
 	}
 
 	try {

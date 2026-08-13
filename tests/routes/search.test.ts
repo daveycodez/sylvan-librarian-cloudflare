@@ -203,6 +203,23 @@ describe("search failure modes", () => {
 		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
 	});
 
+	test("a query that PARSES to a bare value is a 400, and never reaches the engine", async () => {
+		// `/search?q=1` answered 500 in production on 2026-08-13: the query parses fine (upstream pins
+		// `1` to a NumericValueNode), so the value node went to the engine, which cannot evaluate it.
+		installFakeParser(() => ({ node_type: "NumericValueNode", kwargs: { value: 1 } }));
+		const engine = new FakeEngine();
+		const res = await testDispatch(makeCtx({ engine }), "/search?q=1");
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({
+			title: "Invalid Search Query",
+			description:
+				"The search query '1' contains invalid syntax. " +
+				"Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
+		});
+		// The point of rejecting at the route: the engine is never asked the unanswerable question.
+		expect(engine.lastSearch).toBeNull();
+	});
+
 	test("engine failure is a loud 500 Engine Error (deliberate deviation from SQL fallback)", async () => {
 		const engine = new FakeEngine();
 		engine.searchError = new Error("wasm trap");

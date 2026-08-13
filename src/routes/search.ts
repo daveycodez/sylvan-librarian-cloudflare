@@ -26,6 +26,7 @@ import { httpError, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
 import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from "./param-binding";
 import { loadParser } from "./parser-bridge";
+import { arithmeticNotComparedMessage, usesValueAsPredicate } from "./query-validation";
 import type { RouteContext } from "./registry";
 import { Timer } from "./timer";
 
@@ -272,6 +273,12 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 			throw new SearchBadRequest("Invalid Search Query", `Failed to parse query: "${query}"`);
 		}
 		throw err;
+	}
+	// Parsed, but not a filter: `1` and `cmc-power` are legal arithmetic with nothing to evaluate as a
+	// question. Rejected HERE rather than in the parser, whose trees are pinned byte-identical to
+	// upstream's for exactly these inputs — see query-validation.ts.
+	if (usesValueAsPredicate(filterTree)) {
+		throw new SearchBadRequest("Invalid Search Query", arithmeticNotComparedMessage(query));
 	}
 
 	// Fold the in-query directives BEFORE resolveDirection, which is the last
