@@ -142,6 +142,18 @@ class WasmEngine implements Engine {
 		this.ctx = ctx;
 	}
 
+	/**
+	 * Attach the residue archive NOW, off the request path.
+	 *
+	 * Called by the loader under waitUntil on every cold load, /cards/* or not — see the call site.
+	 * Public only for that; every request path goes through the private single-flight below, and
+	 * this is the same promise, so a /cards/* request arriving mid-warm joins it rather than
+	 * starting a second one.
+	 */
+	warmCompat(): Promise<void> {
+		return this.ensureCompat();
+	}
+
 	/** Attach the residue archive if it is not already; idempotent and single-flighted. */
 	private ensureCompat(): Promise<void> {
 		this.compatOnce ??= (async () => {
@@ -818,6 +830,29 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 			});
 		residueFills.set(compatKey, fill);
 		ctx.waitUntil(fill);
+	}
+	// AND ATTACH IT, on every cold load rather than on the first /cards/* request.
+	//
+	// The attach feeds ~10.7MB into wasm and costs 250-350ms of Durable Object CPU, and it used to
+	// be paid lazily — in front of whichever user's /cards/* request happened to be first on a fresh
+	// isolate. The warm ping in resolveEngine calls `.size()`, which does not trigger it, so nothing
+	// was hiding that from a real request.
+	//
+	// This deliberately gives up the property the split was built for: a search-only isolate now
+	// carries the residue's linear memory (71.7MB -> 82.1MB measured, against a 128MB ceiling). That
+	// trade is worth taking because /cards/* is the traffic this deployment actually serves, and
+	// because the KV read was ALREADY being paid on every cold load — 8575754 put the pre-cache
+	// above under waitUntil for exactly this reason. What is left of the split is the part that
+	// still earns: the archive is a separate KV object, so the store itself stays 10.7MB smaller.
+	//
+	// `feedCompat` single-flights against the fill registered above, so this waits for it and
+	// attaches from the local cache rather than opening a second KV read.
+	if (ctx && manifest.compat_key && manifest.compat_bytes) {
+		ctx.waitUntil(
+			engine
+				.warmCompat()
+				.catch((err) => console.warn(`${tag(ctx)}could not warm the card archive (it will attach on demand): ${err}`)),
+		);
 	}
 	console.log(
 		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
