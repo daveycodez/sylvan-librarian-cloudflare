@@ -96,15 +96,6 @@ export interface Engine {
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult>;
 	/** Pre-encoded cards — for the JSON API, which only ever needs the bytes. */
 	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
-	/**
-	 * The same rows, STREAMED. The payload transport every large response uses — see
-	 * scryfallSearchStream and jsonStreamResponse; `/search?limit=1000` is 1,134KB, larger than a
-	 * /cards/search page, so this is the bigger of the two payloads rather than an afterthought.
-	 */
-	searchRowsStream(
-		opts: EngineSearchOptions,
-		shape: ResultShape,
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }>;
 	cardTypeCounts(): Promise<Record<string, number>>;
 	cardKeywordCounts(): Promise<Record<string, number>>;
 	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
@@ -129,18 +120,6 @@ export interface Engine {
 	/** A Scryfall-shaped search: card objects, pre-encoded. `cardsJson` is a JSON array. */
 	scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult>;
 
-	/**
-	 * The same page, as a stream the caller pipes rather than a buffer it holds.
-	 *
-	 * On the serving path (RemoteEngine) this avoids serializing the payload across the isolate/DO
-	 * boundary, which measurement puts at the largest single term in /cards/search's DO CPU. On the
-	 * in-process implementation there is no boundary to avoid, so it wraps the bytes it already has
-	 * — the interface carries the SHAPE, not the saving.
-	 */
-	scryfallSearchStream(
-		opts: EngineSearchOptions,
-		baseUrl: string,
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }>;
 	/**
 	 * `/cards/search`'s WHOLE response — envelope, headers and status — built where the payload is.
 	 *

@@ -302,51 +302,6 @@ export class RemoteEngine implements Engine {
 	}
 
 	/**
-	 * A payload as a STREAM rather than an RPC return value.
-	 *
-	 * The counts come back in headers so the caller can build its envelope without touching the
-	 * bytes, which is the same trade `EngineSerializedResult.rowCount` makes — the engine already
-	 * counted, so nothing downstream parses a 646KB array to learn its length.
-	 */
-	private async streamPayload(
-		call: "rows" | "cards",
-		opts: EngineSearchOptions,
-		extra: { shape?: ResultShape; baseUrl?: string },
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
-		const rpcStart = Date.now();
-		const res = await this.stub.fetch(
-			new Request(`https://engine${ENGINE_STREAM_PATH}`, {
-				method: "POST",
-				body: JSON.stringify({ call, opts, ...extra, shards: currentShardWidth(this.region) }),
-			}),
-		);
-		if (!res.ok || res.body === null) {
-			// Rebuild the error CLASS, not just its text: the routes branch on
-			// EngineUnavailableError to answer 503 "still loading" rather than 500.
-			const message = await res.text();
-			throw res.headers.get("x-engine-error") === "EngineUnavailableError"
-				? new EngineUnavailableError(message)
-				: new Error(message || `engine stream failed (${res.status})`);
-		}
-		const num = (name: string): number | undefined => {
-			const raw = res.headers.get(name);
-			return raw === null ? undefined : Number(raw);
-		};
-		this.feedAutoscaler(rpcStart, {
-			acquireMs: num("x-acquire-ms"),
-			load: num("x-load"),
-			rate: num("x-rate"),
-			shards: num("x-shards"),
-		});
-		return {
-			totalCards: num("x-total-cards") ?? 0,
-			rowCount: num("x-row-count") ?? 0,
-			byteLength: num("content-length") ?? 0,
-			body: res.body,
-		};
-	}
-
-	/**
 	 * `/cards/search`'s WHOLE response — envelope, headers and status — built in the Durable Object.
 	 *
 	 * The isolate's only job on this route is choosing the shard and handing this back. Splicing the
@@ -395,22 +350,6 @@ export class RemoteEngine implements Engine {
 			shards: num("x-shards"),
 		});
 		return res;
-	}
-
-	/** `/search`'s rows, streamed. Same transport as the cards page — see streamPayload. */
-	searchRowsStream(
-		opts: EngineSearchOptions,
-		shape: ResultShape,
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
-		return this.streamPayload("rows", opts, { shape });
-	}
-
-	/** `/cards/search`'s page, streamed. See streamPayload. */
-	scryfallSearchStream(
-		opts: EngineSearchOptions,
-		baseUrl: string,
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
-		return this.streamPayload("cards", opts, { baseUrl });
 	}
 
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {

@@ -231,9 +231,13 @@ export class SearchEngine extends DurableObject<Env> {
 			return new Response("not found", { status: 404 });
 		}
 		const body = (await request.json()) as {
-			call: "rows" | "cards";
+			// "cards" is the only call this endpoint has ever needed to serve since the isolate
+			// stopped splicing envelopes. A "rows" variant existed for /search's streaming
+			// transport; that route is buffered again (see respond.ts), so the branch is gone
+			// rather than left to rot. Anything else is rejected LOUDLY below — answering a
+			// stale `call` with card objects would be silently wrong data, not an error.
+			call: "cards";
 			opts: EngineSearchOptions;
-			shape?: ResultShape;
 			baseUrl?: string;
 			shards?: number;
 			/**
@@ -255,13 +259,12 @@ export class SearchEngine extends DurableObject<Env> {
 			};
 			cache?: Record<string, string>;
 		};
+		if (body.call !== "cards") {
+			return new Response(`unsupported engine call: ${String(body.call)}`, { status: 400 });
+		}
 		let result: EngineSerializedResult & SearchTelemetry;
 		try {
-			result = await this.instrumented(body.shards, (engine) =>
-				body.call === "cards"
-					? engine.scryfallSearch(body.opts, body.baseUrl ?? "")
-					: engine.searchCardsAsJson(body.opts, body.shape ?? "rows"),
-			);
+			result = await this.instrumented(body.shards, (engine) => engine.scryfallSearch(body.opts, body.baseUrl ?? ""));
 		} catch (err) {
 			// The RPC path has `rethrowForRpc` to keep error IDENTITY across the boundary; a fetch
 			// carries a status line instead, so the class is named explicitly and rebuilt client-side.

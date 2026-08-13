@@ -46,47 +46,8 @@ export function jsonBytesResponse(parts: readonly Uint8Array[], headers?: Record
 	});
 }
 
-/**
- * The same envelope splice, with the payload arriving as a STREAM the engine is still sending.
- *
- * The one implementation for every route whose body is `<small head><big payload><small tail>` —
- * /search, /random_search, /cards/search and /cards. They all used to buffer the payload into one
- * array first; measured 2026-08-13, serializing it out of the Durable Object was the largest single
- * term in /cards/search's DO CPU, and taking it off that route moved 18ms -> 14ms. Nothing about
- * that is specific to card objects, so there is no second way to build these responses.
- *
- * CONTENT-LENGTH IS EXACT, from the engine's own byte count. A streamed body would otherwise go out
- * chunked, and these responses are edge-cached on two different tiers; the length is known before
- * the first byte moves, so no client or cache can tell this from the buffered form.
- */
-export function jsonStreamResponse(
-	parts: { head: Uint8Array; payload: ReadableStream<Uint8Array>; payloadLength: number; tail: Uint8Array },
-	headers?: Record<string, string>,
-): Response {
-	const { head, payload, payloadLength, tail } = parts;
-	const reader = payload.getReader();
-	const body = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(head);
-		},
-		async pull(controller) {
-			const { done, value } = await reader.read();
-			if (done) {
-				controller.enqueue(tail);
-				controller.close();
-				return;
-			}
-			controller.enqueue(value);
-		},
-		cancel(reason) {
-			return reader.cancel(reason);
-		},
-	});
-	return new Response(body, {
-		headers: {
-			"content-type": "application/json",
-			"content-length": String(head.byteLength + payloadLength + tail.byteLength),
-			...headers,
-		},
-	});
-}
+// `jsonStreamResponse` USED TO SIT HERE: an envelope spliced around a payload still streaming out
+// of the Durable Object. Removed with its last caller. The isolate no longer splices around a
+// stream on ANY route — /cards/search and /cards have the object build the whole response, and
+// /search and /random_search buffer, because their tail depends on the payload. See the transport
+// note in routes/scryfall-compat/respond.ts before reintroducing this shape.

@@ -328,25 +328,6 @@ class WasmEngine implements Engine {
 		return { totalCards: Number(total), cardsBytes: answer.subarray(split + 1), rowCount: Number(rows) };
 	}
 
-	/** In-process there is no boundary to save; wraps the bytes searchCardsAsJson already produced. */
-	async searchRowsStream(
-		opts: EngineSearchOptions,
-		shape: ResultShape,
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
-		const r = await this.searchCardsAsJson(opts, shape);
-		return {
-			totalCards: r.totalCards,
-			rowCount: r.rowCount,
-			byteLength: r.cardsBytes.byteLength,
-			body: new ReadableStream<Uint8Array>({
-				start(controller) {
-					controller.enqueue(r.cardsBytes);
-					controller.close();
-				},
-			}),
-		};
-	}
-
 	/** In-process: the same envelope, spliced here because there is no boundary to keep it off. */
 	async scryfallSearchPage(
 		opts: EngineSearchOptions,
@@ -380,28 +361,6 @@ class WasmEngine implements Engine {
 			envelope.pretty,
 			cache,
 		);
-	}
-
-	/**
-	 * The page as a stream. In-process there is no boundary to save, so this wraps the bytes
-	 * `scryfallSearch` already produced — see the Engine interface for why the shape is shared.
-	 */
-	async scryfallSearchStream(
-		opts: EngineSearchOptions,
-		baseUrl: string,
-	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
-		const result = await this.scryfallSearch(opts, baseUrl);
-		return {
-			totalCards: result.totalCards,
-			rowCount: result.rowCount,
-			byteLength: result.cardsBytes.byteLength,
-			body: new ReadableStream<Uint8Array>({
-				start(controller) {
-					controller.enqueue(result.cardsBytes);
-					controller.close();
-				},
-			}),
-		};
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
