@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	type ArchiveCacheStorage,
 	cachedArchiveStream,
+	cacheWriter,
 	ensureCacheSchema,
 	fillCache,
 	isCached,
@@ -53,6 +54,13 @@ function fakeStorage(): ArchiveCacheStorage & { rows: Map<string, ArrayBuffer[]>
 				}
 				if (q.startsWith("INSERT INTO archive_cache")) {
 					const list = rows.get(b[0] as string) ?? [];
+					// PRIMARY KEY (archive_key, seq). Modelled, because it is not decoration: it is
+					// what turns "two writers on one key" into a thrown error rather than a silently
+					// interleaved archive, and a fake that overwrote instead would have let the
+					// 2026-08-13 residue race pass its tests.
+					if (list[b[1] as number] !== undefined) {
+						throw new Error(`UNIQUE constraint failed: archive_cache.archive_key, archive_cache.seq`);
+					}
 					list[b[1] as number] = b[2] as ArrayBuffer;
 					rows.set(b[0] as string, list);
 					self.writes += 1;
@@ -189,6 +197,34 @@ describe("archive cache", () => {
 		expect(isCached(store, compat, 1000)).toBe(true);
 		expect(isCached(store, old, 1000)).toBe(false);
 		expect(store.rows.has(old)).toBe(false);
+	});
+
+	test("a second writer on a live key destroys the first — why residue fills are single-flighted", async () => {
+		// The 500 of 2026-08-13, in miniature. The cold load pre-caches the residue under waitUntil
+		// while the request that triggered it attaches that same residue; `isCached` reads false
+		// until the pre-cache commits its meta row LAST, so the attach opened its own writer on the
+		// same key. cacheWriter DELETEs the key on construction and then INSERTs by (archive_key,
+		// seq) — so the two clobber each other, and the loser's commit fails. That surfaced as the
+		// first /cards/* after every store change 500ing, nightly.
+		//
+		// store.ts fixes it upstream of here (residueFills), but this is the property that makes the
+		// fix necessary, so it belongs in the layer that has it.
+		const store = fakeStorage();
+		const source = ramp(6_000_000); // BLOB_GROUP_BYTES is 1.5MB, so this is 4 rows
+		const first = cacheWriter(store, KEY, source.length);
+		first.write(source.subarray(0, 1_500_000)); // flushes seq 0
+		expect((store.rows.get(KEY) ?? []).length).toBe(1);
+
+		// A second writer for the same key, opened while the first is mid-flight. Construction
+		// DELETEs the key, so the first writer's row is gone and its seq counter is now stale.
+		const second = cacheWriter(store, KEY, source.length);
+		expect(store.rows.get(KEY) ?? []).toEqual([]);
+
+		second.write(source.subarray(0, 4_500_000)); // seq 0, 1, 2
+
+		// The first, resuming, writes seq 1 — which the second already holds. This is the
+		// production 500: the loser's insert violates the primary key.
+		expect(() => first.write(source.subarray(1_500_000, 3_000_000))).toThrow("UNIQUE constraint failed");
 	});
 
 	test("prune keeping everything drops nothing", async () => {

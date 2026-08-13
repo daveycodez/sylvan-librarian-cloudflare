@@ -420,6 +420,22 @@ async function feedStore(
 }
 
 /**
+ * Residue fills that are in flight RIGHT NOW, keyed by archive key.
+ *
+ * The cold load pre-caches the residue under `waitUntil` while the request that triggered it goes
+ * on to ATTACH that same residue. Both wrote the same cache key: the pre-cache through `fillCache`,
+ * the attach through its own tee sink, because `isCached` reads false until the pre-cache commits
+ * its meta row last. Whichever finished second collided, and since the loser was usually the
+ * attach, the FIRST `/cards/*` after any store change 500'd — nightly, on the traffic this
+ * deployment mostly serves. Production, 2026-08-13: free 500'd (pre-cache won a 1587ms load), paid
+ * survived only because its 4172ms load let the attach finish first.
+ *
+ * So the attach waits for a fill already running instead of starting a competing one, and then
+ * reads it back locally — which is faster than the KV fetch it used to race, not slower.
+ */
+const residueFills = new Map<string, Promise<unknown>>();
+
+/**
  * Stream the residue archive in and attach it (see StoreManifest.compat_key).
  *
  * Single-flighted per isolate and only ever called from a `/cards/*` path: `/search` reads none of
@@ -438,6 +454,12 @@ async function feedCompat(
 			`Store ${manifest.store_key} has no card-object archive; /cards/* needs one (rebuild the store)`,
 		);
 	}
+	// If the cold load is already filling this archive, wait for it rather than opening a second
+	// writer on the same cache key — see residueFills. A failed fill is not fatal here: the cache
+	// simply stays empty and the read below falls back to KV, which is the pre-8575754 behaviour.
+	const filling = residueFills.get(manifest.compat_key);
+	if (filling) await filling.catch(() => {});
+
 	wasm.begin_compat_load(total);
 	// Cached and fed exactly like the store, and for the same reason: this lands on the `/cards/*`
 	// cold path where the store has usually just been loaded, so both decompressions bill to one
@@ -661,15 +683,23 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		const compatKey = manifest.compat_key;
 		const compatBytes = manifest.compat_bytes;
 		const storage = ctx.storage;
-		ctx.waitUntil(
-			fillCache(storage, compatKey, kvCompatStream(env, manifest), compatBytes)
-				.then((rows) =>
-					console.log(`${tag(ctx)}pre-cached the card archive (${rows} rows) so the first /cards/* wake reads locally`),
-				)
-				.catch((err) =>
-					console.warn(`${tag(ctx)}could not pre-cache the card archive (it will attach from KV): ${err}`),
-				),
-		);
+		// Published in residueFills BEFORE it is handed to waitUntil, so an attach on this very
+		// request — the common case, since only /cards/* triggers one — can find it. Registering it
+		// after the await would be a race with nothing in it.
+		const fill = fillCache(storage, compatKey, kvCompatStream(env, manifest), compatBytes)
+			.then((rows) => {
+				console.log(`${tag(ctx)}pre-cached the card archive (${rows} rows) so the first /cards/* wake reads locally`);
+				return rows;
+			})
+			.catch((err) => {
+				console.warn(`${tag(ctx)}could not pre-cache the card archive (it will attach from KV): ${err}`);
+			})
+			.finally(() => {
+				// Only clear the entry if it is still this fill: a hot swap can publish a newer one.
+				if (residueFills.get(compatKey) === fill) residueFills.delete(compatKey);
+			});
+		residueFills.set(compatKey, fill);
+		ctx.waitUntil(fill);
 	}
 	console.log(
 		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
