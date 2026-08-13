@@ -435,8 +435,28 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       That phase has never run outside tests, and it WILL run at the next
  *       nightly regardless, so running it now — while someone is watching the
  *       logs — is strictly safer than discovering a fault at 17:11 unattended.
+ *  15 — NO CONTENT CHANGE either. Same use as 13 and 14: a re-publish trigger.
+ *
+ *       Generation 14 never actually rebuilt. store-age only forces a build when
+ *       the PUBLISHED manifest's generation differs from this constant, and by
+ *       the time 14 shipped a store already carried it, so the last two builds
+ *       skipped the import and reused the live store. Everything 14 was meant to
+ *       exercise on a fresh key went unexercised with it.
+ *
+ *       What this one is for, specifically: `archive_section_stats` (75f62d5)
+ *       prints the per-section breakdown of the archive from the NATIVE builder,
+ *       and so only emits from a build that genuinely runs the import. It has
+ *       never executed. The breakdown is what makes "shrink the store" — the one
+ *       lever with real headroom left — actionable rather than guesswork, and an
+ *       independent per-field measurement now exists to reconcile it against.
+ *
+ *       Also worth watching on this publish: `chunk_count` must still come back
+ *       2. The archive is 76,656,360 bytes against a 76,800,000 two-chunk
+ *       ceiling — 0.19% — and crossing it silently yields 3 chunks with no
+ *       warning, quietly restoring the KV round trip that was taken off the cold
+ *       path. Nothing in the publisher compares the count.
  */
-export const STORE_CONTENT_GENERATION = 14;
+export const STORE_CONTENT_GENERATION = 15;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
