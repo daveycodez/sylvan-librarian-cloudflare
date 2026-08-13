@@ -8,7 +8,7 @@
 // Upstream split the same plumbing out for the same reason when its second surface arrived
 // (api/scryfall_compat/responder.py, #922).
 
-import { encodeUtf8, jsonBytesResponse, jsonStreamResponse } from "../../engine/bytes";
+import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
 import { cardList, catalogObject } from "./objects";
 
 /**
@@ -144,30 +144,20 @@ export function scryfallListJson(
 	return spliceData(cardList([], opts), dataBytes, pretty, cache);
 }
 
-/**
- * The same List, with `data` arriving as a STREAM the engine is still writing.
- *
- * Byte-for-byte identical to `scryfallListJson` — same envelope, same splice point, same order —
- * but the payload is never a `Uint8Array` in this isolate at all: it is piped from the Durable
- * Object straight to the socket. That is the whole point, since the measured cost of these routes
- * is handling the bytes rather than producing them.
- *
- * `dataLength` is the engine's own count, so `content-length` is still exact and these responses
- * stay cacheable on Scryfall's 16-hour tier exactly as before. A streamed body without it would go
- * out chunked, which is a behaviour change the payload win does not justify.
- */
-export function scryfallListStream(
-	data: { body: ReadableStream<Uint8Array>; byteLength: number },
-	opts: { totalCards?: number; hasMore: boolean; nextPage?: string; warnings?: string[] },
-	pretty: boolean,
-	cache: Record<string, string>,
-): Response {
-	const { head, tail } = spliceMarkers(cardList([], opts), pretty);
-	return jsonStreamResponse(
-		{ head, payload: data.body, payloadLength: data.byteLength, tail },
-		{ "content-type": JSON_CONTENT_TYPE, ...cache },
-	);
-}
+// `scryfallListStream` USED TO SIT HERE: a List whose envelope was spliced around a payload still
+// streaming out of the Durable Object. It is gone because the shape it served is gone. Two
+// transports remain, and neither wants it (see f740ed3):
+//
+//   payload leaves the isolate untouched   -> the object builds the WHOLE response and this side
+//                                             returns it (/cards/search, /cards) — no splice, so
+//                                             nothing to wrap
+//   isolate must splice around the payload -> buffer it (/search, /random_search), because the
+//                                             tail is `metadataFor` and cannot exist before the
+//                                             payload does
+//
+// Splicing around a stream is the third case, and it is the one that measured WORSE: /search on
+// the streaming transport went 5ms -> 11ms of isolate against a 10ms budget. Restoring this
+// function would be re-proposing that, so the argument belongs here rather than the code.
 
 /**
  * A Catalog whose `data` is already encoded.

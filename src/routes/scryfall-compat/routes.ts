@@ -24,7 +24,7 @@
 
 import { encodeUtf8 } from "../../engine/bytes";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
-import type { Engine, EngineSerializedResult } from "../../engine/types";
+import type { Engine } from "../../engine/types";
 import { EngineUnavailableError } from "../../engine/types";
 import type { FilterValue } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -50,7 +50,7 @@ import {
 	PAGE_SIZE,
 	type ScryfallError,
 } from "./objects";
-import { asBool, scryfallJson, scryfallListJson, scryfallListStream } from "./respond";
+import { asBool, scryfallJson, scryfallListJson } from "./respond";
 import { cardName, setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
