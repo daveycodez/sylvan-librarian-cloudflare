@@ -809,7 +809,20 @@ fn cmd_namecheck(store_path: &Path) {
     use card_engine::BufferStore;
 
     let bytes = std::fs::read(store_path).expect("read store");
-    let store = BufferStore::from_bytes(&bytes).expect("load store");
+    let mut store = BufferStore::from_bytes(&bytes).expect("load store");
+    // The residue, when it was built alongside: the three list fields (multiverse_ids,
+    // promo_types, frame_effects) are CSR on CompatData rather than Vecs on CompatFields, and a
+    // digest that never attaches the residue cannot tell a correct window from an off-by-one.
+    if let Some(dir) = store_path.parent() {
+        let compat = std::fs::read_dir(dir)
+            .expect("read out dir")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("card-compat-")));
+        if let Some(c) = compat {
+            store.attach_compat_bytes(&std::fs::read(&c).expect("read compat")).expect("attach compat");
+        }
+    }
     let f = |n: &[&str]| Some(n.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>());
     let sample = store.sample_preferred(400, 11, f(&["name"])).expect("sample");
 
@@ -840,6 +853,31 @@ fn cmd_namecheck(store_path: &Path) {
             lines.push(format!("words {pair:?} -> {names:?}"));
         }
     }
+    // The residue's three CSR list fields, per printing, folded into the digest. A window that
+    // starts one printing early is invisible in aggregate and obvious here, because these are read
+    // back against the SAME sampled ids on both sides of a change.
+    if store.has_compat() {
+        let ids = store
+            .sample_preferred(300, 5, f(&["scryfall_id"]))
+            .expect("sample ids")
+            .into_iter()
+            .filter_map(|v| v.get("scryfall_id").and_then(|s| s.as_str()).map(str::to_owned))
+            .collect::<Vec<_>>();
+        for id in &ids {
+            let row = store
+                .card_by_scryfall_id(id, f(&["multiverse_ids", "promo_types", "frame_effects"]))
+                .expect("by id");
+            if let Some(r) = row {
+                lines.push(format!(
+                    "residue {id} -> {} {} {}",
+                    r.get("multiverse_ids").map(ToString::to_string).unwrap_or_default(),
+                    r.get("promo_types").map(ToString::to_string).unwrap_or_default(),
+                    r.get("frame_effects").map(ToString::to_string).unwrap_or_default()
+                ));
+            }
+        }
+    }
+
     // Autocomplete's accent cases, printed rather than digested: the whole point of folding the
     // needle is that an ASCII query reaches a name carrying diacritics, and that is worth reading.
     for needle in ["eowyn", "jotun", "lim-dul", "aether", "lig"] {

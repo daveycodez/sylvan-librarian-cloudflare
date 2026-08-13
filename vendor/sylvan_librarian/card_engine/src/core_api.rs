@@ -301,9 +301,14 @@ fn jv_opt_nonzero_u32(d: &Value, key: &str) -> Option<NonZeroU32> {
 /// Absent keys stay at their sentinel: `VOCAB_NONE` for interned ids, `None` for the optionals,
 /// clear bits for the flags. Scryfall OMITS a key rather than sending null, so "zero" has to mean
 /// "was not there" or a reconstructed card object sprouts nulls Scryfall never sent.
-fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<CompatFields, EngineError> {
+fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<crate::CompatParsed, EngineError> {
     let Some(blob) = d.get("card_compat_blob").filter(|v| v.is_object()) else {
-        return Ok(CompatFields::default());
+        return Ok(crate::CompatParsed {
+            fields: CompatFields::default(),
+            multiverse_ids: Vec::new(),
+            promo_types: Vec::new(),
+            frame_effects: Vec::new(),
+        });
     };
     let prices = blob.get("prices").filter(|v| v.is_object());
     let price = |key: &str| prices.and_then(|p| jv_opt_price_cents(p, key)).and_then(NonZeroU32::new);
@@ -335,39 +340,41 @@ fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<CompatFields, Engin
         }
     };
 
-    Ok(CompatFields {
-        arena_id: jv_opt_nonzero_u32(blob, "arena_id"),
-        mtgo_id: jv_opt_nonzero_u32(blob, "mtgo_id"),
-        mtgo_foil_id: jv_opt_nonzero_u32(blob, "mtgo_foil_id"),
-        tcgplayer_id: jv_opt_nonzero_u32(blob, "tcgplayer_id"),
-        tcgplayer_etched_id: jv_opt_nonzero_u32(blob, "tcgplayer_etched_id"),
-        cardmarket_id: jv_opt_nonzero_u32(blob, "cardmarket_id"),
-        penny_rank: jv_opt_nonzero_u32(blob, "penny_rank"),
-        image_updated_at: jv_opt_nonzero_u32(blob, "image_updated_at"),
-        price_usd_foil: price("usd_foil"),
-        price_usd_etched: price("usd_etched"),
-        price_eur_foil: price("eur_foil"),
-        set_vid: intern_opt(vocab, jv_opt_str(blob, "set_id"))?,
-        lang_id: intern_opt(vocab, jv_opt_str(blob, "lang"))?,
-        image_status_id: intern_opt(vocab, jv_opt_str(blob, "image_status"))?,
-        set_type_id: intern_opt(vocab, jv_opt_str(blob, "set_type"))?,
-        security_stamp_id: intern_opt(vocab, jv_opt_str(blob, "security_stamp"))?,
-        loyalty_id: intern_opt(vocab, jv_opt_str(blob, "loyalty"))?,
-        games: jv_str_set_bits(blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
-        finishes: jv_str_set_bits(
-            blob,
-            "finishes",
-            &[
-                ("nonfoil", FINISH_NONFOIL),
-                ("foil", FINISH_FOIL),
-                ("etched", FINISH_ETCHED),
-                ("glossy", FINISH_GLOSSY),
-            ],
-        ),
-        flags,
-        // The pydict twin's `extract::<Vec<u32>>` is all-or-nothing: one non-integer element makes
-        // the whole list read as absent, so the filter_map here would diverge. `collect::<Option>`
-        // keeps the two agreeing.
+    Ok(crate::CompatParsed {
+        fields: CompatFields {
+            arena_id: jv_opt_nonzero_u32(blob, "arena_id"),
+            mtgo_id: jv_opt_nonzero_u32(blob, "mtgo_id"),
+            mtgo_foil_id: jv_opt_nonzero_u32(blob, "mtgo_foil_id"),
+            tcgplayer_id: jv_opt_nonzero_u32(blob, "tcgplayer_id"),
+            tcgplayer_etched_id: jv_opt_nonzero_u32(blob, "tcgplayer_etched_id"),
+            cardmarket_id: jv_opt_nonzero_u32(blob, "cardmarket_id"),
+            penny_rank: jv_opt_nonzero_u32(blob, "penny_rank"),
+            image_updated_at: jv_opt_nonzero_u32(blob, "image_updated_at"),
+            price_usd_foil: price("usd_foil"),
+            price_usd_etched: price("usd_etched"),
+            price_eur_foil: price("eur_foil"),
+            set_vid: intern_opt(vocab, jv_opt_str(blob, "set_id"))?,
+            lang_id: intern_opt(vocab, jv_opt_str(blob, "lang"))?,
+            image_status_id: intern_opt(vocab, jv_opt_str(blob, "image_status"))?,
+            set_type_id: intern_opt(vocab, jv_opt_str(blob, "set_type"))?,
+            security_stamp_id: intern_opt(vocab, jv_opt_str(blob, "security_stamp"))?,
+            loyalty_id: intern_opt(vocab, jv_opt_str(blob, "loyalty"))?,
+            games: jv_str_set_bits(blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
+            finishes: jv_str_set_bits(
+                blob,
+                "finishes",
+                &[
+                    ("nonfoil", FINISH_NONFOIL),
+                    ("foil", FINISH_FOIL),
+                    ("etched", FINISH_ETCHED),
+                    ("glossy", FINISH_GLOSSY),
+                ],
+            ),
+            flags,
+            // The pydict twin's `extract::<Vec<u32>>` is all-or-nothing: one non-integer element makes
+            // the whole list read as absent, so the filter_map here would diverge. `collect::<Option>`
+            // keeps the two agreeing.
+        },
         multiverse_ids: blob
             .get("multiverse_ids")
             .and_then(Value::as_array)
@@ -474,6 +481,7 @@ pub(crate) fn card_from_json(
         None => ARTIST_NONE,
     };
     let card_types = card_types_list_to_bits(&jv_str_list(d, "card_types"));
+    let compat_parsed = jv_compat(d, vocab)?;
 
     Ok(CardRow {
         scryfall_id: jv_opt_uuid(d, "scryfall_id"),
@@ -534,7 +542,10 @@ pub(crate) fn card_from_json(
 
         card_faces: jv_faces(d, it, artists)?,
         all_parts: jv_all_parts(d, it, vocab)?,
-        compat: jv_compat(d, vocab)?,
+        compat: compat_parsed.fields,
+        multiverse_ids: compat_parsed.multiverse_ids,
+        promo_types: compat_parsed.promo_types,
+        frame_effects: compat_parsed.frame_effects,
     })
 }
 
@@ -948,9 +959,11 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u8v(r.compat.games);
     e.u8v(r.compat.finishes);
     e.u16v(r.compat.flags);
-    e.vec_u32(&r.compat.multiverse_ids);
-    e.vec_u16(&r.compat.promo_types);
-    e.vec_u16(&r.compat.frame_effects);
+    // On the ROW, not on `compat`: these three are CSR on `CompatData` now (see `CompatLists`),
+    // but the spill still carries them per row because that is the unit it round-trips.
+    e.vec_u32(&r.multiverse_ids);
+    e.vec_u16(&r.promo_types);
+    e.vec_u16(&r.frame_effects);
     e.0
 }
 
@@ -1066,10 +1079,13 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
             games: d.u8v(),
             finishes: d.u8v(),
             flags: d.u16v(),
-            multiverse_ids: d.vec_u32(),
-            promo_types: d.vec_u16(),
-            frame_effects: d.vec_u16(),
         },
+        // AFTER the compat block, matching `encode_card_row`'s order exactly. Struct-literal
+        // fields evaluate top to bottom, so this reads the three lists in the order they were
+        // written; the length check below is what catches it if that ever stops being true.
+        multiverse_ids: d.vec_u32(),
+        promo_types: d.vec_u16(),
+        frame_effects: d.vec_u16(),
     };
     if d.at != buf.len() {
         return Err(EngineError::runtime(format!(
@@ -1172,7 +1188,13 @@ impl BufferStore {
     /// One card's residue slice, by card and printing index.
     fn residue_row(&self, cid: usize, pid: usize) -> Option<CompatRow<'_>> {
         let d = self.compat_data()?;
-        Some(CompatRow { compat: d.compat.get(pid)?, all_parts: d.all_parts.get(cid)? })
+        Some(CompatRow {
+            compat: d.compat.get(pid)?,
+            all_parts: d.all_parts.get(cid)?,
+            multiverse_ids: d.lists.multiverse_of(pid),
+            promo_types: d.lists.promo_of(pid),
+            frame_effects: d.lists.frame_of(pid),
+        })
     }
 
     /// The residue slice for a `(card, printing)` pair the query path handed back as references.
@@ -1505,7 +1527,7 @@ impl BufferStore {
     ) -> Result<(&'static str, Option<Value>), EngineError> {
         let resolved_fields = resolve_fields_json(fields, self.has_compat())?;
         let data = self.data();
-        match fuzzy_name_match(&data.cards, name, floor, lead) {
+        match fuzzy_name_match(&data.cards, &data.strings, name, floor, lead) {
             FuzzyOutcome::Miss => Ok(("miss", None)),
             FuzzyOutcome::Ambiguous => Ok(("ambiguous", None)),
             FuzzyOutcome::Hit(cid) => {
@@ -1557,7 +1579,7 @@ impl BufferStore {
         for cid in name_scan_candidates(data, folded) {
             let cid = cid as usize;
             let card = &data.cards[cid];
-            let stored = card.card_name_folded.as_str();
+            let stored = crate::folded_name(card, &data.strings);
             if !folded_name_matches(stored, folded) {
                 continue;
             }
@@ -1605,7 +1627,7 @@ impl BufferStore {
         for cid in name_scan_candidates(data, longest) {
             let cid = cid as usize;
             let card = &data.cards[cid];
-            let name = card.card_name_folded.as_str();
+            let name = crate::folded_name(card, &data.strings);
             if !words.iter().all(|w| name.contains(w.as_str())) {
                 continue;
             }
@@ -1658,13 +1680,22 @@ impl BufferStore {
         if needle == 0 {
             return Ok(None);
         }
-        // Printings are stored in descending default-prefer order within each card, so the first
+        // Printings are stored in descending default-prefer order within each card, so the FIRST
         // match is the best printing of the first card to carry this art -- the representative
-        // every other by-artwork path shows.
-        let Some(pid) = (0..data.printings.len()).find(|&pid| u128::from(data.printings[pid].illustration_id) == needle)
-        else {
+        // every other by-artwork path shows. `find_printing_by_illustration_id` preserves exactly
+        // that by taking the minimum pid across the run, rather than whichever member a binary
+        // search lands on; the id is not unique, unlike scryfall_id.
+        //
+        // This was a scan over ~95,000 printings comparing a u128 until the index existed --
+        // 391 us worst of 200 sampled ids against a 49 us mean, the last by-id route without one.
+        let Some(pid) = crate::find_printing_by_illustration_id(
+            &data.indexes.printing_by_illustration_id,
+            &data.printings,
+            needle,
+        ) else {
             return Ok(None);
         };
+        let pid = pid as usize;
         let cid = u32::from(data.indexes.printing_to_card[pid]) as usize;
         Ok(Some(card_to_json(
             &data.cards[cid],
@@ -1718,7 +1749,7 @@ impl BufferStore {
         // ranks soundly and the scan below only re-verifies.
         for cid in name_scan_candidates(data, &needle) {
             let card = &data.cards[cid as usize];
-            let folded = card.card_name_folded.as_str();
+            let folded = crate::folded_name(card, &data.strings);
             let rank = if folded.starts_with(&needle) {
                 0u8
             } else if folded.contains(&needle) {
@@ -1894,6 +1925,12 @@ type JsonFieldExtractor = fn(&AOracleCard, &APrinting, &AStrings, &AStrings) -> 
 pub(crate) struct CompatRow<'a> {
     pub compat: &'a Archived<CompatFields>,
     pub all_parts: &'a Archived<Vec<RelatedCard>>,
+    // Resolved at construction, exactly as `all_parts` is: the CSR windows for this printing's
+    // three list fields (see `CompatLists`). Doing it here rather than at each reader keeps the
+    // field table's extractors one expression long, the same as every other residue field.
+    pub multiverse_ids: &'a [Archived<u32>],
+    pub promo_types: &'a [Archived<u16>],
+    pub frame_effects: &'a [Archived<u16>],
 }
 
 /// Everything a residue field reads. The two string tables come from the SEARCH archive — the
@@ -2158,10 +2195,10 @@ const JSON_COMPAT_FIELD_TABLE: &[(&str, JsonCompatExtractor)] = &[
     ("price_usd_etched", |x| opt_cents_value(x.residue.compat.price_usd_etched.as_ref().map(|v| v.get()))),
     ("price_eur_foil", |x| opt_cents_value(x.residue.compat.price_eur_foil.as_ref().map(|v| v.get()))),
     ("multiverse_ids", |x| {
-        Value::Array(x.residue.compat.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
+        Value::Array(x.residue.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
     }),
-    ("promo_types", |x| str_vec_value(sorted_strs(x.vocab, &x.residue.compat.promo_types))),
-    ("frame_effects", |x| str_vec_value(sorted_strs(x.vocab, &x.residue.compat.frame_effects))),
+    ("promo_types", |x| str_vec_value(sorted_strs(x.vocab, x.residue.promo_types))),
+    ("frame_effects", |x| str_vec_value(sorted_strs(x.vocab, x.residue.frame_effects))),
     ("games", |x| str_vec_value(bits_to_names(x.residue.compat.games, GAME_NAMES))),
     ("finishes", |x| str_vec_value(bits_to_names(x.residue.compat.finishes, FINISH_NAMES))),
     ("booster", |x| Value::from(compat_flag(x.residue.compat, COMPAT_BOOSTER))),

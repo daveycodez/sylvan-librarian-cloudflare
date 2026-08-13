@@ -436,9 +436,24 @@ struct CompatFields {
     games: u8,
     finishes: u8,
     flags: u16,
-    multiverse_ids: Vec<u32>,
-    promo_types: Vec<u16>,
-    frame_effects: Vec<u16>,
+    // `multiverse_ids`, `promo_types` and `frame_effects` USED TO SIT HERE, as three `Vec`s. They
+    // are CSR arrays on `CompatData` now (see `CompatLists`), because a `Vec` field costs an
+    // 8-byte rkyv header on EVERY printing whether or not it holds anything: 8 x 95,131 x 3 =
+    // 2.18 MB of headers carrying 0.39 MB of payload, on fields most printings leave empty.
+    // Offsets cost 4 bytes a printing instead, so the three together save ~1.09 MB.
+}
+
+/// What a compat parser yields: the fixed-width residue, plus the three list fields that live in
+/// `CompatData`'s CSR rather than on `CompatFields`.
+///
+/// They are returned ALONGSIDE rather than inside, because the row they land on is a parse-time
+/// `CardRow` and the CSR only exists once the whole corpus has been walked — the split happens at
+/// the same commit pass that splits a row into an `OracleCard` and a `Printing`.
+pub(crate) struct CompatParsed {
+    pub fields: CompatFields,
+    pub multiverse_ids: Vec<u32>,
+    pub promo_types: Vec<u16>,
+    pub frame_effects: Vec<u16>,
 }
 
 /// Hand-written rather than derived, because `#[derive(Default)]` zeroes the interned ids and
@@ -467,9 +482,6 @@ impl Default for CompatFields {
             games: 0,
             finishes: 0,
             flags: 0,
-            multiverse_ids: Vec::new(),
-            promo_types: Vec::new(),
-            frame_effects: Vec::new(),
         }
     }
 }
@@ -481,7 +493,15 @@ struct OracleCard {
     // Accent-folded card_name_lower (e.g. "éowyn" -> "eowyn"), precomputed in Python via
     // fold_accents() (#649). Backs fuzzy name: search (name_trigram/name_bigrams/TextContains)
     // so "eowyn" matches "Éowyn"; exact-match paths deliberately keep using card_name_lower.
-    card_name_folded: InlineStr<61>,
+    //
+    // An INTERNED ID, not a second inline copy: it differs from `card_name_lower` on 88 of 31,724
+    // cards -- every name carrying a diacritic -- so 61 bytes a card stored a string identical to
+    // the one above it 99.72% of the time. `NONE_STR` means exactly that, "read card_name_lower",
+    // and only the 88 exceptions reach the strings table, at ~1.6 KB total.
+    //
+    // FOLDED is the half that moved because it is the COLDER of the two -- two read sites against
+    // six, and both already hold a `strings` table. Resolve with `folded_name`, never directly.
+    card_name_folded_id: u32,
     card_colors: u8,
     card_color_identity: u8,
     produced_mana: u8,
@@ -665,6 +685,12 @@ struct CardRow {
     all_parts: Vec<RelatedCard>,
 
     compat: CompatFields,
+    // The three list fields that are CSR on `CompatData` rather than `Vec`s on `CompatFields`
+    // (see `CompatLists`). They stay plain `Vec`s HERE because a parse-time row is never archived
+    // — the whole cost this avoids is the per-row rkyv header, which only exists in the archive.
+    multiverse_ids: Vec<u32>,
+    promo_types: Vec<u16>,
+    frame_effects: Vec<u16>,
 }
 
 /// Parse-time face: `OracleFace` and `PrintingFace` before the commit pass separates them.
@@ -695,6 +721,27 @@ pub(crate) type AOffsets = Archived<Vec<u32>>;
 
 /// Sentinel id for absent optional strings (a card never has 4 billion distinct strings).
 const NONE_STR: u32 = u32::MAX;
+
+/// A card's accent-folded lowercase name.
+///
+/// `NONE_STR` in `card_name_folded_id` means "the same as `card_name_lower`", true for all but 88
+/// cards, so this is an inline read on the overwhelming majority and a `strings` lookup only for
+/// names that actually carry a diacritic. Every reader goes through here.
+/// Build-time twin of `folded_name`, over unarchived rows and the interner's plain `Vec<String>`.
+fn folded_name_of<'a>(card: &'a OracleCard, strings: &'a [String]) -> &'a str {
+    if card.card_name_folded_id == NONE_STR {
+        return card.card_name_lower.as_str();
+    }
+    strings.get(card.card_name_folded_id as usize).map_or_else(|| card.card_name_lower.as_str(), String::as_str)
+}
+
+fn folded_name<'a>(card: &'a AOracleCard, strings: &'a AStrings) -> &'a str {
+    let id = u32::from(card.card_name_folded_id);
+    if id == NONE_STR {
+        return card.card_name_lower.as_str();
+    }
+    str_at(strings, id).unwrap_or_else(|| card.card_name_lower.as_str())
+}
 
 /// Sentinel for a printing with no artist (see Printing.card_artist_vid).
 pub(crate) const ARTIST_NONE: u16 = u16::MAX;
@@ -1056,9 +1103,14 @@ fn opt_nonzero_u32(d: &Bound<PyDict>, key: &str) -> Option<NonZeroU32> {
 /// clear bits for the flags. That matters for round-tripping, because Scryfall OMITS a key rather
 /// than sending null, so "zero" has to mean "was not there".
 #[cfg(feature = "python")]
-fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<CompatFields> {
+fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<CompatParsed> {
     let Some(blob) = d.get_item("card_compat_blob").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok()) else {
-        return Ok(CompatFields::default());
+        return Ok(CompatParsed {
+            fields: CompatFields::default(),
+            multiverse_ids: Vec::new(),
+            promo_types: Vec::new(),
+            frame_effects: Vec::new(),
+        });
     };
     let prices = blob.get_item("prices").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok());
     let price = |key: &str| prices.as_ref().and_then(|p| opt_price_cents(p, key));
@@ -1090,35 +1142,37 @@ fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<
         }
     };
 
-    Ok(CompatFields {
-        arena_id: opt_nonzero_u32(&blob, "arena_id"),
-        mtgo_id: opt_nonzero_u32(&blob, "mtgo_id"),
-        mtgo_foil_id: opt_nonzero_u32(&blob, "mtgo_foil_id"),
-        tcgplayer_id: opt_nonzero_u32(&blob, "tcgplayer_id"),
-        tcgplayer_etched_id: opt_nonzero_u32(&blob, "tcgplayer_etched_id"),
-        cardmarket_id: opt_nonzero_u32(&blob, "cardmarket_id"),
-        penny_rank: opt_nonzero_u32(&blob, "penny_rank"),
-        image_updated_at: opt_nonzero_u32(&blob, "image_updated_at"),
-        price_usd_foil: price("usd_foil").and_then(NonZeroU32::new),
-        price_usd_etched: price("usd_etched").and_then(NonZeroU32::new),
-        price_eur_foil: price("eur_foil").and_then(NonZeroU32::new),
-        set_vid: intern_opt(vocab, opt_str(&blob, "set_id"))?,
-        lang_id: intern_opt(vocab, opt_str(&blob, "lang"))?,
-        image_status_id: intern_opt(vocab, opt_str(&blob, "image_status"))?,
-        set_type_id: intern_opt(vocab, opt_str(&blob, "set_type"))?,
-        security_stamp_id: intern_opt(vocab, opt_str(&blob, "security_stamp"))?,
-        games: str_set_bits(&blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
-        finishes: str_set_bits(
-            &blob,
-            "finishes",
-            &[
-                ("nonfoil", FINISH_NONFOIL),
-                ("foil", FINISH_FOIL),
-                ("etched", FINISH_ETCHED),
-                ("glossy", FINISH_GLOSSY),
-            ],
-        ),
-        flags,
+    Ok(CompatParsed {
+        fields: CompatFields {
+            arena_id: opt_nonzero_u32(&blob, "arena_id"),
+            mtgo_id: opt_nonzero_u32(&blob, "mtgo_id"),
+            mtgo_foil_id: opt_nonzero_u32(&blob, "mtgo_foil_id"),
+            tcgplayer_id: opt_nonzero_u32(&blob, "tcgplayer_id"),
+            tcgplayer_etched_id: opt_nonzero_u32(&blob, "tcgplayer_etched_id"),
+            cardmarket_id: opt_nonzero_u32(&blob, "cardmarket_id"),
+            penny_rank: opt_nonzero_u32(&blob, "penny_rank"),
+            image_updated_at: opt_nonzero_u32(&blob, "image_updated_at"),
+            price_usd_foil: price("usd_foil").and_then(NonZeroU32::new),
+            price_usd_etched: price("usd_etched").and_then(NonZeroU32::new),
+            price_eur_foil: price("eur_foil").and_then(NonZeroU32::new),
+            set_vid: intern_opt(vocab, opt_str(&blob, "set_id"))?,
+            lang_id: intern_opt(vocab, opt_str(&blob, "lang"))?,
+            image_status_id: intern_opt(vocab, opt_str(&blob, "image_status"))?,
+            set_type_id: intern_opt(vocab, opt_str(&blob, "set_type"))?,
+            security_stamp_id: intern_opt(vocab, opt_str(&blob, "security_stamp"))?,
+            games: str_set_bits(&blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
+            finishes: str_set_bits(
+                &blob,
+                "finishes",
+                &[
+                    ("nonfoil", FINISH_NONFOIL),
+                    ("foil", FINISH_FOIL),
+                    ("etched", FINISH_ETCHED),
+                    ("glossy", FINISH_GLOSSY),
+                ],
+            ),
+            flags,
+        },
         multiverse_ids: blob
             .get_item("multiverse_ids")
             .ok()
@@ -1236,6 +1290,7 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         None => ARTIST_NONE,
     };
     let card_types = card_types_list_to_bits(&str_list(d, "card_types"));
+    let compat_parsed = compat_from_pydict(d, vocab)?;
 
     Ok(CardRow {
         scryfall_id: opt_uuid(d, "scryfall_id"),
@@ -1295,7 +1350,10 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
 
         card_faces: faces_from_pydict(d, it, artists)?,
         all_parts: all_parts_from_pydict(d, it, vocab)?,
-        compat: compat_from_pydict(d, vocab)?,
+        compat: compat_parsed.fields,
+        multiverse_ids: compat_parsed.multiverse_ids,
+        promo_types: compat_parsed.promo_types,
+        frame_effects: compat_parsed.frame_effects,
     })
 }
 
@@ -1829,11 +1887,11 @@ struct NameBigramIndex {
     n_cards: u32,
 }
 
-fn build_name_bigram_index(cards: &[OracleCard]) -> NameBigramIndex {
+fn build_name_bigram_index(cards: &[OracleCard], strings: &[String]) -> NameBigramIndex {
     let mut lists: HashMap<[u8; 2], Vec<u32>> = HashMap::new();
     for (i, card) in cards.iter().enumerate() {
         // Folded (#649) — this index backs the same fuzzy name: path as name_trigram.
-        let bytes = card.card_name_folded.as_str().as_bytes();
+        let bytes = folded_name_of(card, strings).as_bytes();
         let mut seen: Vec<[u8; 2]> = Vec::new(); // names are short; a vec beats a set
         for w in bytes.windows(2) {
             let bg = [w[0], w[1]];
@@ -1893,13 +1951,13 @@ struct NameUnigramIndex {
     n_cards: u32,
 }
 
-fn build_name_unigram_index(cards: &[OracleCard]) -> NameUnigramIndex {
+fn build_name_unigram_index(cards: &[OracleCard], strings: &[String]) -> NameUnigramIndex {
     let mut lists: HashMap<u8, Vec<u32>> = HashMap::new();
     for (i, card) in cards.iter().enumerate() {
         // Folded (#649), matching what `name_trigram` / `name_bigrams` index and what the walk evaluates
         // — that agreement is what makes the tight narrowing sound.
         let mut seen = [false; 256];
-        for &b in card.card_name_folded.as_str().as_bytes() {
+        for &b in folded_name_of(card, strings).as_bytes() {
             if !seen[b as usize] {
                 seen[b as usize] = true;
                 lists.entry(b).or_default().push(i as u32);
@@ -3085,11 +3143,17 @@ struct ExternalIdIndex {
 /// mtgo_foil_id and tcgplayer_etched_id are folded into their base namespace on purpose -- Scryfall
 /// resolves /cards/mtgo/:id against either mtgo_id or mtgo_foil_id, and the answer is the same
 /// printing either way.
-fn build_external_id_index(compat: &[CompatFields]) -> ExternalIdIndex {
+fn build_external_id_index(compat: &[CompatFields], lists: &CompatLists) -> ExternalIdIndex {
     let mut buckets: [Vec<(u32, u32)>; 5] = Default::default();
     for (pid, p) in compat.iter().enumerate() {
         let pid = pid as u32;
-        for mv in &p.multiverse_ids {
+        // From the CSR rather than the row: multiverse ids left `CompatFields` for `CompatLists`.
+        // `lists` is still the plain build-time form here, so this is a slice of the flat payload.
+        let (from, to) = (
+            lists.multiverse_offsets[pid as usize] as usize,
+            lists.multiverse_offsets[pid as usize + 1] as usize,
+        );
+        for mv in &lists.multiverse_ids[from..to] {
             buckets[EXT_MULTIVERSE as usize].push((*mv, pid));
         }
         for (ns, id) in [
@@ -3141,6 +3205,29 @@ fn build_external_id_index(compat: &[CompatFields]) -> ExternalIdIndex {
 /// are therefore built from one interner in one pass and are meaningless apart — which is why the
 /// manifest pairs them by store key and the header carries the same format version. Loading a
 /// residue archive against a different store would silently resolve every string to the wrong one.
+/// The three per-printing lists that used to be `Vec` fields on `CompatFields`, as CSR.
+///
+/// A `Vec` on an archived struct costs an 8-byte relative-pointer header per ROW, present or not.
+/// These three are mostly absent — 65,077 multiverse ids, 47,186 promo types and 28,835 frame
+/// effects across 95,131 printings — so the headers cost 2.18 MB to carry 0.39 MB. One `u32`
+/// offset per printing per list costs 1.09 MB instead, and the payload is unchanged: ~1.09 MB out
+/// of the residue archive.
+///
+/// `offsets` has `n_printings + 1` entries, so printing `p`'s values are
+/// `values[offsets[p] .. offsets[p + 1]]` and the last entry is the payload length — the same
+/// shape `FlavorIndex` and `ArtistIndex` already use, and the same one `artwork_base` is a prefix
+/// sum for. Absent is an EMPTY RANGE rather than a sentinel, which is what makes the reader
+/// identical for "no promo types" and "no such printing".
+#[derive(Archive, Serialize, Deserialize, Default)]
+pub struct CompatLists {
+    multiverse_offsets: Vec<u32>,
+    multiverse_ids: Vec<u32>,
+    promo_offsets: Vec<u32>,
+    promo_types: Vec<u16>,
+    frame_offsets: Vec<u32>,
+    frame_effects: Vec<u16>,
+}
+
 #[derive(Archive, Serialize, Deserialize)]
 pub struct CompatData {
     /// Per printing, parallel to `CardData.printings`.
@@ -3150,6 +3237,54 @@ pub struct CompatData {
     /// (namespace, external id) -> printing index, sorted. Answers
     /// /cards/multiverse|mtgo|arena|tcgplayer|cardmarket/:id.
     external_id_index: ExternalIdIndex,
+    /// Printing-space CSR for the three list fields; see `CompatLists`.
+    lists: CompatLists,
+}
+
+impl CompatLists {
+    /// Append one printing's three lists, in printing order. Callers MUST call this once per
+    /// printing and in order, exactly as `compat.push` is; a skipped call silently shifts every
+    /// later printing's window. `finish` closes the final offsets entry.
+    fn push(&mut self, multiverse: &[u32], promo: &[u16], frame: &[u16]) {
+        self.multiverse_offsets.push(self.multiverse_ids.len() as u32);
+        self.multiverse_ids.extend_from_slice(multiverse);
+        self.promo_offsets.push(self.promo_types.len() as u32);
+        self.promo_types.extend_from_slice(promo);
+        self.frame_offsets.push(self.frame_effects.len() as u32);
+        self.frame_effects.extend_from_slice(frame);
+    }
+
+    /// Close the CSR: every offsets array gets its `n + 1`th entry, the payload length.
+    fn finish(&mut self) {
+        self.multiverse_offsets.push(self.multiverse_ids.len() as u32);
+        self.promo_offsets.push(self.promo_types.len() as u32);
+        self.frame_offsets.push(self.frame_effects.len() as u32);
+    }
+}
+
+/// One printing's window into a CSR pair, or an empty slice when the arrays are absent.
+///
+/// Absent rather than panicking because a residue built before this layout, or a fixture that
+/// never populated the lists, should read as "this printing has none" — the same answer the old
+/// empty `Vec` gave — instead of taking down a card-object render.
+fn csr_window<'a, T>(offsets: &Archived<Vec<u32>>, values: &'a [T], pid: usize) -> &'a [T] {
+    let (Some(from), Some(to)) = (offsets.get(pid), offsets.get(pid + 1)) else {
+        return &[];
+    };
+    let (from, to) = (u32::from(*from) as usize, u32::from(*to) as usize);
+    values.get(from..to).unwrap_or(&[])
+}
+
+impl ArchivedCompatLists {
+    fn multiverse_of(&self, pid: usize) -> &[Archived<u32>] {
+        csr_window(&self.multiverse_offsets, &self.multiverse_ids, pid)
+    }
+    fn promo_of(&self, pid: usize) -> &[Archived<u16>] {
+        csr_window(&self.promo_offsets, &self.promo_types, pid)
+    }
+    fn frame_of(&self, pid: usize) -> &[Archived<u16>] {
+        csr_window(&self.frame_offsets, &self.frame_effects, pid)
+    }
 }
 
 /// The printing for an external id, or None.
@@ -3264,7 +3399,13 @@ pub(crate) enum FuzzyOutcome {
 /// A candidate must clear `floor`, and the best must lead the next DISTINCT name by `lead`. The
 /// distinctness matters: several printings of one card would otherwise look like a tie with
 /// themselves and report ambiguous.
-pub(crate) fn fuzzy_name_match(cards: &Archived<Vec<OracleCard>>, needle: &str, floor: f32, lead: f32) -> FuzzyOutcome {
+pub(crate) fn fuzzy_name_match(
+    cards: &Archived<Vec<OracleCard>>,
+    strings: &AStrings,
+    needle: &str,
+    floor: f32,
+    lead: f32,
+) -> FuzzyOutcome {
     let needle = needle.to_lowercase();
     // The needle's trigrams are LOOP-INVARIANT, and a sorted Vec is the shape this scan wants
     // rather than the BTreeSet `trigram_similarity` returns. Calling that helper per card rebuilt
@@ -3287,7 +3428,7 @@ pub(crate) fn fuzzy_name_match(cards: &Archived<Vec<OracleCard>>, needle: &str, 
     let mut best: Option<(f32, u32, &str)> = None;
     let mut runner_up: Option<f32> = None;
     for (cid, card) in cards.iter().enumerate() {
-        let name = card.card_name_folded.as_str();
+        let name = folded_name(card, strings);
         trigrams_into(name, &mut name_tg);
         if name_tg.is_empty() {
             continue;
@@ -3374,6 +3515,19 @@ fn build_printing_by_scryfall_id(printings: &[Printing]) -> Vec<u32> {
 }
 
 /// Card ids ordered by `oracle_id`, the same shape as `build_printing_by_scryfall_id`.
+/// Printing indices ordered by `illustration_id`, for `find_printing_by_illustration_id`.
+///
+/// Same permutation trick as `build_printing_by_scryfall_id` and the same 4-bytes-a-row cost
+/// (~380 KB): the ids are already on the rows, so duplicating them into a table would cost 16
+/// bytes a row to save one indirection on a once-per-request lookup. `sort_unstable_by_key` is
+/// enough despite the ids not being unique — ties inside a run are resolved by the caller, which
+/// takes the run's minimum pid.
+fn build_printing_by_illustration_id(printings: &[Printing]) -> Vec<u32> {
+    let mut ids: Vec<u32> = (0..printings.len() as u32).collect();
+    ids.sort_unstable_by_key(|&i| printings[i as usize].illustration_id);
+    ids
+}
+
 fn build_oracle_by_oracle_id(cards: &[OracleCard]) -> Vec<u32> {
     let mut ids: Vec<u32> = (0..cards.len() as u32).collect();
     ids.sort_unstable_by_key(|&i| cards[i as usize].oracle_id);
@@ -3392,6 +3546,37 @@ fn find_by_sorted_id(perm: &Archived<Vec<u32>>, id: u128, key_of: impl Fn(u32) -
     }
     let found = perm.binary_search_by(|probe| key_of(u32::from(*probe)).cmp(&id)).ok()?;
     Some(u32::from(perm[found]))
+}
+
+/// The FIRST printing carrying this illustration id, or None.
+///
+/// Unlike `scryfall_id`, an illustration id is NOT unique — every reprint sharing art carries the
+/// same one — so `binary_search_by` lands somewhere inside a run rather than on a single row, and
+/// `find_by_sorted_id` cannot be reused. The old scan answered with the first match in CORPUS
+/// order (printings sit in descending default-prefer order within a card, so that is the
+/// representative printing), and this reproduces exactly that by taking the minimum pid across the
+/// whole run rather than whichever member the search happened to hit.
+pub(crate) fn find_printing_by_illustration_id(
+    perm: &Archived<Vec<u32>>,
+    printings: &Archived<Vec<Printing>>,
+    id: u128,
+) -> Option<u32> {
+    if id == 0 {
+        return None;
+    }
+    let key_of = |i: u32| u128::from(printings[i as usize].illustration_id);
+    let hit = perm.binary_search_by(|probe| key_of(u32::from(*probe)).cmp(&id)).ok()?;
+    // Walk out to the run's edges. Runs are short (a card's printings sharing one artwork), so this
+    // stays far cheaper than the 95,131-element scan it replaces.
+    let mut lo = hit;
+    while lo > 0 && key_of(u32::from(perm[lo - 1])) == id {
+        lo -= 1;
+    }
+    let mut hi = hit;
+    while hi + 1 < perm.len() && key_of(u32::from(perm[hi + 1])) == id {
+        hi += 1;
+    }
+    perm[lo..=hi].iter().map(|p| u32::from(*p)).min()
 }
 
 /// The printing with this Scryfall id, or None. O(log n) against a full scan.
@@ -4686,6 +4871,10 @@ struct CardIndexes {
     // Without them, every /cards/:id, /cards/collection and prints-of-this-card request is a full
     // scan, which is what pushed that whole surface onto SQL.
     printing_by_scryfall_id: Vec<u32>,        // printing space, ordered by scryfall_id
+    // Printing space, ordered by illustration_id. `/cards/:id`-by-artwork was the last by-id route
+    // still scanning: a u128 compare against every printing, measured at 391 us worst of 200
+    // sampled ids against a 49 us mean. 380 KB buys the same O(log n) the other two ids have.
+    printing_by_illustration_id: Vec<u32>,
     oracle_by_oracle_id:     Vec<u32>,        // card space, ordered by oracle_id
 }
 
@@ -12993,7 +13182,7 @@ pub(crate) fn coll_str(vocab: &AStrings, id: u16) -> &str {
 
 /// Resolves interned collection ids to a lexicographically sorted `Vec<&str>` for
 /// deterministic field output.
-fn sorted_strs<'a>(vocab: &'a AStrings, ids: &Archived<Vec<u16>>) -> Vec<&'a str> {
+fn sorted_strs<'a>(vocab: &'a AStrings, ids: &[Archived<u16>]) -> Vec<&'a str> {
     let mut v: Vec<&str> = ids.iter().map(|id| coll_str(vocab, u16::from(*id))).collect();
     v.sort_unstable();
     v
@@ -13101,7 +13290,19 @@ const COMPAT_ARCHIVE_MAGIC: [u8; 8] = *b"ATCOMPAT";
 //                `CardIndexes`, which the header does not measure. So this constant is the only
 //                thing stopping a reader from accessing a generation-16 store's `HashMap<String,
 //                Vec<u32>>` as a `HybridTagIndex` through `access_unchecked`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081301;
+//   2026081401 — three layout changes in one generation, because a rebuild is cheap and a paired
+//                version bump is not free to repeat. (1) `OracleCard.card_name_folded` becomes an
+//                interned `card_name_folded_id`, taking the struct 304 -> 240 bytes: it held a
+//                string identical to `card_name_lower` on all but 88 of 31,724 cards. (2) the
+//                residue's `multiverse_ids`/`promo_types`/`frame_effects` leave `CompatFields` for
+//                a CSR on `CompatData` (`CompatLists`), taking it 84 -> 60 bytes, because an
+//                archived `Vec` field costs an 8-byte header per row whether or not it holds
+//                anything. (3) `CardIndexes` gains `printing_by_illustration_id`, the permutation
+//                that turns the last scanning by-id route into a binary search.
+//                THE HEADER CATCHES (1) ON ITS OWN — `size_of::<AOracleCard>` moves — but neither
+//                (2) nor (3) touches the two sizes it records, so this constant is what forces the
+//                rebuild for them.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081401;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 /// The residue archive's header. Distinct magic so a residue archive can never be accepted as a
@@ -13463,7 +13664,7 @@ fn build_card_data_sorted(
     // the memory-capped wasm build path: it returns a large contiguous
     // region to the allocator right before grouping and index construction
     // want one, cutting both the live peak and heap fragmentation.
-    let Interner { map: interner_map, strings } = interner;
+    let Interner { map: interner_map, mut strings } = interner;
     drop(interner_map);
     let VocabInterner { map: vocab_map, strings: coll_vocab } = vocab;
     drop(vocab_map);
@@ -13485,6 +13686,9 @@ fn build_card_data_sorted(
     // loop goes; the whole point of the split is that neither half is resident while the other's
     // indexes are being built.
     let mut compat: Vec<CompatFields> = Vec::with_capacity(expected_rows);
+    // Gathered in lockstep with `compat` — see CompatLists. `push` MUST run once per printing and
+    // in printing order, which is why it sits next to `compat.push` rather than in a later pass.
+    let mut compat_lists = CompatLists::default();
     let mut all_parts: Vec<Vec<RelatedCard>> = Vec::new();
     for row_res in rows {
         let mut row = row_res?;
@@ -13501,7 +13705,17 @@ fn build_card_data_sorted(
             offsets.push(printings.len() as u32);
             cards.push(OracleCard {
                 card_name_lower: row.card_name_lower,
-                card_name_folded: row.card_name_folded,
+                // Only the ~88 names that actually fold differently reach the strings table; the
+                // rest carry NONE_STR, meaning "identical to card_name_lower". Appended rather
+                // than interned because `interner_map` is dropped above to lower the build's peak,
+                // so these cannot be deduplicated -- which costs nothing at 88 entries and is why
+                // the compare comes first.
+                card_name_folded_id: if row.card_name_folded.as_str() == row.card_name_lower.as_str() {
+                    NONE_STR
+                } else {
+                    strings.push(row.card_name_folded.as_str().to_owned());
+                    (strings.len() - 1) as u32
+                },
                 card_colors: row.card_colors,
                 card_color_identity: row.card_color_identity,
                 produced_mana: row.produced_mana,
@@ -13593,6 +13807,7 @@ fn build_card_data_sorted(
                 .collect(),
         });
         compat.push(row.compat);
+        compat_lists.push(&row.multiverse_ids, &row.promo_types, &row.frame_effects);
     }
     offsets.push(printings.len() as u32);
 
@@ -13601,9 +13816,10 @@ fn build_card_data_sorted(
     // `cards` + `printings` + every index it is about to construct, and that is the peak the
     // 112 MiB wasm cap binds. Measured: keeping the residue inline through that peak cost 24.3 MiB
     // of linear memory for 10.9 MiB of data.
-    let external_id_index = build_external_id_index(&compat);
+    compat_lists.finish();
+    let external_id_index = build_external_id_index(&compat, &compat_lists);
     if let Some(w) = residue {
-        write_compat_archive(&CompatData { compat, all_parts, external_id_index }, w)?;
+        write_compat_archive(&CompatData { compat, all_parts, external_id_index, lists: compat_lists }, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush compat archive: {e}")))?;
     }
     build_ckpt!("compat archive");
@@ -13673,7 +13889,7 @@ fn build_card_data_sorted(
     // so the memory-capped build path can checkpoint each one (build_ckpt) —
     // all are pure functions of cards/printings/strings, so evaluation order
     // does not affect their output.
-    let name_trigram = build_trigram_index(&cards, |c| c.card_name_folded.as_str());
+    let name_trigram = build_trigram_index(&cards, |c| folded_name_of(c, &strings));
     build_ckpt!("name_trigram");
     let oracle_trigram = build_oracle_text_index(&cards, &strings);
     build_ckpt!("oracle_trigram");
@@ -13691,8 +13907,8 @@ fn build_card_data_sorted(
     build_ckpt!("sort_perms");
     let planes_idx = build_bit_planes(&cards, &printings, &offsets, &strings);
     build_ckpt!("bit_planes");
-    let name_bigrams_idx = build_name_bigram_index(&cards);
-    let name_unigrams_idx = build_name_unigram_index(&cards);
+    let name_bigrams_idx = build_name_bigram_index(&cards, &strings);
+    let name_unigrams_idx = build_name_unigram_index(&cards, &strings);
     let arith_tuple_idx = build_arith_tuple_index(&cards);
     build_ckpt!("bigrams+unigrams+arith");
     let indexes = CardIndexes {
@@ -13767,6 +13983,7 @@ fn build_card_data_sorted(
         // Both are sorted-id permutations over the finished vectors, so they must come after
         // grouping — which is where they are.
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
+        printing_by_illustration_id: build_printing_by_illustration_id(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
     };
 

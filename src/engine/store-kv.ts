@@ -484,8 +484,17 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       so no value changes which narrowing path it takes or which selectivity
  *       gate applies to it — deliberately unlike frame_data, whose dense values
  *       take a bitmap path with its own gate.
+ *  18 — three layout changes batched into one generation (ARCHIVE_FORMAT_VERSION
+ *       2026081301 -> 2026081401), paired as always so store-age.ts forces the
+ *       rebuild at deploy rather than leaving the port dark until the nightly.
+ *
+ *       `card_name_folded` becomes an interned id (OracleCard 304 -> 240 bytes),
+ *       the residue's three list fields become CSR on CompatData (CompatFields
+ *       84 -> 60), and a `printing_by_illustration_id` permutation replaces the
+ *       last by-id linear scan. Batched because the rebuild is ~3 minutes and the
+ *       version-pair dance is the part worth not repeating three times.
  */
-export const STORE_CONTENT_GENERATION = 17;
+export const STORE_CONTENT_GENERATION = 18;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
