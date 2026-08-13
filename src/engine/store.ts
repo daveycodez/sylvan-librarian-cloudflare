@@ -315,6 +315,25 @@ class WasmEngine implements Engine {
 		return { totalCards: Number(total), cardsBytes: answer.subarray(split + 1), rowCount: Number(rows) };
 	}
 
+	/** In-process there is no boundary to save; wraps the bytes searchCardsAsJson already produced. */
+	async searchRowsStream(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
+		const r = await this.searchCardsAsJson(opts, shape);
+		return {
+			totalCards: r.totalCards,
+			rowCount: r.rowCount,
+			byteLength: r.cardsBytes.byteLength,
+			body: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(r.cardsBytes);
+					controller.close();
+				},
+			}),
+		};
+	}
+
 	/**
 	 * The page as a stream. In-process there is no boundary to save, so this wraps the bytes
 	 * `scryfallSearch` already produced — see the Engine interface for why the shape is shared.

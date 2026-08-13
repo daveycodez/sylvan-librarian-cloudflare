@@ -346,6 +346,14 @@ export class RemoteEngine implements Engine {
 		};
 	}
 
+	/** `/search`'s rows, streamed. Same transport as the cards page — see streamPayload. */
+	searchRowsStream(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
+		return this.streamPayload("rows", opts, { shape });
+	}
+
 	/** `/cards/search`'s page, streamed. See streamPayload. */
 	scryfallSearchStream(
 		opts: EngineSearchOptions,

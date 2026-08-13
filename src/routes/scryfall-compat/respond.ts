@@ -8,7 +8,7 @@
 // Upstream split the same plumbing out for the same reason when its second surface arrived
 // (api/scryfall_compat/responder.py, #922).
 
-import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
+import { encodeUtf8, jsonBytesResponse, jsonStreamResponse } from "../../engine/bytes";
 import { cardList, catalogObject } from "./objects";
 
 /**
@@ -160,31 +160,10 @@ export function scryfallListStream(
 	cache: Record<string, string>,
 ): Response {
 	const { head, tail } = spliceMarkers(cardList([], opts), pretty);
-	const reader = data.body.getReader();
-	const body = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(head);
-		},
-		async pull(controller) {
-			const { done, value } = await reader.read();
-			if (done) {
-				controller.enqueue(tail);
-				controller.close();
-				return;
-			}
-			controller.enqueue(value);
-		},
-		cancel(reason) {
-			return reader.cancel(reason);
-		},
-	});
-	return new Response(body, {
-		headers: {
-			"content-type": JSON_CONTENT_TYPE,
-			"content-length": String(head.byteLength + data.byteLength + tail.byteLength),
-			...cache,
-		},
-	});
+	return jsonStreamResponse(
+		{ head, payload: data.body, payloadLength: data.byteLength, tail },
+		{ "content-type": JSON_CONTENT_TYPE, ...cache },
+	);
 }
 
 /**

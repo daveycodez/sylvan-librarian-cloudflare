@@ -821,9 +821,10 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 	if (page < 1)
 		return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty, CARDS_CACHE);
 	const engine = await ctx.getEngine();
-	let result: EngineSerializedResult;
+	// Streamed, like every other list route here — see jsonStreamResponse.
+	let result: { totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> };
 	try {
-		result = await engine.scryfallSearch(
+		result = await engine.scryfallSearchStream(
 			{
 				filterTreeJson: TRUE_TREE,
 				unique: "printing",
@@ -841,8 +842,8 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 	}
 	if (result.rowCount === 0) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, CARDS_CACHE);
 	const hasMore = (page - 1) * PAGE_SIZE + result.rowCount < result.totalCards;
-	return scryfallListJson(
-		result.cardsBytes,
+	return scryfallListStream(
+		result,
 		{
 			totalCards: result.totalCards,
 			hasMore,

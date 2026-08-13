@@ -6,7 +6,7 @@
 // loud 500 and an empty/unloaded store is an EngineUnavailableError (dispatch
 // answers 503) — never a silent empty result.
 
-import { encodeUtf8, jsonBytesResponse } from "../engine/bytes";
+import { encodeUtf8, jsonStreamResponse } from "../engine/bytes";
 import type { Engine, EngineSearchOptions, EngineSerializedResult } from "../engine/types";
 import { EngineUnavailableError } from "../engine/types";
 import type { DirectiveFound, FilterValue } from "../parser";
@@ -382,11 +382,13 @@ export async function runSearchJson(
 	ctx: RouteContext,
 	opts: RunSearchOptions,
 	shape: ResponseShape,
-): Promise<Uint8Array[]> {
+): Promise<{ head: Uint8Array; payload: ReadableStream<Uint8Array>; payloadLength: number; tail: Uint8Array }> {
 	const prep = await prepareSearch(ctx, opts);
-	let result: EngineSerializedResult;
+	// STREAMED, like every other large payload here — see jsonStreamResponse. `?limit=1000` is
+	// 1,134KB, so this is the biggest response this Worker serves, not the small case.
+	let result: { totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> };
 	try {
-		result = await prep.timer.time("engine_query", () => prep.engine.searchCardsAsJson(prep.engineOpts, shape));
+		result = await prep.timer.time("engine_query", () => prep.engine.searchRowsStream(prep.engineOpts, shape));
 	} catch (err) {
 		engineFailure(prep.query, err);
 	}
@@ -396,7 +398,12 @@ export async function runSearchJson(
 	// The metadata is built AFTER the query, so its timings tree includes the
 	// spans above — which is why this cannot be encoded before the payload.
 	const tail = JSON.stringify(metadataFor(prep, result.totalCards)).slice(1);
-	return [encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,${tail}`)];
+	return {
+		head: encodeUtf8('{"cards":'),
+		payload: result.body,
+		payloadLength: result.byteLength,
+		tail: encodeUtf8(`,${tail}`),
+	};
 }
 
 // Keyword parameters of search(), in signature order (binding reports the
@@ -439,7 +446,7 @@ export async function searchHandler(
 			},
 			bound.shape as ResponseShape,
 		);
-		return jsonBytesResponse(body, cache);
+		return jsonStreamResponse(body, cache);
 	} catch (err) {
 		if (err instanceof SearchBadRequest) {
 			return httpError(400, err.title, err.description, cache);
@@ -471,8 +478,18 @@ export async function randomSearchHandler(
 	const engine = await ctx.getEngine();
 	// Pre-encoded next to the store, like /search — see runSearchJson.
 	const result = await engine.randomCardsAsJson(numCards, [...DEFAULT_RESULT_FIELDS], bound.shape as ResponseShape);
-	return jsonBytesResponse(
-		[encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,"total_cards":${result.totalCards}}`)],
+	return jsonStreamResponse(
+		{
+			head: encodeUtf8('{"cards":'),
+			payload: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(result.cardsBytes);
+					controller.close();
+				},
+			}),
+			payloadLength: result.cardsBytes.byteLength,
+			tail: encodeUtf8(`,"total_cards":${result.totalCards}}`),
+		},
 		NO_STORE_HEADER,
 	);
 }

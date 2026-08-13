@@ -127,6 +127,25 @@ export class FakeEngine implements Engine {
 		return { totalCards: this.totalCards, cardsBytes: encodeUtf8(JSON.stringify(cards)), rowCount: cards.length };
 	}
 
+	/** In-process there is no boundary to save; wraps the bytes searchCardsAsJson already produced. */
+	async searchRowsStream(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }> {
+		const r = await this.searchCardsAsJson(opts, shape);
+		return {
+			totalCards: r.totalCards,
+			rowCount: r.rowCount,
+			byteLength: r.cardsBytes.byteLength,
+			body: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(r.cardsBytes);
+					controller.close();
+				},
+			}),
+		};
+	}
+
 	/** The streamed shape, over the same fixture bytes — so route tests exercise the real splice. */
 	async scryfallSearchStream(
 		opts: EngineSearchOptions,

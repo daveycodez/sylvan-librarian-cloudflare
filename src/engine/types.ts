@@ -96,6 +96,15 @@ export interface Engine {
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult>;
 	/** Pre-encoded cards — for the JSON API, which only ever needs the bytes. */
 	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
+	/**
+	 * The same rows, STREAMED. The payload transport every large response uses — see
+	 * scryfallSearchStream and jsonStreamResponse; `/search?limit=1000` is 1,134KB, larger than a
+	 * /cards/search page, so this is the bigger of the two payloads rather than an afterthought.
+	 */
+	searchRowsStream(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }>;
 	cardTypeCounts(): Promise<Record<string, number>>;
 	cardKeywordCounts(): Promise<Record<string, number>>;
 	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
