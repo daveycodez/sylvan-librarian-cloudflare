@@ -420,6 +420,9 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     for (key, value) in [
         ("power", str_of(row, "power")),
         ("toughness", str_of(row, "toughness")),
+        // Beside the creature stats it is the planeswalker analogue of, as the PRINTED string --
+        // the `planeswalker_loyalty` the planner filters on is a u8 and loses "X" and "1+*".
+        ("loyalty", str_of(row, "loyalty")),
         ("flavor_text", str_of(row, "flavor_text")),
         ("watermark", str_of(row, "watermark")),
         ("frame", str_of(row, "frame")),
@@ -490,11 +493,35 @@ mod tests {
         serde_json::from_slice(&out).expect("the writer must emit valid JSON")
     }
 
+    /// A planeswalker's printed loyalty reaches the card object, as the STRING Scryfall prints.
+    ///
+    /// The engine holds `planeswalker_loyalty` as a `u8` for `loy:` to filter on, which is why the
+    /// text is its own field: "X" (Nissa, Steward of Elements) does not fit in the number at all,
+    /// so deriving the key from it would silently drop those cards' loyalty.
+    #[test]
+    fn a_planeswalkers_printed_loyalty_is_the_string() {
+        let card = build(json!({
+            "name": "Jace Beleren",
+            "scryfall_id": "ab000000-0000-0000-0000-000000000002",
+            "loyalty": "3",
+        }));
+        assert_eq!(card["loyalty"], "3");
+
+        let x = build(json!({
+            "name": "Nissa, Steward of Elements",
+            "scryfall_id": "ab000000-0000-0000-0000-000000000003",
+            "loyalty": "X",
+        }));
+        assert_eq!(x["loyalty"], "X", "a non-numeric loyalty survives verbatim");
+    }
+
     /// Absent stays absent. A card without a watermark omits the key; it does not send null.
     #[test]
     fn optional_keys_are_omitted_rather_than_nulled() {
         let card = build(json!({"name": "Llanowar Elves", "scryfall_id": "ab000000-0000-0000-0000-000000000001"}));
-        for absent in ["power", "toughness", "flavor_text", "watermark", "frame", "security_stamp", "legalities"] {
+        for absent in
+            ["power", "toughness", "loyalty", "flavor_text", "watermark", "frame", "security_stamp", "legalities"]
+        {
             assert!(card.get(absent).is_none(), "{absent} should be omitted when the row has none");
         }
         // ... while the keys Scryfall always sends are present, even when empty.

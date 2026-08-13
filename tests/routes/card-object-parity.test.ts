@@ -84,6 +84,10 @@ const FULL: Record<string, unknown> = {
 	booster: true,
 	story_spotlight: false,
 	flavor_text: "Elves of the Llanowar forest.",
+	// A creature with a loyalty is not a real card, but FULL's contract is "every optional key
+	// present" — and while it silently lacked this one, both assertions below passed over a key
+	// the Rust builder never wrote. See the planeswalker case for the shape a real card has.
+	loyalty: "3",
 	watermark: "set",
 	security_stamp: "oval",
 	edhrec_rank: 42,
@@ -142,6 +146,23 @@ const CASES: [string, Record<string, unknown>][] = [
 		{ ...FULL, card_faces: [{ name: "Adventure Half", mana_cost: "{1}{G}" }] },
 	],
 	["empty card_faces behaves as single-faced", { ...FULL, card_faces: [] }],
+
+	// Loyalty, in the shape a real card has it: a planeswalker carries one and has no creature
+	// stats, so this pins that the key survives on its own rather than only trailing a toughness.
+	// The printed value is a STRING — "X" and "1+*" are real, and the integer column that answers
+	// `loy:` cannot round-trip either.
+	[
+		"planeswalker — loyalty, no power/toughness",
+		{
+			...FULL,
+			name: "Jace Beleren",
+			type_line: "Legendary Planeswalker — Jace",
+			power: undefined,
+			toughness: undefined,
+			loyalty: "3",
+		},
+	],
+	["loyalty that is not a number", { ...FULL, power: undefined, toughness: undefined, loyalty: "1+*" }],
 
 	// Ids: purchase_uris only carries the ones present, and a zero id is not an id.
 	["no marketplace ids", { ...FULL, tcgplayer_id: undefined, cardmarket_id: undefined, mtgo_id: undefined }],
