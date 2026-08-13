@@ -146,11 +146,13 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
  * actually fires at — unmeasurable from outside.
  *
  * What this measures is now a BACKSTOP rather than the main signal. The 2026-08-13
- * ceiling ramp showed why: of the ~124ms a client waits, the DO contributes ~2.9ms,
- * so this number is 95-98% transport and cannot see the DO cross 80% utilization
- * at all. Expansion keys on the DO's own reported rate instead — see
- * shard-controller.ts DO_CEILING_RATE. Reading min against mean here is still the
- * right way to see what the backstop is comparing against.
+ * ceiling ramp showed why: on /search the DO contributes ~2.9ms of the ~124ms a
+ * client waits, so this number is overwhelmingly transport and cannot see the DO
+ * cross 80% utilization at all. It is less lopsided on the heavy routes — 15.15ms
+ * for /cards/search — but the signal is the same shape, and the DO's own reported
+ * rate is what expansion keys on instead (shard-controller.ts DO_CEILING_RATE).
+ * Reading min against mean here is still the right way to see what the backstop is
+ * comparing against.
  *
  * Windowed by TIME rather than by count, and the first warm RPC an isolate sees
  * always emits. A 1-in-N counter is per-isolate state, so it only reports once

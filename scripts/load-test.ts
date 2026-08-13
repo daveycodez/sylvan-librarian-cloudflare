@@ -44,15 +44,23 @@
 // BOTH WERE RUN on 2026-08-13 against sylvan.mtgseeker.com, and the results are
 // in src/engine/shard-controller.ts (DO_CEILING_RATE) rather than repeated here:
 //
-//   Phase 1: throughput stops at ~340/s and reverses (339.3/s at 64 concurrent,
-//            334.6/s at 96) while p50 climbs 171 -> 247ms. Mean DO CPU was
-//            1.35ms and FLAT across the ramp, so the ~2.9ms of effective
-//            occupancy is not all CPU — see DO_CEILING_RATE for that gap.
-//   Phase 2: expansion fired at 8-16 concurrent, i.e. 19-35% of the ceiling
-//            rather than the intended 80%. The analysis above guessed "~18
-//            points too late"; it was 45-60 points too EARLY, in the opposite
-//            direction. That measurement is what demoted the latency trigger to
+//   Phase 1: /search rows stops at ~340/s and reverses (339.3/s at 64 concurrent,
+//            334.6/s at 96) while p50 climbs 171 -> 247ms. Mean DO CPU 1.35ms and
+//            FLAT across the ramp. /cards/search ceilings at 66/s with 11.66ms
+//            mean CPU — 15.15ms of occupancy against /search's 2.94ms.
+//   Phase 2: expansion fired at 8-16 concurrent, i.e. 19-35% of the /search
+//            ceiling rather than the intended 80%. The analysis above guessed
+//            "~18 points too late"; it was 45-60 points too EARLY, in the
+//            opposite direction. That measurement demoted the latency trigger to
 //            a backstop and made reportEngineRate the primary one.
+//
+// A THIRD RUN IS WHAT ACTUALLY MATTERED, and it is the one to run first next
+// time. Phase 1 was done on /search, so the constant it produced was calibrated
+// on the LIGHTEST route and sat four times above /cards/search's entire ceiling
+// — a bar that route could never reach. Measure the heaviest route you serve
+// before believing any ceiling. Columnar, meanwhile, never plateaued at all
+// within 128 concurrent, so its ceiling is a lower bound and nothing should be
+// derived from it: "still climbing" is not a knee.
 //
 // TWO WAYS TO MEASURE NOTHING, both hit on the day:
 //
@@ -152,9 +160,18 @@
 //   bun run scripts/load-test.ts --url https://example.com/search \
 //     --stages 1,2,4,8,16,32,64 --hold 20 --shape rows --out results.tsv
 //
-// --shape rows|columnar picks the encoding. Both go through searchSerialized,
-// so both charge the encode to the DO; columnar is the heavier payload and the
-// one d538c1f profiled, so run the pair if you want C's payload sensitivity.
+// --shape rows|columnar picks the encoding. Both go through searchSerialized, so both charge the
+// encode to the DO. This used to say columnar was "the heavier payload"; measured on 2026-08-13 it
+// is 28% LIGHTER in bytes (30.8KB against 42.9KB for the same query) and heavier in CPU (2.15ms
+// against 1.35ms mean), because inverting rows into per-field arrays needs the parse that rows skips.
+// The pair therefore varies bytes and CPU in OPPOSITE directions, which is what makes running both
+// worth doing.
+//
+// AND --url IS NOT LIMITED TO /search. Point it at /cards/search for the number that actually
+// governs this deployment: that route goes through the same searchRpc and feeds the same
+// autoscaler, but returns 652.7KB where /search returns 42.9KB, and it ceilings at 66/s against
+// /search's 340/s. Calibrating anything on /search alone measures the lightest thing the Worker
+// serves — see DO_CEILING_RATE in src/engine/shard-controller.ts for what that cost.
 
 import { parseArgs } from "node:util";
 

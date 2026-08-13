@@ -133,22 +133,22 @@
  * lower global traffic — which is correct, since the object really is handling
  * that rate. Only the prose needed fixing, not the constant.
  *
- * THE CEILING IS NOW MEASURED — see DO_CEILING_RATE. It is 340/s, not the
- * ~1500/s the d538c1f profile implied, and the local estimate was wrong in the
- * direction e7ec18d warned about: mean DO CPU really is ~1.35ms, but effective
- * occupancy is ~2.9ms, so CPU alone overstates the ceiling by ~2x.
+ * LOWERED FROM 50 BY THE CEILING MEASUREMENT — see DO_CEILING_RATE. 50 was
+ * chosen as a permissive floor against an assumed ceiling in the hundreds; the
+ * heaviest real route saturates at 66/s, which made this "sanity floor" 76% of
+ * capacity. A gate that high does not reject noise, it rejects the evidence: a
+ * genuine pileup at 30/s — already 45% utilization on /cards/search — was being
+ * discarded for having "no load behind it".
  *
- * This gate stays at 50 regardless. It guards the LATENCY trigger against
- * firing with no load behind it, and that job is unchanged by knowing the
- * ceiling; what changed is that latency is no longer the primary trigger.
+ * 10 keeps the ORIGINAL intent under the corrected ceiling. It was ~17% of the
+ * capacity assumed at the time, and 10/66 is ~15% of the capacity now measured.
  *
- * Whatever the ceiling is, this gate is harder to reach than raw traffic
- * suggests: /search sits behind a 90s edge cache with a day of
- * stale-while-revalidate, and hits never reach the Worker at all. 50/s here
- * means 50 cache-MISSING searches per second at one region's DO. Being permissive
- * is the right failure direction for a gate whose only job is rejecting latency
- * with no load behind it. */
-const EXPAND_MIN_RATE = 50;
+ * The gate is still harder to reach than raw traffic suggests: /search sits
+ * behind a 90s edge cache with a day of stale-while-revalidate, and hits never
+ * reach the Worker at all. 10/s here means 10 cache-MISSING searches per second
+ * at one region's DO. Being permissive is the right failure direction for a gate
+ * whose only job is rejecting a signal with no load behind it. */
+const EXPAND_MIN_RATE = 10;
 
 /**
  * The single-DO ceiling, in searches per second. MEASURED, finally.
@@ -165,34 +165,68 @@ const EXPAND_MIN_RATE = 50;
  * knee. The same client sustained 1862/s against 8 shards fifteen minutes
  * earlier, so 340 is the DO, not the load generator.
  *
- * WHAT IT IS NOT: 1000/1.35ms. Mean DO CPU over 21,032 invocations in that run
- * was 1.35ms (median 1, p95 3, p99 4) and FLAT across the whole ramp — CPU per
- * request does not rise as the DO saturates. But 1/340 = 2.9ms of effective
- * occupancy, so ~1.5ms per request holds the thread without appearing in
- * cpuTimeMs. Presumably RPC deserialization and encoding the ~26KB result on
- * the same thread; that is INFERRED, not measured, and it is the whole
- * difference between a 340/s ceiling and a 740/s one. Worth pinning down before
- * anyone tunes hard against this number.
+ * AND 340 IS THE WRONG NUMBER TO SCALE BY, which the same afternoon established
+ * the hard way. The ceiling is a property of the PAYLOAD, not of the engine, and
+ * /search with rows is the lightest thing this Worker serves:
  *
- * WORKLOAD-SPECIFIC. Measured with --shape rows over the load test's query mix.
- * Columnar is the heavier payload, so it will land somewhere else; re-measure
- * rather than assuming this transfers.
+ *   route / shape        ceiling   occupancy   mean CPU   bytes
+ *   /search rows           340/s      2.94ms     1.35ms   42.9KB
+ *   /search columnar      >=286/s    <=3.50ms    2.15ms   30.8KB   (never plateaued)
+ *   /cards/search           66/s     15.15ms    11.66ms  652.7KB
+ *
+ * /cards/search is 5.2x the occupancy, it goes through searchRpc exactly like
+ * /search, and it is the traffic this deployment actually serves. A bar set at
+ * 80% of 340 sits FOUR TIMES ABOVE that route's entire ceiling: the DO would
+ * saturate completely and the trigger would never fire. Calibrating on the
+ * lightest route was the mistake, and it shipped before this table existed.
+ *
+ * SO THE CONSTANT IS THE HEAVIEST MEASURED ROUTE, not the average and not the
+ * lightest. The two errors are not symmetric — expanding early costs one
+ * background store load against a shard that ready-gating keeps out of the way,
+ * while expanding late costs every user in the region their latency. Nor is 66
+ * a true floor: it is one query mix, and a broader /cards/search result would
+ * land lower still.
+ *
+ * WHAT THE CEILING IS NOT: 1000/CPU. Mean CPU on the rows run was 1.35ms and
+ * FLAT across the whole ramp, leaving ~1.5ms of occupancy that never appears in
+ * cpuTimeMs. The first guess was that this was byte-driven serialization, and
+ * the three-route table REFUTES it: the residue is near-constant (1.59ms at
+ * 42.9KB, 3.49ms at 652.7KB — ~3us/KB of slope) while CPU carries the payload
+ * cost at 16.9us/KB, independently reproducing the ~15us/KB this repo had
+ * already measured elsewhere. So occupancy ~= 2.1ms fixed + 16.9us/KB, and the
+ * residue is fixed per-request RPC overhead rather than encoding.
+ *
+ * THAT MODEL IS THE ARGUMENT FOR REPLACING THIS CONSTANT ENTIRELY. A single
+ * rate bar cannot tell a 42.9KB request from a 652.7KB one, so calibrating for
+ * the heavy route necessarily over-expands the light one (/search now trips at
+ * ~16% of its own ceiling). Thresholding ESTIMATED OCCUPANCY instead — which
+ * the DO can compute from the request count and the bytes it already serialized
+ * — is route- and payload-independent by construction, and the fit above is
+ * what it would use. Until then this bar is deliberately conservative.
  */
-const DO_CEILING_RATE = 340;
+const DO_CEILING_RATE = 66;
 
 /**
  * Expand when one shard reports this rate — 80% of the ceiling.
  *
  * p = 80% is where the ratio rule was always AIMING (T/C = 3 under M/D/1); it
- * just could not get there by thresholding wall time. Measured against the same
- * ramp, the latency trigger fired at conc=8-16, i.e. 19-35% utilization: three
- * to four times too early, which is why production ladders to the cap in ~40s
- * while p50 never moves.
+ * just could not get there by thresholding wall time.
  *
  * This is the cause measured directly instead of inferred through a round trip.
  * A single reading suffices because SearchEngine.searchRate is already a
  * 10-second trailing average, not an instantaneous count; EXPAND_COOLDOWN_MS
  * does the pacing from there.
+ *
+ * READ 80% AS APPLYING TO /cards/search ONLY. Against the heaviest measured
+ * route this is the intended p = 0.8; against /search rows the same bar is ~16%
+ * utilization, which is EARLIER than the 19-35% the old latency trigger managed.
+ * That is not an accident to be tuned away — one rate bar cannot separate a
+ * 42.9KB response from a 652.7KB one, so serving the heavy route correctly means
+ * over-serving the light one. What changes even there is the KIND of signal:
+ * expansion is now caused by measured load, so it stops when load stops, instead
+ * of by latency spread that breaches continuously and ladders to the cap
+ * regardless. Fixing the light route as well needs the occupancy signal
+ * described on DO_CEILING_RATE, not a different multiplier here.
  */
 const EXPAND_RATE = Math.round(DO_CEILING_RATE * 0.8);
 
@@ -200,12 +234,17 @@ const EXPAND_RATE = Math.round(DO_CEILING_RATE * 0.8);
  * Rate below which a latency breach cannot open a shard, now that latency is a
  * BACKSTOP rather than the primary trigger.
  *
- * Half the ceiling. The band this leaves — 170/s to EXPAND_RATE — is the case
- * latency still earns its place in: a shard slow at 200/s when it should manage
- * 340/s is degraded by something the rate signal cannot see (a noisy neighbour,
+ * Half the ceiling. The band this leaves — 33/s up to EXPAND_RATE — is the case
+ * latency still earns its place in: a shard slow at 40/s when it should manage
+ * 66/s is degraded by something the rate signal cannot see (a noisy neighbour,
  * a colo problem). Below half the ceiling, elevated latency is not a shortage
- * of shards and never was; that is the regime EXPAND_MIN_RATE=50 was letting
- * through.
+ * of shards and never was.
+ *
+ * This gate is now BELOW the old EXPAND_MIN_RATE of 50 rather than above it, and
+ * that is the correction the /cards/search measurement forced: at 66/s the
+ * heaviest route is fully saturated, so a gate set above it silences the backstop
+ * exactly where it is most needed. The first version of this constant was half
+ * of the WRONG ceiling and did precisely that.
  */
 const LATENCY_MIN_RATE = Math.round(DO_CEILING_RATE * 0.5);
 
@@ -260,11 +299,13 @@ const CONTRACT_COOLDOWN_MS = 60_000;
  * KV load and another cached archive against the 5GB pool. That is an argument
  * for a bound, not for THIS bound, and 8 is now conservative rather than tuned.
  *
- * THE CEILING HAS NOW BEEN MEASURED (DO_CEILING_RATE = 340/s), so the arithmetic
- * this comment was waiting on: 8 shards is ~2720 cache-MISSING searches per
- * second in one region. Nothing this deployment serves is within an order of
- * magnitude of that, so 8 stays — not for want of a measurement any more, but
- * because the measurement says it is already ample. Raise it with SHARDS_MAX
+ * THE CEILING HAS NOW BEEN MEASURED (DO_CEILING_RATE), so the arithmetic this
+ * comment was waiting on: 8 shards is ~528 cache-MISSING /cards/search per
+ * second in one region, or ~2720 of the much lighter /search. Production sits
+ * nearer 0.1/s, so 8 stays — not for want of a measurement any more, but because
+ * the measurement says it is ample for the traffic that exists. Note the honest
+ * version of that headroom is the SMALL number: the cap should be read against
+ * the heaviest route, not the one that flatters it. Raise it with SHARDS_MAX
  * where a region genuinely needs more. */
 export const DEFAULT_MAX_SHARDS = 8;
 

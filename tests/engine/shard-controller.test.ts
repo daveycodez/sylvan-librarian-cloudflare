@@ -90,7 +90,7 @@ describe("queue-depth expansion", () => {
 
 	test("depth expands once the rate gate opens", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(R)).toBe(1);
 		// Not routable yet — that is the point of ready-gating.
@@ -101,7 +101,7 @@ describe("queue-depth expansion", () => {
 
 	test("the cooldown stops one burst from laddering", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 30; i++) c.reportEngineLoad(R, 3);
 		// First step consumed the warm target; nothing further inside the cooldown.
 		expect(c.takeWarmTarget(R)).toBe(1);
@@ -112,7 +112,7 @@ describe("queue-depth expansion", () => {
 
 	test("a later burst past the cooldown steps up again", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(admitPending(c)).toBe(1);
 		advance(31_000);
@@ -123,11 +123,11 @@ describe("queue-depth expansion", () => {
 });
 
 // Latency is a BACKSTOP since the ceiling was measured (DO_CEILING_RATE): it cannot open a shard
-// below LATENCY_MIN_RATE, which is half the ceiling. These tests therefore report a rate inside the
-// band where it is still allowed to fire — above that gate, and below EXPAND_RATE so that the rate
-// trigger is not what does the expanding. Reporting the old 60/s here would make four of them pass
-// for the wrong reason: refused by the gate rather than by the latency logic they exist to test.
-const LATENCY_BAND_RATE = 200;
+// below LATENCY_MIN_RATE (33/s, half the ceiling), and above EXPAND_RATE (53/s) the rate trigger
+// would be doing the expanding instead. So every test below reports a rate inside that band, which
+// is the only window where the latency logic is what decides. Pick either side of it and four of
+// these pass for the wrong reason — refused by a gate, or expanded by the wrong trigger.
+const LATENCY_BAND_RATE = 40;
 
 describe("latency expansion", () => {
 	test("sustained latency below the noise floor never expands", async () => {
@@ -208,18 +208,19 @@ describe("latency expansion", () => {
 
 // The primary trigger since the ceiling was measured. Numbers here are literals rather than imports
 // so the file states the bars it pins, matching how the latency tests bracket LATENCY_ABS_MS:
-// DO_CEILING_RATE 340/s, EXPAND_RATE 272/s (80%), LATENCY_MIN_RATE 170/s (50%).
+// DO_CEILING_RATE 66/s (the heaviest measured route, /cards/search), EXPAND_RATE 53/s (80%),
+// LATENCY_MIN_RATE 33/s (50%), EXPAND_MIN_RATE 10/s.
 describe("rate expansion", () => {
 	test("a shard at 80% of the measured ceiling expands on rate alone", async () => {
 		// No latency samples and no reported depth — the rate IS the evidence.
 		const c = await freshController();
-		c.reportEngineRate(R, 272);
+		c.reportEngineRate(R, 53);
 		expect(c.takeWarmTarget(R)).toBe(1);
 	});
 
 	test("one search per second below the bar does not", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 271);
+		c.reportEngineRate(R, 52);
 		expect(c.takeWarmTarget(R)).toBeNull();
 		expect(observedWidth(c)).toBe(1);
 	});
@@ -251,28 +252,28 @@ describe("rate expansion", () => {
 	});
 });
 
-describe("the over-expansion the ceiling ramp measured", () => {
-	test("sustained latency at a fifth of the ceiling no longer opens a shard", async () => {
-		// THE REGRESSION THIS FIX EXISTS FOR. Production on 2026-08-13 expanded at 8-16 concurrent
-		// — 65 to 118 searches/s against a 340/s ceiling — and laddered to the 8-shard cap in about
-		// 40s while client p50 never moved off ~124ms. 65/s with badly breaching latency is exactly
-		// that regime, and it must now be refused: at 19% utilization the DO does not need help.
+describe("latency alone, at loads that do not justify a shard", () => {
+	test("badly breaching latency under the gate still opens nothing", async () => {
+		// Latency spread breaches continuously under any real traffic — floorEwma latches the fast
+		// tail while fastEwma tracks current conditions — so before the gate existed this was enough
+		// on its own to ladder a region to the cap. 20/s is under a third of the heaviest route's
+		// ceiling: whatever is slow there, it is not a shortage of shards.
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 65);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 60; i++) c.reportEngineLatency(R, 40);
 		expect(c.takeWarmTarget(R)).toBeNull();
 		expect(observedWidth(c)).toBe(1);
 	});
 
 	test("but a genuinely degraded shard in the backstop band still expands", async () => {
-		// The case latency keeps its place for: 200/s is well under the 272/s bar, so the rate
-		// trigger stays quiet, yet the shard is slow anyway — a noisy neighbour rather than a
-		// shortage of shards. Sharding may not fix it, but refusing to react at all would be a
-		// regression from the previous behaviour.
+		// The case latency keeps its place for: 40/s is under the 53/s bar, so the rate trigger
+		// stays quiet, yet the shard is slow anyway — a noisy neighbour rather than a shortage of
+		// shards. Sharding may not fix it, but refusing to react at all would be a regression from
+		// the previous behaviour.
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 200);
+		c.reportEngineRate(R, 40);
 		for (let i = 0; i < 60; i++) c.reportEngineLatency(R, 40);
 		expect(c.takeWarmTarget(R)).toBe(1);
 	});
@@ -282,7 +283,7 @@ describe("SHARDS_MAX", () => {
 	test("caps the fan-out", async () => {
 		const c = await freshController();
 		c.pickShard(R, 1);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 10; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(R)).toBeNull();
 		expect(observedWidth(c)).toBe(1);
@@ -291,7 +292,7 @@ describe("SHARDS_MAX", () => {
 	test("0 means unbounded, not zero", async () => {
 		const c = await freshController();
 		c.pickShard(R, 0);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(R)).toBe(1);
 	});
@@ -310,7 +311,7 @@ describe("the fan-out rendezvous", () => {
 	test("announces READY width, never a shard still warming", async () => {
 		const c = await freshController();
 		expect(c.currentShardWidth(R)).toBe(1);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		// Expanded, but announcing 2 here would make every peer that adopts it
 		// start routing to a shard that has not loaded the store — the exact cold
@@ -346,7 +347,7 @@ describe("the fan-out rendezvous", () => {
 		// not be undone locally, scale-in would be dead. Contraction is driven by
 		// the idle clock and does not care where the width came from.
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		c.adoptShardWidth(R, 3);
 		expect(observedWidth(c)).toBe(3);
@@ -359,7 +360,7 @@ describe("the fan-out rendezvous", () => {
 describe("contraction", () => {
 	test("folds back one step per cooldown once saturation stops", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		admitPending(c);
 		advance(31_000);
@@ -378,7 +379,7 @@ describe("contraction", () => {
 
 	test("never folds below one shard", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		for (let i = 0; i < 10; i++) {
 			advance(11 * 60_000);
@@ -391,7 +392,7 @@ describe("contraction", () => {
 describe("readiness gating", () => {
 	test("an opened shard takes no traffic until its warm ping resolves", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		// Decided, but unreachable: routing here would put a user on a DO that has
 		// not loaded the ~76MB store, which is the whole failure this prevents.
@@ -404,7 +405,7 @@ describe("readiness gating", () => {
 
 	test("a failed warm-up gives the slot back instead of stranding it", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(R)).toBe(1);
 		c.unmarkPending(R);
@@ -419,7 +420,7 @@ describe("readiness gating", () => {
 	test("unmarking never discards a shard peers have already warmed", async () => {
 		const c = await freshController();
 		c.adoptShardWidth(R, 3);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(R)).toBe(3);
 		c.unmarkPending(R);
@@ -428,7 +429,7 @@ describe("readiness gating", () => {
 
 	test("out-of-order warm pings never admit a gap", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(R)).toBe(1);
 		advance(31_000);
@@ -453,7 +454,7 @@ describe("regions are independent", () => {
 
 	test("one region's expansion does not widen another", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		c.markShardReady(R, 1);
 		expect(observedWidth(c, R)).toBe(2);
@@ -463,7 +464,7 @@ describe("regions are independent", () => {
 
 	test("a busy region's warm target is not handed to a quiet one", async () => {
 		const c = await freshController();
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, 20);
 		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
 		expect(c.takeWarmTarget(OTHER)).toBeNull();
 		expect(c.takeWarmTarget(R)).toBe(1);
@@ -474,8 +475,8 @@ describe("regions are independent", () => {
 		// A slow region breaching its bar must not expand a quiet one. This is the
 		// hazard the Map exists for: regionHint splits NA and EU by longitude, so
 		// ONE isolate can address two regions.
-		c.reportEngineRate(R, 60);
-		c.reportEngineRate(OTHER, 60);
+		c.reportEngineRate(R, 20);
+		c.reportEngineRate(OTHER, 20);
 		warmFloor(c, 1);
 		for (let i = 0; i < 10; i++) c.reportEngineLatency(R, 200);
 		expect(observedWidth(c, OTHER)).toBe(1);
@@ -485,7 +486,7 @@ describe("regions are independent", () => {
 	test("contraction in one region leaves the other alone", async () => {
 		const c = await freshController();
 		for (const region of [R, OTHER]) {
-			c.reportEngineRate(region, 60);
+			c.reportEngineRate(region, 20);
 			for (let i = 0; i < 3; i++) c.reportEngineLoad(region, 3);
 			const target = c.takeWarmTarget(region);
 			if (target !== null) c.markShardReady(region, target);
