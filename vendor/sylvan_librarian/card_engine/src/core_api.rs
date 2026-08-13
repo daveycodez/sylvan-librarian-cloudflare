@@ -2042,8 +2042,16 @@ fn opt_cents_value(v: Option<u32>) -> Value {
 /// `card_name_lower` while this index is built over `card_name_folded`: the two differ on 88 cards,
 /// so narrowing a lower-name predicate through a folded index would silently drop them.
 fn name_scan_candidates(data: &Archived<CardData>, needle: &str) -> Vec<u32> {
-    crate::trigram_candidates(&data.indexes.name_trigram, needle)
-        .unwrap_or_else(|| (0..data.cards.len() as u32).collect())
+    let idx = &data.indexes.name_trigram;
+    // APPLICABILITY CHECK, the same shape every other index gets (`sort_perms::order` length-checks
+    // its arrays, the planes compare `n_cards`). Narrowing through an index that was never built --
+    // or was built for a different card count -- would return NO candidates where the scan found
+    // matches, turning a stale index into silently wrong answers instead of slow ones. A fixture
+    // store that skips index construction is exactly that case.
+    if u32::from(idx.domain) as usize != data.cards.len() {
+        return (0..data.cards.len() as u32).collect();
+    }
+    crate::trigram_candidates(idx, needle).unwrap_or_else(|| (0..data.cards.len() as u32).collect())
 }
 
 fn folded_name_matches(stored: &str, needle: &str) -> bool {
