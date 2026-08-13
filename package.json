@@ -14,6 +14,7 @@
     "build:wasm-import": "scripts/with-rust.sh cargo rustc --release -p sylvan-wasm-import --target wasm32-unknown-unknown -- -C link-arg=--max-memory=117440512 && cp target/wasm32-unknown-unknown/release/sylvan_wasm_import.wasm engine/wasm-import/pkg/",
     "build:builder": "scripts/with-rust.sh cargo build --profile fast-native -p sylvan-store-builder",
     "test": "bun test tests",
+    "gate": "scripts/gate.sh",
     "load-test": "bun run scripts/load-test.ts",
     "bench:cards-search": "bun run scripts/bench-cards-search.ts",
     "check": "biome check src scripts tests",

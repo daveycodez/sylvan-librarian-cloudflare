@@ -783,10 +783,24 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
     time("card_by_external_id (multiverse)", Box::new(|| {
         format!("{:?}", store.card_by_external_id("multiverse", 3, None).expect("q").is_some())
     }));
-    time("autocomplete('lig', 20)", Box::new(|| format!("{} names", store.autocomplete("lig", 20).len())));
+    // Needles taken FROM the corpus, not hardcoded: a needle that matches nothing is fast whether
+    // or not the route narrows, so hardcoded real-Scryfall words would measure nothing at all on a
+    // synthetic corpus -- which is exactly the corpus the gate builds.
+    let prefix: String = folded.chars().take(3).collect();
+    // The WHOLE name, not one word of it: a common word matches most of the corpus, so scanning and
+    // narrowing do nearly the same work and the ratio cannot tell them apart. A full name matches
+    // ~1 card, which is where narrowing is worth 100x and a regression is obvious.
+    let whole_name = folded.clone();
+    time("autocomplete(3-char prefix)", Box::new(|| format!("{} names", store.autocomplete(&prefix, 20).len())));
     time("cards_containing_all_words", Box::new(|| {
-        let w = vec!["lightning".to_owned(), "bolt".to_owned()];
+        let w = vec![whole_name.clone()];
         format!("{} rows", store.cards_containing_all_words(&w, None, 20, None).expect("q").len())
+    }));
+    // A KNOWN full scan over every card, so the gate has a scan-shaped reference to compare the
+    // narrowed routes against. A binary-search baseline is sub-microsecond and too small to divide
+    // by; this is the number that says what "went back to scanning" costs on THIS corpus.
+    time("fuzzy_card_by_name (full scan)", Box::new(|| {
+        format!("{:?}", store.fuzzy_card_by_name(&folded, 0.5, 0.05, None).map(|(s, _)| s))
     }));
     time("sample_preferred(75)", Box::new(|| format!("{} rows", store.sample_preferred(75, 7, None).expect("q").len())));
 

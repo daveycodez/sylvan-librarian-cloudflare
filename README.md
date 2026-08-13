@@ -503,6 +503,22 @@ bun dev                 # full site at localhost. First run does the FULL import
                         # seed and exercises the in-Worker pipeline instead
 bun run seed:local      # the native build + local seed, on its own
 bun run deploy          # publish the index, then deploy the Worker
+bun run gate            # EVERYTHING that has to be green, in one command:
+                        # clippy, cargo test, typecheck, biome, bun test, and
+                        # performance ratios. There is no CI here, so the gate is
+                        # a thing you type — and one command is harder to run four
+                        # fifths of than five are. GATE_SKIP_PERF=1 skips the
+                        # ~40s store build while iterating.
+                        #
+                        # The perf step builds a deterministic corpus (fixed seed,
+                        # committed fixtures, no network) and asserts each by-name
+                        # route stays under 3% of a full scan. That limit was set
+                        # by disabling the narrowing and measuring: healthy 0.3%,
+                        # regressed 14-26%. An earlier 25% limit passed every one
+                        # of those regressions, which is why the number is
+                        # calibrated rather than chosen.
+
+# The individual steps, when you want just one:
 bun test                # parser parity fixtures + route tests
 bun run check           # biome
 bun run typecheck
