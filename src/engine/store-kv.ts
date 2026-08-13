@@ -473,8 +473,19 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *       It also re-exercises the path that broke, on a genuine KV cold load,
  *       which is the only way to prove the fix rather than assert it.
+ *  17 — the five collection indexes store dense values as bitmaps instead of
+ *       posting lists (ARCHIVE_FORMAT_VERSION 2026081104 -> 2026081301). Paired,
+ *       as always: the format bump alone makes the old store unloadable, and
+ *       this is what makes store-age.ts force the rebuild at deploy rather than
+ *       leaving the port dark until the nightly.
+ *
+ *       This is a SIZE change, not a behaviour one. Every read goes through
+ *       len_of/ids_of/bits, which answer identically for both representations,
+ *       so no value changes which narrowing path it takes or which selectivity
+ *       gate applies to it — deliberately unlike frame_data, whose dense values
+ *       take a bitmap path with its own gate.
  */
-export const STORE_CONTENT_GENERATION = 16;
+export const STORE_CONTENT_GENERATION = 17;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

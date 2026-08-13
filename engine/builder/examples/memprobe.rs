@@ -524,6 +524,94 @@ fn cmd_spill(rows_path: &Path, out_dir: &Path) {
     println!("heap_peak       {:.1} MB (native; includes the in-memory spill stand-in)", mb(PEAK.load(Ordering::Relaxed)));
 }
 
+/// Collection-index narrowing cost, by value DENSITY.
+///
+/// The hybrid-encoding question (should `oracle_tags`/`art_tags` store dense values as bitmaps
+/// like `frame_data` does?) is not answerable from byte counts alone. Storage crosses over at
+/// 1/32 of the domain; the NARROWING guard (`MAX_NARROW_FRACTION`) fires at 1/4. Values between
+/// those two are the ones a hybrid moves behind a stricter gate, and lib.rs's frame_data arm
+/// records what that cost when it happened by accident: `o:this frame:2003` went 52us -> 1,809us.
+///
+/// So this measures the values that actually sit in that band, alone and under a selective text
+/// driver (the shape that regressed), rather than a convenient tag name.
+fn cmd_tagbench(store_path: &Path, iters: usize) {
+    use card_engine::{BufferStore, QueryOptions};
+    use std::time::Instant;
+
+    let bytes = std::fs::read(store_path).expect("read store");
+    let store = BufferStore::from_bytes(&bytes).expect("load store");
+    let n_cards = store.card_count();
+    let n_printings = store.size();
+
+    // The wire shapes, taken verbatim from src/parser (parseScryfallQuery) rather than
+    // reconstructed: rhs is a BARE ARRAY for collection attributes, and a StringValueNode for text.
+    let tag_tree = |attr: &str, orig: &str, value: &str| {
+        format!(
+            r#"{{"node_type":"CardBinaryOperatorNode","kwargs":{{"lhs":{{"node_type":"CardAttributeNode","kwargs":{{"attribute_name":"{attr}","original_attribute":"{orig}"}}}},"op":":","rhs":["{value}"]}}}}"#
+        )
+    };
+    let text_tree = |needle: &str| {
+        format!(
+            r#"{{"node_type":"CardBinaryOperatorNode","kwargs":{{"lhs":{{"node_type":"CardAttributeNode","kwargs":{{"attribute_name":"oracle_text","original_attribute":"o"}}}},"op":":","rhs":{{"node_type":"StringValueNode","kwargs":{{"value":"{needle}"}}}}}}}}"#
+        )
+    };
+    let and_tree = |a: &str, b: &str| format!(r#"{{"node_type":"AndNode","kwargs":{{"operands":[{a},{b}]}}}}"#);
+
+    let time_query = |tree: &str| -> (u128, usize) {
+        let opts = QueryOptions { limit: 175, ..QueryOptions::default() };
+        // Warm: first run pays lazy statics and any one-time index touch.
+        let warm = store.query(tree, &opts).expect("query");
+        let mut best = u128::MAX;
+        for _ in 0..iters {
+            let t = Instant::now();
+            let r = store.query(tree, &opts).expect("query");
+            best = best.min(t.elapsed().as_micros());
+            std::hint::black_box(r.total);
+        }
+        (best, warm.total)
+    };
+
+    for (field, attr, orig, domain) in [
+        ("oracle_tags", "card_oracle_tags", "oracletag", n_cards),
+        ("art_tags", "card_art_tags", "arttag", n_printings),
+    ] {
+        let top = store.top_collection_values(field, 8);
+        println!("\n=== {field} (domain {domain}) ===");
+        println!(
+            "{:<28} {:>9} {:>8} {:>7} {:>12} {:>14} {:>10}",
+            "value", "postings", "density", "band", "alone (us)", "o:draw AND (us)", "matches"
+        );
+        for (value, count) in &top {
+            // Which side of each crossover this value falls on: `store` = a bitmap would be
+            // smaller (>1/32); `gate` = a hybrid would newly subject it to MAX_NARROW_FRACTION
+            // (>1/4). "BAND" is store-but-not-gate; "GATED" is the regression-prone region.
+            let density = *count as f64 / domain as f64;
+            let band = if density > 0.25 {
+                "GATED"
+            } else if density > 0.03125 {
+                "BAND"
+            } else {
+                "sparse"
+            };
+            let alone = tag_tree(attr, orig, value);
+            let combined = and_tree(&text_tree("draw"), &alone);
+            let (t_alone, matches) = time_query(&alone);
+            let (t_and, _) = time_query(&combined);
+            println!(
+                "{:<28} {:>9} {:>7.2}% {:>7} {:>12} {:>14} {:>10}",
+                value, count, 100.0 * density, band, t_alone, t_and, matches
+            );
+        }
+    }
+
+    // Controls: the text driver by itself, so the AND column can be read as "what did adding the
+    // tag cost", and a bare TrueNode for the floor.
+    let (t_text, n_text) = time_query(&text_tree("draw"));
+    let (t_true, n_true) = time_query(r#"{"node_type": "TrueNode"}"#);
+    println!("\ncontrol  o:draw alone            {t_text} us ({n_text} matches)");
+    println!("control  TrueNode                {t_true} us ({n_true} matches)");
+}
+
 /// Semantic parity gate between two store files. Archive bytes are
 /// legitimately nondeterministic (HashMap seeding permutes index entry order,
 /// run-to-run even on one machine), so equality is defined over what the
@@ -641,6 +729,10 @@ fn main() {
         "phases" => cmd_phases(&arg(&args, "rows"), &arg(&args, "out")),
         "spill" => cmd_spill(&arg(&args, "rows"), &arg(&args, "out")),
         "compare" => cmd_compare(&arg(&args, "a"), &arg(&args, "b")),
+        "tagbench" => {
+            let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
+            cmd_tagbench(&arg(&args, "store"), iters);
+        }
         other => {
             eprintln!("unknown command {other:?}; expected gen | rows | build");
             std::process::exit(2);

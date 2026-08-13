@@ -1206,6 +1206,35 @@ impl BufferStore {
         unsafe { rkyv::access_unchecked::<Archived<CardData>>(&self.bytes[ARCHIVE_HEADER_LEN..]) }
     }
 
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, benchmark support): the densest
+    /// values of a collection index, with their row counts.
+    ///
+    /// Any question about collection-index encoding is decided by DENSITY — the
+    /// storage crossover is 1/32 of the domain and the narrowing guard fires at
+    /// 1/4 — so a benchmark that does not aim at values BETWEEN those two
+    /// measures nothing that matters. This reports which values those actually
+    /// are rather than leaving a bench to guess at tag names; it is what
+    /// `memprobe tagbench` targets, and what sized the hybrid change.
+    pub fn top_collection_values(&self, field: &str, n: usize) -> Vec<(String, usize)> {
+        let d = self.data();
+        let idx = match field {
+            "oracle_tags" => &d.indexes.oracle_tags,
+            "art_tags" => &d.indexes.art_tags,
+            "subtypes" => &d.indexes.subtypes,
+            "keywords" => &d.indexes.keywords,
+            _ => return Vec::new(),
+        };
+        let mut all: Vec<(String, usize)> = idx
+            .dense
+            .iter()
+            .map(|(k, v)| (k.as_str().to_owned(), u32::from(v.count) as usize))
+            .chain(idx.sparse.iter().map(|(k, v)| (k.as_str().to_owned(), v.len())))
+            .collect();
+        all.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        all.truncate(n);
+        all
+    }
+
     /// Printing count — the same number the pyo3 `size()` reports, so health
     /// checks keep their meaning.
     pub fn size(&self) -> usize {
