@@ -813,10 +813,10 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 	if (page < 1)
 		return scryfallJson(badRequestError("The page parameter must be a positive integer."), pretty, CARDS_CACHE);
 	const engine = await ctx.getEngine();
-	// Streamed, like every other list route here — see jsonStreamResponse.
-	let result: { totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> };
+	// Same pattern as /cards/search: the Durable Object builds the whole response and this returns
+	// it, so the metered isolate never touches the 663KB page.
 	try {
-		result = await engine.scryfallSearchStream(
+		return await engine.scryfallSearchPage(
 			{
 				filterTreeJson: TRUE_TREE,
 				unique: "printing",
@@ -828,22 +828,17 @@ async function allCardsPage(ctx: RouteContext, params: Record<string, string>, p
 				fields: [],
 			},
 			apiBaseUrl(ctx),
+			{
+				pretty,
+				pageOffset: (page - 1) * PAGE_SIZE,
+				noMatchDetails: NO_MATCH_DETAILS,
+				nextPageUrl: buildPageUrl(selfBaseUrl(ctx, "/cards"), {}, page + 1),
+			},
+			CARDS_CACHE,
 		);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
-	if (result.rowCount === 0) return scryfallJson(notFoundError(NO_MATCH_DETAILS), pretty, CARDS_CACHE);
-	const hasMore = (page - 1) * PAGE_SIZE + result.rowCount < result.totalCards;
-	return scryfallListStream(
-		result,
-		{
-			totalCards: result.totalCards,
-			hasMore,
-			nextPage: hasMore ? buildPageUrl(selfBaseUrl(ctx, "/cards"), {}, page + 1) : undefined,
-		},
-		pretty,
-		CARDS_CACHE,
-	);
 }
 
 export type { ScryfallError };
