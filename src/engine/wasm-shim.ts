@@ -59,17 +59,4 @@ export function linearMemoryBytes(): number {
 	return engineMemory?.buffer.byteLength ?? 0;
 }
 
-/**
- * Linear memory itself, for reading a retained payload as a VIEW rather than a copy.
- *
- * The only legitimate use is `scryfall_search_retained`: take the view and hand it straight to a
- * `Response`, synchronously. A view here aliases wasm memory, so it is invalidated by the next
- * engine call (which reuses the slot) and DETACHED outright by any allocation that grows memory.
- * Nothing may hold one across an await.
- */
-export function linearMemory(): ArrayBuffer {
-	if (engineMemory === null) throw new Error("engine is not instantiated");
-	return engineMemory.buffer;
-}
-
 export * from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";

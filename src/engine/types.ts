@@ -132,16 +132,6 @@ export interface Engine {
 		opts: EngineSearchOptions,
 		baseUrl: string,
 	): Promise<{ totalCards: number; rowCount: number; byteLength: number; body: ReadableStream<Uint8Array> }>;
-
-	/**
-	 * The page as a `Response`, with `x-total-cards` and `x-row-count` on it.
-	 *
-	 * Owning the Response is what lets the in-wasm implementation avoid copying the payload out of
-	 * linear memory at all — the bytes go from the engine's buffer to the response body once. It is
-	 * on the interface because the Durable Object holds an `Engine`, not a concrete class; every
-	 * other implementation just wraps what it already has.
-	 */
-	scryfallSearchResponse(opts: EngineSearchOptions, baseUrl: string): Promise<Response>;
 	/** One card object by Scryfall id, or null for a genuine miss (which IS the 404 here). */
 	scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/** Card objects for these ids, in the order given, skipping misses. */

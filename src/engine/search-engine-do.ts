@@ -234,26 +234,13 @@ export class SearchEngine extends DurableObject<Env> {
 			baseUrl?: string;
 			shards?: number;
 		};
-		let result: { payload: Response } & SearchTelemetry;
+		let result: EngineSerializedResult & SearchTelemetry;
 		try {
-			result = await this.instrumented(body.shards, async (engine) => ({
-				// The cards path hands back a Response the ENGINE built, so its bytes never leave wasm
-				// as a JS copy — see WasmEngine.scryfallSearchResponse. The rows path still buffers;
-				// it is 15x smaller and moves onto this once the card page's win is confirmed.
-				payload:
-					body.call === "cards"
-						? await engine.scryfallSearchResponse(body.opts, body.baseUrl ?? "")
-						: await (async () => {
-								const r = await engine.searchCardsAsJson(body.opts, body.shape ?? "rows");
-								return new Response(r.cardsBytes, {
-									headers: {
-										"content-length": String(r.cardsBytes.byteLength),
-										"x-total-cards": String(r.totalCards),
-										"x-row-count": String(r.rowCount),
-									},
-								});
-							})(),
-			}));
+			result = await this.instrumented(body.shards, (engine) =>
+				body.call === "cards"
+					? engine.scryfallSearch(body.opts, body.baseUrl ?? "")
+					: engine.searchCardsAsJson(body.opts, body.shape ?? "rows"),
+			);
 		} catch (err) {
 			// The RPC path has `rethrowForRpc` to keep error IDENTITY across the boundary; a fetch
 			// carries a status line instead, so the class is named explicitly and rebuilt client-side.
@@ -262,14 +249,17 @@ export class SearchEngine extends DurableObject<Env> {
 			const message = err instanceof Error ? err.message : String(err);
 			return new Response(message, { status: 503, headers: { "x-engine-error": name } });
 		}
-		// Re-wrap to add the autoscaler's riders. The body is already a stream owned by the Response
-		// the engine built, so this copies nothing and — importantly — no longer aliases wasm memory.
-		const headers = new Headers(result.payload.headers);
-		headers.set("x-acquire-ms", String(result.acquireMs));
-		headers.set("x-load", String(result.load));
-		headers.set("x-rate", String(result.rate));
-		headers.set("x-shards", String(result.shards));
-		return new Response(result.payload.body, { headers });
+		return new Response(result.cardsBytes, {
+			headers: {
+				"content-length": String(result.cardsBytes.byteLength),
+				"x-total-cards": String(result.totalCards),
+				"x-row-count": String(result.rowCount),
+				"x-acquire-ms": String(result.acquireMs),
+				"x-load": String(result.load),
+				"x-rate": String(result.rate),
+				"x-shards": String(result.shards),
+			},
+		});
 	}
 
 	/** Run a search against the local engine, carrying the autoscaler's signals. */

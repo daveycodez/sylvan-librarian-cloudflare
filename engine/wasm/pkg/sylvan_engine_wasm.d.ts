@@ -175,27 +175,6 @@ export function scryfall_card_from_row(row_json: string, base_url: string): stri
 export function scryfall_search(filter_tree_json: string, opts_json: string, base_url: string): Uint8Array;
 
 /**
- * The same page, RETAINED in linear memory and described by `[ptr, len]`.
- *
- * `scryfall_search` above returns `Vec<u8>`, and wasm-bindgen delivers that to JS by allocating a
- * fresh `Uint8Array` and copying the whole thing out — `getArrayU8FromWasm0(...).slice()` in the
- * generated glue. For a 652KB /cards/search page that is a full copy of the payload purely to
- * change which side of the boundary owns it, on the route whose Durable Object CPU is already
- * dominated by handling these bytes.
- *
- * So the buffer stays here and the caller reads a view over it. The `Vec<u32>` return is copied,
- * but it is two words.
- *
- * THE CALLER MUST FINISH WITH THE VIEW BEFORE THE NEXT ENGINE CALL, and before anything that can
- * grow linear memory — growth DETACHES the ArrayBuffer every view is built on, and the next call
- * through here overwrites this slot. That is safe exactly once: the reader takes the view and
- * hands it to a `Response` synchronously, with no await in between, which is why this pairs with
- * the response-building path rather than with the RPC one. Anything that stores the view for
- * later gets corruption, not an error.
- */
-export function scryfall_search_retained(filter_tree_json: string, opts_json: string, base_url: string): Uint32Array;
-
-/**
  * Printing count of the loaded store (the upstream `size()` health number);
  * 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
  */

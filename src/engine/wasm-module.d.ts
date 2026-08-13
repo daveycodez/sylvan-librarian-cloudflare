@@ -9,10 +9,6 @@ declare module "sylvan-engine-wasm" {
 	/** Wasm linear memory reserved, in bytes — a high-water mark, since it never
 	 * shrinks. Provided by the Workers shim, not wasm-bindgen. */
 	export function linearMemoryBytes(): number;
-	/** Linear memory itself, for viewing a retained payload without copying it out. Provided by the
-	 * Workers shim. A view over this is invalidated by the next engine call and DETACHED by any
-	 * allocation that grows memory — see scryfall_search_retained. */
-	export function linearMemory(): ArrayBuffer;
 	export function __init_panic_hook(): void;
 	/** Preallocate the aligned store buffer (one allocation, no growth). */
 	export function begin_store_load(totalLen: number): void;
@@ -88,14 +84,6 @@ declare module "sylvan-engine-wasm" {
 	 * The objects are built in the engine, so the DO never materializes a card. Needs the residue
 	 * archive attached.
 	 */
-	/**
-	 * `scryfall_search`'s page, left in linear memory and described by `[ptr, len]`.
-	 *
-	 * Avoids wasm-bindgen's copy of the whole payload out to a fresh Uint8Array. The caller must
-	 * take its view and hand it to a Response SYNCHRONOUSLY: the slot is reused by the next call and
-	 * the buffer is detached by any growth.
-	 */
-	export function scryfall_search_retained(filterTreeJson: string, optsJson: string, baseUrl: string): Uint32Array;
 	export function scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
 	/**
 	 * One engine row as a Scryfall card object. Pure — needs no loaded store, which is what lets

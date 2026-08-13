@@ -13,7 +13,6 @@ export const compat_loaded: () => number;
 export const query: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const query_rows: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const scryfall_search: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-export const scryfall_search_retained: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const scryfall_card_from_row: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const catalog: () => [number, number, number, number];
 export const store_version: () => number;

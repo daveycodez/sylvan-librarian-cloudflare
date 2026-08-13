@@ -346,18 +346,6 @@ export class RemoteEngine implements Engine {
 		};
 	}
 
-	/** Not the fast path: this side of the boundary has no wasm to avoid copying out of. */
-	async scryfallSearchResponse(opts: EngineSearchOptions, baseUrl: string): Promise<Response> {
-		const r = await this.scryfallSearchStream(opts, baseUrl);
-		return new Response(r.body, {
-			headers: {
-				"content-length": String(r.byteLength),
-				"x-total-cards": String(r.totalCards),
-				"x-row-count": String(r.rowCount),
-			},
-		});
-	}
-
 	/** `/cards/search`'s page, streamed. See streamPayload. */
 	scryfallSearchStream(
 		opts: EngineSearchOptions,
