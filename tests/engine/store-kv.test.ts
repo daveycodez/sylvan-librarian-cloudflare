@@ -459,14 +459,15 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 // closes that, and the arithmetic it rests on.
 describe("chunk headroom", () => {
 	test("headroom is measured to the next boundary, not the last one", () => {
-		// The 2026-08-12 production measurement: two chunks, and 143,640 bytes left.
-		const h = chunkHeadroom(76_656_360, KV_CHUNK_BYTES);
+		// The generation-19 archive against the 46MB cut: two chunks, 8,097,368 bytes shy
+		// of the 92,000,000-byte boundary. (A 42MB cut left 97,368 bytes — five days of
+		// Scryfall drift — which is why the cut is 46MB.)
+		const h = chunkHeadroom(83_902_632, KV_CHUNK_BYTES);
 		expect(h.chunks).toBe(2);
 		expect(h.nextBoundary).toBe(2 * KV_CHUNK_BYTES);
-		expect(h.headroomBytes).toBe(143_640);
-		// Relative to the store, so it reads as the 0.19% that was reported, not as
-		// the roomier 0.37% the same bytes make of a 38.4MB cut.
-		expect(h.headroomPct).toBeCloseTo(0.187, 3);
+		expect(h.headroomBytes).toBe(8_097_368);
+		// Relative to the store, so a thin margin reads thin regardless of the cut size.
+		expect(h.headroomPct).toBeCloseTo(9.651, 2);
 	});
 
 	test("a store exactly on a boundary has a full chunk of room, not none", () => {
@@ -487,10 +488,13 @@ describe("chunk headroom", () => {
 	});
 
 	test("the warning fires only when the margin is thin, and names the numbers", () => {
-		expect(chunkHeadroomWarning(76_656_360)).toContain("143640");
-		expect(chunkHeadroomWarning(76_656_360)).toContain("becomes 3");
-		// Comfortably inside two chunks: nothing to say.
-		expect(chunkHeadroomWarning(50_000_000)).toBeNull();
+		// A store 100KB shy of the boundary — the exact margin the 42MB cut would have
+		// shipped — must warn and name the numbers.
+		const thin = 2 * KV_CHUNK_BYTES - 100_000;
+		expect(chunkHeadroomWarning(thin)).toContain("100000");
+		expect(chunkHeadroomWarning(thin)).toContain("becomes 3");
+		// The real generation-19 archive sits 8.1MB inside: nothing to say.
+		expect(chunkHeadroomWarning(83_902_632)).toBeNull();
 	});
 
 	test("the threshold is the boundary between quiet and loud", () => {

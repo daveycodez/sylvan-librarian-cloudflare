@@ -107,6 +107,10 @@ pub struct RowDraft {
     pub creature_power_text: Option<String>,
     pub creature_toughness_text: Option<String>,
     pub planeswalker_loyalty: Option<i64>,
+    /// The PRINTED loyalty (upstream line 408: `card["planeswalker_loyalty_text"] =
+    /// card.get("loyalty")`). The integer above is what `loy:` filters on and cannot hold "X"
+    /// (Nissa, Steward of Elements) or "1+*".
+    pub planeswalker_loyalty_text: Option<String>,
     pub card_rarity_int: Option<i64>,
     pub edhrec_rank: Option<i64>,
     pub price_usd: Option<f64>,
@@ -150,15 +154,7 @@ pub struct RowDraft {
 /// `prices` is deliberately absent even though price_usd/eur/tix are columns — usd_foil,
 /// usd_etched and eur_foil are not, and keeping the object whole costs a few bytes against losing
 /// three fields.
-/// ONE ENTRY SHORT OF UPSTREAM'S, deliberately: upstream excludes `loyalty` because it has a
-/// `planeswalker_loyalty_text` column, and this port does not. Its `planeswalker_loyalty` column is
-/// the INTEGER the query planner filters `loy:` on, which cannot hold "X" or "1+*", and promoting
-/// the text to a card-level column would put it in the main store — the one with the three-chunk
-/// ceiling — for a field only `/cards/*` ever reads. So loyalty stays in the residue, where it
-/// costs 2 interned bytes a printing in the archive that is already loaded for exactly those
-/// routes. Excluding it here while no column held it is what silently dropped it from every
-/// planeswalker's card object.
-const COMPAT_BLOB_EXCLUDED: [&str; 47] = [
+const COMPAT_BLOB_EXCLUDED: [&str; 48] = [
     // stored in a column of their own
     "id",
     "oracle_id",
@@ -171,6 +167,7 @@ const COMPAT_BLOB_EXCLUDED: [&str; 47] = [
     "oracle_text",
     "power",
     "toughness",
+    "loyalty",
     "colors",
     "color_identity",
     "keywords",
@@ -503,8 +500,10 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     let type_line = s(card, "type_line").ok_or_else(|| miss("type_line"))?;
     let (card_types, card_subtypes) = parse_type_line(&type_line);
 
-    // Line 175: planeswalker loyalty (maybe_int of the printed loyalty).
+    // Line 175: planeswalker loyalty (maybe_int of the printed loyalty), and line 408: the
+    // printed STRING itself, verbatim, as its own column.
     let planeswalker_loyalty = maybe_int(card.get("loyalty"));
+    let planeswalker_loyalty_text = s(card, "loyalty");
 
     // Lines 176-189: creature stats only for creatures/Vehicles/Spacecraft;
     // explicit None otherwise (matches the DB check constraint).
@@ -663,6 +662,7 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         creature_power_text,
         creature_toughness_text,
         planeswalker_loyalty,
+        planeswalker_loyalty_text,
         card_rarity_int,
         edhrec_rank,
         price_usd,
@@ -771,11 +771,17 @@ fn merge_face_drafts(drafts: Vec<RowDraft>) -> RowDraft {
             merged.creature_power_text = face.creature_power_text;
             merged.creature_toughness_text = face.creature_toughness_text;
         }
-        // Upstream's second group is (planeswalker_loyalty, planeswalker_loyalty_text).
-        // This port has no loyalty _text column — the engine stores loyalty text only
-        // per FACE (FaceRow.planeswalker_loyalty_text_id) — so the group is one field.
-        if merged.planeswalker_loyalty.is_none() && face.planeswalker_loyalty.is_some() {
+        // Upstream's second group: (planeswalker_loyalty, planeswalker_loyalty_text). Copied as a
+        // PAIR from the first face that has any of the group, exactly like the power group above,
+        // so the integer `loy:` filters on and the printed string a card object shows always
+        // describe the same face.
+        let loyalty_group_empty =
+            merged.planeswalker_loyalty.is_none() && merged.planeswalker_loyalty_text.is_none();
+        let face_has_loyalty =
+            face.planeswalker_loyalty.is_some() || face.planeswalker_loyalty_text.is_some();
+        if loyalty_group_empty && face_has_loyalty {
             merged.planeswalker_loyalty = face.planeswalker_loyalty;
+            merged.planeswalker_loyalty_text = face.planeswalker_loyalty_text.clone();
         }
     }
 
@@ -1148,9 +1154,10 @@ pub fn finalize_row(
         let prefer = prefer_score(&r, art_tags, illustration_count) + if pinned { PIN_BONUS } else { 0.0 };
 
         // Exactly ENGINE_COLUMNS (card_engine/card_engine/__init__.py lines
-        // 40-84); columns the engine never reads (raw_card_blob, devotion,
-        // face_name/face_idx, planeswalker_loyalty_text, rarity text,
-        // prefer_score_components, cubecobra_* raw columns) are not emitted.
+        // 40-84) plus `planeswalker_loyalty_text`, which card_from_pydict reads and upstream's
+        // list omits — see the note at its insert below. Columns the engine never reads
+        // (raw_card_blob, devotion, face_name/face_idx, rarity text, prefer_score_components,
+        // cubecobra_* raw columns) are not emitted.
         let mut m = Map::with_capacity(45);
         m.insert("scryfall_id".into(), Value::String(r.scryfall_id));
         m.insert("oracle_id".into(), Value::String(r.oracle_id));
@@ -1199,6 +1206,11 @@ pub fn finalize_row(
         m.insert("mana_cost_text".into(), opt_str_val(&r.mana_cost_text));
         m.insert("oracle_text".into(), opt_str_val(&r.oracle_text));
         m.insert("planeswalker_loyalty".into(), opt_i64_val(r.planeswalker_loyalty));
+        // NOT in upstream #912's ENGINE_COLUMNS, and that looks like ITS bug: card_from_pydict
+        // reads this exact key, and the list's own comment says it "must match". Emitted here
+        // because this port's engine is the only path — omitting it nulls every planeswalker's
+        // printed loyalty.
+        m.insert("planeswalker_loyalty_text".into(), opt_str_val(&r.planeswalker_loyalty_text));
         m.insert("price_eur".into(), opt_f64_val(r.price_eur));
         m.insert("price_tix".into(), opt_f64_val(r.price_tix));
         m.insert("price_usd".into(), opt_f64_val(r.price_usd));
@@ -1529,7 +1541,7 @@ mod tests {
             "card_set_code", "card_subtypes", "card_types", "card_watermark", "cmc",
             "collector_number", "collector_number_int", "creature_power",
             "creature_toughness", "edhrec_rank", "flavor_text", "mana_cost_jsonb",
-            "mana_cost_text", "oracle_text", "planeswalker_loyalty", "price_eur",
+            "mana_cost_text", "oracle_text", "planeswalker_loyalty", "planeswalker_loyalty_text", "price_eur",
             "price_tix", "price_usd", "produced_mana", "released_at",
             "creature_power_text", "creature_toughness_text", "set_name", "type_line",
             "prefer_score", "cubecobra_score", "card_faces", "card_compat_blob",
@@ -1564,25 +1576,26 @@ mod tests {
     }
 
     #[test]
-    fn a_planeswalkers_printed_loyalty_survives_into_the_residue() {
-        // Upstream excludes `loyalty` from the residue because it has a loyalty TEXT column; this
-        // port only has the integer one the query planner filters `loy:` on, so excluding it here
-        // dropped the key from every planeswalker's card object. It has to reach the blob, and as
-        // the printed STRING — the integer column cannot represent "X" or "1+*".
+    fn a_planeswalkers_printed_loyalty_reaches_its_column() {
+        // Upstream's shape exactly: `loyalty` is EXCLUDED from the residue because the
+        // `planeswalker_loyalty_text` column holds the printed STRING — the integer column the
+        // query planner filters `loy:` on cannot represent "X" or "1+*".
         let row = &finalize(
             vec![transform(&fixture("jace_the_mind_sculptor")).unwrap().unwrap()],
             &TagData::default(),
         )
         .collect::<Vec<Value>>()[0];
-        assert_eq!(row["card_compat_blob"]["loyalty"], json!("3"));
+        assert_eq!(row["planeswalker_loyalty_text"], json!("3"));
         // The numeric column still answers `loy:`, and is still a number.
         assert_eq!(row["planeswalker_loyalty"], json!(3));
+        // And the blob no longer duplicates what the column holds.
+        assert!(!row["card_compat_blob"].as_object().unwrap().contains_key("loyalty"));
 
-        // A card with no loyalty keeps the key ABSENT rather than null: Scryfall omits it, and a
-        // reconstructed object that carries `"loyalty": null` differs from Scryfall on every
-        // non-planeswalker.
+        // A card with no loyalty carries null in the column, and the engine's intern_opt turns
+        // null into NONE_STR — which the card object writes as an OMITTED key, not a null.
         let bolt = &finalize(vec![transform(&fixture("lightning_bolt")).unwrap().unwrap()], &TagData::default())
             .collect::<Vec<Value>>()[0];
+        assert_eq!(bolt["planeswalker_loyalty_text"], json!(null));
         assert!(!bolt["card_compat_blob"].as_object().unwrap().contains_key("loyalty"));
     }
 

@@ -46,21 +46,12 @@ if (!dir) {
 const manifest = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")) as {
 	store_key: string;
 	store_bytes: number;
-	compat_key: string;
-	compat_bytes: number;
 	[k: string]: unknown;
 };
 const store = new Uint8Array(readFileSync(`${dir}/${manifest.store_key}`));
 if (store.length !== manifest.store_bytes) {
 	throw new Error(`store file is ${store.length} bytes, manifest says ${manifest.store_bytes}`);
 }
-// The paired card-object archive (see CompatData in card_engine). Seeded too, or /cards/* is the
-// one surface that works in production and 503s in dev.
-const compat = new Uint8Array(readFileSync(`${dir}/${manifest.compat_key}`));
-if (compat.length !== manifest.compat_bytes) {
-	throw new Error(`card-object archive is ${compat.length} bytes, manifest says ${manifest.compat_bytes}`);
-}
-
 // The same KV grid production publishes on: cut on RAW bytes, each cut gzipped
 // as its own member. Local dev deliberately gets the REAL format, not a simpler
 // one — the chunked, per-chunk-decompressing read path would otherwise never run
@@ -68,12 +59,9 @@ if (compat.length !== manifest.compat_bytes) {
 // actually serves.
 const gzip = (c: Uint8Array) => gzipSync(c, { level: 9 });
 const chunkBytes = chunkForKv(store, gzip).chunks;
-const compatChunks = chunkForKv(compat, gzip).chunks;
 (manifest as Record<string, unknown>).chunk_count = chunkBytes.length;
-(manifest as Record<string, unknown>).compat_chunk_count = compatChunks.length;
 // Present iff compressed — the flag the reader keys off (see StoreManifest).
 (manifest as Record<string, unknown>).store_gzip_bytes = chunkBytes.reduce((n, c) => n + c.length, 0);
-(manifest as Record<string, unknown>).compat_gzip_bytes = compatChunks.reduce((n, c) => n + c.length, 0);
 (manifest as Record<string, unknown>).chunks = undefined;
 // See the note in seed-remote-kv.ts: the generation is stamped by whoever
 // publishes, from the one shared constant.
@@ -83,10 +71,7 @@ const compatChunks = chunkForKv(compat, gzip).chunks;
 // Miniflare keeps KV as a SQLite-backed blob store; `wrangler kv key put
 // --local` is the supported way in, and at four values it is fast enough that
 // the direct-file trick the cards table needs is not worth its fragility.
-for (const [key, pieces] of [
-	[manifest.store_key, chunkBytes],
-	[manifest.compat_key, compatChunks],
-] as const) {
+for (const [key, pieces] of [[manifest.store_key, chunkBytes]] as const) {
 	for (let seq = 0; seq < pieces.length; seq++) {
 		const bytes = pieces[seq] as Uint8Array;
 		const tmp = join(tmpdir(), `sylvan-local-chunk-${seq}.bin`);
@@ -105,7 +90,4 @@ try {
 } finally {
 	await unlink(manifestTmp).catch(() => {});
 }
-console.log(
-	`Store seeded into local KV: ${manifest.store_key} (${chunkBytes.length} chunks) ` +
-		`+ ${manifest.compat_key} (${compatChunks.length} chunks).`,
-);
+console.log(`Store seeded into local KV: ${manifest.store_key} (${chunkBytes.length} chunks).`);

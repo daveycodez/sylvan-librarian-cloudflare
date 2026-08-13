@@ -467,7 +467,7 @@ fn cmd_phases(rows_path: &Path, out_dir: &Path) {
     let mut w = CheckpointWriter { inner: BufWriter::with_capacity(1 << 20, out), at_first_write: None };
     // `None`: this probe measures the SEARCH archive's build peak, which is the number the wasm
     // memory cap binds. The card-object archive is written and dropped earlier in the same call.
-    let stats = builder.finish_to_writer(&mut w, None).expect("finish");
+    let stats = builder.finish_to_writer(&mut w).expect("finish");
     w.flush().expect("flush");
     let (card_data_current, card_data_peak) = w.at_first_write.expect("store was written");
     let finish_peak = PEAK.load(Ordering::Relaxed);
@@ -514,7 +514,7 @@ fn cmd_spill(rows_path: &Path, out_dir: &Path) {
     let out = std::fs::File::create(&store_path).expect("create store");
     let mut w = BufWriter::with_capacity(1 << 20, out);
     let stats = builder
-        .finish_from_sorted(order.iter().map(|&i| std::mem::take(&mut spilled[i as usize])), &mut w, None)
+        .finish_from_sorted(order.iter().map(|&i| std::mem::take(&mut spilled[i as usize])), &mut w)
         .expect("finish_from_sorted");
     w.flush().expect("flush");
 
@@ -704,20 +704,7 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
     use std::time::Instant;
 
     let bytes = std::fs::read(store_path).expect("read store");
-    let mut store = BufferStore::from_bytes(&bytes).expect("load store");
-    // The residue, if it was built alongside: several /cards/* routes decline without it, and one
-    // (card_by_external_id) exists only to read it.
-    if let Some(dir) = store_path.parent() {
-        let compat = std::fs::read_dir(dir)
-            .expect("read out dir")
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("card-compat-")));
-        if let Some(c) = compat {
-            store.attach_compat_bytes(&std::fs::read(&c).expect("read compat")).expect("attach compat");
-            println!("(residue attached: {})", c.file_name().and_then(|n| n.to_str()).unwrap_or(""));
-        }
-    }
+    let store = BufferStore::from_bytes(&bytes).expect("load store");
 
     // Real ids from the corpus, so no route is measured against a miss (a miss can be the FAST
     // path — `card_by_illustration_id` returns early on an unparseable id — which would flatter
@@ -823,20 +810,7 @@ fn cmd_namecheck(store_path: &Path) {
     use card_engine::BufferStore;
 
     let bytes = std::fs::read(store_path).expect("read store");
-    let mut store = BufferStore::from_bytes(&bytes).expect("load store");
-    // The residue, when it was built alongside: the three list fields (multiverse_ids,
-    // promo_types, frame_effects) are CSR on CompatData rather than Vecs on CompatFields, and a
-    // digest that never attaches the residue cannot tell a correct window from an off-by-one.
-    if let Some(dir) = store_path.parent() {
-        let compat = std::fs::read_dir(dir)
-            .expect("read out dir")
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("card-compat-")));
-        if let Some(c) = compat {
-            store.attach_compat_bytes(&std::fs::read(&c).expect("read compat")).expect("attach compat");
-        }
-    }
+    let store = BufferStore::from_bytes(&bytes).expect("load store");
     let f = |n: &[&str]| Some(n.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>());
     let sample = store.sample_preferred(400, 11, f(&["name"])).expect("sample");
 
@@ -867,10 +841,9 @@ fn cmd_namecheck(store_path: &Path) {
             lines.push(format!("words {pair:?} -> {names:?}"));
         }
     }
-    // The residue's three CSR list fields, per printing, folded into the digest. A window that
-    // starts one printing early is invisible in aggregate and obvious here, because these are read
-    // back against the SAME sampled ids on both sides of a change.
-    if store.has_compat() {
+    // The residue's three list fields, per printing, folded into the digest — read back against
+    // the SAME sampled ids on both sides of a change.
+    {
         let ids = store
             .sample_preferred(300, 5, f(&["scryfall_id"]))
             .expect("sample ids")

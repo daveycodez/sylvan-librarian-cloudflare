@@ -427,33 +427,12 @@ struct CompatFields {
     image_status_id: u16,
     set_type_id: u16,
     security_stamp_id: u16,
-    // Printed starting loyalty, as the STRING Scryfall sends -- "3", but also "X" (Nissa, Steward
-    // of Elements) and "1+*". A column would have to be the numeric `planeswalker_loyalty` the
-    // query planner filters on, which cannot represent those, so this is the text and the column
-    // stays the number. Interned because the whole vocabulary is ~25 values across ~98,000
-    // printings: 2 bytes a row against a string each.
-    loyalty_id: u16,
     games: u8,
     finishes: u8,
     flags: u16,
-    // `multiverse_ids`, `promo_types` and `frame_effects` USED TO SIT HERE, as three `Vec`s. They
-    // are CSR arrays on `CompatData` now (see `CompatLists`), because a `Vec` field costs an
-    // 8-byte rkyv header on EVERY printing whether or not it holds anything: 8 x 95,131 x 3 =
-    // 2.18 MB of headers carrying 0.39 MB of payload, on fields most printings leave empty.
-    // Offsets cost 4 bytes a printing instead, so the three together save ~1.09 MB.
-}
-
-/// What a compat parser yields: the fixed-width residue, plus the three list fields that live in
-/// `CompatData`'s CSR rather than on `CompatFields`.
-///
-/// They are returned ALONGSIDE rather than inside, because the row they land on is a parse-time
-/// `CardRow` and the CSR only exists once the whole corpus has been walked — the split happens at
-/// the same commit pass that splits a row into an `OracleCard` and a `Printing`.
-pub(crate) struct CompatParsed {
-    pub fields: CompatFields,
-    pub multiverse_ids: Vec<u32>,
-    pub promo_types: Vec<u16>,
-    pub frame_effects: Vec<u16>,
+    multiverse_ids: Vec<u32>,
+    promo_types: Vec<u16>,
+    frame_effects: Vec<u16>,
 }
 
 /// Hand-written rather than derived, because `#[derive(Default)]` zeroes the interned ids and
@@ -478,10 +457,12 @@ impl Default for CompatFields {
             image_status_id: VOCAB_NONE,
             set_type_id: VOCAB_NONE,
             security_stamp_id: VOCAB_NONE,
-            loyalty_id: VOCAB_NONE,
             games: 0,
             finishes: 0,
             flags: 0,
+            multiverse_ids: Vec::new(),
+            promo_types: Vec::new(),
+            frame_effects: Vec::new(),
         }
     }
 }
@@ -555,9 +536,17 @@ struct OracleCard {
 
     creature_power_text_id: u32,
     creature_toughness_text_id: u32,
+    // The PRINTED loyalty, beside the printed power and toughness. `planeswalker_loyalty` above is
+    // the u8 the query planner filters `loy:` on and cannot stand in for it: "X" (Nissa, Steward of
+    // Elements) and "1+*" are real printed loyalties that do not fit in it at all.
+    planeswalker_loyalty_text_id: u32,
 
     // Empty for the ~82% of cards with a single face. Front first, in Scryfall's own order.
     faces: Vec<OracleFace>,
+
+    // Scryfall's all_parts, on ~41% of cards. Oracle-level: a card's relations do not vary by
+    // printing, so this hangs off the card exactly as face TEXT does.
+    all_parts: Vec<RelatedCard>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -620,6 +609,10 @@ struct Printing {
     // Parallel to the owning OracleCard's `faces`, so index i is the same face in both. Empty for
     // single-faced cards, and empty when a multi-face card's printing carries no per-face art.
     faces: Vec<PrintingFace>,
+
+    // The card_compat_blob residue, packed. Printing-level: every field here varies by printing
+    // (ids, prices, finishes) or is set-level and therefore constant across a set's printings.
+    compat: CompatFields,
 }
 
 /// Parse-time row: one DB row (= one printing) with every field, before the
@@ -678,6 +671,7 @@ struct CardRow {
 
     creature_power_text_id: u32,
     creature_toughness_text_id: u32,
+    planeswalker_loyalty_text_id: u32,
 
     // Both halves of each face, together, until the commit pass splits them the same way it splits
     // the row itself: text to the OracleCard, art to the Printing.
@@ -685,12 +679,6 @@ struct CardRow {
     all_parts: Vec<RelatedCard>,
 
     compat: CompatFields,
-    // The three list fields that are CSR on `CompatData` rather than `Vec`s on `CompatFields`
-    // (see `CompatLists`). They stay plain `Vec`s HERE because a parse-time row is never archived
-    // — the whole cost this avoids is the per-row rkyv header, which only exists in the archive.
-    multiverse_ids: Vec<u32>,
-    promo_types: Vec<u16>,
-    frame_effects: Vec<u16>,
 }
 
 /// Parse-time face: `OracleFace` and `PrintingFace` before the commit pass separates them.
@@ -1103,14 +1091,9 @@ fn opt_nonzero_u32(d: &Bound<PyDict>, key: &str) -> Option<NonZeroU32> {
 /// clear bits for the flags. That matters for round-tripping, because Scryfall OMITS a key rather
 /// than sending null, so "zero" has to mean "was not there".
 #[cfg(feature = "python")]
-fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<CompatParsed> {
+fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<CompatFields> {
     let Some(blob) = d.get_item("card_compat_blob").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok()) else {
-        return Ok(CompatParsed {
-            fields: CompatFields::default(),
-            multiverse_ids: Vec::new(),
-            promo_types: Vec::new(),
-            frame_effects: Vec::new(),
-        });
+        return Ok(CompatFields::default());
     };
     let prices = blob.get_item("prices").ok().flatten().and_then(|v| v.cast_into::<PyDict>().ok());
     let price = |key: &str| prices.as_ref().and_then(|p| opt_price_cents(p, key));
@@ -1142,37 +1125,35 @@ fn compat_from_pydict(d: &Bound<PyDict>, vocab: &mut VocabInterner) -> PyResult<
         }
     };
 
-    Ok(CompatParsed {
-        fields: CompatFields {
-            arena_id: opt_nonzero_u32(&blob, "arena_id"),
-            mtgo_id: opt_nonzero_u32(&blob, "mtgo_id"),
-            mtgo_foil_id: opt_nonzero_u32(&blob, "mtgo_foil_id"),
-            tcgplayer_id: opt_nonzero_u32(&blob, "tcgplayer_id"),
-            tcgplayer_etched_id: opt_nonzero_u32(&blob, "tcgplayer_etched_id"),
-            cardmarket_id: opt_nonzero_u32(&blob, "cardmarket_id"),
-            penny_rank: opt_nonzero_u32(&blob, "penny_rank"),
-            image_updated_at: opt_nonzero_u32(&blob, "image_updated_at"),
-            price_usd_foil: price("usd_foil").and_then(NonZeroU32::new),
-            price_usd_etched: price("usd_etched").and_then(NonZeroU32::new),
-            price_eur_foil: price("eur_foil").and_then(NonZeroU32::new),
-            set_vid: intern_opt(vocab, opt_str(&blob, "set_id"))?,
-            lang_id: intern_opt(vocab, opt_str(&blob, "lang"))?,
-            image_status_id: intern_opt(vocab, opt_str(&blob, "image_status"))?,
-            set_type_id: intern_opt(vocab, opt_str(&blob, "set_type"))?,
-            security_stamp_id: intern_opt(vocab, opt_str(&blob, "security_stamp"))?,
-            games: str_set_bits(&blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
-            finishes: str_set_bits(
-                &blob,
-                "finishes",
-                &[
-                    ("nonfoil", FINISH_NONFOIL),
-                    ("foil", FINISH_FOIL),
-                    ("etched", FINISH_ETCHED),
-                    ("glossy", FINISH_GLOSSY),
-                ],
-            ),
-            flags,
-        },
+    Ok(CompatFields {
+        arena_id: opt_nonzero_u32(&blob, "arena_id"),
+        mtgo_id: opt_nonzero_u32(&blob, "mtgo_id"),
+        mtgo_foil_id: opt_nonzero_u32(&blob, "mtgo_foil_id"),
+        tcgplayer_id: opt_nonzero_u32(&blob, "tcgplayer_id"),
+        tcgplayer_etched_id: opt_nonzero_u32(&blob, "tcgplayer_etched_id"),
+        cardmarket_id: opt_nonzero_u32(&blob, "cardmarket_id"),
+        penny_rank: opt_nonzero_u32(&blob, "penny_rank"),
+        image_updated_at: opt_nonzero_u32(&blob, "image_updated_at"),
+        price_usd_foil: price("usd_foil").and_then(NonZeroU32::new),
+        price_usd_etched: price("usd_etched").and_then(NonZeroU32::new),
+        price_eur_foil: price("eur_foil").and_then(NonZeroU32::new),
+        set_vid: intern_opt(vocab, opt_str(&blob, "set_id"))?,
+        lang_id: intern_opt(vocab, opt_str(&blob, "lang"))?,
+        image_status_id: intern_opt(vocab, opt_str(&blob, "image_status"))?,
+        set_type_id: intern_opt(vocab, opt_str(&blob, "set_type"))?,
+        security_stamp_id: intern_opt(vocab, opt_str(&blob, "security_stamp"))?,
+        games: str_set_bits(&blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
+        finishes: str_set_bits(
+            &blob,
+            "finishes",
+            &[
+                ("nonfoil", FINISH_NONFOIL),
+                ("foil", FINISH_FOIL),
+                ("etched", FINISH_ETCHED),
+                ("glossy", FINISH_GLOSSY),
+            ],
+        ),
+        flags,
         multiverse_ids: blob
             .get_item("multiverse_ids")
             .ok()
@@ -1290,7 +1271,6 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         None => ARTIST_NONE,
     };
     let card_types = card_types_list_to_bits(&str_list(d, "card_types"));
-    let compat_parsed = compat_from_pydict(d, vocab)?;
 
     Ok(CardRow {
         scryfall_id: opt_uuid(d, "scryfall_id"),
@@ -1347,13 +1327,11 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
 
         creature_power_text_id: it.intern_opt(opt_str(d, "creature_power_text")),
         creature_toughness_text_id: it.intern_opt(opt_str(d, "creature_toughness_text")),
+        planeswalker_loyalty_text_id: it.intern_opt(opt_str(d, "planeswalker_loyalty_text")),
 
         card_faces: faces_from_pydict(d, it, artists)?,
         all_parts: all_parts_from_pydict(d, it, vocab)?,
-        compat: compat_parsed.fields,
-        multiverse_ids: compat_parsed.multiverse_ids,
-        promo_types: compat_parsed.promo_types,
-        frame_effects: compat_parsed.frame_effects,
+        compat: compat_from_pydict(d, vocab)?,
     })
 }
 
@@ -3143,26 +3121,20 @@ struct ExternalIdIndex {
 /// mtgo_foil_id and tcgplayer_etched_id are folded into their base namespace on purpose -- Scryfall
 /// resolves /cards/mtgo/:id against either mtgo_id or mtgo_foil_id, and the answer is the same
 /// printing either way.
-fn build_external_id_index(compat: &[CompatFields], lists: &CompatLists) -> ExternalIdIndex {
+fn build_external_id_index(printings: &[Printing]) -> ExternalIdIndex {
     let mut buckets: [Vec<(u32, u32)>; 5] = Default::default();
-    for (pid, p) in compat.iter().enumerate() {
+    for (pid, p) in printings.iter().enumerate() {
         let pid = pid as u32;
-        // From the CSR rather than the row: multiverse ids left `CompatFields` for `CompatLists`.
-        // `lists` is still the plain build-time form here, so this is a slice of the flat payload.
-        let (from, to) = (
-            lists.multiverse_offsets[pid as usize] as usize,
-            lists.multiverse_offsets[pid as usize + 1] as usize,
-        );
-        for mv in &lists.multiverse_ids[from..to] {
+        for mv in &p.compat.multiverse_ids {
             buckets[EXT_MULTIVERSE as usize].push((*mv, pid));
         }
         for (ns, id) in [
-            (EXT_MTGO, p.mtgo_id),
-            (EXT_MTGO, p.mtgo_foil_id),
-            (EXT_ARENA, p.arena_id),
-            (EXT_TCGPLAYER, p.tcgplayer_id),
-            (EXT_TCGPLAYER, p.tcgplayer_etched_id),
-            (EXT_CARDMARKET, p.cardmarket_id),
+            (EXT_MTGO, p.compat.mtgo_id),
+            (EXT_MTGO, p.compat.mtgo_foil_id),
+            (EXT_ARENA, p.compat.arena_id),
+            (EXT_TCGPLAYER, p.compat.tcgplayer_id),
+            (EXT_TCGPLAYER, p.compat.tcgplayer_etched_id),
+            (EXT_CARDMARKET, p.compat.cardmarket_id),
         ] {
             if let Some(v) = id {
                 buckets[ns as usize].push((v.get(), pid));
@@ -3181,110 +3153,6 @@ fn build_external_id_index(compat: &[CompatFields], lists: &CompatLists) -> Exte
     }
     starts[5] = entries.len() as u32;
     ExternalIdIndex { entries, starts }
-}
-
-/// The Scryfall card-object residue, as a SECOND archive alongside `CardData`.
-///
-/// LOCAL ARCHITECTURE (Cloudflare port); upstream has no counterpart because Postgres has no
-/// equivalent ceiling. Two measurements forced it:
-///
-///   - Keeping the residue on `Printing`/`OracleCard` took the store from 76,571,408 to
-///     87,989,816 bytes, past the 78,000,000-byte three-KV-chunk ceiling.
-///   - Worse, it took the in-Worker import's wasm LINEAR memory from 103.0 MiB to 127.3 MiB
-///     against a 112 MiB cap, and the build phase aborted. `CardData` must be fully resident
-///     before rkyv can serialize it, so the build peak tracks the store size, and +10.9 MiB of
-///     store cost +24.3 MiB of linear memory — an amplification of 2.23x.
-///
-/// Splitting it fixes both, and it is also the right shape for this deployment on its own terms:
-/// `/search` is the hot path and never reads any of this, so it stops paying for it on every cold
-/// load, while `/cards/*` loads the second archive on demand.
-///
-/// **Indices are `CardData`'s.** `compat[pid]` is `CardData.printings[pid]`'s and
-/// `all_parts[cid]` is `CardData.cards[cid]`'s, and the interned ids inside both resolve against
-/// `CardData.strings` / `CardData.coll_vocab` rather than tables of their own. The two archives
-/// are therefore built from one interner in one pass and are meaningless apart — which is why the
-/// manifest pairs them by store key and the header carries the same format version. Loading a
-/// residue archive against a different store would silently resolve every string to the wrong one.
-/// The three per-printing lists that used to be `Vec` fields on `CompatFields`, as CSR.
-///
-/// A `Vec` on an archived struct costs an 8-byte relative-pointer header per ROW, present or not.
-/// These three are mostly absent — 65,077 multiverse ids, 47,186 promo types and 28,835 frame
-/// effects across 95,131 printings — so the headers cost 2.18 MB to carry 0.39 MB. One `u32`
-/// offset per printing per list costs 1.09 MB instead, and the payload is unchanged: ~1.09 MB out
-/// of the residue archive.
-///
-/// `offsets` has `n_printings + 1` entries, so printing `p`'s values are
-/// `values[offsets[p] .. offsets[p + 1]]` and the last entry is the payload length — the same
-/// shape `FlavorIndex` and `ArtistIndex` already use, and the same one `artwork_base` is a prefix
-/// sum for. Absent is an EMPTY RANGE rather than a sentinel, which is what makes the reader
-/// identical for "no promo types" and "no such printing".
-#[derive(Archive, Serialize, Deserialize, Default)]
-pub struct CompatLists {
-    multiverse_offsets: Vec<u32>,
-    multiverse_ids: Vec<u32>,
-    promo_offsets: Vec<u32>,
-    promo_types: Vec<u16>,
-    frame_offsets: Vec<u32>,
-    frame_effects: Vec<u16>,
-}
-
-#[derive(Archive, Serialize, Deserialize)]
-pub struct CompatData {
-    /// Per printing, parallel to `CardData.printings`.
-    compat: Vec<CompatFields>,
-    /// Per card, parallel to `CardData.cards`. Empty for the ~59% with no relations.
-    all_parts: Vec<Vec<RelatedCard>>,
-    /// (namespace, external id) -> printing index, sorted. Answers
-    /// /cards/multiverse|mtgo|arena|tcgplayer|cardmarket/:id.
-    external_id_index: ExternalIdIndex,
-    /// Printing-space CSR for the three list fields; see `CompatLists`.
-    lists: CompatLists,
-}
-
-impl CompatLists {
-    /// Append one printing's three lists, in printing order. Callers MUST call this once per
-    /// printing and in order, exactly as `compat.push` is; a skipped call silently shifts every
-    /// later printing's window. `finish` closes the final offsets entry.
-    fn push(&mut self, multiverse: &[u32], promo: &[u16], frame: &[u16]) {
-        self.multiverse_offsets.push(self.multiverse_ids.len() as u32);
-        self.multiverse_ids.extend_from_slice(multiverse);
-        self.promo_offsets.push(self.promo_types.len() as u32);
-        self.promo_types.extend_from_slice(promo);
-        self.frame_offsets.push(self.frame_effects.len() as u32);
-        self.frame_effects.extend_from_slice(frame);
-    }
-
-    /// Close the CSR: every offsets array gets its `n + 1`th entry, the payload length.
-    fn finish(&mut self) {
-        self.multiverse_offsets.push(self.multiverse_ids.len() as u32);
-        self.promo_offsets.push(self.promo_types.len() as u32);
-        self.frame_offsets.push(self.frame_effects.len() as u32);
-    }
-}
-
-/// One printing's window into a CSR pair, or an empty slice when the arrays are absent.
-///
-/// Absent rather than panicking because a residue built before this layout, or a fixture that
-/// never populated the lists, should read as "this printing has none" — the same answer the old
-/// empty `Vec` gave — instead of taking down a card-object render.
-fn csr_window<'a, T>(offsets: &Archived<Vec<u32>>, values: &'a [T], pid: usize) -> &'a [T] {
-    let (Some(from), Some(to)) = (offsets.get(pid), offsets.get(pid + 1)) else {
-        return &[];
-    };
-    let (from, to) = (u32::from(*from) as usize, u32::from(*to) as usize);
-    values.get(from..to).unwrap_or(&[])
-}
-
-impl ArchivedCompatLists {
-    fn multiverse_of(&self, pid: usize) -> &[Archived<u32>] {
-        csr_window(&self.multiverse_offsets, &self.multiverse_ids, pid)
-    }
-    fn promo_of(&self, pid: usize) -> &[Archived<u16>] {
-        csr_window(&self.promo_offsets, &self.promo_types, pid)
-    }
-    fn frame_of(&self, pid: usize) -> &[Archived<u16>] {
-        csr_window(&self.frame_offsets, &self.frame_effects, pid)
-    }
 }
 
 /// The printing for an external id, or None.
@@ -4876,6 +4744,9 @@ struct CardIndexes {
     // sampled ids against a 49 us mean. 380 KB buys the same O(log n) the other two ids have.
     printing_by_illustration_id: Vec<u32>,
     oracle_by_oracle_id:     Vec<u32>,        // card space, ordered by oracle_id
+    /// (namespace, external id) -> printing index, sorted. Answers
+    /// /cards/multiverse|mtgo|arena|tcgplayer|cardmarket/:id.
+    external_id_index: ExternalIdIndex,
 }
 
 
@@ -12943,6 +12814,7 @@ const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
     ("collector_number", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.collector_number_id)).into_pyobject(py)?.into_any())),
     ("power", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.creature_power_text_id)).into_pyobject(py)?.into_any())),
     ("toughness", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.creature_toughness_text_id)).into_pyobject(py)?.into_any())),
+    ("loyalty", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.planeswalker_loyalty_text_id)).into_pyobject(py)?.into_any())),
     ("mana_cost", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.mana_cost_text_id)).into_pyobject(py)?.into_any())),
     ("oracle_text", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.oracle_text_id)).into_pyobject(py)?.into_any())),
     ("set_name", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.set_name_id)).into_pyobject(py)?.into_any())),
@@ -13241,8 +13113,6 @@ fn card_to_pydict<'py>(
 // rkyv's alignment requirement for the archived root.
 
 const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
-/// The residue archive's magic (see CompatData). Same length, deliberately different.
-const COMPAT_ARCHIVE_MAGIC: [u8; 8] = *b"ATCOMPAT";
 /// Bump on any archived-data-model change the struct sizes below wouldn't
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
@@ -13302,18 +13172,16 @@ const COMPAT_ARCHIVE_MAGIC: [u8; 8] = *b"ATCOMPAT";
 //                THE HEADER CATCHES (1) ON ITS OWN — `size_of::<AOracleCard>` moves — but neither
 //                (2) nor (3) touches the two sizes it records, so this constant is what forces the
 //                rebuild for them.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081401;
+//   2026081402 — the residue archive is GONE, and everything it held is back where upstream keeps
+//                it: `compat: CompatFields` (with its three `Vec` list fields and no `loyalty_id`)
+//                on `Printing`, `all_parts` and the new card-level `planeswalker_loyalty_text_id`
+//                on `OracleCard`, `external_id_index` on `CardIndexes`. One archive, one KV
+//                object family, one field table — the port's struct layout now matches upstream
+//                #912 exactly. Both header sizes move (`AOracleCard` 240 -> 264, `APrinting`
+//                176 -> 304-class), so the header would catch this alone; the constant moves
+//                because the index relocation would not.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081402;
 const ARCHIVE_HEADER_LEN: usize = 16;
-
-/// The residue archive's header. Distinct magic so a residue archive can never be accepted as a
-/// search store (or the reverse) — they share an index space, so a mix-up would resolve every
-/// string against the wrong table and answer plausibly rather than failing. Same format version
-/// and the same two struct sizes, because they are only ever valid as a pair.
-pub(crate) fn compat_archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
-    let mut h = archive_header();
-    h[..8].copy_from_slice(&COMPAT_ARCHIVE_MAGIC);
-    h
-}
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
     let mut h = [0u8; ARCHIVE_HEADER_LEN];
@@ -13594,7 +13462,6 @@ fn build_card_data(
     vocab: VocabInterner,
     artists: VocabInterner,
     mana: ManaVocabInterner,
-    residue: Option<&mut dyn IoWrite>,
 ) -> Result<BuiltStore, EngineError> {
 
     // The store groups printings by oracle_id, so rows without one would all
@@ -13619,7 +13486,7 @@ fn build_card_data(
     ));
 
     let expected_rows = rows.len();
-    build_card_data_sorted(rows.into_iter().map(Ok), expected_rows, interner, vocab, artists, mana, residue)
+    build_card_data_sorted(rows.into_iter().map(Ok), expected_rows, interner, vocab, artists, mana)
 }
 
 /// The exact ordering build_card_data sorts rows into before grouping,
@@ -13652,11 +13519,6 @@ fn build_card_data_sorted(
     vocab: VocabInterner,
     artists: VocabInterner,
     mana: ManaVocabInterner,
-    // Where the residue archive goes, or None to discard it (a search-only build, and every test).
-    // A WRITER rather than a returned value on purpose: the residue is serialized and dropped
-    // before the search indexes are built, so the two are never resident together. That ordering
-    // is the whole reason the split lowers the build's peak rather than just moving bytes around.
-    residue: Option<&mut dyn IoWrite>,
 ) -> Result<BuiltStore, EngineError> {
     // The interner hash maps (string → id, duplicating every interned string
     // as a key) are only needed while add_card interns; from here on only the
@@ -13681,15 +13543,6 @@ fn build_card_data_sorted(
     let mut cards: Vec<OracleCard> = Vec::new();
     let mut printings: Vec<Printing> = Vec::with_capacity(expected_rows);
     let mut offsets: Vec<u32> = Vec::new();
-    // The residue, gathered in the SAME index space and handed back separately — see CompatData.
-    // Gathered here rather than derived afterwards because the rows own it and are dropped as the
-    // loop goes; the whole point of the split is that neither half is resident while the other's
-    // indexes are being built.
-    let mut compat: Vec<CompatFields> = Vec::with_capacity(expected_rows);
-    // Gathered in lockstep with `compat` — see CompatLists. `push` MUST run once per printing and
-    // in printing order, which is why it sits next to `compat.push` rather than in a later pass.
-    let mut compat_lists = CompatLists::default();
-    let mut all_parts: Vec<Vec<RelatedCard>> = Vec::new();
     for row_res in rows {
         let mut row = row_res?;
         // Same invariant the Vec path pre-checks; streamed rows check inline.
@@ -13743,6 +13596,7 @@ fn build_card_data_sorted(
                 mana_cost: row.mana_cost.clone(),
                 creature_power_text_id: row.creature_power_text_id,
                 creature_toughness_text_id: row.creature_toughness_text_id,
+                planeswalker_loyalty_text_id: row.planeswalker_loyalty_text_id,
                 // Face TEXT is the same on every printing of a card, so the group's first row
                 // supplies it, exactly like the scalars above. Borrowed rather than taken:
                 // the Printing below still needs the art half of the same faces.
@@ -13762,8 +13616,8 @@ fn build_card_data_sorted(
                         color_indicator: f.color_indicator,
                     })
                     .collect(),
+                all_parts: std::mem::take(&mut row.all_parts),
             });
-            all_parts.push(std::mem::take(&mut row.all_parts));
         } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
             cards.last_mut().unwrap().legality_divergent = true;
         }
@@ -13805,24 +13659,10 @@ fn build_card_data_sorted(
                     flavor_text_id: f.flavor_text_id,
                 })
                 .collect(),
+            compat: row.compat,
         });
-        compat.push(row.compat);
-        compat_lists.push(&row.multiverse_ids, &row.promo_types, &row.frame_effects);
     }
     offsets.push(printings.len() as u32);
-
-    // ── the residue archive, written and dropped here ────────────────────────────────────────
-    // Before assign_name_ranks and everything below it: from this line on the build is holding
-    // `cards` + `printings` + every index it is about to construct, and that is the peak the
-    // 112 MiB wasm cap binds. Measured: keeping the residue inline through that peak cost 24.3 MiB
-    // of linear memory for 10.9 MiB of data.
-    compat_lists.finish();
-    let external_id_index = build_external_id_index(&compat, &compat_lists);
-    if let Some(w) = residue {
-        write_compat_archive(&CompatData { compat, all_parts, external_id_index, lists: compat_lists }, w)?;
-        w.flush().map_err(|e| EngineError::runtime(format!("flush compat archive: {e}")))?;
-    }
-    build_ckpt!("compat archive");
 
     assign_name_ranks(&mut cards);
     // LOCAL PLACEMENT (Cloudflare port): upstream #913 puts these two in reload_commit, right after
@@ -13985,6 +13825,7 @@ fn build_card_data_sorted(
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         printing_by_illustration_id: build_printing_by_illustration_id(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
+        external_id_index: build_external_id_index(&printings),
     };
 
     #[cfg(feature = "alloc-counter")]
@@ -14019,16 +13860,6 @@ fn build_card_data_sorted(
 /// Write the 16-byte archive header plus the rkyv archive of `card_data` into
 /// `w`. The header offset is what keeps the payload 16-aligned for readers
 /// (see the archive-header section above). Callers flush.
-/// Serialize the residue archive. Streams through the writer exactly as `write_archive` does, so
-/// the whole thing never exists as one buffer.
-fn write_compat_archive(compat_data: &CompatData, w: &mut dyn IoWrite) -> Result<(), EngineError> {
-    w.write_all(&compat_archive_header())
-        .map_err(|e| EngineError::runtime(format!("write compat header: {e}")))?;
-    rkyv::api::high::to_bytes_in::<_, rkyv::rancor::Error>(compat_data, rkyv::ser::writer::IoWriter::new(w))
-        .map_err(|e| EngineError::runtime(format!("rkyv serialize compat: {e}")))?;
-    Ok(())
-}
-
 fn write_archive<W: IoWrite>(card_data: &CardData, w: &mut W) -> Result<(), EngineError> {
     w.write_all(&archive_header())
         .map_err(|e| EngineError::runtime(format!("write header: {e}")))?;
@@ -14204,7 +14035,7 @@ impl QueryEngine {
         // Sort/group/index/serialize moved verbatim into build_card_data()/
         // write_archive() (see the store-build-core section above) so the
         // non-python store builder shares this exact pipeline.
-        let built = build_card_data(rows, interner, vocab, artists, mana, None)?;
+        let built = build_card_data(rows, interner, vocab, artists, mana)?;
         #[cfg(feature = "alloc-counter")]
         let stats_after_cards = built.stats_after_cards;
         #[cfg(feature = "alloc-counter")]

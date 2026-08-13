@@ -113,10 +113,6 @@ export interface Engine {
 	// so which side of this boundary the assembly happens on is a factor of 3000. That is the one
 	// design choice here that cannot be tuned away afterwards.
 	//
-	// They also attach the residue archive on first use (see StoreManifest.compat_key), which is
-	// why they are separate from search() rather than a `fields` option on it: `/search` must
-	// never pull ~11MB it does not read.
-
 	/** A Scryfall-shaped search: card objects, pre-encoded. `cardsJson` is a JSON array. */
 	scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult>;
 
@@ -272,21 +268,6 @@ export interface StoreManifest {
 	 * reader refuses a compressed manifest without it.
 	 */
 	chunk_count?: number;
-	/**
-	 * The paired residue archive: the Scryfall card-object fields `/search` never reads, kept out
-	 * of the search store so it stays at three chunks and its in-Worker build stays under the
-	 * 112 MiB wasm cap (see CompatData in card_engine). Loaded on demand by `/cards/*`.
-	 *
-	 * Absent on stores built before the split, which reads as "this store cannot serve /cards/*"
-	 * — a 503 on those routes rather than a card object with every residue field missing.
-	 */
-	compat_key?: string;
-	/** Uncompressed residue-archive size; the wasm buffer is preallocated from this. */
-	compat_bytes?: number;
-	/** The residue archive's `store_gzip_bytes` twin; same present-iff-compressed contract. */
-	compat_gzip_bytes?: number;
-	/** KV chunks the residue archive occupies. */
-	compat_chunk_count?: number;
 	/**
 	 * Scryfall's `updated_at` for the bulk dump this store was built from. Lets
 	 * a deploy ask "has upstream actually changed?" instead of guessing from

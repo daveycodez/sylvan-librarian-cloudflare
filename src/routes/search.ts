@@ -59,6 +59,9 @@ export const RESULT_FIELD_NAMES: readonly string[] = [
 	"rarity",
 	"color_identity",
 	"legalities",
+	// upstream #912: the printed loyalty, off the card — a base field like power/toughness now
+	// that `planeswalker_loyalty_text_id` is a card column matching upstream's.
+	"loyalty",
 ];
 
 // Pagination default: offset 0 everywhere it appears, extracted so the route

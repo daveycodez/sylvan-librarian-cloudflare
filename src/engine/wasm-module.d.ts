@@ -21,18 +21,6 @@ declare module "sylvan-engine-wasm" {
 	/** Drop the active store ahead of a tight-memory hot swap. */
 	export function unload_store(): void;
 	export function store_loaded(): boolean;
-	/**
-	 * The paired residue archive: the Scryfall card-object fields `/search` never reads (see
-	 * CompatData in card_engine). Attached on demand by `/cards/*`, so a search-only isolate pays
-	 * neither its ~11MB of linear memory nor its KV read. Same streaming buffer as the store load,
-	 * so the two are never in flight at once.
-	 */
-	export function begin_compat_load(totalLen: number): void;
-	export function compat_load_chunk(chunk: Uint8Array): void;
-	export function finish_compat_load(): void;
-	/** One-shot residue attach for tests. */
-	export function init_compat_store(bytes: Uint8Array): void;
-	export function compat_loaded(): boolean;
 	// ── Single-card addressing (the /cards/* surface) ────────────────────────
 	// `fieldsJson` is a JSON list of field names, or "null" for the default set. A miss is JSON
 	// `null` — this port has no SQL behind it, so a miss IS the answer.

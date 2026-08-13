@@ -430,7 +430,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS ordered_rows (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
-			CREATE TABLE IF NOT EXISTS compat_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			-- What the last import left in each published rulings bucket. CROSS-RUN state, unlike
 			-- every table above it: it is what lets a night publish only the buckets whose bytes
 			-- actually moved, so it is neither in resetStaging nor covered by metaClear.
@@ -1382,9 +1381,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.prechargeReads(Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM ordered_rows")[0]?.n ?? 0));
 
 		this.sqlRun("DELETE FROM chunk_staging");
-		this.sqlRun("DELETE FROM compat_staging");
 		let chunkSeq = -1;
-		let compatSeq = -1;
 		// Stage on the STAGING grid — rows just under the DO's 2MB per-value
 		// cap, which is as large as they can be. Publishing to KV shares a grid
 		// with nobody (it re-cuts these into ~20MB KV chunks), and the old
@@ -1394,45 +1391,30 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const stage = (b: Uint8Array) => {
 			this.sqlRun("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
 		};
-		// The residue archive rides its own grid and its own table. It is written PART WAY through
-		// the build — before the search indexes exist, which is what keeps the peak under the wasm
-		// cap — so the two streams interleave and cannot share a sequence.
-		const compatGrid = new GridChunker();
-		const stageCompat = (b: Uint8Array) => {
-			this.sqlRun("INSERT INTO compat_staging (seq, bytes) VALUES (?, ?)", ++compatSeq, exactBuffer(b));
-		};
 		wasm.setHandlers({
 			pullRow: lookup,
 			onChunk: (b) => {
 				for (const chunk of grid.push(b)) stage(chunk);
 			},
-			onCompatChunk: (b) => {
-				for (const chunk of compatGrid.push(b)) stageCompat(chunk);
-			},
 			onStats: (s) => {
 				this.metaSet("build_card_count", String(s.card_count ?? 0));
 				this.metaSet("build_printing_count", String(s.printing_count ?? 0));
 				this.metaSet("build_store_bytes", String(s.store_bytes ?? 0));
-				this.metaSet("build_compat_bytes", String(s.compat_bytes ?? 0));
 			},
 		});
 		const buildStart = Date.now();
 		const totalBytes = wasm.buildStoreStream();
 		wasm.setHandlers({});
-		// Neither archive's tail is likely to be a whole grid chunk.
+		// The tail is unlikely to be a whole grid chunk.
 		for (const chunk of grid.end()) stage(chunk);
-		for (const chunk of compatGrid.end()) stageCompat(chunk);
 		const heap = wasm.heap();
 		console.log(
-			`Store built: ${totalBytes} bytes in ${chunkSeq + 1} chunks ` +
-				`(+ card-object archive ${this.metaGet("build_compat_bytes") ?? 0} bytes in ${compatSeq + 1}), ` +
-				`${Date.now() - buildStart}ms ` +
+			`Store built: ${totalBytes} bytes in ${chunkSeq + 1} chunks, ${Date.now() - buildStart}ms ` +
 				`(wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB, linear memory ${(heap.linear / 1048576).toFixed(1)}MB)`,
 		);
 		const formatVersion = wasm.formatVersion();
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("chunk_count", String(chunkSeq + 1));
-			this.metaSet("compat_stage_count", String(compatSeq + 1));
 			this.metaSet("built_at", String(Math.floor(Date.now() / 1000)));
 			// Recorded HERE so publish never has to ask wasm for it — see the
 			// dropGroupWasm below.
@@ -1440,9 +1422,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("kv_chunks_published", "0");
 			this.metaSet("kv_cursor_seq", "0");
 			this.metaSet("kv_cursor_off", "0");
-			this.metaSet("kv_compat_published", "0");
-			this.metaSet("kv_compat_seq", "0");
-			this.metaSet("kv_compat_off", "0");
 			this.metaSet("phase", "publish");
 		});
 		// Release the wasm group NOW rather than after publish. Its linear
@@ -1473,21 +1452,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return `card-store-v${this.metaGet("format_version") ?? 0}-${this.metaGet("built_at")}.store`;
 	}
 
-	/** The paired residue archive's key, named off the same build so the two cannot be mismatched. */
-	private compatKey(): string {
-		return `card-compat-v${this.metaGet("format_version") ?? 0}-${this.metaGet("built_at")}.store`;
-	}
-
 	/** Staging-backed reader for assembleChunk (see src/engine/store-kv.ts). */
 	private stagedRows(fromSeq: number, limit: number): StagedRow[] {
 		return this.sqlAll("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", fromSeq, limit).map(
-			(row) => ({ seq: Number(row.seq), bytes: new Uint8Array(row.bytes as ArrayBuffer) }),
-		);
-	}
-
-	/** The same, over the residue archive's staging table. */
-	private stagedCompatRows(fromSeq: number, limit: number): StagedRow[] {
-		return this.sqlAll("SELECT seq, bytes FROM compat_staging WHERE seq >= ? ORDER BY seq LIMIT ?", fromSeq, limit).map(
 			(row) => ({ seq: Number(row.seq), bytes: new Uint8Array(row.bytes as ArrayBuffer) }),
 		);
 	}
@@ -1589,43 +1556,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return; // next alarm continues
 		}
 
-		// Then the residue archive, on the same one-chunk-per-slice rhythm and with the same
-		// idempotent-key property. Before the manifest, because the manifest naming a compat_key
-		// whose chunks are not in KV yet is exactly the state a reader must never see.
-		const compatKey = this.compatKey();
-		const compatBytes = Number(this.metaGet("build_compat_bytes") ?? 0);
-		if (!compatBytes) throw new Error("publish: the build recorded no card-object archive size");
-		const compatTotal = chunkCountFor(compatBytes, cut);
-		const compatPublished = Number(this.metaGet("kv_compat_published") ?? 0);
-		if (compatPublished < compatTotal) {
-			const want = Math.min(cut, compatBytes - compatPublished * cut);
-			const { bytes, cursor } = assembleChunk(
-				want,
-				{ seq: Number(this.metaGet("kv_compat_seq") ?? 0), off: Number(this.metaGet("kv_compat_off") ?? 0) },
-				(fromSeq, limit) => this.stagedCompatRows(fromSeq, limit),
-			);
-			const stored = await gzipBytes(bytes);
-			if (stored.byteLength > KV_VALUE_CAP_BYTES) {
-				throw new Error(
-					`publish: card-object chunk ${compatPublished} compressed to ${stored.byteLength} bytes, ` +
-						`over KV's ${KV_VALUE_CAP_BYTES} cap`,
-				);
-			}
-			const compatGzipSoFar = Number(this.metaGet("kv_compat_gzip_bytes") ?? 0) + stored.byteLength;
-			await this.env.STORE_KV.put(chunkKey(compatKey, compatPublished), stored);
-			this.ctx.storage.transactionSync(() => {
-				this.metaSet("kv_compat_published", String(compatPublished + 1));
-				this.metaSet("kv_compat_seq", String(cursor.seq));
-				this.metaSet("kv_compat_off", String(cursor.off));
-				this.metaSet("kv_compat_gzip_bytes", String(compatGzipSoFar));
-			});
-			console.log(
-				`Publish slice: card-object chunk ${compatPublished + 1}/${compatTotal} ` +
-					`(${(want / 1048576).toFixed(1)}MB raw -> ${(stored.byteLength / 1048576).toFixed(1)}MB gzip) for ${compatKey}`,
-			);
-			return; // next alarm continues
-		}
-
 		// Every chunk is in KV — write the manifest LAST (the commit point).
 		const manifest = {
 			store_key: storeKey,
@@ -1639,10 +1569,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Present iff compressed (see StoreManifest) — the flag the reader keys off.
 			store_gzip_bytes: Number(this.metaGet("kv_gzip_bytes") ?? 0),
 			chunk_count: kvTotal,
-			compat_key: compatKey,
-			compat_bytes: compatBytes,
-			compat_gzip_bytes: Number(this.metaGet("kv_compat_gzip_bytes") ?? 0),
-			compat_chunk_count: compatTotal,
 			source_updated_at: this.metaGet("source_updated_at") ?? undefined,
 		};
 		await this.env.STORE_KV.put(MANIFEST_KEY, JSON.stringify(manifest));
@@ -1662,10 +1588,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// now on gets it. What is left is the edge cache, which still holds
 		// answers computed from the store this one replaced; `purge` clears them
 		// once the readers have caught up.
-		console.log(
-			`Store published to KV: ${storeKey} (${manifest.card_count} cards, ${kvTotal} chunks) ` +
-				`+ ${compatKey} (${compatTotal} chunks)`,
-		);
+		console.log(`Store published to KV: ${storeKey} (${manifest.card_count} cards, ${kvTotal} chunks)`);
 		this.ctx.storage.transactionSync(() => {
 			// `notify` comes FIRST, before rulings and reference: it is what puts the
 			// readers on the new store, and everything after it is additional KV data
@@ -2214,7 +2137,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			"row_batches",
 			"tagdata_blobs",
 			"chunk_staging",
-			"compat_staging",
 		]) {
 			this.sqlRun(`DELETE FROM ${table}`);
 		}

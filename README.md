@@ -85,7 +85,8 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
               │   placed there by location hint; idle regions evict their DO —
               │   scale to zero. The x-sylvan-engine response header says which
               │   DO answered
-              ├─ SearchEngine DO: wasm card_engine + ~72.0MB rkyv store in memory,
+              ├─ SearchEngine DO: wasm card_engine + ~84MB rkyv store in memory —
+              │   ONE archive, card objects included, exactly upstream's shape —
               │   streamed from KV as 2 immutable chunks in 4MB blocks, and cached
               │   DECOMPRESSED in the DO's own SQLite so later wakes skip both the
               │   network and the gunzip. It hot-swaps when the KV manifest
@@ -103,9 +104,9 @@ cron (nightly refresh; the deploy does the first build)
                    fetch → transform → tags → aggregate → finalize → build
                    (the SAME Rust the native builder runs, compiled to wasm;
                     intermediates spill to DO SQLite, never to memory)
-                   publish: 2 store chunks + the residue archive's one, each
-                   gzipped, + manifest to KV, manifest LAST (the commit point
-                   readers act on); the store before last dropped
+                   publish: 2 store chunks, each gzipped, + manifest to KV,
+                   manifest LAST (the commit point readers act on); the store
+                   before last dropped
 ```
 
 The wasm engine is the only query path. A query it cannot answer returns a
@@ -153,8 +154,8 @@ The store *is* gzipped, though, which is a different question — the meter was
 never what the cold path was bound by. A load-carrying invocation measures wall
 p50 915ms against DO CPU p50 164ms, so ~750ms of it was waiting for the whole
 archive to arrive. The cut is on RAW bytes at `KV_CHUNK_BYTES` and each piece is
-gzipped as its own member; the two-way cut puts ~12.4MB and ~18.9MB in KV, the
-binding one at 72% of the 25 MiB value cap.
+gzipped as its own member; the two-way cut puts ~15.3MB and ~17.8MB in KV, the
+binding one at 71.2% of the 25 MiB value cap.
 
 The memory win is bigger than the transfer one and comes from a different
 place. wasm-bindgen marshals a `&[u8]` by COPYING it into linear memory, so a
@@ -178,9 +179,8 @@ remaining wakes skip it entirely. Reverting to uncompressed chunks would cost
 ~13MB of the 128MB isolate to save a cost that is now rare. See
 [src/engine/store-kv.ts](src/engine/store-kv.ts) for both halves measured.
 
-**Publishing** is four writes: two store chunks and the residue archive's
-one, each cut under KV's 25 MiB value cap and gzipped before the put, then
-the manifest as the commit point. Two versions are retained, so a reader
+**Publishing** is three writes: two store chunks, each cut under KV's 25 MiB
+value cap and gzipped before the put, then the manifest as the commit point. Two versions are retained, so a reader
 mid-stream finishes and a bad build can be rolled back.
 
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
@@ -203,11 +203,11 @@ gate is itself answered from the old store, so a colo that was idle across the
 first window refills the cache right after it is emptied. That same request
 starts the swap, so one more pass is enough to clear it for good.
 
-**Free-plan fit.** A store load is 3 KV reads (4 on `/cards/*`, which alone
-attaches the residue archive), a publish 4 writes, and serving touches neither
-— so the daily meters (100k Worker requests, 100k KV reads, 1k KV writes) bound
-*traffic*, not architecture. Storage is one ~82.7MB copy per retained version
-(72.0MB search store plus the 10.7MB residue) against KV's 1GB.
+**Free-plan fit.** A store load is 3 KV reads — the same load for `/search`
+and `/cards/*`, there is no second archive — a publish 3 writes, and serving
+touches neither, so the daily meters (100k Worker requests, 100k KV reads, 1k
+KV writes) bound *traffic*, not architecture. Storage is one ~84MB copy per
+retained version against KV's 1GB.
 
 The meter worth watching is the free plan's **10ms CPU per request**, and
 almost all of what a `/search` spends there is **cold isolate startup, not the
@@ -261,12 +261,19 @@ identical to the standard build). **Filter evaluation** is untouched, so the
 store the Durable Object builds is the same store the native builder produces —
 the tests compare them byte-for-byte at the row level.
 
-The **archive format is not** untouched, and has not been since the card-object
-work: the residue is a second archive rather than fields on `Printing`, and its
-three list fields are a CSR on `CompatData` rather than `Vec`s on
-`CompatFields`. Both are size decisions this deployment has to make and upstream
-does not — see [Deviations](#deviations-from-upstream). `ARCHIVE_FORMAT_VERSION`
-therefore diverges from upstream's on purpose; it is not a sync failure.
+The **archive layout matches upstream #912 exactly** as of generation 19: one
+archive, `compat: CompatFields` on `Printing` (upstream's field list,
+`Vec` list fields included), `all_parts` and `planeswalker_loyalty_text_id` on
+`OracleCard`, `external_id_index` on `CardIndexes`. The residue archive, its
+CSR, its field-table split and its attach plumbing are all gone. What that
+convergence cost, and the one number to watch, is the in-Worker build's memory:
+the single-archive build peaks at 120.9 MiB of wasm linear memory against a
+124 MiB `--max-memory` (raised from 112 for this), and the peak tracks the
+store size at ~2.2x — so `bun run gate` runs the capped build over the real
+corpus whenever `store-build/rows.jsonl` exists, and FAILS before a push could
+ship a nightly that aborts. `ARCHIVE_FORMAT_VERSION` still differs from
+upstream's numerically (different constants, same discipline); that is not a
+sync failure.
 
 ```bash
 bun run sync-upstream
@@ -304,8 +311,8 @@ The complete list of intentional differences:
   bucket, binary-searches its index and splices one byte range into the `List`
   envelope, so it never parses the ~104KB value it read. They are deliberately
   **not** in the card store: rulings hang off `oracle_id` rather than off a
-  printing, only this route reads them, and 26MB in the search archive or the
-  residue would be paid for by every `/search` and every other `/cards/*` load.
+  printing, only this route reads them, and 26MB in the archive would be paid
+  for by every store load.
   `import_rulings` stays a 501 stub, like the other Postgres-backed admin
   routes — the nightly import replaced it, not this endpoint.
   Two consequences worth knowing: a deployment that has never run the rulings
@@ -368,41 +375,20 @@ The complete list of intentional differences:
   `/sets` itself exact, and fetching 1,047 single endpoints per import to
   reconcile the rest is not a trade worth making.
 - **The Scryfall card object is assembled from stored fields**, not unwrapped
-  from a `raw_card_blob` this port does not store — 29 columns, 12 derived keys
+  from a `raw_card_blob` this port does not store — the columns, 12 derived keys
   (every `*_uri` and `image_uris` are pure functions of the id, set, collector
-  number and oracle id) and a packed residue. Absent keys stay absent, because
+  number and oracle id) and the packed residue, all in the ONE archive, on
+  exactly upstream's structs (`Printing.compat`, `OracleCard.all_parts`,
+  card-level `planeswalker_loyalty_text_id`). Absent keys stay absent, because
   Scryfall omits rather than nulls and a card that sprouts nulls differs from
-  Scryfall on every row. That residue lives in a **second KV archive** loaded
-  only when a `/cards/*` route needs it: inlining it took the store across a KV
-  chunk boundary and the in-Worker import past its 112 MiB wasm cap, and
-  `/search` reads none of it.
-- **The residue's three list fields are a CSR, where upstream keeps them as
-  `Vec`s on `CompatFields`.** An archived `Vec` field costs an 8-byte relative-
-  pointer header on every row whether or not it holds anything, and
-  `multiverse_ids`/`promo_types`/`frame_effects` are empty on most printings:
-  three of them across 95,131 printings is 2.18MB of headers carrying 0.39MB of
-  payload. They are offset arrays on `CompatData` instead (`CompatLists`), 84 →
-  60 bytes a printing. Deliberately **not** upstreamed: #912 declines the same
-  trade at five times the size on `external_id_index` (8.34MB → 2.78MB), on the
-  stated grounds that "Postgres has no archive ceiling; a deployment that serves
-  the archive from a size-capped store will want the packed form." This is that
-  deployment.
-- **`loyalty` rides in the residue, where upstream has a column for it.**
-  Upstream stores both `planeswalker_loyalty` (the integer `loy:` filters on)
-  and `planeswalker_loyalty_text` (what Scryfall prints), and so excludes
-  `loyalty` from the residue. This port kept only the integer — which cannot
-  hold `X` (Nissa, Steward of Elements) or `1+*` — while still excluding the
-  key, so every planeswalker's card object came back with no `loyalty` at all.
-  It is now one interned residue field: ~2 bytes a printing, in the archive
-  `/cards/*` already loads, rather than a card-level column in the main store
-  that only `/cards/*` would ever read. `defense` is the same story on the face
-  side — Scryfall prints it on a battle's front face and upstream's face field
-  list omits it, so `Invasion of Alara`'s `defense: 7` was dropped outright.
-  Both are reported upstream against #912.
+  Scryfall on every row. Generations 10–18 kept the residue in a second KV
+  archive; generation 19 folded it back to match upstream, which cost the
+  in-Worker build most of its memory headroom — see Upstream tracking for the
+  measured number and the gate tripwire that watches it.
 - **`/cards/:code/:number/:lang` checks the language after resolving**, where
-  upstream filters on it in SQL. `lang` lives in the residue archive and is not
-  a query field, so the printing is resolved by set and collector number and its
-  own stored language compared — which uses the real value rather than assuming
+  upstream filters on it in SQL. `lang` is a residue field rather than a query
+  field, so the printing is resolved by set and collector number and its own
+  stored language compared — which uses the real value rather than assuming
   one. A mismatch is a 404, as it is upstream.
 - **`/cards/named?exact=` prefers a whole-name match to a face match.** Upstream
   orders both by `prefer_score` alone, which on this corpus answers
@@ -427,9 +413,9 @@ The complete list of intentional differences:
   `Vary: Accept` is not sent — our responses select their format from the
   `format=` query parameter, which is already part of the cache key.
 - **`/cards/search?order=penny` falls back to name with a warning**, as an
-  unrecognized order does. `penny_rank` is stored, but in the residue archive,
-  which carries no sort permutations. `order=review` is Scryfall-internal and
-  not reproducible at all.
+  unrecognized order does. `penny_rank` is stored, but no sort permutation is
+  built over it. `order=review` is Scryfall-internal and not reproducible at
+  all.
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
   That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
   Postgres and S3, neither of which this deployment has — so it was reading a

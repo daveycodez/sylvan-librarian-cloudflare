@@ -198,10 +198,7 @@ pub extern "C" fn builder_finish() -> i64 {
 
     let mut w = ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0 };
     let expected = order.len();
-    // No residue writer: this probe measures the SEARCH archive's build peak, which is the number
-    // the 112 MiB wasm cap binds. The card-object archive is written and dropped earlier in the
-    // same call (see CompatData), so `None` here discards it without changing what is measured.
-    match builder.finish_from_sorted(rows, &mut w, None) {
+    match builder.finish_from_sorted(rows, &mut w) {
         Ok(stats) => {
             if let Some(idx) = failed {
                 report_err(&format!("pull_row failed at blob {idx}"));

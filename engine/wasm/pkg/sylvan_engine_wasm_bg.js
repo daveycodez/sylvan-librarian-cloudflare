@@ -34,18 +34,6 @@ export function autocomplete(prefix, limit) {
 }
 
 /**
- * Start a chunked residue load. The active store must already be loaded: the residue shares its
- * index space and string tables, so there is nothing to attach it to otherwise.
- * @param {number} total_len
- */
-export function begin_compat_load(total_len) {
-    const ret = wasm.begin_compat_load(total_len);
-    if (ret[1]) {
-        throw takeFromExternrefTable0(ret[0]);
-    }
-}
-
-/**
  * Start a chunked store load: preallocate the full aligned buffer up front
  * (one allocation, no growth reallocs while chunks stream in). Any previous
  * in-progress load is discarded; the ACTIVE store is untouched until
@@ -245,28 +233,6 @@ export function catalog() {
 }
 
 /**
- * Append one chunk of the residue archive.
- * @param {Uint8Array} chunk
- */
-export function compat_load_chunk(chunk) {
-    const ptr0 = passArray8ToWasm0(chunk, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.compat_load_chunk(ptr0, len0);
-    if (ret[1]) {
-        throw takeFromExternrefTable0(ret[0]);
-    }
-}
-
-/**
- * Whether the residue archive is attached to the active store.
- * @returns {boolean}
- */
-export function compat_loaded() {
-    const ret = wasm.compat_loaded();
-    return ret !== 0;
-}
-
-/**
  * The best printing of a card whose FOLDED name matches exactly, or `null`.
  *
  * `folded` must already be lowercased and accent-folded by the caller (foldAccents in
@@ -299,16 +265,6 @@ export function exact_card_by_name(folded, set_code, fields_json) {
         return getStringFromWasm0(ptr4, len4);
     } finally {
         wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
- * Validate the streamed residue archive and attach it to the active store.
- */
-export function finish_compat_load() {
-    const ret = wasm.finish_compat_load();
-    if (ret[1]) {
-        throw takeFromExternrefTable0(ret[0]);
     }
 }
 
@@ -355,19 +311,6 @@ export function fuzzy_card_by_name(name, floor, lead, fields_json) {
         return getStringFromWasm0(ptr3, len3);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
- * One-shot residue attach, the `init_store` twin.
- * @param {Uint8Array} bytes
- */
-export function init_compat_store(bytes) {
-    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.init_compat_store(ptr0, len0);
-    if (ret[1]) {
-        throw takeFromExternrefTable0(ret[0]);
     }
 }
 

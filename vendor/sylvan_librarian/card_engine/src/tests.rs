@@ -18,7 +18,7 @@ use super::{
     ArithOp, ArtistIndex, CardData, CardIndexes, Candidates, ColorField, NumExpr, NumField, RarityIndex,
     CollField, CmpOp, FilterExpr, InlineStr, Interner, ManaCost, OracleCard, OracleFace, Printing, PrintingFace, TagIndex,
     build_printing_by_scryfall_id, build_oracle_by_oracle_id, find_printing_by_scryfall_id, find_oracle_by_oracle_id,
-    CompatFields, CompatLists, ExternalIdIndex, RelatedCard, build_external_id_index, find_printing_by_external_id,
+    CompatFields, ExternalIdIndex, RelatedCard, build_external_id_index, find_printing_by_external_id,
     EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER,
     FuzzyOutcome, autocomplete_names, fuzzy_name_match, trigram_similarity,
     VOCAB_NONE, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
@@ -223,7 +223,9 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         mana_cost: ManaCost { core: 0, hybrids: Vec::new(), devotion: 0, cmc: 0.0 },
         creature_power_text_id: NONE_STR,
         creature_toughness_text_id: NONE_STR,
+        planeswalker_loyalty_text_id: NONE_STR,
         faces: Vec::new(),
+        all_parts: Vec::new(),
     }
 }
 
@@ -255,6 +257,7 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         card_frame_data: Vec::new(),
         artwork_group_id: 0, // placeholder; store_of overwrites via assign_artwork_groups
         faces: Vec::new(),
+        compat: CompatFields::default(),
     }
 }
 
@@ -6451,6 +6454,7 @@ fn bench_checked_vs_unchecked_access() {
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         printing_by_illustration_id: crate::build_printing_by_illustration_id(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
+        external_id_index: build_external_id_index(&printings),
     };
     let data = CardData {
         cards,
@@ -12121,13 +12125,11 @@ fn absent_compat_values_stay_absent() {
 #[test]
 fn the_compat_residue_stays_at_84_bytes_a_printing() {
     // This number is the whole reason the residue is packed rather than kept as a blob, and the
-    // reason #912 halved it: it is multiplied by ~98,000 printings, against a 78 MB three-chunk
-    // KV ceiling. A field added here without a compaction costs ~0.4 MB per 4 bytes, so the size
-    // is pinned rather than left to be discovered at import time.
-    // 84 -> 60: `multiverse_ids`, `promo_types` and `frame_effects` left for `CompatLists`, and an
-    // archived `Vec` field is an 8-byte relative-pointer header whether or not it holds anything.
-    // Three of them across 95,131 printings was 2.18 MB of headers carrying 0.39 MB of payload.
-    assert_eq!(std::mem::size_of::<Archived<CompatFields>>(), 60);
+    // reason #912 halved it: it is multiplied by ~98,000 printings. A field added here without a
+    // compaction costs ~0.4 MB per 4 bytes, so the size is pinned rather than left to be
+    // discovered at import time. 84 is upstream #912's number exactly — the struct is upstream's
+    // field-for-field, three `Vec` list fields included.
+    assert_eq!(std::mem::size_of::<Archived<CompatFields>>(), 84);
 }
 
 /// An illustration id is NOT unique -- every reprint sharing art carries the same one -- so the
@@ -12165,27 +12167,25 @@ fn an_illustration_id_resolves_to_its_first_printing() {
 
 #[test]
 fn external_ids_resolve_to_their_printing() {
-    // Built from the RESIDUE, which is where these ids live now (see CompatData) -- index i is
-    // printing i in the search archive.
-    let a = CompatFields {
+    // Built straight off the printings' residue fields, as upstream builds it -- index i is
+    // printing i.
+    let mut a = stub_printing(1, 1, None);
+    a.compat = CompatFields {
         mtgo_id: NonZeroU32::new(200),
         mtgo_foil_id: NonZeroU32::new(201),
         arena_id: NonZeroU32::new(300),
+        multiverse_ids: vec![100, 101],
         ..CompatFields::default()
     };
-    let b = CompatFields {
+    let mut b = stub_printing(2, 2, None);
+    b.compat = CompatFields {
         tcgplayer_id: NonZeroU32::new(400),
         tcgplayer_etched_id: NonZeroU32::new(401),
         ..CompatFields::default()
     };
     let printings = vec![a, b];
-    // Multiverse ids live in the CSR now, so they are supplied alongside rather than on the row.
-    let mut lists = CompatLists::default();
-    lists.push(&[100, 101], &[], &[]);
-    lists.push(&[], &[], &[]);
-    lists.finish();
 
-    let idx = build_external_id_index(&printings, &lists);
+    let idx = build_external_id_index(&printings);
     let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
     let aidx = rkyv::access::<Archived<ExternalIdIndex>, Error>(&bytes).expect("access");
 
@@ -12210,14 +12210,12 @@ fn external_ids_resolve_to_their_printing() {
 fn a_shared_external_id_resolves_to_the_first_printing() {
     // Etched and nonfoil rows do collide on a TCGplayer id. Printings are stored in descending
     // prefer order, so the lowest index is the one the rest of the API would show.
-    let a = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
-    let b = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
+    let mut a = stub_printing(1, 1, None);
+    a.compat = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
+    let mut b = stub_printing(2, 2, None);
+    b.compat = CompatFields { tcgplayer_id: NonZeroU32::new(500), ..CompatFields::default() };
 
-    let mut lists = CompatLists::default();
-    lists.push(&[], &[], &[]);
-    lists.push(&[], &[], &[]);
-    lists.finish();
-    let idx = build_external_id_index(&[a, b], &lists);
+    let idx = build_external_id_index(&[a, b]);
     let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
     let aidx = rkyv::access::<Archived<ExternalIdIndex>, Error>(&bytes).expect("access");
     assert_eq!(find_printing_by_external_id(aidx, EXT_TCGPLAYER, 500), Some(0));
@@ -12397,19 +12395,13 @@ fn autocomplete_is_prefix_matched_sorted_and_capped() {
 }
 
 #[test]
-fn the_search_archive_carries_none_of_the_residue() {
-    // The store ceiling is arithmetic on this number: 97,803 printings against a 78,000,000-byte
-    // three-KV-chunk budget, so every byte here is ~98 KB of archive. Pinned alongside the
-    // residue's own size because the header embeds it and a change silently invalidates every
-    // built store rather than failing to compile.
-    // Back to the pre-#912 sizes: the residue is a SECOND archive now (see CompatData), so the
-    // search store -- the one on the /search hot path and the one the 78,000,000-byte three-chunk
-    // ceiling applies to -- carries none of it. 176 is what generation 9 shipped; 304 is what
-    // Unit 1's `faces` took OracleCard to, and #912 leaves it there.
-    assert_eq!(std::mem::size_of::<Archived<Printing>>(), 176);
-    // 304 -> 240: `card_name_folded` was a second `InlineStr<61>` holding a string identical to
-    // `card_name_lower` on all but 88 of 31,724 cards, and is a `u32` id now. 64 bytes a card,
-    // ~1.94 MB off the archive the three-chunk ceiling applies to.
-    assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 240);
+fn the_archived_row_sizes_stay_pinned() {
+    // One archive again, upstream's shape: `compat` rides ON the printing and `all_parts` plus the
+    // loyalty text id ON the card, so both rows carry the card-object residue the split used to
+    // hive off. Pinned because the header embeds these two sizes and a change silently invalidates
+    // every built store rather than failing to compile — and because at ~95k printings / ~32k
+    // cards, every byte here is real archive.
+    assert_eq!(std::mem::size_of::<Archived<Printing>>(), 256);
+    assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 256);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
 }

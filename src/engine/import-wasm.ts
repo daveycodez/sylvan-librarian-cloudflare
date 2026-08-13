@@ -13,8 +13,6 @@ export interface ImportEmitHandlers {
 	onDraft?(bytes: Uint8Array): void;
 	onSpill?(bytes: Uint8Array): void;
 	onChunk?(bytes: Uint8Array): void;
-	/** The residue archive's chunk stream (EMIT.COMPAT_CHUNK); interleaves with onChunk. */
-	onCompatChunk?(bytes: Uint8Array): void;
 	onRow?(bytes: Uint8Array): void;
 	onTagData?(bytes: Uint8Array): void;
 	onStats?(stats: Record<string, number>): void;
@@ -22,7 +20,7 @@ export interface ImportEmitHandlers {
 	pullRow?(index: number): Uint8Array | null;
 }
 
-const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7, COMPAT_CHUNK: 8 } as const;
+const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7 } as const;
 
 interface ImportExports {
 	memory: WebAssembly.Memory;
@@ -83,9 +81,6 @@ export class ImportWasm {
 						return;
 					case EMIT.CHUNK:
 						h.onChunk?.(view(ptr, len).slice());
-						return;
-					case EMIT.COMPAT_CHUNK:
-						h.onCompatChunk?.(view(ptr, len).slice());
 						return;
 					case EMIT.ROW:
 						h.onRow?.(view(ptr, len).slice());

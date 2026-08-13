@@ -55,22 +55,15 @@ fn newest(prefix: &str) -> Option<std::path::PathBuf> {
 
 fn load() -> Option<BufferStore> {
     let store_path = newest("card-store-")?;
-    let compat_path = newest("card-compat-")?;
     let store_bytes = std::fs::read(&store_path).ok()?;
-    let mut store = match BufferStore::from_bytes(&store_bytes) {
+    let store = match BufferStore::from_bytes(&store_bytes) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("SKIP: {} rejected ({e}) -- stale archive for this build", store_path.display());
             return None;
         }
     };
-    let compat_bytes = std::fs::read(&compat_path).ok()?;
-    if let Err(e) = store.attach_compat_bytes(&compat_bytes) {
-        eprintln!("SKIP: {} rejected ({e})", compat_path.display());
-        return None;
-    }
-    println!("store   {}", store_path.display());
-    println!("compat  {}\n", compat_path.display());
+    println!("store   {}\n", store_path.display());
     Some(store)
 }
 

@@ -43,22 +43,12 @@ if (!dir) {
 const manifest = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")) as {
 	store_key: string;
 	store_bytes: number;
-	compat_key: string;
-	compat_bytes: number;
 	[k: string]: unknown;
 };
 const store = new Uint8Array(readFileSync(`${dir}/${manifest.store_key}`));
 if (store.length !== manifest.store_bytes) {
 	throw new Error(`store file is ${store.length} bytes, manifest says ${manifest.store_bytes}`);
 }
-// The paired card-object archive (see CompatData in card_engine): the fields /search never reads,
-// kept out of the store so it stays at three chunks. Published alongside, never separately -- the
-// two share an index space and are meaningless apart.
-const compat = new Uint8Array(readFileSync(`${dir}/${manifest.compat_key}`));
-if (compat.length !== manifest.compat_bytes) {
-	throw new Error(`card-object archive is ${compat.length} bytes, manifest says ${manifest.compat_bytes}`);
-}
-
 // Cut on RAW bytes, then gzip each cut as its own member — the format the
 // reader expects and the ImportCoordinator also publishes. Level 9 here because
 // this runs in the deploy with a real CPU and no alarm budget, where the Worker
@@ -66,13 +56,10 @@ if (compat.length !== manifest.compat_bytes) {
 // load through the identical path and only the stored size differs.
 const gzip = (c: Uint8Array) => gzipSync(c, { level: 9 });
 const { chunks, cut } = chunkForKv(store, gzip);
-const { chunks: compatChunks } = chunkForKv(compat, gzip);
-console.log(`  cut at ${cut} raw bytes -> ${chunks.length} store chunk(s), ${compatChunks.length} residue chunk(s)`);
+console.log(`  cut at ${cut} raw bytes -> ${chunks.length} store chunk(s)`);
 manifest.chunk_count = chunks.length;
-manifest.compat_chunk_count = compatChunks.length;
 // Present iff compressed: this is the flag the reader keys off, not a hint.
 manifest.store_gzip_bytes = chunks.reduce((n, c) => n + c.length, 0);
-manifest.compat_gzip_bytes = compatChunks.reduce((n, c) => n + c.length, 0);
 // Stamped at publish time, not by the Rust builder: the generation describes
 // what this checkout's builder puts in a store, and one TS constant shared by
 // every publisher (here, the seed scripts, and the ImportCoordinator) cannot
@@ -116,10 +103,7 @@ async function namespaceId(): Promise<string> {
 
 // Chunks first: writing them before the manifest is what makes the manifest a
 // commit point. `--path` because a 20MB value cannot ride an argv string.
-for (const [label, key, pieces] of [
-	["chunk", manifest.store_key, chunks],
-	["card-object chunk", manifest.compat_key, compatChunks],
-] as const) {
+for (const [label, key, pieces] of [["chunk", manifest.store_key, chunks]] as const) {
 	for (let seq = 0; seq < pieces.length; seq++) {
 		const bytes = pieces[seq] as Uint8Array;
 		const tmp = join(tmpdir(), `sylvan-store-chunk-${seq}.bin`);
@@ -152,6 +136,5 @@ const mb = (n: number) => `${(n / 1048576).toFixed(1)}MB`;
 console.log(
 	`Store published to KV "${kvName}": ${manifest.store_key} ` +
 		`(${mb(store.length)} raw -> ${mb(manifest.store_gzip_bytes as number)} gzip, ${chunks.length} chunks, ` +
-		`expected ${chunkCountFor(store.length)}) + ${manifest.compat_key} ` +
-		`(${mb(compat.length)} raw -> ${mb(manifest.compat_gzip_bytes as number)} gzip, ${compatChunks.length} chunks).`,
+		`expected ${chunkCountFor(store.length)}).`,
 );

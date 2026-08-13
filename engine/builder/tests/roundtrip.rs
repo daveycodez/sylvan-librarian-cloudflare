@@ -81,8 +81,11 @@ fn card_row(
         "creature_power_text": null,
         "creature_toughness_text": null,
         "planeswalker_loyalty": null,
+        // The PRINTED loyalty, as upstream's own column: the integer above is what `loy:` filters
+        // on, and "X" is why the text cannot be derived from it.
+        "planeswalker_loyalty_text": "X",
         "card_watermark": null,
-        // The residue Scryfall sends that no column holds — the second archive's whole content.
+        // The residue Scryfall sends that no column holds — packed onto the printing.
         // Verbatim Scryfall keys, exactly as the importer snapshots them (see `_compat_blob`).
         "card_compat_blob": {
             "lang": "en",
@@ -91,9 +94,6 @@ fn card_row(
             "set_id": "9d739461-c5ac-43a1-af41-3d5a585b5c8d",
             "set_type": "core",
             "multiverse_ids": [12345],
-            // A printed loyalty this port keeps ONLY here: the `planeswalker_loyalty` column above
-            // is the integer `loy:` filters on, and "X" is why the text cannot be derived from it.
-            "loyalty": "X",
         },
     })
 }
@@ -168,7 +168,7 @@ fn build_load_query_roundtrip() {
 
     let mut bytes: Vec<u8> = Vec::new();
     // `None`: this test is about the SEARCH archive, which is the one /search loads.
-    let stats = builder.finish_to_writer(&mut bytes, None).expect("finish_to_writer");
+    let stats = builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
     assert_eq!(stats.card_count, 2, "two distinct oracle ids");
     assert_eq!(stats.printing_count, 3, "three printings staged");
     assert!(!bytes.is_empty());
@@ -288,20 +288,8 @@ fn result_fields_reach_the_response() {
         builder.add_card(&row).expect("add_card");
     }
     let mut bytes: Vec<u8> = Vec::new();
-    let mut compat: Vec<u8> = Vec::new();
-    builder.finish_to_writer(&mut bytes, Some(&mut compat)).expect("finish_to_writer");
-    let mut store = BufferStore::from_bytes(&bytes).expect("buffer load");
-
-    // A residue field is unreadable until the SECOND archive is attached, and that failure is a
-    // clear error rather than a null — asserted here because "resolves to null" is precisely the
-    // shape a broken split would take, and it is indistinguishable from a card Scryfall sent no
-    // language for.
-    let before = QueryOptions { fields: Some(vec!["lang".to_owned()]), ..QueryOptions::default() };
-    assert!(
-        store.query(r#"{"node_type": "TrueNode"}"#, &before).is_err(),
-        "a residue field without the card-object archive must error, not answer null"
-    );
-    store.attach_compat_bytes(&compat).expect("attach the card-object archive");
+    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
+    let store = BufferStore::from_bytes(&bytes).expect("buffer load");
 
     let opts = QueryOptions {
         fields: Some(vec![
@@ -338,14 +326,14 @@ fn result_fields_reach_the_response() {
     );
     assert_eq!(card["legalities"]["modern"], json!("legal"));
 
-    // The residue half, from the second archive and through the same one query.
+    // The residue fields, off the same printing and through the same one query — one archive.
     assert_eq!(card["lang"], json!("en"));
     assert_eq!(card["games"], json!(["paper"]), "the games bitset decodes to Scryfall's names");
     assert_eq!(
         card["loyalty"],
         json!("X"),
-        "loyalty comes back as the printed string through the archive — an integer column could \
-         not have carried this value at all, which is the whole reason it lives in the residue"
+        "loyalty comes back as the printed string through the archive — the integer column \
+         `loy:` filters on could not have carried this value at all"
     );
 }
 
@@ -358,7 +346,7 @@ fn the_default_field_set_still_resolves() {
         builder.add_card(&row).expect("add_card");
     }
     let mut bytes: Vec<u8> = Vec::new();
-    builder.finish_to_writer(&mut bytes, None).expect("finish_to_writer");
+    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
     let store = BufferStore::from_bytes(&bytes).expect("buffer load");
     store.query(r#"{"node_type": "TrueNode"}"#, &QueryOptions::default()).expect("default fields");
 }

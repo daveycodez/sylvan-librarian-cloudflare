@@ -115,4 +115,32 @@ awk '
     }
 ' "$PERF_DIR/route.txt"
 
+# ── wasm build fit ────────────────────────────────────────────────────────────
+# The in-Worker nightly build runs under wasm-import's --max-memory cap, and the
+# single-archive build's peak tracks the store size (~2.2x amplification) — so
+# corpus growth or a format change can silently take the NIGHTLY from green to
+# aborting. Measured 2026-08-13: peak 120.9MiB against the 124MiB cap. This
+# tripwire runs the real capped build over the real corpus whenever one exists
+# (store-build/rows.jsonl, produced by every `bun run seed:local`), so the cap
+# is breached HERE, before a push, rather than some night in production.
+if [[ -f store-build/rows.jsonl ]]; then
+    step "wasm build fit (124MiB cap, real corpus)"
+    scripts/with-rust.sh cargo rustc --release -p sylvan-wasm-builder-probe \
+        --target wasm32-unknown-unknown -- -C link-arg=--max-memory=130023424 >/dev/null 2>&1
+    FIT_OUT="$PERF_DIR/wasm-fit.txt"
+    if bun engine/wasm-builder-probe/driver.ts \
+        target/wasm32-unknown-unknown/release/sylvan_wasm_builder_probe.wasm \
+        store-build/rows.jsonl "$PERF_DIR/store-wasm.store" > "$FIT_OUT" 2>&1; then
+        grep -E "wasm_heap_peak|linear_memory" "$FIT_OUT" | sed 's/^/  /'
+    else
+        tail -5 "$FIT_OUT" | sed 's/^/  /'
+        echo "  ERROR: the capped wasm build ABORTED — the nightly in-Worker import would die."
+        echo "  Either shrink the archive or raise the cap in package.json build:wasm-import"
+        echo "  (and re-measure JS headroom against the 128MB isolate before doing so)."
+        exit 1
+    fi
+else
+    echo "  (wasm build fit: skipped — no store-build/rows.jsonl; run bun run seed:local to enable)"
+fi
+
 printf '\n\033[1m==> gate green\033[0m\n'

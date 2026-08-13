@@ -109,10 +109,6 @@ const EMIT_SPILL: u32 = 4;
 const EMIT_CHUNK: u32 = 5;
 const EMIT_ROW: u32 = 6;
 const EMIT_TAGDATA: u32 = 7;
-/// The residue archive's chunk stream (see CompatData in card_engine). A second kind rather than
-/// a flag on EMIT_CHUNK so the host stages the two archives into separate tables without having to
-/// track which one is in flight -- they interleave, because the residue is written mid-build.
-const EMIT_COMPAT_CHUNK: u32 = 8;
 
 unsafe extern "C" {
     fn emit(kind: u32, ptr: *const u8, len: usize);
@@ -200,8 +196,9 @@ fn take_buf(ptr: *mut u8, len: usize) -> Vec<u8> {
 /// fills a host buffer rather than consuming one, and the host calls it once
 /// per reorder slice. Unfreed, that is ~390KB of permutation leaked per slice
 /// into linear memory that is never handed back, and it persists into the
-/// build, whose high-water already sits at 94.9MB against this module's 112MB
-/// `--max-memory`.
+/// build, whose high-water sits at 120.9MiB (single-archive build, measured on
+/// the real corpus 2026-08-13) against this module's 124MiB `--max-memory` —
+/// see the fit tripwire in scripts/gate.sh.
 #[unsafe(no_mangle)]
 pub extern "C" fn dealloc(ptr: *mut u8, len: usize) {
     drop(take_buf(ptr, len));
@@ -720,13 +717,7 @@ pub extern "C" fn build_store_stream() -> i64 {
     });
 
     let mut w = ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0, kind: EMIT_CHUNK };
-    // Written DURING the build, before the search indexes exist -- that ordering is what keeps the
-    // peak down, so the two chunk streams interleave and the host must stage them separately.
-    let mut compat_w =
-        ChunkWriter { buf: Vec::with_capacity(CHUNK_BYTES), total: 0, kind: EMIT_COMPAT_CHUNK };
-    let result = builder.finish_from_sorted(rows, &mut w, Some(&mut compat_w));
-    let _ = compat_w.flush();
-    let compat_bytes = compat_w.total;
+    let result = builder.finish_from_sorted(rows, &mut w);
     match result {
         Ok(stats) => {
             if let Some(idx) = failed {
@@ -745,7 +736,6 @@ pub extern "C" fn build_store_stream() -> i64 {
                 "card_count": stats.card_count,
                 "printing_count": stats.printing_count,
                 "store_bytes": w.total,
-                "compat_bytes": compat_bytes,
             }));
             w.total as i64
         }

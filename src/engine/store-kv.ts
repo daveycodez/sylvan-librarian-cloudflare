@@ -8,15 +8,16 @@
 // the free plan's daily quota.
 //
 // KV removes the constraint that created all of it. At KV_CHUNK_BYTES below,
-// the ~72MB store is TWO chunks (it was three until that constant was raised —
-// see its docstring), so:
+// the ~84MB store — ONE archive since generation 19, card-object residue
+// included — is TWO chunks, so:
 //
-//   - a full publish is 4 writes against a 1,000/day free allowance — two
-//     store chunks, the residue archive's one, and the manifest — with no
-//     incremental publish, no dedup, no resume bookkeeping
-//   - a cold `/search` load is 3 reads against 100,000/day (manifest + two
-//     store chunks); `/cards/*` adds the residue archive's one, for 4
-//   - one copy serves every colo, instead of one 72MB SQLite copy per
+//   - a full publish is 3 writes against a 1,000/day free allowance — two
+//     store chunks and the manifest — with no incremental publish, no dedup,
+//     no resume bookkeeping
+//   - a cold load is 3 reads against 100,000/day (manifest + two chunks), and
+//     it is the SAME load for /search and /cards/* — no second archive, no
+//     second round trip
+//   - one copy serves every colo, instead of one 84MB SQLite copy per
 //     Durable Object against a 5GB pool
 //
 // Chunk count is not cosmetic. The loader below pulls chunks STRICTLY IN
@@ -81,23 +82,18 @@ import { EngineUnavailableError } from "./types";
  * just a meter tick. Measured in the other direction: generation 3 added 6.25MB,
  * went 3 chunks to 4, and the production median store load went 337ms to 691ms.
  *
- * RAISED from 26,000,000 to take the 76.6MB store from three chunks to two.
+ * RAISED from 38,400,000 for generation 19: the residue archive folded back into
+ * the store (one archive, upstream's shape), taking it to 83,902,632 bytes, and
+ * this cut keeps that at TWO chunks with 8.1MB of RAW growth room before a
+ * third (a 42MB cut left 97KB — five days of Scryfall drift). Safe only while
+ * the store compresses better than ~1.76x. Measured on the real generation-19
+ * archive (2026-08-13):
  *
- * WHAT THE OLD VALUE GUARANTEED, AND WHAT THIS ONE DOES NOT. 26,000,000 was the
- * largest cut that could not exceed KV_VALUE_CAP_BYTES *even if the data were
- * entirely incompressible* — gzip's worst case is ~0.02% expansion plus a header,
- * so ~26,005,000 against a 26,214,400 cap. It needed no assumption about the
- * data. This value does: it is safe only while the store compresses better than
- * 1.46x. Measured on the generation-12 build, by region:
+ *   chunk 0: raw 46.0MB -> 15.3MB stored   (58% of the value cap)
+ *   chunk 1: raw 37.9MB -> 17.8MB stored   (71.2% of the cap — the binding one)
  *
- *   raw 26.0MB -> 8.5MB stored   3.06x
- *   raw 26.0MB -> 8.3MB stored   3.13x
- *   raw 24.6MB -> 14.5MB stored  1.70x   <- the tail is the least compressible
- *   whole store                  2.45x
- *
- * A two-way cut puts ~12.4MB and ~18.9MB in KV, so the binding chunk sits at 72%
- * of the cap with 28% headroom, and the whole archive would have to compress
- * worse than its worst quarter currently does before it breached.
+ * so the binding chunk carries ~29% headroom, and the whole archive would have
+ * to compress worse than its worst part currently does before it breached.
  *
  * THE FAILURE MODE IS LOUD AND NON-CORRUPTING, which is what makes the trade
  * acceptable. Every publisher compresses and then checks against
@@ -106,19 +102,16 @@ import { EngineUnavailableError } from "./types";
  * republish rather than failing the run. The cost of being wrong is a slower
  * publish, not a broken one.
  *
- * The 128MB isolate no longer constrains this the way it did. The old comment
- * here argued against raising it because a bigger raw cut meant a bigger scratch
- * allocation inside wasm — but the loader now feeds wasm in fixed 4MB blocks
- * (load-blocks.ts) regardless of chunk size, so the only size that scales with
- * this constant is the compressed chunk resident in the JS heap: ~14.5MB before,
- * ~18.9MB now, against 78.7MB of linear memory. Peak goes ~93MB -> ~98MB.
+ * The 128MB isolate does not constrain this: the loader feeds wasm in fixed 4MB
+ * blocks (load-blocks.ts) regardless of chunk size, so the only size that scales
+ * with this constant is the compressed chunk resident in the JS heap (~17.8MB),
+ * against ~84MB of linear memory.
  *
- * Growth is not the thing to watch. Holding these ratios the store would have to
- * reach ~99.6MB to fill the cap, against ~19KB/day of Scryfall drift. What to
- * watch is a FORMAT CHANGE that adds poorly-compressing data in bulk — which is
+ * Growth is not the thing to watch (~19KB/day of Scryfall drift). What to watch
+ * is a FORMAT CHANGE that adds poorly-compressing data in bulk — which is
  * exactly what generation 3 did.
  */
-export const KV_CHUNK_BYTES = 38_400_000;
+export const KV_CHUNK_BYTES = 46_000_000;
 
 /**
  * The cut that needs no assumption about the data: safe even if incompressible.
@@ -494,8 +487,15 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       84 -> 60), and a `printing_by_illustration_id` permutation replaces the
  *       last by-id linear scan. Batched because the rebuild is ~3 minutes and the
  *       version-pair dance is the part worth not repeating three times.
+ *  19 — ONE ARCHIVE, upstream's shape exactly (ARCHIVE_FORMAT_VERSION
+ *       2026081401 -> 2026081402). The residue archive is gone: `compat` rides on
+ *       `Printing` (with its three Vec list fields, upstream's CompatFields
+ *       field-for-field), `all_parts` and the new card-level
+ *       `planeswalker_loyalty_text_id` ride on `OracleCard`, and
+ *       `external_id_index` moves into `CardIndexes`. The manifest loses its
+ *       compat_* fields and a publish is one chunk family plus the manifest.
  */
-export const STORE_CONTENT_GENERATION = 18;
+export const STORE_CONTENT_GENERATION = 19;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
@@ -755,28 +755,6 @@ export function kvStoreStream(env: Env, manifest: StoreManifest): ReadableStream
 		manifest.store_bytes,
 		manifest.chunk_count,
 		manifest.store_gzip_bytes,
-	);
-}
-
-/**
- * The same stream over the paired residue archive (see StoreManifest.compat_key).
- *
- * Separate keys, same immutable-chunk contract. A manifest without one is a store built before
- * the split: `/cards/*` reports the archive as unavailable rather than answering with every
- * residue field missing, which would look like a card Scryfall sent no language or prices for.
- */
-export function kvCompatStream(env: Env, manifest: StoreManifest): ReadableStream<Uint8Array> {
-	if (!manifest.compat_key || !manifest.compat_bytes) {
-		throw new EngineUnavailableError(
-			`Store ${manifest.store_key} has no card-object archive; /cards/* needs one (rebuild the store)`,
-		);
-	}
-	return kvArchiveStream(
-		env,
-		manifest.compat_key,
-		manifest.compat_bytes,
-		manifest.compat_chunk_count,
-		manifest.compat_gzip_bytes,
 	);
 }
 

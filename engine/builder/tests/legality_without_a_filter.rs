@@ -84,14 +84,12 @@ fn card_row() -> Value {
 /// Set in the CHILD process, which only builds the archive and exits.
 const BUILD_PHASE: &str = "SYLVAN_LEGALITY_PROBE_BUILD";
 
-fn build_archives(store_path: &std::path::Path, compat_path: &std::path::Path) {
+fn build_archive(store_path: &std::path::Path) {
     let mut builder = StoreBuilder::new();
     builder.add_card(&card_row()).expect("add_card");
     let mut bytes: Vec<u8> = Vec::new();
-    let mut compat: Vec<u8> = Vec::new();
-    builder.finish_to_writer(&mut bytes, Some(&mut compat)).expect("finish_to_writer");
+    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
     std::fs::write(store_path, &bytes).expect("write store archive");
-    std::fs::write(compat_path, &compat).expect("write compat archive");
 }
 
 #[test]
@@ -99,14 +97,13 @@ fn a_card_object_carries_its_legalities_before_any_query_runs() {
     let dir = std::env::temp_dir().join("sylvan_legality_probe");
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let store_path = dir.join("store.bin");
-    let compat_path = dir.join("compat.bin");
 
     // The build has to happen in a DIFFERENT PROCESS. `StoreBuilder` assigns format shifts as it
     // interns them, so a build in this process populates FORMAT_SHIFTS and the assertion below
     // passes whether or not loading does -- which is precisely how a first attempt at this test
     // came up green against the unfixed engine. A Worker only ever LOADS a prebuilt archive.
     if std::env::var(BUILD_PHASE).is_ok() {
-        build_archives(&store_path, &compat_path);
+        build_archive(&store_path);
         return;
     }
     let status = std::process::Command::new(std::env::current_exe().expect("current_exe"))
@@ -117,12 +114,10 @@ fn a_card_object_carries_its_legalities_before_any_query_runs() {
     assert!(status.success(), "the build phase failed in the child process");
 
     let bytes = std::fs::read(&store_path).expect("read store archive");
-    let compat = std::fs::read(&compat_path).expect("read compat archive");
 
-    // Load and attach ONLY -- and note nothing in THIS process has built or queried anything, so
-    // the registry holds exactly what loading the archive put there.
-    let mut store = BufferStore::from_bytes(&bytes).expect("buffer load");
-    store.attach_compat_bytes(&compat).expect("attach the card-object archive");
+    // Load ONLY -- and note nothing in THIS process has built or queried anything, so the
+    // registry holds exactly what loading the archive put there.
+    let store = BufferStore::from_bytes(&bytes).expect("buffer load");
 
     let card = store
         .card_by_scryfall_id("aaaaaaaa-0000-0000-0000-000000000001", Some(vec!["name".to_owned(), "legalities".to_owned()]))

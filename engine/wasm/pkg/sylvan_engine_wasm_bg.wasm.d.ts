@@ -2,14 +2,10 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const init_store: (a: number, b: number) => [number, number];
-export const init_compat_store: (a: number, b: number) => [number, number];
 export const begin_store_load: (a: number) => [number, number];
+export const store_load_chunk: (a: number, b: number) => [number, number];
 export const finish_store_load: () => [number, number];
 export const store_loaded: () => number;
-export const begin_compat_load: (a: number) => [number, number];
-export const compat_load_chunk: (a: number, b: number) => [number, number];
-export const finish_compat_load: () => [number, number];
-export const compat_loaded: () => number;
 export const query: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const query_rows: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const scryfall_search: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
@@ -26,7 +22,6 @@ export const exact_card_by_name: (a: number, b: number, c: number, d: number, e:
 export const card_by_illustration_id: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const cards_containing_all_words: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
-export const store_load_chunk: (a: number, b: number) => [number, number];
 export const size: () => number;
 export const card_count: () => number;
 export const __init_panic_hook: () => void;
