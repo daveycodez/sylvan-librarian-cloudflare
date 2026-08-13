@@ -47,9 +47,25 @@ export const PLACEMENT_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace";
  */
 export const PROBE_MIN_INTERVAL_MS = 60 * 60 * 1000;
 
-/** How long to wait for the trace before giving up. Nothing depends on the
- * answer, so a hung probe must not hold the object open. */
-const PROBE_TIMEOUT_MS = 5_000;
+/**
+ * How long to wait for the trace before giving up. Nothing depends on the
+ * answer, so a hung probe must not hold the object open.
+ *
+ * ARMED ON A CONTROLLER THAT IS CANCELLED, not on `AbortSignal.timeout`, which
+ * gives no handle to cancel. That timer stays pending in the object's I/O
+ * context after the trace has answered, and the invocation cannot close until
+ * it fires — so this budget was not a ceiling on a hung probe, it was a floor
+ * on EVERY cold load. Production, request f7f1321e (2026-08-12T23:36 PDT): the
+ * store loaded from local cache at t+669ms, the trace answered at t+690ms, and
+ * the invocation ended at t+5669ms — 5000ms after the probe was armed, to the
+ * millisecond, with 557ms of CPU spent and nothing logged in the gap.
+ *
+ * Nobody waited on it: the RPC returns when the method returns, and this runs
+ * under `waitUntil`. What it cost was ~0.64 GB-s of Durable Object duration per
+ * wake, and the readability of the one trace that shows a cold load — every one
+ * of them measured 5.7s whatever it had actually done.
+ */
+export const PROBE_TIMEOUT_MS = 5_000;
 
 /** What a probe needs from its caller: somewhere to park the work, and who to
  * name in the log. Structurally the useful half of DurableObjectState. */
@@ -108,8 +124,14 @@ export function probePlacement(ctx: PlacementContext, fetcher: typeof fetch = fe
 	// unattributed colo answers nothing worth the request.
 	if (!label) return;
 	if (!takeProbeSlot(Date.now())) return;
+	// See PROBE_TIMEOUT_MS: the deadline has to be cancellable, so it is a plain
+	// timer on a controller rather than `AbortSignal.timeout`. Cleared in the
+	// `finally` below, which runs on every outcome — answered, failed, or timed
+	// out — so the only thing that ever holds the invocation is the fetch itself.
+	const deadline = new AbortController();
+	const timer = setTimeout(() => deadline.abort(new Error(`no trace within ${PROBE_TIMEOUT_MS}ms`)), PROBE_TIMEOUT_MS);
 	ctx.waitUntil(
-		fetcher(PLACEMENT_TRACE_URL, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+		fetcher(PLACEMENT_TRACE_URL, { signal: deadline.signal })
 			.then((res) => res.text())
 			.then((body) => {
 				console.log(placementLine(label, parseTrace(body)));
@@ -120,6 +142,7 @@ export function probePlacement(ctx: PlacementContext, fetcher: typeof fetch = fe
 				console.warn(`[${label}] could not determine its placement: ${err}`);
 			})
 			.finally(() => {
+				clearTimeout(timer);
 				probing = false;
 			}),
 	);

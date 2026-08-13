@@ -242,6 +242,79 @@ describe("probing never lands on the request path", () => {
 		}
 	});
 
+	/**
+	 * Swap the global timers for handles this test can see, so "is a timer still armed?" — which is
+	 * otherwise invisible from inside the process — becomes an assertion. Promises do not go through
+	 * setTimeout, so the probe's own control flow is unaffected.
+	 */
+	function captureTimers() {
+		const armed: { fn: () => void; ms?: number }[] = [];
+		const cleared: unknown[] = [];
+		const setSpy = spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+			const handle = { fn, ms };
+			armed.push(handle);
+			return handle as unknown as ReturnType<typeof setTimeout>;
+		}) as unknown as typeof setTimeout);
+		const clearSpy = spyOn(globalThis, "clearTimeout").mockImplementation(((h: unknown) => {
+			cleared.push(h);
+		}) as unknown as typeof clearTimeout);
+		const restore = () => {
+			setSpy.mockRestore();
+			clearSpy.mockRestore();
+		};
+		return { armed, cleared, restore };
+	}
+
+	test("the answered probe leaves no timer armed, so it cannot hold the invocation open", async () => {
+		// THE REGRESSION THIS EXISTS FOR. `AbortSignal.timeout` cannot be cancelled, so its timer
+		// stayed pending in the Durable Object's I/O context long after the trace had answered and
+		// the invocation could not close until it fired. Production request f7f1321e ended exactly
+		// PROBE_TIMEOUT_MS after the probe was armed, having finished its work in 690ms.
+		const p = await freshPlacement(5);
+		const timers = captureTimers();
+		const log = spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const fetcher = (async () => new Response("colo=SJC\nloc=US\n")) as unknown as typeof fetch;
+			const pending: Promise<unknown>[] = [];
+			p.probePlacement({ waitUntil: (x: Promise<unknown>) => pending.push(x), label: "engine-wnam" }, fetcher);
+			await Promise.all(pending);
+
+			expect(timers.armed).toHaveLength(1);
+			expect(timers.armed[0]?.ms).toBe(p.PROBE_TIMEOUT_MS);
+			// Cancelled, not merely fired-and-ignored: an uncancelled timer is the bug.
+			expect(timers.cleared).toEqual([timers.armed[0]]);
+		} finally {
+			log.mockRestore();
+			timers.restore();
+		}
+	});
+
+	test("a hung probe is still abandoned at the deadline", async () => {
+		// The property the timeout was added for, and which cancelling it must not cost: nothing
+		// depends on the trace, so a probe that never answers must not keep the object resident.
+		const p = await freshPlacement(6);
+		const timers = captureTimers();
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// Answers only by being aborted — the shape of a trace endpoint that has gone silent.
+			const fetcher = ((_url: string, init?: { signal?: AbortSignal }) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+				})) as unknown as typeof fetch;
+			const pending: Promise<unknown>[] = [];
+			p.probePlacement({ waitUntil: (x: Promise<unknown>) => pending.push(x), label: "engine-wnam" }, fetcher);
+			expect(timers.cleared).toEqual([]);
+
+			// Fire the deadline by hand rather than waiting five seconds for it.
+			timers.armed[0]?.fn();
+			await Promise.all(pending);
+			expect(warn).toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+			timers.restore();
+		}
+	});
+
 	test("the throttle interval is long enough to bound the eviction hold", () => {
 		// An outbound request keeps a DO resident for as long as its connection is
 		// pooled (~15 minutes). An interval below that would keep an idle object
