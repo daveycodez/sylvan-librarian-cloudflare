@@ -1,6 +1,6 @@
 use super::{
     and_child_rank, assign_name_ranks,
-    build_numeric_index, build_oracle_text_index, build_tag_index, build_trigram_index,
+    build_numeric_index, build_oracle_text_index, build_trigram_index,
     build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, assign_artist_ranks, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
@@ -12213,6 +12213,41 @@ fn cards_without_relations_carry_none() {
 }
 
 // ─── Fuzzy name matching ──────────────────────────────────────────────────────
+
+/// `trigrams_into` is a hand-rolled restatement of `trigrams`'s padded-window definition that
+/// avoids materialising the `"  word "` buffer, so the two must agree EXACTLY — a single dropped
+/// or extra window would shift every fuzzy score without failing anything else.
+///
+/// The word lengths are the interesting axis: 1 and 2 bytes are the cases where the padded form is
+/// shorter than a full 3-window and the leading/trailing windows overlap, which is precisely where
+/// an off-by-one would hide.
+#[test]
+fn trigrams_into_matches_the_padded_definition() {
+    let mut buf = Vec::new();
+    for s in [
+        "",
+        "a",
+        "ab",
+        "abc",
+        "abcd",
+        "a b",
+        "a bc def",
+        "jace beleren",
+        "urza's bauble",
+        "  leading and trailing  ",
+        "!!! ??? ---",
+        "eowyn",
+        "éowyn",
+        "fire // ice",
+        "x",
+        "aaaa aaaa",
+        "Ætherling",
+    ] {
+        crate::trigrams_into(s, &mut buf);
+        let want: Vec<[u8; 3]> = crate::trigrams(s).into_iter().collect();
+        assert_eq!(buf, want, "trigrams_into disagrees with trigrams for {s:?}");
+    }
+}
 
 #[test]
 fn trigram_similarity_matches_pg_trgm() {

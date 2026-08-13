@@ -612,6 +612,81 @@ fn cmd_tagbench(store_path: &Path, iters: usize) {
     println!("control  TrueNode                {t_true} us ({n_true} matches)");
 }
 
+/// Text and name search cost, per INDEX TIER.
+///
+/// The two largest remaining archive reductions are both text-shaped, and both trade bytes for work
+/// on this path, so neither can be judged without it:
+///
+///   - `oracle_text_lower` / `flavor_text_lower` are exact `to_lowercase()` duplicates on 100% of
+///     rows (~7.5 MiB). Dropping them means matching case-insensitively against the cased text, so
+///     the cost lands on whatever VERIFIES a text predicate.
+///   - `card_name_folded` differs from `card_name_lower` on 88 of 31,724 cards (~1.45 MiB after
+///     alignment). Interning it moves the folded read behind a branch and an occasional `str_at`.
+///
+/// Aimed at the TIERS rather than at queries that look representative, because the tiers are what
+/// the change moves: a >=4-char word hits the word dictionary, a 3-char needle the exact trigram
+/// table, a longer substring a trigram intersection plus a verify scan, a 2-char name needle the
+/// bigram index, and fuzzy name a full similarity scan. The verify-scan rows are the ones that
+/// would pay for a `_lower` removal; the fuzzy and bigram rows are the ones `card_name_folded`
+/// would pay for. Recording both now means the "after" has something honest to sit beside.
+fn cmd_textbench(store_path: &Path, iters: usize) {
+    use card_engine::{BufferStore, QueryOptions};
+    use std::time::Instant;
+
+    let bytes = std::fs::read(store_path).expect("read store");
+    let store = BufferStore::from_bytes(&bytes).expect("load store");
+
+    // Wire shapes taken verbatim from src/parser (parseScryfallQuery).
+    let text_tree = |attr: &str, orig: &str, needle: &str| {
+        format!(
+            r#"{{"node_type":"CardBinaryOperatorNode","kwargs":{{"lhs":{{"node_type":"CardAttributeNode","kwargs":{{"attribute_name":"{attr}","original_attribute":"{orig}"}}}},"op":":","rhs":{{"node_type":"StringValueNode","kwargs":{{"value":"{needle}"}}}}}}}}"#
+        )
+    };
+
+    let time_query = |tree: &str| -> (u128, usize) {
+        let opts = QueryOptions { limit: 175, ..QueryOptions::default() };
+        let warm = store.query(tree, &opts).expect("query");
+        let mut best = u128::MAX;
+        for _ in 0..iters {
+            let t = Instant::now();
+            let r = store.query(tree, &opts).expect("query");
+            best = best.min(t.elapsed().as_micros());
+            std::hint::black_box(r.total);
+        }
+        (best, warm.total)
+    };
+
+    println!("{:<34} {:<26} {:>10} {:>10}", "tier", "query", "us", "matches");
+    for (tier, attr, orig, needle) in [
+        ("oracle: word dictionary (>=4)", "oracle_text", "o", "battlefield"),
+        ("oracle: word dictionary (common)", "oracle_text", "o", "draw"),
+        ("oracle: exact trigram (3-char)", "oracle_text", "o", "lif"),
+        ("oracle: trigram + verify scan", "oracle_text", "o", "attlefield"),
+        ("oracle: phrase + verify scan", "oracle_text", "o", "draw card"),
+        ("oracle: 2-char, no tier (scan)", "oracle_text", "o", "qx"),
+        ("name: bigram (2-char)", "card_name", "name", "wa"),
+        ("name: word", "card_name", "name", "ward"),
+        ("name: substring + verify", "card_name", "name", "arden"),
+        ("flavor: verify scan", "flavor_text", "ft", "death"),
+    ] {
+        let (t, n) = time_query(&text_tree(attr, orig, needle));
+        println!("{:<34} {:<26} {:>10} {:>10}", tier, format!("{orig}:{needle}"), t, n);
+    }
+
+    // Fuzzy name resolution is a different path again: a full similarity scan over every card's
+    // folded name, which is exactly what `card_name_folded` would make indirect.
+    let t = Instant::now();
+    let mut best = u128::MAX;
+    for _ in 0..iters {
+        let s = Instant::now();
+        let r = store.fuzzy_card_by_name("jace beleran", 0.5, 0.05, None);
+        best = best.min(s.elapsed().as_micros());
+        std::hint::black_box(r.is_ok());
+    }
+    let _ = t;
+    println!("{:<34} {:<26} {:>10} {:>10}", "name: fuzzy (full scan)", "fuzzy 'jace beleran'", best, "-");
+}
+
 /// Semantic parity gate between two store files. Archive bytes are
 /// legitimately nondeterministic (HashMap seeding permutes index entry order,
 /// run-to-run even on one machine), so equality is defined over what the
@@ -732,6 +807,10 @@ fn main() {
         "tagbench" => {
             let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
             cmd_tagbench(&arg(&args, "store"), iters);
+        }
+        "textbench" => {
+            let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
+            cmd_textbench(&arg(&args, "store"), iters);
         }
         other => {
             eprintln!("unknown command {other:?}; expected gen | rows | build");

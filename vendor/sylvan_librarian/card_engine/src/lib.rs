@@ -3203,6 +3203,36 @@ fn trigrams(s: &str) -> std::collections::BTreeSet<[u8; 3]> {
 }
 
 /// pg_trgm's `similarity(a, b)`: Jaccard over trigram sets. 0.0 when both are empty.
+/// `trigrams`, written into a caller-owned buffer as a sorted, deduped run.
+///
+/// Same trigram definition as `trigrams` (pg_trgm's `"  word "` padding, windowed over bytes), and
+/// `fuzzy_name_match` reuses one buffer across every card so its scan allocates once instead of
+/// 31,724 times. Sorted+deduped so a merge can stand in for a set intersection.
+fn trigrams_into(s: &str, out: &mut Vec<[u8; 3]>) {
+    out.clear();
+    for word in s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+        let bytes = word.as_bytes();
+        // The padded form is "  word ", so the windows are: two leading pairs that need no buffer,
+        // then the word's own windows, then the trailing one. Materialising the padded Vec was the
+        // other per-name allocation.
+        out.push([b' ', b' ', bytes[0]]);
+        if bytes.len() >= 2 {
+            out.push([b' ', bytes[0], bytes[1]]);
+        } else {
+            out.push([b' ', bytes[0], b' ']);
+        }
+        for w in bytes.windows(3) {
+            out.push([w[0], w[1], w[2]]);
+        }
+        if bytes.len() >= 2 {
+            let n = bytes.len();
+            out.push([bytes[n - 2], bytes[n - 1], b' ']);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+}
+
 pub(crate) fn trigram_similarity(a: &str, b: &str) -> f32 {
     let (ta, tb) = (trigrams(a), trigrams(b));
     if ta.is_empty() || tb.is_empty() {
@@ -3230,11 +3260,55 @@ pub(crate) enum FuzzyOutcome {
 /// themselves and report ambiguous.
 pub(crate) fn fuzzy_name_match(cards: &Archived<Vec<OracleCard>>, needle: &str, floor: f32, lead: f32) -> FuzzyOutcome {
     let needle = needle.to_lowercase();
+    // The needle's trigrams are LOOP-INVARIANT, and a sorted Vec is the shape this scan wants
+    // rather than the BTreeSet `trigram_similarity` returns. Calling that helper per card rebuilt
+    // this set 31,724 times and heap-allocated a fresh BTreeSet (plus a padded Vec per word) for
+    // every name besides — on a path that is one linear pass over every card in the corpus.
+    // Measured on the real corpus: 25,350 us for one `?fuzzy=` lookup before this.
+    //
+    // `trigram_similarity` itself is deliberately untouched: it is pinned to pg_trgm's definition
+    // by `trigram_similarity_matches_pg_trgm`, and this computes the identical Jaccard ratio by a
+    // different route (two sorted runs merged, instead of two sets intersected).
+    let mut needle_tg: Vec<[u8; 3]> = trigrams(&needle).into_iter().collect();
+    needle_tg.sort_unstable();
+    needle_tg.dedup();
+    if needle_tg.is_empty() {
+        return FuzzyOutcome::Miss;
+    }
+    // Reused across every card, so the scan allocates once rather than per name. Card names are
+    // InlineStr<61>, so a name yields at most ~64 trigrams and this never grows after the first.
+    let mut name_tg: Vec<[u8; 3]> = Vec::with_capacity(64);
     let mut best: Option<(f32, u32, &str)> = None;
     let mut runner_up: Option<f32> = None;
     for (cid, card) in cards.iter().enumerate() {
         let name = card.card_name_folded.as_str();
-        let score = trigram_similarity(name, &needle);
+        trigrams_into(name, &mut name_tg);
+        if name_tg.is_empty() {
+            continue;
+        }
+        // Jaccard is bounded by the size ratio: `shared <= min(|a|,|b|)` and
+        // `union >= max(|a|,|b|)`, so `score <= min/max`. When that ceiling is already under the
+        // floor the merge below cannot change the outcome, and skipping it is exact rather than
+        // approximate — no candidate that could clear `floor` is dropped.
+        let (la, lb) = (name_tg.len(), needle_tg.len());
+        if (la.min(lb) as f32) < floor * la.max(lb) as f32 {
+            continue;
+        }
+        // Two sorted runs merged: no set, no allocation, no hashing.
+        let (mut i, mut j, mut shared) = (0usize, 0usize, 0usize);
+        while i < la && j < lb {
+            match name_tg[i].cmp(&needle_tg[j]) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    shared += 1;
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        let union = la + lb - shared;
+        let score = if union == 0 { 0.0 } else { shared as f32 / union as f32 };
         if score < floor {
             continue;
         }
