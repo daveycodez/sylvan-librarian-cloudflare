@@ -687,6 +687,171 @@ fn cmd_textbench(store_path: &Path, iters: usize) {
     println!("{:<34} {:<26} {:>10} {:>10}", "name: fuzzy (full scan)", "fuzzy 'jace beleran'", best, "-");
 }
 
+/// Every serving route that is NOT a `/search` query, timed.
+///
+/// `textbench` exists because the text tiers are where the archive reductions land. This exists
+/// because of what building that bench turned up: `?fuzzy=` was costing 25.8ms, 22x the next worst
+/// thing measured, and nothing had ever timed it. That was not a text-search finding — it was a
+/// finding about a ROUTE nobody had put a clock on.
+///
+/// So this puts a clock on the rest of them. The `/cards/*` surface reaches the engine through nine
+/// entry points besides `query`, several of which are linear scans over the corpus by construction
+/// (`card_by_illustration_id` compares a u128 against every printing; `autocomplete` calls
+/// `starts_with` on every card). Whether that matters is a question about constants, and constants
+/// are measured, not reasoned about.
+fn cmd_routebench(store_path: &Path, iters: usize) {
+    use card_engine::{BufferStore, QueryOptions};
+    use std::time::Instant;
+
+    let bytes = std::fs::read(store_path).expect("read store");
+    let mut store = BufferStore::from_bytes(&bytes).expect("load store");
+    // The residue, if it was built alongside: several /cards/* routes decline without it, and one
+    // (card_by_external_id) exists only to read it.
+    if let Some(dir) = store_path.parent() {
+        let compat = std::fs::read_dir(dir)
+            .expect("read out dir")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("card-compat-")));
+        if let Some(c) = compat {
+            store.attach_compat_bytes(&std::fs::read(&c).expect("read compat")).expect("attach compat");
+            println!("(residue attached: {})", c.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+        }
+    }
+
+    // Real ids from the corpus, so no route is measured against a miss (a miss can be the FAST
+    // path — `card_by_illustration_id` returns early on an unparseable id — which would flatter
+    // exactly the scan this is trying to catch).
+    let f = |names: &[&str]| Some(names.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>());
+    let sample = store
+        .sample_preferred(200, 42, f(&["scryfall_id", "oracle_id", "illustration_id", "name"]))
+        .expect("sample");
+    let get = |i: usize, k: &str| sample[i].get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let (sid, oid, ill, name) = (get(0, "scryfall_id"), get(0, "oracle_id"), get(0, "illustration_id"), get(0, "name"));
+    let ids: Vec<String> = (0..75.min(sample.len())).map(|i| get(i, "scryfall_id")).collect();
+    let folded = name.to_lowercase();
+
+    let mut time = |label: &str, mut run: Box<dyn FnMut() -> String + '_>| {
+        let note = run();
+        let mut best = u128::MAX;
+        for _ in 0..iters {
+            let t = Instant::now();
+            let out = run();
+            best = best.min(t.elapsed().as_micros());
+            std::hint::black_box(out);
+        }
+        println!("{:<38} {:>10} us   {}", label, best, note);
+    };
+
+    time("card_by_scryfall_id", Box::new(|| {
+        format!("{:?}", store.card_by_scryfall_id(&sid, None).expect("q").is_some())
+    }));
+    time("cards_by_scryfall_ids (75)", Box::new(|| {
+        format!("{} rows", store.cards_by_scryfall_ids(&ids, None).expect("q").len())
+    }));
+    time("printings_of_oracle_id", Box::new(|| {
+        format!("{} rows", store.printings_of_oracle_id(&oid, None).expect("q").len())
+    }));
+    time("exact_card_by_name", Box::new(|| {
+        format!("{:?}", store.exact_card_by_name(&folded, None, None).expect("q").is_some())
+    }));
+    // A LINEAR SCAN that stops at the first match, so one sample id measures only how early that
+    // card happens to sit. Sweeping 200 and reporting the worst is what says whether the scan
+    // matters — the tail is the number a user with an unlucky illustration actually pays.
+    {
+        let mut worst = (0u128, String::new());
+        let mut total = 0u128;
+        let n = sample.len();
+        for i in 0..n {
+            let id = get(i, "illustration_id");
+            if id.is_empty() {
+                continue;
+            }
+            let t = Instant::now();
+            std::hint::black_box(store.card_by_illustration_id(&id, None).expect("q"));
+            let us = t.elapsed().as_micros();
+            total += us;
+            if us > worst.0 {
+                worst = (us, id);
+            }
+        }
+        println!(
+            "{:<38} {:>10} us   worst of {} sampled (mean {} us)",
+            "card_by_illustration_id", worst.0, n, total / n.max(1) as u128
+        );
+    }
+    time("card_by_external_id (multiverse)", Box::new(|| {
+        format!("{:?}", store.card_by_external_id("multiverse", 3, None).expect("q").is_some())
+    }));
+    time("autocomplete('lig', 20)", Box::new(|| format!("{} names", store.autocomplete("lig", 20).len())));
+    time("cards_containing_all_words", Box::new(|| {
+        let w = vec!["lightning".to_owned(), "bolt".to_owned()];
+        format!("{} rows", store.cards_containing_all_words(&w, None, 20, None).expect("q").len())
+    }));
+    time("sample_preferred(75)", Box::new(|| format!("{} rows", store.sample_preferred(75, 7, None).expect("q").len())));
+
+    // Paging: a deep offset is the shape that makes a streamed sort walk furthest, and it is the
+    // one a crawler reaches by following next_page.
+    let true_node = r#"{"node_type": "TrueNode"}"#;
+    for (label, offset) in [("query orderby=name offset=0", 0usize), ("query orderby=name offset=9000", 9000)] {
+        let opts = QueryOptions { limit: 175, offset, orderby: "name".to_owned(), ..QueryOptions::default() };
+        time(label, Box::new(|| format!("{} total", store.query(true_node, &opts).expect("q").total)));
+    }
+    for (label, unique) in [("query unique=printing", "printing"), ("query unique=artwork", "artwork")] {
+        let opts = QueryOptions { limit: 175, unique: unique.to_owned(), ..QueryOptions::default() };
+        time(label, Box::new(|| format!("{} total", store.query(true_node, &opts).expect("q").total)));
+    }
+}
+
+/// Deterministic digest of the folded-name routes, so narrowing them can be proved to change
+/// nothing. Timings say a change is faster; only this says it still answers the same.
+fn cmd_namecheck(store_path: &Path) {
+    use card_engine::BufferStore;
+
+    let bytes = std::fs::read(store_path).expect("read store");
+    let store = BufferStore::from_bytes(&bytes).expect("load store");
+    let f = |n: &[&str]| Some(n.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>());
+    let sample = store.sample_preferred(400, 11, f(&["name"])).expect("sample");
+
+    let mut lines: Vec<String> = Vec::new();
+    for row in &sample {
+        let Some(name) = row.get("name").and_then(|v| v.as_str()) else { continue };
+        let folded = name.to_lowercase();
+        // exact: the whole name, and each face of a split card, which is the fallback arm.
+        for needle in std::iter::once(folded.clone()).chain(folded.split(" // ").map(str::to_owned)) {
+            let got = store
+                .exact_card_by_name(&needle, None, None)
+                .expect("exact")
+                .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_owned))
+                .unwrap_or_else(|| "<none>".to_owned());
+            lines.push(format!("exact {needle} -> {got}"));
+        }
+        // containment: each word of the name, and the first two together.
+        let words: Vec<String> = folded.split_whitespace().map(str::to_owned).collect();
+        for w in words.iter().take(3) {
+            let got = store.cards_containing_all_words(std::slice::from_ref(w), None, 2, None).expect("words");
+            let names: Vec<&str> = got.iter().filter_map(|v| v.get("name").and_then(|n| n.as_str())).collect();
+            lines.push(format!("words [{w}] -> {names:?}"));
+        }
+        if words.len() >= 2 {
+            let pair = words[..2].to_vec();
+            let got = store.cards_containing_all_words(&pair, None, 2, None).expect("words");
+            let names: Vec<&str> = got.iter().filter_map(|v| v.get("name").and_then(|n| n.as_str())).collect();
+            lines.push(format!("words {pair:?} -> {names:?}"));
+        }
+    }
+    // Sorted so the digest does not depend on sample iteration order.
+    lines.sort();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for l in &lines {
+        for b in l.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+    }
+    println!("namecheck {} probes, digest {h:016x}", lines.len());
+}
+
 /// Semantic parity gate between two store files. Archive bytes are
 /// legitimately nondeterministic (HashMap seeding permutes index entry order,
 /// run-to-run even on one machine), so equality is defined over what the
@@ -811,6 +976,11 @@ fn main() {
         "textbench" => {
             let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
             cmd_textbench(&arg(&args, "store"), iters);
+        }
+        "namecheck" => cmd_namecheck(&arg(&args, "store")),
+        "routebench" => {
+            let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
+            cmd_routebench(&arg(&args, "store"), iters);
         }
         other => {
             eprintln!("unknown command {other:?}; expected gen | rows | build");

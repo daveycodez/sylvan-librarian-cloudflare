@@ -1554,7 +1554,9 @@ impl BufferStore {
         // named that. Scryfall returns the whole-name match. Matching a face is right -- Scryfall
         // resolves `exact=Delver of Secrets` -- but it is a FALLBACK, not a peer.
         let mut best: Option<(bool, f32, usize, usize)> = None;
-        for (cid, card) in data.cards.iter().enumerate() {
+        for cid in name_scan_candidates(data, folded) {
+            let cid = cid as usize;
+            let card = &data.cards[cid];
             let stored = card.card_name_folded.as_str();
             if !folded_name_matches(stored, folded) {
                 continue;
@@ -1596,7 +1598,13 @@ impl BufferStore {
         let data = self.data();
         // Best printing per distinct NAME, not per card: two cards sharing a name are one answer.
         let mut by_name: Vec<(&str, f32, usize, usize)> = Vec::new();
-        for (cid, card) in data.cards.iter().enumerate() {
+        // Narrow on the LONGEST word: every word must be contained, so any one of them is a sound
+        // filter, and the longest has the most trigrams to intersect and so the fewest postings to
+        // survive them. Candidate ids stay ascending, which is what the `limit` break below assumes.
+        let longest = words.iter().max_by_key(|w| w.len()).map(String::as_str).unwrap_or("");
+        for cid in name_scan_candidates(data, longest) {
+            let cid = cid as usize;
+            let card = &data.cards[cid];
             let name = card.card_name_folded.as_str();
             if !words.iter().all(|w| name.contains(w.as_str())) {
                 continue;
@@ -2016,6 +2024,28 @@ fn opt_cents_value(v: Option<u32>) -> Value {
 }
 
 /// Upstream's `exact=` predicate: the whole folded name, or either half of a `Front // Back` one.
+/// Card ids worth examining for a folded-name predicate, narrowed by `name_trigram` when it can be.
+///
+/// LOCAL ADDITION (Cloudflare port). Every `/cards/named` route scanned all ~31,700 cards doing
+/// string work, while `name:` in the query language answered the same question through this index
+/// in a tenth the time — measured, `exact_card_by_name` 1,090 us against `name:ward` at 75 us.
+/// The index was right there; these routes predate the habit of reaching for it.
+///
+/// SOUND because both callers require the needle as a CONTIGUOUS SUBSTRING of the stored folded
+/// name — `folded_name_matches` accepts the whole name or one side of a " // " split, and
+/// `cards_containing_all_words` uses `contains` — so a matching name contains every trigram of the
+/// needle and cannot be outside the intersection. The callers still re-verify; this only decides
+/// who gets asked.
+///
+/// `None` from `trigram_candidates` means the needle is under 3 bytes, where the index has nothing
+/// to say and the full scan is the only answer. NOT usable for `autocomplete`, which matches on
+/// `card_name_lower` while this index is built over `card_name_folded`: the two differ on 88 cards,
+/// so narrowing a lower-name predicate through a folded index would silently drop them.
+fn name_scan_candidates(data: &Archived<CardData>, needle: &str) -> Vec<u32> {
+    crate::trigram_candidates(&data.indexes.name_trigram, needle)
+        .unwrap_or_else(|| (0..data.cards.len() as u32).collect())
+}
+
 fn folded_name_matches(stored: &str, needle: &str) -> bool {
     if stored == needle {
         return true;
