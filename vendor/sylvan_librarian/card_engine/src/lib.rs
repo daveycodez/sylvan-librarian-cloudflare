@@ -3233,6 +3233,12 @@ fn trigrams_into(s: &str, out: &mut Vec<[u8; 3]>) {
     out.dedup();
 }
 
+/// TEST-ONLY since the fuzzy scan stopped calling it: this is the REFERENCE statement of
+/// pg_trgm's similarity, pinned by `trigram_similarity_matches_pg_trgm` and used by
+/// `trigrams_into_matches_the_padded_definition` to hold the scan's faster route to it. Kept
+/// rather than deleted because a definition the tests check against is worth more than the call
+/// site it lost.
+#[cfg(test)]
 pub(crate) fn trigram_similarity(a: &str, b: &str) -> f32 {
     let (ta, tb) = (trigrams(a), trigrams(b));
     if ta.is_empty() || tb.is_empty() {
