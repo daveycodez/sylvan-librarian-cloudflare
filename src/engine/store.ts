@@ -39,6 +39,7 @@ import {
 	fillCache,
 	pruneCache,
 	readLiveManifest,
+	recordLiveManifest,
 } from "./store-cache";
 import { announceSelf, kvStoreStream, readManifest } from "./store-kv";
 import type {
@@ -531,7 +532,35 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// ~190ms of DecompressionStream per load in workerd — which is why this is a
 	// trade, not a free win, and why `store_gzip_bytes` is a flag the reader can
 	// still see absent.
-	const { pieces, blocks } = await feedStore(body, manifest.store_bytes, sink);
+	let counts: FeedCounts;
+	try {
+		counts = await feedStore(body, manifest.store_bytes, sink);
+	} catch (err) {
+		// A PUSHED manifest can name a store that no longer loads — its archive header no longer
+		// matches this build, or its chunks were pruned by a deploy that published without
+		// notifying. The confirm read below was started for exactly this doubt, but it used to be
+		// consulted only AFTER a successful load, so a failing pushed manifest wedged the object:
+		// every wake re-read the same stale record, failed the same way, and nothing ever asked KV
+		// what is actually live. Production, 2026-08-13: a generation bump pruned the old chunks
+		// and every engine object answered 5xx until this fallback existed.
+		if (confirm) {
+			const truth = await confirm;
+			if (truth?.store_bytes && truth.store_key !== manifest.store_key) {
+				console.warn(
+					`${tag(ctx)}the pushed manifest named ${manifest.store_key}, which failed to load (${err}); ` +
+						`KV says ${truth.store_key} — reloading from that`,
+				);
+				sink?.abort();
+				wasm.unload_store();
+				// Overwrite the stale record so the NEXT wake starts from the store that exists,
+				// instead of paying this failed load again.
+				if (ctx?.storage) recordLiveManifest(ctx.storage, truth);
+				return loadStore(env, ctx, truth);
+			}
+		}
+		throw err;
+	}
+	const { pieces, blocks } = counts;
 
 	// The confirmation, awaited only now: it has had the whole load to arrive, so in the common case
 	// this costs nothing. A mismatch means the pushed manifest was stale, and the load just done is
