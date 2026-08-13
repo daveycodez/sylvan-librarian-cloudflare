@@ -414,7 +414,12 @@ export async function cardsAutocompleteHandler(
 	if (needle.length < 2) return scryfallJson(catalogObject([]), pretty, CARDS_CACHE);
 	const engine = await ctx.getEngine();
 	try {
-		const names = await engine.scryfallAutocomplete(needle, MAX_AUTOCOMPLETE_VALUES);
+		// FOLDED, matching what the engine now compares against. Unfolded, an ASCII query could not
+		// reach a name carrying diacritics: `q=eowyn` answered an EMPTY catalog while `q=éowyn`
+		// answered three cards, and `jotun` and `lim-dul` answered nothing. Scryfall returns 3, 3
+		// and 8 for those. The `name:` search path has folded here since #649 (card-query-nodes);
+		// this route simply never did.
+		const names = await engine.scryfallAutocomplete(foldAccents(needle.toLowerCase()), MAX_AUTOCOMPLETE_VALUES);
 		return scryfallJson(catalogObject(names), pretty, CARDS_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);

@@ -139,6 +139,22 @@ describe("GET /cards/autocomplete", () => {
 		expect(body.total_values).toBe(0);
 		expect(engine.lastAutocomplete).toBeNull();
 	});
+
+	// The engine matches `card_name_folded`, so the needle has to arrive folded or an ASCII query
+	// can never reach a name carrying diacritics. Unfolded, `q=eowyn` answered an EMPTY catalog
+	// while `q=éowyn` answered three cards — against Scryfall, which answers both. Asserted on what
+	// the ENGINE receives rather than on results, because the fixture corpus has no accented names
+	// and a result-shaped test would pass just as well without the fold.
+	test.each([
+		["É" + "owyn", "eowyn"],
+		["Jötun", "jotun"],
+		["Lim-Dûl", "lim-dul"],
+		["LLAN", "llan"],
+	])("folds and lowercases %p before the engine sees it", async (query, expected) => {
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), `/cards/autocomplete?q=${encodeURIComponent(query)}`);
+		expect(engine.lastAutocomplete?.prefix).toBe(expected);
+	});
 });
 
 describe("GET /cards/random", () => {

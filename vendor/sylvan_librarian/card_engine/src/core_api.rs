@@ -1707,16 +1707,26 @@ impl BufferStore {
         // stopping at `limit` matches would answer with the wrong ones. ~31,700 names is a scan
         // measured in single-digit milliseconds, and it runs in the DO's 30 s, not the isolate's.
         let mut hits: Vec<(u8, usize, &str)> = Vec::new();
-        for card in data.cards.iter() {
-            let lower = card.card_name_lower.as_str();
-            let rank = if lower.starts_with(&needle) {
+        // FOLDED, not lower. Matching the lowercase name meant an ASCII query could not reach a
+        // name carrying diacritics: `q=eowyn` returned NOTHING while `q=éowyn` returned three
+        // cards, and `jotun` and `lim-dul` returned nothing at all. Scryfall answers all three
+        // (3, 3 and 8 results), and this corpus stores `card_name_folded` precisely so an ASCII
+        // query can reach "Éowyn". The caller folds the needle the same way; see the route.
+        //
+        // Folding also makes the predicate answerable from `name_trigram`, which is built over this
+        // same field -- a prefix and a substring are both containments, so the index narrows both
+        // ranks soundly and the scan below only re-verifies.
+        for cid in name_scan_candidates(data, &needle) {
+            let card = &data.cards[cid as usize];
+            let folded = card.card_name_folded.as_str();
+            let rank = if folded.starts_with(&needle) {
                 0u8
-            } else if lower.contains(&needle) {
+            } else if folded.contains(&needle) {
                 1u8
             } else {
                 continue;
             };
-            let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(lower);
+            let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(folded);
             hits.push((rank, printed.len(), printed));
         }
         hits.sort_unstable();

@@ -840,6 +840,13 @@ fn cmd_namecheck(store_path: &Path) {
             lines.push(format!("words {pair:?} -> {names:?}"));
         }
     }
+    // Autocomplete's accent cases, printed rather than digested: the whole point of folding the
+    // needle is that an ASCII query reaches a name carrying diacritics, and that is worth reading.
+    for needle in ["eowyn", "jotun", "lim-dul", "aether", "lig"] {
+        let got = store.autocomplete(needle, 5);
+        println!("  autocomplete {needle:>8} -> {got:?}");
+    }
+
     // Sorted so the digest does not depend on sample iteration order.
     lines.sort();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
