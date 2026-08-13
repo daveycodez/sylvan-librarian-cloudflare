@@ -35,13 +35,33 @@
 //   1. Ceiling.   SHARDS_MAX=1 on the target, so the fan-out cannot rescue a
 //                 saturated DO. Ramp until p50 inflects. The concurrency at the
 //                 inflection is the single-DO ceiling; the flat p50 below it is
-//                 C + network. This is the number the controller is tuned
-//                 against and the one nothing has ever measured.
+//                 C + network.
 //   2. Autoscale. SHARDS_MAX unset (or high). Same ramp. Watch the shard
 //                 histogram widen and p99 recover. The gap between "p50 starts
 //                 climbing" and "a second shard appears" is how late the
-//                 trigger fires — the thing the analysis says is ~18 points of
-//                 utilization too late.
+//                 trigger fires.
+//
+// BOTH WERE RUN on 2026-08-13 against sylvan.mtgseeker.com, and the results are
+// in src/engine/shard-controller.ts (DO_CEILING_RATE) rather than repeated here:
+//
+//   Phase 1: throughput stops at ~340/s and reverses (339.3/s at 64 concurrent,
+//            334.6/s at 96) while p50 climbs 171 -> 247ms. Mean DO CPU was
+//            1.35ms and FLAT across the ramp, so the ~2.9ms of effective
+//            occupancy is not all CPU — see DO_CEILING_RATE for that gap.
+//   Phase 2: expansion fired at 8-16 concurrent, i.e. 19-35% of the ceiling
+//            rather than the intended 80%. The analysis above guessed "~18
+//            points too late"; it was 45-60 points too EARLY, in the opposite
+//            direction. That measurement is what demoted the latency trigger to
+//            a backstop and made reportEngineRate the primary one.
+//
+// TWO WAYS TO MEASURE NOTHING, both hit on the day:
+//
+//   Verify SHARDS_MAX with CONCURRENCY, never with serial requests. Twenty
+//   requests one at a time all land on shard 0 whether or not a cap is set, so
+//   they confirm nothing. Read the shard histogram of a real stage instead.
+//   Setting a variable in the Cloudflare dashboard creates a VERSION; it does
+//   not promote it. Check `wrangler deployments list` shows it at 100%, or the
+//   ramp measures the old configuration.
 //
 // THREE THINGS THAT WILL SILENTLY MEASURE THE WRONG SUBJECT:
 //

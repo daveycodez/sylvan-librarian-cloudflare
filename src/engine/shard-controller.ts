@@ -55,28 +55,40 @@
 // 154ms against 86-125ms for the others, and is now 117ms against 116-122ms —
 // every shard alike. Whole-run p50 at that stage fell 142ms -> 118ms.
 //
-// ELASTIC IN BOTH DIRECTIONS. Expansion: sustained queue depth — several
-// responses within a short window reporting that >=2 searches were already
-// executing when the request arrived — steps the fan-out up by one, with a
-// cooldown so a single blip cannot ladder. Contraction: a long stretch without
-// evidence of saturation steps it back down; the abandoned shard then evicts on
-// its own (scale-in IS eviction), and the nightly publish fan-out reclaims its
-// cached archive storage (see store-cache.ts).
+// ELASTIC IN BOTH DIRECTIONS. Expansion: a shard reporting 80% of its measured
+// ceiling (EXPAND_RATE), or sustained queue depth — several responses within a
+// short window reporting that >=2 searches were already executing when the
+// request arrived — steps the fan-out up by one, with a cooldown so a single
+// blip cannot ladder. Contraction: a long stretch without evidence of saturation
+// steps it back down; the abandoned shard then evicts on its own (scale-in IS
+// eviction), and the nightly publish fan-out reclaims its cached archive storage
+// (see store-cache.ts).
 //
 // A NEW SHARD TAKES NO TRAFFIC UNTIL IT IS WARM — see readyShards below. That is
 // what makes expanding cheap enough to do promptly: the cost of being wrong is a
 // wasted store load in the background, never a user waiting on one.
 
-// Expansion needs evidence of LOAD and evidence of SLOWNESS, together.
+// THIS USED TO SAY expansion needs evidence of LOAD and evidence of SLOWNESS,
+// together — that latency alone has many causes sharding cannot fix, so a rate
+// gate stands in front of it, and that real saturation always produces both.
+// The second half of that was right and the first half was backwards, which the
+// 2026-08-13 ceiling ramp settled (see DO_CEILING_RATE):
 //
-// Latency alone is an effect with many causes — KV slowness, network jitter,
-// a noisy neighbour — and none of those are fixed by adding shards. So a rate
-// gate stands in front of the latency trigger: high rate without slowness
-// means the fan-out is coping; slowness without rate means the problem is
-// somewhere sharding cannot reach. Real saturation of a single-threaded DO
-// always produces both.
+//   LOAD ALONE IS SUFFICIENT, and is now the primary trigger. A single-threaded
+//   DO at 80% of its measured ceiling needs relief whether or not anything has
+//   looked slow yet — waiting for slowness means waiting until users feel it.
 //
-// The two load-side signals, and why neither is sufficient alone:
+//   SLOWNESS ALONE IS NOT, and could never have been. Of the ~124ms a client
+//   waits, the DO contributes ~2.9ms; the rest is transport. At p = 80% the
+//   queueing to detect is ~3ms inside a signal that idles at 7-77ms, so the
+//   latency rule could only ever fire near p = 100%. Left in front, it fired at
+//   19-35% utilization on noise instead — early AND for the wrong reason.
+//
+// So the ordering inverted: rate expands, and latency is a backstop behind its
+// own gate (LATENCY_MIN_RATE) for the case rate cannot see — a shard slow at
+// half its ceiling because something outside it is degraded.
+//
+// The two load-side signals, and what each is actually good for:
 //
 // 1. QUEUE DEPTH (reportEngineLoad): the DO's in-flight count at arrival.
 //    Blind on the warm path — a warm search is synchronous CPU whose only
@@ -121,14 +133,14 @@
  * lower global traffic — which is correct, since the object really is handling
  * that rate. Only the prose needed fixing, not the constant.
  *
- * The ceiling probably moved with the encode-in-the-DO change (d538c1f): that
- * profile put total warm busy at 2.08ms with 1.43ms of it isolate-side, which
- * would leave ~0.65ms in the DO for a 26KB result and put a single-threaded DO
- * nearer 1500/s than the 300/s this comment used to assume. Treat that as an
- * estimate, not a measurement — it was taken locally under wrangler dev, and
- * e7ec18d is this repo's own worked example of a local harness disagreeing with
- * production outright (it predicted 35% off startup for a split that delivered
- * 0). Nothing has measured the DO's ceiling against real traffic.
+ * THE CEILING IS NOW MEASURED — see DO_CEILING_RATE. It is 340/s, not the
+ * ~1500/s the d538c1f profile implied, and the local estimate was wrong in the
+ * direction e7ec18d warned about: mean DO CPU really is ~1.35ms, but effective
+ * occupancy is ~2.9ms, so CPU alone overstates the ceiling by ~2x.
+ *
+ * This gate stays at 50 regardless. It guards the LATENCY trigger against
+ * firing with no load behind it, and that job is unchanged by knowing the
+ * ceiling; what changed is that latency is no longer the primary trigger.
  *
  * Whatever the ceiling is, this gate is harder to reach than raw traffic
  * suggests: /search sits behind a 90s edge cache with a day of
@@ -137,6 +149,65 @@
  * is the right failure direction for a gate whose only job is rejecting latency
  * with no load behind it. */
 const EXPAND_MIN_RATE = 50;
+
+/**
+ * The single-DO ceiling, in searches per second. MEASURED, finally.
+ *
+ * scripts/load-test.ts phase 1 against sylvan.mtgseeker.com on 2026-08-13, with
+ * SHARDS_MAX=1 so the fan-out could not rescue a saturated DO — the experiment
+ * the load-test header describes and nothing had ever run:
+ *
+ *   conc     1     4     8    16    32    48    64    96
+ *   rps    7.4  33.3  65.4 117.9 217.0 255.7 339.3 334.6
+ *   p50    134   123   121   131   131   151   171   247 ms
+ *
+ * Throughput stops at ~340/s and goes BACKWARDS while p50 climbs. That is the
+ * knee. The same client sustained 1862/s against 8 shards fifteen minutes
+ * earlier, so 340 is the DO, not the load generator.
+ *
+ * WHAT IT IS NOT: 1000/1.35ms. Mean DO CPU over 21,032 invocations in that run
+ * was 1.35ms (median 1, p95 3, p99 4) and FLAT across the whole ramp — CPU per
+ * request does not rise as the DO saturates. But 1/340 = 2.9ms of effective
+ * occupancy, so ~1.5ms per request holds the thread without appearing in
+ * cpuTimeMs. Presumably RPC deserialization and encoding the ~26KB result on
+ * the same thread; that is INFERRED, not measured, and it is the whole
+ * difference between a 340/s ceiling and a 740/s one. Worth pinning down before
+ * anyone tunes hard against this number.
+ *
+ * WORKLOAD-SPECIFIC. Measured with --shape rows over the load test's query mix.
+ * Columnar is the heavier payload, so it will land somewhere else; re-measure
+ * rather than assuming this transfers.
+ */
+const DO_CEILING_RATE = 340;
+
+/**
+ * Expand when one shard reports this rate — 80% of the ceiling.
+ *
+ * p = 80% is where the ratio rule was always AIMING (T/C = 3 under M/D/1); it
+ * just could not get there by thresholding wall time. Measured against the same
+ * ramp, the latency trigger fired at conc=8-16, i.e. 19-35% utilization: three
+ * to four times too early, which is why production ladders to the cap in ~40s
+ * while p50 never moves.
+ *
+ * This is the cause measured directly instead of inferred through a round trip.
+ * A single reading suffices because SearchEngine.searchRate is already a
+ * 10-second trailing average, not an instantaneous count; EXPAND_COOLDOWN_MS
+ * does the pacing from there.
+ */
+const EXPAND_RATE = Math.round(DO_CEILING_RATE * 0.8);
+
+/**
+ * Rate below which a latency breach cannot open a shard, now that latency is a
+ * BACKSTOP rather than the primary trigger.
+ *
+ * Half the ceiling. The band this leaves — 170/s to EXPAND_RATE — is the case
+ * latency still earns its place in: a shard slow at 200/s when it should manage
+ * 340/s is degraded by something the rate signal cannot see (a noisy neighbour,
+ * a colo problem). Below half the ceiling, elevated latency is not a shortage
+ * of shards and never was; that is the regime EXPAND_MIN_RATE=50 was letting
+ * through.
+ */
+const LATENCY_MIN_RATE = Math.round(DO_CEILING_RATE * 0.5);
 
 /** A response reporting this many already-executing searches counts as queuing. */
 const EXPAND_DEPTH = 2;
@@ -188,8 +259,12 @@ const CONTRACT_COOLDOWN_MS = 60_000;
  * makes each shard likelier to fall idle and evict, and each re-warm is another
  * KV load and another cached archive against the 5GB pool. That is an argument
  * for a bound, not for THIS bound, and 8 is now conservative rather than tuned.
- * Raising it is a measurement — run scripts/load-test.ts — not a guess, so it
- * stays at 8 until something measures the ceiling. Raise it with SHARDS_MAX
+ *
+ * THE CEILING HAS NOW BEEN MEASURED (DO_CEILING_RATE = 340/s), so the arithmetic
+ * this comment was waiting on: 8 shards is ~2720 cache-MISSING searches per
+ * second in one region. Nothing this deployment serves is within an order of
+ * magnitude of that, so 8 stays — not for want of a measurement any more, but
+ * because the measurement says it is already ample. Raise it with SHARDS_MAX
  * where a region genuinely needs more. */
 export const DEFAULT_MAX_SHARDS = 8;
 
@@ -247,13 +322,27 @@ export const DEFAULT_MAX_SHARDS = 8;
  * an unnecessary shard costs a background store load rather than a slow request.
  * It is still worth fixing, because idle shards evict and re-warm.
  *
- * Raising MULT is NOT the fix: the observed ratio is ~16x, so any multiplier
- * large enough to stop this would be too blunt to detect real queueing. The
- * fix is making floorEwma represent a healthy RECENT baseline instead of an
- * all-time minimum — softening the 0.3 downward weight so a single fast sample
- * cannot yank it back down, and letting it rise faster than 0.001. Both numbers
- * need a measurement to choose, which is why this is written down rather than
- * guessed at; the cap is holding the blast radius meanwhile.
+ * AND THE FIX THIS COMMENT USED TO PROPOSE WOULD NOT HAVE WORKED. It said the
+ * answer was making floorEwma a healthy RECENT baseline instead of an all-time
+ * minimum — soften the 0.3 downward weight, let it rise faster than 0.001 — and
+ * that both numbers needed a measurement to choose. The measurement now exists
+ * (DO_CEILING_RATE) and it retires the whole approach rather than settling the
+ * weights:
+ *
+ *   At p = 80%, M/D/1 puts queueing at about 2x service time. Service time here
+ *   is ~2.9ms of DO occupancy, so the signal to detect is ~3ms — inside an RPC
+ *   wall time that idles at 7-77ms and is 95-98% transport. No baseline, however
+ *   well chosen, recovers a 3ms signal from that. Saturation only becomes
+ *   visible in wall time at p ~ 100%, where the ramp saw DO wall reach ~150ms
+ *   while CPU stayed at 1-4ms.
+ *
+ * So latency can only ever fire LATE, which is the opposite of what expanding at
+ * 80% is for. Raising MULT was already rejected as too blunt; softening the
+ * floor is rejected now for a better reason — it is thresholding the wrong
+ * quantity. The rate signal (reportEngineRate) measures the constraint directly
+ * and is the primary trigger; what survives here is a backstop, gated at
+ * LATENCY_MIN_RATE so it cannot fire in the regime that produced the 19-35%
+ * expansions.
  *   - Below ~9ms the bar stops rejecting single outliers. One 100ms sample
  *     drives fastEwma to 20.8 against a 1ms floor, and the 0.2 weight decays it
  *     back under 9 only on the fifth sample after — so any lower bar turns one
@@ -348,10 +437,37 @@ function expand(state: RegionState, region: string, now: number, why: string): v
 	);
 }
 
-/** Feed the DO's reported request rate back into the controller. This is the
- * cause-side half of the expansion decision — see the header. */
+/**
+ * Feed the DO's reported request rate back into the controller, and expand on it.
+ *
+ * THE PRIMARY TRIGGER, as of the ceiling measurement. It thresholds the thing
+ * that actually constrains a single-threaded DO — searches per second arriving
+ * at it — instead of inferring saturation from a round trip that is 95-98%
+ * transport. At the ceiling the DO contributes ~2.9ms to a ~124ms client-observed
+ * request; a rule reading the 124ms cannot see the 2.9ms move until it is
+ * queueing hard, which is exactly what production did.
+ *
+ * `rate` is per-OBJECT, reported by whichever shard answered, so a shard at
+ * EXPAND_RATE is at 80% of ITS ceiling however wide the region already is. That
+ * is the right reading: it means this shard needs relief, not that the region
+ * does on average.
+ */
 export function reportEngineRate(region: string, rate: number): void {
-	stateFor(region).engineRate = rate;
+	const state = stateFor(region);
+	state.engineRate = rate;
+	if (rate < EXPAND_RATE) return;
+	const now = Date.now();
+	// At 80% of its ceiling a shard is busy whether or not anything has queued yet — hold
+	// contraction off on the same evidence that opens a shard.
+	state.lastBusyAt = now;
+	if (now - state.lastExpandAt >= EXPAND_COOLDOWN_MS && canExpand(state)) {
+		expand(
+			state,
+			region,
+			now,
+			`engine rate ${rate.toFixed(0)}/s at ${EXPAND_RATE}/s bar (80% of ${DO_CEILING_RATE}/s)`,
+		);
+	}
 }
 
 /** Feed one response's reported queue depth back into the controller. */
@@ -400,7 +516,9 @@ export function reportEngineLatency(region: string, rpcMs: number): void {
 	state.latencyBreaches += 1;
 	if (
 		state.latencyBreaches >= LATENCY_BREACHES_TO_EXPAND &&
-		state.engineRate >= EXPAND_MIN_RATE &&
+		// Demoted to a backstop: below half the ceiling, elevated latency is not a shortage of
+		// shards. This gate is what stops the 19-35%-utilization expansions the ramp measured.
+		state.engineRate >= LATENCY_MIN_RATE &&
 		now - state.lastExpandAt >= EXPAND_COOLDOWN_MS &&
 		canExpand(state)
 	) {

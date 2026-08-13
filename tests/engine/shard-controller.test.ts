@@ -122,11 +122,18 @@ describe("queue-depth expansion", () => {
 	});
 });
 
+// Latency is a BACKSTOP since the ceiling was measured (DO_CEILING_RATE): it cannot open a shard
+// below LATENCY_MIN_RATE, which is half the ceiling. These tests therefore report a rate inside the
+// band where it is still allowed to fire — above that gate, and below EXPAND_RATE so that the rate
+// trigger is not what does the expanding. Reporting the old 60/s here would make four of them pass
+// for the wrong reason: refused by the gate rather than by the latency logic they exist to test.
+const LATENCY_BAND_RATE = 200;
+
 describe("latency expansion", () => {
 	test("sustained latency below the noise floor never expands", async () => {
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, LATENCY_BAND_RATE);
 		for (let i = 0; i < 60; i++) c.reportEngineLatency(R, 8);
 		expect(c.takeWarmTarget(R)).toBeNull();
 		expect(observedWidth(c)).toBe(1);
@@ -135,7 +142,7 @@ describe("latency expansion", () => {
 	test("sustained latency above the bar expands", async () => {
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, LATENCY_BAND_RATE);
 		for (let i = 0; i < 12; i++) c.reportEngineLatency(R, 25);
 		expect(c.takeWarmTarget(R)).toBe(1);
 	});
@@ -154,7 +161,7 @@ describe("latency expansion", () => {
 		// A colo whose healthy cost really is 20ms: 3 x floor = 60ms, so 25ms
 		// reads as normal here even though it expanded against a 1ms floor.
 		warmFloor(c, 20);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, LATENCY_BAND_RATE);
 		for (let i = 0; i < 30; i++) c.reportEngineLatency(R, 25);
 		expect(c.takeWarmTarget(R)).toBeNull();
 	});
@@ -162,7 +169,7 @@ describe("latency expansion", () => {
 	test("isolated spikes decay before they can breach", async () => {
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, LATENCY_BAND_RATE);
 		for (let round = 0; round < 10; round++) {
 			c.reportEngineLatency(R, 40);
 			for (let i = 0; i < 15; i++) c.reportEngineLatency(R, 1);
@@ -178,7 +185,7 @@ describe("latency expansion", () => {
 		// that constant to 4 and a single outlier cold-loads a shard.
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, LATENCY_BAND_RATE);
 		c.reportEngineLatency(R, 100);
 		for (let i = 0; i < 20; i++) c.reportEngineLatency(R, 1);
 		expect(c.takeWarmTarget(R)).toBeNull();
@@ -190,11 +197,83 @@ describe("latency expansion", () => {
 		// is slow, not jittery.
 		const c = await freshController();
 		warmFloor(c);
-		c.reportEngineRate(R, 60);
+		c.reportEngineRate(R, LATENCY_BAND_RATE);
 		for (let i = 0; i < 20; i++) {
 			c.reportEngineLatency(R, 40);
 			c.reportEngineLatency(R, 1);
 		}
+		expect(c.takeWarmTarget(R)).toBe(1);
+	});
+});
+
+// The primary trigger since the ceiling was measured. Numbers here are literals rather than imports
+// so the file states the bars it pins, matching how the latency tests bracket LATENCY_ABS_MS:
+// DO_CEILING_RATE 340/s, EXPAND_RATE 272/s (80%), LATENCY_MIN_RATE 170/s (50%).
+describe("rate expansion", () => {
+	test("a shard at 80% of the measured ceiling expands on rate alone", async () => {
+		// No latency samples and no reported depth — the rate IS the evidence.
+		const c = await freshController();
+		c.reportEngineRate(R, 272);
+		expect(c.takeWarmTarget(R)).toBe(1);
+	});
+
+	test("one search per second below the bar does not", async () => {
+		const c = await freshController();
+		c.reportEngineRate(R, 271);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("the cooldown paces it, so one hot window cannot ladder to the cap", async () => {
+		const c = await freshController();
+		c.reportEngineRate(R, 400);
+		expect(admitPending(c)).toBe(1);
+		for (let i = 0; i < 20; i++) c.reportEngineRate(R, 400);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		advance(31_000);
+		c.reportEngineRate(R, 400);
+		expect(admitPending(c)).toBe(2);
+		expect(observedWidth(c)).toBe(3);
+	});
+
+	test("a rate that high holds contraction off", async () => {
+		// Rate is evidence of BUSY as well as of needing a shard: without this a region at 80%
+		// of its ceiling could have shards folded under it by the idle timer, since a coping DO
+		// reports depth 0 almost always.
+		const c = await freshController();
+		c.reportEngineRate(R, 400);
+		expect(admitPending(c)).toBe(1);
+		advance(9 * 60_000);
+		c.reportEngineRate(R, 400);
+		advance(9 * 60_000);
+		c.reportEngineRate(R, 400);
+		expect(observedWidth(c)).toBe(2);
+	});
+});
+
+describe("the over-expansion the ceiling ramp measured", () => {
+	test("sustained latency at a fifth of the ceiling no longer opens a shard", async () => {
+		// THE REGRESSION THIS FIX EXISTS FOR. Production on 2026-08-13 expanded at 8-16 concurrent
+		// — 65 to 118 searches/s against a 340/s ceiling — and laddered to the 8-shard cap in about
+		// 40s while client p50 never moved off ~124ms. 65/s with badly breaching latency is exactly
+		// that regime, and it must now be refused: at 19% utilization the DO does not need help.
+		const c = await freshController();
+		warmFloor(c);
+		c.reportEngineRate(R, 65);
+		for (let i = 0; i < 60; i++) c.reportEngineLatency(R, 40);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("but a genuinely degraded shard in the backstop band still expands", async () => {
+		// The case latency keeps its place for: 200/s is well under the 272/s bar, so the rate
+		// trigger stays quiet, yet the shard is slow anyway — a noisy neighbour rather than a
+		// shortage of shards. Sharding may not fix it, but refusing to react at all would be a
+		// regression from the previous behaviour.
+		const c = await freshController();
+		warmFloor(c);
+		c.reportEngineRate(R, 200);
+		for (let i = 0; i < 60; i++) c.reportEngineLatency(R, 40);
 		expect(c.takeWarmTarget(R)).toBe(1);
 	});
 });

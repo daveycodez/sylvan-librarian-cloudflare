@@ -145,6 +145,13 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
  * the flat LATENCY_ABS_MS bar binds, and therefore what utilization expansion
  * actually fires at — unmeasurable from outside.
  *
+ * What this measures is now a BACKSTOP rather than the main signal. The 2026-08-13
+ * ceiling ramp showed why: of the ~124ms a client waits, the DO contributes ~2.9ms,
+ * so this number is 95-98% transport and cannot see the DO cross 80% utilization
+ * at all. Expansion keys on the DO's own reported rate instead — see
+ * shard-controller.ts DO_CEILING_RATE. Reading min against mean here is still the
+ * right way to see what the backstop is comparing against.
+ *
  * Windowed by TIME rather than by count, and the first warm RPC an isolate sees
  * always emits. A 1-in-N counter is per-isolate state, so it only reports once
  * one isolate has personally served N warm searches — which never happens at
