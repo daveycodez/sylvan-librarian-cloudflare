@@ -7,15 +7,16 @@
 // store, reuse accounting, prune-by-reference) purely to keep row writes under
 // the free plan's daily quota.
 //
-// KV removes the constraint that created all of it. A 25 MiB value cap means a
-// ~75MB store is THREE chunks, so:
+// KV removes the constraint that created all of it. At KV_CHUNK_BYTES below,
+// the ~72MB store is TWO chunks (it was three until that constant was raised —
+// see its docstring), so:
 //
-//   - a full publish is 5 writes against a 1,000/day free allowance — three
+//   - a full publish is 4 writes against a 1,000/day free allowance — two
 //     store chunks, the residue archive's one, and the manifest — with no
 //     incremental publish, no dedup, no resume bookkeeping
-//   - a cold `/search` load is 4 reads against 100,000/day (manifest + three
-//     store chunks); `/cards/*` adds the residue archive's one, for 5
-//   - one copy serves every colo, instead of one 75MB SQLite copy per
+//   - a cold `/search` load is 3 reads against 100,000/day (manifest + two
+//     store chunks); `/cards/*` adds the residue archive's one, for 4
+//   - one copy serves every colo, instead of one 72MB SQLite copy per
 //     Durable Object against a 5GB pool
 //
 // Chunk count is not cosmetic. The loader below pulls chunks STRICTLY IN

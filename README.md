@@ -85,8 +85,8 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
               │   placed there by location hint; idle regions evict their DO —
               │   scale to zero. The x-sylvan-engine response header says which
               │   DO answered
-              ├─ SearchEngine DO: wasm card_engine + ~76.6MB rkyv store in memory,
-              │   streamed from KV as 3 immutable chunks in 4MB blocks, and cached
+              ├─ SearchEngine DO: wasm card_engine + ~72.0MB rkyv store in memory,
+              │   streamed from KV as 2 immutable chunks in 4MB blocks, and cached
               │   DECOMPRESSED in the DO's own SQLite so later wakes skip both the
               │   network and the gunzip. It hot-swaps when the KV manifest
               │   advances. Results come back already JSON-encoded in the requested
@@ -103,13 +103,28 @@ cron (nightly refresh; the deploy does the first build)
                    fetch → transform → tags → aggregate → finalize → build
                    (the SAME Rust the native builder runs, compiled to wasm;
                     intermediates spill to DO SQLite, never to memory)
-                   publish: 3 store chunks + the residue archive's one, each
+                   publish: 2 store chunks + the residue archive's one, each
                    gzipped, + manifest to KV, manifest LAST (the commit point
                    readers act on); the store before last dropped
 ```
 
 The wasm engine is the only query path. A query it cannot answer returns a
 structured error, never a silently empty result.
+
+**Two transports, and the response shape picks which — not consistency.**
+`/cards/*` STREAMS: the Durable Object builds the entire response, envelope
+included, and the isolate returns it without touching the bytes. `/search` and
+`/random_search` stay BUFFERED, because their tail is `metadataFor` — the
+compiled query and a timings tree whose `engine_query` span is measured *around*
+the query, so the envelope cannot exist until the payload does. Streaming a body
+you then have to splice in the isolate buys nothing and costs the stream
+machinery.
+
+This is calibrated, not stylistic. Unifying `/search` onto the streaming path
+moved its Durable Object CPU 7ms → 6ms and its **isolate** 5ms → 11ms median — a
+2.6× regression that took the route from under the free plan's 10ms budget to
+over it, missed at the time because only the DO side was measured. Measure both
+sides before moving a route between them.
 
 **Cold starts.** The engine tier is sharded by REGION, and that is the main
 thing keeping stores warm. It used to be sharded per colo with the regional DO
@@ -136,9 +151,10 @@ where KV caches per colo.
 
 The store *is* gzipped, though, which is a different question — the meter was
 never what the cold path was bound by. A load-carrying invocation measures wall
-p50 915ms against DO CPU p50 164ms, so ~750ms of it was waiting for 76.6MB to
-arrive. Compressed, the chunks are 40% of that (8.5 + 8.3 + 12.5MB, cut on RAW
-bytes and each gzipped as its own member).
+p50 915ms against DO CPU p50 164ms, so ~750ms of it was waiting for the whole
+archive to arrive. The cut is on RAW bytes at `KV_CHUNK_BYTES` and each piece is
+gzipped as its own member; the two-way cut puts ~12.4MB and ~18.9MB in KV, the
+binding one at 72% of the 25 MiB value cap.
 
 The memory win is bigger than the transfer one and comes from a different
 place. wasm-bindgen marshals a `&[u8]` by COPYING it into linear memory, so a
@@ -148,11 +164,22 @@ vanishes: peak linear memory measured 99.4MB before and 74.6MB after — the
 ~25MB is the chunk that is no longer copied whole, not the ~12MB the smaller
 KV value saves. Against a 128MB isolate that is the difference that matters.
 
-It is not free: decompression costs ~190ms of DO CPU per load, and that trade
-is the thing to re-measure before undoing it.
+It is not free, and the ~190ms this section used to budget for decompression was
+**wrong by roughly 5x**. Measured across the deploy that introduced it
+(2026-08-12), cold DO CPU went 322ms → 1252ms at the median and 1050ms → 2504ms
+at the max, and cold wall time went 1606ms → 2263ms: compression did not buy back
+in I/O what it cost in CPU.
 
-**Publishing** is five writes: three store chunks and the residue archive's
-one, each cut just under KV's 25 MiB value cap and gzipped before the put, then
+It stands anyway, for a reason unrelated to the original argument — the fix was
+to stop paying it so often rather than to stop paying it. Engine DOs are named
+per REGION now, so the ~45 cold loads a day that made this expensive collapse to
+a handful, and `store-cache.ts` holds the DECOMPRESSED archive locally so most
+remaining wakes skip it entirely. Reverting to uncompressed chunks would cost
+~13MB of the 128MB isolate to save a cost that is now rare. See
+[src/engine/store-kv.ts](src/engine/store-kv.ts) for both halves measured.
+
+**Publishing** is four writes: two store chunks and the residue archive's
+one, each cut under KV's 25 MiB value cap and gzipped before the put, then
 the manifest as the commit point. Two versions are retained, so a reader
 mid-stream finishes and a bad build can be rolled back.
 
@@ -176,11 +203,11 @@ gate is itself answered from the old store, so a colo that was idle across the
 first window refills the cache right after it is emptied. That same request
 starts the swap, so one more pass is enough to clear it for good.
 
-**Free-plan fit.** A store load is 4 KV reads (5 on `/cards/*`, which alone
-attaches the residue archive), a publish 5 writes, and serving touches neither
+**Free-plan fit.** A store load is 3 KV reads (4 on `/cards/*`, which alone
+attaches the residue archive), a publish 4 writes, and serving touches neither
 — so the daily meters (100k Worker requests, 100k KV reads, 1k KV writes) bound
-*traffic*, not architecture. Storage is one ~88MB copy per retained version
-(76.6MB search store plus the 11.8MB residue) against KV's 1GB.
+*traffic*, not architecture. Storage is one ~82.7MB copy per retained version
+(72.0MB search store plus the 10.7MB residue) against KV's 1GB.
 
 The meter worth watching is the free plan's **10ms CPU per request**, and
 almost all of what a `/search` spends there is **cold isolate startup, not the
@@ -228,11 +255,18 @@ rows (~28% of it). The query is 1–2ms of DO CPU, metered separately against a
 
 Upstream is vendored at the commit pinned in [UPSTREAM.lock](UPSTREAM.lock).
 The Rust engine (`vendor/sylvan_librarian/card_engine`) is upstream's own code
-with a thin patch set (PyO3 optional, buffer-based store load for wasm, and a
+with a patch set (PyO3 optional, buffer-based store load for wasm, and a
 memory-capped streaming build path whose output is verified semantically
-identical to the standard build). Filter evaluation and the archive format are
-untouched, so the store the Durable Object builds is the same store the native
-builder produces — the tests compare them byte-for-byte at the row level.
+identical to the standard build). **Filter evaluation** is untouched, so the
+store the Durable Object builds is the same store the native builder produces —
+the tests compare them byte-for-byte at the row level.
+
+The **archive format is not** untouched, and has not been since the card-object
+work: the residue is a second archive rather than fields on `Printing`, and its
+three list fields are a CSR on `CompatData` rather than `Vec`s on
+`CompatFields`. Both are size decisions this deployment has to make and upstream
+does not — see [Deviations](#deviations-from-upstream). `ARCHIVE_FORMAT_VERSION`
+therefore diverges from upstream's on purpose; it is not a sync failure.
 
 ```bash
 bun run sync-upstream
@@ -339,9 +373,20 @@ The complete list of intentional differences:
   number and oracle id) and a packed residue. Absent keys stay absent, because
   Scryfall omits rather than nulls and a card that sprouts nulls differs from
   Scryfall on every row. That residue lives in a **second KV archive** loaded
-  only when a `/cards/*` route needs it: inlining it took the store past its
-  three-chunk ceiling and the in-Worker import past its 112 MiB wasm cap, and
+  only when a `/cards/*` route needs it: inlining it took the store across a KV
+  chunk boundary and the in-Worker import past its 112 MiB wasm cap, and
   `/search` reads none of it.
+- **The residue's three list fields are a CSR, where upstream keeps them as
+  `Vec`s on `CompatFields`.** An archived `Vec` field costs an 8-byte relative-
+  pointer header on every row whether or not it holds anything, and
+  `multiverse_ids`/`promo_types`/`frame_effects` are empty on most printings:
+  three of them across 95,131 printings is 2.18MB of headers carrying 0.39MB of
+  payload. They are offset arrays on `CompatData` instead (`CompatLists`), 84 →
+  60 bytes a printing. Deliberately **not** upstreamed: #912 declines the same
+  trade at five times the size on `external_id_index` (8.34MB → 2.78MB), on the
+  stated grounds that "Postgres has no archive ceiling; a deployment that serves
+  the archive from a size-capped store will want the packed form." This is that
+  deployment.
 - **`loyalty` rides in the residue, where upstream has a column for it.**
   Upstream stores both `planeswalker_loyalty` (the integer `loy:` filters on)
   and `planeswalker_loyalty_text` (what Scryfall prints), and so excludes
@@ -546,36 +591,47 @@ California, one **cold** request per query then the median of two immediate
 HTTP/2 connection each. Times are total wall-clock ms, door to door. Two runs
 pooled, so each column below is the median of 20 cold samples per service;
 upstream is read in the same runs as the ambient-network control, and moved
-0.97× between them, so neither run is contaminated.
+0.99× between them, so neither run is contaminated.
 
 ```bash
 scripts/bench.sh results.tsv
 ```
 
+**Space the two runs by ~90s.** One invocation is 30 requests to this port, and
+the rate limiter allows 25 per 10s per IP (`RATE_LIMIT_PER_10S`), so two
+back-to-back runs answer a chunk of the second with 429s and silently shrink the
+sample — 18 of 60 on the run that found this. The script warns on non-200s;
+treat any warning as a run to discard rather than pool.
+
 | | cold (cache miss) | warm (repeat) | payload |
 |---|---|---|---|
-| **this port (Cloudflare)** | 184ms | **30ms** | ~39 KB |
-| sylvan-librarian.com | **107ms** — 0.58× | 104ms — 3.5× slower | **~34 KB** |
-| Scryfall API | 867ms — 4.7× slower | 54ms — 1.8× slower | ~813 KB — 21× larger |
+| **this port (Cloudflare)** | 161ms | **21ms** | ~39 KB |
+| sylvan-librarian.com | **103ms** — 0.64× | 101ms — 4.8× slower | **~34 KB** |
+| Scryfall API | 1460ms — 9.1× slower | 34ms — 1.6× slower | ~813 KB — 21× larger |
 
-Worst single request: **this port 6799ms** · upstream 527ms · Scryfall 1302ms.
+Worst single request: **this port 1071ms** · upstream 458ms · Scryfall 2625ms.
+
+Re-measured 2026-08-13 (was 184 / 30 / 6799ms for this port). Upstream is the
+ambient-network control and moved 0.96× across the two measurement dates, so the
+improvement in this port's columns is the port's, not the network's.
 
 Upstream is FASTER than this port on a genuine cache miss, and that is the
 honest shape of the trade: they run a warm process that is always resident,
 while a miss here goes through an isolate and a Durable Object that may both
-be cold. What this port buys instead is the repeat — 30ms against their 104ms,
+be cold. What this port buys instead is the repeat — 21ms against their 101ms,
 because they front `/search` with no edge cache at all and their cold and warm
-numbers are the same number. Scryfall's miss is 867ms and its worst case 1.3s;
-its 54ms warm is its own CDN.
+numbers are the same number. Scryfall's miss is 1460ms and its worst case 2.6s;
+its 34ms warm is its own CDN.
 
-That 6799ms worst case is one request of the twenty — the first query of the
+That 1071ms worst case is one request of the twenty — the first query of the
 first run, landing on a region whose `SearchEngine` had been evicted, so it paid
 a full store load out of KV before it could answer. It is the same wake the
-store loader is built around (~915ms of Durable Object wall time at the
-median, of which only ~164ms is CPU), and it is not the median's problem: the
-other nineteen cold samples span 84–262ms. Nothing about it is hidden by
-averaging, which is why the worst case is printed next to the median rather
-than in place of it.
+store loader is built around, and it is not the median's problem: the other
+nineteen cold samples span 44–497ms. Nothing about it is hidden by averaging,
+which is why the worst case is printed next to the median rather than in place
+of it. The equivalent sample was 6799ms when this table was last measured; what
+changed between the two is not isolated here, so read it as "the worst case
+moved", not as any one commit's credit.
 
 The payload is ~39 KB against upstream's ~34 KB because `scryfall_id` is this
 port's tenth default result field where upstream sends nine — card images here
