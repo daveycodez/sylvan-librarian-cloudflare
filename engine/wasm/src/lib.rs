@@ -34,6 +34,9 @@ thread_local! {
     static STORE: RefCell<Option<BufferStore>> = const { RefCell::new(None) };
     /// An in-progress chunked load: (buffer, expected total length).
     static LOADING: RefCell<Option<(AlignedVec, usize)>> = const { RefCell::new(None) };
+    /// The last payload written for `scryfall_search_retained`, kept alive so the
+    /// caller can VIEW it instead of being handed a copy. See that function.
+    static RETAINED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Panics must be loud, not silent isolate deaths: route the panic message to
@@ -263,6 +266,39 @@ pub fn scryfall_search(filter_tree_json: &str, opts_json: &str, base_url: &str) 
     let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
     let tree: serde_json::Value = serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
     with_store(|store| store.scryfall_search_bytes(&tree, &opts, base_url).map_err(js_err))
+}
+
+/// The same page, RETAINED in linear memory and described by `[ptr, len]`.
+///
+/// `scryfall_search` above returns `Vec<u8>`, and wasm-bindgen delivers that to JS by allocating a
+/// fresh `Uint8Array` and copying the whole thing out — `getArrayU8FromWasm0(...).slice()` in the
+/// generated glue. For a 652KB /cards/search page that is a full copy of the payload purely to
+/// change which side of the boundary owns it, on the route whose Durable Object CPU is already
+/// dominated by handling these bytes.
+///
+/// So the buffer stays here and the caller reads a view over it. The `Vec<u32>` return is copied,
+/// but it is two words.
+///
+/// THE CALLER MUST FINISH WITH THE VIEW BEFORE THE NEXT ENGINE CALL, and before anything that can
+/// grow linear memory — growth DETACHES the ArrayBuffer every view is built on, and the next call
+/// through here overwrites this slot. That is safe exactly once: the reader takes the view and
+/// hands it to a `Response` synchronously, with no await in between, which is why this pairs with
+/// the response-building path rather than with the RPC one. Anything that stores the view for
+/// later gets corruption, not an error.
+#[wasm_bindgen]
+pub fn scryfall_search_retained(
+    filter_tree_json: &str,
+    opts_json: &str,
+    base_url: &str,
+) -> Result<Vec<u32>, JsError> {
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    let tree: serde_json::Value = serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let bytes = with_store(|store| store.scryfall_search_bytes(&tree, &opts, base_url).map_err(js_err))?;
+    Ok(RETAINED.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        *buf = bytes;
+        vec![buf.as_ptr() as u32, buf.len() as u32]
+    }))
 }
 
 /// One engine row as a Scryfall card object, for the differential test that guards the port.

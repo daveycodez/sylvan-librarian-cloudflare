@@ -316,6 +316,43 @@ class WasmEngine implements Engine {
 	}
 
 	/**
+	 * The page as a `Response`, built WITHOUT copying the payload out of wasm.
+	 *
+	 * `scryfall_search` hands JS a `Vec<u8>`, and wasm-bindgen delivers that by allocating a fresh
+	 * Uint8Array and copying all 652KB out of linear memory. `scryfall_search_retained` leaves the
+	 * bytes where they are and returns `[ptr, len]`, so this reads a VIEW and lets the Response take
+	 * them once, on its way to the socket.
+	 *
+	 * EVERYTHING AFTER THE ENGINE CALL IS SYNCHRONOUS, and that is the safety property rather than a
+	 * style choice. The view aliases linear memory: the next engine call reuses the slot, and any
+	 * allocation that grows memory DETACHES the buffer the view is built on. A single await here
+	 * would hand a concurrent request the chance to do either between the view being taken and the
+	 * Response reading it, and the result would be corrupted JSON rather than an error. The await on
+	 * `ensureCompat` is deliberately BEFORE the call for the same reason.
+	 *
+	 * This is why the earlier plan to do the ptr/len change against the RPC path was wrong: there,
+	 * the bytes were serialized by the runtime after the method returned, so the window could not be
+	 * closed at all. Owning the Response is what makes the view safe.
+	 */
+	async scryfallSearchResponse(opts: EngineSearchOptions, baseUrl: string): Promise<Response> {
+		await this.ensureCompat();
+		const optsJson = this.optsJson({ ...opts, fields: [...CARD_OBJECT_FIELDS] });
+		// ── no await beyond this point ──
+		const [ptr = 0, len = 0] = wasm.scryfall_search_retained(opts.filterTreeJson, optsJson, baseUrl);
+		const view = new Uint8Array(wasm.linearMemory(), ptr, len);
+		const split = view.indexOf(NEWLINE);
+		const [total = "0", rows = "0"] = new TextDecoder().decode(view.subarray(0, split)).split(" ");
+		const payload = view.subarray(split + 1);
+		return new Response(payload, {
+			headers: {
+				"content-length": String(payload.byteLength),
+				"x-total-cards": total,
+				"x-row-count": rows,
+			},
+		});
+	}
+
+	/**
 	 * The page as a stream. In-process there is no boundary to save, so this wraps the bytes
 	 * `scryfallSearch` already produced — see the Engine interface for why the shape is shared.
 	 */

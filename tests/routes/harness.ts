@@ -127,6 +127,18 @@ export class FakeEngine implements Engine {
 		return { totalCards: this.totalCards, cardsBytes: encodeUtf8(JSON.stringify(cards)), rowCount: cards.length };
 	}
 
+	/** Not the fast path: this side of the boundary has no wasm to avoid copying out of. */
+	async scryfallSearchResponse(opts: EngineSearchOptions, baseUrl: string): Promise<Response> {
+		const r = await this.scryfallSearchStream(opts, baseUrl);
+		return new Response(r.body, {
+			headers: {
+				"content-length": String(r.byteLength),
+				"x-total-cards": String(r.totalCards),
+				"x-row-count": String(r.rowCount),
+			},
+		});
+	}
+
 	/** The streamed shape, over the same fixture bytes — so route tests exercise the real splice. */
 	async scryfallSearchStream(
 		opts: EngineSearchOptions,

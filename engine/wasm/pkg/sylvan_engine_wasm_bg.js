@@ -574,6 +574,45 @@ export function scryfall_search(filter_tree_json, opts_json, base_url) {
 }
 
 /**
+ * The same page, RETAINED in linear memory and described by `[ptr, len]`.
+ *
+ * `scryfall_search` above returns `Vec<u8>`, and wasm-bindgen delivers that to JS by allocating a
+ * fresh `Uint8Array` and copying the whole thing out — `getArrayU8FromWasm0(...).slice()` in the
+ * generated glue. For a 652KB /cards/search page that is a full copy of the payload purely to
+ * change which side of the boundary owns it, on the route whose Durable Object CPU is already
+ * dominated by handling these bytes.
+ *
+ * So the buffer stays here and the caller reads a view over it. The `Vec<u32>` return is copied,
+ * but it is two words.
+ *
+ * THE CALLER MUST FINISH WITH THE VIEW BEFORE THE NEXT ENGINE CALL, and before anything that can
+ * grow linear memory — growth DETACHES the ArrayBuffer every view is built on, and the next call
+ * through here overwrites this slot. That is safe exactly once: the reader takes the view and
+ * hands it to a `Response` synchronously, with no await in between, which is why this pairs with
+ * the response-building path rather than with the RPC one. Anything that stores the view for
+ * later gets corruption, not an error.
+ * @param {string} filter_tree_json
+ * @param {string} opts_json
+ * @param {string} base_url
+ * @returns {Uint32Array}
+ */
+export function scryfall_search_retained(filter_tree_json, opts_json, base_url) {
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.scryfall_search_retained(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v4;
+}
+
+/**
  * Printing count of the loaded store (the upstream `size()` health number);
  * 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
  * @returns {number}
@@ -639,6 +678,11 @@ export function __wbindgen_init_externref_table() {
     table.set(offset + 2, true);
     table.set(offset + 3, false);
 }
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
@@ -646,6 +690,14 @@ function getArrayU8FromWasm0(ptr, len) {
 
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
+}
+
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
 }
 
 let cachedUint8ArrayMemory0 = null;
