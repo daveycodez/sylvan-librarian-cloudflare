@@ -462,7 +462,8 @@ The complete list of intentional differences:
   it loose, letting roughly 2x the configured number through, so 25 is about
   5/s in practice. That is half of what Scryfall asks of its own consumers, and
   far above any human. **Off by default** — see .env.example, including the
-  `TRUSTED_API_KEY` bypass. Cache hits never count.
+  `TRUSTED_API_KEYS` bypass (comma-separated, one key per caller). Cache hits
+  never count.
 - **Static files are served by the CDN, not the Worker.** `/static/*`,
   `/favicon.ico`, `/robots.txt` and the tuner page come from `public/` and
   never invoke the Worker, which is what took cold start down to the platform

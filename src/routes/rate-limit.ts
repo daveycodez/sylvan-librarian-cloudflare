@@ -93,20 +93,31 @@ export function isRateLimitedRoute(routeKey: string, params: Record<string, stri
 }
 
 /**
- * True when TRUSTED_API_KEY is configured and the request presents it.
- * Unset secret (the default) = no bypass surface at all. Timing-safe compare
- * so the key cannot be probed byte-by-byte through response timing.
+ * True when TRUSTED_API_KEYS is configured and the request presents one of
+ * them. The secret is a comma-separated list (whitespace around entries is
+ * ignored, empty entries are skipped), so each caller can hold its own key
+ * and one can be revoked without rotating the others. Unset secret (the
+ * default) = no bypass surface at all. Timing-safe compare per key so no key
+ * can be probed byte-by-byte through response timing; every configured key is
+ * checked even after a match, so response time does not reveal list position.
  */
 export async function isTrustedRequest(env: Env, request: Request): Promise<boolean> {
-	const secret = (env as { TRUSTED_API_KEY?: string }).TRUSTED_API_KEY;
-	if (!secret) return false;
+	const configured = (env as { TRUSTED_API_KEYS?: string }).TRUSTED_API_KEYS;
+	if (!configured) return false;
 	const presented = request.headers.get("X-API-Key");
 	if (!presented) return false;
 	const enc = new TextEncoder();
-	const a = enc.encode(secret);
 	const b = enc.encode(presented);
-	if (a.byteLength !== b.byteLength) return false;
-	return crypto.subtle.timingSafeEqual(a, b);
+	let trusted = false;
+	for (const entry of configured.split(",")) {
+		const key = entry.trim();
+		if (!key) continue;
+		const a = enc.encode(key);
+		if (a.byteLength === b.byteLength && crypto.subtle.timingSafeEqual(a, b)) {
+			trusted = true;
+		}
+	}
+	return trusted;
 }
 
 /** Per-isolate cache of DO verdicts: ip -> blocked-until epoch ms. */

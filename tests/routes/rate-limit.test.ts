@@ -14,10 +14,18 @@
 // blocked once the cap is passed.
 
 import { describe, expect, mock, test } from "bun:test";
+import { timingSafeEqual } from "node:crypto";
 
 mock.module("cloudflare:workers", () => ({ DurableObject: class {} }));
 
-const { enforceRateLimit, isRateLimitedRoute } = await import("../../src/routes/rate-limit");
+// crypto.subtle.timingSafeEqual is a Workers-only extension; Bun does not
+// have it, so the trusted-key tests borrow Node's constant-time compare.
+if (!("timingSafeEqual" in crypto.subtle)) {
+	(crypto.subtle as { timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean }).timingSafeEqual = (a, b) =>
+		timingSafeEqual(a, b);
+}
+
+const { enforceRateLimit, isRateLimitedRoute, isTrustedRequest } = await import("../../src/routes/rate-limit");
 type Env = Parameters<typeof enforceRateLimit>[0];
 
 /** Env whose limiter DO always rules the address over its allowance. */
@@ -105,6 +113,49 @@ describe("the 429", () => {
 		expect(retryAfter).toBeGreaterThanOrEqual(30);
 		const body = (await response?.json()) as { title: string };
 		expect(body.title).toBe("Too Many Requests");
+	});
+});
+
+describe("trusted keys", () => {
+	const envWith = (keys: string | undefined): Env => ({ TRUSTED_API_KEYS: keys }) as unknown as Env;
+	const requestWith = (key?: string): Request =>
+		new Request("https://sylvan-librarian.com/search?q=elf", {
+			headers: key === undefined ? {} : { "X-API-Key": key },
+		});
+
+	test("no configured keys means no bypass surface at all", async () => {
+		expect(await isTrustedRequest(envWith(undefined), requestWith("anything"))).toBe(false);
+		expect(await isTrustedRequest(envWith(""), requestWith("anything"))).toBe(false);
+	});
+
+	test("a single configured key still works", async () => {
+		expect(await isTrustedRequest(envWith("alpha"), requestWith("alpha"))).toBe(true);
+		expect(await isTrustedRequest(envWith("alpha"), requestWith("beta"))).toBe(false);
+		expect(await isTrustedRequest(envWith("alpha"), requestWith())).toBe(false);
+	});
+
+	test("every key in the list is accepted", async () => {
+		const env = envWith("alpha,beta,gamma");
+		expect(await isTrustedRequest(env, requestWith("alpha"))).toBe(true);
+		expect(await isTrustedRequest(env, requestWith("beta"))).toBe(true);
+		expect(await isTrustedRequest(env, requestWith("gamma"))).toBe(true);
+		expect(await isTrustedRequest(env, requestWith("delta"))).toBe(false);
+	});
+
+	test("whitespace around entries and empty entries are tolerated", async () => {
+		const env = envWith(" alpha , ,\tbeta ,");
+		expect(await isTrustedRequest(env, requestWith("alpha"))).toBe(true);
+		expect(await isTrustedRequest(env, requestWith("beta"))).toBe(true);
+		// A padded presented key is unrepresentable: the Headers API trims
+		// field values per the fetch spec, so " alpha " arrives as "alpha".
+		// Trimming the CONFIGURED entries mirrors that, which is why the two
+		// sides can only ever meet on the trimmed form.
+		expect(await isTrustedRequest(env, requestWith(""))).toBe(false);
+	});
+
+	test("the delimiter cannot be smuggled: the joined list is not a key", async () => {
+		const env = envWith("alpha,beta");
+		expect(await isTrustedRequest(env, requestWith("alpha,beta"))).toBe(false);
 	});
 });
 
