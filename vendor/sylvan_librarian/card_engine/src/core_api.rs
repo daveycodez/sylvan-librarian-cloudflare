@@ -2315,6 +2315,133 @@ mod tests {
         assert_eq!(answer, "0 0\n[]");
     }
 
+    /// LOCAL PATCH measurement probe: break the archive's `indexes + padding`
+    /// remainder — the largest section in archive_section_stats' report and the
+    /// only one it cannot see inside — into individual `CardIndexes` fields, by
+    /// serializing each field as its own rkyv root. Per-root sizes carry their
+    /// own alignment rather than the archive's exact layout, so they rank the
+    /// fields rather than partition the bytes exactly; the reconciliation lines
+    /// at the end show how much the difference amounts to.
+    ///
+    /// Ignored because it needs a real corpus and holds it in memory several
+    /// times over — native only, never wasm. SYLVAN_ROWS must be ABSOLUTE:
+    /// cargo runs the test with the crate dir as cwd, not the repo root. Run as:
+    ///   SYLVAN_ROWS=$PWD/store-build/rows.jsonl scripts/with-rust.sh cargo test --release \
+    ///     -p card_engine index_section_breakdown -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn index_section_breakdown() {
+        use std::io::BufRead;
+        let rows_path = std::env::var("SYLVAN_ROWS").expect("set SYLVAN_ROWS to a rows.jsonl path");
+        let file = std::fs::File::open(&rows_path).unwrap_or_else(|e| panic!("open {rows_path}: {e}"));
+        let mut b = StoreBuilder::new();
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line.expect("read rows.jsonl line");
+            if line.trim().is_empty() {
+                continue;
+            }
+            let v: Value = serde_json::from_str(&line).expect("parse row JSON");
+            b.add_card(&v).expect("stage row");
+        }
+        let StoreBuilder { rows, interner, vocab, artists, mana } = b;
+        let built = build_card_data(rows, interner, vocab, artists, mana).expect("build card data");
+        let d = &built.card_data;
+
+        macro_rules! sz {
+            ($v:expr) => {
+                rkyv::to_bytes::<rkyv::rancor::Error>(&$v).map(|b| b.len()).unwrap_or(0)
+            };
+        }
+
+        let ix = &d.indexes;
+        let mut parts: Vec<(&str, usize)> = vec![
+            ("name_trigram", sz!(ix.name_trigram)),
+            ("oracle_trigram", sz!(ix.oracle_trigram)),
+            ("cmc", sz!(ix.cmc)),
+            ("power", sz!(ix.power)),
+            ("toughness", sz!(ix.toughness)),
+            ("rarity", sz!(ix.rarity)),
+            ("subtypes", sz!(ix.subtypes)),
+            ("keywords", sz!(ix.keywords)),
+            ("oracle_tags", sz!(ix.oracle_tags)),
+            ("art_tags", sz!(ix.art_tags)),
+            ("is_tags", sz!(ix.is_tags)),
+            ("frame_data", sz!(ix.frame_data)),
+            ("artists", sz!(ix.artists)),
+            ("flavor", sz!(ix.flavor)),
+            ("set_codes", sz!(ix.set_codes)),
+            ("watermarks", sz!(ix.watermarks)),
+            ("released_at", sz!(ix.released_at)),
+            ("price_usd", sz!(ix.price_usd)),
+            ("price_eur", sz!(ix.price_eur)),
+            ("price_tix", sz!(ix.price_tix)),
+            ("collector_number", sz!(ix.collector_number)),
+            ("released_at_cards", sz!(ix.released_at_cards)),
+            ("price_usd_cards", sz!(ix.price_usd_cards)),
+            ("price_eur_cards", sz!(ix.price_eur_cards)),
+            ("price_tix_cards", sz!(ix.price_tix_cards)),
+            ("collector_number_cards", sz!(ix.collector_number_cards)),
+            ("rarity_cards", sz!(ix.rarity_cards)),
+            ("value_totals", sz!(ix.value_totals)),
+            ("pair_totals", sz!(ix.pair_totals)),
+            ("sort_perms", sz!(ix.sort_perms)),
+            ("artwork_groups", sz!(ix.artwork_groups)),
+            ("artwork_base", sz!(ix.artwork_base)),
+            ("artwork_group_col", sz!(ix.artwork_group_col)),
+            ("printing_to_card", sz!(ix.printing_to_card)),
+            ("planes", sz!(ix.planes)),
+            ("border_printing", sz!(ix.border_printing)),
+            ("rarity_printing", sz!(ix.rarity_printing)),
+            ("rarity_printing_ordered", sz!(ix.rarity_printing_ordered)),
+            ("name_bigrams", sz!(ix.name_bigrams)),
+            ("name_unigrams", sz!(ix.name_unigrams)),
+            ("legal_divergent", sz!(ix.legal_divergent)),
+            ("arith_tuple", sz!(ix.arith_tuple)),
+            ("printing_by_scryfall_id", sz!(ix.printing_by_scryfall_id)),
+            ("printing_by_illustration_id", sz!(ix.printing_by_illustration_id)),
+            ("oracle_by_oracle_id", sz!(ix.oracle_by_oracle_id)),
+            ("external_id_index", sz!(ix.external_id_index)),
+        ];
+        parts.sort_by_key(|p| std::cmp::Reverse(p.1));
+
+        let whole_indexes = sz!(d.indexes);
+        let field_sum: usize = parts.iter().map(|p| p.1).sum();
+
+        struct CountWriter(usize);
+        impl std::io::Write for CountWriter {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0 += b.len();
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut cw = CountWriter(0);
+        write_archive(d, &mut cw).expect("serialize archive");
+        let archive_total = cw.0 - ARCHIVE_HEADER_LEN;
+        let stats = archive_section_stats(d);
+        let named = stats.cards_bytes
+            + stats.printings_bytes
+            + stats.strings_bytes
+            + stats.vocab_bytes
+            + stats.direct_arrays_bytes;
+
+        let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+        println!("CardIndexes fields, serialized standalone ({} rows -> {} cards, {} printings):", built.card_data.printings.len(), stats.card_count, stats.printing_count);
+        for (name, bytes) in &parts {
+            if *bytes == 0 {
+                continue;
+            }
+            println!("  {name:<28} {:>8.2}MB  {:>5.1}%", mb(*bytes), *bytes as f64 * 100.0 / whole_indexes as f64);
+        }
+        println!("  {:<28} {:>8.2}MB", "sum of fields", mb(field_sum));
+        println!("  {:<28} {:>8.2}MB  (field alignment/framing: {:+.2}MB)", "CardIndexes as one root", mb(whole_indexes), mb(whole_indexes) - mb(field_sum));
+        println!("  {:<28} {:>8.2}MB", "archive total", mb(archive_total));
+        println!("  {:<28} {:>8.2}MB  (what archive_section_stats reports as indexes+padding)", "archive minus named sections", mb(archive_total - named));
+        println!("  {:<28} {:>8.2}MB  (rkyv slack the per-field view cannot attribute)", "remainder minus CardIndexes", mb(archive_total - named - whole_indexes));
+    }
+
     /// A CardRow with every scalar at its zero value, for tests that care about one field.
     fn empty_card_row() -> CardRow {
         let mut it = Interner::new();
