@@ -1,4 +1,10 @@
-// A per-region copy of the DECOMPRESSED archive bytes, in the Durable Object's own SQLite.
+// A per-object copy of the archive bytes it loads, in the Durable Object's own SQLite.
+//
+// IN WHICH FORM DEPENDS ON THE ARCHIVE, and this file holds both paths — see "TWO FORMATS LIVE
+// HERE" below. A partitioned archive, which is all any publisher emits today, caches COMPRESSED
+// chunk for chunk; the decompressed form survives for an uncompressed archive alone. So the
+// header of this comment cannot be read as "the gunzip is gone" any more: what a cached wake
+// skips is the FETCH.
 //
 // KV REMAINS THE SOURCE OF TRUTH. Nothing here is authoritative: a miss, a stale key, a partial
 // fill, or any error at all falls back to the KV path that has always worked, and the cache is
@@ -6,10 +12,12 @@
 // see the header of search-engine-do.ts, where DO storage WAS the store, a wake read it instead of
 // the origin, and a cold boot paid a blocking ~70MB write burst before it could answer.
 //
-// What it buys is the cost that survives a warm KV cache. A wake has to materialise ~76.6MB into a
-// fresh wasm heap no matter where the bytes come from, but the KV path also gunzips them on the
-// way. Storing the archive already decompressed removes that step; the bytes go straight from a
-// local blob into linear memory.
+// What it buys is the cost that survives a warm KV cache: a wake has to materialise the archive
+// into a fresh wasm heap wherever the bytes come from, and everything before that is what a local
+// copy can remove. HOW MUCH it removes is what the two formats differ on, and the measurements
+// below were all taken on the DECOMPRESSED one — the single English-only archive of generation 19,
+// where a cached wake skipped the fetch AND the gunzip. Under the partitioned format a cached wake
+// still gunzips, so read the numbers as the ceiling this bought at the time, not as today's saving.
 //
 // MEASURED 2026-08-12 on the paid deployment, cold invocations (cpuTimeMs > 200) in one window:
 //
@@ -46,27 +54,33 @@
 //     every publisher sets it), so this format is what keeps a compression revert code-only.
 //   - PARTITIONED archives cache COMPRESSED, one row-family per stored KV chunk (see
 //     putCompressedChunk / cachedCompressedStream). This is plan reconciliation 2: the partitioned
-//     corpus is ~385MB decompressed, and 9 regions × ~385MB ≈ 3.5GB of decompressed copies plus the
-//     coordinator's ~1.5GB staging peak does NOT fit the 5GB DO pool. Compressed it is
-//     9 regions × N partitions × ~19MB gz ≈ 1.4GB, leaving the pool at ~3.2GB peak. The cost is a
+//     corpus is ~385MB decompressed (2026-08-16, content generation 32), and 9 regions × ~385MB ≈
+//     3.5GB of decompressed copies plus the coordinator's ~1.5GB staging peak does NOT fit the 5GB
+//     DO pool. Compressed the whole store is ~165MB, so 9 regions of it is ~1.5GB — spread across
+//     N objects a region, ~19MB gz each at that cut — leaving the pool at ~3.2GB peak. The cost is a
 //     local gunzip when a cached partition is loaded — paid at the publish COMMIT (the publisher's
 //     window, not a user's request) and on genuinely cold wakes, which paid it on the KV path anyway.
 //
 // Sizing, against the Workers Free plan's Durable Objects limits (5GB stored, 5M row reads/day,
 // 100k row writes/day):
 //
-//   - ~52 rows for the 76.6MB store and ~8 for the 11.8MB residue, at BLOB_GROUP_BYTES each
-//   - a wake reads ~52 of them, so ~2,300 reads/day at current traffic, against 5,000,000
-//   - a fill writes ~60 and a replacement deletes ~60 (deletes bill as writes), once per region per
-//     publish — a few hundred a day against 100,000
-//   - ~88MB stored per region under the decompressed format; ~19MB gz per PARTITION object
-//     once partitioned. THIS IS THE AXIS THAT BINDS, and what
-//     makes it affordable is that engine DOs are named per REGION rather than per colo: there are
-//     nine location hints, so the worst case is ~790MB decompressed / ~1.4GB partitioned against the 5GB
-//     ceiling however much traffic
-//     arrives. Under per-colo naming the same cache would have been bounded only by how many of
-//     Cloudflare's ~330 colos saw traffic, times the shard width — which is the shape that forced
-//     free-plan sharding down to a single shard the last time this storage held a copy of the store.
+//   - row count follows `ceil(cached bytes / BLOB_GROUP_BYTES)` over ONE object's archive — one
+//     partition's compressed chunks today, and there is no separate residue archive to add to it
+//     (generation 19 folded that into the printing record). Dated for scale: ~52 rows held the
+//     76.6MB single archive decompressed, and ~8 more its 11.8MB residue, before either was true
+//   - a wake reads that object's rows and no others, which at current traffic is thousands a day
+//     against 5,000,000 — the read meter has never been the constraint here
+//   - a fill writes them and a replacement deletes them (deletes bill as writes), once per object
+//     per publish — hundreds a day against 100,000
+//   - STORAGE IS THE AXIS THAT BINDS, and the bound is `regions × partition_count × one partition
+//     compressed` — nine times the whole compressed store, whatever `partition_count` is, which
+//     is the arithmetic above and is ~1.5GB against the 5GB ceiling however much traffic arrives.
+//     Take the per-object factor from the manifest's `partitions[k].store_gzip_bytes` rather than
+//     from a number written down here. What makes it affordable is that engine DOs are
+//     named per REGION rather than per colo — nine location hints, a fixed multiplier. Under
+//     per-colo naming the same cache would have been bounded only by how many of Cloudflare's ~330
+//     colos saw traffic, times the shard width, which is the shape that forced free-plan sharding
+//     down to a single shard the last time this storage held a copy of the store.
 //
 // Shards above the announced width are released on the nightly publish fan-out, so a traffic spike
 // that opens shards does not permanently consume the pool.

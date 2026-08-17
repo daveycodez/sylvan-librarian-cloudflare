@@ -20,13 +20,25 @@
 // `engine-<hint>` IS this object, so a surviving relay would recurse into its
 // own stub.
 //
-// The DO keeps NO local copy of the store. It used to persist all ~70MB into
-// its own SQLite so wakes avoided the origin, which cost a 70MB write burst on
-// first boot (blocking live responses behind the output gate until the writes
-// were trickled), 70MB of the 5GB DO storage pool per colo — which is what
-// forced free-plan sharding down to one shard — and ~39 metered row reads on
-// every wake. KV replaced all of it: a wake is ~4 KV reads of immutable,
-// colo-cached chunks, so the local copy earned nothing it cost.
+// KV IS THE STORE; DO STORAGE HOLDS A CACHE OF IT. That distinction is the whole
+// of this file's history, and it is not the same claim as "no local copy".
+//
+// The design that was removed made DO storage AUTHORITATIVE: the object persisted
+// the entire ~70MB archive into its own SQLite so a wake never touched the origin.
+// That cost a 70MB write burst on first boot (blocking live responses behind the
+// output gate until the writes were trickled), 70MB of the 5GB DO storage pool per
+// COLO — which is what forced free-plan sharding down to one shard — and ~39
+// metered row reads on every wake. KV replaced it: chunks are immutable and
+// colo-cached, and a cold object reads the chunks of its OWN partition, nothing
+// more.
+//
+// What came back afterwards is a read-through CACHE, not a store
+// (src/engine/store-cache.ts): it holds this object's partition compressed, chunk
+// for chunk; nothing in it is authoritative; and a miss, a stale key or any fault
+// falls back to the KV path. It DOES consume the 5GB pool, so anyone sizing that
+// budget must count it — the bound is regions × partitions × one compressed
+// partition, which is why store-cache.ts and not this comment carries the
+// arithmetic.
 
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -449,14 +461,13 @@ export class SearchEngine extends DurableObject<Env> {
 	// return value, and a bare `null` (a genuine card miss) has nothing to spread onto.
 	// RemoteEngine unwraps on the other side, so the Engine interface keeps the plain shapes.
 	//
-	// THE RESIDUE ATTACH IS NOW PAID IN FRONT OF THE USER, and that is an accepted consequence of
-	// dropping the relay. A DO can be fully warm for `/search` and still ~250-350ms of CPU away from
-	// a card object, because the residue archive is attached only on first `/cards/*` use — so a
-	// search-only region never carries its ~11.8MB. `shouldRelayScryfall` used to hide that behind a
-	// race with the regional DO. With one tier there is nothing to race, so the first card request
-	// after a wake pays it. Two things make that acceptable: the local archive cache turns the attach
-	// into a same-machine read (store-cache.ts), and a region-scale DO wakes far less often than a
-	// colo-scale one did.
+	// THERE IS NO SECOND ARCHIVE TO ATTACH. Generation 19 folded the `card-compat-*` residue into
+	// the printing record, so a warm object is warm for `/cards/*` on exactly the terms it is warm
+	// for `/search`: one archive, loaded once, no lazy attach and no first-card-request penalty.
+	// This paragraph used to describe the opposite — a ~11.8MB residue attached on first `/cards/*`
+	// use, costing ~250-350ms of CPU in front of the user once the relay tier (`shouldRelayScryfall`)
+	// stopped hiding it behind a race. Both the relay and the residue are gone; the memory argument
+	// that justified splitting them is in store-kv.ts's generation changelog.
 
 	async scryfallSearch(
 		opts: EngineSearchOptions,
@@ -896,10 +907,14 @@ export class SearchEngine extends DurableObject<Env> {
 	 * Drop this object's cached archives — called on shards above the fan-out.
 	 *
 	 * Scale-in is eviction, which was free while a shard held nothing in storage.
-	 * With the archive cache it is not: an abandoned `engine-wnam-3` would keep
-	 * ~88MB of rows forever, and its own prune never runs again because it never
-	 * loads again. Left alone, every transient spike would permanently consume a
-	 * slice of the 5GB pool.
+	 * With the archive cache it is not: an abandoned partition object — every
+	 * `engine-wnam-3-p<k>` of a retired replica, released together — would keep its
+	 * cached chunks forever, and its own prune never runs again because it never
+	 * loads again. The rows are one partition's COMPRESSED archive, not the whole
+	 * store's (~19MB gz per object at the 2026-08-16 ten-partition cut; the
+	 * standing figure is `partitions[k].store_gzip_bytes`), and a retired replica
+	 * holds one such object per partition. Left alone, every transient spike would
+	 * permanently consume a slice of the 5GB pool.
 	 *
 	 * Safe unconditionally: the cache is an optimisation over KV, so the worst a
 	 * mistaken release can do is make one later load slower. Cloudflare reclaims a

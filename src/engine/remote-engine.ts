@@ -256,9 +256,14 @@ function sampleWarmRpc(region: string, colo: string, rpcMs: number): void {
 			`max=${w.max}ms over ${w.start === 0 ? 0 : now - w.start}ms`,
 	);
 	if (w.min >= WARM_RPC_FAR_MS) {
+		// Name the OBJECTS, not the replica-group label. `engine-<region>` is what
+		// replicaGroupOf returns and nothing loads a store into it; the things this
+		// window actually timed are `engine-<region>[-<n>]-p<k>`, and the window
+		// mixes every partition and shard this isolate addressed, so the floor says
+		// "at least one of them is far", never which.
 		console.warn(
-			`${prefix} warm engine rpc floor is ${w.min}ms — engine-${region} may not be in ${region}; ` +
-				`check its placement line (see ENGINE-PLACEMENT.md)`,
+			`${prefix} warm engine rpc floor is ${w.min}ms — an engine-${region}[-<n>]-p<k> object may not be ` +
+				`in ${region}; check their placement lines (see ENGINE-PLACEMENT.md)`,
 		);
 	}
 	w.start = now;
@@ -278,7 +283,6 @@ export class RemoteEngine implements Engine {
 
 	constructor(
 		private readonly stub: SearchEngineStub,
-		/** Region of the calling request: where a COLD colo DO relays to. */
 		/** Which region's DO this stub addresses — the key the shard controller
 		 * keeps its state under, since one isolate can serve both sides of a
 		 * longitude split and therefore address two regions. */

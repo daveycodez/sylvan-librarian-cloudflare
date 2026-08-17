@@ -898,12 +898,15 @@ struct Printing {
     /// family on the query side too (see filter.rs's exact-match arm). Costs the archived row
     /// nothing: it rides padding the 16-byte (u128) alignment had already left, so
     /// `the_archived_row_sizes_stay_pinned` still reads 304.
+    ///
+    /// It also decides, and is the ONLY thing that decides, whether a printing of this card prints
+    /// the card's own faces and name or its `OracleCard::divergent` triple — see `divergent_of`
+    /// and `DivergentPrinting::printing_layout_id`. The printing carries no flag of its own for
+    /// two reasons that agree: this value already answers the question exactly (0 of the 71
+    /// divergent groups have a layout appearing on both pairs), and there is no room for a second
+    /// copy anyway — the row is 304 archived bytes with zero padding left, so one byte here rounds
+    /// it to 320 across ~540k rows.
     card_layout_id: u32,
-    /// Whether a printing of this card prints the card's own faces and name or its
-    /// `OracleCard::divergent` pair is decided by THIS value and nothing else — see
-    /// `divergent_of` and `DivergentPrinting::printing_layout_id`. The printing carries no flag
-    /// of its own because it has no room for one: the row is 304 archived bytes with zero
-    /// padding left, and one byte here rounds it to 320 across ~540k rows.
     // Dense ranks of card_set_code and the artist name in byte order, assigned post-load by
     // assign_set_ranks / assign_artist_ranks; the sort keys for SortCol::Set and SortCol::Artist.
     // Neither can be derived at sort time: a set code is a string, and card_artist_vid is intern
@@ -1045,8 +1048,10 @@ struct CardRow {
     card_artist_folded_id: u32,
     card_set_code: InlineStr<8>,
     card_layout_id: u32,
-    // The FACE-level layout, taken from the front face and shared by every face of the printing
-    // — see Printing::card_face_layout_id. NONE_STR on all but the reversible rows.
+    // The FACE-level layout, taken from the front face and shared by every face of the printing.
+    // Transient like the rest of CardRow: the commit pass routes it onto the CARD, as
+    // `DivergentPrinting::face_layout_id`, and the printing keeps only `card_layout_id`.
+    // NONE_STR on all but the 81 reversible rows.
     card_face_layout_id: u32,
     card_border_id: u32,
     card_watermark_id: u32,
@@ -1894,7 +1899,7 @@ fn opt_str_list_color_mask(d: &Bound<PyDict>, key: &str) -> Option<u8> {
 ///
 /// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`, for the reason on
 /// `str_list_color_mask` above. The JSON twin is `jv_faces` in core_api.rs.
-/// The FRONT face's `layout` — the whole of `Printing::card_face_layout_id`, since every face of
+/// The FRONT face's `layout` — the whole of `CardRow::card_face_layout_id`, since every face of
 /// every printing that has the key agrees on its value (measured: 81 printings, 162 faces).
 ///
 /// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`, like its neighbours. The JSON twin
@@ -2022,7 +2027,7 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         card_set_code: InlineStr::<8>::from_str(&opt_str(d, "card_set_code").unwrap_or_default()),
         card_layout_id: it.intern(opt_str(d, "card_layout").unwrap_or_default()),
         // The FRONT face's `layout`, which every face of the printing shares — see
-        // Printing::card_face_layout_id. The JSON twin is in `card_from_json`.
+        // CardRow::card_face_layout_id. The JSON twin is in `card_from_json`.
         card_face_layout_id: it.intern_opt(face_layout_from_pydict(d)),
         card_border_id: it.intern(opt_str(d, "card_border").unwrap_or_default()),
         card_watermark_id: it.intern_opt(opt_str(d, "card_watermark")),
@@ -5619,8 +5624,8 @@ fn build_all_value_totals(
             NONE_STR => Vec::new(),
             id => vec![strings[id as usize].clone()],
         }),
-        // BOTH values a printing answers `layout:` with — its own and its faces' (see
-        // Printing::card_face_layout_id). This table is read as an EXACT total (the
+        // BOTH values a printing answers `layout:` with — its own `card_layout_id` and its faces'
+        // (`DivergentPrinting::face_layout_id`, on the CARD). This table is read as an EXACT total (the
         // `TextExact { Layout, Eq }` arm in `exact_total` returns it and never runs the filter),
         // so a face layout missing from it is not a slower count but a WRONG one:
         // `layout:normal` would keep answering 106,558 against Scryfall's 106,635 while the
@@ -15553,7 +15558,7 @@ fn faces_to_pylist<'py>(
     strings: &AStrings,
 ) -> PyResult<Bound<'py, PyList>> {
     // Whichever of the card's two face lists THIS printing prints, and the FACE-level `layout`
-    // that goes with it — see the JSON twin `faces_to_json` and OracleCard::divergent_faces.
+    // that goes with it — see the JSON twin `faces_to_json` and OracleCard::divergent.
     let divergent = divergent_of(card, printing);
     let faces = divergent.map_or(&card.faces, |d| &d.faces);
     let face_layout = divergent.and_then(|d| str_at(strings, u32::from(d.face_layout_id)));
@@ -15955,17 +15960,31 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                2026-08-16 all_cards bulk, which is also where the 3 `adventure` cases come
 //                from, the ones whose reversible printing prints the SAME face names with the
 //                front's oracle text copied onto the back.
-//                Four stored things move: `OracleCard` gains `divergent_faces` +
-//                `divergent_name_id` (the group's OTHER pair, one per card because its
-//                reversible printings all agree — 0 of 71 disagree internally); `Printing` gains
-//                `faces_diverge` (which pair this row prints) and `card_face_layout_id` (the
-//                faces' own `layout`, which `layout:` now reads as a SECOND value — Scryfall's
-//                `layout:normal` is 106,635 against the 106,558 printings whose own layout is
-//                normal, and the gap is exactly the 77 reversible printings with normal faces);
-//                and `ValueTotals::layout` posts both values, since it short-circuits the result
-//                total and would otherwise keep answering 106,558 under a fixed filter. Both row
-//                sizes move (304 -> 320, 256 -> 272), so the header catches a stale archive —
-//                but the totals table does not, which is why the constant moves too.
+//                TWO stored things move, and `Printing` is not one of them. `OracleCard` gains
+//                `divergent` — a Vec holding at most one `DivergentPrinting`, the group's OTHER
+//                (name, faces, face-layout) triple, one per card because its reversible printings
+//                all agree (0 of 71 disagree internally). WHICH pair a row prints is read off the
+//                printing's own `card_layout_id` rather than a flag, and that is exact rather than
+//                a proxy: 0 of the 71 groups carry one layout on both of their pairs, so the
+//                builder re-checks it per group and errors rather than storing a record that would
+//                answer for the wrong printings. And `ValueTotals::layout` posts BOTH of a
+//                printing's layout values — its own and its faces'
+//                (`DivergentPrinting::face_layout_id`), which `layout:` reads as a SECOND value:
+//                Scryfall's `layout:normal` is 106,635 against the 106,558 printings whose own
+//                layout is normal, and the gap is exactly the 77 reversible printings with normal
+//                faces. That table short-circuits the result total, so it would otherwise keep
+//                answering 106,558 under a filter that had already been fixed.
+//                THE PRINTING-SIDE PLACEMENT WAS CONSIDERED AND REJECTED ON BYTES, which is the
+//                whole reason the record hangs off the card. Putting a `faces_diverge` flag and a
+//                face-layout id on `Printing` is where a per-printing fact belongs, but 2026081615
+//                spent the last of that row's padding on `card_layout_id`, so ONE byte there rounds
+//                the row 304 -> 320 and costs 8.6 MB across ~540k printings — measured, not
+//                estimated, and weighed against the ~8 MB of raw growth room the port then had
+//                under its 2-chunk KV cap. On the card the same information is one 8-byte Vec
+//                header, ~0.6 MB. So exactly one row size moves — `OracleCard` 256 -> 272, while
+//                `Printing` STAYS 304, which `the_archived_row_sizes_stay_pinned` asserts — and the
+//                header catches a stale archive on that one size. The totals table it does not
+//                catch, which is why the constant moves too.
 //   2026081617 — AN ARTWORK IS A FACE TUPLE, NOT A FRONT ILLUSTRATION. `assign_artwork_groups`
 //                keyed on `Printing::illustration_id`, which the importer's face merge fills from
 //                face 0 — so two printings of one card that share a front and differ on the back
@@ -16545,7 +16564,7 @@ fn build_card_data_sorted(
                 //
                 // All but 71 of the 38,626 oracle groups: the exceptions are the ones with a
                 // `reversible_card` printing, whose faces and name are the group's OTHER value
-                // and land in `divergent_faces` below on whichever rows disagree with this one.
+                // and land in `divergent` below on whichever rows disagree with this one.
                 faces: oracle_faces(&row.card_faces),
                 divergent: Vec::new(),
             });

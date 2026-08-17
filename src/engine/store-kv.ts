@@ -1,5 +1,5 @@
-// Where the card store lives: Workers KV, as a handful of large chunks plus a
-// manifest pointing at them.
+// Where the card store lives: Workers KV, as one chunk family PER PARTITION plus
+// a manifest pointing at them all.
 //
 // This replaces a content-addressed 40,000-byte grid in D1. That grid existed
 // for one reason — D1's 100,000-byte SQL statement limit, with hex doubling
@@ -7,18 +7,28 @@
 // store, reuse accounting, prune-by-reference) purely to keep row writes under
 // the free plan's daily quota.
 //
-// KV removes the constraint that created all of it. At KV_CHUNK_BYTES below,
-// the ~84MB store — ONE archive since generation 19, card-object residue
-// included — is TWO chunks, so:
+// KV removes the constraint that created all of it. What is published is one
+// complete rkyv archive per partition — no second card-object archive since
+// generation 19, which folded the residue into the printing record — sized so
+// that a partition is normally a SINGLE chunk (TARGET_PARTITION_BYTES in
+// src/import-publish.ts is held under KV_CHUNK_BYTES for exactly that reason).
+// So:
 //
-//   - a full publish is 3 writes against a 1,000/day free allowance — two
-//     store chunks and the manifest — with no incremental publish, no dedup,
-//     no resume bookkeeping
-//   - a cold load is 3 reads against 100,000/day (manifest + two chunks), and
-//     it is the SAME load for /search and /cards/* — no second archive, no
-//     second round trip
-//   - one copy serves every colo, instead of one 84MB SQLite copy per
+//   - a full publish writes every partition's chunks, one routing filter and
+//     the manifest, against a 1,000/day free allowance — with no incremental
+//     publish, no dedup, no resume bookkeeping
+//   - a cold engine object reads the chunks of ITS OWN partition and nothing
+//     else, against 100,000/day, and it is the SAME load for /search and
+//     /cards/* — no second archive, no second round trip
+//   - one copy serves every colo, instead of one whole-store SQLite copy per
 //     Durable Object against a 5GB pool
+//
+// Both totals scale with the manifest's `partition_count`, which is derived per
+// build and is not a constant anywhere; do not restate it here. Dated for scale
+// only, and attributed because it rots: read 2026-08-16 off the all_cards corpus
+// at content generation 32 / format 2026081616, the manifest was 10 partitions
+// with one chunk each — so a publish was 12 store-side writes and a cold
+// partition object one chunk read.
 //
 // Chunk count is not cosmetic. The loader below pulls chunks STRICTLY IN
 // SEQUENCE, one awaited get each (and must — see kvSourceStream), so a chunk is
@@ -35,7 +45,9 @@
 // CHUNKS ARE GZIPPED. The cut is still on RAW bytes at KV_CHUNK_BYTES, and each
 // cut is then compressed as its own gzip member, so the chunk COUNT is what it
 // always was and the value KV holds is ~43% of it. Two things bought that, and
-// neither is the meter:
+// neither is the meter — both measured on the SINGLE-ARCHIVE, English-only store
+// of generation 19 (2026-08-12, 76.6MB), which is the shape the argument was made
+// on and not the shape running today:
 //
 //   - the cold path is I/O-bound, not read-count-bound. Measured on production
 //     over 3 days (n=121 cold loads): wall p50 915ms against DO CPU p50 164ms,
@@ -43,6 +55,10 @@
 //   - a chunk is materialised whole while it is copied into wasm, and that sum
 //     against 128MB is the real ceiling. Holding the ~13MB compressed chunk
 //     instead of the 26MB raw one takes peak from ~102.6MB to ~89.6MB.
+//
+// Partitioning did not weaken either half; it made them cheaper per object, since
+// a partition is a fraction of that archive. The REASONING is what carries over —
+// re-measure before quoting a number.
 //
 // It is not free, and the ~190ms this comment used to budget for decompression
 // was WRONG BY ROUGHLY 5x. Measured across the deploy that introduced it
@@ -53,22 +69,31 @@
 //
 // It stands anyway, for a reason that has nothing to do with the original
 // argument: the fix was to stop paying it so often rather than to stop paying
-// it. Engine DOs are now named per REGION rather than per colo, so the ~45 cold
-// loads a day that made this expensive collapse to a handful, and store-cache.ts
-// holds the DECOMPRESSED archive locally so most of the remaining wakes skip it
-// too. Reverting to uncompressed chunks would cost ~13MB of the 128MB isolate
-// (the resident chunk doubles) to save a cost that is now rare.
+// it. Engine DOs are named per REGION rather than per colo, so the ~45 cold loads
+// a day that made this expensive collapse to a handful, and store-cache.ts keeps
+// a local copy so most of the remaining wakes skip the network entirely.
+// Reverting to uncompressed chunks would cost the isolate the difference between
+// a resident compressed chunk and a raw one, to save a cost that is now rare.
+//
+// WHAT THAT LOCAL COPY HOLDS DEPENDS ON THE ARCHIVE'S SHAPE, and store-cache.ts
+// is the module that decides it — a PARTITIONED archive caches COMPRESSED, chunk
+// for chunk, because decompressed copies of every partition in every region do
+// not fit the 5GB DO pool. So a cached wake still pays a gunzip; what it skips is
+// the fetch. The uncompressed-caching path survives only for an uncompressed
+// archive, which no publisher emits.
 //
 // Note also what is NOT the cause, so it is not retried: the piece count. Gzip
 // took production from 3 pieces to 18,713 (DecompressionStream emits 4KB), and
 // 58cfbe7 gathered those back into 19 blocks with no change in cold CPU at all.
 //
-// Both halves are now measured, same account and window: a cold load reading the
-// DECOMPRESSED archive out of store-cache.ts costs 445ms of DO CPU and waits
-// 124ms, against 3466-4204ms of CPU and 2596-3543ms of wait from KV. Note those
-// KV figures are the COLD-KV-cache case (they followed a republish); against a
-// warm colo cache the gap narrows to roughly the decompression alone. See
-// store-cache.ts.
+// Both halves were measured on the same account and window, against the
+// generation-19 single archive with store-cache.ts still holding it DECOMPRESSED
+// (2026-08-12): a cold load out of the cache cost 445ms of DO CPU and waited
+// 124ms, against 3466-4204ms of CPU and 2596-3543ms of wait from KV. Those KV
+// figures are the COLD-KV-cache case (they followed a republish); against a warm
+// colo cache the gap narrows to roughly the decompression alone. Today's cached
+// wake pays that decompression too, so the gap is the fetch — smaller than these
+// numbers, and not re-measured. See store-cache.ts.
 
 import type { Env, StoreManifest, StoreManifestPartition } from "./types";
 import { EngineUnavailableError } from "./types";
@@ -76,24 +101,34 @@ import { EngineUnavailableError } from "./types";
 /**
  * Bytes per KV chunk — the RAW cut, whose gzip member is what KV actually stores.
  *
- * Chunk count is `ceil(store_bytes / this)`, and a chunk is a SERIALIZED NETWORK
- * ROUND TRIP on the cold path (the loader pulls them strictly in sequence, one
- * awaited get each — see kvSourceStream), so the count is a latency number, not
- * just a meter tick. Measured in the other direction: generation 3 added 6.25MB,
- * went 3 chunks to 4, and the production median store load went 337ms to 691ms.
+ * Applied PER PARTITION: a partition's chunk count is `ceil(store_bytes / this)`
+ * over ITS OWN archive, and a chunk is a SERIALIZED NETWORK ROUND TRIP on the
+ * cold path (the loader pulls them strictly in sequence, one awaited get each —
+ * see kvSourceStream), so the count is a latency number, not just a meter tick.
+ * Measured in the other direction, on the pre-partition single archive:
+ * generation 3 added 6.25MB, went 3 chunks to 4, and the production median store
+ * load went 337ms to 691ms.
  *
- * RAISED from 38,400,000 for generation 19: the residue archive folded back into
- * the store (one archive, upstream's shape), taking it to 83,902,632 bytes, and
- * this cut keeps that at TWO chunks with 8.1MB of RAW growth room before a
- * third (a 42MB cut left 97KB — five days of Scryfall drift). Safe only while
- * the store compresses better than ~1.76x. Measured on the real generation-19
- * archive (2026-08-13):
+ * WHAT THIS CONSTANT NOW GOVERNS IS THE OTHER END. Partition sizing is what keeps
+ * a partition to one chunk, and `TARGET_PARTITION_BYTES` (src/import-publish.ts)
+ * is deliberately held BELOW this value for that reason — a target above the cut
+ * puts a nearly-empty second chunk on some partitions and buys an extra
+ * sequential round trip on their every cold load. Raise this and that headroom
+ * grows; lower it below the target and every partition splits.
+ *
+ * RAISED from 38,400,000 for generation 19, when the store was still one archive
+ * and this cut had to keep 83,902,632 bytes at two chunks. Measured on that
+ * archive (2026-08-13), which is where the compression margin comes from:
  *
  *   chunk 0: raw 46.0MB -> 15.3MB stored   (58% of the value cap)
  *   chunk 1: raw 37.9MB -> 17.8MB stored   (71.2% of the cap — the binding one)
  *
- * so the binding chunk carries ~29% headroom, and the whole archive would have
- * to compress worse than its worst part currently does before it breached.
+ * so a full-size cut carried ~29% headroom against KV's per-value cap, and the
+ * archive would have to compress worse than its worst part currently does before
+ * it breached. Partitions are cut well under a full-size chunk (2026-08-16, at
+ * content generation 32: 10 partitions averaging ~41MB raw, one chunk each), so
+ * the margin is wider still — and it stays wider, because
+ * `TARGET_PARTITION_BYTES` is what decides a partition's size, not this cut.
  *
  * THE FAILURE MODE IS LOUD AND NON-CORRUPTING, which is what makes the trade
  * acceptable. Every publisher compresses and then checks against
@@ -104,12 +139,15 @@ import { EngineUnavailableError } from "./types";
  *
  * The 128MB isolate does not constrain this: the loader feeds wasm in fixed 4MB
  * blocks (load-blocks.ts) regardless of chunk size, so the only size that scales
- * with this constant is the compressed chunk resident in the JS heap (~17.8MB),
- * against ~84MB of linear memory.
+ * with this constant is the compressed chunk resident in the JS heap, against the
+ * one partition's worth of linear memory beside it.
  *
- * Growth is not the thing to watch (~19KB/day of Scryfall drift). What to watch
- * is a FORMAT CHANGE that adds poorly-compressing data in bulk — which is
- * exactly what generation 3 did.
+ * CORPUS GROWTH IS NOT WHAT THIS CONSTANT ABSORBS ANY MORE — the builder answers
+ * growth by choosing a larger `partition_count`, and each partition stays near
+ * `TARGET_PARTITION_BYTES` whatever the corpus does. What to watch is still a
+ * FORMAT CHANGE that adds poorly-compressing data in bulk, which is exactly what
+ * generation 3 did: that raises bytes per partition without raising N, and it is
+ * the one direction that can push a partition over the cut.
  */
 export const KV_CHUNK_BYTES = 46_000_000;
 
@@ -1393,7 +1431,9 @@ export function chunkCountFor(storeBytes: number, cut: number = KV_CHUNK_BYTES):
 }
 
 /**
- * How close the store is to needing one more chunk.
+ * How close an archive is to needing one more chunk. Called with ONE PARTITION's
+ * `store_bytes` (the coordinator warns per partition as it publishes each one),
+ * so "the store" below means that partition's archive.
  *
  * CROSSING A BOUNDARY IS SILENT. `splitStore` is a bare `ceil` loop, and the only
  * check anywhere near it — `chunkForKv`'s fallback to `KV_CHUNK_BYTES_SAFE` —
@@ -1403,12 +1443,15 @@ export function chunkCountFor(storeBytes: number, cut: number = KV_CHUNK_BYTES):
  * and every cold load quietly pays another KV read. The manifest records
  * `chunk_count`, but nothing has ever compared it to the last one.
  *
- * That is worth a guard because the margin is thin and growth is lumpy. Measured
- * 2026-08-12, the store was 76,656,360 bytes against a two-chunk ceiling of
- * 76,800,000 — 143,640 bytes, 0.19%. Scryfall drift is ~19KB/day, so the trend
- * alone gives about a week; a single set release (~300 printings and ~280 new
- * oracle cards, roughly 500KB once their text and index entries land) crosses it
- * in one nightly import.
+ * That is worth a guard because the margin can be thin and growth is lumpy.
+ * Measured 2026-08-12, on the single English-only archive that predates
+ * partitioning: 76,656,360 bytes against a two-chunk ceiling of 76,800,000 —
+ * 143,640 bytes, 0.19%, with Scryfall drift then ~19KB/day, so the trend alone
+ * gave about a week and a single set release (~300 printings, ~280 new oracle
+ * cards, roughly 500KB once their text and index entries land) crossed it in one
+ * nightly import. A partition sized by `TARGET_PARTITION_BYTES` starts much
+ * further from its boundary than that, which is the point of sizing it there —
+ * the warning is what says so if a build ever lands close anyway.
  */
 export function chunkHeadroom(
 	storeBytes: number,

@@ -58,21 +58,40 @@
 	// the better part of a day.
 	"cache": { "enabled": true },
 
-	// The engine store lives here, and this is the SOURCE OF TRUTH for it: three
-	// ~25.5MB search chunks, the ~11.8MB card-object residue archive in one more,
-	// and a manifest — written by the deploy and the nightly cron, read by every
-	// SearchEngine DO. One copy serves everywhere (KV caches it per-colo on
-	// immutable chunk keys), where an earlier design kept a 70MB SQLite copy per
-	// Durable Object against the 5GB DO pool. A cold `/search` load is 4 metered
-	// reads and a cold `/cards/*` load 5 (it alone attaches the residue); a full
-	// publish is 5 writes, against free-tier allowances of 100k reads and 1k
-	// writes per day.
+	// The engine store lives here, and KV is the SOURCE OF TRUTH for it: nothing
+	// else holds an authoritative copy. The store is one complete rkyv archive PER
+	// PARTITION, each published under its own immutable chunk family, plus one
+	// routing filter and one manifest at `store:manifest` — written by the deploy
+	// and the nightly cron, read by every SearchEngine DO.
 	//
-	// Each engine DO now ALSO keeps the decompressed archive in its own SQLite as
-	// a read-through cache (src/engine/store-cache.ts), so a wake usually skips
-	// both the network and the gunzip. That is not a return to the old design:
-	// nothing there is authoritative, any miss or fault falls back to these keys,
-	// and it is bounded by the nine regions rather than by every colo.
+	// DO NOT WRITE THE PARTITION COUNT DOWN HERE. The builder derives it per build
+	// from the corpus it just measured (TARGET_PARTITION_BYTES, src/import-publish.ts)
+	// and every reader takes it from the manifest's `partition_count`; a literal in
+	// this file could only ever be a stale copy of it. `bun scripts/store-age.ts`
+	// reads the live shape. For scale only, and dated and attributed because it
+	// rots: read 2026-08-16 off the all_cards corpus, with the code then standing
+	// at content generation 32 / format 2026081616, the manifest was 10 partitions,
+	// one chunk each, 412,869,984 raw archive bytes across the ten. Content
+	// generation has moved twice since; do not treat those bytes as current.
+	//
+	// What that costs against the free tier (100k KV reads and 1k writes a day)
+	// follows from the shape rather than from a fixed count. A publish writes every
+	// partition's chunks plus the routing filter plus the manifest; a cold engine
+	// object reads the chunks of ITS OWN partition and nothing else, and a request
+	// fans out across all of them (see PartitionedEngine) rather than loading one
+	// large archive. Both totals therefore scale with `partition_count`. There is
+	// no separate card-object residue archive and no extra round trip for
+	// `/cards/*`: generation 19 folded the residue into the printing record, so
+	// `/search` and `/cards/*` load the identical bytes.
+	//
+	// Each engine DO ALSO keeps its partition in its own SQLite as a read-through
+	// cache (src/engine/store-cache.ts), COMPRESSED chunk for chunk — decompressed
+	// copies of every partition across every region do not fit the 5GB DO pool.
+	// That is not a return to the design where DO storage WAS the store: nothing
+	// there is authoritative, any miss or fault falls back to these keys, and it is
+	// bounded by the nine regions rather than by every colo. It does consume the
+	// pool, though, so size that from store-cache.ts's own accounting.
+	//
 	// Nothing to fill in by hand: the deploy creates the namespace if absent
 	// and pins its id (scripts/align-kv-binding.ts) before wrangler reads this
 	// file, which also repairs the binding after a namespace is deleted and
