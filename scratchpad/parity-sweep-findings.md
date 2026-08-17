@@ -1266,3 +1266,385 @@ Local `10fc323`; upstream `9df17a3` on `multilingual-store`.
 **Wanted, not added here** (`scripts/live-parity-cases.json` is another agent's): a case for
 `q=ser`, which is the one prefix that separates similarity from *every* length metric in both
 directions — `Serra Avenger` (12 collated characters) must lead `Serenity` (8).
+
+---
+
+# 20. `unique=cards`: the representative is FIRST-IN-SORT-ORDER, and its tie-break is a FOURTH internal ordinal — with one derivable component worth +1.9pp
+
+§17.4 left the 28 `plst` findings as "not proven undecidable, and not snapshot skew — a derivable
+feature exists and was measured and declined", on the strength of three narrowed pairs in which
+Scryfall kept the OLDEST candidate. This section settles it on 20,321 labelled representative
+decisions and 152 complete printing orders read straight off api.scryfall.com. Three results, and
+they do not all point the same way:
+
+* **`released_at ASC` is dead.** Across 13,041 date-differing pairs the newest-first rule is right
+  11,003 times and wrong 2,038. The three pairs were real, but they were three members of a
+  residual class, not evidence about the direction of the key.
+* **The residual is NOT derivable, and it is proven the way §18 proves `/sets`.** Scryfall's own
+  printing order can be read directly — under `order=name` every printing of one card ties, so the
+  row order IS the tie-break — and a sweep of 254 candidate keys × 2 directions (every field the
+  card object publishes, plus presence/length variants, plus 15 `/sets` fields including
+  `printed_size`) returns the fixpoint `pin ASC` **and nothing else**. 153 of 164 date-inversions
+  are unexplained by any published field.
+* **One component of it IS derivable and is not a set code.** A collector number with an alphabetic
+  PREFIX (`plst/USG-4`, `wc04/mb278`, `ptc/…`) sorts after one without, ahead of the date key. On
+  ten scopes never used in the fit it beats today's rule by **+1.90pp** and beats the hardcoded
+  `plst` demotion §17.4 quoted at +0.35pp on its own corpus (+1.67pp on these).
+
+## 20.1 The corpus, and the request budget
+
+**174 requests to api.scryfall.com**, serial, ≥1.15s apart, all cached. Everything else came from
+data already paid for: the session's `live-parity-cache` (5,264 responses, 4,023 of them card
+lists) and the local origin at `localhost:8787` (a dev server that was already running; nothing was
+started or stopped).
+
+| corpus | what it is | size |
+|---|---|---|
+| **A — cache-mined merges** | 1,170 cached `unique=cards` pages whose `next_page` names their own query; winners joined to candidate sets fetched from the LOCAL origin under `unique=prints` with the same `include_*` flags | 266,700 winner rows → **18,638 decisions** with ≥2 candidates over 45 scopes; 7,999 pin-EXCLUDED |
+| **B — printing orders** | `!"<name>" unique=prints order=name`, one request per card: the primary key ties on every row, so the response IS Scryfall's internal order | **152 cards, 2,942 printings, 2,748 same-oracle adjacent pairs**, 164 of them date-inversions |
+| **C — fresh scopes** | 10 scopes chosen AFTER the rule was fitted, never used for fitting | **1,683 decisions** |
+
+Corpus A's reconstruction is validated per card, not per scope: the winner Scryfall returned had to
+be in the candidate set the local origin produced. It was, 266,697 times out of 266,700 — three
+misses in total, which is also the tightest membership check on `/cards/search` this repo has run.
+
+## 20.2 The mechanism, which was not what the port assumes
+
+**`unique=cards` keeps the row that sorts FIRST in the requested order.** Two independent proofs:
+
+* The same query under a different `order=` keeps a DIFFERENT printing. `e:one` cached under six
+  orderings: 28 of 271 cards shared between them change representative, and every change is
+  `order=usd dir=desc` picking the most expensive print (`one/414 ph` over `one/10`). `e:bro`: 17 of
+  292. Under `order=name` all printings of a card tie, which is why the tie-break decides.
+* The first row of a card's `order=name` print list IS the merge winner: over the 468 corpus-A
+  decisions that corpus B covers, the earliest-ranked candidate is the one Scryfall kept **463
+  times (98.9%)**.
+
+This port cannot express that: `prefer_score` is a stored per-printing VALUE, so the representative
+is fixed no matter what `order=` asks for. That is a real divergence class of its own, it is not
+what §17.4 was about, and nothing here fixes it — it is recorded so the next person does not
+rediscover the mechanism from the residual again.
+
+## 20.3 The direction is settled: newest-first, decisively
+
+| key, on corpus A's 7,999 pin-excluded decisions | decided | right | wrong | acc |
+|---|---|---|---|---|
+| `released_at` DESC | 4,615 | 3,501 | 1,114 | **.7586** |
+| `released_at` ASC | 5,243 | 721 | 4,522 | .1375 |
+
+Whole-rule, same 7,999: `pin > released DESC > cn ASC` **.8546**; `pin > released ASC > cn ASC`
+**.4282**. On pairwise constraints (17,776 of them) DESC is right 11,003 / wrong 2,038; ASC is the
+mirror. The pin itself re-measures at **10,628 / 10,639 = .9990** on this corpus, independently of
+`ranks.rs`'s own harvest, so nothing about the pin is in doubt either.
+
+**And the residual is one-sided.** Of the 1,152 decisions `pin > released DESC > cn ASC` gets wrong,
+the printing Scryfall keeps is OLDER than ours in 1,114 and NEWER in **0**. So whatever is missing
+demotes some printings below all others; it does not reorder dates.
+
+## 20.4 `plst` is not a `set_type` question, and not a set question at all
+
+`plst`'s `set_type` is `masters` — and so is the `set_type` of the printings that beat it. The
+largest error class in corpus A is **`masters` losing to `masters`** (402 of 1,152: `cmm`, `ima`,
+`a25`, `2xm`, `mma`, `vma`, `uma` all beat `plst`). Every `is_st_*` one-hot was tried in both
+directions; none is admissible.
+
+Nor is it a SET ordinal — i.e. it is not §16/§18's stored set sequence wearing a different hat:
+
+* Corpus A's cross-set constraints contain a confident cycle:
+  `vma > plst > prm > 2x2 > a25 > vma` (edges of 19, 7, 5, 3 and 5 observations, each ≥2× its
+  reverse). A set-level total order cannot exist.
+* A set's printings are not even contiguous in the order. `Canopy Vista`: `msc/227` sits in the
+  first date-descending run and `msc/462` in the second — same set, same release date, opposite
+  groups. The key is a per-PRINTING property.
+
+## 20.5 The proof, on the §18.3 template
+
+Corpus B is exact evidence: 2,748 adjacent pairs of Scryfall's own order, no reconstruction, no
+scope semantics, no snapshot skew between two sides. A component of a lexicographic sort key must
+be non-decreasing along that order; fix one, drop the pairs it decides, repeat.
+
+```
+254 candidate keys x 2 directions tested at every level
+  fix pin ASC   decides 163 pairs (11 of them date-inversions); 2,585 pairs left
+
+fixpoint key: [pin ASC]
+pairs left UNDECIDED at any depth: 2,585 of 2,748
+date-inversions left UNEXPLAINED:    153 of 164
+```
+
+The sweep covers every scalar the card object publishes (`booster`, `promo`, `promo_types`,
+`frame_effects`, `border_color`, `full_art`, `textless`, `variation`, `oversized`, `finishes`,
+`games`, `digital`, `image_status`, `highres_image`, `security_stamp`, `watermark`, `reserved`,
+`arena_id`/`mtgo_id`/`tcgplayer_id`/`cardmarket_id`, `multiverse_ids`, `illustration_id`, prices,
+…) plus `has:`/`len:` variants of each, plus the `/sets` object (`printed_size`, `card_count`,
+`set_type`, `digital`, `foil_only`, `nonfoil_only`, `parent_set_code`, `block`, listing index) and
+the derived `collector_number > printed_size` / `> card_count` flags. After the pin, **every one of
+them orders at least one observed adjacent pair backwards.** The best non-admissible key is
+`released_at` DESC itself, which is wrong on 153 of the 1,980 pairs it decides (7.7%).
+
+A supervised check says the same thing from the other side. Labelling each printing by which
+date-descending RUN it lands in (577 printings, 48 multi-run cards) and hunting for a predictor:
+best single field .974 only by memorising `tcgplayer_id`; best depth-2 boolean conjunction
+`has:multiverse_ids × has:promo_types` at **.825** against a .546 majority baseline. Within one set
+the runs are clean (`promo_types: ["boosterfun"]`, `frame_effects`, `booster:false` — the base
+printing precedes its own showcase/extended variants) and ACROSS sets the same fields explain
+nothing: `gnt` (box, `booster:false`) leads run 1 of `Air Elemental` while `dpa`, `ps11`, `btd`,
+`brb` (box, `booster:false`) sit in run 2.
+
+**So the `unique=cards` tie-break is a fourth proven ordinal**, alongside `unique=art` (`5440875`),
+`order=released`'s intra-date set order (§16) and `/sets` (§18). Unlike `unique=art`, most of it is
+derivable — the pin plus date plus collector number already reach .9370 — and what is left is not.
+
+## 20.6 The one component that IS derivable: an alpha-prefixed collector number
+
+`cn_sort_key` already splits a collector number into (leading non-digits, digits, remainder). The
+finding is that the FIRST element being non-empty is itself a sort key, and it sits between the pin
+and the date: `mma/196` beats `plst/MMA-196`, `usg/4` beats `plst/USG-4`, `2x2/361` beats `sld/901`.
+It fires on **7,489 of 114,068 English printings (6.57%)** — 5,028 of them `plst`, the rest `unk`,
+`ptc`, `td0` and the `wc**` world-championship decks.
+
+| rule | corpus A, all 18,638 | A, pin-excluded | **C — 10 FRESH scopes, 1,683** |
+|---|---|---|---|
+| today: `pin > rel DESC > cn ASC` | .9370 | .8546 | **.9156** |
+| + demote `set == "plst"` (§17.4's declined hack) | .9587 | .9052 | **.9323** |
+| + demote **alpha-prefixed cn** | **.9616** | **.9120** | **.9346** |
+
+On corpus A the prefix key fixes 594 decisions and breaks 135; on corpus B's simulated merges it
+lifts pin-excluded accuracy .4700 → .5079; on corpus C it never loses a scope by more than a
+rounding error and gains 13pp on `frame:2003` (.7808 → .9110). It is strictly better than the
+hardcoded set code on every corpus, and it is a property of the printing rather than a list of sets
+to maintain.
+
+The residual after it is `plst` beating the DIGITAL remaster sets (`klr`, `akr`) and the paper
+remasters (`tsr`, `sir`, `sis`) — the 135 breakages are almost entirely that shape. `digital` as a
+companion key does not fix it (.9468 combined, worse than .9616 alone).
+
+## 20.7 What NOT to ship, and why it is recorded
+
+`cn-prefix OR NOT booster` scores **.9783** on corpus A (pin-excluded .9509) and survives a
+scope-hash holdout inside that corpus (.9190 → .9905). On corpus C it scores **.9228 — below the
+prefix key's .9346** — and on corpus B's full pairwise order it is worse than doing nothing
+(.7867 against .8539). Corpus A is dominated by `frame:1997`, `st:masters` and `border:white`,
+three scopes whose candidate sets all have the same shape, so an in-corpus holdout does not
+separate them. **A holdout drawn from the same scope family is not a holdout**; that is the
+methodological finding here and it applies to the +0.35pp figure §17.4 quotes as well.
+
+## 20.8 The specification, for whoever owns `ranks.rs`
+
+Exactly one key is inserted, between the pin and the date, in `PrintingRanks::seal`:
+
+```rust
+ordered.sort_unstable_by_key(|(released_at, set, cn)| {
+    let key: PinKey = (oracle_id.clone(), set.clone(), cn.clone());
+    (
+        u8::from(!pins.contains_key(&key)),          // unchanged, still first
+        u8::from(!cn_sort_key(cn).0.is_empty()),     // NEW: a prefixed cn sorts last
+        Reverse(released_at.clone()),                // unchanged
+        cn_sort_key(cn),                             // unchanged
+    )
+});
+```
+
+* **Direction**: prefixed sorts AFTER unprefixed. The prefix STRING must not be compared —
+  `cn_prefix ASC` as an ordering scores .8961 against the boolean's .9120, because among two
+  prefixed numbers the date is right and the prefix is not.
+* **Must not disturb**: the pin stays the first key, so pin-in-scope stays bit-for-bit exact
+  (.9990, unchanged in every measurement above); `RANK_SPAN`, `RANK_STEP`, `PIN_BONUS` and the
+  f32 encoding are untouched (this adds no bits — it permutes ranks within a card); the DISTINCT
+  slot key is unchanged, so languages still share a rank and `+40` still orders them; cross-card
+  order still turns on the old score alone.
+* **Cost**: none. `cn_sort_key` is already computed on the same line.
+* **Regression to accept**: 10 of 3,702 same-set pin-excluded decisions (.9949 → .9922 on that
+  slice). Every other slice improves.
+* **Release**: `prefer_score` is a stored VALUE, so this is a `STORE_CONTENT_GENERATION` bump with
+  **no** `ARCHIVE_FORMAT_VERSION` change — the same shape as generation 26, which is the entry that
+  introduced this rank. `store-age.ts` rebuilds on the generation, so the bump is the whole
+  deployment story.
+* **Do not** add `booster`, `digital`, `promo`, `promo_types` or `frame_effects` to this key
+  (§20.7), and do not name a set code.
+
+Expected effect on the sweep: of the 28 `unique=cards` findings, the ones whose loser is a
+prefixed collector number go away; `plst` beating `tsr`/`klr`/`akr` and the `cmm`-vs-`mb2` class
+stay, and by §20.5 they stay for good.
+
+## 20.9 What this does not claim
+
+The 3.8% `ranks.rs` reports and the 6.30% here are not the same denominator — this corpus is
+deliberately weighted toward cross-set scopes (`is:unique`, `st:masters`, `frame:1997`,
+`border:white`, artist scopes), where `ranks.rs`'s 16,045 observations were 12,594 single-set ones,
+in which `released_at` almost never differs. That is why the date key looked stronger there and why
+its direction was under-determined by that fit: the corpus that chose it barely exercised it.
+
+No file in the repo was touched. Counts elsewhere may have moved under this section while other
+agents changed `t:` matching, prices, `*` power/toughness and `is:vanilla`; nothing above depends
+on those, because corpus B is Scryfall-only and corpora A and C use the local origin only for
+membership, which those changes do not reach.
+
+---
+
+# 21. C8, C10, `*` and `is:vanilla` — all four fixed, measured on a rebuilt store
+
+Store rebuilt at content generation **29** with both wasm blobs rebuilt; every "after" below is
+`/cards/search` on that store, every "Scryfall" is api.scryfall.com on 2026-08-17, serial.
+
+| query | before | after | Scryfall | |
+|---|---|---|---|---|
+| `t:god` | 104 | **96** | 96 | exact |
+| `t:ape` | 273 | **45** | 45 | exact |
+| `t:bat` | 92 | **54** | 54 | exact |
+| `t:gob` | 563 | 563 | 563 | unmoved, and must be |
+| `t:ir` | 1,906 | 1,906 | 1,906 | unmoved, and must be |
+| `t:warrior` | 1,294 | 1,294 | 1,298 | the Burakos residual, §17.3 C8 |
+| `tou=0` | 272 | **432** | 432 | exact |
+| `toughness<1` | 273 | **433** | 434 | one card, see §21.3 |
+| `usd>=500` | 84 | **205** | 205 | exact |
+| `eur>=400` | 198 | **375** | 375 | exact |
+| `tix>=1` | 3,293 | 3,293 | — | the control, unmoved |
+| `is:vanilla` | 18,753 | **352** | 363 | face-level residual, §21.4 |
+| `has:vanilla` | 18,753 | **352** | 363 | follows `is:`, as C9 requires |
+
+## 21.1 C8 — the anchor is a CATALOG, not the corpus's own type words
+
+The rule is substring **except** when the value names a type, and the naming is decided by the
+union of the nine `/catalog/*` type lists (531 names, fetched 2026-08-17), not by tokenising the
+corpus's type lines. Three measurements kill the corpus-derived version, which was the obvious
+implementation and is wrong:
+
+```text
+t:ir    1906 = 1906   `Plane — Ir` is a printed type line and "Ir" is in no catalog
+t:las     43 =   43   `Plane — Las Vegas`; Scryfall still matches Bolas and Class
+t:art   4171 = 4171   `Creature — Art Lizard`; Scryfall still matches Artifact
+```
+
+Plane types are printed, are published in no catalog, and Scryfall does **not** anchor on them. A
+vocabulary built from type-line tokens would have anchored `t:ir` and answered **0** where Scryfall
+answers 1,906.
+
+The boundary is a type-word boundary with `'`, `-` and `.` BOUND, because the catalog spells all
+three inside names: `Urza's`, `Assembly-Worker`, `B.O.B.`. That is what keeps `t:urza` (a
+planeswalker type) off `Land — Urza's Mine` while `t:worker` (in no catalog) still substring-matches
+`Assembly-Worker`, both matching Scryfall.
+
+**Re-checking what §17.3 said this poisoned.** The `t:god` anchor is now exact, so the three probes
+filed with it (`op-card_set_code-neg`, `op-released_at-eq0`, `op-released_at-cmp0`) no longer carry
+Demigod rows. Nothing else in this file leans on a `t:` probe with a canonical single-word value:
+the anchors elsewhere are `e:khm t:creature` (151, unmoved — `creature` never occurs inside another
+type word) and the `t:` rows of §10.2, which use `card_types`/`card_subtypes` shapes rather than
+counts.
+
+One stale number found in passing, not a defect: `filter.rs`'s type-line comment records
+`t:"artifact creature"` as **360**. It is **1,309** on api.scryfall.com today and 1,309 here —
+the two agree exactly, before and after this change. Whatever scope produced 360 is not the default
+corpus.
+
+## 21.2 C10 — etched is in the chain, and the STORED COLUMN MUST NOT MOVE
+
+Two additions to §17.3's evidence, both measured, one request each:
+
+```text
+Mox Opal          sld    usd null, foil null, etched 381.19   ->  matches usd>=300
+Force of Negation h1r    usd null, foil 113.66, etched 67.45  ->  matches usd>=100
+```
+
+The first says the chain reaches `usd_etched` (892 printings are etched-priced and nothing else);
+the second says foil comes **first** (etched-wins would fail at 100). So the key is
+`COALESCE(usd, usd_foil, usd_etched)`, and `eur` is two long — Scryfall sends no `eur_etched`.
+
+**The naive fix is wrong, and quietly.** §17.3 routed this as "the stored price column", but
+Scryfall serves `"usd": null` for that same Force of Negation *while* answering `usd>=100` with it.
+Writing the coalesced value into `price_usd` at import fixes the filter and corrupts the card
+object on **12,865** printings — and `live-parity` strips every value under `prices` as volatile, so
+nothing in the suite would ever have caught it.
+
+So the coalesce went onto the SEARCH KEY, in the three places that must agree with each other:
+`filter::field_num`, the printing-space range index the planner narrows with, and the `order=usd`
+sort key plus the representative pick that feeds it. A query-time-only coalesce is **not** sufficient
+and is the trap worth recording: `numeric_candidates` narrows on `indexes.price_usd`, so a filter
+that matched more rows than the index carries would lose them before verification ever ran.
+
+Confirmed after the rebuild: `prices` for `Force of Negation` (h1r) still reads
+`{"usd": null, "usd_foil": "113.66", "usd_etched": "67.45", "eur": null, "eur_foil": "141.52",
+"tix": null}` — byte-identical to Scryfall's own object — while `usd>=500` is 205.
+
+`order=usd dir=desc` now leads with a foil-only printing (Aragorn, the Uniter, foil $8,000), the
+same shape §4323 of `lib.rs` recorded for Scryfall's khm/407.
+
+**Side finding, recorded once and not chased.** `order=usd` CHANGES THE RESULT SET on Scryfall:
+`usd>=500` is 205 there, and `usd>=500&order=usd` is **35**, with or without `dir=desc`. Ours is
+205 in all three. Only 35 cards have their cheapest printing at $500 — so on that route Scryfall
+appears to apply the predicate to the representative rather than to any printing. Unrelated to the
+coalesce (a coalesce cannot shrink a total), unmeasured beyond these two requests, and a candidate
+for its own investigation.
+
+## 21.3 `*` is zero — and the last card in `toughness<1` is a different bug
+
+The arithmetic is substituted, not replaced. One card per printed form, measured 2026-08-17:
+Allosaurus Rider (`1+*`) answers `pow=1`; Souls of the Lost (`*+1`) answers `tou=1`; Aysen Crusader
+(`2+*`) answers `pow=2` and **not** `pow=0`. The corpus prints `*`, `1+*`, `*+1`, `2+*`, `7-*` and
+one `*²`; anything else stays absent.
+
+It had to move in TWO parsers — the builder's column and the engine's per-face parse — because the
+numeric planes are built from FACE values. `front_face_stats_match_card_columns` is the test that
+would have caught a one-sided change, and it did.
+
+Loyalty was deliberately left alone: the two cards printing `*` there (Personal Decoy, B.O.B.) are
+funny-set cards api.scryfall.com answers **404** for even bare, so there is no measurement to follow.
+
+**`toughness<1` is 433 against 434 and the missing card is `Little Girl`**, whose printed toughness
+is `½`. `!"Little Girl" tou<1` is 1 on Scryfall and `!"Little Girl" tou=0` is 404 — Scryfall keeps
+the fraction, this port truncates it to 0 through `int(float(...))`. That is the power/toughness
+twin of the fractional-mana-value fix (`a_fractional_mana_value_is_not_rounded`), and it is not
+free: `creature_power`/`creature_toughness` are `i8` columns, so it is an `ARCHIVE_FORMAT_VERSION`
+question. Recorded, not fixed.
+
+**One expansion improved for free.** `is:commander`'s `toughness>=0` term now reaches the 62
+legendary `*/*` creatures it was silently excluding, and Scryfall agrees they belong:
+`!"Abomination of Llanowar" is:commander` and `!"Ashaya, Soul of the Wild" is:commander` are each 1.
+Ours is 3,714 against Scryfall's 3,679; the remaining over-catch is the shape's own, not the star's.
+
+## 21.4 `is:vanilla` — shape 2 of the three, and NOT a filter bug
+
+The diagnosis asked for: the empty-text condition is **present in the compiled plane and vacuous**,
+and it is vacuous on Scryfall too. `o=""` and `o:""` are each a **400** there ("All of your terms
+were ignored"), and `t:creature o=""` answers **18,753** on api.scryfall.com — the same number this
+port answered. Nothing was dropped and nothing failed to compile: `=` on a text column is a
+SUBSTRING test (itself a measured parity fix), and every string contains the empty one.
+
+So the fix is in the rewrite, not the filter: `t:creature -o:/./`, the presence regex the `has:`
+family already uses, negated. 352 on Scryfall, 352 here.
+
+The 11-card gap is one class and is not reachable by any rewrite: Scryfall's `is:vanilla` is
+FACE-level. All 12 rows of its own `is:vanilla o:/./` are adventures and their kin whose CREATURE
+face is textless while the other face is not (`Beluna's Gatekeeper // Entry Denied`); this port's
+`oracle_text` is the merged row. Closing it needs a face-scoped predicate — `OracleFace` already
+carries `oracle_text_id`.
+
+**No other `is:` value shares the shape.** `is:vanilla` was the only expansion in the map spelling
+an empty value, and every conjunctive expansion was checked against each of its own conjuncts on the
+rebuilt store — all strictly narrowing:
+
+```text
+is:party  3,861 < 3,879 & 18,753     is:pathway 10 < 11 & 1,224
+is:bear   1,072 < 4,707 & 5,733      is:manland 48 < 121 & 1,224
+is:oathbreaker 302 < 337             is:commander 3,714 < 3,722
+is:brawler 2,120 < 3,722 & 15,722    is:vanilla 352 < 372 & 18,753
+```
+
+## 21.5 Release and routing
+
+`STORE_CONTENT_GENERATION` **must be bumped** for this set: `creature_power`/`creature_toughness`
+change stored VALUES and the `price_usd`/`price_eur` range indexes change CONTENT. No
+`ARCHIVE_FORMAT_VERSION` change — no column was added and no layout moved. (The bump itself is
+another agent's single edit; it is not made here.)
+
+Upstream, routed per hunk by where the code lives rather than by subject:
+
+* **#907** `engine-regex-parity` — the type-word anchor, because that PR introduced
+  `TypeLineContains`; #927 has the variant only in a comment.
+* **#927** `multilingual-store` — the `*` stat rule (`card_processing.py` + `card_engine`) and the
+  price search key.
+* **#926** `parser-lang-operator` — the `is:vanilla` expansion, and its `test_rewrite.py` row.
+
+**Wanted, not added here** (`scripts/live-parity-cases.json` is another agent's): a `/cards/search`
+case for `q=usd>=500&unique=prints` — the one shape that would have caught a coalesce written into
+the stored column, since the parity reduction strips price VALUES but not the row SET.
