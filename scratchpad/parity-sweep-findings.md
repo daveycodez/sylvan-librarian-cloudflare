@@ -1156,3 +1156,113 @@ sequence — one internal ordinal, exposed by neither listing.
 
 No code changes. The `/sets` order stays as it is, for the same reason `assign_set_ranks` keeps
 ranking by set code: there is nothing better to rank by. The four findings are bucket (a).
+
+# 19. C11 resolved: autocomplete's order is `pg_trgm` similarity, and its residual is a THIRD proven ordinal
+
+§17.3's C11 recorded two proven rules and one residual it could not derive. Both rules survive —
+and the first one turns out to be the shadow of a bigger rule that also derives the residual. The
+thing left over afterwards is a different question from the one C11 named, and it *is* the
+underivable-ordinal class, proven the way §16 and §18 prove theirs.
+
+## 19.1 The metric is not a length. It is `similarity()`
+
+C11 established that "Scryfall's length metric strips spaces and punctuation before comparing".
+That is right as far as it goes, and it is a special case. The rule is Postgres `pg_trgm`'s
+`similarity(a, b)` = `|A ∩ B| / |A ∪ B|`, where a string's trigrams are the 3-character windows of
+`"  " + s + " "`, computed over the **collated** name (`collate_name`, the same column
+`card_name_collated` already holds).
+
+Collated length is what that reduces to when the name has no repeated window: strip the separators
+and each of `n` characters contributes one window plus the two edges. The two terms C11's metric
+cannot see are exactly the two places it was wrong:
+
+| shape | evidence |
+|---|---|
+| a REPEATED window shrinks the set | `Light Up the Night` (`igh`, `ght` twice) sorts with the 13-letter names, ahead of the 14-letter `Lightning Angel` — **the C11 residual, in one row**. `Shapesharer` and `Shambleshark` repeat `sha` and each sort one group early, which is `sha`'s two inversions. |
+| a name ENDING in the query's tail shares the closing window | `q=ser`: the six promoted names (`Serum Raker`, `Serum Powder`, `Serene Master`, `Serra Avenger`, `Serra Redeemer`, `Serendib Sorcerer`) are **exactly** the six ending in `er`. `q=ang`: the four promoted are **exactly** the four ending in `ng`. `q=bla`: `Blazing Rootwalla` (`la`). `q=ele`: `Elektra, Femme Fatale` and `Elemental Spectacle` (`le`). `q=dra`: `Drake Umbra` (`ra`). |
+
+**Measured, 30 prefixes off api.scryfall.com (2026-08-17), 546 adjacent pairs of Scryfall's own
+output.** Inversions under each candidate key:
+
+```
+pg_trgm over the collated name (2 leading spaces, 1 trailing)     0 / 546
+collated length (C11's metric)                                   18 / 375   (the first 20 prefixes)
+printed length (what shipped)                                    71 / 375
+pg_trgm with ONE leading space                                    7 / 375
+pg_trgm applied PER WORD (Postgres' real word splitting)         61 / 375
+```
+
+Ten of the thirty prefixes (`vor sun tem cha spi hel war mir "elf w" zom`) were held out of the
+derivation and are among the zero. There are no fitted parameters — the padding convention is
+Postgres', and it was the only one of four that reached zero.
+
+Two more rules fall out and are measured, not assumed:
+
+- **The rank split is asked of the COLLATED name.** `q=gob` answers `_____ Goblin` FIRST (it
+  collates to `goblin`, a prefix), while `q=ang` never answers `Defang` even though its similarity
+  0.2222 beats six of the twenty names that are there. So rank still leads the key.
+- **The PREDICATE is collated.** `q=ningbolt` answers `Lightning Bolt`; `ningbolt` is a substring of
+  `lightningbolt` and of no spelling that keeps the space. `q=goblinw` answers the same 15 names as
+  `q=goblin w`, and `q=light e` leads with `Light 'Em Up`.
+
+## 19.2 What is left is an ordinal, and the §16/§18 proof applies to it
+
+C11's second sentence about the residual — "the order WITHIN one length is not alphabetical" — is a
+separate question from the inversion, and it is the one that survives. Under the similarity key
+every one of the 30 prefixes is correctly ordered and every set disagreement is a **tie at the cut
+score** or a stale-corpus artifact; what remains is which of several equally-similar names Scryfall
+lists first.
+
+1,121 tie-ordered pairs, 28 features from the bulk (name, folded name, collated name, name length,
+word count, first/last release, printing count, EDHREC rank, penny rank, oracle id, Scryfall id,
+multiverse/MTGO/Arena/TCGplayer/Cardmarket id, rarity, first set, collector number, layout, type
+line, digital/booster/reprint/paper-only), each in both directions — 56 candidate keys.
+
+```
+best single feature over the pairs it decides:  layout, 1104/1121 — separating 36 pairs
+best feature with real separating power:        ~53%, i.e. chance
+fixpoint key: (empty)
+pairs left UNDECIDED at any depth: 1121 of 1121
+```
+
+The §16.3/§18.3 fixpoint returns **the empty key**: no feature is consistent even on the pairs it
+separates, so nothing can be the first component at any depth. And it is not noise — the
+2026-08-16 and 2026-08-17 cached answers for `q=lig` and `q=jötun` agree **name for name**, so it
+is a fixed internal ordinal. **A third instance of the class**, alongside §16's `/sets`-adjacent
+release ordinal and the `unique=art` representative.
+
+The tiebreak shipped is the printed name ascending: total, deterministic, and — the binding
+constraint — recomputable by `mergeAutocomplete` from the names alone.
+
+## 19.3 Result on `route-autocomplete-lig`, and what shipped
+
+Measured against the built store in `store-build/`, all 10 partitions merged the way the deployment
+merges them:
+
+| | positions carrying Scryfall's own similarity value | names Scryfall does not list |
+|---|---|---|
+| before | 12 / 20 | 3 (`Lightning`, `Lightning Colt`, `Lightmine Field`) |
+| after | **20 / 20** | 2, both TIED at the cut score with the two it keeps |
+
+`q=jötun` and `q=ningbolt` now answer byte-for-byte what api.scryfall.com answers, in Scryfall's
+order. The negative invariants hold and are pinned: `q=ego à deriva` and `q=アク` answer empty, and
+autocomplete still has no `include_multilingual`.
+
+**No store change.** This reads `card_name_collated` and `card_is_tags`, both already archived, so
+neither `ARCHIVE_FORMAT_VERSION` nor `STORE_CONTENT_GENERATION` moves and the built stores answer
+the new order without a rebuild.
+
+Route: **#927**, confirming C11. `/cards/autocomplete` and `autocomplete_names` were introduced by
+**#912**, whose copy is four commits ahead of #927's — but `collate_name`, `card_name_collated` and
+`EXTRA_IS_TAG` exist only on **#927**, which is the only branch carrying every prerequisite AND the
+function AND the route. The two branches diverged at 16af3d8 and a trial merge of #912 into #927
+conflicts in `lib.rs`, `filter.rs`, `tests.rs` and `routes.py`, so the dependency was resolved by
+authoring where the prerequisites already are rather than by dragging nine unrelated commits into a
+branch with three writers. #912's own `autocomplete_names` will need the same body when the stack
+lands; its doc comment already names the defect ("some relevance signal we do not have here").
+
+Local `10fc323`; upstream `9df17a3` on `multilingual-store`.
+
+**Wanted, not added here** (`scripts/live-parity-cases.json` is another agent's): a case for
+`q=ser`, which is the one prefix that separates similarity from *every* length metric in both
+directions — `Serra Avenger` (12 collated characters) must lead `Serenity` (8).
