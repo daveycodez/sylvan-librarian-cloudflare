@@ -1093,16 +1093,51 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       against khm/40, a different oracle_id carrying the same tuple. Scryfall dedupes across
  *       cards — including a token against its card (`t30a/7` Skeleton against `lea/122` Raise
  *       Dead), an emblem against its planeswalker (`tmoc/43` against `ddo/1`), and `hbg`'s renamed
- *       reprints against their `clb` originals. Two things block it and both are structural: a
- *       corpus-wide dense artwork id in place of `artwork_base[card] + gid`, which retires the
- *       per-card artwork COUNT the streamed plan answers from as a build-time constant; and a
- *       cross-partition dedupe in the gather, which today sums per-partition totals and merges
- *       byte-comparable keys it is forbidden to interpret. A third thing is not even specified:
- *       Scryfall's representative for a CROSS-card group is not `prefer_score` and not the card
- *       representative either — `!"Oran-Rief Ooze" include:extras` answers znr/198 under
- *       `unique=cards` and znr/361 under `unique=art`, and pvan/102 (1997) beats mb2/251 (2024)
- *       on a shared illustration, so the rule is release-dominant and needs measuring before it
- *       can be built.
+ *       reprints against their `clb` originals.
+ *
+ *       THE GROUPING HALF OF THAT IS NOW SETTLED, OFFLINE, AND IT NEEDED NO API TRAFFIC. Replaying
+ *       the guarded tuple key over the 2026-08-16 `default_cards` bulk (116,712 rows, exactly the
+ *       corpus) reproduces this engine's per-card grouping at 55,076 artworks; dropping oracle_id
+ *       from the scope and changing nothing else yields 54,710, and the two open differentials fall
+ *       out EXACTLY: `e:khm t:god` 26 -> 25 and `e:znr t:creature` 187 -> 174, the two numbers
+ *       api.scryfall.com returns. So the cross-card scope needs no new key and no new guard — it is
+ *       the SAME tuple key with the oracle_id dropped. 339 groups spanning more than one oracle_id,
+ *       1,205 rows, fanout at most 10.
+ *
+ *       WITH ONE GUARD THAT MUST NOT BE DROPPED WITH IT: an ALL-ABSENT tuple stays scoped to its
+ *       own card in BOTH scopes. Absent means unknown, not same-artwork, and letting it widen with
+ *       the rest collapses 726 art-less printings across 689 unrelated cards (`unk/MZ05a` The
+ *       Convincing General with `jtla/44` Learning) into a single artwork, plus 67 more across 35
+ *       cards at arity two. The corpus-wide figure above is the guarded one; without the guard it
+ *       reads 53,987 and is nonsense.
+ *
+ *       WHAT REMAINS IS THE REPRESENTATIVE, AND THE BULK CANNOT SETTLE IT — this is a measured
+ *       negative, not an untried avenue. `unique_artwork.jsonl` looks like the oracle and agrees
+ *       with every API-measured point we have (znr/361 over znr/198, pvan/102 over mb2/251, khm/40
+ *       over khm/A-40), but it is internally inconsistent as a RULE: `pvan/102` (1997, oversized,
+ *       vanguard) WINS over `mb2/251` (2024) while `pvan/206` (1997, oversized, vanguard) LOSES to
+ *       `mbc/50` (2026) — the same set, the same year, the same old-vanguard-against-modern-reprint
+ *       shape, opposite outcomes. No deterministic comparator over printing fields yields both.
+ *       That matches what the file is documented to be (an attempt at the most up-to-date
+ *       RECOGNIZABLE printing, curated) rather than the search API's `DISTINCT ON` inner ordering.
+ *       Fitted against its 25,470 labelled multi-member groups the best single key, earliest
+ *       `released_at`, leaves 603 outright inversions and 9,783 unbroken ties, and greedy extension
+ *       over twenty-odd printing attributes never passes 69%. Do not encode a rule from it.
+ *
+ *       SO THE THREE BLOCKERS ARE NOW: (1) a corpus-wide dense artwork id in place of
+ *       `artwork_base[card] + gid` — cheap in bytes but it retires the per-card artwork COUNT the
+ *       streamed plan answers from as a build-time constant, and `build_pair_totals`' stamp array
+ *       is sized `n * n * (max_artwork_groups + 1)`, which does not survive re-keying on 54k
+ *       canonical ids; (2) the gather, which is worse than "sums totals and may not interpret a
+ *       key" — `encode_sort_key`'s tail carries `illustration_id`, the FRONT only, so the
+ *       coordinator could not identify two partitions' rows as one artwork even if it were allowed
+ *       to. And the ordering underneath is the real obstacle: Scryfall picks the survivor by a
+ *       FIXED inner ordering (`order=` provably does not move it, 24 combinations) and re-sorts
+ *       afterwards, whereas the merge here runs in the CALLER'S order, so the first row of an
+ *       artwork in merge order is not the survivor. Dedupe-at-merge is therefore not a matter of
+ *       requesting slack past `offset+limit`; the survivor is not a prefix property; (3) the
+ *       representative rule, which after the above is an API measurement and nothing else — and
+ *       api.scryfall.com was rate-limiting on 2026-08-17, so it is deferred rather than guessed.
  */
 /**
  * 34 — Vanguard's `life_modifier`/`hand_modifier` reach the card object, and one printing joins

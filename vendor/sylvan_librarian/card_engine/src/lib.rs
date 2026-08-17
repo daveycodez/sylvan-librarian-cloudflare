@@ -5150,6 +5150,17 @@ fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> b
 /// the gather. See the `unique=art` note in `src/engine/store-kv.ts`. This function is the key
 /// half: whatever scope the id ends up having, THIS is what an artwork is.
 ///
+/// AND THE SCOPE IS THE ONLY THING THAT HAS TO CHANGE. Replayed over the 2026-08-16 bulk this
+/// grouping reproduces at 55,076; the same key with `offsets` ignored — one scope for the whole
+/// corpus — gives 54,710 and lands both open differentials exactly (`e:khm t:god` 26 -> 25,
+/// `e:znr t:creature` 187 -> 174, both Scryfall's numbers). No new key, no new guard.
+///
+/// EXCEPT THIS ONE, WHICH IS EASY TO LOSE ON THE WAY: the all-absent tuple must STAY per-card when
+/// the rest widens. `artwork_key_matches` already refuses to unify an all-absent tuple with a
+/// present one, but corpus-wide the all-absent tuples unify with EACH OTHER — 726 art-less
+/// printings across 689 unrelated cards become one artwork, and 67 more across 35 at arity two.
+/// Absent means unknown, not same-artwork.
+///
 /// The groups are held as concatenated key tuples (`keys`) plus one `(offset, len)` span each
 /// (`spans`), both reused across cards, so a corpus of ~100k cards costs no per-card allocation.
 fn assign_artwork_groups(printings: &mut [Printing], offsets: &[u32]) -> Vec<u16> {
