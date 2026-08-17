@@ -2,7 +2,7 @@ use memchr::memmem;
 use rkyv::Archived;
 use serde_json::Value;
 use super::regex_compat::{CompiledRegex, QUERY_REGEX_FLAGS};
-use super::{AOracleCard, APrinting, AStrings, ManaCost, str_at, mana_lane, lane_add, lanes_ge, LANES6_HI, LANES8_HI, mana_pip_counts, mana_cmc, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, NO_TYPE_LINE_INDEX, PrintedNameIndex, OracleTextIndex, SortedTrigramIndex, TypeLineIndex, flavor_fingerprint, flavor_match_sets};
+use super::{AOracleCard, APrinting, AStrings, ManaCost, str_at, mana_lane, lane_add, lane_get, lanes_ge, LANES8_HI, mana_pip_counts, mana_cmc, mana_bare_generic, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, NO_TYPE_LINE_INDEX, PrintedNameIndex, OracleTextIndex, SortedTrigramIndex, TypeLineIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
 
 // ─── Comparison / arithmetic operators ───────────────────────────────────────
@@ -1382,6 +1382,25 @@ fn hybrids_eq(card: &AHybrids, query: &[(u8, u8)]) -> bool {
     card.len() == query.len() && card.iter().zip(query).all(|(c, q)| c.0 == q.0 && c.1 == q.1)
 }
 
+/// GENERIC mana — the `{2}` in `{2}{R}` — as a COUNTED quantity, recovered from a cost's cmc and
+/// its pips rather than stored.
+///
+/// It is not in `core`: `mana_pip_counts` drops numeric symbols on purpose (they are not pips and
+/// have no lane), so a cost's generic used to survive only inside `cmc`, and comparing THAT is a
+/// measurably different question. Every non-X pip contributes exactly 1 to cmc and X contributes
+/// 0, so `cmc - (non-X pips)` is the generic exactly, for a query cost and a card cost alike —
+/// which is why the query side needs no new field and the store needs no new column.
+///
+/// Lane 7 is X (see `MANA_LANE_SYMS`) and is excluded; every other lane, and every hybrid, counts
+/// 1 each. Saturating and clamped at 0 so a cost this arithmetic cannot describe — a `{2/R}`, whose
+/// true cmc contribution is 2 rather than 1 — degrades to 0 instead of wrapping. Scryfall answers
+/// nothing to `m>={2/r}` and so does this, so that cost never reaches a comparison anyway.
+fn generic_of(core: u64, hybrids: impl Iterator<Item = u8>, cmc: f32) -> u8 {
+    let pips: u32 = (0..7).map(|l| u32::from(lane_get(core, l))).sum::<u32>() + hybrids.map(u32::from).sum::<u32>();
+    let cmc = if cmc > 0.0 { cmc as u32 } else { 0 };
+    u8::try_from(cmc.saturating_sub(pips)).unwrap_or(u8::MAX)
+}
+
 /// Interned name ids (ascending, deduplicated) of the `flavor_names` records satisfying `pred`.
 ///
 /// `pred` sees the record's COLLATED name, which is the form both `name:` predicates compare in.
@@ -2411,12 +2430,37 @@ impl FilterExpr {
                 // hold). The card-level cost is tried first and is the whole answer for the 82%
                 // of cards with no faces; a face that printed NO cost has no `mana_cost` and is
                 // skipped, which is why `m=0` still does not match Delver's costless back.
+                // GENERIC MANA IS A COUNTED PIP, NOT A CMC. `{2}` in a query cost means "at least
+                // two GENERIC", not "cmc at least 2" — comparing cmc let every colored pip pay
+                // for it, so `m:{2}` matched a card costing {R}{R}.
+                //
+                // Measured on api.scryfall.com 2026-08-16, `e:khm t:creature` (151) unless noted:
+                //
+                //   m:{2}          102   this answered 142 (= cmc >= 2)
+                //   m:{1}          140   this answered 151
+                //   m:{3}           60   this answered 113
+                //   m:{1}{1}       102   generic SUMS across symbols — the same query as m:{2}
+                //   m:{2}{r}        17   this answered 20
+                //   m:{1}{1}{r}     17   again the same query
+                //   m:{2} -m:{1}     0   >= and not ==, so {2} implies {1}
+                //
+                // and the decisive one, on the whole corpus rather than on KHM, because KHM has no
+                // creature costing exactly {R}{R}: `m={r}{r} t:creature` is 24 there, and
+                // `m={r}{r} m:{2} t:creature` is **0** where this answered all 24. A cost of
+                // {R}{R} has cmc 2 and generic 0; only one of those two readings can be right, and
+                // Scryfall's is the pip.
+                //
+                // The cmc comparisons are GONE rather than kept alongside: once generic and every
+                // pip lane compare in the same direction, cmc's does too (cmc is their sum), so
+                // keeping it would be redundant on the Ge/Le/Eq paths and would re-admit exactly
+                // the cards this excludes.
+                let q_generic = generic_of(*core, hybrid_ids.iter().map(|&(_, n)| n), *cmc);
                 let matches = |mc: &Archived<ManaCost>| {
                     let card_core = u64::from(mc.core);
-                    let card_cmc = f32::from(mc.cmc);
-                    let ge = || lanes_ge(card_core, *core, LANES8_HI) && hybrids_ge(&mc.hybrids, hybrid_ids) && card_cmc >= *cmc;
-                    let le = || lanes_ge(*core, card_core, LANES8_HI) && hybrids_le(&mc.hybrids, hybrid_ids) && card_cmc <= *cmc;
-                    let eq = || card_cmc == *cmc && card_core == *core && hybrids_eq(&mc.hybrids, hybrid_ids);
+                    let c_generic = generic_of(card_core, mc.hybrids.iter().map(|e| e.1), f32::from(mc.cmc));
+                    let ge = || lanes_ge(card_core, *core, LANES8_HI) && hybrids_ge(&mc.hybrids, hybrid_ids) && c_generic >= q_generic;
+                    let le = || lanes_ge(*core, card_core, LANES8_HI) && hybrids_le(&mc.hybrids, hybrid_ids) && c_generic <= q_generic;
+                    let eq = || c_generic == q_generic && card_core == *core && hybrids_eq(&mc.hybrids, hybrid_ids);
                     match op {
                         CmpOp::Ge => ge(),
                         CmpOp::Le => le(),
@@ -2433,23 +2477,83 @@ impl FilterExpr {
             }
 
             FilterExpr::Devotion { op, pips } => {
-                // Mirrors the SQL path's JSONB containment on the devotion column
-                // (devotion @> query, <@, =, and the strict/negated variants):
-                // per-color positional arrays contain each other iff the counts
-                // compare, so containment is per-lane count comparison — one
-                // SWAR op across all six colors — and equality is integer
-                // equality (a zero lane and an absent key are the same thing).
+                // DEVOTION IS A QUESTION ABOUT THE QUERIED COLORS TAKEN TOGETHER, AND A HYBRID
+                // QUERIES **BOTH** OF ITS COLORS AS ONE QUANTITY.
+                //
+                // This read the whole six-lane vector at once — one SWAR containment, plus an
+                // integer equality that demanded every UNQUERIED color be zero too. Both are
+                // wrong, and the hybrid case was wrong by two orders of magnitude:
+                // `devotion:{r/g}` expands to lanes r=1,g=1, and a per-lane containment then
+                // means "at least one red pip AND at least one green pip" — one card in KHM,
+                // where Scryfall answers 62.
+                //
+                // MEASURED on api.scryfall.com 2026-08-16 over `e:khm t:creature` (151). `d[c]` is
+                // this card's devotion to color c; the measure is the SUM over the queried lanes.
+                //
+                //   devotion:{r}       27 = d[r] >= 1        devotion:{g}        36
+                //   devotion:{r}{r}     7 = d[r] >= 2        devotion:{g}{g}      8
+                //   devotion={r}       20 = d[r] == 1        (27 - 7, and NOT 15, which is what
+                //                                             whole-vector equality answered)
+                //   devotion>{r}        7 = d[r] >  1        devotion<={r}      144
+                //   devotion<{r}{r}   144   devotion!={r}    131 = 151 - 20
+                //   devotion:{r/g}     62 = d[r]+d[g] >= 1   (27 + 36 - 1 card carrying both)
+                //   devotion:{r/g}{r/g} 16 = d[r]+d[g] >= 2
+                //   devotion={r/g}     46 = d[r]+d[g] == 1   (62 - 16)
+                //   devotion>{r/g}     16   devotion<={r/g}  135   devotion!={r/g} 105
+                //
+                // THE SUM, NOT A PER-LANE OR — that 16 is what decides it. `devotion:{r}{r}` is 7
+                // and `devotion:{g}{g}` is 8, so "d[r] >= 2 OR d[g] >= 2" can be at most 15; the
+                // sixteenth card is the one KHM creature carrying one red pip AND one green pip,
+                // which has neither lane at 2 and a combined devotion of exactly 2. An OR answers
+                // 15 to all five hybrid rows above and 62 to the first, which is why the first one
+                // alone is not enough evidence to pick a model.
+                //
+                // The queried lanes only — a lane the query left at zero is not part of the sum
+                // and not a constraint. That is the half that made `devotion={r}` 15 here:
+                // pinning the unqueried colors to zero excluded every red card that is also green.
+                //
+                // WHAT THIS STILL DOES NOT REPRODUCE, measured rather than assumed. The real
+                // quantity is the number of PIPS that are red or green, and the sum double-counts
+                // the one pip that is both: a `{R/G}` symbol adds 1 to each lane but is one pip.
+                // Burning-Tree Emissary ({R/G}{R/G}) answers `devotion:{r/g}{r/g}` on Scryfall and
+                // NOT `devotion:{r/g}{r/g}{r/g}`, so its combined devotion is 2 there and 4 here.
+                // Correcting it needs the count of {R/G} pips in the card's own cost — the leaf
+                // has the per-color lanes and no per-hybrid-symbol count, and the devotion PLANES
+                // (two saturating bits per color) cannot hold one either, so this is a store and
+                // node change rather than an arithmetic one. It is wrong only for cards that carry
+                // a hybrid pip of the queried pair (61 cards for {R/G}); the per-lane OR it
+                // replaced was wrong for every card with pips in two queried colors.
+                //
+                // A SECOND, SEPARATE RESIDUAL on Scryfall's side: `=` and `!=` with a hybrid value
+                // never match a card whose cost carries that hybrid pip. `devotion={r/g} m:{r/g}`
+                // is 0 there across all 61, while `devotion={r/g} m:{w/u} -m:{r/g}` is 1 — that
+                // pair specifically, not hybrids in general. It is not self-consistent (the same
+                // cards answer `devotion={r}` and `devotion:{r/g}`, and `!=` follows the model
+                // above exactly, so `=` and `!=` are not complements there), so no model fits it
+                // and none is guessed here.
                 let d = u64::from(card.mana_cost.devotion);
-                let ge = lanes_ge(d, *pips, LANES6_HI);
-                let le = lanes_ge(*pips, d, LANES6_HI);
-                let eq = d == *pips;
+                // The card's devotion to the queried colors TOGETHER, against the number of
+                // symbols the query asked for. A lane the query leaves at zero contributes
+                // nothing — including the vacuous all-zero query, which the parser cannot produce
+                // (a devotion value that is not a single color or a hybrid is ignored-and-warned
+                // before the engine sees it) and which lands here as measure 0 against want 0.
+                let mut measure: u32 = 0;
+                let mut want: u8 = 0;
+                for c in 0..6 {
+                    let k = lane_get(*pips, c);
+                    if k > 0 {
+                        measure += u32::from(lane_get(d, c));
+                        want = want.max(k);
+                    }
+                }
+                let want = u32::from(want);
                 tri_bool(match op {
-                    CmpOp::Ge => ge,
-                    CmpOp::Eq => eq,
-                    CmpOp::Le => le,
-                    CmpOp::Gt => ge && !eq,
-                    CmpOp::Lt => le && !eq,
-                    CmpOp::Ne => !eq,
+                    CmpOp::Ge => measure >= want,
+                    CmpOp::Gt => measure > want,
+                    CmpOp::Eq => measure == want,
+                    CmpOp::Lt => measure < want,
+                    CmpOp::Le => measure <= want,
+                    CmpOp::Ne => measure != want,
                 })
             }
 
@@ -2504,10 +2608,33 @@ fn str_op_to_cmp(s: &str) -> Result<CmpOp, String> {
     }
 }
 
+/// `=` IS `:` ON A COLLECTION COLUMN — set EQUALITY is not a meaning Scryfall gives it.
+///
+/// Measured on api.scryfall.com 2026-08-16, every collection column this feeds, `X=v` against
+/// `X:v` on the same corpus — identical on every row:
+///
+///   kw=flying e:khm      28 = kw:flying 28        (this answered 9: cards whose ONLY keyword is
+///                                                  Flying — set equality, which nothing asks for)
+///   otag=ramp e:khm      35 = otag:ramp 35        (this answered 0)
+///   atag=forest e:khm    17 = atag:forest 17      (this answered 0)
+///   is=foil e:khm t:cre  129 = is:foil 129        (this answered 0)
+///   frame=2015 …         151 = frame:2015 151     (this answered 99)
+///
+/// The boundary is real and lies elsewhere, not on this function: the columns where `=` DOES
+/// differ from `:` are the set-valued COLOR ones, and they go through `op_to_color_cmp`, which
+/// keeps `Eq` — `c=rg e:khm t:creature` is 1 against `c:rg`'s 2, `id=rg` is 1 against `id:rg`'s
+/// 52, `produces=rg` is 0 against `produces:rg`'s 5. Mana keeps it too (`m={2}` 0 against
+/// `m:{2}`'s 102). Probed in both directions before this changed.
+///
+/// The other operators are unaffected and already agree: `kw>=flying`, `kw>flying`, `kw<flying`
+/// and `kw!=flying` are each 404 on Scryfall and 404 here.
+///
+/// TypeCmp also reads this, but cannot observe the change: `card_types` with `=` is claimed by
+/// the TypeLineContains branch above for every non-empty needle, so the only `=` that reaches
+/// TypeCmp carries an empty value, which no query produces.
 fn op_to_collection_cmp(op: &str) -> CmpOp {
     match op {
-        ":" | ">=" => CmpOp::Ge,
-        "="        => CmpOp::Eq,
+        ":" | ">=" | "=" => CmpOp::Ge,
         ">"        => CmpOp::Gt,
         "<="       => CmpOp::Le,
         "<"        => CmpOp::Lt,
@@ -2717,7 +2844,13 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
         // Until bind() resolves them against the store's vocab, hybrid
         // symbols count as unknown — one merged entry no card can match.
         let hybrid_ids = if hybrids.is_empty() { Vec::new() } else { vec![(MANA_SYM_UNKNOWN, 1)] };
-        let cmc = mana_cmc(mana_str);
+        // The TRUE cmc of the query cost, which is what `generic_of` subtracts the pips from.
+        // `mana_cmc` reads braces and bare letters but skips loose digits, so the shorthand forms
+        // the parser passes through verbatim — `m:2` as "2", `m>=2WW` as "2WW", `m:1{r}1` as
+        // "1{R}1" — arrived carrying none of their generic. `m:2` is the case that shows it: an
+        // empty cost with cmc 0 is a tautology, and this answered all 151 of `e:khm t:creature`
+        // where Scryfall answers 102, the same 102 as `m:{2}`.
+        let cmc = mana_cmc(mana_str) + mana_bare_generic(mana_str) as f32;
         let cmp_op = match op { ":" => CmpOp::Ge, _ => str_op_to_cmp(op)? };
         return Ok(FilterExpr::ManaCostCmp { op: cmp_op, core, hybrids, hybrid_ids, cmc });
     }
@@ -3027,7 +3160,35 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
     }
 
     let lower_word = raw_value.to_lowercase();
-    if op == ":" {
+    // `=` IS `:` ON A TEXT COLUMN — a SUBSTRING test, not an equality, and not a member of the
+    // comparison family the branch above answers with the empty set.
+    //
+    // This is the one operator on these columns that carries no information at all. Measured on
+    // api.scryfall.com 2026-08-16, `X=v` against `X:v` over the whole default corpus:
+    //
+    //   o=flying    4,574 = o:flying 4,574      (this answered 99 — the cards whose ORACLE TEXT
+    //                                            IS the word "flying", i.e. a real equality)
+    //   ft=aether      80 = ft:aether 80        (this answered 0)
+    //   name=ft     1,628 = name:ft 1,628       (this answered 0)
+    //   fo=lifelink   713 = fo:lifelink 713
+    //   a=rebecca     170 = a:rebecca 170       (already agreed — `bind` collapses every artist
+    //                                            form onto one collated contains regardless)
+    //
+    // and the BARE/QUOTED split survives `=` intact rather than being flattened to one side of
+    // it: `name="ft"` is 362 on Scryfall, exactly `name:"ft"`, against `name=ft`'s 1,628. That
+    // distinction is carried by the node shape (`CollatedNameValueNode` vs `StringValueNode`), so
+    // routing `=` here preserves it for free — the parser now builds the collated node for `=`
+    // as well, which is the other half of this fix.
+    //
+    // WHAT IS NOT IN THIS CLASS, probed in both directions rather than assumed. `!=` is the empty
+    // set (the branch above, unchanged). `<`, `<=`, `>`, `>=` keep the string-order comparison
+    // they had; Scryfall answers 404 to all of them on every string column, which is what the
+    // query-validation layer already reproduces. And `=` stays a genuine EQUALITY on the columns
+    // that are stored exact rather than searched — set code, layout, border, watermark, collector
+    // number — which is why those five are claimed by the branch above this one and never reach
+    // here: `e=khm` is 151 and `layout=normal` is 284, agreeing with `:` because equality IS the
+    // meaning there, not because the operator was rewritten.
+    if matches!(op, ":" | "=") {
         let tsf = match attr {
             // `CollatedNameValueNode` is the parser's spelling of "the user typed a BARE word
             // here"; a `StringValueNode` under `name:` means they quoted it (or wrote a

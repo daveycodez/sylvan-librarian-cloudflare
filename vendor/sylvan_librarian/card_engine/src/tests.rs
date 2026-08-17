@@ -10868,10 +10868,23 @@ fn devotion_plane_parity_and_boundaries() {
     for op in [CmpOp::Ge, CmpOp::Eq, CmpOp::Le, CmpOp::Ne, CmpOp::Gt, CmpOp::Lt] {
         for k in 1..=2u8 {
             check_exact(&dev(op, &[("U", k)]));
+            // MULTI-LANE (what a HYBRID value expands to) must DECLINE at every operator. tri()
+            // compares the SUM of the queried lanes, and the planes hold a saturating bucket per
+            // color that cannot be added — a card with one pip of each color satisfies
+            // `d[r]+d[g] >= 2` while sitting in no per-color bucket above 1. Declining is the
+            // whole point: `compile_plane` promises exactness, and nothing downstream re-checks a
+            // plane it claimed was exact, so "approximately right" here is a silent wrong answer.
+            for pips in [&[("W", k), ("U", k)], &[("R", k), ("G", k)]] {
+                assert!(
+                    compile_plane(&dev(op, pips), &archived.indexes.planes, &archived.indexes.oracle_trigram.words).is_none(),
+                    "multi-lane devotion must decline, not compile approximately"
+                );
+            }
         }
     }
     check_exact(&dev(CmpOp::Ge, &[("U", 3)])); // saturated value 3 means >= 3: exact
-    check_exact(&dev(CmpOp::Ge, &[("R", 1), ("G", 1)])); // multi-color, hybrid cards in play
+    // Multi-color (a hybrid value) declines — see the loop above and compile_devotion's note.
+    assert!(compile_plane(&dev(CmpOp::Ge, &[("R", 1), ("G", 1)]), &archived.indexes.planes, &archived.indexes.oracle_trigram.words).is_none());
     check_exact(&dev(CmpOp::Ge, &[("C", 2)])); // colorless devotion
     check_exact(&dev(CmpOp::Ge, &[("R", 3)])); // {R/G}{R/G}{R} card reaches R=3
 
@@ -10887,6 +10900,58 @@ fn devotion_plane_parity_and_boundaries() {
     for (cid, card) in archived.cards.iter().enumerate() {
         if deep.eval_card(card, &archived.strings) == Tri::True {
             assert!(cand.contains(&(cid as u32)), "superset must cover card {cid}");
+        }
+    }
+}
+
+// A HYBRID QUERY ADDS ITS TWO COLORS INTO ONE QUANTITY.
+//
+// Pinned against ABSOLUTE expectations, because the plane-parity test above proves only that the
+// compiler and tri() agree — and they agreed just as well when both read the query as a per-lane
+// AND, and again when both read it as a per-lane OR. All three disagree about the {W}{U} card,
+// which is the only card here with one pip in each queried color.
+//
+// Scryfall decides it. Over `e:khm t:creature`: `devotion:{r}{r}` is 7 and `devotion:{g}{g}` is 8,
+// so "d[r] >= 2 OR d[g] >= 2" cannot exceed 15 — and `devotion:{r/g}{r/g}` is **16**. The
+// sixteenth is the one KHM creature carrying a red pip and a green pip, whose lanes are 1 and 1
+// and whose combined devotion is 2. The AND reading answered 1 to `devotion:{r/g}`'s 62.
+#[test]
+fn a_hybrid_devotion_query_sums_its_two_colors() {
+    let data = devotion_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    // Fixture cards, in order: 0 no cost, 1 {U}, 2 {U}{U}, 3 {U}{U}{U}, 4 {U}x5, 5 {R/G},
+    // 6 {R/G}{R/G}{R} (R=3,G=2), 7 {W}{U}, 8 {C}{C}, 9 {R} on an INSTANT (devotion 0).
+    // Queried W,U with one symbol: the measure is d[W]+d[U], the want is 1.
+    let wu = |op| FilterExpr::Devotion { op, pips: packed_pips(&[("W", 1), ("U", 1)]) };
+    let cases: &[(CmpOp, &[usize])] = &[
+        (CmpOp::Ge, &[1, 2, 3, 4, 7]),                // sum >= 1
+        (CmpOp::Gt, &[2, 3, 4, 7]),                   // sum >  1 — card 7 is 1+1, and belongs here
+        (CmpOp::Eq, &[1]),                            // sum == 1 — and card 7 does NOT
+        (CmpOp::Lt, &[0, 5, 6, 8, 9]),                // sum <  1
+        (CmpOp::Le, &[0, 1, 5, 6, 8, 9]),             // sum <= 1
+        (CmpOp::Ne, &[0, 2, 3, 4, 5, 6, 7, 8, 9]),    // sum != 1
+    ];
+    for &(op, want) in cases {
+        let f = wu(op);
+        let got: Vec<usize> = archived
+            .cards
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| f.eval_card(c, &archived.strings) == Tri::True)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(got, want, "devotion {op:?} over lanes W,U");
+    }
+    // The superset must still COVER a multi-lane match, which is the direction that matters once
+    // the exact compiler declines: card 7 sits in no per-color bucket above 1.
+    let f = wu(CmpOp::Ge);
+    let pe = super::planes::compile_devotion_superset(packed_pips(&[("W", 1), ("U", 1)])).expect("superset compiles");
+    let mut bitmap: Vec<u64> = Vec::new();
+    eval_planes(&pe, &archived.indexes.planes, &mut bitmap);
+    for (cid, card) in archived.cards.iter().enumerate() {
+        if f.eval_card(card, &archived.strings) == Tri::True {
+            assert!(bitmap_contains(&bitmap, cid as u32), "superset must cover card {cid}");
         }
     }
 }
@@ -11500,6 +11565,85 @@ fn mana_cost_cmp_packed_semantics() {
     assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("Q/Z", 1)], 2.0, &mv)), [7]);
     // Ne is not-exactly-equal.
     assert_eq!(matches(&mana_cmp_of(CmpOp::Ne, &[("W", 1)], 1.0, &mv)), [2, 3, 4, 5, 6, 7, 8]);
+}
+
+// GENERIC MANA IS A COUNTED PIP, AND THE FIXTURE ABOVE CANNOT SEE IT.
+//
+// Every cost in `mana_fixture_store` has generic 0 — its cmc is exactly its pip count — so the
+// comparison this replaced (card cmc against query cmc) and the one that replaced it (card generic
+// against query generic) agree on all eight cards, and every assertion above passes under either.
+// That is the whole bug: `m:{2}` compared cmc, so any two pips paid for it.
+//
+// The decisive case is a card whose cmc and generic disagree. Measured on api.scryfall.com
+// 2026-08-16 over the whole corpus, because KHM has no creature costing exactly {R}{R}:
+// `m={r}{r} t:creature` is 24, and `m={r}{r} m:{2} t:creature` is **0** — a {R}{R} cost has cmc 2
+// and generic 0, and Scryfall reads the pip. Over `e:khm t:creature` (151): `m:{2}` 102 where cmc
+// answered 142, `m:{1}` 140 where cmc answered 151, `m:{3}` 60 where cmc answered 113.
+#[test]
+fn generic_mana_is_a_counted_pip_not_a_cmc() {
+    let mut vocab = VocabInterner::new();
+    let mut mana_vocab: Vec<String> = Vec::new();
+    // (pips, cmc) — the pips are what `core` holds, and cmc - pips is the GENERIC:
+    let costs: &[(&[(&str, u8)], f32)] = &[
+        (&[("R", 1)], 3.0),  // 1: {2}{R} — generic 2
+        (&[("R", 2)], 2.0),  // 2: {R}{R} — generic 0, same cmc as {1}{R}
+        (&[("R", 1)], 2.0),  // 3: {1}{R} — generic 1
+        (&[("R", 1)], 1.0),  // 4: {R}     — generic 0
+        (&[], 2.0),          // 5: {2}     — generic 2, no pips at all
+    ];
+    let cards: Vec<OracleCard> = costs.iter().enumerate().map(|(i, &(pips, cmc))| {
+        let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+        c.mana_cost = mana_cost_of(pips, &mut mana_vocab);
+        c.mana_cost.cmc = cmc;
+        for (lane, sym) in ["W", "U", "B", "R", "G"].iter().enumerate() {
+            if super::lane_get(c.mana_cost.devotion, lane) > 0 {
+                c.card_color_identity |= super::color_list_to_mask(&[sym]);
+            }
+        }
+        c
+    }).collect();
+    let mut data = store_of(cards, &[1usize; 5], vocab);
+    data.mana_vocab = mana_vocab;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let matches = |f: &FilterExpr| -> Vec<u128> {
+        archived.cards.iter()
+            .filter(|c| f.eval_card(c, &archived.strings) == Tri::True)
+            .map(|c| u128::from(c.oracle_id))
+            .collect()
+    };
+    let mv: Vec<String> = archived.mana_vocab.iter().map(|s| s.to_string()).collect();
+
+    // `m:{2}` — no pips, cmc 2, so generic 2. The {R}{R} card has cmc 2 and must NOT match; the
+    // cmc comparison matched it, and that is the divergence this closes.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[], 2.0, &mv)), [1, 5]);
+    // `m:{1}` — generic >= 1, so {2}{R}, {1}{R} and {2}, but not {R}{R} or {R}.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[], 1.0, &mv)), [1, 3, 5]);
+    // `m:{2}{r}` — generic >= 2 AND an R pip: {2}{R} alone, not the bare {2}.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("R", 1)], 3.0, &mv)), [1]);
+    // `m={r}{r}` — generic 0 and exactly two R. The {R}{R} card, and never {2}{R}.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("R", 2)], 2.0, &mv)), [2]);
+    // `m={1}{r}` — generic 1 and one R, which distinguishes it from {R}{R} at the SAME cmc.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("R", 1)], 2.0, &mv)), [3]);
+    // `m<={1}{r}` — card ⊆ query on both the pips and the generic.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("R", 1)], 2.0, &mv)), [3, 4]);
+}
+
+// The bare, unbraced generic the query grammar allows and `mana_cmc` does not see: `m:2` arrives
+// as the mana string "2", `m>=2WW` as "2WW", `m:1{r}1` as "1{R}1". Without this the first became
+// the EMPTY cost — a tautology, answering all 151 of `e:khm t:creature` where Scryfall answers
+// `m:{2}`'s 102.
+#[test]
+fn bare_generic_digits_are_counted_outside_braces() {
+    use super::mana_bare_generic;
+    assert_eq!(mana_bare_generic("2"), 2);
+    assert_eq!(mana_bare_generic("2WW"), 2);
+    assert_eq!(mana_bare_generic("1{R}1"), 2, "runs on both sides of a braced pip");
+    assert_eq!(mana_bare_generic("10WW"), 10, "a maximal RUN, not one digit then another");
+    assert_eq!(mana_bare_generic("{2}{R}"), 0, "braced generic belongs to mana_cmc, not here");
+    assert_eq!(mana_bare_generic("{10}"), 0);
+    assert_eq!(mana_bare_generic("WW"), 0);
+    assert_eq!(mana_bare_generic(""), 0);
 }
 
 // The SWAR lane comparison agrees with the scalar per-lane loop across the

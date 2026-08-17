@@ -787,19 +787,26 @@ fn dev_eq(color: usize, k: u8) -> Option<PlaneExpr> {
     }
 }
 
-fn dev_le(color: usize, k: u8) -> Option<PlaneExpr> {
-    // count <= k  ⟺  not (count >= k + 1); k <= 2 keeps >= k+1 exact.
-    if k > 2 {
-        return None;
-    }
-    dev_ge(color, k + 1).map(|ge| PlaneExpr::Not(Box::new(ge)))
-}
-
-/// Compile a Devotion node exactly, mirroring FilterExpr::Devotion's tri():
-/// Ge constrains only the queried colors (the nonzero lanes); Le/Eq
-/// additionally pin every unqueried color to zero (SQL devotion-column
-/// containment semantics). None whenever any needed comparison crosses the
-/// saturation boundary.
+/// Compile a Devotion node exactly, mirroring `FilterExpr::Devotion`'s tri().
+///
+/// That tri() compares the SUM of the queried devotion lanes against the number of symbols the
+/// query asked for — see its own note for the api.scryfall.com measurements. `compile_plane`'s
+/// contract is exactness and the estimator reports `exact(c)` on the strength of it, so this
+/// answers only the case it can answer exactly and DECLINES the rest.
+///
+/// ONE queried lane: the sum IS that lane, so each operator is one per-color comparison over the
+/// color's two saturating bit-slices, exactly as before.
+///
+/// TWO queried lanes (what a HYBRID value expands to): the planes hold a saturating 0/1/2/3+ per
+/// color and cannot add two of them — `d[r] + d[g] >= 2` is true for a card with one pip of each,
+/// and no conjunction of per-color buckets distinguishes that from the pair being 1 and 0 without
+/// enumerating the splits, which stops being exact the moment either lane saturates. Declining
+/// sends the leaf to `compile_devotion_superset` for narrowing and to the verifier for the answer;
+/// being approximately right here would be a silent wrong answer, since nothing downstream
+/// re-checks a plane the compiler claimed was exact.
+///
+/// `None` also whenever a needed comparison crosses the saturation boundary — `>= k` is exact
+/// through k = 3 and `== k` through k = 2.
 fn compile_devotion(op: CmpOp, pips: u64) -> Option<PlaneExpr> {
     let query: Vec<(usize, u8)> = (0..COLOR_PLANES)
         .filter_map(|c| {
@@ -807,36 +814,44 @@ fn compile_devotion(op: CmpOp, pips: u64) -> Option<PlaneExpr> {
             (k > 0).then_some((c, k))
         })
         .collect();
-    let ge = || query.iter().map(|&(c, k)| dev_ge(c, k)).collect::<Option<Vec<_>>>().map(and_of);
-    let all_colors = |f: &dyn Fn(usize, u8) -> Option<PlaneExpr>| {
-        (0..COLOR_PLANES)
-            .map(|c| f(c, query.iter().find(|&&(qc, _)| qc == c).map_or(0, |&(_, k)| k)))
-            .collect::<Option<Vec<_>>>()
-            .map(and_of)
-    };
-    let eq = || all_colors(&dev_eq);
+    let &[(color, k)] = query.as_slice() else { return None };
     match op {
-        CmpOp::Ge => ge(),
-        CmpOp::Le => all_colors(&dev_le),
-        CmpOp::Eq => eq(),
-        CmpOp::Ne => eq().map(|e| PlaneExpr::Not(Box::new(e))),
-        CmpOp::Gt => Some(and_of(vec![ge()?, PlaneExpr::Not(Box::new(eq()?))])),
-        CmpOp::Lt => Some(and_of(vec![all_colors(&dev_le)?, PlaneExpr::Not(Box::new(eq()?))])),
+        CmpOp::Ge => dev_ge(color, k),
+        CmpOp::Gt => dev_ge(color, k.checked_add(1)?),
+        CmpOp::Eq => dev_eq(color, k),
+        CmpOp::Lt => dev_ge(color, k).map(|e| PlaneExpr::Not(Box::new(e))),
+        CmpOp::Le => dev_ge(color, k.checked_add(1)?).map(|e| PlaneExpr::Not(Box::new(e))),
+        CmpOp::Ne => dev_eq(color, k).map(|e| PlaneExpr::Not(Box::new(e))),
     }
 }
 
-/// Saturated superset for devotion comparisons the exact compiler declines
-/// (Ge/Gt past the boundary): clamp each queried count to 3. Every real match
-/// has count >= k >= 3 per queried color, so it lands in the saturated bucket
-/// — a loose candidate set for the driver to verify (~0.5% of cards/color).
+/// Saturated superset for the devotion comparisons the exact compiler declines — Ge/Gt past the
+/// boundary, and every multi-lane (hybrid) query. Loose candidates for the driver to verify.
+///
+/// ONE lane: clamp the count to 3. Every match has count >= k >= 3, so it lands in that color's
+/// saturated bucket.
+///
+/// TWO lanes: only that SOME queried color is present at all. `sum >= k` with k >= 1 forces at
+/// least one of the two lanes above zero — but nothing stronger, because the sum can be reached by
+/// either lane alone or by both together, and a card with one pip of each color sits in no
+/// per-color bucket above 1. Clamping per lane the way the single-lane case does would drop
+/// exactly that card, which is the one the sum model exists to catch.
+///
+/// OR, not AND, throughout: this direction has to be SOUND — an over-wide candidate set is
+/// verified away, a narrow one loses cards.
 pub(crate) fn compile_devotion_superset(pips: u64) -> Option<PlaneExpr> {
-    (0..COLOR_PLANES)
+    let query: Vec<(usize, u8)> = (0..COLOR_PLANES)
         .filter_map(|c| {
             let k = lane_get(pips, c);
-            (k > 0).then(|| dev_ge(c, k.min(3)))
+            (k > 0).then_some((c, k))
         })
+        .collect();
+    let floor = if query.len() > 1 { 1 } else { u8::MAX };
+    query
+        .iter()
+        .map(|&(c, k)| dev_ge(c, k.min(3).min(floor)))
         .collect::<Option<Vec<_>>>()
-        .map(and_of)
+        .map(or_of)
 }
 
 // ─── Numeric-range planes (#655) ───────────────────────────────────────────────

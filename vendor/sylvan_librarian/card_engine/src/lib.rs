@@ -253,6 +253,48 @@ pub(crate) fn mana_pip_counts(s: &str) -> HashMap<String, u8> {
     pips
 }
 
+/// Generic mana written WITHOUT braces, which `mana_cmc` does not see at all.
+///
+/// A stored cost is always canonical Scryfall (`{2}{R}`), so this is 0 for every card and exists
+/// for the QUERY side, where the shorthand is allowed and common: the parser hands `m:2` through
+/// as the mana string `"2"`, `m>=2WW` as `"2WW"` and `m:1{r}1` as `"1{R}1"`. `mana_cmc` walks
+/// braces and single letters and ignores loose digits entirely, so all three used to arrive with
+/// cmc 0, 2 and 1 — and `m:2` in particular became the empty cost, which is a tautology.
+///
+/// Maximal digit RUNS, so `m:10WW` is ten generic and not one-then-zero. Saturating: a query cost
+/// larger than a u32 of generic is not a cost, and clamping keeps the arithmetic total.
+pub(crate) fn mana_bare_generic(s: &str) -> u32 {
+    let mut total: u32 = 0;
+    let mut run: u32 = 0;
+    let mut in_run = false;
+    let mut in_brace = false;
+    for c in s.chars() {
+        match c {
+            // A brace ENDS a run, it does not discard it: `m:1{r}1` is two generic, one on each
+            // side of the braced pip, and resetting without flushing lost the leading digit.
+            '{' => {
+                if in_run { total = total.saturating_add(run); }
+                in_brace = true;
+                in_run = false;
+                run = 0;
+            }
+            '}' => in_brace = false,
+            _ if in_brace => {}
+            _ if c.is_ascii_digit() => {
+                run = run.saturating_mul(10).saturating_add(c as u32 - '0' as u32);
+                in_run = true;
+            }
+            _ => {
+                if in_run { total = total.saturating_add(run); }
+                in_run = false;
+                run = 0;
+            }
+        }
+    }
+    if in_run { total = total.saturating_add(run) }
+    total
+}
+
 pub(crate) fn mana_cmc(s: &str) -> f32 {
     let upper = s.to_uppercase();
     let mut cmc = 0.0f32;
