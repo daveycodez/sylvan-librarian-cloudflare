@@ -8768,6 +8768,98 @@ fn build_filter_numeric_color_rhs() {
     assert!(matches!(f, FilterExpr::ColorCountCmp { field: ColorField::ProducedMana, op: CmpOp::Ge, count: 1 }));
 }
 
+// A PARTIAL DATE IS A RANGE, NOT A POINT. `date:2021` means "released in 2021", so each operator
+// reads off the end of the window it needs — the zero-padded reading this replaced used the START
+// for all six, which is right for `<` and `>=` and wrong for the other four.
+//
+// Measured on api.scryfall.com 2026-08-16 over the whole default corpus, `date:<year>` against
+// `year:<year>` — the same column under its other spelling, which was correct all along:
+//
+//               Scryfall   the padded reading answered
+//   date:2021      3,834    0 (released_at == 2021-01-01)
+//   date=2021      3,834    0
+//   date<2021     20,966    20,966 ✓
+//   date<=2021    22,888    20,966
+//   date>2021     18,639    20,086
+//   date>=2021    20,086    20,086 ✓
+//   date!=2021    32,774    33,599 (the whole corpus — nothing was ever equal)
+//
+// Month precision is the same rule one level down: `date:2021-02` is 504 and equals
+// `date>=2021-02 date<2021-03`, and `date>=2021-02` is 20,085.
+#[test]
+fn build_filter_partial_date_is_a_range() {
+    let node = |value: &str, op: &str| {
+        serde_json::json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": "released_at", "original_attribute": "date"}},
+                "op": op,
+                "rhs": {"node_type": "StringValueNode", "kwargs": {"value": value}},
+            },
+        })
+    };
+    let leaf = |f: &FilterExpr| match f {
+        FilterExpr::DateCmp { op, value } => (*op, *value),
+        _ => panic!("expected a DateCmp leaf"),
+    };
+
+    // The four ordered operators take one end of the window each.
+    for (op, want) in [("<", (CmpOp::Lt, 20210101)), (">=", (CmpOp::Ge, 20210101)), ("<=", (CmpOp::Le, 20211231)), (">", (CmpOp::Gt, 20211231))] {
+        let f = super::build_filter(&node("2021", op)).expect("date must build");
+        assert_eq!(leaf(&f), want, "date{op}2021");
+    }
+
+    // Equality is the whole window, and inequality is its complement — composed from the same leaf
+    // so the narrower, the estimator and the cost model need no new variant.
+    let f = super::build_filter(&node("2021", ":")).expect("date:2021 must build");
+    match &f {
+        FilterExpr::And(children) => {
+            assert_eq!(leaf(&children[0]), (CmpOp::Ge, 20210101));
+            assert_eq!(leaf(&children[1]), (CmpOp::Le, 20211231));
+        }
+        _ => panic!("date:2021 must be the year's window, not a point"),
+    }
+    let f = super::build_filter(&node("2021", "!=")).expect("date!=2021 must build");
+    match &f {
+        FilterExpr::Not(inner) => match inner.as_ref() {
+            FilterExpr::And(children) => {
+                assert_eq!(leaf(&children[0]), (CmpOp::Ge, 20210101));
+                assert_eq!(leaf(&children[1]), (CmpOp::Le, 20211231));
+            }
+            _ => panic!("date!=2021 must complement the window"),
+        },
+        _ => panic!("date!=2021 must be a Not"),
+    }
+
+    // Month precision, same rule one level down.
+    let f = super::build_filter(&node("2021-02", ">=")).expect("date>=2021-02 must build");
+    assert_eq!(leaf(&f), (CmpOp::Ge, 20210201));
+    let f = super::build_filter(&node("2021-02", "<=")).expect("date<=2021-02 must build");
+    assert_eq!(leaf(&f), (CmpOp::Le, 20210231));
+
+    // A FULL date is its own window and stays the single leaf the fuzz corpus already exercises —
+    // which also keeps SQL's three-valued answer for a printing with no release date.
+    let f = super::build_filter(&node("2021-02-05", ":")).expect("date:2021-02-05 must build");
+    assert_eq!(leaf(&f), (CmpOp::Eq, 20210205));
+    let f = super::build_filter(&node("2021-02-05", "!=")).expect("date!=2021-02-05 must build");
+    assert_eq!(leaf(&f), (CmpOp::Ne, 20210205));
+
+    // `year:` reaches YearCmp as it always did — the two spellings now agree, by two routes.
+    let year = serde_json::json!({
+        "node_type": "CardBinaryOperatorNode",
+        "kwargs": {
+            "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": "released_at", "original_attribute": "year"}},
+            "op": "<=",
+            "rhs": {"node_type": "StringValueNode", "kwargs": {"value": "2021"}},
+        },
+    });
+    assert!(matches!(super::build_filter(&year).expect("year<=2021 must build"), FilterExpr::YearCmp { op: CmpOp::Le, year: 2021 }));
+
+    // A precision the parser cannot emit is an error rather than a silently different window.
+    assert!(super::build_filter(&node("202", ":")).is_err());
+    assert!(super::build_filter(&node("20210", ":")).is_err());
+}
+
 // The five/six split, asserted head-on rather than only through the oracle: the SAME C bit means
 // "not a color" on an identity and "one kind of mana" on the produced plane, and a later tidy-up
 // that unified the two widths would still pass a width-aware oracle if the oracle were changed

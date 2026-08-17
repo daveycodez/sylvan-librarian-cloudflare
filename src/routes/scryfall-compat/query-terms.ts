@@ -246,6 +246,107 @@ const NEGATION_HONORING_COMPARISONS: ReadonlySet<string> = new Set([
  */
 const DATE_KEYWORDS: ReadonlySet<string> = new Set(["date"]);
 
+/**
+ * THE KEYWORDS SCRYFALL ACTUALLY IMPLEMENTS `>` `>=` `<` `<=` `!=` FOR. Everything else — a text
+ * column this parser knows, a directive, or a keyword nobody knows — is HONORED AND MATCHES
+ * NOTHING under those five operators, silently.
+ *
+ * ─── THE ENUMERATION ─────────────────────────────────────────────────────────────────────────
+ *
+ * Not reasoned about: every alias in `DB_COLUMNS` and every directive name was probed as
+ * `<alias>>=0 e:khm t:creature` against api.scryfall.com, 2026-08-16, one request each. `>=0` is
+ * the discriminator because it is satisfiable on every numeric column, so a 404 means the
+ * comparison did not happen rather than that it happened and found nothing. 78 rows fell into
+ * exactly three classes:
+ *
+ *   COMPARES (200, a real count)
+ *     c ci color colors colour colours commander id identity   151 (colour count)
+ *     cmc mv manavalue m mana                                  151
+ *     pow power tou toughness                                  151
+ *     cn number year                                           151
+ *     usd eur tix                                              141
+ *     loy loyalty                                                1
+ *     produces                                                 151
+ *
+ *   COMPARES, AND CHECKS ITS VALUE (200 + an ignored-term warning on a bad value)
+ *     r rarity        `Unknown rarity “0.”`
+ *     date            `Invalid date or unknown set code “0”`
+ *     devotion        `Devotion can only match single color or hybrid mana.`
+ *
+ *   MATCHES NOTHING (404, and NO `warnings` key)
+ *     a art artist arttag atag banned border e s set f format legal restricted flavor fo ft
+ *     fulloracle function frame has is keyword kw lang language layout name o oracle oracle_id
+ *     oracleid oracletag otag set_type settype st t type watermark wm
+ *     unique sort order direction dir prefer            (the directive names take it too)
+ *     nonsense                                          (and so does any unknown keyword)
+ *
+ * ─── WHY IT IS ONE RULE AND NOT TWO ──────────────────────────────────────────────────────────
+ *
+ * The unknown-keyword case and the text-column case reach the same answer by the same route, and
+ * the pairs that separate them are the proof:
+ *
+ *   nonsense:1   200, 151 + `Unknown keyword “nonsense”.`   nonsense>=1  404, no warning
+ *   t:creature   200, 151                                   t>creature   404, no warning
+ *   f:notaformat 200, 151 + `Unknown game format`           f>notaformat 404, no warning
+ *   lang:zz      200, 151 + `Unknown language \`zz\``          lang>zz      404, no warning
+ *
+ * Under `:`/`=` each of those runs a validator and ignores the term; under a comparison NONE of
+ * them does, and the term survives matching nothing. So this must run BEFORE the unknown-keyword
+ * rule and before every value validator — a comparison never reaches them.
+ *
+ * `nonsense>1`, `nonsense<1`, `nonsense<=1` and `nonsense!=1` are all the same 404, so it is the
+ * whole comparison family and not `>=` alone.
+ *
+ * ─── WHAT IS DELIBERATELY NOT IN THE SET ─────────────────────────────────────────────────────
+ *
+ * `edhrec`, `artists`, `paperprints`, `papersets` and `pt` are numeric columns Scryfall compares
+ * (`edhrec>=5000 e:khm t:creature` = 112) and this parser has no spelling for. They are not in
+ * SCRYFALL_ONLY_KEYWORDS either, so they were already being reported as unknown keywords; under
+ * this rule they answer the 404 an unknown keyword answers instead of the 151 the ignore
+ * machinery answered. Both are wrong against Scryfall's count, and putting them in the set would
+ * be worse — a term kept for a keyword the parser cannot lex is a 400.
+ */
+const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
+	// colour and colour-identity counts
+	"c",
+	"color",
+	"colors",
+	"colour",
+	"colours",
+	"ci",
+	"id",
+	"identity",
+	"commander",
+	"produces",
+	// mana
+	"m",
+	"mana",
+	"devotion",
+	// numeric columns
+	"cmc",
+	"mv",
+	"manavalue",
+	"pow",
+	"power",
+	"tou",
+	"toughness",
+	"loy",
+	"loyalty",
+	"usd",
+	"eur",
+	"tix",
+	"cn",
+	"number",
+	"year",
+	// ordered enums / dates
+	"r",
+	"rarity",
+	"date",
+]);
+
+/** The five operators the rule above is about; `:` and `=` are the other, older mechanism. */
+const COMPARISON_OPERATORS: ReadonlySet<string> = new Set([">", ">=", "<", "<=", "!="]);
+
 /** `f:`/`format:`/`legal:`/`banned:`/`restricted:` — Scryfall's game formats. */
 const SCRYFALL_FORMATS: ReadonlySet<string> = new Set([
 	// The `legalities` key set of a live card object (api.scryfall.com/cards/named, 2026-08-16) …
@@ -498,6 +599,79 @@ const COLOR_KEYWORDS: ReadonlySet<string> = new Set([
 	"produces",
 ]);
 
+/** The keyword whose value is a devotion cost. */
+const DEVOTION_KEYWORDS: ReadonlySet<string> = new Set(["devotion"]);
+
+/** Colour letters, and the rest of the alphabet a mana symbol may be spelled from. */
+const DEVOTION_COLORS = "wubrg";
+const MANA_SYMBOL_PARTS = new Set([..."wubrgcsxyzp"]);
+
+const DEVOTION_REASON = "Devotion can only match single color or hybrid mana.";
+
+function unknownManaSymbols(value: string): string {
+	return `Unknown mana symbols “${value.toUpperCase()}”.`;
+}
+
+/**
+ * `devotion:` takes ONE colour, repeated — or one hybrid PAIR, repeated. Anything else is
+ * ignored-and-warned, in both polarities and under every operator.
+ *
+ * Two different sentences, and which one you get says whether Scryfall recognized the symbol at
+ * all. Measured against api.scryfall.com 2026-08-16, anchor `e:khm t:creature` = 151:
+ *
+ *   HONORED            {r} 27   {R} 27   r 27   {r}{r} 7   rr 7   {r}{r}{r} 404 (nothing that deep)
+ *                      {r/g} 62   {g/r} 62   {r/g}{r/g} 16   {r/g}{g/r} 16
+ *
+ *   `Devotion can only match single color or hybrid mana.`
+ *                      {w}{u}   {r}{g}   rg          two different colours
+ *                      {r}{r/g}                      a colour and a hybrid do not mix
+ *                      {c} {s} {x} {1}               recognized symbols that are not a colour
+ *                      {2/r} {r/p}                   hybrids with a non-colour half
+ *                      2                             any non-symbol value
+ *
+ *   `Unknown mana symbols “<VALUE, UPPERCASED>”.`
+ *                      {p} → “{P}”     {} → “{}”     notmana → “NOTMANA”
+ *
+ * So `{c}`, `{s}`, `{x}`, `{1}`, `{2/r}` and `{r/p}` ARE mana symbols and simply are not devotion,
+ * while a lone `{p}` and an empty `{}` are not symbols at all. The echo is the value as written
+ * with `toUpperCase` applied — braces kept, nothing re-spelled.
+ *
+ * Order-insensitivity of the hybrid pair is measured, not assumed: `{g/r}` and `{r/g}` answer the
+ * same 62, and mixing the two spellings in one value answers the same 16 as either alone.
+ *
+ * Both polarities: `-devotion>2` and `-devotion:2` are 151 with the devotion sentence, the same as
+ * their positive twins — this is a VALUE check, not a negation rule, which is why it sits with the
+ * other validators and after the negation block. (`devotion` is in
+ * NEGATION_HONORING_COMPARISONS, so a negated comparison reaches here rather than being swallowed.)
+ */
+function devotionReason(value: string): string | null {
+	const lower = value.toLowerCase();
+	const symbols: string[] = [];
+	if (lower.startsWith("{")) {
+		// `{a}{b}{c}` — anything that is not a closed brace group makes the whole value unreadable.
+		const groups = lower.match(/\{[^{}]*\}/g);
+		if (groups === null || groups.join("") !== lower) return unknownManaSymbols(value);
+		symbols.push(...groups.map((g) => g.slice(1, -1)));
+	} else {
+		symbols.push(...lower);
+	}
+	if (symbols.length === 0) return unknownManaSymbols(value);
+	const signatures: string[] = [];
+	for (const symbol of symbols) {
+		const parts = symbol.split("/");
+		// A symbol Scryfall does not know at all: an empty group, or a part outside the mana
+		// alphabet. A LONE `p` is in that class too — `{p}` is "Unknown mana symbols", where
+		// `{r/p}` is a symbol Scryfall knows and rejects for devotion.
+		if (parts.some((p) => !MANA_SYMBOL_PARTS.has(p) && !/^\d+$/.test(p))) return unknownManaSymbols(value);
+		if (parts.length === 1 && parts[0] === "p") return unknownManaSymbols(value);
+		// Known, but devotion counts colour pips only: every half must be a colour.
+		if (!parts.every((p) => DEVOTION_COLORS.includes(p))) return DEVOTION_REASON;
+		signatures.push([...new Set(parts)].sort().join(""));
+	}
+	if (new Set(signatures).size > 1) return DEVOTION_REASON;
+	return null;
+}
+
 /** Keyword groups, by the alias spellings this parser and Scryfall share. */
 const FORMAT_KEYWORDS: ReadonlySet<string> = new Set(["f", "format", "legal", "banned", "restricted"]);
 const LANGUAGE_KEYWORDS: ReadonlySet<string> = new Set(["lang", "language"]);
@@ -519,6 +693,7 @@ const KNOWN_KEYWORDS: ReadonlySet<string> = new Set([
 	...MANA_VALUE_KEYWORDS,
 	...NEGATED_EQUALITY_UNKNOWN_KEYWORD,
 	...NEGATION_HONORING_COMPARISONS,
+	...COMPARABLE_KEYWORDS,
 	...DATE_KEYWORDS,
 	...FORMAT_KEYWORDS,
 	...LANGUAGE_KEYWORDS,
@@ -858,6 +1033,20 @@ function classifyLeaf(term: string): LeafVerdict {
 		}
 	}
 
+	// BEFORE the unknown-keyword rule and before every value validator, because Scryfall's
+	// comparison operators reach neither. A keyword outside COMPARABLE_KEYWORDS — a text column,
+	// a directive name, or a keyword nobody knows — is HONORED and matches nothing under `>` `>=`
+	// `<` `<=` `!=`, with no `warnings` key at all. `nonsense>=1`, `t>creature`, `f>notaformat`,
+	// `lang>zz`, `oracleid>abc` and `is>foil` are one 404 each; their `:` twins are all
+	// ignored-and-warned. See COMPARABLE_KEYWORDS for the 78-row enumeration.
+	//
+	// The SCRYFALL_ONLY exemption below does not apply here: it exists so a keyword Scryfall
+	// honors is not silently dropped, and this rule drops nothing — it answers Scryfall's own
+	// empty result.
+	if (COMPARISON_OPERATORS.has(op) && !COMPARABLE_KEYWORDS.has(keyword)) {
+		return { keep: true, text: NEVER_MATCHES };
+	}
+
 	if (NOT_SCRYFALL_KEYWORDS.has(keyword) || (!KNOWN_KEYWORDS.has(keyword) && !SCRYFALL_ONLY_KEYWORDS.has(keyword))) {
 		return { keep: false, reason: `Unknown keyword “${negated ? "-" : ""}${keyword}”.` };
 	}
@@ -891,10 +1080,23 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (LANGUAGE_KEYWORDS.has(keyword) && !SCRYFALL_LANGUAGES.has(value.toLowerCase())) {
 		return { keep: false, reason: `Unknown language \`${value}\`` };
 	}
-	if (RARITY_KEYWORDS.has(keyword) && equality && !SCRYFALL_RARITIES.has(value.toLowerCase())) {
+	// EVERY operator, not only `:`/`=`. Rarity is an ordered enum, so `r>rare` is a comparison
+	// Scryfall really performs — and it checks the value under a comparison exactly as it does
+	// under equality. Measured, anchor `e:khm t:creature` = 151: `r:notarare`, `r=notarare`,
+	// `r>notarare`, `r>=notarare`, `r<notarare` and `r!=notarare` are all 151 carrying
+	// `Unknown rarity “notarare.”`, and `rarity>=0` is 151 carrying `Unknown rarity “0.”`. With an
+	// `equality` guard here this port answered the four comparisons `400 Failed to parse query`
+	// instead: nothing removed the term, and the parser's rarity value parser rejects a word that
+	// is not a rarity.
+	if (RARITY_KEYWORDS.has(keyword) && !SCRYFALL_RARITIES.has(value.toLowerCase())) {
 		// The period INSIDE the quotes is Scryfall's, not a typo here: the live body reads
 		// `Unknown rarity “notarare.”`.
 		return { keep: false, reason: `Unknown rarity \u201c${value}.\u201d` };
+	}
+	// Devotion checks its value under every operator and in both polarities — see devotionReason.
+	if (DEVOTION_KEYWORDS.has(keyword)) {
+		const reason = devotionReason(value);
+		if (reason !== null) return { keep: false, reason };
 	}
 	if (ORACLE_ID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
 		return { keep: false, reason: "You must provide a valid v4 UUID." };

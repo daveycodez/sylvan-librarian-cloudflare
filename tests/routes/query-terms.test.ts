@@ -98,6 +98,109 @@ describe("keywords Scryfall does not know", () => {
 	}
 });
 
+describe("a comparison Scryfall does not implement is honored and matches nothing", () => {
+	// ONE rule, not two. An unknown keyword under `>` `>=` `<` `<=` `!=` and a TEXT column under the
+	// same five reach the same answer by the same route: the term is kept, it matches nothing, and
+	// there is no `warnings` key at all. Under `:`/`=` both run a validator and are ignored-and-warned
+	// instead, which is the pair that separates the two mechanisms:
+	//
+	//   nonsense:1   151 + `Unknown keyword “nonsense”.`   nonsense>=1   404, no warning
+	//   t:creature   151                                   t>creature    404, no warning
+	//   f:notaformat 151 + `Unknown game format`           f>notaformat  404, no warning
+	//   lang:zz      151 + `Unknown language \`zz\``         lang>zz       404, no warning
+	//
+	// The boundary is a KEYWORD table, enumerated rather than guessed: every alias in DB_COLUMNS
+	// and every directive name was probed as `<alias>>=0 e:khm t:creature` against api.scryfall.com
+	// on 2026-08-16. See COMPARABLE_KEYWORDS for the three classes the 78 rows fell into.
+
+	test("an unknown keyword under a comparison is NOT the ignore machinery", () => {
+		for (const op of [">", ">=", "<", "<=", "!="]) {
+			const result = scryfallTermPolicy(`nonsense${op}1 e:khm t:creature`);
+			expect(result.warnings).toEqual([]);
+			expect(result.query).toBe("cmc<0 e:khm t:creature");
+		}
+		// …and under `:`/`=` it still is.
+		for (const op of [":", "="]) {
+			expect(scryfallTermPolicy(`nonsense${op}1 e:khm`).warnings).toEqual([
+				`Invalid expression “nonsense${op}1” was ignored. Unknown keyword “nonsense”.`,
+			]);
+		}
+	});
+
+	test("a text column under a comparison matches nothing", () => {
+		for (const term of ["t>creature", "t!=creature", "o!=flying", "name!=a", "a>guay", "ft>zzz", "wm>zzz"]) {
+			const result = scryfallTermPolicy(`${term} e:khm`);
+			expect(result.warnings).toEqual([]);
+			expect(result.query).toBe("cmc<0 e:khm");
+		}
+		// The `:` twins are ordinary searches and must be untouched.
+		for (const term of ["t:creature", "o:flying", "name:a", "t=creature"]) {
+			expect(scryfallTermPolicy(`${term} e:khm`).query).toBe(`${term} e:khm`);
+		}
+	});
+
+	test("it runs BEFORE every value validator, so those go quiet under a comparison", () => {
+		// `f>notaformat`, `lang>zz`, `oracleid>abc` and `is>foil` are one 404 each with no warning,
+		// where `f:notaformat`, `lang:zz` and `oracleid:abc` are all ignored-and-warned.
+		for (const term of ["f>notaformat", "lang>zz", "oracleid>abc", "is>foil", "layout>normal", "border>black"]) {
+			const result = scryfallTermPolicy(`${term} e:khm t:creature`);
+			expect(result.warnings).toEqual([]);
+			expect(result.query).toBe("cmc<0 e:khm t:creature");
+		}
+	});
+
+	test("the directive names take it too", () => {
+		for (const keyword of ["unique", "sort", "order", "direction", "dir", "prefer"]) {
+			expect(scryfallTermPolicy(`${keyword}>=0 e:khm`).query).toBe("cmc<0 e:khm");
+		}
+	});
+
+	test("the keywords Scryfall DOES compare are untouched", () => {
+		// The other two classes of the enumeration: a real comparison (a count comes back), and a
+		// real comparison that checks its value first (rarity, date, devotion — tested above).
+		for (const term of [
+			"c>=2",
+			"ci>=2",
+			"colour>=2",
+			"commander>=2",
+			"id>=2",
+			"produces>=2",
+			"m>=2",
+			"cmc>=3",
+			"mv>=3",
+			"manavalue>=3",
+			"pow>=1",
+			"power>=1",
+			"tou>=1",
+			"toughness>=1",
+			"loy>=3",
+			"loyalty>=3",
+			"usd>=1",
+			"eur>=1",
+			"tix>=1",
+			"cn>=100",
+			"number>=100",
+			"year>=2022",
+			"date>=2022",
+			"r>=rare",
+			"rarity>=rare",
+		]) {
+			expect(scryfallTermPolicy(`${term} e:khm`).query).toBe(`${term} e:khm`);
+		}
+	});
+
+	test("the negated form still takes the tautology, and this rule does not steal it", () => {
+		// `-nonsense>=1` and `-t>creature` are 151 with `warnings` absent — the always-true leaf the
+		// negation rule installs, NOT this rule's empty one. The negation block runs first, so a
+		// negated comparison never reaches here.
+		for (const term of ["-nonsense>=1", "-t>creature", "-lang>zz"]) {
+			const result = scryfallTermPolicy(`${term} e:khm t:creature`);
+			expect(result.warnings).toEqual([]);
+			expect(result.query).toBe("-cmc<0 e:khm t:creature");
+		}
+	});
+});
+
 describe("negated numeric equality, which Scryfall cannot express", () => {
 	test("mana value gets the value sentence", () => {
 		expect(scryfallTermPolicy("-cmc:3 e:lea").warnings).toEqual([
@@ -231,6 +334,70 @@ describe("values a known keyword cannot take", () => {
 		]);
 		// A COMPARISON on rarity is ordinary and must survive.
 		expect(scryfallTermPolicy("r>=rare e:khm").warnings).toEqual([]);
+	});
+
+	test("rarity checks its value under EVERY operator, not only `:`", () => {
+		// Rarity is an ordered enum, so `r>rare` is a comparison Scryfall really performs — and it
+		// therefore checks the value the same way it does under equality. Anchor `e:khm t:creature`
+		// = 151, one request each: all seven of these answer 151 carrying the same sentence, where
+		// this port used to answer `400 Failed to parse query` for the five comparisons.
+		for (const op of [":", "=", ">", ">=", "<", "<=", "!="]) {
+			expect(scryfallTermPolicy(`r${op}notarare e:khm t:creature`).warnings).toEqual([
+				`Invalid expression “r${op}notarare” was ignored. Unknown rarity “notarare.”`,
+			]);
+		}
+		// `rarity>=0` is 151 with `Unknown rarity “0.”` — a number is not a rarity either.
+		expect(scryfallTermPolicy("rarity>=0 e:khm").warnings).toEqual([
+			"Invalid expression “rarity>=0” was ignored. Unknown rarity “0.”",
+		]);
+		// And the real comparisons still pass through untouched, in both polarities.
+		for (const term of ["r>rare", "r<=mythic", "r!=common", "-r>=rare"]) {
+			expect(scryfallTermPolicy(`${term} e:khm`).warnings).toEqual([]);
+		}
+	});
+
+	test("devotion takes one colour repeated, or one hybrid PAIR repeated", () => {
+		// Measured against api.scryfall.com 2026-08-16, anchor `e:khm t:creature` = 151.
+		const devotion = "Devotion can only match single color or hybrid mana.";
+		for (const [value, reason] of [
+			["2", devotion],
+			["{c}", devotion],
+			["{s}", devotion],
+			["{x}", devotion],
+			["{1}", devotion],
+			["{2/r}", devotion],
+			["{r/p}", devotion],
+			["{w}{u}", devotion],
+			["{r}{g}", devotion],
+			["rg", devotion],
+			["{r}{r/g}", devotion],
+			// Not a mana symbol at all — a different sentence, and the echo is the value as
+			// written with toUpperCase applied.
+			["{p}", "Unknown mana symbols “{P}”."],
+			["{}", "Unknown mana symbols “{}”."],
+			["notmana", "Unknown mana symbols “NOTMANA”."],
+		] as [string, string][]) {
+			expect(scryfallTermPolicy(`devotion:${value} e:khm`).warnings).toEqual([
+				`Invalid expression “devotion:${value}” was ignored. ${reason}`,
+			]);
+		}
+		// Honored: one colour repeated, one hybrid pair repeated, either brace order, unbraced.
+		for (const value of ["{r}", "{R}", "r", "{r}{r}", "rr", "{r}{r}{r}", "{r/g}", "{g/r}", "{r/g}{r/g}", "{r/g}{g/r}"]) {
+			expect(scryfallTermPolicy(`devotion:${value} e:khm`).warnings).toEqual([]);
+		}
+	});
+
+	test("devotion checks its value in BOTH polarities and under every operator", () => {
+		// `-devotion>2` and `-devotion:2` are 151 with the devotion sentence, the same as their
+		// positive twins — a VALUE check, not a negation rule. `devotion` is in
+		// NEGATION_HONORING_COMPARISONS, which is what lets a negated comparison reach the
+		// validator instead of being swallowed as an always-true leaf.
+		for (const term of ["devotion:2", "devotion>2", "devotion>=2", "-devotion:2", "-devotion>2"]) {
+			expect(scryfallTermPolicy(`${term} e:khm t:creature`).warnings).toEqual([
+				`Invalid expression “${term}” was ignored. Devotion can only match single color or hybrid mana.`,
+			]);
+		}
+		expect(scryfallTermPolicy("-devotion>={r}{r} e:khm").warnings).toEqual([]);
 	});
 
 	test("oracle id must be a v4 UUID", () => {
