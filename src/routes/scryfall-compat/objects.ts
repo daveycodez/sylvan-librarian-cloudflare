@@ -118,6 +118,8 @@ export const CARD_OBJECT_FIELDS: readonly string[] = [
 	"printed_type_line",
 	"printed_text",
 	"flavor_name",
+	"life_modifier",
+	"hand_modifier",
 	"power",
 	"toughness",
 	"loyalty",
@@ -608,6 +610,14 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		...(reversible ? {} : { cmc: num(row, "cmc") ?? null, type_line: str(row, "type_line") ?? null }),
 		// Directly after the oracle `type_line` it translates, per the live objects.
 		...(str(row, "printed_type_line") !== undefined ? { printed_type_line: str(row, "printed_type_line") } : {}),
+		// Vanguard's two starting-total deltas, in Scryfall's own key position: measured on the live
+		// object for `Akroma, Angel of Wrath Avatar` (61b07ae0), the order is
+		// `oracle_text -> life_modifier -> hand_modifier -> colors`. Spread conditionally rather than
+		// added to the optional tail for the reason `printed_name` is, one block up — the tail would
+		// put them after `legalities`. Absent on every other layout, and all 119 printings that carry
+		// them are `vanguard` and carry BOTH.
+		...(str(row, "life_modifier") !== undefined ? { life_modifier: str(row, "life_modifier") } : {}),
+		...(str(row, "hand_modifier") !== undefined ? { hand_modifier: str(row, "hand_modifier") } : {}),
 		// `colors` is one of the values a two-image layout keeps on its faces alone (see
 		// TWO_IMAGE_LAYOUTS); `color_identity` is the card's and stays at top level on every layout.
 		...(twoImage ? {} : { colors: list(row, "colors") }),

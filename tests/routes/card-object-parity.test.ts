@@ -137,6 +137,21 @@ const CASES: [string, Record<string, unknown>][] = [
 	["minimal row, almost everything absent", MINIMAL],
 	["full row, every optional present", FULL],
 
+	// Vanguard, the only layout carrying `life_modifier`/`hand_modifier` — 119 printings and 107
+	// oracle cards over the whole 2026-08-16 all_cards bulk, and nothing else in the corpus. Its
+	// own case rather than two more keys on FULL, because these two are layout-coupled where every
+	// FULL key is not, and because the values are SIGNED STRINGS whose sign is always printed:
+	// "+0" is the zero, never a bare "0", so a writer that reformatted them would round-trip the
+	// negatives and lose the plus.
+	[
+		"vanguard, life/hand modifiers",
+		{ ...MINIMAL, name: "Akroma, Angel of Wrath Avatar", layout: "vanguard", life_modifier: "+7", hand_modifier: "+1" },
+	],
+	[
+		"vanguard, negative and signed-zero modifiers",
+		{ ...MINIMAL, name: "Sisters of Stone Death Avatar", layout: "vanguard", life_modifier: "-8", hand_modifier: "+0" },
+	],
+
 	// The slug and quote_plus paths, which are where a careless port drifts. Non-ASCII must
 	// percent-encode identically in the slug (j%C3%B6tun) while quote_plus keeps its own safe set
 	// (`!'()*` escape, `~` does not); apostrophes and periods DELETE from slugs rather than
@@ -705,6 +720,8 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		flavor_name: ["flavor_name"],
 		printed_type_line: ["printed_type_line"],
 		printed_text: ["printed_text"],
+		life_modifier: ["life_modifier"],
+		hand_modifier: ["hand_modifier"],
 		power: ["power"],
 		toughness: ["toughness"],
 		loyalty: ["loyalty"],

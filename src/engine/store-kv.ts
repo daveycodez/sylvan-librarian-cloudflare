@@ -1066,7 +1066,15 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       on a shared illustration, so the rule is release-dominant and needs measuring before it
  *       can be built.
  */
-export const STORE_CONTENT_GENERATION = 33;
+/**
+ * 34 — Vanguard's `life_modifier`/`hand_modifier` reach the card object, and one printing joins
+ *      the extras class. Both halves change what a built store CONTAINS, so this moves with
+ *      `ARCHIVE_FORMAT_VERSION` 2026081618 (see its changelog entry for the measurements): the
+ *      importer emits two new columns, and `extras_class` now reads a reversible card's FACE type
+ *      lines when the card prints none of its own, which puts `is:extra` on sld/1969
+ *      `Mechtitan // Mechtitan` and takes it out of every default search.
+ */
+export const STORE_CONTENT_GENERATION = 34;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

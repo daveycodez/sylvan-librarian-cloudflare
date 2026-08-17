@@ -239,6 +239,8 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         creature_power_text_id: NONE_STR,
         creature_toughness_text_id: NONE_STR,
         planeswalker_loyalty_text_id: NONE_STR,
+        life_modifier_id: NONE_STR,
+        hand_modifier_id: NONE_STR,
         faces: Vec::new(),
         divergent: Vec::new(),
     }

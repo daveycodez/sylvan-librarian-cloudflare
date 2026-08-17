@@ -663,6 +663,13 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     }
     // Directly after the oracle `type_line` it translates, per the live objects.
     write_opt_str(out, &mut first, "printed_type_line", str_of(row, "printed_type_line"));
+    // Vanguard's two starting-total deltas, in Scryfall's own key position: measured on the live
+    // object for `Akroma, Angel of Wrath Avatar` (61b07ae0), the order is
+    // `oracle_text -> life_modifier -> hand_modifier -> colors`. Absent on every other layout, and
+    // `write_opt_str` is what keeps the key out rather than writing null — all 119 printings that
+    // carry them are `vanguard`, and all 119 carry BOTH.
+    write_opt_str(out, &mut first, "life_modifier", str_of(row, "life_modifier"));
+    write_opt_str(out, &mut first, "hand_modifier", str_of(row, "hand_modifier"));
     // `colors` is one of the values a two-image layout keeps on its faces alone (see
     // TWO_IMAGE_LAYOUTS); `color_identity` is the card's and stays at top level on every layout.
     if !two_image {

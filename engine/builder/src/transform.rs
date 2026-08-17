@@ -147,6 +147,15 @@ pub struct RowDraft {
     pub card_layout: Option<String>,
     pub card_border: Option<String>,
     pub card_watermark: Option<String>,
+    /// Scryfall's `life_modifier` / `hand_modifier` — the two starting-total deltas a Vanguard
+    /// avatar prints, carried VERBATIM as the signed strings Scryfall writes ("+7", "-3", "+0").
+    ///
+    /// Vanguard-only and card-level, both measured over the whole 2026-08-16 all_cards bulk: 119
+    /// printings carry them, every one of layout `vanguard`, every one carrying both, and the pair
+    /// is constant across every printing of each of the 107 oracle cards. Nothing else in the
+    /// corpus — no layout, no set, no language — carries either key.
+    pub life_modifier: Option<String>,
+    pub hand_modifier: Option<String>,
     pub collector_number: Option<String>,
     pub collector_number_int: Option<i64>,
     pub mana_cost_text: Option<String>,
@@ -256,7 +265,7 @@ pub struct RowDraft {
 /// `prices` is deliberately absent even though price_usd/eur/tix are columns — usd_foil,
 /// usd_etched and eur_foil are not, and keeping the object whole costs a few bytes against losing
 /// three fields.
-const COMPAT_BLOB_EXCLUDED: [&str; 52] = [
+const COMPAT_BLOB_EXCLUDED: [&str; 54] = [
     // stored in a column of their own
     "id",
     "oracle_id",
@@ -311,6 +320,9 @@ const COMPAT_BLOB_EXCLUDED: [&str; 52] = [
     "printed_text",
     // stored in a column of its own; the per-face variant rides card_faces
     "flavor_name",
+    // stored in columns of their own (Vanguard's two starting-total deltas)
+    "life_modifier",
+    "hand_modifier",
     // Added by upstream's importer before it snapshots the residue. Raw bulk JSON never carries
     // them, so these four are inert here — kept so the two exclusion lists stay comparable
     // line-for-line when upstream's changes are synced.
@@ -703,6 +715,13 @@ const FUNNY_EXTRA_SETS: &[&str] = &[
 /// `FUNNY_EXTRA_SETS` finds nothing separating them from their own set-mates either, so they are
 /// left rather than enumerated one id at a time. Before the funny/digital/silver-promo/Stickers
 /// rules were added it reached 10,482 with 308 misses and 2 false positives.
+///
+/// THE "ONE SECRET LAIR POSTER" IS NO LONGER AMONG THEM (2026-08-17). It was sld/1969
+/// `Mechtitan // Mechtitan`, and it did have a signal — the type line the "Card"/"Token" rule
+/// below already reads. Being a `reversible_card` it prints no TOP-LEVEL type line, so that rule
+/// saw an empty string; both its faces are `Token Legendary Artifact Creature — Construct`. The
+/// rule now falls back to the faces when the card states no type line of its own, which closes it
+/// and leaves 44 — the Arena duplicates, which genuinely carry nothing.
 fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     let legalities = card
         .get("legalities")
@@ -765,10 +784,34 @@ fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     // Secret Lair sticker sheets (sld/335-339) ship as an ordinary `normal` box-set printing whose
     // only tell is the type. `Stickers` is guarded on `funny` because `sunf` ships 48 sticker
     // sheets that Scryfall serves; `Card`/`Token` need no guard, and deliberately do not have one.
-    if let Some(type_line) = s(card, "type_line")
-        && !type_line.is_empty()
-    {
-        let (card_types, _) = parse_type_line(&type_line);
+    //
+    // READ THE FACES WHEN THE CARD PRINTS NO TYPE LINE OF ITS OWN. A `reversible_card` has no
+    // top-level `type_line` at all — every one of its 40-odd keys lives on the two faces — so this
+    // rule saw an empty string and fell through, and the ONE printing in the corpus it should have
+    // caught is the one the class comment below already records as an unexplained miss: sld/1969
+    // `Mechtitan // Mechtitan`, whose two faces are both `Token Legendary Artifact Creature —
+    // Construct`. Scryfall answers `e:sld cn:1969 is:extra` 1; this answered 0, and the printing
+    // leaked into every default search — `c=wubrg` was 61 here against Scryfall's 60.
+    //
+    // MEASURED AS A RULE, NOT AS AN ID. Over the whole 2026-08-16 all_cards bulk, 81 printings have
+    // no top-level `type_line`; the face fallback fires on exactly ONE of them, sld/1969, which is
+    // exactly the one Scryfall calls extra. No false positive to trade against, in any language.
+    // `poster` was the other candidate signal and is NOT the rule — 434 printings carry that promo
+    // type and Scryfall serves all but this one ordinarily.
+    //
+    // FALLBACK RATHER THAN UNION, deliberately: a card that DOES print a type line has already
+    // stated its own class, and a `transform` front face is a Creature whose back may be anything.
+    // Only the card that says nothing at all delegates to its faces.
+    let type_lines: Vec<String> = match s(card, "type_line").filter(|t| !t.is_empty()) {
+        Some(type_line) => vec![type_line],
+        None => card
+            .get("card_faces")
+            .and_then(Value::as_array)
+            .map(|faces| faces.iter().filter_map(|f| f.as_object().and_then(|o| s(o, "type_line"))).collect())
+            .unwrap_or_default(),
+    };
+    for type_line in &type_lines {
+        let (card_types, _) = parse_type_line(type_line);
         if card_types.iter().any(|t| t == "Card" || t == "Token" || (t == "Stickers" && !funny)) {
             return Ok(true);
         }
@@ -900,6 +943,21 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     let card_border = s(card, "border_color").map(|v| v.to_lowercase());
     let card_watermark = s(card, "watermark").map(|v| v.to_lowercase());
 
+    // VERBATIM, not lowercased and not parsed to a number, unlike the four above. Scryfall prints
+    // these as SIGNED STRINGS and the sign is always written, zero included: over the whole
+    // 2026-08-16 all_cards bulk the life values are the 23 strings "+0".."+30" and "-1".."-8" and
+    // the hand values the 8 strings "-4".."+3" — never a bare "0", never a "-0". An i8 plus a
+    // formatter would round-trip today's corpus and invent a spelling the day Scryfall writes one
+    // of them unsigned, so the string is what is carried.
+    //
+    // Read here, in `build_draft`, rather than restored in `transform_row` from the unoverlaid
+    // card like `card_layout` and `card_artist`: those two exist on FACES and so had to be taken
+    // back from the card, while these appear on no face anywhere in the corpus. All 119 printings
+    // that carry them are layout `vanguard`, every one carries BOTH (never one alone), and none
+    // has `card_faces` at all — so the face overlay cannot reach them and one parse site does.
+    let life_modifier = s(card, "life_modifier");
+    let hand_modifier = s(card, "hand_modifier");
+
     // Lines 230-231: mana cost symbol counts. (Line 235's devotion column is
     // NOT ported: it is not in ENGINE_COLUMNS — card_from_pydict recomputes
     // devotion from mana_cost_jsonb + card types, lib.rs lines 688-718.)
@@ -966,6 +1024,8 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         card_layout,
         card_border,
         card_watermark,
+        life_modifier,
+        hand_modifier,
         collector_number,
         collector_number_int,
         mana_cost_text,
@@ -1891,6 +1951,8 @@ pub fn finalize_row(
             Value::Array(r.card_keywords_printed.into_iter().map(Value::String).collect()),
         );
         m.insert("card_layout".into(), opt_str_val(&r.card_layout));
+        m.insert("life_modifier".into(), opt_str_val(&r.life_modifier));
+        m.insert("hand_modifier".into(), opt_str_val(&r.hand_modifier));
         m.insert("card_legalities".into(), Value::Object(r.card_legalities));
         m.insert("card_name".into(), Value::String(r.card_name));
         m.insert("card_name_folded".into(), Value::String(r.card_name_folded));
@@ -2635,6 +2697,7 @@ mod tests {
             "creature_power_text", "creature_toughness_text", "set_name", "type_line",
             "prefer_score", "cubecobra_score", "card_faces", "card_compat_blob",
             "printed_name", "printed_type_line", "printed_text", "printed_name_folded", "is_canonical",
+            "life_modifier", "hand_modifier",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);

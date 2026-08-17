@@ -772,6 +772,23 @@ struct OracleCard {
     // Elements) and "1+*" are real printed loyalties that do not fit in it at all.
     planeswalker_loyalty_text_id: u32,
 
+    /// Scryfall's `life_modifier` / `hand_modifier`, interned verbatim as the SIGNED strings it
+    /// writes ("+7", "-3", "+0"). `NONE_STR` means the key was absent, which is the answer for all
+    /// but 107 of the 38,626 cards and must survive to the archive exactly as `printed_*` does —
+    /// the card object omits the key rather than emitting null.
+    ///
+    /// ON THE CARD AND NOT ON THE PRINTING, for the reason `divergent` states two fields down:
+    /// `Printing` is 304 archived bytes with ZERO padding left, so a u32 there rounds the row to
+    /// 320 and costs 8.6 MB across ~540k printings. These two are card-CONSTANT anyway — measured
+    /// over the whole 2026-08-16 all_cards bulk, all 119 printings that carry them agree within
+    /// each of their 107 oracle groups, so the printing has nothing of its own to say.
+    ///
+    /// A STRING RATHER THAN AN i8. The sign is always printed, zero included: the corpus holds
+    /// "+0" and never a bare "0" or a "-0". An integer plus a formatter would round-trip today and
+    /// invent a spelling the first time Scryfall writes one unsigned.
+    life_modifier_id: u32,
+    hand_modifier_id: u32,
+
     // Empty for the ~82% of cards with a single face. Front first, in Scryfall's own order.
     faces: Vec<OracleFace>,
 
@@ -1075,6 +1092,10 @@ struct CardRow {
     printed_name_folded_id: u32,
     flavor_name_id: u32,
     flavor_name_folded_id: u32,
+    // Vanguard's two starting-total deltas, interned verbatim; NONE_STR = key absent. See the same
+    // pair on OracleCard for why they land on the CARD rather than here on the printing.
+    life_modifier_id: u32,
+    hand_modifier_id: u32,
     // Whether this row is one of Scryfall's canonical (default_cards) printings. Canonical rows
     // become `CardData.printings`; the rest become the `foreign` annex. Decided by the importer
     // (id-membership in default_cards), never re-derived here.
@@ -2055,6 +2076,9 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         flavor_name_id: it.intern_opt(opt_str(d, "flavor_name")),
         // Already lowercased + accent-folded by the importer, like the two above.
         flavor_name_folded_id: it.intern_opt(opt_str(d, "flavor_name_folded")),
+        // Verbatim: signed strings, never lowercased or reparsed. See `OracleCard`'s pair.
+        life_modifier_id: it.intern_opt(opt_str(d, "life_modifier")),
+        hand_modifier_id: it.intern_opt(opt_str(d, "hand_modifier")),
         // An ABSENT key reads canonical: every pre-multilingual feed is canonical-only, so
         // absence means "there is no annex", not "this row belongs in it".
         is_canonical: d
@@ -15287,6 +15311,9 @@ const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
     ("printed_name", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.printed_name_id)).into_pyobject(py)?.into_any())),
     ("printed_type_line", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.printed_type_line_id)).into_pyobject(py)?.into_any())),
     ("printed_text", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.printed_text_id)).into_pyobject(py)?.into_any())),
+    // Off the CARD, unlike the printed_* trio above — see `OracleCard::life_modifier_id`.
+    ("life_modifier", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.life_modifier_id)).into_pyobject(py)?.into_any())),
+    ("hand_modifier", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.hand_modifier_id)).into_pyobject(py)?.into_any())),
     ("image_status", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.image_status_id)).into_pyobject(py)?.into_any())),
     ("set_type", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.set_type_id)).into_pyobject(py)?.into_any())),
     ("security_stamp", |py, _c, p, _s, v| Ok(coll_str_opt(v, u16::from(p.compat.security_stamp_id)).into_pyobject(py)?.into_any())),
@@ -15964,7 +15991,28 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                unique=art` is 25 there and 26 here, the extra row being khm/A-40 against khm/40);
 //                that needs a corpus-wide dense artwork id and a cross-partition dedupe in the
 //                gather, and is not in this version. See the `unique=art` note in store-kv.ts.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081617;
+//   2026081618 — VANGUARD'S TWO STARTING-TOTAL DELTAS, and one printing that was hiding from the
+//                extras class behind a type line it prints on its faces.
+//                `OracleCard` gains `life_modifier_id` + `hand_modifier_id`, two interned u32s
+//                holding Scryfall's `life_modifier`/`hand_modifier` VERBATIM as the signed strings
+//                it writes ("+7", "-3", "+0"). This port had never emitted either, on any card:
+//                they are Vanguard-only (119 printings, 107 oracle cards, all layout `vanguard`,
+//                all carrying BOTH) and no anchored probe in the sweep had ever selected a
+//                Vanguard card, so nothing could see the absence until `ENUM_DOMAINS` enumerated
+//                the layout domain corpus-wide. Card-level and not printing-level because the pair
+//                is constant within every one of the 107 oracle groups and because `Printing` has
+//                no padding left; `NONE_STR` = key absent, and the card object omits the key
+//                rather than writing null, exactly as `printed_*` does.
+//                ALSO A CONTENT CHANGE, which is why `STORE_CONTENT_GENERATION` moves with it:
+//                `extras_class` reads the faces' type lines when the card prints none of its own.
+//                A `reversible_card` has no top-level `type_line`, so the "Card"/"Token" rule saw
+//                an empty string and sld/1969 `Mechtitan // Mechtitan` — whose two faces are both
+//                `Token Legendary Artifact Creature` — leaked into every default search. Measured
+//                on api.scryfall.com 2026-08-17: `e:sld cn:1969 is:extra` is 1 there and was 0
+//                here, and `c=wubrg` was 61 here against 60. Over the whole 2026-08-16 all_cards
+//                bulk the fallback fires on exactly one of the 81 printings with no top-level type
+//                line, which is exactly the one Scryfall calls extra.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081618;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -16485,6 +16533,12 @@ fn build_card_data_sorted(
                 creature_power_text_id: row.creature_power_text_id,
                 creature_toughness_text_id: row.creature_toughness_text_id,
                 planeswalker_loyalty_text_id: row.planeswalker_loyalty_text_id,
+                // The group's first row supplies these two, like every scalar above it, and unlike
+                // `card_legalities` no divergence check follows: measured over the whole
+                // 2026-08-16 all_cards bulk, all 119 printings carrying them agree within each of
+                // their 107 oracle groups, so there is no second value for a row to disagree with.
+                life_modifier_id: row.life_modifier_id,
+                hand_modifier_id: row.hand_modifier_id,
                 // Face TEXT is the same on every printing of a card, so the group's first row
                 // supplies it, exactly like the scalars above. Borrowed rather than taken:
                 // the Printing below still needs the art half of the same faces.

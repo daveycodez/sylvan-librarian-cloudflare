@@ -632,6 +632,9 @@ pub(crate) fn card_from_json(
         printed_name_folded_id: it.intern_opt(jv_opt_str(d, "printed_name_folded")),
         flavor_name_id: it.intern_opt(jv_opt_str(d, "flavor_name")),
         flavor_name_folded_id: it.intern_opt(jv_opt_str(d, "flavor_name_folded")),
+        // Verbatim: signed strings, never lowercased or reparsed. See `OracleCard`'s pair.
+        life_modifier_id: it.intern_opt(jv_opt_str(d, "life_modifier")),
+        hand_modifier_id: it.intern_opt(jv_opt_str(d, "hand_modifier")),
         // An ABSENT key reads canonical, deliberately the opposite default from jv_opt_bool:
         // every pre-multilingual feed is canonical-only, so absence means "there is no annex",
         // not "this row belongs in it".
@@ -1108,6 +1111,8 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u32v(r.printed_name_folded_id);
     e.u32v(r.flavor_name_id);
     e.u32v(r.flavor_name_folded_id);
+    e.u32v(r.life_modifier_id);
+    e.u32v(r.hand_modifier_id);
     e.u8v(u8::from(r.is_canonical));
     // Faces ride the spill too. This codec has no upstream twin — it exists because the Worker
     // build is alarm-chained and rows are spilled between invocations to fit a 30s alarm — so
@@ -1256,6 +1261,8 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         printed_name_folded_id: d.u32v(),
         flavor_name_id: d.u32v(),
         flavor_name_folded_id: d.u32v(),
+        life_modifier_id: d.u32v(),
+        hand_modifier_id: d.u32v(),
         is_canonical: d.u8v() != 0,
         // These three must stay LAST, in this order, and in exactly the encoder's field order:
         // struct-literal initializers are evaluated top-to-bottom and each one consumes from the
@@ -2620,6 +2627,11 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("flavor_name", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.flavor_name_id)))),
     ("printed_type_line", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.printed_type_line_id)))),
     ("printed_text", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.printed_text_id)))),
+    // Vanguard's two starting-total deltas — off the CARD, unlike every printed_* above, because
+    // that is where they are stored (see `OracleCard::life_modifier_id`). `null` = key absent,
+    // which is the answer for all but 107 cards.
+    ("life_modifier", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.life_modifier_id)))),
+    ("hand_modifier", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.hand_modifier_id)))),
     ("image_status", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.image_status_id)))),
     ("set_type", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.set_type_id)))),
     ("security_stamp", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.security_stamp_id)))),
