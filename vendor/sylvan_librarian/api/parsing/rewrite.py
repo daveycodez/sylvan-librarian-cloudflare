@@ -343,9 +343,6 @@ _DERIVED_EXPANSIONS.update({("has", value): dsl for value, dsl in _HAS_EXPANSION
 # of them unique.
 ENGINE_IS_VALUES: frozenset[str] = frozenset({"localizedname", "unique"})
 
-# Every `has:` value this parser can answer. Same contract as SUPPORTED_IS_VALUES, and the same
-# consequence for anything outside it: a warning rather than a silent zero.
-SUPPORTED_HAS_VALUES: frozenset[str] = frozenset(_HAS_EXPANSIONS)
 
 # Every `is:` value this parser can answer at all: the derivable expansions above, the booleans the
 # importer stores on the row, and the two the engine answers from a stored field. Anything else
@@ -358,6 +355,40 @@ SUPPORTED_IS_VALUES: frozenset[str] = (
     | ENGINE_IS_VALUES
     | frozenset(value for alias, value in _DERIVED_EXPANSIONS if alias == "is")
 )
+
+# `has:` is a TOTAL ALIAS of `is:`, not the hand-listed subset _HAS_EXPANSIONS above is.
+#
+# That map was built by probing `has:`-FLAVOURED candidates -- the presence questions, and the
+# boolean tags that read like presence questions -- so every value nobody thought to spell against
+# `has:` was absent, and this server answers a no-match where api.scryfall.com answers a full list.
+# `has:split` is the one the parity sweep caught (126 there, nothing here); it is not special.
+#
+# MEASURED against api.scryfall.com on 2026-08-17, over 22 values chosen to span every shape the
+# `is:` vocabulary has -- derived layout predicates (`split`, `dfc`, `modal`, `meld`, `flip`,
+# `leveler`), computed text predicates (`vanilla`, `frenchvanilla`, `permanent`, `spell`), importer
+# booleans (`promo`, `digital`, `reprint`, `funny`, `token`, `extra`, `etched`, `hires`,
+# `reserved`, `spotlight`, `masterpiece`) and the two set-shaped ones (`commander`, `firstprint`).
+# `is:X` and `has:X` answered the SAME total_cards on all 22, with no disagreement anywhere:
+#
+#     is:permanent 26220 = has:permanent      is:frenchvanilla 1095 = has:frenchvanilla
+#     is:split       126 = has:split          is:indicator      369 = has:indicator
+#
+# A value that is neither a `has:` presence test nor an `is:` tag is a 400 upstream and a warning
+# here -- `has:flying` and `has:goblin` are both bad_request on api.scryfall.com -- so the alias
+# widens the vocabulary without widening what counts as valid.
+#
+# A FALLBACK rather than entries folded into _HAS_EXPANSIONS, so the presence half keeps
+# precedence: `has:watermark` asks whether a watermark is PRESENT and must not become
+# `is:watermark`. Mirrored by src/parser/rewrite.ts; carried upstream as jbylund/sylvan_librarian
+# PR #926.
+_DERIVED_EXPANSIONS.update(
+    {("has", value): f"is:{value}" for value in SUPPORTED_IS_VALUES if ("has", value) not in _DERIVED_EXPANSIONS}
+)
+
+# Every `has:` value this parser can answer. Same contract as SUPPORTED_IS_VALUES, and the same
+# consequence for anything outside it: a warning rather than a silent zero. Defined AFTER the alias
+# update above, and after SUPPORTED_IS_VALUES, because it now reads both.
+SUPPORTED_HAS_VALUES: frozenset[str] = frozenset(_HAS_EXPANSIONS) | SUPPORTED_IS_VALUES
 
 
 def _leaf_key(node: QueryNode) -> tuple[str, str] | None:
