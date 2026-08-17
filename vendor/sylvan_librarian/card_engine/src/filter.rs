@@ -621,7 +621,7 @@ fn opt_sv(v: Option<&str>) -> StrVal<'_> {
 /// both `layout:reversible_card` and its faces' `layout:normal` (measured on api.scryfall.com —
 /// `is:reversible layout:reversible_card` 81, `is:reversible layout:normal` 77, and the whole
 /// 77-row gap between `layout:normal`'s 106,635 there and the 106,558 printings whose own layout
-/// is `normal`). See `Printing::card_face_layout_id`.
+/// is `normal`). See `DivergentPrinting::face_layout_id`.
 ///
 /// Exhaustive over `TextField`, not a `matches!` with a hidden `_ => None`: a field that gains a
 /// second value must get a considered answer here rather than silently keeping one. `None` means

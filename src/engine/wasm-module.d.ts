@@ -127,8 +127,9 @@ declare module "sylvan-engine-wasm" {
 	export function fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
 	/**
 	 * A page of Scryfall card objects as `<total> <rowCount>\n<cards JSON array>` in UTF-8 bytes.
-	 * The objects are built in the engine, so the DO never materializes a card. Needs the residue
-	 * archive attached.
+	 * The objects are built in the engine, so the DO never materializes a card. Needs only the
+	 * loaded archive — the card-object residue rides on the printing record, so there is no second
+	 * archive to attach.
 	 */
 	export function scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
 	export function query_widens(filterTreeJson: string, optsJson: string): boolean;

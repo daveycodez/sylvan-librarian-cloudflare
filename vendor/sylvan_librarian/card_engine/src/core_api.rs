@@ -269,7 +269,7 @@ fn jv_opt_str_list_color_mask(d: &Value, key: &str) -> Option<u8> {
 /// transform back face has no `mana_cost` at all, which is different from having an empty one.
 /// The three non-optional ids (name, type_line, oracle_text) use `unwrap_or_default()` to match
 /// the pydict twin exactly, so both sides agree key-for-key.
-/// The FRONT face's `layout` — the whole of `Printing::card_face_layout_id`, since every face of
+/// The FRONT face's `layout` — the whole of `CardRow::card_face_layout_id`, since every face of
 /// every printing that has the key agrees on its value (measured: 81 printings, 162 faces).
 ///
 /// The pydict twin is `face_layout_from_pydict` in lib.rs.
@@ -578,7 +578,7 @@ pub(crate) fn card_from_json(
         card_set_code: InlineStr::<8>::from_str(&jv_opt_str(d, "card_set_code").unwrap_or_default()),
         card_layout_id: it.intern(jv_opt_str(d, "card_layout").unwrap_or_default()),
         // The FRONT face's `layout`, which every face of the printing shares — see
-        // Printing::card_face_layout_id. The pydict twin is `face_layout_from_pydict`.
+        // CardRow::card_face_layout_id. The pydict twin is `face_layout_from_pydict`.
         card_face_layout_id: it.intern_opt(jv_face_layout(d)),
         card_border_id: it.intern(jv_opt_str(d, "card_border").unwrap_or_default()),
         card_watermark_id: it.intern_opt(jv_opt_str(d, "card_watermark")),
@@ -2488,7 +2488,7 @@ fn str_vec_value(items: Vec<&str>) -> Value {
 const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // The card's name, or — on the 81 printings whose faces are not their card's — the joined
     // name THIS printing prints: "Temple Garden // Temple Garden" against the card's "Temple
-    // Garden". See OracleCard::divergent_faces.
+    // Garden". See OracleCard::divergent.
     ("name", |c, p, s, _v| {
         let id = crate::divergent_of(c, p).map_or(u32::from(c.card_name_id), |d| u32::from(d.card_name_id));
         opt_str_value(str_at(s, id))
@@ -2883,9 +2883,10 @@ fn folded_name_matches(stored: &str, needle: &str) -> bool {
 /// both. A printing carrying fewer face-art records than the card has faces leaves those faces
 /// without art rather than borrowing the wrong face's, exactly as the pydict twin does.
 fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings) -> Value {
-    // Whichever of the card's two face lists THIS printing prints -- see
-    // OracleCard::divergent_faces. `faces_diverge` is false on all but 81 printings, where this
-    // reads `card.faces` exactly as it always has.
+    // Whichever of the card's two face lists THIS printing prints -- see OracleCard::divergent.
+    // `divergent_of` is the whole of that decision (there is no flag on the printing): it returns
+    // None for every printing but the 81 reversible ones, and a None reads `card.faces` exactly as
+    // this always has.
     let divergent = crate::divergent_of(card, printing);
     let faces = divergent.map_or(&card.faces, |d| &d.faces);
     // Scryfall's FACE-level `layout`, which the 81 reversible printings carry on both faces and

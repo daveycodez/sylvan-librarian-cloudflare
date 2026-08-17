@@ -3,13 +3,18 @@
 // index is built by the deploy (scripts/import-store.sh) and refreshed by the
 // nightly cron, either of which fails loudly rather than shipping no index.
 //
-// Memory discipline: the store (~84MB — one archive, card-object residue included) is
-// streamed KV → wasm linear memory in
-// 4MB blocks (see load-blocks.ts); no full-store JS buffer ever exists, keeping
-// peak isolate usage inside the 128MB limit. The block size is chosen
+// Memory discipline: what an object loads is ONE PARTITION's archive — a
+// complete rkyv archive with the card-object residue packed into the printing
+// record, not a share of a bigger one — streamed KV → wasm linear memory in 4MB
+// blocks (see load-blocks.ts). No full-archive JS buffer ever exists, keeping
+// peak isolate usage inside the 128MB limit. Partition size is chosen by the
+// builder (TARGET_PARTITION_BYTES, src/import-publish.ts) and read from the
+// manifest, so there is no store-wide byte figure to quote here; dated for scale,
+// on 2026-08-16 the ten partitions averaged ~41MB raw. The block size is chosen
 // independently of however KV and DecompressionStream cut the bytes up, which is
 // what keeps the wasm-side scratch allocation small — it used to be one whole
-// 26MB KV chunk, and peak linear memory 99.4MB instead of 78.7MB.
+// 26MB KV chunk, and peak linear memory 99.4MB instead of 78.7MB on the
+// single-archive store those numbers were measured against.
 //
 // The wasm engine is instantiated lazily (wasm-shim.ts): only a DO that
 // actually loads a store pays for it, never a plain request isolate.
@@ -19,9 +24,11 @@
 // that double-stream measured 0.6-1.3s of billed CPU per load — the single
 // largest cost in the old system. KV's own `cacheTtl` gives colo-level caching
 // for free, on immutable chunk keys, with none of that overhead. What sits in
-// front of KV instead is the Durable Object's own SQLite, holding the archive
-// already DECOMPRESSED — see store-cache.ts, and note it is a read-through cache
-// over a source of truth that is still KV, not a second copy of record.
+// front of KV instead is the Durable Object's own SQLite — see store-cache.ts,
+// and note it is a read-through cache over a source of truth that is still KV,
+// not a second copy of record. It holds a partitioned archive COMPRESSED, chunk
+// for chunk (decompressed copies of every partition in every region do not fit
+// the 5GB DO pool), so a cached wake skips the fetch and still pays the gunzip.
 
 import * as wasm from "sylvan-engine-wasm";
 import {

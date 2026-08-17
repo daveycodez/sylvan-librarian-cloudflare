@@ -22,7 +22,10 @@ export const PREFER_ORDER = {
 // Declaration order, not alphabetical-by-accident: ParamCoercionError renders "expected one of:"
 // from this list, and upstream's StrEnum iterates in declaration order. `cubecobra` is this
 // project's own; the rest are Scryfall's `order=` vocabulary. Scryfall's `penny` and `review` are
-// deliberately absent — penny_rank lives only inside raw_card_blob, which this port does not store.
+// deliberately absent — see SCRYFALL_ONLY_ORDERS in
+// scryfall-compat/routes.ts. `penny_rank` IS stored (on the printing's packed `compat` residue) and
+// the card object emits it; what is missing is a sort permutation over it, and only permuted columns
+// can order a page.
 export const CARD_ORDERING = {
 	name: "CardOrdering",
 	values: [

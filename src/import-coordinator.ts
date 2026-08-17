@@ -2480,9 +2480,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		// Shards at or above their region's fan-out give their cached archives back. Scale-in is
 		// eviction, which was free while a shard held nothing in storage; with the archive cache an
-		// abandoned engine-wnam-3 would keep ~88MB forever, and its own prune never runs again
-		// because it never loads again. Width keys are the REGION's shard-0 group, so a shard's
-		// own group is not its width key — the region prefix is.
+		// abandoned engine-wnam-3 would keep one compressed partition per `-p<k>` object forever,
+		// and their own prune never runs again because they never load again. Width keys are the
+		// REGION's shard-0 group, so a shard's own group is not its width key — the region prefix is.
 		const stale = acked.filter((a) => {
 			const parsed = parseEngineName(a.name);
 			if (!parsed || parsed.shard === 0) return false;

@@ -82,8 +82,9 @@ const UNIQUE_ECHO: Record<UniqueOn, string> = { card: "cards", artwork: "art", p
 const ORDER_MAP: Map<string, CardOrdering> = new Map(CARD_ORDERING.values.map((m) => [m, m]));
 
 /**
- * The two Scryfall orders with no counterpart. `penny` needs penny_rank as a sort column (it is
- * stored, but in the residue archive, which carries no sort permutations); `review` is
+ * The two Scryfall orders with no counterpart. `penny` needs penny_rank as a sort column — it IS
+ * stored (in the printing's packed `compat` residue, which the card object emits), but no sort
+ * permutation is built over it, and only permuted columns can order a page; `review` is
  * Scryfall-internal with no public input and is not reproducible at all. Both fall back to `name`,
  * which is what Scryfall does with an order it does not recognize, and add a warning saying so.
  */
