@@ -44,6 +44,13 @@
 //     recording is DRIFT
 //   - anything else is a FAILURE
 //
+// One thing step 2 makes unobservable is checked before it runs: a case ORDERED BY a volatile key
+// declares `volatile_order`, and `checkVolatileOrder` asserts the order by RULE — null placement,
+// per-side monotonicity, and cross-side agreement on every pair the two snapshots rank the same
+// way — then aligns both `data` arrays by id so the byte comparison above still compares every
+// field of every row. `order=edhrec` is the case: the two sides rank against different bulk dumps,
+// so each is correctly sorted by its own numbers and they still disagree about which row is first.
+//
 // Exit code: 0 all green, 1 any failure, 2 only known-deviation drift.
 //
 // Politeness to api.scryfall.com is non-negotiable: cases run serially, Scryfall requests keep a
@@ -153,6 +160,21 @@ interface FieldDeviation {
 	cases?: string[];
 }
 
+/**
+ * A list ordered by a key the two sides do not hold the SAME VALUES for — see `checkVolatileOrder`
+ * for the four assertions this turns into, and why position-for-position is not one of them.
+ */
+interface VolatileOrder {
+	/** The ordering key, as it appears on each row. Also in `VOLATILE_KEYS`, so the byte compare never sees it. */
+	key: string;
+	/** The direction the page is requested in. */
+	dir: "asc" | "desc";
+	/** Where a row with no value for `key` sorts. THE THING THE CASE EXISTS TO PIN. */
+	nulls: "first" | "last";
+	/** Free-text; documentation only, never read at runtime. */
+	note?: string;
+}
+
 interface CaseSpec {
 	name: string;
 	method: "GET" | "POST";
@@ -163,6 +185,8 @@ interface CaseSpec {
 	/** Extra Scryfall-only-key patterns for this case. */
 	scryfall_only_keys?: string[];
 	known_deviation?: KnownDeviation;
+	/** Checks `data`'s ORDER by rule instead of by position — see `checkVolatileOrder`. */
+	volatile_order?: VolatileOrder;
 	/** Free-text rationale for how this case is built. Documentation only; never read at runtime. */
 	note?: string;
 	/** Names the store capability this case waits on; skipped unless --include-pending. */
@@ -511,6 +535,218 @@ function normalizedEqual(kind: NonNullable<FieldDeviation["normalize"]>, scryfal
 	return fold(scryfall) === fold(ours);
 }
 
+// ─── ordering by a key whose VALUES are volatile ──────────────────────────────
+
+/**
+ * `order=edhrec` sorts by a column the two sides do not hold the same numbers for. Scryfall
+ * refreshes its bulk dumps daily and this mirror rebuilds nightly, so on any given day the same
+ * printing carries a different rank on each side — measured 2026-08-17, `Infernal Pet` is 25740
+ * there and 25733 here, while `Runeforge Champion` is 25731 there and 25740 here. Each side is
+ * then correctly sorted **by its own numbers**, and the two pages still disagree about which of
+ * the two comes first. A position-for-position comparison reports that as a parity failure, every
+ * day, forever, and there is nothing to fix.
+ *
+ * So the order is asserted by RULE rather than by position, and the rules are chosen to be exactly
+ * the ones a real regression breaks:
+ *
+ *   1. NULL PLACEMENT, id for id. The rows with no value for the key form a block at the
+ *      configured end on both sides, of the same length, in the same order. This is the whole
+ *      reason the case exists — `perm_primary_key` used to give every column one absent side, so a
+ *      missing rank sorted as the LOWEST value; Scryfall puts an absent RANK at the other end.
+ *      Nothing volatile can move it: an unranked row has no number to drift.
+ *   2. MEMBERSHIP, allowing only a page-boundary straddle. The two pages hold the same ids, except
+ *      that a row whose rank drifted across the page-1 cut may appear on one side and not the
+ *      other — which is only credible if it sits at the very END of the page it is on, so that is
+ *      what is required. A row missing from the middle is a failure.
+ *   3. EACH SIDE SORTED BY ITS OWN VALUES. Monotone in the requested direction across the ranked
+ *      run. This is what catches a direction inversion on either side, and it needs no agreement
+ *      about the values at all.
+ *   4. CROSS-SIDE ORDER WHEREVER THE TWO SNAPSHOTS AGREE. For every pair of rows both pages hold,
+ *      if our snapshot and theirs BOTH say `a` outranks `b` — strictly, no tie on either side —
+ *      then both pages must place `a` first. A pair the snapshots disagree about, or that ties on
+ *      either side, is exempt: neither side is wrong, they are reading different data. On the
+ *      2026-08-17 page that is 9,995 pairs asserted and 16 exempt, and all ten positional
+ *      differences the byte comparison reported live in those 16.
+ *
+ * What this deliberately does NOT assert is the tie-break among rows the snapshots cannot separate
+ * — which is the only thing the daily churn can move, and the only thing the case never meant to
+ * pin. Rule 4 subsumes plain ties, because a tie on either side exempts the pair.
+ *
+ * The rows themselves are still compared in full: `align` hands back both `data` arrays sorted by
+ * `id`, so the byte comparison downstream lines card object up against card object and every field
+ * of all 175 is pinned exactly as before.
+ */
+function checkVolatileOrder(
+	spec: VolatileOrder,
+	oursBody: Json,
+	scryfallBody: Json,
+): { problems: string[]; align: (body: Json) => Json } {
+	const problems: string[] = [];
+	const identity = (body: Json) => body;
+
+	const rowsOf = (body: Json, label: string): { id: string; rank: number | null }[] | null => {
+		const data = isObject(body) ? body.data : undefined;
+		if (!Array.isArray(data)) {
+			problems.push(`volatile_order: ${label} has no \`data\` array to order`);
+			return null;
+		}
+		const rows: { id: string; rank: number | null }[] = [];
+		for (const [i, row] of data.entries()) {
+			if (!isObject(row) || typeof row.id !== "string") {
+				problems.push(`volatile_order: ${label} data.${i} has no string \`id\``);
+				return null;
+			}
+			const raw = row[spec.key];
+			if (raw !== undefined && raw !== null && typeof raw !== "number") {
+				problems.push(`volatile_order: ${label} data.${i} \`${spec.key}\` is ${excerpt(raw)}, not a number or null`);
+				return null;
+			}
+			rows.push({ id: row.id, rank: typeof raw === "number" ? raw : null });
+		}
+		return rows;
+	};
+
+	const ours = rowsOf(oursBody, "ours");
+	const theirs = rowsOf(scryfallBody, "scryfall");
+	if (!ours || !theirs) return { problems, align: identity };
+
+	// 1. The null block, at the configured end, id for id.
+	const nullBlock = (rows: { id: string; rank: number | null }[]): string[] => {
+		const run = spec.nulls === "first" ? rows : [...rows].reverse();
+		const block: string[] = [];
+		for (const row of run) {
+			if (row.rank !== null) break;
+			block.push(row.id);
+		}
+		return block;
+	};
+	const oursNulls = nullBlock(ours);
+	const theirsNulls = nullBlock(theirs);
+	const strayNull = (rows: { id: string; rank: number | null }[], blockLen: number): number =>
+		(spec.nulls === "first" ? rows.slice(blockLen) : rows.slice(0, rows.length - blockLen)).findIndex(
+			(r) => r.rank === null,
+		);
+	for (const [label, rows, block] of [
+		["ours", ours, oursNulls],
+		["scryfall", theirs, theirsNulls],
+	] as const) {
+		const stray = strayNull(rows, block.length);
+		if (stray >= 0)
+			problems.push(
+				`volatile_order: ${label} has a row with no \`${spec.key}\` outside the leading/trailing block — ` +
+					`nulls must be contiguous at the ${spec.nulls}`,
+			);
+	}
+	if (oursNulls.length !== theirsNulls.length || oursNulls.some((id, i) => id !== theirsNulls[i])) {
+		problems.push(
+			`volatile_order: the block of rows with no \`${spec.key}\` differs — scryfall ${theirsNulls.length} row(s), ` +
+				`ours ${oursNulls.length}, first divergence at ${oursNulls.findIndex((id, i) => id !== theirsNulls[i])}. ` +
+				`This is the null PLACEMENT, which no snapshot skew can move.`,
+		);
+	}
+
+	// 2. Membership, tolerating only a row that drifted across the page cut.
+	const oursIds = new Set(ours.map((r) => r.id));
+	const theirsIds = new Set(theirs.map((r) => r.id));
+	for (const [label, rows, otherIds] of [
+		["ours", ours, theirsIds],
+		["scryfall", theirs, oursIds],
+	] as const) {
+		const extra = rows.filter((r) => !otherIds.has(r.id));
+		const tail = new Set(rows.slice(rows.length - extra.length).map((r) => r.id));
+		const offTail = extra.filter((r) => !tail.has(r.id));
+		if (offTail.length > 0)
+			problems.push(
+				`volatile_order: ${label} holds ${offTail.length} row(s) the other side does not, and not at the page's ` +
+					`end — a rank that drifts across the page cut can only ever add or drop rows at the TAIL. ` +
+					`First: ${offTail[0]?.id}`,
+			);
+	}
+
+	const shared = ours.filter((r) => theirsIds.has(r.id));
+	const oursRank = new Map(ours.map((r) => [r.id, r.rank]));
+	const theirsRank = new Map(theirs.map((r) => [r.id, r.rank]));
+	const oursAt = new Map(ours.map((r, i) => [r.id, i]));
+	const theirsAt = new Map(theirs.map((r, i) => [r.id, i]));
+
+	// 3. Each side monotone in its OWN values across its ranked run.
+	const worse = spec.dir === "desc" ? (a: number, b: number) => a > b : (a: number, b: number) => a < b;
+	for (const [label, rows] of [
+		["ours", ours],
+		["scryfall", theirs],
+	] as const) {
+		const ranked = rows.filter((r) => r.rank !== null);
+		for (let i = 1; i < ranked.length; i++) {
+			const prev = ranked[i - 1] as { id: string; rank: number };
+			const cur = ranked[i] as { id: string; rank: number };
+			if (worse(cur.rank, prev.rank)) {
+				problems.push(
+					`volatile_order: ${label} is not sorted ${spec.dir} by its own \`${spec.key}\` — ${prev.id} ` +
+						`(${prev.rank}) is followed by ${cur.id} (${cur.rank})`,
+				);
+				break;
+			}
+		}
+	}
+
+	// 4. Cross-side order for every pair the two snapshots agree about, strictly.
+	let asserted = 0;
+	let exempt = 0;
+	const violations: string[] = [];
+	const rankedShared = shared.filter((r) => r.rank !== null && theirsRank.get(r.id) !== null);
+	for (let i = 0; i < rankedShared.length; i++) {
+		for (let j = i + 1; j < rankedShared.length; j++) {
+			const a = (rankedShared[i] as { id: string }).id;
+			const b = (rankedShared[j] as { id: string }).id;
+			const us = Math.sign((oursRank.get(a) as number) - (oursRank.get(b) as number));
+			const them = Math.sign((theirsRank.get(a) as number) - (theirsRank.get(b) as number));
+			if (us === 0 || them === 0 || us !== them) {
+				exempt++;
+				continue;
+			}
+			asserted++;
+			// `us === them === 1` means a outranks b; desc puts the higher value first.
+			const aFirst = spec.dir === "desc" ? us > 0 : us < 0;
+			if ((oursAt.get(a) as number) < (oursAt.get(b) as number) !== aFirst)
+				violations.push(`ours places ${a} and ${b} against both snapshots' ranks`);
+			else if ((theirsAt.get(a) as number) < (theirsAt.get(b) as number) !== aFirst)
+				violations.push(`scryfall places ${a} and ${b} against both snapshots' ranks`);
+		}
+	}
+	if (violations.length > 0) {
+		problems.push(
+			`volatile_order: ${violations.length} of ${asserted} agreed pair(s) are ordered wrongly. ` +
+				`First: ${violations[0]}`,
+		);
+	}
+	// A page where nothing can be asserted is not a passing page — it is a case that stopped
+	// measuring. Two snapshots that disagree about EVERY pair are not skew, they are a bug.
+	if (asserted === 0 && rankedShared.length > 1) {
+		problems.push(
+			`volatile_order: not one pair of the ${rankedShared.length} ranked rows is ordered the same way by both ` +
+				`snapshots — that is not drift, and this case asserts nothing until it is explained`,
+		);
+	}
+	lastOrderSummary = `${asserted} ordered pair(s) asserted, ${exempt} exempt (snapshots disagree or tie)`;
+
+	const align = (body: Json): Json => {
+		if (!isObject(body) || !Array.isArray(body.data)) return body;
+		const keep = body.data.filter(
+			(row) => isObject(row) && oursIds.has(row.id as string) && theirsIds.has(row.id as string),
+		);
+		keep.sort((x, y) => String((x as { id: string }).id).localeCompare(String((y as { id: string }).id)));
+		return { ...body, data: keep };
+	};
+	return { problems, align };
+}
+
+/**
+ * How much rule 4 actually asserted on the case just run, printed under its verdict. A case that
+ * quietly stopped measuring — every pair exempt because the two snapshots drifted apart entirely —
+ * looks exactly like a passing one from the outside, so the count is reported, not inferred.
+ */
+let lastOrderSummary: string | undefined;
+
 // ─── per-case verdicts ────────────────────────────────────────────────────────
 
 type Verdict =
@@ -563,8 +799,20 @@ async function runCase(spec: CaseSpec, file: CasesFile): Promise<Verdict> {
 		return { kind: "fail", details: [`a body is not JSON: ${String(err)}`] };
 	}
 
+	// Before the volatile reduction erases them: the ORDER the volatile key put the rows in, which
+	// is the one thing about that key the reduction makes unobservable downstream. Also aligns the
+	// two `data` arrays by id, so everything after this compares card object to card object rather
+	// than position to position — see `checkVolatileOrder`.
+	let orderProblems: string[] = [];
+	if (spec.volatile_order) {
+		const checked = checkVolatileOrder(spec.volatile_order, oursBody, scryfallBody);
+		orderProblems = checked.problems;
+		oursBody = checked.align(oursBody);
+		scryfallBody = checked.align(scryfallBody);
+	}
+
 	// Before the volatile reduction erases them: the shape of the values it is about to erase.
-	const shapeProblems = checkVolatileShape(oursBody, scryfallBody, shapeTally);
+	const shapeProblems = [...orderProblems, ...checkVolatileShape(oursBody, scryfallBody, shapeTally)];
 
 	const volatilePatterns = [...VOLATILE_KEYS, ...(spec.volatile ?? [])].map(compilePattern);
 	const ledgerPatterns = [...file.scryfall_only_keys, ...(spec.scryfall_only_keys ?? [])].map(compilePattern);
@@ -662,11 +910,13 @@ for (const spec of selected) {
 		continue;
 	}
 	let verdict: Verdict;
+	lastOrderSummary = undefined;
 	try {
 		verdict = await runCase(spec, file);
 	} catch (err) {
 		verdict = { kind: "fail", details: [String(err)] };
 	}
+	const orderSummary = lastOrderSummary;
 	switch (verdict.kind) {
 		case "pass":
 			passes++;
@@ -691,6 +941,7 @@ for (const spec of selected) {
 			for (const d of verdict.details) console.log(`         ${d}`);
 			break;
 	}
+	if (orderSummary) console.log(`         ${orderSummary}`);
 }
 
 if (pendingSkipped.length > 0) {
