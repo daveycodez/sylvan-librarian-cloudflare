@@ -721,6 +721,60 @@
 			"method": "GET",
 			"path": "/cards/search?order=set&q=devotion%3E2+e%3Akhm+t%3Acreature&unique=cards",
 			"note": "Devotion takes one colour repeated or one hybrid PAIR repeated; anything else is ignored-and-warned, in both polarities and under every operator. There was no devotion validator here at all, so `devotion>2` reached the engine and answered 149. `{p}` and `{}` earn a different sentence -- `Unknown mana symbols` -- because those are not symbols Scryfall recognises, where `{c}`, `{s}`, `{x}`, `{1}`, `{2/r}` and `{r/p}` are symbols that simply are not devotion."
+		},
+		{
+			"name": "search-devotion-hybrid-sums-its-two-colours",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=devotion%3A%7Br%2Fg%7D+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "A hybrid devotion value asks about BOTH its colours as one quantity: the measure is the sum of the queried lanes. This expanded {R/G} to lanes r=1,g=1 and compared per lane, which means \"a red pip AND a green pip\" -- 1 card, against Scryfall's 62 (= 27 + 36 - the one KHM creature carrying both)."
+		},
+		{
+			"name": "search-devotion-hybrid-is-a-sum-not-a-per-lane-or",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=devotion%3A%7Br%2Fg%7D%7Br%2Fg%7D+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "The row that tells a SUM from a per-lane OR, and the reason the headline count above is not enough evidence on its own. `devotion:{r}{r}` is 7 and `devotion:{g}{g}` is 8, so an OR over the lanes cannot exceed 15 -- this is 16. The sixteenth card has one red pip and one green pip, so neither lane reaches 2 while the sum does."
+		},
+		{
+			"name": "search-devotion-equality-reads-only-the-queried-colours",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=devotion%3D%7Br%7D+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "`devotion={r}` is d[r] == 1 with the other colours FREE: 20, which is `devotion:{r}`'s 27 less `devotion:{r}{r}`'s 7. This compared the whole six-lane vector for equality, pinning every unqueried colour to zero, and so answered 15 -- it excluded every red card that is also green."
+		},
+		{
+			"name": "search-mana-generic-is-a-counted-pip",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=m%3A%7B2%7D+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "`{2}` in a mana value is two GENERIC pips, not cmc 2. Numeric symbols carry no lane, so a cost's generic survived only inside cmc and every coloured pip paid for it; this answered 142 (cards with cmc >= 2) against Scryfall's 102."
+		},
+		{
+			"name": "search-mana-generic-is-not-cmc",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=m%3D%7Br%7D%7Br%7D+m%3A%7B2%7D+t%3Acreature&unique=cards",
+			"note": "The decisive case, and it is not in KHM -- no KHM creature costs exactly {R}{R}. A {R}{R} cost has cmc 2 and generic 0, so Scryfall answers 0 here while `m={r}{r} t:creature` alone answers 24. Comparing cmc matched all 24."
+		},
+		{
+			"name": "search-mana-bare-generic-is-not-an-empty-cost",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=m%3A2+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "The unbraced shorthand: `m:2` is `m:{2}`, both 102. The value reaches the engine as the string \"2\", and the cmc parser reads braces and bare letters but not loose digits -- so this arrived as the EMPTY cost, which is a tautology, and answered all 151."
+		},
+		{
+			"name": "search-equals-on-a-text-column-is-a-substring",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=o%3Dflying+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "`=` on a text column is `:`, not an equality -- 32 either way. This compared the whole oracle text for equality and answered 0. Distinct from the ordered comparisons (`o>flying` and friends), which really do match nothing, and from `!=`, which is the empty set."
+		},
+		{
+			"name": "search-equals-on-a-collection-column-is-membership",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=kw%3Dflying+e%3Akhm&unique=cards",
+			"note": "Same rule on a collection column: `kw=flying` is `kw:flying`, 28. Set EQUALITY is not a meaning Scryfall gives `=` here -- this answered 9, the cards whose ONLY keyword is Flying. The colour columns are the boundary and keep a real equality: `c=rg` is 1 against `c:rg`'s 2."
+		},
+		{
+			"name": "search-date-year-month-is-that-month",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=date%3A2021-02+e%3Akhm&unique=cards",
+			"note": "A partial date names a WINDOW one precision below the bare year: `date:2021-02` is February 2021, and equals `date>=2021-02 date<2021-03`. The parser consumed the month looking for a day and, finding none, returned the bare year -- silently dropping tokens it had already eaten -- so this answered the whole of 2021."
 		}
 	]
 }
