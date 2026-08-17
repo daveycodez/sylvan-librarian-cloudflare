@@ -685,6 +685,42 @@
 			"method": "GET",
 			"path": "/cards/search?order=set&q=%21%22Valki%2C+God+of+Lies+%2F%2F+Tibalt%2C+Cosmic+Impostor%22+c%3Db&unique=cards",
 			"note": "The under-matching direction, on an exact comparison: Valki is mono-black and Tibalt is {B,R}, so `c=b` is satisfied by the front face alone and by no union. Pinned beside the over-matching case above because a fix for either one on its own is wrong."
+		},
+		{
+			"name": "search-date-bare-year-is-the-year",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=date%3A2021+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "A PARTIAL DATE IS A RANGE. `date:2021` means \"released in 2021\", and this port answered 0 -- the engine zero-padded the value to 20210000 and compared that one point, so nothing was ever equal to it. The padded reading is the START of the window, which is the right bound for `<` and `>=` and wrong for the other four operators; each now reads the end it needs. `date:<year>` and `year:<year>` agree on all seven spellings, exactly, which is the check that matters -- `year:` was correct all along."
+		},
+		{
+			"name": "search-date-bare-year-negated",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=-date%3A2021+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "The residual the negated-comparison work left behind: `-date:2021` is 141 on Scryfall because `date` DISCARDS the minus and applies the term positively, and it was 0 here only because our own positive form was broken. Both halves now agree, so this pins the two rules together -- the minus rule and the range rule -- rather than either alone."
+		},
+		{
+			"name": "search-unknown-keyword-under-a-comparison-is-not-ignored",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=nonsense%3E%3D1+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "`nonsense:1` is ignored-and-warned; `nonsense>=1` is a 404 with NO warnings key. Scryfall's value validators and its unknown-keyword table are not reached by `>` `>=` `<` `<=` `!=` at all -- the term is honored and matches nothing. This port ignored-and-warned both, answering 151 with a warning Scryfall does not emit."
+		},
+		{
+			"name": "search-comparison-on-a-text-column-matches-nothing",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=t%3Ecreature+e%3Akhm&unique=cards",
+			"note": "The same rule from the other side, which is why it is one rule and not two: a comparison operator on a TEXT column is honored and matches nothing, exactly as it is on a keyword nobody knows. The boundary was enumerated -- every DB_COLUMNS alias and every directive name probed as `<alias>>=0 e:khm t:creature` -- and only the numeric columns, the colour family, mana, produces, rarity, date and devotion compare at all. This port did a real lexicographic comparison and answered 54."
+		},
+		{
+			"name": "search-rarity-checks-its-value-under-a-comparison",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=r%3Enotarare+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "Rarity is an ordered enum, so `r>rare` is a comparison Scryfall really performs -- and it therefore checks the value under a comparison exactly as it does under `:`. All seven of `r:notarare` through `r!=notarare` answer 151 with the same sentence (whose full stop sits INSIDE the closing quote, which is Scryfall's). With an equality-only guard this port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "search-devotion-checks-its-value",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=devotion%3E2+e%3Akhm+t%3Acreature&unique=cards",
+			"note": "Devotion takes one colour repeated or one hybrid PAIR repeated; anything else is ignored-and-warned, in both polarities and under every operator. There was no devotion validator here at all, so `devotion>2` reached the engine and answered 149. `{p}` and `{}` earn a different sentence -- `Unknown mana symbols` -- because those are not symbols Scryfall recognises, where `{c}`, `{s}`, `{x}`, `{1}`, `{2/r}` and `{r/p}` are symbols that simply are not devotion."
 		}
 	]
 }
