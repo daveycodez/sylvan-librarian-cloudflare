@@ -55,7 +55,7 @@
 // Standalone script, NOT a test under tests/ — bunfig pins the test root and tests/ holds a
 // no-network invariant this file exists to violate on purpose.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 // The port's OWN catalog list drives the `/catalog/*` coverage, so a name added here without being
@@ -227,11 +227,21 @@ function cacheFileFor(method: string, path: string, body: string | undefined): s
 async function fetchScryfall(path: string, method = "GET", body?: string, wantHeaders = false): Promise<Fetched> {
 	const cacheFile = cacheFileFor(method, path, body);
 	if (existsSync(cacheFile)) {
-		const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as Fetched;
+		// An unparseable entry is treated as a MISS, not as an exception. The writer below is atomic
+		// now, but live-parity.ts shares this directory and any entry written before it was is still
+		// on disk — and a cache read that throws does not fail loudly, it fails as a divergence filed
+		// against an innocent case (`SyntaxError: Unterminated string` on whatever query wanted that
+		// path). Re-fetching costs one request and cannot lie.
+		let cached: Fetched | undefined;
+		try {
+			cached = JSON.parse(readFileSync(cacheFile, "utf8")) as Fetched;
+		} catch {
+			cached = undefined;
+		}
 		// A header-less entry (this harness before today, or live-parity's own writes) cannot answer
 		// a header question, so it is re-fetched and REPLACED with the fuller record rather than
 		// stored beside it — one entry per request, and the upgrade is paid once per day at most.
-		if (!wantHeaders || cached.headers !== undefined) {
+		if (cached && (!wantHeaders || cached.headers !== undefined)) {
 			cacheHits++;
 			return cached;
 		}
@@ -265,7 +275,15 @@ async function fetchScryfall(path: string, method = "GET", body?: string, wantHe
 		}
 		const fetched: Fetched = { status: res.status, body: await bodyText(res), headers: headersOf(res) };
 		mkdirSync(dirname(cacheFile), { recursive: true });
-		writeFileSync(cacheFile, JSON.stringify(fetched));
+		// WRITE THEN RENAME, because a killed run must not poison the cache. A `writeFileSync`
+		// interrupted part-way leaves a TRUNCATED entry at a key every later run reads as a hit, and
+		// the JSON parse failure surfaces as `SyntaxError: Unterminated string` filed against whatever
+		// case happened to want that path — five invented divergences from one ^C, each pointing at an
+		// innocent query. rename(2) within a directory is atomic, so an entry is either absent or
+		// whole. The `.tmp` name carries the pid so two harnesses writing the same key cannot collide.
+		const tempFile = `${cacheFile}.${process.pid}.tmp`;
+		writeFileSync(tempFile, JSON.stringify(fetched));
+		renameSync(tempFile, cacheFile);
 		return fetched;
 	}
 }
@@ -647,12 +665,21 @@ function search(q: string, params: Record<string, string> = {}): string {
  * supports on the text columns. Absent entries mean "this column has no searchable alias" (the
  * table is keyed off DB_COLUMNS itself below, so a column added upstream shows up as a MISSING
  * VALUES warning rather than silently dropping out of coverage).
+ *
+ * THE SET ANCHORS IN THIS TABLE ARE CHECKED, not chosen once and trusted. `e:khm` was the default
+ * anchor for years and KHM has no transform printing at all, so all three layout probes compared an
+ * empty list against an empty list and read `ok` throughout the period the per-face layout data was
+ * wrong. Eight anchors here were measured vacuous the first time `anchorProbes` ran — `e:tsp` has no
+ * 2015 frame, `e:khm` no Goblin and no $0.02 printing, `e:nph` no `wm:none`, `e:dom` no "the
+ * multiverse" flavor line — and are re-anchored below. A `neg` anchor is held to more: the anchor
+ * must be SPLIT by the feature, because a set every row of which matches answers 0 under an honored
+ * negation and 0 under a dropped one, which is the exact shape of the family that went unseen.
  */
 const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quoted?: string; regex?: string }> = {
 	card_artist: { eq: ["a:guay"], neg: "-a:guay", quoted: 'a:"rebecca guay"' },
 	card_colors: { eq: ["c:rg", "c:colorless"], neg: "-c:w t:goblin", cmp: ["c>=uw t:instant", "c<wubrg t:dragon"] },
 	card_color_identity: { eq: ["ci:wu t:instant"], neg: "-ci:c e:khm", cmp: ["ci<=wubr e:dom t:legendary"] },
-	card_frame_data: { eq: ["frame:1997 t:goblin", "frame:future"], neg: "-frame:2015 e:tsp" },
+	card_frame_data: { eq: ["frame:1997 t:goblin", "frame:future"], neg: "-frame:2015 e:tsr" },
 	card_keywords: { eq: ["kw:cascade", "keyword:flying e:khm"], neg: "-kw:flying t:angel" },
 	card_name: {
 		eq: ["name:bolt"],
@@ -663,7 +690,7 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 	card_subtypes: { eq: ["subtype:eldrazi"], neg: "-subtype:human t:cleric" },
 	card_types: { eq: ["t:planeswalker r:mythic", "t:legendary t:artifact e:bro"], neg: "-t:creature e:khm" },
 	cmc: { eq: ["cmc:16", "mv:0 t:creature e:khm"], neg: "-cmc:3 e:lea", cmp: ["cmc>=13", "mv<1 t:artifact e:mh1"] },
-	creature_power: { eq: ["pow:12"], neg: "-pow:2 t:goblin e:khm", cmp: ["pow>=13", "power<0"] },
+	creature_power: { eq: ["pow:12"], neg: "-pow:2 t:dwarf e:khm", cmp: ["pow>=13", "power<0"] },
 	creature_toughness: { eq: ["tou:13"], neg: "-tou:1 t:elf e:khm", cmp: ["tou>=14", "toughness<1"] },
 	planeswalker_loyalty: { eq: ["loy:7"], neg: "-loy:3 t:planeswalker e:war", cmp: ["loyalty>=6"] },
 	mana_cost_jsonb: {
@@ -671,9 +698,9 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 		neg: "-m:{U} t:merfolk e:lci",
 		cmp: ["m>={3}{G}{G}{G} t:elf"],
 	},
-	devotion: { eq: ["devotion:{u}{u}{u}{u}"], neg: "-devotion:{r} t:goblin e:khm" },
-	price_usd: { eq: ["usd:0.02 e:khm"], neg: "-usd:0 e:lea", cmp: ["usd>=500", "usd<0.03 e:khm t:land"] },
-	price_eur: { eq: ["eur:0.02 e:khm"], cmp: ["eur>=400", "eur<0.05 e:khm t:goblin"] },
+	devotion: { eq: ["devotion:{u}{u}{u}{u}"], neg: "-devotion:{r} t:dwarf e:khm" },
+	price_usd: { eq: ["usd:0.15 e:khm"], neg: "-usd:0.15 e:khm", cmp: ["usd>=500", "usd<0.30 e:khm t:land"] },
+	price_eur: { eq: ["eur:0.02 e:khm"], cmp: ["eur>=400", "eur<0.30 e:khm t:elf"] },
 	price_tix: { eq: ["tix:0.02 e:khm"], cmp: ["tix>=40", "tix<0.05 e:khm t:land"] },
 	produced_mana: { eq: ["produces:wubrg", "produces:c t:land e:khm"], neg: "-produces:g t:land e:khm" },
 	oracle_text: {
@@ -682,7 +709,7 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 		quoted: 'o:"draw two cards" e:khm',
 		regex: "o:/^Whenever you cast/ e:khm",
 	},
-	flavor_text: { eq: ["ft:dominaria t:legendary"], neg: "-ft:the e:lea", quoted: 'ft:"the multiverse" e:dom' },
+	flavor_text: { eq: ["ft:dominaria t:legendary"], neg: "-ft:the e:lea", quoted: 'ft:"the multiverse"' },
 	card_oracle_tags: {
 		eq: ["otag:removal e:khm", "function:ramp e:khm", "oracletag:counterspell e:khm", "oracle_tags:draw e:khm"],
 		neg: "-otag:removal e:khm t:instant",
@@ -697,14 +724,14 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 	},
 	card_rarity_int: {
 		eq: ["r:mythic e:khm", "rarity:bonus"],
-		neg: "-r:common e:khm t:goblin",
+		neg: "-r:common e:khm t:dwarf",
 		cmp: ["r>=rare e:khm t:creature", "r<uncommon e:khm t:land"],
 	},
 	card_set_code: { eq: ["e:lea t:land", "s:khm t:god", "set:tsp t:legendary"], neg: "-e:khm t:god" },
 	collector_number: { eq: ["cn:1 t:land", "number:250 e:khm"], cmp: ["cn>=380 e:khm", "cn<3 e:lea"] },
 	card_legalities: {
 		eq: [
-			"f:pauper t:goblin r:common e:khm",
+			"f:pauper t:dwarf r:common e:khm",
 			"legal:standard e:khm t:god",
 			"banned:legacy",
 			"restricted:vintage",
@@ -713,9 +740,9 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 		neg: "-f:commander e:khm",
 	},
 	card_lang: { eq: ["lang:ja e:khm t:god", "lang:any e:khm t:god"], neg: "-lang:en e:khm t:god" },
-	card_layout: { eq: ["layout:transform e:khm", "layout:saga e:khm"], neg: "-layout:normal e:khm" },
-	card_border: { eq: ["border:borderless e:khm", "border:silver t:goblin"], neg: "-border:black e:khm" },
-	card_watermark: { eq: ["wm:izzet t:instant", "watermark:mirran"], neg: "-wm:none e:nph t:creature" },
+	card_layout: { eq: ["layout:transform e:mid", "layout:saga e:khm"], neg: "-layout:normal e:mid" },
+	card_border: { eq: ["border:borderless e:khm", "border:silver t:goblin"], neg: "-border:black e:sld" },
+	card_watermark: { eq: ["wm:izzet t:instant", "watermark:mirran"], neg: "-wm:phyrexian e:nph t:creature" },
 	released_at: {
 		eq: ["date:2021-02-05 t:god", "year:1993 t:land"],
 		cmp: ["date>=2026-01-01 t:god", "year<1994 t:legendary", "date<=1994-04-01 t:land"],
@@ -980,6 +1007,574 @@ const OTHER_ROUTES: [string, string][] = [
 	["sets", "/sets/khm"],
 ];
 for (const [name, path] of OTHER_ROUTES) add(`route-${name}`, "routes", path, [`route:${name}`]);
+
+// ─── the BLIND-SPOT backfill: combinations the per-column template cannot reach ──
+//
+// Everything above this line comes out of ONE template applied per column: `eq`, `neg`, `cmp`,
+// `quoted`, `regex`. That shape has a property nobody wrote down and everybody relied on — a
+// combination the template omits is omitted for EVERY column at once, so the sweep's 300-odd cases
+// have the coverage of five shapes, not of 300. Five divergence families were found by hand while
+// this file reported them green, and every one of them lives in a cell the template cannot emit:
+//
+//   1. NEGATED COMPARISON. `neg` is always negated EQUALITY (`-cmc:3`) and `cmp` is always a
+//      POSITIVE comparison (`cmc>=3`). Nothing crosses them, so "every negated numeric comparison
+//      is a silent tautology" was unobservable in 529 cases.
+//   2. COLOUR BEYOND SINGLE-COLOUR `c:`. The colour probes are `c:rg`, `c:colorless`, `ci:wu` — the
+//      one shape that already agreed under a union bitmask. `c=`, `c<=`, colour COUNTS, `c:c` and
+//      multi-colour `c:` on a DFC-heavy corpus were absent, and the whole per-face colour gap sat
+//      unobserved: NEW read 71 before the fix and 71 after.
+//   3. A VACUOUS ANCHOR. All three `op-card_layout-*` probes anchor to `e:khm`, which has no
+//      transform printing and no reversible printing at all. They read `ok` before the per-face
+//      layout fix, after it, and throughout the period the data was wrong. `enumDomainCases` below
+//      is the standing answer: every value the column can take gets a corpus-wide case, so no
+//      anchor's gaps can hide a value.
+//   4. A CONSTANT FIELD. `m:{2}{W}{W}` and `m>={3}{G}{G}{G}` are the only mana probes and both are
+//      exact-symbol forms; the generic-mana reading (`m:{2}` at 151 under a cmc reading vs 102
+//      under a pip reading) had no case at all.
+//   5. NO FALSIFICATION MARGIN. A case whose expected value the WRONG model can also produce
+//      cannot falsify it. `devotion:{r/g}` = 62 was reproduced exactly by a per-lane-OR model; only
+//      `devotion:{r/g}{r/g}` = 16, which exceeds the 15 that OR of ({r}{r}=7, {g}{g}=8) can reach,
+//      distinguishes them.
+//
+// These families are therefore added HERE, as explicit cases, and the reach analysis below is the
+// standing guard that keeps their cells populated.
+
+/** The anchor every negation row is measured against: `e:khm t:creature` = 151 on both sides. */
+const NEG_ANCHOR = "e:khm t:creature";
+
+// ── negated comparisons: the tautology set ──
+//
+// Scryfall drops the `-` on a comparison leaf outside the bitmask/enum columns, silently, and the
+// term survives as a TAUTOLOGY rather than being removed (scratchpad/parity-sweep-findings.md §1,
+// §4). Each of these must answer the anchor's own 151; a row that answers anything else is either
+// side having changed its mind about the rule.
+const NEG_TAUTOLOGY: [string, string][] = [
+	["cmc-ge", "-cmc>=3"],
+	["cmc-ne", "-cmc!=3"],
+	["mv-ge", "-mv>=3"],
+	["pow-ge", "-pow>=1"],
+	["pow-gt", "-pow>1"],
+	["tou-ne", "-tou!=1"],
+	["pt-ge", "-pt>=3"],
+	["loy-ge", "-loy>=3"],
+	["usd-ge", "-usd>=1"],
+	["eur-ge", "-eur>=1"],
+	["year-ge", "-year>=2022"],
+	["year-lt", "-year<2022"],
+	["cn-ge", "-cn>=100"],
+	["edhrec-ge", "-edhrec>=5000"],
+	["paperprints-ge", "-paperprints>=2"],
+	["cross-column", "-pow>=tou"],
+	["nonnumeric-value", "-cmc>=notanumber"],
+	["unknown-keyword", "-nonsense>=1"],
+];
+for (const [name, term] of NEG_TAUTOLOGY)
+	add(`neg-taut-${name}`, "negation", search(`${term} ${NEG_ANCHOR}`), [`negation:tautology:${name}`]);
+// The same leaf ALONE, where a tautology is the whole corpus and a removed term is a 400. This is
+// the case that decides the implementation, and no anchored case can ask it.
+for (const [name, term] of [
+	["cmc", "-cmc>=3"],
+	["pow", "-pow>=1"],
+	["year", "-year!=2000"],
+] as [string, string][])
+	add(`neg-taut-alone-${name}`, "negation", search(term), [`negation:tautology-alone:${name}`]);
+// A tautology in an `or` arm makes the GROUP match everything; a removed arm would leave the other
+// arm's 13. The two mechanisms are indistinguishable on a bare leaf and separable here.
+add("neg-taut-or-arm", "negation", search("(-pow>=1 or t:god) e:khm"), ["negation:tautology-or-arm"]);
+add("neg-ignored-or-arm", "negation", search("(-pow:1 or t:god) e:khm"), ["negation:ignored-or-arm"]);
+
+// ── negated comparisons: the HONORED set, which must NOT become tautologies ──
+//
+// The rule's boundary is the COLUMN, not the operator: the bitmask/enum columns negate correctly.
+// A fix for the family above that is written as "drop the negation on comparisons" passes every
+// tautology row and breaks every row here, so these are the half that pins the boundary.
+const NEG_HONORED: [string, string][] = [
+	["colors", "-c>=2"],
+	["identity", "-id>=2"],
+	["rarity", "-r>=rare"],
+	["rarity-ne", "-r!=rare"],
+	["mana", "-m>=2"],
+	["produces", "-produces>=2"],
+	["devotion", "-devotion>={r}{r}"],
+	["collector-number-string", "-cn:100"],
+];
+for (const [name, term] of NEG_HONORED)
+	add(`neg-honored-${name}`, "negation", search(`${term} ${NEG_ANCHOR}`), [`negation:honored:${name}`]);
+// `devotion` with a non-symbol value is ignored-and-WARNED in both polarities — a value check, not
+// a negation rule, and the one row that separates the two.
+add("neg-devotion-nonsymbol", "negation", search(`-devotion>=2 ${NEG_ANCHOR}`), ["negation:devotion-value-check"]);
+
+// ── the `date` asymmetry: one column, two names, two behaviours ──
+//
+// `-date<X` ≡ `date<X` — the `-` is DISCARDED and the term applied positively — while `-year<X` is
+// the tautology of the family above. Same `released_at` column, opposite answers, and no case in
+// the matrix ever spelled either.
+const DATE_ASYMMETRY: [string, string][] = [
+	["date-lt", "-date<2022"],
+	["date-ge", "-date>=2022"],
+	["date-gt", "-date>2021"],
+	["date-ne", "-date!=2021"],
+	["date-colon", "-date:2021"],
+	["year-lt", "-year<2022"],
+	["year-ne", "-year!=2021"],
+];
+for (const [name, term] of DATE_ASYMMETRY)
+	add(`neg-date-${name}`, "negation", search(`${term} ${NEG_ANCHOR}`), [`negation:date-asymmetry:${name}`]);
+
+// ── group negation: the same leaf inside `-( … )` ──
+//
+// `-` binds differently to a LEAF and to a GROUP, which is what makes the family above a binding
+// bug rather than a negation bug. Every row here is the bare-leaf row's twin and must differ from
+// it wherever the leaf form is a tautology.
+const GROUP_NEGATION: [string, string][] = [
+	["cmc", "-(cmc>=3)"],
+	["cmc-or", "-(cmc>=3 or cmc>=3)"],
+	["year", "-(year>=2022)"],
+	["usd", "-(usd>=1)"],
+	["date", "-(date>2021)"],
+	["rarity", "-(r>=rare)"],
+	["name", "-(name:a)"],
+];
+for (const [name, term] of GROUP_NEGATION)
+	add(`neg-group-${name}`, "negation", search(`${term} ${NEG_ANCHOR}`), [`negation:group:${name}`]);
+
+// ── colour, off the single-colour `c:` diagonal, on DFC-heavy corpora ──
+//
+// `e:mid` and `e:neo` are chosen for the same reason `e:khm` was wrong for layout: a modal DFC's
+// two faces carry DIFFERENT colours, so a union bitmask and a per-face reading disagree there and
+// nowhere else. `c=` (exact), `c<=` (subset), the COUNT forms and `c:c` are the operator shapes the
+// template's `c:rg`/`c:colorless` pair never emits.
+const COLOUR_CASES: [string, string][] = [
+	["exact-two", "c=rg e:mid"],
+	["exact-two-neo", "c=wu e:neo"],
+	["exact-mono", "c=u e:mid t:creature"],
+	["subset", "c<=wu e:mid t:creature"],
+	["subset-neo", "c<=ur e:neo"],
+	["count-ge", "c>=2 e:mid"],
+	["count-eq", "c=2 e:mid"],
+	["count-le", "c<=1 e:mid t:creature"],
+	["colorless-c", "c:c e:mid"],
+	["multicolour-colon", "c:rg e:mid"],
+	["multicolour-m", "c:m e:mid"],
+	["multi-neo", "c:ur e:neo t:creature"],
+	["id-exact", "id=rg e:mid"],
+	["id-count", "id>=3 e:mid"],
+	["mdfc-front-back", "c:u e:mid layout:transform"],
+	["mdfc-modal", "c:g e:znr layout:modal_dfc"],
+	// Unscoped, so no anchor's colour gaps can hide the rule.
+	["exact-five", "c=wubrg"],
+	["colorless-creature", "c:c t:creature layout:modal_dfc"],
+	["count-four", "c=4 t:creature"],
+];
+for (const [name, q] of COLOUR_CASES)
+	add(`colour-${name}`, "colours", search(q, { order: "name" }), [`colour:${name}`]);
+
+// ── generic-bearing mana ──
+//
+// The template's mana probes are `m:{R}{R}{R}`, `m:{2}{W}{W}` and `m>={3}{G}{G}{G}` — every one an
+// exact-symbol form whose generic component is fixed. `m:{2}` is the discriminating shape: it reads
+// 102 over `e:khm t:creature` as a counted PIP and 142 as a cmc, and nothing here asked.
+const MANA_GENERIC: [string, string][] = [
+	["generic-1", `m:{1} ${NEG_ANCHOR}`],
+	["generic-2", `m:{2} ${NEG_ANCHOR}`],
+	["generic-3", `m:{3} ${NEG_ANCHOR}`],
+	["generic-ge", `m>=2 ${NEG_ANCHOR}`],
+	["generic-cmp", `m>={2}{R} ${NEG_ANCHOR}`],
+	// The falsification margin, corpus-wide because KHM has no creature costing exactly {R}{R}:
+	// a {R}{R} cost has cmc 2 and generic 0, so a cmc reading answers `m={r}{r} m:{2}` = 24 and a
+	// pip reading answers 0. No anchored case can produce a pair that far apart.
+	["exact-rr", "m={r}{r} t:creature"],
+	["exact-rr-generic", "m={r}{r} m:{2} t:creature"],
+	["generic-zero", `m:{0} ${NEG_ANCHOR}`],
+	["x-and-generic", "m:{X} m:{2} t:sorcery"],
+];
+for (const [name, q] of MANA_GENERIC) add(`mana-${name}`, "mana", search(q, { order: "name" }), [`mana:${name}`]);
+
+// ── hybrid devotion, with a margin the wrong model cannot reach ──
+//
+// `devotion:{r/g}` = 62 is reproduced EXACTLY by a per-lane-OR model, which is why the unit tests
+// written from that model all passed. `{r}{r}` = 7 and `{g}{g}` = 8 cannot OR to the 16 that
+// `{r/g}{r/g}` answers, so the pair below is the falsifying case and the single-symbol row is only
+// there to show it is not.
+const DEVOTION_CASES: [string, string][] = [
+	["mono-r", "devotion:{r}"],
+	["mono-rr", "devotion:{r}{r}"],
+	["mono-gg", "devotion:{g}{g}"],
+	["hybrid-single", "devotion:{r/g}"],
+	["hybrid-double", "devotion:{r/g}{r/g}"],
+	["hybrid-ge", "devotion>={r/g}{r/g}"],
+	["hybrid-wu", "devotion:{w/u}{w/u}"],
+	["phyrexian", "devotion:{w/p}"],
+	["anchored", `devotion:{r}{r} ${NEG_ANCHOR}`],
+];
+for (const [name, q] of DEVOTION_CASES)
+	add(`devotion-${name}`, "devotion", search(q, { order: "name" }), [`devotion:${name}`]);
+
+// ── `=` crossed with the text columns ──
+//
+// `=` appears in the matrix only through the numeric/enum columns. On a text column Scryfall
+// collates `=` exactly as `:` does, and nothing here ever spelled it.
+const EQ_TEXT: [string, string][] = [
+	["name", "name=bolt"],
+	["name-quoted", 'name="lightning bolt"'],
+	["oracle", "o=flying e:khm"],
+	["type", "t=creature e:khm"],
+	["artist", 'a="rebecca guay"'],
+	["artist-bare", "a=guay"],
+	["flavor", "ft=the e:lea"],
+	["keyword", "kw=flying e:khm"],
+	["watermark", "wm=izzet t:instant"],
+	["subtype", "subtype=eldrazi"],
+	["layout", "layout=saga e:khm"],
+	["set", "set=khm t:god"],
+	["lang", "lang=ja e:khm t:god"],
+];
+for (const [name, q] of EQ_TEXT) add(`eq-text-${name}`, "eq-text", search(q, { order: "name" }), [`eq-text:${name}`]);
+
+/**
+ * Every value an enumerable column can take, and a corpus-wide case for each.
+ *
+ * THIS IS THE STANDING ANSWER TO A VACUOUS ANCHOR. An anchored probe can only ever see the values
+ * its anchor happens to contain, and `e:khm` contains neither `transform` nor `reversible_card` —
+ * which is the entire reason the per-face layout bug survived three green probes. A corpus-wide
+ * case per value has no anchor to be wrong about, so a value that exists upstream and not here (or
+ * the reverse) is a divergence rather than a silence.
+ *
+ * The lists are the DOMAIN, not a sample: a layout Scryfall adds and this table does not have shows
+ * up in `enumDomainProblems` below as a value the sweep cannot see, rather than as nothing at all.
+ */
+const ENUM_DOMAINS: Record<string, string[]> = {
+	layout: [
+		"normal",
+		"split",
+		"flip",
+		"transform",
+		"modal_dfc",
+		"meld",
+		"leveler",
+		"class",
+		"case",
+		"saga",
+		"adventure",
+		"mutate",
+		"prototype",
+		"battle",
+		"planar",
+		"scheme",
+		"vanguard",
+		"token",
+		"double_faced_token",
+		"emblem",
+		"augment",
+		"host",
+		"art_series",
+		"reversible_card",
+	],
+	border: ["black", "white", "silver", "gold", "borderless", "yellow"],
+	frame: ["1993", "1997", "2003", "2015", "future"],
+	rarity: ["common", "uncommon", "rare", "mythic", "special", "bonus"],
+};
+const enumDomainCases: string[] = [];
+for (const [column, values] of Object.entries(ENUM_DOMAINS)) {
+	for (const value of values) {
+		enumDomainCases.push(`${column}:${value}`);
+		// `unique=cards`, deliberately. The question here is whether the VALUE exists and selects the
+		// same cards; `unique=prints` answers it while dragging in the `order=name` printing-tiebreak
+		// family — one already-known divergence re-reported 26 more times, which buries the answer
+		// rather than giving it.
+		add(`domain-${column}-${value}`, "domains", search(`${column}:${value}`, { order: "name" }), [
+			`domain:${column}:${value}`,
+		]);
+	}
+}
+
+// ─── THE REACH OF THE GENERATOR: what this matrix can and cannot emit ─────────
+//
+// A harness whose blind spots are undocumented reads as thorough while being structurally unable to
+// observe what is wrong. This section is the standing statement of what the 400-odd cases above
+// actually cover, computed FROM THE CASES rather than asserted about them, so it cannot drift.
+//
+// Every query leaf is scanned onto four axes, and the crossings are tallied:
+//
+//   OPERATOR    `:` `=` `!=` `>` `>=` `<` `<=`, plus a bare word and `!`-exact
+//   POLARITY    positive, negated leaf (`-cmc>=3`), negated group (`-(cmc>=3)`)
+//   VALUE FORM  bare word, quoted phrase, regex, mana symbols, number, date, colour letters,
+//               another column's name (`pow>=tou`)
+//   GROUPING    top level, inside parens, an `or` arm, inside a negated group
+//
+// OPERATOR × POLARITY is the crossing that hid the negated-comparison family for the whole life of
+// this file: every `neg` probe was negated EQUALITY and every `cmp` probe was a POSITIVE
+// comparison, so the `>=|negated-leaf` cell held zero cases out of 529 and the sweep read green
+// through a family in which every single term was a silent tautology.
+//
+// `REQUIRED_CELLS` is the guard. A cell listed there and empty is a HARNESS finding, reported
+// separately from the divergences so it can never be mistaken for one. `UNREACHABLE_CELLS` is the
+// other half of the same statement: cells that are empty on purpose, each with the reason, so the
+// difference between "not covered" and "not a thing" is written down rather than remembered.
+
+type Polarity = "positive" | "negated-leaf" | "negated-group";
+type Grouping = "top-level" | "paren" | "or-arm" | "in-negated-group";
+type ValueForm = "word" | "quoted" | "regex" | "mana-symbols" | "number" | "date" | "colour-letters" | "column-ref";
+
+interface Leaf {
+	keyword: string;
+	operator: string;
+	value: string;
+	polarity: Polarity;
+	grouping: Grouping;
+	valueForm: ValueForm;
+}
+
+/** Every alias of every column, so `pow>=tou` can be told from `pow>=2`. */
+const ALL_ALIASES = new Set<string>((DB_COLUMNS as readonly FieldInfo[]).flatMap((c) => c.searchAliases));
+
+/** The colour columns, whose values are letter sets rather than words. */
+const COLOUR_KEYWORDS = new Set([
+	"c",
+	"color",
+	"colors",
+	"colour",
+	"colours",
+	"ci",
+	"id",
+	"identity",
+	"commander",
+	"coloridentity",
+	"color_identity",
+	"produces",
+]);
+
+const DATE_KEYWORDS = new Set(["date", "year", "released"]);
+
+const CONNECTIVES = new Set(["or", "and"]);
+
+const TERM_RE =
+	/(-)?\(|\)|(-)?(!)?(?:([A-Za-z_][A-Za-z_0-9]*)(>=|<=|!=|>|<|=|:))?("[^"]*"|\/[^/]*\/|(?:\{[^}]*\})+|[^\s()]+)/g;
+
+function classifyValue(keyword: string, value: string): ValueForm {
+	if (value.startsWith('"')) return "quoted";
+	if (value.startsWith("/")) return "regex";
+	if (value.startsWith("{")) return "mana-symbols";
+	if (DATE_KEYWORDS.has(keyword) && /^\d{4}(-\d{2}(-\d{2})?)?$/.test(value)) return "date";
+	if (/^-?\d+(\.\d+)?$/.test(value)) return "number";
+	if (COLOUR_KEYWORDS.has(keyword) && /^[wubrgcm]+$/i.test(value)) return "colour-letters";
+	if (keyword !== "" && ALL_ALIASES.has(value.toLowerCase())) return "column-ref";
+	return "word";
+}
+
+/**
+ * The leaves of one query string, each with its position on all four axes.
+ *
+ * Groups are tracked by id so an `or` found ANYWHERE in a group retroactively marks every leaf in
+ * it as an `or` arm — `(t:god or t:giant or t:elf)` has its connectives after the first leaf, and a
+ * single forward pass would file that leaf as a plain paren member.
+ */
+function scanLeaves(q: string): Leaf[] {
+	const leaves: (Leaf & { groupId: number })[] = [];
+	const stack: { id: number; negated: boolean }[] = [];
+	const orGroups = new Set<number>();
+	let nextGroupId = 1;
+	TERM_RE.lastIndex = 0;
+	for (let m = TERM_RE.exec(q); m !== null; m = TERM_RE.exec(q)) {
+		const [text, openNeg, leafNeg, bang, keyword, operator, value] = m;
+		if (text.endsWith("(") && value === undefined) {
+			stack.push({ id: nextGroupId++, negated: openNeg === "-" });
+			continue;
+		}
+		if (text === ")") {
+			stack.pop();
+			continue;
+		}
+		if (value === undefined) continue;
+		const inGroup = stack[stack.length - 1];
+		if (keyword === undefined && CONNECTIVES.has(value.toLowerCase())) {
+			if (inGroup) orGroups.add(inGroup.id);
+			continue;
+		}
+		const kw = (keyword ?? "").toLowerCase();
+		const op = operator ?? (bang === "!" ? "!exact" : "bare");
+		leaves.push({
+			keyword: kw,
+			operator: op,
+			value,
+			polarity: leafNeg === "-" ? "negated-leaf" : inGroup?.negated ? "negated-group" : "positive",
+			grouping: inGroup ? (inGroup.negated ? "in-negated-group" : "paren") : "top-level",
+			valueForm: classifyValue(kw, value),
+			groupId: inGroup?.id ?? 0,
+		});
+	}
+	for (const leaf of leaves) if (orGroups.has(leaf.groupId) && leaf.grouping === "paren") leaf.grouping = "or-arm";
+	return leaves;
+}
+
+function queryOf(path: string): string | undefined {
+	const qIndex = path.indexOf("?");
+	if (qIndex < 0) return undefined;
+	return new URLSearchParams(path.slice(qIndex + 1)).get("q") ?? undefined;
+}
+
+/** Every leaf of every query case, with the case it came from. */
+const allLeaves: { caseName: string; leaf: Leaf }[] = [];
+for (const c of cases) {
+	const q = queryOf(c.path);
+	if (q === undefined) continue;
+	for (const leaf of scanLeaves(q)) allLeaves.push({ caseName: c.name, leaf });
+}
+
+function tally(key: (l: Leaf) => string): Map<string, number> {
+	const out = new Map<string, number>();
+	for (const { leaf } of allLeaves) out.set(key(leaf), (out.get(key(leaf)) ?? 0) + 1);
+	return out;
+}
+
+const REACH_AXES: { name: string; key: (l: Leaf) => string }[] = [
+	{ name: "operator × polarity", key: (l) => `${l.operator} × ${l.polarity}` },
+	{ name: "value-form × operator", key: (l) => `${l.valueForm} × ${l.operator}` },
+	{ name: "grouping × polarity", key: (l) => `${l.grouping} × ${l.polarity}` },
+];
+const reachGrid = REACH_AXES.map(({ name, key }) => ({ axis: name, cells: Object.fromEntries(tally(key)) }));
+
+/**
+ * Cells that MUST be populated, each with the divergence family it is the only way to see.
+ *
+ * Every entry here was written after a family escaped: the list is the accumulated evidence of what
+ * this template omits by construction, not a wish list. An empty one is a harness defect.
+ */
+const REQUIRED_CELLS: { cell: string; why: string }[] = [
+	{ cell: ">= × negated-leaf", why: "negated numeric comparison — the silent-tautology family" },
+	{ cell: "> × negated-leaf", why: "the strict half of the same rule" },
+	{ cell: "< × negated-leaf", why: "the reversed half, where `date` behaves differently again" },
+	{ cell: "!= × negated-leaf", why: "`!=` negated, which the old comment claimed was honored and is not" },
+	{ cell: ": × negated-leaf", why: "negated equality — the ignore-and-warn mechanism, a DIFFERENT one" },
+	{ cell: ">= × negated-group", why: "`-(cmc>=3)`: the group form is honored where the leaf form is not" },
+	{ cell: "in-negated-group × negated-group", why: "the binding difference between `-leaf` and `-( … )`" },
+	{ cell: "or-arm × positive", why: "a term inside an `or` group, where a tautology shows as 323 not 13" },
+	{ cell: "word × =", why: "`=` on a text column, where Scryfall collates it exactly as `:`" },
+	{ cell: "colour-letters × =", why: "exact colour — `c:` and a union bitmask agree, `c=` does not" },
+	{ cell: "colour-letters × <=", why: "colour subset" },
+	{ cell: "number × >=", why: "colour/mana COUNT comparisons, distinct from the letter-set forms" },
+	{ cell: "mana-symbols × :", why: "generic-bearing mana, where a cmc reading and a pip reading differ" },
+	{ cell: "mana-symbols × >=", why: "mana containment with a generic component" },
+	{ cell: "column-ref × >=", why: "cross-column comparison (`pow>=tou`)" },
+	{ cell: "date × <", why: "the `date`/`year` split — one column, two names, two behaviours" },
+	{ cell: "regex × :", why: "the `/…/` path on the text columns" },
+	{ cell: "quoted × :", why: "phrase quoting" },
+];
+
+/**
+ * Cells that are empty ON PURPOSE, with the reason. Asserted EMPTY, so a stale entry is a finding
+ * too — the day one of these becomes a real query shape, the declaration says so.
+ *
+ * This half matters as much as the half above: without it, a reader of the grid cannot tell a gap
+ * from an impossibility, and every future audit re-derives the same list from scratch.
+ */
+const UNREACHABLE_CELLS: { cell: string; why: string }[] = [
+	{ cell: "regex × >=", why: "Scryfall has no ordering on a regex; `o>=/x/` is a parse error, not a query" },
+	{ cell: "regex × <=", why: "same" },
+	{ cell: "!exact × negated-leaf", why: '`-!"Name"` is not syntax upstream accepts' },
+	{ cell: "!exact × negated-group", why: "same, one level out" },
+	{ cell: "date × !exact", why: "`!` is a name-only operator, so it crosses with no typed value form" },
+	{ cell: "colour-letters × !exact", why: "same" },
+	{ cell: "mana-symbols × !exact", why: "same" },
+	{ cell: "column-ref × !exact", why: "same" },
+];
+
+const reachProblems: string[] = [];
+{
+	const populated = new Set<string>();
+	for (const { axis, cells } of reachGrid) {
+		void axis;
+		for (const [cell, n] of Object.entries(cells)) if (n > 0) populated.add(cell);
+	}
+	for (const { cell, why } of REQUIRED_CELLS)
+		if (!populated.has(cell))
+			reachProblems.push(`the matrix emits no leaf in the cell "${cell}" — ${why}. Nothing here can see it.`);
+	for (const { cell } of UNREACHABLE_CELLS)
+		if (populated.has(cell))
+			reachProblems.push(`"${cell}" is declared UNREACHABLE but the matrix emits it — the declaration is stale.`);
+}
+
+/**
+ * ANCHOR ADEQUACY: does each anchored probe's anchor contain rows exercising the feature?
+ *
+ * Any anchor set lacking a feature hides that feature for every probe that uses it. All three
+ * `op-card_layout-*` probes anchor to `e:khm`, and KHM has no transform printing at all — so
+ * `layout:transform e:khm` was 0 rows against 0 rows, and read `ok` before the per-face layout fix,
+ * after it, and throughout the period the data was wrong. A comparison of two empty lists is not
+ * evidence of anything, and until now nothing said so.
+ *
+ * The probes are derived from the CASES rather than declared, so a new anchored case is covered the
+ * day it is written. Only the templated groups are scanned: a hand-written case that deliberately
+ * asks for an empty result (`edge-no-results`) is not a template defect.
+ */
+interface AnchorProbe {
+	/** Every templated case that leans on this (anchor, feature) pair. */
+	caseNames: string[];
+	anchor: string;
+	feature: string;
+	/**
+	 * The feature appears NEGATED in at least one of those cases, which is a stricter requirement:
+	 * an anchor where every row matches the feature is exactly as blind as one where none does. Both
+	 * make `-feature` and `feature` compare a fixed list against a fixed list.
+	 */
+	negated: boolean;
+}
+/**
+ * (anchor, feature) pairs that are inadequate ON PURPOSE, with the reason and where the question IS
+ * asked properly.
+ *
+ * The same discipline as `UNREACHABLE_CELLS`: an exemption is a written claim that the vacuity is a
+ * property of the SEARCH SEMANTICS rather than a badly chosen anchor, and a stale one — an
+ * exemption whose probe has become adequate — is reported, so the list cannot quietly outlive its
+ * reason.
+ */
+const ANCHOR_EXEMPTIONS: { anchor: string; feature: string; why: string }[] = [
+	{
+		anchor: "e:khm",
+		feature: "lang:en",
+		why:
+			"a bare /cards/search returns one English row per card on BOTH sides, so no set anchor can " +
+			"split on language — every row matches `lang:en` by construction. The multilingual group asks " +
+			"the same question the only way it can be asked: `lang-negated` runs `-lang:en e:khm t:god` " +
+			"with `unique=prints`, where the non-English printings exist to be removed.",
+	},
+];
+
+const anchorProbes: AnchorProbe[] = [];
+{
+	const ANCHOR_KEYWORDS = new Set(["e", "s", "set", "edition"]);
+	const byKey = new Map<string, AnchorProbe>();
+	for (const c of cases) {
+		if (c.group !== "operators" && c.group !== "aliases") continue;
+		const q = queryOf(c.path);
+		if (q === undefined) continue;
+		const leaves = scanLeaves(q);
+		const anchor = leaves.find((l) => ANCHOR_KEYWORDS.has(l.keyword) && l.polarity === "positive");
+		if (!anchor) continue;
+		const anchorTerm = `${anchor.keyword}${anchor.operator}${anchor.value}`;
+		for (const leaf of leaves) {
+			if (leaf === anchor || leaf.keyword === "") continue;
+			// The POSITIVE spelling: a negated probe still needs its anchor to contain the thing it
+			// is negating, or the negation is the only term doing any work.
+			const feature = `${leaf.keyword}${leaf.operator}${leaf.value}`;
+			const key = `${anchorTerm} ${feature}`;
+			const existing = byKey.get(key);
+			if (existing) {
+				existing.caseNames.push(c.name);
+				existing.negated ||= leaf.polarity !== "positive";
+				continue;
+			}
+			const probe: AnchorProbe = {
+				caseNames: [c.name],
+				anchor: anchorTerm,
+				feature,
+				negated: leaf.polarity !== "positive",
+			};
+			byKey.set(key, probe);
+			anchorProbes.push(probe);
+		}
+	}
+}
 
 // ─── the PERIPHERAL surface: response formats, reference routes, HTTP mechanics ──
 //
@@ -1436,6 +2031,16 @@ type Classification =
 	| "UNSUPPORTED"
 	| "LEDGERED"
 	| "INCONCLUSIVE"
+	/**
+	 * A defect in THIS HARNESS, not in the port: a cell the generator cannot emit, or a probe whose
+	 * anchor cannot exercise the feature it claims to test.
+	 *
+	 * Its own classification on purpose. Filed as NEW it would inflate the divergence count and be
+	 * read as a regression; filed as a log line it would be scrolled past. It is neither — it is the
+	 * sweep reporting the boundary of what it is able to observe, which is the one thing a green run
+	 * cannot otherwise tell you.
+	 */
+	| "BLIND-SPOT"
 	| "NEW";
 
 /**
@@ -2508,6 +3113,90 @@ for (const c of cases) byGroup.set(c.group, (byGroup.get(c.group) ?? 0) + 1);
 for (const c of peripheral) byGroup.set(c.group, (byGroup.get(c.group) ?? 0) + 1);
 console.log(`groups: ${[...byGroup].map(([g, n]) => `${g}=${n}`).join(" ")}`);
 
+// ── the harness's own reach, before a single divergence is measured ──
+//
+// Two checks, both about what this file is ABLE to see rather than about what it saw:
+//
+//   * the reach grid, which is static and costs nothing;
+//   * anchor adequacy, one request per (anchor, feature) pair against OUR origin only. Scryfall
+//     never sees these — a vacuous anchor is a fact about the matrix, and the local store answers
+//     it for free.
+//
+// Both are skipped under `--only` / `--group`, where the matrix is a slice and an "empty cell"
+// means nothing.
+if (!only && !group) {
+	console.log(`\n─── harness reach ───`);
+	for (const { axis, cells } of reachGrid) {
+		const entries = Object.entries(cells).sort((a, b) => b[1] - a[1]);
+		console.log(`  ${axis}: ${entries.length} populated cell(s)`);
+		console.log(`      ${entries.map(([cell, n]) => `${cell}=${n}`).join("  ")}`);
+	}
+	console.log(`  required cells: ${REQUIRED_CELLS.length}, declared unreachable: ${UNREACHABLE_CELLS.length}`);
+	for (const problem of reachProblems)
+		record({
+			classification: "BLIND-SPOT",
+			label: "reach",
+			kind: "uncovered-cell",
+			detail: problem,
+			caseName: "(matrix)",
+			path: "(matrix)",
+		});
+
+	console.log(`  anchor adequacy: ${anchorProbes.length} (anchor, feature) pair(s) against ${origin}`);
+	const anchorTotals = new Map<string, number>();
+	const totalFor = async (q: string): Promise<number> => {
+		const cached = anchorTotals.get(q);
+		if (cached !== undefined) return cached;
+		const body = parse((await fetchOurs(search(q))).body);
+		const total = isObject(body) && typeof body.total_cards === "number" ? body.total_cards : 0;
+		anchorTotals.set(q, total);
+		return total;
+	};
+	let vacuous = 0;
+	for (const probe of anchorProbes) {
+		const matching = await totalFor(`${probe.anchor} ${probe.feature}`);
+		const where = probe.caseNames.join(", ");
+		let problem: string | undefined;
+		if (matching === 0) {
+			problem = `the anchor \`${probe.anchor}\` contains no row matching \`${probe.feature}\`, so the probe compares an empty list against an empty list`;
+		} else if (probe.negated) {
+			// A negated probe needs the anchor SPLIT by the feature. `-frame:2015 e:khm` over a set
+			// whose every printing is a 2015 frame answers 0 either way, and a rule that dropped the
+			// negation entirely would answer 0 too — the same shape as the tautology family that
+			// went unseen for the life of this file.
+			const anchorTotal = await totalFor(probe.anchor);
+			if (anchorTotal > 0 && matching >= anchorTotal)
+				problem = `every one of \`${probe.anchor}\`'s ${anchorTotal} rows matches \`${probe.feature}\`, so negating it removes the whole anchor and a dropped negation is indistinguishable from an honored one`;
+		}
+		const exemption = ANCHOR_EXEMPTIONS.find((e) => e.anchor === probe.anchor && e.feature === probe.feature);
+		if (exemption) {
+			// A stale exemption is a finding of its own: it claims the probe CANNOT be adequate, and
+			// the measurement just said otherwise.
+			if (!problem)
+				record({
+					classification: "BLIND-SPOT",
+					label: "anchor",
+					kind: "stale-exemption",
+					detail: `\`${probe.anchor}\` / \`${probe.feature}\` is exempted as structurally vacuous, but it now discriminates — the exemption's reason no longer holds.`,
+					caseName: probe.caseNames[0] as string,
+					path: search(`${probe.anchor} ${probe.feature}`),
+				});
+			continue;
+		}
+		if (!problem) continue;
+		vacuous++;
+		record({
+			classification: "BLIND-SPOT",
+			label: "anchor",
+			kind: "vacuous-anchor",
+			detail: `${where}: ${problem} — the probe cannot observe the feature it names.`,
+			caseName: probe.caseNames[0] as string,
+			path: search(`${probe.anchor} ${probe.feature}`),
+		});
+	}
+	console.log(`  ${vacuous} inadequate anchor(s), ${ANCHOR_EXEMPTIONS.length} declared exemption(s)`);
+}
+
 const startedAt = Date.now();
 for (const [i, c] of selected.entries()) {
 	const before = findings.length;
@@ -2638,6 +3327,18 @@ const report = {
 		peripheralSelected: selectedPeripheral.length,
 		peripheralCovers: peripheral.flatMap((c) => c.covers),
 		groups: Object.fromEntries(byGroup),
+		// The standing statement of reach: the observed grid, what is required of it, what is
+		// deliberately outside it, and the anchors every templated probe leans on.
+		reach: {
+			grid: reachGrid,
+			required: REQUIRED_CELLS,
+			unreachable: UNREACHABLE_CELLS,
+			problems: reachProblems,
+			anchorProbes: anchorProbes.length,
+			anchorExemptions: ANCHOR_EXEMPTIONS,
+			enumDomains: ENUM_DOMAINS,
+			enumDomainCases,
+		},
 		columnsCovered,
 		aliasesCovered: [...new Set(aliasesCovered)],
 		ordersCovered: orderCovered,
@@ -2660,6 +3361,14 @@ mkdirSync(outDir, { recursive: true });
 const jsonPath = join(outDir, "parity-sweep-results.json");
 writeFileSync(jsonPath, JSON.stringify(report, null, 2));
 console.log(`\nresults: ${jsonPath}`);
+
+// Printed BEFORE the NEW count and separately from it: these are not divergences, and a reader who
+// takes them for a regression will "fix" the harness by deleting the check that found them.
+const blindSpots = findings.filter((f) => f.classification === "BLIND-SPOT");
+if (blindSpots.length > 0) {
+	console.log(`\nHARNESS BLIND SPOTS: ${blindSpots.length} (not divergences — things this sweep cannot see)`);
+	for (const f of blindSpots) console.log(`  ${f.kind}: ${f.detail}`);
+}
 
 const newFindings = findings.filter((f) => f.classification === "NEW");
 const newObjectPaths = [...objectPathStats].filter(([, s]) => s.classification === "NEW");
