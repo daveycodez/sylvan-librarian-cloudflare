@@ -47,7 +47,26 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"],
 	["is\u0000party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
 	["is\u0000outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"],
-	["is\u0000vanilla", 't:creature o=""'],
+	// `o=""` IS A TAUTOLOGY, and on api.scryfall.com too — which is why this expansion answered
+	// `t:creature` exactly, 18,753 against Scryfall's 363 for `is:vanilla`. Measured 2026-08-17:
+	// `o=""` and `o:""` are each a 400 there ("All of your terms were ignored"), and
+	// `t:creature o=""` answers 18,753 — the same number this port answers, so the term evaporates
+	// on BOTH sides and the conjunct was never the empty-text test it reads as. It cannot be one
+	// here either: `=` on a text column is a SUBSTRING test (see filter.rs's build_text_filter, and
+	// Scryfall's own `o=flying` = `o:flying` = 4,574), and every string contains the empty string.
+	//
+	// The empty-text test that DOES exist is the presence regex the `has:` family already uses,
+	// negated: `-o:/./` is "no oracle text at all", and it answers the SAME 352 on api.scryfall.com
+	// and on this store — the two agree on the spelling, which is what makes it the honest
+	// replacement rather than a second guess.
+	//
+	// 352 and not 363, and the 11 are one class: Scryfall's `is:vanilla` is FACE-level. All 12 rows
+	// of its own `is:vanilla o:/./` are adventures and their kin, whose CREATURE face prints no
+	// rules text while the other face does (Beluna's Gatekeeper // Entry Denied), and this port's
+	// oracle text is the MERGED row — every face's text joined — so the regex sees the adventure
+	// half. Closing it needs a face-scoped predicate in the engine (`OracleFace` carries its own
+	// `oracle_text_id`), not a different rewrite; recorded rather than approximated.
+	["is\u0000vanilla", "t:creature -o:/./"],
 	["is\u0000watermark", "has:watermark"], // Scryfall accepts both spellings; 4,656 = 4,656
 	["is\u0000bear", "t:creature pow=2 tou=2 cmc=2"],
 	["is\u0000split", "layout:split"],

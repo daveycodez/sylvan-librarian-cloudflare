@@ -59,8 +59,22 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("is", "permanent"): "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle",  # +2 / 25954
     ("is", "party"): "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)",  # exact
     ("is", "outlaw"): "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling",  # exact
-    # empty-oracle equality; -11 subset (Adventure/DFC textless faces + Dryad Arbor)
-    ("is", "vanilla"): 't:creature o=""',
+    # `o=""` IS A TAUTOLOGY, on api.scryfall.com as much as here, so this expansion answered
+    # `t:creature` and nothing narrower: 18,753 against Scryfall's own `is:vanilla` 363. Measured
+    # 2026-08-17: `o=""` and `o:""` are each a 400 there ("All of your terms were ignored") and
+    # `t:creature o=""` is 18,753. It cannot narrow here either -- `=` on a text column is the
+    # same SUBSTRING test `:` is (`o=flying` = `o:flying` = 4,574), and every string contains the
+    # empty one.
+    #
+    # The empty-text test that exists is the presence regex `has:` already uses, negated. `-o:/./`
+    # answers 352 on api.scryfall.com and 352 on this corpus.
+    #
+    # 352 and not 363 because Scryfall's `is:vanilla` is FACE-level: all 12 rows of its own
+    # `is:vanilla o:/./` are adventures and their kin, whose CREATURE face prints no rules text
+    # while the other face does (Beluna's Gatekeeper // Entry Denied). The stored oracle_text is
+    # the merged row, so the regex sees the other half. Closing that needs a face-scoped
+    # predicate, not a different rewrite.
+    ("is", "vanilla"): "t:creature -o:/./",
     ("is", "watermark"): "has:watermark",  # Scryfall accepts both spellings; 4,656 = 4,656
     # The intuitive "2/2 for 2" bear. Deliberately NOT exactly Scryfall's is:bear (which is
     # single-faced and includes Vehicles/Spacecraft): vs Scryfall this is +~14 DFC creatures
