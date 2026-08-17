@@ -2470,8 +2470,40 @@ impl FilterExpr {
                         CmpOp::Ne => !eq(),
                     }
                 };
+                // THE CARD-LEVEL COST IS NOT A COST WHEN THE CARD HAS FACES — it is one face's pip
+                // multiset paired with the WHOLE CARD's cmc, and `generic_of` reads that pair as a
+                // generic the card does not have.
+                //
+                // `merge_face_drafts` keeps the FRONT face's `mana_cost_jsonb` while `cmc` is the
+                // card column the face overlay never touches, so a split card stores
+                // {core: front's pips, cmc: both halves}. `generic_of` = cmc - pips then counts the
+                // BACK half's cmc as front-half generic. Measured on api.scryfall.com 2026-08-17:
+                //
+                //   Research // Development  {G}{U} // {3}{U}{R}, card cmc 7, front pips 2
+                //     m:{3}  1  the true face generic ({3} on Development)
+                //     m:{4}  0  m:{5}  0      this answered 1 to both, on 7 - 2 = 5
+                //   Cut // Ribbons           {1}{R} // {X}{B}{B}, card cmc 4, front pips 1
+                //     m:{1}  1               m:{2}  0   this answered 1, on 4 - 1 = 3
+                //
+                // and at corpus scale `m:{2}` is 19,692 against this file's 19,746, `m:{6}` 749
+                // against 809. The inflation can even go NEGATIVE-then-clamped: sld/1556's
+                // {R/G}{G}{G/W} has 3 hybrid+core pips against a card cmc of 3, so a back half
+                // would have had to pay for it.
+                //
+                // The faces are the faithful record and already carry their OWN cmc
+                // (`face_mana_cost` computes it from the face's own string), so where a face
+                // carries a cost the card-level pair is not consulted at all. It is redundant as
+                // well as wrong: the core it holds IS the front face's, so nothing that matched
+                // through it truthfully stops matching through `faces[0]`.
+                //
+                // GATED ON A FACE ACTUALLY CARRYING A COST rather than on `faces` being non-empty.
+                // A face that printed none has no `mana_cost` (`jv_faces` skips the absent key), and
+                // for a card whose faces all print none — an art series, a reversible poster — the
+                // card-level cost is still the only cost there is, and still the 82%-of-cards path
+                // for the faceless majority, where core and cmc do describe the same cost.
+                let any_face_cost = card.faces.iter().any(|f| f.mana_cost.is_some());
                 tri_bool(
-                    matches(&card.mana_cost)
+                    (!any_face_cost && matches(&card.mana_cost))
                         || card.faces.iter().any(|f| f.mana_cost.as_ref().is_some_and(matches)),
                 )
             }
