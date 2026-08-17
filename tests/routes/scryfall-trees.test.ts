@@ -22,15 +22,21 @@ describe("hand-built filter trees match the parser", () => {
 		expect(TRUE_TREE).toBe(viaParser(""));
 	});
 
-	test("set code and collector number", () => {
-		expect(setAndCollectorNumber("lea", "1")).toBe(viaParser('set=lea cn="1"'));
+	test("set code and collector number pin English implicitly", () => {
+		// The default language is EMITTED, never omitted: a lang-less tree would resolve whichever
+		// row the engine prefers once foreign printings share a set and collector number.
+		expect(setAndCollectorNumber("lea", "1")).toBe(viaParser('set=lea cn="1" lang=en'));
 	});
 
 	test("a collector number that is not an integer", () => {
 		// The reason `=` is used rather than `:`. `cn:1a` would route to collector_number_int, the
 		// NUMERIC column, and match nothing — Scryfall's collector numbers include "1a", "12★" and
 		// "A-42".
-		expect(setAndCollectorNumber("neo", "1a")).toBe(viaParser('set=neo cn="1a"'));
+		expect(setAndCollectorNumber("neo", "1a")).toBe(viaParser('set=neo cn="1a" lang=en'));
+	});
+
+	test("a named language", () => {
+		expect(setAndCollectorNumber("m15", "18", "ja")).toBe(viaParser('set=m15 cn="18" lang=ja'));
 	});
 
 	test("a card name, with and without a set", () => {

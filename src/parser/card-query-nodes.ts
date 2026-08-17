@@ -11,8 +11,9 @@ import {
 	ALIAS_TO_FIELD_INFOS,
 	CARD_SUPERTYPES,
 	CARD_TYPES,
+	COLOR_ALIAS_TO_CODES,
 	COLOR_CODE_TO_NAME,
-	COLOR_NAME_TO_CODE,
+	COLOR_COUNT_NAMES,
 	type FieldInfo,
 	FieldType,
 	FORMAT_CODE_TO_NAME,
@@ -31,7 +32,7 @@ import {
 	StringValueNode,
 	type ValueNode,
 } from "./nodes";
-import { foldAccents, PyNumber, pyLower, pyStrip, pyStrTitle } from "./pystr";
+import { collateName, foldAccents, PyNumber, pyLower, pyStrip, pyStrTitle } from "./pystr";
 import { artTagAliases, oracleTagAliases } from "./tag-aliases.gen";
 import { titlecase } from "./titlecase";
 
@@ -45,10 +46,10 @@ const RARITY_TO_NUMBER: ReadonlyMap<string, number> = new Map([
 	["u", 1],
 	["rare", 2],
 	["r", 2],
-	["mythic", 3],
-	["m", 3],
-	["special", 4],
-	["s", 4],
+	["special", 3],
+	["s", 3],
+	["mythic", 4],
+	["m", 4],
 	["bonus", 5],
 	["b", 5],
 ]);
@@ -103,12 +104,20 @@ export class CardAttributeNode extends QueryNode {
  * Convert color string to the ordered color-key list for the wire format
  * (get_colors_comparison_object(...).keys(), which preserves first-occurrence
  * order because Python dicts are insertion-ordered).
+ *
+ * `val` is either a letter string ('WUBRG') or one of the names in COLOR_ALIAS_TO_CODES —
+ * 'red', 'azorius', 'yore-tiller' — which is the vocabulary Scryfall itself accepts.
  */
 export function getColorsComparisonKeys(val: string, attr = "card_colors"): string[] {
 	const colorlessIsValue = attr === "produced_mana";
 	const codeSet = new Set(COLOR_CODE_TO_NAME.keys());
-	const chars = [...val];
-	if (val !== "" && chars.every((c) => codeSet.has(c))) {
+	// A color NAME spells a set of letters ('azorius' -> 'wu', 'brown' -> 'c', 'colorless' -> 'c');
+	// a letter string already is one. Expanding the name FIRST leaves a single code path, so
+	// `c:azorius` and `c:wu` serialize to the identical rhs and cannot drift apart, and the
+	// colorless-is-a-value distinction below is stated once instead of once per spelling.
+	const codes = COLOR_ALIAS_TO_CODES.get(val) ?? val;
+	const chars = [...codes];
+	if (codes !== "" && chars.every((c) => codeSet.has(c))) {
 		const keys: string[] = [];
 		for (const c of chars) {
 			if (!colorlessIsValue && c === "c") continue;
@@ -117,14 +126,7 @@ export function getColorsComparisonKeys(val: string, attr = "card_colors"): stri
 		}
 		return keys;
 	}
-	const letterCode = COLOR_NAME_TO_CODE.get(val);
-	if (letterCode === undefined) {
-		throw new ParseError(`Invalid color string: ${val}`);
-	}
-	if (letterCode === "c") {
-		return colorlessIsValue ? ["C"] : [];
-	}
-	return [letterCode.toUpperCase()];
+	throw new ParseError(`Invalid color string: ${val}`);
 }
 
 /** get_frame_data_comparison_object(...).keys() */
@@ -204,7 +206,19 @@ export function getLegalityComparisonKeys(val: string, attr: string): string[] {
 	throw new ParseError(`Unknown legality attribute: ${attr}`);
 }
 
-/** Exact card name search (the ! prefix syntax). */
+/**
+ * Exact card name search (the ! prefix syntax).
+ *
+ * The value is COLLATED — lowercased, diacritics folded, every non-alphanumeric character
+ * removed — because that is the name Scryfall compares `!` against. Measured on
+ * api.scryfall.com 2026-08-16, all four of these answer the same single card:
+ *
+ *   !"Lim-Dûl's Vault"   !"lim-dul's vault"   !"limduls vault"   !"Lim-Dul's Vault"
+ *
+ * and `!"eowyn, lady of rohan"` answers "Éowyn, Lady of Rohan". Comparing the literal lowercase
+ * name — what this emitted before — answered only the first of those, so typing a card's name
+ * without its accent or its punctuation found nothing.
+ */
 export class ExactNameNode extends QueryNode {
 	override readonly nodeType: string = "ExactNameNode";
 
@@ -213,7 +227,7 @@ export class ExactNameNode extends QueryNode {
 	}
 
 	override kwargs(): Record<string, FilterValue> {
-		return { value: pyLower(this.value) };
+		return { value: collateName(foldAccents(pyLower(this.value))) };
 	}
 }
 
@@ -228,8 +242,70 @@ function rhsStringValue(rhs: QueryNode): string {
 }
 
 /** Card-specific binary operator node with the wire-format kwargs specialization. */
+/**
+ * What a colour-COUNT name (`c:m`, `id:gold`) means, per operator, as the (operator, count) pair
+ * the numeric colour-count comparison is built from. Measured; the evidence and the two surprises
+ * in it are written out at db-info's COLOR_COUNT_NAMES.
+ */
+const COLOR_COUNT_BY_OPERATOR: ReadonlyMap<string, readonly [string, number]> = new Map([
+	[":", [">=", 2]],
+	["=", [">=", 2]],
+	[">", [">=", 2]],
+	[">=", [">=", 2]],
+	["<", ["<", 2]],
+	["!=", ["<", 2]],
+	["<=", [">=", 0]], // a tautology, spelled as a count so it stays one leaf
+] as [string, readonly [string, number]][]);
+
+/**
+ * The same table for produced_mana, intersected with "produces at least one value". A card that
+ * makes no mana at all is not a producer of anything, and Scryfall keeps it out of every one of
+ * these: `produces<m` = `produces!=m` = 1,143 = `produces=1`, NOT `produces<2` (32,139), which
+ * sweeps in the 30,996 cards that produce nothing; and `produces<=m` = 2,603 = `produces>=1`
+ * rather than every card. The extra conjunct collapses into the count itself, so this stays one
+ * (operator → operator, count) table and no AND node is needed.
+ */
+const PRODUCED_COUNT_BY_OPERATOR: ReadonlyMap<string, readonly [string, number]> = new Map([
+	[":", [">=", 2]],
+	["=", [">=", 2]],
+	[">", [">=", 2]],
+	[">=", [">=", 2]],
+	["<", ["=", 1]],
+	["!=", ["=", 1]],
+	["<=", [">=", 1]],
+] as [string, readonly [string, number]][]);
+
+const COLOR_COUNT_ATTRIBUTES: ReadonlySet<string> = new Set(["card_colors", "card_color_identity", "produced_mana"]);
+
 export class CardBinaryOperatorNode extends BinaryOperatorNode {
 	override readonly nodeType: string = "CardBinaryOperatorNode";
+
+	/**
+	 * Lower a colour-COUNT name to the numeric colour-count comparison before the node exists.
+	 *
+	 * `c:m` and its five synonyms are a NUMBER of colours, not a set of them, so the value has no
+	 * letters to compare and the operator does not survive verbatim either (`c>m` is `c>=2` and
+	 * `c!=m` is `c<2`). Doing it in the constructor is what keeps the two upstream parsers from
+	 * disagreeing — the hand parser builds this node directly, the pyparsing one via
+	 * `to_card_query_ast` — and it means the rest of the pipeline only ever sees the ordinary
+	 * numeric node that `c>=2` already produces, on every path: engine JSON and explanation alike.
+	 */
+	constructor(lhs: QueryNode, operator: string, rhs: QueryNode) {
+		if (
+			lhs instanceof CardAttributeNode &&
+			rhs instanceof StringValueNode &&
+			COLOR_COUNT_ATTRIBUTES.has(lhs.attributeName) &&
+			COLOR_COUNT_NAMES.has(pyLower(pyStrip(rhs.value)))
+		) {
+			const table = lhs.attributeName === "produced_mana" ? PRODUCED_COUNT_BY_OPERATOR : COLOR_COUNT_BY_OPERATOR;
+			const lowered = table.get(operator);
+			if (lowered !== undefined) {
+				super(lhs, lowered[0], new NumericValueNode(PyNumber.int(BigInt(lowered[1]))));
+				return;
+			}
+		}
+		super(lhs, operator, rhs);
+	}
 
 	override kwargs(): Record<string, FilterValue> {
 		if (!(this.lhs instanceof CardAttributeNode)) {
@@ -275,19 +351,6 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 		return { lhs: this.lhs.toJson(), op: this.operator, rhs: this.rhsToJson() };
 	}
 
-	/**
-	 * Serialize a numeric color-count rhs (id>=3 / c=2) for the Rust engine.
-	 *
-	 * Only the two real color fields support counting; produced_mana's C key is a genuine
-	 * producible value, not a color, so a count over it would be ambiguous.
-	 */
-	private numericColorRhsToJson(attr: string): FilterValue {
-		if (attr === "card_colors" || attr === "card_color_identity") {
-			return nodeToJson(this.rhs);
-		}
-		throw new ParseError(`Numeric comparison is not supported for ${attr}`);
-	}
-
 	/** Compute the JSON-serializable rhs for non-JSONB_ARRAY CardAttributeNode LHS (_rhs_to_json). */
 	private rhsToJson(): FilterValue {
 		const lhs = this.lhs as CardAttributeNode;
@@ -306,7 +369,7 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			// Numeric color syntax (id>=3 / c=2): pass the raw NumericValueNode so the Rust engine
 			// builds a color-count comparison instead of a mask compare.
 			if (this.rhs instanceof NumericValueNode) {
-				return this.numericColorRhsToJson(attr);
+				return nodeToJson(this.rhs);
 			}
 			const val = pyStrip(rhsStringValue(this.rhs));
 			if (attr === "card_colors" || attr === "card_color_identity" || attr === "produced_mana") {
@@ -337,12 +400,29 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 		}
 
 		if ((attr === "card_name" || attr === "card_artist") && this.rhs instanceof StringValueNode) {
-			let value = titlecase(this.rhs.value);
-			// Fold diacritics for fuzzy card_name: search so the Rust engine's
-			// TextContains matches the same way the SQL path does (#649);
-			// exact/comparison ops keep the literal value, accent-sensitive.
-			if (attr === "card_name" && this.operator === ":") {
-				value = foldAccents(value);
+			const value = titlecase(this.rhs.value);
+			// A BARE `name:` word is COLLATED — diacritics folded (#649) AND every
+			// non-alphanumeric character removed — because that is the string Scryfall matches a
+			// bare word against. A QUOTED value (and a plain-literal regex lowered to one) is
+			// matched literally instead, so it keeps neither fold; see StringValueNode. Measured
+			// on api.scryfall.com 2026-08-16: `name:ft` 1,628 against `name:"ft"` 362,
+			// `name:ofthe` 1,109 against `name:"ofthe"` 0, `name:limdul` 8 against
+			// `name:"limdul"` 0. Comparison ops (`name=`, `name!=`) keep the literal value on
+			// both sides, accent-sensitive, exactly as before.
+			// `a:` gets the SAME split, on the same kind of evidence (api.scryfall.com, 2026-08-16):
+			// `a:gawel` answers 10 exactly as `a:gaweł` does, `a:rebecca-guay` answers
+			// `a:"rebecca guay"`'s 166, and `a:gu*ay` answers `a:guay`'s 197. An artist could only
+			// be found under their own diacritics and punctuation before this.
+			//
+			// ...but for ARTISTS the split is a distinction the ENGINE then collapses, and this
+			// node shape is all that survives of it. Scryfall has no quoted/bare and no `:`/`=`
+			// line for artists the way it has for names — measured 2026-08-16, `a:"rebeccaguay"`
+			// answers `a:rebecca-guay`'s 399, `a:"gawel"` answers `a:gaweł`'s 23, and `a="rebecca"`
+			// answers `a:rebecca`'s 405 — so `bind` routes every artist form through one collated
+			// contains (`artist_contains_ids`). The branch below is kept because `card_name` still
+			// needs it, and because the collated node saves the engine the fold on the common path.
+			if ((attr === "card_name" || attr === "card_artist") && this.operator === ":" && !this.rhs.literal) {
+				return { node_type: "CollatedNameValueNode", kwargs: { value: collateName(foldAccents(value)) } };
 			}
 			return { node_type: "StringValueNode", kwargs: { value } };
 		}

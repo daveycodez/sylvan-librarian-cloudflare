@@ -13,16 +13,25 @@
  */
 
 import { ParseError } from "./errors";
-import type { DirectiveFound, FilterTree, Query } from "./nodes";
+import type { DirectiveFound, ExpandedDerivedTerm, FilterTree, LoweredRegexTerm, Query } from "./nodes";
 import { parseQuery } from "./parser";
 import { rewriteQuery } from "./rewrite";
+import { foldTypographicQuotes } from "./tokenizer";
 
 export { ParseError } from "./errors";
-export type { DirectiveFound, FilterTree, FilterValue } from "./nodes";
+export type {
+	DirectiveFound,
+	ExpandedDerivedTerm,
+	FilterTree,
+	FilterValue,
+	LoweredRegexTerm,
+	QueryTerm,
+} from "./nodes";
 export { parseQuery } from "./parser";
 export { PyNumber } from "./pystr";
 export { rewriteQuery } from "./rewrite";
 export { canonicalStringify } from "./serialize";
+export { foldTypographicQuotes } from "./tokenizer";
 
 /**
  * Parse a Scryfall search query into a card-specific AST
@@ -49,13 +58,30 @@ export function parseScryfallQuery(query: string | null | undefined): FilterTree
  * The stripping happens inside `rewriteQuery`, so `parseScryfallQuery` already
  * returns a tree with no directive leaves — this only additionally hands back
  * what was stripped, for the route layer to fold into the search parameters.
+ *
+ * `loweredRegexTerms` rides along for the same reason: the rewrite ERASES the difference between
+ * `name:/zzzqq/` and `name:"zzzqq"` — and between `t:/token/` and `t:token` — while Scryfall's
+ * `include_extras` auto-enable separates both pairs. See `Query.loweredRegexTerms`.
+ *
+ * `expandedDerivedTerms` is the same fact one rewrite further along: `expandDerivedPredicates`
+ * erases the difference between `is:split` and `layout:split`, and that auto-enable separates those
+ * too. See `Query.expandedDerivedTerms`.
  */
 export function parseScryfallQueryWithDirectives(query: string | null | undefined): {
 	tree: FilterTree;
 	directives: readonly DirectiveFound[];
+	warnings: readonly string[];
+	loweredRegexTerms: readonly LoweredRegexTerm[];
+	expandedDerivedTerms: readonly ExpandedDerivedTerm[];
 } {
 	const parsed = parseScryfallQueryAst(query);
-	return { tree: parsed.toJson(), directives: parsed.directives };
+	return {
+		tree: parsed.toJson(),
+		directives: parsed.directives,
+		warnings: parsed.warnings,
+		loweredRegexTerms: parsed.loweredRegexTerms,
+		expandedDerivedTerms: parsed.expandedDerivedTerms,
+	};
 }
 
 /**
@@ -63,7 +89,10 @@ export function parseScryfallQueryWithDirectives(query: string | null | undefine
  * (mirrors api.parsing.parsing_f.balance_partial_query).
  */
 export function balancePartialQuery(queryIn: string): string {
-	let query = queryIn;
+	// The balancer and the lexer must agree about which characters are quotes, or a typed `name:‘`
+	// balances to nothing here and then fails to lex as an unclosed `name:'` after parseQuery
+	// folds it. Same fold, same position: before anything reads a character as a delimiter.
+	let query = foldTypographicQuotes(queryIn);
 	const charToMirror: Record<string, string> = {
 		"(": ")",
 		"'": "'", // single quote is own mirror

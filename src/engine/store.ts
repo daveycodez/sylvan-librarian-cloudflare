@@ -24,8 +24,13 @@
 // over a source of truth that is still KV, not a second copy of record.
 
 import * as wasm from "sylvan-engine-wasm";
-import { CARD_OBJECT_FIELDS, type EngineRow, errorObject, toScryfallCard } from "../routes/scryfall-compat/objects";
-import { scryfallJson, scryfallListJson } from "../routes/scryfall-compat/respond";
+import {
+	CARD_OBJECT_FIELDS,
+	type EngineRow,
+	toScryfallCard,
+	withResolvedMultilingual,
+} from "../routes/scryfall-compat/objects";
+import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
@@ -34,14 +39,26 @@ import {
 	type ArchiveCacheStorage,
 	type CacheWriter,
 	cachedArchiveStream,
+	cachedCompressedStream,
 	cacheWriter,
+	compressedCacheKeys,
+	dropCached,
 	ensureCacheSchema,
 	fillCache,
+	isCompressedCached,
 	pruneCache,
+	putCompressedChunk,
 	readLiveManifest,
 	recordLiveManifest,
 } from "./store-cache";
-import { announceSelf, kvStoreStream, readManifest } from "./store-kv";
+import {
+	type ArchiveSource,
+	announceSelf,
+	archiveOfManifest,
+	fetchStoredChunk,
+	kvSourceStream,
+	readManifest,
+} from "./store-kv";
 import type {
 	Engine,
 	EngineSearchOptions,
@@ -50,24 +67,50 @@ import type {
 	Env,
 	ResultShape,
 	ScryfallFuzzyResult,
+	SearchPageEnvelope,
 	StoreManifest,
 } from "./types";
-import { EngineUnavailableError } from "./types";
+import { EngineUnavailableError, FUZZY_SIMILARITY_LEAD, type FuzzyCandidateWire } from "./types";
 
 /**
- * Thresholds for the typo-tolerant stage of `?fuzzy=` (upstream routes.py).
+ * The FLOOR of the typo-tolerant stage of `?fuzzy=`: a candidate scoring below this is not a
+ * candidate at all. Its twin, the LEAD, lives in types.ts because the partitioned gather applies
+ * it too.
  *
- * A candidate must score at least the floor, and the best must lead the next DISTINCT card name by
- * at least the lead — closer than that and the query does not identify either card, so it is
- * `ambiguous` rather than a guess. The floor sits deliberately above pg_trgm's default 0.3, which
- * is what upstream's index-assisted prefilter relies on; here the engine scans, so the floor is
- * simply the bar.
+ * FITTED, NOT CHOSEN. 0.625 is the middle of the 0.60–0.65 plateau over which Scryfall's answers
+ * to 86 probed needles are reproduced identically — see card_engine's `Fuzzy name matching`
+ * module comment for the metric it is a floor ON, which is no longer pg_trgm's similarity and no
+ * longer comparable to pg_trgm's 0.3 default.
  */
-const FUZZY_SIMILARITY_FLOOR = 0.4;
-const FUZZY_SIMILARITY_LEAD = 0.05;
+const FUZZY_SIMILARITY_FLOOR = 0.625;
 
-let current: { storeKey: string; engine: WasmEngine; manifest: StoreManifest } | null = null;
-let loading: Promise<Engine> | null = null;
+/**
+ * Loaded-store state, PER DURABLE OBJECT LABEL rather than module-global.
+ *
+ * This module is isolate-global, and Durable Object instances of one class can
+ * be COLOCATED in a single isolate — with partitioned stores, engine-wnam-p0
+ * and engine-wnam-p1 may share this module while holding DIFFERENT archives. A
+ * module-global `current` had them clobbering each other: p1's load would
+ * replace p0's engine, and every p0 query would answer from the wrong
+ * partition. The map key is the object's label (`""` for label-less callers —
+ * tests and tooling — which therefore behave exactly as the old globals did).
+ * The wasm side is per-label for the same reason: see wasm-shim.ts engineFor.
+ */
+interface LabelState {
+	current: { storeKey: string; engine: WasmEngine; manifest: StoreManifest; handle: wasm.EngineHandle } | null;
+	loading: Promise<Engine> | null;
+}
+const states = new Map<string, LabelState>();
+
+function stateFor(label: string | undefined): LabelState {
+	const key = label ?? "";
+	let s = states.get(key);
+	if (!s) {
+		s = { current: null, loading: null };
+		states.set(key, s);
+	}
+	return s;
+}
 
 /**
  * What a loader needs from its caller beyond the environment: somewhere to put background work, and
@@ -83,7 +126,7 @@ export interface LoadContext {
 	storage?: ArchiveCacheStorage;
 	/**
 	 * Who to blame in the logs — the Durable Object's own name (`engine-wnam`,
-	 * `engine-wnam-2`).
+	 * `engine-wnam-2`) — AND the key this module's per-label state lives under.
 	 *
 	 * This module is isolate-global and has no idea which object it is running
 	 * inside, so without it every load line reads identically no matter which
@@ -94,6 +137,14 @@ export interface LoadContext {
 	 * unnecessary.
 	 */
 	label?: string;
+	/**
+	 * Which partition of the store this object serves — parsed from the `-p<k>`
+	 * suffix of its own label by the Durable Object. Optional in the TYPE only
+	 * because non-DO callers (tests, tooling) construct a context by hand;
+	 * undefined reaching the loader is a naming bug and archiveOfManifest refuses
+	 * it loudly rather than serving 1/N of the corpus as the whole store.
+	 */
+	partition?: number;
 }
 
 /** `[engine-wnam] ` for logs, or an empty prefix outside a Durable Object. */
@@ -101,7 +152,24 @@ function tag(ctx?: LoadContext): string {
 	return ctx?.label ? `[${ctx.label}] ` : "";
 }
 
+/** The `catalog()` wasm export's payload, parsed once per loaded store. */
+interface WasmCatalog {
+	card_types: Record<string, number>;
+	card_keywords: Record<string, number>;
+	sets_with_extras: string[];
+}
+
 class WasmEngine implements Engine {
+	/** The wasm instance this engine queries: one per label (see wasm-shim.ts). */
+	constructor(private readonly w: wasm.EngineHandle) {}
+
+	/** The options encoding, for gatherOps — phase 1 must serialize opts EXACTLY
+	 * as a local query would, or the fan-out and the single-partition path could
+	 * disagree about defaults. */
+	optsJsonFor(opts: EngineSearchOptions): string {
+		return this.optsJson(opts);
+	}
+
 	/** The engine's options object, shared by both query entry points. */
 	private optsJson(opts: EngineSearchOptions): string {
 		return JSON.stringify({
@@ -112,11 +180,14 @@ class WasmEngine implements Engine {
 			limit: opts.limit,
 			offset: opts.offset,
 			fields: opts.fields,
+			// Scryfall's include_multilingual, defaulted here so the engine-side key is always a
+			// boolean; true widens the search to foreign printings (see EngineSearchOptions).
+			include_multilingual: opts.includeMultilingual === true,
 		});
 	}
 
 	private query(opts: EngineSearchOptions): { total: number; rows: Record<string, unknown>[] } {
-		return JSON.parse(wasm.query(opts.filterTreeJson, this.optsJson(opts))) as {
+		return JSON.parse(this.w.query(opts.filterTreeJson, this.optsJson(opts))) as {
 			total: number;
 			rows: Record<string, unknown>[];
 		};
@@ -150,7 +221,7 @@ class WasmEngine implements Engine {
 				rowCount: result.rows.length,
 			};
 		}
-		const answer = wasm.query_rows(opts.filterTreeJson, this.optsJson(opts));
+		const answer = this.w.query_rows(opts.filterTreeJson, this.optsJson(opts));
 		// `<total> <rowCount>\n<rows>`. Only the prefix is decoded -- a handful of ASCII digits --
 		// and the rows stay bytes all the way to the response body. `subarray` is a view, not a
 		// copy, so nothing here is proportional to the payload.
@@ -169,15 +240,12 @@ class WasmEngine implements Engine {
 	 * — a hot swap constructs a new WasmEngine — so the result is cached for the
 	 * life of this instance and invalidates by construction.
 	 */
-	private catalogOnce: { card_types: Record<string, number>; card_keywords: Record<string, number> } | null = null;
+	private catalogOnce: WasmCatalog | null = null;
 
-	private catalog(): { card_types: Record<string, number>; card_keywords: Record<string, number> } {
+	private catalog(): WasmCatalog {
 		const cached = this.catalogOnce;
 		if (cached) return cached;
-		const parsed = JSON.parse(wasm.catalog()) as {
-			card_types: Record<string, number>;
-			card_keywords: Record<string, number>;
-		};
+		const parsed = JSON.parse(this.w.catalog()) as WasmCatalog;
 		this.catalogOnce = parsed;
 		return parsed;
 	}
@@ -190,12 +258,21 @@ class WasmEngine implements Engine {
 		return this.catalog().card_keywords;
 	}
 
+	/**
+	 * The set codes this archive holds an `is:extra` printing for — the `include_extras`
+	 * auto-enable table, folded at build (see `CardIndexes::sets_with_extras`) and read here off
+	 * the same cached catalog payload the two count maps come from.
+	 */
+	async setsWithExtras(): Promise<string[]> {
+		return this.catalog().sets_with_extras;
+	}
+
 	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
 		// Engine sampling is deterministic per seed; per-request entropy keeps
 		// /random_search random, mirroring upstream's process-side RNG.
 		const seedBytes = crypto.getRandomValues(new BigUint64Array(1));
 		const seed = seedBytes[0] ?? 0n;
-		return JSON.parse(wasm.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
+		return JSON.parse(this.w.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
 	}
 
 	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
@@ -204,7 +281,7 @@ class WasmEngine implements Engine {
 	}
 
 	async cardCount(): Promise<number> {
-		return wasm.size();
+		return this.w.size();
 	}
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
@@ -232,46 +309,52 @@ class WasmEngine implements Engine {
 	 * would notice a divergence.
 	 */
 	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
-		const answer = wasm.scryfall_search(
+		const answer = this.w.scryfall_search(
 			opts.filterTreeJson,
 			this.optsJson({ ...opts, fields: [...CARD_OBJECT_FIELDS] }),
 			baseUrl,
 		);
-		// `<total> <rowCount>\n<cards>`, the same framing query_rows uses; only the short ASCII
-		// prefix is decoded and the cards stay bytes all the way to the response body.
+		// `<total> <rowCount> <widened>\n<cards>`, the same framing query_rows uses plus the
+		// widening flag; only the short ASCII prefix is decoded and the cards stay bytes all the
+		// way to the response body.
 		const split = answer.indexOf(NEWLINE);
-		const [total = "0", rows = "0"] = new TextDecoder().decode(answer.subarray(0, split)).split(" ");
-		return { totalCards: Number(total), cardsBytes: answer.subarray(split + 1), rowCount: Number(rows) };
+		const [total = "0", rows = "0", widened = "0"] = new TextDecoder().decode(answer.subarray(0, split)).split(" ");
+		return {
+			totalCards: Number(total),
+			cardsBytes: answer.subarray(split + 1),
+			rowCount: Number(rows),
+			widened: widened === "1",
+		};
+	}
+
+	/**
+	 * Whether this query would run the widened (multilingual) driver.
+	 *
+	 * One implementation, in the engine: `include_multilingual`, or a `card_lang` leaf in the
+	 * BOUND filter. The gather path asks for it separately because it assembles its envelope from
+	 * key replies rather than from a query result.
+	 */
+	queryWidens(opts: EngineSearchOptions): boolean {
+		return this.w.query_widens(opts.filterTreeJson, this.optsJson(opts));
 	}
 
 	/** In-process: the same envelope, spliced here because there is no boundary to keep it off. */
 	async scryfallSearchPage(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		envelope: {
-			pretty: boolean;
-			warnings?: string[];
-			nextPageUrl?: string;
-			pageOffset: number;
-			noMatchDetails: string;
-		},
+		envelope: SearchPageEnvelope,
 		cache: Record<string, string>,
 	): Promise<Response> {
 		const r = await this.scryfallSearch(opts, baseUrl);
-		if (r.rowCount === 0) {
-			return scryfallJson(
-				errorObject("not_found", 404, envelope.noMatchDetails, envelope.warnings),
-				envelope.pretty,
-				cache,
-			);
-		}
+		if (r.rowCount === 0) return emptyPageResponse(envelope, r.totalCards, cache);
 		const hasMore = envelope.pageOffset + r.rowCount < r.totalCards;
+		if (envelope.csv === true) return scryfallCsvResponse(r.cardsBytes, hasMore, cache);
 		return scryfallListJson(
 			r.cardsBytes,
 			{
 				totalCards: r.totalCards,
 				hasMore,
-				nextPage: hasMore ? envelope.nextPageUrl : undefined,
+				nextPage: hasMore ? withResolvedMultilingual(envelope.nextPageUrl, r.widened === true) : undefined,
 				warnings: envelope.warnings,
 			},
 			envelope.pretty,
@@ -281,20 +364,20 @@ class WasmEngine implements Engine {
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const row = JSON.parse(
-			wasm.card_by_scryfall_id(scryfallId, JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.card_by_scryfall_id(scryfallId, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow | null;
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
 
 	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
 		const rows = JSON.parse(
-			wasm.cards_by_scryfall_ids(JSON.stringify(scryfallIds), JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.cards_by_scryfall_ids(JSON.stringify(scryfallIds), JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow[];
 		return this.toCards(rows, baseUrl);
 	}
 
 	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const rows = JSON.parse(wasm.printings_of_oracle_id(oracleId, JSON.stringify(CARD_OBJECT_FIELDS))) as EngineRow[];
+		const rows = JSON.parse(this.w.printings_of_oracle_id(oracleId, JSON.stringify(CARD_OBJECT_FIELDS))) as EngineRow[];
 		// Printings are stored in descending default-prefer order, so the first is the
 		// representative printing every other by-name path shows.
 		const first = rows[0];
@@ -307,32 +390,37 @@ class WasmEngine implements Engine {
 		baseUrl: string,
 	): Promise<Record<string, unknown> | null> {
 		const row = JSON.parse(
-			wasm.card_by_external_id(namespace, BigInt(externalId), JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.card_by_external_id(namespace, BigInt(externalId), JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow | null;
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
 
 	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
 		const out = JSON.parse(
-			wasm.fuzzy_card_by_name(name, FUZZY_SIMILARITY_FLOOR, FUZZY_SIMILARITY_LEAD, JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.fuzzy_card_by_name(
+				name,
+				FUZZY_SIMILARITY_FLOOR,
+				FUZZY_SIMILARITY_LEAD,
+				JSON.stringify(CARD_OBJECT_FIELDS),
+			),
 		) as { status: ScryfallFuzzyResult["status"]; card: EngineRow | null };
 		return { status: out.status, card: out.card === null ? null : toScryfallCard(out.card, baseUrl) };
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
-		return JSON.parse(wasm.autocomplete(prefix, limit)) as string[];
+		return JSON.parse(this.w.autocomplete(prefix, limit)) as string[];
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const row = JSON.parse(
-			wasm.exact_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.exact_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow | null;
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
 
 	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const row = JSON.parse(
-			wasm.card_by_illustration_id(illustrationId, JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.card_by_illustration_id(illustrationId, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow | null;
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
@@ -344,7 +432,7 @@ class WasmEngine implements Engine {
 		baseUrl: string,
 	): Promise<Record<string, unknown>[]> {
 		const rows = JSON.parse(
-			wasm.cards_containing_all_words(JSON.stringify(words), setCode, limit, JSON.stringify(CARD_OBJECT_FIELDS)),
+			this.w.cards_containing_all_words(JSON.stringify(words), setCode, limit, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow[];
 		return this.toCards(rows, baseUrl);
 	}
@@ -371,17 +459,29 @@ export { readManifest } from "./store-kv";
 
 /** Stream the store bytes into wasm memory, in blocks (see load-blocks.ts for why). */
 async function feedStore(
+	w: wasm.EngineHandle,
 	body: ReadableStream<Uint8Array>,
 	totalLen: number,
 	sink: CacheWriter | null,
 ): Promise<FeedCounts> {
-	wasm.begin_store_load(totalLen);
+	w.begin_store_load(totalLen);
 	const counts = await feedBlocks(body, (block) => {
-		wasm.store_load_chunk(block);
+		w.store_load_chunk(block);
 		sink?.write(block);
 	});
-	wasm.finish_store_load();
+	w.finish_store_load();
 	return counts;
+}
+
+/** archiveOfManifest as a question rather than a refusal — for the publish
+ * paths, where a shape this object cannot serve means "keep the current store
+ * and ack", never a failed phase. Request paths use the throwing form. */
+function tryArchiveOfManifest(manifest: StoreManifest, partition?: number): ArchiveSource | null {
+	try {
+		return archiveOfManifest(manifest, partition);
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -433,6 +533,85 @@ function archiveBytes(
 }
 
 /**
+ * The COMPRESSED-cache twin of archiveBytes, and the path every real archive
+ * takes (plan reconciliation 2 — see the store-cache.ts header for why N
+ * decompressed partition copies do not fit the 5GB DO pool).
+ *
+ * On a hit the body is the local compressed copy DECOMPRESSING as it streams;
+ * on a miss it is the KV stream with each stored chunk tee'd into the cache
+ * before decompression — each chunk commits meta-last as a unit, and the copy
+ * only becomes readable as a whole when every chunk is present and their bytes
+ * sum to the manifest's store_gzip_bytes (isCompressedCached). `commit` prunes
+ * once wasm has accepted the archive; `invalidate` is the readable-and-wrong
+ * escape hatch — a cached copy that fails to load is dropped so the next
+ * attempt reads KV instead of re-reading the same corrupt rows (the 2026-08-13
+ * lesson, applied to this cache from birth).
+ */
+function compressedArchiveBytes(
+	env: Env,
+	ctx: LoadContext | undefined,
+	source: ArchiveSource,
+): { body: ReadableStream<Uint8Array>; cached: boolean; commit: () => void; invalidate: () => void } {
+	const storage = ctx?.storage;
+	const gzipBytes = source.gzipBytes as number; // callers gate on presence
+	const chunkCount = source.chunkCount as number; // compressed manifests always carry it (kvArchiveStream enforces)
+	const keys = compressedCacheKeys(source.storeKey, chunkCount);
+	const dropAll = () => {
+		if (!storage) return;
+		try {
+			for (const k of keys) dropCached(storage, k);
+		} catch (err) {
+			console.warn(`${tag(ctx)}could not drop the compressed cache for ${source.storeKey}: ${err}`);
+		}
+	};
+	if (storage) {
+		try {
+			ensureCacheSchema(storage);
+			const local = cachedCompressedStream(storage, source.storeKey, chunkCount, gzipBytes);
+			if (local) return { body: local, cached: true, commit: () => {}, invalidate: dropAll };
+		} catch (err) {
+			console.warn(
+				`${tag(ctx)}compressed archive cache unreadable for ${source.storeKey} (falling back to KV): ${err}`,
+			);
+		}
+	}
+	// Miss: read KV, teeing each STORED chunk in. Tee faults must never fail the
+	// load — warn once and stop writing, exactly like the decompressed sink.
+	let teeBroken = storage === undefined;
+	const tee = (seq: number, bytes: Uint8Array) => {
+		if (teeBroken || !storage) return;
+		try {
+			putCompressedChunk(storage, source.storeKey, seq, bytes);
+		} catch (err) {
+			teeBroken = true;
+			console.warn(`${tag(ctx)}compressed archive cache unwritable for ${source.storeKey} (KV still serves): ${err}`);
+		}
+	};
+	return {
+		body: kvSourceStream(env, source, storage ? tee : undefined),
+		cached: false,
+		commit: () => {
+			if (!storage || teeBroken) return;
+			try {
+				if (!isCompressedCached(storage, source.storeKey, chunkCount, gzipBytes)) {
+					console.warn(`${tag(ctx)}compressed cache for ${source.storeKey} is incomplete after the load; not kept`);
+					dropAll();
+					return;
+				}
+				const dropped = pruneCache(storage, keys);
+				console.log(
+					`${tag(ctx)}cached ${source.storeKey} compressed while loading it (${chunkCount} chunks)` +
+						`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
+				);
+			} catch (err) {
+				console.warn(`${tag(ctx)}could not keep the compressed cache for ${source.storeKey}: ${err}`);
+			}
+		},
+		invalidate: dropAll,
+	};
+}
+
+/**
  * Publish a tee'd copy, or discard it — called once the archive is known good.
  *
  * Committed only AFTER the wasm side has accepted the bytes, so a load that dies mid-stream leaves
@@ -462,10 +641,12 @@ function commitSink(
 }
 
 async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Promise<Engine> {
-	// The one place wasm is first touched, so the one place that has to bring
-	// it up. Isolates that only parse and RPC never reach here and never pay
-	// the instantiation — see the header of wasm-shim.ts.
-	wasm.ensureEngine();
+	const state = stateFor(ctx?.label);
+	// The one place wasm is first touched, so the one place that has to bring it
+	// up — one INSTANCE per label, because colocated partition objects share this
+	// module (see wasm-shim.ts). Isolates that only parse and RPC never reach
+	// here and never pay the instantiation.
+	const w = wasm.engineFor(ctx?.label ?? "");
 	// Three sources, in order of what they cost.
 	//
 	// `known` is the publisher handing it over during a swap. Otherwise the object may already have
@@ -483,8 +664,22 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	if (!manifest && ctx?.storage) {
 		const pushed = readLiveManifest(ctx.storage) as StoreManifest | null;
 		if (pushed?.store_bytes) {
-			manifest = pushed;
-			confirm = readManifest(env).catch(() => null);
+			// The guard on pushed state (the notify side refuses to record a shape
+			// this object cannot serve, but a record written before that guard —
+			// or by a skewed build — could still be here): a pushed manifest this
+			// object's own name cannot serve is IGNORED, loudly, and the load
+			// falls through to KV. Trusting it would wedge every wake on
+			// archiveOfManifest's refusal without KV ever being consulted.
+			if (tryArchiveOfManifest(pushed, ctx.partition)) {
+				manifest = pushed;
+				confirm = readManifest(env).catch(() => null);
+			} else {
+				console.error(
+					`${tag(ctx)}ignoring a pushed manifest this object cannot serve ` +
+						`(${pushed.store_key}, partition_count ${pushed.partition_count ?? "none"} vs own partition ` +
+						`${ctx.partition ?? "none"}); reading the manifest from KV instead`,
+				);
+			}
 		}
 	}
 	if (!manifest) manifest = (await readManifest(env)) ?? undefined;
@@ -504,7 +699,14 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		throw new EngineUnavailableError(`Manifest ${manifest.store_key} is not in the raw store format this Worker reads`);
 	}
 
-	if (current && current.storeKey === manifest.store_key) return current.engine;
+	// WHICH archive this object loads: its own `partitions[k]`. Every refusal —
+	// an unpartitioned manifest, a label carrying no partition, an unknown
+	// partition hash — throws the loud 503 here, on the request path, where
+	// serving anyway would mean silently answering with the wrong slice of the
+	// corpus. See archiveOfManifest for the full case table.
+	const source = archiveOfManifest(manifest, ctx?.partition);
+
+	if (state.current && state.current.storeKey === source.storeKey) return state.current.engine;
 
 	// Started here rather than after the load, so the write has the whole archive fetch to complete
 	// in. Awaited below, before the engine is committed — see announceSelf for why a dropped
@@ -512,16 +714,32 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	const announced = announceSelf(env, ctx?.label);
 
 	const started = Date.now();
-	// Local first (decompressed, no network); KV otherwise, teeing into the cache as it streams so
-	// the archive is read and decompressed exactly once.
-	const { body, cached, sink } = archiveBytes(ctx, manifest.store_key, manifest.store_bytes, () =>
-		kvStoreStream(env, manifest),
-	);
-	if (current) {
+	// Local first (no network); KV otherwise, teeing into the cache as it streams
+	// so the archive is fetched exactly once. The cache FORMAT follows the
+	// ARCHIVE's: a gzipped archive — which is every archive any publisher here
+	// emits — caches COMPRESSED (see compressedArchiveBytes and the store-cache.ts
+	// header). The decompressed path below is what an UNCOMPRESSED archive would
+	// take; it is the compression revert staying code-only (StoreManifest
+	// .store_gzip_bytes is the format flag), not a partitioning fallback.
+	const compressedMode = source.gzipBytes !== undefined;
+	const fetch = compressedMode
+		? { ...compressedArchiveBytes(env, ctx, source), sink: null as CacheWriter | null }
+		: (() => {
+				const f = archiveBytes(ctx, source.storeKey, source.storeBytes, () => kvSourceStream(env, source));
+				return {
+					body: f.body,
+					cached: f.cached,
+					sink: f.sink,
+					commit: () => commitSink(ctx, f.sink, source.storeKey, [source.storeKey]),
+					invalidate: () => f.sink?.abort(),
+				};
+			})();
+	const { body, cached, sink } = fetch;
+	if (state.current) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
-		current = null;
-		wasm.unload_store();
+		state.current = null;
+		w.unload_store();
 	}
 	// GZIPPED in KV (see StoreManifest.store_gzip_bytes), decompressed per chunk
 	// as it streams. The meter argument against this was sound but answered the
@@ -534,7 +752,7 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// still see absent.
 	let counts: FeedCounts;
 	try {
-		counts = await feedStore(body, manifest.store_bytes, sink);
+		counts = await feedStore(w, body, source.storeBytes, sink);
 	} catch (err) {
 		// A PUSHED manifest can name a store that no longer loads — its archive header no longer
 		// matches this build, or its chunks were pruned by a deploy that published without
@@ -543,19 +761,27 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		// every wake re-read the same stale record, failed the same way, and nothing ever asked KV
 		// what is actually live. Production, 2026-08-13: a generation bump pruned the old chunks
 		// and every engine object answered 5xx until this fallback existed.
+		//
+		// PER-PARTITION: the comparison is between THIS PARTITION's chunk-family
+		// keys under each manifest, not the manifests' top-level keys — a v2
+		// store_key is a stem holding no chunks, so comparing stems would both
+		// miss real changes (same stem, republished partition) and be blind to
+		// what this object actually failed to read.
+		if (compressedMode && cached) fetch.invalidate();
 		if (confirm) {
 			const truth = await confirm;
-			if (truth?.store_bytes && truth.store_key !== manifest.store_key) {
+			const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx?.partition) : null;
+			if (truthSource && truthSource.storeKey !== source.storeKey) {
 				console.warn(
-					`${tag(ctx)}the pushed manifest named ${manifest.store_key}, which failed to load (${err}); ` +
-						`KV says ${truth.store_key} — reloading from that`,
+					`${tag(ctx)}the pushed manifest named ${source.storeKey}, which failed to load (${err}); ` +
+						`KV says ${truthSource.storeKey} — reloading from that`,
 				);
-				sink?.abort();
-				wasm.unload_store();
+				fetch.invalidate();
+				w.unload_store();
 				// Overwrite the stale record so the NEXT wake starts from the store that exists,
 				// instead of paying this failed load again.
 				if (ctx?.storage) recordLiveManifest(ctx.storage, truth);
-				return loadStore(env, ctx, truth);
+				return loadStore(env, ctx, truth ?? undefined);
 			}
 		}
 		throw err;
@@ -567,16 +793,17 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// discarded rather than served.
 	if (confirm) {
 		const truth = await confirm;
-		if (truth?.store_bytes && truth.store_key !== manifest.store_key) {
+		const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx?.partition) : null;
+		if (truthSource && truthSource.storeKey !== source.storeKey) {
 			console.warn(
-				`${tag(ctx)}the pushed manifest named ${manifest.store_key} but KV says ${truth.store_key}; reloading`,
+				`${tag(ctx)}the pushed manifest named ${source.storeKey} but KV says ${truthSource.storeKey}; reloading`,
 			);
-			sink?.abort();
-			wasm.unload_store();
-			return loadStore(env, ctx, truth);
+			fetch.invalidate();
+			w.unload_store();
+			return loadStore(env, ctx, truth ?? undefined);
 		}
 	}
-	commitSink(ctx, sink, manifest.store_key, [manifest.store_key]);
+	fetch.commit();
 
 	// The announcement started before the load must have LANDED before this object starts answering
 	// from the store it just loaded: the fan-out reaches exactly the objects in that set, and guessing
@@ -591,17 +818,17 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		probePlacement(ctx);
 	}
 
-	const engine = new WasmEngine();
-	current = { storeKey: manifest.store_key, engine, manifest };
+	const engine = new WasmEngine(w);
+	state.current = { storeKey: source.storeKey, engine, manifest, handle: w };
 	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
 	// synchronous execution, so it cannot see the decompression or the copy into
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
 	// linear-memory figure is the honest one here, and is a high-water mark.
 	console.log(
-		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${manifest.store_key} (${manifest.card_count} cards, ` +
-			`${manifest.store_bytes} bytes${!cached && manifest.store_gzip_bytes ? ` from ${manifest.store_gzip_bytes} gzipped` : ""}, ` +
+		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
+			`${source.storeBytes} bytes${!cached && source.gzipBytes ? ` from ${source.gzipBytes} gzipped` : ""}, ` +
 			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
-			`(linear memory ${(wasm.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
+			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 	);
 	return engine;
 }
@@ -634,47 +861,184 @@ export async function refreshNow(env: Env, ctx: LoadContext, known?: StoreManife
 	// shape below regardless, so a bad one fails the load rather than being served.
 	const manifest = known ?? (await readManifest(env));
 	if (!manifest?.store_bytes) return false;
-	if (current?.storeKey === manifest.store_key) return false;
+	await prefetchStore(env, ctx, manifest);
+	return swapToStore(env, ctx, manifest);
+}
 
-	// Prefetch under the OLD store, which keeps serving throughout. Failures here
-	// are not fatal: the swap below falls back to reading from KV, which is what
-	// it did before this cache existed.
-	if (ctx.storage) {
-		try {
-			ensureCacheSchema(ctx.storage);
-			const rows = await fillCache(ctx.storage, manifest.store_key, kvStoreStream(env, manifest), manifest.store_bytes);
-			const dropped = pruneCache(ctx.storage, [manifest.store_key]);
+/**
+ * Step 1 of the two-step publish, in the loader's terms: hold the new archive
+ * in LOCAL storage, swapping nothing. The old store serves throughout.
+ *
+ * The FORMAT held follows the ARCHIVE's, exactly as a cold load's does: a
+ * gzipped archive is prefetched as its COMPRESSED chunks (fetched whole from KV,
+ * no decompression paid for bytes that are only being staged — the gunzip lands
+ * at the commit swap, still the publisher's window and not a user's request);
+ * the decompressed branch is the uncompressed-archive twin (see loadStore).
+ *
+ * Returns false — never throws — when there is nothing this object can hold: no
+ * storage, a manifest shape this object's name cannot serve (which is a bug, not
+ * a mode — it keeps its current store and the publish phase still completes), or
+ * a prefetch fault (the commit swap falls back to KV, which is what this path
+ * did before the cache existed). The publish phase must degrade to slower, never
+ * to failed.
+ */
+export async function prefetchStore(env: Env, ctx: LoadContext, manifest: StoreManifest): Promise<boolean> {
+	if (!ctx.storage) return false;
+	const source = tryArchiveOfManifest(manifest, ctx.partition);
+	if (!source) {
+		console.warn(
+			`${tag(ctx)}not prefetching ${manifest.store_key}: this object cannot serve that manifest shape ` +
+				`(partition ${ctx.partition ?? "none"} vs partition_count ${manifest.partition_count ?? "none"})`,
+		);
+		return false;
+	}
+	if (stateFor(ctx.label).current?.storeKey === source.storeKey) return false;
+	try {
+		ensureCacheSchema(ctx.storage);
+		if (source.gzipBytes !== undefined) {
+			const chunkCount = source.chunkCount as number;
+			if (!isCompressedCached(ctx.storage, source.storeKey, chunkCount, source.gzipBytes)) {
+				for (let seq = 0; seq < chunkCount; seq++) {
+					putCompressedChunk(ctx.storage, source.storeKey, seq, await fetchStoredChunk(env, source.storeKey, seq));
+				}
+			}
+			const dropped = pruneCache(ctx.storage, compressedCacheKeys(source.storeKey, chunkCount));
 			console.log(
-				`${tag(ctx)}prefetched ${manifest.store_key} (${rows} rows) before swapping` +
+				`${tag(ctx)}prefetched ${source.storeKey} (${chunkCount} compressed chunks) before swapping` +
 					`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
 			);
-		} catch (err) {
-			console.warn(`${tag(ctx)}prefetch failed, swapping straight from KV: ${err}`);
+		} else {
+			const rows = await fillCache(ctx.storage, source.storeKey, kvSourceStream(env, source), source.storeBytes);
+			const dropped = pruneCache(ctx.storage, [source.storeKey]);
+			console.log(
+				`${tag(ctx)}prefetched ${source.storeKey} (${rows} rows) before swapping` +
+					`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
+			);
 		}
+		return true;
+	} catch (err) {
+		console.warn(`${tag(ctx)}prefetch failed, a swap will read from KV: ${err}`);
+		return false;
 	}
+}
 
-	loading = loadStore(env, ctx, manifest).finally(() => {
-		loading = null;
+/**
+ * Step 2: the swap itself — local when the prefetch landed, KV otherwise.
+ *
+ * Single-flighted per label through the same `loading` slot getEngine uses, so
+ * requests arriving during the swap wait on the load rather than observing the
+ * unloaded window. A manifest shape this object cannot serve reports
+ * `false` (kept its current store) for the same publish-must-not-fail reason as
+ * prefetchStore; a shape it CAN serve that fails to load still throws, because
+ * that is a real fault the publish phase must see and retry.
+ */
+export async function swapToStore(env: Env, ctx: LoadContext, manifest: StoreManifest): Promise<boolean> {
+	const state = stateFor(ctx.label);
+	const source = tryArchiveOfManifest(manifest, ctx.partition);
+	if (!source) {
+		console.warn(
+			`${tag(ctx)}not swapping to ${manifest.store_key}: this object cannot serve that manifest shape; ` +
+				`it keeps serving ${state.current?.storeKey ?? "nothing"}`,
+		);
+		return false;
+	}
+	if (state.current?.storeKey === source.storeKey) return false;
+	state.loading = loadStore(env, ctx, manifest).finally(() => {
+		state.loading = null;
 	});
-	await loading;
+	await state.loading;
 	return true;
 }
 
 export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 	// No manifest re-check on the warm path: a publish reaches this isolate by
 	// being pushed to it, so the hot path does no KV read at all.
-	if (current) {
-		return current.engine;
+	const state = stateFor(ctx.label);
+	if (state.current) {
+		return state.current.engine;
 	}
-	if (!loading) {
-		loading = loadStore(env, ctx).finally(() => {
-			loading = null;
+	if (!state.loading) {
+		state.loading = loadStore(env, ctx).finally(() => {
+			state.loading = null;
 		});
 	}
-	return loading;
+	return state.loading;
 }
 
-/** Non-blocking: the local engine if this isolate is already warm, else null. */
-export function tryGetLoadedEngine(): Engine | null {
-	return current?.engine ?? null;
+/** Non-blocking: the label's engine if this isolate is already warm, else null. */
+export function tryGetLoadedEngine(label?: string): Engine | null {
+	return stateFor(label).current?.engine ?? null;
+}
+
+/** The manifest the label's loaded store came from, or null when cold — how the
+ * gather learns partition_count without a KV read on the request path. */
+export function currentManifest(label?: string): StoreManifest | null {
+	return stateFor(label).current?.manifest ?? null;
+}
+
+/**
+ * The two-phase gather's view of a LOADED store (plan B5): the phase-1/phase-2
+ * wasm exports plus the identity facts the protocol rides on — which archive
+ * answered (the pinned-generation check) and which sort-key version its keys
+ * carry (streams from disagreeing builds must never be merged).
+ *
+ * Null when nothing is loaded for this label; the Durable Object acquires its
+ * engine FIRST (which loads on a cold sibling) and only then asks for this, so
+ * null here is a bug surfacing, not a state to serve through.
+ */
+export interface GatherOps {
+	/** The loaded archive's chunk-family key (carries `-p<k>` when partitioned). */
+	storeKey: string;
+	sortKeyVersion(): number;
+	/** `inlineRows` folds phase 2 into phase 1: the rows for the first N entries
+	 * ride back with the keys (see gather.ts's inlineRowBudget). */
+	queryKeys(opts: EngineSearchOptions, inlineRows: number): Uint8Array;
+	fetchRows(vpids: number[], fields: string[]): Uint8Array;
+	/** This partition's scores-bearing fuzzy candidates (the cross-partition race's phase 1). */
+	fuzzyCandidates(name: string): FuzzyCandidateWire[];
+}
+
+/** Decode `fuzzy_candidates`' packed reply: `n: u32, then n of (score: f32, oracle_id: 16B,
+ * vpid: u32, namelen: u16, name)`, all LITTLE-ENDIAN except the oracle's raw uuid bytes. */
+function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] {
+	const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+	const n = view.getUint32(0, true);
+	const out: FuzzyCandidateWire[] = [];
+	let at = 4;
+	for (let i = 0; i < n; i++) {
+		const score = view.getFloat32(at, true);
+		at += 4;
+		const hex = Array.from(packed.subarray(at, at + 16), (b) => b.toString(16).padStart(2, "0")).join("");
+		at += 16;
+		const oracleId =
+			hex === "00000000000000000000000000000000"
+				? ""
+				: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+		const vpid = view.getUint32(at, true);
+		at += 4;
+		const len = view.getUint16(at, true);
+		at += 2;
+		const foldedName = new TextDecoder().decode(packed.subarray(at, at + len));
+		at += len;
+		out.push({ score, oracleId, vpid, foldedName });
+	}
+	return out;
+}
+
+/** How many candidate classes each partition ships the race — see the wasm export's docstring
+ * for why 8 makes the bounded reply practically exact. */
+const FUZZY_CANDIDATE_CLASSES = 8;
+
+export function gatherOps(label?: string): GatherOps | null {
+	const current = stateFor(label).current;
+	if (!current) return null;
+	const { handle, engine, storeKey } = current;
+	return {
+		storeKey,
+		sortKeyVersion: () => handle.sort_key_version(),
+		queryKeys: (opts, inlineRows) => handle.query_keys(opts.filterTreeJson, engine.optsJsonFor(opts), inlineRows),
+		fetchRows: (vpids, fields) => handle.fetch_rows(Uint32Array.from(vpids), JSON.stringify(fields)),
+		fuzzyCandidates: (name) =>
+			decodeFuzzyCandidates(handle.fuzzy_candidates(name, FUZZY_SIMILARITY_FLOOR, FUZZY_CANDIDATE_CLASSES)),
+	};
 }

@@ -30,7 +30,7 @@ import {
 import { NO_STORE_HEADER } from "../http";
 import type { RouteContext } from "../registry";
 import { ManaCostError, parseManaCost } from "./mana";
-import { badRequestError, errorObject, notFoundError } from "./objects";
+import { errorObject, notFoundError } from "./objects";
 import { asBool, scryfallCatalogJson, scryfallJson, scryfallListJson } from "./respond";
 
 // ─── cache tiers ─────────────────────────────────────────────────────────────
@@ -52,6 +52,19 @@ import { asBool, scryfallCatalogJson, scryfallJson, scryfallListJson } from "./r
 const MIRRORED_CACHE: Record<string, string> = { "Cache-Control": "public" };
 const PARSE_MANA_CACHE: Record<string, string> = { "Cache-Control": "max-age=0, private, must-revalidate" };
 
+/**
+ * The tier on a MISS THAT IS ABOUT THE ROUTE rather than about Magic.
+ *
+ * Measured 2026-08-16, and it is a real split, not noise: `/sets/zzzz` — a well-formed set lookup
+ * that found nothing — is `public`, the same tier as the answer would have been, while
+ * `/catalog/not-a-catalog`, `/catalog/Card-Types` and `/sets/khm/extra` are `no-cache`. The
+ * difference is what the 404 is a statement ABOUT. A set code that does not exist is a fact about
+ * Magic and keeps the data tier; a path that addresses nothing is a fact about the URL, and
+ * Scryfall declines to cache those anywhere. This port had `public` on both, so a client that
+ * mistyped a catalog name got the mistake held at every edge for as long as the heuristics liked.
+ */
+const ROUTE_MISS_CACHE: Record<string, string> = { "Cache-Control": "no-cache" };
+
 // Scryfall's own wording, per route, measured on 2026-08-12 — these are NOT the generic body the
 // cards surface uses, and upstream answers all of them with that generic one (reported against
 // #922). A client that string-matches on `details` sees the difference.
@@ -64,6 +77,15 @@ const PARSE_MANA_CACHE: Record<string, string> = { "Cache-Control": "max-age=0, 
 // shared so neither can be "fixed" into the other.
 const SET_NOT_FOUND_DETAILS = "No Magic set found for the given code or ID";
 const CATALOG_NOT_FOUND_DETAILS = "The requested object or REST method was not found.";
+/**
+ * The wording for a path that addresses nothing, which is the same sentence the catalog miss uses.
+ *
+ * Spelled separately rather than aliased: they mean different things — "there is no such catalog"
+ * against "there is no such route" — and Scryfall happening to say the same thing today is not a
+ * reason to make one of them impossible to change without changing the other. Same discipline as
+ * the SET/CATALOG pair above, which are also one sentence apart on purpose.
+ */
+const ROUTE_NOT_FOUND_DETAILS = "The requested object or REST method was not found.";
 
 /**
  * The host a Catalog's own `uri` points at.
@@ -131,8 +153,13 @@ export async function setsHandler(
 		}
 		key = setTcgplayerKey(second);
 	} else if (second) {
-		// /sets takes at most one identifying segment; anything longer addresses nothing.
-		key = null;
+		// /sets takes at most one identifying segment; anything longer addresses nothing — and that
+		// is a statement about the URL, not about Magic, so it answers with the ROUTE miss rather
+		// than the set one. `/sets/khm/extra` on api.scryfall.com is "The requested object or REST
+		// method was not found." at `no-cache`, not "No Magic set found…" at `public` (measured
+		// 2026-08-16); this port sent the latter, which told a client the set was missing when the
+		// set was fine and the path was not.
+		return scryfallJson(notFoundError(ROUTE_NOT_FOUND_DETAILS), pretty, ROUTE_MISS_CACHE);
 	} else {
 		key = setCodeOrIdKey(identifier);
 	}
@@ -164,10 +191,14 @@ export async function catalogHandler(
 	params: Record<string, string>,
 ): Promise<Response> {
 	const pretty = asBool(params.pretty);
-	const wanted = (positionalArgs[0] ?? "").trim().toLowerCase();
+	// VERBATIM, not lowercased and not trimmed: catalog names are CASE-SENSITIVE on
+	// api.scryfall.com — `/catalog/Card-Types` is a 404 there and was a 200 here (measured
+	// 2026-08-16). Folding the case made this route answer a URL Scryfall does not serve, which is
+	// the same class of mistake as failing to answer one it does.
+	const wanted = positionalArgs[0] ?? "";
 	// Upstream's reasoning, kept: the list is fixed in code rather than discovered, so a name this
 	// instance has never imported 404s instead of reporting that Magic has no creature types.
-	if (!isCatalogName(wanted)) return scryfallJson(notFoundError(CATALOG_NOT_FOUND_DETAILS), pretty, MIRRORED_CACHE);
+	if (!isCatalogName(wanted)) return scryfallJson(notFoundError(CATALOG_NOT_FOUND_DETAILS), pretty, ROUTE_MISS_CACHE);
 
 	const value = await readValue(ctx, catalogKey(wanted));
 	if (value === null) return unpublished(pretty);
@@ -207,17 +238,27 @@ export function parseManaHandler(
 	params: Record<string, string>,
 ): Response {
 	const pretty = asBool(params.pretty);
-	const cost = params.cost;
-	if (cost === undefined) {
-		return scryfallJson(badRequestError("You must provide a cost parameter to parse."), pretty, PARSE_MANA_CACHE);
-	}
+	// A MISSING `cost` is the same request as an empty one, and both are answered: measured
+	// 2026-08-16, `/symbology/parse-mana` with no parameter and `?cost=` both return
+	// `200 {"object":"mana_cost","cost":null,"colors":[],"cmc":0.0,…}`. This port sent a 400 saying
+	// "You must provide a cost parameter to parse." — a sentence Scryfall does not own and a
+	// rejection it does not make. `parseManaCost("")` already produces exactly that body, because
+	// the empty-cost-is-null branch was measured when this route was written; only the guard in
+	// front of it was wrong. Upstream 400s here too (reported against #922).
+	const cost = params.cost ?? "";
 	try {
 		return scryfallJson(parseManaCost(cost), pretty, PARSE_MANA_CACHE);
 	} catch (err) {
 		if (!(err instanceof ManaCostError)) throw err;
 		// 422 with code `validation_error`, both measured: upstream sends 422 with code
 		// `bad_request`, which is the status right and the code wrong (reported against #922).
-		return scryfallJson(errorObject("validation_error", 422, err.message), pretty, PARSE_MANA_CACHE);
+		//
+		// `no-cache`, not the route's own tier: an unreadable cost is a fact about the REQUEST, and
+		// Scryfall declines to cache those anywhere (measured on `{QQQ}`, `!!!`, `{}`, `é` and
+		// `{W/U/B}`). The successful answer keeps `max-age=0, private, must-revalidate`, which is
+		// nearly the same instruction and is the one Scryfall sends there — copied rather than
+		// unified, because Scryfall really does send two different strings.
+		return scryfallJson(errorObject("validation_error", 422, err.message), pretty, ROUTE_MISS_CACHE);
 	}
 }
 

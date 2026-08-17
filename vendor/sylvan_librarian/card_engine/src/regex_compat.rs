@@ -49,16 +49,33 @@ pub(crate) enum CompiledRegex {
     Backtrack(Arc<fancy_regex::Regex>),
 }
 
+/// The inline flags every query regex is compiled with, and the exact prefix the two callers that
+/// read a compiled pattern back (`regex_tier`, `regex_required_factors`) strip before parsing it.
+///
+/// `i` is the `~*` operator the SQL path uses. `m` makes `^` and `$` match at every line boundary
+/// rather than only at the ends of the string, which is what Scryfall does — measured against
+/// api.scryfall.com on 2026-08-16, `o:/^Whenever you cast/ e:khm` returns Firja, Judge of Valor
+/// (khm/209), whose oracle text is `"Flying, lifelink\nWhenever you cast your second spell each
+/// turn, …"`, and `o:/lifelink$/ e:khm` returns it too. Oracle text is the only multi-line column,
+/// so this changes nothing on the single-line ones (name, type line, artist, set code).
+///
+/// It does NOT turn on `s`: `.` still stops at a newline, verified the same way
+/// (`o:/Flying.Whenever/ e:khm` is empty on Scryfall while `o:/Flying\nWhenever/ e:khm` is not).
+/// Together that is exactly PostgreSQL ARE's newline-sensitive mode — the SQL path spells the
+/// same pair `(?n)` — so the two paths still accept and answer one dialect.
+///
+/// Keep this a single `(?…)` group: the strippers match it by literal prefix.
+pub(crate) const QUERY_REGEX_FLAGS: &str = "(?im)";
+
 impl CompiledRegex {
-    /// Compile a query pattern, case-insensitively (every query regex is
-    /// `(?i)` — see the `~*` operator the SQL path uses).
+    /// Compile a query pattern under [`QUERY_REGEX_FLAGS`].
     ///
     /// The error string is the linear engine's, not the backtracking one's: if
     /// both reject the pattern it is malformed rather than merely non-linear,
     /// and the first message is the one that names the actual syntax problem.
     pub(crate) fn new(pattern: &str) -> Result<Self, String> {
         let translated = translate_are_escapes(pattern);
-        let cased = format!("(?i){translated}");
+        let cased = format!("{QUERY_REGEX_FLAGS}{translated}");
         match Regex::new(&cased) {
             Ok(re) => Ok(CompiledRegex::Fast(re)),
             Err(linear_err) => match fancy_regex::RegexBuilder::new(&cased)
@@ -86,7 +103,7 @@ impl CompiledRegex {
         }
     }
 
-    /// The compiled pattern source, `(?i)` prefix included.
+    /// The compiled pattern source, [`QUERY_REGEX_FLAGS`] prefix included.
     ///
     /// Feeds `regex_tier` (cost) and the #734 literal-factor extraction. The
     /// latter parses this with `regex_syntax`, which fails on a backtracking

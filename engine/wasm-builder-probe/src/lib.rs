@@ -204,10 +204,16 @@ pub extern "C" fn builder_finish() -> i64 {
                 report_err(&format!("pull_row failed at blob {idx}"));
                 return -1;
             }
-            if stats.printing_count != expected {
+            // Canonical + annex + annex-only-dropped, not `printing_count` alone: since the
+            // foreign annex, `printing_count` counts canonical rows only, and this check —
+            // whose one job is catching a truncated pull stream — aborted every successful
+            // MULTILINGUAL build after the fact. The three terms account for every staged row
+            // exactly (see StoreStats.annex_only_rows_dropped).
+            let built = stats.printing_count + stats.foreign_printing_count + stats.annex_only_rows_dropped;
+            if built != expected {
                 report_err(&format!(
-                    "row stream truncated: {} of {expected} printings",
-                    stats.printing_count
+                    "row stream truncated: {built} of {expected} rows (canonical {} + annex {} + annex-only dropped {})",
+                    stats.printing_count, stats.foreign_printing_count, stats.annex_only_rows_dropped
                 ));
                 return -1;
             }

@@ -229,6 +229,8 @@ This is smaller than textbook max-of-N math implies, because every query hits ev
 
 ## 9. Migration path
 
+> **SUPERSEDED — this section describes a rollout that was deliberately not taken.** Phases 3 and 4 (an env-var gate, two serving paths run side by side, the unpartitioned path removed later) were built and then deleted by owner decision: the partitioned multilingual store is the setup, not a migration target, so there is no flag, no second manifest key, and no unpartitioned serving path. The cost that buys is a few minutes of errors on the single transition deploy, recorded and accepted in `scripts/import-store.sh`'s header. §5.7's "changing PARTITION_COUNT is a migration" is separately superseded by the plan's Decision 3b (the count is manifest-driven and auto-scaled). The rest of this document still describes the shape that shipped.
+
 Land it in stages, each independently revertable, with the unpartitioned path intact until the last one.
 
 **Phase 0 — measure.** See §11. Do not start Phase 1 without a clean `/cards/*` latency distribution; its *spread* determines the entire cost of this project.

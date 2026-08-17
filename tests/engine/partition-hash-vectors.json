@@ -1,0 +1,150 @@
+{
+	"algorithm": "fnv1a64/oracle_id/v1",
+	"description": "FNV-1a 64-bit over the ASCII bytes of the canonical lowercase hyphenated oracle_id string. partition = hash % partition_count. Raw hashes pinned as decimal strings (u64 exceeds JS number range); N-generic by construction.",
+	"vectors": [
+		{
+			"oracle_id": "00000000-0000-0000-0000-000000000000",
+			"fnv1a64": "8950988243607919089"
+		},
+		{
+			"oracle_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+			"fnv1a64": "8581874840851305265"
+		},
+		{
+			"oracle_id": "5963eef1-1022-42b1-8a0c-fc9850bfc2a3",
+			"fnv1a64": "14632148136958941935"
+		},
+		{
+			"oracle_id": "8faa4330-07bb-4b65-810a-bbce29d3cd42",
+			"fnv1a64": "4453788708158089930"
+		},
+		{
+			"oracle_id": "b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6",
+			"fnv1a64": "4384203588371196652"
+		},
+		{
+			"oracle_id": "44623693-51d6-49ad-8cd7-140505caf02f",
+			"fnv1a64": "11632177860159622073"
+		},
+		{
+			"oracle_id": "8ae3562f-28b7-4462-96ed-be0cf7052ccc",
+			"fnv1a64": "1478165459819210989"
+		},
+		{
+			"oracle_id": "30cd69a8-7893-4075-94ca-04450ff821d3",
+			"fnv1a64": "14400979143441552140"
+		},
+		{
+			"oracle_id": "dc4e2134-f0c2-49aa-9ea3-ebf83af1445c",
+			"fnv1a64": "7903774540165062839"
+		},
+		{
+			"oracle_id": "9f0d82ae-38bf-45d8-8cda-982b6ead1d72",
+			"fnv1a64": "4345382264093577199"
+		},
+		{
+			"oracle_id": "d37c4e77-5023-4d13-9cfe-a43f513364bf",
+			"fnv1a64": "5638474254437832908"
+		},
+		{
+			"oracle_id": "5aa12aff-db3c-4be5-822b-3afdf536b33e",
+			"fnv1a64": "16880525152410948175"
+		},
+		{
+			"oracle_id": "ae2c89c2-66d6-484a-a176-9ea19e00f445",
+			"fnv1a64": "3805269910444421189"
+		},
+		{
+			"oracle_id": "f4d54a89-8409-4fbc-b01f-3b03f352820f",
+			"fnv1a64": "12419279999048535599"
+		},
+		{
+			"oracle_id": "3f372107-6c52-4f1f-8bf0-7b3fa21b2cae",
+			"fnv1a64": "11311143665994331306"
+		},
+		{
+			"oracle_id": "2afbaa9a-c171-4a8b-90f3-5250d8498356",
+			"fnv1a64": "2476756464155592872"
+		},
+		{
+			"oracle_id": "5187c0b2-1996-42ea-bd77-3031b3add596",
+			"fnv1a64": "14649883071341158747"
+		},
+		{
+			"oracle_id": "f5126c01-f765-44f4-9ced-0fc157f8b897",
+			"fnv1a64": "15382191329121238458"
+		},
+		{
+			"oracle_id": "c6e0574c-3e2b-4c40-b17a-05bce3d49309",
+			"fnv1a64": "11254447642540706633"
+		},
+		{
+			"oracle_id": "b0394cf2-12a0-4d4f-87e0-fe8937e6faff",
+			"fnv1a64": "881846599599337944"
+		},
+		{
+			"oracle_id": "4d720849-56cd-4b78-b9a7-7b9484702f0f",
+			"fnv1a64": "12836137211619232248"
+		},
+		{
+			"oracle_id": "d46c3fb6-f1c7-4a96-ae42-5bce17fc7c1d",
+			"fnv1a64": "5487917802962234549"
+		},
+		{
+			"oracle_id": "396b088d-f9af-4ee1-843f-dbe1633f9cc8",
+			"fnv1a64": "11592960996715716328"
+		},
+		{
+			"oracle_id": "032ec6e2-6cc3-4a97-9cc7-3233f5e11904",
+			"fnv1a64": "17977970456392228555"
+		},
+		{
+			"oracle_id": "d96ac790-428b-4a64-8dbd-6baa73eb6210",
+			"fnv1a64": "4827971976975321433"
+		},
+		{
+			"oracle_id": "7714af0e-41d9-4609-967f-27233b46055f",
+			"fnv1a64": "5735518948694717134"
+		},
+		{
+			"oracle_id": "5bac5225-70e4-4614-bb2f-49518ad93646",
+			"fnv1a64": "10013822249902301635"
+		},
+		{
+			"oracle_id": "9180f77f-c288-4a24-a35d-a16270b3d737",
+			"fnv1a64": "13031764508383283841"
+		},
+		{
+			"oracle_id": "c37770aa-4770-4198-b6a6-f9ff86dbb06b",
+			"fnv1a64": "17041948560160053206"
+		},
+		{
+			"oracle_id": "06e9287b-56d4-443e-97ba-b5dcdc4fa989",
+			"fnv1a64": "7731335804536505958"
+		},
+		{
+			"oracle_id": "645b5784-a6f7-4cf3-966a-e1a51420b96b",
+			"fnv1a64": "2709798351974731130"
+		},
+		{
+			"oracle_id": "3b319540-4db1-43d3-8f4d-f5a276ad78e4",
+			"fnv1a64": "15619916127208538659"
+		},
+		{
+			"oracle_id": "96cb97ca-4ce0-4d33-86fb-4db4ce1956be",
+			"fnv1a64": "9763923216918247093"
+		},
+		{
+			"oracle_id": "3492cee8-b854-449a-ada4-a4e8a4333d87",
+			"fnv1a64": "3234255893935804106"
+		},
+		{
+			"oracle_id": "e96ce18e-b002-4b5b-9560-c1634320e164",
+			"fnv1a64": "9897586952170286500"
+		},
+		{
+			"oracle_id": "212d058b-69c6-4dc2-8c93-bdfe26dc2ffe",
+			"fnv1a64": "13540871180135947102"
+		}
+	]
+}

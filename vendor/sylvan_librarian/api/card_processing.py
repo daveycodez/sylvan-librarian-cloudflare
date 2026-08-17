@@ -74,8 +74,8 @@ def rarity_text_to_int(rarity_text: str) -> int:
         "common": 0,
         "uncommon": 1,
         "rare": 2,
-        "mythic": 3,
-        "special": 4,
+        "special": 3,
+        "mythic": 4,
         "bonus": 5,
     }
     return rarity_map.get(rarity_text.lower(), -1)

@@ -18,17 +18,24 @@ import {
 	chunkHeadroomWarning,
 	chunkKey,
 	gzipBytes,
+	isPartitionedManifest,
 	KV_CHUNK_BYTES,
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
-	kvStoreStream,
+	kvSourceStream,
 	MANIFEST_KEY,
+	manifestServableBy,
+	manifestShapeProblem,
+	PARTITION_HASH_ALGO,
+	partitionStoreKey,
 	readManifest,
 	type StagedRow,
 	splitStore,
 	staleStoreKeys,
+	storeKeyStem,
+	writeManifest,
 } from "../../src/engine/store-kv";
-import type { Env, StoreManifest } from "../../src/engine/types";
+import type { Env, StoreManifest, StoreManifestPartition } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
 
 /** A store whose every byte is checkable: value at i is derived from i. */
@@ -227,6 +234,24 @@ const manifestFor = (store: Uint8Array, key = "card-store-v1-123.store"): StoreM
 	chunk_count: splitStore(store).length,
 });
 
+/**
+ * One manifest's archive as a stream. In production a reader gets its
+ * ArchiveSource from archiveOfManifest (partitions[k]); these tests drive the
+ * CHUNK GRID rather than the partition selection, so they build the source from
+ * the manifest's own fields and hand it to the same kvSourceStream the loader
+ * uses. `kvStoreStream` used to do exactly this in src/ — it was deleted with
+ * the unpartitioned loader, because a partitioned manifest's top-level
+ * store_key is a stem holding no chunks.
+ */
+const kvStoreStream = (env: Env, manifest: StoreManifest) =>
+	kvSourceStream(env, {
+		storeKey: manifest.store_key,
+		storeBytes: manifest.store_bytes,
+		...(manifest.store_gzip_bytes !== undefined ? { gzipBytes: manifest.store_gzip_bytes } : {}),
+		...(manifest.chunk_count !== undefined ? { chunkCount: manifest.chunk_count } : {}),
+		cardCount: manifest.card_count,
+	});
+
 async function drain(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 	const reader = stream.getReader();
 	const parts: Uint8Array[] = [];
@@ -397,7 +422,22 @@ describe("readManifest", () => {
 	});
 
 	test("parses a published manifest", async () => {
-		const manifest = manifestFor(syntheticStore(10));
+		// A PARTITIONED one, because that is the only shape readManifest hands
+		// back — the unpartitioned shape is refused, and has its own test below.
+		const manifest: StoreManifest = {
+			...manifestFor(syntheticStore(10)),
+			partition_count: 1,
+			partition_hash: PARTITION_HASH_ALGO,
+			partitions: [
+				{
+					store_key: partitionStoreKey(1, "123", 0),
+					store_bytes: 10,
+					chunk_count: 1,
+					card_count: 1,
+					printing_count: 1,
+				},
+			],
+		};
 		const env = { STORE_KV: fakeKv({ [MANIFEST_KEY]: JSON.stringify(manifest) }) } as Env;
 		expect((await readManifest(env))?.store_key).toBe(manifest.store_key);
 	});
@@ -411,6 +451,187 @@ describe("readManifest", () => {
 			},
 		} as unknown as Env;
 		expect(readManifest(env)).rejects.toThrow(/KV binding is not available/);
+	});
+});
+
+// The manifest: ONE key, ONE shape. Every publisher writes a partitioned
+// manifest to `store:manifest` and every reader gets one back — an unpartitioned
+// manifest is refused on both sides, loudly, as the builder bug it would be.
+describe("the manifest", () => {
+	const partition = (k: number, over: Partial<StoreManifestPartition> = {}): StoreManifestPartition => ({
+		store_key: partitionStoreKey(2026081501, "1755300000", k),
+		store_bytes: 40_000_000,
+		store_gzip_bytes: 17_000_000,
+		chunk_count: 1,
+		card_count: 4_000,
+		printing_count: 12_000,
+		...over,
+	});
+
+	const v2 = (over: Partial<StoreManifest> = {}): StoreManifest => ({
+		store_key: storeKeyStem(2026081501, "1755300000"),
+		built_at: "1755300000",
+		card_count: 8_000,
+		printing_count: 24_000,
+		upstream_commit: "vendored",
+		format_version: 2026081501,
+		content_generation: 20,
+		store_bytes: 80_000_000,
+		store_gzip_bytes: 34_000_000,
+		chunk_count: 2,
+		partition_count: 2,
+		partition_hash: PARTITION_HASH_ALGO,
+		partitions: [partition(0), partition(1)],
+		...over,
+	});
+
+	/** A KV stand-in that also records puts/deletes, for the writeManifest round trip. */
+	function fakeKvStore() {
+		const entries: Record<string, string> = {};
+		return {
+			entries,
+			kv: {
+				get: async (key: string) => entries[key] ?? null,
+				put: async (key: string, value: string) => {
+					entries[key] = value;
+				},
+				delete: async (key: string) => {
+					delete entries[key];
+				},
+			} as unknown as Env["STORE_KV"],
+		};
+	}
+
+	test("the discriminant is partition_count's presence, nothing subtler", () => {
+		expect(isPartitionedManifest(v2())).toBe(true);
+		expect(isPartitionedManifest(manifestFor(syntheticStore(10)))).toBe(false);
+	});
+
+	test("writeManifest → readManifest round-trips a manifest field-for-field", async () => {
+		const { kv } = fakeKvStore();
+		const env = { STORE_KV: kv } as Env;
+		const manifest = v2();
+		await writeManifest(env, manifest);
+		expect(await readManifest(env)).toEqual(manifest);
+	});
+
+	// ONE POINTER. There is no shape→key derivation left to get wrong because
+	// there is no second key: a partitioned manifest is the only thing that can
+	// be written, and `store:manifest` is the only place it goes.
+	describe("the one manifest pointer", () => {
+		test("the key is store:manifest, and a publish writes exactly it", async () => {
+			expect(MANIFEST_KEY).toBe("store:manifest");
+			const { kv, entries } = fakeKvStore();
+			await writeManifest({ STORE_KV: kv } as Env, v2());
+			expect(Object.keys(entries)).toEqual([MANIFEST_KEY]);
+		});
+
+		test("a republish overwrites in place rather than opening a second pointer", async () => {
+			const { kv, entries } = fakeKvStore();
+			const env = { STORE_KV: kv } as Env;
+			await writeManifest(env, v2());
+			const next = v2({ built_at: "1755400000" });
+			await writeManifest(env, next);
+			expect(Object.keys(entries)).toEqual([MANIFEST_KEY]);
+			expect(await readManifest(env)).toEqual(next);
+		});
+
+		test("nothing published yet reads as null, not as an error", async () => {
+			const { kv } = fakeKvStore();
+			expect(await readManifest({ STORE_KV: kv } as Env)).toBeNull();
+		});
+	});
+
+	// THE ONE-TIME TRANSITION, from the reader's side: a store published before
+	// the partitioned format is still physically in KV, and meeting it must be a
+	// loud, specific failure rather than a silently-served fallback. There is no
+	// unpartitioned reader left to hand it to.
+	describe("a manifest that predates the partitioned store", () => {
+		test("readManifest refuses it, naming the format and the repair", async () => {
+			const { kv, entries } = fakeKvStore();
+			entries[MANIFEST_KEY] = JSON.stringify(manifestFor(syntheticStore(1000)));
+			const env = { STORE_KV: kv } as Env;
+			expect(readManifest(env)).rejects.toThrow(EngineUnavailableError);
+			expect(readManifest(env)).rejects.toThrow(/partition_count/);
+			// The repair is a rebuild, and the message says so — an operator meeting
+			// this 503 should not have to re-derive that no fallback exists.
+			expect(readManifest(env)).rejects.toThrow(/next import/);
+		});
+
+		test("writeManifest refuses to CREATE one, naming the builder", async () => {
+			// The mirror of the read side: this shape is a builder bug, so the error
+			// names both publishers rather than describing a mode.
+			const { kv, entries } = fakeKvStore();
+			const env = { STORE_KV: kv } as Env;
+			expect(writeManifest(env, manifestFor(syntheticStore(1000)))).rejects.toThrow(/partitions auto/);
+			expect(entries[MANIFEST_KEY]).toBeUndefined();
+		});
+	});
+
+	// The reader-side guard on PUSHED manifests, which never go through
+	// readManifest and so have no other shape check (see SearchEngine.preparePublish).
+	describe("manifestServableBy", () => {
+		test("a partition-named object serves partitioned shapes", () => {
+			expect(manifestServableBy(0, v2())).toBe(true);
+			expect(manifestServableBy(3, v2())).toBe(true);
+		});
+
+		test("an unpartitioned manifest is servable by nobody", () => {
+			expect(manifestServableBy(0, manifestFor(syntheticStore(10)))).toBe(false);
+			expect(manifestServableBy(undefined, manifestFor(syntheticStore(10)))).toBe(false);
+		});
+
+		test("a label with no partition cannot serve anything — that is a naming bug", () => {
+			// Every engine object is engine-<region>[-<n>]-p<k>. A suffix-less label
+			// reaching here would otherwise cache a manifest it then wedges on.
+			expect(manifestServableBy(undefined, v2())).toBe(false);
+		});
+	});
+
+	test("the partition keys carry the -p suffix and the stem carries none", () => {
+		expect(partitionStoreKey(2026081501, "1755300000", 3)).toBe("card-store-v2026081501-1755300000-p3.store");
+		expect(storeKeyStem(2026081501, "1755300000")).toBe("card-store-v2026081501-1755300000.store");
+	});
+
+	describe("what the producer refuses", () => {
+		test("a healthy v2 manifest has nothing to complain about", () => {
+			expect(manifestShapeProblem(v2())).toBeNull();
+		});
+
+		test("an unpartitioned manifest is itself the problem, named as a builder bug", () => {
+			const problem = manifestShapeProblem(manifestFor(syntheticStore(1000)));
+			expect(problem).toContain("partition_count");
+			expect(problem).toContain("--partitions auto");
+			expect(problem).toContain("ImportCoordinator");
+		});
+
+		test("partition_count disagreeing with partitions[] is refused", () => {
+			expect(manifestShapeProblem(v2({ partition_count: 3 }))).toContain("partition_count 3");
+		});
+
+		test("an unknown partition_hash is refused at the source", () => {
+			// The loader refuses unknown hashes too (its own defense); the writer
+			// refusing first means the bad manifest never exists to be refused.
+			expect(manifestShapeProblem(v2({ partition_hash: "md5/name/v9" }))).toContain("partition_hash");
+		});
+
+		test("an incomplete partition record is refused", () => {
+			expect(manifestShapeProblem(v2({ partitions: [partition(0), partition(1, { chunk_count: 0 })] }))).toContain(
+				"partition 1",
+			);
+		});
+
+		test("totals that are not the sum of their parts are refused", () => {
+			expect(manifestShapeProblem(v2({ store_bytes: 1 }))).toContain("store_bytes");
+			expect(manifestShapeProblem(v2({ chunk_count: 99 }))).toContain("chunk_count");
+		});
+
+		test("writeManifest throws instead of publishing the problem", async () => {
+			const { kv, entries } = fakeKvStore();
+			const env = { STORE_KV: kv } as Env;
+			expect(writeManifest(env, v2({ partition_count: 9 }))).rejects.toThrow(/refusing to publish/);
+			expect(entries[MANIFEST_KEY]).toBeUndefined();
+		});
 	});
 });
 
@@ -449,6 +670,55 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 		expect(src).toContain("STORE_CONTENT_GENERATION");
 		expect(src).toMatch(/!==\s*STORE_CONTENT_GENERATION/);
 		expect(src).toMatch(/!manifest\.store_bytes\s*\|\|\s*!manifest\.chunk_count/);
+	});
+
+	// The gate validates the partition shape UNCONDITIONALLY and probes EVERY
+	// partition. There is no flag left to pick a key or a shape with, which is
+	// the property worth pinning: a re-introduced conditional here is how a
+	// deploy would green-light a store the serving path cannot load.
+	test("store-age validates the partition shape with no mode selection", () => {
+		const src = read("store-age.ts");
+		expect(src).not.toContain("PARTITIONED_STORE");
+		expect(src).not.toContain("manifestKeyFor");
+		expect(src).toContain("MANIFEST_KEY");
+		// The shape check is a plain refusal, not an arm of a conditional.
+		expect(src).toMatch(/!Number\.isInteger\(manifest\.partition_count\)/);
+		// Every partition's last chunk is probed: an interrupted publish can leave
+		// 0..k complete while k+1 is missing, and one absent partition 503s every
+		// card it owns.
+		expect(src).toMatch(/for \(const target of manifest\.partitions \?\? \[\]\)/);
+	});
+
+	test("store-age watches all_cards, the corpus the one pipeline reads", () => {
+		const src = read("store-age.ts");
+		expect(src).toMatch(/const DUMP_KINDS = \["all_cards", "default_cards", "oracle_tags", "art_tags"\]/);
+	});
+});
+
+// The publishers, pinned at the source level the way the store-age gate is:
+// every one of them writes the single manifest key, and every sweeper protects
+// the build the live manifest references.
+describe("the publishers", () => {
+	const read = (p: string) => readFileSync(join(import.meta.dir, "../../scripts", p), "utf8");
+
+	test("seed-remote-kv publishes the manifest at the one key", () => {
+		const src = read("seed-remote-kv.ts");
+		expect(src).toMatch(/"put", MANIFEST_KEY/);
+		expect(src).not.toContain("MANIFEST_KEY_V2");
+	});
+
+	test("seed-local-store seeds the same key, so dev reads through the same loader", () => {
+		const src = read("seed-local-store.ts");
+		expect(src).toMatch(/localKvPut\(MANIFEST_KEY/);
+		expect(src).not.toContain("MANIFEST_KEY_V2");
+	});
+
+	test("every deploy sweep protects the build the live manifest references", () => {
+		const kvPrune = read("kv-prune.ts");
+		expect(kvPrune).toContain("export async function liveManifestBuiltAts");
+		expect(kvPrune).not.toContain("MANIFEST_KEY_V2");
+		expect(read("prune-kv.ts")).toContain("liveManifestBuiltAts(remote)");
+		expect(read("seed-remote-kv.ts")).toContain("liveManifestBuiltAts(true)");
 	});
 });
 
@@ -562,6 +832,126 @@ describe("staleStoreKeys", () => {
 		const others = ["store:manifest", "rulings:v2:00", "reference:v2:sets:list", "rulings:meta"];
 		const withStores = [...others, "store:card-store-v11-1.store:0", "store:card-store-v11-2.store:0"];
 		expect(staleStoreKeys(withStores, 1, "2")).toEqual(["store:card-store-v11-1.store:0"]);
+	});
+
+	// A partitioned build is N chunk families sharing one built_at, and retention must treat them as
+	// ONE build: retiring some partitions of a generation while keeping others leaves a manifest
+	// pointing at a store with holes, which 503s every card the missing partitions own.
+	describe("partitioned families", () => {
+		/** Two partitioned builds (N=3 and N=2) plus one suffix-less pre-partition
+		 * build, mixed chunk seqs. */
+		const partitioned = [
+			// built_at 1000, N=3
+			"store:card-store-v2026081501-1000-p0.store:0",
+			"store:card-store-v2026081501-1000-p0.store:1",
+			"store:card-store-v2026081501-1000-p1.store:0",
+			"store:card-store-v2026081501-1000-p2.store:0",
+			// built_at 2000, N=2
+			"store:card-store-v2026081501-2000-p0.store:0",
+			"store:card-store-v2026081501-2000-p1.store:0",
+			// the pre-partition build, built_at 500 — suffix-less family
+			"store:card-store-v2026081402-500.store:0",
+			"store:card-store-v2026081402-500.store:1",
+		];
+
+		test("an N-family retires all-or-nothing, grouped by built_at", () => {
+			const stale = staleStoreKeys(partitioned, 1, "2000");
+			// EVERY key of build 1000 goes — all three partitions, every chunk.
+			expect(stale.filter((k) => k.includes("-1000-")).length).toBe(4);
+			// And NO key of the kept build does.
+			expect(stale.some((k) => k.includes("-2000-"))).toBe(false);
+		});
+
+		test("THE ORPHANED PRE-PARTITION FAMILY IS COLLECTED BY THE ORDINARY SWEEP", () => {
+			// The one-time transition's only leftover in KV. Once `store:manifest`
+			// names a partitioned build, the generation-19 chunk family is referenced
+			// by nothing — and because the pattern matches SUFFIX-LESS families too,
+			// it groups by its own built_at, ages out of the newest-`keep` set, and
+			// goes. No one-off cleanup script, and nothing to remember to run.
+			//
+			// keep=2 across three builds: 500 is the oldest and the one to go.
+			const stale = staleStoreKeys(partitioned, 2, "2000").sort();
+			expect(stale).toEqual(["store:card-store-v2026081402-500.store:0", "store:card-store-v2026081402-500.store:1"]);
+		});
+
+		test("the suffix-less family is matched at all — the property the sweep rests on", () => {
+			// If the pattern had been tightened to REQUIRE `-p<k>` when the
+			// partitioned store landed, the pre-partition family would be invisible to
+			// retention and sit in a 1GB namespace forever. Alone against keep=1 with
+			// a newer partitioned build, every one of its chunks must be named.
+			const orphaned = [
+				"store:card-store-v2026081402-500.store:0",
+				"store:card-store-v2026081402-500.store:1",
+				"store:card-store-v2026081501-2000-p0.store:0",
+			];
+			expect(staleStoreKeys(orphaned, 1, "2000").sort()).toEqual([
+				"store:card-store-v2026081402-500.store:0",
+				"store:card-store-v2026081402-500.store:1",
+			]);
+		});
+
+		test("the live partitioned build is never retired, whatever its age", () => {
+			// A republished older manifest is a rollback; the sweep must not take the
+			// site down behind it. Same property the suffix-less test above pins, for
+			// -p keys.
+			const stale = staleStoreKeys(partitioned, 1, "1000");
+			expect(stale.some((k) => k.includes("-1000-"))).toBe(false);
+		});
+
+		test("a -p suffix does not leak into the build grouping", () => {
+			// The regex must group by built_at alone: if p10 parsed as part of the
+			// timestamp, one partition of a build could be "newer" than its siblings.
+			const keys = [
+				"store:card-store-v1-100-p0.store:0",
+				"store:card-store-v1-100-p10.store:0",
+				"store:card-store-v1-200-p0.store:0",
+			];
+			expect(staleStoreKeys(keys, 1, "200")).toEqual([
+				"store:card-store-v1-100-p0.store:0",
+				"store:card-store-v1-100-p10.store:0",
+			]);
+		});
+	});
+
+	// Age alone does not decide. A build the live manifest references is a build
+	// the serving path depends on, whatever its timestamp says, so every sweeper
+	// passes that built_at alongside the one it just published.
+	describe("the protect list", () => {
+		// Three builds against keep=2, oldest first — the shape where an age-only
+		// sweep and a protected sweep genuinely disagree.
+		const dualWindow = [
+			"store:card-store-v2026081402-500.store:0",
+			"store:card-store-v2026081402-500.store:1",
+			"store:card-store-v2026081501-1000-p0.store:0",
+			"store:card-store-v2026081501-1000-p1.store:0",
+			"store:card-store-v2026081501-2000-p0.store:0",
+			"store:card-store-v2026081501-2000-p1.store:0",
+		];
+
+		test("WITHOUT protection the sweep takes the oldest family — the hazard is real", () => {
+			const stale = staleStoreKeys(dualWindow, 2, "2000");
+			expect(stale.filter((k) => k.includes("-500.")).length).toBe(2);
+		});
+
+		test("a family the live manifest references survives, however old", () => {
+			const stale = staleStoreKeys(dualWindow, 2, ["2000", "500"]);
+			expect(stale).toEqual([]);
+		});
+
+		test("protection is per-build, not blanket: unreferenced old builds still retire", () => {
+			const withOlder = ["store:card-store-v2026081501-900-p0.store:0", ...dualWindow];
+			const stale = staleStoreKeys(withOlder, 2, ["2000", "500"]);
+			expect(stale).toEqual(["store:card-store-v2026081501-900-p0.store:0"]);
+		});
+
+		test("a plain string still means one protected build — the old call shape", () => {
+			expect(staleStoreKeys(dualWindow, 1, "500").filter((k) => k.includes("-500."))).toEqual([]);
+		});
+
+		test("empty strings in the protect list protect nothing", () => {
+			const stale = staleStoreKeys(dualWindow, 2, ["2000", ""]);
+			expect(stale.filter((k) => k.includes("-500.")).length).toBe(2);
+		});
 	});
 });
 

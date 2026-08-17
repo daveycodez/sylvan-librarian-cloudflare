@@ -8,31 +8,42 @@
 // are auto-stubbed, throwing loudly if ever actually called.
 
 import wasmModule from "../../engine/wasm-import/pkg/sylvan_wasm_import.wasm";
+import { splitDraftEmit } from "../import-spill";
 
 export interface ImportEmitHandlers {
-	onDraft?(bytes: Uint8Array): void;
+	/**
+	 * One RowDraft, already split off its 8-byte framing: `partHash` is the
+	 * full 64-bit fnv1a64(oracle_id) the wasm stamped on it — N-generic, so the
+	 * build phase mods it by whatever partition_count it later chooses.
+	 */
+	onDraft?(bytes: Uint8Array, partHash: bigint): void;
 	onSpill?(bytes: Uint8Array): void;
 	onChunk?(bytes: Uint8Array): void;
-	onRow?(bytes: Uint8Array): void;
 	onTagData?(bytes: Uint8Array): void;
+	/** One scores batch's routing-filter input: `<partition>\t<key>\n` lines,
+	 * the same text the native builder writes to `routing-keys.tsv`. */
+	onRoutingKeys?(bytes: Uint8Array): void;
 	onStats?(stats: Record<string, number>): void;
 	/** Serve spilled row blob #index (add order) during the store build. */
 	pullRow?(index: number): Uint8Array | null;
 }
 
-const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7 } as const;
+const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7, ROUTING: 8 } as const;
 
 interface ImportExports {
 	memory: WebAssembly.Memory;
 	alloc(len: number): number;
 	dealloc(ptr: number, len: number): void;
 	reset(): void;
+	canonical_add_lines(ptr: number, len: number): bigint;
 	transform_lines(ptr: number, len: number): bigint;
 	tags_begin(): void;
 	tags_add_lines(ptr: number, len: number): bigint;
 	tags_finish(kind: number): bigint;
 	tags_export(): bigint;
 	tags_restore(ptr: number, len: number): bigint;
+	scores_add_drafts(ptr: number, len: number, partitionCount: number): bigint;
+	scores_finish(): bigint;
 	agg_drafts(ptr: number, len: number): bigint;
 	agg_finish(): bigint;
 	labels_add_lines(ptr: number, len: number): bigint;
@@ -70,9 +81,13 @@ export class ImportWasm {
 					case EMIT.LOG:
 						console.log(`[wasm-import] ${decoder.decode(view(ptr, len))}`);
 						return;
-					case EMIT.DRAFT:
-						h.onDraft?.(view(ptr, len).slice());
+					case EMIT.DRAFT: {
+						if (h.onDraft) {
+							const { partHash, draft } = splitDraftEmit(view(ptr, len).slice());
+							h.onDraft(draft, partHash);
+						}
 						return;
+					}
 					case EMIT.STATS:
 						h.onStats?.(JSON.parse(decoder.decode(view(ptr, len))) as Record<string, number>);
 						return;
@@ -83,10 +98,17 @@ export class ImportWasm {
 						h.onChunk?.(view(ptr, len).slice());
 						return;
 					case EMIT.ROW:
-						h.onRow?.(view(ptr, len).slice());
+						// Per-row JSON, upstream's D1 cards-table feed. The wasm module
+						// (engine/, shared with the native driver) still emits it, but no
+						// Workers-side consumer exists — the row_batches table it once fed
+						// was write-only and is deleted. Dropped without copying: the
+						// bytes never leave wasm memory.
 						return;
 					case EMIT.TAGDATA:
 						h.onTagData?.(view(ptr, len).slice());
+						return;
+					case EMIT.ROUTING:
+						h.onRoutingKeys?.(view(ptr, len).slice());
 						return;
 					default:
 						throw new Error(`wasm-import emitted unknown kind ${kind}`);
@@ -210,12 +232,44 @@ export class ImportWasm {
 		return this.sendBytes(encoder.encode(lines), (p, l) => this.ex.labels_add_lines(p, l), "labels_add_lines");
 	}
 
+	/**
+	 * Feed `default_cards` JSONL; wasm keeps each line's `id` in the canonical
+	 * id set — the membership `transform_lines` marks every row's is_canonical
+	 * by. Rides `TagData` like the labels, for the same one-persistence-path
+	 * reason; returns ids newly added (the coordinator sums this for its
+	 * coverage check — unlike labels, an empty set is a broken import).
+	 */
+	canonicalAddLinesRaw(bytes: Uint8Array): bigint {
+		return this.sendBytes(bytes, (p, l) => this.ex.canonical_add_lines(p, l), "canonical_add_lines");
+	}
+
 	tagsExport(): void {
 		if (this.ex.tags_export() < 0n) throw new Error("wasm-import tags_export failed");
 	}
 
 	tagsRestore(bytes: Uint8Array): bigint {
 		return this.sendBytes(bytes, (p, l) => this.ex.tags_restore(p, l), "tags_restore");
+	}
+
+	/**
+	 * Feed one staged draft batch into the CORPUS-WIDE finalize tables — every partition's drafts,
+	 * in emission order.
+	 *
+	 * The cubecobra score is a percent-rank over the whole corpus's distinct card names, and the
+	 * illustration count groups by (illustration_id, card_name), a key with no oracle_id to
+	 * co-locate it; the per-partition loop can compute neither and is handed both. The tables ride
+	 * the TagData snapshot, like the canonical id set. The batch bytes are passed through exactly
+	 * as staged (they are already the length-prefixed framing the wasm expects).
+	 */
+	scoresAddDrafts(batch: Uint8Array, partitionCount: number): bigint {
+		return this.sendBytes(batch, (p, l) => this.ex.scores_add_drafts(p, l, partitionCount), "scores_add_drafts");
+	}
+
+	/** Seal the corpus-wide tables; the per-partition loop reads them and cannot rebuild them. */
+	scoresFinish(): bigint {
+		const rc = this.ex.scores_finish();
+		if (rc < 0n) throw new Error("wasm-import scores_finish failed (see [wasm-import] log)");
+		return rc;
 	}
 
 	aggDrafts(batch: Uint8Array): bigint {

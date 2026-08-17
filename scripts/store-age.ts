@@ -43,7 +43,7 @@
 // is exactly the failure this split exists to make visible. Every path says
 // why on stderr; callers must show that text, not discard it.
 
-import { chunkKey, MANIFEST_KEY, STORE_CONTENT_GENERATION } from "../src/engine/store-kv";
+import { chunkKey, MANIFEST_KEY, routingFilterKey, STORE_CONTENT_GENERATION } from "../src/engine/store-kv";
 import { kvName } from "./project-config";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -52,8 +52,9 @@ import { wranglerArgv } from "./wrangler-cmd";
 const MAX_AGE_HOURS = 7 * 24;
 
 const BULK_DATA_URL = process.env.SCRYFALL_BULK_URL ?? "https://api.scryfall.com/bulk-data";
-/** The dumps an import actually reads; a refresh of any of them is a change. */
-const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags"];
+/** The dumps an import actually reads. A refresh of any of them is a change the
+ * live store does not have; the rest of the listing is not this gate's business. */
+const DUMP_KINDS = ["all_cards", "default_cards", "oracle_tags", "art_tags"];
 
 /**
  * When Scryfall last regenerated the dumps this store is built from, as unix
@@ -148,7 +149,7 @@ if ((await proc.exited) !== 0) {
 	// A namespace that has never been published to simply has no manifest key.
 	// That is an ANSWER — "nothing here yet" — not a failure to ask.
 	if (/not found|does not exist|no value/i.test(detail)) {
-		console.error(`store-age: ${WHERE} holds no manifest — nothing has ever been published.`);
+		console.error(`store-age: ${WHERE} holds no manifest at ${MANIFEST_KEY} — nothing has been published.`);
 		process.exit(1);
 	}
 	console.error(`store-age: could not read the manifest from ${WHERE} —\n  ${detail}`);
@@ -166,6 +167,9 @@ let manifest: {
 	chunk_count?: number;
 	store_key?: string;
 	content_generation?: number;
+	partition_count?: number;
+	format_version?: number;
+	partitions?: { store_key?: string; store_bytes?: number; chunk_count?: number }[];
 };
 try {
 	manifest = JSON.parse(json) as typeof manifest;
@@ -199,23 +203,65 @@ if (!manifest.store_bytes || !manifest.chunk_count) {
 	);
 	process.exit(1);
 }
+// The partition shape is validated UNCONDITIONALLY: readers load only
+// partitioned archives, so a manifest without the shape — an unpartitioned one
+// left by a store that predates the format, or a malformed partitions[] — is a
+// store this deployment cannot serve. Loudly "no store", never quietly
+// "current", so the build rebuilds it rather than deploying dark.
+//
+// The check mirrors manifestShapeProblem's producer-side one (this script
+// cannot import it wholesale: that also validates the totals against archive
+// files this machine does not hold).
+if (
+	!Number.isInteger(manifest.partition_count) ||
+	!Array.isArray(manifest.partitions) ||
+	manifest.partitions.length !== manifest.partition_count ||
+	manifest.partitions.some((p) => !p.store_key || !p.store_bytes || !p.chunk_count)
+) {
+	console.error(
+		`store-age: the manifest at ${MANIFEST_KEY} is generation ${STORE_CONTENT_GENERATION} but its ` +
+			`partition shape is malformed or absent (partition_count=${manifest.partition_count}, ` +
+			`partitions=${manifest.partitions?.length}). This deployment serves partitioned archives only.`,
+	);
+	console.error("           Treating it as no store at all, so the build rebuilds it.");
+	process.exit(1);
+}
 
 // A manifest is a POINTER, and a pointer can outlive what it points at: empty
 // the namespace key by key and the manifest can be the last one standing (or
 // simply the last to propagate), at which point this script would report a
 // healthy store, skip the import, and leave every request 503ing on a missing
 // chunk. So prove the bytes are really there before believing the manifest.
-// One extra read, on the store's LAST chunk — a truncated upload loses the
-// tail first, so the last chunk is the one that catches a half-published
-// store as well as an emptied one.
-const lastChunk = chunkKey(manifest.store_key ?? "", (manifest.chunk_count ?? 1) - 1);
-const probe = Bun.spawnSync(kvGetArgv(lastChunk));
-if (probe.exitCode !== 0) {
-	console.error(
-		`store-age: the manifest names ${manifest.store_key} but ${lastChunk} is not in ${WHERE} — the store is`,
-	);
-	console.error("           incomplete or was emptied. Treating it as no store at all, so the build rebuilds it.");
-	process.exit(1);
+// One extra read per archive, on its LAST chunk — a truncated upload loses the
+// tail first, so the last chunk catches a half-published store as well as an
+// emptied one. EVERY partition is probed, because retention retires families
+// all-or-nothing but an interrupted publish does not: partitions 0..k can be
+// complete while k+1 is missing, and one absent partition 503s every card it
+// owns.
+for (const target of manifest.partitions ?? []) {
+	const lastChunk = chunkKey(target.store_key ?? "", (target.chunk_count ?? 1) - 1);
+	const probe = Bun.spawnSync(kvGetArgv(lastChunk));
+	if (probe.exitCode !== 0) {
+		console.error(
+			`store-age: the manifest names ${target.store_key} but ${lastChunk} is not in ${WHERE} — the store is`,
+		);
+		console.error("           incomplete or was emptied. Treating it as no store at all, so the build rebuilds it.");
+		process.exit(1);
+	}
+}
+
+// The routing filter is OPTIONAL to serve with — a missing one just means the
+// bare-id routes fan out — so a missing one is a warning here, not a rebuild.
+// The generation bump that shipped the filter is what forces the rebuild
+// (STORE_CONTENT_GENERATION 21); this line is how you see it landed.
+if (manifest.format_version && manifest.built_at) {
+	const key = routingFilterKey(manifest.format_version, String(manifest.built_at));
+	if (Bun.spawnSync(kvGetArgv(key)).exitCode !== 0) {
+		console.warn(
+			`store-age: no routing filter at ${key} — every /cards/<id> lookup will fan out to all ` +
+				`${manifest.partition_count} partitions (9 billed DO requests instead of 1).`,
+		);
+	}
 }
 
 const ageMs = Date.now() - builtAt * 1000;

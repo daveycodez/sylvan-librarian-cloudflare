@@ -41,6 +41,12 @@
 		"not_found_handling": "none"
 	},
 	"cache": { "enabled": true },
+
+	// No `vars` here, and that is now the point rather than an omission: dev used
+	// to carry PARTITIONED_STORE=1 to select the partitioned serving path, and
+	// the whole class of "dev and the staleness gate disagree about which store
+	// is live" came from that var having to be set in three places at once. The
+	// partitioned store is the only store, so there is nothing left to select.
 	"kv_namespaces": [
 		{
 			"binding": "STORE_KV",

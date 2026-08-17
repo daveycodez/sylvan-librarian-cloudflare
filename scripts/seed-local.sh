@@ -9,6 +9,10 @@
 #
 #   bun run seed:local            # build store (~a few minutes) + seed locally
 #   bun run seed:local --reuse    # skip the build, re-seed the last built store
+#
+# SYLVAN_BULK_DIR=<dir> streams already-downloaded dumps off disk instead of
+# re-fetching ~470MB (see engine/builder/src/bulk.rs) — the difference between a
+# two-minute iteration and a twenty-minute one when the corpus is already local.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +23,11 @@ if [[ "${1:-}" != "--reuse" ]]; then
     echo "Building sylvan-store-builder..."
     "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
     echo "Building store from Scryfall bulk data (this streams ~450MB, takes a few minutes)..."
-    ./target/fast-native/sylvan-store-builder --out "$OUT_DIR"
+    # `--partitions auto` for the same reason import-store.sh passes it: this
+    # deployment serves only partitioned stores, and the builder rejects unknown
+    # argv — so a checkout whose builder predates the flag fails HERE, loudly,
+    # instead of seeding a store the code cannot read.
+    ./target/fast-native/sylvan-store-builder --out "$OUT_DIR" --partitions auto
 fi
 
 echo "Seeding local KV..."

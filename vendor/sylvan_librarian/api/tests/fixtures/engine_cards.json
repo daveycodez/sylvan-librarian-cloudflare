@@ -1360,7 +1360,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "wwk",
     "card_subtypes": [
       "Jace"
@@ -1445,7 +1445,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "v13",
     "card_subtypes": [
       "Jace"
@@ -1530,7 +1530,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "ema",
     "card_subtypes": [
       "Jace"
@@ -1615,7 +1615,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "a25",
     "card_subtypes": [
       "Jace"
@@ -1700,7 +1700,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "med",
     "card_subtypes": [
       "Jace"
@@ -1785,7 +1785,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "2xm",
     "card_subtypes": [
       "Jace"
@@ -1870,7 +1870,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "2xm",
     "card_subtypes": [
       "Jace"
@@ -1955,7 +1955,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "sld",
     "card_subtypes": [
       "Jace"
@@ -2040,7 +2040,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "blc",
     "card_subtypes": [
       "Jace"
@@ -2126,7 +2126,7 @@
     "card_name": "Jace, the Mind Sculptor",
     "card_name_folded": "jace, the mind sculptor",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "blc",
     "card_subtypes": [
       "Jace"
@@ -2712,7 +2712,7 @@
     "card_oracle_tags": {
       "burn": true
     },
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "tle",
     "card_subtypes": [],
     "card_types": [
@@ -3047,7 +3047,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "con",
     "card_subtypes": [
       "Bolas"
@@ -3142,7 +3142,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "ddh",
     "card_subtypes": [
       "Bolas"
@@ -3237,7 +3237,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "m13",
     "card_subtypes": [
       "Bolas"
@@ -3332,7 +3332,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "e01",
     "card_subtypes": [
       "Bolas"
@@ -3427,7 +3427,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "med",
     "card_subtypes": [
       "Bolas"
@@ -3522,7 +3522,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "sld",
     "card_subtypes": [
       "Bolas"
@@ -3617,7 +3617,7 @@
     "card_name": "Nicol Bolas, Planeswalker",
     "card_name_folded": "nicol bolas, planeswalker",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "pmei",
     "card_subtypes": [
       "Bolas"
@@ -5205,7 +5205,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "mma",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5288,7 +5288,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "mm2",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5371,7 +5371,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "mm3",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5455,7 +5455,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "puma",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5538,7 +5538,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "uma",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5621,7 +5621,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "tsr",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5872,7 +5872,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "pip",
     "card_subtypes": [
       "Lhurgoyf"
@@ -5957,7 +5957,7 @@
     "card_name": "Tarmogoyf",
     "card_name_folded": "tarmogoyf",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "pip",
     "card_subtypes": [
       "Lhurgoyf"
@@ -6673,7 +6673,7 @@
     "card_name": "Kitchen Finks",
     "card_name_folded": "kitchen finks",
     "card_oracle_tags": {},
-    "card_rarity_int": 3,
+    "card_rarity_int": 4,
     "card_set_code": "puma",
     "card_subtypes": [
       "Ouphe"

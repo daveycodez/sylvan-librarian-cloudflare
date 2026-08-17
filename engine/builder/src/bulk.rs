@@ -28,6 +28,11 @@
 //! Deliberately not ported: the on-disk zstd cache (`_ensure_cached`). Upstream
 //! shares one download across multiple long-lived worker processes; this builder
 //! is a single-shot container job, so it streams straight from the network.
+//!
+//! Two env overrides, both unset in production: `SCRYFALL_BULK_URL` replaces the
+//! `/bulk-data` listing URL (mirrors, local fake servers — the same var the
+//! ImportCoordinator honors), and `SYLVAN_BULK_DIR` streams already-downloaded
+//! dumps off disk (see [`local_bulk_path`]).
 
 use std::io::{BufRead, BufReader, Read};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,7 +41,17 @@ use flate2::read::MultiGzDecoder;
 use serde_json::Value;
 
 /// Bulk data types this pipeline consumes (subset of upstream's `BulkDataKey`).
+///
+/// Scryfall's own per-(set, collector_number) selection — one printing per card per set, English
+/// where an English printing exists. It is NOT the corpus any more (see [`ALL_CARDS`]); it is the
+/// CANONICAL ID SET. A row is canonical iff its id appears here, which is why both dumps are
+/// streamed: re-deriving Scryfall's selection is the drift class the PIN_BONUS precedent exists to
+/// eliminate (plan reconciliation 5).
 pub const DEFAULT_CARDS: &str = "default_cards";
+/// Every printing in every language (~392MB gzipped, ~540k rows against default_cards' ~117k) —
+/// THE corpus. Foreign rows become the engine's annex; canonicality is decided by id-membership in
+/// [`DEFAULT_CARDS`], never by a rule derived from this file's contents.
+pub const ALL_CARDS: &str = "all_cards";
 /// One card object per oracle_id, and that object IS Scryfall's chosen representative printing —
 /// which is what pins ours. ~24MB compressed against default_cards' ~450MB, so a second pass over
 /// the listing is cheap. Optional: a fetch failure degrades to "no labels", not to a failed import.
@@ -167,12 +182,50 @@ impl BulkClient {
     }
 
     /// Stream one bulk dump as an iterator of JSON card/tag objects.
+    ///
+    /// Reads `SYLVAN_BULK_DIR/<kind>.jsonl.gz` when that file exists (see
+    /// [`local_bulk_path`]); otherwise downloads, as production always does.
     pub fn stream(&self, kind: &str) -> Result<JsonlStream<BufReader<Box<dyn Read>>>, BulkError> {
+        if let Some(path) = local_bulk_path(kind) {
+            eprintln!("  SYLVAN_BULK_DIR: streaming {kind} from {}", path.display());
+            let file = std::fs::File::open(&path)?;
+            let reader = gunzip_if_needed(Box::new(file))?;
+            return Ok(JsonlStream::new(BufReader::with_capacity(1 << 16, reader)));
+        }
         let uri = self.jsonl_download_uri(kind)?;
         let resp = self.get_with_retry(&uri)?;
         let reader = gunzip_if_needed(Box::new(resp))?;
         Ok(JsonlStream::new(BufReader::with_capacity(1 << 16, reader)))
     }
+}
+
+/// Where a pre-downloaded copy of `kind` lives, if `SYLVAN_BULK_DIR` names a directory holding one.
+///
+/// Local dev and CI otherwise re-download ~470MB (all_cards + default_cards) for every build, which
+/// turns a two-minute iteration into a twenty-minute one; pointing the builder at dumps already on
+/// disk is the difference between running the real corpus end-to-end and not running it. Both
+/// spellings of a bulk key are accepted — `all_cards.jsonl.gz` (Scryfall's `type`) and
+/// `all-cards.jsonl.gz` (its download filename) — because both are what people actually have.
+///
+/// PER-KIND and OPTIONAL by design: a dir holding only the two card dumps still fetches
+/// oracle_tags/art_tags/oracle_cards from the network, so a partial local mirror is useful rather
+/// than an all-or-nothing switch. Nothing about this changes what a deploy does — the var is unset
+/// in Workers Builds, and an unset var is byte-for-byte today's download path.
+fn local_bulk_path(kind: &str) -> Option<std::path::PathBuf> {
+    let dir = std::env::var("SYLVAN_BULK_DIR").ok()?;
+    resolve_local_bulk(std::path::Path::new(&dir), kind)
+}
+
+/// The path half of [`local_bulk_path`], split out so it is testable without touching
+/// process-global environment state.
+fn resolve_local_bulk(dir: &std::path::Path, kind: &str) -> Option<std::path::PathBuf> {
+    if dir.as_os_str().is_empty() {
+        return None;
+    }
+    [format!("{kind}.jsonl.gz"), format!("{}.jsonl.gz", kind.replace('_', "-"))]
+        .into_iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 /// Extract `jsonl_download_uri` for record `type == kind` from a /bulk-data
@@ -423,6 +476,26 @@ mod tests {
             }
             other => panic!("expected Format error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn local_bulk_accepts_both_spellings_and_falls_back_when_absent() {
+        let dir = std::env::temp_dir().join(format!("sylvan-bulk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Nothing on disk yet: every kind falls through to the network.
+        assert_eq!(resolve_local_bulk(&dir, ALL_CARDS), None);
+        // Scryfall's `type` spelling and its download-filename spelling both resolve.
+        let underscored = dir.join("all_cards.jsonl.gz");
+        std::fs::write(&underscored, gz(b"{\"a\":1}\n")).unwrap();
+        assert_eq!(resolve_local_bulk(&dir, ALL_CARDS), Some(underscored.clone()));
+        let hyphenated = dir.join("default-cards.jsonl.gz");
+        std::fs::write(&hyphenated, gz(b"{\"a\":1}\n")).unwrap();
+        assert_eq!(resolve_local_bulk(&dir, DEFAULT_CARDS), Some(hyphenated));
+        // A partial mirror is a partial mirror: the kinds it lacks still download.
+        assert_eq!(resolve_local_bulk(&dir, ORACLE_TAGS), None);
+        // An unset (empty) dir is the production path.
+        assert_eq!(resolve_local_bulk(std::path::Path::new(""), ALL_CARDS), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -10,7 +10,8 @@ import pytest
 
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.nodes import RegexValueNode
-from api.parsing.rewrite import _regex_plain_literal
+from api.parsing.db_info import ARRAY_IS_TAGS, BOOLEAN_IS_TAGS
+from api.parsing.rewrite import _DERIVED_EXPANSIONS, ENGINE_IS_VALUES, SUPPORTED_IS_VALUES, _regex_plain_literal
 
 # (synonym query, canonical expansion) — the two must produce identical ASTs.
 EQUIVALENCES = [
@@ -18,7 +19,7 @@ EQUIVALENCES = [
     ("frame:old", "frame:1993 or frame:1997"),
     ("frame:new", "frame:2003 or frame:2015 or frame:future"),
     ("is:old", "frame:1993 or frame:1997"),
-    ("is:new", "frame:2015"),
+    ("is:new", "frame:2003 or frame:2015 or frame:future"),
     # type / subtype based
     ("is:historic", "t:legendary or t:artifact or t:saga"),
     ("is:permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"),
@@ -33,7 +34,16 @@ EQUIVALENCES = [
     ("is:mdfc", "layout:modal_dfc"),
     ("is:meld", "layout:meld"),
     ("is:leveler", "layout:leveler"),
-    ("is:dfc", "layout:transform or layout:modal_dfc or layout:meld"),
+    (
+        "is:dfc",
+        "layout:transform or layout:modal_dfc or layout:art_series or layout:double_faced_token or "
+        "layout:reversible_card",
+    ),
+    # The same predicate under two names, and neither of them is one layout: `is:host
+    # -is:augmentation` and its converse are both empty on api.scryfall.com.
+    ("is:host", "layout:host or layout:augment"),
+    ("is:augmentation", "layout:host or layout:augment"),
+    ("is:token", "layout:token or layout:double_faced_token or t:token"),
     ("is:colorshifted", "frame:colorshifted"),
     ("is:manland", "t:land o:become o:creature o:/still a.* land/"),
     ("is:creatureland", "t:land o:become o:creature o:/still a.* land/"),
@@ -57,6 +67,27 @@ EQUIVALENCES = [
     ("is:triome", "otag:cycle-iko-triome or otag:cycle-snc-triland"),
     ("is:companion", "kw:companion"),
     ("is:class", "t:class"),
+    # Mana-symbol classes. Long, and spelled out rather than trimmed to a sample: the whole point of
+    # the entry is that the SET is right, and a truncated expectation would pass while the
+    # vocabulary drifted.
+    (
+        "is:hybrid",
+        "m:{W/U} or m:{W/B} or m:{U/B} or m:{U/R} or m:{B/R} or m:{B/G} or m:{R/G} or m:{R/W} or "
+        "m:{G/W} or m:{G/U} or m:{W/U/P} or m:{W/B/P} or m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or "
+        "m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or m:{G/U/P} or m:{2/W} or m:{2/U} or "
+        "m:{2/B} or m:{2/R} or m:{2/G} or m:{C/W} or m:{C/U} or m:{C/B} or m:{C/R} or m:{C/G}",
+    ),
+    (
+        "is:phyrexian",
+        "m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{C/P} or m:{W/U/P} or m:{W/B/P} or "
+        "m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or "
+        'm:{G/U/P} or o:"{w/p}" or o:"{u/p}" or o:"{b/p}" or o:"{r/p}" or o:"{g/p}" or o:"{c/p}" or '
+        'o:"{w/u/p}" or o:"{w/b/p}" or o:"{u/b/p}" or o:"{u/r/p}" or o:"{b/r/p}" or o:"{b/g/p}" or '
+        'o:"{r/g/p}" or o:"{r/w/p}" or o:"{g/w/p}" or o:"{g/u/p}"',
+    ),
+    # `has:printedname` is `is:localizedname` under its other spelling; the engine answers the
+    # right-hand side from a field, which is why this one does not expand any further.
+    ("has:printedname", "is:localizedname"),
     ("is:adventure", "layout:adventure"),
     ("is:bounceland", "otag:bounceland"),
     ("is:filterland", "otag:cycle-hybrid-filterland or otag:cycle-ody-filterland"),
@@ -66,6 +97,51 @@ EQUIVALENCES = [
     ("is:shadowland", "t:land o:/reveal an? (Plains|Island|Swamp|Mountain|Forest)/"),
     ("is:snarl", "t:land o:/reveal an? (Plains|Island|Swamp|Mountain|Forest)/"),
     ("is:modal", "otag:modal"),
+    # Everything castable. A strict superset of Scryfall's face-level is:spell: +48 / 31,760 on the
+    # imported corpus, 0 misses (2026-08-16).
+    (
+        "is:spell",
+        "t:artifact or t:battle or t:creature or t:enchantment or t:instant or t:kindred or t:planeswalker or t:sorcery",
+    ),
+    # "first printing" is exactly "not a reprint" — the two partition the printing space on
+    # Scryfall, ties included (2026-08-16). Both spellings are accepted there.
+    ("is:firstprinting", "-is:reprint"),
+    ("is:firstprint", "-is:reprint"),
+    # Scryfall's second names for land cycles we already carry, and the ones we did not.
+    ("is:karoo", "otag:bounceland"),
+    ("is:canland", "otag:cycle-horizon-land"),
+    ("is:bikeland", "otag:cycle-bicycle-land"),
+    ("is:cycleland", "otag:cycle-bicycle-land"),
+    ("is:bicycleland", "otag:cycle-bicycle-land"),
+    ("is:surveilland", "otag:cycle-mkm-surveil-land"),
+    ("is:tricycleland", "otag:cycle-iko-triome or otag:cycle-snc-triland"),
+    ("is:pathway", "t:land name:pathway"),
+    # Frame effects and layouts that were already expressible and simply had no entry.
+    ("is:showcase", "frame:showcase"),
+    ("is:extendedart", "frame:extendedart"),
+    ("is:tdfc", "layout:transform"),
+    ("is:planar", "layout:planar"),
+    ("is:reversible", "layout:reversible_card"),
+    # Spelling aliases of stored tags: the expansion is the OTHER is: value, which stays a leaf.
+    ("is:full", "is:fullart"),
+    ("is:promostamped", "is:stamped"),
+    # Set types: `st:` is the operator these five turn out to BE.
+    ("is:masterpiece", "st:masterpiece"),
+    ("is:alchemy", "st:alchemy"),
+    ("is:funny", "st:funny"),
+    ("is:watermark", "has:watermark"),
+    # Eligibility, each count-validated on its own rather than rewritten to the format filter.
+    ("is:oathbreaker", "t:planeswalker f:oathbreaker"),
+    ("is:brawler", '((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") f:brawl'),
+    ("is:duelcommander", '((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") f:duel'),
+    # The `has:` family: presence on a regex-capable column, or the is: tag that answers the same
+    # question off the same stored value.
+    ("has:watermark", "watermark:/./"),
+    ("has:artist", "artist:/./"),
+    ("has:flavor", "flavor:/./"),
+    ("has:foil", "is:foil"),
+    ("has:highres", "is:hires"),
+    ("has:story", "is:spotlight"),
     # composes under negation and inside compounds
     ("-frame:old", "-(frame:1993 or frame:1997)"),
     ("t:goblin frame:modern", "t:goblin frame:2003"),
@@ -118,7 +194,9 @@ LOWERED_EQUIVALENCES = [
     (r"o:/foo\.bar/", 'o:"foo.bar"'),  # escaped punctuation unescapes to its literal
     (r"o:/\{t\}/", 'o:"{t}"'),  # escaped braces
     ("ft:/dragon/", "ft:dragon"),
-    ("a:/guay/", "a:guay"),  # artist field
+    # `a:` is COLLATED for a bare word and literal for a quoted one, exactly as `name:` is -- so the
+    # lowered regex equals the QUOTED spelling, not the bare one.
+    ("a:/guay/", 'a:"guay"'),  # artist field
 ]
 
 
@@ -184,3 +262,131 @@ _PLAIN_LITERAL_CASES = {
 def test_regex_plain_literal(expected: str | None, pattern: str) -> None:
     """`_regex_plain_literal` extracts the literal for metachar-free patterns, else None."""
     assert _regex_plain_literal(pattern) == expected
+
+
+# ─── The `is:` vocabulary, and what happens outside it ────────────────────────
+
+
+def test_array_is_tags_name_a_real_blob_array() -> None:
+    """Every ARRAY_IS_TAGS entry points at a bulk array key, not a boolean or a scalar.
+
+    The mappings were read off Scryfall's own card objects rather than guessed, and the two keys
+    that appear (`promo_types`, `finishes`) are the only arrays this table has any business
+    naming. A third would mean somebody wrote a scalar field here, where the containment test
+    silently answers false for every card — the silent-zero shape this whole table exists to end.
+    """
+    assert {key for key, _ in ARRAY_IS_TAGS.values()} == {"promo_types", "finishes"}
+    # ...and no tag is claimed by both tables, which would make the two halves of the sync
+    # statement fight over one key.
+    assert not (frozenset(ARRAY_IS_TAGS) & frozenset(BOOLEAN_IS_TAGS))
+
+
+def test_every_stored_is_tag_is_a_supported_value() -> None:
+    """A tag the importer writes must be one the parser reports as supported.
+
+    The two read one dict (db_info.BOOLEAN_IS_TAGS), so this is a structural check rather than a
+    duplicate-keeping-honest one — but it is the assertion that would fail if either side ever
+    grew its own copy again.
+    """
+    assert frozenset(BOOLEAN_IS_TAGS) <= SUPPORTED_IS_VALUES
+    assert frozenset(ARRAY_IS_TAGS) <= SUPPORTED_IS_VALUES
+
+
+def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
+    """The `is:` values the ENGINE answers from a field are supported, and only from there.
+
+    Two directions, and the second is the one that bites. Supported: a predicate that works and
+    still warns is worse than one that does neither. Stored nowhere: if `localizedname` or `unique`
+    ever became an importer tag as well, the engine would keep intercepting the leaf and the stored
+    tag would be dead weight nobody could observe.
+    """
+    assert ENGINE_IS_VALUES <= SUPPORTED_IS_VALUES
+    assert not (ENGINE_IS_VALUES & frozenset(BOOLEAN_IS_TAGS))
+    assert not (ENGINE_IS_VALUES & frozenset(ARRAY_IS_TAGS))
+    # ...and no rewrite claims them either: an expansion would silently win over the engine leaf.
+    assert not (ENGINE_IS_VALUES & {value for alias, value in _DERIVED_EXPANSIONS if alias == "is"})
+
+
+@pytest.mark.parametrize(
+    argnames="query",
+    argvalues=[
+        "is:reprint",
+        "is:promo",
+        "is:foil",
+        "is:reserved",
+        "is:spell",
+        "is:firstprinting",
+        "is:fetchland",
+        "is:nonfoil",
+        "is:booster",
+        "is:hires",
+        "is:prerelease",
+        "is:universesbeyond",
+        "is:judge",
+        "is:etched",
+        "is:showcase",
+        "is:tdfc",
+        "is:hybrid",
+        "is:phyrexian",
+        # Neither expands nor names a stored tag: the engine reads a field for each. Warning about
+        # them would be the exact defect SUPPORTED_IS_VALUES exists to remove, in reverse.
+        "is:localizedname",
+        "is:unique",
+    ],
+)
+def test_supported_is_values_do_not_warn(query: str) -> None:
+    """Everything the vocabulary covers — stored or derived — passes without a warning."""
+    assert parse_scryfall_query(query).warnings == ()
+
+
+def test_unsupported_is_value_warns_once_per_leaf() -> None:
+    """An `is:` value with no data behind it says so instead of returning a silent zero.
+
+    Scryfall IGNORES an unknown `is:` value and warns (measured 2026-08-16: `is:notarealtag e:khm`
+    returns the whole set). This parser keeps the term, so the answer is a no-match — the warning is
+    what tells the caller which of the two happened.
+    """
+    (warning,) = parse_scryfall_query("is:notarealtag t:creature").warnings
+    assert "is:notarealtag" in warning
+
+    # Under a negation and inside an or-group, both of which the walk descends into.
+    assert len(parse_scryfall_query("-is:notarealtag").warnings) == 1
+    assert len(parse_scryfall_query("is:nope or is:alsonope").warnings) == 2
+
+    # A supported value in the same query does not add one.
+    assert len(parse_scryfall_query("is:nope is:reprint").warnings) == 1
+
+
+@pytest.mark.parametrize(
+    argnames="query",
+    argvalues=["has:watermark", "has:artist", "has:flavor", "has:foil", "has:booster", "has:etched", "has:story"],
+)
+def test_supported_has_values_do_not_warn(query: str) -> None:
+    """The `has:` family gets the same treatment `is:` does — supported means silent."""
+    assert parse_scryfall_query(query).warnings == ()
+
+
+def test_unsupported_has_value_warns_like_an_is_value() -> None:
+    """`has:` shares `is:`'s column, so an unmapped value would otherwise be the same silent zero.
+
+    `has:illustration` is the case to hold onto: the column IS stored, and the value is one
+    api.scryfall.com answers — what is missing is a presence predicate over an id, which no
+    rewrite can express. Warning says that; returning zero does not.
+    """
+    (warning,) = parse_scryfall_query("has:illustration").warnings
+    assert "has:illustration" in warning
+    assert len(parse_scryfall_query("has:notarealfield t:creature").warnings) == 1
+
+
+def test_set_type_parses_as_its_own_column() -> None:
+    """`st:` is a column, not a tag: it must not land in card_is_tags with the is:/has: family."""
+    node = parse_scryfall_query("st:masterpiece").root
+    assert node.lhs.attribute_name == "card_set_type"
+    # Every alias Scryfall accepts for it reaches the same column.
+    for alias in ("set_type", "settype", "st"):
+        assert parse_scryfall_query(f"{alias}:promo").root.lhs.attribute_name == "card_set_type"
+
+
+def test_type_operator_is_not_an_is_value() -> None:
+    """Only `is:` is checked — a subtype nobody has is a legitimate empty result, not a warning."""
+    assert parse_scryfall_query("t:notarealtype").warnings == ()

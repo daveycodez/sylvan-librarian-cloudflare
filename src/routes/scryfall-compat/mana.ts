@@ -81,12 +81,29 @@ function symbolValue(symbol: string): number {
 	if (VARIABLE_PIPS.has(symbol)) return 0;
 	if (symbol.startsWith("H") && symbol.length > 1) return HALF_MANA;
 	if (symbol.includes("/")) {
+		// A hybrid has exactly TWO halves. `{W/U/B}` is not a Magic symbol and Scryfall rejects it
+		// (422, measured 2026-08-16); this port summed it to 1 and answered a three-coloured
+		// `mana_cost` for a cost that cannot be printed. Each half must also be a colour, a generic
+		// amount, or Phyrexian `P` — the same three things the value rule below knows how to price.
+		const halves = symbol.split("/");
+		const priceable = (part: string): boolean => /^\d+$/.test(part) || part in COLOR_INDEX || part === "P";
+		if (halves.length !== 2 || !halves.every(priceable)) throw new UnparseableSymbol();
 		// A hybrid is worth its more expensive half: {2/W} is 2, {W/U} and {W/P} are 1.
-		return Math.max(...symbol.split("/").map((part) => (/^\d+$/.test(part) ? Number.parseInt(part, 10) : 1)));
+		return Math.max(...halves.map((part) => (/^\d+$/.test(part) ? Number.parseInt(part, 10) : 1)));
 	}
 	if (COLORLESS_PIPS.has(symbol) || symbol in COLOR_INDEX) return 1;
-	throw new ManaCostError(`The string fragment(s) “{${symbol}}” could not be understood as part of mana cost.`);
+	throw new UnparseableSymbol();
 }
+
+/**
+ * Internal signal that ONE token is not mana — never thrown out of this module.
+ *
+ * The message Scryfall sends names EVERY unparseable fragment of the cost at once ("The string
+ * fragment(s) …"), so the fragments have to be collected before any error can be worded. Throwing
+ * the finished `ManaCostError` from here reported only the first, and reported it re-braced: `!!!`
+ * came back as `“{!}”` where Scryfall says `“!!!”`.
+ */
+class UnparseableSymbol extends Error {}
 
 const BRACED = /^\{([^}]*)\}/;
 const DIGITS = /^\d+/;
@@ -97,29 +114,60 @@ const DIGITS = /^\d+/;
  * Unbraced runs are read a character at a time, except digits, which group so `11R` is `{11}{R}`
  * rather than `{1}{1}{R}`.
  */
-function tokenize(raw: string): string[] {
-	const tokens: string[] = [];
+interface Token {
+	/** The symbol's contents, brace-stripped and uppercased — what every rule below reads. */
+	symbol: string;
+	/** How it was WRITTEN, uppercased: braced tokens keep their braces, bare characters do not. */
+	spelling: string;
+	/** True for a braced token, which is what stops `!!` and `{!}{!}` from merging into one fragment. */
+	braced: boolean;
+}
+
+function tokenize(raw: string): Token[] {
+	const tokens: Token[] = [];
 	const upper = raw.toUpperCase();
 	let position = 0;
 	while (position < upper.length) {
 		const rest = upper.slice(position);
 		const braced = BRACED.exec(rest);
 		if (braced) {
-			tokens.push((braced[1] as string).trim());
+			tokens.push({ symbol: (braced[1] as string).trim(), spelling: braced[0], braced: true });
 			position += braced[0].length;
 			continue;
 		}
 		const digits = DIGITS.exec(rest);
 		if (digits) {
-			tokens.push(digits[0]);
+			tokens.push({ symbol: digits[0], spelling: digits[0], braced: false });
 			position += digits[0].length;
 			continue;
 		}
 		const char = upper[position] as string;
-		if (!/\s/.test(char)) tokens.push(char);
+		if (!/\s/.test(char)) tokens.push({ symbol: char, spelling: char, braced: false });
 		position += 1;
 	}
 	return tokens;
+}
+
+/**
+ * How Scryfall names the parts of a cost it could not read — measured, one request per row
+ * (2026-08-16):
+ *
+ *   ?cost=!!!         “!!!”      three bare characters, reported as ONE run
+ *   ?cost=é           “É”        uppercased, and reported as itself rather than re-braced
+ *   ?cost={QQQ}       “{QQQ}”    a braced token keeps its braces
+ *   ?cost={}          “{}”       including the empty one
+ *   ?cost={W/U/B}     “{//}”     the RECOGNIZED halves are struck out and the residue reported
+ *
+ * The last row is the rule the others are a degenerate case of: what comes back is the fragment with
+ * everything Scryfall could read removed. `{QQQ}` keeps all three Qs because none of them is a
+ * symbol; `{W/U/B}` keeps only its punctuation.
+ */
+function reportedFragment(token: Token): string {
+	if (!token.braced) return token.spelling;
+	const residue = [...token.symbol]
+		.filter((ch) => !(ch in COLOR_INDEX) && !COLORLESS_PIPS.has(ch) && !VARIABLE_PIPS.has(ch) && !/[\dPH]/.test(ch))
+		.join("");
+	return `{${residue}}`;
 }
 
 /**
@@ -144,11 +192,35 @@ function renderCost(
 		.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1])
 		.map((entry) => entry.symbol);
 
-	const parts = variables.map((symbol) => `{${symbol}}`);
+	// Variables come out in X, Y, Z order regardless of how they were written, and repeats group:
+	// `?cost=xyzzy` is `{X}{Y}{Y}{Z}{Z}` on api.scryfall.com (measured 2026-08-16) where writing
+	// order would have given `{X}{Y}{Z}{Z}{Y}`. A plain sort does both at once — the alphabet and
+	// the pip order coincide.
+	const parts = [...variables].sort().map((symbol) => `{${symbol}}`);
 	if (generic) parts.push(`{${generic}}`);
 	parts.push(...ordered.map((symbol) => `{${symbol}}`));
 	parts.push(...colorless.map((symbol) => `{${symbol}}`));
 	return parts.join("") || "{0}";
+}
+
+/**
+ * How many CHARACTERS of the joined fragment list the error names before Scryfall cuts it.
+ *
+ * 51, and it is characters rather than bytes — measured across nine lengths on 2026-08-16: 51 `a`s
+ * come back whole and 52 come back as 51, while 51 `é`s (102 bytes) also come back whole and 60 come
+ * back as 51 characters / 102 bytes. The cut is applied to the WHOLE joined list, not per fragment:
+ * ten separate `{QQQQQQQQ}` tokens come back as 51 characters of the concatenation.
+ *
+ * No ellipsis, unlike `/cards/collection`'s 30-character echo — the string simply stops. 51 is an odd
+ * bound and nothing here explains it, which is why it is a named constant carrying its measurement
+ * rather than an inline number.
+ */
+const FRAGMENT_ECHO_LIMIT = 51;
+
+/** Cut the joined fragment list where Scryfall cuts it, counting code points rather than UTF-16 units. */
+function truncateFragments(fragments: string): string {
+	const points = [...fragments];
+	return points.length > FRAGMENT_ECHO_LIMIT ? points.slice(0, FRAGMENT_ECHO_LIMIT).join("") : fragments;
 }
 
 /**
@@ -166,13 +238,38 @@ export function parseManaCost(raw: string): Record<string, unknown> {
 	const colorSet = new Set<string>();
 	let total = 0;
 
+	// EVERY unparseable fragment is collected before any error is raised, because Scryfall's message
+	// names them all at once — CONCATENATED IN ORDER WITH NO SEPARATOR, and the readable symbols
+	// between them do not separate them either. Measured 2026-08-16, one request per row:
+	//
+	//   ?cost={Q}W{T}   “{Q}{T}”   the readable {W} between them leaves no trace
+	//   ?cost=!W!       “!!”       same, for bare characters
+	//   ?cost=!{Q}!     “!{Q}!”    braced and bare interleave in written order
+	//   ?cost=a{Q}b     “A{Q}”     `b` is BLACK MANA and readable, so only two fragments
+	//
+	// This is the one rule here that was first written from a guess: an earlier pass joined the
+	// fragments with a space, which no measurement supported and which `{Q}W{T}` disproves. One
+	// accumulated string is now the whole mechanism — with an empty separator there is nothing left
+	// for a per-fragment merge rule to do.
+	let bad = "";
 	for (const token of tokens) {
-		total += symbolValue(token);
-		for (const color of symbolColors(token)) colorSet.add(color);
-		if (/^\d+$/.test(token)) generic += Number.parseInt(token, 10);
-		else if (VARIABLE_PIPS.has(token)) variables.push(token);
-		else if (COLORLESS_PIPS.has(token)) colorless.push(token);
-		else colored.push(token);
+		try {
+			total += symbolValue(token.symbol);
+		} catch (err) {
+			if (!(err instanceof UnparseableSymbol)) throw err;
+			bad += reportedFragment(token);
+			continue;
+		}
+		for (const color of symbolColors(token.symbol)) colorSet.add(color);
+		if (/^\d+$/.test(token.symbol)) generic += Number.parseInt(token.symbol, 10);
+		else if (VARIABLE_PIPS.has(token.symbol)) variables.push(token.symbol);
+		else if (COLORLESS_PIPS.has(token.symbol)) colorless.push(token.symbol);
+		else colored.push(token.symbol);
+	}
+	if (bad !== "") {
+		throw new ManaCostError(
+			`The string fragment(s) “${truncateFragments(bad)}” could not be understood as part of mana cost.`,
+		);
 	}
 
 	// An empty cost is null, but a cost that was written and happens to be free is `{0}`: Scryfall

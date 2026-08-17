@@ -24,6 +24,15 @@ export interface EngineSearchOptions {
 	offset: number;
 	/** Resolved result field names (never undefined by the time it reaches the engine). */
 	fields: string[];
+	/**
+	 * Scryfall's `include_multilingual`: true widens the search to foreign printings. Absent or
+	 * false is Scryfall's default — English/canonical printings only. The OTHER widening trigger
+	 * is a `card_lang` comparison in the filter tree, detected inside the engine during filter
+	 * compile (one implementation, so the flag and the operator cannot drift). The transports
+	 * (RemoteEngine, SearchEngineDO) carry the whole options object opaquely, so this rides the
+	 * existing wire unchanged.
+	 */
+	includeMultilingual?: boolean;
 }
 
 export interface EngineSearchResult {
@@ -77,12 +86,59 @@ export interface EngineSerializedResult {
 	 * `rows.length` is the count, by construction, wherever the rows came from.
 	 */
 	rowCount: number;
+	/**
+	 * Whether the engine ran the WIDENED (multilingual) driver — `include_multilingual` was set,
+	 * or the bound filter carried a `lang:` leaf.
+	 *
+	 * It rides back so `/cards/search` can echo `include_multilingual` in `next_page` the way
+	 * Scryfall does: a `lang:` in `q` alone makes Scryfall's echo say `true`. The route cannot
+	 * work that out without re-implementing the engine's lang-leaf detection in TypeScript, which
+	 * is the drift the one-implementation rule forbids — so the engine reports what it did.
+	 */
+	widened?: boolean;
 }
 
 export interface EngineCatalog {
 	/** Card type → count, as the engine reports it (pre-alias massaging). */
 	types: Record<string, number>;
 	keywords: Record<string, number>;
+}
+
+/**
+ * Everything `scryfallSearchPage` needs to build the WHOLE response beside the payload.
+ *
+ * One definition, referenced by all five implementations (WasmEngine, RemoteEngine,
+ * PartitionedEngine, the Durable Object handler and the route-test harness). It used to be
+ * spelled out at each of them, so adding a field meant five identical edits and a build error was
+ * the only thing standing between "four of five updated" and a route that silently lost it.
+ */
+export interface SearchPageEnvelope {
+	pretty: boolean;
+	warnings?: string[];
+	nextPageUrl?: string;
+	pageOffset: number;
+	/** Scryfall's no-match wording — passed in so its text stays with the other route copy. */
+	noMatchDetails: string;
+	/**
+	 * Scryfall's `422 validation_error` wording for a page PAST the end of a non-empty result.
+	 *
+	 * Separate from `noMatchDetails` because the two answer different questions and Scryfall gives
+	 * them different statuses: "nothing matched" is a 404 at every page, "this page is past the
+	 * end" is a 422. Only the side holding the total can tell them apart, which is why the sentence
+	 * travels here rather than being decided in the isolate. Omitted (and the 404 used for both)
+	 * by callers with no pagination of their own.
+	 */
+	beyondEndDetails?: string;
+	/**
+	 * Render the page as Scryfall's CSV rather than as a List envelope (`?format=csv`).
+	 *
+	 * A RESOLVED boolean, not the raw `format` string, so the rule that decides it — Scryfall
+	 * accepts `csv` on `/cards/search` alone and is case-sensitive about it — has one implementation,
+	 * in the route, and does not get re-derived on the far side of the RPC. Everything else about
+	 * the request is identical: same query, same page, same 175 rows, same 404 for an empty result
+	 * and same 422 past the end. Only the bytes wrapping the rows change.
+	 */
+	csv?: boolean;
 }
 
 /**
@@ -98,6 +154,17 @@ export interface Engine {
 	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
 	cardTypeCounts(): Promise<Record<string, number>>;
 	cardKeywordCounts(): Promise<Record<string, number>>;
+	/**
+	 * The set codes holding at least one `is:extra` printing, sorted and deduplicated.
+	 *
+	 * THE `include_extras` AUTO-ENABLE TABLE. Scryfall forces `include_extras=true` — overriding
+	 * an explicit `false`, in the echo and in the results — when a query names a set that has an
+	 * extra printing, and leaves it off when the set has none. That question is not answerable
+	 * from the query text, so the builder folds it into the archive and the route reads it from
+	 * here; `PartitionedEngine` unions the partitions' answers and caches the union for the life
+	 * of the store generation, so a set-scoped search costs no round trip of its own.
+	 */
+	setsWithExtras(): Promise<string[]>;
 	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
 	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
 	/** The same sample, pre-encoded (see searchCardsAsJson). */
@@ -115,6 +182,8 @@ export interface Engine {
 	//
 	/** A Scryfall-shaped search: card objects, pre-encoded. `cardsJson` is a JSON array. */
 	scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult>;
+	/** Whether this query runs the widened (multilingual) driver; see EngineSerializedResult.widened. */
+	queryWidens?(opts: EngineSearchOptions): boolean;
 
 	/**
 	 * `/cards/search`'s WHOLE response — envelope, headers and status — built where the payload is.
@@ -123,16 +192,11 @@ export interface Engine {
 	 * scaling with the page at all. Splicing the envelope in the isolate instead measured ~13ms mean
 	 * on a 652KB page, over the free plan's 10ms metered budget.
 	 */
+
 	scryfallSearchPage(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		envelope: {
-			pretty: boolean;
-			warnings?: string[];
-			nextPageUrl?: string;
-			pageOffset: number;
-			noMatchDetails: string;
-		},
+		envelope: SearchPageEnvelope,
 		cache: Record<string, string>,
 	): Promise<Response>;
 	/** One card object by Scryfall id, or null for a genuine miss (which IS the 404 here). */
@@ -179,6 +243,33 @@ export interface Engine {
 	 * identifiers). One RPC for the whole batch so 75 identifiers are not 75 round trips.
 	 */
 	scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]>;
+}
+
+/**
+ * The fuzzy LEAD threshold: the best candidate must lead the best competing (different name,
+ * different card) candidate by this much or the answer is `ambiguous`. Lives here, on the seam,
+ * because BOTH sides apply it — the engine's own race and the partitioned gather's global race —
+ * and the two must never drift.
+ *
+ * FITTED against 86 probed Scryfall needles alongside the floor in store.ts. It is small because
+ * on the derived metric the typo stage almost never has to declare ambiguity: every needle
+ * Scryfall calls ambiguous (`bolt`, `jac bel`, `aust com`, `ring sol`, …) falls THROUGH the typo
+ * stage's floor and is called ambiguous by the containment stage behind it.
+ *
+ * It got SMALLER when the extras classes started being imported: `Lightning Bolt // Lightning
+ * Bolt` (astx/76, art series) trails Blightning by 0.0032 for `fuzzy=bolt lightning`, and 0.01
+ * called that ambiguous. See card_engine's FUZZY_SCORE_LEAD for the refit.
+ */
+export const FUZZY_SIMILARITY_LEAD = 0.002;
+
+/** One cross-partition fuzzy candidate, decoded off the wasm `fuzzy_candidates` packet.
+ * `oracleId` is the global card identity the race's "a card never competes with itself" rule
+ * keys on; `vpid` is partition-local and unused by the race. */
+export interface FuzzyCandidateWire {
+	score: number;
+	oracleId: string;
+	vpid: number;
+	foldedName: string;
 }
 
 /** What a `?fuzzy=` lookup resolved to. */
@@ -229,7 +320,64 @@ export class EngineUnavailableError extends Error {
 	}
 }
 
+/**
+ * Thrown when the engine refused the QUERY rather than failed to serve — a bad request, not an
+ * outage.
+ *
+ * The one producer today is `build_filter`, which compiles a regex leaf the parser accepted:
+ * `q=o:/[unclosed/` reached the wasm, threw
+ * `build_filter: invalid regex '[unclosed': regex parse error: unclosed character class`, and came
+ * back out of the Durable Object's fetch transport as a bare `503` with a NON-JSON body. A 5xx
+ * with nothing to parse, from user-controlled input, is the worst answer this API can give; the
+ * route now turns this class into Scryfall's `400 bad_request`.
+ *
+ * `query-terms.ts` validates the patterns it can before the engine ever sees them, so this is the
+ * backstop for the ones it cannot: Rust's `regex` crate rejects lookaround and backreferences that
+ * JavaScript's `RegExp` compiles happily, and nothing on the isolate side can know that.
+ */
+export class EngineQueryError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "EngineQueryError";
+	}
+}
+
+/**
+ * The prefix the engine puts on a failure to COMPILE a bound filter.
+ *
+ * Both ends read it from here: the Durable Object classifies the error it caught, and RemoteEngine
+ * classifies the message that came back over the transport, so "which failures are the caller's
+ * fault" has one definition rather than two that can drift.
+ */
+export const BUILD_FILTER_ERROR_PREFIX = "build_filter";
+
+/**
+ * One partition of the store.
+ *
+ * Each partition is its own complete rkyv archive, holding the cards whose
+ * `fnv1a64(oracle_id) % partition_count` is this partition's index, published
+ * under its own chunk family (`card-store-v<fmt>-<built_at>-p<k>.store`). These
+ * fields are what a reader actually loads from; their top-level twins on the
+ * manifest are the TOTALS over all of them.
+ */
+export interface StoreManifestPartition {
+	/** Chunk-family key for this partition's archive (carries the `-p<k>` suffix). */
+	store_key: string;
+	/** Uncompressed archive size; the wasm buffer is preallocated from this. */
+	store_bytes: number;
+	/** Bytes KV holds for this partition. Present iff compressed (the format flag). */
+	store_gzip_bytes?: number;
+	chunk_count: number;
+	card_count: number;
+	printing_count: number;
+}
+
 export interface StoreManifest {
+	/**
+	 * The build's FAMILY STEM (`card-store-v<fmt>-<built_at>.store`, no `-p<k>`
+	 * suffix). NO CHUNKS LIVE UNDER IT; it exists so retention and logs can name
+	 * the build as one thing. Readers load through `partitions[]`, never this key.
+	 */
 	store_key: string;
 	built_at: string;
 	card_count: number;
@@ -274,6 +422,35 @@ export interface StoreManifest {
 	 * the store's own age. Absent on stores built before it was recorded.
 	 */
 	source_updated_at?: string;
+
+	// ── The partitioned store (generation 20) ──────────────────────────────────
+	//
+	// OPTIONAL IN THE TYPE, MANDATORY IN FACT. Every manifest this deployment
+	// publishes carries all three, and readManifest/writeManifest refuse one that
+	// does not — a manifest without them predates the partitioned store and no
+	// reader here can serve it. They stay optional only so that refusal can be
+	// EXPRESSED: a required field would make the bad shape unparseable rather
+	// than diagnosable, and the loud error naming the builder is the point.
+	//
+	// When present, the top-level store_bytes/store_gzip_bytes/chunk_count/
+	// card_count/printing_count are TOTALS over `partitions`.
+
+	/**
+	 * How many partitions the store is cut into. NOT a constant anywhere: the
+	 * builder auto-scales it per build (plan Decision 3b) and every reader —
+	 * router fan-out width, hash modulus, loaders — derives it from HERE.
+	 */
+	partition_count?: number;
+	/**
+	 * Names the partition-assignment function, algorithm + key + vector version
+	 * (see PARTITION_HASH_ALGO in store-kv.ts). A loader that does not recognise
+	 * it must REFUSE the manifest: routing by the wrong hash makes cards silently
+	 * vanish from single-card routes, and a loud unknown-hash failure is the only
+	 * observable form of that bug.
+	 */
+	partition_hash?: string;
+	/** One record per partition, index k at position k. Length === partition_count. */
+	partitions?: StoreManifestPartition[];
 }
 
 // Generated by `bun run cf-typegen` (wrangler types) from wrangler.jsonc +

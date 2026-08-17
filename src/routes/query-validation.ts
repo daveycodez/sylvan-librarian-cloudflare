@@ -37,6 +37,7 @@ const COMPARISON_OPS: ReadonlySet<string> = new Set([":", "=", "==", "!=", "<>",
 const VALUE_NODES: ReadonlySet<string> = new Set([
 	"NumericValueNode",
 	"StringValueNode",
+	"CollatedNameValueNode",
 	"ManaValueNode",
 	"RegexValueNode",
 	// An attribute standing alone is the `power - cmc` shape with the arithmetic stripped by a

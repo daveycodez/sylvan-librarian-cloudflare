@@ -37,11 +37,77 @@ use unicode_normalization::char::canonical_combining_class;
 use crate::tags::TagData;
 
 /// `is:` values Scryfall ships as BOOLEANS on every bulk card object, as
-/// `(card_is_tags key, raw blob key)`. Mirrors api_resource.BOOLEAN_IS_TAGS.
-/// foil/promo/reprint are deliberately NOT here yet (higher cardinality,
-/// upstream wants a memory check first).
-const BOOLEAN_IS_TAGS: &[(&str, &str)] =
-    &[("reserved", "reserved"), ("gamechanger", "game_changer"), ("oversized", "oversized")];
+/// `(card_is_tags key, raw blob key)`. Mirrors db_info.BOOLEAN_IS_TAGS, which is also what the
+/// parser reads to decide whether an `is:` value has data behind it at all
+/// (`rewrite.SUPPORTED_IS_VALUES`) — an entry added on one side and not the other turns a working
+/// predicate into a warned no-match, or the reverse.
+///
+/// `promo`/`reprint`/`foil` were held back once over their cardinality. THE MEMORY QUESTION THAT
+/// DEFERRED THEM IS ANSWERED, by building the same 2026-08-16 corpus (31,724 cards / 517,746 rows)
+/// four times over and weighing the nine archives:
+///
+/// | stored `is:` vocabulary                     | archives   | vs 3 entries    |
+/// |---------------------------------------------|------------|-----------------|
+/// | 3 (reserved, gamechanger, oversized)        | 363.02 MiB | --              |
+/// | 6 (+ promo, reprint, foil)                  | 364.17 MiB | +1.16 / +0.32%  |
+/// | 27 (full, minus booster/hires/nonfoil)      | 370.79 MiB | +7.77 / +2.14%  |
+/// | 30 (full, this table + ARRAY_IS_TAGS)       | 372.68 MiB | +9.66 / +2.66%  |
+///
+/// The intuition the deferral was built on is BACKWARDS, and the fourth build is what shows it:
+/// `booster`, `hires` and `nonfoil` are the three densest tags in the vocabulary -- 28k, 33k and
+/// 34k cards, the last of them 99.8% of the corpus -- and together they cost 1.89 MiB, a fifth of
+/// the growth. The 24 mid-density tags cost 6.61 MiB. Density is CHEAP here: past the storage
+/// crossover a value is a bitmap plane (one bit per row) rather than a posting list (four bytes
+/// per row), so the expensive tag is the one carried by a few thousand printings, not by all of
+/// them. Nothing in this table is disproportionate on those terms; the whole vocabulary is 2.66%.
+///
+/// `foil` is Scryfall's deprecated top-level boolean and says the same thing as `finishes`
+/// containing "foil"; reading the boolean keeps every entry here on the one shape upstream's
+/// `_sync_is_tags` can express in SQL.
+const BOOLEAN_IS_TAGS: &[(&str, &str)] = &[
+    ("booster", "booster"),
+    ("digital", "digital"),
+    ("foil", "foil"),
+    ("fullart", "full_art"),
+    ("gamechanger", "game_changer"),
+    ("hires", "highres_image"),
+    ("nonfoil", "nonfoil"),
+    ("oversized", "oversized"),
+    ("promo", "promo"),
+    ("reprint", "reprint"),
+    ("reserved", "reserved"),
+    ("spotlight", "story_spotlight"),
+    ("textless", "textless"),
+    ("variation", "variation"),
+];
+
+/// `is:` values Scryfall ships as membership in a bulk ARRAY, as
+/// `(card_is_tags key, raw blob array key, member)`. Mirrors db_info.ARRAY_IS_TAGS; upstream's
+/// `_sync_is_tags` asks the same question in SQL with jsonb's `?` containment operator.
+///
+/// Every mapping was established by READING the cards Scryfall returns rather than by guessing
+/// the spelling: `is:X` was fetched from api.scryfall.com on 2026-08-16 and the `promo_types`
+/// arrays of the results intersected. That is what turns `is:judge` into `judgegift`, and what
+/// separates `is:stamped` from the broader `promopack` its results also all carry.
+const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
+    ("boosterfun", "promo_types", "boosterfun"),
+    ("buyabox", "promo_types", "buyabox"),
+    ("convention", "promo_types", "convention"),
+    ("datestamped", "promo_types", "datestamped"),
+    ("etched", "finishes", "etched"),
+    ("fnm", "promo_types", "fnm"),
+    ("gameday", "promo_types", "gameday"),
+    ("giftbox", "promo_types", "giftbox"),
+    ("glossy", "promo_types", "glossy"),
+    ("instore", "promo_types", "instore"),
+    ("judge", "promo_types", "judgegift"),
+    ("league", "promo_types", "league"),
+    ("prerelease", "promo_types", "prerelease"),
+    ("rebalanced", "promo_types", "rebalanced"),
+    ("release", "promo_types", "release"),
+    ("stamped", "promo_types", "stamped"),
+    ("universesbeyond", "promo_types", "universesbeyond"),
+];
 
 /// Scryfall's set_type for products that are collectible objects rather than tournament-legal
 /// printings. Mirrors api/card_processing.py's MEMORABILIA_SET_TYPE.
@@ -73,6 +139,10 @@ pub struct RowDraft {
     pub oracle_text: Option<String>,
     pub flavor_text: String,
     pub card_artist: Option<String>,
+    /// The artist lowercased and accent-folded, exactly as `card_name_folded` is. The engine
+    /// has no NFKD of its own, so `order=artist`'s collation can only fold if the fold arrives
+    /// with the row -- see card_engine's `artist_vocab_folded`.
+    pub card_artist_folded: Option<String>,
     pub card_set_code: Option<String>,
     pub card_layout: Option<String>,
     pub card_border: Option<String>,
@@ -84,9 +154,11 @@ pub struct RowDraft {
     pub set_name: Option<String>,
     pub released_at: String,
     pub card_colors: Vec<String>,
+    pub color_indicator: Vec<String>,
     pub card_color_identity: Vec<String>,
     pub produced_mana: Vec<String>,
     pub card_keywords: Vec<String>,
+    pub card_keywords_printed: Vec<String>,
     /// The BOOLEAN_IS_TAGS whose bulk-card boolean is true (api_resource.py
     /// `_sync_boolean_is_tags`). Only these are derivable from bulk data;
     /// every other `is:` tag still needs upstream's per-tag Scryfall sweep.
@@ -116,6 +188,36 @@ pub struct RowDraft {
     pub price_usd: Option<f64>,
     pub price_eur: Option<f64>,
     pub price_tix: Option<f64>,
+
+    // ── printed-language columns (multilingual store) ────────────────────────
+    // Scryfall's top-level printed_name / printed_type_line / printed_text, verbatim, with
+    // exact absence: None means the key was not on the card object, and the engine's intern_opt
+    // keeps that distinct from an empty string. The per-face halves ride `card_faces` below
+    // (FACE_OBJECT_FIELDS carries them), never these.
+    pub printed_name: Option<String>,
+    pub printed_type_line: Option<String>,
+    pub printed_text: Option<String>,
+    /// The printed FULL name ("Front // Back"), lowercased and accent-folded with the same
+    /// fold `card_name_folded` uses — the engine's printed-name index key. None when no face
+    /// carries a printed name (every English printing).
+    pub printed_name_folded: Option<String>,
+    /// Scryfall's top-level `flavor_name` — the Godzilla/Stranger Things/Secret Lair alternate
+    /// name a printing is SOLD under. Printing-level like the printed triple, and a different
+    /// thing from it: 669 of the 540,484 all_cards rows carry one, 609 of them English. The
+    /// per-face variant (28 face occurrences on 15 printings, `transform`/`reversible_card`
+    /// only) rides `card_faces` via FACE_OBJECT_FIELDS instead — Scryfall never puts both on
+    /// one printing.
+    pub flavor_name: Option<String>,
+    /// `flavor_name`, lowercased and accent-folded with the same fold as above — the engine's
+    /// flavor-name index key, which is what makes `/cards/named?exact=Godzilla, Primeval
+    /// Champion` and `?fuzzy=godzilla primeval` resolve. Top-level only, matching Scryfall:
+    /// `exact=Dracula, Lord of Blood` (a FACE flavor name) answers 404.
+    pub flavor_name_folded: Option<String>,
+    /// Whether this row is one of Scryfall's canonical (default_cards) printings. Decided by
+    /// the CALLER via [`transform_row`] — id-membership in default_cards, never re-derived —
+    /// and defaulted true so drafts serialized before the flag existed read as canonical.
+    #[serde(default = "default_true")]
+    pub is_canonical: bool,
 
     // ── raw-blob inputs consumed by the prefer-score backfill ───────────────
     // (backfill_prefer_scores.sql reads these via raw_card_blob ->> ...; we
@@ -154,7 +256,7 @@ pub struct RowDraft {
 /// `prices` is deliberately absent even though price_usd/eur/tix are columns — usd_foil,
 /// usd_etched and eur_foil are not, and keeping the object whole costs a few bytes against losing
 /// three fields.
-const COMPAT_BLOB_EXCLUDED: [&str; 48] = [
+const COMPAT_BLOB_EXCLUDED: [&str; 52] = [
     // stored in a column of their own
     "id",
     "oracle_id",
@@ -202,6 +304,13 @@ const COMPAT_BLOB_EXCLUDED: [&str; 48] = [
     "resource_id",
     // its own column
     "card_faces",
+    // stored in a column of their own (the printed-language triple; their per-face halves ride
+    // card_faces via FACE_OBJECT_FIELDS)
+    "printed_name",
+    "printed_type_line",
+    "printed_text",
+    // stored in a column of its own; the per-face variant rides card_faces
+    "flavor_name",
     // Added by upstream's importer before it snapshots the residue. Raw bulk JSON never carries
     // them, so these four are inert here — kept so the two exclusion lists stay comparable
     // line-for-line when upstream's changes are synced.
@@ -227,14 +336,24 @@ fn compat_blob(card: &Map<String, Value>) -> Map<String, Value> {
 ///
 /// `object` is the constant "card_face" and `image_uris` is a pure function of
 /// the card's id and the face's position, so neither is stored.
-const FACE_OBJECT_FIELDS: [&str; 14] = [
+const FACE_OBJECT_FIELDS: [&str; 18] = [
     "name",
+    // Scryfall's key order on a face is name -> flavor_name -> mana_cost (verified live on
+    // vow/338 `transform` and sld/1079 `reversible_card`, 2026-08-16), and jv_faces round-trips
+    // this list's order, so the position here IS the emitted position.
+    "flavor_name",
     "mana_cost",
     "type_line",
     "oracle_text",
     "power",
     "toughness",
     "loyalty",
+    // The per-face printed-language triple. Presence varies per face per printing (a
+    // prepare-layout Spanish card localizes the front face's name and type line and nothing
+    // else), and jv_faces in core_api.rs round-trips exactly what is here — absent stays absent.
+    "printed_name",
+    "printed_type_line",
+    "printed_text",
     // Not in upstream's list, which loses every battle's defense: Scryfall prints it on the FACE
     // (Invasion of Alara's front face is `defense: 7`) and no column holds it.
     "defense",
@@ -321,8 +440,14 @@ fn rarity_text_to_int(rarity: &str) -> i64 {
         "common" => 0,
         "uncommon" => 1,
         "rare" => 2,
-        "mythic" => 3,
-        "special" => 4,
+        // special BELOW mythic, which is Scryfall's ladder and not the one upstream shipped.
+        // Measured 2026-08-16: `order=rarity dir=desc` answers mythic before the single `special`
+        // row (Gaea's Blessing, tsb/77), and `r:bonus or r:special` answers special first ascending
+        // and bonus first descending. So the ladder is common < uncommon < rare < special < mythic
+        // < bonus, and the two middle tiers were transposed. It is one number line, so this moves
+        // `r>=mythic` (now {mythic, bonus}) as well as `order=rarity`.
+        "special" => 3,
+        "mythic" => 4,
         "bonus" => 5,
         _ => -1,
     }
@@ -341,10 +466,62 @@ fn extract_collector_number_int(collector_number: &str) -> Option<i64> {
     if (-(2i64.pow(31))..=(2i64.pow(31) - 1)).contains(&n) { Some(n) } else { None }
 }
 
-/// api/parsing/card_query_nodes.py lines 483-494 (`fold_accents`): NFKD then
-/// drop combining marks. Single source of truth for `card_name_folded`.
+/// The Latin letters NFKD leaves WHOLE, and the spellings a name comparison has to read them as.
+///
+/// NFKD is a decomposition, and a decomposition can only ever separate a base letter from its
+/// marks. `æ` is not `a` with a mark on it — it is its own letter with no decomposition at all — so
+/// every one of these survived `fold_accents` untouched and `name:æther` found nothing where
+/// Scryfall finds 90. MEASURED against api.scryfall.com on 2026-08-16, one probe per character,
+/// each against its expanded spelling: æ/ae 90, œ/oe 167, ß/ss 2051, ø/o 22111, ł/l 18748, đ/d
+/// 14591, þ/th 5689, ð/d 14591, ħ/h 14176, ŋ/ng 4834, ŧ/t 22261, ı/i 22954, ĸ/k 6616 — equal
+/// totals on both sides of every pair. (ĳ folds too, at 22; NFKD already reaches that one.)
+///
+/// The three characters DELIBERATELY ABSENT, each measured to 404 on Scryfall: `×` and `÷`, which
+/// are symbols rather than letters and which `collate_name` would delete anyway; and `ſ`, which
+/// Scryfall does not fold and NFKD does. Known residual divergences, all on characters no card in
+/// the corpus contains: `ſ`, the presentation ligatures `ﬁ`/`ﬂ`/`ﬀ`, `½`, `№` and `ǽ` — NFKD folds
+/// each of them and Scryfall folds none.
+///
+/// Mirrors `_LIGATURE_FOLD` in api/parsing/card_query_nodes.py.
+fn ligature_fold(c: char) -> Option<&'static str> {
+    Some(match c {
+        'Æ' => "AE",
+        'æ' => "ae",
+        'Œ' => "OE",
+        'œ' => "oe",
+        'ß' => "ss",
+        'Ø' => "O",
+        'ø' => "o",
+        'Ł' => "L",
+        'ł' => "l",
+        'Đ' | 'Ð' => "D",
+        'đ' | 'ð' => "d",
+        'Þ' => "Th",
+        'þ' => "th",
+        'Ħ' => "H",
+        'ħ' => "h",
+        'Ŋ' => "NG",
+        'ŋ' => "ng",
+        'Ŧ' => "T",
+        'ŧ' => "t",
+        'ı' => "i",
+        'ĸ' => "k",
+        _ => return None,
+    })
+}
+
+/// api/parsing/card_query_nodes.py (`fold_accents`): NFKD, drop combining marks,
+/// then expand the undecomposable Latin letters. Single source of truth for
+/// `card_name_folded`.
 pub fn fold_accents(value: &str) -> String {
-    value.nfkd().filter(|c| canonical_combining_class(*c) == 0).collect()
+    let mut out = String::with_capacity(value.len());
+    for c in value.nfkd().filter(|c| canonical_combining_class(*c) == 0) {
+        match ligature_fold(c) {
+            Some(expanded) => out.push_str(expanded),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 /// api/parsing/card_query_nodes.py lines 387-421 (`mana_cost_str_to_dict`):
@@ -421,62 +598,179 @@ fn required_str(card: &Map<String, Value>, name: &str, field: &'static str) -> R
 
 // ─── preprocess_card port ────────────────────────────────────────────────────
 
-/// The filters at the top of `preprocess_card` (lines 104-125), applied both to
-/// the top-level card and to each merged face (the Python function recurses, so
-/// every face passes through them again with the parent's card-level values).
-fn passes_filters(card: &Map<String, Value>) -> Result<bool, TransformError> {
-    // Line 104: never-legal paper cards — a card with no "legal" or
-    // "restricted" status in ANY format is dropped. This is upstream's policy,
-    // mirrored exactly (import_data has no "include never-legal" variant).
+/// The `is:` value that carries the extras class. Spelled once here and once in the TypeScript
+/// parser's COMPUTED_IS_TAGS; the two must agree or `is:extra` warns instead of filtering.
+pub const EXTRA_IS_TAG: &str = "extra";
+
+/// The `layout` values whose printings Scryfall calls EXTRAS and hides from a default
+/// `/cards/search`, plus the two non-layout signals that do the same job.
+///
+/// DERIVED FROM SCRYFALL'S OWN ANSWERS, not from this file's old filter list — which turned out to
+/// predict the wrong thing. Every class the old `passes_filters` dropped was probed against
+/// api.scryfall.com on 2026-08-16 (`q=!"<name>"` bare, then with `include_extras=true`, then
+/// `/cards/named?exact=`), and four of the seven are simply ORDINARY search results:
+///
+///   never-legal   `!"Hold the Perimeter"` (cn2/6)     -> 200 bare   ordinary
+///   funny         `!"Bamboozling Beeble"` (unf/37)    -> 200 bare   ordinary
+///                 `!"Goblin Bowling Team"` (ugl/44)   -> 200 bare   ordinary (silver, never-legal)
+///   "X // X"      `!"Magmatic Hellkite // …"` (tdm)   -> 200 bare   ordinary (reversible_card)
+///   playtest+legal `sld/SCTLR` Counterspell            -> in `unique=prints` bare
+///
+///   memorabilia   `!"Siren's Call"&unique=prints`     -> 8 bare, 12 with extras (ced/78 appears)
+///   type "Card"   `!"The Monarch"` (tmkc/31)          -> 404 bare, 200 with extras
+///   type "Token"  `!"Goblin Army"` (thob/4)           -> 404 bare, 200 with extras
+///   planar        `!"Truga Jungle"` (opc2/38)         -> 404 bare, 200 with extras
+///   playtest      `!"Subgoyf"` (mb2/536)              -> 404 bare, 200 with extras
+///
+/// The property that actually predicts hiding is Scryfall's own `is:extra` (6,054 cards); this
+/// approximation reaches 5,873 distinct English cards, within 3% of it — and, unlike the filter
+/// list, it is a statement about the PRINTING rather than about how playable the card is.
+///
+/// `/cards/named?exact=` answered 200 for every one of them, hidden or not: that route has no
+/// extras gate at all, which is the other half of why refusing the ROW could never reproduce this.
+///
+/// `host` AND `augment` WERE HERE AND ARE WRONG. Unstable's Hosts and Augments are ORDINARY search
+/// results: `is:extra e:ust` answers 0 on api.scryfall.com while this list counted 32, and bare
+/// `e:ust` answers Unstable's full English count either way. The two layouts are unusual card
+/// FACES, not printings Scryfall hides — which is the distinction this list is supposed to draw.
+/// Measured 2026-08-16; 46 printings across ust/und/ulst stop carrying `is:extra`.
+const EXTRA_LAYOUTS: &[&str] =
+    &["token", "double_faced_token", "emblem", "planar", "scheme", "vanguard", "art_series", "front_card"];
+
+/// `set_type` of the Un-sets and the joke oddities — the one family where the extras verdict is a
+/// property of the SET and not of the printing.
+const FUNNY_SET_TYPE: &str = "funny";
+
+/// The `funny` sets Scryfall hides behind `include_extras`. Every OTHER funny set is served
+/// ordinarily, and both halves are total: measured on api.scryfall.com 2026-08-16, all 22 funny
+/// sets in the corpus answer `is:extra e:<code>` with either their whole card count or zero —
+/// never anything in between.
+///
+///   whole set extra   cmb1 121  cmb2 121  h17 4  hho 21  ph17 3  ph18 4  ph19 7  ph20 3  ph21 4
+///                     ph22 5  ph23 2  phtr 3  punk 52  ulst 62  unk 512
+///   whole set served  ptg 0  sunf 0  ugl 0  und 0  unf 0  unh 0  ust 0
+///
+/// NOTHING ON THE PRINTING PREDICTS THE SPLIT, and that is a measurement rather than a shrug. The
+/// ulst rows (The List's Unstable reprints) were diffed field by field against their own ust twins
+/// over the whole 2026-08-16 bulk: of the 40-odd keys, the only values ulst holds that no
+/// ust/und/unh/unf/ugl row holds are `highres_image: false` and `image_status: "lowres"` — scan
+/// quality, and not even uniform across ulst. `set_type`, `border_color` (silver both), `layout`,
+/// `security_stamp`, `promo_types`, `frame_effects`, `games`, `finishes`, `booster`, `reprint`,
+/// `content_warning`, `legalities` (never legal both) all overlap. Widening the comparison to the
+/// two GROUPS — 927 printings across the 15 extra sets against 1,310 across the 7 served ones —
+/// found no field whose value set separates them either.
+///
+/// The SET objects do not predict it: `foil_only` is true for both h17 (extra) and ptg (served),
+/// `parent_set_code` is set on both punk (extra) and sunf (served), `tcgplayer_id` is set on both
+/// unk (extra) and ptg (served), and `card_count`/`printed_size`/`digital`/`block` split neither
+/// way. So it is editorial data in Scryfall's own database, and a list is the only faithful port.
+///
+/// SPELLED AS THE EXTRA SIDE ON PURPOSE. A funny set this list has never heard of is served
+/// ORDINARILY, so the failure mode of a stale list is a handful of employee-award or convention
+/// cards leaking into search — not a 639-card retail Un-set vanishing from it, which is what
+/// defaulting the other way would risk the first time Wizards prints another one.
+const FUNNY_EXTRA_SETS: &[&str] = &[
+    "cmb1", "cmb2", "h17", "hho", "ph17", "ph18", "ph19", "ph20", "ph21", "ph22", "ph23", "phtr", "punk", "ulst",
+    "unk",
+];
+
+/// Whether Scryfall hides this printing from a default `/cards/search` — the `is:extra` class.
+///
+/// NOTHING IS DROPPED ANY MORE. `preprocess_card` used to refuse seven classes of printing at
+/// import; Scryfall serves all seven, and gates three-and-a-bit of them behind
+/// `include_extras=false`. An absent row cannot reproduce a query-time gate in either direction:
+/// `/cards/named?exact=Counters` answered 404 where Scryfall answers fmsc/9, and
+/// `include_extras=true` had nothing to include. So every row is imported and this decides which
+/// ones carry `is:extra`; `cardsSearchHandler` ANDs `-is:extra` unless the caller (or a set term)
+/// asks otherwise.
+///
+/// The `legalities` read stays, and stays fallible: it is the one field whose absence still means
+/// the bulk row is malformed rather than merely unusual.
+///
+/// MEASURED COVERAGE (2026-08-16, the 114,068 English printings of the all_cards bulk against
+/// api.scryfall.com's own `is:extra`, 10,818 printings): this class reaches 10,732 — 45 short and
+/// none over. The 45 are Arena-only duplicate printings with no signal on them at all (hbg 18,
+/// j21 16, ydmu 9, ybro 1) plus one Secret Lair poster; the same field-by-field diff that cleared
+/// `FUNNY_EXTRA_SETS` finds nothing separating them from their own set-mates either, so they are
+/// left rather than enumerated one id at a time. Before the funny/digital/silver-promo/Stickers
+/// rules were added it reached 10,482 with 308 misses and 2 false positives.
+fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     let legalities = card
         .get("legalities")
         .and_then(Value::as_object)
         .ok_or_else(|| TransformError::MissingField { card: s(card, "name").unwrap_or_default(), field: "legalities" })?;
-    if !legalities.values().any(|v| matches!(v.as_str(), Some("legal") | Some("restricted"))) {
-        return Ok(false);
-    }
-    // Line 106: playtest promos (Mystery Booster convention cards).
-    if array_contains(card, "promo_types", "playtest") {
-        return Ok(false);
-    }
-    // Line 108: digital-only printings.
-    if !array_contains(card, "games", "paper") {
-        return Ok(false);
-    }
-    // Line 110: un-sets and other joke products.
-    if s(card, "set_type").as_deref() == Some("funny") {
-        return Ok(false);
-    }
-    // Line 117: memorabilia -- World Championship decks, Collectors' Edition, 30th Anniversary,
-    // the oversized promos. Scryfall hides these from any search that does not name their set, so
-    // importing them makes ordinary queries disagree with it; they were supplying the CHEAPEST
-    // printing for 184 cards, which is the printing a price ordering returns. See upstream's
-    // card_processing.py for why this is an IMPORT filter and not a query-time one -- the short
-    // version is that a conjunct on every query breaks four of the six physical plans.
+    let never_legal = !legalities.values().any(|v| matches!(v.as_str(), Some("legal") | Some("restricted")));
+    // A FUNNY SET DECIDES FOR ITS PRINTINGS — see `FUNNY_EXTRA_SETS` for the measurement and for
+    // why no printing field can stand in for the list.
     //
-    // 2,672 of this store's 97,803 printings (2.73%), and 0 of its 31,724 cards are printed only
-    // in memorabilia sets, so no card is lost.
-    if s(card, "set_type").as_deref() == Some(MEMORABILIA_SET_TYPE) {
-        return Ok(false);
+    // A funny set the list names is extra outright. A funny set it does NOT name still falls
+    // through to the layout, memorabilia, content-warning and "Card"/"Token" rules below, and
+    // skips only the two that measurably misfire inside the un-sets: `und`/`unh` carry a
+    // `playtest` promo each ("Look at Me, I'm R&D", a real Un-card that merely DEPICTS a playtest
+    // card) and `sunf` ships 48 sticker sheets, and all three sets answer `is:extra` 0 on
+    // api.scryfall.com.
+    //
+    // FALLING THROUGH RATHER THAN RETURNING FALSE IS THE POINT. An early `false` would let a
+    // future funny set's tokens, planes or vanguards vanish from search the moment the list went
+    // stale — the silent-vanishing failure this list's polarity was chosen to avoid, reintroduced
+    // one level down. It costs nothing today: of the 57 funny printings another rule would call
+    // extra (punk 52 planar, cmb1/cmb2 1 vanguard each, hho/h17 1 token each) every single one is
+    // already in a listed set, so the two rules agree wherever they overlap.
+    let funny = s(card, "set_type").as_deref() == Some(FUNNY_SET_TYPE);
+    if funny && s(card, "set").is_some_and(|code| FUNNY_EXTRA_SETS.contains(&code.as_str())) {
+        return Ok(true);
     }
-    // Lines 114-118: unplayable "Card"/"Token" type lines.
+    // A DIGITAL PRINTING NO FORMAT ALLOWS. Arena's Alchemy duplicates and the Astral cards from
+    // the 1997 MicroProse game are legal nowhere and served nowhere: 117 printings across hbg
+    // (104), past (12) and prm (1), every one of them inside Scryfall's `is:extra` and not one
+    // outside it, over the whole English corpus. Digital and never-legal are each ordinary on
+    // their own — Alchemy's playable cards are legal in alchemy/historic, and paper's never-legal
+    // conspiracies are ordinary results — so it is the conjunction that carries the class.
+    if card.get("digital").and_then(Value::as_bool) == Some(true) && never_legal {
+        return Ok(true);
+    }
+    // A SILVER-BORDERED PROMO: an Un-card handed out outside its own set (Arena League, judge
+    // gifts, prerelease stamps). 10 printings across pal04/j17/p30m/punh/pust, all extras, no
+    // false positive — silver alone is not the class (567 silver printings are ordinary), and
+    // neither is `promo`.
+    if s(card, "border_color").as_deref() == Some("silver") && s(card, "set_type").as_deref() == Some("promo") {
+        return Ok(true);
+    }
+    if s(card, "layout").as_deref().is_some_and(|l| EXTRA_LAYOUTS.contains(&l)) {
+        return Ok(true);
+    }
+    if s(card, "set_type").as_deref() == Some(MEMORABILIA_SET_TYPE) {
+        return Ok(true);
+    }
+    // `content_warning` — the flag Scryfall sets on the printings it will not show unasked. It is
+    // an EXTRAS signal and nothing else in this function catches it: 91 printings across the bulk
+    // (25 English), all layout `normal`, all ordinary type lines, all legal somewhere. Missing it
+    // made nine sets look extras-free that Scryfall auto-enables `include_extras` for — lea's only
+    // extra IS a content-warning card (Crusade), and 2ed/3ed/4ed/5ed/6ed/sum/leg/arn/ddf/me1/me3/
+    // ced/cei/prm are the same story. Measured 2026-08-16: `is:extra e:lea` answers 1.
+    if card.get("content_warning").and_then(Value::as_bool) == Some(true) {
+        return Ok(true);
+    }
+    // A "Card"/"Token"/"Stickers" TYPE LINE, for the printings whose layout does not already say
+    // so: the checklist and substitute-card family ships as layout `normal` in some sets, and the
+    // Secret Lair sticker sheets (sld/335-339) ship as an ordinary `normal` box-set printing whose
+    // only tell is the type. `Stickers` is guarded on `funny` because `sunf` ships 48 sticker
+    // sheets that Scryfall serves; `Card`/`Token` need no guard, and deliberately do not have one.
     if let Some(type_line) = s(card, "type_line")
         && !type_line.is_empty()
     {
         let (card_types, _) = parse_type_line(&type_line);
-        if card_types.iter().any(|t| t == "Card" || t == "Token") {
-            return Ok(false);
+        if card_types.iter().any(|t| t == "Card" || t == "Token" || (t == "Stickers" && !funny)) {
+            return Ok(true);
         }
     }
-    // Lines 121-124: "X // X" cards (same name on both sides).
-    if let Some(name) = s(card, "name")
-        && let Some((left, right)) = name.split_once("//")
-        && left.trim() == right.trim()
-    {
-        return Ok(false);
-    }
-    Ok(true)
+    // A playtest promo, EXCEPT where the printing is otherwise playable: sld/SCTLR Counterspell
+    // carries `promo_types: ["sldbonus", "playtest"]`, is legal in modern/legacy/pauper, and is
+    // returned by a bare `!"Counterspell"&unique=prints` — so the flag alone does not hide a row,
+    // the mb2/cmb1 convention cards are hidden because they are unplayable as well.
+    Ok(array_contains(card, "promo_types", "playtest") && never_legal && !funny)
 }
+
 
 /// The single-face tail of `preprocess_card` (lines 155-270): derive every
 /// engine column from a fully merged card dict. `card_name` is the lifted
@@ -536,7 +830,20 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     // normalization the oracle/art tag collections already use on both sides. Any collision the
     // fold creates collapses in keys_true, matching Python's dict.fromkeys.
     let card_keywords: Vec<String> = str_array(card, "keywords").iter().map(|k| k.to_lowercase()).collect();
+    // ...and again as printed, for the card OBJECT. The fold above is not invertible: only 455 of
+    // the 885 distinct keywords in the 2026-08-16 all_cards bulk come back from capitalizing the
+    // folded form ("Battle Cry", "AV Bead", "Bio-plasmic Barrage" do not), and Scryfall's order is
+    // neither the folded list's nor alphabetical ("Flying" before "Flash" on Brazen Borrower). The
+    // engine keeps the two apart on purpose: `keyword:` binds the folded ids, the object emits
+    // these. Cheap either way -- 885 strings intern once for the whole corpus.
+    let card_keywords_printed = str_array(card, "keywords");
     let produced_mana = str_array(card, "produced_mana");
+    // Scryfall's own top-level `color_indicator` — the dot printed on a card whose colours its mana
+    // cost cannot state (a meld result, a coloured back). 546 printings in the 2026-08-16 bulk carry
+    // one, and this port emitted the key on none of them. Deliberately NOT face-merged: the
+    // two-image layouts keep theirs on the faces and send no top-level copy at all, and on the
+    // one-image layouts the front face's overlay IS the card's value.
+    let color_indicator = str_array(card, "color_indicator");
 
     // The is: tags Scryfall ships as booleans on every bulk card object. Upstream
     // syncs these from raw_card_blob in one set-based statement after each upsert
@@ -547,6 +854,12 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         .iter()
         .filter(|(_, blob_key)| card.get(*blob_key) == Some(&Value::Bool(true)))
         .map(|(tag, _)| (*tag).to_owned())
+        .chain(
+            ARRAY_IS_TAGS
+                .iter()
+                .filter(|(_, blob_key, member)| array_contains(card, blob_key, member))
+                .map(|(tag, _, _)| (*tag).to_owned()),
+        )
         .collect();
 
     // Line 197: edhrec_rank passes through (bulk_upsert casts to integer).
@@ -592,6 +905,7 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     // every value this actually sees today is integral; what changes is that a fraction would
     // now survive rather than being rounded on the way in.
     let card_artist = s(card, "artist");
+    let card_artist_folded = card_artist.as_deref().map(|a| fold_accents(&a.to_lowercase()));
     let cmc = maybe_float(card.get("cmc"));
 
     // Lines 251-255: rarity only when non-empty.
@@ -638,6 +952,7 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         card_name_folded,
         flavor_text,
         card_artist,
+        card_artist_folded,
         card_set_code,
         card_layout,
         card_border,
@@ -648,8 +963,10 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         released_at,
         card_colors,
         card_color_identity,
+        color_indicator,
         produced_mana,
         card_keywords,
+        card_keywords_printed,
         card_is_tags,
         card_types,
         card_subtypes,
@@ -672,9 +989,55 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
         // card has none, which is the ~82% case.
         card_faces: Vec::new(),
         // Also filled by `transform`, from the card as Scryfall sent it rather than from the
-        // per-face overlay this function may have been handed.
+        // per-face overlay this function may have been handed — the printed columns and the
+        // canonical flag likewise (the flag is the caller's fact, not the card's).
         compat_blob: Map::new(),
+        printed_name: None,
+        flavor_name: None,
+        flavor_name_folded: None,
+        printed_type_line: None,
+        printed_text: None,
+        printed_name_folded: None,
+        is_canonical: true,
     })
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl RowDraft {
+    /// Record an `Extra` verdict as the `is:extra` tag, which is where the query plane reads it.
+    ///
+    /// A COMPUTED tag rather than a bulk boolean, so it cannot ride BOOLEAN_IS_TAGS: no Scryfall
+    /// field says "this printing is an extra", the answer is the union of the classes
+    /// `extras_class` recognizes, and `card_is_tags` is the one place the engine already indexes
+    /// per-printing membership (a `HybridTagIndex`, which is what keeps `-is:extra` composable —
+    /// spelled as a set-type conjunct instead it would have cost three of the six physical plans).
+    fn set_extra(&mut self, is_extra: bool) {
+        if is_extra && !self.card_is_tags.iter().any(|t| t == EXTRA_IS_TAG) {
+            self.card_is_tags.push(EXTRA_IS_TAG.to_owned());
+        }
+    }
+}
+
+/// The printed full name for the engine's printed-name index, folded exactly like
+/// `card_name_folded`: per-face `printed_name`s joined " // " — each face falling back to its
+/// English `name` when Scryfall omitted `printed_name` there, so a prepare-layout printing whose
+/// back face is never localized still yields a complete two-part name — or the top-level
+/// `printed_name` when the card has no faces. `None` when no printed name exists anywhere: an
+/// English printing contributes nothing to the printed-name index.
+fn printed_name_folded(card: &Map<String, Value>, faces: &[Map<String, Value>]) -> Option<String> {
+    let full = if faces.iter().any(|f| f.contains_key("printed_name")) {
+        faces
+            .iter()
+            .map(|f| f.get("printed_name").or_else(|| f.get("name")).and_then(Value::as_str).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" // ")
+    } else {
+        s(card, "printed_name")?
+    };
+    Some(fold_accents(&full.to_lowercase()))
 }
 
 /// Joins face texts. `"\n"` so substring/regex matches cannot span faces in
@@ -730,6 +1093,7 @@ fn merge_face_drafts(drafts: Vec<RowDraft>) -> RowDraft {
         // finalize_row emits the same objects, making union_list equivalent.
         union_list(&mut merged.card_colors, &face.card_colors);
         union_list(&mut merged.card_keywords, &face.card_keywords);
+        union_list(&mut merged.card_keywords_printed, &face.card_keywords_printed);
         union_list(&mut merged.produced_mana, &face.produced_mana);
 
         // _FACE_JOINED_TEXTS. type_line uses " // "; the rest use the newline form.
@@ -788,20 +1152,33 @@ fn merge_face_drafts(drafts: Vec<RowDraft>) -> RowDraft {
     merged
 }
 
+/// `preprocess_card` for one bulk card object, canonical by default.
+///
+/// The one-argument shape every existing caller uses; feeds that only carry canonical rows
+/// (default_cards) never say so explicitly. Foreign feeds go through [`transform_row`].
+pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> {
+    transform_row(bulk_card, true)
+}
+
 /// `preprocess_card` for one bulk card object.
 ///
 /// A multi-face card (transform, MDFC, split, adventure, flip) becomes ONE row
 /// carrying the front face's identity and every face's searchable data — see
 /// [`merge_face_drafts`]. `Ok(None)` means every face (or the card itself) was
 /// filtered, mirroring upstream's empty list.
-pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> {
+///
+/// `is_canonical` is the CALLER's fact — id-membership in Scryfall's default_cards — because
+/// re-deriving Scryfall's selection is exactly the drift class the PIN_BONUS precedent exists
+/// to eliminate. The engine routes non-canonical rows into its foreign annex.
+pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<RowDraft>, TransformError> {
     let card = bulk_card
         .as_object()
         .ok_or_else(|| TransformError::BadType { card: String::new(), field: "card" })?;
 
-    if !passes_filters(card)? {
-        return Ok(None);
-    }
+    // EVERY ROW IS IMPORTED. The only question the old filters still answer is whether the
+    // printing carries `is:extra`, and that is a property of the PRINTING — decided once here,
+    // never per face.
+    let verdict = extras_class(card)?;
 
     // Line 134: lift the full card name before face processing.
     let card_name = required_str(card, s(card, "name").unwrap_or_default().as_str(), "name")?;
@@ -819,9 +1196,6 @@ pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> 
             for (k, v) in face_obj {
                 merged.insert(k.clone(), v.clone());
             }
-            if !passes_filters(&merged)? {
-                continue;
-            }
             drafts.push(build_draft(&merged, &card_name)?);
         }
         if drafts.is_empty() {
@@ -833,13 +1207,64 @@ pub fn transform(bulk_card: &Value) -> Result<Option<RowDraft>, TransformError> 
         row.card_faces = face_records(faces);
         // From `card`, not from any face overlay: upstream takes the residue from the card as
         // Scryfall sent it on both paths, and every key in it (ids, prices, finishes, set
-        // metadata) belongs to the printing rather than to one of its faces.
+        // metadata) belongs to the printing rather than to one of its faces. The printed
+        // columns likewise — a face overlay's printed_name would masquerade as the card's.
         row.compat_blob = compat_blob(card);
+        row.printed_name = s(card, "printed_name");
+        row.flavor_name = s(card, "flavor_name");
+        // ...and the LAYOUT, which is the one key on this list a face can genuinely carry. Scryfall
+        // puts `layout` on the FACES of reversible cards and on nothing else — over the whole
+        // 2026-08-15 all_cards bulk exactly 81 cards have a face-level `layout` and all 81 are
+        // `reversible_card` — so the overlay above wrote the face's value onto the merged dict and
+        // `merge_face_drafts` then kept the front's. Every one of the 81 was stored as some other
+        // layout entirely (77 `normal`, 3 `adventure`, 1 `token`), which is why the corpus reported
+        // zero reversible cards and `is:dfc` missed all ten `sld` printings the sweep still flagged.
+        row.card_layout = s(card, "layout").map(|v| v.to_lowercase());
+        row.set_extra(verdict);
+        row.printed_type_line = s(card, "printed_type_line");
+        row.printed_text = s(card, "printed_text");
+        // ...and the ARTIST, for the same reason and on measured evidence. A card drawn by two
+        // people carries the JOINED credit at top level ("David Martin & Franz Vohwinkel" on
+        // Fire // Ice, dmr/215) and the per-face credit inside `card_faces`. The face overlay
+        // above puts face 0's artist on the merged dict, so `merge_face_drafts` kept the FRONT
+        // face's name and Scryfall's joined value never reached the column — this port answered
+        // "David Martin". Upstream's card_processing.py has the same defect; per Decision 8d the
+        // engine follows Scryfall, and the fix goes upstream with this evidence attached.
+        //
+        // Taking Scryfall's own string rather than re-joining the faces is what makes the two
+        // degenerate shapes free: 4,951 multi-faced cards whose faces share ONE artist carry that
+        // single name here (never "X & X"), and 1,158 SINGLE-faced cards are already credited to
+        // two people ("Greg Hildebrandt & Tim Hildebrandt", uds/22) — a derivation from faces
+        // could not have produced either. Measured over the whole 2026-08-16 default_cards bulk:
+        // the separator is " & " with no third artist anywhere in the corpus (max artist_ids 2),
+        // and every comma in an artist string is part of a name ("Ken Meyer, Jr."), never a
+        // separator. `artist_ids` is not stored, so this string is also not re-splittable —
+        // "Hari & Deepti" is ONE artist of ten cards.
+        //
+        // The column feeds three surfaces, and all three were wrong together: the card object's
+        // `artist`, `order=artist` (api.scryfall.com sorts Fire // Ice AFTER all six plain
+        // "David Martin" dmr cards, i.e. on the joined string), and `a:` (`a:"franz vohwinkel"`
+        // matches Fire // Ice there — artist search covers NON-FRONT faces). The third falls out
+        // of the first: `a:` compares the COLLATED artist, which drops the " & ", so every
+        // artist's own collated name is a substring of the joined one.
+        row.card_artist = s(card, "artist");
+        row.card_artist_folded = row.card_artist.as_deref().map(|a| fold_accents(&a.to_lowercase()));
+        row.printed_name_folded = printed_name_folded(card, &row.card_faces);
+        row.flavor_name_folded = row.flavor_name.as_deref().map(|v| fold_accents(&v.to_lowercase()));
+        row.is_canonical = is_canonical;
         return Ok(Some(row));
     }
 
     let mut row = build_draft(card, &card_name)?;
     row.compat_blob = compat_blob(card);
+    row.printed_name = s(card, "printed_name");
+    row.flavor_name = s(card, "flavor_name");
+    row.set_extra(verdict);
+    row.printed_type_line = s(card, "printed_type_line");
+    row.printed_text = s(card, "printed_text");
+    row.printed_name_folded = printed_name_folded(card, &row.card_faces);
+    row.flavor_name_folded = row.flavor_name.as_deref().map(|v| fold_accents(&v.to_lowercase()));
+    row.is_canonical = is_canonical;
     Ok(Some(row))
 }
 
@@ -875,12 +1300,91 @@ pub fn is_off_style(art_tags: &[&str]) -> bool {
 /// `art_style` component deliberately demotes. Upstream optimises "the version that looks like
 /// Magic" and is right to keep that veto; this port optimises "what Scryfall would have said".
 ///
-/// Large enough to dominate every real component sum (scores land in ~130-220), because this is a
-/// PIN rather than another weight: where the label exists and applies, it decides. `prefer_score`
+/// Large enough to dominate every real component sum (components land in ~130-220), because this
+/// is a PIN rather than another weight: where the label exists and applies, it decides. It rides
+/// UNDER the printing rank added by [`crate::ranks`], which is why it can stay this size: the
+/// rank's first key is "is this slot pinned", so a pinned printing is rank 0 and this bonus no
+/// longer has to out-shout anything — it carries the same magnitude into the cross-card
+/// comparisons that read the score, which is the only reason it is still added at all. `prefer_score`
 /// still ranks everything underneath it, which is what the ~3.4% of cards with no usable label,
 /// the per-artwork-group representatives `unique=artwork` needs, and every filtered query fall
 /// back on.
+///
+/// APPLIED BY PRINTING SLOT, NOT BY ID — see [`PinnedPrintings`]. The label names ONE scryfall_id
+/// and it is always an English printing, so pinning that id alone leaves every foreign row of the
+/// same card scored by raw `prefer_score`; Scryfall's own within-language representative is the
+/// printing at the SAME (set_code, collector_number) as its English one, which raw prefer_score
+/// gets wrong wherever a showcase printing outscores the pinned slot (14 of 175 `e:khm lang:ja`
+/// cards, verified against api.scryfall.com 2026-08-16).
 pub const PIN_BONUS: f64 = 1000.0;
+
+/// The printing SLOT a pin applies to: `(oracle_id, set_code, collector_number)`.
+///
+/// oracle_id is in the key so the propagation stays a per-CARD fact — two cards can only collide
+/// on (set, number) across languages of the same card, and keying by card rather than by set slot
+/// makes the whole thing partition-local (every printing of a card hashes to one partition), which
+/// is what lets the nightly coordinator compute it per partition and the native builder compute it
+/// while the corpus streams.
+pub type PinKey = (String, String, String);
+
+/// The (set, collector-number) slots Scryfall's labels named, per card.
+///
+/// Built in each import path's per-card pass — the same pass that already computes illustration
+/// counts — and consulted by [`is_pinned`] once per row. A row with no set code or no collector
+/// number cannot be addressed by slot and is therefore never a propagation source or target; the
+/// labelled row itself is still pinned by its id, so such a card scores exactly as it did before
+/// this propagation existed.
+#[derive(Debug, Default, Clone)]
+pub struct PinnedPrintings(std::collections::HashSet<PinKey>);
+
+impl PinnedPrintings {
+    /// Record `r`'s slot when `r` is the printing a label names. Cheap enough to call per row.
+    pub fn observe(&mut self, r: &RowDraft, labels: &std::collections::HashSet<String>) {
+        if labels.contains(&r.scryfall_id)
+            && let Some(key) = pin_key(r)
+        {
+            self.0.insert(key);
+        }
+    }
+
+    /// Does `r` sit in a slot a label named?
+    pub fn contains(&self, r: &RowDraft) -> bool {
+        pin_key(r).is_some_and(|key| self.0.contains(&key))
+    }
+
+    /// The same question asked of a slot rather than a row — what the printing ranking needs,
+    /// which orders SLOTS and so never has a row in hand (see `ranks::PrintingRanks::seal`).
+    pub fn contains_key(&self, key: &PinKey) -> bool {
+        self.0.contains(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// `r`'s [`PinKey`], or None when it has no addressable slot (no set code or no collector number).
+pub fn pin_key(r: &RowDraft) -> Option<PinKey> {
+    Some((r.oracle_id.clone(), r.card_set_code.clone()?, r.collector_number.clone()?))
+}
+
+/// Whether this row gets [`PIN_BONUS`]: it IS the labelled printing, or it shares that printing's
+/// slot (its own language's edition of it).
+///
+/// Exactly +PIN_BONUS once, never twice, so the pin stays a PIN and raw `prefer_score` still
+/// breaks ties WITHIN a pinned slot (the several rows of one (set, number) in different languages
+/// order among themselves by the ordinary components, English first by the +40 language term).
+pub fn is_pinned(
+    r: &RowDraft,
+    labels: &std::collections::HashSet<String>,
+    pins: &PinnedPrintings,
+) -> bool {
+    labels.contains(&r.scryfall_id) || pins.contains(r)
+}
 
 /// backfill_prefer_scores.sql, one row: every component of
 /// `prefer_score_components`, summed into `prefer_score`.
@@ -1018,6 +1522,116 @@ pub fn cubecobra_scores_from_pairs(per_name: &[(&str, Option<i64>)]) -> HashMap<
         .collect()
 }
 
+/// The finalize inputs that are CORPUS-WIDE — accumulated while the corpus streams past, then
+/// sealed. Two of them, and neither survives being computed per partition:
+///
+///   * `cubecobra_score` is a PERCENT_RANK over the distinct card names of the WHOLE corpus, so
+///     over 1/Nth of the names it produces different numbers for the same card — and the archive
+///     both stores the value and sorts on it (`orderby=cubecobra`).
+///   * `illustration_count` counts rows sharing `(illustration_id, card_name)`. That key carries
+///     NO oracle_id, so unlike every other per-card aggregate nothing in the data model makes it
+///     partition-local: two cards with one name and one illustration would be counted short in
+///     both partitions. It has never happened (0 of 46,487 groups on the real 517,746-row corpus,
+///     measured 2026-08-16) — but "has never happened" is the reason to count it where the
+///     question cannot arise rather than to guard the place it can.
+///
+/// WHY THIS IS A STRUCTURE RATHER THAN TWO LOCALS. The native builder keeps the equivalent
+/// resident while the drafts spill to disk (spill.rs's `CorpusAggregator`); the nightly
+/// coordinator fills THIS one in a global phase before its partition loop and carries it through
+/// the [`TagData`] snapshot — the one persistence path `CanonicalIds` already rides. Both paths
+/// seal through the same `cubecobra_scores_from_pairs` and count through the same
+/// [`illust_count_qualifies`], which is where the parity is.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CorpusTables {
+    /// Distinct card names in FIRST-SEEN order with the edhrec_rank of the first row carrying each
+    /// — the percent-rank's input. Emptied by [`CorpusTables::seal`].
+    #[serde(default)]
+    pending: Vec<(String, Option<i64>)>,
+    /// card_name → score, present only once sealed. `Option` rather than an empty map because an
+    /// unsealed table read as "no scores" is a store whose whole cubecobra column is silently
+    /// null — the callers check [`CorpusTables::is_sealed`] instead of guessing.
+    #[serde(default)]
+    scores: Option<HashMap<String, f64>>,
+    /// [`illust_group_key`] → qualifying rows in that group. Flat string keys rather than a
+    /// `(String, String)` tuple because this map is snapshotted as JSON, whose object keys are
+    /// strings; the separator is a byte neither a UUID nor a card name can contain.
+    #[serde(default)]
+    illust: HashMap<String, u64>,
+    /// card_name → index into `pending`, rebuilt on demand (a restored snapshot has none).
+    #[serde(skip)]
+    index: HashMap<String, usize>,
+}
+
+impl CorpusTables {
+    /// Observe one draft: its name for the percent-rank (first-seen wins, exactly as
+    /// `cubecobra_scores_by_name`'s `DISTINCT ON (card_name)` does over the deduped rows), and its
+    /// illustration group when the row qualifies for counting ([`illust_count_key`]'s predicate).
+    pub fn observe(&mut self, card_name: &str, edhrec_rank: Option<i64>, illust_key: Option<&str>) {
+        if self.index.len() != self.pending.len() {
+            // Restored snapshot: the skipped index is stale — rebuild.
+            self.index = self.pending.iter().enumerate().map(|(i, (n, _))| (n.clone(), i)).collect();
+        }
+        if !self.index.contains_key(card_name) {
+            self.index.insert(card_name.to_owned(), self.pending.len());
+            self.pending.push((card_name.to_owned(), edhrec_rank));
+        }
+        if let Some(ill) = illust_key {
+            *self.illust.entry(illust_group_key(ill, card_name)).or_insert(0) += 1;
+        }
+    }
+
+    /// Compute the percent-rank over everything observed and drop its inputs (the illustration
+    /// counts are already final). Idempotent: a second call keeps the sealed table, so the
+    /// phase's last slice can be retried.
+    pub fn seal(&mut self) -> usize {
+        if self.scores.is_none() {
+            let pairs: Vec<(&str, Option<i64>)> = self.pending.iter().map(|(n, r)| (n.as_str(), *r)).collect();
+            self.scores = Some(cubecobra_scores_from_pairs(&pairs));
+        }
+        self.pending = Vec::new();
+        self.index = HashMap::new();
+        self.names()
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        self.scores.is_some()
+    }
+
+    /// This name's cubecobra score, or None when the table is unsealed or the name was never seen.
+    pub fn cubecobra(&self, card_name: &str) -> Option<f64> {
+        self.scores.as_ref().and_then(|m| m.get(card_name).copied())
+    }
+
+    /// Qualifying rows sharing this row's (illustration_id, card_name); 0 for a row with no
+    /// illustration id, which is what the SQL's NULL equality yields.
+    pub fn illustration_count(&self, illustration_id: Option<&str>, card_name: &str) -> u64 {
+        illustration_id
+            .and_then(|ill| self.illust.get(&illust_group_key(ill, card_name)))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Distinct names — sealed scores if sealed, observations otherwise.
+    pub fn names(&self) -> usize {
+        self.scores.as_ref().map_or(self.pending.len(), HashMap::len)
+    }
+
+    /// Distinct (illustration_id, card_name) groups counted.
+    pub fn illustration_groups(&self) -> usize {
+        self.illust.len()
+    }
+}
+
+/// The illustration-count group key, `illustration_id \u{1f} card_name`. One definition, because
+/// a key built differently at write and read time is a silent zero count.
+fn illust_group_key(illustration_id: &str, card_name: &str) -> String {
+    let mut key = String::with_capacity(illustration_id.len() + card_name.len() + 1);
+    key.push_str(illustration_id);
+    key.push('\u{1f}');
+    key.push_str(card_name);
+    key
+}
+
 fn keys_true<S: AsRef<str>>(keys: &[S]) -> Value {
     let mut m = Map::new();
     for k in keys {
@@ -1096,6 +1710,23 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
     // 4. cubecobra scores per card_name.
     let cubecobra = cubecobra_scores_by_name(&rows);
 
+    // 5. the slots Scryfall's labels named, so the pin reaches every language's edition of the
+    //    labelled printing and not just the (always English) row the label names. Same per-card
+    //    pass shape as the illustration counts above; see PIN_BONUS.
+    let mut pins = PinnedPrintings::default();
+    for r in &rows {
+        pins.observe(r, &tags.labels);
+    }
+
+    // 6. the order each card's printings are chosen in when a filter excludes the pinned one —
+    //    same per-card pass shape again, sealed against the pins because "is this slot pinned"
+    //    is the first key of that order. See `ranks`.
+    let mut ranks = crate::ranks::PrintingRanks::default();
+    for r in &rows {
+        ranks.observe(r);
+    }
+    ranks.seal(&pins);
+
     let empty: Vec<u32> = Vec::new();
     let tags = tags.clone();
     rows.into_iter().map(move |r| {
@@ -1113,8 +1744,9 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
             .copied()
             .unwrap_or(0);
         let cubecobra_score = cubecobra.get(&r.card_name).copied();
-        let pinned = tags.labels.contains(&r.scryfall_id);
-        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned)
+        let pinned = is_pinned(&r, &tags.labels, &pins);
+        let rank = ranks.rank_of(&r);
+        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank)
     })
 }
 
@@ -1124,14 +1756,18 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
 /// pass, so the two paths cannot drift.
 pub fn illust_count_key(r: &RowDraft) -> Option<&str> {
     let ill = r.illustration_id.as_deref()?;
-    if r.raw_lang_en
-        && r.raw_set_type.as_deref() != Some("memorabilia")
-        && !matches!(r.card_border.as_deref(), Some("gold") | Some("yellow"))
-    {
-        Some(ill)
-    } else {
-        None
-    }
+    illust_count_qualifies(r.raw_lang_en, r.raw_set_type.as_deref(), r.card_border.as_deref()).then_some(ill)
+}
+
+/// The predicate alone, over the three raw values it reads.
+///
+/// Split out so the global scores pass — which deserializes a NARROW struct rather than a whole
+/// `RowDraft`, three fields out of fifty — asks the same question the row-level path asks, from
+/// the same code.
+pub fn illust_count_qualifies(raw_lang_en: bool, raw_set_type: Option<&str>, card_border: Option<&str>) -> bool {
+    raw_lang_en
+        && raw_set_type != Some(MEMORABILIA_SET_TYPE)
+        && !matches!(card_border, Some("gold") | Some("yellow"))
 }
 
 /// Emit one finalized ENGINE_COLUMNS row from a draft plus its aggregation
@@ -1144,25 +1780,37 @@ pub fn finalize_row(
     art_tags: &[&str],
     illustration_count: u64,
     cubecobra_score: Option<f64>,
-    // This printing is the one Scryfall's `oracle_cards` file names as the card's representative,
-    // AND `pin_applies` allowed the pin. Decided by the CALLER because it needs a per-card fact
-    // (does an on-style alternative exist), and both import paths already make a per-card pass —
-    // keeping the decision there is what stops the two drifting.
+    // This printing sits in the slot Scryfall's `oracle_cards` file names as the card's
+    // representative — it either IS that printing or shares its (set_code, collector_number), i.e.
+    // it is that printing in another language ([`is_pinned`]). Decided by the CALLER because it
+    // needs a per-card fact the row alone cannot answer, and every import path already makes a
+    // per-card pass — keeping the decision there is what stops the paths drifting.
     pinned: bool,
+    // Where this printing's SLOT sits in its card's order (`ranks::PrintingRanks`) — the other
+    // per-card fact, decided by the caller for the same reason `pinned` is. `RANK_SPAN` (last)
+    // for a row no import path ranked, which is what a caller that has no ranking passes.
+    rank: u32,
 ) -> Value {
     {
-        let prefer = prefer_score(&r, art_tags, illustration_count) + if pinned { PIN_BONUS } else { 0.0 };
+        // The rank leads by construction: one rank step outweighs the ordinary score and the pin
+        // bonus together, so the card's order is the measured rule and everything underneath only
+        // breaks ties WITHIN one slot (its languages) and orders CARDS against each other exactly
+        // as it did before. See `ranks` for the measurement and the encoding argument.
+        let prefer = crate::ranks::rank_term(rank)
+            + prefer_score(&r, art_tags, illustration_count)
+            + if pinned { PIN_BONUS } else { 0.0 };
 
         // Exactly ENGINE_COLUMNS (card_engine/card_engine/__init__.py lines
         // 40-84) plus `planeswalker_loyalty_text`, which card_from_pydict reads and upstream's
         // list omits — see the note at its insert below. Columns the engine never reads
         // (raw_card_blob, devotion, face_name/face_idx, rarity text, prefer_score_components,
         // cubecobra_* raw columns) are not emitted.
-        let mut m = Map::with_capacity(45);
+        let mut m = Map::with_capacity(50);
         m.insert("scryfall_id".into(), Value::String(r.scryfall_id));
         m.insert("oracle_id".into(), Value::String(r.oracle_id));
         m.insert("illustration_id".into(), opt_str_val(&r.illustration_id));
         m.insert("card_artist".into(), opt_str_val(&r.card_artist));
+        m.insert("card_artist_folded".into(), opt_str_val(&r.card_artist_folded));
         m.insert("card_border".into(), opt_str_val(&r.card_border));
         m.insert("card_color_identity".into(), keys_true(&r.card_color_identity));
         m.insert("card_colors".into(), keys_true(&r.card_colors));
@@ -1173,6 +1821,12 @@ pub fn finalize_row(
         // stay absent here, as they are under upstream's own automated import.
         m.insert("card_is_tags".into(), keys_true(&r.card_is_tags));
         m.insert("card_keywords".into(), keys_true(&r.card_keywords));
+        // An ARRAY, not a {key: true} object: this one exists for its ORDER, which a JSON object
+        // loses on the way through serde_json's BTreeMap.
+        m.insert(
+            "card_keywords_printed".into(),
+            Value::Array(r.card_keywords_printed.into_iter().map(Value::String).collect()),
+        );
         m.insert("card_layout".into(), opt_str_val(&r.card_layout));
         m.insert("card_legalities".into(), Value::Object(r.card_legalities));
         m.insert("card_name".into(), Value::String(r.card_name));
@@ -1211,9 +1865,21 @@ pub fn finalize_row(
         // because this port's engine is the only path — omitting it nulls every planeswalker's
         // printed loyalty.
         m.insert("planeswalker_loyalty_text".into(), opt_str_val(&r.planeswalker_loyalty_text));
+        // The printed-language columns (multilingual store). Null = the key was absent on the
+        // card object, which `card_from_json`'s intern_opt keeps distinct from an empty string;
+        // the per-face halves ride `card_faces` below. `is_canonical` routes the row into
+        // either the canonical printings or the engine's foreign annex.
+        m.insert("printed_name".into(), opt_str_val(&r.printed_name));
+        m.insert("flavor_name".into(), opt_str_val(&r.flavor_name));
+        m.insert("printed_type_line".into(), opt_str_val(&r.printed_type_line));
+        m.insert("printed_text".into(), opt_str_val(&r.printed_text));
+        m.insert("printed_name_folded".into(), opt_str_val(&r.printed_name_folded));
+        m.insert("flavor_name_folded".into(), opt_str_val(&r.flavor_name_folded));
+        m.insert("is_canonical".into(), Value::Bool(r.is_canonical));
         m.insert("price_eur".into(), opt_f64_val(r.price_eur));
         m.insert("price_tix".into(), opt_f64_val(r.price_tix));
         m.insert("price_usd".into(), opt_f64_val(r.price_usd));
+        m.insert("color_indicator".into(), keys_true(&r.color_indicator));
         m.insert("produced_mana".into(), keys_true(&r.produced_mana));
         m.insert("released_at".into(), Value::String(r.released_at));
         m.insert("creature_power_text".into(), opt_str_val(&r.creature_power_text));
@@ -1236,6 +1902,68 @@ pub fn finalize_row(
         m.insert("card_compat_blob".into(), Value::Object(r.compat_blob));
         Value::Object(m)
     }
+}
+
+// ─── the id→partition routing filter's key set (LOCAL PATCH, Cloudflare port) ───
+//
+// Every id a `/cards/*` route can be entered by that is NOT an oracle_id. The store is cut by
+// `hash(oracle_id) % N`, so an oracle-keyed route asks one partition and every other id-keyed
+// route had to ask all N and take the first non-null. `src/engine/routing-filter.ts` turns those
+// into one RPC by mapping id → partition; THIS is where the (id, partition) pairs come from, and
+// both publishers call it so the two can never disagree about what the filter contains.
+//
+// The namespace prefixes are WIRE FORMAT — `ROUTING_NAMESPACES` in routing-filter.ts holds the
+// same strings, and the isolate hashes `<namespace>:<id>` on the other side of a KV value.
+// Renaming one here silently turns that whole route class back into a fan-out.
+
+/// External-id namespaces: the Scryfall compat-blob key, and the route namespace it answers
+/// (`/cards/<namespace>/<id>`, `EXTERNAL_ID_NAMESPACES` in routes.ts).
+const ROUTING_EXTERNAL_IDS: [(&str, &str); 4] =
+    [("mtgo_id", "mtgo"), ("arena_id", "arena"), ("tcgplayer_id", "tcgplayer"), ("cardmarket_id", "cardmarket")];
+
+/// Append one printing's routing keys.
+///
+/// `compat` is the printing's compat residue — `RowDraft::compat_blob` on the draft side,
+/// `card_compat_blob` on the finalized-row side; the two publishers reach it under different
+/// names, which is why this takes the map rather than the row.
+///
+/// A missing or oddly-typed id is SKIPPED rather than an error: a key the filter does not carry
+/// costs one fan-out, and refusing to build a store over it would be wildly out of proportion.
+pub fn routing_keys_of(
+    scryfall_id: &str,
+    illustration_id: Option<&str>,
+    compat: &Map<String, Value>,
+    out: &mut Vec<String>,
+) {
+    if !scryfall_id.is_empty() {
+        out.push(format!("i:{}", scryfall_id.to_ascii_lowercase()));
+    }
+    if let Some(ill) = illustration_id.filter(|s| !s.is_empty()) {
+        out.push(format!("l:{}", ill.to_ascii_lowercase()));
+    }
+    if let Some(Value::Array(ids)) = compat.get("multiverse_ids") {
+        for id in ids {
+            if let Some(n) = id.as_i64() {
+                out.push(format!("multiverse:{n}"));
+            }
+        }
+    }
+    for (blob_key, namespace) in ROUTING_EXTERNAL_IDS {
+        if let Some(n) = compat.get(blob_key).and_then(Value::as_i64) {
+            out.push(format!("{namespace}:{n}"));
+        }
+    }
+}
+
+/// [`routing_keys_of`] against a finalized row (`card_compat_blob`) — the native builder's shape.
+pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
+    let empty = Map::new();
+    routing_keys_of(
+        row.get("scryfall_id").and_then(Value::as_str).unwrap_or(""),
+        row.get("illustration_id").and_then(Value::as_str),
+        row.get("card_compat_blob").and_then(Value::as_object).unwrap_or(&empty),
+        out,
+    );
 }
 
 #[cfg(test)]
@@ -1334,14 +2062,21 @@ mod tests {
         assert_eq!(draft.cmc, Some(0.5));
     }
 
-    /// The funny-set filter is NOT relaxed by the change above: this is a capability, not a
-    /// corpus decision, and the one card with a fractional mana value stays out either way.
+    /// A RETAIL funny set is IMPORTED and ORDINARY — not dropped, and not an extra either.
+    ///
+    /// Dropping it was simply wrong: `q=e:ust` answers 249 on api.scryfall.com with and without
+    /// `include_extras`, `q=border:silver t:goblin` answers 19, and `q=!"Earl of Squirrel"`
+    /// answers 200 from a bare search (measured 2026-08-16). The un-sets are search results like
+    /// any other set's — the joke ODDITIES are not, which is `FUNNY_EXTRA_SETS`.
     #[test]
-    fn a_funny_set_is_still_dropped() {
+    fn a_funny_set_is_imported_as_an_ordinary_card() {
         let mut card = minimal_card("Unfunny");
         card["set_type"] = json!("funny");
+        card["set"] = json!("ust");
         card["cmc"] = json!(0.5);
-        assert!(transform(&card).unwrap().is_none(), "set_type funny must still be filtered out");
+        let draft = transform(&card).unwrap().expect("imported");
+        assert!(!draft.card_is_tags.iter().any(|t| t == EXTRA_IS_TAG), "a retail un-set is not an extras class");
+        assert_eq!(draft.cmc, Some(0.5), "the fractional mana value rides along");
     }
 
     #[test]
@@ -1437,6 +2172,189 @@ mod tests {
         assert!(draft.card_faces.is_empty());
     }
 
+    /// The card's OWN artist survives the face overlay — the three shapes, one rule.
+    ///
+    /// The face merge puts face 0's keys on the merged dict, so `card_artist` used to be read
+    /// off the FRONT FACE and Scryfall's joined credit never reached the column. It is a stored
+    /// value read by three surfaces at once (the card object's `artist`, `order=artist`, and
+    /// `a:`), which is why the assertion lives here rather than in a card-object test.
+    #[test]
+    fn a_cards_artist_is_scryfalls_and_never_a_faces() {
+        // TWO artists: the joined credit, verbatim — not "David Martin".
+        let two = transform(&fixture("fire_ice")).unwrap().unwrap();
+        assert_eq!(two.card_artist.as_deref(), Some("David Martin & Franz Vohwinkel"));
+        assert_eq!(two.card_artist_folded.as_deref(), Some("david martin & franz vohwinkel"));
+        // Both faces keep their own credit; the joined string is the CARD's, not any face's.
+        assert_eq!(two.card_faces[0]["artist"], "David Martin");
+        assert_eq!(two.card_faces[1]["artist"], "Franz Vohwinkel");
+
+        // ONE artist across two faces: the single name, never "Nils Hamm & Nils Hamm". Free,
+        // because the value is Scryfall's own rather than a join computed over the faces.
+        let one = transform(&fixture("delver_of_secrets")).unwrap().unwrap();
+        assert_eq!(one.card_artist.as_deref(), Some("Nils Hamm"));
+        assert_eq!(one.card_faces.len(), 2);
+
+        // SINGLE-FACED: the branch that was always right, pinned so it stays that way. Scryfall
+        // credits two people on 1,158 faceless printings, and that string arrives pre-joined.
+        let mut solo = minimal_card("Tormented Angel");
+        solo["artist"] = json!("Greg Hildebrandt & Tim Hildebrandt");
+        let solo = transform(&solo).unwrap().unwrap();
+        assert!(solo.card_faces.is_empty());
+        assert_eq!(solo.card_artist.as_deref(), Some("Greg Hildebrandt & Tim Hildebrandt"));
+    }
+
+    /// The card's OWN layout survives the face overlay — the same rule as the artist above, on the
+    /// one other key a FACE can genuinely carry.
+    ///
+    /// Scryfall puts `layout` on the faces of `reversible_card` printings and on nothing else:
+    /// over the whole 2026-08-15 all_cards bulk exactly 81 cards have a face-level `layout`, and
+    /// all 81 are reversible. The overlay wrote the face's value onto the merged dict and
+    /// `merge_face_drafts` kept the front's, so every one of the 81 was stored as some OTHER
+    /// layout (77 `normal`, 3 `adventure`, 1 `token`) and the corpus reported zero reversible
+    /// cards — which is why `is:dfc` was still missing all ten `sld` printings the sweep flagged
+    /// after `reversible_card` was added to it.
+    #[test]
+    fn a_cards_layout_is_the_printings_and_never_a_faces() {
+        let mut reversible = fixture("delver_of_secrets");
+        reversible["layout"] = json!("reversible_card");
+        for face in reversible["card_faces"].as_array_mut().unwrap() {
+            face["layout"] = json!("normal");
+        }
+        let draft = transform(&reversible).unwrap().unwrap();
+        assert_eq!(draft.card_layout.as_deref(), Some("reversible_card"), "the face's layout is not the card's");
+
+        // The ordinary multi-face case, where no face carries the key at all, is unchanged.
+        let plain = transform(&fixture("delver_of_secrets")).unwrap().unwrap();
+        assert_eq!(plain.card_layout.as_deref(), Some("transform"));
+        // ...and so is the single-face branch, which never had an overlay to survive.
+        let solo = transform(&minimal_card("Shock")).unwrap().unwrap();
+        assert_eq!(solo.card_layout.as_deref(), Some("normal"));
+    }
+
+    /// `flavor_name` is ingested on BOTH branches of `transform_row` — the multi-face merge and
+    /// the single-face one — and folded for the engine's flavor-name index.
+    ///
+    /// Pinned on the single-face branch specifically because it is the branch that was missed:
+    /// every flavor-name card that matters is single-faced (prm/80925 Titanoth Rex ->
+    /// "Godzilla, Primeval Champion"), so a fix applied only to the merge branch reads as
+    /// working code and ships an empty column.
+    #[test]
+    fn a_flavor_name_is_ingested_and_folded_on_both_branches() {
+        let mut single = minimal_card("Titanoth Rex");
+        single["flavor_name"] = json!("Godzilla, Primeval Champion");
+        let draft = transform(&single).unwrap().unwrap();
+        assert_eq!(draft.flavor_name.as_deref(), Some("Godzilla, Primeval Champion"));
+        assert_eq!(draft.flavor_name_folded.as_deref(), Some("godzilla, primeval champion"));
+
+        let mut multi = fixture("prepare_es");
+        multi["flavor_name"] = json!("Amaterasu");
+        let draft = transform_row(&multi, true).unwrap().unwrap();
+        assert!(!draft.card_faces.is_empty(), "the merge branch");
+        assert_eq!(draft.flavor_name.as_deref(), Some("Amaterasu"));
+        assert_eq!(draft.flavor_name_folded.as_deref(), Some("amaterasu"));
+
+        // Absent stays absent — the column must not fabricate an empty string.
+        let plain = transform(&minimal_card("Shock")).unwrap().unwrap();
+        assert_eq!(plain.flavor_name, None);
+        assert_eq!(plain.flavor_name_folded, None);
+    }
+
+    /// A Japanese printing carries its whole printed triple, non-ASCII intact, and none of it
+    /// leaks into the compat residue now that columns hold it.
+    #[test]
+    fn a_japanese_printing_carries_its_printed_triple() {
+        let card = fixture("shock_ja");
+        let draft = transform_row(&card, false).unwrap().unwrap();
+        assert_eq!(draft.printed_name.as_deref(), Some("ショック"));
+        assert_eq!(draft.printed_type_line.as_deref(), Some("インスタント"));
+        assert_eq!(
+            draft.printed_text.as_deref(),
+            card["printed_text"].as_str(),
+            "printed_text must pass through verbatim"
+        );
+        // Single-faced: the folded name is the folded top-level printed_name.
+        assert_eq!(draft.printed_name_folded.as_deref(), Some("ショック"));
+        assert!(!draft.is_canonical);
+
+        let rows: Vec<Value> = finalize(vec![draft], &TagData::default()).collect();
+        assert_eq!(rows[0]["printed_name"], json!("ショック"));
+        assert_eq!(rows[0]["is_canonical"], json!(false));
+        let blob = rows[0]["card_compat_blob"].as_object().unwrap();
+        for key in ["printed_name", "printed_type_line", "printed_text"] {
+            assert!(!blob.contains_key(key), "{key} has a column; the residue must not duplicate it");
+        }
+        // lang still rides the residue — the engine reads it from there.
+        assert_eq!(blob["lang"], json!("ja"));
+    }
+
+    /// A prepare-layout Spanish printing localizes ONLY the front face's name and type line —
+    /// the front has no printed_text and the back has no printed key at all, and both absences
+    /// must survive into the per-face snapshots exactly.
+    #[test]
+    fn a_prepare_layout_localizes_only_the_front_face() {
+        let draft = transform_row(&fixture("prepare_es"), false).unwrap().unwrap();
+        // Multi-faced: no top-level printed keys on the card object, so the columns stay None.
+        assert_eq!(draft.printed_name, None);
+        assert_eq!(draft.printed_type_line, None);
+        assert_eq!(draft.printed_text, None);
+
+        assert_eq!(draft.card_faces.len(), 2);
+        assert_eq!(draft.card_faces[0]["printed_name"], json!("Rescate repentino"));
+        assert_eq!(draft.card_faces[0]["printed_type_line"], json!("Instantáneo"));
+        assert!(!draft.card_faces[0].contains_key("printed_text"), "the front face has no printed_text");
+        for key in ["printed_name", "printed_type_line", "printed_text"] {
+            assert!(!draft.card_faces[1].contains_key(key), "the back face carries no {key}");
+        }
+        // The folded full name joins the localized front with the back's ENGLISH name — the
+        // back was never localized, and a one-sided name would miss every full-name lookup.
+        assert_eq!(draft.printed_name_folded.as_deref(), Some("rescate repentino // steady return"));
+    }
+
+    /// A Spanish transform card carries the full triplet on both faces, and the folded full name
+    /// joins the two printed names accent-folded.
+    #[test]
+    fn an_es_transform_carries_both_faces_triplets() {
+        let draft = transform_row(&fixture("delver_es"), false).unwrap().unwrap();
+        assert_eq!(draft.card_faces.len(), 2);
+        for (i, (name, type_line)) in [
+            ("Ahondador de secretos", "Criatura — Hechicero humano"),
+            ("Aberración insectil", "Criatura — Aberración humana"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(draft.card_faces[i]["printed_name"], json!(name));
+            assert_eq!(draft.card_faces[i]["printed_type_line"], json!(type_line));
+            assert!(draft.card_faces[i].contains_key("printed_text"), "face {i} carries printed_text");
+        }
+        // fold_accents drops the diacritic: "Aberración" -> "aberracion".
+        assert_eq!(
+            draft.printed_name_folded.as_deref(),
+            Some("ahondador de secretos // aberracion insectil")
+        );
+    }
+
+    /// An English printing carries no printed keys anywhere: no columns, no per-face keys, no
+    /// folded name — and the plain [`transform`] entry point marks it canonical.
+    #[test]
+    fn an_english_printing_carries_no_printed_keys() {
+        let draft = transform(&fixture("lightning_bolt")).unwrap().unwrap();
+        assert_eq!(draft.printed_name, None);
+        assert_eq!(draft.printed_type_line, None);
+        assert_eq!(draft.printed_text, None);
+        assert_eq!(draft.printed_name_folded, None);
+        assert!(draft.is_canonical, "the one-argument transform stays canonical");
+
+        let rows: Vec<Value> = finalize(vec![draft], &TagData::default()).collect();
+        assert_eq!(rows[0]["printed_name"], json!(null));
+        assert_eq!(rows[0]["printed_name_folded"], json!(null));
+        assert_eq!(rows[0]["is_canonical"], json!(true));
+
+        // The same card through transform_row with the flag off is the ONLY difference.
+        let foreign = transform_row(&fixture("lightning_bolt"), false).unwrap().unwrap();
+        assert!(!foreign.is_canonical);
+    }
+
     fn minimal_card(name: &str) -> Value {
         json!({
             "id": format!("00000000-0000-4000-8000-{:012x}", name.len()),
@@ -1464,47 +2382,155 @@ mod tests {
         })
     }
 
+    /// The classes, one probe each, as `is:extra` rather than as a drop.
+    ///
+    /// Upstream refuses seven classes of printing at import. api.scryfall.com serves all seven
+    /// (2026-08-16), and hides four of them from a default `/cards/search` behind
+    /// `include_extras=false` — a QUERY-TIME gate, which an absent row cannot reproduce in either
+    /// direction: `/cards/named?exact=` answers every one of them, and `include_extras=true` has
+    /// nothing to include when the row was never stored. So nothing here drops, and the
+    /// assertions are about the TAG.
     #[test]
-    fn skip_filters_mirror_upstream() {
-        // Never legal in any format → skipped (card_processing.py line 104).
+    fn extras_class_matches_what_scryfall_hides() {
+        let tag = |c: &Value| {
+            transform(c).unwrap().expect("every row is imported now").card_is_tags.iter().any(|t| t == EXTRA_IS_TAG)
+        };
+
+        // ─── ordinary: served by a bare `/cards/search` ───────────────────────────────────────
+        // Never legal in any format. `!"Hold the Perimeter"` (cn2/6, a never-legal Conspiracy)
+        // answers 200 bare, as does the never-legal silver-border `!"Goblin Bowling Team"`.
+        // Relaxing this is also what empties card_engine's `drop_group_if_annex_only`.
         let mut c = minimal_card("Never Legal");
         c["legalities"] = json!({"vintage": "not_legal"});
-        assert!(transform(&c).unwrap().is_none());
-        // restricted counts as playable.
-        let mut c = minimal_card("Restricted");
-        c["legalities"] = json!({"vintage": "restricted"});
-        assert!(transform(&c).unwrap().is_some());
-        // Playtest promo → skipped (line 106).
-        let mut c = minimal_card("Playtest");
-        c["promo_types"] = json!(["playtest"]);
-        assert!(transform(&c).unwrap().is_none());
-        // Digital-only → skipped (line 108).
-        let mut c = minimal_card("Digital");
-        c["games"] = json!(["arena"]);
-        assert!(transform(&c).unwrap().is_none());
-        // Funny set → skipped (line 110).
+        assert!(!tag(&c), "never-legal is not an extras class");
+        // A RETAIL funny set: `q=e:ust` answers 249 with and without the flag.
         let mut c = minimal_card("Funny");
         c["set_type"] = json!("funny");
-        assert!(transform(&c).unwrap().is_none());
-        // Memorabilia set → skipped (line 117). The LITERAL, not MEMORABILIA_SET_TYPE: driving
-        // both sides off the same constant makes the assertion self-referential and it then holds
-        // with the constant set to anything at all.
-        let mut c = minimal_card("WorldChampionship");
-        c["set_type"] = json!("memorabilia");
-        assert!(transform(&c).unwrap().is_none());
-        // ...and an ordinary expansion is untouched, so a predicate that dropped EVERYTHING would
-        // fail here rather than looking like a working filter.
-        let mut c = minimal_card("Ordinary");
+        c["set"] = json!("ust");
+        assert!(!tag(&c), "a retail un-set is not an extras class");
+        // ...and the same card in an un-set the list has never heard of, which is served rather
+        // than hidden — the stale-list failure mode this direction was chosen for.
+        let mut c = minimal_card("Unreleased");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("un99");
+        assert!(!tag(&c), "an unlisted funny set defaults to ORDINARY, never to hidden");
+        // ...but its TOKENS are still extras, because the funny rule adds and never subtracts. An
+        // early `false` here would let a future un-set's tokens vanish from search the moment the
+        // list went stale, which is the same silent-vanishing failure one level down.
+        let mut c = minimal_card("Unreleased Token");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("un99");
+        c["layout"] = json!("token");
+        assert!(tag(&c), "a token in an unlisted funny set is still an extra");
+        // A sticker sheet in a funny set is NOT: `sunf` ships 48 and Scryfall serves them.
+        let mut c = minimal_card("Sticker Sheet");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("sunf");
+        c["type_line"] = json!("Stickers");
+        assert!(!tag(&c), "sunf's sticker sheets are served");
+        // A digital printing that IS legal somewhere: Alchemy's playable cards are ordinary.
+        let mut c = minimal_card("Alchemy Playable");
+        c["digital"] = json!(true);
+        c["set_type"] = json!("alchemy");
+        assert!(!tag(&c), "digital alone is not the class");
+        // A silver border outside a promo set: 567 of them are ordinary results.
+        let mut c = minimal_card("Silver Expansion");
+        c["border_color"] = json!("silver");
         c["set_type"] = json!("expansion");
-        assert!(transform(&c).unwrap().is_some());
-        // Token type line → skipped (lines 114-118).
-        let mut c = minimal_card("Token");
-        c["type_line"] = json!("Token Creature \u{2014} Goblin");
-        assert!(transform(&c).unwrap().is_none());
-        // "X // X" same-name card → skipped (lines 121-124).
+        assert!(!tag(&c), "silver alone is not the class");
+        // A reversible "X // X" printing: `!"Magmatic Hellkite // Magmatic Hellkite"` answers 200
+        // bare. (Its art_series cousins ARE extras, by layout, two cases below.)
         let mut c = minimal_card("ignored");
         c["name"] = json!("Echo // Echo");
-        assert!(transform(&c).unwrap().is_none());
+        c["layout"] = json!("reversible_card");
+        assert!(!tag(&c), "a reversible duplicate is an ordinary printing");
+        // A playtest promo that is PLAYABLE: sld/SCTLR Counterspell is legal in modern and appears
+        // in a bare `!"Counterspell"&unique=prints`, so the flag alone hides nothing.
+        let mut c = minimal_card("Playable Playtest");
+        c["promo_types"] = json!(["sldbonus", "playtest"]);
+        assert!(!tag(&c), "playtest alone does not hide a playable printing");
+        // ...and an ordinary expansion card, so a predicate that called everything extra fails
+        // here rather than looking like it works.
+        let mut c = minimal_card("Ordinary");
+        c["set_type"] = json!("expansion");
+        assert!(!tag(&c));
+
+        // ─── extras: 404 bare, 200 with include_extras=true ──────────────────────────────────
+        // A playtest promo that is unplayable: `!"Subgoyf"` (mb2/536).
+        let mut c = minimal_card("Playtest");
+        c["promo_types"] = json!(["playtest"]);
+        c["legalities"] = json!({"vintage": "not_legal"});
+        assert!(tag(&c), "an unplayable playtest promo is an extra");
+        // Memorabilia: `!"Siren's Call"&unique=prints` is 8 bare and 12 with extras (ced/78).
+        let mut c = minimal_card("WorldChampionship");
+        c["set_type"] = json!("memorabilia");
+        assert!(tag(&c));
+        // A "Card" type line: `!"The Monarch"` (tmkc/31).
+        let mut c = minimal_card("ArtSeries");
+        c["type_line"] = json!("Card");
+        assert!(tag(&c));
+        // A "Token" type line: `!"Goblin Army"` (thob/4).
+        let mut c = minimal_card("Token");
+        c["type_line"] = json!("Token Creature \u{2014} Goblin");
+        assert!(tag(&c));
+        // ...and the LAYOUT half of the rule, which is what catches the planes, schemes,
+        // vanguards, emblems and art series whose type lines say nothing: `!"Truga Jungle"`
+        // (opc2/38, layout planar) is 404 bare and 200 with extras.
+        let mut c = minimal_card("Plane");
+        c["layout"] = json!("planar");
+        assert!(tag(&c));
+        let mut c = minimal_card("ArtCard");
+        c["name"] = json!("Echo // Echo");
+        c["layout"] = json!("art_series");
+        assert!(tag(&c), "an art-series duplicate IS an extra, unlike its reversible cousin");
+        // `content_warning`, the flag with no other signal behind it: layout `normal`, an ordinary
+        // type line, legal somewhere. `is:extra e:lea` answers 1 and that one card is Crusade.
+        let mut c = minimal_card("Crusade");
+        c["content_warning"] = json!(true);
+        assert!(tag(&c), "a content_warning printing is an extra");
+        // A funny ODDITY set: `is:extra e:ulst` is 62 of 62, and its rows are field-for-field
+        // indistinguishable from the ust twins two cases above — the set code is the whole signal.
+        let mut c = minimal_card("Earl of Squirrel");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("ulst");
+        c["border_color"] = json!("silver");
+        assert!(tag(&c), "The List's Unstable reprints are extras where Unstable's own are not");
+        // A digital printing legal in NO format: `is:extra e:hbg` is 122, 104 of them this class.
+        let mut c = minimal_card("Alchemy Duplicate");
+        c["digital"] = json!(true);
+        c["set_type"] = json!("alchemy");
+        c["legalities"] = json!({"alchemy": "not_legal", "historic": "not_legal"});
+        assert!(tag(&c), "a digital printing no format allows is an extra");
+        // A silver-bordered promo: pal04's Arena League un-cards, j17's Rules Lawyer, pust/punh.
+        let mut c = minimal_card("Arena League Mise");
+        c["border_color"] = json!("silver");
+        c["set_type"] = json!("promo");
+        assert!(tag(&c), "a silver-bordered promo is an extra");
+        // A Secret Lair sticker sheet (sld/335-339), whose only tell is the type line.
+        let mut c = minimal_card("Sticker sheet");
+        c["type_line"] = json!("Stickers");
+        c["set_type"] = json!("box");
+        assert!(tag(&c), "a sticker sheet is an extra outside a funny set");
+
+        // ─── the two layouts that are NOT extras, against the list that used to hold them ─────
+        // `is:extra e:ust` answers 0 on api.scryfall.com; Unstable's Hosts and Augments are
+        // ordinary results. Asserted as a pair so re-adding either to EXTRA_LAYOUTS fails here.
+        for layout in ["host", "augment"] {
+            let mut c = minimal_card("Unstable");
+            c["layout"] = json!(layout);
+            c["set_type"] = json!("funny");
+            c["set"] = json!("ust");
+            assert!(!tag(&c), "{layout} is an ordinary printing, not an extra");
+        }
+        // ...and the playtest promo that is NOT one: `und`/`unh`'s "Look at Me, I'm R&D" is a real
+        // Un-card that merely depicts a playtest card, and `is:extra e:und` answers 0. The funny
+        // short-circuit is what makes the difference from mb2/536 Subgoyf, two cases above.
+        let mut c = minimal_card("Look at Me, I'm R&D");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("und");
+        c["promo_types"] = json!(["playtest"]);
+        c["legalities"] = json!({"vintage": "not_legal"});
+        assert!(!tag(&c), "a playtest promo inside a served un-set is not an extra");
     }
 
     #[test]
@@ -1534,24 +2560,33 @@ mod tests {
         let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
         keys.sort_unstable();
         let mut expected = vec![
-            "scryfall_id", "oracle_id", "illustration_id", "card_artist", "card_border",
+            "scryfall_id", "oracle_id", "illustration_id", "card_artist", "card_artist_folded", "card_border",
             "card_color_identity", "card_colors", "card_frame_data", "card_is_tags",
-            "card_keywords", "card_layout", "card_legalities", "card_name",
+            "card_keywords", "card_keywords_printed", "card_layout", "card_legalities", "card_name",
             "card_name_folded", "card_art_tags", "card_oracle_tags", "card_rarity_int",
             "card_set_code", "card_subtypes", "card_types", "card_watermark", "cmc",
-            "collector_number", "collector_number_int", "creature_power",
-            "creature_toughness", "edhrec_rank", "flavor_text", "mana_cost_jsonb",
+            "collector_number", "collector_number_int", "color_indicator", "creature_power",
+            "creature_toughness", "edhrec_rank", "flavor_name", "flavor_name_folded", "flavor_text", "mana_cost_jsonb",
             "mana_cost_text", "oracle_text", "planeswalker_loyalty", "planeswalker_loyalty_text", "price_eur",
             "price_tix", "price_usd", "produced_mana", "released_at",
             "creature_power_text", "creature_toughness_text", "set_name", "type_line",
             "prefer_score", "cubecobra_score", "card_faces", "card_compat_blob",
+            "printed_name", "printed_type_line", "printed_text", "printed_name_folded", "is_canonical",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);
         // Spot-check JSONB shapes.
         assert_eq!(row["card_colors"], json!({"G": true}));
         assert_eq!(row["mana_cost_jsonb"], json!({"G": [1]}));
-        assert_eq!(row["card_is_tags"], json!({}));
+        // The blob-backed is: tags, derived from the bulk card's own booleans and arrays: this
+        // fixture is a boostered, high-res, foil-and-nonfoil reprint, and it is neither reserved
+        // nor oversized nor a game changer. Its promo_types (beginnerbox, startercollection) are
+        // not in ARRAY_IS_TAGS, so nothing comes back from that half — which is the case worth
+        // pinning, since a mapping typo there produces exactly this: silence.
+        assert_eq!(
+            row["card_is_tags"],
+            json!({"booster": true, "foil": true, "hires": true, "nonfoil": true, "reprint": true})
+        );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
     }
 
@@ -1652,9 +2687,11 @@ mod tests {
         // or legendary frame effects.
         let draft = transform(&fixture("llanowar_elves")).unwrap().unwrap();
         let rows: Vec<Value> = finalize(vec![draft], &TagData::default()).collect();
+        // Plus the rank term: the card's only printing represents it, so rank 0 (see `ranks`).
         let expected_illus = ((23.0 * 2.0f64.ln() / 40.0f64.ln()) * 10_000.0).round() / 10_000.0;
-        let expected = (188.0 + expected_illus) as f32 as f64;
+        let expected = (crate::ranks::rank_term(0) + 188.0 + expected_illus) as f32 as f64;
         assert_eq!(rows[0]["prefer_score"].as_f64().unwrap(), expected);
+        assert_eq!(crate::ranks::split(expected).0, 0);
         // Single distinct card_name → PERCENT_RANK 0 → cubecobra_score 0.
         assert_eq!(rows[0]["cubecobra_score"].as_f64().unwrap(), 0.0);
     }
@@ -1706,33 +2743,185 @@ mod tests {
     /// veto; see PIN_BONUS.
     #[test]
     fn a_scryfall_label_pins_its_printing() {
-        let mk = |id: &str| {
+        // Two printings of one card in DIFFERENT slots — the pin propagates by (set_code,
+        // collector_number), so two rows sharing a slot are the same printing in two languages
+        // and are pinned together (`the_pin_propagates_to_the_labelled_slot_in_every_language`).
+        let mk = |id: &str, number: &str| {
             let mut c = minimal_card("Pinme");
             c["id"] = json!(id);
+            c["collector_number"] = json!(number);
             c
         };
         const ID_A: &str = "aaaaaaaa-0000-0000-0000-000000000001";
         const ID_B: &str = "aaaaaaaa-0000-0000-0000-000000000002";
-        let drafts = || vec![transform(&mk(ID_A)).unwrap().unwrap(), transform(&mk(ID_B)).unwrap().unwrap()];
+        let drafts =
+            || vec![transform(&mk(ID_A, "1")).unwrap().unwrap(), transform(&mk(ID_B, "2")).unwrap().unwrap()];
         let score_of = |rows: &[Value], id: &str| {
             rows.iter().find(|r| r["scryfall_id"] == json!(id)).expect("row present")["prefer_score"]
                 .as_f64()
                 .unwrap()
         };
 
+        // Components only: the rank term rides above them and is asserted separately (`ranks`).
+        let parts = |rows: &[Value], id: &str| crate::ranks::split(score_of(rows, id));
+
         // Labelled printing wins by the pin, not by a component margin.
         let mut tagged = TagData::default();
         tagged.labels.insert(ID_B.to_string());
         let rows: Vec<Value> = finalize(drafts(), &tagged).collect();
+        assert_eq!(parts(&rows, ID_B).0, 0, "the labelled printing represents its card");
         assert!(
-            score_of(&rows, ID_B) - score_of(&rows, ID_A) > 900.0,
+            parts(&rows, ID_B).1 - parts(&rows, ID_A).1 > 900.0,
             "the labelled printing must be pinned above every ordinary score",
         );
 
         // No labels: scores exactly as before. This is what keeps the second bulk file an
         // OPTIONAL input — an import that cannot fetch it still produces a correct store.
         let rows: Vec<Value> = finalize(drafts(), &TagData::default()).collect();
-        assert!(score_of(&rows, ID_A) < 900.0 && score_of(&rows, ID_B) < 900.0, "no label, no pin");
+        assert!(parts(&rows, ID_A).1 < 900.0 && parts(&rows, ID_B).1 < 900.0, "no label, no pin");
+        // And the fallback order takes over: same release date, so the lower collector number
+        // represents the card (`ranks`).
+        assert_eq!(parts(&rows, ID_A).0, 0);
+        assert_eq!(parts(&rows, ID_B).0, 1);
+    }
+
+    /// The pin reaches the labelled printing's OTHER-LANGUAGE editions — the rows at the same
+    /// (set_code, collector_number) — and no further.
+    ///
+    /// Scryfall's `oracle_cards` label names exactly one scryfall_id and it is always an English
+    /// printing, so pinning by id alone leaves every foreign row of that card ranked by raw
+    /// `prefer_score`, which picks whatever printing scores best — a non-booster showcase, on 14 of
+    /// the 175 `e:khm lang:ja` cards checked against api.scryfall.com. Scryfall's within-language
+    /// representative is the printing at the same slot as its English one, which is what this
+    /// asserts: the foreign row IN the pinned slot outranks the foreign row outside it.
+    #[test]
+    fn the_pin_propagates_to_the_labelled_slot_in_every_language() {
+        const EN_ID: &str = "aaaaaaaa-0000-0000-0000-000000000063";
+        const JA_PINNED: &str = "aaaaaaaa-0000-0000-0000-000000000163";
+        const JA_SHOWCASE: &str = "aaaaaaaa-0000-0000-0000-000000000345";
+        // English #63 (the labelled printing), its Japanese edition at the same number, and a
+        // Japanese showcase printing at #345 — the shape khm ja actually has.
+        let printing = |id: &str, number: &str, english: bool, showcase: bool| {
+            let mut c = minimal_card("Icebreaker Kraken");
+            c["id"] = json!(id);
+            c["set"] = json!("khm");
+            c["collector_number"] = json!(number);
+            c["lang"] = json!(if english { "en" } else { "ja" });
+            if showcase {
+                c["frame_effects"] = json!(["showcase"]);
+            }
+            transform(&c).unwrap().unwrap()
+        };
+        let drafts = || {
+            vec![
+                printing(EN_ID, "63", true, false),
+                printing(JA_PINNED, "63", false, false),
+                printing(JA_SHOWCASE, "345", false, true),
+            ]
+        };
+        let score_of = |rows: &[Value], id: &str| {
+            rows.iter().find(|r| r["scryfall_id"] == json!(id)).expect("row present")["prefer_score"]
+                .as_f64()
+                .unwrap()
+        };
+
+        // Unpinned, the showcase row is NOT what wins — but the two Japanese rows are separated by
+        // ordinary component margins, which is precisely what a pin has to override.
+        let components = |rows: &[Value], id: &str| crate::ranks::split(score_of(rows, id)).1;
+        let bare: Vec<Value> = finalize(drafts(), &TagData::default()).collect();
+        assert!(
+            components(&bare, JA_PINNED) < 900.0 && components(&bare, JA_SHOWCASE) < 900.0,
+            "no label, no pin",
+        );
+
+        let mut tagged = TagData::default();
+        tagged.labels.insert(EN_ID.to_string());
+        let rows: Vec<Value> = finalize(drafts(), &tagged).collect();
+        assert!(
+            components(&rows, JA_PINNED) - components(&rows, JA_SHOWCASE) > 900.0,
+            "the Japanese printing at the pinned slot must outrank the one outside it by the pin",
+        );
+        // Exactly +PIN_BONUS once per qualifying row, so raw prefer_score still orders within the
+        // pinned slot (English above its own translation, by the language component).
+        assert_eq!(score_of(&rows, JA_PINNED) - score_of(&bare, JA_PINNED), PIN_BONUS);
+        assert_eq!(score_of(&rows, EN_ID) - score_of(&bare, EN_ID), PIN_BONUS);
+        assert_eq!(score_of(&rows, JA_SHOWCASE), score_of(&bare, JA_SHOWCASE));
+        assert!(score_of(&rows, EN_ID) > score_of(&rows, JA_PINNED), "English still leads its own slot");
+    }
+
+    /// The order a filter falls back on when it excludes the pinned printing: newest release
+    /// first, then lowest collector number.
+    ///
+    /// Derived rather than guessed — 16,045 labelled observations harvested from
+    /// api.scryfall.com on 2026-08-16, .9624 of the pin-excluded class against .6594 for the
+    /// bare component score. See [`crate::ranks`] for the measurement, the alternatives it beat
+    /// and the classes it still gets wrong.
+    #[test]
+    fn an_excluded_pin_falls_back_to_newest_then_lowest_number() {
+        let printing = |id: &str, set: &str, number: &str, released: &str| {
+            let mut c = minimal_card("Fallbackk");
+            c["id"] = json!(id);
+            c["set"] = json!(set);
+            c["collector_number"] = json!(number);
+            c["released_at"] = json!(released);
+            transform(&c).unwrap().unwrap()
+        };
+        const OLD_LOW: &str = "dddddddd-0000-0000-0000-000000000001";
+        const OLD_HIGH: &str = "dddddddd-0000-0000-0000-000000000002";
+        const NEW_HIGH: &str = "dddddddd-0000-0000-0000-000000000003";
+        let drafts = || {
+            vec![
+                printing(OLD_LOW, "aaa", "5", "2019-01-01"),
+                printing(OLD_HIGH, "aaa", "300", "2019-01-01"),
+                printing(NEW_HIGH, "bbb", "270", "2021-06-01"),
+            ]
+        };
+        let rank_of = |rows: &[Value], id: &str| {
+            let score = rows.iter().find(|r| r["scryfall_id"] == json!(id)).expect("row")["prefer_score"]
+                .as_f64()
+                .unwrap();
+            crate::ranks::split(score).0
+        };
+
+        // No label: recency leads, and the older set orders within itself by collector number.
+        let rows: Vec<Value> = finalize(drafts(), &TagData::default()).collect();
+        assert_eq!(rank_of(&rows, NEW_HIGH), 0, "the newest printing represents the card");
+        assert_eq!(rank_of(&rows, OLD_LOW), 1, "then the older set's lower collector number");
+        assert_eq!(rank_of(&rows, OLD_HIGH), 2);
+
+        // A label overrides all of it: the pinned slot is the first key of the order, so the
+        // known-exact answer is never traded for the fitted one.
+        let mut tagged = TagData::default();
+        tagged.labels.insert(OLD_HIGH.to_string());
+        let rows: Vec<Value> = finalize(drafts(), &tagged).collect();
+        assert_eq!(rank_of(&rows, OLD_HIGH), 0, "the labelled printing wins whatever its date");
+        assert_eq!(rank_of(&rows, NEW_HIGH), 1, "and the fallback order resumes underneath it");
+        assert_eq!(rank_of(&rows, OLD_LOW), 2);
+    }
+
+    /// A different card at the same (set, number) is NOT pinned: the slot key carries the
+    /// oracle_id, so the propagation cannot leak across cards.
+    #[test]
+    fn the_pin_does_not_leak_to_another_card_in_the_same_slot() {
+        const PINNED: &str = "bbbbbbbb-0000-0000-0000-000000000001";
+        const OTHER: &str = "bbbbbbbb-0000-0000-0000-000000000002";
+        let mut a = transform(&minimal_card("Pinme")).unwrap().unwrap();
+        a.scryfall_id = PINNED.into();
+        a.card_set_code = Some("xyz".into());
+        a.collector_number = Some("7".into());
+        let mut b = transform(&minimal_card("Otherc")).unwrap().unwrap();
+        b.scryfall_id = OTHER.into();
+        b.oracle_id = "cccccccc-0000-0000-0000-000000000002".into();
+        b.card_set_code = Some("xyz".into());
+        b.collector_number = Some("7".into());
+
+        let mut tagged = TagData::default();
+        tagged.labels.insert(PINNED.to_string());
+        let rows: Vec<Value> = finalize(vec![a, b], &tagged).collect();
+        // Each row is rank 0 of its OWN card, so the pin is the whole difference between them.
+        let components = |i: usize| crate::ranks::split(rows[i]["prefer_score"].as_f64().unwrap()).1;
+        assert!(components(0) > 900.0, "the labelled printing is pinned");
+        assert!(components(1) < 900.0, "another card in that slot is not");
     }
 
     #[test]
@@ -1780,12 +2969,13 @@ mod tests {
         };
         let count2 = ((23.0 * 3.0f64.ln() / 40.0f64.ln()) * 10_000.0).round() / 10_000.0;
         let count1 = ((23.0 * 2.0f64.ln() / 40.0f64.ln()) * 10_000.0).round() / 10_000.0;
-        assert_eq!(illus_component(&rows[0]), (188.0 + count2) as f32 as f64);
-        assert_eq!(illus_component(&rows[1]), (188.0 + count2) as f32 as f64);
+        let rank0 = crate::ranks::rank_term(0);
+        assert_eq!(illus_component(&rows[0]), (rank0 + 188.0 + count2) as f32 as f64);
+        assert_eq!(illus_component(&rows[1]), (rank0 + 188.0 + count2) as f32 as f64);
         // Non-English row still COUNTS the en rows (its own count is 2) but
         // loses the language component (188 - 40 = 148).
-        assert_eq!(illus_component(&rows[2]), (148.0 + count2) as f32 as f64);
-        assert_eq!(illus_component(&rows[3]), (188.0 + count1) as f32 as f64);
+        assert_eq!(illus_component(&rows[2]), (rank0 + 148.0 + count2) as f32 as f64);
+        assert_eq!(illus_component(&rows[3]), (rank0 + 188.0 + count1) as f32 as f64);
     }
 
     #[test]

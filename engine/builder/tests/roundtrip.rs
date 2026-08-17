@@ -274,6 +274,76 @@ fn build_store_writes_archive_and_manifest_data() {
     std::fs::remove_dir_all(&out_dir).ok();
 }
 
+/// The partitioned build: N archives cut by the shared hash, each loadable, plus a manifest-v2
+/// skeleton in exactly the shape src/engine/types.ts declares — `partition_count` present is the
+/// version discriminant, the top-level counts are TOTALS, and `partitions[k]` names the
+/// `-p<k>`-suffixed chunk family.
+#[test]
+fn build_store_partitioned_cuts_by_the_shared_hash() {
+    let out_dir = std::env::temp_dir().join(format!("sylvan-store-builder-parts-{}", std::process::id()));
+    let manifest = sylvan_store_builder::build_store_partitioned(
+        fixture_rows().into_iter(),
+        &out_dir,
+        "1754000000",
+        sylvan_store_builder::PartitionsArg::Fixed(3),
+    )
+    .expect("partitioned build");
+
+    assert_eq!(manifest["partition_count"], serde_json::json!(3));
+    assert_eq!(manifest["partition_hash"], serde_json::json!("fnv1a64/oracle_id/v1"));
+    assert_eq!(manifest["built_at"], serde_json::json!("1754000000"));
+    assert_eq!(manifest["format_version"], serde_json::json!(card_engine::store_format_version()));
+    // The family stem carries no partition suffix; each partition's key does.
+    let stem = manifest["store_key"].as_str().expect("store_key");
+    assert!(stem.ends_with(".store") && !stem.contains("-p"), "{stem}");
+
+    let partitions = manifest["partitions"].as_array().expect("partitions");
+    assert_eq!(partitions.len(), 3);
+    let (mut cards, mut printings, mut bytes_total) = (0u64, 0u64, 0u64);
+    for (k, p) in partitions.iter().enumerate() {
+        let key = p["store_key"].as_str().expect("partition store_key");
+        assert!(key.contains(&format!("-p{k}.store")), "{key}");
+        let bytes = std::fs::read(out_dir.join(key)).expect("read partition file");
+        assert_eq!(bytes.len() as u64, p["store_bytes"].as_u64().unwrap());
+        let store = BufferStore::from_bytes(&bytes).expect("partition loads");
+        assert_eq!(store.card_count() as u64, p["card_count"].as_u64().unwrap());
+        cards += p["card_count"].as_u64().unwrap();
+        printings += p["printing_count"].as_u64().unwrap();
+        bytes_total += p["store_bytes"].as_u64().unwrap();
+        // Every card in this partition hashes HERE — the cut is the shared function, not luck.
+        let rows = store
+            .query_value(
+                &serde_json::json!({ "node_type": "TrueNode" }),
+                &card_engine::QueryOptions {
+                    fields: Some(vec!["oracle_id".to_owned()]),
+                    ..card_engine::QueryOptions::default()
+                },
+            )
+            .expect("partition queries");
+        for row in rows.rows {
+            let oracle = row["oracle_id"].as_str().expect("oracle_id");
+            assert_eq!(card_engine::partition_of_oracle_id(oracle, 3), k as u32, "{oracle} in p{k}");
+        }
+    }
+    // Top-level counts are the totals over the cut — nothing dropped, nothing doubled.
+    assert_eq!(manifest["card_count"].as_u64().unwrap(), cards);
+    assert_eq!(manifest["printing_count"].as_u64().unwrap(), printings);
+    assert_eq!(manifest["printing_count"], serde_json::json!(3));
+    assert_eq!(manifest["store_bytes"].as_u64().unwrap(), bytes_total);
+
+    // Auto on a tiny corpus clamps to the floor of 2 — the partitioned code paths stay exercised.
+    let manifest = sylvan_store_builder::build_store_partitioned(
+        fixture_rows().into_iter(),
+        &out_dir,
+        "1754000001",
+        sylvan_store_builder::PartitionsArg::Auto,
+    )
+    .expect("auto build");
+    assert_eq!(manifest["partition_count"], serde_json::json!(2));
+
+    std::fs::remove_dir_all(&out_dir).ok();
+}
+
 /// upstream #877's five result fields, proven to reach a RESPONSE and not merely to compile.
 ///
 /// This is the test the port actually needs. `FIELD_TABLE` is pyo3-gated and not built here, so
@@ -335,6 +405,66 @@ fn result_fields_reach_the_response() {
         "loyalty comes back as the printed string through the archive — the integer column \
          `loy:` filters on could not have carried this value at all"
     );
+}
+
+/// Two residue values Scryfall sends as STRINGS, through the readers, the archive, and the card
+/// object writer.
+///
+/// Both were read by number-only readers and so were absent on every card in the corpus:
+/// `prices` members are decimal strings ("60.00"), which made `usd_foil`/`usd_etched`/`eur_foil`
+/// null everywhere, and `image_updated_at` is an ISO-8601 timestamp, which stripped the
+/// `?<epoch>` cache-buster off every image URL. The values here are the real shapes — the
+/// timestamp and its epoch are the pair the lightning_bolt fixture carries.
+#[test]
+fn string_shaped_residue_values_survive_ingest() {
+    let mut row = fixture_rows().remove(0);
+    let blob = row["card_compat_blob"].as_object_mut().expect("compat residue is an object");
+    blob.insert(
+        "prices".to_owned(),
+        json!({"usd": "1.47", "usd_foil": "60.00", "usd_etched": "0.10", "eur": "1.20", "eur_foil": "44.44", "tix": "0.03"}),
+    );
+    blob.insert("image_updated_at".to_owned(), json!("2026-07-13T00:36:48Z"));
+
+    let mut builder = StoreBuilder::new();
+    builder.add_card(&row).expect("add_card");
+    let mut bytes: Vec<u8> = Vec::new();
+    builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
+    let store = BufferStore::from_bytes(&bytes).expect("buffer load");
+
+    let card = store
+        .card_by_scryfall_id(
+            "aaaaaaaa-0000-0000-0000-000000000001",
+            Some(
+                ["name", "scryfall_id", "layout", "image_updated_at", "price_usd", "price_usd_foil", "price_usd_etched", "price_eur", "price_eur_foil", "price_tix"]
+                    .iter()
+                    .map(|f| (*f).to_owned())
+                    .collect(),
+            ),
+        )
+        .expect("lookup")
+        .expect("the card is in the store");
+
+    // Cents, from a decimal string. 60.00 -> 6000 also pins the rounding: a truncating parse of
+    // the string would land 5999 on any price whose f64 sits a hair low.
+    assert_eq!(card["price_usd_foil"], json!(60.0), "prices.usd_foil arrives as a string");
+    assert_eq!(card["price_usd_etched"], json!(0.1));
+    assert_eq!(card["price_eur_foil"], json!(44.44));
+    assert_eq!(card["image_updated_at"], json!(1_783_903_008u32), "the ISO timestamp parses to epoch seconds");
+
+    // And on the wire, which is the surface that was wrong: the three foil prices carry values
+    // and every image URL carries Scryfall's cache-buster query.
+    let mut out: Vec<u8> = Vec::new();
+    card_engine::card_object::write_scryfall_card(&mut out, card.as_object().expect("row"), "https://example.test");
+    let object: Value = serde_json::from_slice(&out).expect("card object parses");
+    assert_eq!(object["prices"]["usd_foil"], json!("60.00"));
+    assert_eq!(object["prices"]["usd_etched"], json!("0.10"));
+    assert_eq!(object["prices"]["eur_foil"], json!("44.44"));
+    for (size, uri) in object["image_uris"].as_object().expect("image_uris") {
+        assert!(
+            uri.as_str().expect("uri").ends_with("?1783903008"),
+            "image_uris.{size} lost the cache-buster: {uri}"
+        );
+    }
 }
 
 /// `fields=None` must keep working. DEFAULT_FIELDS is ungated and live, so a name added there but

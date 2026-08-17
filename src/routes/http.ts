@@ -28,7 +28,25 @@ const SECURITY_HEADERS: Record<string, string> = {
 	"X-XSS-Protection": "1; mode=block",
 	"Referrer-Policy": "strict-origin-when-cross-origin",
 	"Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+	// ── CORS, as api.scryfall.com sends it (measured 2026-08-16, on every response) ──
+	//
+	// `Access-Control-Allow-Origin: *` alone is enough for a SIMPLE cross-origin GET, and that is
+	// all this port sent. It is NOT enough for anything else: a browser preflights
+	// `POST /cards/collection` (its `content-type: application/json` is not a CORS-safelisted
+	// value), and a preflight whose response names no allowed method or header fails the request
+	// before it is made. So a browser client could read this mirror's search results and could not
+	// post a collection to it — a gap with no error message anywhere, because the failing exchange
+	// is the OPTIONS the page never sees.
+	//
+	// The three values are Scryfall's own, verbatim, including the header list a client is unlikely
+	// to send all of. Copying it rather than trimming to what these routes read keeps the answer a
+	// property of the API being mirrored rather than of this implementation's current parameter set.
 	"Access-Control-Allow-Origin": "*",
+	"Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+	"Access-Control-Allow-Headers":
+		"Accept, Accept-Charset, Accept-Language, Authorization, Cache-Control, Content-Language, " +
+		"Content-Type, DNT, Host, If-Modified-Since, Keep-Alive, Origin, Referer, User-Agent, X-Requested-With",
+	"Access-Control-Max-Age": "300",
 };
 
 /** Applied to every response, matching upstream's process_response middlewares. */
@@ -53,7 +71,21 @@ export function httpError(
 ): Response {
 	return new Response(JSON.stringify({ title, description }), {
 		status,
-		headers: { "content-type": "application/json", ...extraHeaders },
+		headers: {
+			// WITH the charset, and `no-cache` — both measured on api.scryfall.com's own dispatch-level
+			// errors (`/nonexistent-route`, `/catalog/card-types/extra`, `/symbology/parse-mana/extra`),
+			// which send `application/json; charset=utf-8` and `Cache-Control: no-cache`. This sent a
+			// bare `application/json` and no cache directive at all, so a shared cache in front of the
+			// Worker was free to apply its own heuristics to a 404, a 405 or a 500.
+			//
+			// The BODY still differs: it is upstream's routes listing rather than Scryfall's error
+			// object. That one is a deliberate deviation (this deployment serves upstream's surface
+			// beside the compat one) and is ledgered in the README and in the sweep's `http` family;
+			// the content type and the tier were not deviations, only omissions.
+			"content-type": "application/json; charset=utf-8",
+			"Cache-Control": "no-cache",
+			...extraHeaders,
+		},
 	});
 }
 
@@ -109,6 +141,34 @@ export function searchPageCacheHeader(): Record<string, string> {
 
 /** Upstream set_no_store_header. */
 export const NO_STORE_HEADER: Record<string, string> = { "Cache-Control": "no-store" };
+
+/**
+ * The CORS preflight answer, byte-for-byte as api.scryfall.com gives it.
+ *
+ * A Message object, not an error and not an empty 204: `{object, code, status, details}` with
+ * `object: "message"`, pretty-printed the way Scryfall pretty-prints every one of these bodies.
+ * The sentence names the four methods the API accepts, which is the same set
+ * `Access-Control-Allow-Methods` carries — Scryfall says it twice and so does this.
+ *
+ * Lives here rather than in the compat routes because dispatch answers it for every path, which is
+ * also what Scryfall does: measured on `/cards/search` and `/catalog/battle-types`, the two
+ * surfaces give the identical response.
+ */
+export function optionsResponse(): Response {
+	const body = {
+		object: "message",
+		code: "ok",
+		status: 200,
+		details: "This API accepts GET, POST, DELETE, and OPTIONS",
+	};
+	return new Response(JSON.stringify(body, null, 2), {
+		status: 200,
+		headers: {
+			"content-type": "application/json; charset=utf-8",
+			"Cache-Control": "max-age=0, private, must-revalidate",
+		},
+	});
+}
 
 /** JSON success envelope; upstream uses orjson with default options (compact). */
 export function jsonResponse(body: unknown, headers?: Record<string, string>): Response {

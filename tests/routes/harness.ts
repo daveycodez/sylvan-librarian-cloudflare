@@ -13,20 +13,27 @@ import type {
 	Env,
 	ResultShape,
 	ScryfallFuzzyResult,
+	SearchPageEnvelope,
 } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
-import { buildRoutesListing, routes } from "../../src/routes";
-import { httpError, securityHeaders } from "../../src/routes/http";
+import { routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
+import { httpError, optionsResponse, securityHeaders } from "../../src/routes/http";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
-import { errorObject, toScryfallCard } from "../../src/routes/scryfall-compat/objects";
-import { scryfallJson, scryfallListJson } from "../../src/routes/scryfall-compat/respond";
+import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import {
+	emptyPageResponse,
+	scryfallCsvResponse,
+	scryfallHttpError,
+	scryfallListJson,
+} from "../../src/routes/scryfall-compat/respond";
+import { NOT_FOUND_DETAILS } from "../../src/routes/scryfall-compat/routes";
 
 export const FIXTURE_CARDS: Record<string, unknown>[] = [
 	{
 		// `scryfall_id` is in DEFAULT_RESULT_FIELDS, so a real engine row always carries one — and
 		// the /cards/* surface addresses cards BY it.
-		scryfall_id: "aaaaaaaa-0000-0000-0000-000000000001",
+		scryfall_id: "aaaaaaaa-0000-4000-8000-000000000001",
 		name: "Llanowar Elves",
 		set_code: "m19",
 		collector_number: "314",
@@ -38,7 +45,7 @@ export const FIXTURE_CARDS: Record<string, unknown>[] = [
 		type_line: "Creature — Elf Druid",
 	},
 	{
-		scryfall_id: "aaaaaaaa-0000-0000-0000-000000000002",
+		scryfall_id: "aaaaaaaa-0000-4000-8000-000000000002",
 		name: "Elvish Mystic",
 		set_code: "m15",
 		collector_number: "18",
@@ -50,6 +57,84 @@ export const FIXTURE_CARDS: Record<string, unknown>[] = [
 		type_line: "Creature — Elf Druid",
 	},
 ];
+
+/**
+ * Foreign printings, addressable by the query-shaped lookups but NOT part of the default search
+ * corpus — the fake's counterpart of the engine's annex. Today's real corpus cannot exercise
+ * these rows (foreign printings are not imported yet); the fixtures exist so the route behavior
+ * is pinned BEFORE the corpus can regress it.
+ */
+export const FOREIGN_FIXTURE_CARDS: Record<string, unknown>[] = [
+	{
+		// A Japanese printing SHARING set and collector number with an English row (Elvish
+		// Mystic, m15/18) — the shape that makes the implicit-English default testable: a
+		// lookup that forgets the language resolves this row instead (see addressableRows).
+		scryfall_id: "aaaaaaaa-0000-4000-8000-000000000003",
+		name: "Elvish Mystic",
+		printed_name: "エルフの神秘家",
+		lang: "ja",
+		set_code: "m15",
+		collector_number: "18",
+		power: "1",
+		toughness: "1",
+		mana_cost: "{G}",
+		oracle_text: "{T}: Add {G}.",
+		set_name: "Magic 2015",
+		type_line: "Creature — Elf Druid",
+	},
+	{
+		// A printing that exists ONLY in Portuguese — the row a default-English lookup must MISS
+		// rather than substitute.
+		scryfall_id: "aaaaaaaa-0000-4000-8000-000000000004",
+		name: "Unmoored Ego",
+		printed_name: "Ego à Deriva",
+		lang: "pt",
+		set_code: "grn",
+		collector_number: "212",
+		mana_cost: "{U}{B}",
+		oracle_text: "Choose a card name.",
+		set_name: "Guilds of Ravnica",
+		type_line: "Sorcery",
+	},
+];
+
+/** The row fields the hand-built trees (src/routes/scryfall-compat/trees.ts) address. */
+const TREE_COLUMNS: Record<string, string> = {
+	card_set_code: "set_code",
+	collector_number: "collector_number",
+	card_lang: "lang",
+	card_name: "name",
+};
+
+/**
+ * Evaluate one hand-built filter tree against a fixture row — REAL matching, deliberately, so a
+ * lookup that drops a clause (the `{set, collector_number}` identifiers' implicit `card_lang ==
+ * "en"` is the one that matters) fails a test instead of resolving whatever the fake felt like.
+ * Only the shapes trees.ts builds are understood; anything else is a loud error, because a tree
+ * this fake cannot evaluate is a tree no test has pinned.
+ */
+function treeMatchesRow(tree: string, row: Record<string, unknown>): boolean {
+	const node = JSON.parse(tree) as { node_type: string; kwargs: Record<string, unknown> };
+	const clauses = node.node_type === "AndNode" ? (node.kwargs.operands as (typeof node)[]) : [node];
+	for (const clause of clauses) {
+		if (clause.node_type !== "CardBinaryOperatorNode" || clause.kwargs.op !== "=") {
+			throw new Error(`FakeEngine cannot evaluate tree node: ${JSON.stringify(clause)}`);
+		}
+		const lhs = clause.kwargs.lhs as { kwargs: { attribute_name: string } };
+		const rhs = clause.kwargs.rhs as { kwargs: { value: string } };
+		const field = TREE_COLUMNS[lhs.kwargs.attribute_name];
+		if (field === undefined) {
+			throw new Error(`FakeEngine cannot evaluate tree attribute: ${lhs.kwargs.attribute_name}`);
+		}
+		// `lang` defaults to "en" when the row omits it, mirroring toScryfallCard's own default;
+		// names compare case-insensitively, mirroring upstream's lower() = lower().
+		const stored = field === "lang" ? String(row.lang ?? "en") : String(row[field] ?? "");
+		const matches =
+			field === "name" ? stored.toLowerCase() === rhs.kwargs.value.toLowerCase() : stored === rhs.kwargs.value;
+		if (!matches) return false;
+	}
+	return true;
+}
 
 export class FakeEngine implements Engine {
 	lastSearch: EngineSearchOptions | null = null;
@@ -83,6 +168,15 @@ export class FakeEngine implements Engine {
 
 	async cardKeywordCounts(): Promise<Record<string, number>> {
 		return { ...this.keywords };
+	}
+
+	/** Set codes with an `is:extra` printing — the `include_extras` auto-enable table. Settable
+	 * per test through `setsWithExtrasList`, because the trigger is a per-set property and a fake
+	 * that always answered "none" could not exercise the half of the rule that fires. */
+	setsWithExtrasList: string[] = [];
+
+	async setsWithExtras(): Promise<string[]> {
+		return [...this.setsWithExtrasList];
 	}
 
 	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
@@ -124,7 +218,10 @@ export class FakeEngine implements Engine {
 		this.lastSearch = opts;
 		if (this.searchError) throw this.searchError;
 		this.scryfallBaseUrl = baseUrl;
-		const cards = this.cards.slice(0, opts.limit).map((row) => toScryfallCard(row, baseUrl));
+		// The OFFSET is honored here (and only here) because the compat surface's pagination
+		// contract depends on it: a page past the end has to come back with zero rows for the
+		// 422 to be reachable at all.
+		const cards = this.cards.slice(opts.offset, opts.offset + opts.limit).map((row) => toScryfallCard(row, baseUrl));
 		return { totalCards: this.totalCards, cardsBytes: encodeUtf8(JSON.stringify(cards)), rowCount: cards.length };
 	}
 
@@ -133,24 +230,16 @@ export class FakeEngine implements Engine {
 	async scryfallSearchPage(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		envelope: {
-			pretty: boolean;
-			warnings?: string[];
-			nextPageUrl?: string;
-			pageOffset: number;
-			noMatchDetails: string;
-		},
+		envelope: SearchPageEnvelope,
 		cache: Record<string, string>,
 	): Promise<Response> {
 		const r = await this.scryfallSearch(opts, baseUrl);
-		if (r.rowCount === 0) {
-			return scryfallJson(
-				errorObject("not_found", 404, envelope.noMatchDetails, envelope.warnings),
-				envelope.pretty,
-				cache,
-			);
-		}
+		if (r.rowCount === 0) return emptyPageResponse(envelope, r.totalCards, cache);
 		const hasMore = envelope.pageOffset + r.rowCount < r.totalCards;
+		// Same branch, same order, same helper as the two real implementations (store.ts and
+		// search-engine-do.ts): `?format=csv` selects a serialization of the rows this page already
+		// holds, so the fake must not be the one place where it selects a query instead.
+		if (envelope.csv === true) return scryfallCsvResponse(r.cardsBytes, hasMore, cache);
 		return scryfallListJson(
 			r.cardsBytes,
 			{
@@ -231,8 +320,24 @@ export class FakeEngine implements Engine {
 			.filter((c): c is Record<string, unknown> => c !== null);
 	}
 
+	/** Foreign printings the query-shaped lookups can address; the fake's annex. */
+	foreignCards: Record<string, unknown>[] = FOREIGN_FIXTURE_CARDS;
+
+	/**
+	 * FOREIGN ROWS FIRST, deliberately: every lookup that must pin English does so via an explicit
+	 * `card_lang == "en"` clause, and putting the ja row in front of the en row it shares an
+	 * address with means a lookup that DROPS that clause resolves the ja row and fails its test —
+	 * ordered the other way, the bug would pass silently.
+	 */
+	private addressableRows(): Record<string, unknown>[] {
+		return [...this.foreignCards, ...this.cards];
+	}
+
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
-		return filterTreeJsons.map(() => this.fixtureCard(0, baseUrl));
+		return filterTreeJsons.map((tree) => {
+			const row = this.addressableRows().find((r) => treeMatchesRow(tree, r));
+			return row === undefined ? null : toScryfallCard(row, baseUrl);
+		});
 	}
 }
 
@@ -260,9 +365,15 @@ export function fakeParse(query: string): unknown {
 export function installFakeParser(parse: (query: string) => unknown = fakeParse): void {
 	setParserForTests({
 		parseScryfallQuery: parse,
-		// The fake parser knows nothing of directives; route tests that care about
-		// them install a parser that does.
-		parseWithDirectives: (query: string) => ({ tree: parse(query), directives: [] }),
+		// The fake parser knows nothing of directives or rewrite warnings; route tests that care
+		// about either install a parser that does.
+		parseWithDirectives: (query: string) => ({
+			tree: parse(query),
+			directives: [],
+			warnings: [],
+			loweredRegexTerms: [],
+			expandedDerivedTerms: [],
+		}),
 		isParseError: (err) => err instanceof FakeParseError,
 	});
 }
@@ -341,14 +452,26 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 			resolved = { key: actionWord, positionalArgs: actionArgs };
 		}
 	}
+	// Mirrors dispatch: an unknown path is Scryfall's error object, not upstream's routes listing.
 	if (!resolved) {
-		return httpError(404, "Not Found", { routes: buildRoutesListing() });
+		return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
 	}
 	const routeEntry = routes[resolved.key];
 	if (!routeEntry) {
-		return httpError(404, "Not Found", { routes: buildRoutesListing() });
+		return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
+	}
+	const scryfallSurface = SCRYFALL_SURFACE_ROUTES.has(resolved.key);
+	// Before the method check, exactly as dispatch does it — no route declares OPTIONS, so a
+	// preflight answered after this point could only be a 405.
+	if (method === "OPTIONS") {
+		return securityHeaders(optionsResponse());
 	}
 	if (!routeEntry.methods.includes(method)) {
+		// Mirrors dispatch: the Scryfall surface answers 404 with `not_found` and no `Allow`, exactly
+		// as api.scryfall.com does; upstream's own surface keeps falcon's 405.
+		if (scryfallSurface) {
+			return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
+		}
 		const allow = [...routeEntry.methods].sort().join(", ");
 		return httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow });
 	}
@@ -368,10 +491,18 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 			return securityHeaders(err);
 		}
 		if (err instanceof EngineUnavailableError) {
-			// Mirrors src/index.ts: upstream's exact wording, cause to the log.
-			return securityHeaders(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));
+			// Mirrors src/index.ts: upstream's exact wording, cause to the log, shape by surface.
+			return securityHeaders(
+				scryfallSurface
+					? scryfallHttpError("service_unavailable", 503, "Engine is not loaded, please try again later.")
+					: httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."),
+			);
 		}
-		return securityHeaders(httpError(500, "Server Error", "An internal error occurred."));
+		return securityHeaders(
+			scryfallSurface
+				? scryfallHttpError("internal_error", 500, "An internal error occurred.")
+				: httpError(500, "Server Error", "An internal error occurred."),
+		);
 	}
 }
 

@@ -10,6 +10,25 @@
 #
 # Failure is always fatal to the caller (set -e, no swallowed errors) — that is
 # the entire point. A deploy that cannot build an index must not happen.
+#
+# ── A RECORDED ONE-TIME COST, ALREADY ACCEPTED — NOT A WARNING TO ACT ON ──────
+#
+# The deploy that first ships the partitioned store publishes a PARTITIONED
+# manifest to `store:manifest` while the previously-deployed Worker is still
+# live and still serving. That Worker cannot parse a partitioned manifest, so
+# from the moment this script's publish lands until the new code finishes
+# deploying — a few minutes — its requests fail.
+#
+# That is deliberate. There is no dual window BY DESIGN: the partitioned store
+# is the setup, not a migration target, so there is no second manifest key to
+# stage the new shape behind and no legacy serving path to keep alive while the
+# swap happens. The alternative was a rollout flag, two manifest pointers, two
+# nightly pipelines and two serving paths — machinery whose whole purpose was
+# to avoid these few minutes, and which was deleted for exactly that trade.
+#
+# It happens ONCE, on the transition deploy. Every deploy after it publishes the
+# shape the live Worker already reads, so this paragraph is history, not a
+# runbook step. Nothing here needs doing about it.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -130,12 +149,33 @@ else
     echo "==> The live store is missing or superseded (reason above) — running the full bulk import."
 fi
 
-# 3. Full native import. 8GB and 20 minutes in Workers Builds, versus a 128MB
+# 3. Full native import. 20 minutes and 2 vCPU in Workers Builds, versus a 128MB
 #    isolate and 30s alarms in the Worker runtime — which is why this lives in
-#    the build and the in-Worker pipeline only handles nightly changes.
+#    the build and the in-Worker pipeline only handles nightly changes. The
+#    reason is WALL CLOCK, not memory: the builder streams the corpus to a spill
+#    file under store-build/ and builds one partition at a time, so the real
+#    517,746-row multilingual corpus measures 451MiB peak RSS in 52s (it held
+#    every draft in one Vec until 2026-08-16 and peaked at 7.41GiB, a 1-2 year
+#    runway against this environment's 8GB — see engine/builder/src/spill.rs).
+#    Memory moved onto scratch disk: ~1.5GB of spill, briefly ~3GB while the
+#    demux holds the single spill and its per-partition cut at once, then
+#    deleted partition by partition as the loop consumes them (and on every
+#    error path). store-build/ still holds rows.jsonl (~1.7GB) as it always has.
+#
+#    `--partitions auto` makes the builder cut the store into N archives
+#    (N = clamp(ceil(staged_draft_bytes * 0.24 / 43MB), 2, 32), plan Decision 3b
+#    — the projection and both constants twinned with src/import-publish.ts, so
+#    the deploy build and the nightly pick the same N for the same corpus) and emit
+#    a v2 manifest skeleton with partition_count/partition_hash/partitions[] —
+#    which is the only store shape a generation-20 deployment can serve. The
+#    builder REJECTS argv it does not recognise (its parser matches exactly), so
+#    if this checkout's builder predates the flag the build FAILS LOUDLY here
+#    rather than silently publishing an unpartitioned store that ships the site
+#    dark; seed-remote-kv.ts refuses an unpartitioned build dir for the same
+#    reason, as the second line of defense.
 echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes)..."
 "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
-./target/fast-native/sylvan-store-builder --out store-build
+./target/fast-native/sylvan-store-builder --out store-build --partitions auto
 
 # 4. Regenerate the parser's alias map from the SAME build.
 #

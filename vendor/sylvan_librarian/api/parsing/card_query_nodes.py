@@ -12,8 +12,9 @@ from api.parsing.db_info import (
     ALIAS_TO_FIELD_INFOS,
     CARD_SUPERTYPES,
     CARD_TYPES,
+    COLOR_ALIAS_TO_CODES,
     COLOR_CODE_TO_NAME,
-    COLOR_NAME_TO_CODE,
+    COLOR_COUNT_NAMES,
     DB_NAME_TO_FIELD_TYPE,
     FORMAT_CODE_TO_NAME,
     FieldType,
@@ -83,10 +84,10 @@ RARITY_TO_NUMBER = {
     "u": 1,
     "rare": 2,
     "r": 2,
-    "mythic": 3,
-    "m": 3,
-    "special": 4,
-    "s": 4,
+    "special": 3,
+    "s": 3,
+    "mythic": 4,
+    "m": 4,
     "bonus": 5,
     "b": 5,
 }
@@ -223,9 +224,14 @@ def _compare_ints(lhs: int, operator: str, rhs: int) -> bool:
     raise ValueError(msg)
 
 
-def _color_count_masks(operator: str, count: int) -> list[int]:
-    """Bitmask values (5 colors => 2^5) whose popcount satisfies `popcount <op> count`."""
-    return [v for v in range(32) if _compare_ints(v.bit_count(), operator, count)]
+def _color_count_masks(operator: str, count: int, bits: int = 5) -> list[int]:
+    """Bitmask values whose popcount satisfies `popcount <op> count`.
+
+    `bits` is 5 for the colour columns and SIX for produced_mana, whose array can literally hold
+    "C" (Sol Ring produces ["C"] while its colors and color_identity are both []). See the
+    2026-08-16-03 migration for the measurements that pin the difference.
+    """
+    return [v for v in range(1 << bits) if _compare_ints(v.bit_count(), operator, count)]
 
 
 def _subset_masks(query_mask: int) -> list[int]:
@@ -240,7 +246,9 @@ def get_colors_comparison_object(val: str, attr: str = "card_colors") -> dict[st
     """Convert color string to comparison object for database queries.
 
     Args:
-        val: Color string (either color codes like 'WUBRG' or color name like 'red').
+        val: Color string (either color codes like 'WUBRG' or a color name like 'red' or
+            'azorius' — every name in COLOR_ALIAS_TO_CODES, which is the vocabulary Scryfall
+            itself accepts).
         attr: The DB column this value is being compared against. Colorless means two
             different things depending on the field: for card_colors/card_color_identity
             it's the *absence* of any color (Scryfall stores both as `[]`, verified
@@ -256,23 +264,20 @@ def get_colors_comparison_object(val: str, attr: str = "card_colors") -> dict[st
         ValueError: If the color string is invalid.
     """
     colorless_is_value = attr == "produced_mana"
-    # If all chars are color codes
+    # A color NAME spells a set of letters ('azorius' -> 'wu', 'brown' -> 'c', 'colorless' -> 'c');
+    # a letter string already is one. Expanding the name FIRST leaves a single code path, so
+    # `c:azorius` and `c:wu` serialize to the identical rhs and cannot drift apart, and the
+    # colorless-is-a-value distinction below is stated once instead of once per spelling.
+    codes = COLOR_ALIAS_TO_CODES.get(val, val)
     color_code_set = set(COLOR_CODE_TO_NAME)
-    if val and set(val) <= color_code_set:
+    if codes and set(codes) <= color_code_set:
         if colorless_is_value:
-            return {c.upper(): True for c in val}
+            return {c.upper(): True for c in codes}
         # Colorless-only queries use an empty dict, matching how colorless cards
         # are stored (card_color_identity = {}) rather than {"C": True}.
-        return {c.upper(): True for c in val if c != "c"}
-    # If it's a color name (e.g. 'red', 'blue', etc.)
-    try:
-        letter_code = COLOR_NAME_TO_CODE[val]
-        if letter_code == "c":
-            return {"C": True} if colorless_is_value else {}
-        return {letter_code.upper(): True}
-    except KeyError as e:
-        msg = f"Invalid color string: {val}"
-        raise ValueError(msg) from e
+        return {c.upper(): True for c in codes if c != "c"}
+    msg = f"Invalid color string: {val}"
+    raise ValueError(msg)
 
 
 def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
@@ -518,18 +523,78 @@ def _escape_like_pattern(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
+# The Latin letters NFKD leaves WHOLE, and the spellings a name comparison has to read them as.
+#
+# NFKD is a decomposition, and a decomposition can only ever separate a base letter from its marks.
+# "æ" is not "a" with a mark on it — it is its own letter with no decomposition at all — so every
+# one of these survived fold_accents() untouched and `name:æther` found nothing where Scryfall
+# finds 90. MEASURED against api.scryfall.com on 2026-08-16, one probe per character, each against
+# its expanded spelling: æ/ae 90, œ/oe 167, ß/ss 2051, ø/o 22111, ł/l 18748, đ/d 14591, þ/th 5689,
+# ð/d 14591, ħ/h 14176, ŋ/ng 4834, ŧ/t 22261, U+0131/i 22954, ĸ/k 6616 — equal totals on both
+# every pair. (ĳ folds too, at 22 — NFKD already reaches that one, so it is not listed here.)
+#
+# The three characters DELIBERATELY ABSENT, each measured to 404 on Scryfall: U+00D7 and U+00F7,
+# which are symbols rather than letters and which collate_name() would delete anyway; and U+017F
+# (long s), which Scryfall does not fold and NFKD does. Known residual divergences, all on
+# characters no card in the corpus contains: U+017F, the presentation ligatures U+FB00..U+FB02,
+# "½", "№" and "ǽ" — NFKD folds each of them and Scryfall folds none.
+_LIGATURE_FOLD = str.maketrans(
+    {
+        "Æ": "AE",
+        "æ": "ae",
+        "Œ": "OE",
+        "œ": "oe",
+        "ß": "ss",
+        "Ø": "O",
+        "ø": "o",
+        "Ł": "L",
+        "ł": "l",
+        "Đ": "D",
+        "đ": "d",
+        "Ð": "D",
+        "ð": "d",
+        "Þ": "Th",
+        "þ": "th",
+        "Ħ": "H",
+        "ħ": "h",
+        "Ŋ": "NG",
+        "ŋ": "ng",
+        "Ŧ": "T",
+        "ŧ": "t",
+        "ı": "i",  # noqa: RUF001 -- U+0131 DOTLESS I is the point of the entry
+        "ĸ": "k",
+    }
+)
+
+
 def fold_accents(value: str) -> str:
     """Strip Latin diacritics so accented and unaccented spellings compare equal.
 
     NFKD-decomposes each character into base letter + combining marks, then drops
-    the marks (unicodedata.combining(c) != 0). This is the single source of truth
+    the marks (unicodedata.combining(c) != 0), then expands the undecomposable
+    Latin letters through _LIGATURE_FOLD. This is the single source of truth
     for accent folding: it's used to precompute card_name_folded at import time
     (see preprocess_card()) and to fold the search term for fuzzy card_name:
     queries in both the SQL and Rust engine paths, so the two sides never diverge
     on what counts as "the same" name (#649).
     """
     decomposed = unicodedata.normalize("NFKD", value)
-    return "".join(c for c in decomposed if not unicodedata.combining(c))
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).translate(_LIGATURE_FOLD)
+
+
+def collate_name(value: str) -> str:
+    """Strip every non-alphanumeric character, so separators stop deciding a name match.
+
+    The SEPARATOR half of the fold a bare ``name:`` word gets (fold_accents() is the other half).
+    Scryfall compares a bare name word with diacritics folded and separators gone, which is what
+    lets ``ft`` find "Sword **of the** Ages" (1,628 results against ``name:"ft"``'s 362) and
+    ``limdul`` find "Lim-Dul's Vault". ``!"..."`` is compared the same way, which is why
+    ``!"limduls vault"`` and ``!"Lim-Dul's Vault"`` both find the card that only the fully
+    accented, fully punctuated spelling used to.
+
+    The engine's ``collate_name`` (card_engine/src/lib.rs) is the twin that folds the STORED side.
+    """
+    return "".join(c for c in value if c.isalnum())
 
 
 class ExactNameNode(QueryNode):
@@ -543,18 +608,30 @@ class ExactNameNode(QueryNode):
         self.value = value
 
     def kwargs(self) -> dict:
-        """Return this node's kwargs dict for Rust engine JSON serialization."""
-        return {"value": self.value.lower()}
+        """Return this node's kwargs dict for Rust engine JSON serialization.
+
+        COLLATED -- lowercased, diacritics folded, every non-alphanumeric character removed --
+        because that is the name Scryfall compares ``!`` against. Measured on api.scryfall.com
+        2026-08-16, all four of ``!"Lim-Dul's Vault"`` (with and without the circumflex),
+        ``!"lim-dul's vault"`` and ``!"limduls vault"`` answer the same single card, and
+        ``!"eowyn, lady of rohan"`` answers "Eowyn, Lady of Rohan". Comparing the literal lowercase
+        name -- what this emitted before -- answered only the first of those, so typing a card's
+        name without its accent or its punctuation found nothing.
+        """
+        return {"value": collate_name(fold_accents(self.value.lower()))}
 
     def to_sql(self, context: QueryContext) -> str:
         """Generate SQL for exact name matching (case-insensitive, no wildcards).
 
-        LIKE special characters (backslash, %, _) are escaped so the value is matched
-        literally rather than as a pattern.
+        COLLATED on both sides, matching kwargs() and the engine: Scryfall answers ``!"limduls
+        vault"`` with the same card as ``!"Lim-Dul's Vault"``. There is no stored column for the
+        collated name, so the fold is expressed inline; see the card_name: branch of
+        CardBinaryOperatorNode.to_sql for the indexing note. LIKE special characters (backslash,
+        %, _) are escaped so the value is matched literally rather than as a pattern.
         """
-        escaped = _escape_like_pattern(self.value.lower())
+        escaped = _escape_like_pattern(collate_name(fold_accents(self.value.lower())))
         placeholder = context.add(escaped)
-        return f"(lower(card.card_name) LIKE {placeholder})"
+        return f"(lower(regexp_replace(card.card_name_folded, '[^[:alnum:]]', '', 'g')) LIKE {placeholder})"
 
     def __repr__(self) -> str:
         """Return a string representation of the ExactNameNode."""
@@ -575,8 +652,69 @@ class ExactNameNode(QueryNode):
         return f'exact name is "{self.value}"'
 
 
+# What a colour-COUNT name (`c:m`, `id:gold`) means, per operator, as the (operator, count) pair
+# the numeric colour-count comparison is built from. Measured; the evidence and the two surprises
+# in it are written out at db_info.COLOR_COUNT_NAMES.
+_COLOR_COUNT_BY_OPERATOR: typing.Final = {
+    ":": (">=", 2),
+    "=": (">=", 2),
+    ">": (">=", 2),
+    ">=": (">=", 2),
+    "<": ("<", 2),
+    "!=": ("<", 2),
+    "<=": (">=", 0),  # a tautology, spelled as a count so it stays one leaf
+}
+
+# The same table for produced_mana, intersected with "produces at least one value". A card that
+# makes no mana at all is not a producer of anything, and Scryfall keeps it out of every one of
+# these: `produces<m` = `produces!=m` = 1,143 = `produces=1`, NOT `produces<2` (32,139) or
+# `produces!=2` (33,095), both of which sweep in the 30,996 cards that produce nothing; and
+# `produces<=m` = 2,603 = `produces>=1` rather than every card. The extra conjunct collapses into
+# the count itself (`<2` and `>=1` is `=1`; `>=0` and `>=1` is `>=1`), so this stays one
+# (operator -> operator, count) table and no AND node is needed.
+_PRODUCED_COUNT_BY_OPERATOR: typing.Final = {
+    ":": (">=", 2),
+    "=": (">=", 2),
+    ">": (">=", 2),
+    ">=": (">=", 2),
+    "<": ("=", 1),
+    "!=": ("=", 1),
+    "<=": (">=", 1),
+}
+
+_COLOR_COUNT_ATTRIBUTES: typing.Final = ("card_colors", "card_color_identity", "produced_mana")
+
+
 class CardBinaryOperatorNode(BinaryOperatorNode):
     """Card-specific binary operator node with custom SQL generation."""
+
+    def __init__(self, lhs: QueryNode, operator: str, rhs: QueryNode) -> None:
+        """Initialize the node, lowering a colour-COUNT name to a numeric colour-count comparison.
+
+        `c:m` and its five synonyms are a NUMBER of colours, not a set of them, so the value has no
+        letters to compare and the operator does not survive verbatim either (`c>m` is `c>=2` and
+        `c!=m` is `c<2`). Both parsers reach this constructor -- the hand parser builds the node
+        directly, the pyparsing one via `to_card_query_ast` -- so lowering it here is what keeps
+        them from disagreeing, and the node the rest of the pipeline sees is the ordinary numeric
+        one that `c>=2` already produces, on every path: engine JSON, SQL and explanation alike.
+
+        Args:
+            lhs: The left-hand side operand.
+            operator: The binary operator.
+            rhs: The right-hand side operand.
+        """
+        if (
+            isinstance(lhs, CardAttributeNode)
+            and isinstance(rhs, StringValueNode)
+            and lhs.attribute_name in _COLOR_COUNT_ATTRIBUTES
+            and rhs.value.strip().lower() in COLOR_COUNT_NAMES
+        ):
+            table = _PRODUCED_COUNT_BY_OPERATOR if lhs.attribute_name == "produced_mana" else _COLOR_COUNT_BY_OPERATOR
+            lowered = table.get(operator)
+            if lowered is not None:
+                operator, count = lowered
+                rhs = NumericValueNode(count)
+        super().__init__(lhs, operator, rhs)
 
     def kwargs(self) -> dict:
         """Return this node's kwargs dict for Rust engine JSON serialization."""
@@ -640,7 +778,7 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             # Numeric color syntax (id>=3 / c=2): pass the raw NumericValueNode so the
             # Rust engine builds a color-count comparison instead of a mask compare.
             if isinstance(self.rhs, NumericValueNode):
-                return self._numeric_color_rhs_to_json(attr)
+                return _node_to_json(self.rhs)
             val = self.rhs.value.strip()
             if attr in ("card_colors", "card_color_identity", "produced_mana"):
                 return list(get_colors_comparison_object(val.lower(), attr).keys())
@@ -654,25 +792,23 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
         if attr in ("card_name", "card_artist") and isinstance(self.rhs, StringValueNode):
             value = titlecase(self.rhs.value)
-            # Fold diacritics for fuzzy card_name: search so the Rust engine's
-            # TextContains matches the same way the SQL path does via card_name_folded
-            # (#649); exact/comparison ops keep the literal value, accent-sensitive.
-            if attr == "card_name" and self.operator == ":":
-                value = fold_accents(value)
+            # A BARE card_name: word is COLLATED -- diacritics folded (#649) AND every
+            # non-alphanumeric character removed -- because that is the string Scryfall matches a
+            # bare word against. A QUOTED value (and a plain-literal regex lowered to one) is
+            # matched literally instead, so it keeps neither fold; see StringValueNode. Measured on
+            # api.scryfall.com 2026-08-16: `name:ft` 1,628 against `name:"ft"` 362, `name:ofthe`
+            # 1,109 against `name:"ofthe"` 0, `name:limdul` 8 against `name:"limdul"` 0.
+            # Comparison ops (name=, name!=) keep the literal value on both sides,
+            # accent-sensitive, exactly as before.
+            # `a:` gets the SAME split, on the same kind of evidence (api.scryfall.com, 2026-08-16):
+            # `a:gawel` answers 10 exactly as `a:gaweł` does, `a:rebecca-guay` answers
+            # `a:"rebecca guay"`'s 166, and `a:gu*ay` answers `a:guay`'s 197. An artist could only be
+            # found under their own diacritics and punctuation before this.
+            if attr in ("card_name", "card_artist") and self.operator == ":" and not self.rhs.literal:
+                return {"node_type": "CollatedNameValueNode", "kwargs": {"value": collate_name(fold_accents(value))}}
             return {"node_type": "StringValueNode", "kwargs": {"value": value}}
 
         return _node_to_json(self.rhs)
-
-    def _numeric_color_rhs_to_json(self, attr: str) -> object:
-        """Serialize a numeric color-count rhs (id>=3 / c=2) for the Rust engine.
-
-        Only the two real color fields support counting; produced_mana's C key is a
-        genuine producible value, not a color, so a count over it would be ambiguous.
-        """
-        if attr in ("card_colors", "card_color_identity"):
-            return _node_to_json(self.rhs)
-        msg = f"Numeric comparison is not supported for {attr}"
-        raise ValueError(msg)
 
     def to_sql(self, context: QueryContext) -> str:
         """Generate SQL for card-specific binary operations.
@@ -726,8 +862,11 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         db_column_name = attr_node.attribute_name.lower()
 
         # Numeric color syntax compares the count of colors, not the colors themselves
-        if db_column_name in ("card_colors", "card_color_identity") and isinstance(self.rhs, NumericValueNode):
-            noun = "colors in the color identity" if db_column_name == "card_color_identity" else "colors"
+        if db_column_name in _COLOR_COUNT_ATTRIBUTES and isinstance(self.rhs, NumericValueNode):
+            noun = {
+                "card_color_identity": "colors in the color identity",
+                "produced_mana": "kinds of mana produced",  # SIX kinds: colorless is one of them
+            }.get(db_column_name, "colors")
             count_op = "is" if self.operator == ":" else operator_str  # : compares counts as equality
             return f"the number of {noun} {count_op} {rhs_str}"
 
@@ -1037,13 +1176,25 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             msg = f"Unknown type: {type(self.rhs)}, {locals()}"
             raise TypeError(msg)
 
-        # card_name fuzzy search is accent-folded so "eowyn" matches "Éowyn" (#649);
-        # card_name_folded is precomputed at import time from the same fold_accents().
-        # Exact-match paths (ExactNameNode, name=) deliberately keep using card_name/
-        # card_name_lower so typing the accent still finds only the accented spelling.
-        if attr == "card_name":
-            lhs_sql = "card.card_name_folded"
-            txt_val = fold_accents(txt_val)
+        # card_name: is TWO searches, and which one this is was decided by the quotes.
+        #
+        # A BARE word is compared against the name with diacritics folded (#649, card_name_folded,
+        # precomputed at import) AND every non-alphanumeric character removed -- the separator fold
+        # Scryfall applies, which is what makes `name:ft` answer 1,628 rather than `name:"ft"`'s
+        # 362 by reaching "Sword of the Ages" through the vanished space. There is no stored column
+        # for that string, so the fold is expressed inline; a deployment that wants it indexed
+        # wants a trigram index on the same expression (or a generated card_name_collated column),
+        # which is what the Rust engine stores.
+        #
+        # A QUOTED value is compared against the name AS WRITTEN: `name:"eowyn"` answers 0 on
+        # api.scryfall.com while `name:"eowyn"` with the accent answers 3.
+        #
+        # Exact-match paths (name=, name!=) are unchanged and keep using card_name/card_name_lower.
+        if attr == "card_name" and isinstance(self.rhs, StringValueNode) and self.rhs.literal:
+            lhs_sql = "card.card_name"
+        elif attr == "card_name":
+            lhs_sql = "regexp_replace(card.card_name_folded, '[^[:alnum:]]', '', 'g')"
+            txt_val = collate_name(fold_accents(txt_val))
 
         words = ["", *(_escape_like_pattern(w) for w in txt_val.lower().split()), ""]
         pattern = "%".join(words)
@@ -1079,16 +1230,18 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         mask set restricted to values whose popcount satisfies the comparison.
         ":" with a number behaves like "=" (verified against the live Scryfall API).
 
-        produced_mana is refused: its C key is a genuine producible value, not a
-        color, so a count over it would be ambiguous.
+        produced_mana counts SIX values, colorless among them, and so uses its
+        own six-bit mask function: `produces=1 produces:c` = 481 (the cards that
+        produce colorless and nothing else) and `produces=6` = 106, neither of
+        which a five-key count can express. The colour columns keep counting
+        five -- `c=5` = `c:all` = 60 and `c=6` is not a valid query at all.
         """
-        if attr == "produced_mana":
-            msg = f"Numeric comparison is not supported for {attr}"
-            raise ValueError(msg)
+        produced = attr == "produced_mana"
         operator = "=" if self.operator == ":" else self.operator
-        masks = IntArray(_color_count_masks(operator, int(self.rhs.value)))
+        masks = IntArray(_color_count_masks(operator, int(self.rhs.value), bits=6 if produced else 5))
         pmask = context.add(masks)
-        return f"(magic.color_identity_mask({lhs_sql}) = ANY({pmask}::smallint[]))"
+        mask_fn = "magic.produced_mana_mask" if produced else "magic.color_identity_mask"
+        return f"({mask_fn}({lhs_sql}) = ANY({pmask}::smallint[]))"
 
     def _handle_jsonb_object(self, context: QueryContext) -> str:  # noqa: PLR0912, C901
         # Produce the query as a jsonb object

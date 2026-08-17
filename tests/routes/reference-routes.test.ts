@@ -175,10 +175,18 @@ describe("GET /symbology/parse-mana", () => {
 		expect(body.colors).toEqual(["W", "U", "R"]);
 	});
 
-	test("no cost parameter is a 400", async () => {
-		const res = await testDispatch(makeCtx(), "/symbology/parse-mana");
-		expect(res.status).toBe(400);
-		expect((await json(res)).details).toContain("cost parameter");
+	// api.scryfall.com does not reject this: a missing `cost` is the same request as an empty one,
+	// and both answer 200 with `cost: null` (measured 2026-08-16). This asserted the 400 upstream
+	// sends, which is a sentence Scryfall does not own and a rejection it does not make.
+	test("no cost parameter is the same 200 an empty cost is, not a 400", async () => {
+		const missing = await testDispatch(makeCtx(), "/symbology/parse-mana");
+		const empty = await testDispatch(makeCtx(), "/symbology/parse-mana?cost=");
+		expect(missing.status).toBe(200);
+		const text = await missing.text();
+		const body = JSON.parse(text) as Record<string, unknown>;
+		expect(body.object).toBe("mana_cost");
+		expect(body.cost).toBeNull();
+		expect(text).toBe(await empty.text());
 	});
 
 	test("a fragment that is not mana is a 422, which is what Scryfall answers", async () => {

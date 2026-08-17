@@ -72,6 +72,36 @@ pub struct TagData {
     /// persistence path that could drift from it. `#[serde(default)]` on the struct means a blob
     /// written before this field restores as "no labels", which scores exactly as it always did.
     pub labels: std::collections::HashSet<String>,
+    /// scryfall_ids present in Scryfall's `default_cards` dump — the canonical-printing set.
+    ///
+    /// `transform_row` takes canonicity as the CALLER's fact (id-membership, never re-derived),
+    /// and the multilingual transform consumes `all_cards`, so every line needs this membership
+    /// test BEFORE any draft exists. It rides `TagData` for exactly the reason `labels` does: the
+    /// coordinator's one snapshot path (`tags_export`/`tags_restore`) is what survives Durable
+    /// Object evictions AND what re-feeds each transient transform instance, and a second
+    /// persistence path here would be a second thing that can drift from it.
+    ///
+    /// Unlike `labels` (36-byte `String`s, ~35k oracle_cards ids), this set is ~117k printings —
+    /// kept as 16-byte binary UUIDs and serialized as one hex string, so the snapshot carries
+    /// ~3.7MB instead of ~5.6MB of quoted JSON strings. `#[serde(default)]`: a snapshot written
+    /// before this field restores as "no canonical ids", and the coordinator treats that as a
+    /// missing canonical pass rather than silently building an all-foreign store.
+    #[serde(default)]
+    pub canonical: CanonicalIds,
+    /// The corpus-wide finalize inputs — cubecobra scores and illustration counts (see
+    /// [`crate::transform::CorpusTables`]).
+    ///
+    /// Third passenger, same one reason as `labels` and `canonical`: the wasm import computes
+    /// these in a phase of its own — neither survives being computed per partition — and
+    /// `TagData`'s snapshot is the one persistence path that survives Durable Object evictions and
+    /// re-feeds every transient instance. `#[serde(default)]`: a snapshot written before this
+    /// field restores UNSEALED, which `finalize_begin` refuses rather than treating as "no
+    /// scores" (an all-null cubecobra column that would build and publish without complaint).
+    ///
+    /// The native builder does not use it: its corpus streams past one aggregation pass that
+    /// holds the equivalent interned (spill.rs). Both seal through `cubecobra_scores_from_pairs`.
+    #[serde(default)]
+    pub corpus: crate::transform::CorpusTables,
     /// Shared slug table; the maps' values index into it.
     pub slugs: Vec<String>,
     /// oracle_id → slug indices (incl. ancestors) for `card_oracle_tags`.
@@ -145,6 +175,110 @@ impl TagData {
         data.art = art;
         data
     }
+}
+
+/// A set of scryfall_ids held as 16-byte binary UUIDs (see [`TagData::canonical`]).
+///
+/// String ids go in and are matched through [`parse_uuid16`], which lowercases and drops hyphens,
+/// so `contains` agrees with `insert` for any casing of the same UUID — the same defensive
+/// normalization `partition::fnv1a64_oracle_id` applies. An id that does not parse as a UUID is
+/// simply not a member (insert refuses it, contains answers false): default_cards ids are UUIDs
+/// by contract, and a malformed one failing closed marks that row non-canonical rather than
+/// aborting an import over one bad line.
+///
+/// Serde: one hex string, ids sorted — deterministic bytes for the snapshot, no per-id JSON
+/// quoting overhead, and `serde_json` string parsing stays a single allocation.
+#[derive(Debug, Default, Clone)]
+pub struct CanonicalIds(HashSet<[u8; 16]>);
+
+impl CanonicalIds {
+    /// Add one id; true when it was new. False for a duplicate OR an unparseable id.
+    pub fn insert(&mut self, id: &str) -> bool {
+        parse_uuid16(id).is_some_and(|bytes| self.0.insert(bytes))
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        parse_uuid16(id).is_some_and(|bytes| self.0.contains(&bytes))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl serde::Serialize for CanonicalIds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut ids: Vec<&[u8; 16]> = self.0.iter().collect();
+        ids.sort_unstable();
+        let mut out = String::with_capacity(ids.len() * 32);
+        for id in ids {
+            for &b in id {
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
+            }
+        }
+        serializer.serialize_str(&out)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CanonicalIds {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let hex = String::deserialize(deserializer)?;
+        if hex.len() % 32 != 0 {
+            return Err(serde::de::Error::custom("canonical id hex length is not a multiple of 32"));
+        }
+        let mut set = HashSet::with_capacity(hex.len() / 32);
+        for chunk in hex.as_bytes().chunks(32) {
+            let mut id = [0u8; 16];
+            for (i, pair) in chunk.chunks(2).enumerate() {
+                let hi = hex_val(pair[0]).ok_or_else(|| serde::de::Error::custom("bad canonical id hex digit"))?;
+                let lo = hex_val(pair[1]).ok_or_else(|| serde::de::Error::custom("bad canonical id hex digit"))?;
+                id[i] = (hi << 4) | lo;
+            }
+            set.insert(id);
+        }
+        Ok(CanonicalIds(set))
+    }
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// A hyphenated (or bare) hex UUID string as 16 bytes; None unless it holds exactly 32 hex
+/// digits. Case-insensitive, so a stray uppercase digit cannot make a canonical row read foreign.
+fn parse_uuid16(id: &str) -> Option<[u8; 16]> {
+    let mut out = [0u8; 16];
+    let mut n = 0usize;
+    let mut hi: Option<u8> = None;
+    for b in id.bytes() {
+        if b == b'-' {
+            continue;
+        }
+        let v = hex_val(b)?;
+        match hi {
+            None => hi = Some(v),
+            Some(h) => {
+                if n == 16 {
+                    return None; // more than 32 hex digits
+                }
+                out[n] = (h << 4) | v;
+                n += 1;
+                hi = None;
+            }
+        }
+    }
+    (n == 16 && hi.is_none()).then_some(out)
 }
 
 /// Normalize a written tag spelling to the slug form tags are stored under.
@@ -597,6 +731,54 @@ mod tests {
         let before = restored.slugs.len();
         restored.intern("parent");
         assert_eq!(restored.slugs.len(), before);
+    }
+
+    #[test]
+    fn canonical_ids_survive_the_snapshot_round_trip() {
+        // The continuity contract the transform phase leans on: the canonical set built by the
+        // coordinator's canonical pass must come back bit-identical through tags_export /
+        // tags_restore, because every transient transform instance is fed FROM that snapshot.
+        let mut data = TagData::default();
+        assert!(data.canonical.insert("5963eef1-1022-42b1-8a0c-fc9850bfc2a3"));
+        assert!(data.canonical.insert("00000000-0000-0000-0000-000000000001"));
+        assert!(!data.canonical.insert("5963eef1-1022-42b1-8a0c-fc9850bfc2a3"), "duplicate reports not-new");
+        let restored: TagData = serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert_eq!(restored.canonical.len(), 2);
+        assert!(restored.canonical.contains("5963eef1-1022-42b1-8a0c-fc9850bfc2a3"));
+        assert!(restored.canonical.contains("00000000-0000-0000-0000-000000000001"));
+        assert!(!restored.canonical.contains("00000000-0000-0000-0000-000000000002"));
+    }
+
+    #[test]
+    fn canonical_ids_normalize_case_and_refuse_junk() {
+        let mut set = CanonicalIds::default();
+        assert!(set.insert("5963EEF1-1022-42B1-8A0C-FC9850BFC2A3"));
+        // Same UUID, different casing and hyphenation: one member.
+        assert!(set.contains("5963eef1-1022-42b1-8a0c-fc9850bfc2a3"));
+        assert!(set.contains("5963eef1102242b18a0cfc9850bfc2a3"));
+        assert_eq!(set.len(), 1);
+        // Non-UUID ids fail closed: not inserted, never a member.
+        assert!(!set.insert("not-a-uuid"));
+        assert!(!set.insert("5963eef1-1022-42b1-8a0c-fc9850bfc2a3ff")); // 34 digits
+        assert!(!set.insert("5963eef1-1022-42b1-8a0c-fc9850bfc2a")); // 31 digits
+        assert!(!set.contains(""));
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_without_canonical_field_restores_empty() {
+        // A snapshot written before the field existed (or by the tags phase, which never
+        // carries it) must restore, with membership answering false — the coordinator, not
+        // serde, is what enforces that the canonical pass actually ran.
+        let json = r#"{"labels":[],"slugs":[],"oracle":{},"art":{},"oracle_aliases":{},"art_aliases":{}}"#;
+        let restored: TagData = serde_json::from_str(json).unwrap();
+        assert!(restored.canonical.is_empty());
+        assert!(!restored.canonical.contains("5963eef1-1022-42b1-8a0c-fc9850bfc2a3"));
+        // The corpus tables restore UNSEALED from the same snapshot — "no scores yet", which the
+        // import refuses to finalize against, rather than "every score is null".
+        assert!(!restored.corpus.is_sealed());
+        assert_eq!(restored.corpus.cubecobra("Shock"), None);
+        assert_eq!(restored.corpus.illustration_count(Some("ill"), "Shock"), 0);
     }
     #[test]
     fn aliases_are_recorded_as_a_map_and_never_stamped_as_keys() {

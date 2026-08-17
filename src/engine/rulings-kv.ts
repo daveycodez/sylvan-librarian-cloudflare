@@ -238,10 +238,19 @@ function rulingObject(row: RulingRow): string {
  *
  * WITHIN one date the order cannot be reproduced at all, and `comment` is a deterministic
  * stand-in rather than a guess at Scryfall's. Scryfall orders same-date rulings by an internal
- * ruling id; the bulk file carries no id, and none of the four candidate rules (the file's own
- * order, that reversed, comment ascending, comment descending) matched on any of 10 sampled cards
- * that have a date carrying several rulings. 13,847 of the 19,770 cards with rulings have such a
- * date, so this is most of them — see the README's deviations list.
+ * ruling id and the bulk file carries no id. Re-measured 2026-08-16 over 25 cards with both
+ * several dates and a date carrying 4+ rulings, against api.scryfall.com: the file's own order
+ * within a date matched 0 of 25, as did that order reversed, whole-file order,
+ * date-ascending-then-file, and the rule below.
+ *
+ * PRESERVING THE DUMP'S ORDER IS NOT THE ANSWER, and the reason is worth keeping so it is not
+ * retried: the six boilerplate "kicker" rulings come back in a DIFFERENT order on different cards
+ * (Strength of Night, Goblin Barrage and Spell Contortion each get their own permutation of the
+ * same six comments), so Scryfall orders by a per-(card, ruling) row id rather than a per-ruling
+ * one, and the dump — one line per pair, grouped by card — does not carry that within a card.
+ *
+ * 13,847 of the 19,770 cards with rulings have a crowded date, so this is most of them — see the
+ * README's deviations list.
  *
  * Determinism matters beyond tidiness: the bytes are a pure function of the ruling SET, so a dump
  * that reorders its lines without changing content produces identical buckets, which is what lets

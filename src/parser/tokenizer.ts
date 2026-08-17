@@ -42,6 +42,52 @@ const SPACE = new Set(" \t\r\n");
 // (Scryfall: "t:goblin," matches nothing) while a bare name sheds it in bareNameNode.
 const SKIPPED = new Set([...SPACE, ","]);
 
+/**
+ * The four typographic quotes Scryfall folds before lexing, and the only four.
+ *
+ * Every word processor and phone keyboard turns a typed apostrophe into U+2019 and typed double
+ * quotes into U+201C/U+201D, so a pasted query carries them constantly — and this parser read them
+ * as ordinary letters, which made `name:"Gaea’s Blessing"` a search for a card whose name contains
+ * a curly apostrophe: no rows, no error, no clue.
+ *
+ * Measured against api.scryfall.com (2026-08-16) by putting each candidate around a phrase and
+ * asking whether the phrase searched as ONE term (`o:Xdraw a cardX` → 2,544 rows means X delimits
+ * a string). U+2018/U+2019 fold to the ASCII apostrophe and U+201C/U+201D to the ASCII double
+ * quote; every other quotation-shaped character stays literal and matches nothing — guillemets
+ * « » ‹ ›, low-9 „ ‚, primes ′ ″ ‵, fullwidth ＂ ＇, CJK brackets 「」『』, ornate ❛❜❝❞, backtick,
+ * acute, U+02BC.
+ *
+ * It is a CHARACTER substitution over the whole query, not a rule about quoted regions:
+ * `name:"Gaea’s Blessing"` finds Gaea's Blessing, which it could not if the curly apostrophe were
+ * left alone INSIDE the double quotes, and `name:‘Gaea"s Blessing’` finds nothing, exactly as
+ * `name:'Gaea"s Blessing'` does. Both directions had to be measured, because folding all four to
+ * `"` fits the first observation and fails the second.
+ *
+ * It lived only on the compat surface until now, so `/search` and the web UI rejected the very
+ * quotes their own search box produces.
+ */
+const TYPOGRAPHIC_QUOTES: ReadonlyMap<string, string> = new Map([
+	["‘", "'"],
+	["’", "'"],
+	["“", '"'],
+	["”", '"'],
+]);
+
+/** Fold the four typographic quotes Scryfall folds; every other character is left alone. */
+export function foldTypographicQuotes(query: string): string {
+	let out = "";
+	let changed = false;
+	for (const ch of query) {
+		const folded = TYPOGRAPHIC_QUOTES.get(ch);
+		if (folded === undefined) out += ch;
+		else {
+			out += folded;
+			changed = true;
+		}
+	}
+	return changed ? out : query;
+}
+
 /** ASCII identifier start, or any Unicode letter — accented card names, e.g. Éowyn (#649). */
 function isWordStart(c: string): boolean {
 	return WORD_START.has(c) || isAlphaCp(c.codePointAt(0) as number);

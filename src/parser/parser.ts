@@ -6,7 +6,13 @@
  */
 
 import { CardAttributeNode, CardBinaryOperatorNode, ExactNameNode } from "./card-query-nodes";
-import { ALIAS_TO_FIELD_INFOS, COLOR_NAME_TO_CODE, type ParserClass, ParserClass as PC } from "./db-info";
+import {
+	ALIAS_TO_FIELD_INFOS,
+	COLOR_ALIAS_TO_CODES,
+	COLOR_COUNT_NAMES,
+	type ParserClass,
+	ParserClass as PC,
+} from "./db-info";
 import { InternalParseError, LexError, ParseError } from "./errors";
 import {
 	AndNode,
@@ -25,7 +31,7 @@ import {
 	TrueNode,
 } from "./nodes";
 import { type PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
-import { type Token, TT, tokenize } from "./tokenizer";
+import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
 
 // ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -58,7 +64,11 @@ const NUMERIC_ALIASES: ReadonlySet<string> = new Set(
 	[...ALIAS_TO_PC].filter(([, pc]) => pc === PC.NUMERIC).map(([alias]) => alias),
 );
 
-const VALID_COLOR_NAMES: ReadonlySet<string> = new Set(COLOR_NAME_TO_CODE.keys());
+// The set-valued names (`azorius`, `rainbow`) and the COUNT-valued ones (`m`, `gold`,
+// `multicolored`) are one vocabulary as far as the value parser is concerned: both are words
+// rather than letter strings. What separates them is what CardBinaryOperatorNode does with the
+// result, not whether this parser will accept it.
+const VALID_COLOR_NAMES: ReadonlySet<string> = new Set([...COLOR_ALIAS_TO_CODES.keys(), ...COLOR_COUNT_NAMES]);
 const COLOR_LETTERS: ReadonlySet<string> = new Set("wubrgcWUBRGC");
 const MIN_MTG_YEAR = 1992n;
 const MAX_YEAR = 2040n;
@@ -78,8 +88,8 @@ function validateMtgYear(value: PyNumber, pos: number): bigint {
 
 const ARITH_OPS: ReadonlySet<TT> = new Set([TT.PLUS, TT.MINUS, TT.STAR, TT.SLASH]);
 
-function nameNode(value: string): CardBinaryOperatorNode {
-	return new CardBinaryOperatorNode(new CardAttributeNode("name", PC.TEXT), ":", new StringValueNode(value));
+function nameNode(value: string, literal = false): CardBinaryOperatorNode {
+	return new CardBinaryOperatorNode(new CardAttributeNode("name", PC.TEXT), ":", new StringValueNode(value, literal));
 }
 
 /**
@@ -226,7 +236,10 @@ export class Parser {
 		}
 		if (tok.type === TT.QUOTED) {
 			this.consume();
-			return nameNode(pyStr(tok.value));
+			// A bare QUOTED term is `name:"…"`, and quoting still means "match this literally":
+			// measured on api.scryfall.com 2026-08-16, `q="ft"` answers 362 exactly as
+			// `q=name:"ft"` does, against the bare word `q=ft`'s 1,628.
+			return nameNode(pyStr(tok.value), true);
 		}
 		if (tok.type === TT.WORD) {
 			this.consume();
@@ -239,6 +252,14 @@ export class Parser {
 			// bare mana outside attribute context — treat as implicit name
 			this.consume();
 			return nameNode(pyStr(tok.value));
+		}
+		if (tok.type === TT.STAR) {
+			// A term that STARTS with `*` is a name search whose first character collates away —
+			// `q=*ft*` answers 1,628 on Scryfall, exactly as `q=ft` does. Only reachable at the
+			// start of a primary, where a multiplication has no left operand and this was a
+			// parse error.
+			this.consume();
+			return this.parseHyphenatedName("*");
 		}
 		throw new InternalParseError(`Unexpected ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
@@ -483,19 +504,43 @@ export class Parser {
 
 	// ── implicit name (possibly hyphenated) ───────────────────────────────────
 
-	/** Build an implicit name node, greedily consuming no-space MINUS+WORD/NUMBER continuations. */
+	/**
+	 * Build an implicit name node, greedily consuming no-space MINUS+WORD/NUMBER and STAR
+	 * continuations.
+	 *
+	 * A bare term is a `name:` search, so `*` reaches it for the same reason it reaches
+	 * `parseTextValue`: the collation deletes it. Measured 2026-08-16 — `q=ft*`, `q=*ft*` and
+	 * `q=ft` all answer 1,628 on api.scryfall.com, and `q=godzilla*` answers `q=godzilla`'s 8.
+	 */
 	parseHyphenatedName(first: string): CardBinaryOperatorNode {
-		const parts = [first];
-		while (
-			this.peek().type === TT.MINUS &&
-			!this.peek().spaceBefore &&
-			(this.peek(1).type === TT.WORD || this.peek(1).type === TT.NUMBER) &&
-			!this.peek(1).spaceBefore
-		) {
-			this.consume(); // MINUS
-			parts.push(pyStr(this.consume().value));
+		let word = first;
+		for (;;) {
+			const next = this.peek();
+			if (next.spaceBefore) break;
+			if (next.type === TT.STAR) {
+				this.consume();
+				word += "*";
+				continue;
+			}
+			if (next.type === TT.WORD || next.type === TT.NUMBER) {
+				// Only reachable ACROSS a star (`*ft`): the lexer scans adjacent word characters
+				// into one token, so two of them never touch on their own.
+				this.consume();
+				word += pyStr(next.value);
+				continue;
+			}
+			if (
+				next.type === TT.MINUS &&
+				(this.peek(1).type === TT.WORD || this.peek(1).type === TT.NUMBER) &&
+				!this.peek(1).spaceBefore
+			) {
+				this.consume(); // MINUS
+				word += `-${pyStr(this.consume().value)}`;
+				continue;
+			}
+			break;
 		}
-		return bareNameNode(parts.join("-"));
+		return bareNameNode(word);
 	}
 
 	// ── value parsers ─────────────────────────────────────────────────────────
@@ -530,24 +575,51 @@ export class Parser {
 		const tok = this.peek();
 		if (tok.type === TT.QUOTED) {
 			this.consume();
-			return new StringValueNode(pyStr(tok.value));
+			// QUOTED, and `name:` reads that as "match this literally" — see StringValueNode.
+			return new StringValueNode(pyStr(tok.value), true);
 		}
 		if (tok.type === TT.REGEX) {
 			this.consume();
 			return new RegexValueNode(pyStr(tok.value));
 		}
-		if (tok.type === TT.WORD || tok.type === TT.NUMBER) {
+		if (tok.type === TT.WORD || tok.type === TT.NUMBER || tok.type === TT.STAR) {
 			this.consume();
-			let word = pyStr(tok.value);
-			// Greedily consume hyphenated continuation (no space on either side)
-			while (
-				this.peek().type === TT.MINUS &&
-				!this.peek().spaceBefore &&
-				(this.peek(1).type === TT.WORD || this.peek(1).type === TT.NUMBER) &&
-				!this.peek(1).spaceBefore
-			) {
-				this.consume();
-				word += `-${pyStr(this.consume().value)}`;
+			let word = tok.type === TT.STAR ? "*" : pyStr(tok.value);
+			// Greedily consume hyphenated and STARRED continuation (no space on either side).
+			//
+			// `*` IS AN ORDINARY CHARACTER IN A VALUE, not a wildcard and not an error. Scryfall
+			// answers `name:ft*`, `name:*ft*`, `name:*ft` and `name:f*t` with the same 1,628 as
+			// `name:ft` — because a bare `name:` value is COLLATED and `*` is one more
+			// non-alphanumeric character to delete, exactly like the `-` in `name:lightning-bolt`
+			// (2) and the `,` in `name:lightning,bolt` (2). It is not a tokenizer rule: the same
+			// `*` in a column that is NOT collated stays put and finds nothing, which is what
+			// `o:ft*`, `t:crea*ture`, `ft:cro*ft` and the QUOTED `name:"ft*"` all answer (404),
+			// and `a:gu*ay` matches `a:guay` because artist is collated too. All measured on
+			// api.scryfall.com 2026-08-16. This port rejected the character outright, so every
+			// one of those was a 400 instead.
+			for (;;) {
+				const next = this.peek();
+				if (next.spaceBefore) break;
+				if (next.type === TT.STAR) {
+					this.consume();
+					word += "*";
+					continue;
+				}
+				if (next.type === TT.WORD || next.type === TT.NUMBER) {
+					this.consume();
+					word += pyStr(next.value);
+					continue;
+				}
+				if (
+					next.type === TT.MINUS &&
+					(this.peek(1).type === TT.WORD || this.peek(1).type === TT.NUMBER) &&
+					!this.peek(1).spaceBefore
+				) {
+					this.consume();
+					word += `-${pyStr(this.consume().value)}`;
+					continue;
+				}
+				break;
 			}
 			return new StringValueNode(word);
 		}
@@ -614,6 +686,23 @@ export class Parser {
 		}
 		if (tok.type === TT.WORD) {
 			const val = pyStr(tok.value);
+			// The four-colour names are HYPHENATED (`yore-tiller`, `witch-maw`), and `-` is not a
+			// word-continuation character, so the lexer hands this WORD MINUS WORD. Glue the three
+			// back together — but only when the result is a name, so an ordinary `c:w-1` still
+			// ends the value at the `w` and lets arithmetic have the rest. Same adjacency rule
+			// parseDateValue uses for YYYY-MM-DD: no space on either side of the hyphen.
+			if (
+				this.peek(1).type === TT.MINUS &&
+				!this.peek(1).spaceBefore &&
+				this.peek(2).type === TT.WORD &&
+				!this.peek(2).spaceBefore &&
+				VALID_COLOR_NAMES.has(pyLower(`${val}-${pyStr(this.peek(2).value)}`))
+			) {
+				this.consume();
+				this.consume();
+				const tail = this.consume();
+				return new StringValueNode(`${val}-${pyStr(tail.value)}`);
+			}
 			if (!VALID_COLOR_NAMES.has(pyLower(val)) && ![...val].every((c) => COLOR_LETTERS.has(c))) {
 				throw new InternalParseError(`Invalid color value ${val} at position ${tok.pos}`);
 			}
@@ -683,6 +772,10 @@ export function parseQuery(src: string | null | undefined): Query {
 	if (!src || !pyStrip(src)) {
 		return new Query(new TrueNode());
 	}
+	// Before the lexer, because a curly quote has to BE a quote by the time a term boundary is
+	// decided; and rebinding `src` so the "Failed to lex/parse" messages echo the query the parser
+	// actually read rather than the one the user pasted.
+	src = foldTypographicQuotes(src);
 	let tokens: Token[];
 	try {
 		tokens = tokenize(src);

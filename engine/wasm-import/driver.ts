@@ -1,6 +1,6 @@
 // End-to-end exercise of the wasm import module against the memprobe corpus:
-// bulk JSONL → transform → tags → aggregate → finalize → store build, with
-// the host side played by in-memory arrays (standing in for DO SQLite / D1).
+// bulk JSONL → transform → tags → scores → aggregate → finalize → store build,
+// with the host side played by in-memory arrays (standing in for DO SQLite / D1).
 //
 //   bun engine/wasm-import/driver.ts <import.wasm> <bulk.jsonl> <tags.json> \
 //       <rows-out.jsonl> <store-out.store>
@@ -43,7 +43,11 @@ const env = {
 				console.error(`[wasm] ${decoder.decode(bytes)}`);
 				break;
 			case EMIT.DRAFT:
-				draftBatchBuf.push(bytes);
+				// Framed [u64 le fnv1a64(oracle_id)][RowDraft JSON] (see src/lib.rs);
+				// agg/finalize consume the bare JSON, so the partition hash is
+				// stripped here — the coordinator persists it, this driver has no
+				// partitions to route to.
+				draftBatchBuf.push(bytes.subarray(8));
 				break;
 			case EMIT.STATS:
 				statsLog.push(JSON.parse(decoder.decode(bytes)));
@@ -94,10 +98,13 @@ const ex = instance.exports as {
 	memory: WebAssembly.Memory;
 	alloc(len: number): number;
 	reset(): void;
+	canonical_add_lines(ptr: number, len: number): bigint;
 	transform_lines(ptr: number, len: number): bigint;
 	tags_begin(): void;
 	tags_add_lines(ptr: number, len: number): bigint;
 	tags_finish(kind: number): bigint;
+	scores_add_drafts(ptr: number, len: number): bigint;
+	scores_finish(): bigint;
 	agg_drafts(ptr: number, len: number): bigint;
 	agg_finish(): bigint;
 	finalize_begin(): bigint;
@@ -155,6 +162,32 @@ async function* fileLines(path: string): AsyncGenerator<string[]> {
 // ── 1. transform ────────────────────────────────────────────────────────────
 ex.reset();
 let t = performance.now();
+// The corpus stands in for default_cards AND all_cards at once, and default_cards is ENGLISH —
+// one representative per card — so only the English lines feed the canonical set. That is what
+// reproduces the native oracle: memprobe feeds `transform_row(&card, lang == "en")` (its
+// synthetic corpus's canonical rule, memprobe.rs), and production derives the same flag from
+// id-membership in a default_cards file that only ever contains English rows.
+//
+// THIS USED TO SEND EVERY LINE, from when the corpus was English-only and memprobe fed the
+// one-argument `transform()` with canonical=true. `--foreign-ratio` made that stale without
+// making it fail: the oracle marked 44,105 of 56,105 rows non-canonical, the driver marked all
+// of them canonical, and the parity check reported a permanent one-field mismatch. A parity
+// instrument with a known-false diff cannot report a TRUE one — nobody reads past the noise —
+// so the filter is the point of this pass, not an optimisation.
+let canonicalIds = 0n;
+for await (const lines of fileLines(bulkPath)) {
+	const english = lines.filter((line) => (JSON.parse(line) as { lang?: string }).lang === "en");
+	if (english.length === 0) continue;
+	canonicalIds += sendBytes(
+		encoder.encode(english.join("\n")),
+		(p, l) => ex.canonical_add_lines(p, l),
+		"canonical_add_lines",
+	);
+}
+console.error(
+	`canonical: ${canonicalIds} ids in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`,
+);
+t = performance.now();
 let drafts = 0n;
 for await (const lines of fileLines(bulkPath)) {
 	drafts = sendBytes(encoder.encode(lines.join("\n")), (p, l) => ex.transform_lines(p, l), "transform_lines");
@@ -204,7 +237,20 @@ feedTags(tagMaps.oracle, "oracle_id", 1);
 feedTags(tagMaps.art, "illustration_id", 2);
 console.error(`tags in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
 
-// ── 3. aggregate ────────────────────────────────────────────────────────────
+// ── 3. scores (global, all partitions' drafts) ──────────────────────────────
+// The coordinator's own global phase, in one call here: the cubecobra table is a percent-rank over
+// the WHOLE corpus's card names, so it is sealed before any per-partition aggregation runs. This
+// driver has no partitions, but it must feed the phase anyway — finalize refuses an unsealed
+// table rather than emitting a null cubecobra column.
+t = performance.now();
+for (const batch of draftBatches) {
+	sendBytes(batch, (p, l) => ex.scores_add_drafts(p, l), "scores_add_drafts");
+}
+const scoredNames = ex.scores_finish();
+if (scoredNames < 0n) throw new Error("scores_finish failed");
+console.error(`scores: ${scoredNames} card names in ${((performance.now() - t) / 1000).toFixed(1)}s`);
+
+// ── 4. aggregate ────────────────────────────────────────────────────────────
 t = performance.now();
 for (const batch of draftBatches) {
 	sendBytes(batch, (p, l) => ex.agg_drafts(p, l), "agg_drafts");
@@ -212,7 +258,7 @@ for (const batch of draftBatches) {
 const winners = ex.agg_finish();
 console.error(`agg: ${winners} winners in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
 
-// ── 4. finalize ─────────────────────────────────────────────────────────────
+// ── 5. finalize ─────────────────────────────────────────────────────────────
 t = performance.now();
 if (ex.finalize_begin() < 0n) throw new Error("finalize_begin failed");
 for (const batch of draftBatches) {
@@ -222,7 +268,7 @@ const staged = ex.finalize_end();
 if (staged < 0n) throw new Error("finalize_end failed");
 console.error(`finalize: ${staged} rows staged in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
 
-// ── 5. store build ──────────────────────────────────────────────────────────
+// ── 6. store build ──────────────────────────────────────────────────────────
 t = performance.now();
 const total = ex.build_store_stream();
 if (total < 0n) throw new Error("build_store_stream failed");

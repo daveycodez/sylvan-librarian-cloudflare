@@ -167,9 +167,25 @@ export const LISTINGS = {
 	"cards/search": {
 		doc: `Search for cards, paginated 175 at a time.
 
-        \`include_extras\`, \`include_multilingual\` and \`include_variations\` are accepted and have no
-        effect: the corpus holds no tokens, emblems or funny-set cards for \`include_extras\` to add,
-        and it holds every printing and language it has imported unconditionally.
+        \`include_multilingual\` is honored: the default is Scryfall's — English (canonical)
+        printings only — and \`include_multilingual=true\` widens the search to foreign printings,
+        as does a \`lang:\` term in the query itself. \`include_extras\` is honored too: the
+        default excludes the printings Scryfall calls extras — memorabilia, tokens and emblems,
+        planes and schemes, art series, content-warning cards, and the "Card"/"Token" type-line
+        family — and \`include_extras=true\` returns them. They carry \`is:extra\`, so the same set
+        is addressable by query. It is also AUTO-ENABLED, exactly as Scryfall auto-enables it:
+        \`a:\`, \`wm:\`, \`layout:\`, \`name:/…/\`, \`t:token\`, \`border:silver\`, \`is:extra\`,
+        \`is:oversized\`, \`is:reserved\` and \`is:rebalanced\` turn it on whatever the parameter
+        says, and so does a set term when that set holds at least one extra (\`e:lea\` does,
+        \`e:khm\` does not). A term written as a REGEX counts as one only for \`name:\`: Scryfall
+        fires on \`name:/…/\` and not on \`t:/token/\`, \`is:/extra/\` or \`border:/silver/\`.
+        \`include_variations\` is honored as well: the default excludes the printings Scryfall marks
+        \`variation\` — alternate-art and alternate-frame duplicates of a card already in the same
+        set — and \`include_variations=true\` returns them. They carry \`is:variation\`, and that term
+        is this gate's ONLY auto-enable: a set term does not turn it on (\`e:hho\` is 21 either way
+        until the parameter is sent), and neither does any term that turns extras on. The two gates
+        are independent, and a query may cross both. \`next_page\` echoes the values that were
+        SERVED, not the ones that were sent.
         `,
 		args: [],
 		kwargs: {

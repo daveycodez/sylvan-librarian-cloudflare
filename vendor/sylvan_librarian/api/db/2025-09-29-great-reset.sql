@@ -43,8 +43,8 @@ BEGIN
         WHEN 0 THEN 'common'
         WHEN 1 THEN 'uncommon'
         WHEN 2 THEN 'rare'
-        WHEN 3 THEN 'mythic'
-        WHEN 4 THEN 'special'
+        WHEN 3 THEN 'special'
+        WHEN 4 THEN 'mythic'
         WHEN 5 THEN 'bonus'
         ELSE NULL
     END;
@@ -63,8 +63,8 @@ BEGIN
         WHEN 'common' THEN 0
         WHEN 'uncommon' THEN 1
         WHEN 'rare' THEN 2
-        WHEN 'mythic' THEN 3
-        WHEN 'special' THEN 4
+        WHEN 'special' THEN 3
+        WHEN 'mythic' THEN 4
         WHEN 'bonus' THEN 5
         ELSE -1
     END;
@@ -338,8 +338,8 @@ INSERT INTO magic.valid_rarities (card_rarity_int, card_rarity_text) VALUES
     (0, 'common'),
     (1, 'uncommon'),
     (2, 'rare'),
-    (3, 'mythic'),
-    (4, 'special'),
+    (3, 'special'),
+    (4, 'mythic'),
     (5, 'bonus');
 
 COMMENT ON TABLE magic.valid_rarities IS 'Lookup table for valid card rarities with integer and text representations';

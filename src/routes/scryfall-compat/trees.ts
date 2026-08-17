@@ -55,13 +55,26 @@ function and(...operands: Node[]): Node {
 export const TRUE_TREE = wire({ node_type: "TrueNode", kwargs: {} });
 
 /**
- * `/cards/:code/:number` — one printing by set code and collector number.
+ * `/cards/:code/:number(/:lang)` — one printing by set code, collector number and language.
  *
  * `=` on `collector_number`, the TEXT column, not `:` on `collector_number_int`: Scryfall's
  * collector numbers include "1a", "12★" and "A-42", none of which are integers.
+ *
+ * The language is part of the QUERY, like upstream's SQL filter, defaulting to "en" exactly as
+ * Scryfall defaults the URL segment — and the default is EMITTED, never omitted. Foreign printings
+ * share a set code and collector number with their English row, so a lang-less lookup would
+ * resolve whichever row the engine happened to prefer. That implicit English is also what the
+ * collection route's `{set, collector_number}` identifiers depend on: they come through here with
+ * the default and must keep doing so.
  */
-export function setAndCollectorNumber(setCode: string, collectorNumber: string): string {
-	return wire(and(textEquals("card_set_code", "set", setCode), textEquals("collector_number", "cn", collectorNumber)));
+export function setAndCollectorNumber(setCode: string, collectorNumber: string, lang = "en"): string {
+	return wire(
+		and(
+			textEquals("card_set_code", "set", setCode),
+			textEquals("collector_number", "cn", collectorNumber),
+			textEquals("card_lang", "lang", lang),
+		),
+	);
 }
 
 /**

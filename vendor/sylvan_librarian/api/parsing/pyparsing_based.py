@@ -24,11 +24,13 @@ from pyparsing import (
 
 from api.parsing.card_query_nodes import CardAttributeNode, ExactNameNode, to_card_query_ast
 from api.parsing.db_info import (
-    COLOR_NAME_TO_CODE,
+    COLOR_ALIAS_TO_CODES,
+    COLOR_COUNT_NAMES,
     NUMERIC_CARD_ATTRIBUTES,
     PARSER_CLASS_TO_FIELD_INFOS,
     ParserClass,
 )
+from api.parsing.hand_parser import fold_typographic_quotes
 from api.parsing.nodes import (
     DIRECTIVE_NAMES,
     AndNode,
@@ -305,7 +307,10 @@ def create_color_parsers() -> dict[str, ParserElement]:
     Returns:
         Dictionary containing color parser elements
     """
-    color_word = make_regex_pattern(COLOR_NAME_TO_CODE)
+    # The same vocabulary the hand parser's _VALID_COLOR_NAMES draws from — one table, so a name
+    # added for one parser cannot be missing from the other (test_parser_parity asserts they agree
+    # on validity, and a colour name accepted by only one of them is exactly that failure).
+    color_word = make_regex_pattern({*COLOR_ALIAS_TO_CODES, *COLOR_COUNT_NAMES})
     color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
     # Scryfall numeric color syntax: id>=3 / c=2 compare the NUMBER of colors in
     # the field. A bare integer is a valid color value; the negative lookahead
@@ -594,6 +599,9 @@ def parse_search_query(query: str | None) -> Query:
     if query is None or not query.strip():
         return Query(TrueNode())
 
+    # The same pre-lex fold `parse_query` applies, for the same reason and in the same position:
+    # the two parsers must agree about which characters are quotes (test_parser_parity).
+    query = fold_typographic_quotes(query)
     query = preprocess_implicit_and(query)
     expr = get_parse_expr()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from api.parsing.hand_parser import _is_word_cont
+from api.parsing.hand_parser import _is_word_cont, fold_typographic_quotes
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.rewrite import rewrite_query
 
@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 def balance_partial_query(query: str) -> str:
     """Balance quotes and parentheses for typeahead searches using a stack."""
+    # The balancer and the lexer must agree about which characters are quotes, or a typed
+    # `name:<U+2018>` balances to nothing here and then fails to lex as an unclosed `name:'` after
+    # parse_query folds it. Same fold, same position: before anything reads a character as a
+    # delimiter.
+    query = fold_typographic_quotes(query)
     char_to_mirror = {
         "(": ")",
         "'": "'",  # single quote is own mirror

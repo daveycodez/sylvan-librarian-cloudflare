@@ -9,13 +9,29 @@ import { json, makeCtx, testDispatch } from "./harness";
 const ctx = makeCtx();
 
 describe("404 routes listing", () => {
-	test("unknown path answers 404 with the full routes listing", async () => {
+	test("unknown path answers Scryfall's error object, NOT the routes listing", async () => {
+		// The deliberate reversal of what this used to assert. This deployment exists so a client
+		// can change one base URL and stop talking to api.scryfall.com, and that has to hold when it
+		// asks for something that does not exist: it parses `code` and `details`, and
+		// `{title, description: {routes}}` gives it neither. Status, wording and tier are measured.
 		const res = await testDispatch(ctx, "/definitely_not_a_route");
 		expect(res.status).toBe(404);
-		const body = await json(res);
-		expect(body.title).toBe("Not Found");
-		const routes = (body.description as { routes: Record<string, unknown> }).routes;
-		expect(routes).toEqual(JSON.parse(JSON.stringify(buildRoutesListing())));
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+		expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+		expect(await json(res)).toEqual({
+			object: "error",
+			code: "not_found",
+			status: 404,
+			details: "The requested object or REST method was not found.",
+		});
+	});
+
+	test("the routes listing is still BUILT — it is the 404 body that stopped carrying it", async () => {
+		// `buildRoutesListing` is upstream's `_build_routes_listing` and its shape and ordering are
+		// still pinned by the test below; nothing about the registration order changed, only where
+		// the listing is served. Kept as its own assertion so a future reader does not conclude the
+		// listing is dead code and delete it.
+		expect(Object.keys(buildRoutesListing()).length).toBeGreaterThan(20);
 	});
 
 	test("listing keys follow upstream registration order", () => {
@@ -96,11 +112,56 @@ describe("404 routes listing", () => {
 });
 
 describe("method handling", () => {
-	test("POST to a GET route is 405 with sorted Allow", async () => {
+	test("POST to a GET route on THIS PROJECT'S surface is falcon's 405", async () => {
+		// `/search` is upstream's own route and the web interface's own JSON, whose error bodies the
+		// frontend renders by reading `title` and `description` (public/static/app.js). It keeps
+		// upstream's shape for exactly that reason.
 		const res = await testDispatch(ctx, "/search", "POST");
 		expect(res.status).toBe(405);
 		expect(res.headers.get("Allow")).toBe("GET, HEAD");
 		expect((await json(res)).description).toBe("Allowed methods: GET, HEAD");
+	});
+
+	test("a wrong method on the SCRYFALL surface is Scryfall's 404, with no Allow header", async () => {
+		// Measured 2026-08-16 across eight requests — POST/PUT/DELETE/PATCH against `/cards/search`,
+		// `/cards/named`, `/cards/collection`, `/cards/:id` and `/sets`: api.scryfall.com answers 404
+		// with the ordinary `not_found` object and sends NO `Allow`.
+		//
+		// This was briefly a 405 carrying an invented `method_not_allowed` code. 405 is the more
+		// correct HTTP answer in the abstract, and it was still wrong here: Scryfall never emits a
+		// 405, so nothing measured backed that code. A client that branches on 404-versus-405 has to
+		// see what Scryfall shows it.
+		const res = await testDispatch(ctx, "/cards/search", "POST");
+		expect(res.status).toBe(404);
+		expect(res.headers.get("Allow")).toBeNull();
+		expect(await json(res)).toEqual({
+			object: "error",
+			code: "not_found",
+			status: 404,
+			details: "The requested object or REST method was not found.",
+		});
+	});
+
+	test("GET /cards/collection is the same 404", async () => {
+		const res = await testDispatch(ctx, "/cards/collection");
+		expect(res.status).toBe(404);
+		expect(res.headers.get("Allow")).toBeNull();
+		expect((await json(res)).code).toBe("not_found");
+	});
+
+	test("every reference route is on the Scryfall surface too", async () => {
+		// The split is by ROUTE KEY because the two surfaces interleave under one namespace:
+		// `catalog` is Scryfall's and `get_catalog` is upstream's own, and only the table separates
+		// them. This pins both halves of that pair.
+		for (const path of ["/sets", "/symbology", "/catalog/battle-types", "/symbology/parse-mana"]) {
+			const res = await testDispatch(ctx, path, "DELETE");
+			expect(res.status).toBe(404);
+			expect((await json(res)).code).toBe("not_found");
+		}
+		const own = await testDispatch(ctx, "/get_catalog", "DELETE");
+		expect(own.status).toBe(405);
+		expect(own.headers.get("Allow")).toBe("GET, HEAD");
+		expect((await json(own)).title).toBe("Method Not Allowed");
 	});
 
 	test("HEAD is implied by GET on every route", async () => {

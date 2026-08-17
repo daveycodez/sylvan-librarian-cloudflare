@@ -101,7 +101,10 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
 cron (nightly refresh; the deploy does the first build)
         ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
               └─ alarm-chained pipeline, all inside the 128MB isolate:
-                   fetch → transform → tags → aggregate → finalize → build
+                   fetch → transform → tags → scores → aggregate → finalize → build
+                   (scores is corpus-GLOBAL — the cubecobra percent-rank and the
+                    illustration counts are computed ACROSS cards, so they are
+                    sealed once before the per-partition loop and handed to it)
                    (the SAME Rust the native builder runs, compiled to wasm;
                     intermediates spill to DO SQLite, never to memory)
                    publish: 2 store chunks, each gzipped, + manifest to KV,
@@ -329,15 +332,26 @@ The complete list of intentional differences:
   oldest-first (2026-08-12). Following upstream here would invert every
   multi-date card's rulings for a client that changed nothing but its base URL,
   so this port follows Scryfall. Reported upstream against #912.
-  **Within a single date the order still cannot be matched**: Scryfall orders
-  same-date rulings by an internal ruling id, and the bulk file carries no id —
-  none of the file's own order, that order reversed, comment ascending or
-  comment descending reproduced it on any of 10 sampled cards. `comment`
-  ascending is used as a deterministic stand-in. This affects 13,847 of the
-  19,770 cards that have rulings; the other 5,923 (one ruling, or one per date)
-  match Scryfall exactly. End to end against api.scryfall.com over 19 cards with
-  rulings: same set 19/19, same `published_at` sequence 19/19, byte-identical
-  order 8/19 — the remainder differ only in the sequence within one date.
+  **Within a single date the order cannot be matched, and 2026-08-16 established
+  why rather than just that.** The obvious candidate — preserve the bulk file's
+  row order, on the theory that the file is exported in internal-id order — was
+  measured against api.scryfall.com over 25 cards that have both several dates
+  and a date carrying four or more rulings. It matched on **0 of 25**, as did
+  the file's order reversed, whole-file order, date-ascending-then-file, and the
+  `comment` ordering this port ships. The reason is visible directly: the six
+  shared "kicker" rulings come back in a **different order on different cards** —
+  Strength of Night, Goblin Barrage and Spell Contortion each get their own
+  permutation of the same six comments — so Scryfall is ordering by a per-(card,
+  ruling) row id, not by a per-ruling one, and the bulk file (one line per pair,
+  grouped by card) does not reproduce it within a card. Nothing derivable from
+  the dump can, so `comment` ascending stays as the deterministic stand-in, and
+  determinism is load-bearing beyond tidiness: the bucket bytes are a pure
+  function of the ruling set, which is what lets the publisher skip rewriting
+  unchanged buckets against a 1,000-writes-per-day budget. This affects 13,847
+  of the 19,770 cards that have rulings; the other 5,923 (one ruling, or one per
+  date) match Scryfall exactly. End to end against api.scryfall.com over 19
+  cards with rulings: same set 19/19, same `published_at` sequence 19/19,
+  byte-identical order 8/19 — the remainder differ only within one date.
 - **`/sets`, `/catalog/*` and `/symbology` are mirrored into KV**, where
   upstream mirrors them into Postgres (#922). Same decision, different store:
   the corpus cannot answer them (a Set object carries eight fields no card
@@ -385,18 +399,24 @@ The complete list of intentional differences:
   archive; generation 19 folded it back to match upstream, which cost the
   in-Worker build most of its memory headroom — see Upstream tracking for the
   measured number and the gate tripwire that watches it.
-- **`/cards/:code/:number/:lang` checks the language after resolving**, where
-  upstream filters on it in SQL. `lang` is a residue field rather than a query
-  field, so the printing is resolved by set and collector number and its own
-  stored language compared — which uses the real value rather than assuming
-  one. A mismatch is a 404, as it is upstream.
 - **`/cards/named?exact=` prefers a whole-name match to a face match.** Upstream
   orders both by `prefer_score` alone, which on this corpus answers
   `exact=Lightning Bolt` with *Emeritus of Conflict // Lightning Bolt* — a
   two-faced card whose back face carries the name and whose score is higher.
   Matching a face is right and Scryfall does it (`exact=Delver of Secrets`
   resolves), but as a fallback rather than a peer. Reported upstream.
-- **`/cards/*` cache headers are Scryfall's own**, measured against
+- **`/cards/named?fuzzy=` matches well-formed foreign names, not Scryfall's
+  garbage-in slack.** The foreign-name lane holds to the same bar as the English
+  one: a correctly spelled — or lightly misspelled — printed name in any
+  language resolves to the printing Scryfall resolves (`fuzzy=ego à deriva`
+  answers the Portuguese Unmoored Ego). What is deliberately NOT reproduced is
+  Scryfall's slack on inputs that are not recognizably a name at all: its
+  matcher resolves `fuzzy=red goad` to *Ego à Deriva*, an artifact of trigram
+  scoring over a 247k-name space rather than behavior a client can rely on —
+  the same input against the English corpus answers Scryfall's own 404. Here
+  such inputs stay a 404 (or `ambiguous`), and the case is pinned as a
+  KNOWN_DEVIATION in the live-parity corpus, which asserts both sides' recorded
+  behavior separately.
   `api.scryfall.com` rather than inherited from `/search`: `public,
   max-age=57600` on the cacheable routes, `no-cache` on `/cards/random`, and
   `max-age=0, private, must-revalidate` on the collection POST. The tier rides
@@ -412,10 +432,92 @@ The complete list of intentional differences:
   that are deterministic in the URL would pin an outage into every edge.
   `Vary: Accept` is not sent — our responses select their format from the
   `format=` query parameter, which is already part of the cache key.
+  A third difference, measured 2026-08-16: `format=image` moves Scryfall's tier
+  to 48 hours on **every** route including `/cards/search`, where the parameter
+  is ignored and a List of card objects comes back. Here the image tier applies
+  where an image is actually served — a page of card objects with prices in it
+  does not become safe to hold for two days because the caller spelled a format
+  the route ignored. `ETag` and `Last-Modified` are not sent either: both would
+  have to be computed over a body the Durable Object streams out, and the tiers
+  above already bound staleness at one import cycle.
+- **Dispatch-level errors take their shape from the surface the path is on.** An
+  unknown path answers Scryfall's error object —
+  `{"object": "error", "code": "not_found", "status": 404, "details": "The
+  requested object or REST method was not found."}`, `no-cache` — and so do a
+  wrong method, a cold engine and an internal error on any `/cards/*`, `/sets`,
+  `/catalog/*` or `/symbology*` path. This deployment exists so a client can
+  change one base URL and stop talking to api.scryfall.com, and that has to hold
+  when the client asks for something that does not exist: it parses `code` and
+  `details`, and upstream's `{"title", "description": {"routes"}}` gives it
+  neither. The routes listing is still built and still pinned by
+  `tests/routes/dispatch.test.ts`; it is where it is *served* that changed.
+  Upstream's own surface — `/`, `/card`, `/search`, `/random_search`,
+  `/get_catalog`, `/get_pid`, the admin stubs — keeps falcon's
+  `{title, description}`, because those bodies are rendered by this project's own
+  web interface, which reads exactly those two keys
+  ([public/static/app.js](public/static/app.js)). The split is by ROUTE KEY
+  rather than by path prefix, because the two surfaces interleave under one
+  namespace: `catalog` is Scryfall's and `get_catalog` is upstream's own, and
+  only the route table can tell them apart (`SCRYFALL_SURFACE_ROUTES` in
+  [src/routes/index.ts](src/routes/index.ts)).
+  A wrong METHOD on that surface is Scryfall's **404 `not_found`** too, with no
+  `Allow` header, because that is what api.scryfall.com answers — measured across
+  eight requests (POST/PUT/DELETE/PATCH against `/cards/search`, `/cards/named`,
+  `/cards/collection`, `/cards/:id` and `/sets`), none of which carries `Allow`.
+  405 is the more correct HTTP answer in the abstract and is *not* used here: it
+  would have needed an error `code` no measurement backs, since Scryfall never
+  emits a 405, and a client that branches on 404-versus-405 has to see what
+  Scryfall shows it. Upstream's own routes keep falcon's 405 + `Allow`, where
+  nothing is mirroring Scryfall. One measured residue: `GET /cards/collection`
+  matches on status, body and the absent `Allow`, and differs on the tier alone
+  (`max-age=57600` there, `no-cache` here) — Scryfall has no GET route at that
+  path, so `collection` falls through its `/cards/:id` pattern and earns that
+  route's not-a-uuid tier, where here it is a method mismatch on a route of its
+  own.
+  Two exceptions remain, both about routes rather than errors: `GET /` is this
+  project's web interface where Scryfall's API root is a `400` saying no data
+  lives there, and `GET /cards` is the mirror image — an upstream route this port
+  serves (a paginated all-cards List) that api.scryfall.com 404s.
+- **Every `object: "error"` body is pretty-printed**, matching Scryfall, which
+  renders errors through a different serializer than answers: measured across the
+  whole surface, an error body is two-space-indented JSON and a data body is
+  compact, and it does not negotiate (`Accept: application/json`, `text/html`, a
+  bare wildcard and an explicit `?pretty=false` all give the same indented body).
+  Listed here because it is the one place `pretty` is ignored rather than obeyed.
+- **`/cards/search?format=csv` is served; every other `format` on every other
+  route is honoured exactly where Scryfall honours it.** The measured table
+  (2026-08-16, one request per cell): `csv` works on `/cards/search` **only**,
+  `text` and `image` work on the single-card routes **only**, and a `format` a
+  route does not implement is silently ignored rather than rejected — including
+  `format=CSV`, which is ignored because the match is case-sensitive. CSV pages
+  exactly like JSON (175 rows, header row repeated per page, `422` past the end,
+  `404` for an empty result) and carries `has_more` in the `x-scryfall-has-more`
+  response header, because it has no envelope to put it in. See
+  [src/routes/scryfall-compat/csv.ts](src/routes/scryfall-compat/csv.ts).
 - **`/cards/search?order=penny` falls back to name with a warning**, as an
   unrecognized order does. `penny_rank` is stored, but no sort permutation is
   built over it. `order=review` is Scryfall-internal and not reproducible at
   all.
+- **`/cards/search` ignores the terms Scryfall cannot honor, and only 400s when
+  none survive.** Scryfall drops an unusable term, warns about it by name and
+  answers with what is left; this port used to reject the whole query, 404 an
+  unknown format or language, and 503 a malformed regex. The mechanism is
+  [src/routes/scryfall-compat/query-terms.ts](src/routes/scryfall-compat/query-terms.ts)
+  and every table in it is a measurement against api.scryfall.com. Three
+  consequences are deviations in their own right, all on the COMPAT surface only
+  — `/search` keeps the whole vocabulary:
+  the spellings this port added and Scryfall never had (`subtype:`, `subtypes:`,
+  `types:`, `color_identity:`, `oracle_tags:`, `art_tags:`) are ignored-and-warned
+  here and honored there, with the Scryfall spelling of the same predicate
+  (`t:`, `otag:`, `atag:`) working on both; a negated numeric equality
+  (`-cmc:3`, `-tou:1`, `-usd:0`) is ignored, because Scryfall cannot express one;
+  and a keyword Scryfall knows and this port does not (`game:`, `in:`, `cube:`,
+  `stamp:`, `cheapest:`) is deliberately NOT ignored, since ignoring it would
+  answer a wider result than Scryfall silently.
+  One count is not reproduced and is recorded rather than pretended: Scryfall
+  reads a dangling operator (`q=t:`) as "this column is not null" — `t:` is
+  22,261 cards and `o:` is 22,111, so they are different filters — where this
+  port drops the term. The STATUS is Scryfall's 200; the total is not.
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
   That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
   Postgres and S3, neither of which this deployment has — so it was reading a
@@ -563,6 +665,22 @@ bun run clippy          # the RUST gate. Pinned to 1.97.1 — the toolchain
 bun run build:wasm          # rebuild query-engine wasm after touching Rust
 bun run build:wasm-import   # rebuild import wasm after touching Rust
 bun run cf-typegen      # regenerate types after wrangler.jsonc changes
+
+# The two differential harnesses, which compare this mirror against
+# api.scryfall.com rather than against its own fixtures:
+bun run live-parity     # ~70 KNOWN shapes, byte for byte. Defaults to the
+                        # DEPLOYMENT, which enforces the per-IP limiter, so a
+                        # remote run needs a bypass key:
+                        #   export TRUSTED_API_KEY=<one of the Worker's
+                        #                           TRUSTED_API_KEYS>
+                        # Without it the run REFUSES to start rather than
+                        # answering 429 to every case and reporting the
+                        # refusals as parity failures. `--origin
+                        # http://localhost:8787` needs no key — the limiter is
+                        # not enforced there.
+bun run parity-sweep    # the systematic matrix, hunting UNKNOWN divergences.
+                        # Defaults to localhost; --origin at the deployment
+                        # takes the same TRUSTED_API_KEY.
 ```
 
 Local dev is production-identical: the import that seeds local KV is the same

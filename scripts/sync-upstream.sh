@@ -57,6 +57,10 @@ api/tag_import.py	engine/builder/src/tags.rs (Rust port)
 api/scryfall_bulk_data_fetcher.py	engine/builder/src/bulk.rs (Rust port)
 api/api_resource.py	src/routes/ (TS port of user-facing routes)
 api/noscript_helpers.py	src/routes/root.ts (TS port)
+api/scryfall_compat/routes.py	src/routes/scryfall-compat/routes.ts (TS port; response envelope: respond.ts)
+api/scryfall_compat/objects.py	src/routes/scryfall-compat/objects.ts + vendor card_engine/src/card_object.rs (three-file lockstep, parity-gated: tests/routes/card-object-parity.test.ts)
+api/scryfall_compat/responder.py	src/routes/scryfall-compat/respond.ts (TS port; today the envelope lives in routes.py — this row fires if upstream splits it out)
+card_engine/src/card_object.rs	VENDORED AHEAD of upstream main (exists only on the #912 scryfall-cards-api branch); on change, re-review objects.ts and regenerate card-object parity fixtures
 PORTS_EOF
 )
 

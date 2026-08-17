@@ -1,0 +1,1002 @@
+/**
+ * Scryfall's "ignore what you cannot honor" query policy, for the compat surface only.
+ *
+ * ─── WHAT SCRYFALL DOES ──────────────────────────────────────────────────────
+ *
+ * Scryfall's search does not reject a query because one term in it is unusable. It DROPS that
+ * term, records a warning naming it, and answers with whatever survives — and it 400s only when
+ * NOTHING survives. Measured against api.scryfall.com on 2026-08-16, one request per row:
+ *
+ *   q=f:notaformat e:khm   200, 323 rows, warnings:["Invalid expression “f:notaformat” was
+ *                          ignored. Unknown game format “notaformat”"]
+ *   q=f:notaformat         400 bad_request, details "All of your terms were ignored.", the same
+ *                          warnings array
+ *   q=subtype:elf e:war    200, 266 rows (the whole set) + "Unknown keyword “subtype”."
+ *   q=(subtype:elf or subtype:goblin) e:war   200, 266 — a group whose every arm was dropped is
+ *                          itself dropped
+ *   q=()                   400 "All of your terms were ignored."
+ *
+ * That single mechanism is the root cause of eight separate divergences this port carried: it
+ * 400d on a dangling operator, 404d on an unknown format or language, 503d on a malformed regex,
+ * and answered a NARROWER result than Scryfall wherever this port's vocabulary is a superset of
+ * Scryfall's (`subtype:`, `types:`, `oracle_tags:`, `art_tags:`, negated numeric equality).
+ *
+ * ─── WHY IT LIVES ON THE COMPAT SURFACE AND NOT IN THE PARSER ────────────────
+ *
+ * Because the two surfaces are answering to different vocabularies, and only one of them is
+ * Scryfall's. `subtype:`, `types:`, `oracle_tags:` and `art_tags:` are spellings upstream added
+ * on purpose; `/search` and the web UI use them, and deleting them from the parser to match
+ * Scryfall would remove working features from the port's own API to make a mirror of an API that
+ * never had them. Scryfall does have the same predicates under different names (`otag:`,
+ * `atag:`), which this port also accepts — so on `/cards/search` the Scryfall spelling works and
+ * the upstream-only spelling is ignored-and-warned exactly as Scryfall does, while `/search`
+ * keeps the whole vocabulary. One parser, two policies, and the policy is a route-layer concept
+ * because "what Scryfall's API accepts" is a route-layer fact.
+ *
+ * ─── HOW ─────────────────────────────────────────────────────────────────────
+ *
+ * The policy runs on the RAW query text, before parsing, for the same reason Scryfall's must: a
+ * term this parser cannot lex at all (`t:` with no value, `cmc>=notanumber`, `o:/[unclosed/`)
+ * has to be removed before the parse, not after it. The scan is quote-, regex-, brace- and
+ * paren-aware, drops the terms the tables below name, and rebuilds the query from the spans it
+ * kept — so a query with nothing to ignore comes back BYTE-IDENTICAL to its input (modulo the
+ * typographic-quote fold), which is the property that keeps this off the hot path's conscience.
+ */
+
+import { foldTypographicQuotes } from "../../parser";
+import { ALIAS_TO_FIELD_INFOS } from "../../parser/db-info";
+import { DIRECTIVE_TABLES } from "../enums";
+
+/**
+ * The four characters Scryfall folds before lexing now live in the PARSER, next to the lexer they
+ * are folded for — `src/parser/tokenizer.ts`, which carries the measurement that established them.
+ *
+ * They were here first and ONLY here, which meant `/search` and the web UI rejected the very
+ * quotes their own search box produces while `/cards/search` accepted them. This scan still folds
+ * FIRST, before anything else it does, because the spans it keeps and the terms it echoes in
+ * warnings have to be the ones the parser will read — so the compat behaviour is byte-identical
+ * and the other surfaces gained it.
+ */
+export const foldSmartQuotes = foldTypographicQuotes;
+
+/**
+ * Keywords this port accepts that Scryfall's search does not know at all.
+ *
+ * Measured one request each (`<alias>:<plausible value> e:war`, 2026-08-16): every OTHER alias in
+ * `DB_COLUMNS` came back honored, and these came back with "Unknown keyword". They are exactly
+ * the upstream-only spellings — Scryfall reaches the same three columns as `t:`/`otag:`/`atag:`.
+ */
+const NOT_SCRYFALL_KEYWORDS: ReadonlySet<string> = new Set([
+	"subtype",
+	"subtypes",
+	"types",
+	"color_identity",
+	"coloridentity",
+	"oracle_tags",
+	"art_tags",
+]);
+
+/**
+ * Keywords SCRYFALL knows and this port does not — left to fail as they already do.
+ *
+ * The rule below ignores any keyword neither side knows (`nonsense:value`, which Scryfall answers
+ * with "Unknown keyword" and a 400 rather than a parse error). These are the exception: ignoring
+ * one would answer a WIDER result than Scryfall, silently, because Scryfall honors it. They are
+ * already ledgered as UNSUPPORTED operators in the sweep, and pretending to have dropped a term
+ * Scryfall applied is worse than saying the query could not be read.
+ */
+const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
+	"game",
+	"in",
+	"cube",
+	"new",
+	"not",
+	"stamp",
+	"cheapest",
+	"include",
+	"direct",
+]);
+
+/**
+ * Scryfall cannot express a NEGATED numeric EQUALITY, and says so in two different sentences.
+ *
+ * Measured (`-<kw>:<value>` alone, so the answer is the 400 that carries the whole warning):
+ * `-cmc:3`, `-mv:3`, `-manavalue:3` earn the value sentence; `-pow:1`, `-power:1`, `-tou:1`,
+ * `-toughness:1`, `-loy:3`, `-loyalty:3`, `-usd:0`, `-eur:0`, `-tix:0`, `-year:1993` earn
+ * "Unknown keyword" WITH THE MINUS INSIDE THE QUOTES. `-cn:1` and `-number:1` are honored — `cn:`
+ * is the STRING collector-number column, and only its integer twin `cn>=` is caught by the rule
+ * below — so this table is equality-and-these-columns rather than negation as such.
+ *
+ * THIS COMMENT USED TO CLAIM `-date:2021` AND `-cmc!=3` WERE HONORED TOO. Both claims were wrong,
+ * and re-measuring them is what produced `negatedComparisonVerdict` below: `-cmc!=3 e:khm
+ * t:creature` is 151, the unfiltered anchor, where `cmc!=3` is 106; and `-date:2021` is 141,
+ * exactly what the UNNEGATED `date:2021` answers. Neither is honored; they are simply quiet about
+ * it, which is why a comment could carry the error.
+ *
+ * Reproducing the split rather than picking one sentence: the strings are the contract, and a
+ * client that matches on them sees Scryfall's.
+ */
+const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
+	"pow",
+	"power",
+	"tou",
+	"toughness",
+	"loy",
+	"loyalty",
+	"usd",
+	"eur",
+	"tix",
+	"year",
+]);
+
+/** The mana-value spellings, whose negated equality earns the value sentence instead. */
+const MANA_VALUE_KEYWORDS: ReadonlySet<string> = new Set(["cmc", "mv", "manavalue"]);
+
+const MANA_VALUE_REASON = "The value must be a number, or \u201ceven\u201d/\u201codd\u201d";
+
+/**
+ * A LEADING `-` ON A COMPARISON LEAF IS NOT APPLIED BY SCRYFALL. The term becomes always-true.
+ *
+ * This is the general case of the table above, and it is SILENT \u2014 no warning, no 400, nothing in
+ * the response that says a term was not applied. That silence is why it went unnoticed while the
+ * equality half, which announces itself, has been implemented here since the policy was written.
+ *
+ * \u2500\u2500\u2500 THE MEASUREMENT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ *
+ * Anchor `e:khm t:creature` = 151, one request per row, api.scryfall.com 2026-08-16. A row that
+ * answers 151 is a term that did nothing:
+ *
+ *              positive   negated                  positive   negated
+ *   pow>=1        146       151        year>=2022      11        151
+ *   pow>1         125       151        year!=2021      11        151
+ *   tou>=1        150       151        cn>=100        112        151
+ *   tou!=1        133       151        edhrec>=5000   112        151
+ *   pt>=3         141       151        artists>=2       0        151
+ *   cmc>=3        112       151        paperprints>=2  87        151
+ *   cmc!=3        106       151        papersets>=2    86        151
+ *   loy>=3          1       151        pow>=tou       106        151
+ *   usd>=1         28       151        cmc>=notanumber  0        151
+ *   eur>=1         27       151
+ *
+ * All five of `>` `>=` `<` `<=` `!=` were probed on each of pow, tou, cmc, loy, usd, eur, tix,
+ * year, cn, edhrec, artists, paperprints, papersets \u2014 65 rows, every one of them 151.
+ *
+ * \u2500\u2500\u2500 IT IS A TAUTOLOGY, NOT A DROPPED TERM \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ *
+ * The distinction decides the implementation, because the two differ under `or`:
+ *
+ *   -pow>=1                       200, 33,599 \u2014 the WHOLE corpus, no warnings
+ *   -pow:1                        400 "All of your terms were ignored." + its warning
+ *   (-pow>=1 or t:god) e:khm      323 \u2014 all of Kaldheim
+ *   (t:god) e:khm                  13 \u2014 what a REMOVED arm would have answered
+ *   (-pow:1 or t:god) e:khm        13 + its warning \u2014 the ignore machinery really does remove
+ *
+ * So this cannot be routed through `ignoredWarning`: the term survives as a leaf that matches
+ * everything. `-pow>=1 f:notaformat e:khm t:creature` is 151 warning ONLY about `f:notaformat`,
+ * which pins that the two mechanisms coexist without borrowing each other's sentence.
+ *
+ * \u2500\u2500\u2500 WHERE THE RULE STOPS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ *
+ * `-( \u2026 )` is honored throughout \u2014 `-(cmc>=3) e:khm t:creature` is 39, the complement of
+ * `cmc>=3`'s 112, where the bare `-cmc>=3` is 151. The fault is in how `-` binds to a comparison
+ * LEAF, not in negation.
+ *
+ * And the set-comparison columns negate correctly, which is what makes this a table of keywords
+ * rather than a rule about the operator (positive, negated, and 151 minus the positive):
+ *
+ *   r>=rare       52   99 \u2713      c>=2        19  132 \u2713      m>=2      102   49 \u2713
+ *   r!=rare      114   37 \u2713      c!=2       135   16 \u2713      m!=2      151    0 \u2713
+ *   rarity>=rare  52   99 \u2713      colour>=2   19  132 \u2713      produces>=2 5  146 \u2713
+ *                                id>=2       19  132 \u2713      devotion>={r}{r} 7 144 \u2713
+ *
+ * Every alias of those columns was probed and agrees (`color colors colour colours`,
+ * `id identity ci commander`, `r rarity`, `m mana`). The upstream-only spellings
+ * `color_identity`/`coloridentity` are deliberately NOT here: Scryfall does not know them, so on
+ * Scryfall they take the tautology like any other unknown keyword \u2014 and NOT_SCRYFALL_KEYWORDS
+ * drops them before this rule is reached anyway.
+ *
+ * On a TEXT column or an unknown keyword the positive comparison already matches nothing
+ * (`name>zzz`, `t>creature`, `nonsense>=1` are all 404 with no warning), so the negated form
+ * matching everything is ordinary boolean negation rather than a fault \u2014 but the answer to
+ * reproduce is the same tautology, and routing those through here is what stops
+ * `-nonsense>=1 e:khm t:creature` emitting an unknown-keyword warning Scryfall does not
+ * (measured: 151, `warnings` absent). It is also why this runs BEFORE the value validators:
+ * `-lang>zz`, `-f>notaformat` and `-oracleid>abc` are 151 with no warning where their unnegated
+ * twins are ignored-and-warned.
+ */
+const NEGATION_HONORING_COMPARISONS: ReadonlySet<string> = new Set([
+	"c",
+	"color",
+	"colors",
+	"colour",
+	"colours",
+	"id",
+	"identity",
+	"ci",
+	"commander",
+	"r",
+	"rarity",
+	"m",
+	"mana",
+	"produces",
+	"devotion",
+]);
+
+/**
+ * `date` is the third behaviour: the `-` is DISCARDED and the term applied POSITIVELY.
+ *
+ * Not dropped (that would answer the anchor's 151) and not honored (that would answer the
+ * complement) \u2014 measured on every operator, with values chosen so the three readings differ:
+ *
+ *                     positive   negated   honored would be
+ *   date>=2022           11        11            140
+ *   date<2022           141       141             11
+ *   date>2021            11        11            141
+ *   date<=2021          141       141             11
+ *   date!=2021           11        11            141
+ *   date:2021           141       141             11
+ *   date=2021           141       141             11
+ *
+ * `year`, the other spelling of the same underlying column, does NOT do this: `year>=2022` is 11
+ * and `-year>=2022` is 151, the ordinary tautology above. Two keywords onto one column, two
+ * different faults \u2014 which is why this is a keyword table and not a column one.
+ *
+ * `-(date>2021) e:khm t:creature` is 141, the honest complement of 11, so this too is the leaf
+ * binding rather than negation.
+ */
+const DATE_KEYWORDS: ReadonlySet<string> = new Set(["date"]);
+
+/** `f:`/`format:`/`legal:`/`banned:`/`restricted:` — Scryfall's game formats. */
+const SCRYFALL_FORMATS: ReadonlySet<string> = new Set([
+	// The `legalities` key set of a live card object (api.scryfall.com/cards/named, 2026-08-16) …
+	"standard",
+	"future",
+	"historic",
+	"timeless",
+	"gladiator",
+	"pioneer",
+	"modern",
+	"legacy",
+	"pauper",
+	"vintage",
+	"penny",
+	"commander",
+	"oathbreaker",
+	"standardbrawl",
+	"brawl",
+	"competitivebrawl",
+	"alchemy",
+	"paupercommander",
+	"duel",
+	"oldschool",
+	"premodern",
+	"predh",
+	"tlr",
+	// … plus the search-only spellings measured as honored. `pauperedh` and `frontier` are NOT
+	// among them — both come back ignored-and-warned, which is what makes this a measured list
+	// rather than a guess at a superset.
+	"explorer",
+	"historicbrawl",
+	"duelcommander",
+	"edh",
+]);
+
+/**
+ * `lang:`/`language:` — every spelling measured as honored, plus `any`.
+ *
+ * Scryfall is generous here (`zh`, `jp`, `sp`, `kr`, `cn`, `tw`, `cs`, `ru-ru`, `pt-br` and the
+ * full English names all resolve) and still rejects `zz`, `po` and the ambiguous `chinese`. The
+ * set is the measured boundary; a spelling missing from it is ignored-and-warned, which is what
+ * this port did to `lang:zz` and is no worse than the empty 404 it used to answer for all of them.
+ */
+const SCRYFALL_LANGUAGES: ReadonlySet<string> = new Set([
+	"any",
+	"en",
+	"es",
+	"fr",
+	"de",
+	"it",
+	"pt",
+	"ja",
+	"ko",
+	"ru",
+	"zhs",
+	"zht",
+	"he",
+	"la",
+	"grc",
+	"ar",
+	"sa",
+	"ph",
+	"qya",
+	"cs",
+	"zh",
+	"jp",
+	"sp",
+	"kr",
+	"cn",
+	"tw",
+	"ru-ru",
+	"pt-br",
+	"english",
+	"spanish",
+	"french",
+	"german",
+	"italian",
+	"portuguese",
+	"japanese",
+	"korean",
+	"russian",
+	"phyrexian",
+	"chinesesimplified",
+	"chinesetraditional",
+]);
+
+/** `r:`/`rarity:` — Scryfall's rarity words and their single-letter forms. */
+const SCRYFALL_RARITIES: ReadonlySet<string> = new Set([
+	"common",
+	"uncommon",
+	"rare",
+	"special",
+	"mythic",
+	"bonus",
+	"c",
+	"u",
+	"r",
+	"s",
+	"m",
+	"b",
+]);
+
+const UUID_V4_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+
+/**
+ * The colour VALUES Scryfall reads as a name rather than as a set of letters.
+ *
+ * Measured one request each (`c:<value> e:khm`, 2026-08-16). The accepted names are exactly the ten
+ * guilds, the ten shards and wedges, the five HYPHENATED four-colour names plus their five
+ * one-word synonyms, `rainbow`, `all`, `gold`, `brown`, and the British spellings — while `yore`,
+ * `glint`, `dune`, `ink`, `witch`, `five` and `mono` are all REJECTED, so the un-hyphenated
+ * four-colour nicknames are not in Scryfall's table and this list is a boundary rather than a
+ * superset. An all-digit value (`c:0`, `c:2`) is a count and always fine.
+ *
+ * The parser now knows every one of them itself — the set-valued names through
+ * `COLOR_ALIAS_TO_CODES`, and the `m` family (`m`, `gold`, `multicolor(ed)`, `multicolour(ed)`)
+ * through `COLOR_COUNT_NAMES`, which is a colour COUNT rather than a set and lowers to the numeric
+ * comparison (`c:m` = `c>=2` = 44 in Kaldheim, where `c:2` = 43). So what this table still decides
+ * is only which values Scryfall REFUSES: it has to stay a superset of the parser's vocabulary,
+ * because a name listed here that the parser cannot spell is a 400 where Scryfall answers, and a
+ * name missing here that the parser CAN spell is a warning where Scryfall is silent.
+ */
+const COLOR_NAMES: ReadonlySet<string> = new Set([
+	"white",
+	"blue",
+	"black",
+	"red",
+	"green",
+	"colorless",
+	"colourless",
+	"multicolor",
+	"multicolour",
+	"multicolored",
+	"multicoloured",
+	"gold",
+	"m",
+	"brown",
+	"rainbow",
+	"all",
+	"azorius",
+	"dimir",
+	"rakdos",
+	"gruul",
+	"selesnya",
+	"orzhov",
+	"izzet",
+	"golgari",
+	"boros",
+	"simic",
+	"bant",
+	"esper",
+	"grixis",
+	"jund",
+	"naya",
+	"abzan",
+	"jeskai",
+	"sultai",
+	"mardu",
+	"temur",
+	"yore-tiller",
+	"glint-eye",
+	"dune-brood",
+	"ink-treader",
+	"witch-maw",
+	"artifice",
+	"chaos",
+	"aggression",
+	"altruism",
+	"growth",
+]);
+
+/** `produces:` accepts the same names minus the three words for colorless. Measured, see below. */
+const PRODUCES_NAMES: ReadonlySet<string> = new Set(
+	[...COLOR_NAMES].filter((n) => n !== "colorless" && n !== "colourless" && n !== "brown"),
+);
+
+/** The letters a colour set is spelled with: the five colours, colourless, and multicolour. */
+const COLOR_LETTERS = "wubrgcm";
+const COLORED_LETTERS = "wubrg";
+
+/**
+ * Why Scryfall refuses a colour value, or null when it does not.
+ *
+ * THE ORDER OF THE THREE CHECKS IS MEASURED, not chosen: `c:witch` spells `w i t c h`, whose `i`,
+ * `t` and `h` are not colours, and Scryfall still answers "A card cannot be both colored and
+ * colorless" — so the contradiction is decided on the letters it DID recognize, before it complains
+ * about the ones it did not.
+ *
+ * But the `m` rule is decided FIRST, ahead of the contradiction: `c:monocolor`, `c:chromatic` and
+ * `c:spectrum` all spell a `c` alongside coloured letters AND contain an `m`, and Scryfall answers
+ * the `m` sentence for every one of them. Reading the contradiction first got all three wrong
+ * while still fitting `c:witch` — the order is pinned by values that SEPARATE the two rules.
+ *
+ * And the contradiction does not exist for `produces:` at all, because colorless is a genuine
+ * producible value there: `produces:wubrgc` is honoured (it matches nothing) and
+ * `produces:colorless` answers "Unknown color “e”" — the unknown-letter sentence — where
+ * `c:colorless` is simply a name.
+ *
+ * The `m` rule reads the WHOLE value, not the letters it recognized, and stops at five characters.
+ * Both halves were needed to fit the measurements, and the port's first reading of this rule
+ * (recognized letters only, untruncated) got `c:mono` wrong in the loudest way available — it
+ * answered "Unknown color “n”" where Scryfall answers the `m` sentence. Seven values pin it, each
+ * one `sorted(set(value) - {m, -})` cut to five: `mono`→no, `mm`→(empty), `mwu`→uw, `mzy`→yz,
+ * `m1`→1, `mono-red`→denor, `monocolor`→clnor, `monocolored`→cdeln, `nephilim`→ehiln (not
+ * "ehilnp"), `chromatic`→achio (not "achiort"), `spectrum`→ceprs (not "ceprstu"), `prismatic`→acipr.
+ *
+ * And the letter it names is the ALPHABETICALLY FIRST unrecognized one, which took nine values to
+ * establish and no two of which agree on any simpler rule: `glint`→i, `yore`→e, `dune`→d,
+ * `null`→l, `void`→d, `spirit`→i, `land`→a, `five`→e, `qq`→q. Not the first in the string, not the
+ * last — the first in sorted order.
+ */
+function colorReason(value: string, keyword: string): string | null {
+	const lower = value.toLowerCase();
+	// `produces:` reads a NARROWER name table than the colour columns do: `produces:brown` comes
+	// back "Unknown color “n”" and `produces:colorless` "Unknown color “e”", where `c:brown` and
+	// `c:colorless` are both fine — colorless is a producible VALUE there, spelled `c`, and the
+	// words for it are simply not in that table. `produces:all` is honoured and means all six
+	// (it matches nothing: no card produces every colour and colorless).
+	const names = keyword === "produces" ? PRODUCES_NAMES : COLOR_NAMES;
+	if (lower === "" || names.has(lower) || /^\d+$/.test(lower)) return null;
+	const known = new Set<string>();
+	const unknown = new Set<string>();
+	for (const ch of lower) (COLOR_LETTERS.includes(ch) ? known : unknown).add(ch);
+	if (lower.includes("m") && lower.length > 1) {
+		const rest = [...new Set([...lower])]
+			.filter((ch) => ch !== "m" && ch !== "-")
+			.sort()
+			.join("")
+			.slice(0, COLORED_LETTERS.length);
+		return `Using \u201cm\u201d with other colors is no longer supported. Use c>${rest} instead.`;
+	}
+	if (keyword !== "produces" && known.has("c") && [...known].some((ch) => COLORED_LETTERS.includes(ch))) {
+		return "A card cannot be both colored and colorless.";
+	}
+	if (unknown.size > 0) return `Unknown color \u201c${[...unknown].sort()[0]}\u201d`;
+	return null;
+}
+
+/** The keywords whose value is a colour set. */
+const COLOR_KEYWORDS: ReadonlySet<string> = new Set([
+	"c",
+	"color",
+	"colors",
+	"colour",
+	"colours",
+	"ci",
+	"id",
+	"identity",
+	"commander",
+	"produces",
+]);
+
+/** Keyword groups, by the alias spellings this parser and Scryfall share. */
+const FORMAT_KEYWORDS: ReadonlySet<string> = new Set(["f", "format", "legal", "banned", "restricted"]);
+const LANGUAGE_KEYWORDS: ReadonlySet<string> = new Set(["lang", "language"]);
+const RARITY_KEYWORDS: ReadonlySet<string> = new Set(["r", "rarity"]);
+const ORACLE_ID_KEYWORDS: ReadonlySet<string> = new Set(["oracleid", "oracle_id"]);
+
+/**
+ * Every keyword this file may NOT call unknown: the parser's own aliases, the in-query directives,
+ * and the ones the validators below have rules for.
+ *
+ * The last group is load-bearing rather than belt-and-braces. It keeps this table honest against a
+ * parser whose vocabulary is narrower than the validators' — the twin of this file upstream sits on
+ * a branch without `lang:` or `oracleid:`, and without this a `lang:zz` there would be reported as
+ * an unknown KEYWORD rather than an unknown LANGUAGE, changing sentence when an unrelated PR merged.
+ */
+const KNOWN_KEYWORDS: ReadonlySet<string> = new Set([
+	...ALIAS_TO_FIELD_INFOS.keys(),
+	...DIRECTIVE_TABLES.keys(),
+	...MANA_VALUE_KEYWORDS,
+	...NEGATED_EQUALITY_UNKNOWN_KEYWORD,
+	...NEGATION_HONORING_COMPARISONS,
+	...DATE_KEYWORDS,
+	...FORMAT_KEYWORDS,
+	...LANGUAGE_KEYWORDS,
+	...RARITY_KEYWORDS,
+	...ORACLE_ID_KEYWORDS,
+	...COLOR_KEYWORDS,
+]);
+
+/**
+ * How much of a rejected expression Scryfall echoes: 20 characters INCLUDING the ellipsis.
+ *
+ * Measured by lengthening one term a character at a time — `f:abcdefghijklmnopqr` (20 characters)
+ * comes back whole and `f:abcdefghijklmnopqrs` (21) comes back as `f:abcdefghijklmnopq…`, which is
+ * 19 characters and a U+2026. That is Rails' `String#truncate(20)`, whose omission counts against
+ * the budget rather than being added to it, and it also fits the other truncation seen live
+ * (`id:00000000-0000-00…` for a nil UUID). Only the EXPRESSION is cut; the reason sentence still
+ * names the full value.
+ */
+const EXPRESSION_ECHO_LIMIT = 20;
+
+/**
+ * A term that can never match, substituted for a numeric comparison whose value is not a number.
+ *
+ * Scryfall answers `q=cmc>=notanumber` with its ordinary 404 — the term is HONORED and matches
+ * nothing, unlike the ignored terms above, which is why it cannot be dropped: dropping it would
+ * turn `cmc>=notanumber e:khm` into all of Kaldheim where Scryfall answers "no cards". Mana value
+ * is never negative, so this leaf is empty by arithmetic rather than by a special node type, and
+ * it composes correctly under `-` and `or` the way a dropped term would not.
+ */
+const NEVER_MATCHES = "cmc<0";
+
+/**
+ * A term that always matches, substituted for a negated comparison Scryfall does not apply.
+ *
+ * The negation of `NEVER_MATCHES` rather than a positive tautology such as `cmc>=0`, because the
+ * two are not the same term over a column that can be absent: `cmc>=0` asks the index for rows
+ * whose mana value compares, and the complement of the empty set is every row including those. It
+ * is also the cheaper of the two — the engine builds the empty leaf and complements it, where
+ * `cmc>=0` is a full range scan.
+ *
+ * `classifyLeaf`'s output is spliced into the rebuilt query and never re-classified, so this
+ * spelling being itself a negated comparison costs nothing; it is idempotent regardless.
+ */
+const ALWAYS_MATCHES = `-${NEVER_MATCHES}`;
+
+/**
+ * A DANGLING OPERATOR IS NOT A TERM AT ALL: `t:` is the bare word `t`, and a bare word is a NAME
+ * search.
+ *
+ * This port used to answer `q=t:` with every card, on the theory that an operator with no value
+ * constrains nothing. Measured (api.scryfall.com, 2026-08-16), the theory is wrong twice over —
+ * and so is the "this column is not null" reading it was replaced by, which fits `t:` = 22,261 and
+ * `o:` = 22,111 and then dies on `ft:` = 1,628 where "has flavor text" is 20,877. What Scryfall
+ * does is simpler: the term fails to lex as a keyword expression, so the token falls through to
+ * an ordinary bare word — and `t` names cards whose NAME contains "t".
+ *
+ * Sixteen pairs, one request each, and every one of them equal:
+ *
+ *   t:      = t      = name:t   22,261      cmc:  = cmc         404 (no card is named "cmc")
+ *   o:      = o                 22,111      layout: = layout    404
+ *   name:   = name                  33      nonsense: = nonsense 404
+ *   ft:     = ft     = name:ft   1,628      wm:   = wm           33
+ *   in:     = in                 7,878      st:   = st        5,556
+ *   t: e:khm  = t e:khm            215      -t: e:khm = -t e:khm  108
+ *   t: or e:khm                 22,369      t: o: = t o      15,057
+ *
+ * `t: or e:khm` is the row that proves it composes as an ordinary leaf rather than as a
+ * special-cased whole-query fallback: 22,261 + (323 - 215) = 22,369 exactly.
+ *
+ * The OPERATOR decides how much of the token becomes the word. With `:`, `>` or `<` the bare word
+ * is the keyword alone (`t>` = `t<` = `t:` = 215 in Kaldheim); with `=`, `>=`, `<=` or `!=` the
+ * operator characters stay ON the word, which is why `t=` and `t>=` are 404 where `t:` is 22,261,
+ * and `name:"t="` is 404 to match. Both branches were checked against their `name:` twin.
+ *
+ * Rewriting to `name:…` rather than to a bare word keeps the substitution safe in every position:
+ * a keyword is `[A-Za-z_][A-Za-z0-9_]*`, so `or:` would otherwise become the connector `or`.
+ * Negation, grouping and `or` then compose for free, because the result is just a term.
+ *
+ * UNQUOTED for the bare-word branch, and quoted only for the `=`-family, because Scryfall does not
+ * read the two spellings alike: `name:ft` is 1,628 and `name:"ft"` is 362, and the measured
+ * equality is with the UNQUOTED form (`ft:` = `ft` = `name:ft` = 1,628). The `=`-family has to be
+ * quoted regardless — its word carries the operator characters, and `name:"t="` is the 404 that
+ * matched `t=`.
+ */
+function danglingOperatorTerm(negated: boolean, keyword: string, op: string): string {
+	const bareWord = op === ":" || op === ">" || op === "<";
+	const value = bareWord ? keyword : `"${keyword}${op}"`;
+	return `${negated ? "-" : ""}name:${value}`;
+}
+
+export interface TermPolicyResult {
+	/** The query to hand the parser: the input, minus the terms Scryfall would ignore. */
+	query: string;
+	/**
+	 * The query's parentheses do not balance — Scryfall's own 400, with its own sentence.
+	 *
+	 * Measured 2026-08-16: `e:khm (t:god`, `e:khm t:god)` and a lone `(` all answer
+	 * `400 bad_request` / `"Your search contains unclosed parentheses."`, in both directions and
+	 * for a stray closer as well as a stray opener. This port answered its own
+	 * `Failed to parse query: "…"` — the right status with the wrong sentence, on the single most
+	 * common typo a search box produces.
+	 */
+	unclosedParens: boolean;
+	/** Scryfall's warnings, in source order, already worded as Scryfall words them. */
+	warnings: string[];
+	/** Every term was ignored — the caller answers 400 "All of your terms were ignored." */
+	allIgnored: boolean;
+}
+
+/** `Invalid expression “<term>” was ignored. <reason>`, with Scryfall's truncation. */
+function ignoredWarning(term: string, reason: string): string {
+	const chars = [...term];
+	const echoed =
+		chars.length > EXPRESSION_ECHO_LIMIT ? `${chars.slice(0, EXPRESSION_ECHO_LIMIT - 1).join("")}\u2026` : term;
+	return `Invalid expression \u201c${echoed}\u201d was ignored. ${reason}`;
+}
+
+/**
+ * Onigmo's wording for the malformations a pasted regex actually has.
+ *
+ * Scryfall compiles the pattern in Ruby and reports its engine's message, so the four classes
+ * below were read off api.scryfall.com rather than translated from V8's:
+ * `/[unclosed/` and `/[a-/` → brackets, `/(unclosed/` and `/a)/` → parentheses, `/a{2,1}/` →
+ * repetition, a bare leading `*` → quantifier. Anything else gets the generic sentence; the
+ * alternative is
+ * inventing a message per malformation, which would be a guess wearing a measurement's clothes.
+ */
+function regexReason(pattern: string): string {
+	const unescaped = pattern.replace(/\\[\s\S]/g, "");
+	let depth = 0;
+	let inClass = false;
+	let bracketsBalanced = true;
+	let parensBalanced = true;
+	for (const ch of unescaped) {
+		if (inClass) {
+			if (ch === "]") inClass = false;
+			continue;
+		}
+		if (ch === "[") inClass = true;
+		else if (ch === "(") depth++;
+		else if (ch === ")") {
+			depth--;
+			if (depth < 0) parensBalanced = false;
+		}
+	}
+	if (inClass) bracketsBalanced = false;
+	if (depth !== 0) parensBalanced = false;
+	if (!bracketsBalanced) return "Invalid regular expression: brackets [] not balanced.";
+	if (!parensBalanced) return "Invalid regular expression: parentheses () not balanced.";
+	const repetition = /\{(\d+),(\d+)\}/.exec(unescaped);
+	if (repetition && Number(repetition[1]) > Number(repetition[2])) {
+		return "Invalid regular expression: invalid repetition count(s).";
+	}
+	if (/(^|[(|])[*+?]/.test(unescaped)) return "Invalid regular expression: quantifier operand invalid.";
+	return "Invalid regular expression: invalid pattern.";
+}
+
+/**
+ * Whether the query's parentheses balance, ignoring the ones inside strings, patterns and mana
+ * symbols — the same regions `scanPieces` steps over, for the same reason.
+ */
+function unbalancedParens(source: string): boolean {
+	const src = [...source];
+	const n = src.length;
+	let depth = 0;
+	for (let pos = 0; pos < n; pos++) {
+		const c = src[pos] as string;
+		if (c === '"' || c === "'" || c === "/") {
+			pos++;
+			while (pos < n) {
+				const d = src[pos] as string;
+				if (d === "\\" && pos + 1 < n) pos += 2;
+				else if (d === c) break;
+				else pos++;
+			}
+			continue;
+		}
+		if (c === "{") {
+			const close = src.indexOf("}", pos + 1);
+			if (close === -1) return false;
+			pos = close;
+			continue;
+		}
+		if (c === "(") depth++;
+		else if (c === ")" && --depth < 0) return true;
+	}
+	return depth !== 0;
+}
+
+// ─── scanning ────────────────────────────────────────────────────────────────
+
+/**
+ * One top-level piece of a query: a group, a boolean connector, or a leaf term.
+ *
+ * The scan respects everything the lexer respects — `"…"`, `'…'`, `/…/` and `{…}` all carry
+ * spaces without ending a term, and a backslash escapes the next character inside a string or a
+ * pattern — because a term boundary this scan gets wrong is a query this policy would corrupt.
+ */
+interface Piece {
+	readonly text: string;
+	readonly kind: "group" | "connector" | "leaf";
+	/** For a group: the text inside the parentheses, and the `-`/`!` prefix outside them. */
+	readonly inner?: string;
+	readonly prefix?: string;
+}
+
+const CONNECTORS: ReadonlySet<string> = new Set(["and", "or"]);
+
+function scanPieces(source: string): Piece[] {
+	const src = [...source];
+	const n = src.length;
+	const pieces: Piece[] = [];
+	let pos = 0;
+	while (pos < n) {
+		const ch = src[pos] as string;
+		if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+			pos++;
+			continue;
+		}
+		const start = pos;
+		let depth = 0;
+		let groupStart = -1;
+		let groupEnd = -1;
+		while (pos < n) {
+			const c = src[pos] as string;
+			if (c === '"' || c === "'" || c === "/") {
+				// A quoted string or a regex literal: run to its closing delimiter, honoring `\`.
+				pos++;
+				while (pos < n) {
+					const d = src[pos] as string;
+					if (d === "\\" && pos + 1 < n) pos += 2;
+					else if (d === c) {
+						pos++;
+						break;
+					} else pos++;
+				}
+				continue;
+			}
+			if (c === "{") {
+				const close = src.indexOf("}", pos + 1);
+				pos = close === -1 ? n : close + 1;
+				continue;
+			}
+			if (c === "(") {
+				if (depth === 0) groupStart = pos;
+				depth++;
+				pos++;
+				continue;
+			}
+			if (c === ")") {
+				depth--;
+				pos++;
+				if (depth === 0) groupEnd = pos;
+				continue;
+			}
+			if (depth === 0 && (c === " " || c === "\t" || c === "\r" || c === "\n")) break;
+			pos++;
+		}
+		const text = src.slice(start, pos).join("");
+		if (groupStart >= 0 && groupEnd === pos) {
+			pieces.push({
+				text,
+				kind: "group",
+				prefix: src.slice(start, groupStart).join(""),
+				inner: src.slice(groupStart + 1, groupEnd - 1).join(""),
+			});
+		} else if (CONNECTORS.has(text.toLowerCase())) {
+			pieces.push({ text, kind: "connector" });
+		} else {
+			pieces.push({ text, kind: "leaf" });
+		}
+	}
+	return pieces;
+}
+
+/** `keyword`, comparison operator and raw value of a leaf, or null when it is not one. */
+const LEAF_RE = /^(-?)([A-Za-z_][A-Za-z0-9_]*)(!=|>=|<=|:|=|>|<)([\s\S]*)$/;
+
+/** Strip one layer of matching quotes, so a validator reads the value the lexer would. */
+function unquote(value: string): string {
+	if (value.length >= 2) {
+		const first = value[0];
+		if ((first === '"' || first === "'") && value.endsWith(first)) return value.slice(1, -1);
+	}
+	return value;
+}
+
+/** Whether a value reads as a number to the numeric columns (Scryfall also takes even/odd). */
+function isNumericValue(value: string): boolean {
+	const v = unquote(value).trim().toLowerCase();
+	if (v === "even" || v === "odd") return true;
+	if (/^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(v)) return true;
+	// `pow>=tou` and friends: a column name on the right is Scryfall's cross-column comparison.
+	return /^[a-z]+$/.test(v) && CROSS_COLUMN_VALUES.has(v);
+}
+
+/** The column names Scryfall accepts on the RIGHT of a numeric comparison. */
+const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
+	"pow",
+	"power",
+	"tou",
+	"toughness",
+	"cmc",
+	"mv",
+	"manavalue",
+	"loy",
+	"loyalty",
+	"x",
+]);
+
+/** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
+type LeafVerdict = { keep: true; text: string } | { keep: false; reason: string };
+
+function classifyLeaf(term: string): LeafVerdict {
+	const match = LEAF_RE.exec(term);
+	if (match === null) return { keep: true, text: term };
+	const negated = match[1] === "-";
+	const keyword = (match[2] as string).toLowerCase();
+	const op = match[3] as string;
+	const rawValue = match[4] as string;
+
+	// BEFORE the unknown-keyword rule, because a dangling operator never reaches Scryfall's keyword
+	// table at all: `nonsense:x` is "Unknown keyword" and `nonsense:` is a 404 for a card named
+	// "nonsense" \u2014 the same 404 `q=nonsense` gives. See danglingOperatorTerm.
+	if (rawValue === "") return { keep: true, text: danglingOperatorTerm(negated, match[2] as string, op) };
+
+	const equality = op === ":" || op === "=";
+
+	// BEFORE the unknown-keyword rule and before every value validator, because Scryfall applies it
+	// there: `-nonsense>=1`, `-subtype>=1`, `-lang>zz`, `-f>notaformat` and `-oracleid>abc` are all
+	// the anchor's 151 with an ABSENT `warnings` key, where each unnegated twin is ignored-and-warned.
+	// See NEGATION_HONORING_COMPARISONS and DATE_KEYWORDS for the measurements.
+	if (negated) {
+		if (DATE_KEYWORDS.has(keyword)) return { keep: true, text: term.slice(1) };
+		if (!equality && !NEGATION_HONORING_COMPARISONS.has(keyword)) {
+			return { keep: true, text: ALWAYS_MATCHES };
+		}
+	}
+
+	if (NOT_SCRYFALL_KEYWORDS.has(keyword) || (!KNOWN_KEYWORDS.has(keyword) && !SCRYFALL_ONLY_KEYWORDS.has(keyword))) {
+		return { keep: false, reason: `Unknown keyword “${negated ? "-" : ""}${keyword}”.` };
+	}
+
+	if (negated && equality) {
+		if (MANA_VALUE_KEYWORDS.has(keyword)) return { keep: false, reason: MANA_VALUE_REASON };
+		if (NEGATED_EQUALITY_UNKNOWN_KEYWORD.has(keyword)) {
+			return { keep: false, reason: `Unknown keyword \u201c-${keyword}\u201d.` };
+		}
+	}
+
+	const value = unquote(rawValue);
+
+	// A numeric column asked for something that is not a number. With `:`/`=` Scryfall ignores the
+	// term; with a comparison it keeps it and matches nothing (`q=cmc>=notanumber` is a 404, not a
+	// 400), so those two answers are different terms rather than one rule.
+	if (MANA_VALUE_KEYWORDS.has(keyword) || NEGATED_EQUALITY_UNKNOWN_KEYWORD.has(keyword)) {
+		if (!isNumericValue(rawValue)) {
+			if (equality) {
+				return MANA_VALUE_KEYWORDS.has(keyword)
+					? { keep: false, reason: MANA_VALUE_REASON }
+					: { keep: false, reason: `Unknown keyword \u201c${keyword}\u201d.` };
+			}
+			return { keep: true, text: NEVER_MATCHES };
+		}
+	}
+
+	if (FORMAT_KEYWORDS.has(keyword) && !SCRYFALL_FORMATS.has(value.toLowerCase())) {
+		return { keep: false, reason: `Unknown game format \u201c${value}\u201d` };
+	}
+	if (LANGUAGE_KEYWORDS.has(keyword) && !SCRYFALL_LANGUAGES.has(value.toLowerCase())) {
+		return { keep: false, reason: `Unknown language \`${value}\`` };
+	}
+	if (RARITY_KEYWORDS.has(keyword) && equality && !SCRYFALL_RARITIES.has(value.toLowerCase())) {
+		// The period INSIDE the quotes is Scryfall's, not a typo here: the live body reads
+		// `Unknown rarity “notarare.”`.
+		return { keep: false, reason: `Unknown rarity \u201c${value}.\u201d` };
+	}
+	if (ORACLE_ID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
+		return { keep: false, reason: "You must provide a valid v4 UUID." };
+	}
+	if (COLOR_KEYWORDS.has(keyword)) {
+		const reason = colorReason(value, keyword);
+		if (reason !== null) return { keep: false, reason };
+	}
+
+	// A regex literal that will not compile. Validated here so the answer is Scryfall's 400 rather
+	// than the engine's 503 — `routes.ts` also maps a filter-build failure to a bad request, for
+	// the patterns this check accepts and Rust's `regex` crate does not.
+	if (rawValue.length >= 2 && rawValue.startsWith("/") && rawValue.endsWith("/")) {
+		const pattern = rawValue.slice(1, -1);
+		try {
+			new RegExp(pattern);
+		} catch {
+			return { keep: false, reason: regexReason(pattern) };
+		}
+	}
+
+	return { keep: true, text: term };
+}
+
+/**
+ * Apply the policy to one nesting level, recursing into groups.
+ *
+ * Returns null when nothing at this level survived — which is what makes a group whose every arm
+ * was dropped disappear along with its parentheses, the behaviour `(subtype:elf or
+ * subtype:goblin) e:war` pins.
+ */
+interface PolicyScan {
+	readonly warnings: string[];
+}
+
+function policyLevel(source: string, scan: PolicyScan): string | null {
+	const pieces = scanPieces(source);
+	if (pieces.length === 0) return null;
+	const kept: Piece[] = [];
+	// Tracks REWRITES as well as drops, because a numeric comparison whose value is not a number is
+	// replaced rather than removed: returning `source` on the strength of "nothing was dropped"
+	// silently threw that substitution away.
+	let changed = false;
+	for (const piece of pieces) {
+		if (piece.kind === "connector") {
+			kept.push(piece);
+			continue;
+		}
+		if (piece.kind === "group") {
+			const inner = policyLevel(piece.inner as string, scan);
+			if (inner === null) {
+				changed = true;
+				continue;
+			}
+			if (inner !== piece.inner) changed = true;
+			kept.push({ ...piece, text: `${piece.prefix ?? ""}(${inner})` });
+			continue;
+		}
+		const verdict = classifyLeaf(piece.text);
+		if (verdict.keep) {
+			if (verdict.text !== piece.text) changed = true;
+			kept.push({ ...piece, text: verdict.text });
+			continue;
+		}
+		changed = true;
+		scan.warnings.push(ignoredWarning(piece.text, verdict.reason));
+	}
+	if (!changed) return source;
+
+	// A connector left with nothing on one side is not a term; Scryfall tolerates `t:elf or` and
+	// so does this, by removing what the drop orphaned rather than by handing the parser a
+	// fragment it would reject.
+	const cleaned: Piece[] = [];
+	for (const piece of kept) {
+		if (piece.kind === "connector") {
+			const previous = cleaned[cleaned.length - 1];
+			if (previous === undefined || previous.kind === "connector") continue;
+		}
+		cleaned.push(piece);
+	}
+	while (cleaned.length > 0 && (cleaned[cleaned.length - 1] as Piece).kind === "connector") cleaned.pop();
+	if (cleaned.length === 0) return null;
+	return cleaned.map((p) => p.text).join(" ");
+}
+
+/**
+ * Fold the typographic quotes, then drop every term Scryfall would ignore.
+ *
+ * `allIgnored` is the 400 case, and it is deliberately not the same as "empty query": Scryfall
+ * answers an empty `q` with "You didn‘t enter anything to search for." and a query whose every
+ * term was unusable with "All of your terms were ignored." — two different sentences for two
+ * different mistakes.
+ */
+export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
+	const folded = foldSmartQuotes(rawQuery);
+	if (unbalancedParens(folded)) return { query: folded, warnings: [], allIgnored: false, unclosedParens: true };
+	const scan: PolicyScan = { warnings: [] };
+	const query = policyLevel(folded, scan);
+	const warnings = scan.warnings;
+	if (query !== null && query.trim() !== "") return { query, warnings, allIgnored: false, unclosedParens: false };
+	// Nothing survived, and now the only way that happens is a term Scryfall refused: a dangling
+	// operator is REWRITTEN rather than dropped (danglingOperatorTerm), so `q=t:` no longer empties
+	// the query and no longer needs an always-true leaf standing in for it.
+	return { query: folded, warnings, allIgnored: true, unclosedParens: false };
+}

@@ -34,12 +34,41 @@ const fakeEngine = {
 	searchCardsAsJson: async () => ({ totalCards: 1, cards: "[]" }),
 };
 
+/** The two-step publish's call log, asserted by the prepare/commit suite below. */
+const publishCalls: string[] = [];
+/** Whether tryGetLoadedEngine reports this object warm (per-label irrelevant here). */
+let objectIsWarm = true;
+
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
 	getEngine: async () => fakeEngine,
-	tryGetLoadedEngine: () => fakeEngine,
-	// Imported by search-engine-do for notifyPublish; no case here publishes.
-	refreshNow: async () => false,
+	tryGetLoadedEngine: () => (objectIsWarm ? fakeEngine : null),
+	// Imported by search-engine-do for notifyPublish and the two-step publish.
+	refreshNow: async () => {
+		publishCalls.push("refreshNow");
+		return true;
+	},
+	prefetchStore: async () => {
+		publishCalls.push("prefetchStore");
+		return true;
+	},
+	swapToStore: async () => {
+		publishCalls.push("swapToStore");
+		return true;
+	},
+	// Imported for the two-phase gather; a null manifest keeps every gather
+	// entry point on the local single-store path, which these tests exercise.
+	currentManifest: () => null,
+	gatherOps: () => null,
+}));
+
+// The placement probe fetches a trace URL; tests must never touch the network.
+// Real exports are preserved for the suites that import them from the plain path.
+const placementSpec = "../../src/engine/placement.ts?real-for-rendezvous";
+const realPlacement = (await import(placementSpec)) as typeof import("../../src/engine/placement");
+mock.module("../../src/engine/placement", () => ({
+	...realPlacement,
+	probePlacement: () => {},
 }));
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
@@ -65,6 +94,101 @@ beforeEach(() => {
 
 afterEach(() => {
 	nowSpy?.mockRestore();
+});
+
+describe("the two-step publish delegates swap to COMMIT, never prepare", () => {
+	type PublishDo = {
+		preparePublish(m?: unknown): Promise<{ prepared: boolean; shards: number }>;
+		commitPublish(): Promise<{ swapped: boolean; shards: number }>;
+	};
+
+	/** Just enough SQLite for recordLiveManifest/readLiveManifest. */
+	function fakeStorage() {
+		let live: string | null = null;
+		return {
+			sql: {
+				exec(query: string, ...b: unknown[]) {
+					const q = query.trim();
+					if (q.startsWith("INSERT OR REPLACE INTO live_manifest")) live = b[0] as string;
+					if (q.startsWith("SELECT json FROM live_manifest")) {
+						return { toArray: () => (live === null ? [] : [{ json: live }]) };
+					}
+					return { toArray: () => [] };
+				},
+			},
+		};
+	}
+
+	function makePublishDo(): PublishDo {
+		return new SearchEngine(
+			{ waitUntil: () => {}, storage: fakeStorage(), id: { name: "engine-wnam-p0" } } as never,
+			{} as never,
+		) as unknown as PublishDo;
+	}
+
+	// PARTITIONED-shaped, which is the only shape any publisher writes — the
+	// object above is engine-wnam-p0 and manifestServableBy makes it refuse
+	// anything else, which the last test in this suite pins.
+	const MANIFEST = {
+		store_key: "card-store-v1-1.store",
+		store_bytes: 10,
+		built_at: "1",
+		card_count: 1,
+		partition_count: 1,
+		partitions: [{ store_key: "card-store-v1-1-p0.store", store_bytes: 10, chunk_count: 1, card_count: 1 }],
+	};
+
+	test("prepare on a WARM object prefetches and does NOT swap", async () => {
+		publishCalls.length = 0;
+		objectIsWarm = true;
+		const r = await makePublishDo().preparePublish(MANIFEST);
+		expect(r.prepared).toBe(true);
+		expect(publishCalls).toEqual(["prefetchStore"]);
+	});
+
+	test("commit on a WARM object swaps from the recorded manifest", async () => {
+		publishCalls.length = 0;
+		objectIsWarm = true;
+		const engine = makePublishDo();
+		await engine.preparePublish(MANIFEST);
+		const r = await engine.commitPublish();
+		expect(r.swapped).toBe(true);
+		expect(publishCalls).toEqual(["prefetchStore", "swapToStore"]);
+	});
+
+	test("a COLD object acks both steps without touching the loader", async () => {
+		publishCalls.length = 0;
+		objectIsWarm = false;
+		const engine = makePublishDo();
+		expect((await engine.preparePublish(MANIFEST)).prepared).toBe(true);
+		expect((await engine.commitPublish()).swapped).toBe(false);
+		expect(publishCalls).toEqual([]);
+		objectIsWarm = true;
+	});
+
+	test("commit with nothing recorded is a no-op ack, not a throw", async () => {
+		publishCalls.length = 0;
+		objectIsWarm = true;
+		const r = await makePublishDo().commitPublish();
+		expect(r.swapped).toBe(false);
+		expect(publishCalls).toEqual([]);
+	});
+
+	test("a manifest shape the object's name cannot serve is ACKED but never cached or prefetched", async () => {
+		// A pushed manifest with no partition_count — a builder bug, since every
+		// publisher emits partitions. The object must refuse to record it (a cached
+		// unservable manifest wedges the next cold load) while still acking, so
+		// the coordinator's all-or-retry barrier does not wedge on it — and a
+		// later commit must find nothing recorded.
+		publishCalls.length = 0;
+		objectIsWarm = true;
+		const engine = makePublishDo();
+		const unpartitioned = { store_key: "card-store-v1-9.store", store_bytes: 10, built_at: "9", card_count: 1 };
+		expect((await engine.preparePublish(unpartitioned)).prepared).toBe(true);
+		expect(publishCalls).toEqual([]); // no prefetch of a shape it cannot hold
+		expect((await engine.commitPublish()).swapped).toBe(false); // nothing was recorded
+		expect(publishCalls).toEqual([]);
+	});
 });
 
 describe("announcing the fan-out width", () => {

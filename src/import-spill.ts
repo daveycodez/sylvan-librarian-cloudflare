@@ -80,6 +80,82 @@ export function blobGroups(blobs: Uint8Array[]): Uint8Array[][] {
 	return groups;
 }
 
+// ─── draft partition hashes ──────────────────────────────────────────────────
+//
+// The transform emits every draft framed [u64 le fnv1a64(oracle_id)][RowDraft
+// JSON] (engine/wasm-import protocol, emit kind 2). The hash — not a partition
+// index — because partition_count is chosen by the BUILDER after transform
+// (auto-scaled, plan Decision 3b): the draft carries the N-generic fact,
+// computed once in Rust, and whoever groups drafts later mods it by the N it
+// actually picked. draft_batches persists the hashes as a parallel BLOB vector
+// (`part_hashes`, count × 8 bytes le, i-th entry belonging to the batch's i-th
+// length-prefixed draft) rather than a column per draft: one draft per row
+// would spend 540k row writes against the 100k/day Durable Object budget, and
+// SQLite INTEGER is a signed i64 the storage bindings cannot carry a u64
+// through undamaged.
+
+/** Bytes of the partition-hash prefix on an EMIT_DRAFT payload. */
+export const DRAFT_HASH_BYTES = 8;
+
+/** Split one EMIT_DRAFT payload into its partition hash and the RowDraft JSON. */
+export function splitDraftEmit(payload: Uint8Array): { partHash: bigint; draft: Uint8Array } {
+	if (payload.length < DRAFT_HASH_BYTES) {
+		throw new Error(`draft emit is ${payload.length} bytes — shorter than its hash prefix`);
+	}
+	const dv = new DataView(payload.buffer, payload.byteOffset, DRAFT_HASH_BYTES);
+	return { partHash: dv.getBigUint64(0, true), draft: payload.subarray(DRAFT_HASH_BYTES) };
+}
+
+/** Pack per-draft hashes into the `part_hashes` column form (count × 8 bytes le). */
+export function packPartHashes(hashes: readonly bigint[]): Uint8Array {
+	const out = new Uint8Array(hashes.length * DRAFT_HASH_BYTES);
+	const dv = new DataView(out.buffer);
+	for (let i = 0; i < hashes.length; i++) dv.setBigUint64(i * DRAFT_HASH_BYTES, hashes[i] as bigint, true);
+	return out;
+}
+
+export function unpackPartHashes(bytes: Uint8Array): bigint[] {
+	if (bytes.length % DRAFT_HASH_BYTES !== 0) {
+		throw new Error(`part_hashes blob is ${bytes.length} bytes — not a multiple of ${DRAFT_HASH_BYTES}`);
+	}
+	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const out: bigint[] = [];
+	for (let at = 0; at < bytes.length; at += DRAFT_HASH_BYTES) out.push(dv.getBigUint64(at, true));
+	return out;
+}
+
+/**
+ * The drafts belonging to partition `partition` of `partitionCount`, out of
+ * draft_batches rows — re-modding the stored hash by the N the build chose.
+ *
+ * This is the enumeration the partitioned build loop (plan B3) runs once per
+ * partition: `agg(p)` feeds exactly these drafts, in batch order, which is
+ * emission order — the order the dedupe's first-seen/last-wins semantics
+ * depend on. Yields views into each batch's bytes; callers that outlive the
+ * batch must copy.
+ */
+export function* draftsForPartition(
+	batches: Iterable<{ bytes: Uint8Array; partHashes: Uint8Array }>,
+	partition: number,
+	partitionCount: number,
+): Generator<Uint8Array> {
+	if (!Number.isInteger(partitionCount) || partitionCount <= 0) {
+		throw new Error(`partitionCount must be a positive integer, got ${partitionCount}`);
+	}
+	const n = BigInt(partitionCount);
+	const k = BigInt(partition);
+	for (const batch of batches) {
+		const drafts = splitBatch(batch.bytes);
+		const hashes = unpackPartHashes(batch.partHashes);
+		if (hashes.length !== drafts.length) {
+			throw new Error(`draft batch holds ${drafts.length} drafts but ${hashes.length} hashes`);
+		}
+		for (let i = 0; i < drafts.length; i++) {
+			if ((hashes[i] as bigint) % n === k) yield drafts[i] as Uint8Array;
+		}
+	}
+}
+
 /** Where every spilled row sits, by add-order index. */
 export interface SpillIndex {
 	/** `base` of the spill_batches group holding this row. */

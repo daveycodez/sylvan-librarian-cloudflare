@@ -50,11 +50,19 @@ describe("explainWireTree", () => {
 	});
 
 	test("a trailing apostrophe stays in the word instead of opening an empty string", () => {
-		// The whole chain: "urza'" must survive the balancer unchanged and explain as a single
+		// The whole chain: "urza'" must survive the balancer unchanged and explain as a SINGLE
 		// name clause. Before, it balanced to "urza''" and explained as "the name contains Urza
-		// and " — the apostrophe dropped from the search and the results silently widened.
-		expect(explainWireTree(parseScryfallQuery("urza'"))).toBe("the name contains Urza'");
-		expect(explainWireTree(parseScryfallQuery("urza's"))).toBe("the name contains Urza's");
+		// and " — the apostrophe opened an empty quoted string, and the results silently widened.
+		//
+		// The apostrophe is gone from the explained VALUE now, and that is not the balancer
+		// failing: a bare `name:` word is collated before it reaches the wire (Scryfall matches
+		// `limdul` and `lim-dul` identically, both 8), so "Urzas" is what the search actually
+		// asks for. The `and ""` half is what this test exists to catch, and it is what a second
+		// clause would still show.
+		expect(explainWireTree(parseScryfallQuery("urza'"))).toBe("the name contains Urza");
+		expect(explainWireTree(parseScryfallQuery("urza's"))).toBe("the name contains Urzas");
+		// The QUOTED spelling keeps every character, because that search does too.
+		expect(explainWireTree(parseScryfallQuery('name:"urza\'s"'))).toBe("the name contains Urza's");
 	});
 
 	test("special card-attribute phrasings", () => {
@@ -71,6 +79,21 @@ describe("explainWireTree", () => {
 		expect(explainWireTree(bin(attr("card_colors"), ":", ["W", "U"]))).toBe("the color is White/Blue");
 		expect(explainWireTree(bin(attr("card_color_identity", "id"), "<=", ["G"]))).toBe("color identity ≤ Green");
 		expect(explainWireTree(bin(attr("card_colors"), ":", []))).toBe("the color is Colorless");
+	});
+
+	test("a numeric colour rhs is a COUNT of colors, not a colour", () => {
+		// `c>=2` and `c:m` are the same node here — the parser lowers the colour-COUNT names into
+		// the numeric comparison — so "the color ≥ 2" would be a sentence about a colour named 2.
+		expect(explainWireTree(bin(attr("card_colors"), ">=", num(2)))).toBe("the number of colors ≥ 2");
+		expect(explainWireTree(bin(attr("card_colors"), ":", num(2)))).toBe("the number of colors is 2");
+		expect(explainWireTree(bin(attr("card_color_identity", "id"), "<", num(2)))).toBe(
+			"the number of colors in the color identity < 2",
+		);
+		// The lowered forms of the count names, end to end through the parser.
+		expect(explainWireTree(parseScryfallQuery("c:m"))).toBe("the number of colors ≥ 2");
+		expect(explainWireTree(parseScryfallQuery("c!=gold"))).toBe("the number of colors < 2");
+		expect(explainWireTree(parseScryfallQuery("c<=multicoloured"))).toBe("the number of colors ≥ 0");
+		expect(explainWireTree(parseScryfallQuery("id>gold"))).toBe("the number of colors in the color identity ≥ 2");
 	});
 
 	test("legalities and rarity", () => {

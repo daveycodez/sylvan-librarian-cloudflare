@@ -24,6 +24,12 @@
 # It therefore rebuilds for everything a deploy rebuilds for: a generation
 # mismatch, a manifest whose chunks are missing, a store past the age backstop,
 # and a store Scryfall has since superseded.
+#
+# There is nothing to keep in sync between this script and the Worker any more:
+# store-age.ts reads the one manifest key and validates the one shape, exactly
+# as the deployed loader does. (This block used to export PARTITIONED_STORE so
+# the staleness question and the Worker agreed about WHICH key to look at —
+# with the two keys gone, so is the way that could disagree.)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

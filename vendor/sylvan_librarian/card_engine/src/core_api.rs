@@ -20,6 +20,7 @@
 // this file must follow — scripts/sync-upstream.sh flags lib.rs for exactly
 // that review.
 
+use super::{face_mana_cost, face_stat_nums};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
@@ -29,20 +30,23 @@ use super::{
     CardData, CardRow, CompatFields, FaceRow, InlineStr, Interner, ManaCost, ManaVocabInterner,
     PERMANENT_TYPES, QueryCtx, QueryParams, RelatedCard, VocabInterner, archive_header,
     build_card_data, card_types_list_to_bits, coll_str, coll_str_opt, color_list_to_mask,
-    count_common_keywords, count_common_types, format_shift_or_assign, identity_letters, lane_add,
+    count_common_keywords, count_common_types, format_shift_or_assign, identity_letters,
+    iso8601_utc_to_epoch_secs, lane_add,
     legality_bits_to_json, legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text,
-    frame_of, released_int_to_iso, run_query_routed, sorted_strs, str_at, sync_format_shifts, uuid_from_u128,
+    frame_of, released_int_to_iso, run_query_routed, sorted_strs, str_at, strip_reminder_text, sync_format_shifts, uuid_from_u128,
     write_archive,
     DEFAULT_FIELDS,
     // The compat residue's flag bits and bitset vocabularies, shared with FIELD_TABLE's twins.
     COMPAT_BOOSTER, COMPAT_DIGITAL, COMPAT_FOIL, COMPAT_FULL_ART, COMPAT_HIGHRES_IMAGE,
     COMPAT_NONFOIL, COMPAT_OVERSIZED, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_STORY_SPOTLIGHT,
     COMPAT_TEXTLESS, COMPAT_VARIATION, FINISH_ETCHED, FINISH_FOIL, FINISH_GLOSSY, FINISH_NONFOIL,
-    FINISH_NAMES, GAME_ARENA, GAME_MTGO, GAME_NAMES, GAME_PAPER, VOCAB_NONE, bits_to_names,
-    compat_flag,
+    FINISH_NAMES, VOCAB_NONE, bits_to_names, compat_flag, games_pack, games_to_names,
     // The engine surface #912 adds: external-id addressing, fuzzy name match, autocomplete.
-    EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER, FuzzyOutcome,
-    find_printing_by_external_id, fuzzy_name_match,
+    EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER, FuzzyOutcome, fuzzy_name_match, record_of_exact_name,
+    // The multilingual surface: the widened driver and the virtual-pid resolvers. The by-id
+    // lookups reach BOTH printing spaces through find_vpid_by_*, never through the canonical
+    // index alone — see card_by_scryfall_id.
+    card_of_vpid, printing_at, run_query_widened,
 };
 use rkyv::Archived;
 use rkyv::util::AlignedVec;
@@ -142,9 +146,26 @@ fn jv_opt_date_str(d: &Value, key: &str) -> Option<String> {
 }
 
 /// Mirror of `opt_price_cents`: dollars → rounded integer cents.
-/// `Value::as_f64` covers both the f64 and i64 arms of the pydict version.
+/// `Value::Number` covers both the f64 and i64 arms of the pydict version, and `Value::String`
+/// its string arm — which is the arm the corpus actually takes, since Scryfall sends every member
+/// of `prices` as a decimal string.
 fn jv_opt_price_cents(d: &Value, key: &str) -> Option<u32> {
-    d.get(key).and_then(Value::as_f64).map(|dollars| (dollars * 100.0).round() as u32)
+    let dollars = match d.get(key)? {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(s) => s.trim().parse::<f64>().ok()?,
+        _ => return None,
+    };
+    Some((dollars * 100.0).round() as u32)
+}
+
+/// Mirror of `opt_image_updated_at`: Scryfall's ISO-8601 UTC string → epoch seconds.
+fn jv_opt_image_updated_at(d: &Value, key: &str) -> Option<NonZeroU32> {
+    let secs = match d.get(key)? {
+        Value::String(s) => iso8601_utc_to_epoch_secs(s)?,
+        // Already-numeric input (a re-ingested row) keeps the old reading rather than vanishing.
+        other => other.as_u64().and_then(|n| u32::try_from(n).ok())?,
+    };
+    NonZeroU32::new(secs)
 }
 
 fn jv_opt_f32(d: &Value, key: &str) -> Option<f32> {
@@ -231,6 +252,12 @@ fn jv_str_list_color_mask(d: &Value, key: &str) -> u8 {
     color_list_to_mask(&colors.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
+/// Mirror of `opt_str_list_color_mask`: `["W"]` is `Some(1)`, `[]` is `Some(0)`, an absent key is
+/// `None`. The three states `face_color_masks` needs and the plain mask collapses two of.
+fn jv_opt_str_list_color_mask(d: &Value, key: &str) -> Option<u8> {
+    d.get(key).filter(|v| !v.is_null()).map(|_| jv_str_list_color_mask(d, key))
+}
+
 /// Mirror of `faces_from_pydict`: the card's faces, front first; empty for the
 /// ~82% of cards with one face.
 ///
@@ -242,7 +269,12 @@ fn jv_str_list_color_mask(d: &Value, key: &str) -> u8 {
 /// transform back face has no `mana_cost` at all, which is different from having an empty one.
 /// The three non-optional ids (name, type_line, oracle_text) use `unwrap_or_default()` to match
 /// the pydict twin exactly, so both sides agree key-for-key.
-fn jv_faces(d: &Value, it: &mut Interner, artists: &mut VocabInterner) -> Result<Vec<FaceRow>, EngineError> {
+fn jv_faces(
+    d: &Value,
+    it: &mut Interner,
+    artists: &mut VocabInterner,
+    mana: &mut ManaVocabInterner,
+) -> Result<Vec<FaceRow>, EngineError> {
     let Some(list) = d.get("card_faces").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
@@ -251,11 +283,33 @@ fn jv_faces(d: &Value, it: &mut Interner, artists: &mut VocabInterner) -> Result
         if !face.is_object() {
             continue;
         }
-        let card_artist_vid = match jv_opt_str(face, "artist") {
+        // Lowercased into the artist vocab for search, original case into the string table for
+        // the card object — the vocab alone loses the printed capitalization.
+        let artist = jv_opt_str(face, "artist");
+        let card_artist_name_id = it.intern_opt(artist.clone());
+        let card_artist_vid = match artist {
             Some(a) => artists.intern(a.to_lowercase())?,
             None => ARTIST_NONE,
         };
+        // The searchable half, parsed from the face's own printed strings — see OracleFace. An
+        // absent OR empty `mana_cost` is no cost at all, not a cost of zero.
+        let face_mana = jv_opt_str(face, "mana_cost").filter(|s| !s.is_empty());
+        let (creature_power, creature_toughness, planeswalker_loyalty) = face_stat_nums(
+            jv_opt_str(face, "type_line").as_deref(),
+            jv_opt_str(face, "power").as_deref(),
+            jv_opt_str(face, "toughness").as_deref(),
+            jv_opt_str(face, "loyalty").as_deref(),
+        );
+        let mana_cost = match face_mana {
+            Some(s) => Some(face_mana_cost(&s, mana)?),
+            None => None,
+        };
         faces.push(FaceRow {
+            card_artist_name_id,
+            creature_power,
+            creature_toughness,
+            planeswalker_loyalty,
+            mana_cost,
             card_name_id: it.intern(jv_opt_str(face, "name").unwrap_or_default()),
             mana_cost_text_id: it.intern_opt(jv_opt_str(face, "mana_cost")),
             type_line_id: it.intern(jv_opt_str(face, "type_line").unwrap_or_default()),
@@ -264,11 +318,17 @@ fn jv_faces(d: &Value, it: &mut Interner, artists: &mut VocabInterner) -> Result
             creature_toughness_text_id: it.intern_opt(jv_opt_str(face, "toughness")),
             planeswalker_loyalty_text_id: it.intern_opt(jv_opt_str(face, "loyalty")),
             defense_text_id: it.intern_opt(jv_opt_str(face, "defense")),
-            card_colors: jv_str_list_color_mask(face, "colors"),
+            flavor_name_id: it.intern_opt(jv_opt_str(face, "flavor_name")),
+            // Absent `colors` stays absent — a split or flip face has no colour of its own and
+            // must inherit the card's, not read as colourless. See `face_color_masks`.
+            card_colors: jv_opt_str_list_color_mask(face, "colors"),
             color_indicator: jv_str_list_color_mask(face, "color_indicator"),
             illustration_id: jv_opt_str(face, "illustration_id").map_or(0, |s| parse_uuid_or_hash(&s)),
             card_artist_vid,
             flavor_text_id: it.intern_opt(jv_opt_str(face, "flavor_text")),
+            printed_name_id: it.intern_opt(jv_opt_str(face, "printed_name")),
+            printed_type_line_id: it.intern_opt(jv_opt_str(face, "printed_type_line")),
+            printed_text_id: it.intern_opt(jv_opt_str(face, "printed_text")),
         });
     }
     Ok(faces)
@@ -286,6 +346,14 @@ fn jv_str_set_bits(d: &Value, key: &str, table: &[(&str, u8)]) -> u8 {
         .iter()
         .filter(|(name, _)| present.iter().any(|p| p == name))
         .fold(0u8, |acc, (_, bit)| acc | bit)
+}
+
+/// The `games` list as the ORDERED bit sequence `games_pack` packs, unknown members dropped.
+///
+/// Its sibling `jv_str_set_bits` folds membership and loses the order, which is fine for
+/// `finishes` (Scryfall lists those in a fixed nonfoil/foil/etched order) and wrong for `games`.
+fn jv_games_bits(d: &Value, key: &str) -> u8 {
+    games_pack(jv_str_list(d, key).iter().map(String::as_str))
 }
 
 /// Mirror of `opt_nonzero_u32`: a 0 reads as absent, which is right for every field this is used
@@ -342,7 +410,7 @@ fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<CompatFields, Engin
         tcgplayer_etched_id: jv_opt_nonzero_u32(blob, "tcgplayer_etched_id"),
         cardmarket_id: jv_opt_nonzero_u32(blob, "cardmarket_id"),
         penny_rank: jv_opt_nonzero_u32(blob, "penny_rank"),
-        image_updated_at: jv_opt_nonzero_u32(blob, "image_updated_at"),
+        image_updated_at: jv_opt_image_updated_at(blob, "image_updated_at"),
         price_usd_foil: price("usd_foil"),
         price_usd_etched: price("usd_etched"),
         price_eur_foil: price("eur_foil"),
@@ -351,7 +419,7 @@ fn jv_compat(d: &Value, vocab: &mut VocabInterner) -> Result<CompatFields, Engin
         image_status_id: intern_opt(vocab, jv_opt_str(blob, "image_status"))?,
         set_type_id: intern_opt(vocab, jv_opt_str(blob, "set_type"))?,
         security_stamp_id: intern_opt(vocab, jv_opt_str(blob, "security_stamp"))?,
-        games: jv_str_set_bits(blob, "games", &[("paper", GAME_PAPER), ("mtgo", GAME_MTGO), ("arena", GAME_ARENA)]),
+        games: jv_games_bits(blob, "games"),
         finishes: jv_str_set_bits(
             blob,
             "finishes",
@@ -464,16 +532,25 @@ pub(crate) fn card_from_json(
     // Already lowercased + accent-folded upstream (fold_accents(), #649); read as-is.
     let card_name_folded = InlineStr::<61>::from_str(&jv_opt_str(d, "card_name_folded").unwrap_or_default());
     let oracle_text = jv_opt_str(d, "oracle_text").unwrap_or_default();
-    let oracle_text_lower_id = it.intern(oracle_text.to_lowercase());
+    let oracle_text_lower_id = it.intern(strip_reminder_text(&oracle_text).to_lowercase());
+    let oracle_full_lower_id = it.intern(oracle_text.to_lowercase());
     let flavor_text = jv_opt_str(d, "flavor_text").unwrap_or_default();
     let flavor_text_lower_id = it.intern(flavor_text.to_lowercase());
-    let card_artist_vid = match jv_opt_str(d, "card_artist") {
+    // Lowercased into the artist vocab for search, original case into the string table for the
+    // card object — see Printing.card_artist_name_id.
+    let card_artist = jv_opt_str(d, "card_artist");
+    let card_artist_name_id = it.intern_opt(card_artist.clone());
+    // Already lowercased + accent-folded by the builder, like card_name_folded; read as-is.
+    let card_artist_folded_id = it.intern_opt(jv_opt_str(d, "card_artist_folded"));
+    let card_artist_vid = match card_artist {
         Some(a) => artists.intern(a.to_lowercase())?,
         None => ARTIST_NONE,
     };
     let card_types = card_types_list_to_bits(&jv_str_list(d, "card_types"));
 
     Ok(CardRow {
+        card_artist_name_id,
+        card_artist_folded_id,
         scryfall_id: jv_opt_uuid(d, "scryfall_id"),
         oracle_id: jv_opt_uuid(d, "oracle_id"),
         illustration_id: jv_opt_uuid(d, "illustration_id"),
@@ -482,6 +559,7 @@ pub(crate) fn card_from_json(
         card_name_folded,
         card_name_id: it.intern(card_name),
         oracle_text_lower_id,
+        oracle_full_lower_id,
         oracle_text_id: it.intern(oracle_text),
         flavor_text_lower_id,
         flavor_text_id: it.intern(flavor_text),
@@ -499,6 +577,7 @@ pub(crate) fn card_from_json(
         card_colors: jv_color_bits(d, "card_colors"),
         card_color_identity: jv_color_bits(d, "card_color_identity"),
         produced_mana: jv_color_bits(d, "produced_mana"),
+        color_indicator: jv_color_bits(d, "color_indicator"),
 
         // Read as f32, not truncated: `mana_cost` below already asks for the same key as an
         // f32, so an integer cmc here was the only place the two disagreed. Mirrors
@@ -519,6 +598,7 @@ pub(crate) fn card_from_json(
         card_types,
         card_subtypes: jv_str_list_to_ids(d, "card_subtypes", vocab)?,
         card_keywords: jv_obj_to_ids(d, "card_keywords", vocab)?,
+        card_keywords_printed: jv_str_list_to_ids(d, "card_keywords_printed", vocab)?,
         card_legalities: jv_legality_bits(d, "card_legalities"),
         card_oracle_tags: jv_obj_to_ids(d, "card_oracle_tags", vocab)?,
         card_art_tags: jv_obj_to_ids(d, "card_art_tags", vocab)?,
@@ -531,7 +611,19 @@ pub(crate) fn card_from_json(
         creature_toughness_text_id: it.intern_opt(jv_opt_str(d, "creature_toughness_text")),
         planeswalker_loyalty_text_id: it.intern_opt(jv_opt_str(d, "planeswalker_loyalty_text")),
 
-        card_faces: jv_faces(d, it, artists)?,
+        printed_name_id: it.intern_opt(jv_opt_str(d, "printed_name")),
+        printed_type_line_id: it.intern_opt(jv_opt_str(d, "printed_type_line")),
+        printed_text_id: it.intern_opt(jv_opt_str(d, "printed_text")),
+        // Already lowercased + accent-folded by the importer, like card_name_folded above.
+        printed_name_folded_id: it.intern_opt(jv_opt_str(d, "printed_name_folded")),
+        flavor_name_id: it.intern_opt(jv_opt_str(d, "flavor_name")),
+        flavor_name_folded_id: it.intern_opt(jv_opt_str(d, "flavor_name_folded")),
+        // An ABSENT key reads canonical, deliberately the opposite default from jv_opt_bool:
+        // every pre-multilingual feed is canonical-only, so absence means "there is no annex",
+        // not "this row belongs in it".
+        is_canonical: d.get("is_canonical").and_then(Value::as_bool).unwrap_or(true),
+
+        card_faces: jv_faces(d, it, artists, mana)?,
         all_parts: jv_all_parts(d, it, vocab)?,
         compat: jv_compat(d, vocab)?,
     })
@@ -561,18 +653,25 @@ fn archive_section_stats(d: &CardData) -> StoreStats {
             * std::mem::size_of::<rkyv::string::ArchivedString>()
         + d.coll_vocab_sorted.len() * 2;
     let direct_arrays_bytes = d.offsets.len() * 4
+        + d.foreign_offsets.len() * 4
         + d.indexes.printing_to_card.len() * 4
+        + d.indexes.foreign_to_card.len() * 4
         + d.indexes.artwork_base.len() * 4
         + d.indexes.artwork_groups.len() * 2
         + d.indexes.artwork_group_col.len() * 2;
     StoreStats {
         card_count: d.cards.len(),
+        // Canonical printings only, so the number keeps meaning what the pyo3 size() and every
+        // health check reads; the annex is counted separately below.
         printing_count: d.printings.len(),
         cards_bytes: d.cards.len() * std::mem::size_of::<AOracleCard>(),
-        printings_bytes: d.printings.len() * std::mem::size_of::<APrinting>(),
+        printings_bytes: (d.printings.len() + d.foreign.len()) * std::mem::size_of::<APrinting>(),
         strings_bytes,
         vocab_bytes,
         direct_arrays_bytes,
+        foreign_printing_count: d.foreign.len(),
+        annex_only_oracles_dropped: 0, // the builder entry points overwrite from BuiltStore
+        annex_only_rows_dropped: 0,
     }
 }
 
@@ -607,6 +706,19 @@ pub struct StoreStats {
     pub strings_bytes: usize,
     pub vocab_bytes: usize,
     pub direct_arrays_bytes: usize,
+    /// Annex (foreign) rows in the store. `printing_count` above stays canonical-only — the
+    /// pyo3 size() meaning — so completeness checks over a multilingual feed must count
+    /// `printing_count + foreign_printing_count` (the wasm-builder-probe aborted healthy builds
+    /// until it did).
+    pub foreign_printing_count: usize,
+    /// Oracle groups dropped whole because NO canonical row survived the import filters (the
+    /// annex-only shape — e.g. the ja 4ED ante printings whose every other printing is
+    /// never-legal). See build_card_data_sorted's drop site; a small nonzero value is expected
+    /// (3 on the real corpus), a LARGE one means the canonical feed went missing.
+    pub annex_only_oracles_dropped: usize,
+    /// Rows those drops removed, so a spilled stream's completeness check stays EXACT:
+    /// `printing_count + foreign_printing_count + annex_only_rows_dropped == staged rows`.
+    pub annex_only_rows_dropped: usize,
 }
 
 /// Non-python twin of the pyo3 staged-reload surface: `new()` ≙ reload_begin
@@ -652,7 +764,9 @@ impl StoreBuilder {
     pub fn finish_to_writer<W: std::io::Write>(self, w: &mut W) -> Result<StoreStats, EngineError> {
         let StoreBuilder { rows, interner, vocab, artists, mana } = self;
         let built = build_card_data(rows, interner, vocab, artists, mana)?;
-        let stats = archive_section_stats(&built.card_data);
+        let mut stats = archive_section_stats(&built.card_data);
+        stats.annex_only_oracles_dropped = built.annex_only_oracles_dropped;
+        stats.annex_only_rows_dropped = built.annex_only_rows_dropped;
         write_archive(&built.card_data, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
         Ok(stats)
@@ -732,7 +846,9 @@ impl SpillingStoreBuilder {
         drop(keys);
         let rows = rows.map(|bytes| decode_card_row(&bytes));
         let built = crate::build_card_data_sorted(rows, expected, interner, vocab, artists, mana)?;
-        let stats = archive_section_stats(&built.card_data);
+        let mut stats = archive_section_stats(&built.card_data);
+        stats.annex_only_oracles_dropped = built.annex_only_oracles_dropped;
+        stats.annex_only_rows_dropped = built.annex_only_rows_dropped;
         write_archive(&built.card_data, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
         Ok(stats)
@@ -743,6 +859,77 @@ impl Default for SpillingStoreBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ─── Partitioned build (LOCAL PATCH, Cloudflare port) ────────────────────────
+// Upstream serves from Postgres and has no partition axis. The Cloudflare store is cut into N
+// archives by `partition_of_oracle_id`; the native builder assigns each row here, and the
+// nightly wasm import reaches the same cut through its own draft partitioning (the coordinator
+// re-mods each draft's stored 64-bit hash) — both sides of that agreement are pinned by
+// tests/engine/partition-hash-vectors.json.
+
+/// What [`SpillingStoreBuilder::encode_standalone`] knows about a row without a shared interner:
+/// where it belongs and where it sorts.
+#[derive(Debug, Clone, Copy)]
+pub struct RowMeta {
+    /// The RAW fnv1a64 of the row's oracle_id — deliberately not a partition index, so the same
+    /// staged blobs can be cut at any N the caller later chooses (`part_hash % N`).
+    pub part_hash: u64,
+    /// Byte-ascending order over these blobs IS `card_row_build_order`: oracle_id (16B BE), then
+    /// `!f32_sort_bits(prefer_score or 0.0)` (4B BE — prefer descending, None ≡ 0.0, exactly the
+    /// build comparator), then illustration_id and scryfall_id (16B BE each). 52 bytes, not the
+    /// plan's sketched 40: the full tiebreak chain (16+4+16+16) does not fit in 40, and a
+    /// truncated scryfall_id would make the spill order nondeterministic exactly where reprint
+    /// sheets tie on everything else.
+    pub build_sort_blob: [u8; 52],
+}
+
+impl SpillingStoreBuilder {
+    /// Encode one raw engine row as a SELF-CONTAINED blob: no interner state rides along, so the
+    /// blob can be replayed into any partition's own fresh builder — per-partition interning is
+    /// the whole point (one global interner over the multilingual corpus is ~125MB of strings and
+    /// cannot fit a 124MiB wasm build; each partition's interner holds only its own cut).
+    ///
+    /// An associated function, not a method, deliberately: touching `self`'s interners would be
+    /// exactly the shared state the blob must not depend on. The blob is the row's compact JSON —
+    /// byte-heavier than the id-based spill codec, which is the accepted trade on this NATIVE
+    /// path (the nightly wasm import partitions its DRAFTS instead and never stages these; see
+    /// import-coordinator.ts's partition loop).
+    pub fn encode_standalone(card: &Value) -> Result<(RowMeta, Vec<u8>), EngineError> {
+        let oracle_id = card
+            .get("oracle_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| EngineError::value("row is missing oracle_id (required for partitioning)"))?;
+        let mut blob_key = [0u8; 52];
+        blob_key[..16].copy_from_slice(&parse_uuid_or_hash(oracle_id).to_be_bytes());
+        let prefer = jv_opt_f32(card, "prefer_score").unwrap_or(0.0);
+        blob_key[16..20].copy_from_slice(&(!crate::f32_sort_bits(prefer)).to_be_bytes());
+        blob_key[20..36].copy_from_slice(&jv_opt_uuid(card, "illustration_id").to_be_bytes());
+        blob_key[36..52].copy_from_slice(&jv_opt_uuid(card, "scryfall_id").to_be_bytes());
+        let blob = serde_json::to_vec(card).map_err(|e| EngineError::runtime(format!("encode row: {e}")))?;
+        Ok((
+            RowMeta { part_hash: crate::fnv1a64_oracle_id(oracle_id), build_sort_blob: blob_key },
+            blob,
+        ))
+    }
+}
+
+/// Build ONE partition's archive from its standalone blobs, through fresh interners and the same
+/// build/serialize pipeline every other path uses — so a partition's archive is byte-identical
+/// to what a single-partition build of the same rows would produce. Order-insensitive on this
+/// native path (`build_card_data` sorts internally); `RowMeta::build_sort_blob` exists so a
+/// memory-capped caller that spills blobs externally can presort them instead.
+pub fn build_partition_from_standalone<W: std::io::Write>(
+    blobs: impl Iterator<Item = Vec<u8>>,
+    w: &mut W,
+) -> Result<StoreStats, EngineError> {
+    let mut builder = StoreBuilder::new();
+    for (i, blob) in blobs.enumerate() {
+        let row: Value = serde_json::from_slice(&blob)
+            .map_err(|e| EngineError::value(format!("partition blob {i}: {e}")))?;
+        builder.add_card(&row)?;
+    }
+    builder.finish_to_writer(w)
 }
 
 // ─── CardRow spill codec ─────────────────────────────────────────────────────
@@ -838,6 +1025,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u8v(r.card_colors);
     e.u8v(r.card_color_identity);
     e.u8v(r.produced_mana);
+    e.u8v(r.color_indicator);
     e.u16v(r.card_types);
     e.u128v(r.scryfall_id);
     e.u128v(r.oracle_id);
@@ -845,9 +1033,12 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u32v(r.card_name_id);
     e.u32v(r.oracle_text_id);
     e.u32v(r.oracle_text_lower_id);
+    e.u32v(r.oracle_full_lower_id);
     e.u32v(r.flavor_text_id);
     e.u32v(r.flavor_text_lower_id);
     e.u16v(r.card_artist_vid);
+    e.u32v(r.card_artist_name_id);
+    e.u32v(r.card_artist_folded_id);
     e.str_inline(r.card_set_code.as_str());
     e.u32v(r.card_layout_id);
     e.u32v(r.card_border_id);
@@ -875,6 +1066,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.opt(&r.cubecobra_score, |e, &v| e.f32v(v));
     e.vec_u16(&r.card_subtypes);
     e.vec_u16(&r.card_keywords);
+    e.vec_u16(&r.card_keywords_printed);
     e.u64v(r.card_legalities);
     e.vec_u16(&r.card_oracle_tags);
     e.vec_u16(&r.card_art_tags);
@@ -891,6 +1083,17 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u32v(r.creature_power_text_id);
     e.u32v(r.creature_toughness_text_id);
     e.u32v(r.planeswalker_loyalty_text_id);
+    // The printed-language columns and the canonical flag. Same exposure as the faces below:
+    // no upstream twin, no compile error if forgotten — a printed field dropped here is a
+    // printed field absent from every foreign card object this port serves, and a lost
+    // canonical flag silently moves a printing between the two spaces.
+    e.u32v(r.printed_name_id);
+    e.u32v(r.printed_type_line_id);
+    e.u32v(r.printed_text_id);
+    e.u32v(r.printed_name_folded_id);
+    e.u32v(r.flavor_name_id);
+    e.u32v(r.flavor_name_folded_id);
+    e.u8v(u8::from(r.is_canonical));
     // Faces ride the spill too. This codec has no upstream twin — it exists because the Worker
     // build is alarm-chained and rows are spilled between invocations to fit a 30s alarm — so
     // nothing upstream would catch faces being dropped here. A face that does not survive the
@@ -905,11 +1108,34 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
         e.u32v(f.creature_toughness_text_id);
         e.u32v(f.planeswalker_loyalty_text_id);
         e.u32v(f.defense_text_id);
-        e.u8v(f.card_colors);
+        // OPTIONAL, because "no colors key" and "colors: []" are different facts about a face and
+        // the spill is the only copy between two alarm invocations — collapsing them here would
+        // make `c:c` match every split card in production and nowhere else.
+        e.opt(&f.card_colors, |e, &v| e.u8v(v));
         e.u8v(f.color_indicator);
+        // The searchable half rides the spill with the rest of the face: a face whose numbers
+        // survive here and not there is a face that is printable and unsearchable in production
+        // only — the exact shape this column was added to close.
+        e.opt(&f.creature_power, |e, &v| e.u8v(v as u8));
+        e.opt(&f.creature_toughness, |e, &v| e.u8v(v as u8));
+        e.opt(&f.planeswalker_loyalty, |e, &v| e.u8v(v));
+        e.opt(&f.mana_cost, |e, m| {
+            e.u64v(m.core);
+            e.u16v(m.hybrids.len() as u16);
+            for &(id, count) in &m.hybrids {
+                e.u8v(id);
+                e.u8v(count);
+            }
+            e.f32v(m.cmc);
+        });
         e.u128v(f.illustration_id);
         e.u16v(f.card_artist_vid);
+        e.u32v(f.card_artist_name_id);
         e.u32v(f.flavor_text_id);
+        e.u32v(f.flavor_name_id);
+        e.u32v(f.printed_name_id);
+        e.u32v(f.printed_type_line_id);
+        e.u32v(f.printed_text_id);
     }
     // The related-card list and the compat residue ride the spill for the same reason the faces
     // do, and with the same exposure: no upstream twin, no compile error if a field is forgotten,
@@ -954,6 +1180,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         card_colors: d.u8v(),
         card_color_identity: d.u8v(),
         produced_mana: d.u8v(),
+        color_indicator: d.u8v(),
         card_types: d.u16v(),
         scryfall_id: d.u128v(),
         oracle_id: d.u128v(),
@@ -961,9 +1188,12 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         card_name_id: d.u32v(),
         oracle_text_id: d.u32v(),
         oracle_text_lower_id: d.u32v(),
+        oracle_full_lower_id: d.u32v(),
         flavor_text_id: d.u32v(),
         flavor_text_lower_id: d.u32v(),
         card_artist_vid: d.u16v(),
+        card_artist_name_id: d.u32v(),
+        card_artist_folded_id: d.u32v(),
         card_set_code: InlineStr::from_str(&d.str_owned()),
         card_layout_id: d.u32v(),
         card_border_id: d.u32v(),
@@ -987,6 +1217,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         cubecobra_score: d.opt(|d| d.f32v()),
         card_subtypes: d.vec_u16(),
         card_keywords: d.vec_u16(),
+        card_keywords_printed: d.vec_u16(),
         card_legalities: d.u64v(),
         card_oracle_tags: d.vec_u16(),
         card_art_tags: d.vec_u16(),
@@ -1003,6 +1234,13 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         creature_power_text_id: d.u32v(),
         creature_toughness_text_id: d.u32v(),
         planeswalker_loyalty_text_id: d.u32v(),
+        printed_name_id: d.u32v(),
+        printed_type_line_id: d.u32v(),
+        printed_text_id: d.u32v(),
+        printed_name_folded_id: d.u32v(),
+        flavor_name_id: d.u32v(),
+        flavor_name_folded_id: d.u32v(),
+        is_canonical: d.u8v() != 0,
         // These three must stay LAST, in this order, and in exactly the encoder's field order:
         // struct-literal initializers are evaluated top-to-bottom and each one consumes from the
         // same cursor. The length check below is what turns any drift between the two halves into
@@ -1019,11 +1257,25 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
                     creature_toughness_text_id: d.u32v(),
                     planeswalker_loyalty_text_id: d.u32v(),
                     defense_text_id: d.u32v(),
-                    card_colors: d.u8v(),
+                    card_colors: d.opt(|d| d.u8v()),
                     color_indicator: d.u8v(),
+                    creature_power: d.opt(|d| d.u8v() as i8),
+                    creature_toughness: d.opt(|d| d.u8v() as i8),
+                    planeswalker_loyalty: d.opt(|d| d.u8v()),
+                    mana_cost: d.opt(|d| {
+                        let core = d.u64v();
+                        let n = d.u16v() as usize;
+                        let hybrids = (0..n).map(|_| (d.u8v(), d.u8v())).collect();
+                        ManaCost { core, hybrids, devotion: 0, cmc: d.f32v() }
+                    }),
                     illustration_id: d.u128v(),
                     card_artist_vid: d.u16v(),
+                    card_artist_name_id: d.u32v(),
                     flavor_text_id: d.u32v(),
+                    flavor_name_id: d.u32v(),
+                    printed_name_id: d.u32v(),
+                    printed_type_line_id: d.u32v(),
+                    printed_text_id: d.u32v(),
                 })
                 .collect()
         },
@@ -1180,6 +1432,12 @@ impl BufferStore {
         count_common_keywords(self.data())
     }
 
+    /// The set codes holding at least one `is:extra` printing, sorted — the table the
+    /// `include_extras` auto-enable reads. See `CardIndexes::sets_with_extras`.
+    pub fn sets_with_extras(&self) -> Vec<&str> {
+        self.data().indexes.sets_with_extras.iter().map(|s| s.as_str()).collect()
+    }
+
     /// Mirror of the pyo3 `query()`: filter-tree JSON in, `(total, rows)` out,
     /// with rows rendered through JSON_FIELD_TABLE instead of PyDicts. Runs
     /// the exact same bind/split/route/execute path.
@@ -1189,9 +1447,16 @@ impl BufferStore {
         self.query_value(&json_val, opts)
     }
 
-    /// [`Self::query`] over an already parsed filter tree.
-    pub fn query_value(&self, filter_tree: &Value, opts: &QueryOptions) -> Result<QueryOutput, EngineError> {
-        let resolved_fields = resolve_fields_json(opts.fields.clone())?;
+    /// The shared executor dispatch: bind, detect the multilingual widening, run the right
+    /// driver, and hand back the raw page. Split from [`Self::query_value`] so `query_keys` (the
+    /// partitioned gather's phase 1) runs the EXACT same routing — same triggers, same drivers —
+    /// and can never page differently than the query it stands in for.
+    #[allow(clippy::type_complexity)]
+    fn run_page<'a>(
+        &'a self,
+        filter_tree: &Value,
+        opts: &QueryOptions,
+    ) -> Result<(QueryParams, usize, Vec<(&'a AOracleCard, &'a APrinting)>, bool), EngineError> {
         let data = self.data();
         let params = QueryParams::from_strs(
             &opts.unique,
@@ -1204,20 +1469,133 @@ impl BufferStore {
         let (plane_expr, mut filter_expr, sort_bound, unsplit) =
             super::bind_and_split_filter_value(filter_tree, &opts.unique, data, params.sort_col)?;
 
-        let ctx = QueryCtx::from(data);
-        let (total, page) = run_query_routed(
-            &ctx,
-            &params.with_sort_bound(sort_bound),
-            &mut filter_expr,
-            Some(&unsplit),
-            plane_expr.as_ref(),
-        );
+        // The multilingual widening: either trigger sends the query to the widened driver over
+        // both printing spaces, with the FULL bound filter (`unsplit` — the widened driver has no
+        // plane machinery to hand a split half to). With neither trigger, the routed driver runs
+        // bit-for-bit as before and never reads the annex.
+        let widened = opts.include_multilingual || unsplit.widens_to_annex();
+        let (total, page) = if widened {
+            run_query_widened(data, &params.with_sort_bound(sort_bound), &unsplit)
+        } else {
+            let ctx = QueryCtx::from(data);
+            run_query_routed(
+                &ctx,
+                &params.with_sort_bound(sort_bound),
+                &mut filter_expr,
+                Some(&unsplit),
+                plane_expr.as_ref(),
+            )
+        };
+        Ok((params, total, page, widened))
+    }
 
+    /// [`Self::query`] over an already parsed filter tree.
+    pub fn query_value(&self, filter_tree: &Value, opts: &QueryOptions) -> Result<QueryOutput, EngineError> {
+        let resolved_fields = resolve_fields_json(opts.fields.clone())?;
+        let data = self.data();
+        let (_params, total, page, widened) = self.run_page(filter_tree, opts)?;
         let rows: Vec<Value> = page
             .iter()
             .map(|(c, p)| card_to_json(c, p, &data.strings, &data.coll_vocab, &resolved_fields))
             .collect();
-        Ok(QueryOutput { total, rows })
+        Ok(QueryOutput { total, rows, widened })
+    }
+
+    /// LOCAL PATCH (Cloudflare port): whether this query WOULD run the widened driver, without
+    /// running it.
+    ///
+    /// The partitioned gather assembles its own envelope from `query_keys` replies, so it never
+    /// sees a `QueryOutput` and cannot read `widened` off one. The decision is a pure function of
+    /// the options and the bound filter and is identical in every partition, so the gather asks
+    /// its own local store once. Binding a filter is cheap next to a nine-way fan-out.
+    ///
+    /// Same two triggers, same code path as `run_page` — that is the point: `/cards/search` echoes
+    /// `include_multilingual` in `next_page` from this, and a second implementation in TypeScript
+    /// is the drift the one-implementation rule forbids.
+    pub fn query_widens(&self, filter_tree: &Value, opts: &QueryOptions) -> Result<bool, EngineError> {
+        if opts.include_multilingual {
+            return Ok(true);
+        }
+        let data = self.data();
+        let params = QueryParams::from_strs(&opts.unique, &opts.prefer, &opts.orderby, &opts.direction, 1, 0);
+        let (_, _, _, unsplit) =
+            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, params.sort_col)?;
+        Ok(unsplit.widens_to_annex())
+    }
+
+    /// LOCAL PATCH (Cloudflare port): phase 1 of the partitioned two-phase gather. Runs the same
+    /// executor as [`Self::query_value`] — routed or widened by the same triggers — and answers
+    /// with the exact total plus the page's OPAQUE SORT KEYS and virtual printing ids instead of
+    /// rows. The gather DO bytewise-merges these streams across partitions (see
+    /// `encode_sort_key` for why byte order is sound across archives) and fetches only the
+    /// surviving rows with [`Self::fetch_rows`]. `opts.limit`/`opts.offset` bound the keys the
+    /// same way they bound a page: a partition never ships more keys than the final page could
+    /// use (each partition is asked for the top `offset + limit`, offset 0, by the caller).
+    ///
+    /// `inline_rows` folds phase 2 into phase 1 for the rows most likely to survive the merge.
+    /// The caller asks for the first `inline_rows` entries' materialized rows ALONGSIDE the keys;
+    /// a page whose every row lands inside those prefixes needs no second round trip, and one that
+    /// does not simply falls back to [`Self::fetch_rows`] for what is missing. The rows are
+    /// byte-identical to what `fetch_rows` would return for the same vpids and fields — that is the
+    /// property the differential holds this to, and the reason the two paths can be mixed inside a
+    /// single page without the merged order noticing which rows came from where.
+    ///
+    /// Why a PREFIX and not a window: with offset 0 (the overwhelming majority of traffic) the
+    /// global page is the global top `limit`, so each partition's contribution is a prefix of its
+    /// own stream and `limit/N + slack` entries cover it with room to spare. At a nonzero offset a
+    /// partition's contribution starts at an unknown local rank, so the caller asks for no inline
+    /// rows at all rather than shipping bytes that provably cannot be used.
+    pub fn query_keys(
+        &self,
+        filter_tree: &Value,
+        opts: &QueryOptions,
+        inline_rows: usize,
+    ) -> Result<QueryKeysOutput, EngineError> {
+        let resolved_fields = resolve_fields_json(opts.fields.clone())?;
+        let data = self.data();
+        let (params, total, page, _widened) = self.run_page(filter_tree, opts)?;
+        let inline = inline_rows.min(page.len());
+        let rows = page[..inline]
+            .iter()
+            .map(|(c, p)| card_to_json(c, p, &data.strings, &data.coll_vocab, &resolved_fields))
+            .collect();
+        let keys = page
+            .into_iter()
+            .map(|(c, p)| {
+                let vpid = super::vpid_of_ref(data, p);
+                (super::encode_sort_key(data, c, p, vpid, params.sort_col, params.descending), vpid)
+            })
+            .collect();
+        Ok(QueryKeysOutput { total, keys, rows })
+    }
+
+    /// LOCAL PATCH (Cloudflare port): phase 2 of the partitioned two-phase gather — the rows for
+    /// the virtual printing ids phase 1's merge kept, in CALLER order (the merged page order),
+    /// each materialized like any other row (a foreign vpid yields the foreign printing object).
+    /// An out-of-range vpid is a loud error, not a skip: the ids came from this same store's
+    /// phase 1 moments ago, so a miss means the caller mixed stores or generations.
+    pub fn fetch_rows(&self, vpids: &[u32], fields: Option<Vec<String>>) -> Result<Vec<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        let n_total = (data.printings.len() + data.foreign.len()) as u32;
+        vpids
+            .iter()
+            .map(|&vpid| {
+                if vpid >= n_total {
+                    return Err(EngineError::value(format!(
+                        "vpid {vpid} out of range ({n_total} printings across both spaces)"
+                    )));
+                }
+                let cid = card_of_vpid(data, vpid) as usize;
+                Ok(card_to_json(
+                    &data.cards[cid],
+                    printing_at(data, vpid),
+                    &data.strings,
+                    &data.coll_vocab,
+                    &resolved_fields,
+                ))
+            })
+            .collect()
     }
 
     /// A page of Scryfall card objects, encoded, as `<total> <row count>\n<cards JSON array>`.
@@ -1236,7 +1614,9 @@ impl BufferStore {
     ) -> Result<Vec<u8>, EngineError> {
         let out = self.query_value(filter_tree, opts)?;
         let mut buf = Vec::with_capacity(out.rows.len() * 3072 + 24);
-        buf.extend_from_slice(format!("{} {}", out.total, out.rows.len()).as_bytes());
+        // `<total> <rows> <widened>` — the third field is new, and it is why `next_page` can echo
+        // `include_multilingual` the way Scryfall does (see QueryOutput::widened).
+        buf.extend_from_slice(format!("{} {} {}", out.total, out.rows.len(), u8::from(out.widened)).as_bytes());
         buf.push(b'\n');
         crate::card_object::write_scryfall_cards(&mut buf, &out.rows, base_url);
         Ok(buf)
@@ -1267,7 +1647,9 @@ impl BufferStore {
             .iter()
             .map(|&cid| {
                 let card = &data.cards[cid];
-                let preferred = u32::from(data.offsets[cid]) as usize;
+                // The random pool is built from cards, so a card with no canonical printing would
+                // read an unrelated row rather than fail; see crate::preferred_vpid.
+                let preferred = crate::preferred_vpid(data, cid).unwrap_or_default() as usize;
                 card_to_json(
                     card,
                     &data.printings[preferred],
@@ -1285,21 +1667,18 @@ impl BufferStore {
     // This port has no SQL, so a None here IS the 404 — see the module comment and the README's
     // "Deviations from upstream". Every one of them runs in the Durable Object, never the isolate.
 
-    /// Mirror of the pyo3 `card_by_scryfall_id()`.
+    /// Mirror of the pyo3 `card_by_scryfall_id()`. Both printing spaces: a foreign id resolves to
+    /// the FOREIGN printing object, the same way `/cards/<set>/<number>/<lang>` already answers.
     pub fn card_by_scryfall_id(&self, scryfall_id: &str, fields: Option<Vec<String>>) -> Result<Option<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some(pid) = super::find_printing_by_scryfall_id(
-            &data.indexes.printing_by_scryfall_id,
-            &data.printings,
-            parse_uuid_or_hash(scryfall_id),
-        ) else {
+        let Some(vpid) = super::find_vpid_by_scryfall_id(data, parse_uuid_or_hash(scryfall_id)) else {
             return Ok(None);
         };
-        let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+        let cid = card_of_vpid(data, vpid) as usize;
         Ok(Some(card_to_json(
             &data.cards[cid],
-            &data.printings[pid as usize],
+            printing_at(data, vpid),
             &data.strings,
             &data.coll_vocab,
             &resolved_fields,
@@ -1320,17 +1699,13 @@ impl BufferStore {
         let data = self.data();
         let mut out = Vec::with_capacity(scryfall_ids.len());
         for id in scryfall_ids {
-            let Some(pid) = super::find_printing_by_scryfall_id(
-                &data.indexes.printing_by_scryfall_id,
-                &data.printings,
-                parse_uuid_or_hash(id),
-            ) else {
+            let Some(vpid) = super::find_vpid_by_scryfall_id(data, parse_uuid_or_hash(id)) else {
                 continue;
             };
-            let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+            let cid = card_of_vpid(data, vpid) as usize;
             out.push(card_to_json(
                 &data.cards[cid],
-                &data.printings[pid as usize],
+                printing_at(data, vpid),
                 &data.strings,
                 &data.coll_vocab,
                 &resolved_fields,
@@ -1372,6 +1747,8 @@ impl BufferStore {
 
     /// Mirror of the pyo3 `card_by_external_id()`. An unknown namespace is a query error rather
     /// than a miss, so a typo in the path reads as a bad request instead of "no such card".
+    /// Both printing spaces, like `card_by_scryfall_id`: foreign printings carry their own
+    /// multiverse ids, so `/cards/multiverse/<foreign>` addresses an annex row.
     pub fn card_by_external_id(
         &self,
         namespace: &str,
@@ -1388,13 +1765,13 @@ impl BufferStore {
         };
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some(pid) = find_printing_by_external_id(&data.indexes.external_id_index, ns, external_id) else {
+        let Some(vpid) = super::find_vpid_by_external_id(data, ns, external_id) else {
             return Ok(None);
         };
-        let cid = u32::from(data.indexes.printing_to_card[pid as usize]) as usize;
+        let cid = card_of_vpid(data, vpid) as usize;
         Ok(Some(card_to_json(
             &data.cards[cid],
-            &data.printings[pid as usize],
+            printing_at(data, vpid),
             &data.strings,
             &data.coll_vocab,
             &resolved_fields,
@@ -1415,18 +1792,18 @@ impl BufferStore {
     ) -> Result<(&'static str, Option<Value>), EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        match fuzzy_name_match(&data.cards, &data.strings, name, floor, lead) {
+        match fuzzy_name_match(data, name, floor, lead) {
             FuzzyOutcome::Miss => Ok(("miss", None)),
             FuzzyOutcome::Ambiguous => Ok(("ambiguous", None)),
-            FuzzyOutcome::Hit(cid) => {
-                let cid = cid as usize;
-                // The card's default-preferred printing, the same one every other by-name path shows.
-                let preferred = u32::from(data.offsets[cid]) as usize;
+            FuzzyOutcome::Hit { cid, vpid } => {
+                // The card's default-preferred printing for an English hit; the matched printed
+                // name's best printing for a foreign one (the FOREIGN printing object, which is
+                // what Scryfall answers for "ego à deriva") — the vpid encodes which.
                 Ok((
                     "hit",
                     Some(card_to_json(
-                        &data.cards[cid],
-                        &data.printings[preferred],
+                        &data.cards[cid as usize],
+                        printing_at(data, vpid),
                         &data.strings,
                         &data.coll_vocab,
                         &resolved_fields,
@@ -1434,6 +1811,23 @@ impl BufferStore {
                 ))
             }
         }
+    }
+
+    /// LOCAL PATCH (Cloudflare port): the scores-bearing fuzzy surface for the partitioned
+    /// gather — the top `k` distinct (card, name) candidate classes clearing `floor`, so the
+    /// gather can run the exact global FLOOR/LEAD race that `fuzzy_card_by_name` runs locally
+    /// (see `crate::fuzzy_candidates` for why `{status, card}` alone forces a conservative
+    /// merge). `oracle_id` is the cross-partition card identity; `vpid` is partition-local.
+    pub fn fuzzy_candidates(&self, name: &str, floor: f32, k: usize) -> Vec<FuzzyCandidate> {
+        crate::fuzzy_candidates(self.data(), name, floor, k)
+            .into_iter()
+            .map(|c| FuzzyCandidate {
+                score: c.score,
+                oracle_id: uuid_from_u128(c.oracle_id).map(|u| u.to_string()).unwrap_or_default(),
+                vpid: c.vpid,
+                folded_name: c.name,
+            })
+            .collect()
     }
 
     /// The best printing of a card whose FOLDED name matches exactly, optionally within one set.
@@ -1478,23 +1872,104 @@ impl BufferStore {
                 best = Some((whole, score, cid, pid));
             }
         }
-        let Some((_, _, cid, pid)) = best else { return Ok(None) };
+        // EXACT NEVER READS PRINTED NAMES — verified against api.scryfall.com on 2026-08-16,
+        // in every script and with and without accents:
+        //
+        //   exact=アクスガルドの自慢屋  (ja, Axgard Braggart)  -> 404 not_found
+        //   exact=Ego à Deriva          (pt, Unmoored Ego)     -> 404 not_found
+        //   exact=Ego a Deriva          (folded)               -> 404 not_found
+        //   exact=Impacto               (es, Shock)            -> 404 not_found
+        //
+        // while `fuzzy=` resolves the same needles to the foreign printing. So the split is not
+        // script- or accent-related: `exact=` is scoped to the ORACLE name and `fuzzy=` is not,
+        // and a printed-name pass here would answer 200 where Scryfall answers 404 on every
+        // well-formed foreign name — the opposite of parity. A printed-name record lookup was
+        // written for this path and is deleted with it rather than left unreachable.
+        //
+        // IT DOES READ FLAVOR NAMES, which is not the same rule read loosely — it is the third
+        // case, measured the same day on the same route:
+        //
+        //   exact=Godzilla, Primeval Champion  -> 200, Titanoth Rex prm/80925 (that printing)
+        //   exact=Mechagodzilla, the Weapon    -> 200, Crystalline Giant prm/80937
+        //   exact=Yojimbo                      -> 200, Solitude sld/7004
+        //   exact=Titanoth Rex   (control)     -> 200, Titanoth Rex iko/174 (the oracle default)
+        //   exact=Dracula, Lord of Blood       -> 404  (a FACE flavor name — face-level does not
+        //                                              participate, and is not indexed here)
+        //
+        // A flavor name resolves to the PRINTING that carries it, not the card's default — which
+        // is why this pass answers with the record's own vpid. It runs only when the oracle scan
+        // found nothing, so `exact=Titanoth Rex` still answers iko/174.
+        if best.is_none()
+            && let Some(rec) = record_of_exact_name(&data.indexes.flavor_names, &data.strings, folded)
+            && let Some((vpid, _)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
+        {
+            return Ok(Some(card_to_json(
+                &data.cards[card_of_vpid(data, vpid) as usize],
+                printing_at(data, vpid),
+                &data.strings,
+                &data.coll_vocab,
+                &resolved_fields,
+            )));
+        }
+        let Some((_, _, cid, vpid)) = best else { return Ok(None) };
         Ok(Some(card_to_json(
             &data.cards[cid],
-            &data.printings[pid],
+            printing_at(data, vpid as u32),
             &data.strings,
             &data.coll_vocab,
             &resolved_fields,
         )))
     }
 
-    /// One card per DISTINCT name whose folded name contains every one of `words`, best printing
-    /// each, up to `limit`.
+    /// A record's best printing passing the set filter, with its prefer score — the annex twin
+    /// of `best_printing_of`. The record's vpids are stored best-prefer-first, so the first one
+    /// through the filter is the answer. `idx` is `printed_names` or `flavor_names`: containment
+    /// reads both, `exact=` reads only the second (see `exact_card_by_name`).
+    fn best_vpid_of_record_in(
+        &self,
+        idx: &Archived<crate::PrintedNameIndex>,
+        rec: usize,
+        set_code: Option<&str>,
+    ) -> Option<(u32, f32)> {
+        let data = self.data();
+        let pn = idx;
+        let (from, to) = (u32::from(pn.offsets[rec]) as usize, u32::from(pn.offsets[rec + 1]) as usize);
+        pn.vpids[from..to]
+            .iter()
+            .map(|v| u32::from(*v))
+            .find(|&v| {
+                set_code.is_none_or(|s| printing_at(data, v).card_set_code.as_str().eq_ignore_ascii_case(s))
+            })
+            .map(|v| (v, printing_at(data, v).prefer_score.as_ref().map_or(f32::MIN, |x| f32::from(*x))))
+    }
+
+    /// `best_vpid_of_record_in` over the printed-name index — the shape most callers want.
+    fn best_vpid_of_record(&self, rec: usize, set_code: Option<&str>) -> Option<(u32, f32)> {
+        self.best_vpid_of_record_in(&self.data().indexes.printed_names, rec, set_code)
+    }
+
+    /// One card per DISTINCT name whose NAMES carry every one of `words`, best printing each, up
+    /// to `limit`.
     ///
     /// LOCAL ADDITION, same reasoning as `exact_card_by_name`: this is the containment stage of
     /// `/cards/named?fuzzy=`, which upstream runs as a `DISTINCT ON (card_name)` with a LIKE per
     /// word. The caller asks for 2 and reads the count: more than one distinct name is
     /// `ambiguous`, which Scryfall reports rather than guessing between.
+    ///
+    /// SCRYFALL'S TWO SLACKNESSES, both measured against api.scryfall.com on 2026-08-16 and both
+    /// reproduced here (they are why `fuzzy=red goad` resolves at all):
+    ///
+    ///   1. SEPARATORS DO NOT COUNT. A word matches the name with every non-alphanumeric removed,
+    ///      so it may span the name's own word boundaries: `goad` is inside `Ego à Deriva`
+    ///      ("eg|o a d|eriva"), and `aust`/`com` are inside `Manicomio Infausto`.
+    ///   2. THE POOL IS THE PRINTING'S NAMES, NOT ONE NAME. Each word may land in EITHER the
+    ///      oracle name or that printing's printed name, independently and in any order:
+    ///      `red goad` takes `red` from "Unmoo|red| Ego" and `goad` from the Portuguese
+    ///      "Ego à Deriva", and `fuzzy=goad red` resolves to the same printing.
+    ///
+    /// The answer is the PRINTING whose names completed the match — the card's preferred printing
+    /// when the oracle name alone carried every word, the best printing of the printed name that
+    /// supplied the rest otherwise.
     pub fn cards_containing_all_words(
         &self,
         words: &[String],
@@ -1504,47 +1979,162 @@ impl BufferStore {
     ) -> Result<Vec<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        // Best printing per distinct NAME, not per card: two cards sharing a name are one answer.
-        let mut by_name: Vec<(&str, f32, usize, usize)> = Vec::new();
-        // Narrow on the LONGEST word: every word must be contained, so any one of them is a sound
-        // filter, and the longest has the most trigrams to intersect and so the fewest postings to
-        // survive them. Candidate ids stay ascending, which is what the `limit` break below assumes.
-        let longest = words.iter().max_by_key(|w| w.len()).map(String::as_str).unwrap_or("");
-        for cid in name_scan_candidates(data, longest) {
+        // Separators are stripped from the QUERY side once, here, so the match is a plain
+        // "contains, ignoring the name's separators" per candidate (see contains_unseparated).
+        let needles: Vec<String> = words.iter().map(|w| strip_separators(w)).filter(|w| !w.is_empty()).collect();
+        if needles.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Two answers are distinct when they differ in BOTH card and oracle name — the fuzzy
+        // lane's rule (FuzzyRace): several printings of one card are one answer, a card's own
+        // printed names are too, and two cards sharing a name stay one answer. `matched` is the
+        // length of the PRINTED name that completed the match, 0 for an oracle-only hit: the
+        // shortest one answers, because a name that spells the query and nothing else is the match
+        // the query meant (`fuzzy=ego à deriva` is contained by the Portuguese "Ego à Deriva", the
+        // Spanish "Ego a la deriva" and the Italian "Ego alla Deriva" alike, and Scryfall answers
+        // the Portuguese one — measured 2026-08-16). Prefer score breaks what length cannot.
+        let mut answers: Vec<Answer> = Vec::new();
+        // The query as ONE unseparated string, for the whole-name rank: a name that IS the query
+        // ends the ambiguity question outright (see equals_unseparated). Word order matters here
+        // and nowhere else in this stage — an exact name is a sequence, containment is a set.
+        let whole: String = needles.concat();
+        let mut exact: Option<Answer> = None;
+        // A word under 3 bytes has no trigrams and narrows nothing; when no word has any, the scan
+        // is the only answer.
+        let narrowable: Vec<&str> = needles.iter().map(String::as_str).filter(|w| w.len() >= 3).collect();
+        // THE ORACLE PASS narrows on the LONGEST word alone, and can: it answers only when the
+        // oracle name carries EVERY word, so any one of them is a sound filter and the longest is
+        // the most selective.
+        let longest = narrowable.iter().max_by_key(|w| w.len()).copied().unwrap_or("");
+        let mut cards: Vec<u32> = Vec::new();
+        if narrowable.is_empty() {
+            cards.extend(0..data.cards.len() as u32);
+        } else {
+            // ONE probe. `name_trigram` is built over the COLLATED name and `name_scan_candidates`
+            // collates the needle, so a query word that spans a separator now shares windows with
+            // the name that carries it — `goad` IS a window of "egoaderiva". This used to need
+            // `unseparated_variants`: several hundred re-spellings of the word with separators put
+            // back in, unioned, because the index windowed names as stored. Against a collated
+            // index every one of those collapses to this same probe, and the union of a few
+            // hundred identical answers is what took `cards_containing_all_words` from 2.6% of a
+            // full scan to 6.3% (gate perf ratios, limit 3%).
+            cards.extend(name_scan_candidates(data, longest));
+        }
+        for cid in cards {
             let cid = cid as usize;
-            let card = &data.cards[cid];
-            let name = crate::folded_name(card, &data.strings);
-            if !words.iter().all(|w| name.contains(w.as_str())) {
+            let name = crate::folded_name(&data.cards[cid], &data.strings);
+            if !needles.iter().all(|w| contains_unseparated(name, w)) {
                 continue;
             }
-            let Some((pid, score)) = self.best_printing_of(cid, set_code) else {
+            let Some((vpid, score)) = self.best_printing_of(cid, set_code) else { continue };
+            let answer = Answer { name, score, cid, vpid, matched: 0 };
+            if equals_unseparated(name, &whole) {
+                // An oracle name that IS the query. Nothing outranks it, and a second card
+                // spelling the same name is the same answer either way.
+                if exact.as_ref().is_none_or(|best| score > best.score) {
+                    exact = Some(answer);
+                }
                 continue;
-            };
-            match by_name.iter_mut().find(|(n, _, _, _)| *n == name) {
-                Some(slot) if score > slot.1 => *slot = (name, score, cid, pid),
-                Some(_) => {}
-                None => by_name.push((name, score, cid, pid)),
             }
             // One past the limit is enough to tell "one match" from "ambiguous"; the caller asks
-            // for 2 and never needs the rest.
-            if by_name.len() > limit {
-                break;
+            // for 2 and never needs the rest. The pass still RUNS to the end of its candidates
+            // rather than breaking: a name that IS the query outranks ambiguity, and candidates
+            // arrive in card order, not in rank order.
+            Self::offer_answer(&mut answers, answer, limit);
+        }
+        // THE RECORD PASSES: names OTHER than the oracle name that a printing carries — its
+        // printed name, and its `flavor_name`. Both indexes have the same shape and the same
+        // rule, so they are one loop.
+        //
+        // The flavor pass is what resolves `fuzzy=godzilla primeval` (Titanoth Rex, whose flavor
+        // name is "Godzilla, Primeval Champion"), `fuzzy=rex godzilla` and `fuzzy=titanoth
+        // champion` — the last of which takes "titanoth" from the ORACLE name and "champion"
+        // from the flavor name, which is the pooling rule below doing its job across a third
+        // name. All three measured on api.scryfall.com 2026-08-16.
+        //
+        // Narrowed on EVERY word, unioned — unlike the oracle pass this one cannot know which
+        // word the other name supplies, and the words it does not supply are the oracle name's.
+        // Ambiguity here is counted by ORACLE CARD, not by string: a record whose card already
+        // answered — under its oracle name or another of its printed names — is the same answer,
+        // so "berserker" matching a card's ja and es names cannot fake a two-answer tie. Two
+        // different CARDS are two answers, exactly like two oracle names. Skipped once the pass
+        // above already proved ambiguity: the caller only reads the count past `limit`.
+        for pn in [&data.indexes.printed_names, &data.indexes.flavor_names] {
+            if exact.is_some() || pn.name_ids.is_empty() {
+                continue;
+            }
+            let mut records: Vec<u32> = Vec::new();
+            if narrowable.is_empty() {
+                records.extend(0..pn.name_ids.len() as u32);
+            } else {
+                for variant in narrowable.iter().flat_map(|w| unseparated_variants(w)) {
+                    match crate::trigram_candidates(&pn.trigrams, &variant) {
+                        Some(ids) => records.extend(ids),
+                        None => records.extend(0..pn.name_ids.len() as u32),
+                    }
+                }
+                records.sort_unstable();
+                records.dedup();
+            }
+            for rec in records {
+                let rec = rec as usize;
+                let Some(printed) = str_at(&data.strings, u32::from(pn.name_ids[rec])) else { continue };
+                let Some((vpid, score)) = self.best_vpid_of_record_in(pn, rec, set_code) else { continue };
+                let cid = card_of_vpid(data, vpid) as usize;
+                let name = crate::folded_name(&data.cards[cid], &data.strings);
+                // The printing's whole pool: this printed name OR the oracle name it prints.
+                if !needles.iter().all(|w| contains_unseparated(printed, w) || contains_unseparated(name, w)) {
+                    continue;
+                }
+                let answer = Answer { name, score, cid, vpid: vpid as usize, matched: printed.len() };
+                if equals_unseparated(printed, &whole) {
+                    // A printed name that IS the query — `fuzzy=egoaderiva` and `fuzzy=ego à
+                    // deriva` alike. It outranks containment, but never an ORACLE name that is
+                    // also the query: `exact=` is oracle-scoped and this stage keeps that order.
+                    if exact.as_ref().is_none_or(|best| best.matched > 0 && score > best.score) {
+                        exact = Some(answer);
+                    }
+                    continue;
+                }
+                Self::offer_answer(&mut answers, answer, limit);
             }
         }
-        by_name.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        // A name that IS the query is THE answer, however many other names carry its letters.
+        let mut by_name = match exact {
+            Some(answer) => vec![answer],
+            None => answers,
+        };
+        by_name.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
         Ok(by_name
             .into_iter()
             .take(limit)
-            .map(|(_, _, cid, pid)| {
+            .map(|answer| {
                 card_to_json(
-                    &data.cards[cid],
-                    &data.printings[pid],
+                    &data.cards[answer.cid],
+                    printing_at(data, answer.vpid as u32),
                     &data.strings,
                     &data.coll_vocab,
                     &resolved_fields,
                 )
             })
             .collect())
+    }
+
+    /// Record one containment answer, keeping ONE per (card, oracle name) class: the shortest
+    /// completing printed name, then the better prefer score. See `cards_containing_all_words`.
+    fn offer_answer<'a>(answers: &mut Vec<Answer<'a>>, candidate: Answer<'a>, limit: usize) {
+        match answers.iter().position(|a| a.name == candidate.name || a.cid == candidate.cid) {
+            Some(at) => {
+                let slot = &answers[at];
+                if (candidate.matched, -candidate.score) < (slot.matched, -slot.score) {
+                    answers[at] = candidate;
+                }
+            }
+            // One past the limit is all the caller reads ("more than one" is ambiguous), so the
+            // list stops growing there while the passes keep looking for a whole-name match.
+            None if answers.len() <= limit => answers.push(candidate),
+            None => {}
+        }
     }
 
     /// The best printing carrying this illustration id, or None.
@@ -1671,6 +2261,11 @@ pub struct QueryOptions {
     pub limit: usize,
     pub offset: usize,
     pub fields: Option<Vec<String>>,
+    /// Scryfall's `include_multilingual`: widen the search to the foreign-printing annex. False
+    /// is Scryfall's default — English/canonical printings only. The OTHER widening trigger is a
+    /// `lang:` leaf in the bound filter, detected during filter compile (FilterExpr::widens_to_annex),
+    /// so the flag and the operator can never widen differently.
+    pub include_multilingual: bool,
 }
 
 impl Default for QueryOptions {
@@ -1683,6 +2278,7 @@ impl Default for QueryOptions {
             limit: 100,
             offset: 0,
             fields: None,
+            include_multilingual: false,
         }
     }
 }
@@ -1719,6 +2315,11 @@ impl QueryOptions {
                         opts.offset = n as usize;
                     }
                 }
+                "include_multilingual" => {
+                    opts.include_multilingual = val
+                        .as_bool()
+                        .ok_or_else(|| EngineError::query("option \"include_multilingual\" must be a boolean"))?;
+                }
                 "fields" => {
                     if val.is_null() {
                         opts.fields = None;
@@ -1746,6 +2347,40 @@ impl QueryOptions {
 #[derive(Debug, Clone)]
 pub struct QueryOutput {
     pub total: usize,
+    pub rows: Vec<Value>,
+    /// LOCAL ADDITION (Cloudflare port): whether this query ran the WIDENED driver — either
+    /// `include_multilingual` was set or the bound filter carried a `lang:` leaf.
+    ///
+    /// It exists so `/cards/search` can echo `include_multilingual` in `next_page` the way
+    /// Scryfall does: a `lang:` in `q` alone makes Scryfall's echo say `true`. The route cannot
+    /// work that out for itself without re-implementing the lang-leaf detection in TypeScript,
+    /// which is the drift this engine's one-implementation rule exists to prevent — so the engine
+    /// hands back the answer it already computed to choose a driver.
+    pub widened: bool,
+}
+
+/// LOCAL PATCH (Cloudflare port): one cross-partition fuzzy candidate — the best score of a
+/// distinct (card, name) class. `oracle_id` is the canonical hyphenated uuid string ("" for the
+/// unset id), the identity the global race's "same card never competes with itself" rule keys on.
+#[derive(Debug, Clone)]
+pub struct FuzzyCandidate {
+    pub score: f32,
+    pub oracle_id: String,
+    pub vpid: u32,
+    pub folded_name: String,
+}
+
+/// LOCAL PATCH (Cloudflare port): [`BufferStore::query_keys`]'s answer — the exact total plus
+/// the page's opaque sort keys, each paired with the virtual printing id [`BufferStore::fetch_rows`]
+/// resolves. Keys are byte-comparable within and ACROSS partitions (see `encode_sort_key`), and
+/// every key leads with `SORT_KEY_VERSION` — a merge must refuse mixed versions.
+#[derive(Debug, Clone)]
+pub struct QueryKeysOutput {
+    pub total: usize,
+    pub keys: Vec<(Vec<u8>, u32)>,
+    /// The materialized rows for the first `rows.len()` entries of `keys`, in the same order —
+    /// phase 2 folded into phase 1 (see [`BufferStore::query_keys`]). Empty when the caller asked
+    /// for none. Always a PREFIX of `keys`, so an entry's row is at the same index as its key.
     pub rows: Vec<Value>,
 }
 
@@ -1867,7 +2502,16 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("card_subtypes", |c, _p, _s, v| {
         str_vec_value(c.card_subtypes.iter().map(|id| coll_str(v, u16::from(*id))).collect())
     }),
-    ("card_keywords", |c, _p, _s, v| str_vec_value(sorted_strs(v, &c.card_keywords))),
+    // Scryfall's casing, in Scryfall's order — the folded, sorted `card_keywords` is the SEARCH
+    // form and never reaches a card object. Empty printed list falls back to it so a hand-built
+    // row (tests, benches) without the printed key still renders its keywords.
+    ("card_keywords", |c, _p, _s, v| {
+        if c.card_keywords_printed.is_empty() {
+            str_vec_value(sorted_strs(v, &c.card_keywords))
+        } else {
+            str_vec_value(c.card_keywords_printed.iter().map(|id| coll_str(v, u16::from(*id))).collect())
+        }
+    }),
     ("card_oracle_tags", |c, _p, _s, v| str_vec_value(sorted_strs(v, &c.card_oracle_tags))),
     ("card_art_tags", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.card_art_tags))),
     ("card_is_tags", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.card_is_tags))),
@@ -1889,6 +2533,16 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
             .unwrap_or(Value::Null)
     }),
     ("color_identity", |c, _p, _s, _v| str_vec_value(identity_letters(c.card_color_identity))),
+    // Scryfall's `produced_mana`, which the store has always held (the `produces:` filter reads
+    // the same byte) and no field table ever emitted — so every land this port served was missing
+    // a key Scryfall sends. Omitted, not nulled, when the card produces nothing: Value::Null goes
+    // through the writers' absent path.
+    ("color_indicator", |c, _p, _s, _v| {
+        if c.color_indicator == 0 { Value::Null } else { str_vec_value(identity_letters(c.color_indicator)) }
+    }),
+    ("produced_mana", |c, _p, _s, _v| {
+        if c.produced_mana == 0 { Value::Null } else { str_vec_value(identity_letters(c.produced_mana)) }
+    }),
     ("legalities", |c, p, _s, _v| {
         // Printing-level word only for the ~556 divergence cards, the same rule the filters use.
         let bits = if c.legality_divergent { u64::from(p.card_legalities) } else { u64::from(c.card_legalities) };
@@ -1898,7 +2552,7 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // Same standing note as #877's five above: FIELD_TABLE is pyo3-gated and compiles to nothing
     // in this port, so these hand-written twins are the live table. The residue fields are NOT
     // here — they moved to JSON_COMPAT_FIELD_TABLE below with the second archive.
-    ("card_faces", |c, p, s, v| faces_to_json(c, p, s, v)),
+    ("card_faces", |c, p, s, _v| faces_to_json(c, p, s)),
     ("colors", |c, _p, _s, _v| str_vec_value(identity_letters(c.card_colors))),
     // See FIELD_TABLE's note: upstream emits `border_color: null` on every engine-served card and
     // omits `frame`, because neither had an accessor. Scryfall always sends both.
@@ -1906,7 +2560,13 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("frame", |_c, p, _s, v| opt_str_value(frame_of(p, v))),
     ("oracle_id", |c, _p, _s, _v| uuid_value(u128::from(c.oracle_id))),
     ("flavor_text", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.flavor_text_id)))),
-    ("artist", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.card_artist_vid)))),
+    // The ORIGINAL-CASE string, from its own interned id. Resolving `card_artist_vid` here served
+    // garbage twice over — the vid indexes the ARTIST vocab, not the collection vocab this arm was
+    // reading ("fumes" for Franz Vohwinkel in production), and even the right vocab holds only the
+    // lowercased search form. Fixture parity could never catch the cross-vocab half: both twins
+    // read the same row JSON, so they agreed on the scrambled value — the live-parity harness
+    // against api.scryfall.com is the guard that did.
+    ("artist", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.card_artist_name_id)))),
     ("watermark", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.card_watermark_id)))),
     ("edhrec_rank", |c, _p, _s, _v| {
         c.edhrec_rank.as_ref().copied().map(|v| Value::from(u32::from(v))).unwrap_or(Value::Null)
@@ -1924,6 +2584,17 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // emitting them, which is what keeps a reconstructed object shaped like Scryfall's instead
     // of sprouting nulls Scryfall never sent.
     ("lang", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.lang_id)))),
+    // The printing's printed-language text (top-level; the per-face halves ride card_faces).
+    // `null` = Scryfall omitted the key, same absence rule as every field in this block.
+    ("printed_name", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.printed_name_id)))),
+    // Scryfall's `flavor_name`: the alternate name a printing is sold under. Its key position is
+    // "immediately before `lang`" on every one of the 669 top-level occurrences in the 2026-08-16
+    // all_cards bulk, which is `name -> flavor_name -> lang` when there is no printed name and
+    // `name -> printed_name -> flavor_name -> lang` when there is. The face-level variant rides
+    // the face objects instead; the two never appear on one printing.
+    ("flavor_name", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.flavor_name_id)))),
+    ("printed_type_line", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.printed_type_line_id)))),
+    ("printed_text", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.printed_text_id)))),
     ("image_status", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.image_status_id)))),
     ("set_type", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.set_type_id)))),
     ("security_stamp", |_c, p, _s, v| opt_str_value(coll_str_opt(v, u16::from(p.compat.security_stamp_id)))),
@@ -1943,9 +2614,17 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("multiverse_ids", |_c, p, _s, _v| {
         Value::Array(p.compat.multiverse_ids.iter().map(|v| Value::from(u32::from(*v))).collect())
     }),
-    ("promo_types", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.compat.promo_types))),
-    ("frame_effects", |_c, p, _s, v| str_vec_value(sorted_strs(v, &p.compat.frame_effects))),
-    ("games", |_c, p, _s, _v| str_vec_value(bits_to_names(p.compat.games, GAME_NAMES))),
+    // In STORED order, which is the payload's: the ingest reads both with jv_str_list_to_ids, so
+    // the order was there all along and only the emission was throwing it away. Scryfall serves
+    // `["showcase","legendary"]` and `["universesbeyond","ffv"]`, neither of them alphabetical.
+    ("promo_types", |_c, p, _s, v| {
+        str_vec_value(p.compat.promo_types.iter().map(|id| coll_str(v, u16::from(*id))).collect())
+    }),
+    ("frame_effects", |_c, p, _s, v| {
+        str_vec_value(p.compat.frame_effects.iter().map(|id| coll_str(v, u16::from(*id))).collect())
+    }),
+    // Scryfall's own order, not a fixed one -- the byte carries the permutation (see GAME_ORDERS).
+    ("games", |_c, p, _s, _v| str_vec_value(games_to_names(p.compat.games))),
     ("finishes", |_c, p, _s, _v| str_vec_value(bits_to_names(p.compat.finishes, FINISH_NAMES))),
     ("booster", |_c, p, _s, _v| Value::from(compat_flag(&p.compat, COMPAT_BOOSTER))),
     ("digital", |_c, p, _s, _v| Value::from(compat_flag(&p.compat, COMPAT_DIGITAL))),
@@ -1959,9 +2638,11 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("story_spotlight", |_c, p, _s, _v| Value::from(compat_flag(&p.compat, COMPAT_STORY_SPOTLIGHT))),
     ("textless", |_c, p, _s, _v| Value::from(compat_flag(&p.compat, COMPAT_TEXTLESS))),
     ("variation", |_c, p, _s, _v| Value::from(compat_flag(&p.compat, COMPAT_VARIATION))),
-    ("all_parts", |c, _p, s, v| {
+    // Off the PRINTING, not the card: Scryfall's related-card list varies by printing (see the
+    // field's note on `Printing`), so every printing answers with its own or with none.
+    ("all_parts", |_c, p, s, v| {
         Value::Array(
-            c.all_parts
+            p.all_parts
                 .iter()
                 .map(|part| {
                     let mut m = Map::with_capacity(5);
@@ -1996,16 +2677,23 @@ fn opt_cents_value(v: Option<u32>) -> Value {
 /// in a tenth the time — measured, `exact_card_by_name` 1,090 us against `name:ward` at 75 us.
 /// The index was right there; these routes predate the habit of reaching for it.
 ///
-/// SOUND because both callers require the needle as a CONTIGUOUS SUBSTRING of the stored folded
-/// name — `folded_name_matches` accepts the whole name or one side of a " // " split, and
-/// `cards_containing_all_words` uses `contains` — so a matching name contains every trigram of the
-/// needle and cannot be outside the intersection. The callers still re-verify; this only decides
-/// who gets asked.
+/// SOUND for `exact=`, whose needle is a CONTIGUOUS SUBSTRING of the stored folded name by
+/// construction — `folded_name_matches` accepts the whole name or one side of a " // " split — so a
+/// matching name contains every trigram of the needle and cannot be outside the intersection.
+///
+/// The containment stage matches with the name's SEPARATORS IGNORED, which is weaker than
+/// contiguous, so this index cannot decide that question alone: `cards_containing_all_words` unions
+/// this over every word and states the recall edge that leaves. The callers still re-verify; this
+/// only decides who gets asked.
 ///
 /// `None` from `trigram_candidates` means the needle is under 3 bytes, where the index has nothing
-/// to say and the full scan is the only answer. NOT usable for `autocomplete`, which matches on
-/// `card_name_lower` while this index is built over `card_name_folded`: the two differ on 88 cards,
-/// so narrowing a lower-name predicate through a folded index would silently drop them.
+/// to say and the full scan is the only answer.
+///
+/// The needle is COLLATED before it is looked up, because the index is built over
+/// `card_name_collated`: a folded needle that kept its spaces ("of the") has no window in common
+/// with the collated names and would narrow to nothing. Collating only ever WIDENS the candidate
+/// set relative to the folded question the callers ask — deleting the same character class from
+/// both sides preserves containment — so every caller's own verification still decides.
 fn name_scan_candidates(data: &Archived<CardData>, needle: &str) -> Vec<u32> {
     let idx = &data.indexes.name_trigram;
     // APPLICABILITY CHECK, the same shape every other index gets (`sort_perms::order` length-checks
@@ -2016,7 +2704,129 @@ fn name_scan_candidates(data: &Archived<CardData>, needle: &str) -> Vec<u32> {
     if u32::from(idx.domain) as usize != data.cards.len() {
         return (0..data.cards.len() as u32).collect();
     }
-    crate::trigram_candidates(idx, needle).unwrap_or_else(|| (0..data.cards.len() as u32).collect())
+    let collated = crate::collate_name(needle);
+    if collated.is_empty() {
+        return (0..data.cards.len() as u32).collect();
+    }
+    crate::trigram_candidates(idx, &collated).unwrap_or_else(|| (0..data.cards.len() as u32).collect())
+}
+
+/// A query word with every non-alphanumeric character removed — the form the containment stage
+/// matches with (see `cards_containing_all_words`). Apostrophes ride along: `yawgmoth's` becomes
+/// `yawgmoths`, which is what "Yawgmoth's Will" reads as with ITS separators gone.
+fn strip_separators(word: &str) -> String {
+    word.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// One containment answer: the printing that carries it, and what completed the match.
+///
+/// `matched` is the length of the PRINTED name that supplied the words the oracle name could not,
+/// and 0 when the oracle name carried all of them — the rank that decides which of a card's
+/// printings answers (see `cards_containing_all_words`).
+struct Answer<'a> {
+    name: &'a str,
+    score: f32,
+    cid: usize,
+    vpid: usize,
+    matched: usize,
+}
+
+/// The separator runs a folded name can spell BETWEEN two of a query word's characters. Space
+/// covers nearly everything; the rest are what the corpus actually puts inside a name — an
+/// apostrophe ("Yawgmoth's Will"), a hyphen ("Ley-Line"), and comma-space ("Yawgmoth, Thran
+/// Physician"), which is the only multi-byte run that occurs often enough to matter.
+const NAME_SEPARATORS: [&str; 4] = [" ", "'", "-", ", "];
+
+/// How the corpus could have SPELLED `word`, for narrowing: the word itself, then the word with
+/// one or two separator runs inserted between its characters.
+///
+/// The trigram index windows names AS STORED, so a word that spans a separator shares no window
+/// with the name that carries it — `goad` has no window in common with "ego a deriva". Every
+/// variant here is an ordinary contiguous probe, and their union covers every occurrence with up
+/// to two separator runs inside the word: `lightningbolt` finds "lightning bolt" and `egoaderiva`
+/// finds "ego a deriva". A variant the corpus never spells dies on its first window lookup, which
+/// is what keeps a few hundred probes cheap.
+///
+/// KNOWN EDGE: three or more separator runs inside ONE query word is not enumerated (a four-word
+/// name typed as a single token). Two is where the observed Scryfall answers stop, and the count
+/// grows quadratically in the word's length — so the k=2 tier is also capped at
+/// `TWO_SEPARATOR_MAX_LEN`, past which a word long enough to need it identifies its card by its
+/// contiguous half anyway.
+fn unseparated_variants(word: &str) -> Vec<String> {
+    /// Past this, only the one-separator tier is enumerated (see above).
+    const TWO_SEPARATOR_MAX_LEN: usize = 20;
+    let chars: Vec<&str> = word.char_indices().map(|(i, c)| &word[i..i + c.len_utf8()]).collect();
+    let mut out = vec![word.to_owned()];
+    for first in 1..chars.len() {
+        for sep in NAME_SEPARATORS {
+            out.push(format!("{}{sep}{}", chars[..first].concat(), chars[first..].concat()));
+        }
+        // The two-run tier is SPACES ONLY, and 16x cheaper for it. Two runs inside one query word
+        // means the name spelled it across three of its own words — "ego a deriva" carrying `goad`
+        // — and a name that puts punctuation at BOTH of those joins, typed as one token, is a
+        // shape no observed Scryfall answer needs.
+        if word.len() > TWO_SEPARATOR_MAX_LEN {
+            continue;
+        }
+        for second in first + 1..chars.len() {
+            out.push(format!(
+                "{} {} {}",
+                chars[..first].concat(),
+                chars[first..second].concat(),
+                chars[second..].concat(),
+            ));
+        }
+    }
+    out
+}
+
+/// `hay` IS `needle` (already separator-free) once `hay`'s non-alphanumerics are dropped.
+///
+/// The whole-name half of the containment rule: `fuzzy=lightningbolt` answers Lightning Bolt on
+/// api.scryfall.com (2026-08-16) even though "Emeritus of Conflict // Lightning Bolt" contains the
+/// same letters, so a name that IS the query outranks every name that merely carries it — and
+/// that is not `hay == needle`, which the separators break.
+fn equals_unseparated(hay: &str, needle: &str) -> bool {
+    let mut wanted = needle.chars();
+    for c in hay.chars().filter(|c| c.is_alphanumeric()) {
+        if wanted.next() != Some(c) {
+            return false;
+        }
+    }
+    wanted.next().is_none()
+}
+
+/// `needle` (already separator-free) inside `hay`, ignoring `hay`'s non-alphanumerics.
+///
+/// Scryfall's containment rule, and it is not the same as `hay.contains(needle)`: `goad` is inside
+/// "ego à deriva" because the folded name reads `egoaderiva` once its spaces are dropped. No
+/// allocation — the name is walked in place, per start position, skipping separators as they come.
+/// Names are short (61 bytes covers the corpus), so the quadratic worst case is bounded.
+fn contains_unseparated(hay: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut rest = hay;
+    while !rest.is_empty() {
+        let mut hay_chars = rest.chars();
+        let mut needle_chars = needle.chars();
+        let mut wanted = needle_chars.next();
+        while let Some(want) = wanted {
+            match hay_chars.next() {
+                None => return false, // the name ran out mid-needle, and every later start is shorter
+                Some(c) if !c.is_alphanumeric() => {} // a separator the query never spelled
+                Some(c) if c == want => wanted = needle_chars.next(),
+                Some(_) => break,
+            }
+        }
+        if wanted.is_none() {
+            return true;
+        }
+        let mut next = rest.chars();
+        next.next();
+        rest = next.as_str();
+    }
+    false
 }
 
 fn folded_name_matches(stored: &str, needle: &str) -> bool {
@@ -2035,7 +2845,7 @@ fn folded_name_matches(stored: &str, needle: &str) -> bool {
 /// the second a pure function of the card's id and the face's position, so the caller re-emits
 /// both. A printing carrying fewer face-art records than the card has faces leaves those faces
 /// without art rather than borrowing the wrong face's, exactly as the pydict twin does.
-fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, vocab: &AStrings) -> Value {
+fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings) -> Value {
     Value::Array(
         card.faces
             .iter()
@@ -2056,15 +2866,46 @@ fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, v
                     opt_str_value(str_at(strings, u32::from(face.planeswalker_loyalty_text_id))),
                 );
                 m.insert("defense".to_owned(), opt_str_value(str_at(strings, u32::from(face.defense_text_id))));
-                m.insert("colors".to_owned(), str_vec_value(identity_letters(face.card_colors)));
+                // `unwrap_or(0)` deliberately: this writer has always emitted the key on every
+                // face, and the absent/empty distinction the column now carries is a SEARCH fact.
+                // The Scryfall-compat writer (card_object.rs) emits faces from the row's own face
+                // records, where an absent key was already absent, so nothing on the parity path
+                // reads this.
+                m.insert(
+                    "colors".to_owned(),
+                    str_vec_value(identity_letters(face.card_colors.as_ref().map_or(0, |v| *v))),
+                );
                 m.insert(
                     "color_indicator".to_owned(),
                     str_vec_value(identity_letters(face.color_indicator)),
                 );
                 if let Some(art) = printing.faces.get(i) {
-                    m.insert("artist".to_owned(), opt_str_value(coll_str_opt(vocab, u16::from(art.card_artist_vid))));
+                    // Original case from the string table — see JSON_FIELD_TABLE's `artist` arm.
+                    m.insert("artist".to_owned(), opt_str_value(str_at(strings, u32::from(art.card_artist_name_id))));
                     m.insert("illustration_id".to_owned(), uuid_value(u128::from(art.illustration_id)));
                     m.insert("flavor_text".to_owned(), opt_str_value(str_at(strings, u32::from(art.flavor_text_id))));
+                    // Present only when THIS face carries one — absence is exact, like the
+                    // printed triple below and unlike `flavor_text`, which Scryfall's face
+                    // objects carry as a key even when empty.
+                    if let Some(v) = str_at(strings, u32::from(art.flavor_name_id)) {
+                        m.insert("flavor_name".to_owned(), Value::String(v.to_owned()));
+                    }
+                }
+                // The printed-language triple, inserted only when this printing's face carries
+                // the key: absence is exact per face (a prepare-layout Spanish printing
+                // localizes the front face's name and type line and nothing else), so an
+                // absent key never becomes a null. Keys land alphabetically like the rest —
+                // this Map is a BTreeMap — which the TS twin mirrors.
+                if let Some(printed) = printing.printed_faces.get(i) {
+                    if let Some(v) = str_at(strings, u32::from(printed.printed_name_id)) {
+                        m.insert("printed_name".to_owned(), Value::String(v.to_owned()));
+                    }
+                    if let Some(v) = str_at(strings, u32::from(printed.printed_type_line_id)) {
+                        m.insert("printed_type_line".to_owned(), Value::String(v.to_owned()));
+                    }
+                    if let Some(v) = str_at(strings, u32::from(printed.printed_text_id)) {
+                        m.insert("printed_text".to_owned(), Value::String(v.to_owned()));
+                    }
                 }
                 Value::Object(m)
             })
@@ -2111,7 +2952,7 @@ fn card_to_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NONE_STR;
+    use crate::{NONE_STR, find_printing_by_external_id};
     use serde_json::json;
 
     /// The LIVE gate for a result field in this port. A name that reaches
@@ -2212,7 +3053,7 @@ mod tests {
                   "oracle_text": "Flying", "flavor_text": "", "colors": ["U"] },
             ]
         });
-        let faces = jv_faces(&d, &mut it, &mut artists).expect("faces");
+        let faces = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
         assert_eq!(faces.len(), 2);
 
         // Front: mana_cost present.
@@ -2226,9 +3067,43 @@ mod tests {
         assert_eq!(faces[1].planeswalker_loyalty_text_id, NONE_STR);
         // Face colors arrive as a plain list, not the row columns' jsonb object.
         assert_eq!(faces[0].card_colors, faces[1].card_colors);
-        assert_ne!(faces[0].card_colors, 0);
+        assert_eq!(faces[0].card_colors, Some(0b0000_0010), "U");
         // color_indicator is absent on both, which is a clear mask rather than a wrong one.
         assert_eq!(faces[0].color_indicator, 0);
+    }
+
+    /// THE THREE STATES OF A FACE'S `colors`, which a bare `u8` had only two of.
+    ///
+    /// A split or flip face carries no `colors` key at all — Fire // Ice's halves have `name`,
+    /// `mana_cost` and `type_line` and nothing else — while an MDFC land back carries
+    /// `"colors": []`, declared colourless. Both used to arrive as the mask 0, and reading the
+    /// first as colourless is what would make `!"Fire // Ice" c:c` answer 1 where
+    /// api.scryfall.com answers 404. See `face_color_masks` for what each state then means.
+    #[test]
+    fn an_absent_face_colors_key_is_not_a_declared_empty_one() {
+        let mut it = Interner::new();
+        let mut artists = VocabInterner::new();
+        let d = json!({
+            "card_faces": [
+                // Fire // Ice, verbatim in shape: no `colors` anywhere on either half.
+                { "name": "Fire", "mana_cost": "{1}{R}", "type_line": "Instant" },
+                { "name": "Ice", "mana_cost": "{1}{U}", "type_line": "Instant" },
+            ]
+        });
+        let split = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
+        assert_eq!(split[0].card_colors, None, "an omitted key is not a colourless face");
+        assert_eq!(split[1].card_colors, None);
+
+        let d = json!({
+            "card_faces": [
+                { "name": "Kabira Takedown", "mana_cost": "{1}{W}", "type_line": "Instant", "colors": ["W"] },
+                // The land back DECLARES its emptiness, and that really does mean colourless.
+                { "name": "Kabira Plateau", "mana_cost": "", "type_line": "Land", "colors": [] },
+            ]
+        });
+        let mdfc = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
+        assert_eq!(mdfc[0].card_colors, Some(0b0000_0001), "W");
+        assert_eq!(mdfc[1].card_colors, Some(0), "a declared empty list IS colourless");
     }
 
     /// Faces must survive the spill codec.
@@ -2251,7 +3126,7 @@ mod tests {
                   "illustration_id": "c2b5f731-771b-4949-90f3-0ad40d676100", "artist": "Nils Hamm" },
             ]
         });
-        let faces = jv_faces(&d, &mut it, &mut artists).expect("faces");
+        let faces = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
 
         let mut row = decode_card_row(&encode_card_row(&CardRow {
             card_faces: faces,
@@ -2289,7 +3164,7 @@ mod tests {
             json!({"name": "Æther \"Vial\"\nSecond line", "oracle_text": "Draw a card.\nThen discard."}),
             json!({"name": "Jötun Grunt", "power": null}),
         ];
-        let out = QueryOutput { total: 4242, rows: rows.clone() };
+        let out = QueryOutput { total: 4242, rows: rows.clone(), widened: false };
 
         let wrapped = out.to_json();
         let want_rows = wrapped.get("rows").expect("rows key").to_string();
@@ -2310,7 +3185,7 @@ mod tests {
     /// An empty page still carries a well-formed prefix and an empty array, not "" or "null".
     #[test]
     fn total_and_rows_json_handles_an_empty_page() {
-        let bytes = QueryOutput { total: 0, rows: Vec::new() }.into_total_and_rows_bytes().expect("serialize");
+        let bytes = QueryOutput { total: 0, rows: Vec::new(), widened: false }.into_total_and_rows_bytes().expect("serialize");
         let answer = String::from_utf8(bytes).expect("valid UTF-8");
         assert_eq!(answer, "0 0\n[]");
     }
@@ -2401,6 +3276,12 @@ mod tests {
             ("printing_by_illustration_id", sz!(ix.printing_by_illustration_id)),
             ("oracle_by_oracle_id", sz!(ix.oracle_by_oracle_id)),
             ("external_id_index", sz!(ix.external_id_index)),
+            ("langs", sz!(ix.langs)),
+            ("foreign_langs", sz!(ix.foreign_langs)),
+            ("foreign_to_card", sz!(ix.foreign_to_card)),
+            ("foreign_by_scryfall_id", sz!(ix.foreign_by_scryfall_id)),
+            ("foreign_external_ids", sz!(ix.foreign_external_ids)),
+            ("printed_names", sz!(ix.printed_names)),
         ];
         parts.sort_by_key(|p| std::cmp::Reverse(p.1));
 
@@ -2450,5 +3331,2016 @@ mod tests {
         let mut mana = ManaVocabInterner::new();
         card_from_json(&json!({}), &mut it, &mut vocab, &mut artists, &mut mana)
             .expect("an empty object yields an all-defaults row")
+    }
+
+    // ─── Foreign-printing annex round trips ──────────────────────────────────
+
+    /// One engine row in the shape `card_from_json` reads: minimal, but grouping-complete.
+    fn annex_row(name: &str, oracle: &str, scry: &str, lang: &str, prefer: f64) -> Value {
+        json!({
+            "card_name": name,
+            "card_name_folded": name.to_lowercase(),
+            "oracle_id": oracle,
+            "scryfall_id": scry,
+            "illustration_id": format!("{scry}-art"),
+            "card_set_code": "tst",
+            "set_name": "Test Set",
+            "collector_number": "1",
+            "oracle_text": "Do a thing.",
+            "flavor_text": "",
+            "type_line": "Instant",
+            "card_types": ["Instant"],
+            "card_legalities": {"vintage": "legal"},
+            "card_colors": {"R": true},
+            "card_color_identity": {"R": true},
+            "produced_mana": {},
+            "card_layout": "normal",
+            "prefer_score": prefer,
+            "card_compat_blob": {"lang": lang},
+        })
+    }
+
+    /// Build through the Vec path and load through the buffer path — the wasm pipeline's shape.
+    fn build_store(rows: &[Value]) -> (Vec<u8>, BufferStore) {
+        let mut b = StoreBuilder::new();
+        for r in rows {
+            b.add_card(r).expect("stage row");
+        }
+        let mut bytes = Vec::new();
+        b.finish_to_writer(&mut bytes).expect("build store");
+        let store = BufferStore::from_bytes(&bytes).expect("load store");
+        (bytes, store)
+    }
+
+    /// The whole annex contract in one build→archive→read pass: non-canonical rows land in
+    /// `foreign` under a card-aligned CSR in prefer-desc order, the canonical space keeps only
+    /// the canonical rows, the annex indexes point where they claim, printed strings intern to
+    /// one table entry however many rows share them, absent printed keys stay absent — and the
+    /// spill codec reproduces the identical archive, so the alarm-chained wasm build cannot
+    /// drift from the Vec path.
+    #[test]
+    fn foreign_rows_build_an_annex_with_csr_integrity() {
+        let mut a_ja = annex_row("Shock", "oracle-a", "row-a-ja", "ja", 100.0);
+        a_ja["is_canonical"] = json!(false);
+        a_ja["printed_name"] = json!("ショック");
+        a_ja["printed_type_line"] = json!("インスタント");
+        a_ja["printed_text"] = json!("2点のダメージ");
+        a_ja["printed_name_folded"] = json!("ショック");
+        a_ja["card_compat_blob"]["multiverse_ids"] = json!([464001]);
+        // Spanish printing whose type line and text were never localized: name only.
+        let mut a_es = annex_row("Shock", "oracle-a", "row-a-es", "es", 90.0);
+        a_es["is_canonical"] = json!(false);
+        a_es["printed_name"] = json!("Impacto");
+        a_es["printed_name_folded"] = json!("impacto");
+        // A second card whose Japanese printing shares A's printed name byte-for-byte.
+        let mut b_ja = annex_row("Other Card", "oracle-b", "row-b-ja", "ja", 80.0);
+        b_ja["is_canonical"] = json!(false);
+        b_ja["printed_name"] = json!("ショック");
+        b_ja["printed_name_folded"] = json!("ショック");
+        let rows = vec![
+            annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0),
+            a_ja,
+            a_es,
+            annex_row("Other Card", "oracle-b", "row-b-en", "en", 150.0),
+            b_ja,
+        ];
+        let (_bytes, store) = build_store(&rows);
+        let d = store.data();
+
+        // The canonical space holds ONLY the canonical rows; the annex holds the rest.
+        assert_eq!(store.size(), 2, "canonical printings only");
+        assert_eq!(store.card_count(), 2);
+        assert_eq!(d.foreign.len(), 3);
+
+        // CSR integrity: card-aligned, terminated, nondecreasing, and every foreign_to_card
+        // entry agrees with the range that owns it.
+        assert_eq!(d.foreign_offsets.len(), d.cards.len() + 1);
+        assert_eq!(u32::from(*d.foreign_offsets.last().unwrap()) as usize, d.foreign.len());
+        for w in d.foreign_offsets.windows(2) {
+            assert!(u32::from(w[0]) <= u32::from(w[1]));
+        }
+        for (cid, w) in d.foreign_offsets.windows(2).enumerate() {
+            for fid in u32::from(w[0])..u32::from(w[1]) {
+                assert_eq!(u32::from(d.indexes.foreign_to_card[fid as usize]) as usize, cid);
+            }
+        }
+
+        // Card A's annex range: both foreign rows, in LANGUAGE order (es before ja) — the order
+        // Scryfall serves a slot's languages in, which `order_annex_by_language` stores. Note this
+        // is NOT prefer order: the ja row scores 100 against the es row's 90, and it comes second.
+        let a = d.cards.iter().position(|c| c.card_name_lower.as_str() == "shock").expect("card A");
+        let (from, to) = (u32::from(d.foreign_offsets[a]) as usize, u32::from(d.foreign_offsets[a + 1]) as usize);
+        assert_eq!(to - from, 2);
+        let a_range = &d.foreign[from..to];
+        let lang_of = |p: &APrinting| d.coll_vocab[u16::from(p.compat.lang_id) as usize].as_str();
+        assert_eq!([lang_of(&a_range[0]), lang_of(&a_range[1])], ["es", "ja"], "annex rows are stored by language");
+
+        // The language planes narrow each space independently.
+        let en = d.indexes.langs.ids_of("en").expect("en postings");
+        assert_eq!(en.len(), 2, "every canonical row is English here");
+        assert!(d.indexes.langs.ids_of("ja").is_none(), "no canonical row is Japanese");
+        let ja = d.indexes.foreign_langs.ids_of("ja").expect("ja postings");
+        assert_eq!(ja.len(), 2);
+        assert_eq!(d.indexes.foreign_langs.ids_of("es").expect("es postings").len(), 1);
+
+        // The by-scryfall permutation covers the annex, ordered.
+        assert_eq!(d.indexes.foreign_by_scryfall_id.len(), d.foreign.len());
+        let by_id: Vec<u128> = d
+            .indexes
+            .foreign_by_scryfall_id
+            .iter()
+            .map(|i| u128::from(d.foreign[u32::from(*i) as usize].scryfall_id))
+            .collect();
+        assert!(by_id.windows(2).all(|w| w[0] <= w[1]));
+
+        // A foreign multiverse id resolves through the annex external-id index to the ja row.
+        let hit = find_printing_by_external_id(&d.indexes.foreign_external_ids, EXT_MULTIVERSE, 464001)
+            .expect("foreign multiverse id resolves");
+        assert_ne!(u32::from(d.foreign[hit as usize].printed_text_id), NONE_STR);
+        assert!(
+            find_printing_by_external_id(&d.indexes.external_id_index, EXT_MULTIVERSE, 464001).is_none(),
+            "the canonical index must not see an annex-only id"
+        );
+
+        // PrintedNameIndex: records sorted by (name bytes, lang), a shared (name, lang) pair is
+        // ONE record whose vpids come best prefer first, and vpids address the annex space.
+        let pn = &d.indexes.printed_names;
+        assert_eq!(pn.name_ids.len(), 2, "ショック(ja) collapses to one record; impacto(es) is the other");
+        assert_eq!(pn.offsets.len(), pn.name_ids.len() + 1);
+        let record_names: Vec<&str> =
+            pn.name_ids.iter().map(|id| str_at(&d.strings, u32::from(*id)).expect("interned")).collect();
+        assert_eq!(record_names, ["impacto", "ショック"], "sorted by name bytes");
+        let shared = &pn.vpids[u32::from(pn.offsets[1]) as usize..u32::from(pn.offsets[2]) as usize];
+        assert_eq!(shared.len(), 2);
+        let n_printings = d.printings.len() as u32;
+        let vprefer = |vpid: u32| {
+            assert!(vpid >= n_printings, "printed names here live on annex rows");
+            f32::from(d.foreign[(vpid - n_printings) as usize].prefer_score.as_ref().copied().unwrap())
+        };
+        assert!(vprefer(u32::from(shared[0])) > vprefer(u32::from(shared[1])), "best prefer first");
+
+        // Interning dedupe: two rows' printed name (and its folded twin, identical here) share
+        // ONE strings entry.
+        assert_eq!(d.strings.iter().filter(|s| s.as_str() == "ショック").count(), 1);
+
+        // Absence-exactness through the archive and back out as JSON: the es row's type line
+        // and text were never localized, so they read as null while the name reads localized.
+        let es = a_range.iter().find(|p| u32::from(p.printed_type_line_id) == NONE_STR).expect("es row");
+        assert_eq!(u32::from(es.printed_text_id), NONE_STR);
+        let fields = resolve_fields_json(Some(
+            ["printed_name", "printed_type_line", "printed_text", "lang"].iter().map(|s| s.to_string()).collect(),
+        ))
+        .expect("printed fields resolve");
+        let obj = card_to_json(&d.cards[a], es, &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["printed_name"], json!("Impacto"));
+        assert_eq!(obj["printed_type_line"], json!(null));
+        assert_eq!(obj["printed_text"], json!(null));
+        assert_eq!(obj["lang"], json!("es"));
+
+        // And the printed columns + canonical flag survive the spill codec: the decoder's
+        // trailing length check makes a forgotten field a loud error, and the rebuilt store's
+        // annex must come back row-for-row. (Byte equality between two independent builds is
+        // not assertable — the archived HashMap sections serialize in per-instance iteration
+        // order — so this compares the content the codec is responsible for.)
+        let mut sb = SpillingStoreBuilder::new();
+        let blobs: Vec<Vec<u8>> = rows.iter().map(|r| sb.add_card(r).expect("stage")).collect();
+        let order = sb.sorted_order();
+        let mut spilled = Vec::new();
+        sb.finish_from_sorted(order.iter().map(|&i| blobs[i as usize].clone()), &mut spilled)
+            .expect("spill build");
+        let spill_store = BufferStore::from_bytes(&spilled).expect("load spilled store");
+        let sd = spill_store.data();
+        assert_eq!(sd.printings.len(), d.printings.len());
+        assert_eq!(sd.foreign.len(), d.foreign.len());
+        let offsets_of = |v: &Archived<Vec<u32>>| v.iter().map(|o| u32::from(*o)).collect::<Vec<u32>>();
+        assert_eq!(offsets_of(&sd.foreign_offsets), offsets_of(&d.foreign_offsets));
+        for (x, y) in sd.foreign.iter().zip(d.foreign.iter()) {
+            assert_eq!(u128::from(x.scryfall_id), u128::from(y.scryfall_id));
+            for (xi, yi) in [
+                (x.printed_name_id, y.printed_name_id),
+                (x.printed_type_line_id, y.printed_type_line_id),
+                (x.printed_text_id, y.printed_text_id),
+                (x.printed_name_folded_id, y.printed_name_folded_id),
+                (x.flavor_name_id, y.flavor_name_id),
+                (x.flavor_name_folded_id, y.flavor_name_folded_id),
+            ] {
+                assert_eq!(
+                    str_at(&sd.strings, u32::from(xi)),
+                    str_at(&d.strings, u32::from(yi)),
+                    "a printed field diverged across the spill"
+                );
+            }
+        }
+    }
+
+    /// Per-face printed keys round-trip with exact absence: a face without a key stays without
+    /// it through build → archive → `faces_to_json`, and an all-English multi-faced printing
+    /// stores no printed_faces at all.
+    #[test]
+    fn printed_faces_round_trip_absence_exactly() {
+        let faces = json!([
+            { "name": "Sudden Rescue", "type_line": "Instant", "oracle_text": "x",
+              "printed_name": "Rescate repentino", "printed_type_line": "Instantáneo" },
+            { "name": "Steady Return", "type_line": "Sorcery", "oracle_text": "y" },
+        ]);
+        let mut es = annex_row("Sudden Rescue // Steady Return", "oracle-p", "row-p-es", "es", 90.0);
+        es["is_canonical"] = json!(false);
+        es["card_faces"] = faces.clone();
+        es["printed_name_folded"] = json!("rescate repentino // steady return");
+        let mut en = annex_row("Sudden Rescue // Steady Return", "oracle-p", "row-p-en", "en", 200.0);
+        en["card_faces"] = json!([
+            { "name": "Sudden Rescue", "type_line": "Instant", "oracle_text": "x" },
+            { "name": "Steady Return", "type_line": "Sorcery", "oracle_text": "y" },
+        ]);
+        let (_bytes, store) = build_store(&[en, es]);
+        let d = store.data();
+
+        // The English printing carries faces but NO printed_faces — absence is a length-0 Vec,
+        // not a run of sentinels.
+        assert_eq!(d.printings.len(), 1);
+        assert_eq!(d.printings[0].faces.len(), 2);
+        assert!(d.printings[0].printed_faces.is_empty());
+
+        // The Spanish printing's printed_faces parallel its faces, sentinels exactly where
+        // Scryfall omitted keys.
+        assert_eq!(d.foreign.len(), 1);
+        let p = &d.foreign[0];
+        assert_eq!(p.printed_faces.len(), 2);
+        assert_ne!(u32::from(p.printed_faces[0].printed_name_id), NONE_STR);
+        assert_ne!(u32::from(p.printed_faces[0].printed_type_line_id), NONE_STR);
+        assert_eq!(u32::from(p.printed_faces[0].printed_text_id), NONE_STR);
+        assert_eq!(u32::from(p.printed_faces[1].printed_name_id), NONE_STR);
+        assert_eq!(u32::from(p.printed_faces[1].printed_type_line_id), NONE_STR);
+        assert_eq!(u32::from(p.printed_faces[1].printed_text_id), NONE_STR);
+
+        // faces_to_json inserts a printed key only where the face carries it — never a null.
+        let out = faces_to_json(&d.cards[0], p, &d.strings);
+        let front = out[0].as_object().expect("front face");
+        assert_eq!(front["printed_name"], json!("Rescate repentino"));
+        assert_eq!(front["printed_type_line"], json!("Instantáneo"));
+        assert!(!front.contains_key("printed_text"));
+        let back = out[1].as_object().expect("back face");
+        for key in ["printed_name", "printed_type_line", "printed_text"] {
+            assert!(!back.contains_key(key), "the back face must not sprout {key}");
+        }
+        // And the English printing's faces stay printed-free.
+        let plain = faces_to_json(&d.cards[0], &d.printings[0], &d.strings);
+        assert!(!plain[0].as_object().unwrap().contains_key("printed_name"));
+    }
+
+    // ─── The widened (multilingual) query plan and the printing-granularity name paths ────────
+
+    /// The A2/A3 fixture corpus: card A ("Unmoored Ego") with an English canonical row and two
+    /// annex rows (pt with shared artwork, ja with its own), card B English-only.
+    fn multilingual_store() -> BufferStore {
+        let mut a_en = annex_row("Unmoored Ego", "oracle-a", "row-a-en", "en", 200.0);
+        a_en["illustration_id"] = json!("ill-1");
+        let mut a_pt = annex_row("Unmoored Ego", "oracle-a", "row-a-pt", "pt", 100.0);
+        a_pt["is_canonical"] = json!(false);
+        a_pt["illustration_id"] = json!("ill-1"); // shares the canonical artwork
+        a_pt["printed_name"] = json!("Ego à Deriva");
+        a_pt["printed_name_folded"] = json!("ego a deriva");
+        let mut a_ja = annex_row("Unmoored Ego", "oracle-a", "row-a-ja", "ja", 90.0);
+        a_ja["is_canonical"] = json!(false);
+        a_ja["illustration_id"] = json!("ill-2"); // foreign-only artwork
+        a_ja["printed_name"] = json!("係留を解かれた自我");
+        a_ja["printed_name_folded"] = json!("係留を解かれた自我");
+        let b_en = annex_row("Other Card", "oracle-b", "row-b-en", "en", 150.0);
+        build_store(&[a_en, a_pt, a_ja, b_en]).1
+    }
+
+    /// A `lang:xx` filter-tree leaf, the shape the parser emits for `card_lang`.
+    fn lang_filter(value: &str) -> Value {
+        json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_lang", "original_attribute": "lang" } },
+                "rhs": { "node_type": "StringValueNode", "kwargs": { "value": value } },
+            }
+        })
+    }
+
+    fn opts_with(unique: &str, multilingual: bool) -> QueryOptions {
+        QueryOptions {
+            unique: unique.to_owned(),
+            fields: Some(vec!["lang".to_owned(), "printed_name".to_owned()]),
+            include_multilingual: multilingual,
+            ..QueryOptions::default()
+        }
+    }
+
+    /// `lang:xx` answers with that language's rows themselves: unique=cards picks the best
+    /// matching row IN THE LANGUAGE (the foreign printing object), unique=prints lists them.
+    #[test]
+    fn a_lang_query_answers_the_foreign_printing() {
+        let store = multilingual_store();
+        let out = store.query_value(&lang_filter("pt"), &opts_with("card", false)).expect("lang:pt");
+        assert_eq!(out.total, 1);
+        assert_eq!(out.rows[0]["lang"], json!("pt"), "the Portuguese ROW, not the English rollup");
+        assert_eq!(out.rows[0]["printed_name"], json!("Ego à Deriva"));
+
+        let out = store.query_value(&lang_filter("ja"), &opts_with("printing", false)).expect("lang:ja");
+        assert_eq!(out.total, 1);
+        assert_eq!(out.rows[0]["lang"], json!("ja"));
+
+        // lang:en names the canonical rows — the widened driver over the canonical space.
+        let out = store.query_value(&lang_filter("en"), &opts_with("printing", false)).expect("lang:en");
+        assert_eq!(out.total, 2);
+        // A language nothing carries matches nothing (bound to no vocab id).
+        let out = store.query_value(&lang_filter("ko"), &opts_with("card", false)).expect("lang:ko");
+        assert_eq!(out.total, 0);
+    }
+
+    /// An `oracleid:<uuid>` filter-tree leaf, the shape the parser emits for `oracle_id`.
+    fn oracle_id_filter(value: &str) -> Value {
+        json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "oracle_id", "original_attribute": "oracleid" } },
+                "rhs": { "node_type": "StringValueNode", "kwargs": { "value": value } },
+            }
+        })
+    }
+
+    /// `oracleid:<uuid>` is the query every card object's `prints_search_uri` carries, so
+    /// `unique=prints` over it must answer with exactly that card's printings — and nothing else.
+    /// The id resolves through `oracle_by_oracle_id`, folds hex case, and a value naming no card
+    /// (unknown id or unparseable text) matches nothing rather than erroring.
+    #[test]
+    fn an_oracle_id_query_answers_that_cards_printings() {
+        let id_a = "43fbfeec-bcaf-48b8-befe-b7346fec5a3a";
+        let id_b = "21f45043-5419-4019-8b6c-e5294bd5f549";
+        let a1 = annex_row("Card A", id_a, "row-a-1", "en", 200.0);
+        let a2 = annex_row("Card A", id_a, "row-a-2", "en", 100.0);
+        let b1 = annex_row("Card B", id_b, "row-b-1", "en", 150.0);
+        let store = build_store(&[a1, a2, b1]).1;
+        let opts = |unique: &str| QueryOptions {
+            unique: unique.to_owned(),
+            fields: Some(vec!["name".to_owned(), "oracle_id".to_owned()]),
+            ..QueryOptions::default()
+        };
+
+        let out = store.query_value(&oracle_id_filter(id_a), &opts("printing")).expect("oracleid:A");
+        assert_eq!(out.total, 2, "both of A's printings, neither of B's");
+        for row in &out.rows {
+            assert_eq!(row["name"], json!("Card A"));
+        }
+        // unique=cards rolls the same match up to one row, the way Scryfall's default does.
+        let out = store.query_value(&oracle_id_filter(id_a), &opts("card")).expect("oracleid:A cards");
+        assert_eq!(out.total, 1);
+
+        // The parser hands the value on unchanged, so the engine must fold hex case itself.
+        let out = store
+            .query_value(&oracle_id_filter(&id_a.to_uppercase()), &opts("printing"))
+            .expect("oracleid:A uppercase");
+        assert_eq!(out.total, 2, "an uppercase uuid names the same card");
+
+        // A well-formed id this store does not hold, and a value that is not a uuid at all: both
+        // are ordinary empty results, never an error (the parser deliberately does not validate).
+        for miss in ["deadbeef-dead-4bee-8dad-decafbadf00d", "not-a-uuid"] {
+            let out = store.query_value(&oracle_id_filter(miss), &opts("printing")).expect(miss);
+            assert_eq!(out.total, 0, "{miss} names no card");
+        }
+
+        // Negation is the complement over the same exact set — B's row, and only B's.
+        let negated = json!({ "node_type": "NotNode", "kwargs": { "operand": oracle_id_filter(id_a) } });
+        let out = store.query_value(&negated, &opts("printing")).expect("-oracleid:A");
+        assert_eq!(out.total, 1);
+        assert_eq!(out.rows[0]["name"], json!("Card B"));
+    }
+
+    /// `include_multilingual` widens the row space but `unique=cards` still rolls up to the
+    /// English row: every row matches and the canonical row carries the higher prefer score —
+    /// no prefer-formula change, exactly Scryfall's observed semantics.
+    #[test]
+    fn include_multilingual_unique_cards_rolls_up_to_english() {
+        let store = multilingual_store();
+        let tree = json!({ "node_type": "TrueNode" });
+        let out = store.query_value(&tree, &opts_with("card", true)).expect("widened");
+        assert_eq!(out.total, 2, "one row per CARD");
+        for row in &out.rows {
+            assert_eq!(row["lang"], json!("en"), "the rollup representative is the English row");
+        }
+
+        // unique=prints: every row of every language, canonical before annex within a card.
+        let mut opts = opts_with("printing", true);
+        opts.fields = Some(vec!["lang".to_owned(), "name".to_owned()]);
+        let out = store.query_value(&tree, &opts).expect("widened prints");
+        assert_eq!(out.total, 4);
+        // Cards tie on the sort key (no edhrec anywhere), so the page orders by (cid, vpid) —
+        // card order is the store's (hashed oracle id), but WITHIN card A the canonical row
+        // must precede the annex rows, which come in language order.
+        let a_langs: Vec<&str> = out
+            .rows
+            .iter()
+            .filter(|r| r["name"] == json!("Unmoored Ego"))
+            .map(|r| r["lang"].as_str().unwrap())
+            .collect();
+        // English first (it is canonical, so it is in the other space and sorts ahead by vpid),
+        // then the annex alphabetically by language code — ja before pt. Measured against
+        // api.scryfall.com: `e:khm cn:1 include_multilingual=true` answers en, de, es, fr, it, ja,
+        // ko, pt, ru, zhs, zht. It was prefer-desc, which put pt first here.
+        assert_eq!(a_langs, ["en", "ja", "pt"], "canonical first, then the annex by language");
+    }
+
+    /// `unique=art` over the widened space counts UNION artwork groups: an annex row sharing a
+    /// canonical illustration folds into that group (represented by the best row, the canonical
+    /// one), and a foreign-only illustration is its own group represented by the foreign row.
+    #[test]
+    fn include_multilingual_unique_art_counts_union_groups() {
+        let store = multilingual_store();
+        let tree = json!({ "node_type": "TrueNode" });
+        let mut opts = opts_with("artwork", true);
+        opts.fields = Some(vec!["lang".to_owned(), "name".to_owned()]);
+        let out = store.query_value(&tree, &opts).expect("widened art");
+        assert_eq!(out.total, 3, "A's shared group + A's ja-only group + B's group");
+        let a_langs: Vec<&str> = out
+            .rows
+            .iter()
+            .filter(|r| r["name"] == json!("Unmoored Ego"))
+            .map(|r| r["lang"].as_str().unwrap())
+            .collect();
+        assert_eq!(a_langs, ["en", "ja"], "shared artwork reps as English; ja-only artwork as the ja row");
+
+        // Without the widening, the same query counts canonical groups only.
+        let out = store.query_value(&tree, &opts_with("artwork", false)).expect("canonical art");
+        assert_eq!(out.total, 2);
+    }
+
+    /// The negative invariant that keeps the default lane free: without a trigger, the annex is
+    /// never read. The annex rows here are built to CHANGE the answer if they leaked — they match
+    /// every filter below.
+    #[test]
+    fn a_default_query_never_reads_the_annex() {
+        let store = multilingual_store();
+        let tree = json!({ "node_type": "TrueNode" });
+        for unique in ["card", "printing", "artwork"] {
+            let out = store.query_value(&tree, &opts_with(unique, false)).expect("default lane");
+            assert_eq!(out.total, 2, "unique={unique}: canonical rows only");
+            assert!(out.rows.iter().all(|r| r["lang"] == json!("en")));
+        }
+    }
+
+    /// An `is:` filter-tree leaf, the shape the parser emits for `card_is_tags`.
+    fn is_filter(value: &str) -> Value {
+        json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_is_tags", "original_attribute": "is" } },
+                "rhs": [value],
+            }
+        })
+    }
+
+    /// `is:localizedname` reads the printing's printed name — and WIDENS, with no `lang:` written.
+    ///
+    /// The widening is not a convenience: api.scryfall.com answers 31,294 cards for a bare
+    /// `is:localizedname`, and `&unique=prints` shows German, French and Japanese rows coming back.
+    /// A canonical-only reading answers with the English printings that happen to carry a printed
+    /// name — 182 of them there — and calls that the whole set.
+    #[test]
+    fn is_localizedname_widens_and_reads_the_printed_name() {
+        let store = multilingual_store();
+        // No `lang:`, `include_multilingual` false — and the answer is the two ANNEX rows.
+        let out = store.query_value(&is_filter("localizedname"), &opts_with("printing", false)).expect("localizedname");
+        assert_eq!(out.total, 2, "the pt and ja rows; the canonical English pair carries no printed name");
+        // Language order, which is the order the annex is stored in and Scryfall serves.
+        let langs: Vec<&str> = out.rows.iter().map(|r| r["lang"].as_str().unwrap()).collect();
+        assert_eq!(langs, ["ja", "pt"]);
+        assert_eq!(out.rows[1]["printed_name"], json!("Ego à Deriva"));
+
+        // The complement is the canonical rows, over the same widened space.
+        let negated = json!({ "node_type": "NotNode", "kwargs": { "operand": is_filter("localizedname") } });
+        let out = store.query_value(&negated, &opts_with("printing", false)).expect("-localizedname");
+        assert_eq!(out.total, 2);
+        assert!(out.rows.iter().all(|r| r["lang"] == json!("en")));
+    }
+
+    /// PRESENCE, not "non-English": an ENGLISH printing that carries a printed name matches.
+    ///
+    /// 182 of them do on api.scryfall.com (om1/66 prints "Rhilex the Accursed" over Agent Venom),
+    /// and 4,468 foreign printings print a name byte-identical to the English one and still count.
+    /// A rule spelled as "lang != en" or as "printed_name != name" would be wrong on both sets.
+    #[test]
+    fn is_localizedname_counts_an_english_printing_that_has_one() {
+        let mut en = annex_row("Agent Venom", "oracle-v", "row-v-en", "en", 200.0);
+        en["printed_name"] = json!("Rhilex the Accursed");
+        en["printed_name_folded"] = json!("rhilex the accursed");
+        // ...and a printing whose printed name EQUALS its oracle name still counts.
+        let mut same = annex_row("Shock", "oracle-s", "row-s-de", "de", 90.0);
+        same["is_canonical"] = json!(false);
+        same["printed_name"] = json!("Shock");
+        same["printed_name_folded"] = json!("shock");
+        let plain = annex_row("Shock", "oracle-s", "row-s-en", "en", 200.0);
+        let store = build_store(&[en, plain, same]).1;
+
+        let out = store.query_value(&is_filter("localizedname"), &opts_with("printing", false)).expect("localizedname");
+        assert_eq!(out.total, 2, "the English printing with a printed name, and the identical-name German one");
+        let langs: Vec<&str> = out.rows.iter().map(|r| r["lang"].as_str().unwrap()).collect();
+        assert!(langs.contains(&"en"), "an English printing is not excluded for being English");
+        assert!(langs.contains(&"de"));
+    }
+
+    /// `is:unique` is a SET count over the canonical rows AND the annex.
+    ///
+    /// Three cards, each built to break a different wrong rule. A: two printings, one set — unique,
+    /// so "prints=1" is not the rule (`!"Forest"` is the real-corpus shape, two lea printings of
+    /// one set). B: one English set plus a Japanese printing in a set of its own — NOT unique, the
+    /// case a canonical-only walk gets wrong on 130 real cards (Salvat, ps11, pmei). C: an English
+    /// row and a Japanese row in the SAME set — unique, so the annex cannot merely be counted.
+    #[test]
+    fn is_unique_counts_sets_across_the_annex() {
+        let set_of = |mut row: Value, code: &str, cn: &str| -> Value {
+            row["card_set_code"] = json!(code);
+            row["collector_number"] = json!(cn);
+            row
+        };
+        let mut rows = vec![
+            set_of(annex_row("A", "oracle-a", "row-a-1", "en", 200.0), "aaa", "1"),
+            set_of(annex_row("A", "oracle-a", "row-a-2", "en", 190.0), "aaa", "2"),
+            set_of(annex_row("B", "oracle-b", "row-b-en", "en", 200.0), "aaa", "3"),
+            set_of(annex_row("B", "oracle-b", "row-b-ja", "ja", 90.0), "bbb", "3"),
+            set_of(annex_row("C", "oracle-c", "row-c-en", "en", 200.0), "aaa", "4"),
+            set_of(annex_row("C", "oracle-c", "row-c-ja", "ja", 90.0), "aaa", "4"),
+        ];
+        for r in &mut rows {
+            if r["card_compat_blob"]["lang"] != json!("en") {
+                r["is_canonical"] = json!(false);
+                r["printed_name"] = json!("名");
+                r["printed_name_folded"] = json!("名");
+            }
+        }
+        let store = build_store(&rows).1;
+
+        let opts = QueryOptions { unique: "card".to_owned(), fields: Some(vec!["name".to_owned()]), ..QueryOptions::default() };
+        let out = store.query_value(&is_filter("unique"), &opts).expect("is:unique");
+        let names: Vec<&str> = out.rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+        assert_eq!(out.total, 2);
+        assert_eq!(names, ["A", "C"], "B's Japanese-only second set disqualifies it");
+
+        // It does NOT widen — asking about a card's set count is not asking for foreign rows.
+        assert!(!store.query_widens(&is_filter("unique"), &opts).expect("widens?"));
+        // ...where the printed-name predicate does.
+        assert!(store.query_widens(&is_filter("localizedname"), &opts).expect("widens?"));
+    }
+
+    /// `lang:` + `unique=cards` follows the query's OWN English pick, not the card's global one.
+    ///
+    /// The Maskwood Nexus shape, from the live-parity ledger: the card's representative printing
+    /// lives in ANOTHER set (clb 865), so no khm row carries the importer's PIN_BONUS, and the two
+    /// khm ja rows are left to a tiebreak Scryfall's data does not supply — its ja extended-art
+    /// printing has no `frame_effects`, so the -6 that separates the English pair (#240 over #369)
+    /// does not exist between the annex rows. api.scryfall.com answers khm ja #240 anyway, because
+    /// it follows the best English row IN THE QUERIED SET.
+    ///
+    /// The fixture makes the wrong answer the easy one: ja #369 outscores ja #240 on its own
+    /// prefer, so a per-row rule picks #369. Only reading the canonical row at each slot, under
+    /// the query with its language lifted, gets #240.
+    #[test]
+    fn a_language_pick_follows_the_english_row_in_the_querys_own_set() {
+        let mut rows = Vec::new();
+        // The card's GLOBAL representative, in a set the query does not ask for.
+        let mut clb = annex_row("Maskwood Nexus", "oracle-m", "row-m-clb", "en", 240.0);
+        clb["card_set_code"] = json!("clb");
+        clb["collector_number"] = json!("865");
+        rows.push(clb);
+        // The two English khm rows: #240 beats #369 by the extended-art penalty.
+        for (cn, prefer) in [("240", 197.36), ("369", 191.36)] {
+            let mut r = annex_row("Maskwood Nexus", "oracle-m", &format!("row-m-khm-{cn}"), "en", prefer);
+            r["card_set_code"] = json!("khm");
+            r["collector_number"] = json!(cn);
+            rows.push(r);
+        }
+        // The two Japanese khm rows, at the same two slots — and the WRONG one scores higher.
+        for (cn, prefer) in [("240", 90.0), ("369", 95.0)] {
+            let mut r = annex_row("Maskwood Nexus", "oracle-m", &format!("row-m-khm-{cn}-ja"), "ja", prefer);
+            r["is_canonical"] = json!(false);
+            r["card_set_code"] = json!("khm");
+            r["collector_number"] = json!(cn);
+            r["printed_name"] = json!("仮面の樹の交錯점");
+            r["printed_name_folded"] = json!("仮面の樹の交錯점");
+            rows.push(r);
+        }
+        let store = build_store(&rows).1;
+        let khm = json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_set_code", "original_attribute": "set" } },
+                "rhs": { "node_type": "StringValueNode", "kwargs": { "value": "khm" } },
+            }
+        });
+        let scoped = json!({ "node_type": "AndNode", "kwargs": { "operands": [khm.clone(), lang_filter("ja")] } });
+
+        let opts = |unique: &str, ml: bool| QueryOptions {
+            unique: unique.to_owned(),
+            fields: Some(vec!["collector_number".to_owned(), "lang".to_owned()]),
+            include_multilingual: ml,
+            ..QueryOptions::default()
+        };
+
+        let out = store.query_value(&scoped, &opts("card", false)).expect("lang-scoped");
+        assert_eq!(out.total, 1, "one card");
+        assert_eq!(out.rows[0]["lang"], json!("ja"));
+        assert_eq!(out.rows[0]["collector_number"], json!("240"), "follows the best khm ENGLISH row, not the ja score");
+
+        // The row that outscores it is still THERE — this reorders the representative, it does not
+        // drop anything.
+        let prints = store.query_value(&scoped, &opts("printing", false)).expect("prints");
+        assert_eq!(prints.total, 2, "both ja rows still match");
+
+        // And the English lane is unmoved: include_multilingual rolls up to the global English
+        // representative exactly as before, annex ranking never consulted.
+        let all = store.query_value(&json!({ "node_type": "TrueNode" }), &opts("card", true)).expect("ml");
+        assert_eq!(all.rows[0]["lang"], json!("en"));
+        assert_eq!(all.rows[0]["collector_number"], json!("865"), "clb 865 is still the card's own pick");
+    }
+
+    /// An annex row whose slot has no canonical row in scope keeps the pick phase 1 made.
+    ///
+    /// The fallback half of the rule above: a foreign-only printing has no English row to follow,
+    /// so nothing overrides its own prefer score and `unique=cards` answers the best of them.
+    #[test]
+    fn a_foreign_only_slot_keeps_its_own_pick() {
+        let mut rows = Vec::new();
+        let mut en = annex_row("Solo Print", "oracle-s", "row-s-en", "en", 200.0);
+        en["card_set_code"] = json!("khm");
+        en["collector_number"] = json!("5");
+        rows.push(en);
+        for (cn, prefer) in [("900", 60.0), ("901", 80.0)] {
+            let mut r = annex_row("Solo Print", "oracle-s", &format!("row-s-{cn}-ja"), "ja", prefer);
+            r["is_canonical"] = json!(false);
+            r["card_set_code"] = json!("khm");
+            r["collector_number"] = json!(cn);
+            rows.push(r);
+        }
+        let store = build_store(&rows).1;
+        let out = store
+            .query_value(
+                &lang_filter("ja"),
+                &QueryOptions {
+                    unique: "card".to_owned(),
+                    fields: Some(vec!["collector_number".to_owned()]),
+                    ..QueryOptions::default()
+                },
+            )
+            .expect("lang-scoped");
+        assert_eq!(out.rows[0]["collector_number"], json!("901"), "no English row at either slot; best own score wins");
+    }
+
+    /// Every by-id entry point addresses BOTH printing spaces.
+    ///
+    /// A foreign Scryfall id — and a multiverse id only a foreign row carries — resolves to the
+    /// FOREIGN printing object. Searching `printing_by_scryfall_id` alone was what made
+    /// `/cards/<foreign id>`, `/cards/multiverse/<foreign>`, that card's rulings (addressed by
+    /// the same id) and `POST /cards/collection` with a foreign `{id}` all answer "no such card"
+    /// about a row `/cards/<set>/<number>/<lang>` was serving at the same moment.
+    #[test]
+    fn every_by_id_lookup_reaches_the_annex() {
+        let mut a_en = annex_row("Unmoored Ego", "oracle-a", "row-a-en", "en", 200.0);
+        a_en["card_compat_blob"]["multiverse_ids"] = json!([451111]);
+        let mut a_pt = annex_row("Unmoored Ego", "oracle-a", "row-a-pt", "pt", 100.0);
+        a_pt["is_canonical"] = json!(false);
+        a_pt["printed_name"] = json!("Ego à Deriva");
+        a_pt["printed_name_folded"] = json!("ego a deriva");
+        a_pt["card_compat_blob"]["multiverse_ids"] = json!([454775]);
+        let b_en = annex_row("Other Card", "oracle-b", "row-b-en", "en", 150.0);
+        let (_b, store) = build_store(&[a_en, a_pt, b_en]);
+        let fields = Some(vec!["lang".to_owned(), "printed_name".to_owned(), "name".to_owned()]);
+
+        // One id at a time: the annex row, and the canonical row still exactly as before.
+        let pt = store.card_by_scryfall_id("row-a-pt", fields.clone()).expect("lookup").expect("a foreign id resolves");
+        assert_eq!(pt["lang"], json!("pt"));
+        assert_eq!(pt["printed_name"], json!("Ego à Deriva"));
+        assert_eq!(pt["name"], json!("Unmoored Ego"), "oracle fields stay English");
+        let en = store.card_by_scryfall_id("row-a-en", fields.clone()).expect("lookup").expect("canonical id");
+        assert_eq!(en["lang"], json!("en"));
+        assert_eq!(en["printed_name"], json!(null));
+
+        // The batch (POST /cards/collection): both spaces, in the order asked, misses skipped.
+        let ids = ["row-a-pt".to_owned(), "row-never-imported".to_owned(), "row-b-en".to_owned()];
+        let batch = store.cards_by_scryfall_ids(&ids, fields.clone()).expect("batch");
+        assert_eq!(batch.len(), 2, "the unknown id is skipped, never faked");
+        assert_eq!(batch[0]["lang"], json!("pt"));
+        assert_eq!(batch[1]["name"], json!("Other Card"));
+
+        // External ids: the foreign multiverse id lives ONLY in the annex index.
+        let mv_pt =
+            store.card_by_external_id("multiverse", 454775, fields.clone()).expect("ext").expect("foreign multiverse");
+        assert_eq!(mv_pt["lang"], json!("pt"));
+        let mv_en =
+            store.card_by_external_id("multiverse", 451111, fields.clone()).expect("ext").expect("canonical multiverse");
+        assert_eq!(mv_en["lang"], json!("en"));
+
+        // An unknown id must still MISS — in both spaces. Widening the search is only correct if
+        // it cannot turn a 404 into some other card.
+        assert!(store.card_by_scryfall_id("row-never-imported", fields.clone()).expect("lookup").is_none());
+        assert!(store.card_by_external_id("multiverse", 999_999, fields.clone()).expect("ext").is_none());
+        assert!(store.cards_by_scryfall_ids(&["row-never-imported".to_owned()], fields).expect("batch").is_empty());
+    }
+
+    /// A foreign printed name resolves to the FOREIGN printing object — through the CONTAINMENT
+    /// stage, which is the stage Scryfall resolves it with.
+    ///
+    /// The typo scan behind `fuzzy_card_by_name` is English-only, and that is measured, not a
+    /// simplification (api.scryfall.com, 2026-08-16): `fuzzy=blitzschlag` resolves the German
+    /// printing of Lightning Bolt while `fuzzy=blitzschlagg` answers 404, and `fuzzy=ego a
+    /// deriva` resolves the Portuguese printing while `fuzzy=ego a derva` answers 404. A printed
+    /// name gets EXACT tolerance, never typo tolerance — so this test asserts both halves: the
+    /// typo scan misses the foreign name, and the containment stage answers it.
+    #[test]
+    fn fuzzy_resolves_a_foreign_printed_name_to_the_foreign_printing() {
+        let store = multilingual_store();
+        let fields = Some(vec!["lang".to_owned(), "printed_name".to_owned(), "name".to_owned()]);
+        let floor = crate::FUZZY_SCORE_FLOOR;
+        let lead = crate::FUZZY_SCORE_LEAD;
+
+        // THE TYPO SCAN: English names only, so a foreign needle finds nothing here.
+        let (status, _) = store.fuzzy_card_by_name("ego a deriva", floor, lead, fields.clone()).expect("fuzzy");
+        assert_eq!(status, "miss", "the typo scan does not read printed names");
+
+        // THE CONTAINMENT STAGE, which the route reaches next, answers with the pt printing.
+        let hits = store
+            .cards_containing_all_words(&["ego".to_owned(), "a".to_owned(), "deriva".to_owned()], None, 2, fields.clone())
+            .expect("containment");
+        assert_eq!(hits.len(), 1, "one answer, not ambiguous");
+        assert_eq!(hits[0]["lang"], json!("pt"), "the Portuguese printing object");
+        assert_eq!(hits[0]["printed_name"], json!("Ego à Deriva"));
+        assert_eq!(hits[0]["name"], json!("Unmoored Ego"), "oracle fields stay English");
+
+        // An English needle keeps answering exactly what it always did, on the typo scan.
+        let (status, card) = store.fuzzy_card_by_name("unmoored ego", floor, lead, fields).expect("fuzzy en");
+        assert_eq!(status, "hit");
+        assert_eq!(card.expect("hit")["lang"], json!("en"));
+    }
+
+    /// Ambiguity is counted by ORACLE CARD: a card's own name never competes with itself, while
+    /// the same near-tie across two DIFFERENT cards still reads ambiguous.
+    ///
+    /// Both cards here are English, because the typo scan is: a foreign printed name reaches
+    /// `?fuzzy=` through exact and containment (see
+    /// `fuzzy_resolves_a_foreign_printed_name_to_the_foreign_printing`), so a card's foreign name
+    /// cannot make it ambiguous with itself for the simpler reason that this scan never sees it.
+    #[test]
+    fn fuzzy_ambiguity_counts_cards_not_strings() {
+        let floor = crate::FUZZY_SCORE_FLOOR;
+        let lead = crate::FUZZY_SCORE_LEAD;
+        // ONE card with two printings: two rows, one name, one answer.
+        let a1 = annex_row("Fire Dragon", "oracle-c", "row-c-1", "en", 200.0);
+        let a2 = annex_row("Fire Dragon", "oracle-c", "row-c-2", "en", 100.0);
+        let (_b, store) = build_store(&[a1.clone(), a2]);
+        let (status, _) = store.fuzzy_card_by_name("fire dragen", floor, lead, None).expect("fuzzy");
+        assert_eq!(status, "hit", "one card's own printings must not make it ambiguous with itself");
+
+        // The near-tie across two different CARDS stays ambiguous: "fire dragen" is one
+        // substitution from both "fire dragon" and "fire dragan" and differs from each in the
+        // same three trigrams, so the two score identically and neither leads.
+        let other = annex_row("Fire Dragan", "oracle-d", "row-d-1", "en", 150.0);
+        let (_b, store) = build_store(&[a1, other]);
+        let (status, _) = store.fuzzy_card_by_name("fire dragen", floor, lead, None).expect("fuzzy");
+        assert_eq!(status, "ambiguous", "two cards' near-tied names still read ambiguous");
+    }
+
+    /// `exact=` is scoped to the ORACLE name and never reads printed names — the negative
+    /// invariant, pinned the same way autocomplete's foreign exclusion is.
+    ///
+    /// Verified against api.scryfall.com on 2026-08-16: `exact=アクスガルドの自慢屋`,
+    /// `exact=Ego à Deriva`, `exact=Ego a Deriva` and `exact=Impacto` are all 404 not_found,
+    /// while `fuzzy=` resolves the same needles to the foreign printing. Not a script or accent
+    /// rule — a lane rule. Answering these would be a 200 where Scryfall answers 404.
+    #[test]
+    fn exact_never_reads_printed_names() {
+        let store = multilingual_store();
+        let fields = Some(vec!["lang".to_owned(), "printed_name".to_owned()]);
+        assert!(
+            store.exact_card_by_name("ego a deriva", None, fields.clone()).expect("exact").is_none(),
+            "a well-formed foreign printed name is a MISS on exact, as it is on Scryfall"
+        );
+        assert!(store.exact_card_by_name("係留を解かれた自我", None, fields.clone()).expect("exact").is_none());
+        // The English/oracle name keeps answering, and answers with the English printing.
+        let hit = store.exact_card_by_name("unmoored ego", None, fields.clone()).expect("exact").expect("hit");
+        assert_eq!(hit["lang"], json!("en"));
+
+        // Nor by a `//` half of a printed name — the other class the deleted record lookup had.
+        let mut es = annex_row("Sudden Rescue // Steady Return", "oracle-p", "row-p-es", "es", 90.0);
+        es["is_canonical"] = json!(false);
+        es["printed_name_folded"] = json!("rescate repentino // regreso constante");
+        let en = annex_row("Sudden Rescue // Steady Return", "oracle-p", "row-p-en", "en", 200.0);
+        let (_b, store) = build_store(&[en, es]);
+        assert!(store.exact_card_by_name("rescate repentino", None, fields.clone()).expect("exact").is_none());
+        // While the ENGLISH half still resolves — Scryfall's `exact=Delver of Secrets` rule.
+        assert!(store.exact_card_by_name("sudden rescue", None, fields).expect("exact").is_some());
+    }
+
+    /// The containment stage searches printed names too, deduped by oracle card: a card whose
+    /// English name already answered does not answer again under its printed name, and a
+    /// foreign-only containment hit materializes the foreign printing.
+    #[test]
+    fn containment_searches_printed_names_deduped_by_card() {
+        let store = multilingual_store();
+        let fields = Some(vec!["lang".to_owned()]);
+        // "ego" is in card A's English name AND its pt printed name: ONE answer (the English one),
+        // or the fuzzy lane would call every such card ambiguous with itself.
+        let rows = store.cards_containing_all_words(&["ego".to_owned()], None, 2, fields.clone()).expect("contains");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["lang"], json!("en"));
+        // "deriva" exists only in the pt printed name: the foreign printing answers.
+        let rows = store.cards_containing_all_words(&["deriva".to_owned()], None, 2, fields).expect("contains");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["lang"], json!("pt"));
+    }
+
+    /// Scryfall's containment slack, both halves, on the printing that made the mirror's
+    /// `named-fuzzy-red-goad` deviation: separators do not count, and the pool is the PRINTING's
+    /// names rather than any one of them.
+    ///
+    /// Measured on api.scryfall.com 2026-08-16: `fuzzy=red goad` and `fuzzy=goad red` both answer
+    /// the Portuguese printing of Unmoored Ego, `fuzzy=redgoad` answers not_found (the words are
+    /// matched separately, never rejoined), and `fuzzy=red goad xyzzy` answers not_found (EVERY
+    /// word must land somewhere).
+    #[test]
+    fn containment_ignores_separators_and_pools_a_printings_names() {
+        let store = multilingual_store();
+        let fields = Some(vec!["lang".to_owned(), "printed_name".to_owned(), "name".to_owned()]);
+        let words = |ws: &[&str]| ws.iter().map(|w| (*w).to_owned()).collect::<Vec<String>>();
+
+        // "red" is inside "unmoo|red| ego"; "goad" is inside "eg|o a d|eriva" once the printed
+        // name's spaces stop counting. Neither name carries both — the printing does.
+        for query in [["red", "goad"], ["goad", "red"]] {
+            let rows = store.cards_containing_all_words(&words(&query), None, 2, fields.clone()).expect("contains");
+            assert_eq!(rows.len(), 1, "{query:?} identifies exactly one card");
+            assert_eq!(rows[0]["lang"], json!("pt"), "{query:?} answers the printing that completed it");
+            assert_eq!(rows[0]["printed_name"], json!("Ego à Deriva"));
+            assert_eq!(rows[0]["name"], json!("Unmoored Ego"), "oracle fields stay English");
+        }
+
+        // Rejoined, it is one word no name spells: the words are matched one at a time, and
+        // "redgoad" is contiguous in nothing (api.scryfall.com answers not_found, as it does for
+        // "goadderiva" — while "egoaderiva", which IS contiguous once the spaces go, resolves).
+        let rows = store.cards_containing_all_words(&words(&["redgoad"]), None, 2, fields.clone()).expect("contains");
+        assert!(rows.is_empty());
+        // One word spanning two of a printed name's spaces, and one spanning an oracle name's:
+        // both resolve, which is the narrowing's real test — the index has no window of either.
+        let rows = store.cards_containing_all_words(&words(&["egoaderiva"]), None, 2, fields.clone()).expect("c");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["lang"], json!("pt"), "the printed name that spells it");
+        let rows = store.cards_containing_all_words(&words(&["unmooredego"]), None, 2, fields.clone()).expect("c");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["lang"], json!("en"));
+        // And a word nothing carries sinks the whole query, however well the others match.
+        let rows =
+            store.cards_containing_all_words(&words(&["red", "goad", "xyzzy"]), None, 2, fields.clone()).expect("c");
+        assert!(rows.is_empty());
+
+        // The mixed pool does not widen to a SECOND card's names: "other" (card B's English name)
+        // with "deriva" (card A's pt printed name) is nobody's printing.
+        let rows = store.cards_containing_all_words(&words(&["other", "deriva"]), None, 2, fields).expect("contains");
+        assert!(rows.is_empty());
+    }
+
+    /// A name that IS the query outranks every name that merely carries its letters, and ends the
+    /// ambiguity question — the corpus really does hold both "Lightning Bolt" and "Emeritus of
+    /// Conflict // Lightning Bolt", and `fuzzy=lightningbolt` answers the first on
+    /// api.scryfall.com (2026-08-16) rather than reporting two.
+    #[test]
+    fn containment_prefers_the_name_that_is_the_query() {
+        let bolt = annex_row("Lightning Bolt", "oracle-a", "row-a-en", "en", 100.0);
+        // The split card outscores it, so a prefer-score-only rule answers the wrong one.
+        let split = annex_row("Emeritus of Conflict // Lightning Bolt", "oracle-b", "row-b-en", "en", 200.0);
+        let store = build_store(&[bolt, split]).1;
+        let fields = Some(vec!["name".to_owned()]);
+        let words = |ws: &[&str]| ws.iter().map(|w| (*w).to_owned()).collect::<Vec<String>>();
+
+        for query in [vec!["lightningbolt"], vec!["lightning", "bolt"]] {
+            let rows = store.cards_containing_all_words(&words(&query), None, 2, fields.clone()).expect("contains");
+            assert_eq!(rows.len(), 1, "{query:?} is one answer, not an ambiguous pair");
+            assert_eq!(rows[0]["name"], json!("Lightning Bolt"));
+        }
+        // A word only ONE of them carries still reaches the other, unranked and alone.
+        let rows = store.cards_containing_all_words(&words(&["emeritus"]), None, 2, fields).expect("contains");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], json!("Emeritus of Conflict // Lightning Bolt"));
+    }
+
+    /// Which PRINTING answers when several of a card's printed names carry every word: the
+    /// shortest one, which is the exact printed name whenever the corpus holds it.
+    ///
+    /// `fuzzy=ego à deriva` answers the PORTUGUESE printing on api.scryfall.com (2026-08-16)
+    /// even though the Spanish "Ego a la deriva" and Italian "Ego alla Deriva" contain the same
+    /// three words — and the Italian row here outscores the Portuguese one deliberately, so a
+    /// prefer-score-only rule fails this test.
+    #[test]
+    fn containment_answers_with_the_shortest_completing_printed_name() {
+        let mut pt = annex_row("Unmoored Ego", "oracle-a", "row-a-pt", "pt", 100.0);
+        pt["is_canonical"] = json!(false);
+        pt["printed_name"] = json!("Ego à Deriva");
+        pt["printed_name_folded"] = json!("ego a deriva");
+        let mut it = annex_row("Unmoored Ego", "oracle-a", "row-a-it", "it", 180.0);
+        it["is_canonical"] = json!(false);
+        it["printed_name"] = json!("Ego alla Deriva");
+        it["printed_name_folded"] = json!("ego alla deriva");
+        let mut es = annex_row("Unmoored Ego", "oracle-a", "row-a-es", "es", 170.0);
+        es["is_canonical"] = json!(false);
+        es["printed_name"] = json!("Ego a la deriva");
+        es["printed_name_folded"] = json!("ego a la deriva");
+        let store = build_store(&[annex_row("Unmoored Ego", "oracle-a", "row-a-en", "en", 200.0), pt, it, es]).1;
+        let fields = Some(vec!["lang".to_owned()]);
+        let words = ["ego", "a", "deriva"].iter().map(|w| (*w).to_owned()).collect::<Vec<String>>();
+        let rows = store.cards_containing_all_words(&words, None, 2, fields).expect("contains");
+        assert_eq!(rows.len(), 1, "one card, however many of its printings carry the words");
+        assert_eq!(rows[0]["lang"], json!("pt"), "the printed name that IS the query, not the best-scoring one");
+    }
+
+    /// Autocomplete stays English/canonical — verified against the live API: Scryfall's
+    /// autocomplete has no include_multilingual and returns nothing for foreign names.
+    #[test]
+    fn autocomplete_excludes_printed_names() {
+        let store = multilingual_store();
+        assert_eq!(store.autocomplete("ego", 20), vec!["Unmoored Ego"], "the English name only");
+        assert!(store.autocomplete("deriva", 20).is_empty(), "a printed name never autocompletes");
+    }
+
+    /// The perf property behind the foreign name paths: candidates come off the record trigram
+    /// index, not a record scan. Exact and containment are the index-driven stages; the fuzzy
+    /// scan is English-only and does not read these records at all (lib.rs's module comment has
+    /// the Scryfall evidence — a foreign printed name gets no typo tolerance).
+    #[test]
+    fn printed_records_narrow_by_shared_windows() {
+        let store = multilingual_store();
+        let d = store.data();
+        let pn = &d.indexes.printed_names;
+        assert_eq!(pn.name_ids.len(), 2, "pt + ja records");
+        // A needle sharing every window with only the pt record narrows to it alone.
+        let hits = crate::trigram_candidates(&pn.trigrams, "deriva").expect("index applies");
+        assert_eq!(hits.len(), 1);
+        // A needle sharing no window with any record narrows to nothing.
+        assert!(crate::trigram_candidates(&pn.trigrams, "zzzzzz").expect("index applies").is_empty());
+    }
+
+    /// The artist reaches the card object AS PRINTED — uppercase, diacritics — while search
+    /// keeps narrowing on the lowercased artist vocab.
+    ///
+    /// Fixture parity could never catch the cross-vocab defect this pins: both twins read the
+    /// same emitted row JSON, so they agreed byte-for-byte on the scrambled value. The
+    /// live-parity harness against api.scryfall.com is what found it in production ("fumes" for
+    /// Franz Vohwinkel, "blue-magic" for Milivoj Ćeran — collection-vocab strings, because
+    /// `card_artist_vid` indexes the ARTIST vocab and was resolved against the collection one,
+    /// and even the artist vocab holds only the lowercased search form). This is the offline
+    /// regression pin for the fix: the printed string has its own interned id.
+    #[test]
+    fn the_artist_round_trips_in_original_case_and_searches_lowercased() {
+        let mut row = annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0);
+        row["card_artist"] = json!("Milivoj Ćeran");
+        // Populate the collection vocab so a relapse into the cross-vocab read has strings to
+        // scramble into rather than an index panic.
+        row["card_keywords"] = json!({"flying": {}, "haste": {}});
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let fields = resolve_fields_json(Some(vec!["artist".to_owned()])).expect("artist resolves");
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["artist"], json!("Milivoj Ćeran"), "original case, from the string table");
+
+        // And the search side still narrows through the lowercased artist vocab.
+        let tree = json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_artist", "original_attribute": "artist" } },
+                "rhs": { "node_type": "StringValueNode", "kwargs": { "value": "ćeran" } },
+            }
+        });
+        let opts = QueryOptions { fields: Some(vec!["artist".to_owned()]), ..QueryOptions::default() };
+        let out = store.query_value(&tree, &opts).expect("artist search");
+        assert_eq!(out.total, 1, "the lowercased vocab still answers artist:");
+        assert_eq!(out.rows[0]["artist"], json!("Milivoj Ćeran"));
+
+        // An artistless printing stays an absent key, not an empty string.
+        let (_b, store) = build_store(&[annex_row("Other Card", "oracle-b", "row-b-en", "en", 150.0)]);
+        let d = store.data();
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["artist"], json!(null));
+    }
+
+    /// `games` survives the archive in SCRYFALL's order, not a fixed one.
+    ///
+    /// The byte spends its low three bits on membership and the next three on a GAME_ORDERS index
+    /// (see the constant), so this is really two assertions in one: the emitted array is the
+    /// payload's own order, and the membership bits underneath are still exactly the members —
+    /// which is what every pre-order reader of the byte meant by it.
+    #[test]
+    fn games_keep_the_order_the_payload_listed_them_in() {
+        for listed in [
+            json!(["arena", "paper", "mtgo"]),
+            json!(["paper", "arena", "mtgo"]),
+            json!(["paper", "mtgo", "arena"]),
+            json!(["mtgo", "paper"]),
+            json!(["paper"]),
+        ] {
+            let mut row = annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0);
+            row["card_compat_blob"] = json!({"lang": "en", "games": listed});
+            let (_b, store) = build_store(&[row]);
+            let d = store.data();
+            let fields = resolve_fields_json(Some(vec!["games".to_owned()])).expect("games resolves");
+            let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+            assert_eq!(obj["games"], listed, "the emitted order is the payload's");
+            // ...and the membership half of the byte still reads as a plain set.
+            let packed = d.printings[0].compat.games;
+            let members: Vec<&str> = listed.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert_eq!(
+                (packed & crate::GAME_MEMBER_MASK).count_ones() as usize,
+                members.len(),
+                "one membership bit per game, order bits excluded"
+            );
+        }
+        // An unknown game is dropped rather than mispacked, and a repeat does not double-count.
+        let mut row = annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0);
+        row["card_compat_blob"] = json!({"lang": "en", "games": ["astral", "mtgo", "paper", "mtgo"]});
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let fields = resolve_fields_json(Some(vec!["games".to_owned()])).expect("games resolves");
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["games"], json!(["mtgo", "paper"]));
+    }
+
+    /// Keywords reach the card object AS PRINTED while `keyword:` keeps binding the folded form.
+    ///
+    /// The same shape as the artist defect above and unreachable by fixture parity for the same
+    /// reason: both twins read the emitted row, so they agree on a wrong value. Scryfall's casing
+    /// is not derivable from the fold (only 455 of the corpus's 885 keywords come back from
+    /// capitalizing the first letter) and its ORDER is neither the fold's nor alphabetical, so
+    /// both have to be stored.
+    #[test]
+    fn keywords_emit_as_printed_and_search_folded() {
+        let mut row = annex_row("Brazen Borrower", "oracle-a", "row-a-en", "en", 200.0);
+        row["card_keywords"] = json!({"flying": {}, "flash": {}});
+        row["card_keywords_printed"] = json!(["Flying", "Flash"]);
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let fields = resolve_fields_json(Some(vec!["card_keywords".to_owned()])).expect("keywords resolve");
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["card_keywords"], json!(["Flying", "Flash"]), "printed casing, printed order");
+
+        // The search side is untouched: the query value is lowercase and binds the folded ids.
+        let tree = json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_keywords", "original_attribute": "keyword" } },
+                // The rhs a JSONB_OBJECT attribute carries is the raw key ARRAY the TS parser
+                // emits (getKeywordsComparisonKeys), already lowercased.
+                "rhs": ["flying"],
+            }
+        });
+        let opts = QueryOptions { fields: Some(vec!["card_keywords".to_owned()]), ..QueryOptions::default() };
+        let out = store.query_value(&tree, &opts).expect("keyword search");
+        assert_eq!(out.total, 1, "keyword: still matches through the folded vocab");
+        assert_eq!(out.rows[0]["card_keywords"], json!(["Flying", "Flash"]));
+    }
+
+    /// A second store, with the same keyword at a DIFFERENT vocab id, still answers `keyword:`.
+    ///
+    /// The lifetime question behind a nightly publish: a serving object loads store A, then
+    /// `commitPublish` swaps store B under it (search-engine-do.ts), and B's `coll_vocab` is
+    /// interned in build order, so "flying" is almost never the same u16 in both. A filter bound
+    /// once against A's vocab and reused would then match nothing on B — `keyword:` quietly
+    /// returning zero rows after every publish, in the English lane too.
+    ///
+    /// It does not, and this pins why: `prepare_query` calls `FilterExpr::bind` with the vocab of
+    /// the archive it is ABOUT to query, on every query, and nothing caches the bound tree between
+    /// them (the same per-query re-read `sync_format_shifts` does for the legality registry one
+    /// line above it). Two stores in one process, queried in turn, is the smallest shape that can
+    /// tell a per-store binding from a process-global one.
+    #[test]
+    fn a_keyword_filter_rebinds_against_each_store_it_queries() {
+        let tree = json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_keywords", "original_attribute": "keyword" } },
+                "rhs": ["flying"],
+            }
+        });
+        let opts = QueryOptions { fields: Some(vec!["card_keywords".to_owned()]), ..QueryOptions::default() };
+
+        let mut a = annex_row("Air Elemental", "oracle-a", "row-a-en", "en", 200.0);
+        a["card_keywords"] = json!({"flying": {}});
+        a["card_keywords_printed"] = json!(["Flying"]);
+        let (_ba, store_a) = build_store(&[a]);
+
+        // Store B interns a run of collection strings ahead of the keyword — subtypes are read
+        // before keywords in jv_card_row — so "flying" lands on a different vocab id and at a
+        // different position in the sorted permutation `bind` binary-searches.
+        let mut b = annex_row("Wind Drake", "oracle-b", "row-b-en", "en", 200.0);
+        b["card_subtypes"] = json!(["Drake", "Bird", "Aardvark"]);
+        b["card_keywords"] = json!({"flying": {}});
+        b["card_keywords_printed"] = json!(["Flying"]);
+        let (_bb, store_b) = build_store(&[b]);
+
+        let id_of = |store: &BufferStore| -> u16 {
+            let d = store.data();
+            (0..d.coll_vocab.len())
+                .find(|i| d.coll_vocab[*i].as_str() == "flying")
+                .expect("the folded keyword is interned") as u16
+        };
+        assert_ne!(id_of(&store_a), id_of(&store_b), "the fixture must actually move the id");
+
+        // A, then B, then A again: a stale binding would fail the second or the third.
+        assert_eq!(store_a.query_value(&tree, &opts).expect("a").total, 1);
+        assert_eq!(store_b.query_value(&tree, &opts).expect("b").total, 1, "the swapped store rebinds");
+        assert_eq!(store_a.query_value(&tree, &opts).expect("a again").total, 1);
+    }
+
+    /// Colours come out ALPHABETICAL, which is what Scryfall serves — see identity_letters.
+    #[test]
+    fn colors_emit_in_scryfalls_alphabetical_order() {
+        let mut row = annex_row("Invasion of Alara", "oracle-a", "row-a-en", "en", 200.0);
+        row["card_colors"] = json!({"W": true, "U": true, "B": true, "R": true, "G": true});
+        row["card_color_identity"] = json!({"U": true, "R": true});
+        row["produced_mana"] = json!({"C": true, "B": true, "W": true});
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let names = ["colors", "color_identity", "produced_mana"];
+        let fields = resolve_fields_json(Some(names.iter().map(|n| (*n).to_string()).collect())).expect("resolve");
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["colors"], json!(["B", "G", "R", "U", "W"]), "not WUBRG");
+        assert_eq!(obj["color_identity"], json!(["R", "U"]), "not U then R");
+        assert_eq!(obj["produced_mana"], json!(["B", "C", "W"]), "C sorts with the letters, not last");
+    }
+
+    /// `produced_mana` reaches the card object at all — it never did, so every land this port
+    /// served was missing a key Scryfall sends. Absent when the card makes no mana, never `[]`.
+    #[test]
+    fn produced_mana_is_emitted_and_absent_when_empty() {
+        let fields = resolve_fields_json(Some(vec!["produced_mana".to_owned()])).expect("resolves");
+        let mut row = annex_row("Ancient Tomb", "oracle-a", "row-a-en", "en", 200.0);
+        row["produced_mana"] = json!({"C": true});
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["produced_mana"], json!(["C"]));
+
+        let (_b, store) = build_store(&[annex_row("Shock", "oracle-b", "row-b-en", "en", 150.0)]);
+        let d = store.data();
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["produced_mana"], json!(null), "null is the writers' absent form");
+    }
+
+    /// `promo_types` and `frame_effects` keep the payload's order too.
+    ///
+    /// Same class as colours and games, and the cheapest of the three to have got wrong: the
+    /// ingest reads both with `jv_str_list_to_ids`, so the order was in the archive the whole time
+    /// and only the emission re-sorted it. Scryfall serves `["showcase","legendary"]` and
+    /// `["universesbeyond","ffv"]`; alphabetical gives the reverse of both.
+    #[test]
+    fn promo_types_and_frame_effects_keep_the_payloads_order() {
+        let mut row = annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0);
+        row["card_compat_blob"] = json!({
+            "lang": "en",
+            "frame_effects": ["showcase", "legendary"],
+            "promo_types": ["universesbeyond", "ffv"],
+        });
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let names = ["promo_types", "frame_effects"];
+        let fields = resolve_fields_json(Some(names.iter().map(|n| (*n).to_string()).collect())).expect("resolve");
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["frame_effects"], json!(["showcase", "legendary"]), "not alphabetical");
+        assert_eq!(obj["promo_types"], json!(["universesbeyond", "ffv"]), "not alphabetical");
+    }
+
+    /// The printed colour dot reaches the card object — it never did.
+    ///
+    /// A meld result states its colours with an indicator because its mana cost cannot (it has
+    /// none): Mishra, Lost to Phyrexia serves `"color_indicator": ["B","R"]`. 546 printings in the
+    /// corpus carry the key and this port emitted it on zero of them.
+    #[test]
+    fn a_printed_color_indicator_reaches_the_card_object() {
+        let fields = resolve_fields_json(Some(vec!["color_indicator".to_owned()])).expect("resolves");
+        let mut row = annex_row("Mishra, Lost to Phyrexia", "oracle-a", "row-a-en", "en", 200.0);
+        row["color_indicator"] = json!({"B": true, "R": true});
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["color_indicator"], json!(["B", "R"]));
+
+        let (_b, store) = build_store(&[annex_row("Shock", "oracle-b", "row-b-en", "en", 150.0)]);
+        let d = store.data();
+        let obj = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        assert_eq!(obj["color_indicator"], json!(null), "absent, not an empty list");
+    }
+
+    /// `all_parts` is the PRINTING's list, not the card's.
+    ///
+    /// Two printings of one oracle card, one carrying related cards and one carrying none: the
+    /// second must answer with an empty list rather than borrowing the first's. This is the shape
+    /// mom/230 has live — two related cards on the English printing, the key omitted entirely on
+    /// the Spanish one — and it is why the field moved off `OracleCard`.
+    #[test]
+    fn all_parts_belongs_to_the_printing_that_carries_it() {
+        let mut en = annex_row("Invasion of Alara", "oracle-a", "row-a-en", "en", 200.0);
+        en["card_compat_blob"] = json!({
+            "lang": "en",
+            "all_parts": [{"id": "11111111-1111-1111-1111-111111111111", "component": "token",
+                           "name": "Copy", "type_line": "Token"}],
+        });
+        let mut es = annex_row("Invasion of Alara", "oracle-a", "row-a-es", "es", 150.0);
+        es["card_compat_blob"] = json!({"lang": "es"});
+        let (_b, store) = build_store(&[en, es]);
+        let d = store.data();
+        let fields = resolve_fields_json(Some(vec!["all_parts".to_owned()])).expect("all_parts resolves");
+        assert_eq!(d.printings.len(), 2, "one card, two canonical printings");
+        let first = card_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab, &fields);
+        let second = card_to_json(&d.cards[0], &d.printings[1], &d.strings, &d.coll_vocab, &fields);
+        let first_empty = first["all_parts"].as_array().unwrap().is_empty();
+        let (with_parts, without) = if first_empty { (second, first) } else { (first, second) };
+        assert_eq!(with_parts["all_parts"][0]["name"], json!("Copy"));
+        assert_eq!(with_parts["all_parts"][0]["component"], json!("token"));
+        assert!(
+            without["all_parts"].as_array().unwrap().is_empty(),
+            "the printing without related cards must not inherit the other's"
+        );
+    }
+
+    /// The per-face artist, through the same fix: original case out of `faces_to_json`, absence
+    /// exact on a face without one.
+    #[test]
+    fn a_face_artist_round_trips_in_original_case() {
+        let mut row = annex_row("Sudden Rescue // Steady Return", "oracle-p", "row-p-en", "en", 200.0);
+        row["card_faces"] = json!([
+            { "name": "Sudden Rescue", "type_line": "Instant", "oracle_text": "x",
+              "artist": "Milivoj Ćeran", "illustration_id": "ill-front" },
+            { "name": "Steady Return", "type_line": "Sorcery", "oracle_text": "y",
+              "illustration_id": "ill-back" },
+        ]);
+        let (_b, store) = build_store(&[row]);
+        let d = store.data();
+        let out = faces_to_json(&d.cards[0], &d.printings[0], &d.strings);
+        assert_eq!(out[0]["artist"], json!("Milivoj Ćeran"));
+        assert_eq!(out[1]["artist"], json!(null), "the artistless face stays null, never scrambled");
+    }
+
+    // ─── Opaque sort keys, query_keys/fetch_rows, and the partitioned differential ────────────
+
+    /// A corpus rich enough to exercise every orderby: six cards across several sets, prices,
+    /// dates, artists (one artistless), edhrec ranks (some missing), plus foreign rows.
+    /// Set a row's collector number the way the importer does: the string, plus the integer
+    /// `extract_collector_number_int` pulls out of it (ASCII digits concatenated, absent when
+    /// there are none). Both, because `order=set` keys on the PAIR and a fixture that carried only
+    /// the string would sort "10" before "9" and call it correct.
+    fn set_collector_number(r: &mut Value, cn: &str) {
+        r["collector_number"] = json!(cn);
+        let digits: String = cn.chars().filter(char::is_ascii_digit).collect();
+        match digits.parse::<u16>() {
+            Ok(n) => r["collector_number_int"] = json!(n),
+            Err(_) => {
+                if let Value::Object(map) = r {
+                    map.remove("collector_number_int");
+                }
+            }
+        }
+    }
+
+    fn differential_rows() -> Vec<Value> {
+        let mut rows = Vec::new();
+        let mk = |name: &str, oracle: &str, scry: &str, lang: &str, prefer: f64| {
+            let mut r = annex_row(name, oracle, scry, lang, prefer);
+            r["released_at"] = json!("2020-01-01");
+            r
+        };
+        for (name, oracle, set, cn, date, usd, cmc, edhrec, artist, rarity) in [
+            ("Alpha Strike", "oracle-1", "lea", "2", "1993-08-05", 12.0, 1.0, Some(100), Some("Anna Steinbauer"), 0),
+            ("Alpha Strike", "oracle-1", "m21", "10", "2020-07-03", 0.5, 1.0, Some(100), Some("Zoltan Boros"), 0),
+            ("Beta Ray", "oracle-2", "m21", "9", "2020-07-03", 3.25, 2.0, Some(50), Some("anna steinbauer"), 1),
+            ("Gamma Wave", "oracle-3", "neo", "100", "2022-02-18", 0.1, 3.5, None, None, 2),
+            ("Delta Wing", "oracle-4", "neo", "20", "2022-02-18", 7.0, 2.0, Some(50), Some("Milivoj Ćeran"), 3),
+            ("Epsilon Drive", "oracle-5", "otj", "7", "2024-04-19", 0.02, 0.0, Some(7000), Some("Zoltan Boros"), 0),
+            ("Zeta Field", "oracle-6", "lea", "1", "1993-08-05", 950.0, 6.0, Some(3), Some("Anna Steinbauer"), 3),
+        ] {
+            let scry = format!("row-{oracle}-{set}");
+            let mut r = mk(name, oracle, &scry, "en", usd + 100.0);
+            r["card_set_code"] = json!(set);
+            set_collector_number(&mut r, cn);
+            r["released_at"] = json!(date);
+            r["price_usd"] = json!(usd);
+            r["cmc"] = json!(cmc);
+            r["card_rarity_int"] = json!(rarity);
+            if let Some(e) = edhrec {
+                r["edhrec_rank"] = json!(e);
+            }
+            if let Some(a) = artist {
+                r["card_artist"] = json!(a);
+            }
+            rows.push(r);
+        }
+        // `order=name`'s COLLATION, in the shapes that separate it from a byte compare. Without
+        // these the differential fixture is punctuation-free and proves nothing about the default
+        // order — the same blind spot `collector_number: "1"` used to be for `order=set`.
+        // Scryfall's answers, measured 2026-08-16: `Binding the Old Gods` before `Bind the
+        // Monster` (the space goes), `Ajani, Caller of the Pride` before `Ajani Goldmane` (the
+        // comma goes), `Éowyn, Lady of Rohan` before `Erebor Flamesmith` (É folds to e rather than
+        // sorting past z). Each is the REVERSE of raw byte order, so a fixture that passes with a
+        // byte comparator cannot contain them.
+        for (oracle, name, folded) in [
+            ("oracle-nm-1", "Bind the Monster", "bind the monster"),
+            ("oracle-nm-2", "Binding the Old Gods", "binding the old gods"),
+            ("oracle-nm-3", "Ajani, Caller of the Pride", "ajani, caller of the pride"),
+            ("oracle-nm-4", "Ajani Goldmane", "ajani goldmane"),
+            // The importer stores card_name_folded already accent-folded (fold_accents of the
+            // lowercased name), so the fixture spells the folded form out the same way.
+            ("oracle-nm-5", "Éowyn, Lady of Rohan", "eowyn, lady of rohan"),
+            ("oracle-nm-6", "Erebor Flamesmith", "erebor flamesmith"),
+        ] {
+            let scry = format!("row-{oracle}-en");
+            let mut r = mk(name, oracle, &scry, "en", 150.0);
+            r["card_name_folded"] = json!(folded);
+            r["edhrec_rank"] = json!(700);
+            rows.push(r);
+        }
+        // `order=set`'s SECOND key, in the one shape that can go wrong: rows of ONE set whose
+        // collector numbers separate only by the (int, string) rule. "9" before "10" is what a
+        // plain string order gets backwards; "40" before "A-40" before "41" is khm's own sequence
+        // (measured against api.scryfall.com over the whole set, 2026-08-16) and is what an
+        // int-only key cannot express. "UB" carries no digits at all and leads the set, which is
+        // where Scryfall puts the corpus's five digit-free numbers (`e:unk` answers CAa, CAb, UB,
+        // CA01, ... , measured the same day) and what `Option<u16>`'s own `None < Some` gives.
+        // Distinct oracles so the partition cut splits them, which is
+        // what makes `partitioned_key_streams_merge_to_the_unpartitioned_order` prove the BYTE
+        // encoding rather than just the in-archive rank.
+        for (oracle, cn) in [
+            ("oracle-cn-0", "UB"),
+            ("oracle-cn-1", "9"),
+            ("oracle-cn-2", "10"),
+            ("oracle-cn-3", "40"),
+            ("oracle-cn-4", "A-40"),
+            ("oracle-cn-5", "41"),
+        ] {
+            let scry = format!("row-{oracle}-khm");
+            let mut r = mk("Kaldheim Filler", oracle, &scry, "en", 150.0);
+            r["card_set_code"] = json!("khm");
+            set_collector_number(&mut r, cn);
+            r["edhrec_rank"] = json!(600);
+            rows.push(r);
+        }
+        // The near-tie name pairs the cross-partition NAME lanes are proven on, placed (by the
+        // shared hash, checked in-test) so each pair SPLITS across partitions at N=3.
+        for (name, oracle, edhrec) in [
+            ("Steel Wall", "oracle-7", 200),   // p1 at N=3
+            ("Steel Walls", "oracle-9", 300),  // p2
+            ("Shock", "oracle-10", 400),       // p0
+            ("Shatter", "oracle-11", 500),     // p2
+        ] {
+            let scry = format!("row-{oracle}-en");
+            let mut r = mk(name, oracle, &scry, "en", 150.0);
+            r["edhrec_rank"] = json!(edhrec);
+            rows.push(r);
+        }
+        // Foreign rows on two of the cards, for the widened differential.
+        for (oracle, lang, printed) in [("oracle-1", "ja", "アルファの一撃"), ("oracle-4", "pt", "asa delta")] {
+            let scry = format!("row-{oracle}-{lang}");
+            let mut r = mk("x", oracle, &scry, lang, 40.0);
+            // The card-level fields come from the group's first row; give the annex row the same
+            // name so a first-row flip (hash order) cannot change card identity.
+            r["card_name"] = rows
+                .iter()
+                .find(|x| x["oracle_id"] == json!(oracle))
+                .map(|x| x["card_name"].clone())
+                .unwrap();
+            r["card_name_folded"] = json!(r["card_name"].as_str().unwrap().to_lowercase());
+            r["is_canonical"] = json!(false);
+            r["printed_name"] = json!(printed);
+            r["printed_name_folded"] = json!(printed.to_lowercase());
+            rows.push(r);
+        }
+        rows
+    }
+
+    /// The (orderby, direction, unique, include_multilingual) grid the key tests sweep: every
+    /// primary-segment shape (string asc/desc, numeric, date, missing artist, missing edhrec
+    /// tiebreak) and both drivers.
+    fn key_grid() -> Vec<(&'static str, &'static str, &'static str, bool)> {
+        vec![
+            ("name", "asc", "card", false),
+            ("name", "desc", "card", false),
+            ("set", "asc", "printing", false),
+            // Both directions, because `set` is the one column with a SECOND key and descending
+            // has to reverse that key too — an encoder that reversed only the set code would still
+            // pass the ascending sweep.
+            ("set", "desc", "printing", false),
+            ("released", "desc", "printing", false),
+            ("cmc", "asc", "card", false),
+            ("artist", "asc", "printing", false),
+            ("artist", "desc", "printing", false),
+            ("edhrec", "asc", "card", false),
+            ("usd", "desc", "printing", false),
+            ("name", "asc", "printing", true),
+            ("released", "asc", "printing", true),
+        ]
+    }
+
+    fn keys_opts(orderby: &str, direction: &str, unique: &str, multilingual: bool) -> QueryOptions {
+        QueryOptions {
+            unique: unique.to_owned(),
+            orderby: orderby.to_owned(),
+            direction: direction.to_owned(),
+            limit: 10_000,
+            fields: Some(vec!["scryfall_id".to_owned()]),
+            include_multilingual: multilingual,
+            ..QueryOptions::default()
+        }
+    }
+
+    /// `order=set` orders a set by COLLECTOR NUMBER, and by the (int, string) rule Scryfall uses.
+    ///
+    /// The port had no collector-number component at all, so this order was whatever the edhrec
+    /// tiebreak happened to give — `e:khm order=set` agreed with api.scryfall.com on 0 of 175 rows
+    /// on page 1, in English. All four shapes that decide the rule are here: a digit-free number
+    /// leads ("UB"), 9 precedes 10 (so it is not a string sort), "40" precedes "A-40" precedes
+    /// "41" (so it is not an int sort either), and `dir=desc` reverses the number with the set
+    /// rather than leaving it ascending inside a descending set — khm answers 407, 406, 405 …
+    #[test]
+    fn order_set_ranks_by_collector_number() {
+        let (_b, store) = build_store(&differential_rows());
+        let tree = json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_set_code", "original_attribute": "set" } },
+                "rhs": { "node_type": "StringValueNode", "kwargs": { "value": "khm" } },
+            }
+        });
+        let numbers = |direction: &str| -> Vec<String> {
+            let opts = QueryOptions {
+                unique: "prints".to_owned(),
+                orderby: "set".to_owned(),
+                direction: direction.to_owned(),
+                limit: 100,
+                fields: Some(vec!["collector_number".to_owned()]),
+                ..QueryOptions::default()
+            };
+            store
+                .query_value(&tree, &opts)
+                .expect("query")
+                .rows
+                .iter()
+                .map(|r| r["collector_number"].as_str().expect("collector_number").to_owned())
+                .collect()
+        };
+        let asc = numbers("asc");
+        assert_eq!(asc, ["UB", "9", "10", "40", "A-40", "41"], "Scryfall's own khm/unk sequence");
+        let mut reversed = asc.clone();
+        reversed.reverse();
+        assert_eq!(numbers("desc"), reversed, "dir=desc reverses the number with the set it sits in");
+    }
+
+    /// `order=name` collates the way Scryfall does: accents folded, every non-alphanumeric removed.
+    ///
+    /// The three pairs are each the REVERSE of raw byte order, which is what the port shipped: a
+    /// space, a comma and an É respectively decide the comparison, and all three sort before
+    /// letters as bytes. Measured against api.scryfall.com on 2026-08-16 over 1,333 adjacent pairs
+    /// from eight pages: 0 violations of this rule, 133 of byte order.
+    #[test]
+    fn order_name_uses_scryfalls_collation() {
+        let (_b, store) = build_store(&differential_rows());
+        let opts = QueryOptions {
+            unique: "card".to_owned(),
+            orderby: "name".to_owned(),
+            limit: 10_000,
+            fields: Some(vec!["name".to_owned()]),
+            ..QueryOptions::default()
+        };
+        let names: Vec<String> = store
+            .query_value(&json!({ "node_type": "TrueNode" }), &opts)
+            .expect("query")
+            .rows
+            .iter()
+            .map(|r| r["name"].as_str().expect("name").to_owned())
+            .collect();
+        let at = |n: &str| names.iter().position(|x| x == n).unwrap_or_else(|| panic!("missing {n}"));
+        assert!(at("Binding the Old Gods") < at("Bind the Monster"), "the space is not a character");
+        assert!(at("Ajani, Caller of the Pride") < at("Ajani Goldmane"), "the comma is not a character");
+        assert!(at("Éowyn, Lady of Rohan") < at("Erebor Flamesmith"), "É folds to e, and does not vanish");
+    }
+
+    /// Within one archive, the emitted key sequence must BE the page order — every key leads
+    /// with the version byte and the stream is bytewise nondecreasing, for every orderby shape.
+    #[test]
+    fn query_keys_are_versioned_and_bytewise_page_ordered() {
+        let (_b, store) = build_store(&differential_rows());
+        let tree = json!({ "node_type": "TrueNode" });
+        for (orderby, direction, unique, ml) in key_grid() {
+            let out = store.query_keys(&tree, &keys_opts(orderby, direction, unique, ml), 0).expect("keys");
+            assert!(!out.keys.is_empty());
+            for (key, _) in &out.keys {
+                assert_eq!(key[0], crate::SORT_KEY_VERSION, "every key leads with the version byte");
+            }
+            for w in out.keys.windows(2) {
+                assert!(
+                    w[0].0 <= w[1].0,
+                    "byte order must equal page order for orderby={orderby} {direction} unique={unique}"
+                );
+            }
+        }
+    }
+
+    /// query_keys is the same query: identical total, and its vpids fetched back through
+    /// fetch_rows are exactly the rows query_value pages, in order.
+    #[test]
+    fn query_keys_totals_and_rows_match_the_query() {
+        let (_b, store) = build_store(&differential_rows());
+        let tree = json!({ "node_type": "TrueNode" });
+        for (orderby, direction, unique, ml) in key_grid() {
+            let opts = keys_opts(orderby, direction, unique, ml);
+            let keyed = store.query_keys(&tree, &opts, 0).expect("keys");
+            let paged = store.query_value(&tree, &opts).expect("rows");
+            assert_eq!(keyed.total, paged.total);
+            assert_eq!(keyed.keys.len(), paged.rows.len());
+            let vpids: Vec<u32> = keyed.keys.iter().map(|(_, v)| *v).collect();
+            let fetched = store.fetch_rows(&vpids, opts.fields.clone()).expect("fetch");
+            assert_eq!(fetched, paged.rows, "fetch_rows(page vpids) must reproduce the page");
+        }
+    }
+
+    /// fetch_rows answers in CALLER order, reaches the annex, and errors loudly on a vpid from
+    /// nowhere.
+    #[test]
+    fn fetch_rows_preserves_caller_order_and_rejects_strays() {
+        let store = multilingual_store();
+        let d = store.data();
+        let n = d.printings.len() as u32;
+        let fields = Some(vec!["lang".to_owned()]);
+        // Annex first, then a canonical row — order must survive.
+        let rows = store.fetch_rows(&[n, 0], fields.clone()).expect("fetch");
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0]["lang"], json!("en"), "an annex vpid materializes the foreign printing");
+        assert_eq!(rows[1]["lang"], json!("en"));
+        let stray = n + d.foreign.len() as u32;
+        assert!(store.fetch_rows(&[stray], fields).is_err(), "an out-of-range vpid is an error, not a skip");
+    }
+
+    /// THE cross-partition property (plan A4/G2 in miniature): cut the same corpus at N=4 via
+    /// encode_standalone/build_partition_from_standalone, run query_keys on every partition, and
+    /// the bytewise merge of the streams must equal the unpartitioned key sequence EXACTLY — same
+    /// bytes, same order, totals summing. Key equality is row identity (the last 16 bytes are the
+    /// scryfall_id), so this is the whole two-phase gather proven end to end, per orderby shape.
+    /// It is also what forces UNDERLYING VALUES into the keys: a rank-based key passes the
+    /// in-archive ordering test above and fails here, because each partition ranks its own cut.
+    #[test]
+    fn partitioned_key_streams_merge_to_the_unpartitioned_order() {
+        const N: u32 = 4;
+        let rows = differential_rows();
+        let (_b, reference) = build_store(&rows);
+
+        // The partitioned cut, through the standalone blob path the native builder uses.
+        let partitions = partitioned_stores(&rows, N);
+        assert!(
+            partitions.iter().filter(|p| p.card_count() > 0).count() >= 2,
+            "the corpus must actually split for the merge to prove anything"
+        );
+
+        let tree = json!({ "node_type": "TrueNode" });
+        for (orderby, direction, unique, ml) in key_grid() {
+            let opts = keys_opts(orderby, direction, unique, ml);
+            let want = reference.query_keys(&tree, &opts, 0).expect("reference keys");
+
+            let mut merged: Vec<Vec<u8>> = Vec::new();
+            let mut total = 0usize;
+            for p in &partitions {
+                let out = p.query_keys(&tree, &opts, 0).expect("partition keys");
+                total += out.total;
+                for (key, _) in out.keys {
+                    assert_eq!(key[0], crate::SORT_KEY_VERSION, "a merge must never mix key versions");
+                    merged.push(key);
+                }
+            }
+            // Each stream is sorted (asserted above), so sorting the concatenation IS the k-way
+            // merge, and keys are globally unique (scryfall tail) so the order is total.
+            merged.sort_unstable();
+
+            let want_keys: Vec<&Vec<u8>> = want.keys.iter().map(|(k, _)| k).collect();
+            assert_eq!(total, want.total, "orderby={orderby} {direction} unique={unique} ml={ml}");
+            assert_eq!(
+                merged.iter().collect::<Vec<_>>(),
+                want_keys,
+                "merged partition streams must equal the unpartitioned order (orderby={orderby} {direction} unique={unique} ml={ml})"
+            );
+        }
+    }
+
+    /// The same corpus cut at N partitions through the standalone blob path the native builder
+    /// uses — shared by the key-merge property test and the envelope differential below.
+    fn partitioned_stores(rows: &[Value], n: u32) -> Vec<BufferStore> {
+        let mut buckets: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n as usize];
+        for row in rows {
+            let (meta, blob) = SpillingStoreBuilder::encode_standalone(row).expect("standalone");
+            buckets[(meta.part_hash % u64::from(n)) as usize].push(blob);
+        }
+        buckets
+            .into_iter()
+            .map(|blobs| {
+                let mut bytes = Vec::new();
+                build_partition_from_standalone(blobs.into_iter(), &mut bytes).expect("partition build");
+                BufferStore::from_bytes(&bytes).expect("partition loads")
+            })
+            .collect()
+    }
+
+    /// THE REFERENCE GATHER — exactly the algorithm the serving DO must implement over
+    /// `query_keys`/`fetch_rows` (src/engine/remote-engine.ts's gather must match this; the
+    /// envelope test below is the contract it is held to):
+    ///
+    ///   phase 1: ask every partition for its top `offset + limit` keys at offset 0;
+    ///            refuse mixed key versions; sum the exact totals.
+    ///   merge:   k-way bytewise merge of the (sorted) streams; the page is positions
+    ///            [offset, offset + limit) of the merged sequence.
+    ///   phase 2: fetch each page row from the partition that OWNS it (vpids are
+    ///            partition-local) FOR THE ROWS PHASE 1 DID NOT ALREADY CARRY, then splice
+    ///            every row — inline or fetched — back into merged order.
+    ///
+    /// `inline_budget` is what the caller asks each partition to materialize alongside its keys
+    /// (`0` reproduces the original keys-only protocol exactly). It is applied only at offset 0,
+    /// for the reason `query_keys`' docstring gives, and it changes NOTHING about the answer: a
+    /// row's bytes are the same whichever phase carried it. The returned `phase2_calls` is what
+    /// the free plan is actually being billed for, so the test below can assert it went to zero.
+    ///
+    /// Returns (total_cards, data, has_more, phase2_calls).
+    fn gather_reference(
+        partitions: &[BufferStore],
+        tree: &Value,
+        opts: &QueryOptions,
+        inline_budget: usize,
+    ) -> (usize, Vec<Value>, bool, usize) {
+        let mut phase1 = opts.clone();
+        phase1.limit = opts.offset + opts.limit;
+        phase1.offset = 0;
+        let inline = if opts.offset == 0 { inline_budget } else { 0 };
+        let mut total = 0usize;
+        // (key, partition, vpid, LOCAL INDEX in that partition's stream)
+        let mut merged: Vec<(Vec<u8>, usize, u32, usize)> = Vec::new();
+        let mut carried: Vec<Vec<Value>> = Vec::with_capacity(partitions.len());
+        for (part, store) in partitions.iter().enumerate() {
+            let out = store.query_keys(tree, &phase1, inline).expect("phase 1 keys");
+            total += out.total;
+            for (local, (key, vpid)) in out.keys.into_iter().enumerate() {
+                assert_eq!(key[0], crate::SORT_KEY_VERSION, "the gather must refuse mixed key versions");
+                merged.push((key, part, vpid, local));
+            }
+            carried.push(out.rows);
+        }
+        // Streams arrive sorted, so sorting the concatenation IS the k-way merge; keys are
+        // globally unique (the scryfall tail), so the order is total and needs no tiebreak.
+        merged.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let end = (opts.offset + opts.limit).min(merged.len());
+        let page = if opts.offset < end { &merged[opts.offset..end] } else { &[][..] };
+
+        // Splice: rows phase 1 carried are taken by LOCAL INDEX; the rest are fetched, grouped per
+        // owning partition, and only from the partitions that still owe something.
+        let mut rows: Vec<Option<Value>> = vec![None; page.len()];
+        let mut phase2_calls = 0usize;
+        for (part, store) in partitions.iter().enumerate() {
+            let mut owed_at: Vec<usize> = Vec::new();
+            let mut owed_vpids: Vec<u32> = Vec::new();
+            for i in 0..page.len() {
+                if page[i].1 != part {
+                    continue;
+                }
+                match carried[part].get(page[i].3) {
+                    Some(row) => rows[i] = Some(row.clone()),
+                    None => {
+                        owed_at.push(i);
+                        owed_vpids.push(page[i].2);
+                    }
+                }
+            }
+            if owed_vpids.is_empty() {
+                continue;
+            }
+            phase2_calls += 1;
+            let fetched = store.fetch_rows(&owed_vpids, opts.fields.clone()).expect("phase 2 rows");
+            for (slot, row) in owed_at.into_iter().zip(fetched) {
+                rows[slot] = Some(row);
+            }
+        }
+        let data: Vec<Value> = rows.into_iter().map(|r| r.expect("every page slot fetched")).collect();
+        let has_more = opts.offset + data.len() < total;
+        (total, data, has_more, phase2_calls)
+    }
+
+    /// The envelope-level differential (plan C5's acceptance shape, CARD-PARTITIONING §6): the
+    /// same query corpus through (a) the unpartitioned store's pages and (b) the reference
+    /// gather over an N=3 cut — BYTE-IDENTICAL envelopes: total_cards, has_more, and data in
+    /// order, compared as serialized JSON. Sweeps the orderby grid plus lang:/include_multilingual
+    /// variants and deep/past-the-end offsets.
+    #[test]
+    fn gathered_envelopes_equal_the_unpartitioned_pages() {
+        let rows = differential_rows();
+        let (_b, reference) = build_store(&rows);
+        let partitions = partitioned_stores(&rows, 3);
+        let true_node = json!({ "node_type": "TrueNode" });
+
+        let mut cases: Vec<(Value, QueryOptions)> = Vec::new();
+        for (orderby, direction, unique, ml) in key_grid() {
+            for (offset, limit) in [(0usize, 4usize), (3, 4), (7, 50), (10_000, 5)] {
+                let mut opts = keys_opts(orderby, direction, unique, ml);
+                opts.offset = offset;
+                opts.limit = limit;
+                cases.push((true_node.clone(), opts));
+            }
+        }
+        // The lang: lane through the gather too — the widened driver behind query_keys.
+        let mut lang_opts = keys_opts("name", "asc", "card", false);
+        lang_opts.limit = 5;
+        cases.push((lang_filter("ja"), lang_opts));
+
+        for (tree, opts) in cases {
+            let want = reference.query_value(&tree, &opts).expect("unpartitioned page");
+            let want_has_more = opts.offset + want.rows.len() < want.total;
+            let envelope = |t: usize, d: &[Value], h: bool| {
+                serde_json::json!({ "total_cards": t, "has_more": h, "data": d }).to_string()
+            };
+            let expected = envelope(want.total, &want.rows, want_has_more);
+
+            // Every inline budget must produce the SAME envelope: 0 is the original keys-only
+            // protocol, 1 forces a page that mixes carried and fetched rows inside one partition,
+            // and a budget past the page length carries everything. If any of the three diverged,
+            // folding phase 2 into phase 1 would be changing answers, not just round trips.
+            for budget in [0usize, 1, 2, opts.offset + opts.limit + 1] {
+                let (total, data, has_more, phase2) = gather_reference(&partitions, &tree, &opts, budget);
+                assert_eq!(
+                    envelope(total, &data, has_more),
+                    expected,
+                    "envelope diverged at inline budget {budget}: orderby={} {} unique={} ml={} offset={} limit={}",
+                    opts.orderby, opts.direction, opts.unique, opts.include_multilingual, opts.offset, opts.limit
+                );
+                // The point of the whole exercise: at offset 0 a budget that covers the page costs
+                // no phase-2 call at all, which is 1 isolate RPC + N-1 sibling RPCs and nothing else.
+                if opts.offset == 0 && budget > opts.limit {
+                    assert_eq!(
+                        phase2, 0,
+                        "an inline budget past the page length must fold phase 2 away entirely \
+                         (orderby={} {} unique={} limit={})",
+                        opts.orderby, opts.direction, opts.unique, opts.limit
+                    );
+                }
+            }
+        }
+    }
+
+    /// The rows `query_keys` carries inline must be BYTE-IDENTICAL to the ones `fetch_rows` would
+    /// hand back for the same vpids and fields — the property that lets a single page mix them.
+    /// Checked across the orderby grid and with an explicit field projection, because the two
+    /// paths resolve `fields` through different call sites.
+    #[test]
+    fn inline_rows_equal_fetch_rows_for_the_same_entries() {
+        let store = multilingual_store();
+        let tree = json!({ "node_type": "TrueNode" });
+        for (orderby, direction, unique, ml) in key_grid() {
+            for fields in [None, Some(vec!["name".to_owned(), "lang".to_owned()])] {
+                let mut opts = keys_opts(orderby, direction, unique, ml);
+                opts.limit = 12;
+                opts.fields = fields.clone();
+                let out = store.query_keys(&tree, &opts, 5).expect("keys with inline rows");
+                assert_eq!(out.rows.len(), out.keys.len().min(5), "inline rows are a prefix of the keys");
+                let vpids: Vec<u32> = out.keys.iter().take(out.rows.len()).map(|(_, v)| *v).collect();
+                let fetched = store.fetch_rows(&vpids, fields).expect("phase 2 rows");
+                assert_eq!(
+                    serde_json::to_string(&out.rows).unwrap(),
+                    serde_json::to_string(&fetched).unwrap(),
+                    "inline and fetched rows diverged (orderby={orderby} {direction} unique={unique} ml={ml})"
+                );
+            }
+        }
+        // Asking for more inline rows than the page has is clamped, never an error.
+        let mut opts = keys_opts("name", "asc", "card", false);
+        opts.limit = 3;
+        let out = store.query_keys(&tree, &opts, 9_999).expect("clamped");
+        assert_eq!(out.rows.len(), out.keys.len());
+    }
+
+    /// The reference cross-partition fuzzy race — exactly what partitioned-engine.ts's fuzzy
+    /// combine must compute from the `fuzzy_candidates` export: union every partition's
+    /// candidate classes, global best by score, runner-up = best candidate differing from it in
+    /// BOTH folded name and oracle id, `hit` iff the best leads by `lead`. Returns the status
+    /// and, on a hit, the winner's oracle id.
+    fn fuzzy_race_reference(
+        partitions: &[BufferStore],
+        needle: &str,
+        floor: f32,
+        lead: f32,
+    ) -> (&'static str, Option<String>) {
+        let mut all: Vec<FuzzyCandidate> = Vec::new();
+        for p in partitions {
+            all.extend(p.fuzzy_candidates(needle, floor, 8));
+        }
+        all.sort_by(|a, b| {
+            b.score.total_cmp(&a.score).then_with(|| a.oracle_id.cmp(&b.oracle_id)).then_with(|| a.vpid.cmp(&b.vpid))
+        });
+        let Some(best) = all.first().cloned() else { return ("miss", None) };
+        let runner = all
+            .iter()
+            .find(|c| c.folded_name != best.folded_name && c.oracle_id != best.oracle_id);
+        match runner {
+            Some(r) if best.score - r.score < lead => ("ambiguous", None),
+            _ => ("hit", Some(best.oracle_id)),
+        }
+    }
+
+    /// The cross-partition fuzzy race must answer EXACTLY what a single store answers, for every
+    /// needle shape — and the case that proves the scores-bearing export necessary: a needle two
+    /// partitions both resolve to (distinct-name) local hits, where the conservative
+    /// `{status, card}` combine reads ambiguous and the single store picks the winner by LEAD.
+    #[test]
+    fn fuzzy_race_across_partitions_matches_the_single_store() {
+        let rows = differential_rows();
+        let (_b, reference) = build_store(&rows);
+        let partitions = partitioned_stores(&rows, 3);
+        let fields = Some(vec!["oracle_id".to_owned()]);
+        let (floor, lead) = (0.4f32, 0.05f32);
+
+        let needles =
+            ["alpha strike", "alpha strik", "beta rey", "steel wall", "shock", "アルファの一撃", "zzzzzz"];
+        let mut split_hit_proven = false;
+        for needle in needles {
+            let (want_status, want_card) =
+                reference.fuzzy_card_by_name(needle, floor, lead, fields.clone()).expect("single-store fuzzy");
+            let (got_status, got_oracle) = fuzzy_race_reference(&partitions, needle, floor, lead);
+            assert_eq!(got_status, want_status, "status diverged for {needle:?}");
+            if want_status == "hit" {
+                let want_oracle = want_card.expect("hit card")["oracle_id"].as_str().unwrap().to_owned();
+                assert_eq!(got_oracle.as_deref(), Some(want_oracle.as_str()), "winner diverged for {needle:?}");
+                // The materialization rule the TS combine uses: the winning partition's OWN
+                // fuzzy answers the same hit (the global winner leads its local competitors too).
+                let winner_partition = partitions
+                    .iter()
+                    .find(|p| {
+                        p.fuzzy_candidates(needle, floor, 8)
+                            .first()
+                            .is_some_and(|c| c.oracle_id == want_oracle)
+                    })
+                    .expect("some partition owns the winner");
+                let (s, c) = winner_partition
+                    .fuzzy_card_by_name(needle, floor, lead, fields.clone())
+                    .expect("winner-partition fuzzy");
+                assert_eq!(s, "hit", "the winning partition must re-resolve its own hit for {needle:?}");
+                assert_eq!(c.expect("card")["oracle_id"].as_str().unwrap(), want_oracle);
+                // The divergence proof: at least one hit needle must have DISTINCT-NAME local
+                // hits on two partitions — where {status, card} combining reads ambiguous.
+                let local_hits: Vec<String> = partitions
+                    .iter()
+                    .filter_map(|p| {
+                        let (s, c) = p.fuzzy_card_by_name(needle, floor, lead, fields.clone()).ok()?;
+                        (s == "hit").then(|| c.unwrap()["oracle_id"].as_str().unwrap().to_owned())
+                    })
+                    .collect();
+                if local_hits.len() >= 2 {
+                    split_hit_proven = true;
+                }
+            }
+        }
+        assert!(
+            split_hit_proven,
+            "no needle produced two distinct local hits — the corpus no longer proves the \
+             conservative combine wrong; re-place the near-tie pairs"
+        );
+    }
+
+    /// The autocomplete merge key: merging per-partition lists under the engine's OWN
+    /// (prefix-rank, char length, name) key reproduces the single-store output — and the old
+    /// (prefix-rank, alphabetical) approximation provably does not on this corpus ("Shock"
+    /// before "Shatter" by length; the reverse alphabetically).
+    #[test]
+    fn autocomplete_merge_key_matches_the_single_store() {
+        let rows = differential_rows();
+        let (_b, reference) = build_store(&rows);
+        let partitions = partitioned_stores(&rows, 3);
+        let prefix = "sh";
+        let want = reference.autocomplete(prefix, 20);
+
+        let mut merged: Vec<String> = Vec::new();
+        for p in &partitions {
+            for name in p.autocomplete(prefix, 20) {
+                if !merged.contains(&name) {
+                    merged.push(name);
+                }
+            }
+        }
+        let rank = |name: &str| u8::from(!name.to_lowercase().starts_with(prefix));
+        let mut keyed = merged.clone();
+        keyed.sort_by_key(|n| (rank(n), n.chars().count(), n.clone()));
+        assert_eq!(keyed, want, "the (rank, char_len, name) merge key must reproduce the engine order");
+
+        let mut alpha = merged;
+        alpha.sort_by_key(|n| (rank(n), n.to_lowercase()));
+        assert_ne!(alpha, want, "the alphabetical approximation must be provably wrong on this corpus");
+    }
+
+    /// Sorting standalone blobs by their RowMeta sort key reproduces the build order exactly —
+    /// the contract a memory-capped caller relies on to presort spilled blobs.
+    #[test]
+    fn standalone_sort_blobs_reproduce_the_build_order() {
+        let rows = differential_rows();
+        let mut metas: Vec<(crate::core_api::RowMeta, usize)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (SpillingStoreBuilder::encode_standalone(r).expect("standalone").0, i))
+            .collect();
+        metas.sort_by_key(|(m, _)| m.build_sort_blob);
+
+        let mut sb = SpillingStoreBuilder::new();
+        for r in &rows {
+            sb.add_card(r).expect("stage");
+        }
+        let want: Vec<usize> = sb.sorted_order().into_iter().map(|i| i as usize).collect();
+        let got: Vec<usize> = metas.into_iter().map(|(_, i)| i).collect();
+        assert_eq!(got, want, "blob byte order must equal card_row_build_order");
+    }
+
+    /// The annex-only oracle shape found by the real-corpus G2 run: an oracle whose EVERY
+    /// canonical printing is import-filtered while a foreign row survives (the ja 4ED ante
+    /// cards, whose ja printings alone carry `oldschool: legal`). Before the drop guard this
+    /// PANICKED the build (`divergent_formats_of` on the zero-width canonical window) — and
+    /// would have killed the nightly wasm import identically, since both paths share
+    /// build_card_data_sorted. The group is dropped whole and counted; two annex-only oracles
+    /// so both close sites (interior group boundary and end-of-stream) are exercised whichever
+    /// way the oracle hash orders them.
+    #[test]
+    fn an_annex_only_oracle_is_dropped_not_panicked() {
+        let mut rows = Vec::new();
+        for (name, oracle, scry) in
+            [("Bronze Tablet", "oracle-ante-1", "row-ante-1"), ("Tempest Efreet", "oracle-ante-2", "row-ante-2")]
+        {
+            let mut ja = annex_row(name, oracle, scry, "ja", 40.0);
+            ja["is_canonical"] = json!(false);
+            ja["printed_name"] = json!("アンティ");
+            ja["printed_name_folded"] = json!("アンティ");
+            rows.push(ja);
+        }
+        rows.push(annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0));
+        let mut a_ja = annex_row("Shock", "oracle-a", "row-a-ja", "ja", 60.0);
+        a_ja["is_canonical"] = json!(false);
+        rows.push(a_ja);
+
+        let (bytes, store) = build_store(&rows);
+        let d = store.data();
+        assert_eq!(store.card_count(), 1, "the annex-only oracles are gone, cards and rows alike");
+        assert_eq!(store.size(), 1);
+        assert_eq!(d.foreign.len(), 1, "only the surviving card's annex row remains");
+        // The stats name what happened, exactly.
+        let mut b = StoreBuilder::new();
+        for r in &rows {
+            b.add_card(r).expect("stage");
+        }
+        let mut out = Vec::new();
+        let stats = b.finish_to_writer(&mut out).expect("annex-only oracles must not panic the build");
+        assert_eq!(stats.annex_only_oracles_dropped, 2);
+        assert_eq!(stats.annex_only_rows_dropped, 2);
+        assert_eq!(stats.printing_count + stats.foreign_printing_count + stats.annex_only_rows_dropped, rows.len());
+
+        // The spill path — the nightly's shape — takes the same guard.
+        let mut sb = SpillingStoreBuilder::new();
+        let blobs: Vec<Vec<u8>> = rows.iter().map(|r| sb.add_card(r).expect("stage")).collect();
+        let order = sb.sorted_order();
+        let mut spilled = Vec::new();
+        let sstats = sb
+            .finish_from_sorted(order.iter().map(|&i| blobs[i as usize].clone()), &mut spilled)
+            .expect("spill build must not panic either");
+        assert_eq!(sstats.annex_only_oracles_dropped, 2);
+
+        // The dropped cards are unreachable on every lane — widened included — and the store
+        // still answers queries (the panic site was the planes build; reaching a page proves
+        // the whole index build ran).
+        let out = store
+            .query_value(&json!({ "node_type": "TrueNode" }), &opts_with("printing", true))
+            .expect("widened query");
+        assert_eq!(out.total, 2);
+        drop(bytes);
+    }
+
+    /// An all-canonical feed — every store built before the multilingual work — produces an
+    /// empty annex with a still-well-formed CSR, and rows without the flag read canonical.
+    #[test]
+    fn a_feed_without_canonical_flags_builds_an_empty_annex() {
+        let (_bytes, store) = build_store(&[
+            annex_row("Shock", "oracle-a", "row-a-en", "en", 200.0),
+            annex_row("Other Card", "oracle-b", "row-b-en", "en", 150.0),
+        ]);
+        let d = store.data();
+        assert!(d.foreign.is_empty());
+        assert_eq!(d.foreign_offsets.len(), d.cards.len() + 1);
+        assert!(d.foreign_offsets.iter().all(|o| u32::from(*o) == 0));
+        assert_eq!(d.indexes.printed_names.name_ids.len(), 0);
+        assert!(d.indexes.foreign_langs.ids_of("en").is_none());
+        // The canonical lang plane still posts, for the day lang: narrows canonical rows.
+        assert_eq!(d.indexes.langs.ids_of("en").expect("en postings").len(), 2);
     }
 }

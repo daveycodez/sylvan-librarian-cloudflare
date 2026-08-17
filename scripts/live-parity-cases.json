@@ -1,0 +1,690 @@
+{
+	"scryfall_only_keys": [
+		"resource_id",
+		"game_changer",
+		"foil",
+		"nonfoil",
+		"artist_ids",
+		"**.card_faces.*.artist_id",
+		"image_updated_at",
+		"**.all_parts.*.uri",
+		"**.image_uris.thumb",
+		"**.image_uris.grid",
+		"**.image_uris.display",
+		"**.image_uris.art",
+		"**.image_uris.crop",
+		"preview"
+	],
+	"scryfall_only_key_notes": {
+		"resource_id": "api.scryfall.com envelope id; no upstream #912 column (plan C4 seed).",
+		"game_changer": "Commander bracket flag Scryfall added; no upstream #912 column (plan C4 seed).",
+		"foil": "Deprecated by `finishes`; Scryfall still sends it, upstream #912 does not store it (plan C4 seed).",
+		"nonfoil": "Deprecated by `finishes`; Scryfall still sends it, upstream #912 does not store it (plan C4 seed).",
+		"artist_ids": "Top-level and per-face artist id lists; upstream #912 stores only the artist name (plan C4 seed).",
+		"**.card_faces.*.artist_id": "Per-face artist id; upstream #912 stores only the artist name (plan C4 seed).",
+		"image_updated_at": "Image pipeline timestamp, the field the image_uris cache-buster is derived from; no upstream #912 column (observed live 2026-08-15).",
+		"**.image_uris.thumb": "Newer api.scryfall.com webp image size, absent from the bulk files and from upstream's IMAGE_VERSIONS (observed live 2026-08-15; same for grid/display/art/crop).",
+		"**.image_uris.grid": "See **.image_uris.thumb.",
+		"**.image_uris.display": "See **.image_uris.thumb.",
+		"**.image_uris.art": "See **.image_uris.thumb.",
+		"**.image_uris.crop": "See **.image_uris.thumb.",
+		"preview": "Preview metadata (source/source_uri/previewed_at); in the bulk files but upstream #912 has no column, so the mirror never emits it (observed live 2026-08-15).",
+		"**.all_parts.*.uri": "Self-referential related-card URI; upstream #912's RelatedCard (mirrored by card_engine core_api.rs jv_all_parts) stores only id/name/type_line/component, so neither upstream nor the mirror can emit it (observed live 2026-08-15)."
+	},
+	"field_deviations": [
+		{
+			"name": "printing-preference-on-name-hits",
+			"paths": [
+				"id",
+				"multiverse_ids",
+				"arena_id",
+				"mtgo_id",
+				"mtgo_foil_id",
+				"tcgplayer_id",
+				"tcgplayer_etched_id",
+				"cardmarket_id",
+				"released_at",
+				"set",
+				"set_id",
+				"set_name",
+				"set_type",
+				"set_uri",
+				"set_search_uri",
+				"scryfall_set_uri",
+				"scryfall_uri",
+				"uri",
+				"collector_number",
+				"rarity",
+				"artist",
+				"artist_ids",
+				"illustration_id",
+				"image_uris",
+				"image_status",
+				"highres_image",
+				"prices",
+				"purchase_uris",
+				"related_uris",
+				"promo",
+				"promo_types",
+				"frame",
+				"frame_effects",
+				"border_color",
+				"booster",
+				"digital",
+				"games",
+				"finishes",
+				"reprint",
+				"variation",
+				"full_art",
+				"textless",
+				"oversized",
+				"security_stamp",
+				"flavor_text",
+				"watermark",
+				"card_back_id",
+				"preview",
+				"penny_rank",
+				"edhrec_rank",
+				"story_spotlight",
+				"prints_search_uri",
+				"rulings_uri"
+			],
+			"cases": ["named-fuzzy-sol-rin"],
+			"note": "SAME CARD, DIFFERENT PRINTING — the prefer_score divergence the 2026-08-16 differential sweep recorded as N9, surfacing on a name-route hit. `fuzzy=sol rin` resolves Sol Ring on both sides; Scryfall answers msc/213 and the mirror answers msc/211. The paths here are PRINTING identity only, deliberately: name, oracle_id, type_line, oracle_text, cmc, colors, legalities and the rest are still byte-compared, so a wrong CARD fails this case. Scryfall's preference is not derivable from what is stored here — probed on six flavor names with several carriers, it picks the lowest collector number three times, the newest release once, and a promo digital printing over a paper non-promo one once (prm/80925 over iko/377) — so this stays a recorded divergence rather than a guess."
+		},
+		{
+			"name": "same-name-different-card-on-a-name-hit",
+			"paths": [
+				"id",
+				"oracle_id",
+				"multiverse_ids",
+				"name",
+				"set",
+				"collector_number",
+				"released_at",
+				"object",
+				"lang",
+				"layout",
+				"type_line",
+				"oracle_text",
+				"mana_cost",
+				"cmc",
+				"colors",
+				"color_identity",
+				"keywords",
+				"legalities",
+				"rarity",
+				"artist",
+				"set_name",
+				"set_type",
+				"prices",
+				"purchase_uris",
+				"related_uris",
+				"scryfall_uri",
+				"uri",
+				"rulings_uri",
+				"prints_search_uri",
+				"image_uris",
+				"card_back_id",
+				"border_color",
+				"frame",
+				"games",
+				"finishes",
+				"digital",
+				"booster",
+				"promo",
+				"reprint",
+				"variation",
+				"full_art",
+				"textless",
+				"story_spotlight",
+				"oversized",
+				"highres_image",
+				"image_status",
+				"set_id",
+				"illustration_id",
+				"artist_ids",
+				"edhrec_rank",
+				"penny_rank",
+				"security_stamp",
+				"produced_mana",
+				"flavor_text",
+				"watermark",
+				"frame_effects",
+				"promo_types",
+				"tcgplayer_id",
+				"mtgo_id",
+				"cardmarket_id",
+				"arena_id",
+				"color_indicator",
+				"all_parts",
+				"card_faces",
+				"set_uri",
+				"set_search_uri",
+				"scryfall_set_uri",
+				"tcgplayer_etched_id",
+				"mtgo_foil_id"
+			],
+			"cases": ["named-fuzzy-countersp"],
+			"note": "TWO CARDS SHARE ONE NAME, and the lanes pick different ones. `fuzzy=countersp` answers `Counters` on both sides — fmsc/9 (oracle 48f0cd77) on Scryfall, ftla/6 (oracle 14994561) here — two distinct oracle cards printed under the same name on two front-card sets. The fuzzy rule both sides implement is that names, not cards, compete, so neither answer is ambiguous and neither is wrong; which one wins is the same printing-preference question the sweep recorded as N9, one level up. THE CORPUS GAP THIS ENTRY USED TO RECORD IS CLOSED: those printings are imported now and carry `is:extra`, so `/cards/named?fuzzy=counters` answers `Counters`, `fuzzy=lightning` answers `Lightning` (fjmp/21) and `fuzzy=welcome australia` answers `Welcome to Australia` (unk) — all three were 404s or wrong cards before."
+		},
+		{
+			"name": "gatherer-pending-deploy",
+			"paths": ["**.related_uris.gatherer"],
+			"note": "DEPLOY LAG, not a parity definition. The serializers emit related_uris.gatherer (first multiverse id, &printed=true for non-en, false for en) and it byte-matches Scryfall — verified against the live values for en cmd/16, es mom/230, pt grn/212 and ja khm/1. PRODUCTION still serves no gatherer key until the next deploy, so against the deployed origin this fires as a missing-ours diff; against `--origin http://localhost:8787` it never fires and the field is byte-compared like any other. This was a scryfall_only_keys ledger entry, which STRIPPED the key from Scryfall's side and so could never have compared the value; as a deviation it compares wherever both sides have it. Delete this entry at the first post-deploy run."
+		},
+		{
+			"name": "rulings-same-date-order",
+			"paths": ["data.*.comment"],
+			"cases": ["rulings-via-es-id-mom-230"],
+			"note": "PRE-EXISTING, LANGUAGE-INDEPENDENT and already in the README's deviations list. RE-MEASURED 2026-08-16 and it does NOT close: the candidate fix was to preserve the rulings bulk file's row order within a date, on the theory that the dump is exported in internal-id order. Tested against api.scryfall.com over 25 cards that have both several dates and a date carrying 4+ rulings, the file's order matched 0 of 25 — as did that order reversed, whole-file order, date-ascending-then-file, and the comment rule this port ships. The reason is direct: the six shared 'kicker' rulings come back in a DIFFERENT order on different cards (Strength of Night, Goblin Barrage and Spell Contortion each get their own permutation of the same six comments), so Scryfall orders by a per-(card, ruling) row id rather than a per-ruling one, and the dump — one line per pair, grouped by card — cannot reproduce that within a card. So date desc + comment stays, and determinism is load-bearing beyond tidiness: identical bucket bytes are what let the publisher skip rewrites against the 1,000-writes/day budget. Both sides return the SAME 26 rulings for mom/230 in a different order; the array LENGTH is still compared (an array-length diff is not covered by this path), so a missing or extra ruling still fails. Nothing to do with the foreign id — /cards/<the English id>/rulings differs identically. rulings-en-jotun-grunt passes because that card has no crowded date."
+		},
+		{
+			"name": "artist-vocab-scramble",
+			"paths": ["**.artist"],
+			"note": "PRODUCTION BUG, not a parity definition: card_artist_vid is interned into artist_vocab lowercased (core_api.rs jv_card_row) but JSON_FIELD_TABLE's `artist` entry resolves it against coll_vocab (core_api.rs ~:1947), so every served artist is an unrelated vocabulary string ('fumes', 'blue-magic'). Remove this entry when the engine fix ships — the harness then enforces artist byte-parity."
+		},
+		{
+			"name": "slug-apostrophe",
+			"paths": ["**.scryfall_uri"],
+			"cases": ["cards-id-en-flip-erayo", "cards-id-en-modal-dfc-agadeem"],
+			"note": "PRODUCTION DIVERGENCE, same C3 slug-fix territory as slug-percent-encoding: Scryfall DELETES apostrophes in slugs (erayos-essence, agadeems-awakening); the mirror hyphenates them (erayo-s-essence). No normalize can hold across that, so this is scoped to the apostrophe-named cases; every other case still goes through slug-percent-encoding's percent-decode check. FIX IN-TREE (2026-08-16): slug() in objects.ts/card_object.rs/objects.py now deletes apostrophes per the live rule; PRODUCTION still serves the old bytes until the next deploy, so this entry stays. At the first post-deploy run it flips to a plain byte-compared case — delete this entry then."
+		},
+		{
+			"name": "slug-percent-encoding",
+			"paths": ["**.scryfall_uri"],
+			"normalize": "percent-decode",
+			"note": "Plan C3: the mirror does not UTF-8 percent-encode non-ASCII scryfall_uri slug bytes (joetun-grunt umlaut raw vs %C3%B6). Both sides must still agree percent-DECODED. FIX IN-TREE (2026-08-16): slug() in objects.ts/card_object.rs/objects.py now percent-encodes per the live rule; PRODUCTION still serves the old bytes until the next deploy, so this entry stays. At the first post-deploy run it flips to a plain byte-equal field — delete this entry then."
+		}
+	],
+	"cases": [
+		{
+			"name": "cards-id-en-normal-bolt",
+			"method": "GET",
+			"path": "/cards/7673784e-db4b-43a1-8d55-1bb9fc1e284f"
+		},
+		{
+			"name": "cards-id-en-transform-delver",
+			"method": "GET",
+			"path": "/cards/6904ea20-e504-47da-95a0-08739fdde260"
+		},
+		{
+			"name": "cards-id-en-modal-dfc-agadeem",
+			"method": "GET",
+			"path": "/cards/67f4c93b-080c-4196-b095-6a120a221988"
+		},
+		{
+			"name": "cards-id-en-split-fire-ice",
+			"method": "GET",
+			"path": "/cards/18303862-4726-4136-814f-157aa7006579"
+		},
+		{
+			"name": "cards-id-en-adventure-brazen-borrower",
+			"method": "GET",
+			"path": "/cards/25d309d6-9e56-441e-bd29-5c903d5221bf"
+		},
+		{
+			"name": "cards-id-en-flip-erayo",
+			"method": "GET",
+			"path": "/cards/0b61d772-2d8b-4acf-9dd2-b2e8b03538c8"
+		},
+		{
+			"name": "cards-id-en-meld-hanweir-garrison",
+			"method": "GET",
+			"path": "/cards/1811b4fa-fed6-46ea-a6de-bb7624a5b1de"
+		},
+		{
+			"name": "cards-id-en-basic-land-forest",
+			"method": "GET",
+			"path": "/cards/0000419b-0bba-4488-8f7a-6194544ce91e"
+		},
+		{
+			"name": "cards-id-en-meld-back-mishra",
+			"method": "GET",
+			"path": "/cards/0220c1e9-07bc-44f0-b39e-ca345ec4ea28"
+		},
+		{
+			"name": "cards-id-en-showcase-frame-effects",
+			"method": "GET",
+			"path": "/cards/b4a4aeaa-aff7-4299-8030-36eefd5acaf3"
+		},
+		{
+			"name": "cards-id-en-prepare-sos-113",
+			"method": "GET",
+			"path": "/cards/f58dba4f-1abb-47a3-a684-29c32bab95c0"
+		},
+		{
+			"name": "named-exact-lightning-bolt",
+			"method": "GET",
+			"path": "/cards/named?exact=Lightning+Bolt"
+		},
+		{
+			"name": "named-exact-diacritic-jotun-grunt",
+			"method": "GET",
+			"path": "/cards/named?exact=J%C3%B6tun%20Grunt"
+		},
+		{
+			"name": "named-fuzzy-austere-com",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=austere+com"
+		},
+		{
+			"name": "named-fuzzy-aust-com",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=aust+com"
+		},
+		{
+			"name": "autocomplete-diacritic-jotun",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=j%C3%B6tun"
+		},
+		{
+			"name": "autocomplete-foreign-name-empty",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=ego%20%C3%A0%20deriva"
+		},
+		{
+			"name": "collection-english-mixed-not-found",
+			"method": "POST",
+			"path": "/cards/collection",
+			"body": {
+				"identifiers": [
+					{
+						"name": "Lightning Bolt"
+					},
+					{
+						"id": "91a2217c-8478-479b-a146-2d78f407a36f"
+					},
+					{
+						"set": "grn",
+						"collector_number": "212"
+					},
+					{
+						"id": "3f2c8e5d-91b7-4a6e-bd12-4f5a9c7e8b01"
+					},
+					{
+						"name": "Definitely Not A Real Card Name"
+					},
+					{
+						"name": "Austere Command"
+					}
+				]
+			}
+		},
+		{
+			"name": "collection-zero-uuid-validation",
+			"method": "POST",
+			"path": "/cards/collection",
+			"body": {
+				"identifiers": [
+					{
+						"id": "00000000-0000-0000-0000-000000000000"
+					}
+				]
+			}
+		},
+		{
+			"name": "collection-zero-value-in-v4-shape",
+			"method": "POST",
+			"path": "/cards/collection",
+			"body": {
+				"identifiers": [
+					{
+						"id": "00000000-0000-4000-8000-000000000000"
+					}
+				]
+			}
+		},
+		{
+			"name": "collection-non-v4-version-nibble",
+			"method": "POST",
+			"path": "/cards/collection",
+			"body": {
+				"identifiers": [
+					{
+						"id": "3f2c8e5d-91b7-1a6e-bd12-4f5a9c7e8b01"
+					}
+				]
+			}
+		},
+		{
+			"name": "set-number-cmd-16",
+			"method": "GET",
+			"path": "/cards/cmd/16"
+		},
+		{
+			"name": "set-number-lang-cmd-16-en",
+			"method": "GET",
+			"path": "/cards/cmd/16/en"
+		},
+		{
+			"name": "set-number-khm-1",
+			"method": "GET",
+			"path": "/cards/khm/1"
+		},
+		{
+			"name": "set-number-lang-khm-1-en",
+			"method": "GET",
+			"path": "/cards/khm/1/en"
+		},
+		{
+			"name": "multiverse-en-jotun-grunt",
+			"method": "GET",
+			"path": "/cards/multiverse/247182"
+		},
+		{
+			"name": "rulings-en-jotun-grunt",
+			"method": "GET",
+			"path": "/cards/91a2217c-8478-479b-a146-2d78f407a36f/rulings"
+		},
+		{
+			"name": "prints-search-uri-sanity",
+			"method": "GET",
+			"path": "/cards/search?order=released&q=oracleid%3A6591f243-f94c-4a83-bb16-1fb838d9eb14&unique=prints",
+			"note": "The exact shape every card object's prints_search_uri carries. It was a KNOWN_DEVIATION until 2026-08-16 because `oracleid:` was in no parser -- the mirror 400d on the URI it emits -- which upstream #926 and this port's src/parser/db-info.ts entry fixed; it now compares plainly. The card is deliberately a SINGLE-PRINTING one (Altanak, the Thrice-Called, dsk): a multi-printing card drags this case into two divergences that have nothing to do with the operator -- the digital-only import filter (transform.rs passes_filters line 108, e.g. Jotun Grunt's td0/B5 printing, the gap already recorded on search-lang-khm-prints-page23) and the missing collector-number component in the sort key, which reorders same-release-date rows under order=released. Keep it single-printing."
+		},
+		{
+			"name": "named-fuzzy-red-goad",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=red+goad"
+		},
+		{
+			"name": "cards-id-es-transform-mom-230",
+			"method": "GET",
+			"path": "/cards/a962096a-03f3-4560-a84b-8a797ffbff23"
+		},
+		{
+			"name": "cards-id-es-prepare-sos-113",
+			"method": "GET",
+			"path": "/cards/c8a06545-bc69-4e1b-a539-7027398b64f2"
+		},
+		{
+			"name": "cards-id-pt-normal-unmoored-ego",
+			"method": "GET",
+			"path": "/cards/87130bc6-3a34-4855-9dd6-10607983bb29"
+		},
+		{
+			"name": "cards-id-ja-normal-axgard-braggart",
+			"method": "GET",
+			"path": "/cards/9cce2226-39ae-4bc9-b0fc-fad811c6322c"
+		},
+		{
+			"name": "cards-id-ru-normal-axgard-braggart",
+			"method": "GET",
+			"path": "/cards/5923d61f-37c6-4c72-b4cd-1935e471f228"
+		},
+		{
+			"name": "cards-id-ko-normal-axgard-braggart",
+			"method": "GET",
+			"path": "/cards/838545db-c485-44b6-b4d3-7d5b10d285b5"
+		},
+		{
+			"name": "cards-id-zhs-normal-axgard-braggart",
+			"method": "GET",
+			"path": "/cards/948ae10f-a741-4727-8e7f-c5dfd5da20cf"
+		},
+		{
+			"name": "cards-id-zht-normal-axgard-braggart",
+			"method": "GET",
+			"path": "/cards/63c41c5d-ad47-4e90-932b-c267550b0213"
+		},
+		{
+			"name": "set-number-lang-mom-230-es",
+			"method": "GET",
+			"path": "/cards/mom/230/es"
+		},
+		{
+			"name": "set-number-lang-sos-113-es",
+			"method": "GET",
+			"path": "/cards/sos/113/es"
+		},
+		{
+			"name": "set-number-lang-grn-212-pt",
+			"method": "GET",
+			"path": "/cards/grn/212/pt"
+		},
+		{
+			"name": "set-number-lang-khm-1-ja",
+			"method": "GET",
+			"path": "/cards/khm/1/ja"
+		},
+		{
+			"name": "named-fuzzy-pt-ego-a-deriva",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=ego%20%C3%A0%20deriva"
+		},
+		{
+			"name": "named-exact-ja-axgard-braggart",
+			"method": "GET",
+			"path": "/cards/named?exact=%E3%82%A2%E3%82%AF%E3%82%B9%E3%82%AC%E3%83%AB%E3%83%89%E3%81%AE%E8%87%AA%E6%85%A2%E5%B1%8B"
+		},
+		{
+			"name": "named-fuzzy-pt-set-scoped",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=ego%20%C3%A0%20deriva&set=grn"
+		},
+		{
+			"name": "search-lang-ja-khm-unique-cards",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=e%3Akhm+lang%3Aja&unique=cards"
+		},
+		{
+			"name": "search-lang-pt-unmoored-ego-prints",
+			"method": "GET",
+			"path": "/cards/search?order=released&q=lang%3Apt+%21%22Unmoored+Ego%22&unique=prints"
+		},
+		{
+			"name": "search-include-multilingual-khm-page-1",
+			"method": "GET",
+			"path": "/cards/search?include_multilingual=true&order=set&q=e%3Akhm&unique=prints",
+			"known_deviation": {
+				"reason": "ONE cause left, and it is not an ordering one. Re-measured 2026-08-16 after the sort-key work: total_cards is 4035 on BOTH sides (the 18 Arena-rebalanced A-* rows are imported now that the paper-only filter came off), page 1 leads with khm/1 en Axgard Braggart on both, and page 2 leads with khm/16 zht Invoke the Divine on both — so the collector-number key, the name/tiebreak chain and the annex's language order all agree end to end.\nWHAT REMAINS: `purchase_uris` on the A-* rows. Those printings are Arena-only, and Scryfall omits the key entirely for a digital-only printing while this port still derives tcgplayer/cardmarket search links from the card name. It rides in with the import-filter change that added the rows, not with the ordering work, and it fires on every page that contains an A-* row.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 4035,
+						"data.0.collector_number": "1",
+						"data.0.lang": "en"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 4035,
+						"data.0.collector_number": "1",
+						"data.0.lang": "en"
+					}
+				}
+			}
+		},
+		{
+			"name": "search-include-multilingual-khm-page-2",
+			"method": "GET",
+			"path": "/cards/search?include_multilingual=true&order=set&page=2&q=e%3Akhm&unique=prints",
+			"known_deviation": {
+				"reason": "ONE cause left, and it is not an ordering one. Re-measured 2026-08-16 after the sort-key work: total_cards is 4035 on BOTH sides (the 18 Arena-rebalanced A-* rows are imported now that the paper-only filter came off), page 1 leads with khm/1 en Axgard Braggart on both, and page 2 leads with khm/16 zht Invoke the Divine on both — so the collector-number key, the name/tiebreak chain and the annex's language order all agree end to end.\nWHAT REMAINS: `purchase_uris` on the A-* rows. Those printings are Arena-only, and Scryfall omits the key entirely for a digital-only printing while this port still derives tcgplayer/cardmarket search links from the card name. It rides in with the import-filter change that added the rows, not with the ordering work, and it fires on every page that contains an A-* row.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 4035,
+						"data.0.collector_number": "16",
+						"data.0.lang": "zht"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 4035,
+						"data.0.collector_number": "16",
+						"data.0.lang": "zht"
+					}
+				}
+			}
+		},
+		{
+			"name": "multiverse-es-mom-230",
+			"method": "GET",
+			"path": "/cards/multiverse/607962"
+		},
+		{
+			"name": "rulings-via-es-id-mom-230",
+			"method": "GET",
+			"path": "/cards/a962096a-03f3-4560-a84b-8a797ffbff23/rulings"
+		},
+		{
+			"name": "collection-foreign-ids-not-found",
+			"method": "POST",
+			"path": "/cards/collection",
+			"body": {
+				"identifiers": [
+					{
+						"id": "a962096a-03f3-4560-a84b-8a797ffbff23"
+					},
+					{
+						"id": "c8a06545-bc69-4e1b-a539-7027398b64f2"
+					},
+					{
+						"id": "87130bc6-3a34-4855-9dd6-10607983bb29"
+					},
+					{
+						"id": "3f2c8e5d-91b7-4a6e-bd12-4f5a9c7e8b01"
+					}
+				]
+			}
+		},
+		{
+			"name": "named-fuzzy-bolt-lightning",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=bolt+lightning"
+		},
+		{
+			"name": "named-fuzzy-primeval-titanoth",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=primeval+titanoth"
+		},
+		{
+			"name": "named-fuzzy-sol-rin",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=sol+rin"
+		},
+		{
+			"name": "named-fuzzy-lihgtning-bolt",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lihgtning+bolt"
+		},
+		{
+			"name": "named-fuzzy-countersp",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=countersp"
+		},
+		{
+			"name": "cards-prm-80925-flavor-name",
+			"method": "GET",
+			"path": "/cards/prm/80925"
+		},
+		{
+			"name": "cards-vow-338-face-flavor-name",
+			"method": "GET",
+			"path": "/cards/vow/338"
+		},
+		{
+			"name": "search-rebalanced-a-tyvar",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22A-Tyvar%20Kell%22"
+		},
+		{
+			"name": "search-khm-prints-count",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Akhm&unique=prints"
+		},
+		{
+			"name": "named-exact-flavor-awesome-android",
+			"method": "GET",
+			"path": "/cards/named?exact=Awesome%20Android"
+		},
+		{
+			"name": "named-fuzzy-flavor-awesome-android",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=awesome%20android"
+		},
+		{
+			"name": "named-fuzzy-flavor-pool-containment-android",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=containment%20android"
+		},
+		{
+			"name": "named-fuzzy-flavor-pool-bruse-hugo",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=bruse%20hugo"
+		},
+		{
+			"name": "named-fuzzy-flavor-pool-firion-edificer",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=firion%20edificer"
+		},
+		{
+			"name": "search-color-name-guild-azorius",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=c%3Aazorius+e%3Akhm&unique=cards",
+			"note": "The guild/shard/wedge colour vocabulary. `c:azorius` was a 400 here until 2026-08-16 -- the parser knew only white/blue/black/red/green/colorless and bare letter strings -- while Scryfall answers the same 6 cards `c:wu` does. The 44 names and their letter spellings were measured pair by pair over the whole corpus (see COLOR_ALIAS_TO_CODES) because Kaldheim holds one card of three colours or more and would have agreed with almost any mapping."
+		},
+		{
+			"name": "search-color-name-shard-bant",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=id%3Abant+e%3Akhm&unique=cards",
+			"note": "`id:`/`identity:`/`ci:` take the same vocabulary `c:` does, measured separately rather than assumed: id:bant e:khm == id:gwu e:khm == 176."
+		},
+		{
+			"name": "search-color-name-four-color-hyphenated",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=c%3Ayore-tiller+e%3Akhm&unique=cards",
+			"note": "The four-colour names are HYPHENATED, and `-` is not a word-continuation character, so the lexer sees WORD MINUS WORD and the parser has to glue them back. `yore` alone is REJECTED by Scryfall, so the un-hyphenated nickname is deliberately not in the table."
+		},
+		{
+			"name": "search-typographic-quotes-fold",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=name%3A%E2%80%9CGaea%E2%80%99s+Blessing%E2%80%9D&unique=cards",
+			"note": "U+201C/U+201D and U+2019 fold to ASCII quotes before lexing -- and the curly apostrophe INSIDE the double quotes folds too, which is the only reason this finds the card. The fold used to live on the compat surface alone, so /search and the web UI rejected the very quotes their own search box produces; it now lives in the parser (src/parser/tokenizer.ts)."
+		},
+		{
+			"name": "search-dangling-operator-is-a-bare-word",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=t%3A+e%3Akhm&unique=cards",
+			"note": "A keyword with no value is not a term at all: `t:` is the bare word `t`, and a bare word is a name search. This port answered `t: e:khm` with all 323 of Kaldheim (an always-true leaf); Scryfall answers the 215 whose NAME contains a t, which is exactly `t e:khm` and `name:t e:khm`."
+		},
+		{
+			"name": "search-dangling-operator-negated",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=-t%3A+e%3Akhm&unique=cards",
+			"note": "The negation composes because the rewrite produces an ordinary term: 323 - 215 = 108, and `-t e:khm` is 108 on Scryfall too."
+		},
+		{
+			"name": "search-face-colours-mdfc-colorless",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=is%3Amdfc+c%3Ac&unique=cards",
+			"note": "A colour comparison runs over the FACES' masks, not the merged row's union. This is the whole set of MDFCs with a colourless face -- almost all of them land backs -- and the port answered 12 of the 61 before gen 29, because the union of a white front and a colourless back is white. Kept as a LIST rather than one card so a partial fix cannot pass it."
+		},
+		{
+			"name": "search-face-colours-split-card-is-not-colourless",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=%21%22Fire+%2F%2F+Ice%22+c%3Ac&unique=cards",
+			"note": "THE REGRESSION GUARD, and the reason OracleFace.card_colors is an Option. A split face carries no `colors` key at all -- Fire // Ice's two halves have name, mana_cost and type_line and nothing more -- so a per-face read that treats an absent key as the mask 0 answers 1 here where Scryfall answers 404, and every split and flip card in the corpus becomes colourless. An absent key inherits the card's mask; a DECLARED `\"colors\": []` (an MDFC land back) really is colourless. Answers 404 on both sides, which is what the empty-list case above cannot check."
+		},
+		{
+			"name": "search-face-colours-union-is-not-a-value",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=%21%22Extus%2C+Oriq+Overlord+%2F%2F+Awaken+the+Blood+Avatar%22+c%3Abrw&unique=cards",
+			"note": "The other direction, which the stat columns do not have: the merged colour value is a UNION, so it is a value no face holds, and matching against it OVER-matches. Extus's faces are {W,B} and {B,R}; only the union is {W,B,R}, so `c:brw` answered 1 here and 404 on Scryfall. `c=3` on the same card is the same fact through the colour count."
+		},
+		{
+			"name": "search-face-colours-front-face-alone",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=%21%22Valki%2C+God+of+Lies+%2F%2F+Tibalt%2C+Cosmic+Impostor%22+c%3Db&unique=cards",
+			"note": "The under-matching direction, on an exact comparison: Valki is mono-black and Tibalt is {B,R}, so `c=b` is satisfied by the front face alone and by no union. Pinned beside the over-matching case above because a fix for either one on its own is wrong."
+		}
+	]
+}

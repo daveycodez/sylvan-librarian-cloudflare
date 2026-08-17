@@ -12,40 +12,23 @@
 // The layout sweeps live in the two seeding scripts, which run on every deploy. This is the store's
 // counterpart, and it runs unconditionally beside them.
 
-import { KEEP_STORES_IN_KV, MANIFEST_KEY } from "../src/engine/store-kv";
-import { pruneOldStores } from "./kv-prune";
-import { kvTargetArgs, requireDeployEnvironment } from "./kv-target";
-import { wranglerArgv } from "./wrangler-cmd";
+import { KEEP_STORES_IN_KV } from "../src/engine/store-kv";
+import { liveManifestBuiltAts, pruneOldStores } from "./kv-prune";
+import { requireDeployEnvironment } from "./kv-target";
 
 const remote = process.argv.includes("--remote");
 if (remote) requireDeployEnvironment();
 
-/**
- * The build the manifest points at, which is never swept whatever its timestamp says.
- *
- * Read rather than assumed: a rollback republishes an OLDER manifest, and a sweep that decided
- * "newest wins" would delete the store being served.
- */
-async function liveBuiltAt(): Promise<string | undefined> {
-	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", MANIFEST_KEY, ...(await kvTargetArgs(remote))], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const out = await new Response(proc.stdout).text();
-	if ((await proc.exited) !== 0) return undefined;
-	try {
-		return String((JSON.parse(out.slice(out.indexOf("{"))) as { built_at?: string }).built_at ?? "") || undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-const current = await liveBuiltAt();
-if (current === undefined) {
-	// No manifest, or one that could not be read: sweeping now could delete the only store there is.
+// The build the LIVE MANIFEST points at is never swept, whatever its timestamp
+// says. Read rather than assumed — a rollback republishes an OLDER manifest,
+// and a sweep that decided "newest wins" would delete the store being served
+// (see liveManifestBuiltAts).
+const protect = await liveManifestBuiltAts(remote);
+if (protect.length === 0) {
+	// No readable manifest: sweeping now could delete the only store there is.
 	console.log("Retention: no readable manifest — leaving every store build in place.");
 } else {
-	const removed = await pruneOldStores(KEEP_STORES_IN_KV, current, remote);
+	const removed = await pruneOldStores(KEEP_STORES_IN_KV, protect, remote);
 	console.log(
 		removed > 0
 			? `Retention: dropped ${removed} chunk(s) from superseded store builds.`

@@ -1,0 +1,117 @@
+{
+ "artist": "Nils Hamm",
+ "artist_ids": [
+  "c540d1fc-1500-457f-93cf-d6069ee66546"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Nils Hamm",
+   "artist_id": "c540d1fc-1500-457f-93cf-d6069ee66546",
+   "colors": [
+    "U"
+   ],
+   "illustration_id": "1c2fee9b-89ea-4ab1-a751-451c3cd65a88",
+   "mana_cost": "{U}",
+   "name": "Delver of Secrets",
+   "object": "card_face",
+   "oracle_text": "At the beginning of your upkeep, look at the top card of your library. You may reveal that card. If an instant or sorcery card is revealed this way, transform Delver of Secrets.",
+   "power": "1",
+   "printed_name": "Ahondador de secretos",
+   "printed_text": "Al comienzo de tu mantenimiento, mira la primera carta de tu biblioteca. Puedes mostrar esa carta. Si una carta de instantáneo o de conjuro es mostrada de esta manera, transforma al Ahondador de secretos.",
+   "printed_type_line": "Criatura — Hechicero humano",
+   "toughness": "1",
+   "type_line": "Creature — Human Wizard"
+  },
+  {
+   "artist": "Nils Hamm",
+   "artist_id": "c540d1fc-1500-457f-93cf-d6069ee66546",
+   "color_indicator": [
+    "U"
+   ],
+   "colors": [
+    "U"
+   ],
+   "flavor_text": "Transformado por la iluminación.",
+   "illustration_id": "d5dfd236-b1da-4552-b94f-ebf6bb9dafdf",
+   "mana_cost": "",
+   "name": "Insectile Aberration",
+   "object": "card_face",
+   "oracle_text": "Flying",
+   "power": "3",
+   "printed_name": "Aberración insectil",
+   "printed_text": "Vuela.",
+   "printed_type_line": "Criatura — Aberración humana",
+   "toughness": "2",
+   "type_line": "Creature — Human Insect"
+  }
+ ],
+ "cardmarket_id": 244912,
+ "cmc": 1.0,
+ "collector_number": "51",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 2047,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "5f0e0d9c-8a2c-4a53-9e35-9b02b7c9f6a1",
+ "image_status": "highres_scan",
+ "image_updated_at": "2021-03-05T20:19:15.851Z",
+ "keywords": [
+  "Flying",
+  "Transform"
+ ],
+ "lang": "es",
+ "layout": "transform",
+ "legalities": {
+  "commander": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "pauper": "legal",
+  "pioneer": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{U}",
+ "multiverse_ids": [
+  245227
+ ],
+ "name": "Delver of Secrets // Insectile Aberration",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "68bdedfa-c50b-46cb-b8fd-6cba929d3a2e",
+ "oversized": false,
+ "prices": {
+  "eur": "0.94",
+  "tix": null,
+  "usd": "0.85"
+ },
+ "promo": false,
+ "rarity": "common",
+ "released_at": "2011-09-30",
+ "reprint": false,
+ "reserved": false,
+ "set": "isd",
+ "set_id": "a7ecb771-d1b6-4dec-8cf5-8d45179f21e0",
+ "set_name": "Innistrad",
+ "set_type": "expansion",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Creature — Human Wizard // Creature — Human Insect",
+ "variation": false
+}

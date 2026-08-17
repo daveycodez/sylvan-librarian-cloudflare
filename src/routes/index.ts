@@ -122,6 +122,37 @@ export const routes: RouteTable = {
 	setup_schema: stub("setup_schema", Number.POSITIVE_INFINITY),
 };
 
+/**
+ * The route keys that make up the SCRYFALL-COMPATIBLE surface.
+ *
+ * It decides one thing: which shape a DISPATCH-level error takes on that path — Scryfall's
+ * `{object, code, status, details}` or upstream's falcon `{title, description}`. Everything a
+ * handler answers for itself already knows which surface it is on.
+ *
+ * The split is by ROUTE KEY rather than by path prefix because the two surfaces interleave under
+ * one: `catalog` is Scryfall's `/catalog/:name` and `get_catalog` is upstream's own endpoint, and
+ * only the table can tell them apart. `cards` is in the set even though `/cards` itself is an
+ * upstream route api.scryfall.com does not have — it owns every `/cards/*` path a Scryfall client
+ * would ever address, and a client is far likelier to mistype one of those than to want the listing.
+ *
+ * What is deliberately NOT here: `_root`, `card`, `index` (the web interface), `search` and
+ * `random_search` (this project's own JSON, whose error bodies the frontend renders by reading
+ * `title` and `description` — see public/static/app.js), `get_catalog`, `get_pid`, and the
+ * Postgres-only admin stubs. Those are upstream's surface and keep upstream's shape.
+ */
+export const SCRYFALL_SURFACE_ROUTES: ReadonlySet<string> = new Set([
+	"cards",
+	"cards/search",
+	"cards/named",
+	"cards/autocomplete",
+	"cards/random",
+	"cards/collection",
+	"catalog",
+	"sets",
+	"symbology",
+	"symbology/parse-mana",
+]);
+
 /** The {route: {doc, args, kwargs}} listing carried by 404 responses (upstream _build_routes_listing). */
 export function buildRoutesListing(): Record<string, RouteEntry["listing"]> {
 	return Object.fromEntries(Object.entries(routes).map(([path, routeEntry]) => [path, routeEntry.listing]));

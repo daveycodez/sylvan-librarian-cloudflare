@@ -15,6 +15,8 @@
     "build:builder": "scripts/with-rust.sh cargo build --profile fast-native -p sylvan-store-builder",
     "test": "bun test tests",
     "gate": "scripts/gate.sh",
+    "live-parity": "bun scripts/live-parity.ts",
+    "parity-sweep": "bun scripts/parity-sweep.ts",
     "load-test": "bun run scripts/load-test.ts",
     "bench:cards-search": "bun run scripts/bench-cards-search.ts",
     "check": "biome check src scripts tests",

@@ -48,9 +48,14 @@ describe("search param coercion", () => {
 		});
 	});
 
-	test("coercion errors carry no cache header (binding precedes the handler)", async () => {
+	test("coercion errors carry the dispatch-error tier, not the route's (binding precedes the handler)", async () => {
+		// The route's own `public, max-age=90, …` is applied by the handler, which a coercion error
+		// never reaches — so this answer comes from `httpError`, whose tier is `no-cache`. It used to
+		// carry no `Cache-Control` at all, which left a 400 to whatever heuristics an intermediary
+		// applies; api.scryfall.com sends `no-cache` on its own dispatch-level errors.
 		const res = await testDispatch(makeCtx(), "/search?limit=abc");
-		expect(res.headers.get("Cache-Control")).toBeNull();
+		expect(res.status).toBe(400);
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
 	});
 
 	test("negative limit is upstream's Invalid Limit 400, with the search cache header", async () => {

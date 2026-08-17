@@ -38,6 +38,20 @@
 // An earlier version of this comment guessed ~800ms flat, from the step across the compression
 // deploy. That guess was the warm-KV case only, and it understated the cold-KV case by ~4x.
 //
+// TWO FORMATS LIVE HERE, chosen by the ARCHIVE's shape, not by this module:
+//
+//   - An UNCOMPRESSED archive caches DECOMPRESSED, which is what this cache did originally — the
+//     whole point was removing the gunzip from a wake, and one ~84MB copy per region fit the pool.
+//     No publisher emits an uncompressed archive today (store_gzip_bytes is the format flag, and
+//     every publisher sets it), so this format is what keeps a compression revert code-only.
+//   - PARTITIONED archives cache COMPRESSED, one row-family per stored KV chunk (see
+//     putCompressedChunk / cachedCompressedStream). This is plan reconciliation 2: the partitioned
+//     corpus is ~385MB decompressed, and 9 regions × ~385MB ≈ 3.5GB of decompressed copies plus the
+//     coordinator's ~1.5GB staging peak does NOT fit the 5GB DO pool. Compressed it is
+//     9 regions × N partitions × ~19MB gz ≈ 1.4GB, leaving the pool at ~3.2GB peak. The cost is a
+//     local gunzip when a cached partition is loaded — paid at the publish COMMIT (the publisher's
+//     window, not a user's request) and on genuinely cold wakes, which paid it on the KV path anyway.
+//
 // Sizing, against the Workers Free plan's Durable Objects limits (5GB stored, 5M row reads/day,
 // 100k row writes/day):
 //
@@ -45,9 +59,11 @@
 //   - a wake reads ~52 of them, so ~2,300 reads/day at current traffic, against 5,000,000
 //   - a fill writes ~60 and a replacement deletes ~60 (deletes bill as writes), once per region per
 //     publish — a few hundred a day against 100,000
-//   - ~88MB stored per region that caches both archives. THIS IS THE AXIS THAT BINDS, and what
+//   - ~88MB stored per region under the decompressed format; ~19MB gz per PARTITION object
+//     once partitioned. THIS IS THE AXIS THAT BINDS, and what
 //     makes it affordable is that engine DOs are named per REGION rather than per colo: there are
-//     nine location hints, so the worst case is ~790MB against the 5GB ceiling however much traffic
+//     nine location hints, so the worst case is ~790MB decompressed / ~1.4GB partitioned against the 5GB
+//     ceiling however much traffic
 //     arrives. Under per-colo naming the same cache would have been bounded only by how many of
 //     Cloudflare's ~330 colos saw traffic, times the shard width — which is the shape that forced
 //     free-plan sharding down to a single shard the last time this storage held a copy of the store.
@@ -318,6 +334,128 @@ export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]
 		exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
 	}
 	return stale;
+}
+
+// ── The COMPRESSED archive cache (partitioned stores) ──────────────────────────
+//
+// A partitioned archive is cached as its KV chunks, AS STORED: each gzip member under its own
+// cache key, so the reader can run one DecompressionStream per member — workerd rejects
+// concatenated members in a single stream ("Trailing bytes after end of compressed data"), which
+// is the same reason the KV loader decompresses per chunk. Reusing the row/meta machinery above
+// per chunk keeps every existing guarantee: meta written LAST per chunk, a length check per chunk,
+// and completeness of the WHOLE archive judged by all chunks present + their stored bytes summing
+// to the manifest's store_gzip_bytes. A fill that dies between chunks leaves a set that
+// cachedCompressedStream refuses, exactly as a half-written decompressed copy is refused by its meta.
+
+/** Cache key for one stored (compressed) chunk of an archive. */
+export function compressedChunkKey(archiveKey: string, seq: number): string {
+	return `${archiveKey}:gz:${seq}`;
+}
+
+/** Every cache key a compressed archive occupies — the prune keep-list's unit. */
+export function compressedCacheKeys(archiveKey: string, chunkCount: number): string[] {
+	return Array.from({ length: chunkCount }, (_, seq) => compressedChunkKey(archiveKey, seq));
+}
+
+/**
+ * Store one chunk exactly as KV holds it. The chunk is whole and in hand (the KV
+ * loader materialises each stored value before decompressing, and the prefetch
+ * fetches values whole), so write-then-commit is one synchronous sequence — no
+ * partially-written chunk can ever carry a meta row.
+ */
+export function putCompressedChunk(
+	storage: ArchiveCacheStorage,
+	archiveKey: string,
+	seq: number,
+	bytes: Uint8Array,
+): void {
+	const writer = cacheWriter(storage, compressedChunkKey(archiveKey, seq), bytes.byteLength);
+	writer.write(bytes);
+	if (writer.commit() === 0) {
+		throw new Error(`compressed cache chunk ${seq} of ${archiveKey} did not commit its own length`);
+	}
+}
+
+/**
+ * Whether the WHOLE compressed archive is held locally: every chunk's meta
+ * present, and their stored lengths summing to what the manifest says KV holds.
+ * The sum is the cross-chunk integrity check — per-chunk meta only proves each
+ * row-family matches itself.
+ */
+export function isCompressedCached(
+	storage: ArchiveCacheStorage,
+	archiveKey: string,
+	chunkCount: number,
+	expectedGzipBytes: number,
+): boolean {
+	let total = 0;
+	for (let seq = 0; seq < chunkCount; seq++) {
+		const meta = exec(
+			storage,
+			"SELECT total_bytes, row_count FROM archive_cache_meta WHERE archive_key = ?",
+			compressedChunkKey(archiveKey, seq),
+		)[0];
+		if (!meta) return false;
+		total += Number(meta.total_bytes);
+	}
+	return total === expectedGzipBytes;
+}
+
+/**
+ * The cached compressed archive as a stream of its DECOMPRESSED bytes, or null
+ * when any chunk is missing or the stored total disagrees with the manifest.
+ *
+ * One row per pull and one gzip member per chunk, mirroring kvArchiveStream's
+ * discipline: at most one ~1.5MB row is resident on the JS side, and the
+ * decompressed pieces flow into wasm as they emerge. The gunzip this pays is
+ * the deliberate trade recorded in the header — it buys the pool back.
+ */
+export function cachedCompressedStream(
+	storage: ArchiveCacheStorage,
+	archiveKey: string,
+	chunkCount: number,
+	expectedGzipBytes: number,
+): ReadableStream<Uint8Array> | null {
+	if (!isCompressedCached(storage, archiveKey, chunkCount, expectedGzipBytes)) return null;
+	let chunk = 0;
+	let current: ReadableStreamDefaultReader<Uint8Array> | null = null;
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			for (;;) {
+				if (current) {
+					const { done, value } = await current.read();
+					if (!done) {
+						controller.enqueue(value);
+						return;
+					}
+					current = null;
+					chunk += 1;
+				}
+				if (chunk >= chunkCount) {
+					controller.close();
+					return;
+				}
+				const key = compressedChunkKey(archiveKey, chunk);
+				const meta = exec(
+					storage,
+					"SELECT total_bytes, row_count FROM archive_cache_meta WHERE archive_key = ?",
+					key,
+				)[0];
+				if (!meta) {
+					// isCompressedCached said yes and a chunk vanished underneath: corrupt copy. Fail
+					// the load — the previously loaded engine stays in place and KV refills next time.
+					controller.error(new Error(`compressed cache for ${archiveKey} lost chunk ${chunk} mid-read`));
+					return;
+				}
+				const rows = cachedArchiveStream(storage, key, Number(meta.total_bytes));
+				if (!rows) {
+					controller.error(new Error(`compressed cache for ${archiveKey} chunk ${chunk} is unreadable`));
+					return;
+				}
+				current = rows.pipeThrough(new DecompressionStream("gzip")).getReader();
+			}
+		},
+	});
 }
 
 /**

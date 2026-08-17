@@ -13,10 +13,18 @@ import type {
 	EngineSearchOptions,
 	EngineSearchResult,
 	EngineSerializedResult,
+	FuzzyCandidateWire,
 	ResultShape,
 	ScryfallFuzzyResult,
+	SearchPageEnvelope,
 } from "./types";
-import { ENGINE_STREAM_PATH, ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
+import {
+	BUILD_FILTER_ERROR_PREFIX,
+	ENGINE_STREAM_PATH,
+	ENGINE_UNAVAILABLE_MARKER,
+	EngineQueryError,
+	EngineUnavailableError,
+} from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
 type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: number };
@@ -36,7 +44,24 @@ interface SearchEngineStub {
 		shape: ResultShape,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
-	typeAndKeywordCounts(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }>;
+	// The two-phase gather twins (plan B5): served by a partition object, which
+	// coordinates its siblings. Same shapes, same riders.
+	gatherSearchAsObjects(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & Telemetry>;
+	gatherSearchAsJson(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+		reportedShards?: number,
+	): Promise<EngineSerializedResult & Telemetry>;
+	gatherScryfallSearch(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<EngineSerializedResult & Telemetry>;
+	typeAndKeywordCounts(): Promise<{
+		types: Record<string, number>;
+		keywords: Record<string, number>;
+		setsWithExtras: string[];
+	}>;
 	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
 	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
 	cardCount(): Promise<number>;
@@ -69,6 +94,7 @@ interface SearchEngineStub {
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
 	scryfallFuzzyName(name: string, baseUrl: string, reportedShards?: number): Promise<ScryfallFuzzyResult & Telemetry>;
+	fuzzyCandidates(name: string): Promise<{ candidates: FuzzyCandidateWire[] }>;
 	scryfallAutocomplete(
 		prefix: string,
 		limit: number,
@@ -109,6 +135,9 @@ async function unwrap<T>(call: Promise<T>): Promise<T> {
 		if (at >= 0) {
 			throw new EngineUnavailableError(message.slice(at + ENGINE_UNAVAILABLE_MARKER.length + 1));
 		}
+		// The RPC path carries the message verbatim, so the same classification the fetch transport
+		// makes from its status line is made here from the text.
+		if (message.includes(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
 		throw err;
 	}
 }
@@ -241,7 +270,11 @@ function sampleWarmRpc(region: string, colo: string, rpcMs: number): void {
 
 export class RemoteEngine implements Engine {
 	/** get_catalog reads both catalogs; one RPC serves both calls. */
-	private catalogOnce: Promise<{ types: Record<string, number>; keywords: Record<string, number> }> | null = null;
+	private catalogOnce: Promise<{
+		types: Record<string, number>;
+		keywords: Record<string, number>;
+		setsWithExtras: string[];
+	}> | null = null;
 
 	constructor(
 		private readonly stub: SearchEngineStub,
@@ -313,21 +346,18 @@ export class RemoteEngine implements Engine {
 	async scryfallSearchPage(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		envelope: {
-			pretty: boolean;
-			warnings?: string[];
-			nextPageUrl?: string;
-			pageOffset: number;
-			noMatchDetails: string;
-		},
+		envelope: SearchPageEnvelope,
 		cache: Record<string, string>,
+		/** "cards2" routes the same request through the two-phase gather (plan
+		 * B5) — set only by PartitionedEngine, whose stub is a partition object. */
+		call: "cards" | "cards2" = "cards",
 	): Promise<Response> {
 		const rpcStart = Date.now();
 		const res = await this.stub.fetch(
 			new Request(`https://engine${ENGINE_STREAM_PATH}`, {
 				method: "POST",
 				body: JSON.stringify({
-					call: "cards",
+					call,
 					opts,
 					baseUrl,
 					envelope,
@@ -336,8 +366,15 @@ export class RemoteEngine implements Engine {
 				}),
 			}),
 		);
-		if (res.status === 503 && res.headers.get("x-engine-error") === "EngineUnavailableError") {
-			throw new EngineUnavailableError(await res.text());
+		if (res.status === 503) {
+			// The transport reports EVERY failure as a 503 with the class name in a header, so the
+			// class has to be rebuilt here or the raw 503 becomes the client's answer — which is
+			// exactly how a malformed regex in a user's query produced a 5xx with a non-JSON body.
+			const kind = res.headers.get("x-engine-error");
+			const message = await res.text();
+			if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
+			if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
+			throw new Error(message);
 		}
 		const num = (name: string): number | undefined => {
 			const raw = res.headers.get(name);
@@ -360,6 +397,24 @@ export class RemoteEngine implements Engine {
 		return this.searchRpc(() => this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region)));
 	}
 
+	// ── Gather twins (partitioned serving; called by PartitionedEngine only) ────
+	//
+	// Same instrumentation as the local twins — the gather object's riders feed
+	// the autoscaler exactly as a single-store object's do, so partitioned
+	// serving cannot quietly blind the shard controller.
+
+	gatherSearchAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
+		return this.searchRpc(() => this.stub.gatherSearchAsObjects(opts, currentShardWidth(this.region)));
+	}
+
+	gatherSearchAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
+		return this.searchRpc(() => this.stub.gatherSearchAsJson(opts, shape, currentShardWidth(this.region)));
+	}
+
+	gatherScryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
+		return this.searchRpc(() => this.stub.gatherScryfallSearch(opts, baseUrl, currentShardWidth(this.region)));
+	}
+
 	private catalog() {
 		this.catalogOnce ??= withRetry(() => this.stub.typeAndKeywordCounts());
 		return this.catalogOnce;
@@ -371,6 +426,10 @@ export class RemoteEngine implements Engine {
 
 	async cardKeywordCounts(): Promise<Record<string, number>> {
 		return (await this.catalog()).keywords;
+	}
+
+	async setsWithExtras(): Promise<string[]> {
+		return (await this.catalog()).setsWithExtras;
 	}
 
 	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
@@ -432,6 +491,13 @@ export class RemoteEngine implements Engine {
 
 	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
 		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, currentShardWidth(this.region)));
+	}
+
+	/** This partition's scores-bearing fuzzy candidates — no telemetry riders (like the gather
+	 * phases, it is partition machinery, not a shard-controller-fed route). */
+	async fuzzyCandidates(name: string): Promise<FuzzyCandidateWire[]> {
+		const { candidates } = await withRetry(() => this.stub.fuzzyCandidates(name));
+		return candidates;
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {

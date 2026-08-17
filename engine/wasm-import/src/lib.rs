@@ -17,7 +17,15 @@
 //!
 //! Emit kinds:
 //!   1 log line (utf-8)               diagnostics, host console.logs it
-//!   2 draft blob                     one serialized RowDraft (store in order)
+//!   2 draft blob                     one RowDraft as [u64 le fnv1a64(oracle_id)]
+//!                                    [RowDraft JSON] (store in order). The 8-byte
+//!                                    prefix is the partition hash: the store is cut
+//!                                    by hash(oracle_id) % partition_count, but N is
+//!                                    chosen by the BUILDER after transform (Decision
+//!                                    3b, auto-scaled) — so the draft carries the full
+//!                                    64-bit hash, computed once in Rust (the plan's
+//!                                    "partition tag" with the modulus deferred), and
+//!                                    the build phase mods it by whatever N it picks.
 //!   3 stats json                     per-call summary (see each export)
 //!   4 spill blob                     one encoded CardRow (store in add order)
 //!   5 store chunk                    archive bytes, in order
@@ -31,12 +39,32 @@
 //! Exports drive the phases in order; all buffers passed in are allocated
 //! with `alloc` and consumed (freed) by the callee:
 //!   reset()                          fresh import; drops all state
-//!   transform_lines(ptr, len)        JSONL bulk-card lines → draft emits
+//!   canonical_add_lines(ptr, len)    default_cards JSONL lines → id set in
+//!                                    TagData (MUST be fed, and snapshotted via
+//!                                    tags_export, BEFORE transform runs: the
+//!                                    coordinator restores the snapshot into each
+//!                                    transient transform instance)
+//!   transform_lines(ptr, len)        all_cards JSONL lines → draft emits, each
+//!                                    marked is_canonical by id-membership in the
+//!                                    restored canonical set
 //!   tags_begin() / tags_add_lines(ptr, len) / tags_finish(kind)
 //!   tags_export() / tags_restore(ptr, len)
-//!   agg_drafts(ptr, len)             draft-blob batch (length-prefixed)
-//!   agg_finish()                     seals aggregation (winners, counts,
-//!                                    cubecobra) — call after ALL drafts
+//!   scores_add_drafts(ptr, len, n)   draft-blob batch, EVERY partition, in
+//!                                    emission order → the corpus-wide tables in
+//!                                    TagData (cubecobra percent-rank over the
+//!                                    whole corpus's names; illustration counts,
+//!                                    whose group key has no oracle_id in it —
+//!                                    a partition can compute neither), AND
+//!                                    EMIT_ROUTING lines for the id→partition
+//!                                    routing filter (`n` = partition_count; 0
+//!                                    to skip). The one pass that sees every
+//!                                    draft once is the one place both belong.
+//!   scores_finish()                  seals those tables — call after ALL drafts,
+//!                                    BEFORE the per-partition loop opens
+//!   agg_drafts(ptr, len)             draft-blob batch (length-prefixed), ONE
+//!                                    partition's drafts
+//!   agg_finish()                     seals aggregation (dedupe winners, pin
+//!                                    slots) — call after that partition's drafts
 //!   finalize_begin()
 //!   finalize_drafts(ptr, len)        same draft batches, same order →
 //!                                    spill + row emits for winners
@@ -54,11 +82,12 @@ use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use card_engine::SpillingStoreBuilder;
+use card_engine::{fnv1a64_oracle_id, SpillingStoreBuilder};
 use serde_json::Value;
+use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
-    cubecobra_scores_from_pairs, finalize_row, illust_count_key, transform, RowDraft,
+    finalize_row, illust_count_qualifies, is_pinned, routing_keys_of, transform_row, PinnedPrintings, RowDraft,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -109,6 +138,9 @@ const EMIT_SPILL: u32 = 4;
 const EMIT_CHUNK: u32 = 5;
 const EMIT_ROW: u32 = 6;
 const EMIT_TAGDATA: u32 = 7;
+/// One scores batch's routing-filter input: `<partition>\t<key>\n` lines, the SAME text shape
+/// the native builder writes to `routing-keys.tsv`, so one parser reads both publishers' output.
+const EMIT_ROUTING: u32 = 8;
 
 unsafe extern "C" {
     fn emit(kind: u32, ptr: *const u8, len: usize);
@@ -129,28 +161,23 @@ fn emit_stats(v: Value) {
 
 // ─── import state ────────────────────────────────────────────────────────────
 
-/// Per-winner aggregation row collected during `agg_drafts`, compact enough
-/// for ~110k printings to sit in a few MB. Sorted by first_pos in
-/// `agg_finish` to reproduce the native path's deduped-row order.
-struct WinnerInfo {
-    first_pos: u32,
-    /// The winning (last) occurrence's fields, overwritten on re-encounter.
-    card_name: String,
-    edhrec_rank: Option<i64>,
-    illust_key: Option<String>,
-}
-
 #[derive(Default)]
 struct AggState {
-    /// scryfall_id → index into `winners` (insertion order = first-seen order).
+    /// scryfall_id → first-seen position (the dedupe: a repeated id keeps its first position and
+    /// its last content, which `winner_pos` below is the other half of).
     by_id: HashMap<String, u32>,
-    winners: Vec<WinnerInfo>,
     /// scryfall_id → winning occurrence position (pos of the LAST occurrence);
     /// finalize processes a draft only at its winning position.
     winner_pos: HashMap<String, u32>,
-    /// Sealed by agg_finish:
-    illust_counts: HashMap<(String, String), u64>,
-    cubecobra: HashMap<String, f64>,
+    /// The (set, collector-number) slots this partition's labelled printings sit in, so the pin
+    /// reaches every language's edition of them (transform::PIN_BONUS). Partition-local by
+    /// construction: the slot key carries the oracle_id, and every printing of one card hashes to
+    /// one partition — unlike the corpus tables, which is why THOSE come from TagData.
+    pins: PinnedPrintings,
+    /// Where each printing slot sits in its card's order — which printing represents the card
+    /// under a filter the pinned printing does not survive (sylvan_store_builder::ranks).
+    /// Partition-local for exactly the reason `pins` is: the order is keyed inside one card.
+    ranks: PrintingRanks,
     sealed: bool,
     positions_seen: u32,
 }
@@ -216,61 +243,121 @@ pub extern "C" fn reset() {
 // ─── phase: transform ────────────────────────────────────────────────────────
 
 /// Newline-separated bulk-card JSONL lines → transform each; drafts leave as
-/// EMIT_DRAFT blobs. Emits a stats object per call:
-/// {parsed, skipped, filtered, drafts, parsed_bytes}. Returns drafts emitted
-/// this call, or -1 on a fatal transform error (missing required field —
-/// upstream aborts the whole import; so do we).
+/// EMIT_DRAFT blobs framed [u64 le fnv1a64(oracle_id)][RowDraft JSON] (the
+/// partition hash — see the protocol doc for why it is a full hash and not a
+/// partition index). Each row's `is_canonical` is id-membership in the
+/// canonical set (`canonical_add_lines`), which the host must have restored
+/// into THIS instance (`tags_restore`) before the first line arrives —
+/// transform instances are transient, so the set cannot be assumed resident.
+/// An empty set is not an error here (the host enforces that the canonical
+/// pass ran; this module cannot tell "not restored" from "restored empty").
+///
+/// Emits a stats object per call:
+/// {parsed, skipped, filtered, drafts, canonical, parsed_bytes}. Returns
+/// drafts emitted this call, or -1 on a fatal transform error (missing
+/// required field — upstream aborts the whole import; so do we).
 #[unsafe(no_mangle)]
 pub extern "C" fn transform_lines(ptr: *mut u8, len: usize) -> i64 {
     let buf = take_buf(ptr, len);
-    let (mut parsed, mut skipped, mut filtered, mut drafts) = (0u64, 0u64, 0u64, 0u64);
-    let mut parsed_bytes = 0u64;
-    for line in buf.split(|&b| b == b'\n') {
-        let trimmed = trim_ascii(line);
-        if trimmed.is_empty() {
-            continue;
-        }
-        // JsonlStream parity: non-object lines are skipped (the host runs the
-        // parse-coverage check over these counts, mirroring bulk.rs).
-        let card: Value = match serde_json::from_slice(trimmed) {
-            Ok(v @ Value::Object(_)) => {
-                parsed += 1;
-                // +1: the newline the host's line splitter consumed, matching
-                // read_line()'s byte accounting in the native JsonlStream.
-                parsed_bytes += line.len() as u64 + 1;
-                v
-            }
-            _ => {
-                skipped += 1;
+    with_state(|s| {
+        let (mut parsed, mut skipped, mut filtered, mut drafts, mut canonical) = (0u64, 0u64, 0u64, 0u64, 0u64);
+        let mut parsed_bytes = 0u64;
+        for line in buf.split(|&b| b == b'\n') {
+            let trimmed = trim_ascii(line);
+            if trimmed.is_empty() {
                 continue;
             }
-        };
-        match transform(&card) {
-            Ok(Some(draft)) => {
-                let blob = match serde_json::to_vec(&draft) {
-                    Ok(b) => b,
-                    Err(e) => {
+            // JsonlStream parity: non-object lines are skipped (the host runs the
+            // parse-coverage check over these counts, mirroring bulk.rs).
+            let card: Value = match serde_json::from_slice(trimmed) {
+                Ok(v @ Value::Object(_)) => {
+                    parsed += 1;
+                    // +1: the newline the host's line splitter consumed, matching
+                    // read_line()'s byte accounting in the native JsonlStream.
+                    parsed_bytes += line.len() as u64 + 1;
+                    v
+                }
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            // The caller's fact, per transform_row's contract: id-membership in
+            // default_cards, never re-derived. A card without an `id` cannot be a
+            // member (and fails transform below on the missing required field).
+            let is_canonical =
+                card.get("id").and_then(Value::as_str).is_some_and(|id| s.tags.canonical.contains(id));
+            match transform_row(&card, is_canonical) {
+                Ok(Some(draft)) => {
+                    // Hash prefix + JSON in one buffer, one emit: the pair must
+                    // never separate, or a draft lands in the wrong partition.
+                    let mut blob = Vec::with_capacity(2048);
+                    blob.extend_from_slice(&fnv1a64_oracle_id(&draft.oracle_id).to_le_bytes());
+                    if let Err(e) = serde_json::to_writer(&mut blob, &draft) {
                         log(&format!("draft serialize failed: {e}"));
                         return -1;
                     }
-                };
-                emit_bytes(EMIT_DRAFT, &blob);
-                drafts += 1;
-            }
-            Ok(None) => filtered += 1,
-            Err(e) => {
-                // Fatal, matching the native pipeline: a card missing a field
-                // upstream reads unconditionally aborts the import.
-                log(&format!("transform: {e}"));
-                return -1;
+                    emit_bytes(EMIT_DRAFT, &blob);
+                    drafts += 1;
+                    if is_canonical {
+                        canonical += 1;
+                    }
+                }
+                Ok(None) => filtered += 1,
+                Err(e) => {
+                    // Fatal, matching the native pipeline: a card missing a field
+                    // upstream reads unconditionally aborts the import.
+                    log(&format!("transform: {e}"));
+                    return -1;
+                }
             }
         }
+        emit_stats(serde_json::json!({
+            "parsed": parsed, "skipped": skipped, "filtered": filtered,
+            "drafts": drafts, "canonical": canonical, "parsed_bytes": parsed_bytes,
+        }));
+        drafts as i64
+    })
+}
+
+/// Feed `default_cards` JSONL lines; keep each line's `id` — membership in Scryfall's canonical
+/// printing set — as a 16-byte binary member of `TagData.canonical`.
+///
+/// Same continuity rationale as `labels_add_lines`: the set lands inside `TagData` so the ONE
+/// snapshot path (`tags_export`/`tags_restore`) carries it — across DO evictions between canonical
+/// slices, and into every transient transform instance, which is where it is consumed
+/// (`transform_lines` marks each row's `is_canonical` by membership). It must therefore be fully
+/// built and exported BEFORE the transform phase starts.
+///
+/// Junk lines are skipped rather than fatal — the same posture as the bulk stream — but unlike
+/// labels the set is NOT optional (an empty set builds a store with no canonical printings), so
+/// the COORDINATOR enforces coverage over the whole phase, where lines-fed is knowable; the
+/// per-call return (ids newly added) is what it sums.
+#[unsafe(no_mangle)]
+pub extern "C" fn canonical_add_lines(ptr: *mut u8, len: usize) -> i64 {
+    /// The one field read per line; serde skips the other ~4KB without building a Value.
+    #[derive(serde::Deserialize)]
+    struct IdOnly {
+        #[serde(default)]
+        id: Option<String>,
     }
-    emit_stats(serde_json::json!({
-        "parsed": parsed, "skipped": skipped, "filtered": filtered,
-        "drafts": drafts, "parsed_bytes": parsed_bytes,
-    }));
-    drafts as i64
+    let buf = take_buf(ptr, len);
+    let mut added = 0i64;
+    with_state(|s| {
+        for line in buf.split(|&b| b == b'\n') {
+            let trimmed = trim_ascii(line);
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_slice::<IdOnly>(trimmed) else { continue };
+            if let Some(id) = v.id {
+                if s.tags.canonical.insert(&id) {
+                    added += 1;
+                }
+            }
+        }
+    });
+    added
 }
 
 fn trim_ascii(b: &[u8]) -> &[u8] {
@@ -412,8 +499,127 @@ fn split_batch(buf: &[u8]) -> Result<Vec<&[u8]>, String> {
     Ok(out)
 }
 
-/// First pass over draft blobs, in emission order. Mirrors the native
-/// finalize's dedupe: first-seen position kept, last content wins.
+// ─── phase: scores (GLOBAL, before the partition loop) ───────────────────────
+
+/// Fold one batch of draft blobs into the corpus-wide tables.
+///
+/// FED EVERY DRAFT, of every partition, in emission order — that is the whole point:
+///   * `cubecobra_score` is a PERCENT_RANK over the distinct card names of the WHOLE corpus, so a
+///     table built from one partition's names gives the same card a different number; the archive
+///     stores that number and sorts on it (`orderby=cubecobra`), so the two publishers would
+///     disagree about the ordering of every `order=cubecobra` query after the first nightly.
+///   * `illustration_count` groups by `(illustration_id, card_name)`, a key with no oracle_id in
+///     it — the only finalize aggregate the partition hash does not co-locate.
+///
+/// The tables land in `TagData`, which the coordinator snapshots per slice
+/// (tags_export/tags_restore) — the same one persistence path the canonical id set rides, so this
+/// phase is resumable and eviction-proof for free.
+///
+/// Only five fields are read per draft, so the batch is not parsed into `RowDraft`s.
+/// Returns distinct card names observed so far.
+#[unsafe(no_mangle)]
+pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u32) -> i64 {
+    /// The corpus tables' inputs: the percent-rank's pair, and what
+    /// `transform::illust_count_key` reads to decide whether a row is counted.
+    #[derive(serde::Deserialize)]
+    struct TableInputs {
+        card_name: String,
+        #[serde(default)]
+        edhrec_rank: Option<i64>,
+        #[serde(default)]
+        illustration_id: Option<String>,
+        #[serde(default)]
+        raw_lang_en: bool,
+        #[serde(default)]
+        raw_set_type: Option<String>,
+        #[serde(default)]
+        card_border: Option<String>,
+        // ── the routing filter's inputs (transform::routing_keys_of) ─────────
+        // Read here rather than in a pass of their own: this phase already visits every draft of
+        // every partition exactly once, which is precisely the visit the filter needs.
+        #[serde(default)]
+        scryfall_id: String,
+        #[serde(default)]
+        oracle_id: String,
+        #[serde(default)]
+        compat_blob: serde_json::Map<String, Value>,
+    }
+    let buf = take_buf(ptr, len);
+    let blobs = match split_batch(&buf) {
+        Ok(b) => b,
+        Err(e) => {
+            log(&format!("scores_add_drafts: {e}"));
+            return -1;
+        }
+    };
+    with_state(|s| {
+        if s.tags.corpus.is_sealed() {
+            log("scores_add_drafts after scores_finish");
+            return -1;
+        }
+        // The routing filter's key set rides THIS pass because it is the only one that sees every
+        // draft of every partition exactly once, and it already parses each of them — so the keys
+        // cost one wider Deserialize rather than a second sweep of the corpus. Emitted per batch
+        // and never accumulated: 1.2M keys held in wasm would be ~55MB against a 124MiB ceiling
+        // the build peak already spends most of.
+        let mut routing = String::new();
+        let mut keys: Vec<String> = Vec::with_capacity(8);
+        for blob in blobs {
+            let draft: TableInputs = match serde_json::from_slice(blob) {
+                Ok(d) => d,
+                Err(e) => {
+                    log(&format!("scores_add_drafts: draft parse: {e}"));
+                    return -1;
+                }
+            };
+            let illust = draft.illustration_id.as_deref().filter(|_| {
+                illust_count_qualifies(draft.raw_lang_en, draft.raw_set_type.as_deref(), draft.card_border.as_deref())
+            });
+            s.tags.corpus.observe(&draft.card_name, draft.edhrec_rank, illust);
+            if partition_count > 0 {
+                keys.clear();
+                routing_keys_of(
+                    &draft.scryfall_id,
+                    draft.illustration_id.as_deref(),
+                    &draft.compat_blob,
+                    &mut keys,
+                );
+                let p = fnv1a64_oracle_id(&draft.oracle_id) % u64::from(partition_count);
+                for key in &keys {
+                    routing.push_str(&p.to_string());
+                    routing.push('\t');
+                    routing.push_str(key);
+                    routing.push('\n');
+                }
+            }
+        }
+        if partition_count > 0 {
+            // Emitted even when EMPTY: the coordinator keys the staged row on the batch this call
+            // consumed, and a skipped emit would leave that batch's row absent on a retry rather
+            // than replaced.
+            emit_bytes(EMIT_ROUTING, routing.as_bytes());
+        }
+        s.tags.corpus.names() as i64
+    })
+}
+
+/// Seal the corpus tables — call once, after every draft has been fed, before the per-partition
+/// loop opens. Idempotent (the phase's last slice can be retried). Returns distinct names scored.
+#[unsafe(no_mangle)]
+pub extern "C" fn scores_finish() -> i64 {
+    with_state(|s| {
+        let names = s.tags.corpus.seal();
+        emit_stats(serde_json::json!({
+            "cubecobra_names": names,
+            "illust_groups": s.tags.corpus.illustration_groups(),
+        }));
+        names as i64
+    })
+}
+
+/// First pass over ONE PARTITION's draft blobs, in emission order. Mirrors the native finalize's
+/// dedupe — a repeated scryfall_id is finalized once, at its LAST occurrence, so the last content
+/// wins — and collects that partition's pin slots on the way past.
 #[unsafe(no_mangle)]
 pub extern "C" fn agg_drafts(ptr: *mut u8, len: usize) -> i64 {
     let buf = take_buf(ptr, len);
@@ -439,69 +645,43 @@ pub extern "C" fn agg_drafts(ptr: *mut u8, len: usize) -> i64 {
             };
             let pos = s.agg.positions_seen;
             s.agg.positions_seen += 1;
-            let info = WinnerInfo {
-                first_pos: pos,
-                illust_key: illust_count_key(&draft).map(str::to_owned),
-                card_name: draft.card_name,
-                edhrec_rank: draft.edhrec_rank,
-            };
-            match s.agg.by_id.get(&draft.scryfall_id) {
-                Some(&idx) => {
-                    // Re-encounter: content updates (last wins), first_pos kept.
-                    let slot = &mut s.agg.winners[idx as usize];
-                    slot.card_name = info.card_name;
-                    slot.edhrec_rank = info.edhrec_rank;
-                    slot.illust_key = info.illust_key;
-                    s.agg.winner_pos.insert(draft.scryfall_id, pos);
-                }
-                None => {
-                    s.agg.by_id.insert(draft.scryfall_id.clone(), s.agg.winners.len() as u32);
-                    s.agg.winners.push(info);
-                    s.agg.winner_pos.insert(draft.scryfall_id, pos);
-                }
-            }
+            // The one per-card fact this pass still collects: the labelled row's slot, knowable
+            // only while that row goes past (transform::PIN_BONUS).
+            s.agg.pins.observe(&draft, &s.tags.labels);
+            s.agg.ranks.observe(&draft);
+            let first = s.agg.by_id.len() as u32;
+            s.agg.by_id.entry(draft.scryfall_id.clone()).or_insert(first);
+            s.agg.winner_pos.insert(draft.scryfall_id, pos);
         }
-        s.agg.winners.len() as i64
+        s.agg.by_id.len() as i64
     })
 }
 
-/// Seal aggregation: order winners by first-seen position (the native deduped
-/// row order), then derive illustration counts and cubecobra scores exactly
-/// as transform::finalize does over its deduped Vec.
+/// Seal aggregation.
+///
+/// What is left of it, now that BOTH of `finalize`'s cross-row tables are corpus-global
+/// (`scores_add_drafts`): the dedupe — which draft position is a winner — and the pin slots. Both
+/// are keyed inside one card, and the partition hash puts one card in one partition, so both are
+/// exactly what they would be over the whole corpus.
 #[unsafe(no_mangle)]
 pub extern "C" fn agg_finish() -> i64 {
     with_state(|s| {
         if s.agg.sealed {
-            return s.agg.winners.len() as i64;
+            return s.agg.by_id.len() as i64;
         }
-        let mut order: Vec<u32> = (0..s.agg.winners.len() as u32).collect();
-        order.sort_unstable_by_key(|&i| s.agg.winners[i as usize].first_pos);
-
-        let mut illust: HashMap<(String, String), u64> = HashMap::new();
-        let mut per_name: Vec<(&str, Option<i64>)> = Vec::new();
-        let mut name_seen: HashMap<&str, ()> = HashMap::new();
-        for &i in &order {
-            let w = &s.agg.winners[i as usize];
-            if let Some(ill) = &w.illust_key {
-                *illust.entry((ill.clone(), w.card_name.clone())).or_insert(0) += 1;
-            }
-            if name_seen.insert(w.card_name.as_str(), ()).is_none() {
-                per_name.push((w.card_name.as_str(), w.edhrec_rank));
-            }
-        }
-        let cubecobra = cubecobra_scores_from_pairs(&per_name);
-        drop(name_seen);
-        drop(per_name);
-        s.agg.illust_counts = illust;
-        s.agg.cubecobra = cubecobra;
         s.agg.sealed = true;
+        // The printing order asks "is this slot pinned" first, so it can only be frozen once the
+        // whole partition has gone past and the pin slots are complete.
+        let pins = std::mem::take(&mut s.agg.pins);
+        s.agg.ranks.seal(&pins);
+        s.agg.pins = pins;
         emit_stats(serde_json::json!({
-            "winners": s.agg.winners.len(),
+            "winners": s.agg.by_id.len(),
             "positions": s.agg.positions_seen,
-            "illust_entries": s.agg.illust_counts.len(),
-            "cubecobra_names": s.agg.cubecobra.len(),
+            "pinned_slots": s.agg.pins.len(),
+            "ranked_slots": s.agg.ranks.len(),
         }));
-        s.agg.winners.len() as i64
+        s.agg.by_id.len() as i64
     })
 }
 
@@ -512,6 +692,14 @@ pub extern "C" fn finalize_begin() -> i64 {
     with_state(|s| {
         if !s.agg.sealed {
             log("finalize_begin before agg_finish");
+            return -1;
+        }
+        // Unsealed tables would finalize every row with a NULL cubecobra_score and a zero
+        // illustration count, and build a perfectly valid, silently wrong store — so they are
+        // refused here rather than read as "no scores". Only a snapshot from before the scores
+        // phase existed can produce it.
+        if !s.tags.corpus.is_sealed() {
+            log("finalize_begin before the corpus tables were sealed (scores phase)");
             return -1;
         }
         s.finalize_pos = 0;
@@ -561,19 +749,27 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
                     .and_then(|ill| s.tags.art.get(ill))
                     .unwrap_or(&empty),
             );
-            let illustration_count = draft
-                .illustration_id
-                .as_ref()
-                .and_then(|ill| s.agg.illust_counts.get(&(ill.clone(), draft.card_name.clone())))
-                .copied()
-                .unwrap_or(0);
-            let cubecobra_score = s.agg.cubecobra.get(&draft.card_name).copied();
+            // BOTH GLOBAL, from the scores phase — not from this partition's aggregation, which
+            // would rank the card against 1/Nth of the corpus's names and count only the rows of
+            // its illustration group that landed here (see `scores_add_drafts`).
+            let illustration_count =
+                s.tags.corpus.illustration_count(draft.illustration_id.as_deref(), &draft.card_name);
+            let cubecobra_score = s.tags.corpus.cubecobra(&draft.card_name);
             // Same source of truth as the native builder: `TagData.labels`, which the tags
-            // export/restore already carries across DO evictions. Unconditional, matching
-            // transform.rs's PIN_BONUS doc — this port answers like Scryfall.
-            let pinned = s.tags.labels.contains(&draft.scryfall_id);
-            let row =
-                finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned);
+            // export/restore already carries across DO evictions, plus the slots those labels
+            // named (agg's per-card pass). Unconditional, matching transform.rs's PIN_BONUS doc —
+            // this port answers like Scryfall.
+            let pinned = is_pinned(&draft, &s.tags.labels, &s.agg.pins);
+            let rank = s.agg.ranks.rank_of(&draft);
+            let row = finalize_row(
+                draft,
+                &oracle_tags,
+                &art_tags,
+                illustration_count,
+                cubecobra_score,
+                pinned,
+                rank,
+            );
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");
             match builder.add_card(&row) {
@@ -724,10 +920,19 @@ pub extern "C" fn build_store_stream() -> i64 {
                 log(&format!("build_store_stream: pull_row failed at blob {idx}"));
                 return -1;
             }
-            if stats.printing_count != expected {
+            // Canonical + annex + annex-only-dropped, not `printing_count` alone: since the
+            // foreign annex, `printing_count` counts CANONICAL rows only (the pyo3 size()
+            // meaning), so this check — whose one job is catching a truncated pull stream —
+            // rejects every healthy MULTILINGUAL build. The wasm-builder-probe hit exactly this
+            // and fixed it there; this copy kept the old comparison, and only stayed quiet
+            // because the one caller fed a corpus in which every row was canonical. The three
+            // terms account for every staged row exactly (see StoreStats.annex_only_rows_dropped).
+            let built = stats.printing_count + stats.foreign_printing_count + stats.annex_only_rows_dropped;
+            if built != expected {
                 log(&format!(
-                    "build_store_stream: row stream truncated: {} of {expected}",
-                    stats.printing_count
+                    "build_store_stream: row stream truncated: {built} of {expected} rows \
+                     (canonical {} + annex {} + annex-only dropped {})",
+                    stats.printing_count, stats.foreign_printing_count, stats.annex_only_rows_dropped
                 ));
                 return -1;
             }
@@ -735,6 +940,7 @@ pub extern "C" fn build_store_stream() -> i64 {
             emit_stats(serde_json::json!({
                 "card_count": stats.card_count,
                 "printing_count": stats.printing_count,
+                "foreign_printing_count": stats.foreign_printing_count,
                 "store_bytes": w.total,
             }));
             w.total as i64

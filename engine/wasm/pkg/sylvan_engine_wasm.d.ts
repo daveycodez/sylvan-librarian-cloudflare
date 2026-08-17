@@ -53,8 +53,13 @@ export function cards_by_scryfall_ids(ids_json: string, fields_json: string): st
 export function cards_containing_all_words(words_json: string, set_code: string, limit: number, fields_json: string): string;
 
 /**
- * `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
- * behind /get_catalog.
+ * `{"card_types": {…}, "card_keywords": {…}, "sets_with_extras": [code, …]}` —
+ * the data behind /get_catalog, plus the `include_extras` auto-enable table.
+ *
+ * The extras table rides HERE rather than on an export of its own because the
+ * route that reads it needs it at most once per store generation: this is the
+ * one call the isolate already caches whole, so a set-scoped `/cards/search`
+ * costs zero extra round trips.
  */
 export function catalog(): string;
 
@@ -68,11 +73,39 @@ export function catalog(): string;
 export function exact_card_by_name(folded: string, set_code: string, fields_json: string): string;
 
 /**
+ * Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
+ * CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
+ * from this same store moments ago, so a miss means the caller mixed partitions or generations.
+ */
+export function fetch_rows(vpids: Uint32Array, fields_json: string): Uint8Array;
+
+/**
  * Validate the streamed archive and atomically swap it in as the active
  * store. On any error the in-progress buffer is dropped and the previously
  * active store (if any) keeps serving.
  */
 export function finish_store_load(): void;
+
+/**
+ * The scores-bearing fuzzy surface for the cross-partition FLOOR/LEAD race: this partition's
+ * top `k` distinct (card, name) candidate classes clearing `floor`, packed little-endian:
+ *
+ * ```text
+ * n: u32, then n of:
+ *   score: f32 LE
+ *   oracle_id: 16 bytes (the uuid's big-endian byte order — render as the canonical
+ *              hyphenated string; all zeros = unset)
+ *   vpid: u32 LE (partition-local; meaningful only against THIS loaded store)
+ *   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
+ * ```
+ *
+ * The gather races the UNION of every partition's candidates with the engine's own rule:
+ * global best by score; runner-up = best candidate differing from it in BOTH folded name and
+ * oracle_id (a card never competes with itself, two cards sharing a name are one answer);
+ * `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
+ * whose local race the global winner provably also wins — to materialize the card.
+ */
+export function fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
 
 /**
  * Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
@@ -97,11 +130,35 @@ export function printings_of_oracle_id(oracle_id: string, fields_json: string): 
 /**
  * Run a query. `filter_tree_json` is the filter-tree JSON (TrueNode /
  * AndNode / ... encoding); `opts_json` is an object with any of `unique`,
- * `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields` — missing
- * keys take the same defaults as the upstream pyo3 `query()`. Returns
- * `{"total": n, "rows": [...]}` as a JSON string.
+ * `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields`,
+ * `include_multilingual` — missing keys take the same defaults as the
+ * upstream pyo3 `query()`. Returns `{"total": n, "rows": [...]}` as a JSON
+ * string.
  */
 export function query(filter_tree_json: string, opts_json: string): string;
+
+/**
+ * Phase 1: the same query [`query`] runs, answered as keys — and, for the first `inline_rows`
+ * of them, the rows too — packed little-endian:
+ *
+ * ```text
+ * version: u32 (= KEY_PACKET_VERSION)
+ * total: u32, n: u32, inline: u32
+ * n      of: keylen: u16, key: keylen bytes, vpid: u32
+ * inline of: rowlen: u32, row JSON bytes
+ * ```
+ *
+ * `total` is the partition's exact match count; the keys are its top `offset + limit` in page
+ * order. The key bytes are comparable across partitions (see card_engine's `encode_sort_key`);
+ * `vpid` is meaningful only against the SAME loaded store — hand it back to [`fetch_rows`] on
+ * this partition, never another.
+ *
+ * THE INLINE SECTION IS A PREFIX, and each row is framed separately rather than shipped as one
+ * JSON array on purpose: most of them lose the cross-partition merge, and a gather that had to
+ * parse the whole array to reach the few survivors would pay for the losers twice — once on the
+ * wire and once in the parser. Framed, it parses exactly the rows the page kept.
+ */
+export function query_keys(filter_tree_json: string, opts_json: string, inline_rows: number): Uint8Array;
 
 /**
  * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>` IN BYTES.
@@ -118,6 +175,16 @@ export function query(filter_tree_json: string, opts_json: string): string;
  * payload, both charged to CPU budgets, to arrive at the bytes written here.
  */
 export function query_rows(filter_tree_json: string, opts_json: string): Uint8Array;
+
+/**
+ * Whether a query would run the multilingual (widened) driver — `include_multilingual`, or a
+ * `lang:` leaf in the bound filter.
+ *
+ * The partitioned gather builds its envelope from `query_keys` replies and never holds a
+ * `QueryOutput`, so it asks this instead. `/cards/search` needs the answer to echo
+ * `include_multilingual` in `next_page` the way Scryfall does.
+ */
+export function query_widens(filter_tree_json: string, opts_json: string): boolean;
 
 /**
  * `n` randomly sampled oracle cards, each as its default-preferred printing —
@@ -153,6 +220,13 @@ export function scryfall_search(filter_tree_json: string, opts_json: string, bas
  * 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
  */
 export function size(): number;
+
+/**
+ * The sort-key layout version this build emits (the first byte of every key). The gather
+ * refuses to merge streams whose versions differ — a mixed-generation fan-out must fail loudly,
+ * not return a silently misordered page.
+ */
+export function sort_key_version(): number;
 
 /**
  * Append one chunk of the archive (wasm-bindgen copies the chunk into linear

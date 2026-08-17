@@ -58,6 +58,17 @@ const IMAGE_EXTENSION_ENTRIES: readonly (readonly [string, string])[] = Object.e
  * both but never asks for them, so on its engine path every card carries `border_color: null` and
  * no `frame` at all — see the FIELD_TABLE note in card_engine's lib.rs.
  */
+/**
+ * Whether SOME marketplace sells this printing — the condition `purchase_uris` is emitted under.
+ *
+ * `paper` covers tcgplayer and cardmarket, `mtgo` covers cardhoarder, and nothing sells Arena.
+ * An absent `games` list emits, because the omission is a positive claim about the printing.
+ */
+function soldSomewhere(row: EngineRow): boolean {
+	const games = list(row, "games");
+	return games.length === 0 || games.some((g) => g === "paper" || g === "mtgo");
+}
+
 export const CARD_OBJECT_FIELDS: readonly string[] = [
 	"name",
 	"scryfall_id",
@@ -67,6 +78,10 @@ export const CARD_OBJECT_FIELDS: readonly string[] = [
 	"cmc",
 	"type_line",
 	"oracle_text",
+	"printed_name",
+	"printed_type_line",
+	"printed_text",
+	"flavor_name",
 	"power",
 	"toughness",
 	"loyalty",
@@ -126,7 +141,54 @@ export const CARD_OBJECT_FIELDS: readonly string[] = [
 	"variation",
 	"card_faces",
 	"all_parts",
+	"produced_mana",
+	"color_indicator",
 ];
+
+/**
+ * The layouts whose faces each get their OWN image — and, with it, their own copy of every value
+ * the one-image layouts keep at the top level.
+ *
+ * This is the single fact the whole multi-face branch turns on, and it is a property of the
+ * LAYOUT, not of anything the row carries: a transform card's front and back are two photographs,
+ * so Scryfall puts `image_uris`, `colors`, `power`, `illustration_id`, `flavor_text` and the rest
+ * on the faces and sends NO top-level copy (and no `card_back_id` — there is no shared back). A
+ * split or adventure card is ONE photograph of one piece of cardboard, so Scryfall sends one
+ * top-level `image_uris` and one top-level `colors`, and its faces carry only text.
+ *
+ * Verified exhaustively against the 2026-08-16 all_cards bulk: of 540,484 printings, every row of
+ * these five layouts has per-face `image_uris` and no top-level one, and every row of every other
+ * layout has the reverse — zero exceptions in either direction. This port used to serve per-face
+ * URLs for all multi-face cards, which invented a `.../back/...` URL with no image behind it on
+ * every split, flip, adventure and prepare printing.
+ */
+const TWO_IMAGE_LAYOUTS = new Set(["art_series", "double_faced_token", "modal_dfc", "reversible_card", "transform"]);
+
+/**
+ * The multi-face layouts whose `related_uris.edhrec` link keeps the JOINED name.
+ *
+ * EDHREC files a transforming or adventuring card under its front face (`cc=Delver+of+Secrets`,
+ * `cc=Brazen+Borrower`, `cc=Erayo%2C+Soratami+Ascendant`, `cc=Agadeem%27s+Awakening`) and a split
+ * or double-backed card under both halves (`cc=Fire+%2F%2F+Ice`, `cc=Wear+%2F%2F+Tear`,
+ * `cc=Temple+Garden+%2F%2F+Temple+Garden`, `cc=Punchcard+%2F%2F+Punchcard`) — all eight verified
+ * against api.scryfall.com. `art_series` sits with the front-face group, not with the other
+ * two-image layouts. The `tcgplayer_infinite_*` links in the same object keep the joined name on
+ * EVERY layout, split included, so this rule is deliberately scoped to `edhrec` alone.
+ */
+const EDHREC_JOINED_LAYOUTS = new Set(["double_faced_token", "reversible_card", "split"]);
+
+/** Top-level keys a two-image layout does not carry, because they belong to a face there. */
+const FACE_OWNED_KEYS = new Set([
+	"colors",
+	"card_back_id",
+	"illustration_id",
+	"power",
+	"toughness",
+	"loyalty",
+	"flavor_text",
+	"watermark",
+	"color_indicator",
+]);
 
 // ─── reading an engine row ───────────────────────────────────────────────────
 // `null` is the wire form of "Scryfall omitted this", so every accessor collapses it to undefined
@@ -135,6 +197,22 @@ export const CARD_OBJECT_FIELDS: readonly string[] = [
 function str(row: EngineRow, key: string): string | undefined {
 	const v = row[key];
 	return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/**
+ * Like `str`, but an empty string is a VALUE rather than an absence.
+ *
+ * Scryfall distinguishes the two and this port collapsed them: a basic land's `mana_cost` is `""`
+ * on 61,908 of the 540,484 printings in the 2026-08-16 bulk, its `oracle_text` is `""` on 7,266,
+ * and `artist` is `""` on 965 — and all three came out of here as `null`. The distinction is safe
+ * to draw because the three keys are always PRESENT where they are emitted at all: `mana_cost` is
+ * on every one of the 532,040 rows that is not a two-image layout, `oracle_text` on every one of
+ * the 528,386 that is not multi-faced, and `artist` on all 540,484. An `undefined` from this
+ * accessor is a row that carried no key at all, which only a hand-built one does.
+ */
+function strPresent(row: EngineRow, key: string): string | undefined {
+	const v = row[key];
+	return typeof v === "string" ? v : undefined;
 }
 
 function num(row: EngineRow, key: string): number | undefined {
@@ -186,15 +264,91 @@ export function imageUris(
 	return out;
 }
 
-/** Scryfall's URL slug for a card name: lowercase, non-alphanumerics collapsed to hyphens. */
+// Characters Scryfall DELETES from a slug rather than hyphenating. Live-derived: "Erayo's
+// Essence" slugs to `erayos-essence` (not `erayo-s-essence`), "S.H.I.E.L.D." to `shield`,
+// `Henzie "Toolbox" Torre` to `henzie-toolbox-torre`, and the zhs printings of Kongming/Pang Tong
+// pin the curly quotes. U+201E („) is NOT deleted — `Henzie „Der Beschaffer" Torre` (de) keeps it.
+const SLUG_DELETED = new Set(["'", '"', ",", ".", "/", "“", "”"]);
+
+// Slug bytes served literally; every other byte is UTF-8 percent-encoded, uppercase hex. The
+// literal set is exactly what appears un-encoded across the bulk corpus (`!&()+-:;=_`); `?` is the
+// one ASCII special observed encoded. Unobserved characters encode, which can never break a URL.
+const SLUG_LITERAL = /[A-Za-z0-9!&()+\-:;=_]/;
+
+/**
+ * Scryfall's URL slug for a card name.
+ *
+ * NOT the folklore "non-alphanumerics collapse to hyphens" rule this port first shipped — that rule
+ * hyphenates apostrophes (`erayo-s-essence`) and serves raw UTF-8 (`jötun-grunt`) where production
+ * Scryfall deletes the apostrophe and percent-encodes the bytes. The real rule, verified against
+ * the `scryfall_uri` of all 540,484 printings in the 2026-08-16 all_cards bulk (zero mismatches):
+ *
+ *   1. lowercase;
+ *   2. DELETE `' " , . /` and the curly quotes U+201C/U+201D;
+ *   3. each run of ASCII spaces becomes one hyphen — literal hyphens pass through and may stack
+ *      (ru "Пламенник - военный разведчик" keeps `---`), and nothing is trimmed ("Humming-" and
+ *      "With Great Power . . ." both keep their trailing hyphen);
+ *   4. everything else survives verbatim (`:`, `!`, `&`, `、`, `・`, fullwidth punctuation, U+00A0)
+ *      and is then UTF-8 percent-encoded per SLUG_LITERAL.
+ */
 export function slug(name: string): string {
-	// Python's str.isalnum() is Unicode-aware, so `\p{L}\p{N}` rather than [a-z0-9] — "Æther" and
-	// "Jötun" must slug the same way here as they do upstream.
-	return name
-		.toLowerCase()
-		.replace(/[^\p{L}\p{N}]/gu, "-")
-		.replace(/-+/g, "-")
-		.replace(/^-|-$/g, "");
+	let cleaned = "";
+	for (const ch of name.toLowerCase()) {
+		if (SLUG_DELETED.has(ch)) continue;
+		cleaned += ch;
+	}
+	const hyphenated = cleaned.replace(/ +/g, "-");
+	let out = "";
+	for (const byte of new TextEncoder().encode(hyphenated)) {
+		const ch = String.fromCharCode(byte);
+		out += SLUG_LITERAL.test(ch) ? ch : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+	}
+	return out;
+}
+
+/**
+ * The languages Scryfall writes into the scryfall_uri path — its ten print localizations, exactly.
+ * The glyph and novelty languages (ph, qya, he, la, grc, ar, sa, dw) get NO path segment: a ph
+ * Elesh Norn lives at `/card/one/414/elesh-norn-mother-of-machines`, English form.
+ */
+const SLUG_LANG_SEGMENTS = new Set(["de", "es", "fr", "it", "ja", "ko", "pt", "ru", "zhs", "zht"]);
+
+/**
+ * Languages whose printed name never reaches the slug even when stored: the Phyrexian and Quenya
+ * printings carry glyph-font `printed_name`s ("|Ceghm.", U+E0xx runs) and production serves them
+ * the plain English slug. Every other non-English language — including he/grc/ar/sa, which lack
+ * the path segment — keeps the `printed-(english)` slug form.
+ */
+const SLUG_PRINTED_IGNORED = new Set(["en", "ph", "qya"]);
+
+/**
+ * `scryfall_uri`: `https://scryfall.com/card/{set}/{number}[/{lang}]/{slug}?utm_source=api`.
+ *
+ * A foreign printing's slug is `slug(printed full name)-(slug(english full name))`, parentheses
+ * literal. The printed full name is the top-level `printed_name` or, on a multi-face card, the
+ * faces' `printed_name`s joined " // " — ONLY the faces that have one: the es printing of
+ * sos/113, whose second face has no printed_name, slugs as
+ * `em%C3%A9rita-del-conflicto-(emeritus-of-conflict-lightning-bolt)` (verified live). A foreign
+ * printing with no printed name at all falls back to the plain English slug, keeping the language
+ * segment (ody/243/zhs → `/zhs/holistic-wisdom`, verified live); one whose printed name slugs to
+ * nothing takes the same fallback (live-unpinned — no such printing exists in the corpus).
+ */
+function scryfallUri(row: EngineRow, name: string, setCode: string, number: string, lang: string): string {
+	const segment = SLUG_LANG_SEGMENTS.has(lang) ? `${lang}/` : "";
+	let printedFull: string | undefined;
+	if (!SLUG_PRINTED_IGNORED.has(lang)) {
+		printedFull = str(row, "printed_name");
+		if (printedFull === undefined) {
+			const parts = (list(row, "card_faces") as EngineRow[])
+				.map((face) => face.printed_name)
+				.filter((v): v is string => typeof v === "string" && v !== "");
+			if (parts.length > 0) printedFull = parts.join(" // ");
+		}
+	}
+	const english = slug(name);
+	const printed = printedFull === undefined ? "" : slug(printedFull);
+	const path = printed === "" ? english : `${printed}-(${english})`;
+	return `https://scryfall.com/card/${setCode}/${number}/${segment}${path}?utm_source=api`;
 }
 
 /**
@@ -203,29 +357,69 @@ export function slug(name: string): string {
  * Scryfall wraps the TCGplayer entries in `partner.tcgplayer.com/...?u=<encoded real URL>` with its
  * own affiliate code. The destination is the same page, and emitting the wrapper from this host
  * would route another service's affiliate revenue to Scryfall.
+ *
+ * `gatherer` LEADS the object when the printing has multiverse ids, built from the FIRST id, with
+ * `printed=true` for every non-English printing and `printed=false` for English — verified against
+ * the bulk corpus at 540,430 of 540,484 printings. The 54 exceptions are foreign-only promos
+ * (dd2-ja, snc launch, one-ph, ltc-qya) whose Gatherer entries carry no translation; that fact
+ * lives on Scryfall's side of the wire and is not derivable from the row, so they stay a known
+ * limit rather than a rule.
  */
-function relatedUris(name: string): Record<string, string> {
-	// Python's quote_plus, which encodes a space as `+` where encodeURIComponent gives `%20`.
-	const quoted = encodeURIComponent(name)
+/** Python's `quote_plus`, which encodes a space as `+` where `encodeURIComponent` gives `%20`. */
+function quotePlus(value: string): string {
+	return encodeURIComponent(value)
 		.replace(/%20/g, "+")
 		.replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-	return {
-		tcgplayer_infinite_articles: `https://www.tcgplayer.com/search/articles?productLineName=magic&q=${quoted}`,
-		tcgplayer_infinite_decks: `https://www.tcgplayer.com/search/decks?productLineName=magic&q=${quoted}`,
-		edhrec: `https://edhrec.com/route/?cc=${quoted}`,
-	};
 }
 
-/** Scryfall's `purchase_uris`, rebuilt from the marketplace ids. Same affiliate reasoning. */
-function purchaseUris(row: EngineRow): Record<string, string> {
+/**
+ * `edhrec` takes `edhrecName`, which is the front face's on most multi-face layouts — see
+ * EDHREC_JOINED_LAYOUTS. The two tcgplayer searches take the joined name on every layout.
+ */
+function relatedUris(name: string, edhrecName: string, multiverseIds: unknown[], lang: string): Record<string, string> {
 	const out: Record<string, string> = {};
+	const firstId = multiverseIds[0];
+	if (typeof firstId === "number") {
+		const printed = lang === "en" ? "false" : "true";
+		out.gatherer = `https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=${firstId}&printed=${printed}`;
+	}
+	const quoted = quotePlus(name);
+	out.tcgplayer_infinite_articles = `https://www.tcgplayer.com/search/articles?productLineName=magic&q=${quoted}`;
+	out.tcgplayer_infinite_decks = `https://www.tcgplayer.com/search/decks?productLineName=magic&q=${quoted}`;
+	out.edhrec = `https://edhrec.com/route/?cc=${quotePlus(edhrecName)}`;
+	return out;
+}
+
+/**
+ * Scryfall's `purchase_uris`, rebuilt from the marketplace ids — or, for a key whose id this
+ * printing does not have, from a NAME SEARCH on that marketplace. Same affiliate reasoning.
+ *
+ * All three keys are always present. The fallback is per KEY, not per card: an English printing
+ * with TCGplayer and Cardmarket ids but no MTGO id gets two product links and a cardhoarder
+ * search (verified live across khm). Every foreign printing takes the search form on all three —
+ * marketplace product ids belong to the English printing and never reach an annex row.
+ *
+ * The search text is the FRONT FACE name (`Invasion of Alara`, not
+ * `Invasion of Alara // Awaken the Maelstrom`): the joined name matches no product. Note that
+ * `related_uris`' tcgplayer_infinite_* links do carry the joined name — verified live — so the
+ * two are deliberately not the same string.
+ */
+function purchaseUris(row: EngineRow, name: string): Record<string, string> {
 	const tcg = num(row, "tcgplayer_id");
 	const cm = num(row, "cardmarket_id");
 	const mtgo = num(row, "mtgo_id");
-	if (tcg) out.tcgplayer = `https://www.tcgplayer.com/product/${tcg}?page=1`;
-	if (cm) out.cardmarket = `https://www.cardmarket.com/en/Magic/Products?idProduct=${cm}`;
-	if (mtgo) out.cardhoarder = `https://www.cardhoarder.com/cards/${mtgo}`;
-	return out;
+	const q = quotePlus(name.split(" // ")[0] as string);
+	return {
+		tcgplayer: tcg
+			? `https://www.tcgplayer.com/product/${tcg}?page=1`
+			: `https://www.tcgplayer.com/search/magic/product?productLineName=magic&q=${q}&view=grid`,
+		cardmarket: cm
+			? `https://www.cardmarket.com/en/Magic/Products?idProduct=${cm}`
+			: `https://www.cardmarket.com/en/Magic/Products/Search?searchString=${q}`,
+		cardhoarder: mtgo
+			? `https://www.cardhoarder.com/cards/${mtgo}`
+			: `https://www.cardhoarder.com/cards?data%5Bsearch%5D=${q}`,
+	};
 }
 
 /** Scryfall's `prices` object: the three price fields plus the three residue variants. */
@@ -245,22 +439,56 @@ function prices(row: EngineRow): Record<string, string | null> {
 }
 
 /**
+ * The joined top-level `mana_cost` a one-image multi-face card carries.
+ *
+ * Scryfall's rule, checked against all 3,654 split/flip/adventure/prepare printings in the
+ * 2026-08-16 bulk with zero misses: `" // "` between the faces that HAVE a cost, skipping the ones
+ * that do not. Fire // Ice is `"{1}{R} // {1}{U}"`; flipped Erayo, whose back face carries
+ * `"mana_cost": ""`, is `"{1}{U}"` and not `"{1}{U} // "`.
+ *
+ * Derived rather than stored because the ingest cannot preserve it: transform_row overlays each
+ * face onto the parent card, so the stored top-level cost is the FRONT face's alone.
+ */
+function joinedManaCost(stored: Record<string, unknown>[]): string {
+	return stored
+		.map((face) => face.mana_cost)
+		.filter((v): v is string => typeof v === "string" && v !== "")
+		.join(" // ");
+}
+
+/**
  * The card's faces, with the two keys the engine deliberately does not store re-added.
  *
  * `object` is the constant "card_face", and a face's `image_uris` is the card's CDN function with
- * front/back swapped, so neither is worth archive space.
+ * front/back swapped — on the two-image layouts, which are the only ones whose faces have their
+ * own picture.
  */
-function faces(row: EngineRow, scryfallId: string): Record<string, unknown>[] {
+function faces(row: EngineRow, scryfallId: string, twoImage: boolean): Record<string, unknown>[] {
 	const stored = list(row, "card_faces") as Record<string, unknown>[];
 	return stored.map((face, index) => {
 		const built: Record<string, unknown> = { object: "card_face" };
-		// Same absent-stays-absent filter upstream applies: a null, an empty string and an empty
-		// list are all "Scryfall did not send this face that key".
 		for (const [key, value] of Object.entries(face)) {
-			if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) continue;
+			// `colors` is a face key only where the faces own their own art: every face of every
+			// two-image printing carries one, empty included (Agadeem, the Undercrypt is colorless
+			// and still sends `"colors": []`), and no face of a split, flip, adventure or prepare
+			// printing carries one at all. The engine always writes the key, so both halves of that
+			// are decided here.
+			if (key === "colors") {
+				if (twoImage) built[key] = value;
+				continue;
+			}
+			// Absent stays absent, the same filter upstream applies: a null, an empty string and an
+			// empty list are all "Scryfall did not send this face that key" — EXCEPT for `mana_cost`
+			// and `oracle_text`, where "" is a value Scryfall does send. Every face of every
+			// multi-face printing in the corpus carries both keys (8,620 of 8,620 transform faces,
+			// 4,356 of them with an empty cost), so an empty string there is a costless back face,
+			// never an omission.
+			if (value === null) continue;
+			if (value === "" && key !== "mana_cost" && key !== "oracle_text") continue;
+			if (Array.isArray(value) && value.length === 0) continue;
 			built[key] = value;
 		}
-		if (stored.length > 1) {
+		if (twoImage) {
 			built.image_uris = imageUris(scryfallId, num(row, "image_updated_at"), index === 0 ? "front" : "back");
 		}
 		return built;
@@ -286,7 +514,15 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	const setCode = str(row, "set_code") ?? "";
 	const number = str(row, "collector_number") ?? "";
 	const setId = str(row, "set_id");
-	const built = faces(row, scryfallId);
+	const lang = str(row, "lang") ?? "en";
+	const layout = str(row, "layout");
+	const hasFaces = list(row, "card_faces").length > 0;
+	// Only ever true for a card that HAS faces: the two-image layouts are all multi-face.
+	const twoImage = hasFaces && layout !== undefined && TWO_IMAGE_LAYOUTS.has(layout);
+	// The joined name everywhere except edhrec on the layouts EDHREC files by front face.
+	const edhrecName =
+		hasFaces && !(layout !== undefined && EDHREC_JOINED_LAYOUTS.has(layout)) ? (name.split(" // ")[0] as string) : name;
+	const built = faces(row, scryfallId, twoImage);
 
 	const card: Record<string, unknown> = {
 		object: "card",
@@ -294,16 +530,32 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		oracle_id: oracleId,
 		multiverse_ids: list(row, "multiverse_ids"),
 		name,
-		lang: str(row, "lang") ?? "en",
+		// Between `name` and `lang`, where api.scryfall.com puts it (verified on grn/212/pt and
+		// khm/1/ja) — and PRESENT only when the printing carries one, which is why these are
+		// conditional spreads mid-literal rather than entries in the optional tail: the tail would
+		// put them after `legalities`, and key position is part of the parity contract here the
+		// same way security_stamp's position was (see the note in the tail below).
+		...(str(row, "printed_name") !== undefined ? { printed_name: str(row, "printed_name") } : {}),
+		// Scryfall's `flavor_name` — the alternate name a printing is SOLD under (Godzilla,
+		// Stranger Things, the Secret Lair crossovers), which is a different thing from a
+		// printed_name and can sit beside one. Its position is "immediately before `lang`" on all
+		// 669 top-level occurrences in the 2026-08-16 all_cards bulk, verified live on prm/80925
+		// (no printed_name) and sld/2236/ja (one). The FACE-level variant rides `card_faces`.
+		...(str(row, "flavor_name") !== undefined ? { flavor_name: str(row, "flavor_name") } : {}),
+		lang,
 		released_at: str(row, "released_at") ?? null,
 		uri: `${baseUrl}/cards/${scryfallId}`,
-		scryfall_uri: `https://scryfall.com/card/${setCode}/${number}/${slug(name)}?utm_source=api`,
+		scryfall_uri: scryfallUri(row, name, setCode, number, lang),
 		layout: str(row, "layout") ?? null,
 		highres_image: bool(row, "highres_image"),
 		image_status: str(row, "image_status") ?? null,
 		cmc: num(row, "cmc") ?? null,
 		type_line: str(row, "type_line") ?? null,
-		colors: list(row, "colors"),
+		// Directly after the oracle `type_line` it translates, per the live objects.
+		...(str(row, "printed_type_line") !== undefined ? { printed_type_line: str(row, "printed_type_line") } : {}),
+		// `colors` is one of the values a two-image layout keeps on its faces alone (see
+		// TWO_IMAGE_LAYOUTS); `color_identity` is the card's and stays at top level on every layout.
+		...(twoImage ? {} : { colors: list(row, "colors") }),
 		color_identity: list(row, "color_identity"),
 		keywords: list(row, "card_keywords"),
 		games: list(row, "games"),
@@ -325,27 +577,59 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		collector_number: number,
 		digital: bool(row, "digital"),
 		rarity: str(row, "rarity") ?? null,
-		card_back_id: CARD_BACK_ID,
-		artist: str(row, "artist") ?? null,
-		illustration_id: str(row, "illustration_id") ?? null,
+		// No shared card back on a two-image layout, and no card-level illustration: both belong to
+		// a face there, and Scryfall omits the top-level keys entirely.
+		...(twoImage ? {} : { card_back_id: CARD_BACK_ID }),
+		artist: strPresent(row, "artist") ?? null,
+		...(twoImage ? {} : { illustration_id: str(row, "illustration_id") ?? null }),
 		border_color: str(row, "border_color") ?? null,
 		full_art: bool(row, "full_art"),
 		textless: bool(row, "textless"),
 		booster: bool(row, "booster"),
 		story_spotlight: bool(row, "story_spotlight"),
 		prices: prices(row),
-		related_uris: relatedUris(name),
-		purchase_uris: purchaseUris(row),
+		related_uris: relatedUris(name, edhrecName, list(row, "multiverse_ids"), lang),
+		// A printing NO MARKETPLACE SELLS omits the key rather than carrying three dead links.
+		// The rule is the marketplaces, not `digital` — measured 2026-08-16:
+		//
+		//   prm/80925   games ["mtgo"]   digital true    purchase_uris PRESENT  (cardhoarder)
+		//   ymid/59     games ["arena"]  digital true    purchase_uris ABSENT
+		//   khm/A-198   games ["arena"]  digital true    purchase_uris ABSENT
+		//   msc/806     games paper,…    digital false   purchase_uris PRESENT
+		//
+		// so it is "paper or mtgo" — tcgplayer and cardmarket sell cardboard, cardhoarder sells
+		// MTGO, and nothing sells Arena. `digital` would have dropped the key on prm/80925 too.
+		// The mirror only meets this case because Arena printings are imported now (the `games`
+		// clause left `passes_filters`); before that it could not have been wrong here.
+		// ABSENT `games` emits: the omission is a positive statement ("this printing is sold
+		// nowhere"), and a row that never carried the column has made no such statement.
+		...(soldSomewhere(row) ? { purchase_uris: purchaseUris(row, name) } : {}),
 	};
 
-	// A multi-face card carries its faces and NOT the top-level text they replace; a single-faced
-	// one carries the text and no `card_faces`. Which keys sit at top level varies by LAYOUT, which
-	// is why this is a branch rather than a fixed key set.
+	// A multi-face card carries its faces and NOT the top-level ORACLE TEXT they replace; a
+	// single-faced one carries the text and no `card_faces`. Which keys sit at top level varies by
+	// LAYOUT, which is why this is a branch rather than a fixed key set.
+	//
+	// `mana_cost` and `image_uris` are the two the multi-face branch keeps, on the one-image
+	// layouts only: one piece of cardboard has one picture and one printed cost, so Scryfall sends
+	// both at top level for split/flip/adventure/prepare — and neither for transform/modal_dfc,
+	// where each face has its own.
 	if (built.length > 0) {
 		card.card_faces = built;
+		if (!twoImage) {
+			card.mana_cost = joinedManaCost(list(row, "card_faces") as Record<string, unknown>[]);
+			card.image_uris = imageUris(scryfallId, num(row, "image_updated_at"));
+		}
 	} else {
-		card.mana_cost = str(row, "mana_cost") ?? null;
-		card.oracle_text = str(row, "oracle_text") ?? null;
+		// An empty string is a VALUE for both of these — every basic land carries
+		// `"mana_cost": ""` and 7,266 printings carry `"oracle_text": ""` — so they read through
+		// `strPresent` rather than the empty-is-absent `str`.
+		card.mana_cost = strPresent(row, "mana_cost") ?? null;
+		card.oracle_text = strPresent(row, "oracle_text") ?? null;
+		// Directly after the `oracle_text` it translates — single-face only, like the text it
+		// shadows; a multi-face printing's printed text rides its face objects.
+		const printedText = str(row, "printed_text");
+		if (printedText !== undefined) card.printed_text = printedText;
 		card.image_uris = imageUris(scryfallId, num(row, "image_updated_at"));
 	}
 
@@ -373,12 +657,24 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		// here, which made the two implementations disagree on key order for every card that has a
 		// security stamp — cosmetic, but upstream is the reference for a port, so this moved.
 		["security_stamp", str(row, "security_stamp")],
+		// `produced_mana` joins them: the engine has always stored the mana a card can make (the
+		// `produces:` filter reads the same byte) and no card object ever carried it, so every land
+		// this port served was missing a key Scryfall sends. On a modal DFC it is the union over the
+		// faces, which is what the store already holds.
+		// ...and `color_indicator` beside it, the printed colour dot on a card whose mana cost cannot
+		// state its colours (a meld result, a coloured back). 546 printings carry one; this port
+		// emitted the key on none of them.
+		["color_indicator", listOrAbsent(row, "color_indicator")],
+		["produced_mana", listOrAbsent(row, "produced_mana")],
 		["promo_types", listOrAbsent(row, "promo_types")],
 		["frame_effects", listOrAbsent(row, "frame_effects")],
 		["all_parts", listOrAbsent(row, "all_parts")],
 		["legalities", row.legalities ?? undefined],
 	];
 	for (const [key, value] of optional) {
+		// Five of the string keys above belong to a face on a two-image layout; `frame` is the
+		// printing's and stays. See FACE_OWNED_KEYS.
+		if (twoImage && FACE_OWNED_KEYS.has(key)) continue;
 		if (value !== undefined) card[key] = value;
 	}
 
@@ -392,21 +688,34 @@ export interface ScryfallError extends Record<string, unknown> {
 	code: string;
 	status: number;
 	details: string;
-	warnings?: string[];
+	warnings?: string[] | null;
 }
 
-/** Scryfall's error object. */
-export function errorObject(code: string, status: number, details: string, warnings?: string[]): ScryfallError {
-	const error: ScryfallError = { object: "error", code, status, details };
-	if (warnings && warnings.length > 0) error.warnings = warnings;
-	return error;
+/**
+ * Scryfall's error object.
+ *
+ * `warnings` sits BEFORE `details`, which is Scryfall's own key order — measured on every error
+ * body that carries one (`/cards/search?q=f:notaformat` and `/cards/search` with no `q` at all,
+ * 2026-08-16): `{object, code, status, warnings, details}`. This used to append it last, so a
+ * client comparing bodies byte for byte saw a different document for the same answer.
+ *
+ * `null` and `undefined` are DIFFERENT arguments. Scryfall writes `"warnings": null` on a
+ * `bad_request` from `/cards/search` even when nothing was warned about, and writes no key at all
+ * on a `not_found`, a `validation_error`, or `/cards/named`'s missing-parameter 400 — so the
+ * caller says which shape it means rather than having it inferred from emptiness.
+ */
+export function errorObject(code: string, status: number, details: string, warnings?: string[] | null): ScryfallError {
+	const error: Record<string, unknown> = { object: "error", code, status };
+	if (warnings !== undefined) error.warnings = warnings !== null && warnings.length > 0 ? warnings : null;
+	error.details = details;
+	return error as ScryfallError;
 }
 
 export function notFoundError(details: string): ScryfallError {
 	return errorObject("not_found", 404, details);
 }
 
-export function badRequestError(details: string, warnings?: string[]): ScryfallError {
+export function badRequestError(details: string, warnings?: string[] | null): ScryfallError {
 	return errorObject("bad_request", 400, details, warnings);
 }
 
@@ -419,19 +728,48 @@ export interface CardListOptions {
 }
 
 /**
- * Scryfall's List object.
+ * The one definition of a List's key order, for both envelopes Scryfall answers with.
  *
- * Key order follows Scryfall's own so a byte-comparing client sees the same document.
+ * `has_more` is written IFF the caller supplies one. That is the ONLY difference between the two,
+ * and it is a difference in the key set rather than in the value — see `collectionList`. Every
+ * other key keeps its position here so the two envelopes cannot drift apart.
  */
-export function cardList(cards: unknown[], opts: CardListOptions = {}): Record<string, unknown> {
+function listObject(cards: unknown[], opts: CardListOptions): Record<string, unknown> {
 	const result: Record<string, unknown> = { object: "list" };
 	if (opts.totalCards !== undefined) result.total_cards = opts.totalCards;
 	if (opts.notFound !== undefined) result.not_found = opts.notFound;
-	result.has_more = opts.hasMore ?? false;
+	if (opts.hasMore !== undefined) result.has_more = opts.hasMore;
 	if (opts.nextPage !== undefined) result.next_page = opts.nextPage;
 	if (opts.warnings && opts.warnings.length > 0) result.warnings = opts.warnings;
 	result.data = cards;
 	return result;
+}
+
+/**
+ * Scryfall's paginated List object.
+ *
+ * Key order follows Scryfall's own so a byte-comparing client sees the same document. `has_more`
+ * is always present — a paginated list says whether there is more even when there is not.
+ */
+export function cardList(cards: unknown[], opts: CardListOptions = {}): Record<string, unknown> {
+	return listObject(cards, { ...opts, hasMore: opts.hasMore ?? false });
+}
+
+/**
+ * The List `POST /cards/collection` answers with: `{object, not_found, data}` and NO `has_more`.
+ *
+ * Measured against api.scryfall.com on 2026-08-16 — every collection response's key set is exactly
+ * those three, whether or not anything was found. It is the one List Scryfall does not paginate:
+ * the request carries at most 75 identifiers and the answer carries all of them, so there is no
+ * further page for a `has_more` to describe.
+ *
+ * A separate entry point rather than a `hasMore: undefined` at the call site, because omitting a
+ * key is the kind of thing an options bag hides: `cardList(found, { notFound })` used to read as
+ * correct and quietly emitted `has_more: false`. Both build the same object through `listObject`,
+ * so the key ORDER still has exactly one definition.
+ */
+export function collectionList(cards: unknown[], notFound: unknown[]): Record<string, unknown> {
+	return listObject(cards, { notFound });
 }
 
 /**
@@ -468,6 +806,28 @@ export function buildPageUrl(baseUrl: string, params: Record<string, string>, pa
 	return `${baseUrl}?${query.toString()}`;
 }
 
+/**
+ * `next_page` with `include_multilingual` set to what the query RESOLVED to.
+ *
+ * Scryfall echoes the effective value, not the one the client sent: a `lang:` leaf in `q` widens
+ * the query on its own and its `next_page` then says `include_multilingual=true` even though the
+ * request carried no such parameter (measured 2026-08-16 on `e:khm lang:ja unique=cards`).
+ *
+ * The route cannot decide this for itself. Whether a query widens is settled inside the engine at
+ * filter-compile time — `include_multilingual` OR a `card_lang` leaf in the BOUND filter — and
+ * re-implementing that detection in TypeScript is exactly the drift the one-implementation rule
+ * exists to prevent. So the engine reports what it did (`QueryOutput::widened`, on the search
+ * envelope's header line) and this rewrites the one parameter.
+ *
+ * A targeted replacement rather than a rebuild: the URL was already built with every other
+ * resolved value, and `buildPageUrl` sorts its parameters, so re-deriving it here would mean
+ * carrying the whole parameter set across the engine boundary to change one flag.
+ */
+export function withResolvedMultilingual(url: string | undefined, widened: boolean): string | undefined {
+	if (url === undefined || !widened) return url;
+	return url.replace("include_multilingual=false", "include_multilingual=true");
+}
+
 // ─── format=text and format=image ────────────────────────────────────────────
 
 /** The requested face of a card, falling back to the card itself. */
@@ -478,11 +838,23 @@ function faceOf(card: Record<string, unknown>, face: string): Record<string, unk
 	return card;
 }
 
-/** The image URL for a card at a given size and face, or undefined when it has none. */
+/**
+ * The image URL for a card at a given size and face, or undefined when it has none.
+ *
+ * An UNRECOGNIZED `version` falls back to the default size rather than missing: measured
+ * 2026-08-16, `?format=image&version=bogus` 302s to the same `large` front image `?format=image`
+ * alone does, and `&face=sideways` likewise redirects to the front. This port answered
+ * `404 "No image is available for this card in that version."` to the first of those — a sentence
+ * about the CARD, for a mistake in the URL, on a card whose image is right there. `faceOf` already
+ * had the face half of the rule; only the version half was missing.
+ *
+ * The 404 stays for the case it was written for: a card that genuinely carries no image map, where
+ * even the default size has nothing to point at.
+ */
 export function imageUri(card: Record<string, unknown>, version: string, face: string): string | undefined {
 	const selected = faceOf(card, face);
 	const uris = (selected.image_uris ?? card.image_uris ?? {}) as Record<string, string>;
-	return uris[version];
+	return uris[version] ?? uris[DEFAULT_IMAGE_VERSION];
 }
 
 /** One card face in Scryfall's plain-text format. */

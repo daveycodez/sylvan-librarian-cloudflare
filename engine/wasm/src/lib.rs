@@ -152,9 +152,10 @@ fn with_store<T>(f: impl FnOnce(&BufferStore) -> Result<T, JsError>) -> Result<T
 
 /// Run a query. `filter_tree_json` is the filter-tree JSON (TrueNode /
 /// AndNode / ... encoding); `opts_json` is an object with any of `unique`,
-/// `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields` — missing
-/// keys take the same defaults as the upstream pyo3 `query()`. Returns
-/// `{"total": n, "rows": [...]}` as a JSON string.
+/// `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields`,
+/// `include_multilingual` — missing keys take the same defaults as the
+/// upstream pyo3 `query()`. Returns `{"total": n, "rows": [...]}` as a JSON
+/// string.
 #[wasm_bindgen]
 pub fn query(filter_tree_json: &str, opts_json: &str) -> Result<String, JsError> {
     let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
@@ -200,6 +201,19 @@ pub fn scryfall_search(filter_tree_json: &str, opts_json: &str, base_url: &str) 
     with_store(|store| store.scryfall_search_bytes(&tree, &opts, base_url).map_err(js_err))
 }
 
+/// Whether a query would run the multilingual (widened) driver — `include_multilingual`, or a
+/// `lang:` leaf in the bound filter.
+///
+/// The partitioned gather builds its envelope from `query_keys` replies and never holds a
+/// `QueryOutput`, so it asks this instead. `/cards/search` needs the answer to echo
+/// `include_multilingual` in `next_page` the way Scryfall does.
+#[wasm_bindgen]
+pub fn query_widens(filter_tree_json: &str, opts_json: &str) -> Result<bool, JsError> {
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    let tree: serde_json::Value = serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
+    with_store(|store| store.query_widens(&tree, &opts).map_err(js_err))
+}
+
 /// One engine row as a Scryfall card object, for the differential test that guards the port.
 ///
 /// Needs NO store: the builder is a pure function of the row and the base URL, which is what lets
@@ -217,14 +231,20 @@ pub fn scryfall_card_from_row(row_json: &str, base_url: &str) -> Result<String, 
     String::from_utf8(out).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
-/// behind /get_catalog.
+/// `{"card_types": {…}, "card_keywords": {…}, "sets_with_extras": [code, …]}` —
+/// the data behind /get_catalog, plus the `include_extras` auto-enable table.
+///
+/// The extras table rides HERE rather than on an export of its own because the
+/// route that reads it needs it at most once per store generation: this is the
+/// one call the isolate already caches whole, so a set-scoped `/cards/search`
+/// costs zero extra round trips.
 #[wasm_bindgen]
 pub fn catalog() -> Result<String, JsError> {
     with_store(|store| {
         let out = serde_json::json!({
             "card_types": store.common_card_types(),
             "card_keywords": store.common_card_keywords(),
+            "sets_with_extras": store.sets_with_extras(),
         });
         Ok(out.to_string())
     })
@@ -390,6 +410,135 @@ pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
     with_store(|store| Ok(serde_json::to_string(&store.autocomplete(prefix, limit as usize)).unwrap_or_else(|_| "[]".into())))
 }
 
+// ─── The partitioned two-phase gather (LOCAL PATCH, Cloudflare port) ─────────
+// Phase 1 asks every partition for its page's opaque sort keys; the gather DO bytewise-merges
+// the streams (each key leads with a version byte — refuse mixed versions) and phase 2 fetches
+// only the rows that survived the merge, from the partitions that own them.
+
+/// The phase-1 packet layout this build emits and `src/engine/gather.ts` decodes.
+///
+/// It leads the packet so the two sides can never disagree silently: a gather reading a packet
+/// whose version it does not know REFUSES it, the same way it refuses a key stream whose
+/// `sort_key_version` disagrees. Version 1 was keys-only (`total, n, entries…`); version 2 adds
+/// the inline-row section that folds phase 2 into phase 1.
+pub const KEY_PACKET_VERSION: u32 = 2;
+
+/// Phase 1: the same query [`query`] runs, answered as keys — and, for the first `inline_rows`
+/// of them, the rows too — packed little-endian:
+///
+/// ```text
+/// version: u32 (= KEY_PACKET_VERSION)
+/// total: u32, n: u32, inline: u32
+/// n      of: keylen: u16, key: keylen bytes, vpid: u32
+/// inline of: rowlen: u32, row JSON bytes
+/// ```
+///
+/// `total` is the partition's exact match count; the keys are its top `offset + limit` in page
+/// order. The key bytes are comparable across partitions (see card_engine's `encode_sort_key`);
+/// `vpid` is meaningful only against the SAME loaded store — hand it back to [`fetch_rows`] on
+/// this partition, never another.
+///
+/// THE INLINE SECTION IS A PREFIX, and each row is framed separately rather than shipped as one
+/// JSON array on purpose: most of them lose the cross-partition merge, and a gather that had to
+/// parse the whole array to reach the few survivors would pay for the losers twice — once on the
+/// wire and once in the parser. Framed, it parses exactly the rows the page kept.
+#[wasm_bindgen]
+pub fn query_keys(filter_tree_json: &str, opts_json: &str, inline_rows: u32) -> Result<Vec<u8>, JsError> {
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    let tree: serde_json::Value =
+        serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
+    with_store(|store| {
+        let out = store.query_keys(&tree, &opts, inline_rows as usize).map_err(js_err)?;
+        let mut buf = Vec::with_capacity(16 + out.keys.iter().map(|(k, _)| k.len() + 6).sum::<usize>());
+        buf.extend_from_slice(&KEY_PACKET_VERSION.to_le_bytes());
+        buf.extend_from_slice(&u32::try_from(out.total).unwrap_or(u32::MAX).to_le_bytes());
+        buf.extend_from_slice(&(out.keys.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(out.rows.len() as u32).to_le_bytes());
+        for (key, vpid) in &out.keys {
+            let len = u16::try_from(key.len())
+                .map_err(|_| JsError::new("sort key exceeds u16 length"))?;
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&vpid.to_le_bytes());
+        }
+        for row in &out.rows {
+            let encoded = serde_json::to_vec(row).map_err(|e| JsError::new(&e.to_string()))?;
+            let len = u32::try_from(encoded.len())
+                .map_err(|_| JsError::new("inline row exceeds u32 length"))?;
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(&encoded);
+        }
+        Ok(buf)
+    })
+}
+
+/// Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
+/// CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
+/// from this same store moments ago, so a miss means the caller mixed partitions or generations.
+#[wasm_bindgen]
+pub fn fetch_rows(vpids: &[u32], fields_json: &str) -> Result<Vec<u8>, JsError> {
+    let fields = parse_fields(fields_json)?;
+    with_store(|store| {
+        let rows = store.fetch_rows(vpids, fields).map_err(js_err)?;
+        serde_json::to_vec(&serde_json::Value::Array(rows)).map_err(|e| JsError::new(&e.to_string()))
+    })
+}
+
+/// The sort-key layout version this build emits (the first byte of every key). The gather
+/// refuses to merge streams whose versions differ — a mixed-generation fan-out must fail loudly,
+/// not return a silently misordered page.
+#[wasm_bindgen]
+pub fn sort_key_version() -> u8 {
+    card_engine::SORT_KEY_VERSION
+}
+
+/// The scores-bearing fuzzy surface for the cross-partition FLOOR/LEAD race: this partition's
+/// top `k` distinct (card, name) candidate classes clearing `floor`, packed little-endian:
+///
+/// ```text
+/// n: u32, then n of:
+///   score: f32 LE
+///   oracle_id: 16 bytes (the uuid's big-endian byte order — render as the canonical
+///              hyphenated string; all zeros = unset)
+///   vpid: u32 LE (partition-local; meaningful only against THIS loaded store)
+///   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
+/// ```
+///
+/// The gather races the UNION of every partition's candidates with the engine's own rule:
+/// global best by score; runner-up = best candidate differing from it in BOTH folded name and
+/// oracle_id (a card never competes with itself, two cards sharing a name are one answer);
+/// `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
+/// whose local race the global winner provably also wins — to materialize the card.
+#[wasm_bindgen]
+pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsError> {
+    with_store(|store| {
+        let out = store.fuzzy_candidates(name, floor, k as usize);
+        let mut buf = Vec::with_capacity(4 + out.len() * 40);
+        buf.extend_from_slice(&(out.len() as u32).to_le_bytes());
+        for c in &out {
+            buf.extend_from_slice(&c.score.to_le_bytes());
+            // The hyphenated uuid's 16 bytes (hex pairs in order); all zeros for "" (unset).
+            let mut oracle = [0u8; 16];
+            let mut nibbles = c.oracle_id.bytes().filter_map(|b| (b as char).to_digit(16).map(|d| d as u8));
+            for slot in &mut oracle {
+                match (nibbles.next(), nibbles.next()) {
+                    (Some(hi), Some(lo)) => *slot = (hi << 4) | lo,
+                    _ => {
+                        oracle = [0u8; 16];
+                        break;
+                    }
+                }
+            }
+            buf.extend_from_slice(&oracle);
+            buf.extend_from_slice(&c.vpid.to_le_bytes());
+            let len = u16::try_from(c.folded_name.len()).map_err(|_| JsError::new("name exceeds u16 length"))?;
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(c.folded_name.as_bytes());
+        }
+        Ok(buf)
+    })
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -479,5 +628,89 @@ mod tests {
         unload_store();
         assert!(!store_loaded());
         assert_eq!(size(), 0);
+    }
+
+    /// The wire contract between THIS crate's `query_keys` packer and src/engine/gather.ts's
+    /// `decodeKeyPacket`, pinned as committed bytes: a deterministic two-row store's real packet
+    /// must equal tests/engine/gather-wire-fixture.json byte for byte, and the bun twin
+    /// (tests/engine/gather-wire.test.ts) decodes the SAME file with the TS codec. Regenerate
+    /// deliberately with SYLVAN_WRITE_WIRE_FIXTURE=1 when the layout version moves.
+    #[test]
+    fn query_keys_packet_matches_the_committed_wire_fixture() {
+        let mk = |name: &str, oracle: &str, scry: &str, edhrec: u32| {
+            serde_json::json!({
+                "card_name": name,
+                "card_name_folded": name.to_lowercase(),
+                "oracle_id": oracle,
+                "scryfall_id": scry,
+                "card_set_code": "tst",
+                "set_name": "Test Set",
+                "collector_number": "1",
+                "oracle_text": "Do the thing.",
+                "type_line": "Instant",
+                "card_types": ["Instant"],
+                "card_legalities": {"vintage": "legal"},
+                "card_colors": {"R": true},
+                "card_color_identity": {"R": true},
+                "edhrec_rank": edhrec,
+                "prefer_score": 100.0,
+            })
+        };
+        let mut builder = card_engine::StoreBuilder::new();
+        builder.add_card(&mk("Wire Alpha", "77777777-7777-4777-8777-777777777771", "88888888-8888-4888-8888-888888888881", 10)).expect("add");
+        builder.add_card(&mk("Wire Beta", "77777777-7777-4777-8777-777777777772", "88888888-8888-4888-8888-888888888882", 20)).expect("add");
+        let mut bytes = Vec::new();
+        builder.finish_to_writer(&mut bytes).expect("finish");
+        init_store(&bytes).expect("load");
+
+        // ONE inline row of the two, so the fixture pins BOTH sections and the boundary between
+        // them — a keys-only packet would leave the inline framing unpinned, which is precisely
+        // the half a decoder mistake would land in.
+        let packed = query_keys(r#"{"node_type": "TrueNode"}"#, r#"{"orderby": "name", "limit": 10, "fields": ["name"]}"#, 1)
+            .expect("query_keys");
+        unload_store();
+
+        // Base16, dependency-free both sides.
+        let hex: String = packed.iter().map(|b| format!("{b:02x}")).collect();
+        let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/engine/gather-wire-fixture.json");
+        let fixture = serde_json::json!({
+            "note": "REAL query_keys bytes off a deterministic 2-row store (orderby=name, \
+                     fields=[name], inline_rows=1). Pins the LE packet layout — version header, \
+                     key entries AND the framed inline-row section — between the Rust packer \
+                     (engine/wasm) and src/engine/gather.ts's decodeKeyPacket. Regenerate with \
+                     SYLVAN_WRITE_WIRE_FIXTURE=1 cargo test -p sylvan-engine-wasm.",
+            "packet_version": KEY_PACKET_VERSION,
+            "sort_key_version": card_engine::SORT_KEY_VERSION,
+            "total": 2,
+            "entries": 2,
+            "inline_rows": 1,
+            "packed_hex": hex,
+        });
+        if std::env::var("SYLVAN_WRITE_WIRE_FIXTURE").is_ok() {
+            // Tab-indented, matching the repo's biome formatting, so a regenerated fixture is
+            // commit-clean without a manual format pass.
+            let two_space = serde_json::to_string_pretty(&fixture).expect("encode fixture");
+            let tabbed: String = two_space
+                .lines()
+                .map(|line| {
+                    let spaces = line.len() - line.trim_start_matches(' ').len();
+                    format!("{}{}\n", "\t".repeat(spaces / 2), &line[spaces..])
+                })
+                .collect();
+            std::fs::write(fixture_path, tabbed).expect("write fixture");
+        }
+        let committed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture_path).expect(
+                "committed wire fixture missing — run once with SYLVAN_WRITE_WIRE_FIXTURE=1",
+            ))
+            .expect("fixture parses");
+        assert_eq!(
+            committed["packed_hex"].as_str().expect("hex"),
+            hex,
+            "the packed query_keys bytes moved — if deliberate (layout/version change), \
+             regenerate the fixture AND update gather.ts's codec + its bun test together"
+        );
+        assert_eq!(committed["sort_key_version"], serde_json::json!(card_engine::SORT_KEY_VERSION));
+        assert_eq!(committed["packet_version"], serde_json::json!(KEY_PACKET_VERSION));
     }
 }

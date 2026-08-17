@@ -209,8 +209,13 @@ export function cards_containing_all_words(words_json, set_code, limit, fields_j
 }
 
 /**
- * `{"card_types": {name: count}, "card_keywords": {name: count}}` — the data
- * behind /get_catalog.
+ * `{"card_types": {…}, "card_keywords": {…}, "sets_with_extras": [code, …]}` —
+ * the data behind /get_catalog, plus the `include_extras` auto-enable table.
+ *
+ * The extras table rides HERE rather than on an export of its own because the
+ * route that reads it needs it at most once per store generation: this is the
+ * one call the isolate already caches whole, so a set-scoped `/cards/search`
+ * costs zero extra round trips.
  * @returns {string}
  */
 export function catalog() {
@@ -269,6 +274,28 @@ export function exact_card_by_name(folded, set_code, fields_json) {
 }
 
 /**
+ * Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
+ * CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
+ * from this same store moments ago, so a miss means the caller mixed partitions or generations.
+ * @param {Uint32Array} vpids
+ * @param {string} fields_json
+ * @returns {Uint8Array}
+ */
+export function fetch_rows(vpids, fields_json) {
+    const ptr0 = passArray32ToWasm0(vpids, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.fetch_rows(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
+
+/**
  * Validate the streamed archive and atomically swap it in as the active
  * store. On any error the in-progress buffer is dropped and the previously
  * active store (if any) keeps serving.
@@ -278,6 +305,41 @@ export function finish_store_load() {
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
+}
+
+/**
+ * The scores-bearing fuzzy surface for the cross-partition FLOOR/LEAD race: this partition's
+ * top `k` distinct (card, name) candidate classes clearing `floor`, packed little-endian:
+ *
+ * ```text
+ * n: u32, then n of:
+ *   score: f32 LE
+ *   oracle_id: 16 bytes (the uuid's big-endian byte order — render as the canonical
+ *              hyphenated string; all zeros = unset)
+ *   vpid: u32 LE (partition-local; meaningful only against THIS loaded store)
+ *   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
+ * ```
+ *
+ * The gather races the UNION of every partition's candidates with the engine's own rule:
+ * global best by score; runner-up = best candidate differing from it in BOTH folded name and
+ * oracle_id (a card never competes with itself, two cards sharing a name are one answer);
+ * `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
+ * whose local race the global winner provably also wins — to materialize the card.
+ * @param {string} name
+ * @param {number} floor
+ * @param {number} k
+ * @returns {Uint8Array}
+ */
+export function fuzzy_candidates(name, floor, k) {
+    const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.fuzzy_candidates(ptr0, len0, floor, k);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
 }
 
 /**
@@ -361,9 +423,10 @@ export function printings_of_oracle_id(oracle_id, fields_json) {
 /**
  * Run a query. `filter_tree_json` is the filter-tree JSON (TrueNode /
  * AndNode / ... encoding); `opts_json` is an object with any of `unique`,
- * `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields` — missing
- * keys take the same defaults as the upstream pyo3 `query()`. Returns
- * `{"total": n, "rows": [...]}` as a JSON string.
+ * `prefer`, `orderby`, `direction`, `limit`, `offset`, `fields`,
+ * `include_multilingual` — missing keys take the same defaults as the
+ * upstream pyo3 `query()`. Returns `{"total": n, "rows": [...]}` as a JSON
+ * string.
  * @param {string} filter_tree_json
  * @param {string} opts_json
  * @returns {string}
@@ -389,6 +452,45 @@ export function query(filter_tree_json, opts_json) {
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
+}
+
+/**
+ * Phase 1: the same query [`query`] runs, answered as keys — and, for the first `inline_rows`
+ * of them, the rows too — packed little-endian:
+ *
+ * ```text
+ * version: u32 (= KEY_PACKET_VERSION)
+ * total: u32, n: u32, inline: u32
+ * n      of: keylen: u16, key: keylen bytes, vpid: u32
+ * inline of: rowlen: u32, row JSON bytes
+ * ```
+ *
+ * `total` is the partition's exact match count; the keys are its top `offset + limit` in page
+ * order. The key bytes are comparable across partitions (see card_engine's `encode_sort_key`);
+ * `vpid` is meaningful only against the SAME loaded store — hand it back to [`fetch_rows`] on
+ * this partition, never another.
+ *
+ * THE INLINE SECTION IS A PREFIX, and each row is framed separately rather than shipped as one
+ * JSON array on purpose: most of them lose the cross-partition merge, and a gather that had to
+ * parse the whole array to reach the few survivors would pay for the losers twice — once on the
+ * wire and once in the parser. Framed, it parses exactly the rows the page kept.
+ * @param {string} filter_tree_json
+ * @param {string} opts_json
+ * @param {number} inline_rows
+ * @returns {Uint8Array}
+ */
+export function query_keys(filter_tree_json, opts_json, inline_rows) {
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.query_keys(ptr0, len0, ptr1, len1, inline_rows);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
 }
 
 /**
@@ -420,6 +522,29 @@ export function query_rows(filter_tree_json, opts_json) {
     var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
     return v3;
+}
+
+/**
+ * Whether a query would run the multilingual (widened) driver — `include_multilingual`, or a
+ * `lang:` leaf in the bound filter.
+ *
+ * The partitioned gather builds its envelope from `query_keys` replies and never holds a
+ * `QueryOutput`, so it asks this instead. `/cards/search` needs the answer to echo
+ * `include_multilingual` in `next_page` the way Scryfall does.
+ * @param {string} filter_tree_json
+ * @param {string} opts_json
+ * @returns {boolean}
+ */
+export function query_widens(filter_tree_json, opts_json) {
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.query_widens(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] !== 0;
 }
 
 /**
@@ -527,6 +652,17 @@ export function size() {
 }
 
 /**
+ * The sort-key layout version this build emits (the first byte of every key). The gather
+ * refuses to merge streams whose versions differ — a mixed-generation fan-out must fail loudly,
+ * not return a silently misordered page.
+ * @returns {number}
+ */
+export function sort_key_version() {
+    const ret = wasm.sort_key_version();
+    return ret;
+}
+
+/**
  * Append one chunk of the archive (wasm-bindgen copies the chunk into linear
  * memory; stream ~1MB chunks so the JS side never holds the whole store).
  * @param {Uint8Array} chunk
@@ -591,12 +727,27 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
 
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
     if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {

@@ -51,6 +51,8 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	type_line: "type line",
 	flavor_text: "flavor text",
 	card_keywords: "keyword",
+	oracle_id: "oracle ID",
+	card_lang: "language",
 	card_layout: "layout",
 	card_border: "border",
 	card_watermark: "watermark",
@@ -140,12 +142,16 @@ function explainRhs(rhs: unknown, lhs: WireNode | null): string {
 		}
 		if (
 			rhs.node_type === "StringValueNode" ||
+			// The BARE-word `name:` value (see the parser). It reads as a string everywhere here;
+			// the only difference is that the parser already collated it, so an explanation of
+			// `urza's` says "Urzas" — which is honestly what the search now matches on.
+			rhs.node_type === "CollatedNameValueNode" ||
 			rhs.node_type === "NumericValueNode" ||
 			rhs.node_type === "ManaValueNode" ||
 			rhs.node_type === "RegexValueNode"
 		) {
 			const value = valueToString(rhs.kwargs.value);
-			if (rhs.node_type !== "StringValueNode") {
+			if (rhs.node_type !== "StringValueNode" && rhs.node_type !== "CollatedNameValueNode") {
 				return value;
 			}
 			const trimmed = value.trim();
@@ -170,9 +176,34 @@ function explainRhs(rhs: unknown, lhs: WireNode | null): string {
 	return valueToString(rhs);
 }
 
+/**
+ * The noun each colour column counts, for the numeric colour-count branch below.
+ *
+ * `c:m` and `c>=2` are the same node by the time an explanation sees them — the parser lowers the
+ * colour-COUNT names into the numeric comparison — so this sentence is what both of them get.
+ */
+const COLOR_COUNT_NOUN: Record<string, string> = {
+	card_colors: "colors",
+	card_color_identity: "colors in the color identity",
+	// SIX kinds, not five: produced_mana is the one colour-ish column whose array can hold "C".
+	produced_mana: "kinds of mana produced",
+};
+
 /** CardBinaryOperatorNode._format_card_attribute_explanation. */
-function formatCardAttributeExplanation(lhs: WireNode, op: string, opStr: string, rhsStr: string): string {
+function formatCardAttributeExplanation(
+	lhs: WireNode,
+	op: string,
+	opStr: string,
+	rhsStr: string,
+	rhs: unknown,
+): string {
 	const dbColumnName = attributeName(lhs);
+
+	// Numeric color syntax compares the count of colors, not the colors themselves.
+	if (COLOR_COUNT_NOUN[dbColumnName] && isWireNode(rhs) && rhs.node_type === "NumericValueNode") {
+		const countOp = op === ":" ? "is" : opStr; // ":" compares counts as equality
+		return `the number of ${COLOR_COUNT_NOUN[dbColumnName]} ${countOp} ${rhsStr}`;
+	}
 
 	if (dbColumnName === "card_color_identity" && (op === "=" || op === ":")) {
 		return `the color identity is ${rhsStr}`;
@@ -221,7 +252,11 @@ function explainBinary(node: WireNode): string {
 	const op = typeof node.kwargs.op === "string" ? node.kwargs.op : "";
 
 	// Handle empty string values (CardBinaryOperatorNode.to_human_explanation).
-	if (isWireNode(rhs) && rhs.node_type === "StringValueNode" && valueToString(rhs.kwargs.value).trim() === "") {
+	if (
+		isWireNode(rhs) &&
+		(rhs.node_type === "StringValueNode" || rhs.node_type === "CollatedNameValueNode") &&
+		valueToString(rhs.kwargs.value).trim() === ""
+	) {
 		return "";
 	}
 	if (typeof rhs === "string" && rhs.trim() === "") {
@@ -233,7 +268,7 @@ function explainBinary(node: WireNode): string {
 	const rhsStr = explainRhs(rhs, lhsNode);
 
 	if (lhsNode && lhsNode.node_type === "CardAttributeNode") {
-		return formatCardAttributeExplanation(lhsNode, op, opStr, rhsStr);
+		return formatCardAttributeExplanation(lhsNode, op, opStr, rhsStr, rhs);
 	}
 
 	const lhsStr = lhsNode ? explain(lhsNode) : valueToString(lhs);
@@ -294,6 +329,7 @@ function explain(node: WireNode): string {
 		case "ExactNameNode":
 			return `exact name is "${valueToString(node.kwargs.value)}"`;
 		case "StringValueNode":
+		case "CollatedNameValueNode":
 		case "NumericValueNode":
 		case "ManaValueNode":
 		case "RegexValueNode":

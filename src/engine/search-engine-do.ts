@@ -29,20 +29,46 @@
 // colo-cached chunks, so the local copy earned nothing it cost.
 
 import { DurableObject } from "cloudflare:workers";
-import { cardList, errorObject } from "../routes/scryfall-compat/objects";
-import { JSON_CONTENT_TYPE, scryfallJson, spliceMarkers } from "../routes/scryfall-compat/respond";
-import { concatBytes } from "./bytes";
+import {
+	CARD_OBJECT_FIELDS,
+	cardList,
+	type EngineRow,
+	toScryfallCard,
+	withResolvedMultilingual,
+} from "../routes/scryfall-compat/objects";
+import {
+	emptyPageResponse,
+	JSON_CONTENT_TYPE,
+	scryfallCsvResponse,
+	spliceMarkers,
+} from "../routes/scryfall-compat/respond";
+import { concatBytes, encodeUtf8 } from "./bytes";
+import { serializeCards } from "./columnar";
+import { parseEngineName, siblingStub } from "./engine-namespace";
+import { type PartitionClient, runTwoPhase, type SearchKeysReply } from "./gather";
 import { probePlacement } from "./placement";
-import { getEngine, type LoadContext, refreshNow, tryGetLoadedEngine } from "./store";
-import { recordLiveManifest } from "./store-cache";
+import {
+	currentManifest,
+	gatherOps,
+	getEngine,
+	type LoadContext,
+	prefetchStore,
+	refreshNow,
+	swapToStore,
+	tryGetLoadedEngine,
+} from "./store";
+import { readLiveManifest, recordLiveManifest } from "./store-cache";
+import { isPartitionedManifest, manifestServableBy } from "./store-kv";
 import type {
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
 	EngineSerializedResult,
 	Env,
+	FuzzyCandidateWire,
 	ResultShape,
 	ScryfallFuzzyResult,
+	SearchPageEnvelope,
 	StoreManifest,
 } from "./types";
 import { ENGINE_STREAM_PATH, ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
@@ -231,12 +257,14 @@ export class SearchEngine extends DurableObject<Env> {
 			return new Response("not found", { status: 404 });
 		}
 		const body = (await request.json()) as {
-			// "cards" is the only call this endpoint has ever needed to serve since the isolate
-			// stopped splicing envelopes. A "rows" variant existed for /search's streaming
-			// transport; that route is buffered again (see respond.ts), so the branch is gone
-			// rather than left to rot. Anything else is rejected LOUDLY below — answering a
-			// stale `call` with card objects would be silently wrong data, not an error.
-			call: "cards";
+			// "cards" answers from this object's own store; "cards2" is the partitioned
+			// twin — the two-phase gather across this object's sibling partitions (plan
+			// B5), same envelope, same headers. A "rows" variant existed for /search's
+			// streaming transport; that route is buffered again (see respond.ts), so the
+			// branch is gone rather than left to rot. Anything else is rejected LOUDLY
+			// below — answering a stale `call` with card objects would be silently wrong
+			// data, not an error.
+			call: "cards" | "cards2";
 			opts: EngineSearchOptions;
 			baseUrl?: string;
 			shards?: number;
@@ -249,22 +277,19 @@ export class SearchEngine extends DurableObject<Env> {
 			 * stops scaling with the payload at all. Everything needed is small and known before the
 			 * query; only the counts are not, and this object has those.
 			 */
-			envelope?: {
-				pretty: boolean;
-				warnings?: string[];
-				nextPageUrl?: string;
-				pageOffset: number;
-				/** Scryfall's own no-match wording, passed in so its text stays with the other route copy. */
-				noMatchDetails: string;
-			};
+			envelope?: SearchPageEnvelope;
 			cache?: Record<string, string>;
 		};
-		if (body.call !== "cards") {
+		if (body.call !== "cards" && body.call !== "cards2") {
 			return new Response(`unsupported engine call: ${String(body.call)}`, { status: 400 });
 		}
 		let result: EngineSerializedResult & SearchTelemetry;
 		try {
-			result = await this.instrumented(body.shards, (engine) => engine.scryfallSearch(body.opts, body.baseUrl ?? ""));
+			result = await this.instrumented(body.shards, (engine) =>
+				body.call === "cards2"
+					? this.gatherScryfallSearchLocal(body.opts, body.baseUrl ?? "")
+					: engine.scryfallSearch(body.opts, body.baseUrl ?? ""),
+			);
 		} catch (err) {
 			// The RPC path has `rethrowForRpc` to keep error IDENTITY across the boundary; a fetch
 			// carries a status line instead, so the class is named explicitly and rebuilt client-side.
@@ -291,20 +316,26 @@ export class SearchEngine extends DurableObject<Env> {
 		// THE WHOLE RESPONSE, headers and status included, so the isolate can return it verbatim.
 		const cache = body.cache ?? {};
 		if (result.rowCount === 0) {
-			const miss = scryfallJson(
-				errorObject("not_found", 404, envelope.noMatchDetails, envelope.warnings),
-				envelope.pretty,
-				cache,
-			);
+			const miss = emptyPageResponse(envelope, result.totalCards, cache);
 			for (const [k, v] of Object.entries(telemetry)) miss.headers.set(k, v);
 			return miss;
 		}
 		const hasMore = envelope.pageOffset + result.rowCount < result.totalCards;
+		if (envelope.csv === true) {
+			// The CSV branch sits HERE, beside the JSON splice, rather than in the isolate: the rows
+			// are already on this side, and rendering them means parsing the ~900KB array — the exact
+			// work the whole `envelope`-crosses-the-RPC design exists to keep off the 10ms budget.
+			// Both `cards` and `cards2` converge on this line, so the partitioned and single-store
+			// paths cannot render a page differently.
+			const csv = scryfallCsvResponse(result.cardsBytes, hasMore, cache);
+			for (const [k, v] of Object.entries(telemetry)) csv.headers.set(k, v);
+			return csv;
+		}
 		const { head, tail } = spliceMarkers(
 			cardList([], {
 				totalCards: result.totalCards,
 				hasMore,
-				nextPage: hasMore ? envelope.nextPageUrl : undefined,
+				nextPage: hasMore ? withResolvedMultilingual(envelope.nextPageUrl, result.widened === true) : undefined,
 				warnings: envelope.warnings,
 			}),
 			envelope.pretty,
@@ -347,10 +378,26 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 	}
 
-	/** Both catalogs in one RPC (get_catalog needs both). */
-	async typeAndKeywordCounts(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+	/**
+	 * Both catalogs plus the extras-set table, in one RPC.
+	 *
+	 * `setsWithExtras` has nothing to do with /get_catalog; it rides along because the isolate
+	 * already caches this call's answer for the life of the store generation, and the route that
+	 * needs the table (`cardsSearchHandler`, deciding Scryfall's `include_extras` auto-enable) is
+	 * the hottest one there is. A second RPC would have made a set-scoped search pay a round trip
+	 * per partition to learn something that changes only when the store does.
+	 */
+	async typeAndKeywordCounts(): Promise<{
+		types: Record<string, number>;
+		keywords: Record<string, number>;
+		setsWithExtras: string[];
+	}> {
 		const engine = await this.engine();
-		return { types: await engine.cardTypeCounts(), keywords: await engine.cardKeywordCounts() };
+		return {
+			types: await engine.cardTypeCounts(),
+			keywords: await engine.cardKeywordCounts(),
+			setsWithExtras: await engine.setsWithExtras(),
+		};
 	}
 
 	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
@@ -377,7 +424,7 @@ export class SearchEngine extends DurableObject<Env> {
 	 * a warm call is the boring case and says nothing worth a log line.
 	 */
 	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		const warm = tryGetLoadedEngine() !== null;
+		const warm = tryGetLoadedEngine(this.label) !== null;
 		const acquireStart = Date.now();
 		const engine = await this.engine();
 		const acquireMs = Date.now() - acquireStart;
@@ -521,6 +568,177 @@ export class SearchEngine extends DurableObject<Env> {
 		}));
 	}
 
+	// ── The two-phase gather (plan B5, CARD-PARTITIONING §6) ──────────────────────
+	//
+	// A partitioned search cannot be answered by one object — the global order is
+	// scattered across N archives — and the ~N × 650KB interleave is exactly the
+	// splice this codebase has twice exiled from isolates to Durable Objects. So
+	// the ISOLATE sends one request to a gather partition (spread by
+	// gatherPartitionOf), and THIS object coordinates: phase-1 searchKeys to its
+	// N-1 siblings plus its own store, a bytewise merge, phase-2 fetchRows to the
+	// owning partitions, and the reassembly — all inside the DO's 30s budget. The
+	// order-sensitive machinery lives in gather.ts, where it is testable without
+	// a Durable Object; this section is only the wiring.
+	//
+	// Riders come from the GATHER object alone — the isolate made one RPC and the
+	// autoscaler reasons about replicas, not partitions — and sibling calls are
+	// plain RPCs that deliberately do not feed the rendezvous.
+
+	/**
+	 * Phase 1, served to a sibling gather: this partition's page of opaque sort
+	 * keys, plus the identity facts the protocol pins on. A cold object LOADS
+	 * here — `engine()` is the same acquisition every RPC does.
+	 *
+	 * `inlineRows` is the gather's request to carry the first N entries' ROWS back
+	 * in the same reply, which is what removes the phase-2 RPC on the common page
+	 * (see gather.ts's inlineRowBudget). Defaulted to 0 so an object still running
+	 * the previous build during a rolling deploy — or any caller that predates the
+	 * argument — gets exactly the old keys-only behaviour.
+	 */
+	async searchKeys(opts: EngineSearchOptions, inlineRows = 0): Promise<SearchKeysReply> {
+		await this.engine();
+		const ops = gatherOps(this.label);
+		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
+		return {
+			packed: ops.queryKeys(opts, inlineRows),
+			storeKey: ops.storeKey,
+			sortKeyVersion: ops.sortKeyVersion(),
+		};
+	}
+
+	/**
+	 * This partition's scores-bearing fuzzy candidates — phase 1 of the
+	 * cross-partition FLOOR/LEAD race (the {status, card} answer cannot carry
+	 * scores, so racing it globally was impossible; see PartitionedEngine's
+	 * scryfallFuzzyName for the exact rule these feed).
+	 */
+	async fuzzyCandidates(name: string): Promise<{ candidates: FuzzyCandidateWire[] }> {
+		await this.engine();
+		const ops = gatherOps(this.label);
+		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
+		return { candidates: ops.fuzzyCandidates(name) };
+	}
+
+	/**
+	 * Phase 2: rows for vpids THIS partition's phase-1 keys named, in caller
+	 * order. `storeKey` pins the generation — vpids are meaningless against any
+	 * other archive, so a swapped object errors loudly rather than answering
+	 * from different rows (the gather re-runs against the newer generation).
+	 */
+	async fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<{ rowsBytes: Uint8Array }> {
+		await this.engine();
+		const ops = gatherOps(this.label);
+		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
+		if (ops.storeKey !== storeKey) {
+			throw new Error(`generation mismatch: rows asked from ${storeKey} but ${this.label} serves ${ops.storeKey}`);
+		}
+		return { rowsBytes: ops.fetchRows(vpids, fields) };
+	}
+
+	/** One client per partition: this object's own store served locally, every
+	 * sibling over RPC. Names derive from THIS object's label (siblingStub), so
+	 * a gather can only ever fan out within its own region and replica. */
+	private partitionClients(count: number): PartitionClient[] {
+		const own = parseEngineName(this.label)?.partition;
+		return Array.from({ length: count }, (_, p) => {
+			if (p === own) {
+				// The gather's OWN partition answers in-process, so inlining its rows would only
+				// move bytes it already holds. Asking for none keeps that work off the local path
+				// and leaves those page slots to the (free, local) fetchRows call.
+				return {
+					searchKeys: (opts: EngineSearchOptions) => this.searchKeys(opts, 0),
+					fetchRows: async (vpids: number[], fields: string[], storeKey: string) =>
+						(await this.fetchRows(vpids, fields, storeKey)).rowsBytes,
+				};
+			}
+			const stub = siblingStub(this.env, this.label, p) as unknown as {
+				searchKeys(opts: EngineSearchOptions, inlineRows: number): Promise<SearchKeysReply>;
+				fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<{ rowsBytes: Uint8Array }>;
+			} | null;
+			if (!stub) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
+			return {
+				searchKeys: (opts: EngineSearchOptions, inlineRows: number) => stub.searchKeys(opts, inlineRows),
+				fetchRows: async (vpids: number[], fields: string[], storeKey: string) =>
+					(await stub.fetchRows(vpids, fields, storeKey)).rowsBytes,
+			};
+		});
+	}
+
+	/**
+	 * Both phases.
+	 *
+	 * `await this.engine()` has just loaded (or confirmed) this object's store, so
+	 * the manifest is present and — since every published manifest is partitioned
+	 * — carries partition_count. Both checks below are therefore assertions: a
+	 * gather that could not find its width would otherwise answer from one
+	 * partition and report it as the whole corpus, which is the failure mode with
+	 * no symptom.
+	 */
+	private async gatherRun(opts: EngineSearchOptions): Promise<{ total: number; rows: Record<string, unknown>[] }> {
+		await this.engine();
+		const manifest = currentManifest(this.label);
+		if (!manifest || !isPartitionedManifest(manifest)) {
+			rethrowForRpc(
+				new EngineUnavailableError(
+					`${this.label} cannot gather: its loaded store reports ` +
+						`${manifest ? `manifest ${manifest.store_key} with no partition_count` : "no manifest at all"}. ` +
+						`Answering from one partition would silently return a fraction of the corpus.`,
+				),
+			);
+		}
+		return runTwoPhase(this.partitionClients(manifest.partition_count as number), opts);
+	}
+
+	/** The gather twin of engine.scryfallSearch: card objects, pre-encoded. */
+	private async gatherScryfallSearchLocal(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
+		const wide = { ...opts, fields: [...CARD_OBJECT_FIELDS] };
+		const gathered = await this.gatherRun(wide);
+		const cards = gathered.rows.map((row) => toScryfallCard(row as EngineRow, baseUrl));
+		const cardsBytes = encodeUtf8(JSON.stringify(cards));
+		// The gather never holds a QueryOutput, so the widening flag comes from this object's OWN
+		// store: the decision is a pure function of the options and the bound filter and is the
+		// same in every partition. `/cards/search` echoes `include_multilingual` in `next_page`
+		// from it — see withResolvedMultilingual.
+		const widened = (await this.engine()).queryWidens?.(opts) ?? false;
+		return { totalCards: gathered.total, cardsBytes, rowCount: cards.length, widened };
+	}
+
+	/** /search's object shape, gathered. Instrumented exactly like its local twin. */
+	async gatherSearchAsObjects(
+		opts: EngineSearchOptions,
+		reportedShards?: number,
+	): Promise<EngineSearchResult & SearchTelemetry> {
+		return this.instrumented(reportedShards, async () => {
+			const gathered = await this.gatherRun(opts);
+			return { totalCards: gathered.total, cards: gathered.rows };
+		});
+	}
+
+	/** The API row shapes, gathered. */
+	async gatherSearchAsJson(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+		reportedShards?: number,
+	): Promise<EngineSerializedResult & SearchTelemetry> {
+		return this.instrumented(reportedShards, async () => {
+			const gathered = await this.gatherRun(opts);
+			return {
+				totalCards: gathered.total,
+				cardsBytes: encodeUtf8(serializeCards(gathered.rows, shape)),
+				rowCount: gathered.rows.length,
+			};
+		});
+	}
+
+	/** Scryfall card objects, gathered — the RPC-return twin of `cards2`. */
+	async gatherScryfallSearch(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<EngineSerializedResult & SearchTelemetry> {
+		return this.instrumented(reportedShards, () => this.gatherScryfallSearchLocal(opts, baseUrl));
+	}
+
 	/**
 	 * The store's card count, and the readiness probe a freshly opened shard is warmed with.
 	 *
@@ -564,6 +782,19 @@ export class SearchEngine extends DurableObject<Env> {
 		// Record it even with nothing loaded. A cold object costs nothing to tell — it wakes, writes
 		// one row and evicts again without reading an archive — and this is precisely what lets its
 		// NEXT cold start skip the KV manifest read: the publisher already told it what is live.
+		//
+		// UNLESS the shape is one this object's own name cannot serve — an
+		// unpartitioned manifest, or a label that parsed to no partition. Either is
+		// a BUG rather than a state to serve through, and caching it would wedge the
+		// next cold load on the loader's refusal; refuse LOUDLY here instead, ack,
+		// and keep the current store, because the publish must not fail on it.
+		if (manifest && !manifestServableBy(parseEngineName(this.label)?.partition, manifest)) {
+			console.error(
+				`[${this.label}] REFUSING a pushed manifest this object cannot serve ` +
+					`(${manifest.store_key}, partition_count ${manifest.partition_count ?? "none"}); not caching it`,
+			);
+			return { swapped: false, shards: this.announcedShards };
+		}
 		if (manifest) {
 			try {
 				recordLiveManifest(this.ctx.storage, manifest);
@@ -571,7 +802,7 @@ export class SearchEngine extends DurableObject<Env> {
 				console.warn(`[${this.label}] could not record the live manifest (it will read KV): ${err}`);
 			}
 		}
-		if (tryGetLoadedEngine() === null) return { swapped: false, shards: this.announcedShards };
+		if (tryGetLoadedEngine(this.label) === null) return { swapped: false, shards: this.announcedShards };
 		// Deliberately BELOW the cold early-return. A publish is the one recurring, off-request moment
 		// to re-check where this object is, but a probe holds an object open for as long as its
 		// outbound connection is pooled — and "a cold object wakes, writes one row and evicts again"
@@ -580,6 +811,84 @@ export class SearchEngine extends DurableObject<Env> {
 		probePlacement(this.loadContext());
 		const swapped = await refreshNow(this.env, this.loadContext(), manifest);
 		console.log(`[${this.label}] publish notify: ${swapped ? "swapped to the new store" : "already current"}`);
+		return { swapped, shards: this.announcedShards };
+	}
+
+	// ── Two-step publish (prepare → commit) ────────────────────────────────────
+	//
+	// The publish protocol the coordinator speaks (stepNotify, plan B5):
+	//   preparePublish(manifest)  prefetch the announced archive into local
+	//                             storage, NO swap — ack when the bytes are held
+	//   commitPublish()           the swap itself, local and sub-second
+	// so that no region swaps before every region is ready, and the
+	// mixed-generation window shrinks from "slowest prefetch" to "commit fan-out
+	// spread" — which is what a partitioned store's pinned-generation fan-out
+	// needs.
+	//
+	// ROLLOUT COMPATIBILITY: an object still running the PREVIOUS build during
+	// the deploy that ships this file implements prepare as a shim over
+	// notifyPublish, so a prepare to it swaps immediately — reproducing today's
+	// one-step behavior for exactly one mixed window, the deploy itself. That is
+	// the PRE-EXISTING behavior of every current publish, not a regression, and
+	// it resolves itself: the fan-out runs nightly and the fleet is on one build
+	// by then. notifyPublish itself stays — it is the documented single-step RPC
+	// and remains correct on its own (prefetch, then swap).
+
+	/**
+	 * Step 1 of the two-step publish: hold the new store locally, ready to swap.
+	 * NO swap happens here — the old store serves until every object has acked
+	 * and the coordinator says commit.
+	 *
+	 * Idempotent — an object that already prepared (or already swapped) re-acks
+	 * from its local state for free, which is what lets the coordinator retry
+	 * the whole phase on any single failure. A cold object records the manifest
+	 * and acks without loading a byte; an object that cannot serve the pushed
+	 * shape also acks — it keeps its current store, and the publish must not
+	 * wedge on what is a bug elsewhere.
+	 */
+	async preparePublish(manifest?: StoreManifest): Promise<{ prepared: boolean; shards: number }> {
+		// The same refusal as notifyPublish: a manifest shape this object's name
+		// cannot serve is never recorded, because a cached one wedges the next cold
+		// load — but the ack still goes back, because a publish must not wedge on
+		// what is a bug on the other side of the call.
+		if (manifest && !manifestServableBy(parseEngineName(this.label)?.partition, manifest)) {
+			console.error(
+				`[${this.label}] REFUSING a pushed manifest this object cannot serve ` +
+					`(${manifest.store_key}, partition_count ${manifest.partition_count ?? "none"}); not caching it`,
+			);
+			return { prepared: true, shards: this.announcedShards };
+		}
+		if (manifest) {
+			try {
+				recordLiveManifest(this.ctx.storage, manifest);
+			} catch (err) {
+				console.warn(`[${this.label}] could not record the live manifest (it will read KV): ${err}`);
+			}
+		}
+		if (tryGetLoadedEngine(this.label) === null) return { prepared: true, shards: this.announcedShards };
+		// Warm: hold the bytes locally under the OLD store. See prefetchStore for
+		// why every failure here degrades to a slower commit, never a failed one.
+		probePlacement(this.loadContext());
+		const held = manifest ? await prefetchStore(this.env, this.loadContext(), manifest) : false;
+		console.log(`[${this.label}] publish prepare: ${held ? "holding the new store locally" : "nothing prefetched"}`);
+		return { prepared: true, shards: this.announcedShards };
+	}
+
+	/**
+	 * Step 2 of the two-step publish: swap to the prepared store.
+	 *
+	 * The manifest comes from this object's own storage — preparePublish
+	 * recorded it — so a commit needs no arguments and a retry is free. A cold
+	 * object acks `swapped: false` (its next real request loads the new store
+	 * anyway); a warm one swaps from the local copy, falling back to KV if the
+	 * prefetch did not land.
+	 */
+	async commitPublish(): Promise<{ swapped: boolean; shards: number }> {
+		if (tryGetLoadedEngine(this.label) === null) return { swapped: false, shards: this.announcedShards };
+		const manifest = readLiveManifest(this.ctx.storage) as StoreManifest | null;
+		if (!manifest?.store_bytes) return { swapped: false, shards: this.announcedShards };
+		const swapped = await swapToStore(this.env, this.loadContext(), manifest);
+		console.log(`[${this.label}] publish commit: ${swapped ? "swapped to the new store" : "already current"}`);
 		return { swapped, shards: this.announcedShards };
 	}
 
@@ -614,10 +923,16 @@ export class SearchEngine extends DurableObject<Env> {
 	 * every load.
 	 */
 	private loadContext(): LoadContext {
+		// The partition this object serves is carried IN ITS NAME (`engine-wnam-p3`
+		// → partition 3), so the loader needs no other channel to learn it. A name
+		// that parses to no partition passes undefined, and the loader refuses that
+		// loudly as the naming bug it is (see archiveOfManifest).
+		const partition = parseEngineName(this.label)?.partition;
 		return {
 			waitUntil: (p) => this.ctx.waitUntil(p),
 			storage: this.ctx.storage,
 			label: this.label,
+			...(partition === undefined ? {} : { partition }),
 		};
 	}
 

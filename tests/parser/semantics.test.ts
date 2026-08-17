@@ -56,7 +56,9 @@ const EQUIVALENCES: Array<[string, string]> = [
 	["frame:old", "frame:1993 or frame:1997"],
 	["frame:new", "frame:2003 or frame:2015 or frame:future"],
 	["is:old", "frame:1993 or frame:1997"],
-	["is:new", "frame:2015"],
+	// Measured 2026-08-16: `is:new` IS `frame:new`, exactly (both set differences empty on
+	// api.scryfall.com). It was `frame:2015` here, under-matching by 9,201 cards.
+	["is:new", "frame:2003 or frame:2015 or frame:future"],
 	["is:historic", "t:legendary or t:artifact or t:saga"],
 	["is:permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"],
 	["is:party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
@@ -69,7 +71,16 @@ const EQUIVALENCES: Array<[string, string]> = [
 	["is:mdfc", "layout:modal_dfc"],
 	["is:meld", "layout:meld"],
 	["is:leveler", "layout:leveler"],
-	["is:dfc", "layout:transform or layout:modal_dfc or layout:meld"],
+	[
+		"is:dfc",
+		"layout:transform or layout:modal_dfc or layout:art_series or layout:double_faced_token or " +
+			"layout:reversible_card",
+	],
+	// The same predicate under two names, and neither of them is one layout: `is:host
+	// -is:augmentation` and its converse are both empty on api.scryfall.com.
+	["is:host", "layout:host or layout:augment"],
+	["is:augmentation", "layout:host or layout:augment"],
+	["is:token", "layout:token or layout:double_faced_token or t:token"],
 	["is:colorshifted", "frame:colorshifted"],
 	["is:manland", "t:land o:become o:creature o:/still a.* land/"],
 	["-frame:old", "-(frame:1993 or frame:1997)"],
@@ -99,7 +110,10 @@ const LOWERED_EQUIVALENCES: Array<[string, string]> = [
 	["o:/foo\\.bar/", 'o:"foo.bar"'],
 	["o:/\\{t\\}/", 'o:"{t}"'],
 	["ft:/dragon/", "ft:dragon"],
-	["a:/guay/", "a:guay"],
+	// `a:` is COLLATED for a bare word and literal for a quoted one, exactly as `name:` is — so
+	// the lowered regex equals the QUOTED spelling, not the bare one. Same shape as
+	// `name:/lightning bolt/` above.
+	["a:/guay/", 'a:"guay"'],
 ];
 
 describe("plain-literal regex lowering", () => {
@@ -143,6 +157,74 @@ describe("plain-literal regex lowering", () => {
 	for (const [pattern, expected] of plainLiteralCases) {
 		test(`regexPlainLiteral(${JSON.stringify(pattern)})`, () => {
 			expect(regexPlainLiteral(pattern)).toBe(expected);
+		});
+	}
+
+	// THE PROPERTY THE REWRITE HAS TO HAVE, rather than a table of what it currently answers.
+	//
+	// `o:/\(this creature/` reaching the engine as the substring `(this creature` reads like a
+	// mangled pattern and is not one: a backslash before a NON-word character is that character,
+	// so the lowered literal matches exactly the strings the regex did. This test states that as
+	// an equivalence against the real regex engine instead of trusting the reading — the escape
+	// table above would still pass if `\(` were being dropped rather than resolved.
+	//
+	// The `i` flag is the query flag the engine prepends to every pattern, and the substring path
+	// compares lowercased text, so case-insensitivity is what both sides mean.
+	const corpus = [
+		"(this creature can't be blocked)",
+		"this creature can't be blocked",
+		"{T}: Add {G}.",
+		"T: Add G.",
+		"deal 2 damage. draw a card.",
+		"+1/+1 counter",
+		"11 counter",
+		"a-b",
+		"ab",
+		"[brackets]",
+		"brackets",
+		"back\\slash",
+	];
+	const equivalences = [
+		"\\(this creature",
+		"\\{t\\}",
+		"target\\.",
+		"\\+1/\\+1",
+		"a\\-b",
+		"\\[brackets\\]",
+		"back\\\\slash",
+	];
+	for (const pattern of equivalences) {
+		test(`lowering ${JSON.stringify(pattern)} preserves what it matches`, () => {
+			const literal = regexPlainLiteral(pattern);
+			expect(literal).not.toBeNull();
+			const re = new RegExp(pattern, "i");
+			for (const text of corpus) {
+				expect(text.toLowerCase().includes((literal as string).toLowerCase())).toBe(re.test(text));
+			}
+		});
+	}
+
+	// ...and the other half: a pattern that KEEPS its regex leaf keeps its backslashes byte for
+	// byte, because that string is handed to the engine's regex compiler verbatim.
+	const verbatim = [
+		["o", "\\(a.b"],
+		["name", "^\\(x"],
+		["ft", "\\d\\d\\d"],
+		["a", "\\bguay\\b"],
+		["t", "\\(a|b"],
+		["fo", "[\\]]"],
+		["e", "kh\\w"],
+		["cn", "\\d+a"],
+		["watermark", "izz\\S+"],
+		["layout", "norm\\w+"],
+		["border", "bl\\w+"],
+	];
+	for (const [op, pattern] of verbatim as Array<[string, string]>) {
+		test(`${op}:/${pattern}/ reaches the engine byte for byte`, () => {
+			const root = parseScryfallQuery(`${op}:/${pattern}/`);
+			const rhs = root.kwargs.rhs as { node_type: string; kwargs: { value: string } };
+			expect(rhs.node_type).toBe("RegexValueNode");
+			expect(rhs.kwargs.value).toBe(pattern);
 		});
 	}
 });

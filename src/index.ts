@@ -4,16 +4,20 @@
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { engineName, placeEngineStub } from "./engine/engine-namespace";
+import { livePartitionedManifest, liveRoutingFilter, PartitionedEngine } from "./engine/partitioned-engine";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
 import { markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
+import { readManifest } from "./engine/store-kv";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
-import { buildRoutesListing, routes } from "./routes";
-import { httpError, securityHeaders } from "./routes/http";
+import { routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
+import { httpError, optionsResponse, securityHeaders } from "./routes/http";
 import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
+import { scryfallHttpError } from "./routes/scryfall-compat/respond";
+import { NOT_FOUND_DETAILS } from "./routes/scryfall-compat/routes";
 
 export { ImportCoordinator, RateLimiter, SearchEngine };
 
@@ -46,7 +50,12 @@ export { ImportCoordinator, RateLimiter, SearchEngine };
 // "Cannot perform I/O on behalf of a different request" — and caching just the
 // DurableObjectId, which is a plain value, measured flat: the cost here is in
 // `get()`, not in hashing the name.
-function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source: { tag: string }): Promise<Engine> {
+async function resolveEngine(
+	request: Request,
+	env: Env,
+	ctx: ExecutionContext,
+	source: { tag: string },
+): Promise<Engine> {
 	const region = regionHint(request);
 	// The colo THIS isolate is running in, carried into the warm-RPC log line.
 	// It is the other half of the placement join: a colo that shows up serving
@@ -60,27 +69,41 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 	const maxShards = Number.isNaN(configured) ? undefined : configured;
 	const shard = pickShard(region, maxShards);
 	source.tag = `do-${engineName(region, shard).slice("engine-".length)}`;
-	// THIS IS THE ONLY PLACE IN THE DEPLOYMENT THAT MAY CREATE AN ENGINE OBJECT,
-	// and the reason it may is that this line runs in an isolate serving a real
-	// user — already in that user's region, so the hint it supplies is where the
-	// traffic is. `locationHint` applies at creation and never again, so an object
-	// created anywhere else is misplaced permanently and silently. See
-	// engine-namespace.ts, which is where the rule is enforced rather than
-	// described.
-	const stub = placeEngineStub(env, region, shard);
+
+	// ── Partitioned serving (plan B5) ───────────────────────────────────────────
+	//
+	// THE ONLY SERVING PATH. The store is N partitioned archives, so every route
+	// resolves through the per-route fan-out table in PartitionedEngine; there is
+	// no single-archive path left to fall back to and no flag selecting between
+	// them. `livePartitionedManifest` throws the loud 503 when the manifest is
+	// absent or unusable, which is the honest answer — nothing published a store
+	// this deployment can read.
+	//
+	// Stubs are still constructed only through placeEngineStub, from this request
+	// isolate, so partition objects are created in the user's region exactly as
+	// replica objects are. THAT MAKES THIS THE ONLY PLACE IN THE DEPLOYMENT THAT
+	// MAY CREATE AN ENGINE OBJECT: `locationHint` applies at creation and never
+	// again, so an object created anywhere else is misplaced permanently and
+	// silently. See engine-namespace.ts, which is where the rule is enforced
+	// rather than described.
+	const manifest = await livePartitionedManifest(env);
 	// Decision-time warm ping for a shard the controller just opened: start its
-	// wake NOW rather than at its first real request, and — the part that is new
-	// — REPORT THE OUTCOME, because the shard takes no traffic until this
-	// resolves. `cardCount()` loads the store on a cold DO, so its resolution is
-	// exactly "this shard can serve"; a failure gives the slot back rather than
-	// stranding it. Routing never waits on any of it: existing shards carry the
-	// load throughout.
+	// wake NOW rather than at its first real request, and REPORT THE OUTCOME,
+	// because the shard takes no traffic until this resolves. A fresh shard is
+	// ready only when EVERY partition of it can serve — admitting it on one warm
+	// partition would route fan-outs into N-1 cold loads at once — so the ping is
+	// N `cardCount()` calls, each of which loads its partition on a cold DO. A
+	// failure gives the slot back rather than stranding it, and routing never
+	// waits on any of it: existing shards carry the load throughout.
 	const warmTarget = takeWarmTarget(region);
 	if (warmTarget !== null) {
-		const warmStub = placeEngineStub(env, region, warmTarget);
+		const count = manifest.partition_count as number;
 		ctx.waitUntil(
-			new RemoteEngine(warmStub, region, colo)
-				.cardCount()
+			Promise.all(
+				Array.from({ length: count }, (_, p) =>
+					new RemoteEngine(placeEngineStub(env, region, warmTarget, p), region, colo).cardCount(),
+				),
+			)
 				.then(() => markShardReady(region, warmTarget))
 				.catch((err) => {
 					unmarkPending(region);
@@ -88,7 +111,16 @@ function resolveEngine(request: Request, env: Env, ctx: ExecutionContext, source
 				}),
 		);
 	}
-	return Promise.resolve(new RemoteEngine(stub, region, colo));
+	return new PartitionedEngine(
+		(partition) => new RemoteEngine(placeEngineStub(env, region, shard, partition), region, colo),
+		manifest,
+		// The stale-modulus retry (Decision 3b): re-read the one manifest key.
+		() => readManifest(env),
+		// The bare-id routing hints, if this isolate already holds them. Returns null
+		// on a cold isolate and loads them in the background — the fan-out is correct
+		// without it, so nothing here waits on a 740KB KV read.
+		liveRoutingFilter(env, manifest, (p) => ctx.waitUntil(p)),
+	);
 }
 
 // Upstream DISALLOWED_QUERY_ARGS: these names are reserved for internal
@@ -112,16 +144,55 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	const path = url.pathname.replace(/^\/+|\/+$/g, "") || "_root";
 
 	const resolved = resolveAction(path);
-	if (!resolved) {
-		// Upstream 404: description carries the full routes listing.
-		return httpError(404, "Not Found", { routes: buildRoutesListing() });
-	}
+	// AN UNKNOWN PATH GETS SCRYFALL'S ERROR OBJECT, not upstream's routes listing.
+	//
+	// This deployment exists so a client can change one base URL and stop talking to
+	// api.scryfall.com, and that has to hold when the client asks for something that does not
+	// exist: it parses `code` and `details`, and `{title, description: {routes: ...}}` gives it
+	// neither. The listing is a convenience for a human poking at the origin, and a human still has
+	// it — every route this deployment serves is documented, and `/` is the web interface. What a
+	// client cannot have is a body shape that stops it being pointed back at Scryfall.
+	//
+	// Status, wording and tier are all measured: `404`, "The requested object or REST method was not
+	// found.", `no-cache`.
+	if (!resolved) return scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS);
 	const entry = routes[resolved.key];
-	if (!entry) return httpError(404, "Not Found", { routes: buildRoutesListing() });
+	if (!entry) return scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS);
+	/** Whether this path is on the Scryfall-compatible surface, which picks the error shape. */
+	const scryfallSurface = SCRYFALL_SURFACE_ROUTES.has(resolved.key);
+	// CORS PREFLIGHT, answered before the method check — which is what makes it work at all: no
+	// route in the table declares OPTIONS, so a preflight used to come back 405 and every
+	// cross-origin request needing one failed in the browser before it was sent. That is not a
+	// theoretical case here: `POST /cards/collection` sends `content-type: application/json`, which
+	// is not a CORS-safelisted value, so a browser preflights it every time.
+	//
+	// The body is api.scryfall.com's own answer, verbatim, measured 2026-08-16 on `/cards/search`
+	// and `/catalog/battle-types` alike — the same object on both, so this sits in dispatch rather
+	// than in a route. Note the `object: "message"` envelope: Scryfall has exactly one non-error
+	// use of it and this is it. The tier is Scryfall's too (a preflight answer is per-client and
+	// short-lived; `Access-Control-Max-Age` is what actually caches it, and securityHeaders sends
+	// that on every response).
+	// `securityHeaders` explicitly, not via `finish` below (which does not exist yet at this point in
+	// the function): a preflight that came back WITHOUT the CORS headers would be the one response
+	// on this surface where dropping them breaks something, since the headers are the entire answer.
+	if (request.method === "OPTIONS") return securityHeaders(optionsResponse());
 	if (!entry.methods.includes(request.method)) {
-		return httpError(405, "Method Not Allowed", `Allowed methods: ${[...entry.methods].sort().join(", ")}`, {
-			Allow: [...entry.methods].sort().join(", "),
-		});
+		// A METHOD A ROUTE DOES NOT ACCEPT IS A 404 ON THE SCRYFALL SURFACE, exactly as api.scryfall.com
+		// answers it — same `not_found` object, same sentence, and NO `Allow` header, which it does not
+		// send either (measured 2026-08-16 across eight requests: POST/PUT/DELETE/PATCH against
+		// `/cards/search`, `/cards/named`, `/cards/collection`, `/cards/:id` and `/sets`).
+		//
+		// This was briefly a 405 with an invented `method_not_allowed` code, on the argument that 405 is
+		// the more correct HTTP answer in the abstract. It is — and it is the wrong call here, for the
+		// reason the code itself gave away: Scryfall never emits a 405, so there was no measurement
+		// behind that code and nothing to check it against. An error body nobody measured is the same
+		// defect as a CSV column set nobody measured. A client that branches on 404-versus-405 has to see
+		// what Scryfall shows it, and this deployment's job is to be substitutable.
+		if (scryfallSurface) return scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS);
+		// Upstream's own surface keeps falcon's 405 + `Allow`: nothing there is mirroring Scryfall, and
+		// 405 remains the right answer for a route that genuinely declares its methods.
+		const allow = [...entry.methods].sort().join(", ");
+		return httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow });
 	}
 
 	const params: Record<string, string> = {};
@@ -182,10 +253,20 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			// API alike. The specific cause (a deleted KV namespace, a binding that
 			// stopped resolving) goes to the log, where a diagnostic belongs.
 			console.error(`Card index unavailable: ${err.message}`);
-			return finish(httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."));
+			// Same split: a `/cards/*` client waiting out a cold store gets Scryfall's error object,
+			// and the web interface keeps the `{title, description}` its showError() renders.
+			return finish(
+				scryfallSurface
+					? scryfallHttpError("service_unavailable", 503, "Engine is not loaded, please try again later.")
+					: httpError(503, "Service Unavailable", "Engine is not loaded, please try again later."),
+			);
 		}
 		console.error(`Error handling request for ${path}:`, err);
-		return finish(httpError(500, "Server Error", "An internal error occurred."));
+		return finish(
+			scryfallSurface
+				? scryfallHttpError("internal_error", 500, "An internal error occurred.")
+				: httpError(500, "Server Error", "An internal error occurred."),
+		);
 	}
 }
 

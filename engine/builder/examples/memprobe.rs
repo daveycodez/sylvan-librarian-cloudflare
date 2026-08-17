@@ -126,6 +126,159 @@ const SETS: &[&str] = &[
 
 const RARITIES: &[&str] = &["common", "uncommon", "rare", "mythic"];
 
+// ─── Foreign-printing synthesis (`gen --foreign-ratio`) ──────────────────────
+// Weighted like the measured all_cards distribution (ja 62k : fr 59k : de 58k : es 53k : it 53k
+// : zhs 41k : pt 40k : zht 24k : ru 22k : ko 15k), so the gate's ratios are read off a corpus
+// with the real language shape rather than a uniform one.
+const FOREIGN_LANGS: &[(&str, u64)] = &[
+    ("ja", 62), ("fr", 59), ("de", 58), ("es", 53), ("it", 53),
+    ("zhs", 41), ("pt", 40), ("zht", 24), ("ru", 22), ("ko", 15),
+];
+const FOREIGN_LANG_WEIGHT_SUM: u64 = 427;
+
+// Accent- and script-bearing word pools, one per script family: the printed-name index, the
+// fuzzy fold path and the interner all behave differently on multi-byte text, so the synthetic
+// corpus must actually carry some.
+const LATIN_ACCENT_WORDS: &[&str] = &[
+    "árbol", "niño", "déluge", "forêt", "über", "größe", "salão", "coração", "perché", "città",
+    "señal", "étoile", "grimório", "relâmpago", "dragão", "fantôme", "espíritu", "montaña",
+];
+const JA_WORDS: &[&str] =
+    &["稲妻", "一撃", "ショック", "森", "島", "山", "沼", "平地", "戦士", "魔法", "竜", "霊", "呪文", "破壊", "召喚"];
+const ZH_WORDS: &[&str] = &["闪电", "冲击", "森林", "海岛", "山脉", "沼泽", "平原", "战士", "法术", "巨龙", "幽灵", "毁灭"];
+const KO_WORDS: &[&str] = &["번개", "일격", "숲", "섬", "산", "늪", "들판", "전사", "마법", "용", "유령", "파괴"];
+const RU_WORDS: &[&str] =
+    &["молния", "удар", "лес", "остров", "гора", "болото", "равнина", "воин", "заклинание", "дракон", "призрак"];
+
+fn lang_words(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "ja" => JA_WORDS,
+        "zhs" | "zht" => ZH_WORDS,
+        "ko" => KO_WORDS,
+        "ru" => RU_WORDS,
+        _ => LATIN_ACCENT_WORDS,
+    }
+}
+
+// Composition units for printed NAMES. Names need far more entropy than the small word pools
+// give: 4,200 cards × 10 languages is ~42k distinct names, and pool-word pairs collide across
+// CARDS — which both deflates the printed-name index below its real cardinality and makes every
+// typo'd fuzzy lookup ambiguous. Composed units give ~10^5+ combinations per language while
+// keeping the multi-byte scripts real.
+const LATIN_SYLLABLES: &[&str] = &[
+    "ra", "vé", "ño", "lor", "ün", "za", "mi", "côr", "tha", "gué",
+    "dro", "ßen", "pa", "lî", "chi", "õe", "ka", "sur", "ël", "bri",
+];
+const JA_CHARS: &[&str] = &[
+    "稲", "妻", "撃", "森", "島", "山", "沼", "戦", "士", "魔", "法", "竜", "霊", "呪", "文",
+    "破", "壊", "召", "喚", "光", "影", "風", "火", "水", "雷", "剣", "盾", "王", "夜", "星",
+];
+const ZH_CHARS: &[&str] = &[
+    "闪", "电", "冲", "击", "森", "林", "海", "岛", "山", "脉", "沼", "泽", "战", "士", "法",
+    "术", "巨", "龙", "幽", "灵", "毁", "灭", "光", "影", "风", "火", "水", "雷", "剑", "夜",
+];
+const KO_SYLLABLES: &[&str] = &[
+    "번", "개", "일", "격", "숲", "섬", "산", "늪", "들", "전", "사", "마", "법", "용", "유",
+    "령", "파", "괴", "빛", "밤", "별", "칼", "왕", "물", "불",
+];
+const RU_SYLLABLES: &[&str] = &[
+    "мо", "лни", "я", "уда", "р", "ле", "с", "го", "ра", "бо", "ло", "то", "вои", "н", "дра",
+    "кон", "при", "зра", "к", "звез", "да", "ночь", "меч",
+];
+
+/// One composed printed-name word: 2–4 units from the language's own script.
+fn printed_word(rng: &mut Rng, lang: &str) -> String {
+    let units: &[&str] = match lang {
+        "ja" => JA_CHARS,
+        "zhs" | "zht" => ZH_CHARS,
+        "ko" => KO_SYLLABLES,
+        "ru" => RU_SYLLABLES,
+        _ => LATIN_SYLLABLES,
+    };
+    let n = 2 + rng.below(3) as usize;
+    (0..n).map(|_| units[rng.below(units.len() as u64) as usize]).collect()
+}
+
+/// Printed strings are a pure function of (oracle_id, lang): every reprint of a card in one
+/// language shares its printed name/type/text, which is BOTH how the real corpus behaves and
+/// what produces the measured ~1.7x intern-dedupe (unique printed names ≈ (oracle, lang) pairs,
+/// not printings). fnv-seeded so the whole corpus stays byte-identical under the fixed gen seed.
+fn printed_rng(oracle_id: &str, lang: &str) -> Rng {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in oracle_id.bytes().chain(lang.bytes()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Rng(h | 1)
+}
+
+fn printed_phrase(rng: &mut Rng, lang: &str, words: usize) -> String {
+    let pool = lang_words(lang);
+    let sep = if matches!(lang, "ja" | "zhs" | "zht") { "" } else { " " };
+    (0..words).map(|_| pool[rng.below(pool.len() as u64) as usize]).collect::<Vec<_>>().join(sep)
+}
+
+/// One foreign printing of `canonical`: its own scryfall id and language, printed_* keys by the
+/// measured presence classes (90% full triplet, ~8% name-only, remainder name+type; multiface:
+/// full triplets per face, or the prepare shape — front face name+type only, back face nothing),
+/// most carrying their own multiverse id.
+fn foreign_twin(rng: &mut Rng, canonical: &Value, oracle: &OracleCard, lang: &str) -> Value {
+    let mut card = canonical.clone();
+    let obj = card.as_object_mut().expect("card is an object");
+    set_str(obj, "id", uuid(rng));
+    set_str(obj, "lang", lang.to_owned());
+    let mut prng = printed_rng(&oracle.oracle_id, lang);
+    // Composed name (collision-free at corpus scale), pool-word type line and text (whose
+    // cross-card repetition is realistic — type lines DO repeat).
+    let name = {
+        let sep = if matches!(lang, "ja" | "zhs" | "zht") { "" } else { " " };
+        format!("{}{sep}{}", printed_word(&mut prng, lang), printed_word(&mut prng, lang))
+    };
+    let type_line = printed_phrase(&mut prng, lang, 2);
+    let text_words = 12 + prng.below(20) as usize;
+    let text = printed_phrase(&mut prng, lang, text_words);
+    if rng.chance(60) {
+        obj.insert("multiverse_ids".to_owned(), serde_json::json!([400_000 + rng.below(500_000)]));
+    } else {
+        obj.remove("multiverse_ids");
+    }
+    let faces = obj.get("card_faces").and_then(Value::as_array).cloned();
+    match faces {
+        Some(mut faces) if !faces.is_empty() => {
+            let prepare_shape = rng.chance(20);
+            for (i, face) in faces.iter_mut().enumerate() {
+                let Some(f) = face.as_object_mut() else { continue };
+                if prepare_shape {
+                    if i == 0 {
+                        f.insert("printed_name".to_owned(), Value::String(name.clone()));
+                        f.insert("printed_type_line".to_owned(), Value::String(type_line.clone()));
+                    }
+                    // The back face of a prepare-style printing is never localized: NO keys.
+                } else {
+                    // Per-face names differ; derive the back face's from the shared stream so it
+                    // stays a function of (oracle, lang) too.
+                    let face_name =
+                        if i == 0 { name.clone() } else { printed_word(&mut prng, lang) };
+                    f.insert("printed_name".to_owned(), Value::String(face_name));
+                    f.insert("printed_type_line".to_owned(), Value::String(type_line.clone()));
+                    f.insert("printed_text".to_owned(), Value::String(text.clone()));
+                }
+            }
+            obj.insert("card_faces".to_owned(), Value::Array(faces));
+        }
+        _ => {
+            obj.insert("printed_name".to_owned(), Value::String(name));
+            if rng.chance(90) {
+                obj.insert("printed_type_line".to_owned(), Value::String(type_line));
+                obj.insert("printed_text".to_owned(), Value::String(text));
+            } else if !rng.chance(80) {
+                obj.insert("printed_type_line".to_owned(), Value::String(type_line));
+            }
+        }
+    }
+    card
+}
+
 fn word(rng: &mut Rng) -> &'static str {
     WORDS[rng.below(WORDS.len() as u64) as usize]
 }
@@ -260,7 +413,7 @@ fn printing(
     card
 }
 
-fn cmd_gen(printings: usize, bulk_path: &Path, tags_path: &Path) {
+fn cmd_gen(printings: usize, foreign_ratio: f64, bulk_path: &Path, tags_path: &Path) {
     let templates: Vec<Value> = [BOLT, ELVES, JACE, DELVER]
         .iter()
         .map(|s| serde_json::from_str(s).expect("fixture parses"))
@@ -295,6 +448,7 @@ fn cmd_gen(printings: usize, bulk_path: &Path, tags_path: &Path) {
     let out = std::fs::File::create(bulk_path).expect("create bulk output");
     let mut w = BufWriter::with_capacity(1 << 20, out);
     let mut written = 0usize;
+    let mut foreign_written = 0usize;
     'outer: loop {
         for oracle in &oracles {
             // Zipf-ish printing counts: most cards 1-2 printings, a tail with many.
@@ -303,6 +457,19 @@ fn cmd_gen(printings: usize, bulk_path: &Path, tags_path: &Path) {
                 let card = printing(&mut rng, &templates, oracle, &mut illustration_ids);
                 serde_json::to_writer(&mut w, &card).expect("write bulk row");
                 w.write_all(b"\n").expect("write newline");
+                // Foreign twins of THIS printing, at most one per language (as in the real bulk),
+                // each language included with probability ratio·weight/Σweights — so the corpus
+                // lands at ~`foreign_ratio` foreign rows per canonical with the measured language
+                // mix. `--printings` keeps meaning CANONICAL printings; foreign rows are extra.
+                for &(lang, weight) in FOREIGN_LANGS {
+                    let per_mille = (foreign_ratio * weight as f64 * 1000.0 / FOREIGN_LANG_WEIGHT_SUM as f64) as u64;
+                    if per_mille > 0 && rng.below(1000) < per_mille.min(1000) {
+                        let twin = foreign_twin(&mut rng, &card, oracle, lang);
+                        serde_json::to_writer(&mut w, &twin).expect("write foreign row");
+                        w.write_all(b"\n").expect("write newline");
+                        foreign_written += 1;
+                    }
+                }
                 written += 1;
                 if written == printings {
                     break 'outer;
@@ -311,6 +478,9 @@ fn cmd_gen(printings: usize, bulk_path: &Path, tags_path: &Path) {
         }
     }
     w.flush().expect("flush bulk");
+    if foreign_ratio > 0.0 {
+        eprintln!("  plus {foreign_written} foreign printings (ratio {:.2})", foreign_written as f64 / written as f64);
+    }
 
     // Tag corpus: slugs over ~40% of oracle ids (avg ~4) and ~30% of
     // illustration ids (avg ~2), mirroring real tagger coverage shape.
@@ -377,7 +547,11 @@ fn cmd_rows(bulk_path: &Path, tags_path: &Path, out_path: &Path) {
             continue;
         }
         let card: Value = serde_json::from_str(&line).expect("parse bulk card");
-        if let Some(draft) = transform::transform(&card).expect("transform") {
+        // The synthetic corpus's canonical rule: lang == "en". Production derives the flag from
+        // id-membership in default_cards (reconciliation 5); this generator only ever emits
+        // English canonical rows, so the two rules coincide here by construction.
+        let is_canonical = card.get("lang").and_then(Value::as_str) == Some("en");
+        if let Some(draft) = transform::transform_row(&card, is_canonical).expect("transform") {
             drafts.push(draft);
         }
     }
@@ -774,14 +948,19 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
     // or not the route narrows, so hardcoded real-Scryfall words would measure nothing at all on a
     // synthetic corpus -- which is exactly the corpus the gate builds.
     let prefix: String = folded.chars().take(3).collect();
-    // The WHOLE name, not one word of it: a common word matches most of the corpus, so scanning and
-    // narrowing do nearly the same work and the ratio cannot tell them apart. A full name matches
-    // ~1 card, which is where narrowing is worth 100x and a regression is obvious.
-    let whole_name = folded.clone();
+    // EVERY WORD of a whole name, not one word of it: a common word matches most of the corpus, so
+    // scanning and narrowing do nearly the same work and the ratio cannot tell them apart. A full
+    // name matches ~1 card, which is where narrowing is worth 100x and a regression is obvious.
+    //
+    // Split, because that is the shape the route passes — `/cards/named?fuzzy=` splits on
+    // non-word characters, so a word never contains a space. Handing the whole spaced name in as
+    // ONE word measured the separator-spanning narrowing tier instead of the ordinary one, and on
+    // a synthetic corpus whose names have more than two words it matched nothing at all: a
+    // tripwire that reports 0 rows cannot fail.
+    let name_words: Vec<String> = folded.split_whitespace().map(str::to_owned).collect();
     time("autocomplete(3-char prefix)", Box::new(|| format!("{} names", store.autocomplete(&prefix, 20).len())));
     time("cards_containing_all_words", Box::new(|| {
-        let w = vec![whole_name.clone()];
-        format!("{} rows", store.cards_containing_all_words(&w, None, 20, None).expect("q").len())
+        format!("{} rows", store.cards_containing_all_words(&name_words, None, 20, None).expect("q").len())
     }));
     // A KNOWN full scan over every card, so the gate has a scan-shaped reference to compare the
     // narrowed routes against. A binary-search baseline is sub-microsecond and too small to divide
@@ -789,6 +968,42 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
     time("fuzzy_card_by_name (full scan)", Box::new(|| {
         format!("{:?}", store.fuzzy_card_by_name(&folded, 0.5, 0.05, None).map(|(s, _)| s))
     }));
+
+    // The foreign name lane, against a REAL printed name from this store (a hit, like every
+    // other measured route — a miss can be the fast path). Labeled `printed_*`, not
+    // `exact_card_by_name (…)`, so the gate's awk prefixes cannot match two lines at once.
+    // Skipped when the store has no foreign rows (a legacy corpus), so this bench still runs
+    // against old archives.
+    let ml_opts = QueryOptions {
+        limit: 200,
+        unique: "printing".to_owned(),
+        include_multilingual: true,
+        fields: f(&["printed_name"]),
+        ..QueryOptions::default()
+    };
+    let printed = store.query(r#"{"node_type": "TrueNode"}"#, &ml_opts).ok().and_then(|out| {
+        out.rows.iter().find_map(|r| r.get("printed_name").and_then(|v| v.as_str()).map(str::to_owned))
+    });
+    match printed {
+        Some(printed) => {
+            let folded_printed = transform::fold_accents(&printed.to_lowercase());
+            time("printed_exact_hit", Box::new(|| {
+                format!("{:?}", store.exact_card_by_name(&folded_printed, None, None).expect("q").is_some())
+            }));
+            // One character dropped: the typo shape the fuzzy lane exists for, valid in every
+            // script the generator emits.
+            let typo: String = folded_printed
+                .chars()
+                .enumerate()
+                .filter(|(i, _)| *i != 1)
+                .map(|(_, c)| c)
+                .collect();
+            time("printed_fuzzy_hit", Box::new(|| {
+                format!("{:?}", store.fuzzy_card_by_name(&typo, 0.4, 0.05, None).map(|(s, _)| s))
+            }));
+        }
+        None => eprintln!("  (no foreign rows in this store; printed-name lanes skipped)"),
+    }
     time("sample_preferred(75)", Box::new(|| format!("{} rows", store.sample_preferred(75, 7, None).expect("q").len())));
 
     // Paging: a deep offset is the shape that makes a streamed sort walk furthest, and it is the
@@ -921,6 +1136,12 @@ fn cmd_querybench(store_path: &Path, iters: usize) {
     ("c:wu", "c:wu", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_colors","original_attribute":"c"}},"op":":","rhs":["W","U"]}}"#),
     ("id<=wubrg", "id<=wubrg", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_color_identity","original_attribute":"id"}},"op":"<=","rhs":["W","U","B","R","G"]}}"#),
     ("c>=3 (colour count)", "c>=3", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_colors","original_attribute":"c"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":3}}}}"#),
+    ("t:creature (substring)", "t:creature", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_types","original_attribute":"t"}},"op":":","rhs":["Creature"]}}"#),
+    ("t:creat (partial word)", "t:creat", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_subtypes","original_attribute":"t"}},"op":":","rhs":["Creat"]}}"#),
+    ("t:elf (subtype)", "t:elf", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_subtypes","original_attribute":"t"}},"op":":","rhs":["Elf"]}}"#),
+    ("t:\"artifact creature\"", "t:\"artifact creature\"", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_subtypes","original_attribute":"t"}},"op":":","rhs":["Artifact Creature"]}}"#),
+    ("t:zzzz (bind only, 0 rows)", "t:zzzz", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_subtypes","original_attribute":"t"}},"op":":","rhs":["Zzzz"]}}"#),
+    ("t>creature (type mask)", "t>creature", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_types","original_attribute":"t"}},"op":">","rhs":["Creature"]}}"#),
     ("NOT t:creature", "-t:creature", r#"{"node_type":"NotNode","kwargs":{"operand":{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_types","original_attribute":"t"}},"op":":","rhs":["Creature"]}}}}"#),
     ("NOT legal:modern", "-legal:modern", r#"{"node_type":"NotNode","kwargs":{"operand":{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"legal"}},"op":":","rhs":["modern"]}}}}"#),
     ("And of three leaves", "t:creature c:r cmc>=4", r#"{"node_type":"AndNode","kwargs":{"operands":[{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_types","original_attribute":"t"}},"op":":","rhs":["Creature"]}},{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_colors","original_attribute":"c"}},"op":":","rhs":["R"]}},{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"cmc","original_attribute":"cmc"}},"op":">=","rhs":{"node_type":"NumericValueNode","kwargs":{"value":4}}}}]}}"#),
@@ -996,33 +1217,71 @@ fn cmd_compare(a_path: &Path, b_path: &Path) {
     assert_eq!(a.common_card_keywords(), b.common_card_keywords(), "common_card_keywords");
 
     let true_node = r#"{"node_type": "TrueNode"}"#;
-    for (label, opts) in [
-        ("all printings, all fields", QueryOptions {
-            unique: "printing".to_owned(),
-            limit: 200_000,
-            ..QueryOptions::default()
-        }),
-        ("all cards, default fields, name order", QueryOptions {
-            limit: 200_000,
-            orderby: "name".to_owned(),
-            ..QueryOptions::default()
-        }),
-        ("cards, edhrec desc, offset window", QueryOptions {
-            limit: 500,
-            offset: 1234,
-            direction: "desc".to_owned(),
-            ..QueryOptions::default()
-        }),
-    ] {
-        let qa = a.query(true_node, &opts).expect("query a");
-        let qb = b.query(true_node, &opts).expect("query b");
+
+    // THE GRID IS DELIBERATELY TIE-HEAVY. Two archives built from IDENTICAL rows can still
+    // differ byte-for-byte in their index region, because index construction may break ties
+    // between equally-ranked rows in build order. That is invisible to a checksum and invisible
+    // to a query whose sort key is unique -- it shows up only where many rows share one sort
+    // value and the archive's own order decides which comes first. So every low-cardinality
+    // ordering is here (`rarity` has 5 distinct values over 4,200 cards, `color` 6, `cmc` ~10,
+    // `set` a handful), in both directions, across all three unique modes, with and without the
+    // annex, plus deep offsets where a tie straddling the window boundary would repeat or skip a
+    // row. If these all agree the two builders answer identically, which is the property the
+    // two-publisher design actually needs -- byte equality of the archive is not it.
+    let orderings = [
+        "rarity", "color", "cmc", "set", "name", "released", "artist", "edhrec", "usd", "power", "toughness",
+        "cubecobra",
+    ];
+    let mut cases: Vec<(String, QueryOptions)> = Vec::new();
+    for orderby in orderings {
+        for direction in ["asc", "desc"] {
+            for unique in ["card", "printing", "artwork"] {
+                for ml in [false, true] {
+                    cases.push((
+                        format!("TrueNode orderby={orderby} {direction} unique={unique} ml={ml}"),
+                        QueryOptions {
+                            orderby: orderby.to_owned(),
+                            direction: direction.to_owned(),
+                            unique: unique.to_owned(),
+                            include_multilingual: ml,
+                            limit: 200_000,
+                            ..QueryOptions::default()
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    // Deep offsets: a tie group straddling the page boundary is where a build-order difference
+    // turns into a repeated or skipped row rather than a merely reordered one.
+    for (offset, limit) in [(0usize, 175usize), (3, 4), (1234, 500), (9000, 175), (40_000, 175), (55_000, 175)] {
+        for orderby in ["rarity", "color", "set"] {
+            cases.push((
+                format!("TrueNode orderby={orderby} offset={offset} limit={limit} (printing+ml)"),
+                QueryOptions {
+                    orderby: orderby.to_owned(),
+                    unique: "printing".to_owned(),
+                    include_multilingual: true,
+                    offset,
+                    limit,
+                    ..QueryOptions::default()
+                },
+            ));
+        }
+    }
+
+    let mut compared = 0usize;
+    for (label, opts) in &cases {
+        let qa = a.query(true_node, opts).expect("query a");
+        let qb = b.query(true_node, opts).expect("query b");
         assert_eq!(qa.total, qb.total, "total: {label}");
         assert_eq!(qa.rows.len(), qb.rows.len(), "row count: {label}");
         for (i, (ra, rb)) in qa.rows.iter().zip(qb.rows.iter()).enumerate() {
             assert_eq!(ra, rb, "row {i} differs: {label}");
         }
-        println!("match: {label} ({} rows, total {})", qa.rows.len(), qa.total);
+        compared += qa.rows.len();
     }
+    println!("match: {} envelope cases, {compared} rows compared row-for-row", cases.len());
 
     // Text searches exercise the trigram/word/bigram index tiers — the
     // structures the lean two-pass builder constructs — across their distinct
@@ -1066,6 +1325,39 @@ fn cmd_compare(a_path: &Path, b_path: &Path) {
     println!("STORES SEMANTICALLY IDENTICAL");
 }
 
+// ─── partition ───────────────────────────────────────────────────────────────
+
+/// Cut a rows.jsonl into per-partition row files by the SHARED hash (`fnv1a64(oracle_id) % N`),
+/// so the gate's wasm-fit probe can run the capped build one partition at a time — each in its
+/// own process, which is what structurally guarantees the builder never holds two partitions'
+/// state at once.
+fn cmd_partition(rows_path: &Path, parts: u32, out_prefix: &Path) {
+    let rows = std::fs::File::open(rows_path).expect("open rows");
+    let mut outs: Vec<BufWriter<std::fs::File>> = (0..parts)
+        .map(|k| {
+            let path = PathBuf::from(format!("{}{k}.jsonl", out_prefix.display()));
+            BufWriter::with_capacity(1 << 20, std::fs::File::create(path).expect("create partition rows"))
+        })
+        .collect();
+    let mut counts = vec![0usize; parts as usize];
+    for line in BufReader::with_capacity(1 << 20, rows).lines() {
+        let line = line.expect("read row line");
+        if line.is_empty() {
+            continue;
+        }
+        let row: Value = serde_json::from_str(&line).expect("parse row");
+        let oracle = row.get("oracle_id").and_then(Value::as_str).expect("row has oracle_id");
+        let k = card_engine::partition_of_oracle_id(oracle, parts) as usize;
+        outs[k].write_all(line.as_bytes()).expect("write row");
+        outs[k].write_all(b"\n").expect("write newline");
+        counts[k] += 1;
+    }
+    for o in &mut outs {
+        o.flush().expect("flush partition rows");
+    }
+    eprintln!("partitioned into {parts}: {counts:?} rows");
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 fn arg(args: &HashMap<String, String>, key: &str) -> PathBuf {
@@ -1085,9 +1377,15 @@ fn main() {
     match cmd {
         "gen" => {
             let printings: usize = args.get("printings").map(|s| s.parse().expect("number")).unwrap_or(100_000);
-            cmd_gen(printings, &arg(&args, "bulk"), &arg(&args, "tags"));
+            let foreign_ratio: f64 =
+                args.get("foreign-ratio").map(|s| s.parse().expect("ratio")).unwrap_or(0.0);
+            cmd_gen(printings, foreign_ratio, &arg(&args, "bulk"), &arg(&args, "tags"));
         }
         "rows" => cmd_rows(&arg(&args, "bulk"), &arg(&args, "tags"), &arg(&args, "out")),
+        "partition" => {
+            let parts: u32 = args.get("parts").map(|s| s.parse().expect("number")).unwrap_or(4);
+            cmd_partition(&arg(&args, "rows"), parts, &arg(&args, "out-prefix"));
+        }
         "build" => cmd_build(&arg(&args, "rows"), &arg(&args, "out")),
         "phases" => cmd_phases(&arg(&args, "rows"), &arg(&args, "out")),
         "spill" => cmd_spill(&arg(&args, "rows"), &arg(&args, "out")),
@@ -1110,7 +1408,10 @@ fn main() {
             cmd_routebench(&arg(&args, "store"), iters);
         }
         other => {
-            eprintln!("unknown command {other:?}; expected gen | rows | build");
+            eprintln!(
+                "unknown command {other:?}; expected gen | rows | partition | build | phases | spill | \
+                 compare | tagbench | textbench | namecheck | querybench | routebench"
+            );
             std::process::exit(2);
         }
     }

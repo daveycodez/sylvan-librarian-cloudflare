@@ -54,12 +54,18 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import sys
 import types
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VENDOR_ROOT = REPO_ROOT / "vendor" / "sylvan_librarian"
+# PARSER_EXPORT_SOURCE points the exporter at another checkout of the upstream
+# repo root (a PR worktree, or a patched copy of vendor/). Used when a parser
+# change lands on an upstream branch before the vendor tree syncs it — ground
+# truth must come from the branch's parser or the new fixtures cannot exist.
+# Default stays the vendored tree.
+VENDOR_ROOT = Path(os.environ["PARSER_EXPORT_SOURCE"]) if os.environ.get("PARSER_EXPORT_SOURCE") else REPO_ROOT / "vendor" / "sylvan_librarian"
 TESTS_DIR = VENDOR_ROOT / "api" / "parsing" / "tests"
 FIXTURES_DIR = REPO_ROOT / "tests" / "parser" / "fixtures"
 
@@ -198,6 +204,42 @@ EXTRA_CASES = [
     "!Éowyn",
     '!"ÆTHER VIAL"',
     "name:ætherling",
+    # The Latin letters NFKD leaves whole, which fold_accents expands and Scryfall compares as
+    # their expansions (measured 2026-08-16, equal totals against the expanded spelling for each):
+    # æ/ae 90, œ/oe 167, ß/ss 2051, ø/o 22111, ł/l 18748, đ/d 14591, þ/th 5689, ð/d 14591,
+    # ħ/h 14176, ŋ/ng 4834, ŧ/t 22261, ı/i 22954, ĸ/k 6616.
+    "name:œuvre",
+    "name:øde",
+    "name:þor",
+    "name:łódź",
+    "name:đelo",
+    "name:ĳsselmeer",
+    "a:łebski",
+    "o:æther",
+    'o:"æther"',
+    "t:æ",
+    "ft:æther",
+    # `*` is an ordinary character in a value, deleted by the name/artist collation and kept
+    # everywhere else: `name:ft*` == `name:*ft*` == `name:ft` (1,628) while `o:ft*`,
+    # `t:crea*ture` and the quoted `name:"ft*"` each find nothing.
+    "name:ft*",
+    "name:*ft*",
+    "name:*ft",
+    "name:f*t",
+    'name:"ft*"',
+    "o:ft*",
+    "t:crea*ture",
+    "a:gu*ay",
+    "ft:cro*ft",
+    "*",
+    "ft*",
+    # `!=` on a string column is the empty set on Scryfall, whatever the value.
+    "name!=ft",
+    'name!="lightning bolt"',
+    "o!=draw",
+    "t!=creature",
+    "a!=guay",
+    "set!=khm",
     "artist:rebecca",
     'artist:"seb mckinnon"',
     'a:"PETE VENTERS"',
@@ -217,6 +259,67 @@ EXTRA_CASES = [
     'name:"the wanderer"',
     'name:"war of the last alliance"',
     "name:x/y",
+    'name:"Ego à Deriva"',
+    'name:"稲妻"',
+    # lang: operator (multilingual)
+    "lang:ja",
+    "lang:any",
+    "-lang:en",
+    "lang:zzz",
+    "lang>=en",
+    "language:ru",
+    "lang:ja t:creature",
+    "(lang:ja or lang:ru) cmc=1",
+    # Escaped metacharacters on every regex-capable operator. A backslash before a NON-word
+    # character IS that character, so a pattern with nothing else in it lowers to the equivalent
+    # substring leaf (rewrite._regex_plain_literal) and one with a real metacharacter or class
+    # escape keeps its regex leaf with the backslashes intact. Both halves are pinned here across
+    # the operators, because the two implementations have to agree about WHICH half a pattern is
+    # in -- the trees are compared byte for byte.
+    r"o:/\(this creature/",
+    r"fo:/\(this creature/",
+    r"o:/\{t\}/",
+    r"o:/target\./",
+    r"o:/\+1\/\+1/",
+    r"o:/\[brackets\]/",
+    r"o:/back\\slash/",
+    r"name:/\,/",
+    r"name:/\'/",
+    r"a:/\./",
+    r"ft:/\./",
+    r"flavor:/\(/",
+    r"t:/\(/",
+    r"t:/\-/",
+    r"e:/kh\w/",
+    r"cn:/\d/",
+    r"watermark:/izz\S+/",
+    r"layout:/norm\w+/",
+    r"border:/bl\w+/",
+    # ...and the ones that must NOT lower, so a pattern that keeps its leaf keeps its backslashes.
+    r"o:/\(a.b/",
+    r"name:/^\(x/",
+    r"t:/\(a|b/",
+    r"fo:/[\]]/",
+    r"o:/\bfoo/",
+    # fo:/fulloracle: -- Scryfall's FULL-oracle operator, sharing oracle_text's column and told
+    # apart from `o:` by original_attribute (the engine's searchable oracle column is stripped).
+    "fo:lifelink",
+    "fulloracle:lifelink",
+    'fo:"damage dealt by this creature also causes"',
+    "fo:/\\(this creature/",
+    "-fo:lifelink",
+    "fo:draw e:khm",
+    # oracleid: operator -- the query every card object's prints_search_uri carries
+    "oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a",
+    "oracle_id:43fbfeec-bcaf-48b8-befe-b7346fec5a3a",
+    "oracleid:43FBFEEC-BCAF-48B8-BEFE-B7346FEC5A3A",
+    'oracleid:"43fbfeec-bcaf-48b8-befe-b7346fec5a3a"',
+    "-oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a",
+    "oracleid:not-a-uuid",
+    "oracleid:43fbfeec",
+    "oracleid>43fbfeec-bcaf-48b8-befe-b7346fec5a3a",
+    "oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a t:creature",
+    "(oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a or oracleid:21f45043-5419-4019-8b6c-e5294bd5f549) cmc=1",
     # floats and int/float json rendering
     "cmc=2.0",
     "cmc>=1.5",
@@ -261,6 +364,99 @@ EXTRA_CASES = [
     "produces:wu",
     "c:purple",
     "identity!=r",
+    # colour COUNT names: every spelling, every operator, every column. The lowering lives in
+    # CardBinaryOperatorNode's constructor and depends on BOTH the value and the operator, so the
+    # fixture has to cross them rather than sample one of each.
+    "c:m",
+    "c=m",
+    "c>m",
+    "c>=m",
+    "c<m",
+    "c<=m",
+    "c!=m",
+    "c:gold",
+    "c=gold",
+    "c>gold",
+    "c>=gold",
+    "c<gold",
+    "c<=gold",
+    "c!=gold",
+    "c:multicolor",
+    "c=multicolor",
+    "c>multicolor",
+    "c>=multicolor",
+    "c<multicolor",
+    "c<=multicolor",
+    "c!=multicolor",
+    "c:multicolour",
+    "c<multicolour",
+    "c<=multicolour",
+    "c:multicolored",
+    "c!=multicolored",
+    "c<=multicolored",
+    "c:multicoloured",
+    "c!=multicoloured",
+    "c<=multicoloured",
+    "color:m",
+    "colors:m",
+    "colour:gold",
+    "colours:multicolored",
+    "id:m",
+    "id=m",
+    "id>m",
+    "id>=m",
+    "id<m",
+    "id<=m",
+    "id!=m",
+    "identity:gold",
+    "ci:multicolored",
+    "coloridentity<m",
+    "color_identity<=m",
+    # produced_mana counts SIX values (colorless is a producible one), so it lowers to its own
+    # operator table and reaches a different SQL mask than the colour columns do
+    "produces:m",
+    "produces=m",
+    "produces>m",
+    "produces>=m",
+    "produces<m",
+    "produces<=m",
+    "produces!=m",
+    "produces:gold",
+    "produces:multicoloured",
+    "produces>=2",
+    "produces=6",
+    # the alias spellings Scryfall accepts for each colour column, in both modes
+    "colour:wu",
+    "colours:wu",
+    "colour:m",
+    "colours>=2",
+    "commander:wu",
+    "commander:m",
+    "commander>=2",
+    "commander<=jund",
+    # and the neighbours it REJECTS, which must stay bare-name searches here
+    "cid:wu",
+    "colouridentity:wu",
+    "commanderidentity:wu",
+    # the bare counts the names lower to, so a fixture diff shows them side by side
+    "c>=2",
+    "c<2",
+    "c>=0",
+    # case, quoting and negation reach the same lowering
+    "c:M",
+    "c:GOLD",
+    'c:"m"',
+    'c:"multicolor"',
+    "-c:m",
+    # still invalid: `m` beside another colour letter is not a name and not a letter set
+    "c:mw",
+    "c:wm",
+    "c:mc",
+    "c:mm",
+    "c!=mw",
+    "id:mw",
+    "c:mono",
+    "produces:mw",
     # rarity
     "r:mythic",
     "r>=u",

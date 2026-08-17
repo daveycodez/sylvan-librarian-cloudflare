@@ -9,7 +9,9 @@
 // (api/scryfall_compat/responder.py, #922).
 
 import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
-import { cardList, catalogObject } from "./objects";
+import type { SearchPageEnvelope } from "../../engine/types";
+import { CSV_CONTENT_DISPOSITION, CSV_CONTENT_TYPE, CSV_HAS_MORE_HEADER, cardsToCsv } from "./csv";
+import { cardList, catalogObject, errorObject } from "./objects";
 
 /**
  * Spelled out rather than a shared constant: Scryfall sends the charset, and a client that compares
@@ -79,16 +81,59 @@ export function stringifyScryfall(value: unknown, pretty = false): string {
 	return marked.replace(pattern, "$1");
 }
 
-/** One Scryfall object as a response. An error object's own `status` becomes the HTTP status. */
+/**
+ * One Scryfall object as a response. An error object's own `status` becomes the HTTP status.
+ *
+ * AN ERROR BODY IS ALWAYS PRETTY-PRINTED, whatever `pretty` says. That is not a style choice, it is
+ * what api.scryfall.com does: measured 2026-08-16 across the whole surface, every `object: "error"`
+ * body comes back as two-space-indented JSON while every data body comes back compact, and it does
+ * not negotiate — `Accept: application/json`, `Accept: text/html`, a bare wildcard and an explicit
+ * `?pretty=false` all produce the same 130-byte indented not-found. Scryfall renders errors through
+ * a different serializer than answers, and this port rendered both compact, so a client comparing
+ * bytes saw a different document for every 4xx it received.
+ *
+ * `pretty` still reaches the writer for the 200 case, which is the only case it was ever about.
+ */
 export function scryfallJson(
 	payload: Record<string, unknown>,
 	pretty: boolean,
 	cache: Record<string, string>,
 ): Response {
-	const status = payload.object === "error" && typeof payload.status === "number" ? payload.status : 200;
-	return new Response(stringifyScryfall(payload, pretty), {
+	const isError = payload.object === "error";
+	const status = isError && typeof payload.status === "number" ? payload.status : 200;
+	return new Response(stringifyScryfall(payload, isError || pretty), {
 		status,
 		headers: { "content-type": JSON_CONTENT_TYPE, ...cache },
+	});
+}
+
+/**
+ * A DISPATCH-level error in Scryfall's shape: `{object, code, status, details}`.
+ *
+ * The router answers some errors before any handler runs — an unknown path, a method a route does
+ * not accept, an engine that has not loaded — and it used to answer all of them in upstream's falcon
+ * shape, `{title, description}`. On the Scryfall-compatible surface that is the wrong document: a
+ * client pointed at this deployment instead of api.scryfall.com parses `code` and `details`, finds
+ * neither, and has to special-case this origin — which is precisely the thing it cannot do and still
+ * be pointable back at Scryfall.
+ *
+ * So the SHAPE is chosen by which surface the path belongs to (see `SCRYFALL_SURFACE_ROUTES`), not
+ * by which error it is. This deployment also serves upstream's own routes and its own web
+ * interface, whose error bodies the frontend renders through `showError()` by reading `title` and
+ * `description`; those keep falcon's shape, because there the JSON is talking to a page rather than
+ * to an API client.
+ *
+ * Pretty-printed, like every other error body here — see `scryfallJson`.
+ */
+export function scryfallHttpError(
+	code: string,
+	status: number,
+	details: string,
+	extraHeaders?: Record<string, string>,
+): Response {
+	return new Response(stringifyScryfall(errorObject(code, status, details), true), {
+		status,
+		headers: { "content-type": JSON_CONTENT_TYPE, "Cache-Control": "no-cache", ...extraHeaders },
 	});
 }
 
@@ -134,6 +179,37 @@ function spliceData(
 	return jsonBytesResponse([head, dataBytes, tail], { "content-type": JSON_CONTENT_TYPE, ...cache });
 }
 
+/**
+ * The answer when a page came back with no rows — which is TWO different answers.
+ *
+ * Scryfall separates "your query matched nothing" from "your query matched, but not this far in":
+ * a query with no results is `404 not_found` at every page, and a page past the end of a result
+ * that DOES have rows is `422 validation_error` (measured 2026-08-16: `e:khm` is two pages, and
+ * `page=3` is a 422 while `e:notaset` is a 404 at `page=1` and at `page=3` alike). This port
+ * answered 404 to both, which told a paginating client its query had stopped matching.
+ *
+ * Lives here rather than in the three engines that call it because all three MUST agree: the same
+ * URL is served by the in-process engine under test, the Durable Object in production and the
+ * route-test harness, and a divergence between them is one no single suite can see.
+ */
+export function emptyPageResponse(
+	envelope: SearchPageEnvelope,
+	totalCards: number,
+	cache: Record<string, string>,
+): Response {
+	if (envelope.beyondEndDetails !== undefined && totalCards > 0 && envelope.pageOffset >= totalCards) {
+		// No `warnings` on this body: Scryfall's 422 carries none even for a query whose terms were
+		// ignored (`subtype:elf e:khm&page=9999`).
+		return scryfallJson(errorObject("validation_error", 422, envelope.beyondEndDetails), envelope.pretty, cache);
+	}
+	// NO `warnings` on a 404, even when terms WERE ignored: Scryfall's not-found body is
+	// `{object, code, status, details}` and nothing else, on a query with ignored terms
+	// (`-pow:2 t:goblin e:khm`) exactly as on one without (`subtype:elf e:notaset`). This port used
+	// to attach them here to explain an unsupported `is:` value, which is a real courtesy and a real
+	// divergence; the note survives on `/search`, this project's own surface, where it belongs.
+	return scryfallJson(errorObject("not_found", 404, envelope.noMatchDetails), envelope.pretty, cache);
+}
+
 /** A List whose `data` is already encoded. */
 export function scryfallListJson(
 	dataBytes: Uint8Array,
@@ -158,6 +234,33 @@ export function scryfallListJson(
 // Splicing around a stream is the third case, and it is the one that measured WORSE: /search on
 // the streaming transport went 5ms -> 11ms of isolate against a 10ms budget. Restoring this
 // function would be re-proposing that, so the argument belongs here rather than the code.
+
+/**
+ * The same page of cards as `scryfallListJson`, rendered as Scryfall's CSV instead.
+ *
+ * It takes the SAME `data` bytes the JSON envelope would have been spliced around, which is what
+ * keeps the two formats from ever disagreeing about which rows a page holds: `format=csv` selects a
+ * serialization, never a query. The array is parsed here rather than in the engine because this
+ * runs where the payload already is — inside the Durable Object for the deployed path, in-process
+ * for the direct one — and never in the request isolate, whose 10ms budget is the reason
+ * `/cards/search` builds its whole response on the far side of the RPC in the first place.
+ *
+ * `has_more` has no envelope to live in, so it rides a header, exactly as api.scryfall.com does.
+ */
+export function scryfallCsvResponse(dataBytes: Uint8Array, hasMore: boolean, cache: Record<string, string>): Response {
+	const cards = JSON.parse(new TextDecoder().decode(dataBytes)) as Record<string, unknown>[];
+	const body = encodeUtf8(cardsToCsv(cards));
+	return new Response(body, {
+		status: 200,
+		headers: {
+			"content-type": CSV_CONTENT_TYPE,
+			"content-disposition": CSV_CONTENT_DISPOSITION,
+			"content-length": String(body.byteLength),
+			[CSV_HAS_MORE_HEADER]: String(hasMore),
+			...cache,
+		},
+	});
+}
 
 /**
  * A Catalog whose `data` is already encoded.

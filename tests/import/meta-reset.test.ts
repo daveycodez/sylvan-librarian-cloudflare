@@ -24,6 +24,33 @@ function seed(): Database {
 	const rows: [string, string][] = [
 		["phase", "build"],
 		["retries", "2"],
+		// The recode phase's checkpoint: raw all_cards bytes already re-compressed
+		// into stage_members. Run-scoped — a fresh run refetches the dump and must
+		// recode it from byte 0, so surviving a reset would make stepRecode skip
+		// a prefix of a stream it has not staged.
+		["recode_raw_done", "268435456"],
+		// The canonical phase's cursor pair and the transform's raw-offset twin:
+		// run-scoped like recode's — a fresh run refetches default_cards and
+		// all_cards, so a surviving cursor would skip a prefix of streams the
+		// run has not staged, and a surviving id count would satisfy the
+		// coverage check with last night's ids.
+		["canonical_raw_done", "94371840"],
+		["canonical_ids", "48000"],
+		["transform_raw_offset", "1073741824"],
+		// The partition loop's state, fixed at the end of tags: built_at and
+		// format_version pin the run's key family, pp_publish carries the chosen
+		// N and every partition's publish cursor, agg_partition_started marks
+		// whose fresh wasm heap is live. ALL run-scoped — a surviving pp_publish
+		// would resume last night's loop against chunk keys derived from a
+		// built_at the new run no longer owns, which is the resume-from-stale-
+		// cursor bug the single value exists to prevent.
+		["built_at", "1755300000"],
+		["format_version", "2026081501"],
+		["agg_partition_started", "3"],
+		[
+			"pp_publish",
+			'{"partition":3,"step":"publish","partitions":[{"store_bytes":1,"card_count":1,"printing_count":1,"chunk_count":1,"chunks_published":1,"cursor_seq":0,"cursor_off":0,"cut":46000000,"gzip_bytes":1}]}',
+		],
 		["do_rows_read", "98000"],
 		["do_rows_written", "1200"],
 		[`${TODAY}:read`, "1200000"],

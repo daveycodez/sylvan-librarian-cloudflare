@@ -9,9 +9,36 @@
 // that will not delete costs a few KB of a 1GB namespace and gets another chance next publish.
 
 import { staleKeys } from "../src/engine/kv-versions";
-import { staleStoreKeys } from "../src/engine/store-kv";
+import { MANIFEST_KEY, staleStoreKeys } from "../src/engine/store-kv";
 import { kvTargetArgs } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
+
+/**
+ * The built_at of the build the LIVE manifest points at, so a sweep cannot
+ * retire the family the serving path is reading right now — age alone is not
+ * the whole rule.
+ *
+ * A list rather than a single value because callers concatenate it with the
+ * build they just published; both go to `protect`.
+ *
+ * Best effort: a pointer that is absent or unreadable protects nothing (there
+ * is nothing being served through it to protect).
+ */
+export async function liveManifestBuiltAts(remote: boolean): Promise<string[]> {
+	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", MANIFEST_KEY, ...(await kvTargetArgs(remote))], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const out = await new Response(proc.stdout).text();
+	if ((await proc.exited) !== 0) return [];
+	try {
+		const at = String((JSON.parse(out.slice(out.indexOf("{"))) as { built_at?: unknown }).built_at ?? "");
+		return at ? [at] : [];
+	} catch {
+		// Unparseable manifest: nothing to protect through it.
+		return [];
+	}
+}
 
 /** Delete every key under `prefix` that the current layout does not own. */
 export async function pruneOldKeys(prefix: string, currentPrefix: string, remote: boolean): Promise<number> {
@@ -52,7 +79,9 @@ export async function pruneOldKeys(prefix: string, currentPrefix: string, remote
 }
 
 /**
- * Delete every store build but the newest `keep`, plus the one just published.
+ * Delete every store build but the newest `keep`, plus every build in `protect`
+ * — the one just published and the one the live manifest references (see
+ * liveManifestBuiltAts).
  *
  * The deploy's counterpart to ImportCoordinator.pruneOldStores. Retention used to be driven by a
  * history list the coordinator wiped every run, so nothing was ever deleted; deriving it from the
@@ -60,7 +89,7 @@ export async function pruneOldKeys(prefix: string, currentPrefix: string, remote
  */
 export async function pruneOldStores(
 	keep: number,
-	currentBuiltAt: string | undefined,
+	protect: string | readonly string[] | undefined,
 	remote: boolean,
 ): Promise<number> {
 	const target = await kvTargetArgs(remote);
@@ -81,7 +110,7 @@ export async function pruneOldStores(
 		return 0;
 	}
 
-	const stale = staleStoreKeys(names, keep, currentBuiltAt);
+	const stale = staleStoreKeys(names, keep, protect);
 	if (stale.length === 0) return 0;
 	const file = `${require("node:os").tmpdir()}/sylvan-prune-stores.json`;
 	await Bun.write(file, JSON.stringify(stale));

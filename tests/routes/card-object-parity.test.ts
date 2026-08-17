@@ -15,7 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as bg from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";
-import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import { CARD_OBJECT_FIELDS, toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
 
 // Instantiated here rather than through src/engine/wasm-shim.ts: that shim's `.wasm` import
@@ -46,7 +46,12 @@ const MINIMAL: Record<string, unknown> = {
 	collector_number: "314",
 };
 
-/** Everything present, including all six prices and every optional key. */
+/**
+ * Everything present, including all six prices and every optional key — for an ENGLISH printing.
+ * `lang: "en"` is deliberate, not an oversight: the printed triple is absent by contract on
+ * English rows (Scryfall never stores one), so "every optional key" here means every key an
+ * English card can carry. FULL_FOREIGN below is the foreign twin that adds the printed triple.
+ */
 const FULL: Record<string, unknown> = {
 	...MINIMAL,
 	layout: "normal",
@@ -99,6 +104,7 @@ const FULL: Record<string, unknown> = {
 	tcgplayer_etched_id: 5005,
 	cardmarket_id: 6006,
 	multiverse_ids: [12345, 12346],
+	produced_mana: ["G"],
 	promo_types: ["boosterfun"],
 	frame_effects: ["extendedart"],
 	image_updated_at: 1700000000,
@@ -112,15 +118,35 @@ const FULL: Record<string, unknown> = {
 	all_parts: [{ object: "related_card", id: "eeeeeeee-0000-0000-0000-000000000001", component: "token" }],
 };
 
+/**
+ * FULL's foreign twin: a ja printing carrying the whole printed triple, its own multiverse ids,
+ * and CJK text with fullwidth punctuation, a newline and quotes — the JSON-escaping surface where
+ * the Rust writer (serde_json, raw UTF-8) and `stringifyScryfall` (JSON.stringify, raw UTF-8)
+ * must agree byte for byte.
+ */
+const FULL_FOREIGN: Record<string, unknown> = {
+	...FULL,
+	lang: "ja",
+	printed_name: "ラノワールのエルフ",
+	printed_type_line: "クリーチャー — エルフ・ドルイド",
+	printed_text: "（Ｔ）：（緑）を加える。\n「森は我らの言葉を話す。」",
+	multiverse_ids: [503618],
+};
+
 const CASES: [string, Record<string, unknown>][] = [
 	["minimal row, almost everything absent", MINIMAL],
 	["full row, every optional present", FULL],
 
-	// The slug and quote_plus paths, which are where a careless port drifts. Non-ASCII must fold
-	// the same way in both, and `!'()*` must escape while `~` must not.
+	// The slug and quote_plus paths, which are where a careless port drifts. Non-ASCII must
+	// percent-encode identically in the slug (j%C3%B6tun) while quote_plus keeps its own safe set
+	// (`!'()*` escape, `~` does not); apostrophes and periods DELETE from slugs rather than
+	// hyphenating (erayos-essence, shield — the live rule, see slug() in objects.ts).
 	["non-ASCII name (Æ, ö)", { ...FULL, name: "Æther Vial // Jötun Grunt" }],
 	["name with quote_plus-sensitive punctuation", { ...FULL, name: "Yawgmoth's Will (Alt!) ~ *test*" }],
-	["name that slugs to nothing but hyphens", { ...FULL, name: "!!! ??? ---" }],
+	["apostrophes delete from the slug", { ...FULL, name: "Erayo, Soratami Ascendant // Erayo's Essence" }],
+	["deleted-set punctuation (periods, quotes)", { ...FULL, name: 'S.H.I.E.L.D. "Toolbox", Mk. II' }],
+	["kept-set punctuation and literal hyphens", { ...FULL, name: "Summon: Choco/Mog & Co. - Deluxe!" }],
+	["name of nothing but punctuation", { ...FULL, name: "!!! ??? ---" }],
 	["name with runs of separators", { ...FULL, name: "  Fire  //  Ice  " }],
 
 	// Prices: the formatting is `.2f`, so integers, long decimals and zero all matter, and a
@@ -146,6 +172,346 @@ const CASES: [string, Record<string, unknown>][] = [
 		{ ...FULL, card_faces: [{ name: "Adventure Half", mana_cost: "{1}{G}" }] },
 	],
 	["empty card_faces behaves as single-faced", { ...FULL, card_faces: [] }],
+
+	// ─── layout classes ──────────────────────────────────────────────────────────
+	//
+	// WHERE a multi-face card's picture lives — and with it its colors, power, illustration and
+	// flavor — is a property of the LAYOUT, not of the face count. The five two-image layouts put
+	// all of it on the faces and send no top-level copy and no card_back_id; the one-image layouts
+	// send one picture, one joined mana_cost and one set of top-level values, and their faces carry
+	// text only. Each fixture below is shaped like the live object it is named for (see the
+	// TWO_IMAGE_LAYOUTS note in objects.ts for the corpus-wide verification).
+	[
+		"split — one image, joined mana_cost, faceless colors",
+		{
+			...FULL,
+			layout: "split",
+			name: "Fire // Ice",
+			colors: ["R", "U"],
+			mana_cost: "{1}{R}",
+			type_line: "Instant // Instant",
+			illustration_id: "dddddddd-0000-0000-0000-00000000000f",
+			power: undefined,
+			toughness: undefined,
+			loyalty: undefined,
+			card_faces: [
+				{ name: "Fire", mana_cost: "{1}{R}", type_line: "Instant", oracle_text: "Fire deals 2 damage." },
+				{ name: "Ice", mana_cost: "{1}{U}", type_line: "Instant", oracle_text: "Tap target permanent." },
+			],
+		},
+	],
+	[
+		"flip — a costless back face keeps its empty mana_cost",
+		{
+			...FULL,
+			layout: "flip",
+			name: "Erayo, Soratami Ascendant // Erayo's Essence",
+			card_faces: [
+				{ name: "Erayo, Soratami Ascendant", mana_cost: "{1}{U}", oracle_text: "Flying", power: "1", toughness: "1" },
+				{ name: "Erayo's Essence", mana_cost: "", oracle_text: "Counter that spell." },
+			],
+		},
+	],
+	[
+		"adventure — edhrec takes the front face, tcgplayer the joined name",
+		{
+			...FULL,
+			layout: "adventure",
+			name: "Brazen Borrower // Petty Theft",
+			card_faces: [
+				{ name: "Brazen Borrower", mana_cost: "{1}{U}{U}", type_line: "Creature — Faerie Rogue", power: "3" },
+				{ name: "Petty Theft", mana_cost: "{1}{U}", type_line: "Instant — Adventure", oracle_text: "Return it." },
+			],
+		},
+	],
+	[
+		"transform — two images, nothing hoisted to the top level",
+		{
+			...FULL,
+			layout: "transform",
+			name: "Delver of Secrets // Insectile Aberration",
+			card_faces: [
+				{ name: "Delver of Secrets", mana_cost: "{U}", colors: ["U"], power: "1", toughness: "1" },
+				{
+					name: "Insectile Aberration",
+					mana_cost: "",
+					colors: ["U"],
+					power: "3",
+					toughness: "2",
+					flavor_text: "I feel no fear.",
+					illustration_id: "dddddddd-0000-0000-0000-000000000002",
+				},
+			],
+		},
+	],
+	[
+		"modal_dfc — a colorless back face still carries its empty colors",
+		{
+			...FULL,
+			layout: "modal_dfc",
+			name: "Agadeem's Awakening // Agadeem, the Undercrypt",
+			colors: ["B"],
+			color_identity: ["B"],
+			produced_mana: ["B"],
+			card_faces: [
+				{ name: "Agadeem's Awakening", mana_cost: "{X}{B}{B}{B}", colors: ["B"], type_line: "Sorcery" },
+				{ name: "Agadeem, the Undercrypt", mana_cost: "", colors: [], type_line: "Land" },
+			],
+		},
+	],
+	[
+		"prepare (es) — printed name on the front face only",
+		{
+			...FULL,
+			layout: "prepare",
+			lang: "es",
+			name: "Emeritus of Conflict // Lightning Bolt",
+			mana_cost: "{1}{R}",
+			card_faces: [
+				{ name: "Emeritus of Conflict", mana_cost: "{1}{R}", printed_name: "Emérita del conflicto", power: "2" },
+				{ name: "Lightning Bolt", mana_cost: "{R}", oracle_text: "Deals 3 damage to any target." },
+			],
+		},
+	],
+	[
+		"double_faced_token — two images AND the joined edhrec name",
+		{
+			...FULL,
+			layout: "double_faced_token",
+			name: "Punchcard // Punchcard",
+			card_faces: [
+				{ name: "Punchcard", mana_cost: "", colors: [], type_line: "Token" },
+				{ name: "Punchcard", mana_cost: "", colors: [], type_line: "Token" },
+			],
+		},
+	],
+	[
+		"reversible_card — joined edhrec name, per-face art",
+		{
+			...FULL,
+			layout: "reversible_card",
+			name: "Temple Garden // Temple Garden",
+			produced_mana: ["G", "W"],
+			card_faces: [
+				{ name: "Temple Garden", mana_cost: "", colors: [], illustration_id: "dddddddd-0000-0000-0000-000000000003" },
+				{ name: "Temple Garden", mana_cost: "", colors: [], illustration_id: "dddddddd-0000-0000-0000-000000000004" },
+			],
+		},
+	],
+	[
+		"art_series — two images but the FRONT-face edhrec name",
+		{
+			...FULL,
+			layout: "art_series",
+			name: "Iceman and Firestar // Iceman and Firestar",
+			card_faces: [
+				{ name: "Iceman and Firestar", mana_cost: "", oracle_text: "", colors: [] },
+				{ name: "Iceman and Firestar", mana_cost: "", oracle_text: "", colors: [] },
+			],
+		},
+	],
+	[
+		"meld — single-faced, so every value stays at the top level",
+		{
+			...FULL,
+			layout: "meld",
+			name: "Hanweir Garrison",
+			all_parts: [
+				{ object: "related_card", id: "eeeeeeee-0000-0000-0000-000000000002", component: "meld_part" },
+				{ object: "related_card", id: "eeeeeeee-0000-0000-0000-000000000003", component: "meld_result" },
+			],
+		},
+	],
+	// The printed colour dot: present on a meld result whose mana cost cannot state its colours,
+	// and OMITTED at top level on a two-image layout, where it belongs to a face.
+	[
+		"meld back — a printed color_indicator",
+		{
+			...FULL,
+			layout: "meld",
+			name: "Mishra, Lost to Phyrexia",
+			mana_cost: undefined,
+			colors: ["B", "R"],
+			color_indicator: ["B", "R"],
+			type_line: "Legendary Artifact Creature — Phyrexian Artificer",
+		},
+	],
+	[
+		"transform — the color_indicator rides the face, not the card",
+		{
+			...FULL,
+			layout: "transform",
+			name: "Delver of Secrets // Insectile Aberration",
+			color_indicator: ["U"],
+			card_faces: [
+				{ name: "Delver of Secrets", mana_cost: "{U}", colors: ["U"] },
+				{ name: "Insectile Aberration", mana_cost: "", colors: ["U"], color_indicator: ["U"] },
+			],
+		},
+	],
+	// The empty string is a VALUE, not an absence, on the three keys Scryfall always sends: a basic
+	// land's mana_cost and oracle_text and, on 965 printings, the artist. All three used to come out
+	// of both builders as `null`.
+	[
+		"basic land — empty mana_cost and oracle_text are values",
+		{
+			...FULL,
+			name: "Forest",
+			type_line: "Basic Land — Forest",
+			mana_cost: "",
+			oracle_text: "",
+			power: undefined,
+			toughness: undefined,
+		},
+	],
+	["artist is an empty string, not an absence", { ...FULL, artist: "" }],
+	// A card's `artist` and its FACES' artists are independent values, and both builders must emit
+	// them that way. The store used to conflate them: the multi-face merge overlays each face on
+	// the parent dict with the face winning, so face 0's artist overwrote the card's and Fire //
+	// Ice went out as "David Martin" instead of Scryfall's "David Martin & Franz Vohwinkel"
+	// (generation 27). The row arrives correct now, so what these two pin is that nothing
+	// downstream re-derives the top-level value from the faces — a joined credit passes through
+	// whole, and a shared one is NOT doubled into "Nils Hamm & Nils Hamm".
+	[
+		"two artists: the card's joined credit and each face's own",
+		{
+			...FULL,
+			name: "Fire // Ice",
+			layout: "split",
+			type_line: "Instant // Instant",
+			artist: "David Martin & Franz Vohwinkel",
+			card_faces: [
+				{ name: "Fire", mana_cost: "{1}{R}", artist: "David Martin" },
+				{ name: "Ice", mana_cost: "{1}{U}", artist: "Franz Vohwinkel" },
+			],
+		},
+	],
+	[
+		"one artist across two faces is never doubled",
+		{
+			...FULL,
+			name: "Delver of Secrets // Insectile Aberration",
+			layout: "transform",
+			artist: "Nils Hamm",
+			card_faces: [
+				{ name: "Delver of Secrets", mana_cost: "{U}", artist: "Nils Hamm" },
+				{ name: "Insectile Aberration", mana_cost: "", artist: "Nils Hamm" },
+			],
+		},
+	],
+	// ...while an ABSENT key on the same three is still null, which is what a hand-built row gives.
+	["absent mana_cost and oracle_text are still null", { ...MINIMAL, artist: undefined }],
+	// produced_mana on the card that actually has it, and its absence on the card that does not:
+	// the key is omitted, never sent empty.
+	[
+		"a land's produced_mana",
+		{ ...FULL, name: "Ancient Tomb", type_line: "Land", produced_mana: ["C"], colors: [], mana_cost: undefined },
+	],
+	["no produced_mana at all", { ...FULL, produced_mana: [] }],
+
+	// The printed triple, in every presence shape the corpus has (varies per face per printing —
+	// absence must round-trip exactly, never English-filled), plus the foreign scryfall_uri form:
+	// `/{set}/{number}/{lang}/{slug(printed)}-({slug(english)})` with the whole slug
+	// percent-encoded, and gatherer's `&printed=true` for non-en.
+	["foreign printing, full printed triple (ja)", FULL_FOREIGN],
+	["printed_name only, no printed type or text", { ...FULL, lang: "es", printed_name: "Elfos de Llanowar" }],
+	[
+		"printed name and text without printed type line",
+		{ ...FULL, lang: "pt", printed_name: "Elfos de Llanowar", printed_text: "{T}: Adicione {G}." },
+	],
+	["foreign row with no printed fields at all", { ...FULL, lang: "zhs" }],
+	// An ARENA-ONLY printing omits `purchase_uris` — no marketplace sells one, and Scryfall sends
+	// the key on no such card (khm/A-198, ymid/59, measured 2026-08-16). The MTGO-only twin below
+	// is the other half of the rule: cardhoarder does sell those, so prm/80925 keeps the key, and
+	// a `digital`-based rule would have dropped it. Reachable at all only because these printings
+	// are imported now; see passes_filters.
+	["arena-only printing omits purchase_uris", { ...FULL, digital: true, games: ["arena"] }],
+	["mtgo-only printing keeps purchase_uris", { ...FULL, digital: true, games: ["mtgo"] }],
+	// `flavor_name`: the alternate SOLD-AS name, which sits immediately before `lang` on every one
+	// of the 669 top-level occurrences in the 2026-08-16 all_cards bulk — after `printed_name`
+	// when there is one (sld/2236/ja) and after `name` when there is not (prm/80925). Both shapes
+	// are here because the position is the whole parity contract for a key with no other behavior.
+	["flavor name, no printed name (the Godzilla shape)", { ...FULL, flavor_name: "Godzilla, Primeval Champion" }],
+	[
+		"flavor name beside a printed name",
+		{ ...FULL, lang: "ja", printed_name: "原初の潮流、ネザール", flavor_name: "海洋の支配者ラギアクルス" },
+	],
+	// ph/qya glyph printings: production ignores the stored glyph printed_name and drops the lang
+	// path segment (one/414's ph Elesh Norn serves the plain English slug).
+	["phyrexian printing ignores its glyph printed name", { ...FULL, lang: "ph", printed_name: "|Ceghm." }],
+	// A printed name of only deleted characters slugs to nothing; the fallback to the plain
+	// English slug (keeping the /fr/ segment) is LIVE-UNPINNED — no such printing exists in the
+	// 2026-08-16 corpus — chosen to match the pinned no-printed-name fallback (ody/243/zhs).
+	["printed name that slugs to nothing", { ...FULL, lang: "fr", printed_name: '"..."' }],
+	// FACE-level `flavor_name`: Scryfall puts it on the faces of a `transform` or
+	// `reversible_card` printing (vow/338 is "Dracula, Lord of Blood" // "Dracula, Lord of Bats"),
+	// never beside a card-level one. Presence is per FACE, like the printed triple.
+	[
+		"face-level flavor names on a transform printing",
+		{
+			...FULL,
+			layout: "transform",
+			card_faces: [
+				{ name: "Voldaren Bloodcaster", flavor_name: "Dracula, Lord of Blood", mana_cost: "{1}{B}", power: "1" },
+				{ name: "Bloodbat Summoner", flavor_name: "Dracula, Lord of Bats", type_line: "Creature — Vampire" },
+			],
+		},
+	],
+	// ...and only one face carrying one, which is the shape the absence filter has to keep exact.
+	[
+		"face-level flavor name on the front face only",
+		{
+			...FULL,
+			layout: "transform",
+			card_faces: [
+				{ name: "Voldaren Bloodcaster", flavor_name: "Dracula, Lord of Blood", mana_cost: "{1}{B}" },
+				{ name: "Bloodbat Summoner", type_line: "Creature — Vampire" },
+			],
+		},
+	],
+	[
+		"two es faces, both fully printed (transform shape)",
+		{
+			...FULL,
+			lang: "es",
+			layout: "transform",
+			name: "Delver of Secrets // Insectile Aberration",
+			card_faces: [
+				{
+					name: "Delver of Secrets",
+					mana_cost: "{U}",
+					oracle_text: "At the beginning of your upkeep...",
+					printed_name: "Descifrador de secretos",
+					printed_type_line: "Criatura — Hechicero humano",
+					printed_text: "Al comienzo de tu mantenimiento...",
+				},
+				{
+					name: "Insectile Aberration",
+					oracle_text: "Flying",
+					printed_name: "Aberración insectil",
+					printed_type_line: "Criatura — Aberración humana",
+					printed_text: "Vuela.",
+				},
+			],
+		},
+	],
+	// The es printing of sos/113: the first face has ONLY a printed name, the second nothing —
+	// and the joined printed slug uses only the faces that have one (verified live:
+	// em%C3%A9rita-del-conflicto-(emeritus-of-conflict-lightning-bolt)).
+	[
+		"es prepare faces: first printed-name-only, second nothing",
+		{
+			...FULL,
+			lang: "es",
+			layout: "prepare",
+			name: "Emeritus of Conflict // Lightning Bolt",
+			card_faces: [{ name: "Emeritus of Conflict", printed_name: "Emérita del conflicto" }, { name: "Lightning Bolt" }],
+		},
+	],
+	// gatherer: FULL pins the en form (printed=false, FIRST of its two multiverse ids) and
+	// FULL_FOREIGN the non-en form; an empty id list emits no gatherer at all, distinct from
+	// MINIMAL where the key is absent entirely.
+	["no multiverse ids — no gatherer", { ...FULL, multiverse_ids: [] }],
 
 	// Loyalty, in the shape a real card has it: a planeswalker carries one and has no creature
 	// stats, so this pins that the key survives on its own rather than only trailing a toughness.
@@ -225,5 +591,134 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		const rustKeys = Object.keys(JSON.parse(scryfall_card_from_row(JSON.stringify(clean), BASE)));
 		const tsKeys = Object.keys(toScryfallCard(clean, BASE));
 		expect(rustKeys).toEqual(tsKeys);
+	});
+
+	// ─── guard the guard ─────────────────────────────────────────────────────────
+	//
+	// The byte comparison above can only catch a divergence a fixture REACHES. Commit 1cea214's
+	// lesson: FULL silently lacked `loyalty`, so both builders were compared over a key neither
+	// wrote, and the suite was green while the key was broken. This closes that class structurally:
+	// every key either builder can emit must be exercised by some fixture, and the emittable set is
+	// DERIVED from CARD_OBJECT_FIELDS rather than written down twice — a field added to the
+	// builders without a fixture, or to CARD_OBJECT_FIELDS without a classification here, fails.
+
+	/** Output keys computed from other fields rather than carried by one (the *_uri family etc.). */
+	const DERIVED_KEYS: readonly string[] = [
+		"object",
+		"uri",
+		"scryfall_uri",
+		"set_uri",
+		"set_search_uri",
+		"scryfall_set_uri",
+		"rulings_uri",
+		"prints_search_uri",
+		"card_back_id",
+		"prices",
+		"related_uris",
+		"purchase_uris",
+		"image_uris",
+	];
+
+	/**
+	 * Every CARD_OBJECT_FIELDS entry, classified: the output keys it becomes. An empty list is a
+	 * field that feeds a derived key or is requested only for upstream parity and never emitted.
+	 */
+	const FIELD_TO_KEYS: Record<string, readonly string[]> = {
+		name: ["name"],
+		scryfall_id: ["id"],
+		oracle_id: ["oracle_id"],
+		layout: ["layout"],
+		mana_cost: ["mana_cost"],
+		cmc: ["cmc"],
+		type_line: ["type_line"],
+		oracle_text: ["oracle_text"],
+		printed_name: ["printed_name"],
+		flavor_name: ["flavor_name"],
+		printed_type_line: ["printed_type_line"],
+		printed_text: ["printed_text"],
+		power: ["power"],
+		toughness: ["toughness"],
+		loyalty: ["loyalty"],
+		colors: ["colors"],
+		color_identity: ["color_identity"],
+		card_keywords: ["keywords"],
+		set_code: ["set"],
+		set_name: ["set_name"],
+		collector_number: ["collector_number"],
+		rarity: ["rarity"],
+		flavor_text: ["flavor_text"],
+		artist: ["artist"],
+		illustration_id: ["illustration_id"],
+		released_at: ["released_at"],
+		legalities: ["legalities"],
+		edhrec_rank: ["edhrec_rank"],
+		price_usd: [], // the six price columns fold into the derived `prices`
+		price_eur: [],
+		price_tix: [],
+		price_usd_foil: [],
+		price_usd_etched: [],
+		price_eur_foil: [],
+		watermark: ["watermark"],
+		card_frame_data: [], // requested for upstream parity; never read by either builder
+		card_is_tags: ["reserved"],
+		border_color: ["border_color"],
+		frame: ["frame"],
+		lang: ["lang"],
+		image_status: ["image_status"],
+		set_type: ["set_type"],
+		security_stamp: ["security_stamp"],
+		set_id: ["set_id"],
+		arena_id: ["arena_id"],
+		mtgo_id: ["mtgo_id"],
+		mtgo_foil_id: ["mtgo_foil_id"],
+		tcgplayer_id: ["tcgplayer_id"],
+		tcgplayer_etched_id: ["tcgplayer_etched_id"],
+		cardmarket_id: ["cardmarket_id"],
+		penny_rank: ["penny_rank"],
+		image_updated_at: [], // the cache-buster inside the derived image_uris
+		multiverse_ids: ["multiverse_ids"], // also gatherer, inside the derived related_uris
+		promo_types: ["promo_types"],
+		frame_effects: ["frame_effects"],
+		games: ["games"],
+		finishes: ["finishes"],
+		booster: ["booster"],
+		digital: ["digital"],
+		foil: [], // requested for upstream parity; not stored, never emitted (ledgered Scryfall-only)
+		nonfoil: [],
+		full_art: ["full_art"],
+		highres_image: ["highres_image"],
+		oversized: ["oversized"],
+		promo: ["promo"],
+		reprint: ["reprint"],
+		story_spotlight: ["story_spotlight"],
+		textless: ["textless"],
+		variation: ["variation"],
+		card_faces: ["card_faces"],
+		all_parts: ["all_parts"],
+		produced_mana: ["produced_mana"],
+		color_indicator: ["color_indicator"],
+	};
+
+	test("every CARD_OBJECT_FIELDS entry is classified, and only those", () => {
+		expect(Object.keys(FIELD_TO_KEYS).sort()).toEqual([...CARD_OBJECT_FIELDS].sort());
+	});
+
+	test("the fixtures exercise every emittable key, and the builders emit no unclassified key", () => {
+		const emittable = new Set<string>([...DERIVED_KEYS, ...Object.values(FIELD_TO_KEYS).flat()]);
+		const tsSeen = new Set<string>();
+		const rustSeen = new Set<string>();
+		for (const [, row] of CASES) {
+			const clean = asRow(row);
+			for (const key of Object.keys(toScryfallCard(clean, BASE))) tsSeen.add(key);
+			for (const key of Object.keys(JSON.parse(scryfall_card_from_row(JSON.stringify(clean), BASE)))) {
+				rustSeen.add(key);
+			}
+		}
+		// No builder invents a key the classification does not know about...
+		expect([...tsSeen].filter((k) => !emittable.has(k)).sort()).toEqual([]);
+		expect([...rustSeen].filter((k) => !emittable.has(k)).sort()).toEqual([]);
+		// ...and no emittable key escapes the fixtures — the 1cea214 assertion.
+		expect([...emittable].filter((k) => !tsSeen.has(k)).sort()).toEqual([]);
+		expect([...emittable].filter((k) => !rustSeen.has(k)).sort()).toEqual([]);
 	});
 });

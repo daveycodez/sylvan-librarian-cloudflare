@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from api.parsing.card_query_nodes import CardAttributeNode, CardBinaryOperatorNode, ExactNameNode
-from api.parsing.db_info import ALIAS_TO_FIELD_INFOS, COLOR_NAME_TO_CODE, ParserClass
+from api.parsing.db_info import ALIAS_TO_FIELD_INFOS, COLOR_ALIAS_TO_CODES, COLOR_COUNT_NAMES, ParserClass
 from api.parsing.nodes import (
     DIRECTIVE_NAMES,
     AndNode,
@@ -49,7 +49,11 @@ _DUAL_NUM_TEXT: frozenset[str] = frozenset(
 
 _NUMERIC_ALIASES: frozenset[str] = frozenset(alias for alias, pc in _ALIAS_TO_PC.items() if pc == ParserClass.NUMERIC)
 
-_VALID_COLOR_NAMES: frozenset[str] = frozenset(COLOR_NAME_TO_CODE)
+# The set-valued names (`azorius`, `rainbow`) and the COUNT-valued ones (`m`, `gold`,
+# `multicolored`) are one vocabulary as far as the value parser is concerned: both are words
+# rather than letter strings. What separates them is what CardBinaryOperatorNode does with the
+# result, not whether this parser will accept it.
+_VALID_COLOR_NAMES: frozenset[str] = frozenset(COLOR_ALIAS_TO_CODES) | COLOR_COUNT_NAMES
 _COLOR_LETTERS: frozenset[str] = frozenset("wubrgcWUBRGC")
 _MIN_MTG_YEAR: int = 1992
 _MAX_YEAR: int = 2040
@@ -146,6 +150,34 @@ def _scan_word_end(src: str, n: int, j: int) -> int:
             break
         j += 1
     return j
+
+
+# The four typographic quotes Scryfall folds before lexing, and the only four.
+#
+# Every word processor and phone keyboard turns a typed apostrophe into U+2019 and typed double
+# quotes into U+201C/U+201D, so a pasted query carries them constantly -- and this parser read them
+# as ordinary letters, which made a query for Gaea<U+2019>s Blessing a search for a card whose name
+# contains a curly apostrophe: no rows, no error, no clue.
+#
+# Measured against api.scryfall.com (2026-08-16) by putting each candidate around a phrase and
+# asking whether the phrase searched as ONE term (`o:Xdraw a cardX` -> 2,544 rows means X delimits
+# a string). U+2018/U+2019 fold to the ASCII apostrophe and U+201C/U+201D to the ASCII double
+# quote; every other quotation-shaped character stays literal and matches nothing -- the guillemets
+# (U+00AB/BB, U+2039/203A), the low-9 pair (U+201E, U+201A), the primes (U+2032, U+2033, U+2035),
+# the fullwidth quotes (U+FF02, U+FF07), the CJK brackets (U+300C..U+300F), the ornate pairs
+# (U+275B..U+275E), backtick, acute, U+02BC.
+#
+# It is a CHARACTER substitution over the whole query, not a rule about quoted regions: a curly
+# apostrophe INSIDE double quotes folds too, which is the only reason `name:"Gaea<U+2019>s
+# Blessing"` finds the card; and `name:<U+2018>Gaea"s Blessing<U+2019>` finds nothing, exactly as
+# `name:'Gaea"s Blessing'` does. Both directions had to be measured, because folding all four to
+# `"` fits the first observation and fails the second.
+_TYPOGRAPHIC_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+
+
+def fold_typographic_quotes(query: str) -> str:
+    """Fold the four typographic quotes Scryfall folds; every other character is left alone."""
+    return query.translate(_TYPOGRAPHIC_QUOTES)
 
 
 # ── Lexer ─────────────────────────────────────────────────────────────────────
@@ -321,8 +353,8 @@ class ParseError(ValueError):
     """Raised when the parser encounters unexpected token structure."""
 
 
-def _name_node(value: str) -> CardBinaryOperatorNode:
-    return CardBinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode(value))
+def _name_node(value: str, literal: bool = False) -> CardBinaryOperatorNode:
+    return CardBinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode(value, literal=literal))
 
 
 def _bare_name_node(value: str) -> CardBinaryOperatorNode:
@@ -440,7 +472,10 @@ class Parser:
             return self.parse_exact_name()
         if tok.type == TT.QUOTED:
             self.consume()
-            return _name_node(str(tok.value))
+            # A bare QUOTED term is `name:"..."`, and quoting still means "match this literally":
+            # measured on api.scryfall.com 2026-08-16, `q="ft"` answers 362 exactly as
+            # `q=name:"ft"` does, against the bare word `q=ft`'s 1,628.
+            return _name_node(str(tok.value), literal=True)
         if tok.type == TT.WORD:
             self.consume()
             return self.parse_word_primary(str(tok.value))
@@ -450,6 +485,13 @@ class Parser:
             # bare mana outside attribute context — treat as implicit name
             self.consume()
             return _name_node(str(tok.value))
+        if tok.type == TT.STAR:
+            # A term that STARTS with ``*`` is a name search whose first character collates away --
+            # ``q=*ft*`` answers 1,628 on Scryfall, exactly as ``q=ft`` does. Only reachable at the
+            # start of a primary, where a multiplication has no left operand and this was a
+            # parse error.
+            self.consume()
+            return self.parse_hyphenated_name("*")
         msg = f"Unexpected {tok.value!r} at position {tok.pos}"
         raise ParseError(msg)
 
@@ -664,17 +706,33 @@ class Parser:
     # ── implicit name (possibly hyphenated) ───────────────────────────────────
 
     def parse_hyphenated_name(self, first: str) -> CardBinaryOperatorNode:
-        """Build an implicit name node, greedily consuming no-space MINUS+WORD/NUMBER continuations."""
-        parts = [first]
-        while (
-            self.peek().type == TT.MINUS
-            and not self.peek().space_before
-            and self.peek(1).type in (TT.WORD, TT.NUMBER)
-            and not self.peek(1).space_before
-        ):
-            self.consume()  # MINUS
-            parts.append(str(self.consume().value))
-        return _bare_name_node("-".join(parts))
+        """Build an implicit name node, greedily consuming no-space MINUS+WORD/NUMBER and STAR continuations.
+
+        A bare term is a ``name:`` search, so ``*`` reaches it for the same reason it reaches
+        parse_text_value(): the collation deletes it. Measured 2026-08-16 -- ``q=ft*``, ``q=*ft*`` and
+        ``q=ft`` all answer 1,628 on api.scryfall.com, and ``q=godzilla*`` answers ``q=godzilla``'s 8.
+        """
+        word = first
+        while True:
+            nxt = self.peek()
+            if nxt.space_before:
+                break
+            if nxt.type == TT.STAR:
+                self.consume()
+                word += "*"
+                continue
+            if nxt.type in (TT.WORD, TT.NUMBER):
+                # Only reachable ACROSS a star (``*ft``): the lexer scans adjacent word characters
+                # into one token, so two of them never touch on their own.
+                self.consume()
+                word += str(nxt.value)
+                continue
+            if nxt.type == TT.MINUS and self.peek(1).type in (TT.WORD, TT.NUMBER) and not self.peek(1).space_before:
+                self.consume()  # MINUS
+                word += "-" + str(self.consume().value)
+                continue
+            break
+        return _bare_name_node(word)
 
     # ── value parsers ─────────────────────────────────────────────────────────
 
@@ -702,22 +760,43 @@ class Parser:
         tok = self.peek()
         if tok.type == TT.QUOTED:
             self.consume()
-            return StringValueNode(str(tok.value))
+            # QUOTED, and `name:` reads that as "match this literally" -- see StringValueNode.
+            return StringValueNode(str(tok.value), literal=True)
         if tok.type == TT.REGEX:
             self.consume()
             return RegexValueNode(str(tok.value))
-        if tok.type in (TT.WORD, TT.NUMBER):
+        if tok.type in (TT.WORD, TT.NUMBER, TT.STAR):
             self.consume()
-            word = str(tok.value)
-            # Greedily consume hyphenated continuation (no space on either side)
-            while (
-                self.peek().type == TT.MINUS
-                and not self.peek().space_before
-                and self.peek(1).type in (TT.WORD, TT.NUMBER)
-                and not self.peek(1).space_before
-            ):
-                self.consume()
-                word += "-" + str(self.consume().value)
+            word = "*" if tok.type == TT.STAR else str(tok.value)
+            # Greedily consume hyphenated and STARRED continuation (no space on either side).
+            #
+            # ``*`` IS AN ORDINARY CHARACTER IN A VALUE, not a wildcard and not an error. Scryfall
+            # answers ``name:ft*``, ``name:*ft*``, ``name:*ft`` and ``name:f*t`` with the same 1,628
+            # as ``name:ft`` -- because a bare ``name:`` value is COLLATED and ``*`` is one more
+            # non-alphanumeric character to delete, exactly like the ``-`` in
+            # ``name:lightning-bolt`` (2) and the ``,`` in ``name:lightning,bolt`` (2). It is not a
+            # tokenizer rule: the same ``*`` in a column that is NOT collated stays put and finds
+            # nothing, which is what ``o:ft*``, ``t:crea*ture``, ``ft:cro*ft`` and the QUOTED
+            # ``name:"ft*"`` all answer (404), and ``a:gu*ay`` matches ``a:guay`` because artist is
+            # collated too. All measured on api.scryfall.com 2026-08-16. This parser rejected the
+            # character outright, so every one of those raised instead.
+            while True:
+                nxt = self.peek()
+                if nxt.space_before:
+                    break
+                if nxt.type == TT.STAR:
+                    self.consume()
+                    word += "*"
+                    continue
+                if nxt.type in (TT.WORD, TT.NUMBER):
+                    self.consume()
+                    word += str(nxt.value)
+                    continue
+                if nxt.type == TT.MINUS and self.peek(1).type in (TT.WORD, TT.NUMBER) and not self.peek(1).space_before:
+                    self.consume()
+                    word += "-" + str(self.consume().value)
+                    continue
+                break
             return StringValueNode(word)
         msg = f"Expected value for {attr!r}, got {tok.value!r} at position {tok.pos}"
         raise ParseError(msg)
@@ -771,6 +850,22 @@ class Parser:
             return NumericValueNode(tok.value)
         if tok.type == TT.WORD:
             val = str(tok.value)
+            # The four-colour names are HYPHENATED (`yore-tiller`, `witch-maw`), and `-` is not a
+            # word-continuation character, so the lexer hands this WORD MINUS WORD. Glue the three
+            # back together — but only when the result is a name, so an ordinary `c:w-1` still
+            # ends the value at the `w` and lets arithmetic have the rest. Same adjacency rule
+            # parse_date_value uses for YYYY-MM-DD: no space on either side of the hyphen.
+            if (
+                self.peek(1).type == TT.MINUS
+                and not self.peek(1).space_before
+                and self.peek(2).type == TT.WORD
+                and not self.peek(2).space_before
+                and f"{val}-{self.peek(2).value}".lower() in _VALID_COLOR_NAMES
+            ):
+                self.consume()
+                self.consume()
+                tail = self.consume()
+                return StringValueNode(f"{val}-{tail.value}")
             if val.lower() not in _VALID_COLOR_NAMES and not all(c in _COLOR_LETTERS for c in val):
                 msg = f"Invalid color value {val!r} at position {tok.pos}"
                 raise ParseError(msg)
@@ -836,6 +931,10 @@ def parse_query(src: str | None) -> Query:
     """
     if not src or not src.strip():
         return Query(TrueNode())
+    # Before the lexer, because a curly quote has to BE a quote by the time a term boundary is
+    # decided; and rebinding `src` so the "Failed to lex/parse" messages echo the query the parser
+    # actually read rather than the one the user pasted.
+    src = fold_typographic_quotes(src)
     try:
         tokens = tokenize(src)
     except LexError as exc:

@@ -11,15 +11,51 @@
 // the native dev builder runs — driven phase by phase through an alarm chain
 // so no single invocation exceeds the isolate CPU allowance:
 //
+// ONE PIPELINE. The corpus is all_cards, the build is partitioned, and the
+// commit point is the single manifest key — there is no second shape to select
+// between (src/import-phases.ts holds the dump list and the chain):
+//
 //   listing   Scryfall /bulk-data → dump URIs
 //   fetch     ranged, resumable download of each compressed dump → SQLite
-//   transform bulk JSONL → RowDraft blobs (batched into SQLite)
-//   tags      tag dumps → in-wasm TagData (+ snapshot to SQLite for restarts)
-//   agg       drafts pass 1: dedupe winners, illustration counts, cubecobra
-//   finalize  drafts pass 2: ENGINE_COLUMNS rows → spill blobs + row JSON
-//   build     spilled rows in build order → rkyv archive → chunk staging
-//   publish   ~4 chunks + manifest to KV (manifest LAST — it is the commit
-//             point readers act on), prune old stores, clear staging
+//   recode    all_cards' one long gzip stream → independent 8MB-raw gzip
+//             members (stage_members), so every later resume into the ~2GB
+//             dump seeks to a member instead of re-decompressing the prefix
+//   canonical default_cards' ids → the canonical-printing set, snapshotted as
+//             TagData (tagdata_blobs) — built BEFORE transform because every
+//             all_cards row's is_canonical is membership in this set
+//   transform all_cards JSONL → RowDraft blobs (batched into SQLite), each
+//             carrying its 64-bit oracle-id partition hash
+//   tags      tag dumps → in-wasm TagData (+ snapshot to SQLite for restarts);
+//             fixes built_at and computes partition_count N ONCE at its end
+//             (plan B3/Decision 3b) — the loop below reads both from meta, so a
+//             mid-loop restart can fork neither
+//   scores    EVERY partition's drafts → the corpus-wide finalize tables
+//             (cubecobra percent-rank over the whole corpus's card names;
+//             illustration counts, whose (illustration_id, card_name) group is
+//             the one key the partition hash does not co-locate), sealed into
+//             the same TagData snapshot before the loop opens
+//   [for p in 0..N):                  the PARTITIONED build+publish loop.
+//     agg(p)      partition p's drafts (draftsForPartition re-mods each stored
+//                 hash by N), pass 1: dedupe winners and pin slots — both keyed
+//                 inside one card, so partition-local — through a FRESH group
+//                 wasm + restored tags per partition, so no partition's heap
+//                 high-water carries into the next
+//     finalize(p) same drafts, pass 2: ENGINE_COLUMNS rows → spill blobs.
+//                 draft_batches is dropped after the LAST partition's finalize
+//                 (earlier partitions' finalizes must leave it — later
+//                 partitions still read it)
+//     reorder(p)  partition p's spill rewritten in build order
+//     build(p)    spilled rows → partition p's own rkyv archive
+//                 (card-store-v<fmt>-<built_at>-p<k>.store) → chunk staging;
+//                 the group wasm is DROPPED here, before the publish slices
+//                 (§5.5 emit-one-release-one, enforced by the loop shape)
+//     publish(p)  partition p's chunks to KV; its spill/ordered/chunk staging
+//                 is purged when its publish completes (progressive purge —
+//                 the 5GB pool never holds two partitions' staging)
+//   ]
+//   manifest  written LAST, after every chunk of every partition — the
+//             partitioned manifest is the commit point readers act on; then
+//             prune superseded builds
 //   rulings   the rulings dump → 256 KV buckets for /cards/:id/rulings; after
 //             publish and unable to fail the run, because nothing but that one
 //             route reads them
@@ -35,7 +71,7 @@
 // its SQLite inputs — minutes of redone compute, never a wrong store.
 
 import { DurableObject } from "cloudflare:workers";
-import { addressAnnouncedEngine } from "./engine/engine-namespace";
+import { addressAnnouncedEngine, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
 import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import { staleKeys } from "./engine/kv-versions";
 import {
@@ -57,6 +93,7 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "./engine/reference-kv";
+import { buildRoutingFilterFromHashes, RoutingKeyAccumulator } from "./engine/routing-filter";
 import {
 	encodeRulingsBucket,
 	parseRulingLine,
@@ -74,30 +111,54 @@ import {
 import { GridChunker } from "./engine/store-chunks";
 import {
 	assembleChunk,
-	chunkCountFor,
 	chunkHeadroomWarning,
 	chunkKey,
 	gzipBytes,
 	KEEP_STORES_IN_KV,
-	KV_CHUNK_BYTES,
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
+	PARTITION_HASH_ALGO,
+	partitionStoreKey,
 	REGION_LIVE_PREFIX,
 	STORE_CONTENT_GENERATION,
 	type StagedRow,
 	staleStoreKeys,
+	storeKeyStem,
+	writeManifest,
+	writeRoutingFilter,
 } from "./engine/store-kv";
-import type { Env } from "./engine/types";
+import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types";
+import { isBlankLine, scanJsonlSlice } from "./import-lines";
+import { DUMP_KINDS, type DumpKind, phaseAfterFetch, phaseAfterStaged, TRANSFORM_KIND } from "./import-phases";
+import {
+	advanceToNextPartition,
+	completePartitionPublish,
+	currentRecord,
+	initialPpPublish,
+	type PpPublish,
+	parsePpPublish,
+	partitionCountFor,
+	publishChunkTotal,
+	recordBuild,
+	recordChunk,
+	restartAtSafeCut,
+	serializePpPublish,
+	TARGET_PARTITION_BYTES,
+} from "./import-publish";
+import { MEMBER_RAW_BYTES, memberBytes, recodeWindow, skipBytes } from "./import-recode";
 import {
 	blobBytes,
 	blobGroups,
+	draftsForPartition,
 	exactBuffer,
 	lengthPrefixed,
 	orderedRowCursor,
+	packPartHashes,
 	reorderSlice,
 	spillIndex,
 	splitBatch,
+	unpackPartHashes,
 } from "./import-spill";
 
 interface RunRecord {
@@ -119,6 +180,15 @@ const MAX_RETRIES = 8;
  * attempt, including the ones killed before they could fail. Its job is to
  * put a ceiling on a loop that reports no errors at all, so it only has to be
  * loose enough never to fire on genuine retry-and-recover.
+ *
+ * DELIBERATELY UNCHANGED for the partitioned loop (plan B3). The loop
+ * multiplies how many SLICES a run makes (~N times the agg/finalize/reorder/
+ * build/publish alarms), not how many consecutive attempts any one slice
+ * needs: the counter resets to zero on every slice that completes, so a
+ * healthy N-partition run passes this gate exactly as a healthy N=1 run did —
+ * one attempt per slice, many more slices. What the ceiling bounds is a single
+ * slice the runtime keeps killing, and partitioning makes each slice SMALLER,
+ * not larger.
  */
 const MAX_PHASE_ATTEMPTS = 12;
 /**
@@ -203,12 +273,36 @@ class FatalImportError extends Error {}
 // Slice budgets — sized so a slice stays far under the 30s DO CPU allowance.
 /** Compressed dump bytes fetched per slice (network-bound, cheap CPU). */
 const FETCH_SLICE_BYTES = 48 * 1024 * 1024;
-/** Bulk JSONL lines transformed per slice (~1-2s of wasm CPU). Sized for
- * isolate memory as much as CPU: the slice's drafts buffer in JS (~1.5KB
- * each) until the transaction, alongside the wasm heap. */
+/** Bulk JSONL lines transformed per slice (~2-4s of wasm CPU at all_cards'
+ * CJK-heavy mix). 540,484 all_cards lines ≈ 55 slices — each resuming O(1)
+ * into the recoded members (stagedBytes), so the slice count no longer
+ * multiplies a decompress-the-prefix cost. Sized for isolate memory as much as
+ * CPU: the slice's drafts buffer in JS until the transaction — worst case all
+ * 10k lines draft, at ~1.5KB for an English draft and ~2.5-4KB for a foreign
+ * one carrying printed_* text, ≈ 25-40MB of JS buffers (+ 80KB of hashes)
+ * alongside a transient wasm heap holding the ~2MB canonical set — comfortably
+ * inside 128MB, but not a budget to double casually. */
 const TRANSFORM_SLICE_LINES = 10_000;
+/** default_cards lines fed to the canonical id pass per slice. ~117k canonical
+ * printings at ~3.9KB/line ≈ 450MB raw → 5 slices of 24k lines / ~94MB raw
+ * (plan B2 says ~4-6). default_cards is NOT recoded, so each slice re-streams
+ * the dump and linear-discards to its checkpoint — the tolerable cost profile
+ * stagedBytes documents for small kinds: worst slice gunzips a ~360MB prefix
+ * (~1-2s) plus an id-only serde parse of its own window (~1s). */
+const CANONICAL_SLICE_LINES = 24_000;
 /** Draft batches aggregated / finalized per slice (~1-2s of wasm CPU each). */
 const AGG_SLICE_BATCHES = 8;
+/** Draft batches folded into the corpus-wide finalize tables per slice.
+ *
+ * Bigger than AGG_SLICE_BATCHES because the work per draft is far smaller — three fields off a
+ * narrow serde struct, one hash lookup, no dedupe map, no interners — while the per-slice OVERHEAD
+ * is large and fixed: the whole TagData snapshot is restored and re-exported around every slice
+ * (~20MB of JSON), which is what makes the phase resumable. 24 batches ≈ 45MB of staged drafts,
+ * putting today's corpus at ~35 slices. */
+const SCORES_SLICE_BATCHES = 24;
+/** Batch rows materialized as JS buffers at once inside a scores slice (~15MB) — the same
+ * resident-bytes budget the agg slice keeps. */
+const SCORES_FETCH_BATCHES = 8;
 /** Finalize buffers ~2KB of row JSON per row in JS while the wasm heap holds
  * tags+aggregates+interners (~90MB at full corpus) — small slices keep the
  * isolate total well under 128MB. */
@@ -280,24 +374,20 @@ const SCRYFALL_API_URL = "https://api.scryfall.com";
  * alarms.
  */
 const SCRYFALL_REQUEST_DELAY_MS = 100;
-// `oracle_cards` is one card object per oracle_id, and that object IS Scryfall's chosen
-// representative printing — it pins ours (see transform.rs PIN_BONUS). ~24MB against
-// default_cards' ~450MB. Last in the list so the phase chain reaches it after the dumps the store
-// cannot be built without: a failure here should cost the pin, not the import.
-// `rulings` backs /cards/:id/rulings and its two sibling addressings, and nothing else reads it —
-// which is why it sits after `oracle_cards` at the end: the fetch chain reaches it last, so a dump
-// that is unavailable or malformed costs the rulings refresh rather than the store. ~5.3MB
-// compressed, 25.7MB of JSONL, and it is published to its own KV keys (see stepRulings), not built
-// into the store.
-const DUMP_KINDS = ["default_cards", "oracle_tags", "art_tags", "oracle_cards", "rulings"] as const;
-type DumpKind = (typeof DUMP_KINDS)[number];
+// WHICH dumps a run fetches, and where the chain goes after each, live in
+// src/import-phases.ts (DUMP_KINDS / phaseAfterFetch) — one list, with the
+// per-dump ordering rationale beside it.
 
 type Phase =
 	| "idle"
 	| "listing"
 	| `fetch:${DumpKind}`
+	| "recode:all_cards"
+	| "canonical"
 	| "transform"
 	| "tags"
+	| "scores"
+	| "routing"
 	| "agg"
 	| "finalize"
 	| "reorder"
@@ -312,6 +402,19 @@ type Phase =
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource);
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Newline-join buffered lines into one wasm call's payload (canonical + transform slices). */
+function joinLines(lineBufs: Uint8Array[], lineBytes: number): Uint8Array {
+	const joined = new Uint8Array(lineBytes + lineBufs.length - 1);
+	let at = 0;
+	for (let i = 0; i < lineBufs.length; i++) {
+		if (i > 0) joined[at++] = 0x0a;
+		const buf = lineBufs[i] as Uint8Array;
+		joined.set(buf, at);
+		at += buf.length;
+	}
+	return joined;
 }
 
 /** `sylvan-librarian-worker/<YYYYMMDD>` — Scryfall rejects default UAs. */
@@ -408,7 +511,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 				kind TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL,
 				PRIMARY KEY (kind, seq)
 			);
-			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
+			-- A staged dump re-compressed into INDEPENDENT gzip members of
+			-- MEMBER_RAW_BYTES raw bytes each (see stepRecode), one member per
+			-- row, carrying the raw span it covers. Unlike stage_blobs — arbitrary
+			-- 1.9MB cuts of one long gzip stream, decodable only from the top —
+			-- these let stagedBytes() start decompressing AT any raw offset, which
+			-- is what makes ~55 transform resumes into all_cards' ~2GB affordable.
+			CREATE TABLE IF NOT EXISTS stage_members (
+				kind TEXT NOT NULL, seq INTEGER NOT NULL,
+				raw_start INTEGER NOT NULL, raw_len INTEGER NOT NULL, bytes BLOB NOT NULL,
+				PRIMARY KEY (kind, seq)
+			);
+			-- part_hashes: count × 8 bytes, little-endian u64 — the i-th entry is the
+			-- fnv1a64(oracle_id) partition hash of the batch's i-th length-prefixed
+			-- draft (see the draft-partition-hash block in import-spill.ts for why it
+			-- is a parallel vector and a full hash rather than a per-draft INTEGER or
+			-- a partition index). The build loop re-mods it by the partition_count it
+			-- chooses (draftsForPartition).
+			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL, part_hashes BLOB);
 			-- Spilled card rows, length-prefixed in byte-capped groups keyed by
 			-- the index of their first row. Batched because DO row writes are
 			-- the scarcest resource on the free plan (100k/day): one row per
@@ -416,7 +536,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- stepBuild serves random lookups out of these without re-reading
 			-- whole groups — see the substr() lookup there.
 			CREATE TABLE IF NOT EXISTS spill_batches (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
-			CREATE TABLE IF NOT EXISTS row_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			-- The same spilled rows, rewritten in BUILD order (see stepReorder).
 			-- The build consumes rows sorted; finalize can only write them in add
 			-- order, and serving an arbitrary add-index meant a random seek per
@@ -430,6 +549,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS ordered_rows (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
+			-- The routing filter's raw input, one row per scores batch: tab-separated
+			-- partition/key lines emitted by scores_add_drafts (EMIT_ROUTING). Staged rather than
+			-- accumulated in wasm
+			-- because 1.2M keys resident would be ~55MB against a 124MiB ceiling; the routing phase
+			-- streams them straight into hashes and drops the table.
+			CREATE TABLE IF NOT EXISTS routing_keys (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			-- What the last import left in each published rulings bucket. CROSS-RUN state, unlike
 			-- every table above it: it is what lets a night publish only the buckets whose bytes
 			-- actually moved, so it is neither in resetStaging nor covered by metaClear.
@@ -438,8 +563,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 			);
 			-- What the last import left in each published reference value. Cross-run, like
 			-- rulings_buckets and for the same reason: it is what lets a night write only what moved.
-			CREATE TABLE IF NOT EXISTS reference_values (key TEXT PRIMARY KEY, hash TEXT NOT NULL);`,
+			CREATE TABLE IF NOT EXISTS reference_values (key TEXT PRIMARY KEY, hash TEXT NOT NULL);
+			-- row_batches held finalize's per-row JSON (the D1 cards-table feed upstream has and this
+			-- platform never did). It was WRITE-ONLY — inserted, reset, never read — and at all_cards
+			-- scale it would have been ~1.1GB of dead staging against a 5GB pool. The DROP reclaims
+			-- what a live instance still holds from before the table was removed.
+			DROP TABLE IF EXISTS row_batches;`,
 		);
+		// A live instance's draft_batches predates the part_hashes column (CREATE IF
+		// NOT EXISTS never alters). Additive and nullable, so old rows read NULL —
+		// which takePendingDrafts treats as "staged by the pre-partition pipeline",
+		// a state only a mid-run deploy can produce and one that fails the run.
+		const draftCols = this.sqlAll<{ name: string }>(
+			"SELECT name FROM pragma_table_info('draft_batches') WHERE name = 'part_hashes'",
+		);
+		if (draftCols.length === 0) {
+			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN part_hashes BLOB");
+		}
 		this.schemaReady = true;
 	}
 
@@ -695,10 +835,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		switch (phase) {
 			case "listing":
 				return this.stepListing();
+			case "canonical":
+				return this.stepCanonical();
 			case "transform":
 				return this.stepTransform();
 			case "tags":
 				return this.stepTags();
+			case "scores":
+				return this.stepScores();
+			case "routing":
+				return this.stepRouting();
 			case "agg":
 				return this.stepAgg();
 			case "finalize":
@@ -721,6 +867,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 				if (phase.startsWith("fetch:")) {
 					return this.stepFetch(phase.slice("fetch:".length) as DumpKind);
 				}
+				if (phase.startsWith("recode:")) {
+					return this.stepRecode(phase.slice("recode:".length) as DumpKind);
+				}
 				throw new Error(`unknown phase ${phase}`);
 			}
 		}
@@ -733,6 +882,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async stepListing(): Promise<void> {
+		const kinds = DUMP_KINDS;
 		const res = await fetch(this.bulkDataUrl(), {
 			headers: { "User-Agent": userAgent(), Accept: "application/json" },
 		});
@@ -747,14 +897,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// downloading anything. Best-effort: a listing without updated_at just
 		// leaves the field off, and the deploy falls back to its age backstop.
 		const stamps = records
-			.filter((r) => r.type && (DUMP_KINDS as readonly string[]).includes(r.type))
+			.filter((r) => r.type && (kinds as readonly string[]).includes(r.type))
 			.map((r) => Date.parse(r.updated_at ?? ""))
 			.filter((n) => Number.isFinite(n));
 		this.ctx.storage.transactionSync(() => {
 			if (stamps.length > 0) {
 				this.metaSet("source_updated_at", new Date(Math.max(...stamps)).toISOString());
 			}
-			for (const kind of DUMP_KINDS) {
+			for (const kind of kinds) {
 				const record = records.find((r) => r.type === kind);
 				// Mirrors bulk.rs download_uri_from_listing: a missing record or
 				// missing jsonl_download_uri is a schema change — fail loudly.
@@ -767,8 +917,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 					record.jsonl_download_uri,
 				);
 			}
-			this.metaSet("phase", "fetch:default_cards");
+			this.metaSet("phase", `fetch:${kinds[0]}`);
 		});
+		console.log(`Import run listed ${kinds.length} dumps to fetch`);
 	}
 
 	// ── phase: fetch (ranged, resumable, compressed-at-rest) ───────────────────
@@ -864,13 +1015,80 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private advanceFetch(kind: DumpKind): void {
-		const idx = DUMP_KINDS.indexOf(kind);
-		const next = DUMP_KINDS[idx + 1];
-		this.metaSet("phase", next ? `fetch:${next}` : "transform");
+		// The chain lives in src/import-phases.ts: all_cards takes the recode
+		// detour, and the last dump hands the chain to the canonical id pass, which
+		// must complete before transform starts (every transformed row's
+		// is_canonical is membership in the set it builds; see stepCanonical).
+		const next = phaseAfterFetch(kind);
+		if (next.startsWith("recode:")) {
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("recode_raw_done", "0");
+				this.metaSet("phase", next);
+			});
+			return;
+		}
+		this.metaSet("phase", next);
 	}
 
-	/** Stream a staged dump's decompressed byte chunks. Detects gzip by magic. */
-	private async *stagedBytes(kind: DumpKind): AsyncGenerator<Uint8Array> {
+	// ── phase: recode (all_cards → independent gzip members) ──────────────────
+
+	/**
+	 * Re-compress one RECODE_WINDOW_RAW window of the staged dump into
+	 * independent MEMBER_RAW_BYTES-raw gzip members (stage_members rows).
+	 *
+	 * Each slice re-streams the original stage_blobs gzip from seq 0 and
+	 * discards up to the persisted checkpoint (`recode_raw_done`) — the same
+	 * resume shape the transform phase uses, paid ~8 times here so it never has
+	 * to be paid ~55 times there. Worst slice ≈ 12–15s CPU (decompress a ~1.75GB
+	 * prefix + gzip 256MB); see the constants in import-recode.ts for the math.
+	 *
+	 * Resumable mid-phase: the checkpoint commits in the same transaction as the
+	 * slice's members, and a killed or retried slice cannot duplicate members —
+	 * member seq is derived from raw_start, and the write deletes seq >= the
+	 * resume point before inserting, so a re-run replaces exactly what the dead
+	 * slice may have half-committed (nothing, given the transaction, but the
+	 * delete also covers a checkpoint rolled back under members that landed).
+	 *
+	 * The final slice deletes the original all_cards stage_blobs INSIDE its own
+	 * transaction — first of the progressive staging purges, and load-bearing
+	 * for the 5GB pool: dump-as-blobs (~392MB) plus dump-as-members (~392MB)
+	 * must not both persist for the rest of the run.
+	 */
+	private async stepRecode(kind: DumpKind): Promise<void> {
+		const rawDone = Number(this.metaGet("recode_raw_done") ?? 0);
+		const { members, rawEnd, exhausted } = await recodeWindow(this.stagedBlobBytes(kind), rawDone);
+		this.ctx.storage.transactionSync(() => {
+			this.sqlRun(
+				"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
+				kind,
+				Math.floor(rawDone / MEMBER_RAW_BYTES),
+			);
+			for (const m of members) {
+				this.sqlRun(
+					"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
+					kind,
+					m.seq,
+					m.rawStart,
+					m.rawLen,
+					exactBuffer(m.bytes),
+				);
+			}
+			this.metaSet("recode_raw_done", String(rawEnd));
+			if (exhausted) {
+				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
+				this.metaSet("phase", phaseAfterStaged(kind));
+			}
+		});
+		console.log(
+			`Recode slice: ${kind} raw bytes ${rawDone}-${rawEnd} into ${members.length} member(s)` +
+				`${exhausted ? " (done; original stage blobs dropped)" : ""}`,
+		);
+	}
+
+	/** Stream a staged dump's RAW stage_blobs rows, decompressed. Detects gzip
+	 * by magic. The pre-recode view: one long stream, decodable only from the
+	 * top — stepRecode's input, and the fallback for kinds never recoded. */
+	private async *stagedBlobBytes(kind: DumpKind): AsyncGenerator<Uint8Array> {
 		let seq = 0;
 		const raw = new ReadableStream<Uint8Array>({
 			// Arrow, not a method: `this` inside an underlying-source method is
@@ -902,6 +1120,43 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * Stream a staged dump's decompressed bytes from `fromRawOffset` onward.
+	 *
+	 * Recoded kinds (rows in stage_members) seek: binary-search the members on
+	 * raw_start — the (kind, seq) primary key walks them in raw order, so the
+	 * DESC LIMIT 1 below IS that search — start decompressing at the containing
+	 * member, and skip the offset's remainder inside it. Cost of a resume: one
+	 * ~8MB member, however deep the offset.
+	 *
+	 * Non-recoded kinds keep the original behavior — the whole-stream blob view
+	 * with its gzip-magic sniffing — and honor the offset by linear discard,
+	 * which is the cost profile those dumps are small enough to tolerate.
+	 */
+	private async *stagedBytes(kind: DumpKind, fromRawOffset = 0): AsyncGenerator<Uint8Array> {
+		const start = this.sqlAll<{ seq: number; raw_start: number }>(
+			"SELECT seq, raw_start FROM stage_members WHERE kind = ? AND raw_start <= ? ORDER BY seq DESC LIMIT 1",
+			kind,
+			fromRawOffset,
+		)[0];
+		if (start) {
+			yield* memberBytes(
+				(seq) => {
+					const row = this.sqlAll<{ bytes: ArrayBuffer }>(
+						"SELECT bytes FROM stage_members WHERE kind = ? AND seq = ?",
+						kind,
+						seq,
+					)[0];
+					return row ? new Uint8Array(row.bytes as ArrayBuffer) : null;
+				},
+				Number(start.seq),
+				fromRawOffset - Number(start.raw_start),
+			);
+			return;
+		}
+		yield* skipBytes(this.stagedBlobBytes(kind), fromRawOffset);
+	}
+
 	/** Line-decoded view of a staged dump (tags dumps — small enough to decode). */
 	private async *stagedLines(kind: DumpKind): AsyncGenerator<string> {
 		const decoder = new TextDecoder();
@@ -916,90 +1171,168 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (pending.length > 0) yield pending;
 	}
 
-	// ── phase: transform ───────────────────────────────────────────────────────
+	// ── phase: canonical (default_cards → the canonical id set) ────────────────
 
-	private async stepTransform(): Promise<void> {
-		// Disposable instance per slice: transform is stateless, and reusing a
-		// heap across phases would carry its high-water into the capped later
-		// group (linear memory never shrinks).
+	/**
+	 * Fold one slice of default_cards' ids into the canonical set.
+	 *
+	 * The set answers, for every all_cards row the transform will see,
+	 * "is this printing one of Scryfall's canonical (default_cards) printings?"
+	 * — id-membership, never re-derived (plan reconciliation 5) — so it must be
+	 * COMPLETE before the first transform slice runs; is_canonical is baked
+	 * into each draft at transform time.
+	 *
+	 * Continuity is the labels mechanism, exactly: the set lives inside the
+	 * wasm's TagData (canonical_add_lines), and the ONE snapshot path —
+	 * tags_export into tagdata_blobs, tags_restore back out — is what carries
+	 * it across slices, across DO evictions, and into every transient transform
+	 * instance. Each slice here restores the snapshot, adds its lines, and
+	 * re-exports in the same transaction as its cursor, so a retried slice
+	 * restores exactly the set its cursor describes. (The tags phase later
+	 * overwrites tagdata_blobs with the tag snapshot; by then the set has been
+	 * consumed — transform is complete.)
+	 *
+	 * Resumes by raw byte offset, like transform — but default_cards is not
+	 * recoded, so the resume is stagedBytes' linear discard (see
+	 * CANONICAL_SLICE_LINES for the cost math).
+	 */
+	private async stepCanonical(): Promise<void> {
 		const wasm = transientWasm();
-		const linesDone = Number(this.metaGet("lines_done") ?? 0);
-		const draftBuf: Uint8Array[] = [];
-		const stats = { parsed: 0, skipped: 0, drafts: 0, parsed_bytes: 0, total_bytes: 0 };
-		wasm.setHandlers({
-			onDraft: (b) => draftBuf.push(b),
-			onStats: (s) => {
-				stats.parsed += s.parsed ?? 0;
-				stats.skipped += s.skipped ?? 0;
-				stats.drafts += s.drafts ?? 0;
-				stats.parsed_bytes += s.parsed_bytes ?? 0;
-			},
-		});
+		wasm.reset();
+		const rawDone = Number(this.metaGet("canonical_raw_done") ?? 0);
+		if (rawDone > 0) {
+			const snapshot = this.tagSnapshotBytes();
+			if (!snapshot) throw new FatalImportError("canonical: id snapshot missing mid-phase");
+			wasm.tagsRestore(snapshot);
+		}
 
-		// Byte-level line handling: skipped (already-processed) lines cost one
-		// newline scan, never a decode — resuming deep into the dump stays cheap
-		// even though each slice re-streams the gzip from the start.
-		let seen = 0;
-		let processed = 0;
-		let exhausted = true;
+		let added = 0n;
+		let fed = 0;
 		let lineBufs: Uint8Array[] = [];
 		let lineBytes = 0;
 		const feed = () => {
 			if (lineBufs.length === 0) return;
-			const joined = new Uint8Array(lineBytes + lineBufs.length - 1);
-			let at = 0;
-			for (let i = 0; i < lineBufs.length; i++) {
-				if (i > 0) joined[at++] = 0x0a;
-				const buf = lineBufs[i] as Uint8Array;
-				joined.set(buf, at);
-				at += buf.length;
-			}
-			stats.total_bytes += lineBytes + lineBufs.length; // + one newline per line
-			wasm.transformLinesRaw(joined);
+			added += wasm.canonicalAddLinesRaw(joinLines(lineBufs, lineBytes));
 			lineBufs = [];
 			lineBytes = 0;
 		};
-		const isBlank = (line: Uint8Array): boolean => line.every((b) => b === 0x20 || b === 0x09 || b === 0x0d);
-		const takeLine = (line: Uint8Array): boolean => {
-			// Returns true when the slice budget is exhausted.
-			seen += 1;
-			if (seen <= linesDone || line.length === 0 || isBlank(line)) return false;
+		const result = await scanJsonlSlice(this.stagedBytes("default_cards", rawDone), (line) => {
+			if (line.length === 0 || isBlankLine(line)) return false;
+			lineBufs.push(line.slice());
+			lineBytes += line.length;
+			fed += 1;
+			if (lineBufs.length >= LINES_PER_CALL) feed();
+			return fed >= CANONICAL_SLICE_LINES;
+		});
+		feed();
+
+		const tagBlobs: Uint8Array[] = [];
+		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
+		wasm.tagsExport();
+		wasm.setHandlers({});
+
+		this.ctx.storage.transactionSync(() => {
+			this.writeTagSnapshot(tagBlobs);
+			this.metaSet("canonical_raw_done", String(rawDone + result.consumed));
+			const lines = Number(this.metaGet("canonical_lines") ?? 0) + fed;
+			const ids = Number(this.metaGet("canonical_ids") ?? 0) + Number(added);
+			this.metaSet("canonical_lines", String(lines));
+			this.metaSet("canonical_ids", String(ids));
+			if (result.exhausted) {
+				// Coverage check, the transform parse-coverage's sibling: default_cards
+				// carries one unique id per line, so ids far below lines means the dump
+				// format changed — and unlike the labels (optional by construction),
+				// an empty canonical set builds a store with NO canonical printings.
+				if (lines === 0 || ids < PARSE_COVERAGE_THRESHOLD * lines) {
+					throw new Error(
+						`canonical ids ${ids} from ${lines} default_cards lines, below ${PARSE_COVERAGE_THRESHOLD}; format changed?`,
+					);
+				}
+				// Progressive staging purge (plan B1): this phase is default_cards'
+				// ONLY consumer — the transform reads all_cards — and everything the
+				// set feeds is in the snapshot just written. Same transaction as the
+				// phase's end, so the run either still owns the dump or no longer
+				// needs it, never neither.
+				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", "default_cards");
+				this.metaSet("phase", "transform");
+			}
+		});
+		console.log(
+			`Canonical slice: ${fed} lines, ${added} new ids` +
+				`${result.exhausted ? " (done; default_cards staged blobs dropped)" : ""}`,
+		);
+	}
+
+	// ── phase: transform ───────────────────────────────────────────────────────
+
+	private async stepTransform(): Promise<void> {
+		// The corpus is all_cards — every printing in every language, recoded into
+		// seekable gzip members by the phase before last.
+		const corpus = TRANSFORM_KIND;
+		// Disposable instance per slice: transform keeps no cross-slice state of
+		// its own, and reusing a heap across phases would carry its high-water
+		// into the capped later group (linear memory never shrinks). The one
+		// thing a slice DOES need resident — the canonical id set — is re-fed
+		// below from the snapshot the canonical phase left, the same restore the
+		// group phases use after an eviction (one persistence path, no drift).
+		const wasm = transientWasm();
+		wasm.reset();
+		const snapshot = this.tagSnapshotBytes();
+		if (!snapshot) {
+			// Not retryable: the snapshot is written by the canonical phase, which
+			// the chain guarantees ran to completion before this one.
+			throw new FatalImportError("transform: canonical id snapshot missing (canonical phase incomplete?)");
+		}
+		wasm.tagsRestore(snapshot);
+
+		const linesDone = Number(this.metaGet("lines_done") ?? 0);
+		// The raw-offset cursor pairs with lines_done: it names the byte at which
+		// line `lines_done` starts, so a resume seeks stagedBytes O(1) into the
+		// recoded members instead of newline-scanning a ~2GB prefix.
+		const rawOffset = Number(this.metaGet("transform_raw_offset") ?? 0);
+		const draftBuf: Uint8Array[] = [];
+		const hashBuf: bigint[] = [];
+		const stats = { parsed: 0, skipped: 0, drafts: 0, canonical: 0, parsed_bytes: 0, total_bytes: 0 };
+		wasm.setHandlers({
+			onDraft: (b, partHash) => {
+				draftBuf.push(b);
+				hashBuf.push(partHash);
+			},
+			onStats: (s) => {
+				stats.parsed += s.parsed ?? 0;
+				stats.skipped += s.skipped ?? 0;
+				stats.drafts += s.drafts ?? 0;
+				stats.canonical += s.canonical ?? 0;
+				stats.parsed_bytes += s.parsed_bytes ?? 0;
+			},
+		});
+
+		let processed = 0;
+		let lineBufs: Uint8Array[] = [];
+		let lineBytes = 0;
+		const feed = () => {
+			if (lineBufs.length === 0) return;
+			stats.total_bytes += lineBytes + lineBufs.length; // + one newline per line
+			wasm.transformLinesRaw(joinLines(lineBufs, lineBytes));
+			lineBufs = [];
+			lineBytes = 0;
+		};
+		const result = await scanJsonlSlice(this.stagedBytes(corpus, rawOffset), (line) => {
+			if (line.length === 0 || isBlankLine(line)) return false;
 			lineBufs.push(line.slice());
 			lineBytes += line.length;
 			if (lineBufs.length >= LINES_PER_CALL) feed();
 			processed += 1;
 			return processed >= TRANSFORM_SLICE_LINES;
-		};
-		let carry = new Uint8Array(0);
-		outer: for await (const chunk of this.stagedBytes("default_cards")) {
-			let data: Uint8Array;
-			if (carry.length) {
-				data = new Uint8Array(carry.length + chunk.length);
-				data.set(carry);
-				data.set(chunk, carry.length);
-				carry = new Uint8Array(0);
-			} else {
-				data = chunk;
-			}
-			let start = 0;
-			for (;;) {
-				const nl = data.indexOf(0x0a, start);
-				if (nl === -1) {
-					carry = data.slice(start);
-					break;
-				}
-				const budgetHit = takeLine(data.subarray(start, nl));
-				start = nl + 1;
-				if (budgetHit) {
-					exhausted = false;
-					break outer;
-				}
-			}
-		}
-		if (exhausted && carry.length) takeLine(carry); // final unterminated line
+		});
 		feed();
 		wasm.setHandlers({});
-		console.log(`Transform slice: ${processed} lines (through line ${seen}), ${stats.drafts} drafts`);
+		const exhausted = result.exhausted;
+		const seen = linesDone + result.lines;
+		console.log(
+			`Transform slice: ${processed} lines (through line ${seen}), ${stats.drafts} drafts ` +
+				`(${stats.canonical} canonical)`,
+		);
 
 		// Persist this slice's drafts + progress atomically: an eviction between
 		// the two would otherwise duplicate drafts on resume.
@@ -1008,21 +1341,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Byte-capped rows, the same `blobGroups` the spill and row batches below already use.
 			// The last group is partial unless this slice reached the end of the dump, so it goes
 			// back into the pending row rather than being written undersized once per slice.
-			const groups = blobGroups(this.takePendingDrafts().concat(draftBuf));
+			// The hash vector is cut at the same boundaries, staying parallel to its drafts.
+			const pending = this.takePendingDrafts();
+			const allDrafts = pending.drafts.concat(draftBuf);
+			const allHashes = pending.hashes.concat(hashBuf);
+			const groups = blobGroups(allDrafts);
+			let at = 0;
 			for (const group of exhausted ? groups : groups.slice(0, -1)) {
 				this.sqlRun(
-					"INSERT INTO draft_batches (seq, count, bytes) VALUES (?, ?, ?)",
+					"INSERT INTO draft_batches (seq, count, bytes, part_hashes) VALUES (?, ?, ?, ?)",
 					++seq,
 					group.length,
 					exactBuffer(lengthPrefixed(group)),
+					exactBuffer(packPartHashes(allHashes.slice(at, at + group.length))),
 				);
+				at += group.length;
 			}
-			this.storePendingDrafts(exhausted ? [] : (groups.at(-1) ?? []));
+			const tail = exhausted ? [] : (groups.at(-1) ?? []);
+			this.storePendingDrafts(tail, allHashes.slice(at, at + tail.length));
 			this.metaSet("lines_done", String(seen));
+			this.metaSet("transform_raw_offset", String(rawOffset + result.consumed));
 			for (const [k, v] of Object.entries(stats)) {
-				if (k === "total_bytes" || k === "parsed_bytes" || k === "parsed" || k === "skipped" || k === "drafts") {
-					this.metaSet(`tf_${k}`, String(Number(this.metaGet(`tf_${k}`) ?? 0) + v));
-				}
+				this.metaSet(`tf_${k}`, String(Number(this.metaGet(`tf_${k}`) ?? 0) + v));
 			}
 			if (exhausted) {
 				// Parse-coverage integrity check (bulk.rs JsonlStream parity): a
@@ -1035,6 +1375,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 					);
 				}
 				this.metaSet("drafts_total", this.metaGet("tf_drafts") ?? "0");
+				// Progressive staging purge: the transform's corpus exists to feed
+				// it, and no later phase reads it — everything downstream works
+				// from draft_batches. Dropped in the SAME transaction that ends the
+				// phase, so the run either still owns its input or no longer needs
+				// it, never neither. The rows are the RECODED members; all_cards'
+				// original blobs went at the end of the recode phase.
+				this.sqlRun("DELETE FROM stage_members WHERE kind = ?", corpus);
 				this.metaSet("phase", "tags");
 			}
 		});
@@ -1042,21 +1389,36 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/** Drafts that have not yet filled a whole batch, persisted between slices
 	 * as the reserved seq -1 row (excluded from agg/finalize scans by `seq >= 0`
-	 * ... which start from a non-negative cursor). */
-	private takePendingDrafts(): Uint8Array[] {
-		const stored = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM draft_batches WHERE seq = -1")[0];
-		if (!stored) return [];
+	 * ... which start from a non-negative cursor), each with its partition hash. */
+	private takePendingDrafts(): { drafts: Uint8Array[]; hashes: bigint[] } {
+		const stored = this.sqlAll<{ bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
+			"SELECT bytes, part_hashes FROM draft_batches WHERE seq = -1",
+		)[0];
+		if (!stored) return { drafts: [], hashes: [] };
 		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
-		return splitBatch(new Uint8Array(stored.bytes as ArrayBuffer)).map((b) => b.slice());
+		const drafts = splitBatch(new Uint8Array(stored.bytes as ArrayBuffer)).map((b) => b.slice());
+		const hashes = stored.part_hashes ? unpackPartHashes(new Uint8Array(stored.part_hashes as ArrayBuffer)) : [];
+		if (hashes.length !== drafts.length) {
+			// Only a deploy that lands MID-RUN, across the partition-hash framing
+			// change, can produce this — and that run's staged drafts are from the
+			// old transform anyway (different input dump, no printed columns).
+			// Restarting the run is strictly better than finishing it wrong.
+			throw new FatalImportError(
+				`pending draft row carries ${drafts.length} drafts but ${hashes.length} hashes — ` +
+					"staged by a pre-partition build; the next scheduled import restarts cleanly",
+			);
+		}
+		return { drafts, hashes };
 	}
 
-	private storePendingDrafts(drafts: Uint8Array[]): void {
+	private storePendingDrafts(drafts: Uint8Array[], hashes: bigint[]): void {
 		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
 		if (drafts.length > 0) {
 			this.sqlRun(
-				"INSERT INTO draft_batches (seq, count, bytes) VALUES (-1, ?, ?)",
+				"INSERT INTO draft_batches (seq, count, bytes, part_hashes) VALUES (-1, ?, ?, ?)",
 				drafts.length,
 				exactBuffer(lengthPrefixed(drafts)),
+				exactBuffer(packPartHashes(hashes)),
 			);
 		}
 	}
@@ -1107,28 +1469,264 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
 		wasm.tagsExport();
 		wasm.setHandlers({});
+
+		// Size the partition loop HERE, while everything it needs is already
+		// durable: the drafts are fully staged (transform completed before this
+		// phase), so SUM(length(bytes)) is the whole corpus, and the projection
+		// (bytes × DRAFT_TO_STORE_RATIO / TARGET_PARTITION_BYTES, clamped) is a
+		// pure function of it. N and built_at are persisted in the SAME
+		// transaction that opens the loop, so a mid-loop restart can fork
+		// neither: the store keys, the chunk keys, and every draft's partition
+		// assignment all derive from these two values (plan B3 / Decision 3b).
+		const stagedDraftBytes = Number(
+			this.sqlAll<{ n: number }>("SELECT COALESCE(SUM(length(bytes)), 0) AS n FROM draft_batches WHERE seq >= 0")[0]
+				?.n ?? 0,
+		);
+		const partitionCount = partitionCountFor(stagedDraftBytes);
+		console.log(
+			`Partition loop: ${stagedDraftBytes} staged draft bytes project to ${partitionCount} partition(s) ` +
+				`of ~${(TARGET_PARTITION_BYTES / 1048576).toFixed(0)}MB`,
+		);
+
 		this.ctx.storage.transactionSync(() => {
-			this.sqlRun("DELETE FROM tagdata_blobs");
-			let seq = -1;
-			for (const blob of tagBlobs) {
-				for (let at = 0; at < blob.length; at += STAGE_BLOB_BYTES) {
-					this.sqlRun(
-						"INSERT INTO tagdata_blobs (seq, bytes) VALUES (?, ?)",
-						++seq,
-						exactBuffer(blob.subarray(at, Math.min(at + STAGE_BLOB_BYTES, blob.length))),
-					);
+			// Overwrites the canonical phase's snapshot, deliberately: the canonical
+			// set was consumed when transform completed, and from here every restart
+			// path restores THIS TagData (tags + labels).
+			this.writeTagSnapshot(tagBlobs);
+			this.metaSet("tags_nonce", wasm.nonce);
+			this.metaSet("scores_batch_done", "0");
+			this.metaSet("agg_batch_done", "0");
+			// built_at is fixed ONCE, here at the end of tags, never in stepBuild
+			// (plan B3): with N builds in one run, a built_at stamped per build
+			// would fork the store key family on any mid-loop restart, stranding
+			// the chunks already published under the earlier timestamp.
+			this.metaSet("built_at", String(Math.floor(Date.now() / 1000)));
+			// The format version likewise binds the whole FAMILY of keys, so it is
+			// recorded once beside built_at rather than asked of each partition's
+			// build (every partition builds through the same wasm module anyway).
+			this.metaSet("format_version", String(wasm.formatVersion()));
+			// The loop's one durable cursor: partition 0, step agg, N zeroed
+			// records. Its length IS the persisted N — there is no second copy.
+			this.metaSet("pp_publish", serializePpPublish(initialPpPublish(partitionCount)));
+			// Progressive staging purge: this phase is the only consumer of the
+			// tags dumps and the labels dump, and the TagData snapshot just
+			// written above is what every restart path restores from
+			// (restoreTags reads tagdata_blobs, never these) — so their staged
+			// bytes are dead the moment this transaction commits. (default_cards'
+			// blobs went earlier still, at the end of the canonical phase — its
+			// only consumer.)
+			for (const consumed of ["oracle_tags", "art_tags", "oracle_cards"] as const) {
+				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", consumed);
+			}
+			// The GLOBAL phase between the tags and the loop: the cubecobra table (see stepScores).
+			this.metaSet("phase", "scores");
+		});
+	}
+
+	// ── phase: scores (the corpus-wide finalize tables) ────────────────────────
+
+	/**
+	 * Fold one slice of the staged drafts — EVERY partition's, in emission order — into the
+	 * corpus-wide finalize tables.
+	 *
+	 * WHY IT IS ITS OWN PHASE. Two of `finalize`'s inputs are computed ACROSS rows, and the loop
+	 * below runs `agg(p)` over ONE partition's drafts:
+	 *   - `cubecobra_score` is a PERCENT_RANK over the distinct card names of the whole corpus. A
+	 *     table built per partition ranks each card against 1/Nth of the names, so the same corpus
+	 *     scores differently depending on which publisher built it — and the archive stores the
+	 *     value and SORTS on it (`orderby=cubecobra`), so the deploy's ordering would silently
+	 *     change after the first nightly.
+	 *   - `illustration_count` groups by (illustration_id, card_name), the one aggregate key with
+	 *     no oracle_id in it and therefore the one the partition hash does not co-locate. It has
+	 *     never straddled (0 of 46,487 groups on the real corpus), which is a reason to count it
+	 *     where the question cannot arise, not a reason to assume it.
+	 * Computed once, here, where the drafts are already fully staged (transform finished two
+	 * phases ago) and no partition has been chosen yet.
+	 *
+	 * The mechanism is the canonical id set's, exactly (stepCanonical): the tables live inside the
+	 * wasm's TagData, and the ONE snapshot path — tags_export into tagdata_blobs, tags_restore
+	 * back out — carries them across slices, across evictions, and into every per-partition
+	 * instance the loop creates. Each slice restores, adds its batches, and re-exports in the same
+	 * transaction as its cursor, so a retried slice restores exactly the tables its cursor
+	 * describes.
+	 */
+	private async stepScores(): Promise<void> {
+		const wasm = transientWasm();
+		wasm.reset();
+		const snapshot = this.tagSnapshotBytes();
+		if (!snapshot) {
+			// Not retryable: the snapshot is written by the tags phase, which the chain
+			// guarantees ran to completion before this one.
+			throw new FatalImportError("scores: TagData snapshot missing (tags phase incomplete?)");
+		}
+		wasm.tagsRestore(snapshot);
+
+		// The routing filter's key set rides this pass (see the wasm export): every draft of every
+		// partition, exactly once, is precisely what it needs and precisely what this phase already
+		// reads. The partition count is fixed at the end of `tags`, two phases back, so the wasm can
+		// stamp the final partition index rather than a hash the publisher would have to re-mod.
+		const partitionCount = this.requirePp().partitions.length;
+		const routingBlobs: { seq: number; bytes: Uint8Array }[] = [];
+		let routingSeq = -1;
+		wasm.setHandlers({ onRoutingKeys: (b) => routingBlobs.push({ seq: routingSeq, bytes: b }) });
+
+		const done = Number(this.metaGet("scores_batch_done") ?? 0);
+		let fed = 0;
+		let names = 0n;
+		// Batches are read in small groups rather than one query: a slice's worth of staged drafts
+		// is ~45MB, and materializing that as JS ArrayBuffers alongside the restored tag heap is
+		// the one place this phase could crowd the isolate.
+		while (fed < SCORES_SLICE_BATCHES) {
+			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
+				"SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+				done + fed,
+				SCORES_FETCH_BATCHES,
+			);
+			// Staged bytes are already the length-prefixed batch framing the wasm reads, so a
+			// batch goes across exactly as it was written — no split, no rejoin.
+			for (const row of rows) {
+				// The routing emit that this call produces is tagged with the batch's OWN seq, so a
+				// retried slice replaces its rows rather than appending a second copy of them.
+				routingSeq = row.seq;
+				names = wasm.scoresAddDrafts(new Uint8Array(row.bytes), partitionCount);
+			}
+			fed += rows.length;
+			if (rows.length < SCORES_FETCH_BATCHES) break;
+		}
+		const exhausted = fed < SCORES_SLICE_BATCHES;
+		if (exhausted) names = wasm.scoresFinish();
+
+		const tagBlobs: Uint8Array[] = [];
+		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
+		wasm.tagsExport();
+		wasm.setHandlers({});
+
+		this.ctx.storage.transactionSync(() => {
+			this.writeTagSnapshot(tagBlobs);
+			// Keyed by the batch cursor this slice started from, so a RETRIED slice
+			// overwrites its own rows instead of doubling them. Duplicate keys would
+			// not corrupt the filter (it dedupes), but they would inflate the build.
+			for (const blob of routingBlobs) {
+				this.sqlRun("INSERT OR REPLACE INTO routing_keys (seq, bytes) VALUES (?, ?)", blob.seq, blob.bytes);
+			}
+			this.metaSet("scores_batch_done", String(done + fed));
+			if (exhausted) this.metaSet("phase", "routing");
+		});
+		console.log(
+			`Scores slice: ${fed} draft batches, ${names} distinct card names` +
+				`${exhausted ? " (tables sealed; the partition loop opens)" : ""}`,
+		);
+	}
+
+	// ── phase: routing (the id→partition filter) ───────────────────────────────
+
+	/**
+	 * Build this generation's routing filter from the keys the scores pass staged, and publish it.
+	 *
+	 * WHY IT IS A PHASE OF ITS OWN, AND WHY IT IS HERE. It needs EVERY partition's keys at once —
+	 * an XOR retrieval structure is built from the whole key set or not at all — so it cannot live
+	 * inside the per-partition loop; and it must not live in the publish tail, where it would add
+	 * seconds of CPU to the one slice that also writes the manifest. Right after `scores` is the
+	 * first moment the whole key set exists, and built_at / format_version / partition_count were
+	 * all fixed at the end of `tags`, so the key it writes to is already final.
+	 *
+	 * PUBLISHING BEFORE THE ARCHIVES IS SAFE, not sloppy: the value is addressed by built_at, so
+	 * nothing reads it until a manifest names that generation. A run that dies after this point
+	 * leaves one orphan key, which retention sweeps with the rest of its family (routingFilterKey
+	 * is inside the `store:card-` retention pattern for exactly this reason).
+	 *
+	 * A FAILURE HERE IS NOT A FAILED RUN. The filter is an optimisation — the serving path fans out
+	 * when it is missing, which is what the deployment did before it existed — so a peeling failure
+	 * or a KV hiccup logs and moves on rather than costing a night's import.
+	 */
+	private async stepRouting(): Promise<void> {
+		const pp = this.requirePp();
+		const builtAt = this.metaGet("built_at") ?? "";
+		const formatVersion = Number(this.metaGet("format_version") ?? 0);
+		try {
+			if (!builtAt || !formatVersion) throw new Error("built_at/format_version are not stamped yet");
+			// Streamed into hashes row by row. The staged text is ~60MB on today's corpus and the
+			// accumulator holds three typed arrays instead of 1.2M strings — the difference between
+			// ~15MB and well past this object's 128MB.
+			const acc = new RoutingKeyAccumulator(1 << 21);
+			const decoder = new TextDecoder();
+			let lines = 0;
+			for (const row of this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM routing_keys ORDER BY seq")) {
+				const text = decoder.decode(new Uint8Array(row.bytes));
+				let at = 0;
+				while (at < text.length) {
+					let end = text.indexOf("\n", at);
+					if (end === -1) end = text.length;
+					if (end > at) {
+						const tab = text.indexOf("\t", at);
+						if (tab !== -1 && tab < end) {
+							acc.add(text.slice(tab + 1, end), Number(text.slice(at, tab)));
+							lines++;
+						}
+					}
+					at = end + 1;
 				}
 			}
-			this.metaSet("tags_nonce", wasm.nonce);
-			this.metaSet("agg_batch_done", "0");
+			if (lines === 0) throw new Error("the scores phase staged no routing keys");
+			const sealed = acc.seal();
+			const bytes = buildRoutingFilterFromHashes(sealed, {
+				builtAt,
+				partitionCount: pp.partitions.length,
+				partitionHash: PARTITION_HASH_ALGO,
+			});
+			await writeRoutingFilter(this.env, formatVersion, builtAt, bytes);
+			console.log(
+				`Routing filter published: ${sealed.lo.length} ids from ${lines} rows, ` +
+					`${(bytes.byteLength / 1024).toFixed(0)}KB — bare-id routes ask ONE of ` +
+					`${pp.partitions.length} partitions.`,
+			);
+		} catch (err) {
+			console.warn(`Routing filter NOT published (${err}); every /cards/<id> lookup will fan out.`);
+		}
+		this.ctx.storage.transactionSync(() => {
+			// Dropped either way: the keys have done their job, and ~60MB of staging against a
+			// shared 5GB pool is not worth keeping for a retry of an optional artifact.
+			this.sqlRun("DELETE FROM routing_keys");
 			this.metaSet("phase", "agg");
 		});
 	}
 
-	/** Restore in-wasm TagData from the SQLite snapshot (post-eviction). */
-	private restoreTags(wasm: ReturnType<typeof groupWasm>): void {
+	/**
+	 * The loop state, which every partitioned phase requires.
+	 *
+	 * Missing in a loop phase means the run was staged by the pre-partition
+	 * pipeline and a deploy landed mid-run — the same situation
+	 * takePendingDrafts detects, with the same answer: restarting the run is
+	 * strictly better than finishing it wrong.
+	 */
+	private requirePp(): PpPublish {
+		const state = parsePpPublish(this.metaGet("pp_publish"));
+		if (!state) {
+			throw new FatalImportError(
+				"pp_publish is missing mid-loop — staged by a pre-partition build; " +
+					"the next scheduled import restarts cleanly",
+			);
+		}
+		return state;
+	}
+
+	/** Persist the loop state (caller supplies the surrounding transaction). */
+	private savePp(state: PpPublish): void {
+		this.metaSet("pp_publish", serializePpPublish(state));
+	}
+
+	/** Partition p's chunk-family key in this run's pinned family:
+	 * `card-store-v<fmt>-<built_at>-p<k>.store`. */
+	private partitionKey(partition: number): string {
+		const formatVersion = Number(this.metaGet("format_version") ?? 0);
+		const builtAt = this.metaGet("built_at") ?? "";
+		return partitionStoreKey(formatVersion, builtAt, partition);
+	}
+
+	/** The TagData snapshot, reassembled from its byte-capped rows; null when none. */
+	private tagSnapshotBytes(): Uint8Array | null {
 		const rows = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM tagdata_blobs ORDER BY seq");
-		if (rows.length === 0) throw new Error("tagdata snapshot missing; cannot restore tags");
+		if (rows.length === 0) return null;
 		const total = rows.reduce((n, r) => n + (r.bytes as ArrayBuffer).byteLength, 0);
 		const merged = new Uint8Array(total);
 		let at = 0;
@@ -1136,6 +1734,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 			merged.set(new Uint8Array(r.bytes as ArrayBuffer), at);
 			at += (r.bytes as ArrayBuffer).byteLength;
 		}
+		return merged;
+	}
+
+	/** Replace the TagData snapshot (caller supplies the surrounding transaction). */
+	private writeTagSnapshot(blobs: Uint8Array[]): void {
+		this.sqlRun("DELETE FROM tagdata_blobs");
+		let seq = -1;
+		for (const blob of blobs) {
+			for (let at = 0; at < blob.length; at += STAGE_BLOB_BYTES) {
+				this.sqlRun(
+					"INSERT INTO tagdata_blobs (seq, bytes) VALUES (?, ?)",
+					++seq,
+					exactBuffer(blob.subarray(at, Math.min(at + STAGE_BLOB_BYTES, blob.length))),
+				);
+			}
+		}
+	}
+
+	/** Restore in-wasm TagData from the SQLite snapshot (post-eviction). */
+	private restoreTags(wasm: ReturnType<typeof groupWasm>): void {
+		const merged = this.tagSnapshotBytes();
+		if (!merged) throw new Error("tagdata snapshot missing; cannot restore tags");
 		const n = wasm.tagsRestore(merged);
 		console.log(`Restored TagData after eviction (${n} mapped ids)`);
 	}
@@ -1143,7 +1763,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 	/**
 	 * Tags/agg/finalize state lives in the wasm heap. If the instance nonce
 	 * changed (DO eviction), rebuild that state from SQLite: restore the tag
-	 * snapshot and restart aggregation; the caller then resumes its phase.
+	 * snapshot and restart aggregation OF THE CURRENT PARTITION; the caller
+	 * then resumes its phase.
+	 *
+	 * The rewind scope is one partition, and that is free by construction:
+	 * spill_batches and ordered_rows only ever hold the CURRENT partition's
+	 * rows (each partition's are purged when its publish completes), and
+	 * partitions already published live in KV under their own chunk keys,
+	 * which nothing here touches. So losing the heap during partition 5 of 8
+	 * costs partition 5's agg-to-build, never the four stores already
+	 * published.
 	 */
 	private ensureWasmContinuity(): boolean {
 		const wasm = groupWasm();
@@ -1152,14 +1781,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// returns false, the caller returns cleanly, and the alarm chain
 		// counts the slice as a SUCCESS — clearing the retry and attempt
 		// counters that would otherwise bound it. Meanwhile it has thrown away
-		// every spilled row and sent the run back to `agg`, so the work from
-		// aggregation onwards is done again, including a build phase that
-		// re-reads ~98k staged rows. Evict often enough and the import never
-		// finishes while quietly re-spending the whole daily row budget, with
-		// no error anywhere to say so.
+		// the current partition's spilled rows and sent the run back to `agg`,
+		// so that partition's work from aggregation onwards is done again.
+		// Evict often enough and the import never finishes while quietly
+		// re-spending the daily row budget, with no error anywhere to say so.
 		//
-		// So rewinds get their own ceiling. Hitting it means eviction is
-		// outrunning progress, which no amount of retrying fixes.
+		// So rewinds get their own ceiling — cumulative across the whole run,
+		// not per partition, because the budget being protected (the day's row
+		// allowance) is run-scoped. Hitting it means eviction is outrunning
+		// progress, which no amount of retrying fixes.
 		const rewinds = Number(this.metaGet("wasm_rewinds") ?? 0) + 1;
 		if (rewinds > MAX_WASM_REWINDS) {
 			throw new FatalImportError(
@@ -1167,8 +1797,26 @@ export class ImportCoordinator extends DurableObject<Env> {
 					"so the import is rewinding to aggregation faster than it can reach publish",
 			);
 		}
+		const pp = this.requirePp();
+		// The rewind rebuilds the partition from draft_batches — which the LAST
+		// partition's finalize drops (progressive purge, load-bearing for the 5GB
+		// pool). Losing the heap after that point is unrecoverable within this
+		// run: without this check the rewind would "succeed", aggregate zero
+		// drafts, and die two phases later on "no staged rows" — an accurate
+		// symptom of the wrong cause. The cost is one lost nightly in a rare
+		// double failure (eviction during the last partition's reorder/build);
+		// the previous store keeps serving and the next import restarts cleanly.
+		const draftRows = Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM draft_batches")[0]?.n ?? 0);
+		if (draftRows === 0) {
+			throw new FatalImportError(
+				"wasm state was lost after the draft staging was already dropped (last partition, " +
+					"post-finalize) — this run cannot rebuild the partition; the next scheduled import " +
+					"restarts cleanly",
+			);
+		}
 		console.warn(
-			`Wasm state lost to eviction (${rewinds}/${MAX_WASM_REWINDS}); rebuilding tags + aggregation from SQLite`,
+			`Wasm state lost to eviction (${rewinds}/${MAX_WASM_REWINDS}); rebuilding tags + ` +
+				`partition ${pp.partition}'s aggregation from SQLite`,
 		);
 		const fresh = newGroupWasm();
 		fresh.reset();
@@ -1176,11 +1824,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("wasm_rewinds", String(rewinds));
 			this.metaSet("tags_nonce", fresh.nonce);
+			// This rebuild IS the partition's fresh start, so stepAgg must not
+			// stack a second fresh instance on top of it.
+			this.metaSet("agg_partition_started", String(pp.partition));
 			this.metaSet("agg_batch_done", "0");
 			this.metaSet("agg_sealed", "0");
 			// Any partially-spilled finalize output is invalid with a fresh heap.
+			// Only the current partition's rows exist in these tables (see the
+			// method comment), so the whole-table delete IS the partition-scoped
+			// one.
 			this.sqlRun("DELETE FROM spill_batches");
-			this.sqlRun("DELETE FROM row_batches");
 			this.metaSet("finalize_batch_done", "0");
 			// And so is anything reorder derived FROM that output. Leaving these
 			// behind would resume the rewritten spill part-written against rows
@@ -1188,33 +1841,93 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// builds without error and is wrong.
 			this.sqlRun("DELETE FROM ordered_rows");
 			this.metaSet("reorder_done", "0");
+			pp.step = "agg";
+			this.savePp(pp);
 			this.metaSet("phase", "agg");
 		});
 		return false;
 	}
 
-	// ── phase: agg ─────────────────────────────────────────────────────────────
+	// ── phase: agg (per partition) ───────────────────────────────────────────────
+
+	/**
+	 * The current partition's drafts out of one draft_batches row — the stored
+	 * per-draft hashes re-modded by the run's pinned N, in emission order (the
+	 * order the dedupe's first-seen/last-wins semantics depend on).
+	 */
+	private partitionDrafts(row: { bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }, pp: PpPublish): Uint8Array[] {
+		if (!row.part_hashes) {
+			// Same detection and same answer as takePendingDrafts: only a deploy
+			// that lands mid-run across the partition-hash framing change can
+			// stage a batch with no hash vector, and that run's drafts are from
+			// the old transform anyway.
+			throw new FatalImportError(
+				"draft batch carries no partition hashes — staged by a pre-partition build; " +
+					"the next scheduled import restarts cleanly",
+			);
+		}
+		return [
+			...draftsForPartition(
+				[{ bytes: new Uint8Array(row.bytes), partHashes: new Uint8Array(row.part_hashes) }],
+				pp.partition,
+				pp.partitions.length,
+			),
+		];
+	}
 
 	private async stepAgg(): Promise<void> {
+		const pp = this.requirePp();
+		// A FRESH heap per partition (plan B3): linear memory never shrinks, so a
+		// heap that carried partition k's interners into partition k+1 would climb
+		// monotonically toward the module's cap over the loop. This is the same
+		// move stepTags makes at the start of ITS group, keyed on the partition
+		// index so an eviction mid-partition takes the rewind path below instead
+		// of silently restarting the partition without counting it.
+		if (this.metaGet("agg_partition_started") !== String(pp.partition)) {
+			const fresh = newGroupWasm();
+			fresh.reset();
+			this.restoreTags(fresh);
+			this.ctx.storage.transactionSync(() => {
+				this.metaSet("tags_nonce", fresh.nonce);
+				this.metaSet("agg_partition_started", String(pp.partition));
+				// Every per-partition cursor starts over with the heap. Stale
+				// values from the previous partition would resume its progress
+				// against this partition's data — the forgotten-reset bug class —
+				// so they are all reset HERE, in the one transition that
+				// invalidates them.
+				this.metaSet("agg_batch_done", "0");
+				this.metaSet("agg_sealed", "0");
+				this.metaSet("finalize_batch_done", "0");
+				this.metaSet("spill_base", "0");
+				this.metaSet("reorder_done", "0");
+				this.metaSet("staged_rows", "0");
+			});
+		}
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
 		const done = Number(this.metaGet("agg_batch_done") ?? 0);
-		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
-			"SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
+			"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
 			done,
 			AGG_SLICE_BATCHES,
 		);
 		for (const row of rows) {
-			wasm.aggDrafts(new Uint8Array(row.bytes as ArrayBuffer));
+			// Batches are walked whole and filtered, not pre-split by partition:
+			// the batch is the durable unit the cursor counts, and the filter
+			// preserves emission order within and across batches.
+			const drafts = this.partitionDrafts(row, pp);
+			if (drafts.length > 0) wasm.aggDrafts(lengthPrefixed(drafts));
 		}
 		if (rows.length < AGG_SLICE_BATCHES) {
 			const winners = wasm.aggFinish();
-			console.log(`Aggregation sealed: ${winners} winners`);
+			console.log(`Aggregation sealed for partition ${pp.partition}/${pp.partitions.length}: ${winners} winners`);
 			wasm.finalizeBegin();
 			this.ctx.storage.transactionSync(() => {
 				this.metaSet("agg_sealed", "1");
 				this.metaSet("finalize_batch_done", "0");
 				this.metaSet("spill_base", "0");
+				pp.step = "finalize";
+				this.savePp(pp);
 				this.metaSet("phase", "finalize");
 			});
 		} else {
@@ -1225,23 +1938,30 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ── phase: finalize ────────────────────────────────────────────────────────
 
 	private async stepFinalize(): Promise<void> {
+		const pp = this.requirePp();
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
 		const done = Number(this.metaGet("finalize_batch_done") ?? 0);
 		const spillBuf: Uint8Array[] = [];
-		const rowBuf: Uint8Array[] = [];
+		// Only the spill handler: the wasm also emits per-row JSON (EMIT_ROW,
+		// upstream's D1 cards-table feed), which nothing on this platform reads —
+		// it used to be staged into a row_batches table that was write-only, ~1.1GB
+		// of dead staging at all_cards scale. Leaving the handler unset drops those
+		// emits without even copying the bytes out of wasm memory.
 		wasm.setHandlers({
 			onSpill: (b) => spillBuf.push(b),
-			onRow: (b) => rowBuf.push(b),
 		});
-		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
-			"SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
+			"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
 			done,
 			FINALIZE_SLICE_BATCHES,
 		);
 		let staged = 0n;
 		for (const row of rows) {
-			staged = wasm.finalizeDrafts(new Uint8Array(row.bytes as ArrayBuffer));
+			// Same partition filter, same batches, same order as stepAgg — the
+			// finalize pass's contract with the aggregation it follows.
+			const drafts = this.partitionDrafts(row, pp);
+			if (drafts.length > 0) staged = wasm.finalizeDrafts(lengthPrefixed(drafts));
 		}
 		const finished = rows.length < FINALIZE_SLICE_BATCHES;
 		if (finished) staged = wasm.finalizeEnd();
@@ -1261,24 +1981,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 				base += group.length;
 			}
 			this.metaSet("spill_base", String(base));
-			let rowSeq = Number(
-				this.sqlAll<{ m: number }>("SELECT COALESCE(MAX(seq), -1) AS m FROM row_batches")[0]?.m ?? -1,
-			);
-			for (const group of blobGroups(rowBuf)) {
-				this.sqlRun(
-					"INSERT INTO row_batches (seq, count, bytes) VALUES (?, ?, ?)",
-					++rowSeq,
-					group.length,
-					exactBuffer(lengthPrefixed(group)),
-				);
-			}
 			this.metaSet("finalize_batch_done", String(done + rows.length));
 			if (finished) {
 				this.metaSet("staged_rows", String(staged));
+				// Progressive staging purge, LAST-partition-only (plan B3, and the
+				// careful half of it): every earlier partition's finalize still has
+				// readers behind it — partitions k+1..N-1 re-read draft_batches for
+				// their own agg+finalize — so the drafts drop exactly once, when the
+				// final partition has consumed them. ~1/Nth of the corpus (this
+				// partition's spill) replaces the whole draft staging from here.
+				if (pp.partition === pp.partitions.length - 1) {
+					this.sqlRun("DELETE FROM draft_batches");
+				}
+				pp.step = "reorder";
+				this.savePp(pp);
 				this.metaSet("phase", "reorder");
 			}
 		});
-		console.log(`Finalize slice: ${rows.length} batches, ${staged} rows staged${finished ? " (done)" : ""}`);
+		console.log(
+			`Finalize slice (partition ${pp.partition}): ${rows.length} batches, ${staged} rows staged` +
+				`${finished ? " (done)" : ""}` +
+				`${finished && pp.partition === pp.partitions.length - 1 ? " — draft staging dropped (last partition)" : ""}`,
+		);
 	}
 
 	// ── phase: build ───────────────────────────────────────────────────────────
@@ -1305,9 +2029,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * rather than viewing into the group blobs.
 	 */
 	private async stepReorder(): Promise<void> {
+		const pp = this.requirePp();
 		if (!this.ensureWasmContinuity()) return;
 		const staged = Number(this.metaGet("staged_rows") ?? 0);
-		if (staged === 0) throw new FatalImportError("reorder: no staged rows");
+		if (staged === 0) throw new FatalImportError(`reorder: no staged rows for partition ${pp.partition}`);
 
 		const order = groupWasm().stagedOrder(staged);
 		if (order.length !== staged) {
@@ -1344,12 +2069,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 				base += group.length;
 			}
 			this.metaSet("reorder_done", String(to));
-			if (to >= staged) this.metaSet("phase", "build");
+			if (to >= staged) {
+				pp.step = "build";
+				this.savePp(pp);
+				this.metaSet("phase", "build");
+			}
 		});
-		console.log(`Reorder slice: rows ${from}-${to} of ${staged} from ${groupsRead} spill groups`);
+		console.log(
+			`Reorder slice (partition ${pp.partition}): rows ${from}-${to} of ${staged} from ${groupsRead} spill groups`,
+		);
 	}
 
 	private async stepBuild(): Promise<void> {
+		const pp = this.requirePp();
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
 
@@ -1375,7 +2107,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			)[0];
 			return next ? { base: Number(next.base), bytes: blobBytes(next.bytes) } : null;
 		});
-		console.log(`Build: streaming ${staged} rows from ordered_rows`);
+		console.log(
+			`Build (partition ${pp.partition}/${pp.partitions.length}): streaming ${staged} rows from ordered_rows`,
+		);
 		// One metered read per ordered blob, not per row — charged up front so a
 		// killed build cannot spend the allowance invisibly.
 		this.prechargeReads(Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM ordered_rows")[0]?.n ?? 0));
@@ -1391,15 +2125,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const stage = (b: Uint8Array) => {
 			this.sqlRun("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
 		};
+		const built = { card_count: 0, printing_count: 0, store_bytes: 0 };
 		wasm.setHandlers({
 			pullRow: lookup,
 			onChunk: (b) => {
 				for (const chunk of grid.push(b)) stage(chunk);
 			},
 			onStats: (s) => {
-				this.metaSet("build_card_count", String(s.card_count ?? 0));
-				this.metaSet("build_printing_count", String(s.printing_count ?? 0));
-				this.metaSet("build_store_bytes", String(s.store_bytes ?? 0));
+				built.card_count = s.card_count ?? 0;
+				built.printing_count = s.printing_count ?? 0;
+				built.store_bytes = s.store_bytes ?? 0;
 			},
 		});
 		const buildStart = Date.now();
@@ -1409,48 +2144,45 @@ export class ImportCoordinator extends DurableObject<Env> {
 		for (const chunk of grid.end()) stage(chunk);
 		const heap = wasm.heap();
 		console.log(
-			`Store built: ${totalBytes} bytes in ${chunkSeq + 1} chunks, ${Date.now() - buildStart}ms ` +
-				`(wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB, linear memory ${(heap.linear / 1048576).toFixed(1)}MB)`,
+			`Store built (partition ${pp.partition}): ${totalBytes} bytes in ${chunkSeq + 1} chunks, ` +
+				`${Date.now() - buildStart}ms (wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB, ` +
+				`linear memory ${(heap.linear / 1048576).toFixed(1)}MB)`,
 		);
-		const formatVersion = wasm.formatVersion();
 		this.ctx.storage.transactionSync(() => {
-			this.metaSet("chunk_count", String(chunkSeq + 1));
-			this.metaSet("built_at", String(Math.floor(Date.now() / 1000)));
-			// Recorded HERE so publish never has to ask wasm for it — see the
-			// dropGroupWasm below.
-			this.metaSet("format_version", String(formatVersion));
-			this.metaSet("kv_chunks_published", "0");
-			this.metaSet("kv_cursor_seq", "0");
-			this.metaSet("kv_cursor_off", "0");
+			// The partition's build outputs and a zeroed publish cursor, one
+			// transition (see recordBuild). built_at and format_version are NOT
+			// touched here — they were fixed once at the end of tags, and stamping
+			// either per build would fork the key family on a mid-loop restart.
+			recordBuild(pp, built.store_bytes, built.card_count, built.printing_count);
+			this.savePp(pp);
 			this.metaSet("phase", "publish");
 		});
-		// Release the wasm group NOW rather than after publish. Its linear
-		// memory peaks around 75MB and never shrinks, so holding it through
-		// publish left a ~20MB assembly buffer and ~15MB of staged rows sharing
-		// a 128MB isolate with it — about 111MB, on the one path that runs
-		// unattended at 11:17 UTC. Publish needs nothing from wasm now that the
-		// format version is in meta.
+		// Release the wasm group NOW rather than after this partition's publish
+		// slices (plan B3: dropGroupWasm after each build(p), §5.5
+		// emit-one-release-one). Linear memory peaks well over 70MB and never
+		// shrinks, so holding it through publish would leave a ~20MB assembly
+		// buffer and ~15MB of staged rows sharing a 128MB isolate with it, once
+		// per partition. Publish needs nothing from wasm — the format version has
+		// been in meta since tags — and the next partition's agg builds a fresh
+		// instance anyway.
 		dropGroupWasm();
 	}
 
-	// ── phase: publish (KV) ────────────────────────────────────────────────────
+	// ── phase: publish (KV, per partition) ───────────────────────────────────────
 	//
-	// The store goes to KV as a handful of ~20MB chunks plus a manifest, and
-	// that is the entire publish. What this replaces was a content-addressed
-	// 40,000-byte grid in D1 with hash lookups, reuse accounting and
-	// prune-by-reference — machinery that existed solely to keep ~1,800 row
-	// writes per store under the free plan's daily quota. Four KV writes a
-	// night against a 1,000/day allowance needs none of it.
+	// Partition p's archive goes to KV as ~2 gzipped chunks under its own key
+	// family; the v2 manifest goes up ONCE, after the LAST partition's last
+	// chunk — it is the commit point, and until it lands readers keep serving
+	// the previous store. Between partitions this phase hands the loop back to
+	// `agg` for the next one.
 	//
 	// Still sliced across alarms, for CPU rather than quota: each slice
-	// assembles ONE ~20MB chunk out of the staged rows and puts it, so no
-	// invocation holds more than one chunk or runs long enough to be cut off.
-	// The manifest is written last — it is the commit point, and until it
-	// lands readers keep serving the previous store.
-
-	private storeKey(): string {
-		return `card-store-v${this.metaGet("format_version") ?? 0}-${this.metaGet("built_at")}.store`;
-	}
+	// assembles ONE chunk out of the staged rows and puts it, so no invocation
+	// holds more than one chunk or runs long enough to be cut off. All publish
+	// progress lives in the ONE pp_publish meta value (see import-publish.ts) —
+	// the flat cursor trio this replaces required every restart path to
+	// remember every key, and a forgotten one resumed a fresh publish from a
+	// stale cursor.
 
 	/** Staging-backed reader for assembleChunk (see src/engine/store-kv.ts). */
 	private stagedRows(fromSeq: number, limit: number): StagedRow[] {
@@ -1460,51 +2192,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async stepPublish(): Promise<void> {
-		const storeKey = this.storeKey();
-		const storeBytes = Number(this.metaGet("build_store_bytes") ?? 0);
-		if (!storeBytes) throw new Error("publish: the build recorded no store size");
-		// The cut lives in meta, not in a constant, so a fallback survives the
-		// alarm boundary: every later slice of this run must use the same cut the
-		// earlier ones did or the chunks would not reassemble.
-		const cut = Number(this.metaGet("kv_chunk_cut") ?? 0) || KV_CHUNK_BYTES;
-		const kvTotal = chunkCountFor(storeBytes, cut);
-		let published = Number(this.metaGet("kv_chunks_published") ?? 0);
+		const pp = this.requirePp();
+		const rec = currentRecord(pp);
+		const storeKey = this.partitionKey(pp.partition);
+		if (!rec.store_bytes) throw new Error(`publish: partition ${pp.partition}'s build recorded no store size`);
+		const kvTotal = publishChunkTotal(pp);
 		// Say so while there is still room to act. Publish is the one moment that
 		// knows the finished size, and a crossing is otherwise invisible — see
-		// chunkHeadroom. The publish phase resumes across alarms, so this is gated
-		// on the first slice to keep it one line per publish rather than one per chunk.
-		if (published === 0) {
-			const warning = chunkHeadroomWarning(storeBytes, cut);
+		// chunkHeadroom. Gated on each partition's first slice to keep it one
+		// line per partition rather than one per chunk.
+		if (rec.chunks_published === 0) {
+			const warning = chunkHeadroomWarning(rec.store_bytes, rec.cut);
 			if (warning) console.warn(warning);
-		}
-
-		// A publish that began under the RAW publisher and was interrupted by a
-		// deploy would otherwise finish under this one, leaving chunk 0 raw and the
-		// rest gzipped — a store no reader can load, described by a manifest whose
-		// gzip total counts only the compressed ones. The counter being set while
-		// the gzip total is not is exactly that straddle, and the fix is to publish
-		// the whole thing again: chunk keys are stable per store, so re-putting
-		// from zero is the same idempotent write the retry path already relies on.
-		if (published > 0 && this.metaGet("kv_gzip_bytes") === undefined) {
-			console.warn(`Publish: ${published} chunk(s) were written uncompressed before a code change; republishing all`);
-			this.ctx.storage.transactionSync(() => {
-				this.metaSet("kv_chunks_published", "0");
-				this.metaSet("kv_cursor_seq", "0");
-				this.metaSet("kv_cursor_off", "0");
-			});
-			published = 0;
 		}
 
 		// One chunk per slice. A put that lands but whose marker rolls back (the
 		// alarm threw afterwards, the isolate went away) simply re-puts the same
 		// key with the same bytes on retry — keys are stable per store, so the
 		// write is idempotent and needs no reconciliation.
-		if (published < kvTotal) {
-			const want = Math.min(cut, storeBytes - published * cut);
-			const { bytes, cursor } = assembleChunk(
-				want,
-				{ seq: Number(this.metaGet("kv_cursor_seq") ?? 0), off: Number(this.metaGet("kv_cursor_off") ?? 0) },
-				(fromSeq, limit) => this.stagedRows(fromSeq, limit),
+		if (rec.chunks_published < kvTotal) {
+			const want = Math.min(rec.cut, rec.store_bytes - rec.chunks_published * rec.cut);
+			const { bytes, cursor } = assembleChunk(want, { seq: rec.cursor_seq, off: rec.cursor_off }, (fromSeq, limit) =>
+				this.stagedRows(fromSeq, limit),
 			);
 			// Compressed HERE, inside the slice that publishes it, so the
 			// compression unit is the publish unit and the phase stays resumable
@@ -1512,83 +2221,132 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// cut to the same key, which is the idempotence the raw path already had.
 			const stored = await gzipBytes(bytes);
 			if (stored.byteLength > KV_VALUE_CAP_BYTES) {
-				// KV_CHUNK_BYTES is the ambitious cut and is safe only while the store
+				// rec.cut is the ambitious cut and is safe only while the archive
 				// compresses; this is the branch where it did not. Unlike the in-memory
-				// publishers there is no re-cutting what is already written, so the whole
-				// publish restarts at the cut that needs no assumption about the data.
+				// publishers there is no re-cutting what is already written, so THIS
+				// PARTITION's publish restarts at the cut that needs no assumption
+				// about the data (restartAtSafeCut — scoped to the one record; sibling
+				// partitions' chunk math is self-contained in their own records).
 				// Chunk keys are stable per store, so re-putting from zero is the same
 				// idempotent write the retry path already relies on, and the earlier
 				// chunks are simply overwritten by their re-cut replacements.
 				//
 				// Falling back rather than failing keeps the nightly alive: a store that
 				// compresses badly should cost an extra publish pass, not a dark site.
-				if (cut !== KV_CHUNK_BYTES_SAFE) {
+				if (rec.cut !== KV_CHUNK_BYTES_SAFE) {
 					console.warn(
-						`Publish: chunk ${published} compressed to ${stored.byteLength} bytes, over KV's ` +
-							`${KV_VALUE_CAP_BYTES} cap at a ${cut}-byte cut — restarting the publish at ` +
-							`${KV_CHUNK_BYTES_SAFE}. This store compresses worse than KV_CHUNK_BYTES assumes.`,
+						`Publish: partition ${pp.partition} chunk ${rec.chunks_published} compressed to ` +
+							`${stored.byteLength} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap at a ${rec.cut}-byte cut — ` +
+							`restarting this partition's publish at ${KV_CHUNK_BYTES_SAFE}. ` +
+							`This archive compresses worse than KV_CHUNK_BYTES assumes.`,
 					);
 					this.ctx.storage.transactionSync(() => {
-						this.metaSet("kv_chunk_cut", String(KV_CHUNK_BYTES_SAFE));
-						this.metaSet("kv_chunks_published", "0");
-						this.metaSet("kv_cursor_seq", "0");
-						this.metaSet("kv_cursor_off", "0");
-						this.metaSet("kv_gzip_bytes", "0");
+						restartAtSafeCut(pp);
+						this.savePp(pp);
 					});
-					return; // next alarm re-publishes from chunk 0 at the safe cut
+					return; // next alarm re-publishes this partition from chunk 0 at the safe cut
 				}
 				throw new Error(
-					`publish: chunk ${published} compressed to ${stored.byteLength} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`,
+					`publish: partition ${pp.partition} chunk ${rec.chunks_published} compressed to ` +
+						`${stored.byteLength} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`,
 				);
 			}
-			const gzipSoFar = Number(this.metaGet("kv_gzip_bytes") ?? 0) + stored.byteLength;
-			await this.env.STORE_KV.put(chunkKey(storeKey, published), stored);
+			await this.env.STORE_KV.put(chunkKey(storeKey, rec.chunks_published), stored);
 			this.ctx.storage.transactionSync(() => {
-				this.metaSet("kv_chunks_published", String(published + 1));
-				this.metaSet("kv_cursor_seq", String(cursor.seq));
-				this.metaSet("kv_cursor_off", String(cursor.off));
-				this.metaSet("kv_gzip_bytes", String(gzipSoFar));
+				recordChunk(pp, cursor, stored.byteLength);
+				this.savePp(pp);
 			});
 			console.log(
-				`Publish slice: KV chunk ${published + 1}/${kvTotal} (${(want / 1048576).toFixed(1)}MB raw -> ` +
+				`Publish slice: KV chunk ${rec.chunks_published}/${kvTotal} (${(want / 1048576).toFixed(1)}MB raw -> ` +
 					`${(stored.byteLength / 1048576).toFixed(1)}MB gzip) for ${storeKey}`,
 			);
 			return; // next alarm continues
 		}
 
-		// Every chunk is in KV — write the manifest LAST (the commit point).
-		const manifest = {
-			store_key: storeKey,
-			built_at: this.metaGet("built_at") ?? "",
-			card_count: Number(this.metaGet("build_card_count") ?? 0),
-			printing_count: Number(this.metaGet("build_printing_count") ?? 0),
+		// Every one of this partition's chunks is in KV. Stamp its record, purge
+		// its staging (progressive purge, plan B1/B3: the 5GB pool must never
+		// hold two partitions' spill+ordered+chunk staging at once — these tables
+		// hold ONLY partition p's rows by this same invariant), and either hand
+		// the loop to the next partition or commit the whole build.
+		const isLast = pp.partition === pp.partitions.length - 1;
+		this.ctx.storage.transactionSync(() => {
+			completePartitionPublish(pp);
+			this.sqlRun("DELETE FROM spill_batches");
+			this.sqlRun("DELETE FROM ordered_rows");
+			this.sqlRun("DELETE FROM chunk_staging");
+			if (!isLast) {
+				const advanced = advanceToNextPartition(pp);
+				if (!advanced) throw new Error(`publish: could not advance past partition ${pp.partition}`);
+				this.metaSet("phase", "agg");
+			}
+			this.savePp(pp);
+		});
+		if (!isLast) {
+			console.log(
+				`Partition ${pp.partition - 1} published (${rec.chunk_count} chunk(s)); ` +
+					`continuing with partition ${pp.partition}/${pp.partitions.length}`,
+			);
+			return; // next alarm starts the next partition's agg
+		}
+
+		// Every chunk of every partition is in KV — write the manifest LAST (the
+		// commit point). Totals at top level, one record per partition;
+		// partition_count and partition_hash are what routers derive the fan-out
+		// and the modulus from (never a constant — plan Decision 3b).
+		const builtAt = this.metaGet("built_at") ?? "";
+		const formatVersion = Number(this.metaGet("format_version") ?? 0);
+		const sourceUpdatedAt = this.metaGet("source_updated_at") ?? undefined;
+		const partitions: StoreManifestPartition[] = pp.partitions.map((p, k) => ({
+			store_key: this.partitionKey(k),
+			store_bytes: p.store_bytes,
+			store_gzip_bytes: p.gzip_bytes,
+			chunk_count: p.chunk_count,
+			card_count: p.card_count,
+			printing_count: p.printing_count,
+		}));
+		const sum = (f: (p: StoreManifestPartition) => number) => partitions.reduce((t, p) => t + f(p), 0);
+		const manifest: StoreManifest = {
+			// The FAMILY STEM: no chunks live under it (see StoreManifest.store_key)
+			// — readers load through partitions[].
+			store_key: storeKeyStem(formatVersion, builtAt),
+			built_at: builtAt,
+			card_count: sum((p) => p.card_count),
+			printing_count: sum((p) => p.printing_count),
 			upstream_commit: "vendored", // UPSTREAM.lock is a build-time concern; readers ignore this field
-			format_version: Number(this.metaGet("format_version") ?? 0),
+			format_version: formatVersion,
 			content_generation: STORE_CONTENT_GENERATION,
-			store_bytes: storeBytes,
-			// Present iff compressed (see StoreManifest) — the flag the reader keys off.
-			store_gzip_bytes: Number(this.metaGet("kv_gzip_bytes") ?? 0),
-			chunk_count: kvTotal,
-			source_updated_at: this.metaGet("source_updated_at") ?? undefined,
+			store_bytes: sum((p) => p.store_bytes),
+			store_gzip_bytes: sum((p) => p.store_gzip_bytes ?? 0),
+			chunk_count: sum((p) => p.chunk_count),
+			source_updated_at: sourceUpdatedAt,
+			partition_count: pp.partitions.length,
+			partition_hash: PARTITION_HASH_ALGO,
+			partitions,
 		};
-		await this.env.STORE_KV.put(MANIFEST_KEY, JSON.stringify(manifest));
+		// writeManifest refuses a malformed manifest — the commit point is the one
+		// write where a shape bug becomes a served outage rather than a build error.
+		await writeManifest(this.env, manifest);
 
 		// Retention: keep the newest KEEP_STORES_IN_KV builds, decided from the keys that are actually in
 		// KV. The predecessor stays addressable so a reader mid-stream finishes and a bad build can
-		// be rolled back by republishing the older manifest.
+		// be rolled back by republishing the older manifest. A partitioned build's N chunk families
+		// share one built_at and retire together (see staleStoreKeys).
 		//
 		// This used to read a history list out of `meta` — which `metaClear()` wipes at the start of
 		// every run, so the list was always empty and NOTHING was ever deleted. Production reached 15
 		// store builds and 3 residue builds, ~510MB of a 1GB namespace, before anyone counted. A
 		// sweep derived from the keys themselves cannot drift from what is there, and it heals a
 		// namespace that already leaked.
-		await this.pruneOldStores(this.metaGet("built_at") ?? undefined);
+		await this.pruneOldStores(builtAt || undefined);
 
 		// The store is LIVE from here — every reader that reads the manifest from
 		// now on gets it. What is left is the edge cache, which still holds
 		// answers computed from the store this one replaced; `purge` clears them
 		// once the readers have caught up.
-		console.log(`Store published to KV: ${storeKey} (${manifest.card_count} cards, ${kvTotal} chunks)`);
+		console.log(
+			`Store published to KV: ${manifest.store_key} (${manifest.card_count} cards, ` +
+				`${manifest.partition_count} partition(s), ${manifest.chunk_count} chunks)`,
+		);
 		this.ctx.storage.transactionSync(() => {
 			// `notify` comes FIRST, before rulings and reference: it is what puts the
 			// readers on the new store, and everything after it is additional KV data
@@ -1615,20 +2373,37 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * makes convergence an event, and the run advances when the event has happened
 	 * rather than when a clock says it probably has.
 	 *
-	 * ALL NINE REGIONS ARE NOTIFIED UNCONDITIONALLY, in parallel. A cold one
+	 * ALL LIVE OBJECTS ARE TOLD UNCONDITIONALLY, in parallel. A cold one
 	 * answers instantly without loading anything (see SearchEngine.notifyPublish),
-	 * so this does not wake idle regions into holding a ~76.6MB store, and
+	 * so this does not wake idle regions into holding a full store, and
 	 * scale-to-zero survives. The coordinator's own CPU here is negligible: the
 	 * work happens inside the objects being called.
 	 *
-	 * A failure re-runs the whole phase. That is safe because both RPCs are
-	 * idempotent — notifying a DO that already swapped is a no-op that reports
-	 * `swapped: false`, and releasing an empty cache does nothing.
+	 * TWO-STEP, PREPARE THEN COMMIT (plan B5). With N partitions per region a
+	 * one-step swap gives each object its own multi-second prefetch window, and
+	 * the windows do not line up — a fan-out query pinned to one generation
+	 * could meet regions serving different stores for as long as the slowest
+	 * prefetch takes. So the phase first calls `preparePublish` on EVERY live
+	 * object (prefetch all announced archives into local storage, no swap),
+	 * waits for ALL of them to acknowledge, and only then calls `commitPublish`
+	 * (the swap itself — local, sub-second). The mixed-generation window
+	 * shrinks from "slowest prefetch" to "commit fan-out spread".
+	 *
+	 * The DO side currently implements both names as a COMPATIBILITY SHIM over
+	 * today's single-step notifyPublish (prepare records+swaps, commit is an
+	 * ack — see search-engine-do.ts); the real prefetch-no-swap lands with the
+	 * partitioned loader (task 9). This coordinator already speaks the final
+	 * protocol either way.
+	 *
+	 * A failure at either step re-runs the whole phase. That is safe because
+	 * every RPC is idempotent — preparing an object that already holds the
+	 * archives is a local no-op, committing an object that already swapped
+	 * reports `swapped: false`, and releasing an empty cache does nothing.
 	 */
 	private async stepNotify(): Promise<void> {
 		// Hand the manifest over rather than making each object read it back out of KV. That read is
 		// ~124ms and it is paid IN FRONT OF whatever requests arrive during the swap, for a value
-		// this phase just wrote.
+		// this phase just wrote at the one manifest key.
 		const published = JSON.parse((await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null");
 
 		// ONLY OBJECTS THAT ALREADY EXIST. An engine announces itself under
@@ -1657,39 +2432,62 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// the point is that this phase could not misplace one if the live set were wrong.
 		const stubFor = (name: string) =>
 			addressAnnouncedEngine(this.env, name) as unknown as {
-				notifyPublish(m?: unknown): Promise<{ swapped: boolean; shards: number }>;
+				preparePublish(m?: unknown): Promise<{ prepared: boolean; shards: number }>;
+				commitPublish(): Promise<{ swapped: boolean; shards: number }>;
 				releaseCache(): Promise<unknown>;
 			};
 
-		const results = await Promise.allSettled(
-			live.map(async (name) => ({ name, ...(await stubFor(name).notifyPublish(published)) })),
+		// Step 1: PREPARE everywhere, and require every ack before any commit.
+		// This is the barrier that shrinks the mixed-generation window: no object
+		// swaps until every object holds the new archives locally.
+		const prepared = await Promise.allSettled(
+			live.map(async (name) => ({ name, ...(await stubFor(name).preparePublish(published)) })),
 		);
+		const prepareFailed = prepared.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : []));
+		if (prepareFailed.length > 0) {
+			// Thrown, so the phase retries from prepare: the purge below MUST NOT run while a reader
+			// might still be serving the old store, or it empties the cache straight into a stale
+			// answer that then stands for up to 16 hours. Objects that already prepared re-ack from
+			// their local copy for free.
+			throw new Error(
+				`notify: ${prepareFailed.length}/${live.length} object(s) failed to prepare: ${prepareFailed.join("; ")}`,
+			);
+		}
 
+		// Step 2: COMMIT everywhere. Same all-or-retry posture — a commit that
+		// reached some objects and not others is exactly the mixed window again,
+		// and re-running both steps is safe because both are idempotent.
+		const results = await Promise.allSettled(
+			live.map(async (name) => ({ name, ...(await stubFor(name).commitPublish()) })),
+		);
 		const failed = results.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : []));
 		if (failed.length > 0) {
-			// Thrown, so the phase retries: the purge below MUST NOT run while a reader might still be
-			// serving the old store, or it empties the cache straight into a stale answer that then
-			// stands for up to 16 hours.
-			throw new Error(`notify: ${failed.length}/${live.length} object(s) failed: ${failed.join("; ")}`);
+			throw new Error(`notify: ${failed.length}/${live.length} object(s) failed to commit: ${failed.join("; ")}`);
 		}
 		const acked = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 
 		// Widths are reported by each region's shard 0, which is the rendezvous every isolate in that
-		// region reports to and therefore the only object that knows the fan-out.
+		// region reports to and therefore the only object that knows the fan-out. Partitioned names
+		// parse through the shared helpers: every `engine-<region>[-<n>]-p<k>` partition of one
+		// replica is ONE member of the fan-out (`replicaGroupOf`), so a shard-0 partition object
+		// reports its region's width and a retired replica releases ALL its partitions together.
 		const widthOf = new Map<string, number>();
 		for (const a of acked) {
-			if (!a.name.includes("-", "engine-".length)) widthOf.set(a.name, Math.max(1, Math.floor(a.shards)));
+			const parsed = parseEngineName(a.name);
+			const group = replicaGroupOf(a.name);
+			if (parsed?.shard === 0 && group !== null) widthOf.set(group, Math.max(1, Math.floor(a.shards)));
 		}
 
 		// Shards at or above their region's fan-out give their cached archives back. Scale-in is
 		// eviction, which was free while a shard held nothing in storage; with the archive cache an
 		// abandoned engine-wnam-3 would keep ~88MB forever, and its own prune never runs again
-		// because it never loads again.
+		// because it never loads again. Width keys are the REGION's shard-0 group, so a shard's
+		// own group is not its width key — the region prefix is.
 		const stale = acked.filter((a) => {
-			const dash = a.name.lastIndexOf("-");
-			const idx = dash > "engine".length ? Number(a.name.slice(dash + 1)) : Number.NaN;
-			if (!Number.isInteger(idx)) return false;
-			return idx >= (widthOf.get(a.name.slice(0, dash)) ?? 1);
+			const parsed = parseEngineName(a.name);
+			if (!parsed || parsed.shard === 0) return false;
+			const regionGroup = replicaGroupOf(`engine-${parsed.region}`);
+			return parsed.shard >= ((regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1);
 		});
 		// Release the storage AND retire the announcement together. Deleting only the
 		// storage would leave `engine:live:<name>` behind, so the next publish would
@@ -1900,11 +2698,22 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
-	 * Delete every store build but the newest KEEP_STORES_IN_KV, plus the one just published.
+	 * Delete every store build but the newest KEEP_STORES_IN_KV, plus the one just published,
+	 * plus the build the live manifest points at.
 	 *
-	 * One list operation and however many deletes are owed; best effort, because a chunk that will
-	 * not delete costs storage and gets another chance next publish, and losing a completed publish
-	 * over cleanup would be the worse trade.
+	 * The manifest read is protection against age alone deciding: a family the
+	 * live manifest references is a family the serving path depends on, whatever
+	 * its timestamp says.
+	 *
+	 * Note what this sweep collects for free: the orphaned pre-partition chunk
+	 * family. Its keys have no `-p<k>` suffix, staleStoreKeys' pattern matches
+	 * suffix-less families too, and no manifest names it any more — so it groups
+	 * by its own built_at, ages out of the newest-KEEP set, and goes.
+	 *
+	 * One list operation, one manifest read, and however many deletes are owed;
+	 * best effort, because a chunk that will not delete costs storage and gets
+	 * another chance next publish, and losing a completed publish over cleanup
+	 * would be the worse trade.
 	 */
 	private async pruneOldStores(currentBuiltAt: string | undefined): Promise<void> {
 		try {
@@ -1916,8 +2725,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 				cursor = page.list_complete ? undefined : page.cursor;
 			} while (cursor);
 
+			const protect: string[] = currentBuiltAt ? [currentBuiltAt] : [];
+			try {
+				const live = JSON.parse((await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null") as {
+					built_at?: unknown;
+				} | null;
+				if (live?.built_at) protect.push(String(live.built_at));
+			} catch {
+				// An unreadable manifest protects nothing extra; the newest-KEEP
+				// rule still holds and the next publish gets another chance.
+			}
+
 			let removed = 0;
-			for (const key of staleStoreKeys(names, KEEP_STORES_IN_KV, currentBuiltAt)) {
+			for (const key of staleStoreKeys(names, KEEP_STORES_IN_KV, protect)) {
 				await this.env.STORE_KV.delete(key);
 				removed += 1;
 			}
@@ -2131,12 +2951,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 		for (const table of [
 			"stage_files",
 			"stage_blobs",
+			"stage_members",
 			"draft_batches",
 			"spill_batches",
 			"ordered_rows",
-			"row_batches",
 			"tagdata_blobs",
 			"chunk_staging",
+			"routing_keys",
 		]) {
 			this.sqlRun(`DELETE FROM ${table}`);
 		}

@@ -170,8 +170,54 @@ export function pyStrip(s: string): string {
 }
 
 /**
- * Mirrors api.parsing.card_query_nodes.fold_accents: NFKD-decompose, then drop
- * every character with a nonzero canonical combining class. The ccc table comes
+ * The Latin letters NFKD leaves WHOLE, and the spellings a name comparison has to read them as.
+ *
+ * NFKD is a decomposition, and a decomposition can only ever separate a base letter from its
+ * marks. "æ" is not "a" with a mark on it — it is its own letter with no decomposition at all — so
+ * every one of these survived `foldAccents` untouched and `name:æther` found nothing where
+ * Scryfall finds 90. MEASURED against api.scryfall.com on 2026-08-16, one probe per character,
+ * each against its expanded spelling: æ/ae 90, œ/oe 167, ß/ss 2051, ø/o 22111, ł/l 18748, đ/d
+ * 14591, þ/th 5689, ð/d 14591, ħ/h 14176, ŋ/ng 4834, ŧ/t 22261, ı/i 22954, ĸ/k 6616 — equal totals
+ * on both sides of every pair. (ĳ folds too, at 22; NFKD already reaches that one.)
+ *
+ * The three characters DELIBERATELY ABSENT, each measured to 404 on Scryfall: "×" and "÷", which
+ * are symbols rather than letters and which `collateName` would delete anyway; and "ſ", which
+ * Scryfall does not fold and NFKD does. Known residual divergences, all on characters no card in
+ * the corpus contains: "ſ", the presentation ligatures "ﬁ"/"ﬂ"/"ﬀ", "½", "№" and "ǽ" — NFKD folds
+ * each of them and Scryfall folds none.
+ *
+ * Mirrors `_LIGATURE_FOLD` in api.parsing.card_query_nodes.
+ */
+const LIGATURE_FOLD: ReadonlyMap<string, string> = new Map([
+	["Æ", "AE"],
+	["æ", "ae"],
+	["Œ", "OE"],
+	["œ", "oe"],
+	["ß", "ss"],
+	["Ø", "O"],
+	["ø", "o"],
+	["Ł", "L"],
+	["ł", "l"],
+	["Đ", "D"],
+	["đ", "d"],
+	["Ð", "D"],
+	["ð", "d"],
+	["Þ", "Th"],
+	["þ", "th"],
+	["Ħ", "H"],
+	["ħ", "h"],
+	["Ŋ", "NG"],
+	["ŋ", "ng"],
+	["Ŧ", "T"],
+	["ŧ", "t"],
+	["ı", "i"],
+	["ĸ", "k"],
+]);
+
+/**
+ * Mirrors api.parsing.card_query_nodes.fold_accents: NFKD-decompose, drop every
+ * character with a nonzero canonical combining class, then expand the
+ * undecomposable Latin letters through LIGATURE_FOLD. The ccc table comes
  * from CPython's unicodedata (see py-unicode-data.ts), NOT from \p{M}, which
  * matches a different set.
  */
@@ -179,7 +225,32 @@ export function foldAccents(value: string): string {
 	const decomposed = value.normalize("NFKD");
 	let out = "";
 	for (const ch of decomposed) {
-		if (!inRanges(CCC_NONZERO, ch.codePointAt(0) as number)) out += ch;
+		if (inRanges(CCC_NONZERO, ch.codePointAt(0) as number)) continue;
+		out += LIGATURE_FOLD.get(ch) ?? ch;
+	}
+	return out;
+}
+
+/** Python's `str.isalnum()` per character: category L*, Nd, Nl or No. */
+const ALNUM_RE = /[\p{L}\p{Nd}\p{Nl}\p{No}]/u;
+
+/**
+ * Mirrors api.parsing.card_query_nodes.collate_name: every non-alphanumeric character removed.
+ *
+ * The SEPARATOR half of the fold a bare `name:` word gets (`fold_accents` is the other half) —
+ * Scryfall compares a bare name word with diacritics folded and separators gone, which is what
+ * lets `ft` find "Sword **of the** Ages" and `limdul` find "Lim-Dûl's Vault". The engine's
+ * `collate_name` (card_engine/src/lib.rs) is the twin that folds the STORED side, and
+ * `assign_name_ranks` has ordered `order=name` by this same string since gen 20.
+ *
+ * Character class is Python's `str.isalnum()` rather than the JS default, for the same reason
+ * every other predicate in this file mirrors CPython: the parity fixtures are generated from the
+ * Python parser and compared byte-for-byte.
+ */
+export function collateName(value: string): string {
+	let out = "";
+	for (const ch of value) {
+		if (ALNUM_RE.test(ch)) out += ch;
 	}
 	return out;
 }
