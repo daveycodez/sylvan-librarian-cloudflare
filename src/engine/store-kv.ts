@@ -1112,7 +1112,7 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      lines when the card prints none of its own, which puts `is:extra` on sld/1969
  *      `Mechtitan // Mechtitan` and takes it out of every default search.
  */
-export const STORE_CONTENT_GENERATION = 34;
+export const STORE_CONTENT_GENERATION = 35;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

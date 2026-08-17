@@ -340,6 +340,7 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         name_bigrams: build_name_bigram_index(&cards, &[]),
         name_unigrams: build_name_unigram_index(&cards, &[]),
         legal_divergent: build_divergent_ids(&cards),
+        name_divergent: crate::planes::build_name_divergent_ids(&cards),
         sort_perms: build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
@@ -3686,6 +3687,10 @@ fn a_reversible_printing_prints_its_own_faces_name_and_face_layout() {
     let reversible = interner.intern("reversible_card".to_string());
     let plain_name = interner.intern("Temple Garden".to_string());
     let joined_name = interner.intern("Temple Garden // Temple Garden".to_string());
+    // The FOLDED, lowercased form — what `exact_name_matches` compares, and what the real build
+    // interns from the row's own `card_name_folded`. A fixture holding only the display name
+    // cannot exercise the exact-name path at all: `collate_name` does not lowercase.
+    let joined_name_folded = interner.intern("temple garden // temple garden".to_string());
     data.printings[0].card_layout_id = normal;
     data.printings[1].card_layout_id = normal;
     data.printings[2].card_layout_id = reversible;
@@ -3711,6 +3716,7 @@ fn a_reversible_printing_prints_its_own_faces_name_and_face_layout() {
     data.cards[0].divergent = vec![crate::DivergentPrinting {
         printing_layout_id: reversible,
         card_name_id: joined_name,
+        card_name_folded_id: joined_name_folded,
         face_layout_id: normal,
         faces: vec![face(plain_name), face(plain_name)],
     }];
@@ -6775,6 +6781,7 @@ fn bench_checked_vs_unchecked_access() {
         rarity_printing_ordered: build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from)),
         name_bigrams:   build_name_bigram_index(&cards, &[]),
         legal_divergent: build_divergent_ids(&cards),
+        name_divergent: crate::planes::build_name_divergent_ids(&cards),
         arith_tuple:    build_arith_tuple_index(&cards),
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         printing_by_illustration_id: crate::build_printing_by_illustration_id(&printings),

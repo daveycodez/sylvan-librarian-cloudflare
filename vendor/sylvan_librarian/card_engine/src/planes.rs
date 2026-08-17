@@ -663,6 +663,26 @@ pub(crate) fn build_rarity_printing_planes(printings: &[Printing]) -> RarityPrin
 /// the exact `_EXISTS`/`_ABSENT` planes directly (docs/issues/engine-
 /// legality-divergent-carveout.md's "free upgrade"), so this list is now only
 /// consulted by `filter.rs`'s per-printing `Legality` `tri()` residual check.
+/// Card ids carrying a DIVERGENT PRINTING — one whose printings do not all print the card's name.
+///
+/// The same shape as `build_divergent_ids` beside it, and for the same reason: 71 cards out of
+/// 38,626 have the property, so a list of ids is smaller and faster than a plane, and the callers
+/// want the ids rather than a mask.
+///
+/// It exists because a reversible printing prints its OWN joined name — "Temple Garden // Temple
+/// Garden" against the card's "Temple Garden" — and the name trigram index is built from the
+/// card's name alone. Without this, `narrow_rec`'s ExactName arm drops such a card before any leaf
+/// can answer for it, and `!"Temple Garden // Temple Garden"` returns nothing where Scryfall
+/// returns the one printing. u32 rather than the legality list's u16: this one has no reason to
+/// sit under a card-count ceiling.
+pub(crate) fn build_name_divergent_ids(cards: &[OracleCard]) -> Vec<u32> {
+    cards
+        .iter()
+        .enumerate()
+        .filter_map(|(i, card)| (!card.divergent.is_empty()).then_some(i as u32))
+        .collect()
+}
+
 pub(crate) fn build_divergent_ids(cards: &[OracleCard]) -> Vec<u16> {
     debug_assert!(cards.len() <= u16::MAX as usize + 1, "card count exceeds u16 range for divergent postings");
     cards

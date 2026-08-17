@@ -1286,10 +1286,13 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         FilterExpr::And(_) | FilterExpr::Or(_) | FilterExpr::Not(_) => {
             unreachable!("composites are composed by printing_dependent / touches_printing_field")
         }
+        // A REVERSIBLE PRINTING PRINTS ITS OWN JOINED NAME ("Temple Garden // Temple Garden"
+        // against the card's "Temple Garden"), so an exact-name match can settle differently for
+        // two printings of one card — 81 printings over 71 cards in the 2026-08-16 corpus.
+        FilterExpr::ExactName(_) => true,
         // Exhaustive, not `_ => false`: a new variant must get a considered
         // answer here rather than silently inheriting "can settle at card level".
         FilterExpr::True
-        | FilterExpr::ExactName(_)
         | FilterExpr::NameMatch { .. }
         | FilterExpr::OracleMatch { .. }
         // The type line is oracle data (TextField::TypeLine reads the card, not
@@ -2225,7 +2228,25 @@ impl FilterExpr {
                 Tri::PrintingDep => Tri::PrintingDep,
             },
 
-            FilterExpr::ExactName(lower) => tri_bool(exact_name_matches(crate::folded_name(card, strings), lower)),
+            FilterExpr::ExactName(lower) => {
+                if exact_name_matches(crate::folded_name(card, strings), lower) {
+                    return Tri::True;
+                }
+                // The joined name a REVERSIBLE printing prints, which is not its card's — see
+                // `name_divergent`, the index that makes this reachable at all. Printing-dependent
+                // by construction: only the printings whose layout is the divergent one print it,
+                // which is exactly what `divergent_of` decides, so a card-space evaluation answers
+                // PrintingDep and the driver re-asks per printing — the same contract TextExact
+                // takes for the second layout value.
+                let Some(rec) = card.divergent.first() else { return Tri::False };
+                if !str_at(strings, u32::from(rec.card_name_folded_id)).is_some_and(|joined| exact_name_matches(joined, lower)) {
+                    return Tri::False;
+                }
+                match printing {
+                    None => Tri::PrintingDep,
+                    Some(p) => tri_bool(crate::divergent_of(card, p).is_some()),
+                }
+            }
 
             FilterExpr::NumericCmp { lhs, op, rhs } => {
                 let base = numeric_cmp_tri(lhs, *op, rhs, &|f| field_num(card, printing, f));
