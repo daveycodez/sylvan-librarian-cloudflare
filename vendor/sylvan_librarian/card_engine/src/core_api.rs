@@ -2383,56 +2383,146 @@ impl BufferStore {
             .map(|pid| (pid, data.printings[pid].prefer_score.as_ref().map_or(f32::MIN, |v| f32::from(*v))))
     }
 
-    /// Mirror of the pyo3 `autocomplete()`, but returning the card's PRINTED name rather than the
-    /// folded/lowered key it matched on.
+    /// Whether any CANONICAL printing of this card is one a default search would show.
     ///
-    /// DELIBERATE DEVIATION from the pyo3 twin, which returns `card_name_lower`. Scryfall's
-    /// autocomplete catalog is a list of names a client can hand straight back to
-    /// `/cards/named?exact=`, and `"lightning bolt"` is not the name Scryfall prints. Upstream's
-    /// route never called the engine method (it went to SQL, which selected `card_name`), so the
-    /// lowercase return was never on the wire there; here it would be.
+    /// The card-level reading of `-is:extra`, which is the gate `/cards/search` ANDs in: a name
+    /// belongs in the catalog if ANY of its printings is served, not only if all of them are. A
+    /// token, an emblem, a memorabilia front-card or a playtest card has no served printing at
+    /// all and drops out entirely.
+    ///
+    /// `None` for `extra_vid` means this store's collection vocabulary never interned the tag —
+    /// a fixture, or a corpus with no extras — and then every card is servable, which is the
+    /// same answer the scan would give.
+    fn any_printing_is_served(&self, cid: usize, extra_vid: Option<u16>) -> bool {
+        let Some(vid) = extra_vid else { return true };
+        let data = self.data();
+        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+        (start..end).any(|pid| !data.printings[pid].card_is_tags.iter().any(|t| u16::from(*t) == vid))
+    }
+
+    /// Scryfall's autocomplete catalog: the names a `/cards/autocomplete` client is offered, in
+    /// Scryfall's own order, returning the card's PRINTED name.
+    ///
+    /// TWO RULES, BOTH MEASURED AGAINST api.scryfall.com, and neither of them the `ORDER BY rank,
+    /// length(card_name), card_name` this used to reproduce.
+    ///
+    /// 1. THE ORDER IS TRIGRAM SIMILARITY, NOT LENGTH. Postgres' `pg_trgm` `similarity(a, b)` is
+    ///    the size of the intersection of the two strings' trigram sets over the size of their
+    ///    union, where a string's trigrams are the 3-character windows of `"  " + s + " "`. The
+    ///    name is COLLATED first — spaces and punctuation removed, which is why length looked
+    ///    like the rule for so long: with the separators gone and no repeated window, the
+    ///    denominator is exactly the collated length. Every place plain length got it wrong is a
+    ///    place one of those two terms bites:
+    ///
+    ///      - a REPEATED window shrinks the set. `Light Up the Night` repeats `igh`/`ght` and
+    ///        sorts with the 13-letter names, ahead of the 14-letter `Lightning Angel`;
+    ///        `Shapesharer` and `Shambleshark` repeat `sha` and each sort one group early.
+    ///      - a name ENDING in the query's tail shares the closing `"xy "` window and scores
+    ///        higher for it. For `q=ser` every one of `Serum Raker`, `Serum Powder`,
+    ///        `Serene Master`, `Serra Avenger`, `Serra Redeemer` and `Serendib Sorcerer` ends in
+    ///        `er` and outranks shorter names that do not; for `q=ang` the four promoted names
+    ///        are the four ending in `ng`.
+    ///
+    ///    MEASURED: 30 prefixes fetched from api.scryfall.com (2026-08-17), 546 adjacent pairs of
+    ///    Scryfall's own output. This key inverts ZERO of them. Collated length inverts 18 of the
+    ///    first 375 and printed length inverts 71. Ten of the thirty prefixes were held out of the
+    ///    derivation and are among the zero.
+    ///
+    /// 2. THE CATALOG EXCLUDES EXTRAS. `Shark` and `Shard` (tokens), `Lightning` (a memorabilia
+    ///    front-card) and `Lightning Colt` (a `cmb2` playtest card) are in this corpus and not in
+    ///    Scryfall's answers. Same gate `/cards/search` ANDs in, read per card — see
+    ///    `any_printing_is_served`.
+    ///
+    /// THE RANK SPLIT SURVIVES BOTH, and is now asked of the COLLATED name. `q=gob` answers
+    /// `_____ Goblin` FIRST — which collates to `goblin`, a prefix — while `q=ang` never answers
+    /// `Defang` even though its similarity (0.2222) beats six of the twenty names that are there.
+    /// The predicate is collated too, which is measured rather than assumed: `q=ningbolt` answers
+    /// `Lightning Bolt`, and `ningbolt` is a substring of `lightningbolt` and of nothing else.
+    ///
+    /// WHAT IS NOT DERIVED: the order WITHIN one similarity value. Over 1,121 tie-ordered pairs,
+    /// no feature of the card separates them — name, collated name, first and last release,
+    /// printing count, EDHREC and penny rank, oracle id, Scryfall id, multiverse/MTGO/Arena/
+    /// TCGplayer/Cardmarket id, rarity, first set, collector number, layout, type line, and the
+    /// digital/booster/reprint/paper flags, each in both directions, and the lexicographic
+    /// fixpoint over all 28 returns the EMPTY key. The order is stable across days (2026-08-16
+    /// and 2026-08-17 agree name for name), so it is a fixed internal ordinal and not noise —
+    /// the same class as the `unique=art` representative and `/sets` same-date ordering. The
+    /// printed name is the tiebreak here because it is total and deterministic, and because a
+    /// partitioned merge has to be able to recompute it from the names alone.
     pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
         let data = self.data();
-        let needle = prefix.to_lowercase();
-        // Upstream's `ORDER BY rank, length(card_name), card_name` with rank 0 for a prefix match
-        // and 1 for a bare substring. Sorted whole rather than short-circuited: the ordering is by
-        // LENGTH, so a shorter name later in the corpus outranks a longer one already found, and
-        // stopping at `limit` matches would answer with the wrong ones. ~31,700 names is a scan
-        // measured in single-digit milliseconds, and it runs in the DO's 30 s, not the isolate's.
-        let mut hits: Vec<(u8, usize, &str)> = Vec::new();
-        // FOLDED, not lower. Matching the lowercase name meant an ASCII query could not reach a
-        // name carrying diacritics: `q=eowyn` returned NOTHING while `q=éowyn` returned three
-        // cards, and `jotun` and `lim-dul` returned nothing at all. Scryfall answers all three
-        // (3, 3 and 8 results), and this corpus stores `card_name_folded` precisely so an ASCII
-        // query can reach "Éowyn". The caller folds the needle the same way; see the route.
-        //
-        // Folding also makes the predicate answerable from `name_trigram`, which is built over this
-        // same field -- a prefix and a substring are both containments, so the index narrows both
-        // ranks soundly and the scan below only re-verifies.
+        // COLLATED, not merely lowered. `collate_name` is what `card_name_collated` is built with
+        // and what `name_trigram` indexes, so the needle and the names are compared in one form,
+        // the index narrows exactly rather than approximately, and `similarity` below is computed
+        // over the same strings Scryfall's is.
+        let needle = crate::collate_name(&prefix.to_lowercase());
+        // The route's own "under two characters is an empty catalog" gate, re-asked of the
+        // COLLATED needle — which is the only place it can be asked once collation is what the
+        // names are compared in. `q=a` is an empty catalog on api.scryfall.com, and without this
+        // a two-character query whose second character is punctuation would collate to one
+        // letter and scan-and-score every name in the corpus that contains it.
+        if needle.chars().count() < 2 {
+            return Vec::new();
+        }
+        let mut needle_tg: Vec<[char; 3]> = Vec::with_capacity(needle.len() + 1);
+        collated_trigrams(&needle, &mut needle_tg);
+        let extra_vid = data.coll_vocab.iter().position(|s| s.as_str() == crate::EXTRA_IS_TAG).map(|p| p as u16);
+        // (rank, |name ∩ needle|, |name|, printed name, cid). The similarity is kept as the two
+        // counts rather than a float so the comparison below is exact integer arithmetic: a f32
+        // ratio would make ties depend on rounding, and a tie is the ONE place this ordering
+        // hands over to a tiebreak that must be reproducible in the TypeScript merge.
+        let mut hits: Vec<(u8, u32, u32, &str, u32)> = Vec::new();
+        let mut name_tg: Vec<[char; 3]> = Vec::with_capacity(64);
         for cid in name_scan_candidates(data, &needle) {
             let card = &data.cards[cid as usize];
-            let folded = crate::folded_name(card, &data.strings);
-            let rank = if folded.starts_with(&needle) {
+            let collated = crate::collated_name(card, &data.strings);
+            let rank = if collated.starts_with(&needle) {
                 0u8
-            } else if folded.contains(&needle) {
+            } else if collated.contains(&needle) {
                 1u8
             } else {
                 continue;
             };
-            let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(folded);
-            // CHARACTERS, not bytes. The SQL orders by `length(card_name)`, which Postgres counts in
-        // characters, and this function's contract is to answer alike. `str::len()` is bytes, so
-        // "Éowyn, Shieldmaiden" measured 20 here against 19 there -- harmless while it shifted every
-        // accented name equally, and not harmless at a tie: "Éa" (2 chars, 3 bytes) sorts before
-        // "Aaa" (3 chars, 3 bytes) in SQL, and tied-then-alphabetical after it here. Only reachable
-        // at all since the catalog started matching folded names, which is what put accented names
-        // in front of a client.
-        hits.push((rank, printed.chars().count(), printed));
+            // Scored only for a name that already matched: the trigram work is ~20 windows and a
+            // membership test each, and paying it for all ~31,700 names would be 30x the cost of
+            // the `contains` that rules most of them out in a few bytes.
+            collated_trigrams(collated, &mut name_tg);
+            let inter = name_tg.iter().filter(|t| needle_tg.contains(t)).count() as u32;
+            // The PRINTED name, not the key it matched on. A catalog entry is something a client
+            // hands straight back to `/cards/named?exact=`, and `lightningbolt` is not the name
+            // Scryfall prints.
+            let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(collated);
+            hits.push((rank, inter, name_tg.len() as u32, printed, cid));
         }
-        hits.sort_unstable();
-        // One entry per distinct printed name: several printings of one card are one suggestion.
-        hits.dedup_by(|a, b| a.2 == b.2);
-        hits.into_iter().take(limit).map(|(_, _, name)| name.to_owned()).collect()
+        // similarity = inter / (|needle| + |name| - inter), compared as a cross-multiplied
+        // rational in u64 — the counts are window counts of card names, so the products cannot
+        // come close to overflowing.
+        let qn = needle_tg.len() as u64;
+        let union = |inter: u32, total: u32| qn + u64::from(total) - u64::from(inter);
+        hits.sort_unstable_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| (u64::from(b.1) * union(a.1, a.2)).cmp(&(u64::from(a.1) * union(b.1, b.2))))
+                .then_with(|| a.3.cmp(b.3))
+                .then_with(|| a.4.cmp(&b.4))
+        });
+        let mut out: Vec<String> = Vec::with_capacity(limit.min(hits.len()));
+        for (_, _, _, printed, cid) in hits {
+            // Extras BEFORE the dedup, so a name printed both as a token and as a real card is
+            // still offered: the token copy is skipped and the served copy supplies the entry.
+            if !self.any_printing_is_served(cid as usize, extra_vid) {
+                continue;
+            }
+            // One entry per distinct printed name: several printings of one card are one
+            // suggestion, and two cards sharing a name are one suggestion too.
+            if out.iter().any(|n| n == printed) {
+                continue;
+            }
+            out.push(printed.to_owned());
+            if out.len() == limit {
+                break;
+            }
+        }
+        out
     }
 }
 
@@ -2911,6 +3001,36 @@ fn name_scan_candidates(data: &Archived<CardData>, needle: &str) -> Vec<u32> {
         return (0..data.cards.len() as u32).collect();
     }
     crate::trigram_candidates(idx, &collated).unwrap_or_else(|| (0..data.cards.len() as u32).collect())
+}
+
+/// The distinct trigrams of an already-collated string, as `pg_trgm` forms them.
+///
+/// Postgres pads a word with TWO leading spaces and one trailing space and takes every
+/// 3-character window of the result, so `"bolt"` yields `"  b"`, `" bo"`, `"bol"`, `"olt"`,
+/// `"lt "` — five windows for four characters, and the two that carry the word's edges are what
+/// make a prefix and a suffix score differently from a middle. `similarity(a, b)` is then
+/// `|A ∩ B| / |A ∪ B|` over these sets, which is the ordering `autocomplete` reproduces.
+///
+/// DISTINCT, and that is load-bearing rather than an optimization: a repeated window is one
+/// member of a set, so `Light Up the Night` (`igh` and `ght` twice) has the trigram count of a
+/// name two characters shorter and sorts as one. `Vec` and a linear scan rather than a `HashSet`
+/// because a card name is ~20 windows, where hashing costs more than the comparisons it saves;
+/// the buffer is reused across the whole scan.
+///
+/// CHARS, not bytes. The collated name keeps every alphanumeric the fold left behind, and a
+/// window that split a multi-byte character would compare against a needle that did not.
+fn collated_trigrams(collated: &str, out: &mut Vec<[char; 3]>) {
+    out.clear();
+    if collated.is_empty() {
+        return;
+    }
+    let mut window = [' ', ' ', ' '];
+    for c in collated.chars().chain(std::iter::once(' ')) {
+        window = [window[1], window[2], c];
+        if !out.contains(&window) {
+            out.push(window);
+        }
+    }
 }
 
 /// A query word with every non-alphanumeric character removed — the form the containment stage
@@ -4566,6 +4686,90 @@ mod tests {
         assert!(store.autocomplete("deriva", 20).is_empty(), "a printed name never autocompletes");
     }
 
+    /// A named catalog row, with the folded name the importer would have written.
+    fn catalog_row(name: &str, oracle: &str) -> Value {
+        annex_row(name, oracle, &format!("row-{oracle}-en"), "en", 100.0)
+    }
+
+    /// The autocomplete ORDER is `pg_trgm` similarity, not name length — the two shapes where
+    /// the two disagree, both taken from api.scryfall.com's own answers (2026-08-17).
+    ///
+    ///   `q=lig`  `Light Up the Night` (15 collated characters) before `Lightning Angel` (14),
+    ///           because `igh` and `ght` each occur twice and a trigram SET holds one of each.
+    ///   `q=ser`  `Serra Avenger` (12) before `Serenity` (8), because the query's closing `er `
+    ///           window is one `Serra Avenger` has and `Serenity` does not.
+    ///
+    /// Both are asserted against the length key as well, so a relapse to `length(card_name)`
+    /// fails here rather than 18 rows into a live sweep.
+    #[test]
+    fn autocomplete_orders_by_trigram_similarity_not_length() {
+        let store = build_store(&[
+            catalog_row("Light Up the Night", "oracle-lutn"),
+            catalog_row("Lightning Angel", "oracle-la"),
+            catalog_row("Serra Avenger", "oracle-sa"),
+            catalog_row("Serenity", "oracle-sy"),
+        ])
+        .1;
+        assert_eq!(
+            store.autocomplete("lig", 20),
+            vec!["Light Up the Night", "Lightning Angel"],
+            "a repeated window shrinks the trigram set, so the LONGER name leads"
+        );
+        assert_eq!(
+            store.autocomplete("ser", 20),
+            vec!["Serra Avenger", "Serenity"],
+            "sharing the query's closing window outranks being five characters shorter"
+        );
+        // The key this replaces, spelled out: it gets both pairs backwards.
+        for (a, b) in [("Light Up the Night", "Lightning Angel"), ("Serra Avenger", "Serenity")] {
+            assert!(a.chars().count() > b.chars().count(), "{a} is longer than {b}, so `ORDER BY length` reverses them");
+        }
+    }
+
+    /// The catalog excludes extras, per card: `Shark` is a token in this corpus and is absent
+    /// from Scryfall's `q=sha`, while a name printed BOTH as a token and as a served card is
+    /// still offered.
+    #[test]
+    fn autocomplete_excludes_extras() {
+        let mut token = catalog_row("Shark", "oracle-shark");
+        token["card_is_tags"] = json!({"extra": true});
+        let mut both_token = catalog_row("Shatter", "oracle-shatter-token");
+        both_token["scryfall_id"] = json!("row-shatter-token");
+        both_token["card_is_tags"] = json!({"extra": true});
+        // Same oracle id as the served printing, so the two are one card with two printings.
+        both_token["oracle_id"] = json!("oracle-shatter");
+        let store = build_store(&[token, both_token, catalog_row("Shatter", "oracle-shatter")]).1;
+        assert_eq!(
+            store.autocomplete("sha", 20),
+            vec!["Shatter"],
+            "a card with no served printing leaves the catalog; one with any served printing stays"
+        );
+    }
+
+    /// The rank split and the match predicate are asked of the COLLATED name, which is measured:
+    /// api.scryfall.com answers `q=gob` with `_____ Goblin` FIRST (it collates to `goblin`, a
+    /// prefix) and answers `q=ningbolt` with `Lightning Bolt` (`ningbolt` is a substring of
+    /// `lightningbolt` and of no spelling that keeps the space).
+    #[test]
+    fn autocomplete_ranks_and_matches_the_collated_name() {
+        let store = build_store(&[
+            catalog_row("_____ Goblin", "oracle-blank"),
+            catalog_row("Goblin Welder", "oracle-welder"),
+            catalog_row("Lightning Bolt", "oracle-bolt"),
+        ])
+        .1;
+        assert_eq!(
+            store.autocomplete("gob", 20),
+            vec!["_____ Goblin", "Goblin Welder"],
+            "underscores are not part of the name the prefix rank is asked about"
+        );
+        assert_eq!(
+            store.autocomplete("ningbolt", 20),
+            vec!["Lightning Bolt"],
+            "a needle spanning a space matches, because both sides are compared collated"
+        );
+    }
+
     /// The perf property behind the foreign name paths: candidates come off the record trigram
     /// index, not a record scan. Exact and containment are the index-driven stages; the fuzzy
     /// scan is English-only and does not read these records at all (lib.rs's module comment has
@@ -5732,33 +5936,70 @@ mod tests {
     }
 
     /// The autocomplete merge key: merging per-partition lists under the engine's OWN
-    /// (prefix-rank, char length, name) key reproduces the single-store output — and the old
-    /// (prefix-rank, alphabetical) approximation provably does not on this corpus ("Shock"
-    /// before "Shatter" by length; the reverse alphabetically).
+    /// (prefix-rank over the collated name, `pg_trgm` similarity DESCENDING, name) key
+    /// reproduces the single-store output — and neither the alphabetical approximation nor the
+    /// length one it replaced does, provably, on this corpus. `Shock` leads `Shatter` on
+    /// similarity (2/7 against 2/9) where alphabetical reverses them, and `Serra Avenger` leads
+    /// `Serenity` on similarity where length reverses them.
+    ///
+    /// This is what `src/engine/partitioned-engine.ts`'s `mergeAutocomplete` is pinned to: the
+    /// merge recomputes the key from the NAMES, so a key the names cannot express would silently
+    /// order a partitioned deployment differently from a single archive.
     #[test]
     fn autocomplete_merge_key_matches_the_single_store() {
-        let rows = differential_rows();
+        let mut rows = differential_rows();
+        // `Serra Avenger`/`Serenity` — the suffix-share pair, which is the half of the key a
+        // length merge gets wrong. Placed here rather than in the fixture's near-tie block
+        // because only autocomplete reads it.
+        rows.push(catalog_row("Serra Avenger", "oracle-ac-1"));
+        rows.push(catalog_row("Serenity", "oracle-ac-2"));
         let (_b, reference) = build_store(&rows);
         let partitions = partitioned_stores(&rows, 3);
-        let prefix = "sh";
-        let want = reference.autocomplete(prefix, 20);
 
-        let mut merged: Vec<String> = Vec::new();
-        for p in &partitions {
-            for name in p.autocomplete(prefix, 20) {
-                if !merged.contains(&name) {
-                    merged.push(name);
+        // The merge key, recomputed from the names alone — the exact shape mergeAutocomplete has.
+        // Lowercase-then-collate: the accent fold the TypeScript twin also applies is a no-op on
+        // this fixture's ASCII names, and the store side reads `card_name_folded`, which the
+        // importer already folded.
+        let collate = |s: &str| crate::collate_name(&s.to_lowercase());
+        let similarity = |needle: &str, name: &str| -> f64 {
+            let (mut nt, mut ct) = (Vec::new(), Vec::new());
+            collated_trigrams(needle, &mut nt);
+            collated_trigrams(&collate(name), &mut ct);
+            let inter = ct.iter().filter(|t| nt.contains(t)).count() as f64;
+            let union = nt.len() as f64 + ct.len() as f64 - inter;
+            inter / union
+        };
+
+        for prefix in ["sh", "ser"] {
+            let want = reference.autocomplete(prefix, 20);
+            let needle = collate(prefix);
+            let mut merged: Vec<String> = Vec::new();
+            for p in &partitions {
+                for name in p.autocomplete(prefix, 20) {
+                    if !merged.contains(&name) {
+                        merged.push(name);
+                    }
                 }
             }
-        }
-        let rank = |name: &str| u8::from(!name.to_lowercase().starts_with(prefix));
-        let mut keyed = merged.clone();
-        keyed.sort_by_key(|n| (rank(n), n.chars().count(), n.clone()));
-        assert_eq!(keyed, want, "the (rank, char_len, name) merge key must reproduce the engine order");
+            let rank = |name: &str| u8::from(!collate(name).starts_with(&needle));
+            let mut keyed = merged.clone();
+            keyed.sort_by(|a, b| {
+                rank(a)
+                    .cmp(&rank(b))
+                    .then_with(|| similarity(&needle, b).total_cmp(&similarity(&needle, a)))
+                    .then_with(|| a.cmp(b))
+            });
+            assert_eq!(keyed, want, "{prefix}: the (rank, similarity, name) merge key must reproduce the engine order");
 
-        let mut alpha = merged;
-        alpha.sort_by_key(|n| (rank(n), n.to_lowercase()));
-        assert_ne!(alpha, want, "the alphabetical approximation must be provably wrong on this corpus");
+            let mut alpha = merged.clone();
+            alpha.sort_by_key(|n| (rank(n), n.to_lowercase()));
+            let mut by_len = merged;
+            by_len.sort_by_key(|n| (rank(n), n.chars().count(), n.clone()));
+            assert!(
+                alpha != want || by_len != want,
+                "{prefix}: at least one of the two approximations this key replaced must be provably wrong here"
+            );
+        }
     }
 
     /// Sorting standalone blobs by their RowMeta sort key reproduces the build order exactly —

@@ -35,12 +35,12 @@
 // winning partition's own fuzzy_card_by_name, whose local race the global
 // winner provably also wins (its local competitors are a subset of the global
 // candidates it just led). Autocomplete merges under the engine's own
-// (prefix-rank, char-length, name) key, recomputed from the names — both rules
+// (prefix-rank, trigram similarity, name) key, recomputed from the names — both rules
 // are pinned against the single-store reference by the Rust differential
 // (core_api's fuzzy_race_across_partitions_matches_the_single_store and
 // autocomplete_merge_key_matches_the_single_store).
 
-import { foldAccents } from "../parser/pystr";
+import { collateName, foldAccents } from "../parser/pystr";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import type { RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
@@ -241,11 +241,31 @@ export function raceFuzzyCandidates(
 }
 
 /**
+ * The distinct `pg_trgm` trigrams of a collated name — the TypeScript twin of core_api.rs's
+ * `collated_trigrams`, and the reason it exists here is that a partitioned merge has to recompute
+ * the engine's ordering key from the NAMES alone.
+ */
+function collatedTrigrams(collated: string): Set<string> {
+	const out = new Set<string>();
+	if (collated === "") return out;
+	const padded = `  ${collated} `;
+	const chars = [...padded];
+	for (let i = 0; i + 3 <= chars.length; i++) out.add(chars.slice(i, i + 3).join(""));
+	return out;
+}
+
+/**
  * Merge per-partition autocomplete lists under the ENGINE'S OWN ordering key, recomputed from
- * the names: (prefix-rank over the folded name, printed length in CHARACTERS, name). The length
- * component is load-bearing — the engine orders "Shock" before "Shatter" (5 < 7) where an
- * alphabetical merge reverses them — and the Rust differential
+ * the names: (prefix-rank over the COLLATED name, `pg_trgm` trigram similarity DESCENDING, name).
+ *
+ * The similarity component is load-bearing and is NOT length — it is what puts `Light Up the
+ * Night` ahead of `Lightning Angel` (a repeated `igh`/`ght` window shrinks its trigram set) and
+ * what promotes every `q=ser` name ending in `er`. See core_api.rs `autocomplete` for the
+ * derivation and the measurement; the Rust differential
  * (autocomplete_merge_key_matches_the_single_store) pins this merge to the single-store output.
+ *
+ * The extras exclusion needs no mirror here: each partition applies it before answering, so a
+ * name that reaches this merge is already one Scryfall would offer.
  */
 export function mergeAutocomplete(lists: string[][], prefix: string, limit: number): string[] {
 	const seen = new Set<string>();
@@ -258,10 +278,34 @@ export function mergeAutocomplete(lists: string[][], prefix: string, limit: numb
 			}
 		}
 	}
-	const p = foldAccents(prefix.toLowerCase());
-	const rank = (name: string) => (foldAccents(name.toLowerCase()).startsWith(p) ? 0 : 1);
-	const chars = (name: string) => [...name].length;
-	all.sort((a, b) => rank(a) - rank(b) || chars(a) - chars(b) || (a < b ? -1 : a > b ? 1 : 0));
+	const collate = (value: string) => collateName(foldAccents(value.toLowerCase()));
+	const p = collate(prefix);
+	const needle = collatedTrigrams(p);
+	const rank = (name: string) => (collate(name).startsWith(p) ? 0 : 1);
+	// similarity as the exact rational |A ∩ B| / |A ∪ B|, cross-multiplied rather than divided so
+	// two names cannot tie or untie on a float rounding the Rust side does not have.
+	const score = (name: string): [number, number] => {
+		const tg = collatedTrigrams(collate(name));
+		let inter = 0;
+		for (const t of tg) if (needle.has(t)) inter++;
+		return [inter, needle.size + tg.size - inter];
+	};
+	const cache = new Map<string, [number, number]>();
+	const scoreOf = (name: string) => {
+		let s = cache.get(name);
+		if (s === undefined) {
+			s = score(name);
+			cache.set(name, s);
+		}
+		return s;
+	};
+	all.sort((a, b) => {
+		if (rank(a) !== rank(b)) return rank(a) - rank(b);
+		const [ia, ua] = scoreOf(a);
+		const [ib, ub] = scoreOf(b);
+		if (ib * ua !== ia * ub) return ib * ua - ia * ub;
+		return a < b ? -1 : a > b ? 1 : 0;
+	});
 	return all.slice(0, limit);
 }
 

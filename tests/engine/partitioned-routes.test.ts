@@ -518,6 +518,34 @@ describe("name-route combination rules", () => {
 		).toEqual(["Shock", "Shocker", "Aftershock"]);
 	});
 
+	// The merge key is `pg_trgm` similarity, not name length — the two shapes where the two
+	// disagree, both taken from api.scryfall.com's own answers (2026-08-17) and pinned against
+	// the single-store engine by core_api's autocomplete_merge_key_matches_the_single_store.
+	test("autocomplete: a repeated trigram outranks being shorter", () => {
+		// `igh` and `ght` each occur twice in "Light Up the Night", so its trigram SET is smaller
+		// than that of the shorter "Lightning Angel".
+		expect(mergeAutocomplete([["Lightning Angel"], ["Light Up the Night"]], "lig", 2)).toEqual([
+			"Light Up the Night",
+			"Lightning Angel",
+		]);
+	});
+
+	test("autocomplete: sharing the query's closing window outranks being shorter", () => {
+		// "Serra Avenger" ends in `er` and so carries the `er ` window `ser` closes with;
+		// "Serenity" does not, and is five characters shorter for nothing.
+		expect(mergeAutocomplete([["Serenity"], ["Serra Avenger"]], "ser", 2)).toEqual(["Serra Avenger", "Serenity"]);
+	});
+
+	// The prefix rank is asked of the COLLATED name: api.scryfall.com answers `q=gob` with
+	// `_____ Goblin` first, which is a prefix match only once the underscores are gone.
+	test("autocomplete: the prefix rank is collated", () => {
+		expect(mergeAutocomplete([["Goblin Welder"], ["_____ Goblin", "Gobsmacked"]], "gob", 3)).toEqual([
+			"_____ Goblin",
+			"Gobsmacked",
+			"Goblin Welder",
+		]);
+	});
+
 	test("namesContaining: distinct names survive the cross-partition dedupe", async () => {
 		const { engine } = build({
 			0: { containing: [{ name: "Fire Bolt Two" }] },
