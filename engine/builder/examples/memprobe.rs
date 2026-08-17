@@ -331,16 +331,435 @@ const ELVES: &str = include_str!("../src/fixtures/llanowar_elves.json");
 const JACE: &str = include_str!("../src/fixtures/jace_the_mind_sculptor.json");
 const DELVER: &str = include_str!("../src/fixtures/delver_of_secrets.json");
 
+/// Bumped whenever anything below changes the SHAPE of the generated corpus, and read by
+/// `scripts/gate.sh` into the cache directory name.
+///
+/// The corpus is cached across gate runs because synthesizing it is pure and deterministic. That
+/// is true only of the generator that wrote it: after this file changes, a cached bulk.jsonl is
+/// the OLD corpus wearing the new corpus's path, and every ratio, every envelope case and every
+/// fit measurement in the run is read off it. The `-ml` suffix was added by hand for exactly this
+/// reason once already (a pre-multilingual corpus serving a multilingual gate); a constant the
+/// generator itself publishes is the version of that fix that cannot be forgotten.
+const CORPUS_SHAPE: &str = "ml-v3-spread";
+
+/// The oracle-level VALUE SPREAD, and why it exists.
+///
+/// A FIELD HELD CONSTANT ACROSS EVERY ROW CANNOT DISCRIMINATE ANY RULE ABOUT THAT FIELD. The four
+/// template fixtures are four real cards, so every value they do not vary was pinned at four
+/// distinct values or fewer across the whole corpus — and several of those four collapsed further
+/// in transform. Measured on the 12k-printing gate corpus before this existed (56,105 rows):
+///
+///     cmc                    2 distinct    {1.0, 4.0}
+///     creature_power         2 distinct    {null, 1}
+///     creature_toughness     2 distinct    {null, 1}
+///     edhrec_rank            4 distinct    (one per template)
+///     cubecobra_score        4 distinct    (a percent-rank OF edhrec_rank, so it inherits it)
+///     card_colors            3 distinct    {R}, {G}, {U} — and card_color_identity the SAME three
+///     card_border            1 distinct    "black"
+///     card_watermark         1 distinct    null
+///     card_frame_data        1 distinct    {"2015"}
+///     card_legalities        4 distinct    (one per template; never `banned`, never `restricted`)
+///     card_types             3 distinct    (one per template — no second type, no supertype)
+///     produced_mana          2 distinct    {} and {G}
+///     color_indicator        1 distinct    {}
+///     flavor_name            1 distinct    null — so the flavor_names index built EMPTY
+///
+/// What that cost, concretely: four of `memprobe compare`'s twelve orderings degenerated to a
+/// single tie group, so the tie-heavy grid the two-publisher check leans on was comparing one
+/// undifferentiated block for `cmc`, `power`, `toughness` and `cubecobra`; and eleven of
+/// `querybench`'s filter rows (`cmc>=5`, `power>=4`, `c:wu`, `c>=3`, `mana:{2}{R}`,
+/// `mana>={W}{U}`, `devotion`, `banned:legacy`, `restricted:vintage`, `t>creature`,
+/// `t:"artifact creature"`) were timing an EMPTY result set — a number that cannot regress
+/// because there is nothing in it.
+///
+/// TWO FIELDS ARE STILL CONSTANT ON PURPOSE, and the rule says say so rather than leave it
+/// unexplained. `life_modifier` and `hand_modifier` are null on every row because they exist only
+/// on Vanguard, a layout none of the four templates is; making a slice of the corpus Vanguard
+/// would change what `is:extra` and the default search exclude, moving every route bench for one
+/// field's sake. They are covered where the values are real instead —
+/// `tests/routes/card-object-parity.test.ts` builds an actual vanguard row ("+7"/"+1") and reads
+/// the card object back.
+///
+/// So the spread is drawn per ORACLE CARD (not per printing: cmc, colours, power and edhrec rank
+/// are oracle-level facts that every reprint shares, and the intern-dedupe ratios the probe
+/// measures depend on that staying true), from weighted tables shaped like the real corpus.
+///
+/// DOMAINS ARE DELIBERATELY SMALLER THAN THE CARD COUNT where ties are the point. `edhrec_rank`
+/// is drawn from a range about half the oracle count rather than made unique, because the compare
+/// grid exists to catch build-order differences inside tie groups and a totally-ordered column
+/// has none. Small domains (cmc, power, rarity, colour) are tie-heavy by nature and need no help.
+struct Spread {
+    mana_cost: String,
+    cmc: f64,
+    colors: Vec<&'static str>,
+    color_identity: Vec<&'static str>,
+    produced_mana: Vec<&'static str>,
+    color_indicator: Vec<&'static str>,
+    type_prefix: &'static str,
+    power: Option<String>,
+    toughness: Option<String>,
+    loyalty: Option<String>,
+    edhrec_rank: Option<i64>,
+    penny_rank: Option<i64>,
+    keywords: Vec<&'static str>,
+    legalities: Vec<(&'static str, &'static str)>,
+}
+
+/// Index into an `n`-item table with geometrically decaying weights (each item ~0.8x the one
+/// before), so the head is common and the tail is a handful of rows. 30 sets over 12k printings
+/// puts ~2,600 printings in the largest and ~3 in the smallest.
+fn zipf_index(rng: &mut Rng, n: usize) -> usize {
+    let mut weights = Vec::with_capacity(n);
+    let mut w = 1_000_000f64;
+    for _ in 0..n {
+        weights.push(w.max(1.0) as u64);
+        w *= 0.8;
+    }
+    let total: u64 = weights.iter().sum();
+    let mut r = rng.below(total);
+    for (i, w) in weights.iter().enumerate() {
+        if r < *w {
+            return i;
+        }
+        r -= *w;
+    }
+    n - 1
+}
+
+/// Weighted pick from a `(weight, value)` table.
+fn pick<'a, T>(rng: &mut Rng, table: &'a [(u64, T)]) -> &'a T {
+    let total: u64 = table.iter().map(|(w, _)| *w).sum();
+    let mut r = rng.below(total);
+    for (w, v) in table {
+        if r < *w {
+            return v;
+        }
+        r -= *w;
+    }
+    &table[table.len() - 1].1
+}
+
+/// Colour classes at roughly the real corpus's mix: a tenth colourless, two thirds mono, the rest
+/// spread over the guild/shard pairs and triples with a five-colour tail. Every subset shape the
+/// `c:`/`id:` operators branch on (empty, singleton, pair, triple, all five) is present.
+const COLOR_CLASSES: &[(u64, &[&str])] = &[
+    (100, &[]),
+    (130, &["W"]), (130, &["U"]), (130, &["B"]), (130, &["R"]), (130, &["G"]),
+    (22, &["W", "U"]), (22, &["U", "B"]), (22, &["B", "R"]), (22, &["R", "G"]), (22, &["G", "W"]),
+    (14, &["W", "B"]), (14, &["U", "R"]), (14, &["B", "G"]), (14, &["R", "W"]), (14, &["G", "U"]),
+    (12, &["W", "U", "B"]), (10, &["U", "B", "R"]), (10, &["B", "R", "G"]), (8, &["W", "B", "G"]),
+    (6, &["W", "U", "B", "R", "G"]),
+];
+
+/// Generic mana in the cost, weighted low the way real costs are.
+const GENERIC: &[(u64, u64)] = &[(16, 0), (22, 1), (20, 2), (16, 3), (11, 4), (7, 5), (4, 6), (2, 8), (1, 12)];
+
+/// Pips of each colour the card is: mostly one, sometimes two, rarely three.
+const PIPS: &[(u64, u64)] = &[(70, 1), (23, 2), (7, 3)];
+
+/// Creature power and toughness, weighted like the printed corpus, with the `*` that makes both
+/// the integer column NULL and the text column present — the one shape where the two disagree.
+const PT: &[(u64, &str)] = &[
+    (6, "0"), (20, "1"), (22, "2"), (19, "3"), (13, "4"), (8, "5"), (5, "6"), (3, "7"), (2, "8"),
+    (1, "10"), (1, "*"),
+];
+
+const LOYALTY: &[(u64, &str)] = &[(10, "2"), (26, "3"), (30, "4"), (18, "5"), (10, "6"), (5, "7"), (1, "X")];
+
+/// Keyword pool for the ability soup. Kept lowercase-insensitive on purpose (`Flying` vs
+/// `First strike`): the transform folds these and the catalog counts them, so the mixed casing is
+/// part of what the corpus has to carry.
+const KEYWORDS: &[&str] = &[
+    "Flying", "Trample", "Haste", "Vigilance", "Deathtouch", "Lifelink", "Menace", "Reach", "Ward",
+    "Flash", "First strike", "Double strike", "Hexproof", "Defender", "Prowess", "Scry", "Cycling",
+];
+
+const WATERMARKS: &[&str] = &[
+    "boros", "izzet", "selesnya", "golgari", "dimir", "orzhov", "simic", "rakdos", "gruul",
+    "azorius", "set", "planeswalker", "mirran", "phyrexian",
+];
+
+const FRAMES: &[(u64, &str)] = &[(6, "1993"), (8, "1997"), (18, "2003"), (66, "2015"), (2, "future")];
+
+const BORDERS: &[(u64, &str)] = &[(93, "black"), (4, "white"), (2, "borderless"), (1, "silver")];
+
+/// The formats a legality perturbation can land on. `banned` and `restricted` are RARE, which is
+/// what makes them worth generating: the packed legality word stores four states in two bits, and
+/// a corpus that only ever writes `legal`/`not_legal` exercises one bit of the two.
+const LEGALITY_FORMATS: &[&str] =
+    &["standard", "pioneer", "modern", "legacy", "vintage", "commander", "pauper", "brawl"];
+
+/// SUPERTYPES AND THE SECOND CARD TYPE, spliced onto the template's own type line.
+///
+/// The four templates are one type line each — `Instant`, `Creature — Elf Druid`, `Legendary
+/// Planeswalker — Jace`, `Creature — Human Wizard // Creature — Human Insect` — so `card_types`
+/// held 3 distinct values across the whole corpus and `card_subtypes` 4. Two `querybench` rows
+/// measured that directly: `t>creature` (a type set strictly ABOVE Creature) and
+/// `t:"artifact creature"` both timed 0 rows, because no card in the corpus had a second card
+/// type or a supertype to find.
+///
+/// The prefix goes in front of the primary types on EVERY half of the line (so a transforming
+/// card's two faces agree, as a real one's supertypes do), and it is drawn per oracle card
+/// because a supertype is an oracle-level fact that every reprint shares.
+///
+/// Two tables because the composite types are not universally legal: `Artifact Creature` and
+/// `Enchantment Creature` are printed cards, `Artifact Instant` is not. Only the supertypes
+/// (`Legendary`, `Snow`) go on a non-creature.
+const TYPE_PREFIXES_CREATURE: &[(u64, &str)] = &[
+    (68, ""),
+    (9, "Legendary "),
+    (10, "Artifact "),
+    (4, "Snow "),
+    (3, "Legendary Artifact "),
+    (6, "Enchantment "),
+];
+const TYPE_PREFIXES_OTHER: &[(u64, &str)] = &[(84, ""), (11, "Legendary "), (5, "Snow ")];
+
 struct OracleCard {
     template: usize,
     oracle_id: String,
     name: String,
     oracle_text: String,
     first_illustration: String,
+    spread: Spread,
 }
 
 fn set_str(card: &mut Map<String, Value>, key: &str, val: String) {
     card.insert(key.to_owned(), Value::String(val));
+}
+
+/// WUBRG order, which is the order Scryfall writes colour arrays in and the order the corpus has
+/// to be in for a set-equality assertion against a real answer to mean anything.
+fn wubrg_sorted(mut colors: Vec<&'static str>) -> Vec<&'static str> {
+    colors.sort_by_key(|c| "WUBRG".find(c).unwrap_or(9));
+    colors.dedup();
+    colors
+}
+
+/// Draw one oracle card's value spread. `type_line` is the template's, and it is what decides
+/// which of the mutually exclusive stat groups the card gets: creatures get power/toughness,
+/// planeswalkers get loyalty, and everything else gets neither — the same rule `build_draft`'s
+/// `is_creaturelike` applies on the way in, so the generator never writes a stat the transform
+/// would drop on the floor.
+fn spread_for(rng: &mut Rng, type_line: &str, oracle_count: usize) -> Spread {
+    let colors = wubrg_sorted(pick(rng, COLOR_CLASSES).to_vec());
+    let generic = *pick(rng, GENERIC);
+    let mut mana_cost = String::new();
+    if generic > 0 || colors.is_empty() {
+        mana_cost.push_str(&format!("{{{generic}}}"));
+    }
+    let mut cmc = generic;
+    for c in &colors {
+        let pips = *pick(rng, PIPS);
+        cmc += pips;
+        for _ in 0..pips {
+            mana_cost.push_str(&format!("{{{c}}}"));
+        }
+    }
+
+    // A colour identity WIDER than the cost, on about a seventh of cards — the shape a mana
+    // ability or an activated cost in the rules text produces. Without it `card_colors` and
+    // `card_color_identity` are the same object on every row, and an extractor reading the wrong
+    // one of the two answers correctly on the whole corpus.
+    let mut color_identity = colors.clone();
+    if rng.chance(14) {
+        let extra = ["W", "U", "B", "R", "G"][rng.below(5) as usize];
+        color_identity.push(extra);
+        color_identity = wubrg_sorted(color_identity);
+    }
+
+    // A MANA SOURCE, on about an eighth of cards. `produced_mana` was `{}` on all but the
+    // Llanowar Elves template (2 distinct values corpus-wide), so `produces:` — a filter with its
+    // own bitplane, its own six-wide colour count, and its own "independent transposition" tests —
+    // had one green bit and nothing else to be wrong about here. Drawn from the card's identity
+    // where it has one (a mana creature taps for its own colour) and colourless otherwise, which
+    // is also what keeps `produced_mana ⊄ card_colors` a real shape rather than an accident.
+    let produced_mana = if rng.chance(12) {
+        if color_identity.is_empty() || rng.chance(25) {
+            vec!["C"]
+        } else {
+            wubrg_sorted(color_identity.clone())
+        }
+    } else {
+        Vec::new()
+    };
+
+    let (power, toughness) = if type_line.contains("Creature") {
+        (Some((*pick(rng, PT)).to_owned()), Some((*pick(rng, PT)).to_owned()))
+    } else {
+        (None, None)
+    };
+    let loyalty =
+        type_line.contains("Planeswalker").then(|| (*pick(rng, LOYALTY)).to_owned());
+
+    let type_prefix = *pick(
+        rng,
+        if type_line.contains("Creature") { TYPE_PREFIXES_CREATURE } else { TYPE_PREFIXES_OTHER },
+    );
+
+    // The COLOUR INDICATOR — the dot a costless face wears in place of a mana cost — on most
+    // coloured transform backs, which is where real ones live. It was `{}` on every row, so
+    // `color_indicator`'s whole extraction path was answering about a field the corpus never set.
+    // Only meaningful on the faced template; `apply_spread` writes it to the BACK face alone.
+    let color_indicator = if colors.is_empty() || !rng.chance(80) { Vec::new() } else { colors.clone() };
+
+    // A rank DOMAIN about half the card count, not a unique rank per card: the compare grid is
+    // there to catch build-order differences inside tie groups, and `order=edhrec` over a totally
+    // ordered column has none to catch them in. The null tail is real too — it is the trailing
+    // peer group of the cubecobra percent-rank, and the missing-value arm of every rank sort.
+    let edhrec_domain = (oracle_count as u64 / 2).max(2);
+    let edhrec_rank = rng.chance(92).then(|| 1 + rng.below(edhrec_domain) as i64);
+    let penny_rank = rng.chance(55).then(|| 1 + rng.below(2000) as i64);
+
+    let n_keywords = *pick(rng, &[(55u64, 0usize), (25, 1), (13, 2), (7, 3)]);
+    let mut keywords: Vec<&'static str> = Vec::with_capacity(n_keywords);
+    for _ in 0..n_keywords {
+        let k = KEYWORDS[rng.below(KEYWORDS.len() as u64) as usize];
+        if !keywords.contains(&k) {
+            keywords.push(k);
+        }
+    }
+
+    // Legality perturbations. `banned` on ~4% of cards and `restricted` on ~1% is roughly the real
+    // frequency, and it is the only way the two-bit legality code's upper states ever get written.
+    let mut legalities: Vec<(&'static str, &'static str)> = Vec::new();
+    if rng.chance(4) {
+        legalities.push((LEGALITY_FORMATS[rng.below(LEGALITY_FORMATS.len() as u64) as usize], "banned"));
+    }
+    if rng.chance(1) {
+        legalities.push(("vintage", "restricted"));
+    }
+    if rng.chance(12) {
+        legalities.push((LEGALITY_FORMATS[rng.below(LEGALITY_FORMATS.len() as u64) as usize], "not_legal"));
+    }
+
+    Spread {
+        mana_cost,
+        cmc: cmc as f64,
+        colors,
+        color_identity,
+        produced_mana,
+        color_indicator,
+        type_prefix,
+        power,
+        toughness,
+        loyalty,
+        edhrec_rank,
+        penny_rank,
+        keywords,
+        legalities,
+    }
+}
+
+/// Write one oracle card's spread onto a printing of it. Faces get the cost and the stats where
+/// the template has faces (the front carries the whole cost, as a transforming card does), and
+/// the card level gets them where it does not — mirroring where the real bulk data puts each.
+fn apply_spread(obj: &mut Map<String, Value>, sp: &Spread) {
+    let colors: Vec<Value> = sp.colors.iter().map(|c| Value::String((*c).to_owned())).collect();
+    let letters = |cs: &[&'static str]| Value::Array(cs.iter().map(|c| Value::String((*c).to_owned())).collect());
+    obj.insert("cmc".to_owned(), serde_json::json!(sp.cmc));
+    obj.insert("color_identity".to_owned(), letters(&sp.color_identity));
+    obj.insert("produced_mana".to_owned(), letters(&sp.produced_mana));
+    // The supertype/second-type splice, on every `//` half of the card-level line and on each
+    // face's own — `Creature — Elf Druid` becomes `Artifact Creature — Elf Druid`.
+    if !sp.type_prefix.is_empty() {
+        if let Some(line) = obj.get("type_line").and_then(Value::as_str) {
+            let prefixed =
+                line.split(" // ").map(|half| format!("{}{half}", sp.type_prefix)).collect::<Vec<_>>().join(" // ");
+            set_str(obj, "type_line", prefixed);
+        }
+        if let Some(faces) = obj.get_mut("card_faces").and_then(Value::as_array_mut) {
+            for face in faces.iter_mut() {
+                let Some(f) = face.as_object_mut() else { continue };
+                if let Some(line) = f.get("type_line").and_then(Value::as_str) {
+                    let prefixed = format!("{}{line}", sp.type_prefix);
+                    set_str(f, "type_line", prefixed);
+                }
+            }
+        }
+    }
+    // Keywords: the template's (a transforming card really does keep `Transform`) plus the draw.
+    let mut keywords: Vec<String> =
+        str_list(obj.get("keywords")).into_iter().filter(|k| k == "Transform").collect();
+    for k in &sp.keywords {
+        if !keywords.iter().any(|have| have == k) {
+            keywords.push((*k).to_owned());
+        }
+    }
+    obj.insert("keywords".to_owned(), serde_json::json!(keywords));
+
+    if let Some(legalities) = obj.get_mut("legalities").and_then(Value::as_object_mut) {
+        for (format, status) in &sp.legalities {
+            legalities.insert((*format).to_owned(), Value::String((*status).to_owned()));
+        }
+    }
+
+    let has_faces = obj.get("card_faces").and_then(Value::as_array).is_some_and(|f| !f.is_empty());
+    if has_faces {
+        let faces = obj.get_mut("card_faces").and_then(Value::as_array_mut).expect("faces");
+        for (i, face) in faces.iter_mut().enumerate() {
+            let Some(f) = face.as_object_mut() else { continue };
+            // The front face carries the cost; the back of a transforming card is castless.
+            set_str(f, "mana_cost", if i == 0 { sp.mana_cost.clone() } else { String::new() });
+            f.insert("colors".to_owned(), Value::Array(colors.clone()));
+            // The colour indicator belongs to the COSTLESS face, which is where Scryfall puts it.
+            if i > 0 && !sp.color_indicator.is_empty() {
+                f.insert("color_indicator".to_owned(), letters(&sp.color_indicator));
+            } else {
+                f.remove("color_indicator");
+            }
+            // The back face is bigger, as transforming creatures are — and different, so the
+            // face-merge rule (first group with a value wins) is answering about real values.
+            for (key, val) in [("power", &sp.power), ("toughness", &sp.toughness)] {
+                match val {
+                    Some(v) if i == 0 => set_str(f, key, v.clone()),
+                    Some(v) => set_str(f, key, bumped_stat(v)),
+                    None => {
+                        f.remove(key);
+                    }
+                }
+            }
+        }
+    } else {
+        set_str(obj, "mana_cost", sp.mana_cost.clone());
+        obj.insert("colors".to_owned(), Value::Array(colors));
+        for (key, val) in [("power", &sp.power), ("toughness", &sp.toughness), ("loyalty", &sp.loyalty)] {
+            match val {
+                Some(v) => set_str(obj, key, v.clone()),
+                None => {
+                    obj.remove(key);
+                }
+            }
+        }
+    }
+
+    match sp.edhrec_rank {
+        Some(r) => {
+            obj.insert("edhrec_rank".to_owned(), serde_json::json!(r));
+        }
+        None => {
+            obj.remove("edhrec_rank");
+        }
+    }
+    match sp.penny_rank {
+        Some(r) => {
+            obj.insert("penny_rank".to_owned(), serde_json::json!(r));
+        }
+        None => {
+            obj.remove("penny_rank");
+        }
+    }
+}
+
+/// `"3"` -> `"5"`, `"*"` -> `"*"`: the back face's stat, still in Scryfall's string spelling.
+fn bumped_stat(v: &str) -> String {
+    v.parse::<i64>().map(|n| (n + 2).to_string()).unwrap_or_else(|_| v.to_owned())
+}
+
+fn str_list(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
 }
 
 /// Synthesize one printing of an oracle card from its template fixture.
@@ -368,12 +787,24 @@ fn printing(
     set_str(obj, "illustration_id", illustration_id);
     set_str(obj, "name", oracle.name.clone());
     set_str(obj, "oracle_text", oracle.oracle_text.clone());
-    let set_idx = rng.below(SETS.len() as u64) as usize;
-    set_str(obj, "set", SETS[set_idx].to_owned());
+    // Sets are ZIPFIAN, not uniform. Real sets differ in size by three orders of magnitude, and
+    // the difference is load-bearing here: a uniform 30 sets over 12k printings puts every set in
+    // every partition at any N, which is exactly the condition under which an archive-local
+    // `set_rank` on the wire would agree across two different cuts and the partition differential
+    // would pass a broken sort key. The rare tail (a few printings each) is what makes one
+    // partition's set inventory differ from another's — see `scripts/gate.sh`'s N=2 vs N=10 step.
+    set_str(obj, "set", SETS[zipf_index(rng, SETS.len())].to_owned());
     set_str(obj, "set_name", format!("{} Horizons", title_words(rng, 1)));
     set_str(obj, "collector_number", format!("{}", 1 + rng.below(400)));
     set_str(obj, "artist", title_words(rng, 2));
     set_str(obj, "rarity", RARITIES[rng.below(RARITIES.len() as u64) as usize].to_owned());
+    set_str(obj, "frame", (*pick(rng, FRAMES)).to_owned());
+    set_str(obj, "border_color", (*pick(rng, BORDERS)).to_owned());
+    if rng.chance(9) {
+        set_str(obj, "watermark", WATERMARKS[rng.below(WATERMARKS.len() as u64) as usize].to_owned());
+    } else {
+        obj.remove("watermark");
+    }
     set_str(
         obj,
         "released_at",
@@ -384,6 +815,18 @@ fn printing(
         set_str(obj, "flavor_text", sentence(rng, len));
     } else {
         obj.remove("flavor_text");
+    }
+    // The Godzilla/Secret-Lair ALTERNATE NAME, on ~2% of printings. It was null on every row, and
+    // the engine builds a whole `flavor_names` record table off it and puts every `name:` needle
+    // to that table BEFORE the ordinary name lanes (see `FlavorNameIn` / `bind_flavor_names`). A
+    // corpus with no flavor names builds that index empty, so the tier is never entered and the
+    // route benches measure a name path with one of its stages missing. ~2% of 12k printings is
+    // ~240 records, the same order as the ~546 on the real corpus. PRINTING-level, not oracle:
+    // one printing of a card carries the alternate name and its reprints do not.
+    if rng.chance(2) {
+        set_str(obj, "flavor_name", format!("{} of {}", title_words(rng, 1), title_words(rng, 1)));
+    } else {
+        obj.remove("flavor_name");
     }
     let mut prices = Map::new();
     for (k, present) in [("usd", 85u64), ("eur", 70), ("tix", 40)] {
@@ -409,6 +852,10 @@ fn printing(
         }
         set_str(obj, "name", format!("{} 0 // {} 1", oracle.name, oracle.name));
     }
+
+    // Last, so it owns every field it writes outright: the oracle-level spread (cost, colours,
+    // stats, ranks, keywords, legality perturbations), identical on every printing of this card.
+    apply_spread(obj, &oracle.spread);
 
     card
 }
@@ -436,12 +883,15 @@ fn cmd_gen(printings: usize, foreign_ratio: f64, bulk_path: &Path, tags_path: &P
         illustration_ids.push(first_illustration.clone());
         let name_words = 2 + rng.below(2) as usize;
         let text_len = 140 + rng.below(160) as usize;
+        let type_line =
+            templates[template].get("type_line").and_then(Value::as_str).unwrap_or("").to_owned();
         oracles.push(OracleCard {
             template,
             oracle_id: uuid(&mut rng),
             name: title_words(&mut rng, name_words),
             oracle_text: sentence(&mut rng, text_len),
             first_illustration,
+            spread: spread_for(&mut rng, &type_line, oracle_count),
         });
     }
 
@@ -1124,7 +1574,12 @@ fn cmd_querybench(store_path: &Path, iters: usize) {
     const FILTERS: &[(&str, &str, &str)] = &[
     ("mana: exact cost", "mana:{2}{R}", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"mana_cost_jsonb","original_attribute":"mana"}},"op":":","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"{2}{R}"}}}}"#),
     ("mana>= superset", "mana>={W}{U}", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"mana_cost_jsonb","original_attribute":"mana"}},"op":">=","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"{W}{U}"}}}}"#),
-    ("devotion>=3", "devotion>=3", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"devotion","original_attribute":"devotion"}},"op":">=","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"3"}}}}"#),
+    // `devotion>={G}{G}`, not the `devotion>=3` this row used to hold. A bare `3` is generic mana,
+    // and devotion sums only the COLOUR lanes the value names (see filter.rs's Devotion arm), so
+    // the old row queried zero lanes and matched zero cards on any corpus — the same "cannot
+    // regress because there is nothing in it" shape the corpus spread exists to remove, but this
+    // half of it was the query, not the data.
+    ("devotion>={G}{G}", "devotion>={G}{G}", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"devotion","original_attribute":"devotion"}},"op":">=","rhs":{"node_type":"ManaValueNode","kwargs":{"value":"{G}{G}"}}}}"#),
     ("legal:modern", "legal:modern", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"legal"}},"op":":","rhs":["modern"]}}"#),
     ("banned:legacy", "banned:legacy", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"banned"}},"op":":","rhs":["legacy"]}}"#),
     ("restricted:vintage", "restricted:vintage", r#"{"node_type":"CardBinaryOperatorNode","kwargs":{"lhs":{"node_type":"CardAttributeNode","kwargs":{"attribute_name":"card_legalities","original_attribute":"restricted"}},"op":":","rhs":["vintage"]}}"#),
@@ -1196,38 +1651,25 @@ fn cmd_querybench(store_path: &Path, iters: usize) {
     println!("\n{:<26} {:<24} {:>10} {:>10}", "control TrueNode", "", us, n);
 }
 
-/// Semantic parity gate between two store files. Archive bytes are
-/// legitimately nondeterministic (HashMap seeding permutes index entry order,
-/// run-to-run even on one machine), so equality is defined over what the
-/// serving surface can observe: every printing with every field, in engine
-/// result order, plus catalogs, counts, and seeded samples.
-fn cmd_compare(a_path: &Path, b_path: &Path) {
-    use card_engine::{BufferStore, QueryOptions};
+/// THE ENVELOPE GRID, and it is DELIBERATELY TIE-HEAVY.
+///
+/// Two archives built from IDENTICAL rows can still differ byte-for-byte in their index region,
+/// because index construction may break ties between equally-ranked rows in build order. That is
+/// invisible to a checksum and invisible to a query whose sort key is unique — it shows up only
+/// where many rows share one sort value and the archive's own order decides which comes first. So
+/// every low-cardinality ordering is here (`rarity` has 4 distinct values over 4,200 cards,
+/// `color` 6, `cmc` ~18, `set` 30, `power`/`toughness` ~11), in both directions, across all three
+/// unique modes, with and without the annex, plus deep offsets where a tie straddling the window
+/// boundary would repeat or skip a row.
+///
+/// A GRID IS ONLY TIE-HEAVY IF THE CORPUS IS. Four of these twelve orderings used to be ONE tie
+/// group each, because the generated corpus had two distinct `cmc` values and two distinct
+/// `power`/`toughness` — see `Spread`. Widening the corpus is what makes this grid mean what its
+/// name says, and the two checks that read it (`compare`, `compare-parts`) share it for that
+/// reason: one grid, one corpus, one set of tie groups.
+fn envelope_cases() -> Vec<(String, card_engine::QueryOptions)> {
+    use card_engine::QueryOptions;
 
-    let load = |p: &Path| {
-        let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        BufferStore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {}: {e}", p.display()))
-    };
-    let a = load(a_path);
-    let b = load(b_path);
-
-    assert_eq!(a.card_count(), b.card_count(), "card_count");
-    assert_eq!(a.size(), b.size(), "printing count");
-    assert_eq!(a.common_card_types(), b.common_card_types(), "common_card_types");
-    assert_eq!(a.common_card_keywords(), b.common_card_keywords(), "common_card_keywords");
-
-    let true_node = r#"{"node_type": "TrueNode"}"#;
-
-    // THE GRID IS DELIBERATELY TIE-HEAVY. Two archives built from IDENTICAL rows can still
-    // differ byte-for-byte in their index region, because index construction may break ties
-    // between equally-ranked rows in build order. That is invisible to a checksum and invisible
-    // to a query whose sort key is unique -- it shows up only where many rows share one sort
-    // value and the archive's own order decides which comes first. So every low-cardinality
-    // ordering is here (`rarity` has 5 distinct values over 4,200 cards, `color` 6, `cmc` ~10,
-    // `set` a handful), in both directions, across all three unique modes, with and without the
-    // annex, plus deep offsets where a tie straddling the window boundary would repeat or skip a
-    // row. If these all agree the two builders answer identically, which is the property the
-    // two-publisher design actually needs -- byte equality of the archive is not it.
     let orderings = [
         "rarity", "color", "cmc", "set", "name", "released", "artist", "edhrec", "usd", "power", "toughness",
         "cubecobra",
@@ -1269,6 +1711,31 @@ fn cmd_compare(a_path: &Path, b_path: &Path) {
             ));
         }
     }
+    cases
+}
+
+/// Semantic parity gate between two store files. Archive bytes are
+/// legitimately nondeterministic (HashMap seeding permutes index entry order,
+/// run-to-run even on one machine), so equality is defined over what the
+/// serving surface can observe: every printing with every field, in engine
+/// result order, plus catalogs, counts, and seeded samples.
+fn cmd_compare(a_path: &Path, b_path: &Path) {
+    use card_engine::{BufferStore, QueryOptions};
+
+    let load = |p: &Path| {
+        let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+        BufferStore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {}: {e}", p.display()))
+    };
+    let a = load(a_path);
+    let b = load(b_path);
+
+    assert_eq!(a.card_count(), b.card_count(), "card_count");
+    assert_eq!(a.size(), b.size(), "printing count");
+    assert_eq!(a.common_card_types(), b.common_card_types(), "common_card_types");
+    assert_eq!(a.common_card_keywords(), b.common_card_keywords(), "common_card_keywords");
+
+    let true_node = r#"{"node_type": "TrueNode"}"#;
+    let cases = envelope_cases();
 
     let mut compared = 0usize;
     for (label, opts) in &cases {
@@ -1323,6 +1790,272 @@ fn cmd_compare(a_path: &Path, b_path: &Path) {
     }
     println!("match: sample_preferred sizes (content is build-order-random by design)");
     println!("STORES SEMANTICALLY IDENTICAL");
+}
+
+// ─── the answer does not depend on how the corpus was cut ────────────────────
+
+/// THE PARTITION DIFFERENTIAL: the same corpus cut TWO WAYS must answer byte-identically.
+///
+/// CARD-PARTITIONING §6 originally asked for "byte-identical envelopes, partitioned vs
+/// unpartitioned". That criterion is unachievable and was never met: there IS no unpartitioned
+/// build. `partition_count_for` clamps at `MIN_PARTITIONS = 2`, `writeManifest` refuses a manifest
+/// without partitions, and a single archive over the multilingual corpus aborts under the 124MiB
+/// cap by design (the N=1 shape is superlinear — see `SPILLED_DRAFT_TO_STORE_RATIO`). The old
+/// single-archive gate step was deleted rather than fixed, correctly, and that left the cut proven
+/// on a small fixture, the merge proven in isolation
+/// (`partitioned_key_streams_merge_to_the_unpartitioned_order`), and NOTHING joining the two.
+///
+/// This is the achievable form, and it is strictly stronger than either half because it joins
+/// them: N=2 versus N=10 over one corpus. Both are legal cuts, both build under the cap, and byte
+/// equality between them proves exactly what the original wanted — THE ANSWER DOES NOT DEPEND ON
+/// HOW THE CORPUS WAS CUT. An unpartitioned reference would have proven the same thing about a
+/// shape that no publisher can emit.
+///
+/// It reads the same tie-heavy grid `compare` does (`envelope_cases`), through the same reference
+/// gather the serving DO implements: phase 1 asks every partition for its top `offset + limit`
+/// keys at offset 0, the streams are bytewise-merged, and phase 2 fetches the surviving page rows
+/// from the partition that owns them. Inline budget 0 — the keys-only protocol — because what is
+/// on trial here is the CUT, and `inline_rows_equal_fetch_rows_for_the_same_entries` already pins
+/// the budget dimension against a single store.
+///
+/// It runs its own NEGATIVE CONTROL in the same invocation, over the same two cuts: see
+/// `localize_primary`. The check and the proof that the check can fail are one command because a
+/// control that is a separate command is a control someone stops running.
+fn cmd_compare_parts(rows_path: &Path, work_dir: &Path, n_a: u32, n_b: u32) {
+    use sylvan_store_builder::PartitionsArg;
+
+    let build = |n: u32| -> Vec<card_engine::BufferStore> {
+        let dir = work_dir.join(format!("cut-n{n}"));
+        std::fs::remove_dir_all(&dir).ok();
+        let file = std::fs::File::open(rows_path).expect("open rows");
+        let rows = BufReader::with_capacity(1 << 20, file).lines().filter_map(|line| {
+            let line = line.expect("read row line");
+            if line.is_empty() { None } else { Some(serde_json::from_str::<Value>(&line).expect("parse row")) }
+        });
+        let manifest =
+            sylvan_store_builder::build_store_partitioned(rows, &dir, "memprobe", PartitionsArg::Fixed(n))
+                .expect("partitioned build");
+        let parts = manifest["partitions"].as_array().expect("partitions").clone();
+        let counts: Vec<u64> = parts.iter().map(|p| p["printing_count"].as_u64().unwrap_or(0)).collect();
+        eprintln!("  N={n}: {counts:?} printings per partition");
+        parts
+            .iter()
+            .map(|p| {
+                let key = p["store_key"].as_str().expect("partition store_key");
+                let bytes = std::fs::read(dir.join(key)).expect("read partition archive");
+                card_engine::BufferStore::from_bytes(&bytes).expect("partition loads")
+            })
+            .collect()
+    };
+
+    let a = build(n_a);
+    let b = build(n_b);
+    // A cut that did not actually spread the corpus proves nothing about cutting it.
+    for (n, parts) in [(n_a, &a), (n_b, &b)] {
+        let nonempty = parts.iter().filter(|p| p.card_count() > 0).count();
+        assert!(nonempty as u32 == n, "N={n} left {} of {n} partitions empty — the cut is degenerate", n - nonempty as u32);
+    }
+
+    let true_node = serde_json::json!({ "node_type": "TrueNode" });
+    let cases = envelope_cases();
+
+    // ONE BUILD, TWO PASSES. The honest pass must agree on every case; the control pass must
+    // disagree on at least one. They share the two cuts because building them is most of the cost,
+    // and because a control that runs against different archives than the check it validates is
+    // not validating that check.
+    let mut compared = 0usize;
+    let mut differing = 0usize;
+    let mut differing_orderings: Vec<String> = Vec::new();
+    for (label, opts) in &cases {
+        let ga = gather(&a, &true_node, opts, false);
+        let gb = gather(&b, &true_node, opts, false);
+        // The envelope is `{"total_cards":T,"has_more":H,"data":[...]}`; comparing its three parts
+        // in order, row string against row string, IS comparing those bytes — without ever
+        // building the ~100MB string a 56k-row case would need.
+        if let Some(at) = envelope_diff(&ga, &gb) {
+            panic!(
+                "ENVELOPE DIVERGED between N={n_a} and N={n_b}: {label}\n  \
+                 total {} vs {}, has_more {} vs {}, rows {} vs {}, first differing row {at:?}\n  \
+                 The answer depends on how the corpus was cut — a sort key or a merge is \
+                 archive-local.",
+                ga.total,
+                gb.total,
+                ga.has_more,
+                gb.has_more,
+                ga.rows.len(),
+                gb.rows.len()
+            );
+        }
+        compared += ga.rows.len();
+
+        // The same case with the archive-local primary substituted in. Only the three orderings
+        // whose primary really is a rank in-archive can carry the substitution (see
+        // `localize_primary`), so the others agree here too and are simply not evidence.
+        if matches!(opts.orderby.as_str(), "name" | "set" | "artist") {
+            let ba = gather(&a, &true_node, opts, true);
+            let bb = gather(&b, &true_node, opts, true);
+            if envelope_diff(&ba, &bb).is_some() {
+                differing += 1;
+                if !differing_orderings.contains(&opts.orderby) {
+                    differing_orderings.push(opts.orderby.clone());
+                }
+            }
+        }
+    }
+
+    println!("match: {} envelope cases, {compared} rows byte-for-byte, N={n_a} vs N={n_b}", cases.len());
+    println!("THE CUT DOES NOT CHANGE THE ANSWER");
+
+    // THE NEGATIVE CONTROL, asserted here rather than left to a commit message. A differential
+    // that cannot fail is worth nothing, and this repo produced two of those in one night.
+    assert!(
+        differing > 0,
+        "the archive-local sort key produced IDENTICAL envelopes at N={n_a} and N={n_b} — this \
+         differential cannot fail, so its passing means nothing. Fix the check, not the corpus."
+    );
+    // `set` by name, because it is THE case the `encode_sort_key` decision is about: a control
+    // that fired only on `name` would leave the set-code-versus-`set_rank` choice unguarded.
+    assert!(
+        differing_orderings.iter().any(|o| o == "set"),
+        "order=set survived an archive-local primary — the one ordering whose in-archive key really \
+         is a `set_rank` is exactly the one this must catch. Diverged: {differing_orderings:?}"
+    );
+    println!(
+        "CONTROL: the same differential FAILS on {differing} cases when the sort key's primary is \
+         made archive-local (orderings: {})",
+        differing_orderings.join(", ")
+    );
+}
+
+/// `None` when the two envelopes are byte-equal; otherwise the index of the first differing row
+/// (or `None` inside a `Some` when the difference is in the total, the flag, or the row count).
+fn envelope_diff(a: &Gathered, b: &Gathered) -> Option<Option<usize>> {
+    let row_diff = a
+        .rows
+        .iter()
+        .zip(b.rows.iter())
+        .position(|(ra, rb)| serde_json::to_string(ra).unwrap() != serde_json::to_string(rb).unwrap());
+    if a.total == b.total && a.has_more == b.has_more && a.rows.len() == b.rows.len() && row_diff.is_none() {
+        return None;
+    }
+    Some(row_diff)
+}
+
+struct Gathered {
+    total: usize,
+    has_more: bool,
+    rows: Vec<Value>,
+}
+
+/// The reference two-phase gather, exactly as `src/engine/remote-engine.ts` performs it and as
+/// `gather_reference` in the engine's own tests spells it out: every partition answers phase 1 at
+/// offset 0 with its top `offset + limit` keys, the streams are bytewise-merged (each arrives
+/// sorted and keys are globally unique via the scryfall tail, so sorting the concatenation IS the
+/// k-way merge), the page is the merged window, and phase 2 asks each owning partition for its
+/// share of the page.
+fn gather(
+    parts: &[card_engine::BufferStore],
+    tree: &Value,
+    opts: &card_engine::QueryOptions,
+    break_sort_key: bool,
+) -> Gathered {
+    let mut phase1 = opts.clone();
+    phase1.limit = opts.offset + opts.limit;
+    phase1.offset = 0;
+
+    let mut total = 0usize;
+    let mut merged: Vec<(Vec<u8>, usize, u32)> = Vec::new();
+    for (part, store) in parts.iter().enumerate() {
+        let out = store.query_keys(tree, &phase1, 0).expect("phase 1 keys");
+        total += out.total;
+        let mut keys = out.keys;
+        // ONLY the three string-primary orderings. The numeric columns encode a VALUE
+        // (`perm_primary_key` over the f32), not a rank, so there is no archive-local variant of
+        // them to substitute — and a substitution applied to their 4 raw bytes would be corruption
+        // rather than the encoding under discussion, which is a divergence that proves nothing.
+        if break_sort_key && matches!(opts.orderby.as_str(), "name" | "set" | "artist") {
+            localize_primary(&mut keys, opts.direction == "desc");
+        }
+        for (key, vpid) in keys {
+            assert_eq!(key[0], card_engine::SORT_KEY_VERSION, "a merge must never mix key versions");
+            merged.push((key, part, vpid));
+        }
+    }
+    merged.sort_unstable_by(|x, y| x.0.cmp(&y.0));
+
+    let end = (opts.offset + opts.limit).min(merged.len());
+    let page = if opts.offset < end { &merged[opts.offset..end] } else { &[][..] };
+
+    let mut rows: Vec<Option<Value>> = vec![None; page.len()];
+    for (part, store) in parts.iter().enumerate() {
+        let mut at: Vec<usize> = Vec::new();
+        let mut vpids: Vec<u32> = Vec::new();
+        for (i, entry) in page.iter().enumerate() {
+            if entry.1 == part {
+                at.push(i);
+                vpids.push(entry.2);
+            }
+        }
+        if vpids.is_empty() {
+            continue;
+        }
+        for (slot, row) in at.into_iter().zip(store.fetch_rows(&vpids, opts.fields.clone()).expect("phase 2")) {
+            rows[slot] = Some(row);
+        }
+    }
+    let rows: Vec<Value> = rows.into_iter().map(|r| r.expect("every page slot fetched")).collect();
+    let has_more = opts.offset + rows.len() < total;
+    Gathered { total, has_more, rows }
+}
+
+/// THE NEGATIVE CONTROL: rewrite each key's primary segment as its ARCHIVE-LOCAL dense rank —
+/// precisely the encoding `encode_sort_key` refuses to emit.
+///
+/// The decision it guards is spelled out on `encode_sort_key`: `order=set` writes the set CODE and
+/// never `set_rank`, `order=name` the collated name and never `name_rank`, because those ranks are
+/// assigned over the rows of THIS archive. Partition A ranking `{alp, ixp, zab}` as `{0, 1, 2}`
+/// and partition B ranking `{ixp, zab}` as `{0, 1}` interleaves wrongly under a bytewise merge —
+/// and does so ONLY when the two partitions hold different inventories, which is why the corpus
+/// draws its sets zipfian (a uniform 30-set draw puts every set in every partition, and the
+/// broken key would then agree with the correct one).
+///
+/// This is a HARNESS substitution rather than a build flag on the engine, and it is faithful
+/// because the substitution is exactly the one under discussion: the segment is replaced in place,
+/// the rank is dense over the segments this partition actually holds, and the ordering INSIDE a
+/// partition is unchanged (a dense rank is monotone in the value it ranks) — which is the whole
+/// trap. A rank-based key passes every in-archive ordering test and fails only across the cut.
+///
+/// The CALLER restricts this to the three orderings whose primary is a string segment (`name`,
+/// `set`, `artist`); the numeric columns have no archive-local variant to substitute, so their
+/// cases run the honest key and must still agree even in this mode. That is deliberate: it keeps
+/// the control's own failures attributable. A control that broke every case would not distinguish
+/// "the differential detects an archive-local rank" from "the differential detects garbage".
+fn localize_primary(keys: &mut [(Vec<u8>, u32)], descending: bool) {
+    // push_str_segment's four shapes: absent is one byte (0x00 asc / 0x02 desc); present is 0x01,
+    // the bytes (complemented when descending), then a terminator (0x00 asc / 0xFF desc). A string
+    // byte is never the terminator's value, so the first one ends the segment.
+    let terminator = if descending { 0xFFu8 } else { 0x00 };
+    let primary_len = |key: &[u8]| -> usize {
+        if key.get(1) != Some(&0x01) {
+            return 1; // the absent marker, a single byte
+        }
+        key[2..].iter().position(|b| *b == terminator).map_or(key.len() - 1, |i| i + 2)
+    };
+
+    let mut distinct: Vec<&[u8]> = keys.iter().map(|(k, _)| &k[1..1 + primary_len(k)]).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    let ranks: HashMap<Vec<u8>, u32> =
+        distinct.iter().enumerate().map(|(i, seg)| ((*seg).to_vec(), i as u32)).collect();
+
+    for (key, _) in keys.iter_mut() {
+        let n = primary_len(key);
+        let rank = ranks[&key[1..1 + n]];
+        // Complemented descending, exactly as `perm_primary_key` folds direction into its own
+        // 4-byte primary — so the broken key stays a well-formed key and the merge stays a merge.
+        let rank = if descending { !rank } else { rank };
+        key.splice(1..1 + n, rank.to_be_bytes());
+    }
 }
 
 // ─── partition ───────────────────────────────────────────────────────────────
@@ -1381,6 +2114,9 @@ fn main() {
                 args.get("foreign-ratio").map(|s| s.parse().expect("ratio")).unwrap_or(0.0);
             cmd_gen(printings, foreign_ratio, &arg(&args, "bulk"), &arg(&args, "tags"));
         }
+        // The generated corpus's shape tag, for whoever caches it (scripts/gate.sh names its
+        // cache directory with this). Printed bare so a shell can read it without parsing.
+        "corpus-shape" => println!("{CORPUS_SHAPE}"),
         "rows" => cmd_rows(&arg(&args, "bulk"), &arg(&args, "tags"), &arg(&args, "out")),
         "partition" => {
             let parts: u32 = args.get("parts").map(|s| s.parse().expect("number")).unwrap_or(4);
@@ -1390,6 +2126,11 @@ fn main() {
         "phases" => cmd_phases(&arg(&args, "rows"), &arg(&args, "out")),
         "spill" => cmd_spill(&arg(&args, "rows"), &arg(&args, "out")),
         "compare" => cmd_compare(&arg(&args, "a"), &arg(&args, "b")),
+        "compare-parts" => {
+            let n_a: u32 = args.get("a").map(|s| s.parse().expect("number")).unwrap_or(2);
+            let n_b: u32 = args.get("b").map(|s| s.parse().expect("number")).unwrap_or(10);
+            cmd_compare_parts(&arg(&args, "rows"), &arg(&args, "work"), n_a, n_b);
+        }
         "tagbench" => {
             let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
             cmd_tagbench(&arg(&args, "store"), iters);
@@ -1409,8 +2150,9 @@ fn main() {
         }
         other => {
             eprintln!(
-                "unknown command {other:?}; expected gen | rows | partition | build | phases | spill | \
-                 compare | tagbench | textbench | namecheck | querybench | routebench"
+                "unknown command {other:?}; expected gen | corpus-shape | rows | partition | build | \
+                 phases | spill | compare | compare-parts --rows R --work D [--a 2] [--b 10] | \
+                 tagbench | textbench | namecheck | querybench | routebench"
             );
             std::process::exit(2);
         }

@@ -26,12 +26,22 @@ fn card_row(
     subtypes: &[&str],
     keywords: &[&str],
     colors: &[&str],
+    // DISTINCT FROM `colors` ON EVERY ROW, and that is the point. Both keys used to be handed the
+    // SAME object, which made `card_colors` and `card_color_identity` indistinguishable in this
+    // fixture — so `result_fields_reach_the_response`, whose stated job is catching an extractor
+    // wired to the wrong source field, could not catch that particular wrong field. An identity
+    // wider than the cost is also the real shape (a mana ability or an activated cost in the rules
+    // text), so this is the fixture becoming more like a card, not less.
+    color_identity: &[&str],
     cmc: u32,
     mana_sym: &str,
     prefer_score: f64,
 ) -> Value {
     let color_obj: Value = Value::Object(
         colors.iter().map(|c| ((*c).to_owned(), json!(true))).collect(),
+    );
+    let identity_obj: Value = Value::Object(
+        color_identity.iter().map(|c| ((*c).to_owned(), json!(true))).collect(),
     );
     let keyword_obj: Value = Value::Object(
         keywords.iter().map(|k| ((*k).to_owned(), json!({}))).collect(),
@@ -53,7 +63,7 @@ fn card_row(
         "card_subtypes": subtypes,
         "card_keywords": keyword_obj,
         "card_colors": color_obj,
-        "card_color_identity": color_obj,
+        "card_color_identity": identity_obj,
         "produced_mana": {},
         "card_layout": "normal",
         "card_border": "black",
@@ -116,6 +126,7 @@ fn fixture_rows() -> Vec<Value> {
             &[],
             &[],
             &["R"],
+            &["R", "G"],
             1,
             "R",
             0.9,
@@ -133,6 +144,7 @@ fn fixture_rows() -> Vec<Value> {
             &[],
             &[],
             &["R"],
+            &["R", "G"],
             1,
             "R",
             0.2,
@@ -150,6 +162,7 @@ fn fixture_rows() -> Vec<Value> {
             &["Wurm"],
             &["Trample"],
             &["G"],
+            &["G", "U"],
             6,
             "G",
             0.7,
@@ -369,6 +382,7 @@ fn result_fields_reach_the_response() {
             "layout".to_owned(),
             "cmc".to_owned(),
             "rarity".to_owned(),
+            "colors".to_owned(),
             "color_identity".to_owned(),
             "legalities".to_owned(),
             "loyalty".to_owned(),
@@ -387,7 +401,21 @@ fn result_fields_reach_the_response() {
     // extractor yields -- and the decimal is the one card_object.rs writes to the wire.
     assert_eq!(card["cmc"], json!(1.0), "cmc is the stored decimal, not an integer or a string");
     assert_eq!(card["rarity"], json!("common"), "rarity_int 0 decodes to the word");
-    assert_eq!(card["color_identity"], json!(["R"]), "the identity bitmap decodes to WUBRG letters");
+    // BOTH colour fields, and they DISAGREE on this row ({R} cost, {R}{G} identity). Asserting one
+    // of them against a fixture where the two were the same object proved only that some colour
+    // bitmap decodes to letters; each extractor now has to be reading its own source field, and
+    // swapping the two fails in both directions.
+    assert_eq!(card["colors"], json!(["R"]), "the colors bitmap decodes to letters");
+    assert_eq!(
+        card["color_identity"],
+        // ALPHABETICAL, which is what `identity_letters` emits (B, C, G, R, U, W) — not Scryfall's
+        // WUBRG. Pinned as the port's current behaviour rather than blessed as correct: no fixture
+        // in this repo had a multi-colour identity before, so nothing here has ever had an opinion
+        // about the order, and settling it is a live-parity question rather than a roundtrip one.
+        json!(["G", "R"]),
+        "the IDENTITY bitmap, which is wider than the cost here — an extractor reading card_colors \
+         would answer [\"R\"]"
+    );
     assert_eq!(
         card["legalities"]["vintage"],
         json!("restricted"),

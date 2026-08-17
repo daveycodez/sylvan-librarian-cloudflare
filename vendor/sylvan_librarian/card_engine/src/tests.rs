@@ -8707,6 +8707,22 @@ fn plane_fixture_store() -> CardData {
         (4, 4, TYPE_ENCHANTMENT | TYPE_SNOW, 0),      // mono B snow enchantment
         (0, 32, TYPE_LAND, 32),                        // C-bit identity, exercising the C plane, produces C
     ];
+    // THE ORDERING COLUMNS, which `stub_card` leaves None on every row.
+    //
+    // A FIELD HELD CONSTANT ACROSS ALL ROWS CANNOT DISCRIMINATE ANY RULE ABOUT THAT FIELD, and
+    // both of these were being read as if they could. `run_query_plane_path_parity` sorts by
+    // `edhrec` and compares the two paths' pages IN ORDER — with `edhrec_rank: None` on all ten
+    // cards the whole fixture was ONE tie group, so the primary sort was never exercised and an
+    // ordered comparison degenerated into a set comparison. The same test's mixed filter asks
+    // `cmc != 1`, which over ten Nones is an empty residual: the arm whose entire purpose is
+    // "the type check planes out and the numeric check does NOT" was evaluating nothing.
+    //
+    // Ranks are chosen with TIES (100, 250, 30 each appear twice) and one None: a totally ordered
+    // column would exercise the sort but not the tiebreak below it, and the missing-value arm is
+    // its own branch in every rank sort. cmc likewise repeats and includes 0.
+    const EDHREC: [Option<u32>; 10] =
+        [Some(400), Some(100), Some(250), Some(100), Some(900), Some(30), Some(250), Some(700), Some(30), None];
+    const CMC: [f32; 10] = [3.0, 1.0, 2.0, 2.0, 0.0, 4.0, 5.0, 6.0, 3.0, 0.0];
     let cards = specs
         .iter()
         .enumerate()
@@ -8715,6 +8731,8 @@ fn plane_fixture_store() -> CardData {
             c.card_colors = colors;
             c.card_color_identity = identity;
             c.produced_mana = produced;
+            c.edhrec_rank = EDHREC[i];
+            c.cmc = Some(CMC[i]);
             c
         })
         .collect();
@@ -9174,7 +9192,7 @@ fn run_query_plane_path_parity() {
             ])
         }),
     ];
-    for make in &filters {
+    for (f, make) in filters.iter().enumerate() {
         for unique in ["card", "printing", "artwork"] {
             let mut plain = make();
             let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, unique, "default", "edhrec", "asc", 100, 0);
@@ -9185,8 +9203,31 @@ fn run_query_plane_path_parity() {
                 page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
             };
             assert_eq!(ids(&p0), ids(&p1), "pages must agree (unique={unique})");
+            // NON-VACUITY, asserted rather than assumed. Every filter here must select a PROPER,
+            // NON-EMPTY subset: an "identical pages" assertion over an empty page, or over the
+            // whole fixture, holds for a plane path that is wrong in every interesting way. The
+            // mixed filter (index 3) is the one this guards hardest — it asked `cmc != 1` while
+            // the fixture had `cmc: None` on all ten cards, so it matched nothing and the residual
+            // half of "plane out the type, keep the numeric" was never evaluated at all.
+            assert!(
+                t0 > 0 && t0 < archived.cards.len(),
+                "filter {f} selected {t0} of {} cards (unique={unique}) — an all-or-nothing filter \
+                 makes this differential vacuous",
+                archived.cards.len()
+            );
         }
     }
+    // The ORDER, not just the membership: `orderby=edhrec` has to have something to order. The
+    // fixture's ranks were all None, which made the ordered page comparison above a SET comparison
+    // in disguise — the primary sort was one tie group and no plane-path reordering could show.
+    let mut all = FilterExpr::True;
+    let (_, page) = run_query(&QueryCtx::from(archived), &mut all, None, "card", "default", "edhrec", "asc", 100, 0);
+    let ranks: Vec<Option<u32>> = page.iter().map(|(c, _)| c.edhrec_rank.as_ref().map(|v| u32::from(*v))).collect();
+    assert!(
+        ranks.iter().flatten().collect::<std::collections::BTreeSet<_>>().len() > 1,
+        "order=edhrec over this fixture has fewer than two distinct ranks — the ordering proves \
+         nothing about ordering: {ranks:?}"
+    );
 }
 
 /// Regression for a real bug that shipped briefly in this area: an earlier

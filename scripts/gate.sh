@@ -77,8 +77,18 @@ step "perf ratios"
 # the ratios this asserts hold at any corpus size and a 100k build would put minutes on every
 # gate run. FOREIGN ROWS INCLUDED (--foreign-ratio 3.7, the measured all_cards shape): the
 # name-path ratios below are only meaningful against the corpus whose annex the routes actually
-# search. Dir suffix -ml so a cached pre-multilingual corpus can never serve this gate.
-PERF_DIR="${TMPDIR:-/tmp}/sylvan-gate-perf-ml"
+# search.
+#
+# THE CACHE DIRECTORY IS NAMED BY THE GENERATOR'S OWN SHAPE TAG, not by hand. The corpus is cached
+# across runs because synthesising it is pure and deterministic — of the generator that wrote it.
+# After that generator changes, a cached bulk.jsonl is the OLD corpus wearing the new corpus's
+# path, and every ratio, envelope case and fit measurement in the run is read off it. The `-ml`
+# suffix was added by hand for exactly this reason once already (a pre-multilingual corpus serving
+# a multilingual gate); `memprobe corpus-shape` is the version of that fix that cannot be
+# forgotten, because the constant lives beside the code that would invalidate it.
+scripts/with-rust.sh cargo build --release -p sylvan-store-builder --example memprobe >/dev/null
+CORPUS_SHAPE="$(./target/release/examples/memprobe corpus-shape)"
+PERF_DIR="${TMPDIR:-/tmp}/sylvan-gate-perf-${CORPUS_SHAPE}"
 mkdir -p "$PERF_DIR"
 # The CORPUS is cached; the ROWS are not. bulk.jsonl/tags.json are deterministic INPUTS from a
 # fixed seed, so synthesising them once is free and safe. rows.jsonl is the OUTPUT OF THE CODE
@@ -87,12 +97,10 @@ mkdir -p "$PERF_DIR"
 # confusion: after a transform change the cached rows still held the old values, so the store
 # built from them was stale while everything else in the run was current.
 if [[ ! -f "$PERF_DIR/bulk.jsonl" ]]; then
-    echo "  synthesising the deterministic corpus (first run only)..."
-    scripts/with-rust.sh cargo build --release -p sylvan-store-builder --example memprobe >/dev/null 2>&1
+    echo "  synthesising the deterministic corpus '${CORPUS_SHAPE}' (first run only)..."
     ./target/release/examples/memprobe gen --printings 12000 --foreign-ratio 3.7 \
         --bulk "$PERF_DIR/bulk.jsonl" --tags "$PERF_DIR/tags.json" >/dev/null 2>&1
 fi
-scripts/with-rust.sh cargo build --release -p sylvan-store-builder --example memprobe >/dev/null
 ./target/release/examples/memprobe rows \
     --bulk "$PERF_DIR/bulk.jsonl" --tags "$PERF_DIR/tags.json" --out "$PERF_DIR/rows.jsonl" >/dev/null
 rm -rf "$PERF_DIR/store" && mkdir -p "$PERF_DIR/store"
@@ -243,5 +251,30 @@ if ! cmp -s "$PERF_DIR/rows.jsonl" "$PERF_DIR/rows-wasm.jsonl"; then
     exit 1
 fi
 ./target/release/examples/memprobe compare --a "$STORE" --b "$PERF_DIR/store-wasm.store" | sed 's/^/  /'
+
+# ── the cut does not change the answer ────────────────────────────────────────
+# CARD-PARTITIONING §6 asked for "byte-identical envelopes, partitioned vs unpartitioned". No such
+# thing can be built: partitionCountFor floors at MIN_PARTITION_COUNT=2, writeManifest refuses a
+# manifest without partitions, and a single archive over the multilingual corpus aborts under the
+# cap by design. The old single-archive step was deleted rather than fixed, correctly — and that
+# left the CUT proven on a small fixture, the MERGE proven in isolation
+# (partitioned_key_streams_merge_to_the_unpartitioned_order), and nothing joining the two end to
+# end.
+#
+# This is the achievable form and it is strictly stronger, because it joins them: the same corpus
+# cut N=2 and N=10, both legal, both under the cap, run through the same reference two-phase
+# gather the serving DO implements, over the SAME tie-heavy 162-case envelope grid `compare` uses
+# above. Byte equality between the two cuts is exactly what the original criterion wanted — that
+# the answer does not depend on how the corpus was cut.
+# It carries its own NEGATIVE CONTROL, in the same invocation and over the same two cuts. A
+# differential that cannot fail is worth nothing, and this repo produced two of those in one night
+# (a compare grid whose four low-cardinality orderings were single tie groups, and a plane-path
+# "ordering" assertion over a column that was None on every row). So the check is made to FAIL
+# deliberately, by substituting the partition-local dense rank for the sort key's primary segment —
+# precisely the encoding `encode_sort_key` refuses to write (the set CODE, never `set_rank`) — and
+# memprobe exits non-zero if that substitution does NOT break it.
+step "partition differential: N=2 vs N=10, same corpus, same answers"
+./target/release/examples/memprobe compare-parts --rows "$PERF_DIR/rows.jsonl" \
+    --work "$PERF_DIR/cuts" --a 2 --b 10 2>&1 | grep -v '^  p[0-9]*:' | sed 's/^/  /'
 
 printf '\n\033[1m==> gate green\033[0m\n'
