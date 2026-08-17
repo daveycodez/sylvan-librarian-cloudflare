@@ -382,7 +382,18 @@ describe("values a known keyword cannot take", () => {
 			]);
 		}
 		// Honored: one colour repeated, one hybrid pair repeated, either brace order, unbraced.
-		for (const value of ["{r}", "{R}", "r", "{r}{r}", "rr", "{r}{r}{r}", "{r/g}", "{g/r}", "{r/g}{r/g}", "{r/g}{g/r}"]) {
+		for (const value of [
+			"{r}",
+			"{R}",
+			"r",
+			"{r}{r}",
+			"rr",
+			"{r}{r}{r}",
+			"{r/g}",
+			"{g/r}",
+			"{r/g}{r/g}",
+			"{r/g}{g/r}",
+		]) {
 			expect(scryfallTermPolicy(`devotion:${value} e:khm`).warnings).toEqual([]);
 		}
 	});
