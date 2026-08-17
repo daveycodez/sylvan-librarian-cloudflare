@@ -1,9 +1,32 @@
 # Store build in a 128MB isolate: feasibility prototype — GO
 
+> **PROVENANCE — read this before quoting any number below.** Measured
+> **2026-08-08**, on a **synthetic, English-only** corpus at `default_cards`
+> scale, against the store layout of that date — content generation ≤9,
+> `ARCHIVE_FORMAT_VERSION` in the `20260806`–`20260809` range, **before**
+> generation 10 put the whole Scryfall card-object surface into the archive,
+> before generation 19 folded the residue archive back in, and before generation
+> 20's multilingual annex. A store byte count is a statement about a layout, and
+> this layout is four major revisions old.
+>
+> **The question this document answers has also changed shape.** It asks whether
+> ONE archive fits a 128MB isolate. Production no longer builds one archive: the
+> store is partitioned, and over the real multilingual corpus a single-archive
+> build aborts under the cap by design. The live successor to this measurement is
+> the `wasm build fit per partition` step in `scripts/gate.sh`, which cuts the
+> real corpus at the manifest's own partition count and runs one capped build per
+> partition in its own process. At N=10 those measured 91.6–104.4 MB against a
+> **124 MiB** cap.
+>
+> What is still true, and is why this file is kept: the mechanisms in "What made
+> it fit" are all live code, every symbol it names still resolves, and the
+> reproduce recipe still runs (with the two corrections marked below).
+
 Can the rkyv store build run inside a Cloudflare Worker/Durable Object isolate
 (128MB memory, free plan) instead of the 4GB import container? **Yes.**
 Measured on a realistic synthetic corpus (100k printings / 35k oracle cards,
-57.1MB store — real `default_cards` scale):
+57.1MB store — real `default_cards` scale; for comparison, today's real corpus
+is 540,484 rows cut into ten ~40MB archives):
 
 | measurement | before | after |
 |---|---|---|
@@ -12,9 +35,14 @@ Measured on a realistic synthetic corpus (100k printings / 35k oracle cards,
 | wasm linear memory high-water | 132.9 MB (over 192MB cap run) | **94.9 MB** |
 | wasm build CPU (stage + finish) | — | ~9 s total, chunkable |
 
-The wasm module is linked with `--max-memory=112MB` (117,440,512 = 1792
+The wasm module was linked with `--max-memory=112MB` (117,440,512 = 1792
 pages), leaving JS-side headroom inside a real 128MB isolate; the run
-completes 33MB under the platform ceiling.
+completed 33MB under the platform ceiling.
+
+**That cap is no longer 112MB.** It was raised to **124 MiB** (130,023,424) when
+generation 19 folded the residue archive back in, and that is what
+`package.json`'s `build:wasm-import` and `scripts/gate.sh` link against today.
+The "33MB under the ceiling" arithmetic goes with the old number.
 
 ## What made it fit
 
@@ -56,45 +84,92 @@ trigram+verify, name bigram). Verified identical across:
 (`sample_preferred` contents are excluded: they depend on archive-internal
 order, i.e. random across rebuilds today by design; sizes are compared.)
 
-Existing suites pass: card_engine 154, builder roundtrip 2, repo TS 1854.
-On wasm32 the build is bit-reproducible (fixed hash seeds) — same input,
-same sha256.
+Existing suites passed at the time (card_engine 154, builder roundtrip 2, repo
+TS 1854). **Those counts are long stale and are not worth updating** — every one
+of the three suites has grown substantially. `bun run gate` is the current
+answer to "does everything pass", and it runs `cargo test --release
+--workspace` and `bun test tests` among its ten steps.
+
+On wasm32 the build is bit-reproducible (fixed hash seeds) — same input, same
+sha256. **Do not generalize that to a native-vs-wasm comparison.** Over the same
+rows the two targets differ in ~0.5% of archive bytes, all of it in the index
+region, because index construction can break ties between equally-ranked rows in
+build order. `scripts/gate.sh` says so explicitly and compares ANSWERS rather
+than bytes for exactly this reason; a reader who takes the sentence above at
+face value will reach for a byte comparison the gate forbids.
 
 ## Reproduce
+
+Every subcommand below still exists and still parses. **Two corrections since
+2026-08-08:**
+
+1. Invoke cargo through **`scripts/with-rust.sh`**, not directly — Homebrew's
+   `rustc` ships no `wasm32-unknown-unknown` std, and the wrapper prefers the
+   rustup toolchain and installs the target on first use.
+2. `memprobe gen` gained **`--foreign-ratio`**, defaulting to **0.0**. So the
+   recipe below still synthesizes the *English-only* corpus these numbers were
+   taken on, which is what makes them reproducible — and also what makes them
+   not a statement about production. `scripts/gate.sh` passes
+   `--foreign-ratio 3.7`, the measured `all_cards` shape.
 
 ```bash
 # 1. synthetic corpus at default_cards scale (sandbox can't reach Scryfall;
 #    determinism is required for cross-runtime comparison anyway)
-cargo run --release -p sylvan-store-builder --example memprobe -- gen \
+scripts/with-rust.sh cargo run --release -p sylvan-store-builder --example memprobe -- gen \
     --printings 100000 --bulk /tmp/bulk.jsonl --tags /tmp/tags.json
-cargo run --release -p sylvan-store-builder --example memprobe -- rows \
+scripts/with-rust.sh cargo run --release -p sylvan-store-builder --example memprobe -- rows \
     --bulk /tmp/bulk.jsonl --tags /tmp/tags.json --out /tmp/rows.jsonl
 
 # 2. native builds + parity
-cargo run --release -p sylvan-store-builder --example memprobe -- build --rows /tmp/rows.jsonl --out /tmp/a
-cargo run --release -p sylvan-store-builder --example memprobe -- spill --rows /tmp/rows.jsonl --out /tmp/b
-cargo run --release -p sylvan-store-builder --example memprobe -- compare \
+scripts/with-rust.sh cargo run --release -p sylvan-store-builder --example memprobe -- build --rows /tmp/rows.jsonl --out /tmp/a
+scripts/with-rust.sh cargo run --release -p sylvan-store-builder --example memprobe -- spill --rows /tmp/rows.jsonl --out /tmp/b
+scripts/with-rust.sh cargo run --release -p sylvan-store-builder --example memprobe -- compare \
     --a /tmp/a/card-store-*.store --b /tmp/b/spill.store
 
 # per-phase heap attribution (switches to card_engine's counting allocator)
-cargo run --release --features vendor-alloc-counter -p sylvan-store-builder \
+scripts/with-rust.sh cargo run --release --features vendor-alloc-counter -p sylvan-store-builder \
     --example memprobe -- phases --rows /tmp/rows.jsonl --out /tmp/ckpt
 
-# 3. the memory-capped wasm run (the actual go/no-go)
-cargo rustc --release -p sylvan-wasm-builder-probe --target wasm32-unknown-unknown \
+# 3. the memory-capped wasm run (the original go/no-go). NOTE the cap: 112MB is
+#    the historical value these results were taken at; 130023424 (124 MiB) is
+#    what ships.
+scripts/with-rust.sh cargo rustc --release -p sylvan-wasm-builder-probe --target wasm32-unknown-unknown \
     -- -C link-arg=--max-memory=117440512
 bun engine/wasm-builder-probe/driver.ts \
     target/wasm32-unknown-unknown/release/sylvan_wasm_builder_probe.wasm \
     /tmp/rows.jsonl /tmp/store-wasm.store
-cargo run --release -p sylvan-store-builder --example memprobe -- compare \
+scripts/with-rust.sh cargo run --release -p sylvan-store-builder --example memprobe -- compare \
     --a /tmp/a/card-store-*.store --b /tmp/store-wasm.store
 ```
 
-## What this unlocks (not in this prototype)
+### The measurement that replaced step 3
 
-The ImportCoordinator DO replaces the container: stage rows into its own
-SQLite via `SpillingStoreBuilder` blobs (alarm-chained to respect per-
-invocation CPU), then `finish_from_sorted` streaming chunks into the store
-distribution layer. The transform/tags pipeline (`bulk.rs`/`transform.rs`/
-`tags.rs`) still needs its wasm port + resumable fetch; this prototype
-de-risked the one step that had no fallback if it didn't fit.
+`memprobe partition` cuts a rows file by the shared partition hash, which is how
+the capped build is exercised today — one driver **process** per partition,
+because the probe cannot hold two partitions' state at once and nothing outlives
+a process. That process isolation is the emit-one-release-one discipline the
+nightly's partition loop must keep, enforced rather than described:
+
+```bash
+./target/release/examples/memprobe partition --rows store-build/rows.jsonl \
+    --parts "$N" --out-prefix /tmp/fit-rows-p
+# then one driver run per k, against --max-memory=130023424
+```
+
+`scripts/gate.sh` runs exactly this, taking `$N` from the manifest of the build
+that produced those rows rather than from a hardcoded guess.
+
+## What this unlocked — all of it landed
+
+The ImportCoordinator DO replaced the container: it stages rows into its own
+SQLite via `SpillingStoreBuilder` blobs (alarm-chained to respect per-invocation
+CPU), then `finish_from_sorted` streams chunks into the store distribution
+layer. `src/import-coordinator.ts` is that Durable Object, bound in
+`wrangler.jsonc`.
+
+The transform/tags pipeline is ported too: **`engine/wasm-import`** is the whole
+import pipeline as a wasm C ABI, sharing `transform`/`tags`/`ranks` with the
+native builder through `sylvan-store-builder`, with its fetch driven from JS.
+The gate compares its output against the native builder's on every run,
+precisely because a wasm-only build break would otherwise leave the nightly and
+the deploy writing stores from different transform code.

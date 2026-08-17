@@ -1,6 +1,34 @@
 # Browser Engine — shipping the card store to the client as an npm package
 
-Status: **proposal. Phase 0 done; the server side landed independently.** Written 2026-08-11, revised after `8909a96` gzipped the KV chunks for the Durable Object — which turned out to supply the browser artifact too, so §7 no longer proposes a publish step. Numbers marked *measured* were taken against real artifacts on this machine; numbers marked *estimated* are arithmetic on top of them and are only as good as the stated assumptions.
+Status: **proposal, and its sizing is invalidated.** Written 2026-08-11, revised after `8909a96` gzipped the KV chunks for the Durable Object — which turned out to supply the browser artifact too, so §7 no longer proposes a publish step. Numbers marked *measured* were taken against real artifacts on this machine; numbers marked *estimated* are arithmetic on top of them and are only as good as the stated assumptions.
+
+---
+
+> ## STOP — what changed under this document (audited 2026-08-16)
+>
+> Two assumptions run through every sizing argument below, and **both are dead**. The design reasoning is still worth reading; the arithmetic is not. Nothing here has been recomputed, because recomputing it is the work of actually picking this project up.
+>
+> **1. The corpus changed, and this document never named it.** Every count below silently assumes Scryfall's English-only `default_cards` dump. The store is built from **`all_cards`** — every printing in every language — which is the single change that invalidates the most numbers here. *This is the omission worth learning from: there is no line in the original document a reader could have checked to notice.* A measurement is only re-verifiable if it says what it was measured **on**, not just when.
+>
+> **2. There is no longer one archive to download.** The store+residue **pair** was folded into ONE archive at generation 19, and that archive was then **partitioned**. As of 2026-08-16: 10 partitions, 412,869,984 raw bytes across them, content generation **32**, format **2026081616** — against the 76.6 MB + 11.8 MB pair and generation 10 the tables below rest on.
+>
+> Concretely, what a reader must NOT carry forward:
+>
+> | Claim below | Status |
+> |---|---|
+> | "~28 MB download", everywhere it appears (§8.1, §8.2, §13) | **Dead.** Even at this document's own 43.5% gzip ratio, 412.9 MB raw is ~180 MB compressed. The §8.2 platform-limit table flips on this: ~180 MB against iOS's 200 MB cellular threshold is not the "~14%, non-blocking" it reports. |
+> | "76–91 MB of linear memory per tab" (§1 risk table, §5.3) | **Dead**, and worse than a wrong number. One wasm instance holds one archive; the full corpus cannot be one instance. The SharedWorker *argument* survives — its arithmetic does not, and the partition axis is a design question this document never faced. |
+> | The two-row "search only / search + `/cards/*`" download split (§2) | **Dead.** `/cards/*` and `/search` read the same archive — there is no residue archive to skip. |
+> | The residue-attach measurements (§2) | **Dead.** `begin_compat_load` / `compat_load_chunk` / `finish_compat_load` no longer exist in `engine/wasm/src/lib.rs`. |
+> | Card and printing counts (31,724 / 95,131), and every match count in §2's query table | **Stale.** 38,626 cards / 116,712 canonical printings plus a multilingual annex. |
+> | "3 chunks" / "4 responses" (§7) | **Dead.** `KV_CHUNK_BYTES` went 38.4 MB → 46 MB and the store is now cut per partition — one chunk each by design. |
+> | §7's manifest example | **Dead fields.** `compat_bytes` / `compat_gzip_bytes` were removed; `chunks` is spelled `chunk_count` and is now **per partition**; and `StoreManifest` has since gained `partition_count`, `partition_hash` and `partitions[]` — which a browser loader would *require*, not merely tolerate. Its claim that the route is "a pure projection of the manifest with no browser-specific fields" is now false in both directions. |
+> | §7's gzip advocacy | **Contradicted by the code's own record.** `store-kv.ts` now states the ~190 ms this argument budgeted for decompression was **wrong by roughly 5x**: cold DO CPU went 322 ms → 1252 ms at the median, so compression did not buy back in I/O what it cost in CPU. It stands for an unrelated reason (cold loads became rare), not the one given here. |
+> | "linked against a 112 MiB `--max-memory` cap" (§7) | **Stale.** 124 MiB / 130,023,424. |
+>
+> **What survives unchanged:** §3's parity argument (one wasm module, one set of store bytes, one parser — skew is the only divergence mode, and it is detectable at load); §10's compatibility gate; §13's degradation paths; the `finish_store_load` validation finding (a header and format-version check plus a pointer swap, not a `bytecheck` pass — still true of the code); and §2's *method*, which is why the tables are kept rather than deleted.
+
+---
 
 The idea: an npm package that answers Scryfall-compatible card queries on the client. It starts by proxying to this port's HTTP API, downloads the compiled store in the background, and once the store is resident it answers every subsequent query from wasm in the tab — no network, no cap, no round trip.
 
@@ -12,11 +40,13 @@ Two targets, sharing one engine. On the **web** the network is assumed present a
 
 **Worth building.** Three things make it unusually tractable, and they are not the obvious ones.
 
-**The engine is already a browser target.** `engine/wasm/pkg` is built with `wasm-pack --target bundler`, which is a browser target — `src/engine/wasm-shim.ts` exists only because workerd's `CompiledWasm` rule hands back a `Module` instead of instantiated exports, a problem a browser bundler does not have. No new build, no new crate.
+**The engine is already a browser target.** `engine/wasm/pkg` is built with `wasm-pack --target bundler`, which is a browser target — `src/engine/wasm-shim.ts` exists partly because workerd's `CompiledWasm` rule hands back a `Module` instead of instantiated exports, a problem a browser bundler does not have. No new build, no new crate. (The "only because" this originally said is no longer true: the shim now also keeps ONE INSTANCE PER LABEL, because several partition objects share the module and a single instance would have them clobbering each other's archives. A browser package holding more than one partition hits the same constraint.)
 
 **The parity risk is structural, not behavioural.** Local and remote are not two implementations that have to agree. They are the same wasm module, the same store bytes, and the same `src/parser` TypeScript producing the same filter tree. The only way they diverge is *version skew*, which is detectable at load time and gated on. That is a much stronger position than any dual-backend design normally gets.
 
-**The interface already exists.** `EngineApi` in `src/engine/types.ts` defines the full surface — `search`, `searchSerialized`, `scryfallSearch`, `scryfallCardById`, `scryfallFuzzyName`, `scryfallAutocomplete`, and the rest. `RemoteEngine` (`src/engine/remote-engine.ts`) already implements it over RPC. The browser package is a *third* implementation of the same interface, and its remote phase is nearly the shape `RemoteEngine` already has. The abstraction this needs was drawn a while ago for a different reason.
+**The interface already exists.** `Engine` in `src/engine/types.ts` defines the full surface — `searchCardsAsObjects`, `searchCardsAsJson`, `scryfallSearch`, `scryfallCardById`, `scryfallFuzzyName`, `scryfallAutocomplete`, and the rest. (This document originally called it `EngineApi` with methods `search` / `searchSerialized`; no such names exist — corrected 2026-08-16 against `types.ts`.) `RemoteEngine` (`src/engine/remote-engine.ts`) already implements it over RPC. The browser package would be a *third* implementation of the same interface, and its remote phase is nearly the shape `RemoteEngine` already has. The abstraction this needs was drawn a while ago for a different reason.
+
+**A caveat this argument did not have when it was written:** `PartitionedEngine` (`src/engine/partitioned-engine.ts`) is now the *fourth* implementation, and it is the one that actually serves traffic — it fans a request across partition stubs and merges. A browser package holding the whole corpus would face the same problem the server solved with a fan-out, without a fan-out to solve it with. That is the real open question this document predates.
 
 ### What it actually buys
 
@@ -41,7 +71,7 @@ None of these is disqualifying. The first two are design constraints that shape 
 
 ## 2. The numbers
 
-All against `store-build/card-store-v2026081102-*` (content generation 10, format 2026081102).
+All against `store-build/card-store-v2026081102-*` — corpus **`default_cards` (English only)**, content generation 10, format 2026081102. The corpus is the term this line originally omitted, and it is the one that went stale first; see the note at the top.
 
 ### Artifact sizes
 
@@ -87,7 +117,7 @@ Phase 0 ran: the committed wasm driven from Bun against `card-store-v2026081102-
 | `begin_store_load` | **0.1 ms** | | preallocates 74.63 MB |
 | `store_load_chunk` × 41 | **7.7 ms** | | 1.9 MB chunks, 76.6 MB copied |
 | `finish_store_load` | **0.1 ms** | | |
-| residue attach (all three calls) | **1.1 ms** | | 11.8 MB |
+| ~~residue attach (all three calls)~~ | ~~**1.1 ms**~~ | | ~~11.8 MB~~ — **the three calls no longer exist** (`begin_compat_load` / `compat_load_chunk` / `finish_compat_load`, removed at generation 19) |
 
 **Total non-download warm-up: ~14 ms.** Hydration is entirely download-bound, and every CPU stage is noise beside it.
 
@@ -193,7 +223,7 @@ The exception is embedded targets (§8.2), which are single-window: there the de
 
 ### 5.4 Interface symmetry
 
-The package's local engine implements the same `EngineApi` shape as `src/engine/types.ts`. This is worth preserving rather than inventing a new surface, because it means:
+The package's local engine implements the same `Engine` shape as `src/engine/types.ts` (written here as `EngineApi`, which is not a name that exists). This is worth preserving rather than inventing a new surface, because it means:
 
 - the remote implementation is close to the existing `RemoteEngine`;
 - the parity harness (§11) can drive both through one interface;
@@ -215,7 +245,7 @@ query(q, opts)
 
 The router owns two things the caller never sees.
 
-**One canonical field set.** `query_rows` takes `fields_json`; the HTTP API returns whatever its route decides. If those differ, the two phases return different objects and the transition is visible. The package defines the field set once and sends it on both paths.
+**One canonical field set.** `query_rows(filter_tree_json, opts_json)` carries the field set in its OPTIONS — this document said `fields_json`, which is the parameter of `random_search` / `card_by_scryfall_id` / `fetch_rows`, not of `query_rows`; the HTTP API returns whatever its route decides. If those differ, the two phases return different objects and the transition is visible. The package defines the field set once and sends it on both paths.
 
 **One canonical URL builder.** The HTTP phase must emit byte-identical URLs to anything else hitting the same API, because the Workers Cache in front of this port keys on the raw query string with no `Vary` header. Two spellings of one query are two cache entries. A shared builder makes SSR renders and client fetches warm the same entries.
 
@@ -570,7 +600,7 @@ Ordered by how much they change the design.
 ## Related
 
 - `CARD-PARTITIONING.md` — the memory ceiling this shares its measurements with
-- `src/engine/types.ts` — `EngineApi`, the interface this implements; `StoreManifest`
+- `src/engine/types.ts` — `Engine`, the interface this would implement; `StoreManifest` (now carrying `partition_count`, `partition_hash`, `partitions[]`)
 - `src/engine/store.ts` — `feedStore`, the streaming loader the browser path mirrors
 - `src/engine/store-kv.ts` — `STORE_CONTENT_GENERATION` history, the §10 argument in full
 - `engine/wasm/src/lib.rs` — the chunked load API and its memory discipline
