@@ -614,22 +614,25 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_str_or_null(out, &mut first, "layout", str_of(row, "layout"));
     write_bool(out, &mut first, "highres_image", bool_of(row, "highres_image"));
     write_str_or_null(out, &mut first, "image_status", str_of(row, "image_status"));
+    // `cmc` and `type_line` are the two the ordinary multi-face branch keeps and a REVERSIBLE
+    // printing does not — see the note on `reversible` above.
     if !reversible {
-    write_key(out, &mut first, "cmc");
-    // As a DECIMAL, which is what api.scryfall.com answers with: `"cmc":1.0`, not `"cmc":1` (see
-    // https://api.scryfall.com/cards/named?exact=Lightning+Bolt). Writing the stored number
-    // directly emits `1`, because the engine holds cmc as an integer -- and that would also put
-    // the engine at odds with `toScryfallCard`, which carries the same value as a decimal. The two
-    // must agree byte for byte: tests/routes/card-object-parity.test.ts holds them to it.
-    //
-    // The PRECISION behind the formatting is now real too: the stored value is an `Option<f32>`
-    // (`opt_f32(d, "cmc")` in lib.rs, `jv_opt_f32` in core_api.rs), so Little Girl's 0.5 survives
-    // the archive and arrives here as 0.5 rather than 0. The corpus still excludes funny sets --
-    // this is the capability, not a decision to import them.
-    match num_of(row, "cmc").and_then(serde_json::Value::as_f64) {
-        Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
-        None => out.extend_from_slice(b"null"),
-    }
+        write_key(out, &mut first, "cmc");
+        // As a DECIMAL, which is what api.scryfall.com answers with: `"cmc":1.0`, not `"cmc":1`
+        // (see https://api.scryfall.com/cards/named?exact=Lightning+Bolt). Writing the stored
+        // number directly emits `1`, because the engine holds cmc as an integer -- and that would
+        // also put the engine at odds with `toScryfallCard`, which carries the same value as a
+        // decimal. The two must agree byte for byte: tests/routes/card-object-parity.test.ts holds
+        // them to it.
+        //
+        // The PRECISION behind the formatting is now real too: the stored value is an
+        // `Option<f32>` (`opt_f32(d, "cmc")` in lib.rs, `jv_opt_f32` in core_api.rs), so Little
+        // Girl's 0.5 survives the archive and arrives here as 0.5 rather than 0. The corpus still
+        // excludes funny sets -- this is the capability, not a decision to import them.
+        match num_of(row, "cmc").and_then(serde_json::Value::as_f64) {
+            Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
+            None => out.extend_from_slice(b"null"),
+        }
     }
     if !reversible {
         write_str_or_null(out, &mut first, "type_line", str_of(row, "type_line"));
