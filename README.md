@@ -692,6 +692,29 @@ The complete list of intentional differences:
   printings against `/cards/search`'s two until the rule was extracted and shared.
   `scripts/search-differential.ts` is what now runs the two routes against each
   other, offline, over `parity-sweep`'s generated matrix.
+- **`/cards/random?q=…` runs the extras gate; `/random_search` cannot yet.** Both
+  random routes drew from the ungated corpus while the differential above
+  reported 406 ok — it reaches neither of them, which is why
+  `scripts/random-differential.ts` now exists. **`/cards/random` is fixed**, and
+  the rule was measured rather than assumed: `t:goblin cmc=0` fires no trigger
+  and holds nothing but extras, and api.scryfall.com answers 404 for
+  `/cards/random?q=t:goblin cmc=0` and `Goblin // Blood` (q07/T12) with
+  `include_extras=true` — the same gate `/cards/search` runs, and the parameter
+  is honored here too. Before the fix `/cards/random?q=lightning bolt` drew
+  astx/76 about a third of the time on a query `/cards/search` can never answer
+  it for. **The bare no-`q` draw is deliberately left ungated**: it carries no
+  echo to read, telling a ~14% extras share from zero would take tens of draws
+  from an endpoint that rate-limits this repo, and gating it on the strength of
+  the `q` measurement would remove a sixth of the corpus from it on an
+  inference. **`/random_search` still leaks — 13.6% of 1,000 draws are
+  `is:extra`, measured** — because the wasm `random_search(n, seed, fieldsJson)`
+  takes no filter argument at all, so the route has nothing to gate with. The
+  fix is an engine change (`core_api.rs`, the wasm export, `wasm-shim.ts`,
+  `store.ts`, the RPC and partitioned surfaces, a wasm rebuild) with no stored
+  shape change, and the partitioned router's `card_count` weighting has to
+  become a match-count weighting in the same pass or a filtered draw favors the
+  wrong partition. `random-differential.ts` records the leak and turns red if it
+  ever closes silently.
 - `card_is_tags` used to carry only three of upstream's `BOOLEAN_IS_TAGS`
   (`is:reserved`, `is:gamechanger`, `is:oversized`). Generation 21 took the
   stored vocabulary **from 3 entries to 30**: `BOOLEAN_IS_TAGS` grew and

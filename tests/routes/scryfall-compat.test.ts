@@ -763,6 +763,48 @@ describe("GET /cards/random", () => {
 		await testDispatch(makeCtx({ engine }), "/cards/random?q=elf");
 		expect(engine.lastSearch?.includeMultilingual).toBeUndefined();
 	});
+
+	// ── the extras gate, which this route ran without until 2026-08-17 ──────────
+	//
+	// MEASURED on api.scryfall.com the same day, two requests: `t:goblin cmc=0` fires no trigger
+	// and holds nothing but extras, and `/cards/random` answers 404 for it bare and a token
+	// (q07/T12) with `include_extras=true`. Same rule as `/cards/search`, same module.
+
+	test("q draws from the gated corpus — the same conjunct /cards/search adds", async () => {
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), "/cards/random?q=lightning+bolt");
+		// Both draws (count, then the offset read) see the gated tree, not just the first.
+		expect(engine.lastSearch?.filterTreeJson).toContain('"extra"');
+		expect(engine.lastSearch?.filterTreeJson).toContain('"variation"');
+	});
+
+	test("include_extras=true is honored here, because api.scryfall.com honors it here", async () => {
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), "/cards/random?q=lightning+bolt&include_extras=true");
+		const json = engine.lastSearch?.filterTreeJson ?? "";
+		expect(json).not.toContain('"extra"');
+		expect(json).toContain('"variation"');
+	});
+
+	test("a trigger term auto-enables the gate here too", async () => {
+		const engine = new FakeEngine();
+		engine.setsWithExtrasList = ["lea"];
+		await testDispatch(makeCtx({ engine }), "/cards/random?q=e%3Alea");
+		expect(engine.lastSearch?.filterTreeJson).not.toContain('"extra"');
+		await testDispatch(makeCtx({ engine }), "/cards/random?q=e%3Akhm");
+		expect(engine.lastSearch?.filterTreeJson).toContain('"extra"');
+	});
+
+	test("the bare draw stays UNGATED — deliberately, and not measured", async () => {
+		// Scryfall's own bare `/cards/random` was never established either way: it echoes nothing,
+		// and separating a ~10% extras share from zero would take tens of draws from an endpoint
+		// that rate-limits this repo. The whole-corpus draw is what this route has always done, so
+		// it is what it keeps doing until somebody measures the other side. See the handler.
+		const engine = new FakeEngine();
+		engine.totalCards = engine.cards.length;
+		await testDispatch(makeCtx({ engine }), "/cards/random");
+		expect(engine.lastSearch?.filterTreeJson).not.toContain('"extra"');
+	});
 });
 
 describe("cache headers", () => {

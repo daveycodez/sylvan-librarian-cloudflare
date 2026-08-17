@@ -868,8 +868,16 @@ export async function cardsRandomHandler(
 		}
 		const parser = await loadParser();
 		let tree: unknown;
+		let loweredRegexTerms: readonly LoweredRegexTerm[] = [];
+		let expandedDerivedTerms: readonly ExpandedDerivedTerm[] = [];
 		try {
-			tree = parser.parseWithDirectives(policy.query).tree;
+			const parsed = parser.parseWithDirectives(policy.query);
+			tree = parsed.tree;
+			// Out of band from the tree for the same two reasons `/cards/search` carries them out of
+			// band: `name:/bolt/` is lowered to a literal and `is:split` is expanded to `layout:split`
+			// before the wire tree exists, and the gate has to tell each pair apart. See extras-gate.ts.
+			loweredRegexTerms = parsed.loweredRegexTerms;
+			expandedDerivedTerms = parsed.expandedDerivedTerms;
 		} catch (err) {
 			if (parser.isParseError(err)) {
 				return scryfallJson(badRequestError(`Failed to parse query: "${q}"`), pretty, RANDOM_CACHE);
@@ -880,7 +888,37 @@ export async function cardsRandomHandler(
 		if (usesValueAsPredicate(tree)) {
 			return scryfallJson(badRequestError(arithmeticNotComparedMessage(q)), pretty, RANDOM_CACHE);
 		}
-		filterTreeJson = canonicalStringify(tree as FilterValue);
+		// THE SAME EXTRAS GATE `/cards/search` RUNS, because api.scryfall.com runs it here too.
+		//
+		// MEASURED, 2026-08-17, two requests: `t:goblin cmc=0` fires no trigger and its whole
+		// population is extras (404 bare against 87 with the flag on /cards/search, measured
+		// 2026-08-16), and on /cards/random api.scryfall.com answers
+		//
+		//   /cards/random?q=t:goblin cmc=0                      -> 404 "0 cards matched this search"
+		//   /cards/random?q=t:goblin cmc=0&include_extras=true  -> 200 Goblin // Blood (q07/T12)
+		//
+		// So the exclusion is the default HERE too, and `include_extras` is honored on this route —
+		// which is why the parameters are read rather than passed as an empty request. Without this
+		// the two routes disagreed about one query: `/cards/random?q=lightning bolt` drew astx/76,
+		// the Strixhaven art-series printing, about a third of the time, while
+		// `/cards/search?q=lightning bolt` can never return it.
+		//
+		// THE NO-`q` DRAW ABOVE IS DELIBERATELY NOT GATED — `TRUE_TREE` never reaches this branch,
+		// and `withoutIsTags` would leave a `TrueNode` alone even if it did. Whether Scryfall's own
+		// bare `/cards/random` excludes extras was NOT established: a bare draw carries no echo, the
+		// only observable is the card itself, and telling a ~10% extras share from zero needs tens of
+		// draws from an endpoint that has been rate-limiting this repo with 60-second bodies. Two
+		// bare draws sit in the response cache (afr/380, tmt/158) and neither is an extra, which is
+		// what ~70% of two ungated draws look like — evidence of nothing. Gating it on the strength
+		// of the `q` measurement would quietly remove a sixth of the corpus from the endpoint on an
+		// inference, so it stays as it is until someone measures it.
+		const gate = await applyExtrasGate(
+			engine,
+			tree,
+			{ loweredRegexTerms, expandedDerivedTerms },
+			{ includeExtras: asBool(params.include_extras), includeVariations: asBool(params.include_variations) },
+		);
+		filterTreeJson = canonicalStringify(gate.tree as FilterValue);
 	}
 
 	try {
