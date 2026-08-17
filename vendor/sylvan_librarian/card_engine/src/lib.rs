@@ -1296,6 +1296,68 @@ pub(crate) fn divergent_of<'a>(card: &'a AOracleCard, printing: &APrinting) -> O
 // Type aliases for the archived (mmap-backed) store types
 pub(crate) type AOracleCard = Archived<OracleCard>;
 pub(crate) type APrinting = Archived<Printing>;
+
+/// SCRYFALL'S `usd` SEARCH KEY IS `COALESCE(usd, usd_foil, usd_etched)`, AND ITS `prices.usd`
+/// FIELD IS NOT — the two are different questions about the same printing, and this store answers
+/// them with the same column, which is the whole of the divergence.
+///
+/// `usd>=500` is 205 on api.scryfall.com and was 84 here; `eur>=400` 375 against 198. Measured on
+/// the 175 rows of `usd>=500 unique=prints`: 99 carry `prices.usd` NULL beside a foil price over
+/// $500, 76 carry a plain `usd`, and ZERO carry a LOW `usd` beside a high foil — so it is a
+/// fallback and not a maximum. `tix` has no foil column and agreed exactly (14 = 14), which is the
+/// control that says the difference is the fallback and not a stale dump.
+///
+/// ETCHED IS IN THE CHAIN TOO, and behind foil. Both measured 2026-08-17, one request each:
+///
+/// ```text
+///   Mox Opal          sld    usd null, foil null, etched 381.19   ->  matches usd>=300
+///   Force of Negation h1r    usd null, foil 113.66, etched 67.45  ->  matches usd>=100
+/// ```
+///
+/// so the second would not match at 100 if etched won, and the first would not match at all if the
+/// chain stopped at foil. 892 printings in the corpus are etched-priced and nothing else.
+///
+/// AND THE STORED COLUMN STAYS RAW. Scryfall serves `"usd": null` for that very Force of Negation
+/// while answering `usd>=100` with it, so coalescing at IMPORT would fix the search by breaking
+/// the card object — 12,865 printings would start reporting a nonfoil price that does not exist.
+/// The coalesce therefore lives HERE, on the search key: this function feeds the filter
+/// (`filter::field_num`), the printing-space range index the planner narrows with
+/// (`build_printing_value_index`) and the `order=usd` sort key, so all three agree with each other
+/// and with Scryfall, while `price_usd` — the column the card object reads — is untouched.
+///
+/// It also settles `order=usd`, which this file already recorded as divergent for exactly this
+/// reason: `khm/407` leads Scryfall's `order=usd dir=desc` on a $106.04 foil price with
+/// `prices.usd` null. See `absent_sorts_highest`.
+pub(crate) fn search_price_usd_cents(p: &APrinting) -> Option<u32> {
+    p.price_usd
+        .as_ref()
+        .map(|v| u32::from(*v))
+        .or_else(|| p.compat.price_usd_foil.as_ref().map(|v| v.get()))
+        .or_else(|| p.compat.price_usd_etched.as_ref().map(|v| v.get()))
+}
+
+/// `search_price_usd_cents` for euros. `eur_etched` is a key Scryfall does not send — the object
+/// carries `eur`, `eur_foil` and no third — so the chain is two long rather than three.
+pub(crate) fn search_price_eur_cents(p: &APrinting) -> Option<u32> {
+    p.price_eur
+        .as_ref()
+        .map(|v| u32::from(*v))
+        .or_else(|| p.compat.price_eur_foil.as_ref().map(|v| v.get()))
+}
+
+/// The two above, over the UNARCHIVED row, for the one caller that runs at store-build time:
+/// `build_printing_value_index`. Same chain, same order — `the_search_price_chain_is_the_index`
+/// asserts the two representations agree, because an index built on a different rule from the one
+/// the filter evaluates is the exact shape that narrows a correct answer away.
+fn build_search_price_usd_cents(p: &Printing) -> Option<u32> {
+    p.price_usd
+        .or_else(|| p.compat.price_usd_foil.map(NonZeroU32::get))
+        .or_else(|| p.compat.price_usd_etched.map(NonZeroU32::get))
+}
+
+fn build_search_price_eur_cents(p: &Printing) -> Option<u32> {
+    p.price_eur.or_else(|| p.compat.price_eur_foil.map(NonZeroU32::get))
+}
 // Archived string table (CardData.strings)
 pub(crate) type AStrings = Archived<Vec<String>>;
 // Archived CSR boundary table (CardData.offsets)
@@ -8786,9 +8848,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer) -> f64 {
         // The `*Low` arms negate, so a MISSING price scores -inf and loses to every priced
         // printing — a group with any priced printing is represented by one, and a group with
         // none keeps its first-in-store-order (highest `prefer_score`) printing.
-        Prefer::UsdLow  => -p.price_usd.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
-        Prefer::UsdHigh => p.price_usd.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(0.0),
-        Prefer::EurLow  => -p.price_eur.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
+        // The SEARCH key, the same one `sort_value` and the range index read — `order=usd` picks
+        // its representative with this and then sorts by it, so a printing the sort can see and
+        // the pick cannot would order a card by a price it is not represented at.
+        Prefer::UsdLow  => -search_price_usd_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(f64::INFINITY),
+        Prefer::UsdHigh => search_price_usd_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(0.0),
+        Prefer::EurLow  => -search_price_eur_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(f64::INFINITY),
         Prefer::TixLow  => -p.price_tix.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
         // Card-level (edhrec is oracle-scoped): every printing ties, so the
         // first printing in store order is chosen — same as before the split.
@@ -8879,8 +8944,8 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
         // Raw cents, not dollars -- order-preserving either way (this is a sort key, not an
         // exposed value), and cents fit exactly in f32 (max real price 514,202 cents, f32
         // represents any integer up to 2^24 exactly), so skip the /100.0 dollars conversion.
-        SortCol::PriceUsd   => p.price_usd.as_ref().map(|v| u32::from(*v) as f32),
-        SortCol::PriceEur   => p.price_eur.as_ref().map(|v| u32::from(*v) as f32),
+        SortCol::PriceUsd   => search_price_usd_cents(p).map(|v| v as f32),
+        SortCol::PriceEur   => search_price_eur_cents(p).map(|v| v as f32),
         SortCol::PriceTix   => p.price_tix.as_ref().map(|v| u32::from(*v) as f32),
         SortCol::Cubecobra  => card.cubecobra_score.as_ref().map(|v| f32::from(*v)),
         SortCol::EdhrecRank => card.edhrec_rank.as_ref().map(|v| u32::from(*v) as f32),
@@ -17173,8 +17238,10 @@ fn build_card_data_sorted(
     // so it is derived once and moved in.
     let printing_to_card = build_printing_to_card(&offsets);
     let released_at_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.released_at_int);
-    let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_usd);
-    let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_eur);
+    // The SEARCH key, not the column: `usd`/`eur` coalesce the foil (and etched) price on
+    // api.scryfall.com — see `search_price_usd_cents`, which the filter and the sort key read.
+    let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, build_search_price_usd_cents);
+    let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, build_search_price_eur_cents);
     let price_tix_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_tix);
     let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
     let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len(), &printings, &artwork_base);

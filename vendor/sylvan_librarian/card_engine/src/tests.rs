@@ -8454,6 +8454,60 @@ fn broad_ranges_decline_to_narrow() {
     assert_eq!(range_candidates(archived, 100, 200).map(|v| v.len()), Some(100));
 }
 
+/// `usd` IS `COALESCE(usd, usd_foil, usd_etched)` ON api.scryfall.com, and the fallback has to
+/// reach BOTH the range index the planner narrows with and the verification that follows it — an
+/// index built on the raw column would narrow away the very printings the fallback exists to
+/// include, and the row would never reach `matches`.
+///
+/// `usd>=500` is 205 there against this port's 84 before the fix. Of the 175 rows of
+/// `usd>=500 unique=prints`, 99 carry `prices.usd` NULL beside a foil price over $500 and ZERO
+/// carry a LOW `usd` beside a high foil — which is the fourth printing here, and the reason this
+/// is a fallback rather than a maximum. Etched is measured too: Mox Opal (sld) is etched-priced
+/// and nothing else, and matches `usd>=300`.
+#[test]
+fn the_usd_search_key_falls_back_to_foil_then_etched_but_never_overrides() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[4], vocab);
+    data.printings[0].price_usd = Some(60_000); // $600 nonfoil
+    data.printings[1].compat.price_usd_foil = NonZeroU32::new(60_000); // foil only
+    data.printings[2].compat.price_usd_etched = NonZeroU32::new(60_000); // etched only
+    data.printings[3].price_usd = Some(100); // $1 nonfoil beside a $600 foil — NOT a maximum
+    data.printings[3].compat.price_usd_foil = NonZeroU32::new(60_000);
+    data.indexes.price_usd =
+        build_printing_value_index(&data.printings, &data.cards, &data.offsets, super::build_search_price_usd_cents);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+
+    let ge = usd_cmp(CmpOp::Ge, 500.0);
+    // Verification: three match, the fourth is a dollar.
+    for pid in [0usize, 1, 2] {
+        assert!(ge.matches(card, &archived.printings[pid], &archived.strings), "printing {pid} must match usd>=500");
+    }
+    assert!(!ge.matches(card, &archived.printings[3], &archived.strings), "a low usd is not overridden by a high foil");
+    // Narrowing: the index has to carry the same three, or the planner drops them before
+    // verification ever runs. This is the half a query-time-only coalesce would get wrong.
+    match narrow_candidates(&ge, &archived.indexes, &archived.offsets, &archived.cards) {
+        Some(Candidates::Printings(v)) => {
+            for pid in [0u32, 1, 2] {
+                assert!(v.contains(&pid), "the range index must carry printing {pid}");
+            }
+            assert!(!v.contains(&3));
+        }
+        _ => panic!("usd must narrow in printing space"),
+    }
+    // And the two representations of the chain agree — the archived one the filter and the sort
+    // key read, and the unarchived one the index is built from.
+    for (pid, p) in archived.printings.iter().enumerate() {
+        assert_eq!(
+            super::search_price_usd_cents(p),
+            super::build_search_price_usd_cents(&data.printings[pid]),
+            "the search-price chain must not depend on which representation asks"
+        );
+    }
+}
+
 // Price is stored as integer cents (see Printing::price_usd's doc comment) specifically to make
 // both narrowing (via int_range_bounds, same as collector_number) and verification (field_num's
 // exact cents/100.0 division) genuinely exact at the boundary -- not "may include as a
