@@ -433,7 +433,7 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // "3+" can't be split — the saturated superset (count clamped to 3, the
         // 3+ bucket ⊇ ≥k for k≥3) is a sound upper bound. Superset is Ge-based,
         // so it's sound only for Ge/Gt; Le/Lt/Eq/Ne that decline stay unknown.
-        FilterExpr::Devotion { op, pips } => match plane_popcount(f, indexes, n_cards) {
+        FilterExpr::Devotion { op, pips, .. } => match plane_popcount(f, indexes, n_cards) {
             Some((c, _)) => exact(c),
             None if matches!(op, CmpOp::Ge | CmpOp::Gt) => compile_devotion_superset(*pips)
                 .and_then(|pe| plane_expr_popcount(&pe, indexes, n_cards))

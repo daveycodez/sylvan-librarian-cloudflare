@@ -7792,7 +7792,7 @@ fn narrow_rec(
             }
         }
 
-        FilterExpr::Devotion { op: CmpOp::Ge | CmpOp::Gt, pips } => {
+        FilterExpr::Devotion { op: CmpOp::Ge | CmpOp::Gt, pips, .. } => {
             // The exact compiler (plane arm above) declined: some queried
             // count exceeds the 2-bit saturation. The saturated bucket is a
             // superset of every deeper match — ~0.5% of cards per color — so

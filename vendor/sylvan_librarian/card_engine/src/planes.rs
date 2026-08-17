@@ -1410,7 +1410,7 @@ pub(crate) fn compile_plane(filter: &FilterExpr, bounds: &rkyv::Archived<BitPlan
         }
         // Devotion is card-level and two-valued (tri_bool always), so its
         // bit-sliced planes compile exactly within the saturation boundary.
-        FilterExpr::Devotion { op, pips } => compile_devotion(*op, *pips),
+        FilterExpr::Devotion { op, pips, .. } => compile_devotion(*op, *pips),
         FilterExpr::NumericCmp { lhs, op, rhs } => match (lhs, rhs) {
             (NumExpr::Field(NumField::RarityInt), NumExpr::Const(v)) => compile_rarity_cmp(*op, *v),
             (NumExpr::Const(v), NumExpr::Field(NumField::RarityInt)) => compile_rarity_cmp(flip_op(*op), *v),

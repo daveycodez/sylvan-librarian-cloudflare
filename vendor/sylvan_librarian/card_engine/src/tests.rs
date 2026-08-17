@@ -2160,7 +2160,7 @@ fn fuzz_build_filter(spec: &FuzzSpec) -> FilterExpr {
             hybrid_cmc: Vec::new(), // bind() fills this from the store's mana vocab, always
             cmc: *cmc,
         },
-        FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => FilterExpr::Devotion { op: *op, pips: *pips },
+        FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => FilterExpr::Devotion { op: *op, pips: *pips, hybrid_colors: Vec::new() },
         FuzzSpec::Leaf(FuzzLeaf::Border { value }) => FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: value.clone() },
         FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => FilterExpr::Legality { shift: *shift, expected: *expected },
         FuzzSpec::And(v) => FilterExpr::And(v.iter().map(fuzz_build_filter).collect()),
@@ -10893,13 +10893,75 @@ fn packed_pips(pips: &[(&str, u8)]) -> u64 {
 }
 
 // Every devotion op agrees with tri() through the planes, at every saturation
+/// Devotion counts DISTINCT PIPS, so a `{R/G}` symbol answers a `{r/g}` query ONCE.
+///
+/// The fixture's card 5 is `{R/G}` — lanes R=1 and G=1, because the loader expands a hybrid into
+/// both colours — and card 6 is `{R/G}{R/G}{R}`, lanes R=3 and G=2. Summing the queried lanes
+/// gives 2 and 5; counting pips gives 1 and 3, which is what Scryfall answers.
+///
+/// MEASURED against api.scryfall.com 2026-08-17, on the two cards that falsify the two obvious
+/// readings in opposite directions: Burning-Tree Emissary (`{R/G}{R/G}`) matches
+/// `devotion:{r/g}{r/g}` and NOT `devotion:{r/g}{r/g}{r/g}`, so its devotion is 2 and not the
+/// sum's 4; Svella, Ice Shaper (`{1}{R}{G}`) is the sixteenth card of `e:khm t:creature
+/// devotion:{r/g}{r/g}`'s 16, so its devotion is 2 and not the max's 1. Set-scoped confirmations,
+/// where corpus vintage cannot reach: `e:rna devotion:{r/g}{r/g}` 24, `e:gtc
+/// devotion:{w/u}{w/u}` 16, `e:sok devotion:{b/g}{b/g}` 21.
+///
+/// THE FILTER MUST BE BOUND. `hybrid_colors` is empty until bind() resolves it against the store's
+/// mana vocab, and an empty table corrects nothing — which is exactly the pre-fix behaviour, and
+/// why every other devotion test in this file still passes unbound.
+#[test]
+fn devotion_counts_distinct_pips_not_summed_lanes() {
+    let data = devotion_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bound = |op, pips: &[(&str, u8)]| {
+        let mut f = FilterExpr::Devotion { op, pips: packed_pips(pips), hybrid_colors: Vec::new() };
+        f.bind(
+            &archived.coll_vocab,
+            &archived.coll_vocab_sorted,
+            &archived.artist_vocab,
+            &archived.artist_vocab_collated,
+            &archived.mana_vocab,
+            &archived.indexes.flavor,
+            &archived.strings,
+        );
+        f
+    };
+    let matches = |f: &FilterExpr| -> Vec<usize> {
+        archived.cards.iter().enumerate()
+            .filter(|(_, c)| f.eval_card(c, &archived.strings) == Tri::True)
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    // One {R/G} pip is ONE pip of devotion to red-or-green, not two. Card 5 therefore answers a
+    // one-symbol query and not a two-symbol one; the sum said both.
+    assert!(matches(&bound(CmpOp::Ge, &[("R", 1), ("G", 1)])).contains(&5));
+    assert!(
+        !matches(&bound(CmpOp::Ge, &[("R", 2), ("G", 2)])).contains(&5),
+        "{{R/G}} is one pip: the summed lanes read 2 and matched, which is the Burning-Tree bug"
+    );
+    // Card 6 is {R/G}{R/G}{R} — three pips that are red or green, lanes 3 and 2 summing to 5.
+    assert!(matches(&bound(CmpOp::Ge, &[("R", 3), ("G", 3)])).contains(&6));
+    assert!(
+        !matches(&bound(CmpOp::Ge, &[("R", 4), ("G", 4)])).contains(&6),
+        "three distinct pips, not the five the summed lanes gave"
+    );
+    // A SINGLE-COLOUR query is untouched by the correction — one bit cannot match twice — so the
+    // hybrid still counts toward each colour on its own, and the exact plane stays valid.
+    assert!(matches(&bound(CmpOp::Ge, &[("R", 1)])).contains(&5));
+    assert!(matches(&bound(CmpOp::Ge, &[("G", 1)])).contains(&5));
+    assert_eq!(matches(&bound(CmpOp::Ge, &[("R", 3)])), vec![6]);
+}
+
 // depth — and past the boundary the compiler declines rather than guesses.
 #[test]
 fn devotion_plane_parity_and_boundaries() {
     let data = devotion_fixture_store();
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
-    let dev = |op, pips: &[(&str, u8)]| FilterExpr::Devotion { op, pips: packed_pips(pips) };
+    let dev = |op, pips: &[(&str, u8)]| FilterExpr::Devotion { op, pips: packed_pips(pips), hybrid_colors: Vec::new() };
     let mut bitmap: Vec<u64> = Vec::new();
     let mut check_exact = |f: &FilterExpr| {
         let pe = compile_plane(f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words).expect("must compile exactly");
@@ -10967,7 +11029,7 @@ fn a_hybrid_devotion_query_sums_its_two_colors() {
     // Fixture cards, in order: 0 no cost, 1 {U}, 2 {U}{U}, 3 {U}{U}{U}, 4 {U}x5, 5 {R/G},
     // 6 {R/G}{R/G}{R} (R=3,G=2), 7 {W}{U}, 8 {C}{C}, 9 {R} on an INSTANT (devotion 0).
     // Queried W,U with one symbol: the measure is d[W]+d[U], the want is 1.
-    let wu = |op| FilterExpr::Devotion { op, pips: packed_pips(&[("W", 1), ("U", 1)]) };
+    let wu = |op| FilterExpr::Devotion { op, pips: packed_pips(&[("W", 1), ("U", 1)]), hybrid_colors: Vec::new() };
     let cases: &[(CmpOp, &[usize])] = &[
         (CmpOp::Ge, &[1, 2, 3, 4, 7]),                // sum >= 1
         (CmpOp::Gt, &[2, 3, 4, 7]),                   // sum >  1 — card 7 is 1+1, and belongs here
@@ -11007,7 +11069,7 @@ fn hybrid_pip_counts_toward_both_colors() {
     let data = devotion_fixture_store();
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
-    let dev = |sym: &str, k: u8| FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[(sym, k)]) };
+    let dev = |sym: &str, k: u8| FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[(sym, k)]), hybrid_colors: Vec::new() };
     let mut bitmap: Vec<u64> = Vec::new();
     let rg_card = 5; // {R/G}
     for (f, want) in [(dev("R", 1), true), (dev("G", 1), true), (dev("R", 2), false), (dev("U", 1), false)] {
@@ -11027,8 +11089,8 @@ fn devotion_ignores_nonpermanent_pips() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let instant_card = &archived.cards[9]; // {R} on TYPE_INSTANT
     assert_eq!(u64::from(instant_card.mana_cost.devotion), 0, "an Instant's devotion must be zeroed at load, regardless of its pips");
-    let ge_r = FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("R", 1)]) };
-    let le_r = FilterExpr::Devotion { op: CmpOp::Le, pips: packed_pips(&[("R", 1)]) };
+    let ge_r = FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("R", 1)]), hybrid_colors: Vec::new() };
+    let le_r = FilterExpr::Devotion { op: CmpOp::Le, pips: packed_pips(&[("R", 1)]), hybrid_colors: Vec::new() };
     assert!(ge_r.eval_card(instant_card, &archived.strings) != Tri::True, "a nonpermanent's {{R}} must not satisfy devotion:{{R}}");
     assert!(le_r.eval_card(instant_card, &archived.strings) == Tri::True, "empty devotion is a subset of any query");
 }
@@ -11327,7 +11389,7 @@ fn verify_order_or_sorts_by_bucket_only() {
 // devotion:bbb` 1.2× when measured).
 #[test]
 fn verify_order_or_keeps_scan_cost_band_in_written_order() {
-    let devotion = || FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("B", 3)]) };
+    let devotion = || FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("B", 3)]), hybrid_colors: Vec::new() };
     let mut f = FilterExpr::Or(vec![contains_scan(), devotion()]);
     f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Or(children) = &f else { panic!("still an Or") };
