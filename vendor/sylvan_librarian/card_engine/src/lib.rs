@@ -352,7 +352,7 @@ fn stat_str_to_int_star(s: Option<&str>) -> Option<f64> {
     let mut total = 0f64;
     let mut sign = 1f64;
     let mut term = String::new();
-    let mut take = |term: &mut String, sign: f64, total: &mut f64| -> bool {
+    let take = |term: &mut String, sign: f64, total: &mut f64| -> bool {
         let t = term.trim().to_string();
         term.clear();
         if t.is_empty() {
