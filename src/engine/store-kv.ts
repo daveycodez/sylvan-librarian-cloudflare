@@ -1011,8 +1011,62 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       so a stale archive is caught by the header — but `ValueTotals::layout` posts the second
  *       value now too, and that table short-circuits the result total, which no header check
  *       would have caught.
+ *
+ *  33 — AN ARTWORK IS A FACE TUPLE, NOT A FRONT ILLUSTRATION.
+ *
+ *       Generation 31's note above recorded `unique=art` as wrong in two directions, and this
+ *       closes ONE of them: the key. `assign_artwork_groups` keyed on the printing's single
+ *       `illustration_id`, which the importer's face merge fills from face 0, so two printings of
+ *       one card sharing a front and differing on the back counted as one artwork. The key is now
+ *       the ordered tuple of every face's illustration id.
+ *
+ *       Worth 12 rows on the 2026-08-16 bulk, and they are one shape: the `pxtc` XLN Treasure
+ *       Chest promos reprint ten XLN transform cards with the SAME front art and a DIFFERENT back
+ *       (Growing Rites of Itlimoc, Treasure Map, Legion's Landing, Search for Azcanta, Thaumatic
+ *       Compass, Dowsing Dagger, Primal Amulet, Vance's Blasting Cannons, Arguel's Blood Fast,
+ *       Conqueror's Galleon) — one row each — and the MOM Incubator tokens contribute the other
+ *       two. `!"Growing Rites of Itlimoc" include:extras unique=art` is 5 on api.scryfall.com;
+ *       `name:/Growing Rites/&unique=art` (the same set, spelled in the operators this port has —
+ *       `include:extras` is an in-query directive it does not parse) was 4 here and is now the
+ *       same 5 rows: alci/26, lci/188, p22/10, pxtc/191, xln/191.
+ *
+ *       TWO CASES THE TUPLE ALONE WOULD HAVE BROKEN, both measured before the key moved rather
+ *       than after it regressed:
+ *
+ *         - An ABSENT face id unifies against a present one. 161 art-series signature variants
+ *           carry a NULL back (`astx/66s` = `(b7de5431, NULL)` against `astx/66` =
+ *           `(b7de5431, c9d340c9)`) and Scryfall returns only the base. A tuple key that read NULL
+ *           as a value would have split all 161 to buy the 12. No card in the bulk has a
+ *           partially-null tuple matching two different groups, and none has a null FRONT, so the
+ *           unification is unambiguous.
+ *         - An ALL-absent tuple matches only its own kind. 798 rows carry no illustration id at
+ *           all; as a wildcard each would have folded into whatever artwork its card listed first.
+ *
+ *       ARCHIVE_FORMAT_VERSION moves with it (2026081616 -> 2026081617) and NO ROW SIZE DOES —
+ *       `artwork_group_id` is the same u16 in the same slot. Every derived VALUE moves instead:
+ *       `artwork_groups`, `artwork_base`, `artwork_group_col`, `max_artwork_groups`,
+ *       `SpaceTotals::artworks` inside `ValueTotals` and `PairTotals`, and the artwork columns of
+ *       the six `RangeCardCounts`. The last three short-circuit the result total, so a stale
+ *       archive here is readable and wrong in exactly the way a header check is the only defence
+ *       against — which is why the constant moves for a change that adds not one byte.
+ *
+ *       STILL PER-CARD, which is the OTHER half of generation 31's note and is not closed.
+ *       `e:khm t:god unique=art` is 25 on api.scryfall.com and 26 here; the extra row is khm/A-40
+ *       against khm/40, a different oracle_id carrying the same tuple. Scryfall dedupes across
+ *       cards — including a token against its card (`t30a/7` Skeleton against `lea/122` Raise
+ *       Dead), an emblem against its planeswalker (`tmoc/43` against `ddo/1`), and `hbg`'s renamed
+ *       reprints against their `clb` originals. Two things block it and both are structural: a
+ *       corpus-wide dense artwork id in place of `artwork_base[card] + gid`, which retires the
+ *       per-card artwork COUNT the streamed plan answers from as a build-time constant; and a
+ *       cross-partition dedupe in the gather, which today sums per-partition totals and merges
+ *       byte-comparable keys it is forbidden to interpret. A third thing is not even specified:
+ *       Scryfall's representative for a CROSS-card group is not `prefer_score` and not the card
+ *       representative either — `!"Oran-Rief Ooze" include:extras` answers znr/198 under
+ *       `unique=cards` and znr/361 under `unique=art`, and pvan/102 (1997) beats mb2/251 (2024)
+ *       on a shared illustration, so the rule is release-dominant and needs measuring before it
+ *       can be built.
  */
-export const STORE_CONTENT_GENERATION = 32;
+export const STORE_CONTENT_GENERATION = 33;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

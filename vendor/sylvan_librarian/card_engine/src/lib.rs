@@ -5044,11 +5044,62 @@ fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     }
 }
 
+/// A printing's ARTWORK IDENTITY, appended to `out`: the ordered tuple of every face's
+/// `illustration_id`, or the single top-level id for a printing Scryfall sent no `card_faces` for.
+///
+/// NOT the front illustration alone, which is what this used to be. Scryfall keys `unique=art` on
+/// the WHOLE tuple, measured against api.scryfall.com 2026-08-16: `!"Growing Rites of Itlimoc"
+/// include:extras unique=art` keeps `xln/191` AND `pxtc/191` — one front illustration
+/// (`807e1577`), two backs (`fe41f4ca` / `7cec268a`) — and does the same for the nine other XLN
+/// transform cards the `pxtc` Treasure Chest promos reprint (Treasure Map, Legion's Landing,
+/// Search for Azcanta, Thaumatic Compass, Dowsing Dagger, Primal Amulet, Vance's Blasting Cannons,
+/// Arguel's Blood Fast, Conqueror's Galleon) and, twice over, the MOM Incubator tokens. Ten cards
+/// gaining one row each plus the Incubator's two is the whole 12-row corpus effect; a front-only
+/// key merged every one of those pairs.
+///
+/// The top-level `illustration_id` is the FRONT face's (the importer's face merge folds face 0's
+/// scalars up), so it is the right fallback and never a second, conflicting opinion.
+fn push_artwork_key(p: &Printing, out: &mut Vec<u128>) {
+    if p.faces.is_empty() {
+        out.push(p.illustration_id);
+    } else {
+        out.extend(p.faces.iter().map(|f| f.illustration_id));
+    }
+}
+
+/// Does `key` name the same artwork as the group at `keys[off..off + len]`?
+///
+/// Equal ids match, and so does an ABSENT id (0) against a present one — the art-series
+/// signature variants need it. `astx/66s` carries `(b7de5431, NULL)` where `astx/66` carries
+/// `(b7de5431, c9d340c9)`: same art, and Scryfall returns only `astx/66` from
+/// `!"Memory Lapse" include:extras unique=art`. 161 printings corpus-wide are that shape and a
+/// tuple key that treated NULL as a value would have split every one of them — 161 rows wrong to
+/// buy 12 right. The unification is well defined here and not merely convenient: measured over the
+/// 2026-08-16 `default_cards` bulk, no card has a partially-null tuple that matches two different
+/// groups, and none has a null FRONT.
+///
+/// A tuple that is absent THROUGHOUT is the exception, and it has to be: 798 rows carry no
+/// illustration id at all, and letting their all-zero key unify as a wildcard would fold every one
+/// of them into whatever artwork its card happened to list first. They match only each other, at
+/// the same arity — exactly what the front-only key did with `illustration_id == 0`.
+fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> bool {
+    if len != key.len() {
+        return false;
+    }
+    let group = &keys[off..off + len];
+    let group_absent = group.iter().all(|&x| x == 0);
+    let key_absent = key.iter().all(|&x| x == 0);
+    if group_absent || key_absent {
+        return group_absent && key_absent;
+    }
+    group.iter().zip(key).all(|(&a, &b)| a == b || a == 0 || b == 0)
+}
+
 /// Assigns each printing's `artwork_group_id` (dense, per-card: 0 = first-seen
-/// illustration in stored order — descending prefer_score — 1 = next, shared
-/// artwork shares the id) and returns the per-card distinct-illustration count
+/// artwork in stored order — descending prefer_score — 1 = next, shared
+/// artwork shares the id) and returns the per-card distinct-artwork count
 /// (u16: max printings per card is ~1k). Single source of truth for both derived
-/// arrays so they can't drift out of sync with each other or with `illustration_id`.
+/// arrays so they can't drift out of sync with each other or with the face tuple.
 ///
 /// The count is consumed by the streamed match phase when the card pass already
 /// proved every printing matches: the artwork-mode contribution is then a
@@ -5056,17 +5107,42 @@ fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
 /// The per-printing id is consumed by `card_match_count`/`push_card_matches`'s
 /// `Mode::Artwork` arms (#629) to replace `illustration_id`-UUID bookkeeping with
 /// dense-integer set operations.
+///
+/// STILL PER-CARD, which Scryfall's `unique=art` is not — it dedupes across cards on the same
+/// tuple, and closing that needs a corpus-wide dense artwork id plus a cross-partition dedupe in
+/// the gather. See the `unique=art` note in `src/engine/store-kv.ts`. This function is the key
+/// half: whatever scope the id ends up having, THIS is what an artwork is.
+///
+/// The groups are held as concatenated key tuples (`keys`) plus one `(offset, len)` span each
+/// (`spans`), both reused across cards, so a corpus of ~100k cards costs no per-card allocation.
 fn assign_artwork_groups(printings: &mut [Printing], offsets: &[u32]) -> Vec<u16> {
     let mut counts = Vec::with_capacity(offsets.len().saturating_sub(1));
-    let mut ills: Vec<u128> = Vec::new();
+    let mut keys: Vec<u128> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut key: Vec<u128> = Vec::new();
     for w in offsets.windows(2) {
-        ills.clear();
+        keys.clear();
+        spans.clear();
         for p in &mut printings[w[0] as usize..w[1] as usize] {
-            let gid = match ills.iter().position(|&x| x == p.illustration_id) {
-                Some(pos) => pos,
+            key.clear();
+            push_artwork_key(p, &mut key);
+            let gid = match spans.iter().position(|&(off, len)| artwork_key_matches(&keys, off, len, &key)) {
+                Some(pos) => {
+                    // An absent slot takes the id it matched against, so a LATER printing with a
+                    // different id in that slot opens its own group rather than unifying with the
+                    // same wildcard a second time and merging two real artworks.
+                    let (off, len) = spans[pos];
+                    for (slot, &k) in keys[off..off + len].iter_mut().zip(key.iter()) {
+                        if *slot == 0 {
+                            *slot = k;
+                        }
+                    }
+                    pos
+                }
                 None => {
-                    ills.push(p.illustration_id);
-                    ills.len() - 1
+                    spans.push((keys.len(), key.len()));
+                    keys.extend_from_slice(&key);
+                    spans.len() - 1
                 }
             };
             p.artwork_group_id = gid as u16;
@@ -5075,25 +5151,29 @@ fn assign_artwork_groups(printings: &mut [Printing], offsets: &[u32]) -> Vec<u16
         // see ARTWORK_GROUP_WORDS' doc for why this bound is expected to hold and
         // card_match_count's seen_words for the fixed-size bitmask it protects.
         assert!(
-            ills.len() <= ARTWORK_GROUP_WORDS * 64,
+            spans.len() <= ARTWORK_GROUP_WORDS * 64,
             "card has {} distinct artwork groups, exceeds ARTWORK_GROUP_WORDS bound ({})",
-            ills.len(),
+            spans.len(),
             ARTWORK_GROUP_WORDS * 64
         );
-        counts.push(ills.len() as u16);
+        counts.push(spans.len() as u16);
     }
     counts
 }
 
 /// Extend each card's artwork grouping over its annex printings: a foreign printing sharing a
-/// canonical illustration takes that illustration's existing group id, and a foreign-only
-/// illustration opens the next id after the card's canonical distinct count.
+/// canonical artwork takes that artwork's existing group id, and a foreign-only artwork opens the
+/// next id after the card's canonical distinct count.
 ///
 /// The canonical arrays derived from `assign_artwork_groups` — `artwork_groups` counts,
 /// `artwork_base`, `artwork_group_col`, `max_artwork_groups` — keep their canonical-only meaning
 /// unchanged: this replays the canonical first-seen walk read-only to reproduce the exact same
 /// ids, then continues over the annex. Annex ids exist for the widened (multilingual) plan;
 /// nothing the default plans read moves.
+///
+/// The key is `push_artwork_key`'s face tuple, matched by `artwork_key_matches` — the SAME key
+/// the canonical walk uses, which is the whole point of replaying it here rather than
+/// reconstructing the ids some other way.
 fn assign_foreign_artwork_groups(
     foreign: &mut [Printing],
     foreign_offsets: &[u32],
@@ -5101,33 +5181,49 @@ fn assign_foreign_artwork_groups(
     offsets: &[u32],
 ) {
     debug_assert_eq!(foreign_offsets.len(), offsets.len());
-    let mut ills: Vec<u128> = Vec::new();
+    let mut keys: Vec<u128> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut key: Vec<u128> = Vec::new();
     for (card, w) in foreign_offsets.windows(2).enumerate() {
         if w[0] == w[1] {
             continue; // no annex rows for this card, and no reason to replay its canonical walk
         }
-        ills.clear();
-        for p in &printings[offsets[card] as usize..offsets[card + 1] as usize] {
-            if !ills.contains(&p.illustration_id) {
-                ills.push(p.illustration_id);
+        keys.clear();
+        spans.clear();
+        let canonical = &printings[offsets[card] as usize..offsets[card + 1] as usize];
+        for p in canonical.iter().chain(foreign[w[0] as usize..w[1] as usize].iter()) {
+            key.clear();
+            push_artwork_key(p, &mut key);
+            if let Some(pos) = spans.iter().position(|&(off, len)| artwork_key_matches(&keys, off, len, &key)) {
+                let (off, len) = spans[pos];
+                for (slot, &k) in keys[off..off + len].iter_mut().zip(key.iter()) {
+                    if *slot == 0 {
+                        *slot = k;
+                    }
+                }
+            } else {
+                spans.push((keys.len(), key.len()));
+                keys.extend_from_slice(&key);
             }
         }
+        // Second pass over the annex only, now that the group set is closed: a foreign row's id is
+        // its group's index, canonical rows having claimed 0..artwork_groups[card] in the first
+        // pass exactly as assign_artwork_groups assigned them.
         for p in &mut foreign[w[0] as usize..w[1] as usize] {
-            let gid = match ills.iter().position(|&x| x == p.illustration_id) {
-                Some(pos) => pos,
-                None => {
-                    ills.push(p.illustration_id);
-                    ills.len() - 1
-                }
-            };
+            key.clear();
+            push_artwork_key(p, &mut key);
+            let gid = spans
+                .iter()
+                .position(|&(off, len)| artwork_key_matches(&keys, off, len, &key))
+                .expect("every annex key was inserted by the pass above");
             p.artwork_group_id = gid as u16;
         }
         // The union bound, same reasoning as the canonical assert above: the widened plan's
         // grouping walk uses the same fixed-size seen bitmask.
         assert!(
-            ills.len() <= ARTWORK_GROUP_WORDS * 64,
+            spans.len() <= ARTWORK_GROUP_WORDS * 64,
             "card has {} distinct artwork groups across canonical+annex, exceeds ARTWORK_GROUP_WORDS bound ({})",
-            ills.len(),
+            spans.len(),
             ARTWORK_GROUP_WORDS * 64
         );
     }
@@ -15843,7 +15939,32 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                total and would otherwise keep answering 106,558 under a fixed filter. Both row
 //                sizes move (304 -> 320, 256 -> 272), so the header catches a stale archive —
 //                but the totals table does not, which is why the constant moves too.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081616;
+//   2026081617 — AN ARTWORK IS A FACE TUPLE, NOT A FRONT ILLUSTRATION. `assign_artwork_groups`
+//                keyed on `Printing::illustration_id`, which the importer's face merge fills from
+//                face 0 — so two printings of one card that share a front and differ on the back
+//                counted as one artwork. Scryfall counts two, measured against api.scryfall.com
+//                2026-08-16: `!"Growing Rites of Itlimoc" include:extras unique=art` keeps xln/191
+//                AND pxtc/191 on one front illustration, and the same shape holds for the other
+//                nine XLN transform cards the `pxtc` Treasure Chest promos reprint, plus the three
+//                MOM Incubator tokens — 12 rows corpus-wide. The key is now the ordered tuple of
+//                every face's illustration id, with an ABSENT id unifying against a present one so
+//                the 161 art-series signature variants (`astx/66s` = `(b7de5431, NULL)` against
+//                `astx/66` = `(b7de5431, c9d340c9)`) keep merging as Scryfall merges them, and an
+//                ALL-absent tuple matching only its own kind so the 798 art-less rows do not fold
+//                into their card's first artwork.
+//                NO STRUCT MOVES — `artwork_group_id` is the same u16 in the same slot, and both
+//                row sizes are unchanged. What moves is every VALUE derived from the grouping:
+//                `artwork_groups`, `artwork_base`, `artwork_group_col`, `max_artwork_groups`,
+//                `SpaceTotals::artworks` in `ValueTotals`/`PairTotals`, and the artwork columns of
+//                the six `RangeCardCounts`. Those last three short-circuit the result total, so an
+//                archive built by the older code is READABLE AND WRONG and the header is the only
+//                thing that can catch it — which is the whole reason this constant moves for a
+//                change that adds not one byte.
+//                STILL PER-CARD. Scryfall dedupes the same tuple ACROSS cards (`e:khm t:god
+//                unique=art` is 25 there and 26 here, the extra row being khm/A-40 against khm/40);
+//                that needs a corpus-wide dense artwork id and a cross-partition dedupe in the
+//                gather, and is not in this version. See the `unique=art` note in store-kv.ts.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081617;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

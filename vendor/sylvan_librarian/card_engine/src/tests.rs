@@ -14026,3 +14026,91 @@ fn annex_artwork_groups_share_canonical_ids_and_extend_past_them() {
     assert_eq!(printings[0].artwork_group_id, 0);
     assert_eq!(printings[1].artwork_group_id, 1);
 }
+
+/// A printing whose faces carry `ills`, with the top-level id set to face 0's the way the
+/// importer's face merge fills it — so a test that changes only the BACK is a test of the tuple
+/// and not of the fallback.
+fn faced_printing(scryfall_id: u128, ills: &[u128]) -> Printing {
+    let mut p = stub_printing(scryfall_id, ills.first().copied().unwrap_or(0), Some(1.0));
+    p.faces = ills
+        .iter()
+        .map(|&illustration_id| PrintingFace {
+            illustration_id,
+            card_artist_vid: ARTIST_NONE,
+            card_artist_name_id: NONE_STR,
+            flavor_text_id: NONE_STR,
+            flavor_name_id: NONE_STR,
+        })
+        .collect();
+    p
+}
+
+#[test]
+fn an_artwork_is_the_whole_face_tuple_not_the_front() {
+    // xln/191 and pxtc/191 share the front illustration and differ on the back, and
+    // api.scryfall.com returns BOTH from `!"Growing Rites of Itlimoc" include:extras unique=art`
+    // (5 rows, and this key is what took us from 4 to 5). Front-only grouping merged them.
+    let mut printings = vec![faced_printing(1, &[10, 20]), faced_printing(2, &[10, 30])];
+    let counts = assign_artwork_groups(&mut printings, &[0u32, 2]);
+    assert_eq!(counts, vec![2], "one front, two backs, two artworks");
+    assert_eq!(printings[0].artwork_group_id, 0);
+    assert_eq!(printings[1].artwork_group_id, 1);
+
+    // ...and the same tuple is still one artwork, front and back.
+    let mut same = vec![faced_printing(1, &[10, 20]), faced_printing(2, &[10, 20])];
+    assert_eq!(assign_artwork_groups(&mut same, &[0u32, 2]), vec![1]);
+    assert_eq!(same[1].artwork_group_id, 0);
+}
+
+#[test]
+fn an_absent_face_id_unifies_and_an_absent_tuple_does_not() {
+    // The art-series signature variants: astx/66s carries (b7de5431, NULL) where astx/66 carries
+    // (b7de5431, c9d340c9), and Scryfall returns only astx/66. 161 printings corpus-wide are that
+    // shape, so a tuple key that read NULL as a value would lose far more than it won. Both
+    // orders, because the walk sees whichever prefer_score puts first.
+    let mut base_first = vec![faced_printing(1, &[10, 20]), faced_printing(2, &[10, 0])];
+    assert_eq!(assign_artwork_groups(&mut base_first, &[0u32, 2]), vec![1]);
+    assert_eq!(base_first[1].artwork_group_id, 0);
+
+    let mut sig_first = vec![faced_printing(1, &[10, 0]), faced_printing(2, &[10, 20])];
+    assert_eq!(assign_artwork_groups(&mut sig_first, &[0u32, 2]), vec![1]);
+    assert_eq!(sig_first[1].artwork_group_id, 0);
+
+    // The wildcard is spent once: after (10, 0) has taken (10, 20)'s id, a THIRD printing with a
+    // different back opens its own group rather than unifying with the same absent slot again.
+    let mut three = vec![faced_printing(1, &[10, 0]), faced_printing(2, &[10, 20]), faced_printing(3, &[10, 30])];
+    assert_eq!(assign_artwork_groups(&mut three, &[0u32, 3]), vec![2]);
+    assert_eq!(three[0].artwork_group_id, 0);
+    assert_eq!(three[1].artwork_group_id, 0);
+    assert_eq!(three[2].artwork_group_id, 1);
+
+    // An ALL-absent tuple is its own artwork and never a wildcard — 798 rows carry no illustration
+    // id at all, and as a wildcard each would fold into whatever its card listed first.
+    let mut absent = vec![faced_printing(1, &[10, 20]), faced_printing(2, &[0, 0]), faced_printing(3, &[0, 0])];
+    assert_eq!(assign_artwork_groups(&mut absent, &[0u32, 3]), vec![2]);
+    assert_eq!(absent[1].artwork_group_id, 1);
+    assert_eq!(absent[2].artwork_group_id, 1, "art-less printings share one group with each other");
+
+    // Arity is part of the key: a single-faced printing is not the front half of a two-faced one.
+    // `fdn/335` (one face, fc626d93) and `afdn/41` (two, fc626d93 + b47179b7) both survive
+    // `name:"Ghalta, Primal Hunger" include:extras unique=art` on api.scryfall.com.
+    let mut arity = vec![faced_printing(1, &[10]), faced_printing(2, &[10, 20])];
+    assert_eq!(assign_artwork_groups(&mut arity, &[0u32, 2]), vec![2]);
+}
+
+#[test]
+fn annex_artwork_groups_key_on_the_face_tuple_too() {
+    // The annex walk replays the canonical one, so it has to replay the SAME key: a foreign row
+    // that shares a front and differs on the back is a new artwork there as well.
+    let mut printings = vec![faced_printing(1, &[10, 20])];
+    let offsets = vec![0u32, 1];
+    assert_eq!(assign_artwork_groups(&mut printings, &offsets), vec![1]);
+
+    let mut foreign = vec![faced_printing(2, &[10, 20]), faced_printing(3, &[10, 30]), faced_printing(4, &[10, 0])];
+    assign_foreign_artwork_groups(&mut foreign, &[0u32, 3], &printings, &offsets);
+
+    assert_eq!(foreign[0].artwork_group_id, 0, "same tuple shares the canonical gid");
+    assert_eq!(foreign[1].artwork_group_id, 1, "same front, different back: a new artwork");
+    assert_eq!(foreign[2].artwork_group_id, 0, "an absent back unifies with the canonical tuple");
+    assert_eq!(printings[0].artwork_group_id, 0, "the canonical side never moves");
+}
