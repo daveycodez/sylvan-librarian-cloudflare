@@ -666,7 +666,10 @@ fn text_field_value<'a>(
         TextField::NameLower       => StrVal::Known(card.card_name_lower.as_str()),
         TextField::OracleTextLower => opt_sv(str_at(strings, u32::from(card.oracle_text_lower_id))),
         TextField::FullOracleTextLower => opt_sv(str_at(strings, u32::from(card.oracle_full_lower_id))),
-        TextField::Layout          => opt_sv(str_at(strings, u32::from(card.card_layout_id))),
+        // PRINTING-level since gen 30 (see Printing::card_layout_id): a reversible printing and an
+        // ordinary printing of the same card give different answers, so no card-level value can
+        // stand in for either.
+        TextField::Layout          => printing.map_or(StrVal::PDep, |p| opt_sv(str_at(strings, u32::from(p.card_layout_id)))),
         TextField::FlavorTextLower => printing.map_or(StrVal::PDep, |p| opt_sv(str_at(strings, u32::from(p.flavor_text_lower_id)))),
         // Rewritten to ArtistMatch by bind(); printings carry no artist strings.
         TextField::ArtistLower     => StrVal::Null,
@@ -1186,14 +1189,20 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         },
         // Exhaustive over TextField (no `matches!`), same reason as num_pdep.
         FilterExpr::TextExact { field, .. } | FilterExpr::TextRegex { field, .. } => match field {
-            TextField::FlavorTextLower | TextField::SetCode | TextField::Border | TextField::Watermark | TextField::CollectorNumber => {
-                true
-            }
+            // `Layout` joined this list in gen 30 and is the reason the list is worth reading
+            // twice: it sat in the card-level arm below while `card_layout_id` lived on the
+            // OracleCard, and leaving it there would have let the verifier settle `layout:` at
+            // card level and never look at the printing whose value now decides it.
+            TextField::FlavorTextLower
+            | TextField::SetCode
+            | TextField::Layout
+            | TextField::Border
+            | TextField::Watermark
+            | TextField::CollectorNumber => true,
             TextField::NameLower
             | TextField::OracleTextLower
             | TextField::FullOracleTextLower
             | TextField::ArtistLower
-            | TextField::Layout
             | TextField::TypeLine => false,
         },
         // Exhaustive over CollField (no `matches!`), same reason as num_pdep.
@@ -2583,14 +2592,61 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
             return Ok(FilterExpr::YearCmp { op: cmp_op, year });
         }
         let cmp_op = str_op_to_cmp(op)?;
-        // yyyymmdd as integer; zero-pad partial dates so ordering matches the
-        // lexicographic compare on ISO strings this replaced (day 00 < any real day).
+        // A PARTIAL DATE IS A RANGE, NOT A POINT. `date:2021` means "released in 2021", and every
+        // operator reads off the ends of that window rather than off one padded value.
+        //
+        // The zero-padding this replaced (`"2021"` → 20210000) is the START of the window, which
+        // is the right bound for exactly two of the six operators and wrong for the other four.
+        // Measured on api.scryfall.com 2026-08-16 over the whole default corpus, `date:<year>`
+        // against `year:<year>` — the same column under its other spelling — agreeing on all seven
+        // spellings, where the padded reading agreed on three:
+        //
+        //             Scryfall  padded reading answered
+        //   date:2021     3,834  0        (= released_at == 2021-01-01)
+        //   date=2021     3,834  0
+        //   date<2021    20,966  20,966   ✓ start of window is correct for <
+        //   date<=2021   22,888  20,966   (answered date<2021)
+        //   date>2021    18,639  20,086   (answered date>=2021)
+        //   date>=2021   20,086  20,086   ✓ start of window is correct for >=
+        //   date!=2021   32,774  33,599   (the whole corpus — nothing was ever equal)
+        //
+        // `year:` was right all along because YearCmp compares the extracted year; only the `date`
+        // spelling took the padded path. Month precision is the same rule one level down:
+        // `date:2021-02` is 504 and equals `date>=2021-02 date<2021-03`, and `date>=2021-02` is
+        // 20,085 — one fewer than `date>=2021`, the card released in January.
+        //
+        // Composed from the existing leaf rather than given a new node shape: `And`/`Not` already
+        // narrow, estimate and complement correctly for DateCmp (see date_range_bounds), and a
+        // {lo,hi} DateCmp would have had to be threaded through the narrower, the estimator, the
+        // cost model, the fuzz corpus and three benches to say the same thing.
         let digits: String = val_str.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.is_empty() || digits.len() > 8 {
-            return Err(format!("bad date: {val_str}"));
-        }
-        let value: u32 = format!("{digits:0<8}").parse().map_err(|_| format!("bad date: {val_str}"))?;
-        return Ok(FilterExpr::DateCmp { op: cmp_op, value });
+        let n: u32 = digits.parse().map_err(|_| format!("bad date: {val_str}"))?;
+        // yyyy, yyyymm, yyyymmdd — the three precisions the parser emits. 12-31 and day 31 are
+        // upper bounds rather than real calendar ends: no stored date exceeds them, and using the
+        // true month length would buy nothing but a leap-year table.
+        let (lo, hi) = match digits.len() {
+            4 => (n * 10_000 + 101, n * 10_000 + 1231),
+            6 => (n * 100 + 1, n * 100 + 31),
+            8 => (n, n),
+            _ => return Err(format!("bad date: {val_str}")),
+        };
+        let within = || FilterExpr::And(vec![
+            FilterExpr::DateCmp { op: CmpOp::Ge, value: lo },
+            FilterExpr::DateCmp { op: CmpOp::Le, value: hi },
+        ]);
+        return Ok(match cmp_op {
+            CmpOp::Lt => FilterExpr::DateCmp { op: CmpOp::Lt, value: lo },
+            CmpOp::Ge => FilterExpr::DateCmp { op: CmpOp::Ge, value: lo },
+            CmpOp::Le => FilterExpr::DateCmp { op: CmpOp::Le, value: hi },
+            CmpOp::Gt => FilterExpr::DateCmp { op: CmpOp::Gt, value: hi },
+            // A full date is its own window, and the single leaf keeps SQL's three-valued answer
+            // for a printing with no release date: `Not(Null)` is `Null`, so the composed form
+            // agrees, but the leaf is what the narrower and the fuzz corpus already exercise.
+            CmpOp::Eq if lo == hi => FilterExpr::DateCmp { op: CmpOp::Eq, value: lo },
+            CmpOp::Ne if lo == hi => FilterExpr::DateCmp { op: CmpOp::Ne, value: lo },
+            CmpOp::Eq => within(),
+            CmpOp::Ne => FilterExpr::Not(Box::new(within())),
+        });
     }
 
     if attr == "mana_cost_jsonb" {

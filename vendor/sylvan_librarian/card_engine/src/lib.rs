@@ -681,7 +681,8 @@ struct OracleCard {
     /// measured over the 2026-08-16 corpus only 9,769 of 30,259 distinct oracle
     /// texts differ, 2.17 MB of new strings for the whole store.
     oracle_full_lower_id: u32,
-    card_layout_id: u32,
+    // NO `card_layout_id` HERE — it is a PRINTING field; see Printing::card_layout_id for the
+    // measurement that moved it.
     mana_cost_text_id: u32,
     type_line_id: u32,
 
@@ -753,6 +754,24 @@ struct Printing {
     // (NONE_STR = absent). Emission-only; every predicate and rank keeps using the vid.
     card_artist_name_id: u32,
     card_set_code: InlineStr<8>,
+    /// Scryfall's `layout`. PRINTING-level, which it did not look like: this hung off the
+    /// OracleCard on the reading that "a card's layout does not vary by printing". Measured
+    /// against the 2026-08-16 bulk, it does — every `reversible_card` is a SECOND printing of an
+    /// ordinary card, so all 71 oracle ids behind the 81 reversible printings ALSO carry normal
+    /// ones (Temple Garden by 63 of them), and a single card-level value is always decided by
+    /// whichever printing the group happened to commit. `is:reversible` could therefore answer
+    /// nothing at all, and `is:dfc` read 2,824 against Scryfall's 2,895 — exactly those 71 cards.
+    ///
+    /// Scryfall agrees it is per printing, and says so in the one place card-level and
+    /// printing-level storage differ observably: `is:reversible` is 81 printings over 71 cards,
+    /// not the ~4,000 printings those 71 cards have between them.
+    ///
+    /// Interned into `CardData.strings` like the two ids below it, and placed beside them because
+    /// `card_set_code | card_layout | card_border | card_watermark | collector_number` are one
+    /// family on the query side too (see filter.rs's exact-match arm). Costs the archived row
+    /// nothing: it rides padding the 16-byte (u128) alignment had already left, so
+    /// `the_archived_row_sizes_stay_pinned` still reads 304.
+    card_layout_id: u32,
     // Dense ranks of card_set_code and the artist name in byte order, assigned post-load by
     // assign_set_ranks / assign_artist_ranks; the sort keys for SortCol::Set and SortCol::Artist.
     // Neither can be derived at sort time: a set code is a string, and card_artist_vid is intern
@@ -4949,7 +4968,11 @@ struct ValueTotals {
     /// `border:` — printing-space, 5 values. Keyed by the interned border string, which is what
     /// `TextExact` compares against byte-for-byte.
     border: HashMap<String, SpaceTotals>,
-    /// `layout:` and the `is:flip`/`is:split`/… family — card-space, 14 values.
+    /// `layout:` and the `is:flip`/`is:split`/… family — printing-space since gen 30, 14 values.
+    /// Keyed by the interned layout string, exactly as `border` above is, and counted off the
+    /// PRINTING. Counting it off the card was not merely imprecise once layout moved: this table
+    /// SHORT-CIRCUITS the count (see `exact_result_total`), so a card-keyed entry read against a
+    /// printing-keyed filter would have reported a total no result page could produce.
     layout: HashMap<String, SpaceTotals>,
     /// `frame:` and `is:new`/`is:old` — printing-space, 29 values. Keyed by the `coll_vocab` string.
     frame_data: HashMap<String, SpaceTotals>,
@@ -5256,7 +5279,7 @@ fn build_all_value_totals(
             NONE_STR => Vec::new(),
             id => vec![strings[id as usize].clone()],
         }),
-        layout: totals!(|card: &OracleCard, _p: &Printing| match card.card_layout_id {
+        layout: totals!(|_card: &OracleCard, p: &Printing| match p.card_layout_id {
             NONE_STR => Vec::new(),
             id => vec![strings[id as usize].clone()],
         }),
@@ -14853,7 +14876,10 @@ const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
     // Card-data fields for downstream filtering, in Scryfall JSON shapes (names and value
     // shapes match RESULT_FIELD_COLUMNS in api/api_resource.py, which reshapes the SQL
     // path's raw columns to agree with these).
-    ("layout", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.card_layout_id)).into_pyobject(py)?.into_any())),
+    // Off the PRINTING since gen 30 — the emitted object must say what THIS piece of cardboard is,
+    // which is the whole point of the move: `sld/1079` is a `reversible_card` and every other
+    // Temple Garden is `normal`, and one card-level string cannot be both.
+    ("layout", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.card_layout_id)).into_pyobject(py)?.into_any())),
     // `.to_native()`, not `.copied()`: #923 made cmc an f32, whose archived form is an endian
     // wrapper (f32_le) pyo3 cannot convert — upstream's convention for archived floats at pyo3
     // sites (see the prefer_score read in choose_representative's shape upstream).
@@ -15486,7 +15512,22 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                archive built by the older code has no mask planes to read at all.
 //                Alongside it, the ROWS change: `reversible_card`'s face-level `layout` was
 //                overwriting the printing's, so all 81 were stored as some other layout.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081614;
+//   2026081615 — LAYOUT MOVES OFF THE CARD AND ONTO THE PRINTING. `card_layout_id` leaves
+//                `OracleCard` for `Printing`, because layout is a property of a piece of cardboard
+//                and never was a property of an oracle card. 2026081614 fixed the VALUE the 81
+//                `reversible_card` rows carried and could not fix the answer: all 71 oracle ids
+//                behind those 81 printings also carry ordinary printings of the same card — Temple
+//                Garden by 63 of them — so the group's single layout value was always decided by a
+//                normal printing and `is:reversible` answered nothing. With the field on the
+//                printing it answers 81 printings over 71 cards, which is what api.scryfall.com
+//                answers, and `is:dfc` closes 2,824 → 2,895.
+//                Three stored things move together and an archive built by the older code has all
+//                three wrong: the STRUCT layout (both rows), `ValueTotals::layout` (rebuilt off the
+//                printing — it short-circuits the result total, so a card-keyed table under a
+//                printing-keyed filter reports a count no page can produce), and nothing else —
+//                layout has no posting index and no bit plane, which is why this is a two-row
+//                change and not a ten-index one.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081615;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -15988,7 +16029,6 @@ fn build_card_data_sorted(
                 oracle_text_id: row.oracle_text_id,
                 oracle_text_lower_id: row.oracle_text_lower_id,
                 oracle_full_lower_id: row.oracle_full_lower_id,
-                card_layout_id: row.card_layout_id,
                 mana_cost_text_id: row.mana_cost_text_id,
                 type_line_id: row.type_line_id,
                 cmc: row.cmc,
@@ -16073,6 +16113,9 @@ fn build_card_data_sorted(
             card_artist_vid: row.card_artist_vid,
             card_artist_name_id: row.card_artist_name_id,
             card_set_code: row.card_set_code,
+            // The row IS the printing, so this is simply carried across — the same field the
+            // OracleCard used to take, taken by the half of the split that owns it.
+            card_layout_id: row.card_layout_id,
             card_border_id: row.card_border_id,
             card_watermark_id: row.card_watermark_id,
             collector_number_id: row.collector_number_id,

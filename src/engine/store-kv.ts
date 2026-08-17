@@ -910,8 +910,32 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       FACES of those 81 cards and on nothing else, and the face overlay in `transform_row` was
  *       letting it overwrite the printing's — 77 stored as `normal`, 3 as `adventure`, 1 as
  *       `token`, and the corpus reporting zero reversible cards.
+ *
+ *  30 — LAYOUT IS A PROPERTY OF A PRINTING, AND IS NOW STORED AS ONE.
+ *       ARCHIVE_FORMAT_VERSION 2026081614 -> 2026081615, same pairing rule as 28 and 29.
+ *
+ *       The other half of 29, and the half that made 29 unable to finish its own job.
+ *       `card_layout_id` lived on `OracleCard`, so a card had ONE layout no matter how many
+ *       printings it had. 29 fixed the value the 81 `reversible_card` rows carried; it could not
+ *       make `is:reversible` answer, because all 71 oracle ids behind those 81 printings ALSO
+ *       carry ordinary printings of the same card — Temple Garden by 63 of them — so whichever
+ *       printing the group committed decided the card, and it was never the reversible one.
+ *
+ *       The field now lives on `Printing`. Measured against api.scryfall.com, 2026-08-16, and
+ *       Scryfall answers per printing in the one place the two storages differ observably:
+ *
+ *         is:reversible          71 cards / 81 prints    not the ~4,000 prints those 71 cards have
+ *         layout:reversible_card 71 cards / 81 prints    the same, via the un-rewritten spelling
+ *         is:dfc                 2,895 cards             ours read 2,824 — exactly those 71 short
+ *         is:dfc c:u f:modern    124 cards               ours read 114
+ *
+ *       Three stored things had to move together, and the third is the one a struct change does
+ *       not force: the two archived rows, and `ValueTotals::layout`, which is rebuilt off the
+ *       printing. That table SHORT-CIRCUITS the result total, so a card-keyed table read under a
+ *       printing-keyed filter would have reported a count no result page could produce. Layout has
+ *       no posting index and no bit plane, so nothing else in the store moves.
  */
-export const STORE_CONTENT_GENERATION = 29;
+export const STORE_CONTENT_GENERATION = 30;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

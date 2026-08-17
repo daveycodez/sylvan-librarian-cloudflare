@@ -2519,7 +2519,10 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // Card-data fields in Scryfall's own shapes (upstream #877). FIELD_TABLE is pyo3-gated and not
     // compiled here, so its five new entries would merge clean, build clean, and do nothing —
     // `fields=layout` would 400 as an unknown field. These are their live twins.
-    ("layout", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.card_layout_id)))),
+    // Off the PRINTING since gen 30 — see the FIELD_TABLE twin in lib.rs. This is the LIVE table
+    // (the pyo3 one above it is not compiled here), so this is the entry `card_object.rs` reads
+    // `layout` from when it decides TWO_IMAGE_LAYOUTS and EDHREC_JOINED_LAYOUTS.
+    ("layout", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.card_layout_id)))),
     // Through `f32::from` because the archived scalar is an endian wrapper, and out as a JSON
     // number that keeps its fraction: this is the value card_object.rs writes as the decimal
     // `"cmc"` Scryfall answers with.

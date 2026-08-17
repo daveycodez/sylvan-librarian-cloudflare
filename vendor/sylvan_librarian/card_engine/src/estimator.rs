@@ -97,9 +97,18 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         FilterExpr::DateCmp { .. } | FilterExpr::YearCmp { .. } => true,
         FilterExpr::ArtistMatch { .. } | FilterExpr::FlavorMatch { .. } => true,
         FilterExpr::TextContains { field, .. } => matches!(field, TextSearchField::FlavorTextLower),
+        // `Layout` is here since gen 30 (see Printing::card_layout_id). This is a `matches!` and
+        // not an exhaustive match, so moving the field did NOT break the build here the way it did
+        // in `leaf_compares_printing_field` — this list is the silent twin of that one and has to
+        // be edited by hand alongside it.
         FilterExpr::TextExact { field, .. } | FilterExpr::TextRegex { field, .. } => matches!(
             field,
-            TextField::FlavorTextLower | TextField::SetCode | TextField::Border | TextField::Watermark | TextField::CollectorNumber
+            TextField::FlavorTextLower
+                | TextField::SetCode
+                | TextField::Layout
+                | TextField::Border
+                | TextField::Watermark
+                | TextField::CollectorNumber
         ),
         FilterExpr::CollectionCmp { field, .. } => {
             matches!(field, CollField::ArtTags | CollField::IsTags | CollField::FrameData)

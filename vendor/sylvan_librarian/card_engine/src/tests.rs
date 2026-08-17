@@ -221,7 +221,6 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         oracle_text_id: NONE_STR,
         oracle_text_lower_id: NONE_STR,
         oracle_full_lower_id: NONE_STR,
-        card_layout_id: NONE_STR,
         mana_cost_text_id: NONE_STR,
         type_line_id: NONE_STR,
         cmc: None,
@@ -256,6 +255,7 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         card_artist_vid: ARTIST_NONE,
         card_artist_name_id: NONE_STR,
         card_set_code: InlineStr::from_str(""),
+        card_layout_id: NONE_STR,
         set_rank: 0,
         artist_rank: 0,
         card_border_id: NONE_STR,
@@ -1724,8 +1724,10 @@ const FUZZ_OPS: [CmpOp; 6] = [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp:
 // banned(0b11); NOT_LEGAL(0b00) is never a query leaf (the parser negates instead).
 const FUZZ_SHIFTS: [u8; 3] = [0, 2, 4];
 
-/// Card layouts the fuzz store assigns, cycled by card index. Weighted toward `normal` the way the
-/// corpus is (96% there), so the tail values stay small enough to exercise the sparse end.
+/// Printing layouts the fuzz store assigns, cycled by (card index + printing index within the card)
+/// — so the printings of one card DISAGREE, which is the corpus shape and the shape the field's
+/// move to `Printing` exists for. Weighted toward `normal` the way the corpus is (96% there), so the
+/// tail values stay small enough to exercise the sparse end.
 const FUZZ_LAYOUTS: [&str; 8] = ["normal", "normal", "normal", "normal", "transform", "split", "saga", "flip"];
 const FUZZ_STATUSES: [u64; 3] = [0b01, 0b10, 0b11];
 // Shifts a divergent card is allowed to disagree at. Deliberately NOT all of `FUZZ_SHIFTS`: production
@@ -2314,22 +2316,17 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     let mut frame_meta: Vec<Vec<u16>> = Vec::new();
     let mut artist_meta: Vec<u16> = Vec::new();
     let mut flavor_meta: Vec<u32> = Vec::new();
+    let mut layout_meta: Vec<u32> = Vec::new();
 
     for i in 0..ncards {
         let mut card = stub_card(i as u128 + 1, fuzz_type_bits(rng), &[], &mut vocab);
         card.card_colors = rng.random_range(0..32u8);
-        // Layout, assigned DETERMINISTICALLY from the card index rather than by an rng draw: a draw here
-        // would shift the rng stream and so change every fuzz store in the suite. The skew mirrors the
-        // corpus, where `normal` is 96% of cards and the tail is what the `is:flip`-family predicates
-        // reach. Present at all because `exact_result_total`'s layout arm is otherwise untestable --
-        // this field sat at NONE_STR for every fuzz card.
-        card.card_layout_id = interner.intern(FUZZ_LAYOUTS[i % FUZZ_LAYOUTS.len()].to_string());
         // cmc on the corpus distribution (peaks at 2-3). Power/toughness/loyalty are *derived* from
         // it so bigger stats cost more and P~T track each other, and are present only on the
         // matching card kind: creatures have power/toughness, planeswalkers have loyalty.
         let cmc = fuzz_weighted(rng, &[(0u8, 1), (1, 3), (2, 7), (3, 8), (4, 6), (5, 4), (6, 2), (7, 1), (8, 1)]);
         // Every 17th card is a half-mana card ({HW}, as Little Girl is). Assigned from the card
-        // index rather than by an rng draw for the same reason `card_layout_id` above is: a draw
+        // index rather than by an rng draw for the same reason `card_layout_id` below is: a draw
         // here would shift the stream and change every fuzz store in the suite. The point is that
         // the differential assertions -- which compare the routed pipeline against the trusted
         // per-printing `FilterExpr::matches` scan -- run over a store where the numeric index, the
@@ -2441,7 +2438,20 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
             card.card_legalities = base;
         }
 
-        for &word in &words {
+        for (j, &word) in words.iter().enumerate() {
+            // Layout, assigned DETERMINISTICALLY from the card AND printing indexes rather than by an
+            // rng draw: a draw here would shift the rng stream and so change every fuzz store in the
+            // suite. The skew mirrors the corpus, where `normal` is 96% of printings and the tail is
+            // what the `is:flip`-family predicates reach. Present at all because
+            // `exact_result_total`'s layout arm is otherwise untestable -- this field sat at NONE_STR
+            // for every fuzz row.
+            //
+            // `i + j`, NOT `i`: the printings of one card must DISAGREE about their layout, because a
+            // corpus where they always agree is exactly the corpus in which the card-level bug this
+            // field's move fixes is invisible. Every `reversible_card` in production is a second
+            // printing of a card whose other printings are `normal` (Temple Garden: 1 of 64), so the
+            // disagreeing case is the interesting one and the fuzzer must generate it on every seed.
+            layout_meta.push(interner.intern(FUZZ_LAYOUTS[(i + j) % FUZZ_LAYOUTS.len()].to_string()));
             // Rarity weighted like the corpus (rare > common > uncommon > mythic); 15% NULL for
             // Null-propagation coverage. Collector number spread 1-300 (mostly present). Price 16%
             // NULL, heavy sub-$2 tail. Release date recent-skewed.
@@ -2517,6 +2527,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
         data.printings[idx].card_frame_data = std::mem::take(&mut frame_meta[idx]);
         data.printings[idx].card_artist_vid = artist_meta[idx];
         data.printings[idx].flavor_text_lower_id = flavor_meta[idx];
+        data.printings[idx].card_layout_id = layout_meta[idx];
     }
     data.strings = interner.strings;
     derive_name_collation(&mut data); // the assignment above discarded the collated ids store_of derived
@@ -3562,6 +3573,138 @@ fn value_totals_are_exact_in_all_three_spaces() {
     }
     // Otherwise a table that answered 0 to everything would pass every assertion above.
     assert!(nonzero >= leaves.len(), "too many zero totals ({nonzero}); the sweep is not exercising the table");
+}
+
+/// THE REVERSIBLE SHAPE, pinned as a named case: a card whose printings disagree about their layout
+/// must answer for each printing on its own.
+///
+/// This is Temple Garden reduced to three rows. All 81 `reversible_card` printings in the corpus are
+/// SECOND printings of ordinary cards — the 71 oracle ids behind them carry normal printings too,
+/// Temple Garden by 63 — so while `card_layout_id` hung off the `OracleCard` the group had exactly
+/// one layout string and it was whichever printing the commit pass reached first. `is:reversible`
+/// could not answer 81, or 71, or anything: it answered whatever that accident produced.
+///
+/// The fuzz differential covers this property statistically (every fuzz card's printings now
+/// disagree about layout, by construction). This covers it by name, so the regression back to a
+/// card-level field is a test with the defect written in it rather than a seed that shifted.
+#[test]
+fn a_cards_printings_each_answer_with_their_own_layout() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let cards = vec![stub_card(1, 0, &[], &mut vocab)];
+    let mut data = store_of(cards, &[3], vocab);
+    // Two ordinary printings and one reversible, the corpus's own ratio in miniature.
+    let normal = interner.intern("normal".to_string());
+    let reversible = interner.intern("reversible_card".to_string());
+    data.printings[0].card_layout_id = normal;
+    data.printings[1].card_layout_id = normal;
+    data.printings[2].card_layout_id = reversible;
+    data.indexes.value_totals = build_all_value_totals(
+        &data.cards,
+        &data.printings,
+        &data.indexes.printing_to_card,
+        &interner.strings,
+        &data.coll_vocab,
+        usize::from(data.indexes.max_artwork_groups),
+    );
+    data.strings = interner.strings;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+
+    let leaf = |value: &str| FilterExpr::TextExact {
+        field: TextField::Layout,
+        op: CmpOp::Eq,
+        value: value.to_string(),
+    };
+
+    // The verifier: each printing answers for ITSELF, and the card-level pass cannot settle it.
+    for (value, expected) in [("reversible_card", [false, false, true]), ("normal", [true, true, false])] {
+        let f = leaf(value);
+        for (pid, want) in expected.iter().enumerate() {
+            assert_eq!(
+                f.matches(card, &archived.printings[pid], &archived.strings),
+                *want,
+                "layout:{value} on printing {pid}"
+            );
+        }
+        // The whole reason `leaf_compares_printing_field` had to move Layout: the card-level pass
+        // must not be allowed to settle this leaf. (`tri` is private to filter.rs; this is the
+        // pub(crate) `.any` composition of the same leaf table, which for a LEAF is that table.)
+        assert!(
+            crate::filter::touches_printing_field(&f),
+            "layout:{value} must defer to a printing, not settle at card level"
+        );
+    }
+
+    // And the exact-total table, which SHORT-CIRCUITS the count, must tell the same story in all
+    // three spaces — 1 printing / 1 card for the reversible value, 2 printings / 1 card for normal.
+    // A card-keyed table would have said 0 and 3 here, and the page would have disagreed with the
+    // total it was served under.
+    for (value, printings) in [("reversible_card", 1usize), ("normal", 2)] {
+        let mut f = leaf(value);
+        f.bind(
+            &archived.coll_vocab,
+            &archived.coll_vocab_sorted,
+            &archived.artist_vocab,
+            &archived.artist_vocab_collated,
+            &archived.mana_vocab,
+            &archived.indexes.flavor,
+            &archived.strings,
+        );
+        assert_eq!(exact_result_total(&f, &archived.indexes, Mode::Printing), Some(printings), "layout:{value} printings");
+        assert_eq!(exact_result_total(&f, &archived.indexes, Mode::Card), Some(1), "layout:{value} cards");
+        assert_eq!(
+            exact_result_total(&f, &archived.indexes, Mode::Printing),
+            Some(fuzz_reference_total(archived, &f, "printing")),
+            "layout:{value}: the table and the brute-force scan must agree"
+        );
+    }
+}
+
+/// The two printing-dependence tables must classify every `TextField` identically.
+///
+/// `filter::leaf_compares_printing_field` is an exhaustive `match` — moving a field breaks the build
+/// until it is reclassified. `estimator::has_printing_varying_leaf` is a `matches!` over the same
+/// field list and fails SILENTLY instead: it would have gone on calling `layout:` card-invariant,
+/// and the result-total estimator would have treated a matching card's whole printing span as
+/// all-or-nothing when it is not. That is the exact shape of trap this pair invites, so the pair is
+/// asserted rather than maintained by memory.
+///
+/// Scoped to `TextField` deliberately. The two tables genuinely and deliberately disagree about
+/// `Legality` (see `has_printing_varying_leaf`'s doc), so a whole-enum equality assertion would be
+/// false; the text family has no such carve-out and must agree everywhere.
+#[test]
+fn the_two_printing_dependence_tables_agree_on_every_text_field() {
+    // Exhaustive by construction: a new `TextField` that is not listed here fails the count
+    // assertion below rather than being silently skipped.
+    let fields = [
+        ("NameLower", TextField::NameLower),
+        ("OracleTextLower", TextField::OracleTextLower),
+        ("FullOracleTextLower", TextField::FullOracleTextLower),
+        ("FlavorTextLower", TextField::FlavorTextLower),
+        ("ArtistLower", TextField::ArtistLower),
+        ("SetCode", TextField::SetCode),
+        ("Layout", TextField::Layout),
+        ("Border", TextField::Border),
+        ("Watermark", TextField::Watermark),
+        ("CollectorNumber", TextField::CollectorNumber),
+        ("TypeLine", TextField::TypeLine),
+    ];
+    assert_eq!(fields.len(), 11, "a TextField was added or removed; classify it in BOTH tables");
+    for (name, field) in fields {
+        let leaf = FilterExpr::TextExact { field, op: CmpOp::Eq, value: "x".to_string() };
+        assert_eq!(
+            crate::filter::touches_printing_field(&leaf),
+            crate::estimator::has_printing_varying_leaf(&leaf),
+            "TextField::{name} is classified differently by the two printing-dependence tables"
+        );
+    }
+    // And the one this test was written for, stated outright so the assertion above cannot pass by
+    // agreeing on the wrong answer.
+    let layout = FilterExpr::TextExact { field: TextField::Layout, op: CmpOp::Eq, value: "reversible_card".to_string() };
+    assert!(crate::filter::touches_printing_field(&layout), "layout is a printing-level field");
 }
 
 /// `exact_result_total`'s rarity arm must be exact in all three spaces, for every op against every
@@ -13473,6 +13616,13 @@ fn the_archived_row_sizes_stay_pinned() {
     // holds anything — rounded to 16 by the row's alignment. The CARD does not shrink by the same
     // 8: it hands `all_parts` over and takes `card_keywords_printed` in the same commit, so the
     // two cancel and 256 stands.
+    // 2026081615 moves `card_layout_id` from the card to the printing and BOTH numbers stand: the
+    // u32 lands in padding the printing's 16-byte (u128) alignment had already left, and vacating
+    // its slot on the card only widens padding there. So the whole "layout is printing-level" fix
+    // costs the archive exactly zero bytes — measured here, not estimated. That is worth an
+    // assertion rather than a comment, because the estimate everyone reaches for first (4 bytes x
+    // ~540k printings ≈ 2.2 MB, against ~19 MB of headroom under the 124 MiB wasm build cap) is
+    // both wrong and the reason a cheap change looked like a budget question.
     assert_eq!(std::mem::size_of::<Archived<Printing>>(), 304);
     assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 256);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
