@@ -681,11 +681,17 @@ The complete list of intentional differences:
   direction**. `/cards/named?exact=Counters` answered 404 where Scryfall answers
   fmsc/9, and `include_extras=true` had nothing to include. So every row is now
   imported, `transform.rs` decides which ones carry `is:extra`, and
-  `cardsSearchHandler` ANDs `-is:extra` unless the caller or a set term asks
-  otherwise — spelled as `-is:extra` rather than as a set-type conjunct
+  `src/routes/extras-gate.ts` ANDs `-is:extra` unless the caller or a set term
+  asks otherwise — spelled as `-is:extra` rather than as a set-type conjunct
   deliberately, which is what avoids the plan breakage the old text cites. (The
   "0 of 31,724 cards" figure was a generation-6 measurement and no longer
-  describes the corpus.)
+  describes the corpus.) **BOTH search surfaces run that gate.** It lived inside
+  the compat route while the store was built from `default_cards`, whose dump has
+  no art-series printings, so `/search` — the web UI's own route — never needed
+  one. `all_cards` carries 2,650, and `/search?q=lightning bolt` answered three
+  printings against `/cards/search`'s two until the rule was extracted and shared.
+  `scripts/search-differential.ts` is what now runs the two routes against each
+  other, offline, over `parity-sweep`'s generated matrix.
 - `card_is_tags` used to carry only three of upstream's `BOOLEAN_IS_TAGS`
   (`is:reserved`, `is:gamechanger`, `is:oversized`). Generation 21 took the
   stored vocabulary **from 3 entries to 30**: `BOOLEAN_IS_TAGS` grew and

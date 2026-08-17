@@ -22,6 +22,7 @@ import {
 	UNIQUE_ON,
 } from "./enums";
 import { explainWireTree } from "./explanation";
+import { applyExtrasGate, type ExtrasGateSpellings } from "./extras-gate";
 import { httpError, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
 import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from "./param-binding";
@@ -267,10 +268,18 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 	const parser = await loadParser();
 	let filterTree: unknown;
 	let directives: readonly DirectiveFound[] = [];
+	// Out of band from the tree, for the extras gate: the rewrite erases both the `field:/regex/`
+	// spelling and the `is:split` -> `layout:split` expansion, and Scryfall's auto-enable reads
+	// what was WRITTEN. See extras-gate.ts.
+	let spellings: ExtrasGateSpellings = { loweredRegexTerms: [], expandedDerivedTerms: [] };
 	try {
 		const parsed = timer.time("parse", () => parser.parseWithDirectives(query));
 		filterTree = parsed.tree;
 		directives = parsed.directives;
+		spellings = {
+			loweredRegexTerms: parsed.loweredRegexTerms,
+			expandedDerivedTerms: parsed.expandedDerivedTerms,
+		};
 	} catch (err) {
 		if (parser.isParseError(err)) {
 			throw new SearchBadRequest("Invalid Search Query", `Failed to parse query: "${query}"`);
@@ -284,6 +293,31 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 		throw new SearchBadRequest("Invalid Search Query", arithmeticNotComparedMessage(query));
 	}
 
+	// The EXPLANATION describes the query the user typed, so it is taken before the gate wraps the
+	// tree — "the name contains Bolt" and not "…and it is not an extra and it is not a variation".
+	const queryExplanation = query ? explainWireTree(filterTree) : "";
+
+	// SCRYFALL'S TWO DEFAULT-LANE EXCLUSIONS, shared with `/cards/search` — see extras-gate.ts.
+	//
+	// THIS ROUTE HAD NO EXTRAS HANDLING AT ALL, and did not need any while the store was built from
+	// the `default_cards` bulk: that dump carries no art-series printings, so there was nothing to
+	// exclude. `all_cards` carries 2,650, and `q=lightning bolt` started answering astx/76
+	// ("Lightning Bolt // Lightning Bolt", a Strixhaven Art Series card) alongside the two printings
+	// `/cards/search` and api.scryfall.com both answer. A latent gap the corpus made visible.
+	//
+	// NO PARAMETERS ARE PASSED because this route has none: `/search` is the web UI, not a Scryfall
+	// mirror, so the rule reduces to "exclude unless the query itself triggers". Every trigger still
+	// works — `is:extra`, `t:token`, `layout:…`, `wm:`, `a:`, `border:silver`, a set that holds an
+	// extra, and `is:variation` for the other gate — because they are properties of the QUERY.
+	//
+	// VARIATIONS ARE GATED TOO, deliberately. Scryfall excludes them by default and `/cards/search`
+	// measured that and matches it; a variation is by definition a second printing of a card that is
+	// still in the results under its ordinary printing, so nothing becomes unfindable. Gating one
+	// and not the other would mean the site's own search and the site's own Scryfall-compatible
+	// search disagreed about the same query — which is exactly the bug above, in the other half.
+	const gated = await applyExtrasGate(engine, filterTree, spellings);
+	filterTree = gated.tree;
+
 	// Fold the in-query directives BEFORE resolveDirection, which is the last
 	// point at which orderby is final — `dir:auto` has to resolve against the
 	// ordering a `sort:` directive may just have changed.
@@ -296,7 +330,7 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 
 	return {
 		engine,
-		queryExplanation: query ? explainWireTree(filterTree) : "",
+		queryExplanation,
 		warnings: folded.warnings,
 		engineOpts: {
 			filterTreeJson: canonicalStringify(filterTree as FilterValue),

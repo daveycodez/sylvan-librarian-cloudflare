@@ -154,6 +154,14 @@ let runObjects = true;
 let gapMs = DEFAULT_GAP_MS;
 let outDir = DEFAULT_OUT_DIR;
 let trustedKey: string | undefined = process.env[TRUSTED_KEY_ENV] || undefined;
+/**
+ * Write the generated matrix to a file and exit WITHOUT running it — the corpus as data, for
+ * harnesses that want these queries against a different oracle. scripts/search-differential.ts is
+ * the one that does: it runs `/search` against `/cards/search` on one local store, so `/search`
+ * gets exercised by the same operator × polarity × value-form grid this file builds. Reusing the
+ * matrix is the point; a second hand-written query list would drift from this one immediately.
+ */
+let dumpCases: string | undefined;
 
 {
 	const args = process.argv.slice(2);
@@ -173,13 +181,15 @@ let trustedKey: string | undefined = process.env[TRUSTED_KEY_ENV] || undefined;
 		else if (arg === "--gap") gapMs = Number(value());
 		else if (arg === "--out") outDir = value();
 		else if (arg === "--key") trustedKey = value();
+		else if (arg === "--dump-cases") dumpCases = value();
 		else throw new Error(`unknown flag: ${arg}`);
 	}
 }
 
 // A REMOTE origin with no key is refused BEFORE any case runs, for the reason in live-parity.ts:
 // discovering it case by case turns a missing export into a page of invented divergences.
-if (!trustedKey && !isLocalOrigin(origin)) {
+// `--dump-cases` runs no case at all, so it is exempt — the matrix is generated, not fetched.
+if (!trustedKey && !isLocalOrigin(origin) && !dumpCases) {
 	console.error(`parity-sweep: ${origin} enforces a per-IP rate limit, and no bypass key was given.`);
 	console.error("");
 	console.error(`  export ${TRUSTED_KEY_ENV}=<one of the Worker's TRUSTED_API_KEYS>   # then re-run`);
@@ -3100,6 +3110,17 @@ async function runPageWalk(walk: PageWalk): Promise<void> {
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 const selected = cases.filter((c) => (!only || c.name.includes(only)) && (!group || c.group === group)).slice(0, limit);
+
+// `--dump-cases`: the matrix as data, and then stop. Placed HERE — after generation, before the
+// first request — so a dump costs nobody a Scryfall call. `--only`/`--group`/`--limit` narrow it
+// exactly as they narrow a run.
+if (dumpCases) {
+	mkdirSync(dirname(dumpCases), { recursive: true });
+	writeFileSync(dumpCases, JSON.stringify(selected, null, 2));
+	console.log(`parity-sweep: wrote ${selected.length} of ${cases.length} cases to ${dumpCases}`);
+	process.exit(0);
+}
+
 const selectedPeripheral = peripheral
 	.filter((c) => (!only || c.name.includes(only)) && (!group || c.group === group))
 	.slice(0, limit);
