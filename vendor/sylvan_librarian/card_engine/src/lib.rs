@@ -490,6 +490,17 @@ struct RelatedCard {
 struct PrintingFace {
     illustration_id: u128,
     card_artist_vid: u16,
+    /// Scryfall's FACE-level `watermark`, interned (NONE_STR = absent).
+    ///
+    /// PER FACE, and per PRINTING within that — a guild watermark belongs to the printing that
+    /// prints it, not to the oracle text, so it rides here beside the art rather than on
+    /// `OracleFace`. `Printing.card_watermark_id` holds the FRONT face's copy (the builder's
+    /// face overlay puts it there) and the value a card without faces carries; this is what makes
+    /// `Research // Development` answer `wm:izzet` as well as `wm:simic`.
+    ///
+    /// It is also the ONLY watermark a faced printing's card object emits — see `write_faces` and
+    /// `emits_top_level_watermark`.
+    card_watermark_id: u32,
     flavor_text_id: u32,
     // Scryfall's FACE-level `flavor_name`, interned (NONE_STR = absent). The card-level twin is
     // `Printing.flavor_name_id`, and a printing carries one or the other, never both: 28 face
@@ -1146,6 +1157,8 @@ struct FaceRow {
     card_artist_vid: u16,
     // The face's original-case artist string (see PrintingFace.card_artist_name_id).
     card_artist_name_id: u32,
+    // The face's own watermark (see PrintingFace.card_watermark_id).
+    card_watermark_id: u32,
     flavor_text_id: u32,
     flavor_name_id: u32,
     // The per-face printed-language triple (PrintedFaceText before the commit pass splits it).
@@ -1962,6 +1975,8 @@ fn faces_from_pydict(
         };
         faces.push(FaceRow {
             card_artist_name_id,
+            // The JSON twin's read; see jv_faces for why one id serves search and emission.
+            card_watermark_id: it.intern_opt(opt_str(&face, "watermark")),
             creature_power,
             creature_toughness,
             planeswalker_loyalty,
@@ -2008,8 +2023,9 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
     // card object — see Printing.card_artist_name_id.
     let card_artist = opt_str(d, "card_artist");
     let card_artist_name_id = it.intern_opt(card_artist.clone());
-    let card_artist_folded_id = it.intern_opt(opt_str(d, "card_artist_folded"));
-    let card_artist_vid = match card_artist {
+    let card_artist_folded = opt_str(d, "card_artist_folded");
+    let card_artist_folded_id = it.intern_opt(card_artist_folded.clone());
+    let card_artist_vid = match &card_artist {
         Some(a) => artists.intern(a.to_lowercase())?,
         None => ARTIST_NONE,
     };
@@ -3392,6 +3408,77 @@ struct ArtistIndex {
     printings: Vec<u32>,
 }
 
+// ─── Artist entity index ──────────────────────────────────────────────────────
+//
+// `a:` IS AN ARTIST-ENTITY MATCH, NOT A STRING MATCH, and Scryfall's `artist_ids` is the only
+// thing that says so. Measured on api.scryfall.com 2026-08-17:
+//
+//     a:"don't mess" &order=artist&unique=prints   ->  399
+//
+// exactly the 399 `a:"rebecca guay"` answers, because one printing — `Persecute Artist` (unh/61)
+// — is credited `Rebecca "Don't Mess with Me" Guay`. A needle that matches ANY of an artist's
+// credited spellings answers for ALL of that artist's printings.
+//
+// The credit STRING cannot reach that. 28 of the 2,396 artist entities in the 2026-08-16
+// all_cards bulk carry more than one credited name, and one pair — `Kev Walker` /
+// `Evkay Alkerway` — shares no substring at all. Only the UUID links them, and the UUID is a
+// CORPUS-WIDE fact: the store is partitioned by oracle_id and each partition is built from its own
+// rows, so a partition holding one spelling and not the other can learn nothing on its own. The
+// builder resolves the relation over the whole corpus (`transform::artist_entity_table`) and hands
+// the finished table to each partition's builder ONCE.
+//
+// SPELLINGS ONLY — no artist ids, and no per-printing anything. The ids did their work in the
+// builder, deciding which spellings are one person; here a spelling is related to a credit by the
+// same `contains` rule `a:` already runs on, so a matched entity simply contributes its OTHER
+// spellings as additional needles. That is what keeps this table ~2KB and independent of how many
+// printings each artist has (see `artist_contains_ids`).
+//
+// `order=artist` is NOT keyed on this and deliberately so. Scryfall sorts a printing under its
+// OWN credited spelling, not under a canonical name per entity: in the `order=artist` probe above,
+// `Persecute Artist` comes back FIRST of the 399, ahead of every plain `Rebecca Guay` row, because
+// `rebeccadontmesswithmeguay` collates before `rebeccaguay`. `assign_artist_ranks` already ranks
+// per printing on `artist_vocab_collated`, which is that spelling, so entity membership is a
+// MATCH-time relation only and the rank table is untouched.
+
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct ArtistEntityIndex {
+    /// Row boundaries into `forms_collated` / `forms_lower`: entity `e`'s spellings live at
+    /// `[form_offsets[e] .. form_offsets[e + 1]]`. Length n_entities + 1 (empty when there are
+    /// none at all, which is what a corpus with no `artist_ids` produces).
+    form_offsets: Vec<u32>,
+    /// Each entity's credited spellings, `collate_name(fold_accents(lower))` — the same string
+    /// `artist_vocab_collated` holds, so a needle compares against both by one identical rule.
+    forms_collated: Vec<String>,
+    /// The same spellings lowercased but NOT folded, parallel to `forms_collated`. Only the
+    /// non-ASCII-needle pass reads it, mirroring `artist_contains_ids`' fallback over
+    /// `artist_vocab` — a folded target is already the more permissive one for an ASCII needle.
+    forms_lower: Vec<String>,
+}
+
+/// Read the builder's `artist_entity_table` JSON — `[[[lowercase, accent-folded], ...], ...]` —
+/// into the archived form. A malformed or absent table yields an empty index, which is exactly
+/// today's string-only behaviour rather than a build failure: this relation makes `a:` wider, and
+/// having none of it can only cost rows, never invent them.
+pub(crate) fn artist_entity_index_from_json(table: Option<&Value>) -> ArtistEntityIndex {
+    let mut idx = ArtistEntityIndex::default();
+    let Some(entities) = table.and_then(Value::as_array).filter(|e| !e.is_empty()) else {
+        return idx;
+    };
+    idx.form_offsets.push(0);
+    for entity in entities {
+        for pair in entity.as_array().into_iter().flatten() {
+            let (Some(lower), Some(folded)) =
+                (pair.get(0).and_then(Value::as_str), pair.get(1).and_then(Value::as_str))
+            else {
+                continue;
+            };
+            idx.forms_collated.push(collate_name(folded));
+            idx.forms_lower.push(lower.to_owned());
+        }
+        idx.form_offsets.push(idx.forms_collated.len() as u32);
+    }
+    idx
+}
 
 /// A printing-space collection index that stores each value in whichever representation is CHEAPER: a
 /// bitmap for dense values, postings for the sparse tail. The same plane/postings split
@@ -3549,6 +3636,36 @@ fn build_artist_index(printings: &[Printing], n_artists: usize) -> ArtistIndex {
         (vid != ARTIST_NONE).then_some(vid as usize)
     });
     ArtistIndex { offsets, printings: out }
+}
+
+/// The `watermark:` postings, keyed by value — EVERY value the printing carries, not just its own.
+///
+/// Watermark is per FACE (see `PrintingFace::card_watermark_id`), and `filter::tri` answers `wm:`
+/// existentially over exactly this set (`extra_text_field_values`). The two MUST enumerate
+/// identically: `is_printing_composable` claims these postings are an EXACT printing bitmap and
+/// `narrow_rec` marks them TIGHT, and nothing downstream re-checks a leaf either one called exact,
+/// so a value in one enumeration and not the other is a wrong answer rather than a slow one. This
+/// is a function and not an inline block so the differential test can call the SAME code the
+/// commit pass does, instead of a copy of it that can drift.
+///
+/// DEDUPED PER PRINTING, which is not cosmetic: `compose_printing_estimate` reads the postings
+/// LENGTH as the match count ("each posting is one distinct printing"), so the 137 faced printings
+/// of the 2026-08-16 default_cards bulk whose two faces AGREE would each be counted twice there
+/// while the bitmap stayed right.
+pub(crate) fn build_watermark_index(printings: &[Printing], strings: &[String]) -> TagIndex {
+    let mut idx: TagIndex = HashMap::new();
+    let mut seen: Vec<u32> = Vec::with_capacity(2);
+    for (i, p) in printings.iter().enumerate() {
+        seen.clear();
+        let own = std::iter::once(p.card_watermark_id);
+        for id in own.chain(p.faces.iter().map(|f| f.card_watermark_id)) {
+            if id != NONE_STR && !seen.contains(&id) {
+                seen.push(id);
+                idx.entry(strings[id as usize].as_str().to_string()).or_default().push(i as u32);
+            }
+        }
+    }
+    idx
 }
 
 /// Expand matching artist vocab ids to sorted printing ids via the CSR table.
@@ -6620,6 +6737,9 @@ struct CardData {
     // gets, on the same evidence. `a=`, `a!=` and `a:/…/` keep binding against the raw
     // `artist_vocab`: a regex is compared as written. ~2.5k strings, ~35KB.
     artist_vocab_collated: Vec<String>,
+    // Scryfall's `artist_ids`, reduced to the 28 entities whose second credited spelling the
+    // scan over `artist_vocab_collated` above cannot reach — see ArtistEntityIndex. ~2KB.
+    artist_entities: ArtistEntityIndex,
     // Distinct hybrid mana symbols, indexed by ManaCost.hybrids ids (~29
     // entries). ManaCostCmp binds query symbols against these (see
     // MANA_SYM_UNKNOWN for symbols no card carries).
@@ -16108,7 +16228,37 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                The alternative was to make the arm DECLINE when it found nothing, which sends
 //                every no-match `!"..."` to a full corpus scan — a free-plan CPU regression for one
 //                query form, and pinned against by two existing tests. 71 ids cost less.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081701;
+// 2026081701 -> 2026081702: TWO DIMENSIONS THE STORE DID NOT HOLD, in one bump because both are
+//                stored shape. `STORE_CONTENT_GENERATION` moves with it — the archive layout moves
+//                twice over and every value below is a search answer, not a display one.
+//
+//                (1) `CardData` gains `artist_entities` — Scryfall's `artist_ids`, which
+//                `jv_compat` had been dropping at ingest. `a:` IS AN ARTIST-ENTITY MATCH:
+//                measured on api.scryfall.com 2026-08-17, `a:"don't mess"&unique=prints` answers
+//                399, exactly `a:"rebecca guay"`'s 399, because `Persecute Artist` (unh/61) is
+//                credited `Rebecca "Don't Mess with Me" Guay`. 28 of the 2,396 artist entities in
+//                the 2026-08-16 all_cards bulk carry more than one credited spelling, and one
+//                pair — `Kev Walker` / `Evkay Alkerway` — shares NO substring, so no amount of
+//                string work reaches it. Only those 28 are stored (61 forms, 74 vid slots, ~2KB):
+//                the build COMPUTES which entities the `artist_vocab_collated` scan cannot already
+//                reach rather than assuming it. `order=artist` is untouched, and that is measured
+//                too — Scryfall sorts `Persecute Artist` FIRST of the 399, under its own printed
+//                spelling, so `assign_artist_ranks` was already right.
+//
+//                (2) `PrintingFace` gains `card_watermark_id`, 32 -> 48 archived bytes on the
+//                ~24.3k face rows only. WATERMARK IS PER FACE: `Research // Development`
+//                (dis/155) is simic on its front and izzet on its back and Scryfall answers it
+//                for both, where this port answered simic alone — 19 printings carry a watermark
+//                only a non-front face has. `indexes.watermarks` now holds every value a printing
+//                carries, deduped per printing, and `filter::tri` enumerates exactly the same set,
+//                which is what keeps `narrow_rec`'s TIGHT and `is_printing_composable`'s EXACT
+//                claims true over a multi-valued field. The card object changes with it, in the
+//                OPPOSITE direction: a faced printing now emits the watermark on its FACES and not
+//                at top level, which is what Scryfall does on 0 of its 12,098 faced printings.
+//                A reader pairing this code with a pre-bump archive would find `PrintingFace`
+//                16 bytes short — caught by the header — but the header cannot see the other half:
+//                a stale archive's `watermarks` index would silently answer the front face only.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081702;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -16145,6 +16295,7 @@ struct Staging {
     interner: Interner,
     vocab: VocabInterner,
     artists: VocabInterner,
+    artist_entities: ArtistEntityIndex,
     mana: ManaVocabInterner,
     #[allow(dead_code)] // held for its flock; released on drop
     lock_file: std::fs::File,
@@ -16263,7 +16414,7 @@ fn bind_and_split_filter_value(
     sync_format_shifts(&data.format_shifts);
     let mut filter_expr = build_filter(json_val)
         .map_err(|e| EngineError::query(format!("build_filter: {e}")))?;
-    filter_expr.bind(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.artist_vocab_collated, &data.mana_vocab, &data.indexes.flavor, &data.strings);
+    filter_expr.bind(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.artist_vocab_collated, &data.artist_entities, &data.mana_vocab, &data.indexes.flavor, &data.strings);
     // The second half of binding, split out because `bind` predates the type-line index and is
     // called from a dozen benches and tests that never build one. THE TWO BELONG TOGETHER: every
     // production filter reaches the engine through here.
@@ -16400,6 +16551,7 @@ fn build_card_data(
     interner: Interner,
     vocab: VocabInterner,
     artists: VocabInterner,
+    artist_entities: ArtistEntityIndex,
     mana: ManaVocabInterner,
 ) -> Result<BuiltStore, EngineError> {
 
@@ -16425,7 +16577,7 @@ fn build_card_data(
     ));
 
     let expected_rows = rows.len();
-    build_card_data_sorted(rows.into_iter().map(Ok), expected_rows, interner, vocab, artists, mana)
+    build_card_data_sorted(rows.into_iter().map(Ok), expected_rows, interner, vocab, artists, artist_entities, mana)
 }
 
 /// The exact ordering build_card_data sorts rows into before grouping,
@@ -16457,6 +16609,7 @@ fn build_card_data_sorted(
     interner: Interner,
     vocab: VocabInterner,
     artists: VocabInterner,
+    artist_entities: ArtistEntityIndex,
     mana: ManaVocabInterner,
 ) -> Result<BuiltStore, EngineError> {
     // The interner hash maps (string → id, duplicating every interned string
@@ -16772,6 +16925,7 @@ fn build_card_data_sorted(
                     illustration_id: f.illustration_id,
                     card_artist_vid: f.card_artist_vid,
                     card_artist_name_id: f.card_artist_name_id,
+                    card_watermark_id: f.card_watermark_id,
                     flavor_text_id: f.flavor_text_id,
                     flavor_name_id: f.flavor_name_id,
                 })
@@ -16978,16 +17132,18 @@ fn build_card_data_sorted(
             codes.dedup();
             codes
         },
-        watermarks:     {
-            let mut idx: TagIndex = HashMap::new();
-            for (i, p) in printings.iter().enumerate() {
-                if p.card_watermark_id != NONE_STR {
-                    let wm = strings[p.card_watermark_id as usize].as_str();
-                    idx.entry(wm.to_string()).or_default().push(i as u32);
-                }
-            }
-            idx
-        },
+        // EVERY value the printing carries, not just its own: watermark is per FACE, and
+        // `filter::tri` answers `wm:` existentially over the same set (see
+        // `extra_text_field_values`). The two MUST enumerate identically — `is_printing_composable`
+        // claims this index's postings are an EXACT printing bitmap and nothing re-checks a leaf
+        // the compose path called exact, so a value in one and not the other is a silent wrong
+        // answer rather than a slow one.
+        //
+        // DEDUPED PER PRINTING, which is not cosmetic: `compose_printing_estimate` reads the
+        // postings LENGTH as the match count ("each posting is one distinct printing"), so a
+        // printing listed twice under one value — the 137 faced printings whose faces agree —
+        // would inflate that count while the bitmap stayed right.
+        watermarks:     build_watermark_index(&printings, &strings),
         released_at:    released_at_idx,
         price_usd:      price_usd_idx,
         price_eur:      price_eur_idx,
@@ -17057,6 +17213,7 @@ fn build_card_data_sorted(
         coll_vocab_sorted,
         artist_vocab,
         artist_vocab_collated,
+        artist_entities,
         mana_vocab,
         indexes,
         format_shifts: format_shifts_snapshot,
@@ -17215,7 +17372,7 @@ impl QueryEngine {
         #[cfg(feature = "alloc-counter")]
         alloc_stats::reset_peak();
 
-        *staging = Some(Staging { rows: Vec::new(), interner: Interner::new(), vocab: VocabInterner::new(), artists: VocabInterner::new(), mana: ManaVocabInterner::new(), lock_file });
+        *staging = Some(Staging { rows: Vec::new(), interner: Interner::new(), vocab: VocabInterner::new(), artists: VocabInterner::new(), artist_entities: ArtistEntityInterner::new(), mana: ManaVocabInterner::new(), lock_file });
         Ok(true)
     }
 
@@ -17246,12 +17403,12 @@ impl QueryEngine {
         let staging = self.staging.lock().unwrap().take().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("reload_commit called without reload_begin")
         })?;
-        let Staging { rows, interner, vocab, artists, mana, lock_file } = staging;
+        let Staging { rows, interner, vocab, artists, artist_entities, mana, lock_file } = staging;
 
         // Sort/group/index/serialize moved verbatim into build_card_data()/
         // write_archive() (see the store-build-core section above) so the
         // non-python store builder shares this exact pipeline.
-        let built = build_card_data(rows, interner, vocab, artists, mana)?;
+        let built = build_card_data(rows, interner, vocab, artists, artist_entities, mana)?;
         #[cfg(feature = "alloc-counter")]
         let stats_after_cards = built.stats_after_cards;
         #[cfg(feature = "alloc-counter")]

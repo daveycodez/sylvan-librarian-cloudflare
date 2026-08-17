@@ -144,11 +144,16 @@ pub fn build_store(
     built_at: &str,
 ) -> Result<Manifest, Box<dyn std::error::Error>> {
     let mut builder = StoreBuilder::new();
+    // This path holds the WHOLE corpus, so it computes the artist-entity relation itself rather
+    // than being handed one — see `transform::observe_artist_spellings_row`.
+    let mut artist_spellings = transform::ArtistSpellings::new();
     for (i, row) in rows.enumerate() {
+        transform::observe_artist_spellings_row(&mut artist_spellings, &row);
         builder
             .add_card(&row)
             .map_err(|e| format!("row {i}: {e}"))?;
     }
+    builder.set_artist_entities(transform::artist_entity_table(&artist_spellings));
 
     let format_version = store_format_version();
     // The key must be unique per build: the Worker detects a new publish by
@@ -359,11 +364,15 @@ pub fn build_store_partitioned(
 ) -> Result<Value, Box<dyn std::error::Error>> {
     verify_partition_hash_vectors()?;
     let mut staged: Vec<(u64, Vec<u8>)> = Vec::new();
+    // Computed BEFORE the cut, for the reason the cut exists: no partition sees the whole corpus.
+    let mut artist_spellings = transform::ArtistSpellings::new();
     for (i, row) in rows.enumerate() {
+        transform::observe_artist_spellings_row(&mut artist_spellings, &row);
         let (meta, blob) =
             card_engine::SpillingStoreBuilder::encode_standalone(&row).map_err(|e| format!("row {i}: {e}"))?;
         staged.push((meta.part_hash, blob));
     }
+    let artist_entities = transform::artist_entity_table(&artist_spellings);
 
     let n = match partitions {
         PartitionsArg::Fixed(n) if n >= 1 => n,
@@ -387,7 +396,7 @@ pub fn build_store_partitioned(
     let mut accum = PartitionAccum::new(built_at, n);
     for (k, blobs) in buckets.into_iter().enumerate() {
         let (mut counter, store_key) = accum.open(out_dir, k)?;
-        let stats = card_engine::build_partition_from_standalone(blobs.into_iter(), &mut counter)
+        let stats = card_engine::build_partition_from_standalone(blobs.into_iter(), artist_entities.clone(), &mut counter)
             .map_err(|e| format!("partition {k}: {e}"))?;
         counter.flush()?;
         accum.record(k, store_key, counter.written, &stats);
@@ -447,6 +456,7 @@ pub fn build_store_partitioned_spilled<W: Write>(
         std::fs::File::create(&routing_path).map_err(|e| format!("create routing-keys.tsv: {e}"))?,
     ));
     let mut routing_count = 0u64;
+    let artist_entities = aggregates.artist_entities();
     let mut accum = PartitionAccum::new(built_at, n);
     for k in 0..n as usize {
         let (mut counter, store_key) = accum.open(out_dir, k)?;
@@ -479,7 +489,7 @@ pub fn build_store_partitioned_spilled<W: Write>(
                 }
                 bytes
             });
-            card_engine::build_partition_from_standalone(blobs, &mut counter)
+            card_engine::build_partition_from_standalone(blobs, artist_entities.clone(), &mut counter)
                 .map_err(|e| format!("partition {k}: {e}"))?
         };
         if let Some(e) = rows.take_error() {

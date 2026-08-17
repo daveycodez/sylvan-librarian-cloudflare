@@ -215,7 +215,12 @@ const TWO_IMAGE_LAYOUTS = new Set(["art_series", "double_faced_token", "modal_df
  */
 const EDHREC_JOINED_LAYOUTS = new Set(["double_faced_token", "reversible_card", "split"]);
 
-/** Top-level keys a two-image layout does not carry, because they belong to a face there. */
+/**
+ * Top-level keys a two-image layout does not carry, because they belong to a face there.
+ *
+ * `watermark` is deliberately NOT here — it is face-owned on EVERY faced layout, not only the
+ * two-image ones. See FACED_OWNED_KEYS.
+ */
 const FACE_OWNED_KEYS = new Set([
 	"colors",
 	"card_back_id",
@@ -224,9 +229,20 @@ const FACE_OWNED_KEYS = new Set([
 	"toughness",
 	"loyalty",
 	"flavor_text",
-	"watermark",
 	"color_indicator",
 ]);
+
+/**
+ * Top-level keys ANY card with `card_faces` omits, two-image or not — the Rust twin is
+ * `is_faced_owned_key` in card_object.rs.
+ *
+ * Just `watermark`, measured rather than reasoned: over the whole 2026-08-16 all_cards bulk
+ * api.scryfall.com sends a top-level `watermark` on 36,437 printings and on 0 of the 12,098 with
+ * `card_faces`. A split card like `Research // Development` (dis/155) is ONE image and one piece
+ * of cardboard, so it never reached the two-image gate, and this port emitted a key Scryfall
+ * sends on no faced printing at all — on all 156 of them that carry a face watermark.
+ */
+const FACED_OWNED_KEYS = new Set(["watermark"]);
 
 // ─── reading an engine row ───────────────────────────────────────────────────
 // `null` is the wire form of "Scryfall omitted this", so every accessor collapses it to undefined
@@ -737,9 +753,11 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		["legalities", row.legalities ?? undefined],
 	];
 	for (const [key, value] of optional) {
-		// Five of the string keys above belong to a face on a two-image layout; `frame` is the
+		// Four of the string keys above belong to a face on a two-image layout; `frame` is the
 		// printing's and stays. See FACE_OWNED_KEYS.
 		if (twoImage && FACE_OWNED_KEYS.has(key)) continue;
+		// ...and `watermark` belongs to a face on EVERY faced layout. See FACED_OWNED_KEYS.
+		if (hasFaces && FACED_OWNED_KEYS.has(key)) continue;
 		if (value !== undefined) card[key] = value;
 	}
 

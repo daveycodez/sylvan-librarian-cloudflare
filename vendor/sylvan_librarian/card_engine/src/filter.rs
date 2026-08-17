@@ -623,20 +623,39 @@ fn opt_sv(v: Option<&str>) -> StrVal<'_> {
 /// 77-row gap between `layout:normal`'s 106,635 there and the 106,558 printings whose own layout
 /// is `normal`). See `DivergentPrinting::face_layout_id`.
 ///
-/// Exhaustive over `TextField`, not a `matches!` with a hidden `_ => None`: a field that gains a
-/// second value must get a considered answer here rather than silently keeping one. `None` means
-/// "this field has exactly one value", which is every field but `Layout` and every printing but
-/// the 81.
-fn second_text_field_value<'a>(
+/// `watermark:` is one too, and per FACE rather than per printing: `Research // Development`
+/// (dis/155) prints simic on its front and izzet on its back, and api.scryfall.com answers it for
+/// both `wm:simic` and `wm:izzet`. 19 printings in the 2026-08-16 default_cards bulk carry a
+/// watermark only a non-front face has. See `PrintingFace::card_watermark_id`.
+///
+/// UNBOUNDED, not "one more". A cap here would be a cap on what `tri` can see while
+/// `indexes.watermarks` indexes every value a printing has, and the two disagreeing is precisely
+/// the shape `compile_plane`'s exactness contract cannot survive — the postings leaf is claimed
+/// EXACT and nothing downstream re-checks it, so a third face watermark would have to either
+/// silently drop out of the filter or panic the build. It does neither: this yields all of them.
+/// Allocation-free (an enum, not a `Box<dyn Iterator>`) because it runs per candidate printing.
+///
+/// Exhaustive over `TextField`, not a `matches!` with a hidden `_ => Empty`: a field that gains a
+/// second value must get a considered answer here rather than silently keeping one. `Empty` means
+/// "this field has exactly one value", which is every field but `Layout` and `Watermark`.
+fn extra_text_field_values<'a>(
     card: &'a AOracleCard,
     printing: Option<&'a APrinting>,
     strings: &'a AStrings,
     field: TextField,
-) -> Option<&'a str> {
+) -> ExtraStrs<'a> {
     match field {
         TextField::Layout => printing
             .and_then(|p| crate::divergent_of(card, p))
-            .and_then(|d| str_at(strings, u32::from(d.face_layout_id))),
+            .and_then(|d| str_at(strings, u32::from(d.face_layout_id)))
+            .map_or(ExtraStrs::Empty, ExtraStrs::One),
+        // The FACES' watermarks. `text_field_value` already answered with `Printing`'s own, which
+        // is the front face's copy for a faced printing, so the front repeating here is harmless:
+        // every use of this is an existential OR against that same value.
+        TextField::Watermark => match printing {
+            Some(p) => ExtraStrs::Faces { faces: p.faces.iter(), strings },
+            None => ExtraStrs::Empty,
+        },
         TextField::NameLower
         | TextField::OracleTextLower
         | TextField::FullOracleTextLower
@@ -644,9 +663,65 @@ fn second_text_field_value<'a>(
         | TextField::ArtistLower
         | TextField::SetCode
         | TextField::Border
-        | TextField::Watermark
         | TextField::CollectorNumber
-        | TextField::TypeLine => None,
+        | TextField::TypeLine => ExtraStrs::Empty,
+    }
+}
+
+/// Three-valued existential over every value a `TextField` carries on this printing — the one
+/// shape `TextExact` and `TextRegex` both evaluate, so they cannot drift apart on which values
+/// they see.
+///
+/// `Tri::Null` is reserved for "this printing answers NOTHING here", which on a nullable
+/// multi-valued field means the scalar is absent AND no face supplies one. A faced printing whose
+/// back alone carries the watermark is therefore False-or-True, never Null — the front's absence
+/// is not the printing's.
+fn tri_over_values(
+    card: &AOracleCard,
+    printing: Option<&APrinting>,
+    strings: &AStrings,
+    field: TextField,
+    holds: impl Fn(&str) -> bool,
+) -> Tri {
+    match text_field_value(card, printing, strings, field) {
+        StrVal::Known(s) => {
+            tri_bool(holds(s) || extra_text_field_values(card, printing, strings, field).any(&holds))
+        }
+        StrVal::Null => {
+            // `fold` and not `any`: whether ANY value existed is as load-bearing as whether one
+            // held, and `any` short-circuits away the evidence for the first half.
+            let (seen, hit) = extra_text_field_values(card, printing, strings, field)
+                .fold((false, false), |(_, hit), s| (true, hit || holds(s)));
+            if seen { tri_bool(hit) } else { Tri::Null }
+        }
+        StrVal::PDep => Tri::PrintingDep,
+    }
+}
+
+/// The additional values a multi-valued `TextField` carries — see `extra_text_field_values`.
+enum ExtraStrs<'a> {
+    Empty,
+    One(&'a str),
+    Faces { faces: std::slice::Iter<'a, Archived<crate::PrintingFace>>, strings: &'a AStrings },
+}
+
+impl<'a> Iterator for ExtraStrs<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        match self {
+            ExtraStrs::Empty => None,
+            ExtraStrs::One(_) => match std::mem::replace(self, ExtraStrs::Empty) {
+                ExtraStrs::One(s) => Some(s),
+                _ => unreachable!(),
+            },
+            // A face WITHOUT a watermark is not a value — skipping rather than yielding "" is what
+            // keeps `Tri::Null` meaning "this printing answers nothing" on a faced printing whose
+            // faces are all bare.
+            ExtraStrs::Faces { faces, strings } => {
+                faces.find_map(|f| str_at(strings, u32::from(f.card_watermark_id)))
+            }
+        }
     }
 }
 
@@ -1504,17 +1579,68 @@ fn artist_match_ids(artist_vocab: &AStrings, pred: impl Fn(&str) -> bool) -> Vec
 /// answers 23 for `gaweł` and `gawel` alike. An ASCII needle skips that pass entirely and cannot
 /// need it: folding only ever maps non-ASCII to ASCII, so the stored folded vocab is already the
 /// more permissive target. That keeps the common path allocation-free, as it was.
-fn artist_contains_ids(artist_vocab: &AStrings, artist_vocab_collated: &AStrings, needle: &str) -> Vec<u16> {
+///
+/// AND IT IS AN ARTIST-ENTITY MATCH, not only a string one. A needle matching any ONE of an
+/// artist's credited spellings answers for ALL of that artist's printings — `a:"don't mess"`
+/// answers `a:"rebecca guay"`'s 399 (measured 2026-08-17, `&unique=prints`), because
+/// `Persecute Artist` is credited `Rebecca "Don't Mess with Me" Guay`. The scan above cannot see
+/// that: `Kev Walker` and `Evkay Alkerway` are one artist sharing no substring at all.
+///
+/// SO A MATCHED ENTITY BECOMES MORE NEEDLES, and the same one scan answers all of them. An entity
+/// whose spelling contains the needle contributes its OTHER spellings, and a vocab entry matching
+/// any of them is a match — which is right because a joined credit collates to its components
+/// concatenated (`davidmartin` and `franzvohwinkel` both sit inside `davidmartinfranzvohwinkel`),
+/// so "the credits naming this artist" IS "the credits containing this spelling".
+///
+/// That is also why the entity table stores no ids and nothing per printing: the relation between
+/// a spelling and a credit is the operator's own `contains`, already computed here. The table is
+/// 28 entities and ~61 spellings over the live corpus, so the expansion adds at most 61 needles to
+/// a scan that already runs 2,543 comparisons.
+///
+/// `artist_match_ids` — the ordering comparisons and `a:/…/` — is deliberately NOT given this
+/// expansion. Scryfall has no artist behaviour there to reproduce: `a>"rebecca guay"` answers 0
+/// (2026-08-16), and `a:/don.t.mess/` is a 400 with "All of your terms were ignored" (2026-08-17,
+/// this port supports it as an extension). Extending the entity relation to either would be
+/// inventing semantics.
+fn artist_contains_ids(
+    artist_vocab: &AStrings,
+    artist_vocab_collated: &AStrings,
+    artist_entities: &Archived<crate::ArtistEntityIndex>,
+    needle: &str,
+) -> Vec<u16> {
     let collated = crate::collate_name(needle);
     // memmem::Finder built once, reused across the vocab scan — its SIMD prefilter beats
     // rebuilding str::contains's searcher per entry (~1.3x, bench_substring_finders). #734.
     let finder = memmem::Finder::new(collated.as_bytes());
     let also_unfolded = !collated.is_ascii();
+
+    // The entity pass, BEFORE the vocab scan: whichever spellings it adds are tested in the same
+    // single walk below rather than in a walk of their own.
+    let mut extra: Vec<&str> = Vec::new();
+    for e in 0..artist_entities.form_offsets.len().saturating_sub(1) {
+        let forms = u32::from(artist_entities.form_offsets[e]) as usize
+            ..u32::from(artist_entities.form_offsets[e + 1]) as usize;
+        let hit = forms.clone().any(|i| {
+            finder.find(artist_entities.forms_collated[i].as_bytes()).is_some()
+                || (also_unfolded
+                    && finder
+                        .find(crate::collate_name(artist_entities.forms_lower[i].as_str()).as_bytes())
+                        .is_some())
+        });
+        if hit {
+            extra.extend(forms.map(|i| artist_entities.forms_collated[i].as_str()));
+        }
+    }
+    let extra_finders: Vec<memmem::Finder<'_>> =
+        extra.iter().filter(|f| **f != collated).map(|f| memmem::Finder::new(f.as_bytes())).collect();
+
     artist_vocab_collated
         .iter()
         .enumerate()
         .filter(|(vid, folded)| {
-            finder.find(folded.as_str().as_bytes()).is_some()
+            let bytes = folded.as_str().as_bytes();
+            finder.find(bytes).is_some()
+                || extra_finders.iter().any(|f| f.find(bytes).is_some())
                 || (also_unfolded
                     && finder.find(crate::collate_name(artist_vocab[*vid].as_str()).as_bytes()).is_some())
         })
@@ -1551,6 +1677,9 @@ impl FilterExpr {
         // artist_vocab_collated: the same artists, `collate_name(fold_accents(...))` — the string
         // `a:word` matches against (see TextSearchField::ArtistCollated).
         artist_vocab_collated: &AStrings,
+        // artist_entities: the 28 multi-spelling artist entities the two vocabs above cannot
+        // relate to each other — see `artist_contains_ids` and `ArtistEntityIndex`.
+        artist_entities: &Archived<crate::ArtistEntityIndex>,
         mana_vocab: &AStrings,
         flavor: &rkyv::Archived<FlavorIndex>,
         strings: &AStrings,
@@ -1558,10 +1687,10 @@ impl FilterExpr {
         match self {
             FilterExpr::And(children) | FilterExpr::Or(children) => {
                 for c in children {
-                    c.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, mana_vocab, flavor, strings);
+                    c.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, flavor, strings);
                 }
             }
-            FilterExpr::Not(inner) => inner.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, mana_vocab, flavor, strings),
+            FilterExpr::Not(inner) => inner.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, flavor, strings),
             // UNCONDITIONAL, unlike the other bind arms: the weights are read off the CARD's
             // hybrids, not the query's, so `m:{2}` against a twobrid card needs them even though
             // the query carries no hybrid symbol at all. Gating this on `!hybrids.is_empty()` —
@@ -1606,13 +1735,13 @@ impl FilterExpr {
             FilterExpr::TextContains { field: TextSearchField::ArtistLower, word } => {
                 // A QUOTED `a:"…"` reaches this arm, and it is collated too — Scryfall draws no
                 // quoted/bare line for artists, unlike `name:`. See `artist_contains_ids`.
-                let ids = artist_contains_ids(artist_vocab, artist_vocab_collated, word.as_str());
+                let ids = artist_contains_ids(artist_vocab, artist_vocab_collated, artist_entities, word.as_str());
                 *self = FilterExpr::ArtistMatch { ids };
             }
             FilterExpr::TextContains { field: TextSearchField::ArtistCollated, word } => {
                 // A BARE `a:word`, already folded and collated by the parser. Collating an
                 // already-collated needle is idempotent, so it shares the one comparison.
-                let ids = artist_contains_ids(artist_vocab, artist_vocab_collated, word.as_str());
+                let ids = artist_contains_ids(artist_vocab, artist_vocab_collated, artist_entities, word.as_str());
                 *self = FilterExpr::ArtistMatch { ids };
             }
             FilterExpr::TextExact { field: TextField::ArtistLower, op, value } => {
@@ -1624,7 +1753,7 @@ impl FilterExpr {
                 // to match, and `a!=` already agrees with it at 0 — changing either would be
                 // inventing semantics rather than reproducing them.
                 let ids = if matches!(op, CmpOp::Eq) {
-                    artist_contains_ids(artist_vocab, artist_vocab_collated, &value)
+                    artist_contains_ids(artist_vocab, artist_vocab_collated, artist_entities, &value)
                 } else {
                     artist_match_ids(artist_vocab, |s| match op {
                         CmpOp::Eq => s == value,
@@ -2386,36 +2515,16 @@ impl FilterExpr {
                     CmpOp::Ge => s >= value.as_str(),
                 };
                 // EXISTENTIAL over the field's values, which is one value on every field but
-                // `layout:` and on every printing but the 81 that carry a face-level layout —
-                // see `second_text_field_value`. Negation composes correctly through it: the
-                // `Not` arm complements this, so `-layout:normal` is "no value of this printing
-                // is normal", which is Scryfall's own 4 for `is:reversible -layout:normal`.
-                match text_field_value(card, printing, strings, *field) {
-                    StrVal::Known(s) => tri_bool(
-                        holds(s) || second_text_field_value(card, printing, strings, *field).is_some_and(holds),
-                    ),
-                    StrVal::Null => match second_text_field_value(card, printing, strings, *field) {
-                        Some(s) => tri_bool(holds(s)),
-                        None => Tri::Null,
-                    },
-                    StrVal::PDep => Tri::PrintingDep,
-                }
+                // `layout:` and `watermark:` — see `extra_text_field_values`. Negation composes
+                // correctly through it: the `Not` arm complements this, so `-layout:normal` is
+                // "no value of this printing is normal", which is Scryfall's own 4 for
+                // `is:reversible -layout:normal`.
+                tri_over_values(card, printing, strings, *field, holds)
             }
 
             FilterExpr::TextRegex { field, regex } => {
                 // Existential over the same values the exact arm tests, for the same reason.
-                match text_field_value(card, printing, strings, *field) {
-                    StrVal::Known(s) => tri_bool(
-                        regex.is_match(s)
-                            || second_text_field_value(card, printing, strings, *field)
-                                .is_some_and(|v| regex.is_match(v)),
-                    ),
-                    StrVal::Null => match second_text_field_value(card, printing, strings, *field) {
-                        Some(s) => tri_bool(regex.is_match(s)),
-                        None => Tri::Null,
-                    },
-                    StrVal::PDep => Tri::PrintingDep,
-                }
+                tri_over_values(card, printing, strings, *field, |s| regex.is_match(s))
             }
 
             FilterExpr::ColorCmp { field, op, mask } => {

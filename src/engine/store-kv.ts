@@ -1147,7 +1147,29 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      lines when the card prints none of its own, which puts `is:extra` on sld/1969
  *      `Mechtitan // Mechtitan` and takes it out of every default search.
  */
-export const STORE_CONTENT_GENERATION = 35;
+/**
+ * 35 — `CardIndexes` gains `name_divergent`, so `!"Temple Garden // Temple Garden"` can answer;
+ *      `ARCHIVE_FORMAT_VERSION` 2026081701.
+ *
+ * 36 — TWO SEARCH DIMENSIONS THE STORE DID NOT HOLD, with `ARCHIVE_FORMAT_VERSION` 2026081702.
+ *      Both change what a built store CONTAINS, so this moves with it; see that constant's
+ *      changelog entry for the full measurements.
+ *
+ *      (1) `a:` IS AN ARTIST-ENTITY MATCH. Scryfall's `artist_ids` was being dropped at ingest,
+ *      so two spellings of one artist answered as two artists — `a:"don't mess"` answers
+ *      `a:"rebecca guay"`'s 399 on api.scryfall.com (2026-08-17, `&unique=prints`) because
+ *      `Persecute Artist` is credited `Rebecca "Don't Mess with Me" Guay`, and `Kev Walker` /
+ *      `Evkay Alkerway` is one artist whose two names share no substring at all. `CardData` now
+ *      carries the 28 entities the credit-string scan provably cannot reach, ~2KB.
+ *
+ *      (2) `wm:` IS PER FACE, and the card object was wrong in the opposite direction.
+ *      `FACE_OBJECT_FIELDS` did not carry `watermark`, so a non-front face's value was discarded:
+ *      `Research // Development` is simic AND izzet and this port answered simic, with 19
+ *      printings short and every guild missing 1-2. Meanwhile the builder's face overlay put face
+ *      0's value at TOP level, where Scryfall sends none on any of its 12,098 faced printings —
+ *      so all 156 faced printings with a watermark emitted a key Scryfall does not.
+ */
+export const STORE_CONTENT_GENERATION = 36;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

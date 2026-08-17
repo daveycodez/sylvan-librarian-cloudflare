@@ -260,6 +260,9 @@ const EDHREC_JOINED_LAYOUTS: [&str; 3] = ["double_faced_token", "reversible_card
 const REVERSIBLE_LAYOUT: &str = "reversible_card";
 
 /// Top-level keys a two-image layout does not carry, because they belong to a face there.
+///
+/// `watermark` is deliberately NOT here — it is face-owned on EVERY faced layout, not only the
+/// two-image ones, so it has a gate of its own. See `is_faced_owned_key`.
 fn is_face_owned_key(key: &str) -> bool {
     matches!(
         key,
@@ -270,9 +273,20 @@ fn is_face_owned_key(key: &str) -> bool {
             | "toughness"
             | "loyalty"
             | "flavor_text"
-            | "watermark"
             | "color_indicator"
     )
+}
+
+/// Top-level keys ANY card with `card_faces` omits, two-image or not.
+///
+/// Just `watermark`, and measured rather than reasoned: over the whole 2026-08-16 all_cards bulk
+/// api.scryfall.com sends a top-level `watermark` on 36,437 printings and on 0 of the 12,098 with
+/// `card_faces` — a split card like `Research // Development` (dis/155, one image, one piece of
+/// cardboard) still carries the key on its faces alone. This port emitted it on all 156 faced
+/// printings that have one, because the builder's face overlay writes face 0's value into
+/// `card_watermark` and the two-image gate above never fires for split/flip/adventure/prepare.
+fn is_faced_owned_key(key: &str) -> bool {
+    key == "watermark"
 }
 
 /// The languages Scryfall writes into the scryfall_uri path — its ten print localizations,
@@ -790,9 +804,13 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
         ("watermark", str_of(row, "watermark")),
         ("frame", str_of(row, "frame")),
     ] {
-        // Five of these six belong to a face on a two-image layout; `frame` is the printing's and
+        // Four of these six belong to a face on a two-image layout; `frame` is the printing's and
         // stays. See is_face_owned_key.
         if two_image && is_face_owned_key(key) {
+            continue;
+        }
+        // ...and `watermark` belongs to a face on EVERY faced layout. See is_faced_owned_key.
+        if faces.is_some() && is_faced_owned_key(key) {
             continue;
         }
         if let Some(v) = value {
@@ -889,6 +907,51 @@ mod tests {
             "loyalty": "X",
         }));
         assert_eq!(x["loyalty"], "X", "a non-numeric loyalty survives verbatim");
+    }
+
+    /// A FACED printing emits its watermark on the faces and NOWHERE else.
+    ///
+    /// Measured over the whole 2026-08-16 all_cards bulk: api.scryfall.com sends a top-level
+    /// `watermark` on 36,437 printings and on 0 of the 12,098 that have `card_faces`. This port
+    /// sent one on all 156 faced printings that carry a face watermark, because the builder's face
+    /// overlay copies face 0's value into `card_watermark` and the only gate on the key was the
+    /// TWO-IMAGE one — which `split`, `flip`, `adventure` and `prepare` never trip. One piece of
+    /// cardboard, one picture, and still no top-level watermark.
+    #[test]
+    fn a_faced_card_omits_the_top_level_watermark() {
+        // A SPLIT card: one image, so every two-image gate is false. It is the shape that hid this.
+        let split = build(json!({
+            "name": "Research // Development",
+            "scryfall_id": "cd000000-0000-0000-0000-0000000000a1",
+            "layout": "split",
+            "watermark": "simic",
+            "card_faces": [
+                {"name": "Research", "mana_cost": "{2}{G}{U}", "watermark": "simic"},
+                {"name": "Development", "mana_cost": "{4}{U}{R}", "watermark": "izzet"},
+            ],
+        }));
+        assert!(split.get("watermark").is_none(), "a faced card sends no top-level watermark");
+        let faces = split["card_faces"].as_array().expect("faces");
+        assert_eq!(faces[0]["watermark"], "simic");
+        assert_eq!(faces[1]["watermark"], "izzet", "the back face's own value, which ingest used to drop");
+
+        // ...and a two-image layout, which was already right, stays right.
+        let transform = build(json!({
+            "name": "Delver of Secrets // Insectile Aberration",
+            "scryfall_id": "cd000000-0000-0000-0000-0000000000a2",
+            "layout": "transform",
+            "watermark": "set",
+            "card_faces": [{"name": "Delver of Secrets", "colors": ["U"]}, {"name": "Insectile Aberration", "colors": []}],
+        }));
+        assert!(transform.get("watermark").is_none());
+
+        // An UNFACED printing is untouched — 36,437 of them carry the key at top level.
+        let plain = build(json!({
+            "name": "Llanowar Elves",
+            "scryfall_id": "cd000000-0000-0000-0000-0000000000a3",
+            "watermark": "set",
+        }));
+        assert_eq!(plain["watermark"], "set", "an unfaced card still carries its own");
     }
 
     /// Absent stays absent. A card without a watermark omits the key; it does not send null.

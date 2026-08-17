@@ -28,6 +28,7 @@
 //!   a per-tag Scryfall search sweep that no automated import runs, so they stay
 //!   absent on both sides.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
@@ -348,7 +349,7 @@ fn compat_blob(card: &Map<String, Value>) -> Map<String, Value> {
 ///
 /// `object` is the constant "card_face" and `image_uris` is a pure function of
 /// the card's id and the face's position, so neither is stored.
-const FACE_OBJECT_FIELDS: [&str; 19] = [
+const FACE_OBJECT_FIELDS: [&str; 20] = [
     // Not in upstream's list, and the one key Scryfall puts on a FACE and on no top-level card:
     // the face's own `layout`. Exactly 81 printings in the 2026-08-16 all_cards bulk carry it,
     // all 81 `reversible_card`, both faces of each agreeing (154 `normal` + 6 `adventure` + 2
@@ -381,6 +382,25 @@ const FACE_OBJECT_FIELDS: [&str; 19] = [
     "colors",
     "color_indicator",
     "flavor_text",
+    // WATERMARK IS PER FACE, and dropping it here lost the value twice over.
+    //
+    // Not in upstream's list either. Scryfall puts the watermark on the FACE and, on a card with
+    // `card_faces`, on NOTHING ELSE: 0 of the 12,098 faced printings in the 2026-08-16 all_cards
+    // bulk carry a top-level `watermark`, against 36,437 unfaced ones that do. The face-overlay in
+    // `transform_row` wrote face 0's value onto the merged dict anyway, so `card_watermark` was
+    // set on all 156 faced printings that have one — a key Scryfall never sends — while every
+    // later face's value was discarded here.
+    //
+    // The discard is not a display-only loss. `Research // Development` (dis/155) is simic on its
+    // front face and izzet on its back, and Scryfall answers it for BOTH `wm:simic` and
+    // `wm:izzet`; this port answered only simic. 19 printings carry a watermark a later face alone
+    // has, and every affected guild was short 1-2 rows. Measured over the whole 2026-08-16
+    // default_cards bulk: 156 faced printings carry a watermark, 19 of them two distinct ones,
+    // never three, and never one whose FRONT face lacks it.
+    //
+    // Position is Scryfall's own: the key sits between `flavor_text` and `artist` on every one of
+    // the 1,075 face occurrences in the bulk, and `jv_faces` round-trips this list's order.
+    "watermark",
     "artist",
     "artist_id",
     "illustration_id",
@@ -1626,6 +1646,12 @@ pub struct CorpusTables {
     /// strings; the separator is a byte neither a UUID nor a card name can contain.
     #[serde(default)]
     illust: HashMap<String, u64>,
+    /// Every artist's credited spellings, keyed by `artist_ids` uuid — the input to
+    /// `card_artist_alt`, and the third corpus-wide fact this table carries because a partition
+    /// build cannot reconstruct it. See `ArtistSpellings`. ~2.4k entries; it rides the snapshot
+    /// with the rest, so it survives a DO eviction mid-import exactly as the scores do.
+    #[serde(default)]
+    artists: ArtistSpellings,
     /// card_name → index into `pending`, rebuilt on demand (a restored snapshot has none).
     #[serde(skip)]
     index: HashMap<String, usize>,
@@ -1635,6 +1661,21 @@ impl CorpusTables {
     /// Observe one draft: its name for the percent-rank (first-seen wins, exactly as
     /// `cubecobra_scores_by_name`'s `DISTINCT ON (card_name)` does over the deduped rows), and its
     /// illustration group when the row qualifies for counting ([`illust_count_key`]'s predicate).
+    pub fn observe_artists(&mut self, artist: Option<&str>, compat_blob: &Map<String, Value>) {
+        observe_artist_spellings(&mut self.artists, artist, compat_blob);
+    }
+
+    /// The corpus's artist-entity relation, handed to each partition's builder — see
+    /// `artist_entity_table`.
+    pub fn artist_entities(&self) -> Value {
+        artist_entity_table(&self.artists)
+    }
+
+    /// Artists with more than one credited spelling — the only ones `card_artist_alt` names.
+    pub fn multi_spelling_artists(&self) -> usize {
+        self.artists.values().filter(|s| s.len() > 1).count()
+    }
+
     pub fn observe(&mut self, card_name: &str, edhrec_rank: Option<i64>, illust_key: Option<&str>) {
         if self.index.len() != self.pending.len() {
             // Restored snapshot: the skipped index is stale — rebuild.
@@ -1897,6 +1938,119 @@ pub fn illust_count_qualifies(raw_lang_en: bool, raw_set_type: Option<&str>, car
 /// inputs. Split out of [`finalize`]'s closure so the wasm (Durable Object)
 /// import path — which streams drafts from external storage instead of
 /// holding a Vec — produces byte-identical rows through the same code.
+/// Every credited spelling of one artist ENTITY, keyed by Scryfall's `artist_ids` uuid.
+///
+/// CORPUS-WIDE, and that is the whole reason it exists rather than being derived inside the
+/// engine. `a:` is an artist-ENTITY match — a needle matching any one of an artist's spellings
+/// answers for all of that artist's printings (`a:"don't mess"` answers `a:"rebecca guay"`'s 399
+/// on api.scryfall.com, 2026-08-17). The store is PARTITIONED by oracle_id, and each partition is
+/// built from its own rows alone: the partition holding `Persecute Artist` would learn that
+/// `Rebecca "Don't Mess with Me" Guay` names the same artist as `Rebecca Guay`, and the other nine
+/// would not — so `a:"don't mess"` would answer that one partition's rows and silently drop the
+/// rest. Measured on the first build that tried it: 25 cards against Scryfall's 166.
+///
+/// So the relation is resolved HERE, where the whole corpus is in hand, and travels to every
+/// partition on the rows themselves (`card_artist_alt`). Both import paths keep their own copy for
+/// the same reason they each keep their own illustration counts and cubecobra scores.
+pub type ArtistSpellings = HashMap<String, BTreeSet<String>>;
+
+/// A printing's credit split into `(artist_id, that artist's spelling)`, Scryfall's own alignment.
+///
+/// POSITIONAL: `artist_ids[i]` names the `i`th " & "-joined component. Two rules, both measured
+/// over the whole 2026-08-16 default_cards bulk:
+///
+/// - ONE id is the whole credit even when it contains the separator. `Hari & Deepti` is a single
+///   artist of ten printings; re-splitting it would invent two and give each the other's cards.
+///   10 rows take this branch.
+/// - a count that does not line up yields NOTHING rather than a guessed alignment — an alignment
+///   that slips by one credits the wrong person. 0 rows take this branch.
+///
+/// Takes the two inputs rather than a `RowDraft` so the DO's scores phase — which parses a narrow
+/// subset of the draft to keep the corpus pass inside a 124MiB isolate — can call it unchanged.
+fn artist_credit_components<'a>(artist: Option<&'a str>, compat_blob: &'a Map<String, Value>) -> Vec<(&'a str, &'a str)> {
+    let Some(artist) = artist else { return Vec::new() };
+    let Some(ids) = compat_blob
+        .get("artist_ids")
+        .and_then(Value::as_array)
+        // All-or-nothing, like the count check below: a non-string element must not shift the rest.
+        .and_then(|a| a.iter().map(Value::as_str).collect::<Option<Vec<&str>>>())
+    else {
+        return Vec::new();
+    };
+    if ids.len() == 1 {
+        return vec![(ids[0], artist)];
+    }
+    let parts: Vec<&str> = artist.split(" & ").collect();
+    if parts.len() != ids.len() {
+        return Vec::new();
+    }
+    ids.into_iter().zip(parts).collect()
+}
+
+/// Record one FINALIZED ROW's credit into the corpus-wide table.
+///
+/// The row-iterator build paths (`build_store`, `build_store_partitioned`) are handed rows rather
+/// than drafts, and `artist_ids` survives into the row untouched — it rides the compat residue,
+/// which is subtractive. So those paths compute the same table from the same facts, which is what
+/// keeps a natively-built store and a wasm-built one answering `a:` identically. The rule is
+/// simply WHOEVER HOLDS THE WHOLE CORPUS COMPUTES IT: a partition build must be handed the result.
+pub fn observe_artist_spellings_row(table: &mut ArtistSpellings, row: &Value) {
+    static EMPTY: std::sync::LazyLock<Map<String, Value>> = std::sync::LazyLock::new(Map::new);
+    let blob = row.get("card_compat_blob").and_then(Value::as_object).unwrap_or(&EMPTY);
+    observe_artist_spellings(table, row.get("card_artist").and_then(Value::as_str), blob);
+}
+
+/// Record one draft's credit into the corpus-wide table.
+pub fn observe_artist_spellings(table: &mut ArtistSpellings, artist: Option<&str>, compat_blob: &Map<String, Value>) {
+    for (id, spelling) in artist_credit_components(artist, compat_blob) {
+        table.entry(id.to_owned()).or_default().insert(spelling.to_owned());
+    }
+}
+
+/// The whole corpus's artist-entity relation as ONE object — `[[[lowercase, accent-folded], ...],
+/// ...]`, one row per artist with more than one credited spelling.
+///
+/// ONE OBJECT PER ARCHIVE, NOT PER ROW, and that placement is the whole design rather than a
+/// tidy-up. Written onto the rows instead, this is O(that artist's spellings) on EVERY row
+/// crediting them, which has no bound: the gate's synthetic corpus gives one artist id 4,359
+/// distinct credit strings, so each of its rows carried a 146KB table and `rows.jsonl` went from
+/// 198MB to 6.5GB — an out-of-memory in the capped wasm import, which is the nightly's own build
+/// path. Handed to the builder once, it is ~2KB whatever the corpus does.
+///
+/// ONLY the artists with more than one spelling — 28 of 2,396 in the 2026-08-16 all_cards bulk.
+/// A single-spelling artist has nothing to add: `collate_name` strips the " & ", so that artist's
+/// one collated spelling is a contiguous substring of every collated credit naming them
+/// (`davidmartin` and `franzvohwinkel` both sit inside `davidmartinfranzvohwinkel`), and the
+/// engine's plain vocab scan already answers for every one of those credits.
+///
+/// The ARTIST IDS THEMSELVES ARE NOT CARRIED. They did their work here — deciding which spellings
+/// are one person — and the engine relates a spelling to a credit by the same `contains` rule `a:`
+/// already runs on, so a uuid would be a key nothing reads.
+///
+/// BOTH CASES of the fold, because the engine has no NFKD — the builder owns folding, which is why
+/// `card_name_folded` and `card_artist_folded` arrive pre-folded. `a:` compares the collated fold;
+/// a non-ASCII needle also compares the unfolded spelling, collated on the fly.
+pub fn artist_entity_table(table: &ArtistSpellings) -> Value {
+    let mut entities: Vec<Value> = table
+        .values()
+        .filter(|s| s.len() > 1)
+        .map(|spellings| {
+            Value::Array(
+                spellings
+                    .iter()
+                    .map(|s| {
+                        let lower = s.to_lowercase();
+                        json!([lower, fold_accents(&lower)])
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    // Deterministic archive bytes: `ArtistSpellings` is a HashMap and its iteration order is not.
+    entities.sort_unstable_by_key(std::string::ToString::to_string);
+    Value::Array(entities)
+}
+
 pub fn finalize_row(
     r: RowDraft,
     oracle_tags: &[&str],
@@ -2301,6 +2455,71 @@ mod tests {
     ///
     /// The face merge puts face 0's keys on the merged dict, so `card_artist` used to be read
     /// off the FRONT FACE and Scryfall's joined credit never reached the column. It is a stored
+    /// The corpus-wide artist-entity relation `a:` needs, and the two credit shapes that decide it.
+    ///
+    /// `a:` is an artist-ENTITY match, so a needle matching any one of an artist's spellings must
+    /// answer for all of that artist's printings. The relation is resolved HERE because the store
+    /// is partitioned and no partition sees the whole corpus — see `ArtistSpellings`.
+    #[test]
+    fn artist_spellings_are_split_by_scryfalls_own_alignment() {
+        let kev = "f366a0ee-a0cd-466d-ba6a-90058c7a31a6";
+        let franz = "11111111-2222-3333-4444-555555555555";
+        let pair = "7b22f886-5d28-4add-9515-4364a078fc86";
+        // Through `transform_row`, so the credit and `artist_ids` arrive on the draft exactly as
+        // the importer puts them there — the column and the residue, not a hand-set pair.
+        let draft = |artist: &str, ids: &[&str]| {
+            let mut card = minimal_card(artist);
+            card["artist"] = json!(artist);
+            card["artist_ids"] = Value::Array(ids.iter().map(|i| Value::String((*i).to_owned())).collect());
+            transform_row(&card, true).expect("transform").expect("a row")
+        };
+
+        let drafts = vec![
+            draft("Kev Walker", &[kev]),
+            // ONE ARTIST, TWO NAMES, no shared substring — the pair no string work can relate.
+            draft("Evkay Alkerway", &[kev]),
+            // A joined credit: positional against `artist_ids`, so each half lands on its own id.
+            draft("Kev Walker & Franz Vohwinkel", &[kev, franz]),
+            // ONE id and a separator inside the NAME. `Hari & Deepti` credits ten printings in the
+            // 2026-08-16 default_cards bulk and is a single artist; splitting it would invent two
+            // and give each the other's cards.
+            draft("Hari & Deepti", &[pair]),
+        ];
+        let mut table = ArtistSpellings::new();
+        for d in &drafts {
+            observe_artist_spellings(&mut table, d.card_artist.as_deref(), &d.compat_blob);
+        }
+        assert_eq!(
+            table[kev].iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["Evkay Alkerway", "Kev Walker"],
+            "the joined credit's first half is Kev's, and both spellings reach one id"
+        );
+        assert_eq!(table[franz].iter().map(String::as_str).collect::<Vec<_>>(), vec!["Franz Vohwinkel"]);
+        assert_eq!(
+            table[pair].iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["Hari & Deepti"],
+            "a single id keeps the whole credit — never \"Hari\" and \"Deepti\""
+        );
+
+        // THE TABLE IS ONE OBJECT FOR THE WHOLE CORPUS, and it names only the artists with more
+        // than one spelling: the rest are already reachable by the engine's plain vocab scan.
+        // Written per row instead, this is O(that artist's spellings) on every row crediting them,
+        // which has no bound — see `artist_entity_table`.
+        assert_eq!(
+            artist_entity_table(&table),
+            json!([[["evkay alkerway", "evkay alkerway"], ["kev walker", "kev walker"]]]),
+            "one entity, lowercased AND accent-folded because the engine has no NFKD — and Franz \
+             and `Hari & Deepti`, with one spelling each, say nothing"
+        );
+
+        // A credit whose component count does not line up with `artist_ids` DECLINES rather than
+        // guessing an alignment that slips by one. 0 rows of the live corpus take this branch.
+        let mismatched = draft("A & B & C", &[kev, franz]);
+        let mut solo = ArtistSpellings::new();
+        observe_artist_spellings(&mut solo, mismatched.card_artist.as_deref(), &mismatched.compat_blob);
+        assert!(solo.is_empty(), "a misaligned credit must contribute nothing, not a shifted guess");
+    }
+
     /// value read by three surfaces at once (the card object's `artist`, `order=artist`, and
     /// `a:`), which is why the assertion lives here rather than in a card-object test.
     #[test]
@@ -2685,7 +2904,8 @@ mod tests {
         let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
         keys.sort_unstable();
         let mut expected = vec![
-            "scryfall_id", "oracle_id", "illustration_id", "card_artist", "card_artist_folded", "card_border",
+            "scryfall_id", "oracle_id", "illustration_id", "card_artist", "card_artist_folded",
+            "card_border",
             "card_color_identity", "card_colors", "card_frame_data", "card_is_tags",
             "card_keywords", "card_keywords_printed", "card_layout", "card_legalities", "card_name",
             "card_name_folded", "card_art_tags", "card_oracle_tags", "card_rarity_int",

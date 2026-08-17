@@ -216,6 +216,28 @@ const CASES: [string, Record<string, unknown>][] = [
 		},
 	],
 	[
+		// The divergence gen 36 closed, in the shape that hid it: a SPLIT card is one image, so
+		// every two-image gate is false, and both builders emitted a top-level `watermark`
+		// Scryfall sends on no faced printing at all.
+		"split with per-face watermarks — face-owned, never top level",
+		{
+			...FULL,
+			layout: "split",
+			name: "Research // Development",
+			colors: ["G", "U", "R"],
+			mana_cost: "{2}{G}{U}",
+			type_line: "Sorcery // Sorcery",
+			watermark: "simic",
+			power: undefined,
+			toughness: undefined,
+			loyalty: undefined,
+			card_faces: [
+				{ name: "Research", mana_cost: "{2}{G}{U}", type_line: "Sorcery", oracle_text: "x", watermark: "simic" },
+				{ name: "Development", mana_cost: "{4}{U}{R}", type_line: "Sorcery", oracle_text: "y", watermark: "izzet" },
+			],
+		},
+	],
+	[
 		"flip — a costless back face keeps its empty mana_cost",
 		{
 			...FULL,
@@ -649,6 +671,43 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 	// or exactly these eleven keys in exactly this order — no layout, no `image_status` and no face
 	// position produces a partial set. Written down here so that changing our table alone cannot
 	// make the suite agree with itself again.
+
+	// The same kind of assertion for `watermark`, and for the same reason — both builders emitted
+	// a top-level one on every faced printing that had a face watermark, and every test in this
+	// file stayed green because they did it identically.
+	//
+	// SCRYFALL'S RULE, read off the whole 2026-08-16 all_cards bulk rather than off this port: a
+	// top-level `watermark` appears on 36,437 printings and on 0 of the 12,098 that have
+	// `card_faces` — no layout, no face count and no image count produces an exception. So a card
+	// with faces carries it on the FACES or nowhere.
+	test("a card with faces carries its watermark on the faces and never at top level", () => {
+		const faced = asRow({
+			...FULL,
+			layout: "split",
+			name: "Research // Development",
+			watermark: "simic",
+			card_faces: [
+				{ name: "Research", mana_cost: "{2}{G}{U}", watermark: "simic" },
+				{ name: "Development", mana_cost: "{4}{U}{R}", watermark: "izzet" },
+			],
+		});
+		for (const [who, built] of [
+			["TypeScript", toScryfallCard(faced, BASE) as Record<string, unknown>],
+			["Rust", JSON.parse(scryfall_card_from_row(JSON.stringify(faced), BASE)) as Record<string, unknown>],
+		] as const) {
+			expect(built.watermark, `${who} must not send a top-level watermark on a faced card`).toBeUndefined();
+			const faces = built.card_faces as Record<string, unknown>[];
+			expect(
+				faces.map((f) => f.watermark),
+				`${who} face watermarks`,
+			).toEqual(["simic", "izzet"]);
+		}
+
+		// ...and an UNFACED card is untouched: 36,437 printings carry the key exactly here.
+		const plain = asRow({ ...FULL, watermark: "set", card_faces: undefined });
+		expect((toScryfallCard(plain, BASE) as Record<string, unknown>).watermark).toBe("set");
+		expect(JSON.parse(scryfall_card_from_row(JSON.stringify(plain), BASE)).watermark).toBe("set");
+	});
 
 	/** Scryfall's `image_uris` key set, in Scryfall's order. Their shape, not ours. */
 	const SCRYFALL_IMAGE_KEYS = [

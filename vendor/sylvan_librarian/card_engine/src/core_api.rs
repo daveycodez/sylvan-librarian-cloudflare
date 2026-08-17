@@ -138,6 +138,8 @@ fn jv_opt_uuid(d: &Value, key: &str) -> u128 {
     d.get(key).and_then(Value::as_str).map(parse_uuid_or_hash).unwrap_or(0)
 }
 
+
+
 /// Mirror of `opt_date_str`. JSON carries dates as ISO strings, so only the
 /// string arm of the pydict version (which also accepts datetime.date from
 /// psycopg) applies.
@@ -317,6 +319,10 @@ fn jv_faces(
         };
         faces.push(FaceRow {
             card_artist_name_id,
+            // Scryfall's face watermarks are lowercase already — all 76 distinct values across
+            // the 2026-08-16 all_cards bulk, top level and face alike — so the one interned id
+            // serves both `wm:`, which compares lowercase, and the card object, which prints it.
+            card_watermark_id: it.intern_opt(jv_opt_str(face, "watermark")),
             creature_power,
             creature_toughness,
             planeswalker_loyalty,
@@ -553,7 +559,7 @@ pub(crate) fn card_from_json(
     let card_artist_name_id = it.intern_opt(card_artist.clone());
     // Already lowercased + accent-folded by the builder, like card_name_folded; read as-is.
     let card_artist_folded_id = it.intern_opt(jv_opt_str(d, "card_artist_folded"));
-    let card_artist_vid = match card_artist {
+    let card_artist_vid = match &card_artist {
         Some(a) => artists.intern(a.to_lowercase())?,
         None => ARTIST_NONE,
     };
@@ -663,12 +669,27 @@ pub(crate) fn card_from_json(
 fn archive_section_stats(d: &CardData) -> StoreStats {
     let strings_bytes: usize = d.strings.iter().map(|s| s.len()).sum::<usize>()
         + d.strings.len() * std::mem::size_of::<rkyv::string::ArchivedString>();
+    // `artist_vocab_collated` and the artist entity table are counted here too. The collated
+    // vocab (~40KB) had been missing since the format version that added it — it is a
+    // `Vec<String>` sitting beside `artist_vocab` in `CardData`, so every byte of it was archived
+    // and none of it reported, and a size accounting that under-reports is the one that lets a
+    // memory cap be crossed quietly.
+    let artist_entity_strs: usize = d.artist_entities.forms_collated.iter().map(|s| s.len()).sum::<usize>()
+        + d.artist_entities.forms_lower.iter().map(|s| s.len()).sum::<usize>();
     let vocab_bytes: usize = d.coll_vocab.iter().map(|s| s.len()).sum::<usize>()
         + d.artist_vocab.iter().map(|s| s.len()).sum::<usize>()
+        + d.artist_vocab_collated.iter().map(|s| s.len()).sum::<usize>()
         + d.mana_vocab.iter().map(|s| s.len()).sum::<usize>()
-        + (d.coll_vocab.len() + d.artist_vocab.len() + d.mana_vocab.len())
+        + artist_entity_strs
+        + (d.coll_vocab.len()
+            + d.artist_vocab.len()
+            + d.artist_vocab_collated.len()
+            + d.mana_vocab.len()
+            + d.artist_entities.forms_collated.len()
+            + d.artist_entities.forms_lower.len())
             * std::mem::size_of::<rkyv::string::ArchivedString>()
-        + d.coll_vocab_sorted.len() * 2;
+        + d.coll_vocab_sorted.len() * 2
+        + d.artist_entities.form_offsets.len() * 4;
     let direct_arrays_bytes = d.offsets.len() * 4
         + d.foreign_offsets.len() * 4
         + d.indexes.printing_to_card.len() * 4
@@ -749,6 +770,10 @@ pub struct StoreBuilder {
     interner: Interner,
     vocab: VocabInterner,
     artists: VocabInterner,
+    /// The corpus-wide artist-entity relation, set once by `set_artist_entities` before the build.
+    /// Empty means "not supplied", which is exactly today's string-only `a:` — see
+    /// `ArtistEntityIndex`.
+    artist_entities: Value,
     mana: ManaVocabInterner,
 }
 
@@ -759,8 +784,16 @@ impl StoreBuilder {
             interner: Interner::new(),
             vocab: VocabInterner::new(),
             artists: VocabInterner::new(),
+            artist_entities: Value::Null,
             mana: ManaVocabInterner::new(),
         }
+    }
+
+    /// The corpus-wide artist-entity relation (`transform::artist_entity_table`), which no
+    /// partition build can derive from its own rows — see `ArtistEntityIndex`. Call before
+    /// finishing; a build that never does keeps `a:`'s plain string behaviour.
+    pub fn set_artist_entities(&mut self, table: Value) {
+        self.artist_entities = table;
     }
 
     /// Stage one card row (one printing), parsed by [`card_from_json`].
@@ -779,8 +812,8 @@ impl StoreBuilder {
     /// archive into `w`, flushed. The bytes are exactly what reload_commit()
     /// writes to the shm file, so any reader path (mmap or buffer) accepts them.
     pub fn finish_to_writer<W: std::io::Write>(self, w: &mut W) -> Result<StoreStats, EngineError> {
-        let StoreBuilder { rows, interner, vocab, artists, mana } = self;
-        let built = build_card_data(rows, interner, vocab, artists, mana)?;
+        let StoreBuilder { rows, interner, vocab, artists, artist_entities, mana } = self;
+        let built = build_card_data(rows, interner, vocab, artists, crate::artist_entity_index_from_json(Some(&artist_entities)), mana)?;
         let mut stats = archive_section_stats(&built.card_data);
         stats.annex_only_oracles_dropped = built.annex_only_oracles_dropped;
         stats.annex_only_rows_dropped = built.annex_only_rows_dropped;
@@ -810,6 +843,8 @@ pub struct SpillingStoreBuilder {
     interner: Interner,
     vocab: VocabInterner,
     artists: VocabInterner,
+    /// See `StoreBuilder::artist_entities`.
+    artist_entities: Value,
     mana: ManaVocabInterner,
     /// (oracle_id, prefer_score, illustration_id, scryfall_id) per staged row,
     /// in add order — the inputs to card_row_build_order.
@@ -822,9 +857,15 @@ impl SpillingStoreBuilder {
             interner: Interner::new(),
             vocab: VocabInterner::new(),
             artists: VocabInterner::new(),
+            artist_entities: Value::Null,
             mana: ManaVocabInterner::new(),
             keys: Vec::new(),
         }
+    }
+
+    /// The corpus-wide artist-entity relation — see `StoreBuilder::set_artist_entities`.
+    pub fn set_artist_entities(&mut self, table: Value) {
+        self.artist_entities = table;
     }
 
     /// Stage one card row; returns the encoded row for external storage.
@@ -858,11 +899,20 @@ impl SpillingStoreBuilder {
         rows: impl Iterator<Item = Vec<u8>>,
         w: &mut W,
     ) -> Result<StoreStats, EngineError> {
-        let SpillingStoreBuilder { interner, vocab, artists, mana, keys } = self;
+        let SpillingStoreBuilder { interner, vocab, artists, artist_entities, mana, keys } = self;
         let expected = keys.len();
         drop(keys);
         let rows = rows.map(|bytes| decode_card_row(&bytes));
-        let built = crate::build_card_data_sorted(rows, expected, interner, vocab, artists, mana)?;
+        let built =
+            crate::build_card_data_sorted(
+                rows,
+                expected,
+                interner,
+                vocab,
+                artists,
+                crate::artist_entity_index_from_json(Some(&artist_entities)),
+                mana,
+            )?;
         let mut stats = archive_section_stats(&built.card_data);
         stats.annex_only_oracles_dropped = built.annex_only_oracles_dropped;
         stats.annex_only_rows_dropped = built.annex_only_rows_dropped;
@@ -938,9 +988,14 @@ impl SpillingStoreBuilder {
 /// memory-capped caller that spills blobs externally can presort them instead.
 pub fn build_partition_from_standalone<W: std::io::Write>(
     blobs: impl Iterator<Item = Vec<u8>>,
+    // The corpus-wide artist-entity relation (`transform::artist_entity_table`), the one input a
+    // partition build cannot derive from its own rows — see `ArtistEntityIndex`. `Value::Null`
+    // keeps `a:`'s plain string behaviour.
+    artist_entities: Value,
     w: &mut W,
 ) -> Result<StoreStats, EngineError> {
     let mut builder = StoreBuilder::new();
+    builder.set_artist_entities(artist_entities);
     for (i, blob) in blobs.enumerate() {
         let row: Value = serde_json::from_slice(&blob)
             .map_err(|e| EngineError::value(format!("partition blob {i}: {e}")))?;
@@ -1151,6 +1206,10 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
         e.u128v(f.illustration_id);
         e.u16v(f.card_artist_vid);
         e.u32v(f.card_artist_name_id);
+        // The face's watermark rides the spill for the same reason its artist does: the DO build
+        // is alarm-chained and this is the only copy between invocations, so a value dropped here
+        // is a watermark `wm:` cannot see in production and nowhere else.
+        e.u32v(f.card_watermark_id);
         e.u32v(f.flavor_text_id);
         e.u32v(f.flavor_name_id);
         e.u32v(f.printed_name_id);
@@ -1294,6 +1353,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
                     illustration_id: d.u128v(),
                     card_artist_vid: d.u16v(),
                     card_artist_name_id: d.u32v(),
+                    card_watermark_id: d.u32v(),
                     flavor_text_id: d.u32v(),
                     flavor_name_id: d.u32v(),
                     printed_name_id: d.u32v(),
@@ -2982,6 +3042,12 @@ fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings) -
                     if let Some(v) = str_at(strings, u32::from(art.flavor_name_id)) {
                         m.insert("flavor_name".to_owned(), Value::String(v.to_owned()));
                     }
+                    // Same rule, and the reason the top-level key disappears on a faced printing:
+                    // Scryfall puts the watermark HERE and on 0 of the 12,098 faced printings'
+                    // top level (2026-08-16 all_cards). See PrintingFace::card_watermark_id.
+                    if let Some(v) = str_at(strings, u32::from(art.card_watermark_id)) {
+                        m.insert("watermark".to_owned(), Value::String(v.to_owned()));
+                    }
                 }
                 // The printed-language triple, inserted only when this printing's face carries
                 // the key: absence is exact per face (a prepare-layout Spanish printing
@@ -3310,8 +3376,9 @@ mod tests {
             let v: Value = serde_json::from_str(&line).expect("parse row JSON");
             b.add_card(&v).expect("stage row");
         }
-        let StoreBuilder { rows, interner, vocab, artists, mana } = b;
-        let built = build_card_data(rows, interner, vocab, artists, mana).expect("build card data");
+        let StoreBuilder { rows, interner, vocab, artists, artist_entities, mana } = b;
+        let built =
+            build_card_data(rows, interner, vocab, artists, crate::artist_entity_index_from_json(Some(&artist_entities)), mana).expect("build card data");
         let d = &built.card_data;
 
         macro_rules! sz {
@@ -3454,7 +3521,13 @@ mod tests {
 
     /// Build through the Vec path and load through the buffer path — the wasm pipeline's shape.
     fn build_store(rows: &[Value]) -> (Vec<u8>, BufferStore) {
+        build_store_with_entities(rows, Value::Null)
+    }
+
+    /// ...with the corpus-wide artist-entity relation the real builder computes and hands over.
+    fn build_store_with_entities(rows: &[Value], artist_entities: Value) -> (Vec<u8>, BufferStore) {
         let mut b = StoreBuilder::new();
+        b.set_artist_entities(artist_entities);
         for r in rows {
             b.add_card(r).expect("stage row");
         }
@@ -4681,6 +4754,148 @@ mod tests {
         assert_eq!(out[1]["artist"], json!(null), "the artistless face stays null, never scrambled");
     }
 
+    /// `a:` IS AN ARTIST-ENTITY MATCH: a needle matching ANY of an artist's credited spellings
+    /// answers for ALL of that artist's printings.
+    ///
+    /// Measured on api.scryfall.com 2026-08-17: `a:"don't mess"&order=artist&unique=prints`
+    /// answers 399 — exactly `a:"rebecca guay"`'s 399 — because one printing, `Persecute Artist`
+    /// (unh/61), is credited `Rebecca "Don't Mess with Me" Guay`.
+    ///
+    /// The whole ingest path, not a hand-built `CardData`: `artist_ids` is read out of the compat
+    /// residue by `jv_artist_ids`, the entity table is accumulated across rows and frozen by
+    /// `ArtistEntityInterner::finish`, and only then does `bind` get to see it. A test that
+    /// assembled the table itself would prove the query side and nothing about whether the value
+    /// survives ingest — which is exactly where it was being dropped.
+    ///
+    /// `Kev Walker` / `Evkay Alkerway` is the pair that makes this unfakeable by string work:
+    /// one artist, two credited names, NO shared substring. Only the UUID relates them.
+    #[test]
+    fn artist_predicates_answer_for_the_whole_artist_entity() {
+        let franz = "11111111-2222-3333-4444-555555555555";
+        let mut rows = Vec::new();
+        let mut artist_row = |name: &str, oracle: &str, scry: &str, artist: &str| {
+            let mut r = annex_row(name, oracle, scry, "en", 100.0);
+            r["card_artist"] = json!(artist);
+            r["card_artist_folded"] = json!(artist.to_lowercase());
+            rows.push(r);
+        };
+        // pid order follows oracle_id, so the names below are what the asserts address.
+        artist_row("Alpha", "oracle-a", "row-a", "Kev Walker");
+        artist_row("Bravo", "oracle-b", "row-b", "Evkay Alkerway");
+        // A JOINED credit naming the same artist. It must come along, exactly as the plain
+        // substring scan already brings it along for `a:"kev walker"`.
+        artist_row("Charlie", "oracle-c", "row-c", "Kev Walker & Franz Vohwinkel");
+        // Franz SOLO. He has one spelling, so the table below says nothing about him — and that
+        // silence is load-bearing: naming him would hand every `a:"kev walker"` query, which
+        // matches the joined credit above, his whole body of work.
+        artist_row("Delta", "oracle-d", "row-d", "Franz Vohwinkel");
+        let _ = franz;
+
+        // The table AS THE BUILDER HANDS IT OVER — one object for the corpus, spellings only, no
+        // ids and nothing per row. The split that produces it is the builder's
+        // (`transform::artist_entity_table`, tested there); this is the engine's half.
+        let entities = json!([[["evkay alkerway", "evkay alkerway"], ["kev walker", "kev walker"]]]);
+        let (_b, store) = build_store_with_entities(&rows, entities);
+        let d = store.data();
+        let hits = |needle: &str| -> Vec<String> {
+            let mut f = crate::FilterExpr::TextContains {
+                field: crate::TextSearchField::ArtistCollated,
+                word: needle.to_string(),
+            };
+            f.bind(
+                &d.coll_vocab,
+                &d.coll_vocab_sorted,
+                &d.artist_vocab,
+                &d.artist_vocab_collated,
+                &d.artist_entities,
+                &d.mana_vocab,
+                &d.indexes.flavor,
+                &d.strings,
+            );
+            let mut names: Vec<String> = (0..d.printings.len())
+                .filter(|&pid| {
+                    let cid = u32::from(d.indexes.printing_to_card[pid]) as usize;
+                    f.eval_printing(&d.cards[cid], &d.printings[pid], &d.strings) == crate::Tri::True
+                })
+                .map(|pid| {
+                    let cid = u32::from(d.indexes.printing_to_card[pid]) as usize;
+                    d.cards[cid].card_name_lower.as_str().to_owned()
+                })
+                .collect();
+            names.sort();
+            names
+        };
+
+        // THE DIVERGENCE. Before the entity table, "evkay" reached one printing and "kev walker"
+        // reached two — two spellings of one artist answering as two artists.
+        assert_eq!(hits("evkay"), vec!["alpha", "bravo", "charlie"], "the alternate spelling answers for the whole entity");
+        assert_eq!(hits("kevwalker"), vec!["alpha", "bravo", "charlie"], "and so does the usual one");
+        // ...and the closure stops at the entity. `Charlie` names Kev AND Franz; reaching Franz's
+        // solo printing through it would be a filter that silently WIDENS.
+        assert!(!hits("kevwalker").contains(&"delta".to_string()), "a joined credit must not drag in the other artist's work");
+        assert_eq!(hits("franzvohwinkel"), vec!["charlie", "delta"], "and Franz still answers for his own");
+
+        // The archived table is spellings and nothing else — no artist ids, nothing per printing.
+        assert_eq!(d.artist_entities.form_offsets.len(), 2, "one entity");
+        let forms: Vec<&str> = d.artist_entities.forms_collated.iter().map(rkyv::string::ArchivedString::as_str).collect();
+        assert_eq!(forms, vec!["evkayalkerway", "kevwalker"]);
+    }
+
+    /// WATERMARK IS PER FACE, both halves of it, through the whole ingest path.
+    ///
+    /// `Research // Development` (dis/155) is simic on its front face and izzet on its back.
+    /// Scryfall answers it for `wm:simic` AND `wm:izzet`, and emits the watermark on the FACES —
+    /// it sends a top-level `watermark` on 0 of the 12,098 faced printings in the 2026-08-16
+    /// all_cards bulk, against 36,437 unfaced ones that do.
+    #[test]
+    fn a_faced_printing_carries_every_face_watermark_and_emits_none_at_top_level() {
+        let mut split = annex_row("Research // Development", "oracle-rd", "row-rd", "en", 100.0);
+        split["card_layout"] = json!("split");
+        // What the builder's face overlay writes: the FRONT face's value, at top level.
+        split["card_watermark"] = json!("simic");
+        split["card_faces"] = json!([
+            { "name": "Research", "type_line": "Sorcery", "oracle_text": "x", "watermark": "simic",
+              "illustration_id": "ill-front" },
+            { "name": "Development", "type_line": "Sorcery", "oracle_text": "y", "watermark": "izzet" },
+        ]);
+        let mut plain = annex_row("Shock", "oracle-s", "row-s", "en", 100.0);
+        plain["card_watermark"] = json!("izzet");
+
+        let (_b, store) = build_store(&[split, plain]);
+        let d = store.data();
+        let pid_of = |name: &str| {
+            (0..d.printings.len())
+                .find(|&pid| {
+                    let cid = u32::from(d.indexes.printing_to_card[pid]) as usize;
+                    d.cards[cid].card_name_lower.as_str().starts_with(name)
+                })
+                .expect("printing")
+        };
+        let (split_pid, plain_pid) = (pid_of("research"), pid_of("shock"));
+
+        // 1. THE SEARCH INDEX sees both faces, and the back-only value is a real answer.
+        let postings = |v: &str| -> Vec<u32> {
+            d.indexes.watermarks.get(v).map_or_else(Vec::new, |p| p.iter().map(|x| u32::from(*x)).collect())
+        };
+        assert!(postings("simic").contains(&(split_pid as u32)), "wm:simic must answer the split printing");
+        assert!(postings("izzet").contains(&(split_pid as u32)), "wm:izzet must answer it TOO — the back face's value");
+        assert!(postings("izzet").contains(&(plain_pid as u32)), "and the unfaced printing is untouched");
+
+        // 2. THE CARD OBJECT puts it on the faces...
+        let split_cid = u32::from(d.indexes.printing_to_card[split_pid]) as usize;
+        let faces = faces_to_json(&d.cards[split_cid], &d.printings[split_pid], &d.strings);
+        assert_eq!(faces[0]["watermark"], json!("simic"));
+        assert_eq!(faces[1]["watermark"], json!("izzet"));
+
+        // 3. ...while the printing's own column still holds the front's copy, which is what
+        //    `wm:` reads first and what an unfaced printing answers with. The other half of the
+        //    fix — keeping that value OFF the top level of a faced card object — belongs to the
+        //    serializers and is pinned there: `a_faced_card_omits_the_top_level_watermark` in
+        //    card_object.rs and its TypeScript twin.
+        assert_eq!(str_at(&d.strings, u32::from(d.printings[split_pid].card_watermark_id)), Some("simic"));
+        assert_eq!(str_at(&d.strings, u32::from(d.printings[plain_pid].card_watermark_id)), Some("izzet"));
+    }
+
     // ─── Opaque sort keys, query_keys/fetch_rows, and the partitioned differential ────────────
 
     /// A corpus rich enough to exercise every orderby: six cards across several sets, prices,
@@ -5112,7 +5327,7 @@ mod tests {
             .into_iter()
             .map(|blobs| {
                 let mut bytes = Vec::new();
-                build_partition_from_standalone(blobs.into_iter(), &mut bytes).expect("partition build");
+                build_partition_from_standalone(blobs.into_iter(), Value::Null, &mut bytes).expect("partition build");
                 BufferStore::from_bytes(&bytes).expect("partition loads")
             })
             .collect()

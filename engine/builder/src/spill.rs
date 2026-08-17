@@ -157,6 +157,8 @@ struct CorpusAggregator<'a> {
     /// excludes the pinned printing (`ranks`). Collected as rows stream past, for the same
     /// reason `pins` is, and sealed against them at the end of the stream.
     ranks: PrintingRanks,
+    /// Every artist's credited spellings, corpus-wide — see `transform::ArtistSpellings`.
+    artist_spellings: crate::transform::ArtistSpellings,
 }
 
 impl<'a> CorpusAggregator<'a> {
@@ -171,12 +173,14 @@ impl<'a> CorpusAggregator<'a> {
             labels,
             pins: PinnedPrintings::default(),
             ranks: PrintingRanks::default(),
+            artist_spellings: crate::transform::ArtistSpellings::new(),
         }
     }
 
     fn observe(&mut self, record: u64, part_hash: u64, draft: &RowDraft) {
         self.pins.observe(draft, self.labels);
         self.ranks.observe(draft);
+        crate::transform::observe_artist_spellings(&mut self.artist_spellings, draft.card_artist.as_deref(), &draft.compat_blob);
         let info = Winner {
             record,
             part_hash,
@@ -212,6 +216,7 @@ impl<'a> CorpusAggregator<'a> {
             by_id,
             pins,
             mut ranks,
+            artist_spellings,
             labels: _,
         } = self;
         drop(by_id);
@@ -247,6 +252,7 @@ impl<'a> CorpusAggregator<'a> {
             cubecobra,
             pins,
             ranks,
+            artist_spellings,
             superseded,
             cross_partition_dupes,
         }
@@ -269,6 +275,11 @@ pub struct Aggregates {
     /// Where each printing slot sits in its card's order — the representative choice for every
     /// filter the pinned printing does not survive (`ranks`).
     ranks: PrintingRanks,
+    /// Every credited spelling of every artist, corpus-wide — the input to the `card_artist_alt`
+    /// column. Observed as rows STREAM PAST rather than from the deduped winners, exactly as
+    /// `pins` is, and for the same reason: a repeated scryfall_id cannot change who drew the card.
+    /// See `transform::ArtistSpellings` for why this cannot be derived inside a partition build.
+    artist_spellings: crate::transform::ArtistSpellings,
     /// Spill record positions a LATER duplicate superseded; skipped on replay.
     /// Empty on every real corpus (Scryfall ids are unique) — it exists so a
     /// corpus that does repeat one is deduped identically rather than doubled.
@@ -277,6 +288,12 @@ pub struct Aggregates {
 }
 
 impl Aggregates {
+    /// The corpus's artist-entity relation, handed to each partition's builder once — see
+    /// `transform::artist_entity_table` for why it cannot ride the rows.
+    pub fn artist_entities(&self) -> Value {
+        crate::transform::artist_entity_table(&self.artist_spellings)
+    }
+
     /// One draft → its finalized ENGINE_COLUMNS row, through the same
     /// `finalize_row` every other import path calls, with the same corpus-wide
     /// aggregation inputs the single-`Vec` `finalize` computed.

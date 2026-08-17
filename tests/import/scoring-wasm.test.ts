@@ -32,6 +32,7 @@ const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, ROW: 6, TAGDATA: 7 } as con
 interface Host {
 	drafts: Uint8Array[];
 	rows: Record<string, unknown>[];
+	stats: Record<string, unknown>[];
 	transformLines(lines: string): bigint;
 	labelsAddLines(lines: string): bigint;
 	scoresAddDrafts(batch: Uint8Array): bigint;
@@ -50,6 +51,7 @@ function instantiate(): Host {
 	const drafts: Uint8Array[] = [];
 	const rows: Record<string, unknown>[] = [];
 	const tagData: Uint8Array[] = [];
+	const stats: Record<string, unknown>[] = [];
 	let memory: WebAssembly.Memory | undefined;
 	const view = (ptr: number, len: number) => new Uint8Array((memory as WebAssembly.Memory).buffer, ptr, len);
 	const imports: Record<string, Record<string, unknown>> = {
@@ -59,6 +61,7 @@ function instantiate(): Host {
 				if (kind === EMIT.DRAFT) drafts.push(bytes);
 				else if (kind === EMIT.ROW) rows.push(JSON.parse(dec.decode(bytes)) as Record<string, unknown>);
 				else if (kind === EMIT.TAGDATA) tagData.push(bytes);
+				else if (kind === EMIT.STATS) stats.push(JSON.parse(dec.decode(bytes)) as Record<string, unknown>);
 				else if (kind === EMIT.LOG) console.error(`[wasm-import] ${dec.decode(bytes)}`);
 			},
 			pull_row: () => -1,
@@ -105,6 +108,7 @@ function instantiate(): Host {
 	return {
 		drafts,
 		rows,
+		stats,
 		transformLines: (lines) => send(enc.encode(lines), (p, l) => ex.transform_lines(p, l), "transform_lines"),
 		labelsAddLines: (lines) => send(enc.encode(lines), (p, l) => ex.labels_add_lines(p, l), "labels_add_lines"),
 		scoresAddDrafts: (batch) => send(batch, (p, l) => ex.scores_add_drafts(p, l), "scores_add_drafts"),
@@ -234,6 +238,62 @@ describe("the corpus-wide tables through the real wasm module", () => {
 			}
 			expect(scoresOf(rows)).toEqual(whole);
 		}
+	});
+
+	// THE THIRD CORPUS-WIDE FACT, and the one whose partition-local version was measured wrong in
+	// production shape rather than reasoned about. `a:` is an artist-ENTITY match: a needle matching
+	// any one of an artist's credited spellings answers for ALL of that artist's printings
+	// (`a:"don't mess"` answers `a:"rebecca guay"`'s 399 on api.scryfall.com, 2026-08-17). The
+	// relation lives in `artist_ids`, and only a pass over the WHOLE corpus can see it — a partition
+	// holding one spelling and not the other learns nothing, and the first build that tried it
+	// answered `a:"don't mess"` with 25 cards against Scryfall's 166, because nine partitions out of
+	// ten had never seen the second spelling.
+	//
+	// It rides the same relay everything else corpus-wide rides: sealed once in the scores phase,
+	// carried to every partition's builder through the TagData snapshot. So what this pins is that
+	// the relation SURVIVES tags_export → tags_restore — the eviction and partition boundary —
+	// and the third arm is the negative control that a per-partition pass does not see it.
+	test("the artist entity relation is corpus-wide and survives the snapshot relay", () => {
+		const kev = "f366a0ee-a0cd-466d-ba6a-90058c7a31a6";
+		const franz = "11111111-2222-3333-4444-555555555555";
+		// Two spellings of ONE artist, on cards whose oracle ids land in different partitions, plus
+		// a joined credit and a single-spelling artist that must not count.
+		const cards: Card[] = CORPUS.slice(0, 6).map((c, i) => ({
+			...c,
+			artist: [
+				"Kev Walker",
+				"Evkay Alkerway",
+				"Kev Walker & Franz Vohwinkel",
+				"Franz Vohwinkel",
+				"Kev Walker",
+				"Evkay Alkerway",
+			][i],
+			artist_ids: [[kev], [kev], [kev, franz], [franz], [kev], [kev]][i],
+		})) as Card[];
+
+		const staged = stagedDrafts(cards);
+		const all = staged.map((s) => s.draft);
+		const scorer = instantiate();
+		scorer.scoresAddDrafts(lengthPrefixed(all));
+		scorer.scoresFinish();
+		const multi = (h: Host) => h.stats.at(-1)?.multi_spelling_artists;
+		// ONE artist has two spellings; Franz, with one, is not an entity worth carrying.
+		expect(multi(scorer)).toBe(1);
+
+		// ...and it survives the relay every partition build restores from.
+		const snapshot = scorer.tagsExport();
+		const restored = instantiate();
+		restored.tagsRestore(snapshot);
+		restored.scoresFinish(); // idempotent; re-emits the stats off the RESTORED table
+		expect(multi(restored)).toBe(1);
+
+		// THE NEGATIVE CONTROL: a scorer that only ever saw one partition's drafts. Cards 1 and 5
+		// are the two `Evkay Alkerway` printings; without them Kev has one spelling here and the
+		// relation is invisible — which is exactly the store that answered 25 against 166.
+		const partial = instantiate();
+		partial.scoresAddDrafts(lengthPrefixed(all.filter((_, i) => i !== 1 && i !== 5)));
+		partial.scoresFinish();
+		expect(multi(partial)).toBe(0);
 	});
 
 	test("a table sealed per partition would NOT match — the regression this replaced", () => {

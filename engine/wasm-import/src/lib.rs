@@ -544,6 +544,10 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
         oracle_id: String,
         #[serde(default)]
         compat_blob: serde_json::Map<String, Value>,
+        // The artist entity relation's input, read in this same pass for the same reason the
+        // routing keys are: it is the one visit that sees every draft of every partition.
+        #[serde(default)]
+        card_artist: Option<String>,
     }
     let buf = take_buf(ptr, len);
     let blobs = match split_batch(&buf) {
@@ -577,6 +581,11 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
                 illust_count_qualifies(draft.raw_lang_en, draft.raw_set_type.as_deref(), draft.card_border.as_deref())
             });
             s.tags.corpus.observe(&draft.card_name, draft.edhrec_rank, illust);
+            // The artist ENTITY relation, gathered in the SAME corpus-wide pass and for a stronger
+            // version of the same reason: `a:` is an entity match, and a partition holding one
+            // spelling of an artist and not the other would answer for its own rows and silently
+            // drop the other nine partitions'. See `transform::ArtistSpellings`.
+            s.tags.corpus.observe_artists(draft.card_artist.as_deref(), &draft.compat_blob);
             if partition_count > 0 {
                 keys.clear();
                 routing_keys_of(
@@ -613,6 +622,7 @@ pub extern "C" fn scores_finish() -> i64 {
         emit_stats(serde_json::json!({
             "cubecobra_names": names,
             "illust_groups": s.tags.corpus.illustration_groups(),
+            "multi_spelling_artists": s.tags.corpus.multi_spelling_artists(),
         }));
         names as i64
     })
@@ -704,7 +714,16 @@ pub extern "C" fn finalize_begin() -> i64 {
             return -1;
         }
         s.finalize_pos = 0;
-        s.staging = Some(SpillingStoreBuilder::new());
+        let mut staging = SpillingStoreBuilder::new();
+        // The artist-entity relation, handed over ONCE for this partition. It comes from the
+        // SEALED corpus tables — the same snapshot `cubecobra_score` and `illustration_count` come
+        // from, and global for a stronger version of their reason: `a:` is an entity match, and a
+        // partition that saw only the spellings its own rows print would answer `a:"don't mess"`
+        // with its own Rebecca Guay rows and silently drop the other nine partitions'. Once, and
+        // not on the rows: per row it is O(that artist's spellings) with no bound, which took the
+        // gate corpus's rows.jsonl from 198MB to 6.5GB and out-of-memoried this very build.
+        staging.set_artist_entities(s.tags.corpus.artist_entities());
+        s.staging = Some(staging);
         0
     })
 }
@@ -756,15 +775,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             // this port answers like Scryfall.
             let pinned = is_pinned(&draft, &s.tags.labels, &s.agg.pins);
             let rank = s.agg.ranks.rank_of(&draft);
-            let row = finalize_row(
-                draft,
-                &oracle_tags,
-                &art_tags,
-                illustration_count,
-                cubecobra_score,
-                pinned,
-                rank,
-            );
+            let row = finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank);
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");
             match builder.add_card(&row) {
