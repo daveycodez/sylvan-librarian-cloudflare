@@ -911,9 +911,10 @@ export class SearchEngine extends DurableObject<Env> {
 	 * `engine-wnam-3-p<k>` of a retired replica, released together — would keep its
 	 * cached chunks forever, and its own prune never runs again because it never
 	 * loads again. The rows are one partition's COMPRESSED archive, not the whole
-	 * store's (~19MB gz per object at the 2026-08-16 ten-partition cut; the
-	 * standing figure is `partitions[k].store_gzip_bytes`), and a retired replica
-	 * holds one such object per partition. Left alone, every transient spike would
+	 * store's — `partitions[k].store_gzip_bytes`, a fraction of it set by
+	 * `partition_count` — and a retired replica holds one such object per
+	 * partition, so it strands the whole compressed store once. Left alone, every
+	 * transient spike would
 	 * permanently consume a slice of the 5GB pool.
 	 *
 	 * Safe unconditionally: the cache is an optimisation over KV, so the worst a

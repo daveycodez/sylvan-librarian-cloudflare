@@ -57,7 +57,8 @@
 //     corpus is ~385MB decompressed (2026-08-16, content generation 32), and 9 regions × ~385MB ≈
 //     3.5GB of decompressed copies plus the coordinator's ~1.5GB staging peak does NOT fit the 5GB
 //     DO pool. Compressed the whole store is ~165MB, so 9 regions of it is ~1.5GB — spread across
-//     N objects a region, ~19MB gz each at that cut — leaving the pool at ~3.2GB peak. The cost is a
+//     `partition_count` objects a region, each holding its own partition's
+//     `partitions[k].store_gzip_bytes` — leaving the pool at ~3.2GB peak. The cost is a
 //     local gunzip when a cached partition is loaded — paid at the publish COMMIT (the publisher's
 //     window, not a user's request) and on genuinely cold wakes, which paid it on the KV path anyway.
 //
