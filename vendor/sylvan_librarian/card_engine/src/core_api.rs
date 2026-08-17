@@ -4728,6 +4728,27 @@ mod tests {
             r["edhrec_rank"] = json!(600);
             rows.push(r);
         }
+        // `order=released`'s SECOND key, in the one shape that separates it from a collector-number
+        // key: TWO sets sharing ONE release date, with collector numbers that interleave across
+        // them. Scryfall answers a shared date SET-GROUPED (measured over 102 multi-set date groups
+        // on 2026-08-16, contiguous in 102 of them), so the whole of zza precedes the whole of zzb
+        // ascending — an order no collector-number-only key can produce, since "500" would then
+        // have to follow "10". Distinct oracles so the cut splits them and the BYTE encoding is on
+        // trial too, and a date of its own so the block is contiguous in the full listing.
+        for (oracle, set, cn) in [
+            ("oracle-rt-1", "zzb", "1"),
+            ("oracle-rt-2", "zza", "500"),
+            ("oracle-rt-3", "zza", "9"),
+            ("oracle-rt-4", "zzb", "10"),
+        ] {
+            let scry = format!("row-{oracle}-{set}");
+            let mut r = mk("Released Tie Filler", oracle, &scry, "en", 150.0);
+            r["card_set_code"] = json!(set);
+            set_collector_number(&mut r, cn);
+            r["released_at"] = json!("2021-06-11");
+            r["edhrec_rank"] = json!(650);
+            rows.push(r);
+        }
         // The near-tie name pairs the cross-partition NAME lanes are proven on, placed (by the
         // shared hash, checked in-test) so each pair SPLITS across partitions at N=3.
         for (name, oracle, edhrec) in [
@@ -4838,6 +4859,56 @@ mod tests {
         let mut reversed = asc.clone();
         reversed.reverse();
         assert_eq!(numbers("desc"), reversed, "dir=desc reverses the number with the set it sits in");
+    }
+
+    /// `order=released` breaks a date tie by SET first and collector number second, both following
+    /// the primary's direction.
+    ///
+    /// Measured against api.scryfall.com on 2026-08-16. Cards sharing a release date come back
+    /// set-grouped, not interleaved: `date=2025-04-11` answers all of tdm, then all of tdc, then
+    /// all of ptdm, and 102 of 102 sampled multi-set date groups were contiguous by set. On every
+    /// group tried, `dir=desc` was the exact reversal of `dir=asc`.
+    ///
+    /// The fixture's four rows are chosen so the two candidate rules DISAGREE rather than merely
+    /// differ in confidence: zza's "500" sits above zzb's "1" ascending, which a collector-number
+    /// key (the port's previous second key for this column) cannot produce at any direction — it
+    /// answers zzb:1, zza:9, zzb:10, zza:500. Passing this is therefore evidence about the RULE,
+    /// not just about the code agreeing with itself.
+    #[test]
+    fn order_released_breaks_a_date_tie_by_set_then_collector_number() {
+        let (_b, store) = build_store(&differential_rows());
+        let tree = json!({ "node_type": "TrueNode" });
+        // The whole listing, then the sub-sequence of the one date the fixture gives two sets. A
+        // sub-sequence of the true order is still the true order of those rows.
+        let block = |direction: &str| -> Vec<String> {
+            let opts = QueryOptions {
+                unique: "prints".to_owned(),
+                orderby: "released".to_owned(),
+                direction: direction.to_owned(),
+                limit: 10_000,
+                fields: Some(vec!["set_code".to_owned(), "collector_number".to_owned()]),
+                ..QueryOptions::default()
+            };
+            store
+                .query_value(&tree, &opts)
+                .expect("query")
+                .rows
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}:{}",
+                        r["set_code"].as_str().unwrap_or_default(),
+                        r["collector_number"].as_str().unwrap_or_default()
+                    )
+                })
+                .filter(|s| s.starts_with("zz"))
+                .collect()
+        };
+        let asc = block("asc");
+        assert_eq!(asc, ["zza:9", "zza:500", "zzb:1", "zzb:10"], "a shared date groups by set, then by number");
+        let mut reversed = asc.clone();
+        reversed.reverse();
+        assert_eq!(block("desc"), reversed, "dir=desc reverses the set with the date, and the number with the set");
     }
 
     /// `order=name` collates the way Scryfall does: accents folded, every non-alphanumeric removed.
