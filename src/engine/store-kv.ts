@@ -1138,6 +1138,84 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       requesting slack past `offset+limit`; the survivor is not a prefix property; (3) the
  *       representative rule, which after the above is an API measurement and nothing else — and
  *       api.scryfall.com was rate-limiting on 2026-08-17, so it is deferred rather than guessed.
+ *
+ *       BLOCKER (3) WAS MEASURED ON 2026-08-17 AND THE ANSWER IS THAT THERE IS NO RULE. Not "no
+ *       rule was found" — the survivor is provably not a function of the printing data, and the
+ *       proof does not depend on the bulk file the note above already rejected.
+ *
+ *       THE PROOF IS `e:znr t:creature` ITSELF, asked twice (`unique=prints` 230 rows,
+ *       `unique=art` 174) so that every merge is labelled. 39 of those merges are the same shape:
+ *       a base printing against its extended-art twin, sharing oracle_id, illustration_id, set,
+ *       `released_at`, artist, rarity, and differing only in `extendedart`/`boosterfun` and the
+ *       collector number. 35 resolve to the base printing and 4 to the extended-art one — znr/4
+ *       loses to znr/315, znr/23 to znr/318, znr/220 to znr/365 and znr/225 to znr/367 (znr/198
+ *       loses to znr/361 too, in a three-row group that is not one of the 39, which is why the
+ *       result differs on 5 rows and not 4). znr/5 against znr/316 is byte-for-byte the same
+ *       comparison as znr/4 against znr/315 and goes the other way. An exhaustive sweep over
+ *       EVERY key api.scryfall.com returns on the card object finds no field whose ordering picks
+ *       the winner, and — the stronger statement — no field whose base-vs-extended delta even
+ *       SEPARATES the 4 from the 35. There is nothing left to fit.
+ *
+ *       IT IS A REAL ORDINAL, NOT QUERY NOISE. Narrowed to the pair alone the answer is
+ *       unchanged: `e:znr (cn:4 or cn:315) unique=art` is znr/315, `(cn:2 or cn:314)` is znr/2,
+ *       `(cn:198 or cn:361)` is znr/361. So Scryfall really is doing `DISTINCT ON` over the
+ *       filtered set against a fixed global rank, exactly as the note above reasoned — the rank
+ *       is simply an internal ordinal (row identity in their table, most likely) that no field it
+ *       publishes exposes. This port cannot reconstruct it from any store it can build.
+ *
+ *       THE BULK'S "CONTRADICTION" IS THE API'S TOO, so the negative above is not curation.
+ *       Measured live: `(e:pvan or e:mb2)` and `(e:pvan or e:mbc)` under both uniques give 12
+ *       labelled CROSS-card merges. pvan wins 11 — every mb2 vanguard reprint, and mbc/43 —
+ *       and loses exactly one, pvan/206 to mbc/50. pvan/302 beats mbc/43 while pvan/206 loses to
+ *       mbc/50: same two sets, same date, same shape, opposite outcomes, on api.scryfall.com.
+ *
+ *       WHICH MOVES THE BAR OUT OF THIS WORK'S REACH, and the reason is worth being exact about.
+ *       All 5 rows `e:znr t:creature unique=art` gets wrong here are PER-CARD representative
+ *       choices — this engine answers znr/4, znr/23, znr/198, znr/220, znr/225 where Scryfall
+ *       answers znr/315, znr/318, znr/361, znr/365, znr/367 — and the cross-card scope does not
+ *       touch a single one of them. Closing the scope cannot make the rows match; nothing can.
+ *       `prefer_score` DESC, what this engine already uses, agrees with 58 of the 65 live-labelled
+ *       decisions, and no available alternative does better.
+ *
+ *       AND THE OPEN DIFFERENTIALS ARE NO LONGER OPEN, for a reason that has nothing to do with
+ *       artwork. The served store answers `e:khm t:god unique=art` 25 and `e:znr t:creature
+ *       unique=art` 174 — Scryfall's numbers — because the 1 khm and 13 znr Alchemy `A-*` rows are
+ *       absent from the served search space, and those are exactly the rows Scryfall removes by
+ *       cross-card art dedupe. Two different mechanisms, one total. `e:znr` serves 391 where the
+ *       build input holds 407 canonical znr rows (16 digital), `is:digital` matches nothing, and
+ *       `/cards/znr/A-198` 404s. The premise the three commits above carry — 26 here against 25,
+ *       187 against 174 — no longer describes the deployment, so do not re-derive from it. It also
+ *       puts the `search-include-multilingual-khm-page-1` parity case, which records
+ *       `total_cards` 4035 on both sides for `e:khm`, against a served 407; that is a corpus
+ *       question, not an artwork one, and it is not this note's to answer.
+ *
+ *       ONE CORRECTION TO THE NOTE ABOVE, because "no new key and no new guard" is not quite
+ *       right. Cross-card the wildcard becomes AMBIGUOUS, which per-card it provably is not. The
+ *       replay reproduces the per-card 55,076 exactly and reports 0 rows whose key matches more
+ *       than one group; widen the scope and 5 rows match two — the Alchemy STX signature variants
+ *       `astx/34s`, `astx/44s`, `astx/51s`, `astx/53s`, `astx/55s`, each `(front, NULL)` against a
+ *       paper group and an Alchemy group that share that front and differ on the back. First
+ *       match wins, so which artwork those rows belong to depends on scan order: in corpus order
+ *       `astx/44s` joins `stx/331`'s group, in set/collector order it joins `astx/44`'s, and all
+ *       5 move. What does NOT move is the total — absorbing a wildcard into either candidate
+ *       neither creates nor merges a group, so the count is 54,700 under all four orders tried
+ *       (corpus, reversed, by set/collector, by scryfall_id) while the ambiguous-row count swings
+ *       5/2/0/4. So a cross-card scope needs a deterministic TIE-BREAK that the per-card one never
+ *       needed, and it needs it for ROW IDENTITY, which is what `unique=art` returns — a stable
+ *       total would hide the instability rather than rule it out. (The 54,700 here against the
+ *       54,710 recorded above is corpus drift between the local build input and the 2026-08-16
+ *       bulk, not this ambiguity.)
+ *
+ *       SO THE SCOPE IS DEFERRED ON PURPOSE, not left half-done. What it would buy, sized on the
+ *       rows the store actually serves: 102 cross-oracle groups over 417 rows, 315 rows removed
+ *       from `unique=art` corpus-wide — and NONE of them in either differential above. What it
+ *       costs is blockers (1) and (2) in full, plus co-locating every cross-card group inside one
+ *       partition (today `fnv1a64/oracle_id/v1`, and cards sharing an artwork hash apart), which
+ *       is the only shape that keeps `unique=art` a pure per-partition row predicate and so keeps
+ *       prefix-sufficiency, pagination and the byte-comparable keys intact. That is a large,
+ *       store-shape-changing, re-import-requiring change whose representative choices would be
+ *       guesses on the one axis just proved unguessable. It should be built when something other
+ *       than these two differentials asks for it.
  */
 /**
  * 34 — Vanguard's `life_modifier`/`hand_modifier` reach the card object, and one printing joins

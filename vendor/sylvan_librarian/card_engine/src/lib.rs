@@ -5351,6 +5351,25 @@ fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> b
 /// printings across 689 unrelated cards become one artwork, and 67 more across 35 at arity two.
 /// Absent means unknown, not same-artwork.
 ///
+/// AND ONE MORE THE 2026-08-17 REPLAY FOUND, which "no new key, no new guard" above misses: the
+/// PARTIAL wildcard is unambiguous per-card and ambiguous corpus-wide. Replayed at this scope, 0
+/// rows have a key matching more than one group — which is what lets first-match-wins be a
+/// definition here. Drop `offsets` and 5 rows match TWO: `astx/34s`, `astx/44s`, `astx/51s`,
+/// `astx/53s`, `astx/55s`, each an Alchemy STX signature variant keyed `(front, NULL)` against a
+/// paper group and an Alchemy group that share that front and differ on the back. Whichever is
+/// scanned first absorbs it, and all 5 land in a DIFFERENT artwork under corpus order than under
+/// set/collector order. The total does not move — absorbing a wildcard neither creates nor merges
+/// a group, so the count holds at 54,700 across four scan orders while the ambiguous-row count
+/// swings 5/2/0/4 — so a count is exactly the wrong thing to check this with. A cross-card scope
+/// needs a deterministic tie-break, for row identity, that this one never did.
+///
+/// THE SURVIVOR, SEPARATELY, IS NOT DERIVABLE AT ALL — measured against api.scryfall.com on
+/// 2026-08-17, see the `unique=art` note in `src/engine/store-kv.ts` for the numbers. 39 znr
+/// base-vs-extended-art merges that agree on oracle_id, illustration_id, set, `released_at`,
+/// artist and rarity split 35/4, and no field the card object publishes separates the 4 from the
+/// 35. `prefer_score` DESC, what `group_representative` already uses, matches 58 of 65 live
+/// decisions and nothing available does better. Do not replace it with a fitted comparator.
+///
 /// The groups are held as concatenated key tuples (`keys`) plus one `(offset, len)` span each
 /// (`spans`), both reused across cards, so a corpus of ~100k cards costs no per-card allocation.
 fn assign_artwork_groups(printings: &mut [Printing], offsets: &[u32]) -> Vec<u16> {
