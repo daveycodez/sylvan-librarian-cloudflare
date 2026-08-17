@@ -269,9 +269,57 @@
 			"path": "/cards/autocomplete?q=j%C3%B6tun"
 		},
 		{
+			"name": "autocomplete-similarity-is-not-length-ser",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=ser",
+			"known_deviation": {
+				"reason": "THE ONE PREFIX THAT SEPARATES pg_trgm SIMILARITY FROM EVERY LENGTH METRIC IN BOTH DIRECTIONS, which is why it is pinned and `q=lig`, `q=ang`, `q=gob` and `q=sh` are not. 10fc323 (upstream #927 9df17a3) replaced upstream's `ORDER BY rank, length(card_name), card_name` with Postgres `pg_trgm` similarity — |A ∩ B| / |A ∪ B| over the 3-character windows of `\"  \" + s + \" \"`, computed on the COLLATED name. Length looked like the rule because with separators gone and no repeated window the denominator IS the collated length, so a prefix where the two agree proves nothing. This one disagrees twice, opposite ways:\n  LONG BEATS SHORT. `Serra Avenger` is 12 collated characters and scores 4/13 = 0.3077; `Serenity` is 8 and scores 3/10 = 0.3000. Both sides put Avenger at data.4 and Serenity at data.5. `Serenity` is shorter by four characters and still loses, because a name ending in the query's tail shares the closing `er ` window and `Serenity` (…`ty `) does not — the intersection is 4 against 3.\n  AND SHORT BEATS LONG AT THE SAME SCORE. `Serendib Sorcerer` is 16 collated characters and scores 4/16 = 0.2500, tying the 10-character `Serum Snare`, `Serpentine`, `Serra's Boon`, `Serra's Hymn` and `Serra Angel` at 3/12. A length key of any kind sorts a 16 against five 10s; similarity does not distinguish them at all.\nSo a silent regression to a length sort cannot pass this case in either direction, and that is the whole reason it exists.\n\nTHE SIMILARITY BLOCKS THEMSELVES AGREE EXACTLY, which is the assertion, and the residual is the same undecidable ordinal 10fc323 recorded. Measured against api.scryfall.com 2026-08-17: both sides return the SAME 20 names, and both partition them into the same eight score blocks in the same order — 0.3750 Seraph; 0.3636 Serum Raker; 0.3333 Serum Powder; 0.3077 {Serene Master, Serra Avenger}; 0.3000 Serenity; 0.2857 Serra Redeemer; 0.2727 Serum Tank; 0.2500 six names; 0.2308 six names. Every position through data.7 is a block of one and both sides agree on all eight of them. From data.8 the blocks have six members each and the order WITHIN a block differs: this port sorts a tie by printed name ascending, and Scryfall's order inside a tie is a fixed internal ordinal that 10fc323 proved underivable — over 1,121 tie-ordered pairs from 30 measured prefixes, 28 card features in both directions separate none of them and the lexicographic fixpoint over all 56 candidates returns the EMPTY KEY. data.9 agreeing on `Serpentine` is coincidence inside a tie and is not recorded.\n\nWHAT EACH SIDE IS HELD TO. data.0/4/5/7 are recorded on BOTH sides and are the ordering statement — a length sort moves data.4 and data.5 past each other, a missing rank split or a collation change moves data.0. data.8/13/14 are recorded per side: 8 is the first divergence, 13 is the last member of the 0.2500 block and 14 the first member of the 0.2308 block, so a change that leaked a name ACROSS a block boundary reports as drift on both sides even though the within-block order is free. If Scryfall's data.8/13/14 move while the blocks hold, their internal ordinal moved and this recording is what says so.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "catalog",
+						"total_values": 20,
+						"data.0": "Seraph",
+						"data.4": "Serra Avenger",
+						"data.5": "Serenity",
+						"data.7": "Serum Tank",
+						"data.8": "Serum Snare",
+						"data.13": "Serra Angel",
+						"data.14": "Serra Avatar"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "catalog",
+						"total_values": 20,
+						"data.0": "Seraph",
+						"data.4": "Serra Avenger",
+						"data.5": "Serenity",
+						"data.7": "Serum Tank",
+						"data.8": "Serendib Sorcerer",
+						"data.13": "Serum Snare",
+						"data.14": "Serene Heart"
+					}
+				}
+			}
+		},
+		{
 			"name": "autocomplete-foreign-name-empty",
 			"method": "GET",
 			"path": "/cards/autocomplete?q=ego%20%C3%A0%20deriva"
+		},
+		{
+			"name": "autocomplete-foreign-name-empty-katakana",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=%E3%82%A2%E3%82%AF",
+			"note": "The second leg of the same negative invariant, in a script that shares no characters with any English name. `q=ego à deriva` is the Portuguese `Unmoored Ego` and could in principle be answered by a substring rule that folded diacritics badly; `q=アク` (the katakana prefix of `アクロス・ザ・ユニバース`) cannot be reached by any accident of folding, so an empty catalog here is a statement about the SPACE autocomplete searches rather than about its collation. Both sides answer `total_values` 0 with an empty `data`. Paired with autocomplete-no-include-multilingual: autocomplete has no multilingual mode to turn on, and no foreign names in the space it would search."
+		},
+		{
+			"name": "autocomplete-no-include-multilingual",
+			"method": "GET",
+			"path": "/cards/autocomplete?include_multilingual=true&q=j%C3%B6tun",
+			"note": "`include_multilingual` is a /cards/search parameter and autocomplete does not have it — on either side. api.scryfall.com neither rejects it nor acts on it: this is byte-for-byte autocomplete-diacritic-jotun's answer, the same three names in the same order, with no `warnings` and no extra entries. Pinned on `q=jötun` deliberately rather than on `q=ser`: jötun's three names carry no similarity TIE, so this case asserts only the parameter's inertness and cannot go red for the residual ordinal autocomplete-similarity-is-not-length-ser records. The same probe on `q=ser` was measured on 2026-08-17 for completeness and is byte-identical to `q=ser` without the parameter, ties and all."
 		},
 		{
 			"name": "collection-english-mixed-not-found",
