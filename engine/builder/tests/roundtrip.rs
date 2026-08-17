@@ -408,10 +408,16 @@ fn result_fields_reach_the_response() {
     assert_eq!(card["colors"], json!(["R"]), "the colors bitmap decodes to letters");
     assert_eq!(
         card["color_identity"],
-        // ALPHABETICAL, which is what `identity_letters` emits (B, C, G, R, U, W) — not Scryfall's
-        // WUBRG. Pinned as the port's current behaviour rather than blessed as correct: no fixture
-        // in this repo had a multi-colour identity before, so nothing here has ever had an opinion
-        // about the order, and settling it is a live-parity question rather than a roundtrip one.
+        // ALPHABETICAL, which is what `identity_letters` emits (B, C, G, R, U, W) — and what
+        // Scryfall's JSON emits too. MEASURED 2026-08-17 against api.scryfall.com, because no
+        // fixture here had a multi-colour identity and so nothing had ever had an opinion:
+        //   Burning-Tree Emissary  colors ["G","R"]            identity ["G","R"]
+        //   Niv-Mizzet, Parun      colors ["R","U"]            identity ["R","U"]
+        //   Sliver Queen           colors ["B","G","R","U","W"] identity ["B","G","R","U","W"]
+        //   Golgari Signet         colors []                   identity ["B","G"]
+        // The port answers identically on all four. WUBRG is a card-frame and mana-cost
+        // convention; it does not reach these arrays, so sorting them into WUBRG would break
+        // every multi-colour card we serve.
         json!(["G", "R"]),
         "the IDENTITY bitmap, which is wider than the cost here — an extractor reading card_colors \
          would answer [\"R\"]"

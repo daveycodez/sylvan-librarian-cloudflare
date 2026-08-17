@@ -340,6 +340,34 @@ const CASES: [string, Record<string, unknown>][] = [
 	// The printed colour dot: present on a meld result whose mana cost cannot state its colours,
 	// and OMITTED at top level on a two-image layout, where it belongs to a face.
 	[
+		"five-colour identity — the whole table, in the order it is emitted",
+		{
+			...FULL,
+			name: "Sliver Queen",
+			mana_cost: "{W}{U}{B}{R}{G}",
+			cmc: 5.0,
+			type_line: "Legendary Creature — Sliver",
+			colors: ["B", "G", "R", "U", "W"],
+			color_identity: ["B", "G", "R", "U", "W"],
+		},
+	],
+	// An identity WIDER than the cost — the shape an extractor reading the wrong source field
+	// gets wrong in a way a matching colors/identity pair cannot reveal.
+	[
+		"colourless cost, two-colour identity",
+		{
+			...FULL,
+			name: "Golgari Signet",
+			mana_cost: "{2}",
+			cmc: 2.0,
+			type_line: "Artifact",
+			power: undefined,
+			toughness: undefined,
+			colors: [],
+			color_identity: ["B", "G"],
+		},
+	],
+	[
 		"meld back — a printed color_indicator",
 		{
 			...FULL,
