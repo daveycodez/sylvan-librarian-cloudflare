@@ -336,7 +336,16 @@ fn compat_blob(card: &Map<String, Value>) -> Map<String, Value> {
 ///
 /// `object` is the constant "card_face" and `image_uris` is a pure function of
 /// the card's id and the face's position, so neither is stored.
-const FACE_OBJECT_FIELDS: [&str; 18] = [
+const FACE_OBJECT_FIELDS: [&str; 19] = [
+    // Not in upstream's list, and the one key Scryfall puts on a FACE and on no top-level card:
+    // the face's own `layout`. Exactly 81 printings in the 2026-08-16 all_cards bulk carry it,
+    // all 81 `reversible_card`, both faces of each agreeing (154 `normal` + 6 `adventure` + 2
+    // `token` face occurrences over 77 + 3 + 1 printings). Scryfall SEARCHES it — `layout:normal`
+    // answers 106,635 there against the 106,558 printings whose own layout is `normal`, and the
+    // 77-row difference is exactly the reversible printings whose faces are `normal` — so it is
+    // a stored value, not a display one. Ahead of `name` because Scryfall's face key order is
+    // `object -> oracle_id -> layout -> name`, and the first two are not stored.
+    "layout",
     "name",
     // Scryfall's key order on a face is name -> flavor_name -> mana_cost (verified live on
     // vow/338 `transform` and sld/1079 `reversible_card`, 2026-08-16), and jv_faces round-trips

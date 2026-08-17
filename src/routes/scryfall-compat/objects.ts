@@ -463,10 +463,18 @@ function joinedManaCost(stored: Record<string, unknown>[]): string {
  * front/back swapped — on the two-image layouts, which are the only ones whose faces have their
  * own picture.
  */
-function faces(row: EngineRow, scryfallId: string, twoImage: boolean): Record<string, unknown>[] {
+function faces(
+	row: EngineRow,
+	scryfallId: string,
+	twoImage: boolean,
+	// The card's `oracle_id` and `cmc`, written on EVERY face — passed only for a reversible
+	// printing, which is the one layout whose faces carry them (and whose top-level object omits
+	// them). Both faces of all 81 send the card's own values, never a second one.
+	cardIds?: { oracle_id: string; cmc: number | null },
+): Record<string, unknown>[] {
 	const stored = list(row, "card_faces") as Record<string, unknown>[];
 	return stored.map((face, index) => {
-		const built: Record<string, unknown> = { object: "card_face" };
+		const built: Record<string, unknown> = { object: "card_face", ...(cardIds ?? {}) };
 		for (const [key, value] of Object.entries(face)) {
 			// `colors` is a face key only where the faces own their own art: every face of every
 			// two-image printing carries one, empty included (Agadeem, the Undercrypt is colorless
@@ -519,15 +527,22 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	const hasFaces = list(row, "card_faces").length > 0;
 	// Only ever true for a card that HAS faces: the two-image layouts are all multi-face.
 	const twoImage = hasFaces && layout !== undefined && TWO_IMAGE_LAYOUTS.has(layout);
+	// A REVERSIBLE printing keeps NOTHING of the card at top level — not even the three keys every
+	// other multi-face layout keeps. Measured across the whole 2026-08-16 all_cards bulk: all 81 of
+	// them omit `oracle_id`, `cmc` and `type_line`, where a `transform` printing sends all three
+	// (verified live on Delver of Secrets // Insectile Aberration). Its FACES carry their own
+	// `oracle_id` and `cmc` instead — the card's, on both faces, 0 of 81 disagreeing — which is why
+	// omitting the top-level pair loses nothing. Mirrors `REVERSIBLE_LAYOUT` in card_object.rs.
+	const reversible = layout === "reversible_card";
 	// The joined name everywhere except edhrec on the layouts EDHREC files by front face.
 	const edhrecName =
 		hasFaces && !(layout !== undefined && EDHREC_JOINED_LAYOUTS.has(layout)) ? (name.split(" // ")[0] as string) : name;
-	const built = faces(row, scryfallId, twoImage);
+	const built = faces(row, scryfallId, twoImage, reversible ? { oracle_id: oracleId, cmc: num(row, "cmc") ?? null } : undefined);
 
 	const card: Record<string, unknown> = {
 		object: "card",
 		id: scryfallId,
-		oracle_id: oracleId,
+		...(reversible ? {} : { oracle_id: oracleId }),
 		multiverse_ids: list(row, "multiverse_ids"),
 		name,
 		// Between `name` and `lang`, where api.scryfall.com puts it (verified on grn/212/pt and
@@ -549,8 +564,7 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		layout: str(row, "layout") ?? null,
 		highres_image: bool(row, "highres_image"),
 		image_status: str(row, "image_status") ?? null,
-		cmc: num(row, "cmc") ?? null,
-		type_line: str(row, "type_line") ?? null,
+		...(reversible ? {} : { cmc: num(row, "cmc") ?? null, type_line: str(row, "type_line") ?? null }),
 		// Directly after the oracle `type_line` it translates, per the live objects.
 		...(str(row, "printed_type_line") !== undefined ? { printed_type_line: str(row, "printed_type_line") } : {}),
 		// `colors` is one of the values a two-image layout keeps on its faces alone (see

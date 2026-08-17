@@ -986,8 +986,33 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       cross-partition dedupe in the gather, because cards are partitioned by oracle_id and two
  *       cards sharing an artwork have different ones. That is a store-shape change and a gather
  *       change, so it is not this generation.
+ *
+ *  32 — A REVERSIBLE PRINTING PRINTS ITS OWN FACES, ITS OWN NAME AND ITS FACES' LAYOUT.
+ *
+ *       Generation 31's move gave the printing its `layout` and stopped there. The 81
+ *       `reversible_card` printings still carried NO `card_faces` at all and answered to
+ *       "Temple Garden" rather than Scryfall's "Temple Garden // Temple Garden", because both
+ *       come off the OracleCard — whose values the group's FIRST row supplies, and that row is
+ *       one of the ordinary printings.
+ *
+ *       "Face text is oracle-level" holds for 38,555 of the 38,626 oracle groups and fails for
+ *       exactly the 71 with a reversible printing, measured field for field over every printing
+ *       in the 2026-08-16 all_cards bulk. `OracleCard` gains a `divergent` record (the group's
+ *       OTHER (name, faces, face-layout) triple, keyed by the layout that marks the printings
+ *       that print it) and `Printing` gains nothing — it has no padding left, so one byte there
+ *       would cost 8.6 MB against ~0.6 MB for the card-side record.
+ *
+ *       Two answers change and both are measured against api.scryfall.com: the 81 card objects
+ *       gain `card_faces` and the joined name, and `layout:` becomes a multi-VALUE column —
+ *       `layout:normal` 106,558 -> 106,635 and `is:reversible layout:normal` 0 -> 77, because a
+ *       reversible printing answers both its own layout and its faces'.
+ *
+ *       ARCHIVE_FORMAT_VERSION moves with it (2026081615 -> 2026081616) and both row sizes move,
+ *       so a stale archive is caught by the header — but `ValueTotals::layout` posts the second
+ *       value now too, and that table short-circuits the result total, which no header check
+ *       would have caught.
  */
-export const STORE_CONTENT_GENERATION = 31;
+export const STORE_CONTENT_GENERATION = 32;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

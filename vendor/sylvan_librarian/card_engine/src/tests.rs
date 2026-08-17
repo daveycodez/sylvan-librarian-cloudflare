@@ -240,6 +240,7 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         creature_toughness_text_id: NONE_STR,
         planeswalker_loyalty_text_id: NONE_STR,
         faces: Vec::new(),
+        divergent: Vec::new(),
     }
 }
 
@@ -3655,6 +3656,119 @@ fn a_cards_printings_each_answer_with_their_own_layout() {
         );
         assert_eq!(exact_result_total(&f, &archived.indexes, Mode::Printing), Some(printings), "layout:{value} printings");
         assert_eq!(exact_result_total(&f, &archived.indexes, Mode::Card), Some(1), "layout:{value} cards");
+        assert_eq!(
+            exact_result_total(&f, &archived.indexes, Mode::Printing),
+            Some(fuzz_reference_total(archived, &f, "printing")),
+            "layout:{value}: the table and the brute-force scan must agree"
+        );
+    }
+}
+
+/// THE REVERSIBLE SHAPE, second half: a printing prints its OWN faces and name, and answers
+/// `layout:` with its faces' layout as well as its own.
+///
+/// Temple Garden reduced to three rows again. Face text and the top-level name are oracle-level
+/// for 38,555 of the corpus's 38,626 oracle groups and PRINTING-level for the 71 with a
+/// reversible printing — so the group's first row supplied both, the 81 reversible printings
+/// carried no `card_faces` at all, and `layout:normal` answered 106,558 against Scryfall's
+/// 106,635. Pinned by name for the same reason its sibling above is: the regression back to a
+/// single card-level pair is a defect with no seed to shift.
+#[test]
+fn a_reversible_printing_prints_its_own_faces_name_and_face_layout() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let cards = vec![stub_card(1, 0, &[], &mut vocab)];
+    let mut data = store_of(cards, &[3], vocab);
+    let normal = interner.intern("normal".to_string());
+    let reversible = interner.intern("reversible_card".to_string());
+    let plain_name = interner.intern("Temple Garden".to_string());
+    let joined_name = interner.intern("Temple Garden // Temple Garden".to_string());
+    data.printings[0].card_layout_id = normal;
+    data.printings[1].card_layout_id = normal;
+    data.printings[2].card_layout_id = reversible;
+    data.cards[0].card_name_id = plain_name;
+    // The card's own faces stay empty — Temple Garden is a single-faced land. Its reversible
+    // printing prints two, under a joined name, with `normal` on both faces.
+    let face = |name: u32| OracleFace {
+        card_name_id: name,
+        mana_cost_text_id: NONE_STR,
+        type_line_id: NONE_STR,
+        oracle_text_id: NONE_STR,
+        creature_power_text_id: NONE_STR,
+        creature_toughness_text_id: NONE_STR,
+        planeswalker_loyalty_text_id: NONE_STR,
+        defense_text_id: NONE_STR,
+        card_colors: None,
+        color_indicator: 0,
+        creature_power: None,
+        creature_toughness: None,
+        planeswalker_loyalty: None,
+        mana_cost: None,
+    };
+    data.cards[0].divergent = vec![crate::DivergentPrinting {
+        printing_layout_id: reversible,
+        card_name_id: joined_name,
+        face_layout_id: normal,
+        faces: vec![face(plain_name), face(plain_name)],
+    }];
+    data.indexes.value_totals = build_all_value_totals(
+        &data.cards,
+        &data.printings,
+        &data.indexes.printing_to_card,
+        &interner.strings,
+        &data.coll_vocab,
+        usize::from(data.indexes.max_artwork_groups),
+    );
+    data.strings = interner.strings;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+
+    // Which pair each printing prints, keyed by its own layout and nothing else.
+    for (pid, faces, name) in [(0usize, 0usize, "Temple Garden"), (1, 0, "Temple Garden"), (2, 2, "Temple Garden // Temple Garden")] {
+        let d = crate::divergent_of(card, &archived.printings[pid]);
+        let printed_faces = d.map_or(card.faces.len(), |d| d.faces.len());
+        assert_eq!(printed_faces, faces, "printing {pid} face count");
+        let name_id = d.map_or(u32::from(card.card_name_id), |d| u32::from(d.card_name_id));
+        assert_eq!(crate::str_at(&archived.strings, name_id), Some(name), "printing {pid} name");
+    }
+
+    // `layout:` is a multi-VALUE column: the reversible printing answers BOTH. api.scryfall.com
+    // answers `is:reversible layout:reversible_card` 81 and `is:reversible layout:normal` 77 —
+    // the same printings under both, which a scalar column cannot produce.
+    let leaf = |value: &str| FilterExpr::TextExact {
+        field: TextField::Layout,
+        op: CmpOp::Eq,
+        value: value.to_string(),
+    };
+    for (value, expected) in [("reversible_card", [false, false, true]), ("normal", [true, true, true])] {
+        let f = leaf(value);
+        for (pid, want) in expected.iter().enumerate() {
+            assert_eq!(
+                f.matches(card, &archived.printings[pid], &archived.strings),
+                *want,
+                "layout:{value} on printing {pid}"
+            );
+        }
+    }
+
+    // ...and the exact-total table has to say the same, because it SHORT-CIRCUITS the count:
+    // 3 printings for `normal` (two by their own layout, one by its faces') and 1 for the
+    // reversible value. Posting only the printing's own layout leaves this at 2 while every
+    // assertion above passes — which is precisely how `layout:normal` stayed 77 short.
+    for (value, printings) in [("reversible_card", 1usize), ("normal", 3)] {
+        let mut f = leaf(value);
+        f.bind(
+            &archived.coll_vocab,
+            &archived.coll_vocab_sorted,
+            &archived.artist_vocab,
+            &archived.artist_vocab_collated,
+            &archived.mana_vocab,
+            &archived.indexes.flavor,
+            &archived.strings,
+        );
+        assert_eq!(exact_result_total(&f, &archived.indexes, Mode::Printing), Some(printings), "layout:{value} printings");
         assert_eq!(
             exact_result_total(&f, &archived.indexes, Mode::Printing),
             Some(fuzz_reference_total(archived, &f, "printing")),
@@ -13715,8 +13829,14 @@ fn the_archived_row_sizes_stay_pinned() {
     // assertion rather than a comment, because the estimate everyone reaches for first (4 bytes x
     // ~540k printings ≈ 2.2 MB, against ~19 MB of headroom under the 124 MiB wasm build cap) is
     // both wrong and the reason a cheap change looked like a budget question.
+    // 256 -> 272 with 2026081616, and the PRINTING does not move at all: the reversible
+    // printings' faces, name and face-layout hang off the CARD (`OracleCard::divergent`, one
+    // 8-byte Vec header) and are keyed by the printing's own `card_layout_id`, so the ~540k
+    // printings pay nothing. That routing is a size decision and this assertion is where it was
+    // made: `Printing` has no padding left — 2026081615 spent the last of it — so ONE byte there
+    // rounds the row to 320 and costs 8.6 MB, against ~0.6 MB for the whole change here.
     assert_eq!(std::mem::size_of::<Archived<Printing>>(), 304);
-    assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 256);
+    assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 272);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
 }
 

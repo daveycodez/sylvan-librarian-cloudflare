@@ -732,6 +732,74 @@ struct OracleCard {
 
     // Empty for the ~82% of cards with a single face. Front first, in Scryfall's own order.
     faces: Vec<OracleFace>,
+
+    /// The faces, name and layouts of this card's REVERSIBLE printings — the pair they print
+    /// instead of `faces` and `card_name_id`. Empty for all but 71 of the 38,626 oracle groups.
+    ///
+    /// `OracleFace` says face text is oracle-level because every printing of a card prints the
+    /// same faces. Measured over the whole 2026-08-16 all_cards bulk — every printing's face
+    /// records compared field for field within its group — that holds for all but 71 groups, and
+    /// those 71 are exactly the ones with a `reversible_card` printing:
+    ///
+    ///   * 67 whose ordinary printings are single-faced (`Temple Garden`) while the reversible
+    ///     one has two faces the card itself never prints;
+    ///   * 3 `adventure` cards (`Bloomvine Regent // Claim Territory`) whose reversible printing
+    ///     prints the SAME two face names with the front face's oracle text and power/toughness
+    ///     copied onto the back — so the divergence is not just "more faces", and no rule
+    ///     derives one list from the other;
+    ///   * 1 `token` (`Mechtitan`).
+    ///
+    /// The same 71 groups, and only they, disagree on the top-level `name`: `Temple Garden` on
+    /// 63 printings and `Temple Garden // Temple Garden` on the reversible one — and
+    /// `Bloomvine Regent // Claim Territory` against a THREE-part
+    /// `Bloomvine Regent // Claim Territory // Bloomvine Regent`, which is why the joined name is
+    /// stored rather than derived by joining the face names.
+    ///
+    /// ON THE CARD AND NOT ON THE PRINTING, which is where the field for a per-printing fact
+    /// would go, because the printing has no room: `Printing` is 304 archived bytes with ZERO
+    /// padding left (2026081615 spent the last of it on `card_layout_id`), so ONE byte there
+    /// rounds the row to 320 and costs 8.6 MB across ~540k printings — against ~8 MB of raw room
+    /// under the 2-chunk KV binding cap. Measured, not estimated. Here it is one 8-byte `Vec`
+    /// header per card, ~0.6 MB, and `divergent_of` reads it.
+    ///
+    /// A `Vec` holding 0 or 1 entries rather than an `Option`: rkyv archives a `Vec` as an
+    /// 8-byte header either way, the build is a `push`, and a corpus that ever grew a THIRD pair
+    /// for one card is expressible rather than a panic.
+    divergent: Vec<DivergentPrinting>,
+}
+
+/// The faces and name a SUBSET of a card's printings print, keyed by the layout that marks them.
+///
+/// Behind a pointer (`OracleCard::divergent` is a Vec) so the 38,555 cards with nothing to say
+/// pay 8 bytes and no more.
+#[derive(Archive, Serialize, Deserialize)]
+struct DivergentPrinting {
+    /// A printing of this card prints THESE faces iff its `card_layout_id` is this one.
+    ///
+    /// The gate is the layout and not a flag on the printing for the space reason above, and it
+    /// is EXACT rather than a proxy: measured over every divergent group in the 2026-08-16
+    /// all_cards bulk, 0 of 71 have a layout that appears on both of their pairs — the
+    /// reversible printings are `reversible_card` and their siblings are `normal`, `adventure`
+    /// or `token`, never both. `build_card_data_sorted` re-checks it per group and errors rather
+    /// than storing a record that would answer for the wrong printings.
+    printing_layout_id: u32,
+    /// The joined top-level `name` those printings print ("Temple Garden // Temple Garden").
+    card_name_id: u32,
+    /// Scryfall's FACE-level `layout` — a SECOND value those printings answer `layout:` with.
+    ///
+    /// Both faces of each of the 81 reversible printings carry the key and agree on its value
+    /// (154 `normal` + 6 `adventure` + 2 `token` face occurrences over 77 + 3 + 1 printings), and
+    /// the reversible printings of one card agree with each other, so one id per card holds it.
+    /// Nothing else in the corpus puts `layout` on a face.
+    ///
+    /// It is a SEARCHED value, not a display one, and that is measured rather than assumed:
+    /// `layout:normal` answers 106,635 on api.scryfall.com against the 106,558 printings whose
+    /// own layout is `normal`, and `is:reversible layout:normal` answers exactly the 77-row
+    /// difference — while `is:reversible layout:reversible_card` still answers all 81. So
+    /// `layout:` reads the UNION of this and `Printing::card_layout_id`, which is why filter.rs's
+    /// exact arm has a second value to test rather than one (see `second_text_field_value`).
+    face_layout_id: u32,
+    faces: Vec<OracleFace>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -772,6 +840,11 @@ struct Printing {
     /// nothing: it rides padding the 16-byte (u128) alignment had already left, so
     /// `the_archived_row_sizes_stay_pinned` still reads 304.
     card_layout_id: u32,
+    /// Whether a printing of this card prints the card's own faces and name or its
+    /// `OracleCard::divergent` pair is decided by THIS value and nothing else — see
+    /// `divergent_of` and `DivergentPrinting::printing_layout_id`. The printing carries no flag
+    /// of its own because it has no room for one: the row is 304 archived bytes with zero
+    /// padding left, and one byte here rounds it to 320 across ~540k rows.
     // Dense ranks of card_set_code and the artist name in byte order, assigned post-load by
     // assign_set_ranks / assign_artist_ranks; the sort keys for SortCol::Set and SortCol::Artist.
     // Neither can be derived at sort time: a set code is a string, and card_artist_vid is intern
@@ -913,6 +986,9 @@ struct CardRow {
     card_artist_folded_id: u32,
     card_set_code: InlineStr<8>,
     card_layout_id: u32,
+    // The FACE-level layout, taken from the front face and shared by every face of the printing
+    // — see Printing::card_face_layout_id. NONE_STR on all but the reversible rows.
+    card_face_layout_id: u32,
     card_border_id: u32,
     card_watermark_id: u32,
     collector_number_id: u32,
@@ -1000,6 +1076,73 @@ struct FaceRow {
     printed_name_id: u32,
     printed_type_line_id: u32,
     printed_text_id: u32,
+}
+
+/// The TEXT half of a row's faces — the half an `OracleCard` keeps, whether as its own `faces`
+/// or as the `DivergentPrinting::faces` its reversible printings print instead.
+fn oracle_faces(rows: &[FaceRow]) -> Vec<OracleFace> {
+    rows.iter()
+        .map(|f| OracleFace {
+            card_name_id: f.card_name_id,
+            mana_cost_text_id: f.mana_cost_text_id,
+            type_line_id: f.type_line_id,
+            oracle_text_id: f.oracle_text_id,
+            creature_power_text_id: f.creature_power_text_id,
+            creature_toughness_text_id: f.creature_toughness_text_id,
+            planeswalker_loyalty_text_id: f.planeswalker_loyalty_text_id,
+            defense_text_id: f.defense_text_id,
+            card_colors: f.card_colors,
+            color_indicator: f.color_indicator,
+            creature_power: f.creature_power,
+            creature_toughness: f.creature_toughness,
+            planeswalker_loyalty: f.planeswalker_loyalty,
+            mana_cost: f.mana_cost.clone(),
+        })
+        .collect()
+}
+
+/// Do a committed face and a row's face print the same thing?
+///
+/// EVERY field of `OracleFace`, not a subset: this decides whether a printing reads its card's
+/// faces or its own, and a field left out here is a field that could differ while the two
+/// compared equal. The searchable half is included for the same reason — it is derived from the
+/// printed strings, so two faces that agree on the text agree on it too, and a disagreement
+/// means the derivation itself changed.
+fn same_face_text(a: &OracleFace, b: &FaceRow) -> bool {
+    a.card_name_id == b.card_name_id
+        && a.mana_cost_text_id == b.mana_cost_text_id
+        && a.type_line_id == b.type_line_id
+        && a.oracle_text_id == b.oracle_text_id
+        && a.creature_power_text_id == b.creature_power_text_id
+        && a.creature_toughness_text_id == b.creature_toughness_text_id
+        && a.planeswalker_loyalty_text_id == b.planeswalker_loyalty_text_id
+        && a.defense_text_id == b.defense_text_id
+        && a.card_colors == b.card_colors
+        && a.color_indicator == b.color_indicator
+        && a.creature_power == b.creature_power
+        && a.creature_toughness == b.creature_toughness
+        && a.planeswalker_loyalty == b.planeswalker_loyalty
+        // Field by field rather than a `PartialEq` derive on `ManaCost`, so the `cmc` comparison
+        // is spelled out as a BIT comparison: this asks "did the importer produce the same
+        // value", where `f32`'s own `==` would answer no for two identical NaNs.
+        && match (&a.mana_cost, &b.mana_cost) {
+            (None, None) => true,
+            (Some(x), Some(y)) => {
+                x.core == y.core && x.devotion == y.devotion && x.hybrids == y.hybrids && x.cmc.to_bits() == y.cmc.to_bits()
+            }
+            _ => false,
+        }
+}
+
+/// The record whose faces, name and face-layout THIS printing prints — `None` for all but the 81
+/// reversible printings, which is every printing of the 38,555 cards with nothing divergent to say.
+///
+/// The linear scan is over 0 or 1 entries. See `DivergentPrinting::printing_layout_id` for why
+/// the layout is the key and why that is exact rather than a proxy.
+pub(crate) fn divergent_of<'a>(card: &'a AOracleCard, printing: &APrinting) -> Option<&'a ArchivedDivergentPrinting> {
+    card.divergent
+        .iter()
+        .find(|d| u32::from(d.printing_layout_id) == u32::from(printing.card_layout_id))
 }
 
 // Type aliases for the archived (mmap-backed) store types
@@ -1688,6 +1831,20 @@ fn opt_str_list_color_mask(d: &Bound<PyDict>, key: &str) -> Option<u8> {
 ///
 /// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`, for the reason on
 /// `str_list_color_mask` above. The JSON twin is `jv_faces` in core_api.rs.
+/// The FRONT face's `layout` — the whole of `Printing::card_face_layout_id`, since every face of
+/// every printing that has the key agrees on its value (measured: 81 printings, 162 faces).
+///
+/// LOCAL PATCH (Cloudflare port): `#[cfg(feature = "python")]`, like its neighbours. The JSON twin
+/// is `jv_face_layout` in core_api.rs.
+#[cfg(feature = "python")]
+fn face_layout_from_pydict(d: &Bound<PyDict>) -> Option<String> {
+    let value = d.get_item("card_faces").ok().flatten()?;
+    let list = value.cast::<PyList>().ok()?;
+    let front = list.get_item(0).ok()?;
+    let face = front.cast::<PyDict>().ok()?;
+    opt_str(face, "layout")
+}
+
 #[cfg(feature = "python")]
 fn faces_from_pydict(
     d: &Bound<PyDict>,
@@ -1801,6 +1958,9 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         card_artist_vid,
         card_set_code: InlineStr::<8>::from_str(&opt_str(d, "card_set_code").unwrap_or_default()),
         card_layout_id: it.intern(opt_str(d, "card_layout").unwrap_or_default()),
+        // The FRONT face's `layout`, which every face of the printing shares — see
+        // Printing::card_face_layout_id. The JSON twin is in `card_from_json`.
+        card_face_layout_id: it.intern_opt(face_layout_from_pydict(d)),
         card_border_id: it.intern(opt_str(d, "card_border").unwrap_or_default()),
         card_watermark_id: it.intern_opt(opt_str(d, "card_watermark")),
         collector_number_id: it.intern(opt_str(d, "collector_number").unwrap_or_default()),
@@ -5279,9 +5439,26 @@ fn build_all_value_totals(
             NONE_STR => Vec::new(),
             id => vec![strings[id as usize].clone()],
         }),
-        layout: totals!(|_card: &OracleCard, p: &Printing| match p.card_layout_id {
-            NONE_STR => Vec::new(),
-            id => vec![strings[id as usize].clone()],
+        // BOTH values a printing answers `layout:` with — its own and its faces' (see
+        // Printing::card_face_layout_id). This table is read as an EXACT total (the
+        // `TextExact { Layout, Eq }` arm in `exact_total` returns it and never runs the filter),
+        // so a face layout missing from it is not a slower count but a WRONG one:
+        // `layout:normal` would keep answering 106,558 against Scryfall's 106,635 while the
+        // filter beneath it had already been fixed.
+        layout: totals!(|card: &OracleCard, p: &Printing| {
+            let mut keys = Vec::with_capacity(2);
+            if p.card_layout_id != NONE_STR {
+                keys.push(strings[p.card_layout_id as usize].clone());
+            }
+            // Never the same string twice: no printing in the corpus has a face layout equal to
+            // its own, but one that did would be counted twice by this row.
+            if let Some(d) = card.divergent.iter().find(|d| d.printing_layout_id == p.card_layout_id)
+                && d.face_layout_id != NONE_STR
+                && d.face_layout_id != p.card_layout_id
+            {
+                keys.push(strings[d.face_layout_id as usize].clone());
+            }
+            keys
         }),
         frame_data: totals!(|_card: &OracleCard, p: &Printing| {
             p.card_frame_data.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
@@ -14833,7 +15010,11 @@ type FieldExtractor =
 
 #[cfg(feature = "python")]
 const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
-    ("name", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.card_name_id)).into_pyobject(py)?.into_any())),
+    // The card's name, or the joined one THIS printing prints — see the JSON twin.
+    ("name", |py, c, p, s, _v| {
+        let id = divergent_of(c, p).map_or(u32::from(c.card_name_id), |d| u32::from(d.card_name_id));
+        Ok(str_at(s, id).into_pyobject(py)?.into_any())
+    }),
     ("set_code", |py, _c, p, _s, _v| Ok(p.card_set_code.as_str().into_pyobject(py)?.into_any())),
     ("collector_number", |py, _c, p, s, _v| Ok(str_at(s, u32::from(p.collector_number_id)).into_pyobject(py)?.into_any())),
     ("power", |py, c, _p, s, _v| Ok(str_at(s, u32::from(c.creature_power_text_id)).into_pyobject(py)?.into_any())),
@@ -15143,9 +15324,17 @@ fn faces_to_pylist<'py>(
     printing: &APrinting,
     strings: &AStrings,
 ) -> PyResult<Bound<'py, PyList>> {
-    let mut out: Vec<Bound<PyDict>> = Vec::with_capacity(card.faces.len());
-    for (i, face) in card.faces.iter().enumerate() {
+    // Whichever of the card's two face lists THIS printing prints, and the FACE-level `layout`
+    // that goes with it — see the JSON twin `faces_to_json` and OracleCard::divergent_faces.
+    let divergent = divergent_of(card, printing);
+    let faces = divergent.map_or(&card.faces, |d| &d.faces);
+    let face_layout = divergent.and_then(|d| str_at(strings, u32::from(d.face_layout_id)));
+    let mut out: Vec<Bound<PyDict>> = Vec::with_capacity(faces.len());
+    for (i, face) in faces.iter().enumerate() {
         let d = PyDict::new(py);
+        if let Some(v) = face_layout {
+            d.set_item("layout", v)?;
+        }
         d.set_item("name", str_at(strings, u32::from(face.card_name_id)))?;
         d.set_item("mana_cost", str_at(strings, u32::from(face.mana_cost_text_id)))?;
         d.set_item("type_line", str_at(strings, u32::from(face.type_line_id)))?;
@@ -15527,7 +15716,29 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                printing-keyed filter reports a count no page can produce), and nothing else —
 //                layout has no posting index and no bit plane, which is why this is a two-row
 //                change and not a ten-index one.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081615;
+//   2026081616 — A REVERSIBLE PRINTING GETS ITS OWN FACES, ITS OWN NAME AND ITS FACES' LAYOUT.
+//                2026081615 gave the printing its layout and stopped there, so the 81
+//                `reversible_card` rows still printed no `card_faces` at all and answered to
+//                "Temple Garden" rather than "Temple Garden // Temple Garden": both come off the
+//                OracleCard, whose values the group's FIRST row supplies, and that row is one of
+//                the ordinary printings. `OracleFace`'s "face text is oracle-level" reading holds
+//                for 38,555 of 38,626 oracle groups and fails for exactly the 71 with a
+//                reversible printing — measured field for field over every printing in the
+//                2026-08-16 all_cards bulk, which is also where the 3 `adventure` cases come
+//                from, the ones whose reversible printing prints the SAME face names with the
+//                front's oracle text copied onto the back.
+//                Four stored things move: `OracleCard` gains `divergent_faces` +
+//                `divergent_name_id` (the group's OTHER pair, one per card because its
+//                reversible printings all agree — 0 of 71 disagree internally); `Printing` gains
+//                `faces_diverge` (which pair this row prints) and `card_face_layout_id` (the
+//                faces' own `layout`, which `layout:` now reads as a SECOND value — Scryfall's
+//                `layout:normal` is 106,635 against the 106,558 printings whose own layout is
+//                normal, and the gap is exactly the 77 reversible printings with normal faces);
+//                and `ValueTotals::layout` posts both values, since it short-circuits the result
+//                total and would otherwise keep answering 106,558 under a fixed filter. Both row
+//                sizes move (304 -> 320, 256 -> 272), so the header catches a stale archive —
+//                but the totals table does not, which is why the constant moves too.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081616;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -16051,29 +16262,64 @@ fn build_card_data_sorted(
                 // Face TEXT is the same on every printing of a card, so the group's first row
                 // supplies it, exactly like the scalars above. Borrowed rather than taken:
                 // the Printing below still needs the art half of the same faces.
-                faces: row
-                    .card_faces
-                    .iter()
-                    .map(|f| OracleFace {
-                        card_name_id: f.card_name_id,
-                        mana_cost_text_id: f.mana_cost_text_id,
-                        type_line_id: f.type_line_id,
-                        oracle_text_id: f.oracle_text_id,
-                        creature_power_text_id: f.creature_power_text_id,
-                        creature_toughness_text_id: f.creature_toughness_text_id,
-                        planeswalker_loyalty_text_id: f.planeswalker_loyalty_text_id,
-                        defense_text_id: f.defense_text_id,
-                        card_colors: f.card_colors,
-                        color_indicator: f.color_indicator,
-                        creature_power: f.creature_power,
-                        creature_toughness: f.creature_toughness,
-                        planeswalker_loyalty: f.planeswalker_loyalty,
-                        mana_cost: f.mana_cost.clone(),
-                    })
-                    .collect(),
+                //
+                // All but 71 of the 38,626 oracle groups: the exceptions are the ones with a
+                // `reversible_card` printing, whose faces and name are the group's OTHER value
+                // and land in `divergent_faces` below on whichever rows disagree with this one.
+                faces: oracle_faces(&row.card_faces),
+                divergent: Vec::new(),
             });
         } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
             cards.last_mut().unwrap().legality_divergent = true;
+        }
+        // Does this printing print its card's faces and name, or the group's OTHER pair?
+        //
+        // TWO pairs per group and never three — measured over every printing of every oracle
+        // group in the 2026-08-16 all_cards bulk, face records compared field for field: 71
+        // groups carry two and 38,555 carry one. So the first row's pair is the card's, and the
+        // first row that disagrees defines the divergent one; a third would be a corpus this
+        // shape cannot hold, and is an error rather than a silent drop.
+        //
+        // The group's FIRST row decides which of the two is card-level, the same rule (and the
+        // same exposure) the name and every other scalar above already has: a group whose
+        // highest-prefer printing were the reversible one would carry the joined name at card
+        // level. No group does — a built store flags 81 printings here, exactly the reversible
+        // rows and nothing else.
+        {
+            let card = cards.last_mut().expect("a card exists: the group was just opened or is open");
+            let same = card.card_name_id == row.card_name_id
+                && card.faces.len() == row.card_faces.len()
+                && card.faces.iter().zip(row.card_faces.iter()).all(|(a, b)| same_face_text(a, b));
+            if same {
+                // The layout KEYS the divergent record, so it must not also appear on a printing
+                // that agrees with the card — see DivergentPrinting::printing_layout_id. 0 of the
+                // 71 divergent groups do; one that did would answer for the wrong printings.
+                if card.divergent.iter().any(|d| d.printing_layout_id == row.card_layout_id) {
+                    return Err(EngineError::value(format!(
+                        "oracle group {:032x} has one layout on BOTH of its (name, faces) pairs",
+                        card.oracle_id
+                    )));
+                }
+            } else if let Some(d) = card.divergent.first() {
+                if d.card_name_id != row.card_name_id
+                    || d.printing_layout_id != row.card_layout_id
+                    || d.face_layout_id != row.card_face_layout_id
+                    || d.faces.len() != row.card_faces.len()
+                    || !d.faces.iter().zip(row.card_faces.iter()).all(|(a, b)| same_face_text(a, b))
+                {
+                    return Err(EngineError::value(format!(
+                        "oracle group {:032x} has a THIRD distinct (name, faces) pair; the archive holds two",
+                        card.oracle_id
+                    )));
+                }
+            } else {
+                card.divergent.push(DivergentPrinting {
+                    printing_layout_id: row.card_layout_id,
+                    card_name_id: row.card_name_id,
+                    face_layout_id: row.card_face_layout_id,
+                    faces: oracle_faces(&row.card_faces),
+                });
+            }
         }
         // The per-face printed triple, parallel to `faces` — but only materialized when some
         // face actually carries a printed key, so the all-English common case stores an empty

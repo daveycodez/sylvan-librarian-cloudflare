@@ -615,6 +615,41 @@ fn opt_sv(v: Option<&str>) -> StrVal<'_> {
     v.map_or(StrVal::Null, StrVal::Known)
 }
 
+/// The SECOND value a text field compares against, for the one field that has two.
+///
+/// `layout:` is a multi-VALUE column and not a scalar one: a `reversible_card` printing answers
+/// both `layout:reversible_card` and its faces' `layout:normal` (measured on api.scryfall.com —
+/// `is:reversible layout:reversible_card` 81, `is:reversible layout:normal` 77, and the whole
+/// 77-row gap between `layout:normal`'s 106,635 there and the 106,558 printings whose own layout
+/// is `normal`). See `Printing::card_face_layout_id`.
+///
+/// Exhaustive over `TextField`, not a `matches!` with a hidden `_ => None`: a field that gains a
+/// second value must get a considered answer here rather than silently keeping one. `None` means
+/// "this field has exactly one value", which is every field but `Layout` and every printing but
+/// the 81.
+fn second_text_field_value<'a>(
+    card: &'a AOracleCard,
+    printing: Option<&'a APrinting>,
+    strings: &'a AStrings,
+    field: TextField,
+) -> Option<&'a str> {
+    match field {
+        TextField::Layout => printing
+            .and_then(|p| crate::divergent_of(card, p))
+            .and_then(|d| str_at(strings, u32::from(d.face_layout_id))),
+        TextField::NameLower
+        | TextField::OracleTextLower
+        | TextField::FullOracleTextLower
+        | TextField::FlavorTextLower
+        | TextField::ArtistLower
+        | TextField::SetCode
+        | TextField::Border
+        | TextField::Watermark
+        | TextField::CollectorNumber
+        | TextField::TypeLine => None,
+    }
+}
+
 fn text_search_field_value<'a>(
     card: &'a AOracleCard,
     printing: Option<&'a APrinting>,
@@ -2239,24 +2274,43 @@ impl FilterExpr {
             }
 
             FilterExpr::TextExact { field, op, value } => {
+                let holds = |s: &str| match op {
+                    CmpOp::Eq => s == value,
+                    CmpOp::Ne => s != value,
+                    CmpOp::Lt => s < value.as_str(),
+                    CmpOp::Le => s <= value.as_str(),
+                    CmpOp::Gt => s > value.as_str(),
+                    CmpOp::Ge => s >= value.as_str(),
+                };
+                // EXISTENTIAL over the field's values, which is one value on every field but
+                // `layout:` and on every printing but the 81 that carry a face-level layout —
+                // see `second_text_field_value`. Negation composes correctly through it: the
+                // `Not` arm complements this, so `-layout:normal` is "no value of this printing
+                // is normal", which is Scryfall's own 4 for `is:reversible -layout:normal`.
                 match text_field_value(card, printing, strings, *field) {
-                    StrVal::Known(s) => tri_bool(match op {
-                        CmpOp::Eq => s == value,
-                        CmpOp::Ne => s != value,
-                        CmpOp::Lt => s < value.as_str(),
-                        CmpOp::Le => s <= value.as_str(),
-                        CmpOp::Gt => s > value.as_str(),
-                        CmpOp::Ge => s >= value.as_str(),
-                    }),
-                    StrVal::Null => Tri::Null,
+                    StrVal::Known(s) => tri_bool(
+                        holds(s) || second_text_field_value(card, printing, strings, *field).is_some_and(holds),
+                    ),
+                    StrVal::Null => match second_text_field_value(card, printing, strings, *field) {
+                        Some(s) => tri_bool(holds(s)),
+                        None => Tri::Null,
+                    },
                     StrVal::PDep => Tri::PrintingDep,
                 }
             }
 
             FilterExpr::TextRegex { field, regex } => {
+                // Existential over the same values the exact arm tests, for the same reason.
                 match text_field_value(card, printing, strings, *field) {
-                    StrVal::Known(s) => tri_bool(regex.is_match(s)),
-                    StrVal::Null => Tri::Null,
+                    StrVal::Known(s) => tri_bool(
+                        regex.is_match(s)
+                            || second_text_field_value(card, printing, strings, *field)
+                                .is_some_and(|v| regex.is_match(v)),
+                    ),
+                    StrVal::Null => match second_text_field_value(card, printing, strings, *field) {
+                        Some(s) => tri_bool(regex.is_match(s)),
+                        None => Tri::Null,
+                    },
                     StrVal::PDep => Tri::PrintingDep,
                 }
             }

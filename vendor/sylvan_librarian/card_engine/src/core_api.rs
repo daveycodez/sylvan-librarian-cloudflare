@@ -269,6 +269,17 @@ fn jv_opt_str_list_color_mask(d: &Value, key: &str) -> Option<u8> {
 /// transform back face has no `mana_cost` at all, which is different from having an empty one.
 /// The three non-optional ids (name, type_line, oracle_text) use `unwrap_or_default()` to match
 /// the pydict twin exactly, so both sides agree key-for-key.
+/// The FRONT face's `layout` — the whole of `Printing::card_face_layout_id`, since every face of
+/// every printing that has the key agrees on its value (measured: 81 printings, 162 faces).
+///
+/// The pydict twin is `face_layout_from_pydict` in lib.rs.
+fn jv_face_layout(d: &Value) -> Option<String> {
+    d.get("card_faces")
+        .and_then(Value::as_array)
+        .and_then(|l| l.first())
+        .and_then(|f| jv_opt_str(f, "layout"))
+}
+
 fn jv_faces(
     d: &Value,
     it: &mut Interner,
@@ -566,6 +577,9 @@ pub(crate) fn card_from_json(
         card_artist_vid,
         card_set_code: InlineStr::<8>::from_str(&jv_opt_str(d, "card_set_code").unwrap_or_default()),
         card_layout_id: it.intern(jv_opt_str(d, "card_layout").unwrap_or_default()),
+        // The FRONT face's `layout`, which every face of the printing shares — see
+        // Printing::card_face_layout_id. The pydict twin is `face_layout_from_pydict`.
+        card_face_layout_id: it.intern_opt(jv_face_layout(d)),
         card_border_id: it.intern(jv_opt_str(d, "card_border").unwrap_or_default()),
         card_watermark_id: it.intern_opt(jv_opt_str(d, "card_watermark")),
         collector_number_id: it.intern(jv_opt_str(d, "collector_number").unwrap_or_default()),
@@ -1041,6 +1055,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u32v(r.card_artist_folded_id);
     e.str_inline(r.card_set_code.as_str());
     e.u32v(r.card_layout_id);
+    e.u32v(r.card_face_layout_id);
     e.u32v(r.card_border_id);
     e.u32v(r.card_watermark_id);
     e.u32v(r.collector_number_id);
@@ -1196,6 +1211,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         card_artist_folded_id: d.u32v(),
         card_set_code: InlineStr::from_str(&d.str_owned()),
         card_layout_id: d.u32v(),
+        card_face_layout_id: d.u32v(),
         card_border_id: d.u32v(),
         card_watermark_id: d.u32v(),
         collector_number_id: d.u32v(),
@@ -2463,7 +2479,13 @@ fn str_vec_value(items: Vec<&str>) -> Value {
 /// ordering/sorting behavior, values rendered as JSON instead of Python
 /// objects. Absent optionals are `null`.
 const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
-    ("name", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.card_name_id)))),
+    // The card's name, or — on the 81 printings whose faces are not their card's — the joined
+    // name THIS printing prints: "Temple Garden // Temple Garden" against the card's "Temple
+    // Garden". See OracleCard::divergent_faces.
+    ("name", |c, p, s, _v| {
+        let id = crate::divergent_of(c, p).map_or(u32::from(c.card_name_id), |d| u32::from(d.card_name_id));
+        opt_str_value(str_at(s, id))
+    }),
     ("set_code", |_c, p, _s, _v| Value::String(p.card_set_code.as_str().to_owned())),
     ("collector_number", |_c, p, s, _v| opt_str_value(str_at(s, u32::from(p.collector_number_id)))),
     ("power", |c, _p, s, _v| opt_str_value(str_at(s, u32::from(c.creature_power_text_id)))),
@@ -2849,12 +2871,24 @@ fn folded_name_matches(stored: &str, needle: &str) -> bool {
 /// both. A printing carrying fewer face-art records than the card has faces leaves those faces
 /// without art rather than borrowing the wrong face's, exactly as the pydict twin does.
 fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings) -> Value {
+    // Whichever of the card's two face lists THIS printing prints -- see
+    // OracleCard::divergent_faces. `faces_diverge` is false on all but 81 printings, where this
+    // reads `card.faces` exactly as it always has.
+    let divergent = crate::divergent_of(card, printing);
+    let faces = divergent.map_or(&card.faces, |d| &d.faces);
+    // Scryfall's FACE-level `layout`, which the 81 reversible printings carry on both faces and
+    // nothing else in the corpus carries at all. Absent stays absent: writing the key with a
+    // null would put it on 540k faces Scryfall sends it on none of.
+    let face_layout = divergent.and_then(|d| str_at(strings, u32::from(d.face_layout_id)));
     Value::Array(
-        card.faces
+        faces
             .iter()
             .enumerate()
             .map(|(i, face)| {
                 let mut m = Map::with_capacity(12);
+                if let Some(v) = face_layout {
+                    m.insert("layout".to_owned(), Value::String(v.to_owned()));
+                }
                 m.insert("name".to_owned(), opt_str_value(str_at(strings, u32::from(face.card_name_id))));
                 m.insert("mana_cost".to_owned(), opt_str_value(str_at(strings, u32::from(face.mana_cost_text_id))));
                 m.insert("type_line".to_owned(), opt_str_value(str_at(strings, u32::from(face.type_line_id))));

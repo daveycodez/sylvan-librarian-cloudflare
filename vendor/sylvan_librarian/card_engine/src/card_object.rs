@@ -229,6 +229,12 @@ const TWO_IMAGE_LAYOUTS: [&str; 5] =
 /// EVERY layout, split included, so this rule is deliberately scoped to `edhrec` alone.
 const EDHREC_JOINED_LAYOUTS: [&str; 3] = ["double_faced_token", "reversible_card", "split"];
 
+/// The layout whose printings keep NOTHING of the card at top level — see `write_scryfall_card`.
+///
+/// One name rather than a set, because it is one: nothing else in the corpus omits `oracle_id`,
+/// and nothing else puts `layout` on a face.
+const REVERSIBLE_LAYOUT: &str = "reversible_card";
+
 /// Top-level keys a two-image layout does not carry, because they belong to a face there.
 fn is_face_owned_key(key: &str) -> bool {
     matches!(
@@ -477,7 +483,17 @@ fn joined_mana_cost(faces: &[Value]) -> String {
 /// The card's faces, with the two keys the engine deliberately does not store re-added: `object`
 /// is the constant, and a face's `image_uris` is the card's own CDN function with the face swapped
 /// — on the two-image layouts, which are the only ones whose faces have their own picture.
-fn write_faces(out: &mut Vec<u8>, faces: &[Value], scryfall_id: &str, updated_at: Option<u64>, two_image: bool) {
+fn write_faces(
+    out: &mut Vec<u8>,
+    faces: &[Value],
+    scryfall_id: &str,
+    updated_at: Option<u64>,
+    two_image: bool,
+    // The card's `oracle_id` and `cmc`, to be written on EVERY face -- `Some` only for a
+    // reversible printing, which is the one layout whose faces carry them (and whose top-level
+    // object omits them). Both faces of all 81 send the card's own values, never a second one.
+    card_ids: Option<(&str, Option<&Value>)>,
+) {
     out.push(b'[');
     for (index, face) in faces.iter().enumerate() {
         if index > 0 {
@@ -487,6 +503,15 @@ fn write_faces(out: &mut Vec<u8>, faces: &[Value], scryfall_id: &str, updated_at
         let mut first = true;
         write_key(out, &mut first, "object");
         write_json_str(out, "card_face");
+        if let Some((oid, cmc)) = card_ids {
+            write_key(out, &mut first, "oracle_id");
+            write_json_str(out, oid);
+            write_key(out, &mut first, "cmc");
+            match cmc.and_then(serde_json::Value::as_f64) {
+                Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
+                None => out.extend_from_slice(b"null"),
+            }
+        }
         if let Value::Object(map) = face {
             for (key, value) in map {
                 // `colors` is a face key only where the faces own their own art: every face of
@@ -544,6 +569,13 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     let layout = str_of(row, "layout");
     // Only ever true for a card that HAS faces: the two-image layouts are all multi-face.
     let two_image = faces.is_some() && layout.is_some_and(|l| TWO_IMAGE_LAYOUTS.contains(&l));
+    // A REVERSIBLE printing keeps NOTHING of the card at top level -- not even the three keys
+    // every other multi-face layout keeps. Measured across the whole 2026-08-16 all_cards bulk:
+    // all 81 of them omit `oracle_id`, `cmc` and `type_line`, where a `transform` printing sends
+    // all three (verified live on Delver of Secrets // Insectile Aberration). Its FACES carry
+    // their own `oracle_id` and `cmc` instead -- the card's, on both faces, 0 of 81 disagreeing --
+    // which is why omitting the top-level pair loses nothing.
+    let reversible = layout == Some(REVERSIBLE_LAYOUT);
     // The joined name everywhere except edhrec on the layouts EDHREC files by front face.
     let edhrec_name = if faces.is_some() && !layout.is_some_and(|l| EDHREC_JOINED_LAYOUTS.contains(&l)) {
         front_face_name(name)
@@ -558,8 +590,10 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_json_str(out, "card");
     write_key(out, &mut first, "id");
     write_json_str(out, scryfall_id);
-    write_key(out, &mut first, "oracle_id");
-    write_json_str(out, oracle_id);
+    if !reversible {
+        write_key(out, &mut first, "oracle_id");
+        write_json_str(out, oracle_id);
+    }
     write_list(out, &mut first, "multiverse_ids", list_of(row, "multiverse_ids"));
     write_key(out, &mut first, "name");
     write_json_str(out, name);
@@ -580,6 +614,7 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_str_or_null(out, &mut first, "layout", str_of(row, "layout"));
     write_bool(out, &mut first, "highres_image", bool_of(row, "highres_image"));
     write_str_or_null(out, &mut first, "image_status", str_of(row, "image_status"));
+    if !reversible {
     write_key(out, &mut first, "cmc");
     // As a DECIMAL, which is what api.scryfall.com answers with: `"cmc":1.0`, not `"cmc":1` (see
     // https://api.scryfall.com/cards/named?exact=Lightning+Bolt). Writing the stored number
@@ -595,7 +630,10 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
         Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
         None => out.extend_from_slice(b"null"),
     }
-    write_str_or_null(out, &mut first, "type_line", str_of(row, "type_line"));
+    }
+    if !reversible {
+        write_str_or_null(out, &mut first, "type_line", str_of(row, "type_line"));
+    }
     // Directly after the oracle `type_line` it translates, per the live objects.
     write_opt_str(out, &mut first, "printed_type_line", str_of(row, "printed_type_line"));
     // `colors` is one of the values a two-image layout keeps on its faces alone (see
@@ -686,7 +724,7 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     // where each face has its own.
     if let Some(faces) = faces {
         write_key(out, &mut first, "card_faces");
-        write_faces(out, faces, scryfall_id, image_updated_at, two_image);
+        write_faces(out, faces, scryfall_id, image_updated_at, two_image, reversible.then_some((oracle_id, num_of(row, "cmc"))));
         if !two_image {
             write_key(out, &mut first, "mana_cost");
             write_json_str(out, &joined_mana_cost(faces));
