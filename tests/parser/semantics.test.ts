@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { balancePartialQuery, canonicalStringify, ParseError, parseScryfallQuery } from "../../src/parser";
-import { regexPlainLiteral } from "../../src/parser/rewrite";
+import { regexPlainLiteral, SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "../../src/parser/rewrite";
 
 // ── balance_partial_query: shared frontend/backend fixture contract ──────────
 // (upstream test_balance_parity.py against api/static/fixtures/balance_queries.json)
@@ -99,6 +99,38 @@ describe("derived-predicate expansion", () => {
 		const root = parseScryfallQuery("is:promo");
 		expect(root.node_type).toBe("CardBinaryOperatorNode");
 		expect(root.kwargs.op).toBe(":");
+	});
+});
+
+// ── has: is a TOTAL alias of is: ─────────────────────────────────────────────
+//
+// The parity sweep found `has:split` answering a 404 here against 126 on api.scryfall.com. The
+// cause was that HAS_EXPANSIONS is a hand-probed list of `has:`-FLAVOURED values, so anything
+// nobody thought to spell against `has:` was simply absent. Measured 2026-08-17 over 22 values
+// spanning every shape of the `is:` vocabulary: `is:X` and `has:X` agree on `total_cards` 22 of 22.
+//
+// Two properties, and the second is the one a careless widening breaks: the alias must not swallow
+// the PRESENCE half, where `has:` and `is:` mean genuinely different things.
+describe("has: aliases is:", () => {
+	test("every supported is: value is a supported has: value", () => {
+		const missing = [...SUPPORTED_IS_VALUES].filter((v) => !SUPPORTED_HAS_VALUES.has(v));
+		expect(missing).toEqual([]);
+	});
+
+	// One per shape: a derived layout predicate, a computed text predicate, an importer boolean,
+	// and a set-shaped one. Each must expand to the identical tree under either spelling.
+	for (const value of ["split", "dfc", "frenchvanilla", "permanent", "promo", "etched", "commander"]) {
+		test(`has:${value} == is:${value}`, () => {
+			expect(tree(`has:${value}`)).toBe(tree(`is:${value}`));
+		});
+	}
+
+	// The presence half keeps precedence. `has:watermark` asks whether a watermark is PRESENT --
+	// there is no `is:watermark`, and folding the alias in ahead of HAS_EXPANSIONS would turn this
+	// into an unsupported tag matching nothing.
+	test("the presence half is not overtaken by the alias", () => {
+		expect(tree("has:watermark")).toBe(tree("watermark:/./"));
+		expect(tree("has:artist")).toBe(tree("artist:/./"));
 	});
 });
 

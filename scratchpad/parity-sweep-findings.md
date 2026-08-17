@@ -855,3 +855,304 @@ reachable by any comparator that reads only what `/sets` publishes. No code chan
 The four misses are worth naming as the permanent cost, since they will not be fixed: `4ed`/`4bb`,
 `snc`/`psnc`, `sos`/`psos`, `tdm`/`tdc`. Each puts one small set on the wrong side of one boundary
 inside one shared release date.
+
+---
+
+# 17. Triage of the 78 NEW findings at generation 37, matrix 665
+
+> **Provenance.** `bun run parity-sweep --gap 1000` re-run 2026-08-17 against a local dev server on
+> the current tree, store `card-store-v2026081702-1787001512`, `STORE_CONTENT_GENERATION` **37**.
+> Reproduced the reported run exactly: **465 query + 200 peripheral = 665 cases**, **78 NEW**
+> list-level + **1 NEW object path**, 31 INCONCLUSIVE, and **0 requests to api.scryfall.com against
+> 700 cache hits**. Every count below is at matrix size 665 and is NOT comparable with any figure
+> taken at 529.
+>
+> Triage cost **163 live requests**, serial, spaced 1.1 s. Everything else came from
+> `live-parity-cache/`.
+
+## 17.1 The buckets, and the count in each
+
+Sections 16 and commit `5440875` between them retire one class; snapshot skew was the expected
+second; real defects the third. The 78 do not fit in three, and forcing them would hide the most
+useful distinction in the set — so there are six, and the two extra ones are named rather than
+smuggled into a neighbour.
+
+| bucket | n | what it means |
+|---|---|---|
+| **(a) proven NOT DERIVABLE** | **10** | an unpublished ordinal on Scryfall's side; a proof exists |
+| **(b) snapshot skew** | **0** | see §17.2 — there is none, and that is a measurement, not an omission |
+| **(c) real defect** | **28** | a rule that IS derivable and this port gets wrong |
+| **(d) recorded residual** | **33** | a known, measured, deliberately-accepted loss — NOT proven undecidable |
+| **(e) not a defect** | **4** | this port answers a question Scryfall does not implement |
+| **(f) could not determine** | **3** | stated plainly rather than forced |
+
+## 17.2 (b) is zero, and the reason is checkable
+
+`scripts/store-age.ts --local` reports Scryfall's newest dump (2026-08-17T21:18:06Z) already in the
+served store, and the sweep's own volatile-shape line shows the two corpora within 1% on every
+price and rank column. Every membership divergence in the 78 was chased to a rule rather than a
+vintage: `!"Abomination"`, `!"Active Volcano"`, `!"Angelic Page"`, `!"Burakos, Party Leader"`,
+`!"Daxos, Blessed by the Sun"` and `!"Aang, Swift Savior"` return **byte-identical printing lists**
+on both sides under `unique=prints`, so where the two answers differ it is the SELECTION that
+differs and not the corpus. The `usd>=500` gap looked exactly like skew — 205 against 84 — and
+§17.3 shows it is not.
+
+## 17.3 (c) The seven real defects
+
+### C9 — `has:` is a TOTAL alias of `is:` — **FIXED in this commit**
+
+`has:split` is 126 upstream and a 404 here. `HAS_EXPANSIONS` was built by probing `has:`-FLAVOURED
+candidates, so every value nobody thought to spell against `has:` was missing. Measured on 22
+values spanning the whole `is:` vocabulary: `is:X` and `has:X` agree on `total_cards` **22 of 22**,
+and a value that is neither stays a 400 upstream. `src/parser/rewrite.ts` now falls back
+`has:X` → `is:X` for every supported `is:` value, with `HAS_EXPANSIONS` keeping precedence so
+`has:watermark` stays a presence test. **LOCAL** — the parser is this port's.
+
+### C8 — `t:<canonical type>` matches the type WORD, not a substring
+
+`t:god` is 96 upstream and **104** here; the 8 extra are every **Demigod** in the corpus. Scryfall's
+`t:` is a substring match in general — `t:gob` = `t:goblin` = 563, `t:emigod` = `t:demigod` = 8,
+`t:reature` = `t:crea` = 18,753, all agreeing on both sides — and switches to an exact TYPE-WORD
+match when the value is a canonical type name. `warrior` shows the same rule from the other side:
+`t:rrior` is 1,294 on both, and `t:warrior` is **1,298** upstream because the canonical path reaches
+subtypes Scryfall indexes but never prints (`Burakos, Party Leader` matches `t:orc` and all four
+party classes while its `type_line` is `Legendary Creature — Orc` on BOTH sides).
+
+**This one anchor poisoned three probes.** `op-card_set_code-neg`, `op-released_at-eq0` and
+`op-released_at-cmp0` are all filed against `-e:khm`, `date:` and `date>=` and every one of their
+extra rows is a Demigod. That is property **B** of §11 happening again, and the adequacy check
+cannot see it: `t:god` is not a vacuous anchor, it is a WRONG one.
+
+Route: **#927** (engine — the filter needs the canonical type catalog, which
+`CATALOG_NAMES` already carries). Not fixed here: it needs a Rust filter change and a wasm rebuild.
+The Burakos half is *not* derivable from any published field and is a separate, permanent 1-card
+residual per party class.
+
+### C10 — `usd`/`eur` are `COALESCE(nonfoil, foil)` upstream; this port reads nonfoil only
+
+`usd>=500` is 205 upstream and **84** here, `eur>=400` 375 against 198. Measured on the 175 rows of
+`usd>=500 unique=prints`: **99 have `prices.usd` NULL and `usd_foil >= 500`**, 76 have a plain
+`usd >= 500`, and **zero** have `usd < 500` with a high foil. So it is a fallback when nonfoil is
+absent, not a maximum — foil-only serialized and borderless printings are precisely the expensive
+ones. `tix` has no foil column and agrees exactly (14 = 14), which is the control.
+
+Route: **#927** (engine/builder — the stored price column). Not fixed here: it changes a stored
+column, so it needs `STORE_CONTENT_GENERATION` bumped and a full rebuild.
+
+### C1 — the printing rank has no LANGUAGE key, so a foreign-only slot outranks the English one
+
+`ranks.rs` orders DISTINCT `(released_at, set_code, collector_number)` slots by
+`pin, released_at DESC, cn ASC`, and its module doc claims "ENGLISH STILL LEADS ITS OWN SLOT". It
+does — and nothing makes it lead ACROSS slots. `RANK_STEP` is 2048, so `prefer_score`'s `+40`
+language term (and `+14` border, `+6` paper, `+42` frame) can never influence a cross-slot choice.
+A set printed only in one foreign language therefore wins on date alone. Four narrowed pairs,
+measured live, one request each:
+
+| card | candidates (in scope) | Scryfall | ours |
+|---|---|---|---|
+| Active Volcano | `leg/130:en@1994-06-01` `bchr/43:ja@1995-07-01` `chr/43:en@1995-07-01` | `chr/43:en` | `bchr/43:ja` |
+| Abomination | `leg/87:en@1994-06-01` `4bb/117:es@1995-04-01` `ren/46:fr@1995-08-01` | `leg/87:en` | `ren/46:fr` |
+| Abyssal Specter | `8ed/117:en` `8ed/117★:en` `ddc/40:en` `dpa/18:en` `ps11/60:es@2011-01-01` | `ddc/40:en` | `ps11/60:es` |
+| Darksteel Juggernaut | `som/150:en@2010-10-01` `pmei/2010-1:ja@2010-12-01` | `som/150:en` | `pmei/2010-1:ja` |
+
+Scryfall picks an English printing in every one. Adding an `is_english` key directly after `pin`
+fixes three of the four outright; Abyssal Specter still lands on `dpa/18` rather than `ddc/40`,
+which is the ordinary §17.4 residual and a different question. Note `bchr/43` and `chr/43` share a
+release date AND a collector number, so today the two slots are separated by nothing at all —
+`sort_unstable_by_key` on an exact tie, which is not even deterministic.
+
+Route: **LOCAL** — `engine/builder/src/ranks.rs` is this port's crate; upstream computes the
+representative from `prefer_score` alone, where `+40` does decide it, so upstream does not have
+this bug to fix. Not fixed here: it changes every `prefer_score` in the archive, so it needs a
+`STORE_CONTENT_GENERATION` bump and a rebuild.
+
+### C11 — autocomplete: the length metric and the extras exclusion
+
+The one NEW object path, resolved on its own as asked. `data.*` differs at 18 of 20 positions for
+`q=lig`, and it is two independent rules, both measured, plus one residual:
+
+1. **Ordering.** Upstream's engine (`core_api.rs::autocomplete`) mirrors upstream's SQL
+   `ORDER BY rank, length(card_name), card_name`, and `src/engine/partitioned-engine.ts`'s
+   `mergeAutocomplete` mirrors that in turn. **Scryfall measures the length with spaces and
+   punctuation REMOVED.** Counting adjacent inversions in Scryfall's own output, over four
+   prefixes: `lig` 2 squashed / 6 raw, `sha` 2 / 6, `bol` **0** / 2, `goblin w` **0** / 3. Ours is
+   0 raw by construction and 1–5 squashed. `Light 'Em Up` (9 squashed, 12 raw) sitting third,
+   before `Lightwalker` (11), is the whole difference in one row.
+2. **Selection.** Scryfall's catalog EXCLUDES extras. The three names in our 20 and not theirs are
+   `Shark` and `Shard` (Token Creature / Token Enchantment), `Lightning` (a `memorabilia`
+   front-card) and `Lightning Colt` (`cmb2`, a funny playtest set).
+3. **Residual, unexplained.** `Light of Promise` (14 squashed, a normal m21 card) is excluded while
+   `Light Up the Night` (15) is included, and the order WITHIN one length is not alphabetical. That
+   is one inversion in 20 and I could not derive it.
+
+Route: **#927** (the catalog is the engine's). Not fixed here: (1) and (2) are proven and (3) is
+not, and the differential `autocomplete_merge_key_matches_the_single_store` pins the TS merge to the
+Rust key, so the two must move together.
+
+### C12 — `order=name` ties between DISTINCT cards sharing a name break on `oracle_id` here
+
+Five findings, one rule. Where several different cards print the same name, our secondary key is the
+store's row order, which is `oracle_id` ASC — verified: the oracle-id prefixes of our
+`Knight of the Kitchen Sink`, `Everythingamajig`, `Alien`, `Elemental // Elemental` and
+`Fast // Furious` runs are strictly ascending in every case. `oracle_id` is a UUID, so this is a
+hash order with no relation to anything Scryfall does. Scryfall's is consistent with
+`(set_code, collector_number)` on four of the five — `ust/12a…12f`, `tust/11` then `tust/17`,
+`mh2/123` then `unk/CR15a`, `tmsh` `tpip` `twho` — and contradicts it on `Everythingamajig`
+(`ust/147c, 147f, 147b, 147a, 147e, 147d`), which is the stored-sequence signature again.
+
+Route: **LOCAL**, and expensive — the tie-break lives in `encode_sort_key`'s tail, so changing it is
+an `ARCHIVE_FORMAT_VERSION` bump. Recorded, not fixed. Worth doing on the 4-of-5 evidence, not on
+this session's budget.
+
+### C14 — `next_page` echoes the query's smart quotes
+
+`q=o:“draw”` comes back as `q=o:"draw"` in Scryfall's `next_page` and verbatim here. One row,
+cosmetic, and a client that follows the link is unaffected because our own parser accepts both.
+Route: **#928** (responder).
+
+### Also found while triaging the INCONCLUSIVE, and bigger than anything above
+
+**`*` power/toughness compares as 0 upstream.** `toughness<1` is 434 there and **273** here;
+`tou=0` is 432 against 272; and Scryfall's `tou:*` answers **432** — the same 432 — while ours is a
+400. `Abominable Treefolk` is `*/*` and matches upstream. §6 of this file noted the anomaly in
+passing ("power/toughness are text columns with `*` values on their side. Not addressed here") and
+never sized it: it is **160 cards**. Route **#927**.
+
+**`is:vanilla` is 363 upstream and 18,753 here** — which is exactly `t:creature`. Noted once,
+in passing, from the `has:` work; it is not one of the 78 and is not chased here.
+
+## 17.4 (d) The 33 recorded residuals — and why `plst` is NOT the proven class
+
+**The instruction was to check rather than assume, and the answer is that these are a different
+question from the `unique=art` proof.** `5440875` proved the ARTWORK representative is a fixed
+internal ordinal: no field separates the 4 from the 35. The `unique=cards` representative is not
+that. `ranks.rs` establishes by Kahn's algorithm over 24,943 constraints that **0 of 10,557 cards
+contradict a total order**, so a score exists; the pin answers it exactly (.9999) whenever the
+filter contains the pinned printing; and 96.24% of the pin-EXCLUDED class falls out of
+`released_at DESC, cn ASC`. The 28 `plst`/variant findings are that rule's residual, which
+`ranks.rs` names in its own module doc — `plst/USG-4`, `plst/MMQ-172`, `plst/FUT-174`,
+`plst/DDN-42`, `sld/901` — and declines to fix, because demoting `plst` by set code is worth
++0.35pp and "a hardcoded set code is the wrong trade for a third of a point".
+
+New evidence, three narrowed pairs, one request each, that says the residual is SIGNAL and not
+noise — in every one Scryfall picks the OLDEST candidate, which is the exact opposite of the
+fitted `released_at DESC`:
+
+| scope | candidates | Scryfall | ours |
+|---|---|---|---|
+| `!"Angelic Page" a:guay` | `usg/4@1998-10-12` `brb/4@1999-11-12` `plst/USG-4@2024-08-02` | `usg/4` | `plst/USG-4` |
+| `!"Arms Dealer" frame:1997 t:goblin` | `mmq/172@1999-10-04` `plst/MMQ-172@2024-08-02` | `mmq/172` | `plst/MMQ-172` |
+| `!"Kiki-Jiki…" t:goblin r:rare` | `chk/175@2004-10-01` `plst/CHK-175@2022-02-18` | `chk/175` | `plst/CHK-175` |
+
+And the pin itself is not in doubt: `!"Angelic Page"`, `!"Arms Dealer"` and `!"Kiki-Jiki, Mirror
+Breaker"` under bare `unique=cards` answer `jmp/88`, `m13/120` and `ima/136` on BOTH sides. The
+divergence appears only where the filter excludes the pin, exactly as `ranks.rs` says.
+
+So: **not proven undecidable, and not snapshot skew.** A derivable feature exists and was measured
+and declined. It stays declined here — one session's three pairs is not the evidence that should
+overturn a 16,045-observation fit with a held-out 30% — but it is filed as an open engine question
+rather than as a closed one.
+
+The other 5 in (d) are already-recorded deferrals: `unique=art`'s cross-card SCOPE (`c7d8cf3`,
+`5440875` — 3 findings, and `scripts/live-parity-cases.json` is being extended for it by another
+agent right now, so nothing here touches it) and the reversible-card name (`c1b087a`, 2 findings).
+
+## 17.5 (e) Four that are not defects
+
+`order=cubecobra` is an UPSTREAM ordering; api.scryfall.com does not implement it. Proved rather
+than assumed: Scryfall's `order=cubecobra` output is **byte-identical to its `order=name`** in both
+directions on `e:khm unique=prints`, so it silently falls back. Serving an ordering Scryfall lacks
+cannot break a client that only calls Scryfall's — the same argument the ledger already makes for
+`/cards`. **These want a ledger entry in `scripts/live-parity-cases.json`, which this session did
+not write because another agent holds that file.**
+
+## 17.6 (f) Three I could not determine
+
+* `multilingual-true` (2) — with `include_multilingual=true`, Scryfall's `order=name` tie puts
+  `khm/40 de` ahead of `khm/302` and ours the reverse. A cross-LANGUAGE tie-break, which C1's
+  cross-slot fix does not reach and which no probe here separated.
+* `order-color-desc` (1) — `e:khm order=color dir=desc unique=prints`: `Faceless Haven (khm/255)`
+  against `A-Bretagard Stronghold (khm/A-253)`, both `[]`. A tie among colourless rows where one
+  side is an Arena-rebalanced row; the `dir=asc` twin is INCONCLUSIVE rather than NEW, so the two
+  directions do not even agree about what kind of divergence this is.
+
+## 17.7 The 31 INCONCLUSIVE
+
+Every one is INCONCLUSIVE for the SAME structural reason and it is the harness's, not the subject's:
+the sweep marks a total or a membership divergence inconclusive when the result exceeds one page,
+because page-1 evidence cannot account for rows in a tail neither side showed. That is a correct
+refusal, not a gap in the corpus — no reference data is missing, and no mode is unsupported.
+
+Underneath the refusal, **29 of the 31 resolve to causes already named above**, which is what says
+nobody had looked rather than that nobody could:
+
+| findings | cause |
+|---|---|
+| 5,6,7,8,21,22 | **C10** — `usd`/`eur` foil coalesce |
+| 3,4 | **`*` power/toughness compares as 0** (§17.3), 160 cards |
+| 1,2 | **C8** — `Burakos, Party Leader`, the party-class subtypes Scryfall indexes and never prints; the permanent, non-derivable half |
+| 25,26,27,29 | **C1** — foreign-only slot outranks English (`psal/C14 es`, `ren/46 fr`, `bchr/43 ja`) |
+| 28 | **C2** — `plst` |
+| 20,23,24,30,31 | **C3** — same-card variant blocks |
+| 9,10,11,12,…,19 | ties on `order=color` / `order=usd` / `order=eur` over `e:khm`, 3 rows each, all four `dir=` spellings of the same case counted separately |
+
+The remaining 2 are the `order=color asc/auto/nodir` group, which is §17.6's second undetermined
+item seen from the other direction.
+
+## 17.8 What was fixed here, and what was not
+
+Fixed: **C9** only. Everything else in (c) needs either a Rust filter change plus a wasm rebuild
+(C8, C11, the `*` p/t family) or a stored-column change plus a `STORE_CONTENT_GENERATION` bump and
+a full rebuild (C10, C1) or an `ARCHIVE_FORMAT_VERSION` bump (C12) — none of which is a thing to
+start behind a triage pass, and `bun run gate` was off-limits this session. Each carries its route
+above so the next unit of work does not re-derive the rule.
+
+---
+
+# 18. `/sets` intra-date ordering is NOT derivable either — and it is a DIFFERENT ordinal from §16
+
+§16 proved that which SET comes first inside a shared release date, in an `order=released` CARD
+listing, is not a function of anything `/sets` publishes. The four `/sets` object findings
+(`ref-sets-list`, `http-sets-trailing-slash`, `data.0.code` and `data.0.search_uri`) are the same
+QUESTION asked of the `/sets` listing itself, and they are not the same ORDERING.
+
+## 18.1 The divergence is entirely intra-date
+
+Both sides return **1,047 sets**, and matching by `id` there are **0** code, name or date mismatches
+— the objects agree. **352 of 1,047 positions differ, and all 352 have the same `released_at` as
+the row the other side put there.** So `released_at DESC` is exactly right on both sides and the
+whole divergence is the collation inside a date. `data.0` differs only because Scryfall leads with
+`ttrk` (Star Trek Tokens) and we lead with `trk` (Star Trek), both 2026-11-13 — the sweep's
+positional object comparison then reports six leaf paths for one ordering fact.
+
+## 18.2 It is not §16's ordinal
+
+§16 observed `trc < trk` in a card listing. Scryfall's `/sets` gives `ttrk, trc, trk, sds` for
+2026-11-13, whose reverse predicts `trk < trc`. So the two orderings are not each other and not
+each other's reverse, and §16's proof does not carry over. It had to be redone.
+
+## 18.3 Redone, on 17× the evidence, and the result is stronger
+
+591 adjacent same-date pairs (against §16's 34), read straight off one cached `/sets` response.
+**60 features** — every field `/sets` returns, plus presence flags, lengths, the icon path and
+cache-buster, code split into alpha and digits, folded names, `parent or self`, the parent's listing
+index, the `set_type` doc-order enum — each tried in **both directions**, 120 candidate keys.
+
+The §16.3 fixpoint (a key's first component never gets a second chance; drop the pairs it decides
+and repeat) returns **the EMPTY key**. Not "nine pairs undecided" — *nothing can be the first
+component at all*: every one of the 120 candidates orders at least one observed adjacent pair
+backwards. The best single key over the pairs it decides is `parent_idx` ASC at **71.6%**.
+
+```
+fixpoint key: (empty)
+pairs left UNDECIDED at any depth: 591 of 591
+```
+
+That is the airtight form of §16.4 obtained for free: if no feature is even zero-wrong on the full
+set, no lexicographic key over these features exists at any depth. Consistent with §16.6's stored
+sequence — one internal ordinal, exposed by neither listing.
+
+## 18.4 Verdict
+
+No code changes. The `/sets` order stays as it is, for the same reason `assign_set_ranks` keeps
+ranking by set code: there is nothing better to rank by. The four findings are bucket (a).

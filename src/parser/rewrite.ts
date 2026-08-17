@@ -314,12 +314,6 @@ for (const [value, dsl] of HAS_EXPANSIONS) {
 }
 
 /**
- * Every `has:` value this parser can answer. Same contract as SUPPORTED_IS_VALUES, and the same
- * consequence for anything outside it: a warning rather than a silent zero.
- */
-export const SUPPORTED_HAS_VALUES: ReadonlySet<string> = new Set(HAS_EXPANSIONS.keys());
-
-/**
  * Every `is:` value this parser can answer at all: the derivable expansions above, the booleans the
  * importer stores on the row, and the two the engine answers from a stored field. Anything else
  * reaches the engine as a tag no row carries and comes back as zero results with nothing to say why
@@ -333,6 +327,44 @@ export const SUPPORTED_IS_VALUES: ReadonlySet<string> = new Set([
 	...ENGINE_IS_VALUES,
 	...[...DERIVED_EXPANSIONS.keys()].filter((k) => k.startsWith("is\u0000")).map((k) => k.slice("is\u0000".length)),
 ]);
+
+/**
+ * `has:` is a TOTAL ALIAS of `is:`, not the hand-listed subset HAS_EXPANSIONS above was.
+ *
+ * That map was built by probing `has:`-FLAVOURED candidates — the presence questions, and the
+ * boolean tags that read like presence questions — so every value nobody thought to spell against
+ * `has:` was absent, and this server answered a 404 no-match where api.scryfall.com answers a full
+ * list. `has:split` is the one the sweep caught (126 there, no match here); it is not special.
+ *
+ * MEASURED against api.scryfall.com on 2026-08-17, over 22 values chosen to span every shape the
+ * `is:` vocabulary has — derived layout predicates (`split`, `dfc`, `modal`, `meld`, `flip`,
+ * `leveler`), computed text predicates (`vanilla`, `frenchvanilla`, `permanent`, `spell`), importer
+ * booleans (`promo`, `digital`, `reprint`, `funny`, `token`, `extra`, `etched`, `hires`,
+ * `reserved`, `spotlight`, `masterpiece`) and the two set-shaped ones (`commander`, `firstprint`).
+ * `is:X` and `has:X` answered the SAME `total_cards` on all 22, with no disagreement anywhere:
+ *
+ *     is:permanent 26220 = has:permanent      is:frenchvanilla 1095 = has:frenchvanilla
+ *     is:split       126 = has:split          is:indicator      369 = has:indicator
+ *
+ * A value that is neither a `has:` presence test nor an `is:` tag is a 400 upstream and a warning
+ * here — `has:flying` and `has:goblin` are both `bad_request` on api.scryfall.com — so the alias
+ * widens the vocabulary without widening what counts as valid.
+ *
+ * A FALLBACK rather than entries folded into HAS_EXPANSIONS, so the presence half keeps precedence:
+ * `has:watermark` asks whether a watermark is PRESENT and must not become `is:watermark`.
+ */
+for (const value of SUPPORTED_IS_VALUES) {
+	const key = makeKey("has", value);
+	if (!DERIVED_EXPANSIONS.has(key)) {
+		(DERIVED_EXPANSIONS as Map<string, string>).set(key, `is:${value}`);
+	}
+}
+
+/**
+ * Every `has:` value this parser can answer. Same contract as SUPPORTED_IS_VALUES, and the same
+ * consequence for anything outside it: a warning rather than a silent zero.
+ */
+export const SUPPORTED_HAS_VALUES: ReadonlySet<string> = new Set([...HAS_EXPANSIONS.keys(), ...SUPPORTED_IS_VALUES]);
 
 function makeKey(alias: string, value: string): string {
 	return `${alias}\u0000${value}`;
