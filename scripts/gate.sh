@@ -88,22 +88,56 @@ step "perf ratios"
 # forgotten, because the constant lives beside the code that would invalidate it.
 scripts/with-rust.sh cargo build --release -p sylvan-store-builder --example memprobe >/dev/null
 CORPUS_SHAPE="$(./target/release/examples/memprobe corpus-shape)"
-PERF_DIR="${TMPDIR:-/tmp}/sylvan-gate-perf-${CORPUS_SHAPE}"
-mkdir -p "$PERF_DIR"
+
+# TWO DIRECTORIES, BECAUSE THEY HAVE OPPOSITE LIFETIMES.
+#
+# CORPUS_DIR is shared and PERSISTENT on purpose (see the shape-tag note above): the corpus is a
+# pure function of a fixed seed and the generator's shape tag, so caching it across runs is what
+# keeps a gate from paying ~40s to re-synthesise identical bytes.
+#
+# PERF_DIR is PER RUN. Everything downstream of the corpus — rows.jsonl, the native store, the
+# routebench output, the wasm fit partitions, the wasm-built rows and store, the N=2/N=10 cuts —
+# is the OUTPUT OF THE CODE UNDER TEST, and it all used to land in the shared, fixed directory
+# with no lock and no run identifier — so two gates overlapping in time wrote to the same paths
+# and read each other's results. Every one of those files is truncate-and-rewrite: a second run
+# rewrites rows.jsonl while the first is building from it, `rm -rf .../store && mkdir` empties
+# the store directory out from under a running `routebench`, `find .../store | head -1` can
+# return the OTHER run's archive, and route.txt is overwritten between the write and the awk
+# that grades it. The failure this produces is a ratio regression in a run whose own code is
+# fine, which is the worst kind: it looks like the thing the gate exists to catch. Several
+# late-step reds on 2026-08-17 have this shape. A private mktemp directory per run is the whole
+# fix; it is torn down on success and on every failure path by the trap, matching
+# import-store.sh and sync-upstream.sh.
+CORPUS_DIR="${TMPDIR:-/tmp}/sylvan-gate-perf-${CORPUS_SHAPE}"
+mkdir -p "$CORPUS_DIR"
+CORPUS_BULK="$CORPUS_DIR/bulk.jsonl"
+CORPUS_TAGS="$CORPUS_DIR/tags.json"
+
+PERF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sylvan-gate-run-XXXXXXXX")"
+trap 'rm -rf "$PERF_DIR"' EXIT
+
 # The CORPUS is cached; the ROWS are not. bulk.jsonl/tags.json are deterministic INPUTS from a
 # fixed seed, so synthesising them once is free and safe. rows.jsonl is the OUTPUT OF THE CODE
 # UNDER TEST — transform + finalize — and caching an output across runs means a gate that
 # measures, and compares, whatever the pipeline produced on some earlier day. It cost real
 # confusion: after a transform change the cached rows still held the old values, so the store
 # built from them was stale while everything else in the run was current.
-if [[ ! -f "$PERF_DIR/bulk.jsonl" ]]; then
+#
+# Populated VIA THE RUN DIRECTORY AND A RENAME, never in place. `gen` writes its two files
+# incrementally, so a concurrent gate that finds bulk.jsonl already present would otherwise start
+# reading a corpus still being written. Both files are generated privately and moved in, tags
+# first, so the presence of bulk.jsonl implies the pair is complete. Two runs racing to populate
+# an empty cache both win: the bytes are identical by construction, and rename is atomic.
+if [[ ! -f "$CORPUS_BULK" || ! -f "$CORPUS_TAGS" ]]; then
     echo "  synthesising the deterministic corpus '${CORPUS_SHAPE}' (first run only)..."
     ./target/release/examples/memprobe gen --printings 12000 --foreign-ratio 3.7 \
-        --bulk "$PERF_DIR/bulk.jsonl" --tags "$PERF_DIR/tags.json" >/dev/null 2>&1
+        --bulk "$PERF_DIR/corpus-bulk.jsonl" --tags "$PERF_DIR/corpus-tags.json" >/dev/null 2>&1
+    mv -f "$PERF_DIR/corpus-tags.json" "$CORPUS_TAGS"
+    mv -f "$PERF_DIR/corpus-bulk.jsonl" "$CORPUS_BULK"
 fi
 ./target/release/examples/memprobe rows \
-    --bulk "$PERF_DIR/bulk.jsonl" --tags "$PERF_DIR/tags.json" --out "$PERF_DIR/rows.jsonl" >/dev/null
-rm -rf "$PERF_DIR/store" && mkdir -p "$PERF_DIR/store"
+    --bulk "$CORPUS_BULK" --tags "$CORPUS_TAGS" --out "$PERF_DIR/rows.jsonl" >/dev/null
+mkdir -p "$PERF_DIR/store"
 ./target/release/examples/memprobe build --rows "$PERF_DIR/rows.jsonl" --out "$PERF_DIR/store" >/dev/null
 STORE="$(find "$PERF_DIR/store" -name 'card-store-*.store' | head -1)"
 
@@ -236,7 +270,7 @@ fi
 step "native vs wasm store: same rows, same answers"
 bun engine/wasm-import/driver.ts \
     target/wasm32-unknown-unknown/release/sylvan_wasm_import.wasm \
-    "$PERF_DIR/bulk.jsonl" "$PERF_DIR/tags.json" \
+    "$CORPUS_BULK" "$CORPUS_TAGS" \
     "$PERF_DIR/rows-wasm.jsonl" "$PERF_DIR/store-wasm.store" >"$PERF_DIR/wasm-import.txt" 2>&1 || {
     tail -8 "$PERF_DIR/wasm-import.txt" | sed 's/^/  /'
     echo "  ERROR: the wasm import path failed on the gate corpus — the NIGHTLY runs this path."
