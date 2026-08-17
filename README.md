@@ -80,37 +80,68 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
         ──▶ Workers Cache (regional edge cache; hits skip the Worker entirely)
         └─▶ Worker isolate (thin: parses, RPCs)
               ├─ TS parser: Scryfall syntax → filter tree (port of hand_parser.py)
-              ├─ engine queries: RPC to the region's SearchEngine Durable Object
-              │   (engine-<region>, one per location hint — wnam, weur, apac …),
-              │   placed there by location hint; idle regions evict their DO —
+              ├─ engine queries: RPC to the region's SearchEngine Durable Objects
+              │   (engine-<region>[-<shard>]-p<k> — one object per PARTITION per
+              │   replica, in each of the nine location hints: wnam, weur, apac …),
+              │   placed there by location hint; idle regions evict their DOs —
               │   scale to zero. The x-sylvan-engine response header says which
               │   DO answered
-              ├─ SearchEngine DO: wasm card_engine + ~84MB rkyv store in memory —
-              │   ONE archive, card objects included, exactly upstream's shape —
-              │   streamed from KV as 2 immutable chunks in 4MB blocks, and cached
+              ├─ SearchEngine DO: wasm card_engine + ONE PARTITION's rkyv archive
+              │   in memory — card objects included, exactly upstream's shape —
+              │   streamed from KV as immutable chunks in 4MB blocks, and cached
               │   DECOMPRESSED in the DO's own SQLite so later wakes skip both the
               │   network and the gunzip. It hot-swaps when the KV manifest
               │   advances. Results come back already JSON-encoded in the requested
               │   shape, so no card ever becomes an object in the isolate serving
               │   the request
+              ├─ fan-out: a query reaching one partition is not an answer. Which
+              │   routes cost 1 RPC and which cost N is a per-route table in
+              │   src/engine/partitioned-engine.ts, pinned by
+              │   tests/engine/partitioned-routes.test.ts. Search is a two-phase
+              │   gather (sort keys, then rows); id lookups collapse to 1 RPC via
+              │   the routing filter; catalog/autocomplete/named fan out
               └─ autoscaling: fan-out to engine-<region>-1..N when the DO reports
                   sustained load AND the isolate sees sustained slowness, with
-                  idle fold-back. A new shard takes no traffic until its warm
+                  idle fold-back. That is the REPLICA axis and it multiplies with
+                  the partition axis. A new shard takes no traffic until its warm
                   ping resolves — see src/engine/shard-controller.ts
 
 cron (nightly refresh; the deploy does the first build)
         ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
               └─ alarm-chained pipeline, all inside the 128MB isolate:
-                   fetch → transform → tags → scores → aggregate → finalize → build
+                   fetch → recode → canonical → transform → tags → scores
+                     → [per partition: agg → finalize → reorder → build → publish]
+                     → notify → rulings → reference → purge
                    (scores is corpus-GLOBAL — the cubecobra percent-rank and the
                     illustration counts are computed ACROSS cards, so they are
                     sealed once before the per-partition loop and handed to it)
                    (the SAME Rust the native builder runs, compiled to wasm;
                     intermediates spill to DO SQLite, never to memory)
-                   publish: 2 store chunks, each gzipped, + manifest to KV,
-                   manifest LAST (the commit point readers act on); the store
-                   before last dropped
+                   publish: each partition's chunks gzipped to KV, plus the
+                   routing filter, then the manifest LAST (the commit point
+                   readers act on); the generation before last dropped
 ```
+
+**The store is partitioned, and that is not a tuning knob.** Every published
+manifest names `partition_count` archives; a manifest without one is *refused*
+rather than fallen back on, because there is no unpartitioned serving path left
+to fall back to. The count is derived by the builder from the corpus it just
+measured — not configured — and every router reads it from the manifest it is
+pinned to, so a fan-out can never straddle two moduli. Read
+[CARD-PARTITIONING.md](CARD-PARTITIONING.md) for the design and
+`src/import-publish.ts` for the sizing rule.
+
+The corpus is Scryfall's **`all_cards`** dump — every printing in every
+language — not `default_cards`. Non-English printings live in an annex on the
+same archive, which is what makes `lang:`, `include_multilingual`,
+`printed_name` and `is:localizedname` answerable at all.
+
+Concrete figures rot, so take them from the live manifest rather than from
+here. As of 2026-08-16 it read: 10 partitions, `partition_hash`
+`fnv1a64/oracle_id/v1`, 38,626 oracle cards, 116,712 canonical printings,
+412,869,984 raw archive bytes across the ten. `STORE_CONTENT_GENERATION` is 32
+(`src/engine/store-kv.ts`) and `ARCHIVE_FORMAT_VERSION` is 2026081616 (the
+vendored `card_engine`); those two are bumped as a pair.
 
 The wasm engine is the only query path. A query it cannot answer returns a
 structured error, never a silently empty result.
@@ -156,17 +187,21 @@ where KV caches per colo.
 The store *is* gzipped, though, which is a different question — the meter was
 never what the cold path was bound by. A load-carrying invocation measures wall
 p50 915ms against DO CPU p50 164ms, so ~750ms of it was waiting for the whole
-archive to arrive. The cut is on RAW bytes at `KV_CHUNK_BYTES` and each piece is
-gzipped as its own member; the two-way cut puts ~15.3MB and ~17.8MB in KV, the
-binding one at 71.2% of the 25 MiB value cap.
+archive to arrive. The cut is on RAW bytes at `KV_CHUNK_BYTES` (46,000,000, with
+`KV_CHUNK_BYTES_SAFE` = 26,000,000 as a fallback cut) and each piece is gzipped
+as its own member. `TARGET_PARTITION_BYTES` (43,000,000) is deliberately set
+*under* the chunk cut, so a partition is normally exactly one chunk: a partition
+whose raw bytes cross the cut costs an extra **sequential** round trip on every
+cold load, because a partition's chunks are pulled in order.
 
 The memory win is bigger than the transfer one and comes from a different
 place. wasm-bindgen marshals a `&[u8]` by COPYING it into linear memory, so a
-whole ~25MB raw chunk used to land there as scratch on top of the store itself.
-Decompressed, the pieces arrive ~4KB at a time and that scratch effectively
-vanishes: peak linear memory measured 99.4MB before and 74.6MB after — the
-~25MB is the chunk that is no longer copied whole, not the ~12MB the smaller
-KV value saves. Against a 128MB isolate that is the difference that matters.
+whole raw chunk used to land there as scratch on top of the store itself.
+Decompressed, the pieces arrive in 4MB blocks and that scratch effectively
+vanishes: peak linear memory measured ~102.6MB before and ~78.7MB after
+(`src/engine/load-blocks.ts`; `store-kv.ts` records ~102.6 → ~89.6 for the
+gzip half of the same change). Against a 128MB isolate that is the difference
+that matters.
 
 It is not free, and the ~190ms this section used to budget for decompression was
 **wrong by roughly 5x**. Measured across the deploy that introduced it
@@ -182,9 +217,12 @@ remaining wakes skip it entirely. Reverting to uncompressed chunks would cost
 ~13MB of the 128MB isolate to save a cost that is now rare. See
 [src/engine/store-kv.ts](src/engine/store-kv.ts) for both halves measured.
 
-**Publishing** is three writes: two store chunks, each cut under KV's 25 MiB
-value cap and gzipped before the put, then the manifest as the commit point. Two versions are retained, so a reader
-mid-stream finishes and a bad build can be rolled back.
+**Publishing** is one chunk per partition (each cut under KV's 25 MiB value cap
+and gzipped before the put), plus the ~758KB routing filter, then the manifest
+as the commit point — written last, because a manifest naming chunks that are
+not in KV yet is exactly the state a reader must never see. Two generations are
+retained (`KEEP_STORES_IN_KV`), so a reader mid-stream finishes and a bad build
+can be rolled back by republishing the previous manifest.
 
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
 `/cards/*` carries Scryfall's own tiers (16h, `no-cache` for random, private for
@@ -195,22 +233,37 @@ behaviour too; the cache is per-deploy-version, so a deploy starts cold. An
 import is not a deploy, so the nightly rebuild purges the cache itself, rather
 than leaving a `/cards/*` object sitting on yesterday's prices for 16 hours.
 
-The timing is the whole trick. The purge waits ten minutes after the manifest
-lands, because purging at the commit point is worse than not purging at all — a
-request served in the gap before the engine DOs swap stores gets cached on the
-OLD store, and pins it for the full 16 hours. Ten minutes clears the two things
-that bound convergence: a 5-minute manifest recheck and a 60s KV cache on the
-manifest read. Then it purges a *second* time, ten minutes later, because
-convergence is deferred as well as lazy — the request that trips the recheck
-gate is itself answered from the old store, so a colo that was idle across the
-first window refills the cache right after it is emptied. That same request
-starts the swap, so one more pass is enough to clear it for good.
+The purge now runs **once, immediately** — `PURGE_PASSES = 1`, no delay. It used
+to be two passes ten minutes apart, and both numbers existed for the same
+reason: nothing could observe when the engine DOs had picked up the new store.
+The delay was sized to outlast a 5-minute manifest recheck plus KV's 60s cache
+on the manifest read, and the second pass covered the hole the first could not,
+since convergence was lazy *and* deferred — a colo idle across the first window
+would swap only on its next request, and that request wrote a stale answer
+straight back into a cache that had just been emptied, where for `/cards/*` it
+stood for 16 hours.
 
-**Free-plan fit.** A store load is 3 KV reads — the same load for `/search`
-and `/cards/*`, there is no second archive — a publish 3 writes, and serving
-touches neither, so the daily meters (100k Worker requests, 100k KV reads, 1k
-KV writes) bound *traffic*, not architecture. Storage is one ~84MB copy per
-retained version against KV's 1GB.
+**The `notify` phase removed the premise.** It pushes the new store to every
+region and does not advance until all of them acknowledge, so by the time the
+purge runs there is no reader left holding the old store and nothing to refill
+the cache with a stale answer. Purging once, immediately, is not merely
+adequate — it is strictly better than waiting, because every second between the
+publish and the purge is a second of old answers still served from the edge.
+
+**Free-plan fit.** A cold engine object reads the manifest plus its own
+partition's chunks — one partition, not the whole corpus, and the same load
+serves `/search` and `/cards/*` because there is no second archive. Serving
+touches KV only on a cold load, so the daily meters (100k Worker requests, 100k
+KV reads, 1k KV writes) bound *traffic*, not architecture.
+
+The tightest meter is a different one and it belongs to the importer, not to
+serving: Durable Object SQL **rows written**, 100,000/day (5,000,000 read),
+spent by the nightly import staging its corpus. The coordinator self-caps well
+under the platform ceiling (`MAX_DAY_ROWS_WRITTEN` 60,000,
+`MAX_DAY_ROWS_READ` 1,500,000), on day-scoped counters that survive a run reset
+so restarts cannot launder a fresh allowance. That budget is driven by *bytes
+staged*, not by partition count — raising the partition count does not press on
+it.
 
 The meter worth watching is the free plan's **10ms CPU per request**, and
 almost all of what a `/search` spends there is **cold isolate startup, not the
@@ -227,7 +280,9 @@ pipeline (56KB of JS plus its 1.1MB wasm) and dropping the 1.4MB engine wasm
 all reported the same 10ms — one of them 12ms, which puts the metric's noise at
 ±2ms. Do not spend effort on any of those. (The engine wasm has since grown to
 ~1.55MB with upstream's bitmap-materialize arms; the sizes above are the ones
-that were measured, and the conclusion is that this axis does not move startup.)
+that were measured, and the conclusion is that this axis does not move startup.
+Re-measured on disk 2026-08-16: the engine wasm is 2,120,635 bytes and the
+import wasm 1,600,289 — both larger again, and the conclusion is unchanged.)
 
 Moving the browser's files to the CDN did move it, because it removed a ~313KB
 text module the script had to carry: **10/12/13ms → 5/6/9ms**, against that 5ms
@@ -261,22 +316,45 @@ The Rust engine (`vendor/sylvan_librarian/card_engine`) is upstream's own code
 with a patch set (PyO3 optional, buffer-based store load for wasm, and a
 memory-capped streaming build path whose output is verified semantically
 identical to the standard build). **Filter evaluation** is untouched, so the
-store the Durable Object builds is the same store the native builder produces —
-the tests compare them byte-for-byte at the row level.
+store the Durable Object builds is the same store the native builder produces.
+`bun run gate` is what checks it, in two steps: the finalized ROWS are compared
+byte-for-byte (`cmp`), because identical rows are what makes any archive
+difference a build-order question rather than a data one; the ARCHIVES are then
+compared by **answers**, not bytes. Byte equality of the archive is explicitly
+not asserted and must not be — over the same rows the two targets differ in
+~0.5% of archive bytes, all of it in the index region, because index
+construction can break ties between equally-ranked rows in build order.
 
-The **archive layout matches upstream #912 exactly** as of generation 19: one
-archive, `compat: CompatFields` on `Printing` (upstream's field list,
-`Vec` list fields included), `all_parts` and `planeswalker_loyalty_text_id` on
-`OracleCard`, `external_id_index` on `CardIndexes`. The residue archive, its
-CSR, its field-table split and its attach plumbing are all gone. What that
-convergence cost, and the one number to watch, is the in-Worker build's memory:
-the single-archive build peaks at 120.9 MiB of wasm linear memory against a
-124 MiB `--max-memory` (raised from 112 for this), and the peak tracks the
-store size at ~2.2x — so `bun run gate` runs the capped build over the real
-corpus whenever `store-build/rows.jsonl` exists, and FAILS before a push could
-ship a nightly that aborts. `ARCHIVE_FORMAT_VERSION` still differs from
-upstream's numerically (different constants, same discipline); that is not a
-sync failure.
+The **archive layout converged on upstream #912 at generation 19**: one archive,
+`compat: CompatFields` on `Printing` (upstream's field list, `Vec` list fields
+included), `planeswalker_loyalty_text_id` on `OracleCard`, `external_id_index`
+on `CardIndexes`. The residue archive, its CSR, its field-table split and its
+attach plumbing are all gone. (`all_parts` lives on `Printing`, not on
+`OracleCard` — it is printing-level, which it did not look like.)
+
+**Generations 20 onward diverge from that layout deliberately**, and the current
+generation is 32. The multilingual annex, `DivergentPrinting`,
+`PrintedNameIndex`, `TypeLineIndex` and the partition cut are all this port's,
+not upstream's. "Matches #912 exactly" describes generation 19 and nothing
+after it; `src/engine/store-kv.ts`'s generation log is the authority on what
+each one changed.
+
+The one number to watch is still the in-Worker build's memory, but the shape it
+is measured on changed. `bun run gate` no longer builds a single archive — over
+the multilingual corpus that build aborts under the cap, correctly and
+uselessly, because production never performs it (517,746 rows in one archive
+against a corpus cut ten ways). That step was **deleted rather than fixed**: a
+red gate asserting an impossibility is not a gate. What runs instead is one
+capped wasm build **per partition**, at the partition count read from the
+build's own manifest, each in its own driver process — which is the
+emit-one-release-one discipline enforced rather than described. At N=10 the
+partitions measured 91.6–104.4 MB against the 124 MiB `--max-memory` (raised
+from 112 for the single-archive convergence). It runs whenever
+`store-build/rows.jsonl` exists and FAILS before a push could ship a nightly
+that aborts.
+
+`ARCHIVE_FORMAT_VERSION` still differs from upstream's numerically (different
+constants, same discipline); that is not a sync failure.
 
 ```bash
 bun run sync-upstream
@@ -391,20 +469,30 @@ The complete list of intentional differences:
 - **The Scryfall card object is assembled from stored fields**, not unwrapped
   from a `raw_card_blob` this port does not store — the columns, 12 derived keys
   (every `*_uri` and `image_uris` are pure functions of the id, set, collector
-  number and oracle id) and the packed residue, all in the ONE archive, on
-  exactly upstream's structs (`Printing.compat`, `OracleCard.all_parts`,
-  card-level `planeswalker_loyalty_text_id`). Absent keys stay absent, because
-  Scryfall omits rather than nulls and a card that sprouts nulls differs from
-  Scryfall on every row. Generations 10–18 kept the residue in a second KV
-  archive; generation 19 folded it back to match upstream, which cost the
-  in-Worker build most of its memory headroom — see Upstream tracking for the
-  measured number and the gate tripwire that watches it.
+  number and oracle id) and the packed residue, all in a partition's single
+  archive rather than in a second one, on exactly upstream's structs
+  (`Printing.compat`, `Printing.all_parts`, card-level
+  `planeswalker_loyalty_text_id`). Absent keys stay absent, because Scryfall
+  omits rather than nulls and a card that sprouts nulls differs from Scryfall on
+  every row. Generations 10–18 kept the residue in a second KV archive;
+  generation 19 folded it back to match upstream, which cost the in-Worker build
+  most of its memory headroom — see Upstream tracking for the per-partition
+  measurement and the gate tripwire that watches it.
 - **`/cards/named?exact=` prefers a whole-name match to a face match.** Upstream
   orders both by `prefer_score` alone, which on this corpus answers
   `exact=Lightning Bolt` with *Emeritus of Conflict // Lightning Bolt* — a
   two-faced card whose back face carries the name and whose score is higher.
   Matching a face is right and Scryfall does it (`exact=Delver of Secrets`
   resolves), but as a fallback rather than a peer. Reported upstream.
+- **The corpus is multilingual, which is a deviation from upstream rather than
+  from Scryfall.** Upstream imports `default_cards`; this port imports
+  `all_cards` and keeps non-English printings in an annex on each partition's
+  archive. That is what makes `lang:`, `include_multilingual`, `printed_name`,
+  `printed_text`, `printed_type_line` and `is:localizedname` answerable — a
+  store built before the annex cannot answer any of them, which is why the
+  generation compare exists. A term that reaches the annex widens the search to
+  it; `src/engine/store-kv.ts`'s generations 20–22 record which behaviours that
+  changed and what each was measured against.
 - **`/cards/named?fuzzy=` matches well-formed foreign names, not Scryfall's
   garbage-in slack.** The foreign-name lane holds to the same bar as the English
   one: a correctly spelled — or lightly misspelled — printed name in any
@@ -417,6 +505,7 @@ The complete list of intentional differences:
   such inputs stay a 404 (or `ambiguous`), and the case is pinned as a
   KNOWN_DEVIATION in the live-parity corpus, which asserts both sides' recorded
   behavior separately.
+- **`/cards/*` cache tiers are measured from**
   `api.scryfall.com` rather than inherited from `/search`: `public,
   max-age=57600` on the cacheable routes, `no-cache` on `/cards/random`, and
   `max-age=0, private, must-revalidate` on the collection POST. The tier rides
@@ -512,12 +601,19 @@ The complete list of intentional differences:
   (`t:`, `otag:`, `atag:`) working on both; a negated numeric equality
   (`-cmc:3`, `-tou:1`, `-usd:0`) is ignored, because Scryfall cannot express one;
   and a keyword Scryfall knows and this port does not (`game:`, `in:`, `cube:`,
-  `stamp:`, `cheapest:`) is deliberately NOT ignored, since ignoring it would
-  answer a wider result than Scryfall silently.
-  One count is not reproduced and is recorded rather than pretended: Scryfall
-  reads a dangling operator (`q=t:`) as "this column is not null" — `t:` is
-  22,261 cards and `o:` is 22,111, so they are different filters — where this
-  port drops the term. The STATUS is Scryfall's 200; the total is not.
+  `new:`, `not:`, `stamp:`, `cheapest:`, `include:`, `direct:`) is deliberately
+  NOT ignored, since ignoring it would answer a wider result than Scryfall
+  silently. `SCRYFALL_ONLY_KEYWORDS` in
+  `src/routes/scryfall-compat/query-terms.ts` is the live list — take it from
+  there rather than from this sentence.
+  A dangling operator (`q=t:`) **is** now reproduced, count and all. This used
+  to be recorded here as the one unreproduced total, on the reading that
+  Scryfall treats it as "this column is not null". That reading was itself
+  measured wrong — it dies on `ft:` = 1,628 — and the term is now REWRITTEN
+  rather than dropped (`danglingOperatorTerm` in
+  `src/routes/scryfall-compat/query-terms.ts`), which reproduces the counts
+  exactly: `t: or e:khm` answers 22,369, which is 22,261 + (323 − 215) to the
+  card.
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
   That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
   Postgres and S3, neither of which this deployment has — so it was reading a
@@ -574,35 +670,44 @@ The complete list of intentional differences:
   `application/javascript`) and cache lifetimes are set for this deployment in
   `public/_headers`. Parity is kept where it matters, on the query endpoints.
 - Postgres-only admin/import routes answer `501`. `get_pid` returns `0`.
-- **`set:` on a memorabilia set returns nothing.** Upstream #918 stops importing
-  `set_type: memorabilia` printings — World Championship decks, Collectors'
-  Edition, 30th Anniversary, the oversized promos, 99 sets in all — because
-  Scryfall hides them from every search that does not name their set, and
-  importing them made ordinary queries disagree: they supplied the *cheapest*
-  printing for 184 cards, which is exactly the printing a price ordering
-  returns. Scryfall does still serve them when you ask by name (`set:cei`
-  returns its Ancestral Recall); this port has nothing to serve. **No card is
-  lost** — 0 of 31,724 cards are printed only in memorabilia sets — so it
-  changes which printing represents a card, never whether the card is findable.
-  Filtering at query time instead would have been exact, and was measured and
-  rejected: a conjunct on every query breaks four of the six physical plans
-  (`PlanePopcountOrder`, `CardRangePopcount`, `PrintingRangeScan`, and
-  `all_match_known`'s constant-count arms), costing +59–115 µs per query.
-- `card_is_tags` carries only upstream's `BOOLEAN_IS_TAGS` — `is:reserved`,
-  `is:gamechanger` and `is:oversized`, which come off booleans the bulk cards
-  already carry. The
-  `CUSTOM_IS_TAGS` need a per-tag Scryfall search sweep that upstream's
-  *automated* import does not run either, so they are absent on both sides.
+- ~~**`set:` on a memorabilia set returns nothing.**~~ **REVERSED — nothing is
+  dropped at import any more, and the rejected alternative is what ships.**
+  Upstream #918 stops importing `set_type: memorabilia` printings; this port
+  used to follow it, on the argument that a query-time conjunct breaks four of
+  the six physical plans (`PlanePopcountOrder`, `CardRangePopcount`,
+  `PrintingRangeScan`, and `all_match_known`'s constant-count arms) at +59–115 µs
+  per query. That argument was correct about the cost and wrong about the
+  alternative: an absent row **cannot reproduce a query-time gate in either
+  direction**. `/cards/named?exact=Counters` answered 404 where Scryfall answers
+  fmsc/9, and `include_extras=true` had nothing to include. So every row is now
+  imported, `transform.rs` decides which ones carry `is:extra`, and
+  `cardsSearchHandler` ANDs `-is:extra` unless the caller or a set term asks
+  otherwise — spelled as `-is:extra` rather than as a set-type conjunct
+  deliberately, which is what avoids the plan breakage the old text cites. (The
+  "0 of 31,724 cards" figure was a generation-6 measurement and no longer
+  describes the corpus.)
+- `card_is_tags` used to carry only three of upstream's `BOOLEAN_IS_TAGS`
+  (`is:reserved`, `is:gamechanger`, `is:oversized`). Generation 21 took the
+  stored vocabulary **from 3 entries to 30**: `BOOLEAN_IS_TAGS` grew and
+  `ARRAY_IS_TAGS` is new (upstream #926), and the builder adds the computed
+  `extra` tag on top. `src/parser/db-info.ts` is the live list, and it is read by
+  the parser as well as the builder — an entry added on one side and not the
+  other turns a working predicate into a warned no-match, or the reverse. The
+  `CUSTOM_IS_TAGS` still need a per-tag Scryfall search sweep that upstream's
+  *automated* import does not run either, so those remain absent on both sides.
 - **Tag aliases resolve at query time, not at import.** Scryfall's tagger keeps
   alternate spellings for a tag (`art:flames` means `art:fire`), and upstream
   #914 reproduces that by stamping every alias into `card_oracle_tags` /
   `card_art_tags` as an extra key beside the slug and all its ancestors, so
-  query time stays an exact match. That costs 6,252,880 bytes here — measured,
-  two builds off the same dumps — which took the store from 74.8MB to 81.1MB
-  and across the KV chunk grid from 3 values to 4, putting a fourth serialized
-  read on every cold load. So the store keeps only canonical slugs and the
-  parser folds the search term through a generated map
-  (`src/parser/tag-aliases.gen.ts`, 2,150 entries, ~78KB). Results are
+  query time stays an exact match. That cost 6,252,880 bytes here — measured,
+  two builds off the same dumps — which on the generation-3 store took it from
+  74.8MB to 81.1MB and across the KV chunk grid from 3 values to 4, putting a
+  fourth serialized read on every cold load. (Those store figures describe a
+  much older, English-only, unpartitioned store; the 6,252,880-byte cost of the
+  alias keys themselves is the part that still stands.) So the store keeps only
+  canonical slugs and the parser folds the search term through a generated map
+  (`src/parser/tag-aliases.gen.ts`, 2,152 entries, 68,243 bytes on disk as of
+  2026-08-16). Results are
   identical, because the alias key was never more than a duplicate: the builder
   attached alias `a` under exactly the condition it attached slug `s`. Upstream
   keeps its design — 10MB of JSONB does not bite on Postgres, and its parser has
@@ -613,8 +718,11 @@ The complete list of intentional differences:
 ## Development
 
 Prerequisites: [bun](https://bun.sh). Both wasm modules are committed
-prebuilt, so TS work needs nothing else. Touching Rust needs a toolchain
-(1.88+) with `wasm32-unknown-unknown`.
+prebuilt, so TS work needs nothing else. Touching Rust needs a toolchain with
+`wasm32-unknown-unknown`. No `rust-version` is declared in `Cargo.toml`, so
+there is no enforced floor; the version that actually gates a change is the
+**1.97.1** `scripts/clippy.sh` pins, because that is what upstream's CI runs and
+a locally-green fix on an older toolchain can land red there.
 
 Regenerating parser fixtures needs **CPython 3.13** specifically — upstream's
 target, and the version whose Unicode tables (15.1) `src/parser/py-unicode-data.ts`
@@ -668,7 +776,9 @@ bun run cf-typegen      # regenerate types after wrangler.jsonc changes
 
 # The two differential harnesses, which compare this mirror against
 # api.scryfall.com rather than against its own fixtures:
-bun run live-parity     # ~70 KNOWN shapes, byte for byte. Defaults to the
+bun run live-parity     # KNOWN shapes, byte for byte (90 cases in
+                        # scripts/live-parity-cases.json as of 2026-08-16;
+                        # count them there rather than trusting this). Defaults to the
                         # DEPLOYMENT, which enforces the per-IP limiter, so a
                         # remote run needs a bypass key:
                         #   export TRUSTED_API_KEY=<one of the Worker's
@@ -683,10 +793,24 @@ bun run parity-sweep    # the systematic matrix, hunting UNKNOWN divergences.
                         # takes the same TRUSTED_API_KEY.
 ```
 
-Local dev is production-identical: the import that seeds local KV is the same
-Durable Object pipeline production runs, under wrangler dev's emulator.
+Local dev has two seed paths, and they are not the same code. `bun run
+seed:local` (the default, and what `bun dev` uses) runs the **native**
+`sylvan-store-builder` binary; `DEV_BOOTSTRAP=worker` runs the **Durable Object**
+pipeline production runs, under wrangler dev's emulator. Both share the whole
+transform/tags/ranks surface through `sylvan-store-builder`, which is what makes
+their rows byte-identical — and `bun run gate` asserts exactly that rather than
+assuming it, because a change that compiles natively and not on wasm32 would
+otherwise leave the two publishers writing stores from different transform code.
+Use `DEV_BOOTSTRAP=worker` when the thing under test is the pipeline itself.
 
 ## Benchmarks
+
+> **Measured 2026-08-13, on the English-only single-archive store, before
+> partitioning.** The mechanism notes below (the per-run nonce, the 30 requests
+> against a 25/10s limiter) are current; the *numbers* describe a store shape
+> that no longer ships, and the cold-path story in particular needs re-deriving
+> — a cold region now loads N partitions in parallel rather than one archive in
+> sequence. Re-run `scripts/bench.sh` before quoting any figure here.
 
 Same 10 queries against this deployment, upstream's own
 [sylvan-librarian.com](https://sylvan-librarian.com), and the
