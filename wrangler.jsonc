@@ -77,12 +77,17 @@
 	// What that costs against the free tier (100k KV reads and 1k writes a day)
 	// follows from the shape rather than from a fixed count. A publish writes every
 	// partition's chunks plus the routing filter plus the manifest; a cold engine
-	// object reads the chunks of ITS OWN partition and nothing else, and a request
-	// fans out across all of them (see PartitionedEngine) rather than loading one
-	// large archive. Both totals therefore scale with `partition_count`. There is
-	// no separate card-object residue archive and no extra round trip for
-	// `/cards/*`: generation 19 folded the residue into the printing record, so
-	// `/search` and `/cards/*` load the identical bytes.
+	// object reads the chunks of ITS OWN partition and nothing else. So both totals
+	// scale with `partition_count`, and neither is a number to write down here.
+	//
+	// HOW MANY PARTITIONS A REQUEST TOUCHES IS A ROUTING QUESTION, NOT A KV ONE, and
+	// the two answers differ: a search reaches every partition (the isolate sends
+	// ONE RPC to a gather object, which runs the two-phase gather across all N — see
+	// PartitionedEngine and runTwoPhase), while an id-keyed lookup asks the routing
+	// filter first and normally touches exactly one. Neither ever loads one large
+	// archive. There is no separate card-object residue archive and no extra round
+	// trip for `/cards/*`: generation 19 folded the residue into the printing
+	// record, so `/search` and `/cards/*` read the identical bytes.
 	//
 	// Each engine DO ALSO keeps its partition in its own SQLite as a read-through
 	// cache (src/engine/store-cache.ts), COMPRESSED chunk for chunk — decompressed
