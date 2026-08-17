@@ -328,6 +328,65 @@ fn stat_str_to_int(s: Option<&str>) -> Option<f64> {
     if v.is_finite() { Some(v.trunc()) } else { None }
 }
 
+/// The same rule for a printed POWER or TOUGHNESS, where `*` IS ZERO and the arithmetic printed
+/// around it still runs — `1+*` is 1, `7-*` is 7, `*` and `*²` are 0.
+///
+/// The builder's `maybe_stat_int` (engine/builder/src/transform.rs) is the card-level twin and
+/// carries the three api.scryfall.com measurements that pin the arithmetic. THE TWO MUST MOVE
+/// TOGETHER: `front_face_stats_match_card_columns` compares them on the front face of every card
+/// in the fixture store, and the numeric PLANES are built from face values
+/// (`face_stat_values`), so a face that read `*` as absent while the column read 0 would narrow
+/// `tou=0` away from the very cards this rule exists to include.
+///
+/// Loyalty deliberately keeps `stat_str_to_int`: the corpus prints `*` on two loyalty cards and
+/// both are funny-set cards api.scryfall.com will not answer for at all, so there is no
+/// measurement to follow and an unmeasured column is not extended.
+fn stat_str_to_int_star(s: Option<&str>) -> Option<f64> {
+    let s = s?.trim();
+    if let Some(v) = stat_str_to_int(Some(s)) {
+        return Some(v);
+    }
+    if !s.contains('*') {
+        return None;
+    }
+    let mut total = 0f64;
+    let mut sign = 1f64;
+    let mut term = String::new();
+    let mut take = |term: &mut String, sign: f64, total: &mut f64| -> bool {
+        let t = term.trim().to_string();
+        term.clear();
+        if t.is_empty() {
+            return false;
+        }
+        // The two exact forms the corpus prints; anything else reads as absent, as it did before.
+        if matches!(t.as_str(), "*" | "*\u{b2}") {
+            return true; // `*` and `*²` are both zero
+        }
+        match t.parse::<f64>() {
+            Ok(n) if n.is_finite() => {
+                *total += sign * n.trunc();
+                true
+            }
+            _ => false,
+        }
+    };
+    for (i, c) in s.char_indices() {
+        match c {
+            '+' | '-' if i > 0 => {
+                if !take(&mut term, sign, &mut total) {
+                    return None;
+                }
+                sign = if c == '-' { -1.0 } else { 1.0 };
+            }
+            _ => term.push(c),
+        }
+    }
+    if !take(&mut term, sign, &mut total) {
+        return None;
+    }
+    Some(total)
+}
+
 /// The parsed power/toughness/loyalty of one face, from the strings Scryfall printed on it.
 ///
 /// The power/toughness gate is `card_processing.py`'s: creature-like TYPE LINES only, so a face
@@ -343,8 +402,8 @@ pub(crate) fn face_stat_nums(
     let creaturelike = t.contains("Creature") || t.contains("Vehicle") || t.contains("Spacecraft");
     let (p, tough) = if creaturelike {
         (
-            stat_str_to_int(power).map(|v| v as i8),
-            stat_str_to_int(toughness).map(|v| v as i8),
+            stat_str_to_int_star(power).map(|v| v as i8),
+            stat_str_to_int_star(toughness).map(|v| v as i8),
         )
     } else {
         (None, None)

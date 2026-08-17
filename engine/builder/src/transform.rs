@@ -475,6 +475,81 @@ fn maybe_int(v: Option<&Value>) -> Option<i64> {
     if !f.is_finite() { None } else { Some(f.trunc() as i64) }
 }
 
+/// `maybe_int` for a printed POWER or TOUGHNESS, where `*` IS A NUMBER AND IT IS ZERO.
+///
+/// `maybe_int` reads `*` as absent, and absent compares false against everything — so `tou<1`
+/// answered 273 here against api.scryfall.com's 434 and `tou=0` 272 against 432. That is 160
+/// cards, every one of them a `*`-statted creature, and Scryfall's own `tou:*` answers the same
+/// 432 as `tou=0`.
+///
+/// THE STAR IS SUBSTITUTED, NOT THE VALUE REPLACED — the arithmetic around it still runs. Measured
+/// on api.scryfall.com 2026-08-17, one card per printed form:
+///
+/// ```text
+///   Allosaurus Rider   power     1+*   matches pow=1   (not pow=0)
+///   Souls of the Lost  toughness *+1   matches tou=1
+///   Aysen Crusader     power     2+*   matches pow=2, and NOT pow=0
+/// ```
+///
+/// so `*` -> 0 and the sum is evaluated: `1+*` is 1, `7-*` is 7, `*` alone is 0. The whole
+/// corpus's starred forms are `*`, `1+*`, `*+1`, `2+*`, `7-*` and `*²` (one card, and `0²` is 0),
+/// which this expression grammar covers exactly — a term is a signed integer or a star, and the
+/// terms are added. Anything else (`?`, on the four Un-cards that print it) stays absent, which is
+/// the pre-existing behaviour and not a claim about what Scryfall does with it.
+fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
+    if let Some(n) = maybe_int(v) {
+        return Some(n);
+    }
+    let s = match v? {
+        Value::String(s) => s.trim(),
+        _ => return None,
+    };
+    if !s.contains('*') {
+        return None;
+    }
+    // Split into signed terms without splitting a leading sign off the first one: "7-*" is 7 and
+    // -0, "-1+*" is -1 and 0.
+    let mut total: i64 = 0;
+    let mut sign: i64 = 1;
+    let mut term = String::new();
+    let push = |term: &mut String, sign: i64, total: &mut i64| -> bool {
+        let t = term.trim().to_string();
+        term.clear();
+        if t.is_empty() {
+            return false;
+        }
+        // `*` and `*²` are both zero, so the star term contributes nothing; a numeric term
+        // parses, and anything else fails the whole value. Spelled as the two exact forms the
+        // corpus prints rather than "starts with a star": an unrecognised form then reads as
+        // ABSENT, which is the pre-fix behaviour and the safe direction to be wrong in.
+        if matches!(t.as_str(), "*" | "*\u{b2}") {
+            return true;
+        }
+        match t.parse::<i64>() {
+            Ok(n) => {
+                *total += sign * n;
+                true
+            }
+            Err(_) => false,
+        }
+    };
+    for (i, c) in s.char_indices() {
+        match c {
+            '+' | '-' if i > 0 => {
+                if !push(&mut term, sign, &mut total) {
+                    return None;
+                }
+                sign = if c == '-' { -1 } else { 1 };
+            }
+            _ => term.push(c),
+        }
+    }
+    if !push(&mut term, sign, &mut total) {
+        return None;
+    }
+    Some(total)
+}
+
 /// card_processing.py lines 66-76.
 fn rarity_text_to_int(rarity: &str) -> i64 {
     match rarity {
@@ -875,10 +950,13 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     // explicit None otherwise (matches the DB check constraint).
     let is_creaturelike = card_types.iter().any(|t| t == "Creature")
         || card_subtypes.iter().any(|t| t == "Vehicle" || t == "Spacecraft");
+    // `maybe_stat_int` and not `maybe_int`: `*` is zero on both sides of a power/toughness
+    // comparison — see its doc comment for the three cards that pin the arithmetic. The printed
+    // strings beside them are untouched, and they are what the card object serves.
     let (creature_power, creature_toughness, creature_power_text, creature_toughness_text) = if is_creaturelike {
         (
-            maybe_int(card.get("power")),
-            maybe_int(card.get("toughness")),
+            maybe_stat_int(card.get("power")),
+            maybe_stat_int(card.get("toughness")),
             s(card, "power"),
             s(card, "toughness"),
         )
@@ -2286,6 +2364,45 @@ mod tests {
         assert_eq!(maybe_int(Some(&json!(3.0))), Some(3));
         assert_eq!(maybe_int(Some(&Value::Null)), None);
         assert_eq!(maybe_int(None), None);
+    }
+
+    /// `*` is 0 in a power/toughness comparison on api.scryfall.com — `tou<1` is 434 there and was
+    /// 273 here, `tou=0` 432 against 272, 160 cards — and the arithmetic printed around the star
+    /// still runs. The three arithmetic rows are one card each, measured 2026-08-17:
+    /// Allosaurus Rider (`1+*`) answers `pow=1`, Souls of the Lost (`*+1`) answers `tou=1`, and
+    /// Aysen Crusader (`2+*`) answers `pow=2` and NOT `pow=0`.
+    #[test]
+    fn a_starred_stat_is_zero_and_keeps_its_arithmetic() {
+        // Everything `maybe_int` already read, unchanged.
+        assert_eq!(maybe_stat_int(Some(&json!("2"))), Some(2));
+        assert_eq!(maybe_stat_int(Some(&json!("1.5"))), Some(1));
+        assert_eq!(maybe_stat_int(Some(&json!("-1"))), Some(-1));
+        assert_eq!(maybe_stat_int(Some(&json!(3.0))), Some(3));
+        assert_eq!(maybe_stat_int(Some(&Value::Null)), None);
+        assert_eq!(maybe_stat_int(None), None);
+        // Every starred form the corpus prints.
+        assert_eq!(maybe_stat_int(Some(&json!("*"))), Some(0));
+        assert_eq!(maybe_stat_int(Some(&json!("1+*"))), Some(1));
+        assert_eq!(maybe_stat_int(Some(&json!("*+1"))), Some(1));
+        assert_eq!(maybe_stat_int(Some(&json!("2+*"))), Some(2));
+        assert_eq!(maybe_stat_int(Some(&json!("7-*"))), Some(7));
+        assert_eq!(maybe_stat_int(Some(&json!("*²"))), Some(0));
+        // A star-less value that is not a number stays absent — `?` is what the Un-cards print,
+        // and nothing measured says what it compares as.
+        assert_eq!(maybe_stat_int(Some(&json!("?"))), None);
+        assert_eq!(maybe_stat_int(Some(&json!("X"))), None);
+        assert_eq!(maybe_stat_int(Some(&json!("*?"))), None);
+        // And it reaches the row: the column is what `pow=`/`tou=` compares, the text beside it is
+        // what the card object serves.
+        let mut card = minimal_card("Starry");
+        card["type_line"] = json!("Creature \u{2014} Elemental");
+        card["power"] = json!("*");
+        card["toughness"] = json!("1+*");
+        let draft = transform(&card).unwrap().unwrap();
+        assert_eq!(draft.creature_power, Some(0));
+        assert_eq!(draft.creature_toughness, Some(1));
+        assert_eq!(draft.creature_power_text.as_deref(), Some("*"));
+        assert_eq!(draft.creature_toughness_text.as_deref(), Some("1+*"));
     }
 
     #[test]

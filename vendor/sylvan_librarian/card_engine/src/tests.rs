@@ -13840,15 +13840,25 @@ fn the_colour_planes_answer_exactly_what_tri_answers() {
     }
 }
 
-/// `face_stat_nums` is `card_processing.py`'s `maybe_int` behind the same creature-like gate the
+/// `face_stat_nums` is the builder's `maybe_stat_int` behind the same creature-like gate the
 /// card-level column uses, so the FRONT face's parse must reproduce that column exactly. If it
-/// ever does not, `face_num_values` would add a phantom value beside the merged one.
+/// ever does not, `face_num_values` would add a phantom value beside the merged one — and the
+/// numeric PLANES are built from the face values, so the disagreement would narrow rather than
+/// merely differ.
 #[test]
 fn front_face_stats_match_card_columns() {
     // The printed forms the corpus actually holds, including the ones that are not numbers.
     let creature = Some("Creature — Human Wizard");
     assert_eq!(face_stat_nums(creature, Some("3"), Some("2"), None), (Some(3), Some(2), None));
-    assert_eq!(face_stat_nums(creature, Some("*"), Some("1+*"), None), (None, None, None));
+    // `*` IS ZERO and the arithmetic around it still runs — `tou<1` is 434 on api.scryfall.com
+    // against this port's 273 before the fix, 160 cards. The builder's `maybe_stat_int` carries
+    // the three cards that pin the arithmetic; this is the same rule on a face's own string.
+    assert_eq!(face_stat_nums(creature, Some("*"), Some("1+*"), None), (Some(0), Some(1), None));
+    assert_eq!(face_stat_nums(creature, Some("2+*"), Some("7-*"), None), (Some(2), Some(7), None));
+    assert_eq!(face_stat_nums(creature, Some("*\u{b2}"), Some("?"), None), (Some(0), None, None));
+    // Loyalty keeps the old rule: the two cards printing `*` there are funny-set cards
+    // api.scryfall.com will not answer for at all, so there is nothing measured to follow.
+    assert_eq!(face_stat_nums(Some("Planeswalker — Duck"), None, None, Some("*")), (None, None, None));
     assert_eq!(face_stat_nums(creature, Some("-1"), Some("0"), None), (Some(-1), Some(0), None));
     // int(float(...)) truncates, exactly as maybe_int does.
     assert_eq!(face_stat_nums(creature, Some("1.5"), None, None), (Some(1), None, None));
