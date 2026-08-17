@@ -17,7 +17,10 @@
 //      and neither a price key nor a rank key may be dead across a whole run. That module exists
 //      because this step hid three real bugs (null foil prices, missing cache-busters, and five
 //      missing `image_uris` sizes) for the harness's entire life; read its header before widening
-//      the reduction again
+//      the reduction again. A case may additionally declare `price_nullity`, which asserts that the
+//      two sides agree row for row about which printings have NO price for a named key — the one
+//      thing the blanking hides that a run-level counter cannot see, and what pins the foil/etched
+//      coalesce as a SEARCH-KEY rule rather than a stored-column one
 //   3. strip LEDGERED Scryfall-only keys from Scryfall's side only. The ledger is the cases file's
 //      `scryfall_only_keys` (plus per-case additions): keys api.scryfall.com serves that upstream
 //      #912 has no column for. An UNLISTED key Scryfall sends and the mirror does not is a
@@ -66,6 +69,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringifyScryfall } from "../src/routes/scryfall-compat/respond";
 import {
+	checkPriceNullity,
 	checkVolatileShape,
 	newVolatileShapeTally,
 	volatileShapeRunProblems,
@@ -187,6 +191,13 @@ interface CaseSpec {
 	known_deviation?: KnownDeviation;
 	/** Checks `data`'s ORDER by rule instead of by position — see `checkVolatileOrder`. */
 	volatile_order?: VolatileOrder;
+	/**
+	 * Price members whose NULL-vs-PRESENT state the two sides must agree on, row by row, asserted
+	 * before step 2 blanks the values. For a case that exists to pin the foil/etched coalesce as a
+	 * SEARCH-KEY rule rather than a stored-column one — see `checkPriceNullity`, which is where the
+	 * reasoning lives.
+	 */
+	price_nullity?: string[];
 	/** Free-text rationale for how this case is built. Documentation only; never read at runtime. */
 	note?: string;
 	/** Names the store capability this case waits on; skipped unless --include-pending. */
@@ -811,8 +822,13 @@ async function runCase(spec: CaseSpec, file: CasesFile): Promise<Verdict> {
 		scryfallBody = checked.align(scryfallBody);
 	}
 
-	// Before the volatile reduction erases them: the shape of the values it is about to erase.
-	const shapeProblems = [...orderProblems, ...checkVolatileShape(oursBody, scryfallBody, shapeTally)];
+	// Before the volatile reduction erases them: the shape of the values it is about to erase, and —
+	// where the case declares it — whether the two sides agree about which rows have NO price at all.
+	const shapeProblems = [
+		...orderProblems,
+		...checkVolatileShape(oursBody, scryfallBody, shapeTally),
+		...(spec.price_nullity ? checkPriceNullity(oursBody, scryfallBody, spec.price_nullity) : []),
+	];
 
 	const volatilePatterns = [...VOLATILE_KEYS, ...(spec.volatile ?? [])].map(compilePattern);
 	const ledgerPatterns = [...file.scryfall_only_keys, ...(spec.scryfall_only_keys ?? [])].map(compilePattern);

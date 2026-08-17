@@ -128,6 +128,10 @@ interface Collected {
 	cards: number;
 }
 
+function emptyCollected(): Collected {
+	return { prices: new Map(), images: new Map(), keySets: new Map(), ranks: new Map(), cards: 0 };
+}
+
 /** Walk a parsed body, indexing every price member, image URL, rank and blanked-map key set. */
 function collect(v: unknown, path: string[], out: Collected): void {
 	if (Array.isArray(v)) {
@@ -159,21 +163,68 @@ function collect(v: unknown, path: string[], out: Collected): void {
 }
 
 /**
+ * OPT-IN, PER CASE: the two sides must agree on which rows serve NO price for the named keys.
+ *
+ * Check 4 above is deliberately a run-level existence check, because one card's foil price
+ * appearing between our nightly import and the live API is ordinary churn. That leaves one class of
+ * bug it cannot see, and it is not hypothetical — it is the exact shape the `usd`/`eur` coalesce
+ * fix (local 417bed6, upstream #927 10a6fb7) was built to avoid. api.scryfall.com answers
+ * `usd>=500` WITH a printing whose served `"usd"` is `null`, because the foil/etched fallback lives
+ * on its SEARCH KEY and not on the column it serves. Writing that coalesce into the stored column
+ * instead passes every filter test and every count, and corrupts the card object on 12,865
+ * printings — and since both harnesses blank price VALUES, `null` and `"4900.00"` reduce to the
+ * same byte. Nothing above would notice: the key set still matches (check 1), the value is still a
+ * decimal string (check 2), and the run-level counter goes UP, not down (check 4).
+ *
+ * So a case that exists to pin that distinction says so, and gets a per-row NULLITY comparison —
+ * presence, never value, so it still cannot go red because a price moved. Opt-in rather than global
+ * because global is what check 4 already refused to be, and for the same good reason.
+ *
+ * Only paths BOTH sides serve are compared; a row only one side has is the byte comparison's
+ * business, not this one's.
+ */
+export function checkPriceNullity(oursBody: unknown, scryfallBody: unknown, keys: readonly string[]): string[] {
+	const ours: Collected = emptyCollected();
+	const theirs: Collected = emptyCollected();
+	collect(oursBody, [], ours);
+	collect(scryfallBody, [], theirs);
+
+	const problems: string[] = [];
+	let compared = 0;
+	for (const [path, theirValue] of theirs.prices) {
+		const key = path.slice(path.lastIndexOf(".") + 1);
+		if (!keys.includes(key)) continue;
+		if (!ours.prices.has(path)) continue;
+		compared++;
+		const ourValue = ours.prices.get(path);
+		const theirNull = theirValue === null || theirValue === undefined;
+		const ourNull = ourValue === null || ourValue === undefined;
+		if (theirNull === ourNull) continue;
+		problems.push(
+			`${path}: Scryfall serves ${theirNull ? "null" : "a price"} and the mirror serves ` +
+				`${ourNull ? "null" : "a price"}. This case declares price_nullity because the row is here to ` +
+				`prove the foil/etched coalesce lives on the SEARCH KEY and not on the served column; both ` +
+				`harnesses blank the value, so this is the only assertion that can tell the two apart.`,
+		);
+	}
+	if (compared === 0)
+		problems.push(
+			`price_nullity [${keys.join(", ")}]: no row carried any of these keys on both sides, so the case ` +
+				`asserted nothing. Either the query stopped matching the printings it was written for or the ` +
+				`declaration names keys the response does not carry.`,
+		);
+	return problems;
+}
+
+/**
  * Check one request's two bodies and fold them into the run tally.
  *
  * Returns the problems that are decidable from this pair alone; the run-level verdict comes from
  * `volatileShapeRunProblems` once every case has been folded in.
  */
 export function checkVolatileShape(oursBody: unknown, scryfallBody: unknown, tally: VolatileShapeTally): string[] {
-	const empty = (): Collected => ({
-		prices: new Map(),
-		images: new Map(),
-		keySets: new Map(),
-		ranks: new Map(),
-		cards: 0,
-	});
-	const ours: Collected = empty();
-	const theirs: Collected = empty();
+	const ours: Collected = emptyCollected();
+	const theirs: Collected = emptyCollected();
 	collect(oursBody, [], ours);
 	collect(scryfallBody, [], theirs);
 	tally.cards += ours.cards;
