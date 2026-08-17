@@ -1532,6 +1532,13 @@ impl PinnedPrintings {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Pin a slot directly. `ranks.rs` orders SLOTS, so its tests need a pinned slot without a
+    /// `RowDraft` to build one from; production code reaches this set only through `observe`.
+    #[cfg(test)]
+    pub(crate) fn pin_slot_for_test(&mut self, key: PinKey) {
+        self.0.insert(key);
+    }
 }
 
 /// `r`'s [`PinKey`], or None when it has no addressable slot (no set code or no collector number).
