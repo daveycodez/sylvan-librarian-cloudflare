@@ -87,7 +87,8 @@ use serde_json::Value;
 use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
-    finalize_row, illust_count_qualifies, is_pinned, routing_keys_of, transform_row, PinnedPrintings, RowDraft,
+    art_tags_of, finalize_row, illust_count_qualifies, is_pinned, routing_keys_of, transform_row, PinnedPrintings,
+    RowDraft,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -742,13 +743,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
                 continue; // a duplicated scryfall_id's non-winning occurrence
             }
             let oracle_tags = s.tags.resolve(s.tags.oracle.get(&draft.oracle_id).unwrap_or(&empty));
-            let art_tags = s.tags.resolve(
-                draft
-                    .illustration_id
-                    .as_ref()
-                    .and_then(|ill| s.tags.art.get(ill))
-                    .unwrap_or(&empty),
-            );
+            let art_tags = art_tags_of(&s.tags, &draft);
             // BOTH GLOBAL, from the scores phase — not from this partition's aggregation, which
             // would rank the card against 1/Nth of the corpus's names and count only the rows of
             // its illustration group that landed here (see `scores_add_drafts`).

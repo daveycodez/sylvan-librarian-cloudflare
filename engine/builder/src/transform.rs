@@ -1731,12 +1731,7 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
     let tags = tags.clone();
     rows.into_iter().map(move |r| {
         let oracle_tags = tags.resolve(tags.oracle.get(&r.oracle_id).unwrap_or(&empty));
-        let art_tags = tags.resolve(
-            r.illustration_id
-                .as_ref()
-                .and_then(|ill| tags.art.get(ill))
-                .unwrap_or(&empty),
-        );
+        let art_tags = art_tags_of(&tags, &r);
         let illustration_count = r
             .illustration_id
             .as_ref()
@@ -1748,6 +1743,65 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         let rank = ranks.rank_of(&r);
         finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank)
     })
+}
+
+/// Every illustration this printing SHOWS, front first, deduped: the row's own
+/// `illustration_id` plus each face's.
+///
+/// A single-faced card has exactly one, and a card whose faces carry no art of their own (split,
+/// flip, adventure — Scryfall puts one `illustration_id` on the card and none on the faces) also
+/// has exactly one. A double-faced card has TWO, and only the front's is the row's own: the face
+/// merge (store-kv.ts generation 5) puts face 0's keys on the merged dict, so `illustration_id` is
+/// the FRONT face's and the back's exists only inside `card_faces`.
+pub fn illustration_ids(r: &RowDraft) -> Vec<&str> {
+    let mut ids: Vec<&str> = Vec::new();
+    if let Some(ill) = r.illustration_id.as_deref().filter(|s| !s.is_empty()) {
+        ids.push(ill);
+    }
+    for face in &r.card_faces {
+        if let Some(ill) = face.get("illustration_id").and_then(Value::as_str).filter(|s| !s.is_empty())
+            && !ids.contains(&ill)
+        {
+            ids.push(ill);
+        }
+    }
+    ids
+}
+
+/// `card_art_tags` for a row: the UNION of the art tags of every illustration it shows.
+///
+/// THIS PORT DIVERGES FROM UPSTREAM'S SQL, because Scryfall diverges from it. `_sync_card_tags`
+/// matches `card_art_tags` on the row's single `illustration_id` column, which for a
+/// double-faced card is its FRONT face's — so a back-face-only tag was unreachable. Scryfall
+/// answers otherwise, measured 2026-08-16 against api.scryfall.com:
+///
+/// * `arttag:snow e:khm` — 75 there, 73 here. The two missing are `Birgi, God of Storytelling //
+///   Harnfel, Horn of Bounty` and `Esika, God of the Tree // The Prismatic Bridge`, whose snow is
+///   on the BACK face's art.
+/// * `-art:human e:khm t:creature` — 135 there, 136 here, the extra being `Valki, God of Lies //
+///   Tibalt, Cosmic Impostor`: Tibalt is the human, and Tibalt is the back.
+///
+/// Scope on the 2026-08-16 bulk: 9,368 printings carry more than one illustration and 5,491 of
+/// them gain at least one tag from a non-front face.
+///
+/// One definition, three callers — this path, the spill aggregation and the wasm import — so no
+/// import path can attach a different tag set than another.
+pub fn art_tags_of<'a>(tags: &'a TagData, r: &RowDraft) -> Vec<&'a str> {
+    const EMPTY: &[u32] = &[];
+    let ids = illustration_ids(r);
+    // One illustration is the overwhelming majority and its stored list is ALREADY sorted by slug
+    // text and deduped (tags.rs `finish_into`), so it is returned untouched rather than re-sorted.
+    if ids.len() < 2 {
+        return tags.resolve(ids.first().and_then(|ill| tags.art.get(*ill)).map_or(EMPTY, Vec::as_slice));
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for ill in ids {
+        out.extend(tags.resolve(tags.art.get(ill).map_or(EMPTY, Vec::as_slice)));
+    }
+    // Back into the invariant a single list already satisfies: sorted by slug text, deduped.
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// The illustration_count predicate (backfill_prefer_scores.sql lines 31-45):
@@ -3000,5 +3054,57 @@ mod tests {
         .collect();
         let diff = untagged[0]["prefer_score"].as_f64().unwrap() - rows[0]["prefer_score"].as_f64().unwrap();
         assert_eq!(diff, 14.0);
+    }
+
+    /// The row's `illustration_id` is its FRONT face's, so face 0 is a duplicate of it and the
+    /// back is the only id the column cannot reach. A face with no art of its own (Fire // Ice's
+    /// Ice half) contributes nothing rather than a null entry.
+    #[test]
+    fn illustration_ids_are_front_first_deduped_and_skip_artless_faces() {
+        let delver = transform(&fixture("delver_of_secrets")).unwrap().unwrap();
+        assert_eq!(
+            illustration_ids(&delver),
+            vec!["1c2fee9b-89ea-4ab1-a751-451c3cd65a88", "c2b5f731-771b-4949-90f3-0ad40d676100"]
+        );
+        let fire_ice = transform(&fixture("fire_ice")).unwrap().unwrap();
+        assert_eq!(illustration_ids(&fire_ice), vec!["c890cb20-7e04-4ad0-96a6-8854cd409c14"]);
+        let solo = transform(&fixture("llanowar_elves")).unwrap().unwrap();
+        assert_eq!(illustration_ids(&solo), vec![solo.illustration_id.as_deref().unwrap()]);
+    }
+
+    /// A BACK-face-only art tag reaches the card. `arttag:snow e:khm` is 75 on Scryfall and was 73
+    /// here for exactly this reason — Birgi's and Esika's snow is on the back face's art.
+    #[test]
+    fn art_tags_union_every_face_and_stay_sorted() {
+        let draft = transform(&fixture("delver_of_secrets")).unwrap().unwrap();
+        let tags = TagData::from_slug_maps(
+            HashMap::new(),
+            HashMap::from([
+                ("1c2fee9b-89ea-4ab1-a751-451c3cd65a88".into(), vec!["human".into(), "window".into()]),
+                ("c2b5f731-771b-4949-90f3-0ad40d676100".into(), vec!["insect".into(), "window".into()]),
+            ]),
+        );
+        // Sorted by slug text and deduped, the invariant a single stored list already satisfies.
+        assert_eq!(art_tags_of(&tags, &draft), vec!["human", "insect", "window"]);
+        let rows: Vec<Value> = finalize(vec![draft], &tags).collect();
+        assert_eq!(rows[0]["card_art_tags"], json!({"human": true, "insect": true, "window": true}));
+    }
+
+    /// The single-illustration path is untouched by the union: one stored list, returned as-is.
+    #[test]
+    fn art_tags_of_a_single_illustration_row_are_its_stored_list() {
+        let draft = transform(&fixture("llanowar_elves")).unwrap().unwrap();
+        let tags = TagData::from_slug_maps(
+            HashMap::new(),
+            HashMap::from([(draft.illustration_id.clone().unwrap(), vec!["elf".into(), "forest".into()])]),
+        );
+        assert_eq!(art_tags_of(&tags, &draft), vec!["elf", "forest"]);
+        // And a face carrying no art of its own adds nothing: Fire // Ice's tags are the card's.
+        let fire_ice = transform(&fixture("fire_ice")).unwrap().unwrap();
+        let split_tags = TagData::from_slug_maps(
+            HashMap::new(),
+            HashMap::from([("c890cb20-7e04-4ad0-96a6-8854cd409c14".into(), vec!["fire".into()])]),
+        );
+        assert_eq!(art_tags_of(&split_tags, &fire_ice), vec!["fire"]);
     }
 }

@@ -283,13 +283,7 @@ impl Aggregates {
     pub fn finalize(&self, draft: RowDraft, tags: &TagData) -> Value {
         const EMPTY: &[u32] = &[];
         let oracle_tags = tags.resolve(tags.oracle.get(&draft.oracle_id).map_or(EMPTY, Vec::as_slice));
-        let art_tags = tags.resolve(
-            draft
-                .illustration_id
-                .as_ref()
-                .and_then(|ill| tags.art.get(ill))
-                .map_or(EMPTY, Vec::as_slice),
-        );
+        let art_tags = crate::transform::art_tags_of(tags, &draft);
         let illustration_count = draft
             .illustration_id
             .as_ref()

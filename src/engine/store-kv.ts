@@ -934,8 +934,60 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       printing. That table SHORT-CIRCUITS the result total, so a card-keyed table read under a
  *       printing-keyed filter would have reported a count no result page could produce. Layout has
  *       no posting index and no bit plane, so nothing else in the store moves.
+ *
+ *  31 — A CARD'S ART TAGS ARE THE UNION OVER EVERY FACE IT SHOWS, NOT ITS FRONT'S.
+ *
+ *       NO ARCHIVE_FORMAT_VERSION change, and that is exactly what makes this bump load-bearing:
+ *       `card_art_tags` is a stored VALUE, the layout is untouched, and a generation-30 store
+ *       still loads — so nothing in the header can see that the values moved, and without this
+ *       bump store-age.ts would keep serving a store whose double-faced cards answer only for
+ *       their front art. Same reason as generations 6, 8 and 9.
+ *
+ *       Upstream's `_sync_card_tags` matches `card_art_tags` on the row's one `illustration_id`
+ *       column. Since generation 5's face merge that column is the FRONT face's, so a tag on the
+ *       BACK face's art was unreachable by any query. Scryfall answers otherwise — measured
+ *       against api.scryfall.com, 2026-08-16:
+ *
+ *         arttag:snow e:khm              75    ours 73    missing Birgi // Harnfel and
+ *                                                         Esika // The Prismatic Bridge,
+ *                                                         whose snow is on the BACK art
+ *         -art:human e:khm t:creature   135    ours 136   the extra is Valki // Tibalt:
+ *                                                         Tibalt is the human, Tibalt is the back
+ *
+ *       `transform::art_tags_of` is now the one definition, called by all three import paths
+ *       (native `finalize`, the spill aggregation, the wasm import), so no path can attach a
+ *       different tag set than another. Scope on the 2026-08-16 bulk: 9,368 printings carry more
+ *       than one illustration and 5,491 of them gain at least one tag from a non-front face.
+ *
+ *       `prefer_score` reads the union too, deliberately: `is_off_style` is a question about the
+ *       art a printing shows, and a printing shows all of it. Measured cost of not splitting the
+ *       two readings: THREE printings corpus-wide flip `is_off_style` (Tribute to Horobi // Echo
+ *       of Death's Wail neo/356 en and de, `anime` on the back; Thaumatic Compass // Spires of
+ *       Orazca pxtc/249, `line-art` on the back). One rule for both readings is worth three rows.
+ *
+ *       WHAT THIS DOES NOT FIX, measured at the same time so the next attempt starts from data
+ *       rather than from the same guess: `unique=art` does NOT group by card, and it does not key
+ *       on the front illustration either. Scryfall dedupes the RESULT SET on the ordered tuple of
+ *       every face's illustration_id, across cards. Two proofs, both 2026-08-16:
+ *
+ *         - `e:khm t:god unique=art` is 25 there and 26 here. The extra row is `A-Alrund` (khm
+ *           A-40), whose two faces carry the SAME illustration ids as khm 40 — a different
+ *           oracle_id, a different name, and still one artwork. `unique=cards` (13) and
+ *           `unique=prints` (26) agree exactly, so the dedupe is not card-scoped.
+ *         - `name:"Growing Rites of Itlimoc" include:extras unique=art` keeps BOTH alci/26 and
+ *           lci/188, which share a front illustration and differ on the back — so the key is the
+ *           whole tuple, not the front. Same shape for `name:"Clearwater Pathway"`.
+ *
+ *       `assign_artwork_groups` keys on the printing's single `illustration_id` and groups WITHIN
+ *       a card, which is wrong in both directions. On the 2026-08-16 bulk the front-only key
+ *       merges 12 within-card rows Scryfall keeps, and the per-card scope keeps 333 rows Scryfall
+ *       merges (296 shared tuples, 215 of them an Alchemy `A-` card against its original). Closing
+ *       it needs a corpus-wide dense artwork id in place of `artwork_base[card] + gid` AND a
+ *       cross-partition dedupe in the gather, because cards are partitioned by oracle_id and two
+ *       cards sharing an artwork have different ones. That is a store-shape change and a gather
+ *       change, so it is not this generation.
  */
-export const STORE_CONTENT_GENERATION = 30;
+export const STORE_CONTENT_GENERATION = 31;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
