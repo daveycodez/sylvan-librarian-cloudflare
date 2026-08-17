@@ -20,13 +20,17 @@ The idea: mirror every card image to R2 once, in WebP, and make `imageUris` poin
 
 A card image is currently a third-party request on every page view. Mirroring makes art a property of the deployment: no dependence on Scryfall's CDN being up, no dependence on their rate posture, and — the part that matters for a packaged or offline build — bytes we can bundle.
 
-It also decouples us from an **undocumented** path. The WebP variant names below appear nowhere in Scryfall's API; `image_uris` only ever lists the six JPEG/PNG ones. They can move without notice. That is a bad thing to depend on at runtime and a fine thing to crawl once — which is an argument for doing the mirror *sooner*, not for avoiding WebP.
+~~It also decouples us from an **undocumented** path. The WebP variant names below appear nowhere in Scryfall's API; `image_uris` only ever lists the six JPEG/PNG ones.~~ **Corrected 2026-08-16: this is no longer true, and it was the load-bearing claim of the paragraph.** All five WebP names are now in the API — `image_uris` serves **eleven** keys, the six JPEG/PNG ones followed by `thumb`, `grid`, `display`, `art`, `crop`, on every card object and every face (measured against api.scryfall.com, and against all 540,484 printings in the 2026-08-16 all_cards bulk, where the key set is either wholly absent or exactly those eleven — never partial). The port emits all eleven as of the same date; see `IMAGE_EXTENSIONS` in `src/routes/scryfall-compat/objects.ts`.
+
+That weakens the "crawl an undocumented path once" argument rather than the mirror itself: these names are now a published part of the card object, so they are considerably less likely to move without notice, and the *sooner rather than later* urgency in the original paragraph is gone. What the mirror still buys — no third-party request per page view, art as a property of the deployment, bundleable bytes — is untouched.
+
+One caveat the promotion introduces: `version=` did **not** grow with `image_uris`. `?format=image&version=thumb` redirects to the LARGE jpg, byte for byte the fallback `version=bogus` gets, and the same for grid/display/art/crop (*measured* 2026-08-16). So the eleven names are emitted as URLs and refused as parameters, and anything here that treats "an `image_uris` key" and "a `version=` value" as one vocabulary is wrong in both directions.
 
 ### The honest risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Undocumented variant names change or disappear | Medium | Crawl once; after that we serve our own bytes. A failed re-crawl degrades to stale art, not missing art. |
+| ~~Undocumented~~ variant names change or disappear | ~~Medium~~ **Low** (revised 2026-08-16) | All five are now published in `image_uris`, so they carry Scryfall's usual API-stability posture rather than none. The original mitigation still stands regardless: crawl once, after which we serve our own bytes, and a failed re-crawl degrades to stale art rather than missing art. |
 | Sample-of-one sizing is wrong | Low | Totals could move ±20%. At $0.26/month the decision does not turn on it — but measure the real distribution during Phase 1 before quoting a number anywhere else. |
 | Faces collapsed into one object | **High** | §4. This is the failure upstream's mirror actually shipped. |
 | Crawl looks like abuse | Medium | §5's pacing. Scryfall asks for 50–100 ms between requests; this is ~13 hours of politeness, not a burst. |
@@ -179,7 +183,9 @@ One function. `imageUris` in `src/routes/scryfall-compat/objects.ts` builds ever
 out[size] = `https://cards.scryfall.io/${size}/${face}/${first}/${second}/${scryfallId}.${ext}${suffix}`;
 ```
 
-That is the only place the host and the variant vocabulary are decided, so pointing at the mirror is a change to one function plus the JPEG→WebP name map from §3. Note the *keys* of the returned object must stay Scryfall's documented names (`small`, `normal`, `large`, `art_crop`, `border_crop`) — a client reading `image_uris.large` must keep working. Only the URL behind each key changes.
+That is the only place the host and the variant vocabulary are decided, so pointing at the mirror is a change to one function plus the JPEG→WebP name map from §3. Note the *keys* of the returned object must stay Scryfall's own names — all **eleven** of them, `small`, `normal`, `large`, `png`, `art_crop`, `border_crop`, `thumb`, `grid`, `display`, `art`, `crop`, in that order — because a client reading `image_uris.large` must keep working and a client reading `image_uris.display` now must too. Only the URL behind each key changes.
+
+The §3 name map is consequently a smaller change than it was when this was written: five of the eleven keys are ALREADY the WebP variants, so mirroring them is a host swap with no renaming at all, and only the six JPEG/PNG keys need the map.
 
 `png` keeps pointing at Scryfall unless and until it is mirrored.
 

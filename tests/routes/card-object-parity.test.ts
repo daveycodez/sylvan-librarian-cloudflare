@@ -593,6 +593,75 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		expect(rustKeys).toEqual(tsKeys);
 	});
 
+	// ─── the one assertion that is not "the two writers agree" ───────────────────
+	//
+	// Everything above holds the two builders TO EACH OTHER, which is what this file is for and also
+	// its blind spot: both can be wrong the same way and stay green forever. They were. Scryfall
+	// serves ELEVEN keys under `image_uris` and both builders served six, missing `thumb`, `grid`,
+	// `display`, `art` and `crop` on every card object and every face either one had ever built —
+	// and this file, the live-parity harness and the 759-object sweep were all green throughout.
+	//
+	// So this constant is SCRYFALL'S, not ours: read off api.scryfall.com and confirmed against all
+	// 540,484 printings in the 2026-08-16 all_cards bulk, where `image_uris` is either wholly absent
+	// or exactly these eleven keys in exactly this order — no layout, no `image_status` and no face
+	// position produces a partial set. Written down here so that changing our table alone cannot
+	// make the suite agree with itself again.
+
+	/** Scryfall's `image_uris` key set, in Scryfall's order. Their shape, not ours. */
+	const SCRYFALL_IMAGE_KEYS = [
+		"small",
+		"normal",
+		"large",
+		"png",
+		"art_crop",
+		"border_crop",
+		"thumb",
+		"grid",
+		"display",
+		"art",
+		"crop",
+	];
+
+	test("image_uris carries Scryfall's eleven keys in Scryfall's order, top level and per face", () => {
+		const imagesOf = (built: Record<string, unknown>): string[][] => {
+			const found: string[][] = [];
+			const top = built.image_uris;
+			if (top && typeof top === "object") found.push(Object.keys(top));
+			for (const face of (built.card_faces ?? []) as Record<string, unknown>[]) {
+				const faceImages = face.image_uris;
+				if (faceImages && typeof faceImages === "object") found.push(Object.keys(faceImages));
+			}
+			return found;
+		};
+
+		let topLevel = 0;
+		let perFace = 0;
+		for (const [label, row] of CASES) {
+			const clean = asRow(row);
+			const ts = imagesOf(toScryfallCard(clean, BASE) as Record<string, unknown>);
+			const rust = imagesOf(JSON.parse(scryfall_card_from_row(JSON.stringify(clean), BASE)));
+			// The empty `image_uris` an id-less row produces is the documented no-id case, not a
+			// short key set — it has no keys at all rather than some of them.
+			for (const keys of ts) {
+				if (keys.length === 0) continue;
+				expect(keys, `${label}: TypeScript image_uris`).toEqual(SCRYFALL_IMAGE_KEYS);
+			}
+			for (const keys of rust) {
+				if (keys.length === 0) continue;
+				expect(keys, `${label}: Rust image_uris`).toEqual(SCRYFALL_IMAGE_KEYS);
+			}
+			const built = toScryfallCard(clean, BASE) as Record<string, unknown>;
+			if (built.image_uris && Object.keys(built.image_uris).length > 0) topLevel++;
+			perFace += ((built.card_faces ?? []) as Record<string, unknown>[]).filter(
+				(f) => f.image_uris && Object.keys(f.image_uris as object).length > 0,
+			).length;
+		}
+		// Both placements were checked, not just whichever one the fixtures happen to reach — the
+		// gap was per-face as well as top-level, so a run that only saw one proves half of it.
+		expect(topLevel, "fixtures reaching a top-level image_uris").toBeGreaterThan(0);
+		expect(perFace, "fixtures reaching a per-face image_uris").toBeGreaterThan(0);
+	});
+
 	// ─── guard the guard ─────────────────────────────────────────────────────────
 	//
 	// The byte comparison above can only catch a divergence a fixture REACHES. Commit 1cea214's

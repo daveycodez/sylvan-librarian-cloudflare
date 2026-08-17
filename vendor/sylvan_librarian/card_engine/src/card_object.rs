@@ -33,13 +33,37 @@ use serde_json::{Map, Value};
 const CARD_BACK_ID: &str = "0aeebaf5-8c7d-4636-9e82-8c27447861f7";
 
 /// Image size -> file extension, in Scryfall's own order.
-const IMAGE_EXTENSIONS: [(&str, &str); 6] = [
+///
+/// ELEVEN, not the six this file shipped with. Scryfall added five webp sizes — `thumb`, `grid`,
+/// `display`, `art`, `crop` — and every card object it serves carries all eleven; a six-key
+/// `image_uris` differed from Scryfall on every card object emitted.
+///
+/// Unconditional, and measured that way: across all 540,484 printings in the 2026-08-16 all_cards
+/// bulk, `image_uris` is either wholly ABSENT (8,444 cards, 7,641 faces — the layouts whose picture
+/// lives on the other level) or carries exactly these eleven keys in exactly this order. No card,
+/// face, layout or `image_status` carries a partial set, so there is no per-key conditionality to
+/// round-trip the way `printed_*` has.
+///
+/// Derived, not stored: the same scan confirms all eleven URLs are the same pure function of the id
+/// and the face on every one of the 548,604 objects that has them — `art_crop` and `art` are
+/// different sizes of one path, not a stored pair. These five cost zero archive bytes, which is why
+/// they are a table and not a column.
+///
+/// NOT the `version=` vocabulary of `format=image`, which stays six: measured against
+/// api.scryfall.com, `version=thumb` redirects to the LARGE jpg, the same fallback `version=bogus`
+/// gets, and the same for grid/display/art/crop.
+const IMAGE_EXTENSIONS: [(&str, &str); 11] = [
     ("small", "jpg"),
     ("normal", "jpg"),
     ("large", "jpg"),
     ("png", "png"),
     ("art_crop", "jpg"),
     ("border_crop", "jpg"),
+    ("thumb", "webp"),
+    ("grid", "webp"),
+    ("display", "webp"),
+    ("art", "webp"),
+    ("crop", "webp"),
 ];
 
 // ─── row accessors, mirroring the port's str/num/bool/list ───────────────────
@@ -938,6 +962,50 @@ mod tests {
         assert!(faces[0].get("image_uris").is_none(), "a split's faces have no picture of their own");
         assert!(faces[1].get("image_uris").is_none());
         assert!(faces[0].get("colors").is_none(), "...and no colours of their own");
+    }
+
+    /// All ELEVEN sizes, in Scryfall's order, with the webp five spelled out.
+    ///
+    /// A key-SET test, not a URL-shape one: the six-key version of this table was wrong on every
+    /// card object for as long as it shipped, and neither parity harness could see it because both
+    /// reduce `image_uris` before comparing. Pinned to the bytes, so a size added in the middle of
+    /// the table fails here rather than reordering every card object silently.
+    #[test]
+    fn image_uris_carries_scryfalls_eleven_sizes_in_scryfalls_order() {
+        const EXPECTED: [(&str, &str); 11] = [
+            ("small", "jpg"),
+            ("normal", "jpg"),
+            ("large", "jpg"),
+            ("png", "png"),
+            ("art_crop", "jpg"),
+            ("border_crop", "jpg"),
+            ("thumb", "webp"),
+            ("grid", "webp"),
+            ("display", "webp"),
+            ("art", "webp"),
+            ("crop", "webp"),
+        ];
+        let id = "cd000000-0000-0000-0000-000000000002";
+        let expected = |face: &str, suffix: &str| {
+            let body = EXPECTED
+                .iter()
+                .map(|(size, ext)| {
+                    format!(r#""{size}":"https://cards.scryfall.io/{size}/{face}/c/d/{id}.{ext}{suffix}""#)
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        };
+
+        // Single-faced, with the cache-buster the row's image_updated_at supplies.
+        let mut out = Vec::new();
+        write_image_uris(&mut out, id, Some(1_783_903_008), "front");
+        assert_eq!(String::from_utf8(out).expect("utf-8"), expected("front", "?1783903008"));
+
+        // Per-face, back half, no cache-buster — the same eleven keys either way.
+        let mut out = Vec::new();
+        write_image_uris(&mut out, id, None, "back");
+        assert_eq!(String::from_utf8(out).expect("utf-8"), expected("back", ""));
     }
 
     /// The joined top-level cost skips a face that has none, which is how a flip card reads.

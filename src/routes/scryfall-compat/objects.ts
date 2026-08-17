@@ -18,7 +18,16 @@
 /** An engine row: JSON_FIELD_TABLE names to values, absent rendered as null. */
 export type EngineRow = Record<string, unknown>;
 
-/** Sizes Scryfall serves under `image_uris`, and the `version` vocabulary of `format=image`. */
+/**
+ * The `version` vocabulary of `format=image` — SIX names, not the eleven `image_uris` carries.
+ *
+ * The two lists used to be the same list, and are not any more: Scryfall's `image_uris` gained five
+ * webp sizes (see IMAGE_EXTENSIONS) that `version=` does not accept. Measured against
+ * api.scryfall.com on 2026-08-16 — `?format=image&version=thumb` redirects to the LARGE jpg, byte
+ * for byte the same fallback `version=bogus` gets, and the same for grid/display/art/crop. So these
+ * five are emitted as URLs and refused as parameters, and widening this tuple to match the other
+ * would silently change five 302 targets.
+ */
 export const IMAGE_VERSIONS = ["small", "normal", "large", "png", "art_crop", "border_crop"] as const;
 export const DEFAULT_IMAGE_VERSION = "large";
 
@@ -37,7 +46,29 @@ export const MAX_AUTOCOMPLETE_VALUES = 20;
 /** Scryfall's card back, one image for every normal card. */
 export const CARD_BACK_ID = "0aeebaf5-8c7d-4636-9e82-8c27447861f7";
 
-/** The file extension each image size is served as. */
+/**
+ * The file extension each `image_uris` size is served as, in Scryfall's own key order.
+ *
+ * ELEVEN, not the six this port shipped with. Scryfall added five webp sizes — `thumb`, `grid`,
+ * `display`, `art`, `crop` — and every card object it serves carries all eleven; a six-key
+ * `image_uris` differed from Scryfall on every card object this mirror has ever emitted.
+ *
+ * Unconditional, and measured that way: across all 540,484 printings in the 2026-08-16 all_cards
+ * bulk, `image_uris` is either wholly ABSENT (8,444 cards, 7,641 faces — the layouts whose picture
+ * lives on the other level) or carries exactly these eleven keys in exactly this order. Not one
+ * card, face, layout or `image_status` carries a partial set, so there is no per-key conditionality
+ * to round-trip the way `printed_*` has.
+ *
+ * Derived, not stored: the same scan confirms all eleven URLs are the same pure function of the id
+ * and the face on every one of the 548,604 objects that has them — `art_crop` and `art` are
+ * different sizes of the same path, not a stored pair. Adding them costs zero archive bytes, which
+ * is why this is a table and not a column.
+ *
+ * The one exception is not an exception to the KEY set: 29 `image_status: "missing"` printings serve
+ * `https://errors.scryfall.com/soon.jpg` for all eleven values. That placeholder is a pre-existing
+ * divergence of this mirror's derived URLs (it predates these five keys and applies equally to the
+ * original six), not something the extra sizes introduce.
+ */
 const IMAGE_EXTENSIONS: Record<string, string> = {
 	small: "jpg",
 	normal: "jpg",
@@ -45,6 +76,11 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 	png: "png",
 	art_crop: "jpg",
 	border_crop: "jpg",
+	thumb: "webp",
+	grid: "webp",
+	display: "webp",
+	art: "webp",
+	crop: "webp",
 };
 
 /** The same table pre-entried, because imageUris() walks it once per card and once per face. */
@@ -256,7 +292,7 @@ export function imageUris(
 	const [first, second] = [scryfallId[0], scryfallId[1]];
 	const out: Record<string, string> = {};
 	// IMAGE_EXTENSION_ENTRIES, not Object.entries(IMAGE_EXTENSIONS): this runs once per card and
-	// again per face, so a /cards/search page called it 175+ times and allocated the same six
+	// again per face, so a /cards/search page called it 175+ times and allocated the same eleven
 	// pairs every time.
 	for (const [size, ext] of IMAGE_EXTENSION_ENTRIES) {
 		out[size] = `https://cards.scryfall.io/${size}/${face}/${first}/${second}/${scryfallId}.${ext}${suffix}`;

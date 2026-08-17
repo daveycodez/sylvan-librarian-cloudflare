@@ -129,9 +129,14 @@ const OBJECT_SAMPLE = 3;
 /**
  * Volatile leaf keys stripped from BOTH sides anywhere they appear (live-parity, plan C4).
  *
- * The reduction below it — nulling `prices` and cutting the image cache-buster — hid two real bugs
- * from BOTH harnesses for their whole life, so what it erases is checked structurally instead by
- * scripts/volatile-shape.ts; see that file's header before widening any of this.
+ * The reduction below it — nulling `prices` and cutting the image cache-buster — hid three real
+ * bugs from BOTH harnesses for their whole life, so what it erases is checked structurally instead
+ * by scripts/volatile-shape.ts; see that file's header before widening any of this.
+ *
+ * These two keys are erased HARDER than a price is: `prices` keeps its keys and only loses its
+ * values, so a missing price key still fails the byte comparison, while these are deleted key and
+ * all from both sides. volatile-shape.ts's run-level check is the only thing that would notice
+ * either of them going permanently dark.
  */
 const VOLATILE_KEYS = ["edhrec_rank", "penny_rank"];
 
@@ -527,9 +532,14 @@ const IN_FLIGHT: InFlightFamily[] = [
 		// The paths the concurrent working tree is editing right now (git diff of
 		// src/routes/scryfall-compat/objects.ts at the time of the run): the hoisted top-level face
 		// fields, the printed_* triple, produced_mana, and the per-layout image/related_uris rules.
+		// `**.image_uris` was in this list and is deliberately NOT any more. It suppressed the
+		// whole subtree, and the subtree was five keys short of Scryfall's on every card object
+		// this mirror served (thumb/grid/display/art/crop — see IMAGE_EXTENSIONS in
+		// scryfall-compat/objects.ts). An in-flight entry hides the field it names for as long as
+		// it stands, so it must name a difference somebody is actually holding open; this one
+		// outlived the repair it was written for and turned into a blindfold.
 		paths: [
 			"**.mana_cost",
-			"**.image_uris",
 			"**.card_back_id",
 			"**.illustration_id",
 			"**.power",

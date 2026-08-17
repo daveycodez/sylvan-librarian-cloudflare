@@ -11,11 +11,13 @@
 //   2. strip volatile fields from both sides: every value under `prices` (all of them move daily),
 //      `edhrec_rank`, `penny_rank`, and the `?<timestamp>` cache-buster on every `image_uris`
 //      value (top-level and per-face) — the PATH of the image still has to match. What that
-//      reduction cannot see is checked STRUCTURALLY instead, by scripts/volatile-shape.ts: prices
-//      the mirror serves must be decimal strings, an image URL Scryfall cache-busts the mirror must
-//      cache-bust too, and no price key may be dead across a whole run. That module exists because
-//      this step hid two real bugs (null foil prices, missing cache-busters) for the harness's
-//      entire life; read its header before widening the reduction again
+//      reduction cannot see is checked STRUCTURALLY instead, by scripts/volatile-shape.ts: the KEY
+//      SETS of `prices` and `image_uris` must match Scryfall's exactly, prices the mirror serves
+//      must be decimal strings, an image URL Scryfall cache-busts the mirror must cache-bust too,
+//      and neither a price key nor a rank key may be dead across a whole run. That module exists
+//      because this step hid three real bugs (null foil prices, missing cache-busters, and five
+//      missing `image_uris` sizes) for the harness's entire life; read its header before widening
+//      the reduction again
 //   3. strip LEDGERED Scryfall-only keys from Scryfall's side only. The ledger is the cases file's
 //      `scryfall_only_keys` (plus per-case additions): keys api.scryfall.com serves that upstream
 //      #912 has no column for. An UNLISTED key Scryfall sends and the mirror does not is a

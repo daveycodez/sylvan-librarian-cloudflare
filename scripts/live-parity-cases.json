@@ -8,11 +8,6 @@
 		"**.card_faces.*.artist_id",
 		"image_updated_at",
 		"**.all_parts.*.uri",
-		"**.image_uris.thumb",
-		"**.image_uris.grid",
-		"**.image_uris.display",
-		"**.image_uris.art",
-		"**.image_uris.crop",
 		"preview"
 	],
 	"scryfall_only_key_notes": {
@@ -23,11 +18,6 @@
 		"artist_ids": "Top-level and per-face artist id lists; upstream #912 stores only the artist name (plan C4 seed).",
 		"**.card_faces.*.artist_id": "Per-face artist id; upstream #912 stores only the artist name (plan C4 seed).",
 		"image_updated_at": "Image pipeline timestamp, the field the image_uris cache-buster is derived from; no upstream #912 column (observed live 2026-08-15).",
-		"**.image_uris.thumb": "Newer api.scryfall.com webp image size, absent from the bulk files and from upstream's IMAGE_VERSIONS (observed live 2026-08-15; same for grid/display/art/crop).",
-		"**.image_uris.grid": "See **.image_uris.thumb.",
-		"**.image_uris.display": "See **.image_uris.thumb.",
-		"**.image_uris.art": "See **.image_uris.thumb.",
-		"**.image_uris.crop": "See **.image_uris.thumb.",
 		"preview": "Preview metadata (source/source_uri/previewed_at); in the bulk files but upstream #912 has no column, so the mirror never emits it (observed live 2026-08-15).",
 		"**.all_parts.*.uri": "Self-referential related-card URI; upstream #912's RelatedCard (mirrored by card_engine core_api.rs jv_all_parts) stores only id/name/type_line/component, so neither upstream nor the mirror can emit it (observed live 2026-08-15)."
 	},

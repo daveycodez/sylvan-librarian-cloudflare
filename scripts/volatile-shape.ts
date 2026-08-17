@@ -16,26 +16,62 @@
 // `jv_opt_image_updated_at`/`opt_image_updated_at`; this file is the guard that keeps the class
 // from recurring behind the same blind spot.
 //
+// A THIRD bug hid here for the same reason and was found the same way, by hand: Scryfall serves
+// ELEVEN keys under `image_uris` and this mirror served six, missing `thumb`, `grid`, `display`,
+// `art` and `crop` on every card object and every face of every card object it had ever emitted.
+// This file was the guard that should have caught it and did not, because it only ever compared the
+// values it found at PAIRED paths — a key Scryfall had and we did not simply had no pair, so it was
+// skipped rather than reported, and the run-level counter it did keep was left reading 0.52 (168,114
+// ours to 320,639 theirs, which is 6/11) with nothing configured to call that a failure.
+//
+// So the rule this file exists to enforce is now stated properly: IGNORE THE VALUE, ASSERT THE KEY
+// SET. A reduction that erases values must not also erase which keys were there, or it stops being
+// a reduction and becomes a hole. Check 1 below is the new one.
+//
 // Everything asserted here is SHAPE or PRESENCE, never a value, so no assertion in this file can go
 // red because a price moved overnight:
 //
-//   1. PER VALUE, our side only. A price we serve must be a decimal string; a cache-buster we serve
+//   1. PER OBJECT, paired by path. Where Scryfall serves a `prices` or an `image_uris`, ours must
+//      carry the SAME KEYS IN THE SAME ORDER. This is the check that stands directly in the hole
+//      the reduction opens: both harnesses blank these values, so the key set is the only thing
+//      left to compare and something has to compare it. Fully deterministic — a key set is a
+//      property of the serializer, never of today's market or today's image pipeline.
+//   2. PER VALUE, our side only. A price we serve must be a decimal string; a cache-buster we serve
 //      must be an epoch inside a plausible window. Fully deterministic — the mirror's own output has
 //      to be well-formed no matter what either corpus says today.
-//   2. PER URL, paired by path. Where Scryfall's image URL carries a cache-buster, ours must too.
+//   3. PER URL, paired by path. Where Scryfall's image URL carries a cache-buster, ours must too.
 //      Presence, not value: ours is present exactly when `image_updated_at` is, which is a property
 //      of the row rather than of the day.
-//   3. PER RUN, per price key. A key Scryfall served a non-null value for on at least MIN_LIVE_CARDS
-//      cards must be non-null on at least one card on our side. Deliberately a run-level existence
-//      check and not a per-card one: one card's foil price appearing or vanishing between our
-//      nightly import and the live API is ordinary churn, while a key that is dead across an entire
-//      run is precisely the bug class — and needs no per-card agreement to detect.
+//   4. PER RUN, per volatile key. A key Scryfall served a value for on at least MIN_LIVE_CARDS cards
+//      must be non-null on at least one card on our side. Deliberately a run-level existence check
+//      and not a per-card one: one card's foil price appearing or vanishing between our nightly
+//      import and the live API is ordinary churn, while a key that is dead across an entire run is
+//      precisely the bug class — and needs no per-card agreement to detect. This covers `prices`,
+//      the image cache-buster, and the two RANK keys.
+//
+// `edhrec_rank` and `penny_rank` are in check 4 because they are the one other thing both harnesses
+// erase, and they are erased HARDER than prices are: `prices` is blanked value-by-value with its
+// keys left standing, so a missing price key still fails the byte comparison, but the ranks are in
+// VOLATILE_KEYS and `stripPatternKeys` deletes them key and all from BOTH sides. Nothing outside
+// this file would notice either rank going permanently dark. Audited against the store at the time
+// this check was added — 80 printings sampled from the 2026-08-16 all_cards bulk that carry a rank,
+// compared per id against the mirror, zero mismatches — so the check is a guard on a currently
+// healthy field rather than a report of a live bug.
 //
 // Consumed by both harnesses; it lives in its own module rather than being duplicated because the
 // point of it is that the two harnesses share the blind spot.
 
 /** Scryfall's `prices` members, in the order it serves them. */
 export const PRICE_KEYS = ["usd", "usd_foil", "usd_etched", "eur", "eur_foil", "tix"] as const;
+
+/**
+ * The volatile SCALARS both harnesses delete outright — key and all, from both sides — rather than
+ * blanking in place the way they do a price. Nothing else compares their presence, so check 4 does.
+ */
+export const RANK_KEYS = ["edhrec_rank", "penny_rank"] as const;
+
+/** The flat scalar maps the harnesses blank the values of. Their KEY SETS are check 1's subject. */
+const KEY_SET_FIELDS = new Set(["prices", "image_uris"]);
 
 /** What a price on the wire looks like — Python's `f"{v:.2f}"`, which is what this port emits too. */
 const DECIMAL_PRICE = /^\d+\.\d{2}$/;
@@ -56,14 +92,24 @@ const MIN_LIVE_CARDS = 3;
 export interface VolatileShapeTally {
 	/** price key -> how many cards each side served a non-null value for. */
 	prices: Map<string, { scryfall: number; ours: number }>;
+	/** rank key -> how many cards each side served the key on at all. */
+	ranks: Map<string, { scryfall: number; ours: number }>;
 	/** image URLs carrying a cache-buster, per side. */
 	images: { scryfall: number; ours: number };
+	/** `prices`/`image_uris` objects whose key set was compared, and how many agreed. */
+	keySets: { compared: number; agreed: number };
 	/** Card objects walked, so a caller can report the sample the verdict rests on. */
 	cards: number;
 }
 
 export function newVolatileShapeTally(): VolatileShapeTally {
-	return { prices: new Map(), images: { scryfall: 0, ours: 0 }, cards: 0 };
+	return {
+		prices: new Map(),
+		ranks: new Map(),
+		images: { scryfall: 0, ours: 0 },
+		keySets: { compared: 0, agreed: 0 },
+		cards: 0,
+	};
 }
 
 function isObject(v: unknown): v is { [key: string]: unknown } {
@@ -75,10 +121,14 @@ interface Collected {
 	prices: Map<string, unknown>;
 	/** dotted path (`data.0.image_uris.large`) -> the served URL. */
 	images: Map<string, string>;
+	/** dotted path of the MAP itself (`data.0.image_uris`) -> its keys, in served order. */
+	keySets: Map<string, string[]>;
+	/** dotted path (`data.0.penny_rank`) -> the served value, for keys deleted before comparison. */
+	ranks: Map<string, unknown>;
 	cards: number;
 }
 
-/** Walk a parsed body, indexing every price member and image URL by its path. */
+/** Walk a parsed body, indexing every price member, image URL, rank and blanked-map key set. */
 function collect(v: unknown, path: string[], out: Collected): void {
 	if (Array.isArray(v)) {
 		v.forEach((item, i) => {
@@ -90,12 +140,18 @@ function collect(v: unknown, path: string[], out: Collected): void {
 	if (v.object === "card") out.cards++;
 	for (const [key, value] of Object.entries(v)) {
 		const here = [...path, key];
+		if ((RANK_KEYS as readonly string[]).includes(key)) out.ranks.set(here.join("."), value);
 		// `prices` and `image_uris` are flat maps of scalars — index them and do not descend.
-		if (key === "prices" && isObject(value)) {
-			for (const [k, val] of Object.entries(value)) out.prices.set([...here, k].join("."), val);
-		} else if (key === "image_uris" && isObject(value)) {
-			for (const [k, val] of Object.entries(value))
-				if (typeof val === "string") out.images.set([...here, k].join("."), val);
+		if (KEY_SET_FIELDS.has(key) && isObject(value)) {
+			// The key set of the map, before anything blanks what is inside it. Recorded for BOTH
+			// sides at the map's own path, so check 1 can pair them.
+			out.keySets.set(here.join("."), Object.keys(value));
+			if (key === "prices") {
+				for (const [k, val] of Object.entries(value)) out.prices.set([...here, k].join("."), val);
+			} else {
+				for (const [k, val] of Object.entries(value))
+					if (typeof val === "string") out.images.set([...here, k].join("."), val);
+			}
 		} else {
 			collect(value, here, out);
 		}
@@ -109,8 +165,15 @@ function collect(v: unknown, path: string[], out: Collected): void {
  * `volatileShapeRunProblems` once every case has been folded in.
  */
 export function checkVolatileShape(oursBody: unknown, scryfallBody: unknown, tally: VolatileShapeTally): string[] {
-	const ours: Collected = { prices: new Map(), images: new Map(), cards: 0 };
-	const theirs: Collected = { prices: new Map(), images: new Map(), cards: 0 };
+	const empty = (): Collected => ({
+		prices: new Map(),
+		images: new Map(),
+		keySets: new Map(),
+		ranks: new Map(),
+		cards: 0,
+	});
+	const ours: Collected = empty();
+	const theirs: Collected = empty();
 	collect(oursBody, [], ours);
 	collect(scryfallBody, [], theirs);
 	tally.cards += ours.cards;
@@ -118,14 +181,45 @@ export function checkVolatileShape(oursBody: unknown, scryfallBody: unknown, tal
 	const problems: string[] = [];
 	const ceiling = Math.floor(Date.now() / 1000) + 366 * 86_400;
 
-	// 1a. Every price WE serve is a decimal string.
+	// 1. The KEY SET of every map whose values the harnesses blank. The whole point of the file:
+	//    the reduction erases the values, so this is the only thing left that can say the object
+	//    still has Scryfall's shape.
+	for (const [path, theirKeys] of theirs.keySets) {
+		const ourKeys = ours.keySets.get(path);
+		// No map at that path at all — a missing or extra `image_uris` is a difference the byte
+		// comparison can still see, because only the map's CONTENTS are reduced, not the map.
+		if (ourKeys === undefined) continue;
+		tally.keySets.compared++;
+		if (ourKeys.length === theirKeys.length && ourKeys.every((k, i) => k === theirKeys[i])) {
+			tally.keySets.agreed++;
+			continue;
+		}
+		const field = path.slice(path.lastIndexOf(".") + 1);
+		const missing = theirKeys.filter((k) => !ourKeys.includes(k));
+		const extra = ourKeys.filter((k) => !theirKeys.includes(k));
+		const detail = [
+			missing.length ? `missing ${missing.join(", ")}` : "",
+			extra.length ? `extra ${extra.join(", ")}` : "",
+			!missing.length && !extra.length ? "same keys in a different ORDER" : "",
+		]
+			.filter(Boolean)
+			.join("; ");
+		problems.push(
+			`${path}: the mirror serves ${ourKeys.length} ${field} key(s) where Scryfall serves ` +
+				`${theirKeys.length} — ${detail}. Both harnesses blank these VALUES before comparing, so a key ` +
+				`set that drifts is invisible everywhere except here. Ours [${ourKeys.join(", ")}] vs Scryfall's ` +
+				`[${theirKeys.join(", ")}].`,
+		);
+	}
+
+	// 2a. Every price WE serve is a decimal string.
 	for (const [path, value] of ours.prices) {
 		if (value === null || value === undefined) continue;
 		if (typeof value !== "string" || !DECIMAL_PRICE.test(value))
 			problems.push(`${path}: the mirror serves ${JSON.stringify(value)}, which is not a "0.00"-shaped price string`);
 	}
 
-	// 1b. Every cache-buster WE serve is a plausible epoch.
+	// 2b. Every cache-buster WE serve is a plausible epoch.
 	for (const [path, url] of ours.images) {
 		const match = CACHE_BUSTER.exec(url);
 		if (!match) continue;
@@ -136,12 +230,14 @@ export function checkVolatileShape(oursBody: unknown, scryfallBody: unknown, tal
 			);
 	}
 
-	// 2. Where Scryfall's image URL has a cache-buster, ours must have one too.
+	// 3. Where Scryfall's image URL has a cache-buster, ours must have one too.
 	for (const [path, url] of theirs.images) {
 		if (!CACHE_BUSTER.test(url)) continue;
 		tally.images.scryfall++;
 		const oursUrl = ours.images.get(path);
-		// No URL at that path: the byte comparison owns that difference, not this check.
+		// No URL at that path. Check 1 owns that difference now — it used to fall through to
+		// nothing at all, which is how five missing image sizes rode this counter down to 6/11
+		// without failing anything.
 		if (oursUrl === undefined) continue;
 		if (CACHE_BUSTER.test(oursUrl)) tally.images.ours++;
 		else
@@ -151,7 +247,7 @@ export function checkVolatileShape(oursBody: unknown, scryfallBody: unknown, tal
 			);
 	}
 
-	// 3. Tally, per price key, how many cards each side served a value for.
+	// 4a. Tally, per price key, how many cards each side served a value for.
 	for (const [path, value] of theirs.prices) {
 		const key = path.slice(path.lastIndexOf(".") + 1);
 		if (!(PRICE_KEYS as readonly string[]).includes(key) || value === null || value === undefined) continue;
@@ -162,12 +258,34 @@ export function checkVolatileShape(oursBody: unknown, scryfallBody: unknown, tal
 		tally.prices.set(key, seen);
 	}
 
+	// 4b. The same tally for the two rank keys, which both harnesses delete outright.
+	for (const [path, value] of theirs.ranks) {
+		if (value === null || value === undefined) continue;
+		const key = path.slice(path.lastIndexOf(".") + 1);
+		const seen = tally.ranks.get(key) ?? { scryfall: 0, ours: 0 };
+		seen.scryfall++;
+		const oursValue = ours.ranks.get(path);
+		if (oursValue !== null && oursValue !== undefined) seen.ours++;
+		tally.ranks.set(key, seen);
+	}
+
 	return problems;
 }
 
-/** The run-level verdict: a price key Scryfall serves broadly that the mirror never serves at all. */
+/** The run-level verdict: a volatile key Scryfall serves broadly that the mirror never serves. */
 export function volatileShapeRunProblems(tally: VolatileShapeTally): string[] {
 	const problems: string[] = [];
+	for (const key of RANK_KEYS) {
+		const seen = tally.ranks.get(key);
+		if (!seen || seen.scryfall < MIN_LIVE_CARDS) continue;
+		if (seen.ours === 0)
+			problems.push(
+				`${key}: Scryfall served a value on ${seen.scryfall} card(s) this run and the mirror served none at ` +
+					`all. Both harnesses put this key in VOLATILE_KEYS and delete it from BOTH sides before comparing, ` +
+					`so nothing else in either run would notice it going permanently dark — check that the column is ` +
+					`still populated by the import and still in CARD_OBJECT_FIELDS.`,
+			);
+	}
 	for (const key of PRICE_KEYS) {
 		const seen = tally.prices.get(key);
 		if (!seen || seen.scryfall < MIN_LIVE_CARDS) continue;
@@ -189,9 +307,18 @@ export function volatileShapeRunProblems(tally: VolatileShapeTally): string[] {
 
 /** One line for a run summary, whether or not anything failed. */
 export function volatileShapeSummary(tally: VolatileShapeTally): string {
-	const priced = PRICE_KEYS.map((key) => {
-		const seen = tally.prices.get(key);
-		return `${key} ${seen?.ours ?? 0}/${seen?.scryfall ?? 0}`;
-	}).join(", ");
-	return `volatile shape: ${tally.cards} card object(s); prices ours/scryfall ${priced}; image cache-busters ${tally.images.ours}/${tally.images.scryfall}`;
+	const perKey = (map: VolatileShapeTally["prices"], keys: readonly string[]) =>
+		keys
+			.map((key) => {
+				const seen = map.get(key);
+				return `${key} ${seen?.ours ?? 0}/${seen?.scryfall ?? 0}`;
+			})
+			.join(", ");
+	return (
+		`volatile shape: ${tally.cards} card object(s); ` +
+		`key sets ${tally.keySets.agreed}/${tally.keySets.compared}; ` +
+		`prices ours/scryfall ${perKey(tally.prices, PRICE_KEYS)}; ` +
+		`ranks ${perKey(tally.ranks, RANK_KEYS)}; ` +
+		`image cache-busters ${tally.images.ours}/${tally.images.scryfall}`
+	);
 }
