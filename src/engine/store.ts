@@ -418,6 +418,16 @@ class WasmEngine implements Engine {
 		return JSON.parse(this.w.autocomplete(prefix, limit)) as string[];
 	}
 
+	/**
+	 * `[tier, score]` for this store's best `exact=` candidate, or null. Higher wins.
+	 *
+	 * The partitioned router ranks every partition with this and materializes only the winner —
+	 * see PartitionedEngine.scryfallExactName for why a first-non-null merge was wrong.
+	 */
+	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
+		return JSON.parse(this.w.exact_name_rank(folded, setCode)) as number[] | null;
+	}
+
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
 		const row = JSON.parse(
 			this.w.exact_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),

@@ -225,6 +225,14 @@ export interface Engine {
 	 * `Front // Back` name as well as the whole, which is what Scryfall does.
 	 */
 	scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null>;
+	/**
+	 * `[tier, score]` for this engine's best `exact=` candidate, or null; higher wins.
+	 *
+	 * Only the partitioned router calls this, to rank partitions before materializing one — a
+	 * needle can match one card's whole name and another card's face name, and those cards live
+	 * in different partitions. Compare the pair; do not interpret either half.
+	 */
+	scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null>;
 	/** `illustration_id`, one of the collection endpoint's identifiers; not a searchable field. */
 	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/**

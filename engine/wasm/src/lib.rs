@@ -375,6 +375,28 @@ pub fn exact_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Re
     })
 }
 
+/// How well this partition's best `exact=` candidate matches, as `[tier, score]`, or `null`.
+///
+/// Tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
+/// name); ties break on prefer_score. Compare these, do not interpret them.
+///
+/// EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
+/// corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
+/// because a needle is often one card's whole name and another card's face name, and those two
+/// cards hash apart. Taking the first non-null answer discarded the ranking and returned whichever
+/// partition replied first. The router now ranks every partition with this and materializes only
+/// the winner, which is the same shape `fuzzy_candidates` already uses for the fuzzy race.
+#[wasm_bindgen]
+pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> {
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    with_store(|store| {
+        Ok(match store.exact_name_rank(folded, set) {
+            Some((tier, score)) => format!("[{tier},{score}]"),
+            None => "null".to_string(),
+        })
+    })
+}
+
 /// The best printing carrying this illustration id, or `null`.
 #[wasm_bindgen]
 pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Result<String, JsError> {

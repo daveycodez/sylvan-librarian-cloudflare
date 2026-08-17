@@ -547,6 +547,16 @@ export class SearchEngine extends DurableObject<Env> {
 		}));
 	}
 
+	async scryfallExactNameRank(
+		folded: string,
+		setCode: string,
+		reportedShards?: number,
+	): Promise<{ rank: number[] | null } & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => ({
+			rank: await engine.scryfallExactNameRank(folded, setCode),
+		}));
+	}
+
 	async scryfallCardByIllustrationId(
 		illustrationId: string,
 		baseUrl: string,

@@ -106,6 +106,11 @@ interface SearchEngineStub {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallExactNameRank(
+		folded: string,
+		setCode: string,
+		reportedShards?: number,
+	): Promise<{ rank: number[] | null } & Telemetry>;
 	scryfallCardByIllustrationId(
 		illustrationId: string,
 		baseUrl: string,
@@ -516,6 +521,13 @@ export class RemoteEngine implements Engine {
 			this.stub.scryfallExactName(folded, setCode, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
+	}
+
+	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
+		const { rank } = await this.searchRpc(() =>
+			this.stub.scryfallExactNameRank(folded, setCode, currentShardWidth(this.region)),
+		);
+		return rank;
 	}
 
 	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

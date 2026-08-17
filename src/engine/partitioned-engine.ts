@@ -115,6 +115,17 @@ function equalsUnseparated(value: unknown, whole: string): boolean {
 	return typeof value === "string" && unseparated(value) === whole;
 }
 
+/**
+ * Whether exact-name rank `a` beats `b` — TIER first, then prefer_score, with null losing to
+ * anything. The pair is compared, never interpreted; see core_api's `exact_name_rank`.
+ */
+function beatsExactRank(a: number[], b: number[] | null): boolean {
+	if (b === null) return true;
+	const [aTier = 0, aScore = 0] = a;
+	const [bTier = 0, bScore = 0] = b;
+	return aTier > bTier || (aTier === bTier && aScore > bScore);
+}
+
 // ── The routing filter (src/engine/routing-filter.ts) ─────────────────────────
 //
 // A ~740KB KV value that answers "which partition owns this printing id?" for
@@ -535,9 +546,57 @@ export class PartitionedEngine implements Engine {
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		// A folded name identifies an oracle card, and an oracle card lives in
-		// exactly one partition — so at most one partition answers.
-		return this.firstNonNull((e) => e.scryfallExactName(folded, setCode, baseUrl));
+		// RANK EVERY PARTITION, THEN MATERIALIZE THE WINNER — the same shape as the fuzzy race
+		// above, and for the same reason.
+		//
+		// This used to be `firstNonNull`, on the premise that "a folded name identifies an oracle
+		// card, and an oracle card lives in exactly one partition — so at most one partition
+		// answers". THAT PREMISE WAS FALSE, and had been since `exact_card_by_name` learned to
+		// match FACE names and FLAVOR names: a needle is very often one card's whole name and
+		// another card's face name, and those two cards hash apart. So several partitions answer,
+		// and taking the first in partition order threw away the ranking the engine had just
+		// computed — the ranking whose entire purpose is that `exact=Lightning Bolt` must not
+		// answer `Emeritus of Conflict // Lightning Bolt`.
+		//
+		// Measured on the ten-partition store, 2026-08-17, against api.scryfall.com — and against
+		// the single-archive production deployment, which answers all four correctly because there
+		// the ranking was global by construction:
+		//
+		//   exact=Ancestral Recall  ours Emeritus of Ideation // Ancestral Recall  want Ancestral Recall
+		//   exact=Brainstorm        ours Harmonized Trio // Brainstorm             want Brainstorm
+		//   exact=Fire              ours Start // Fire                             want Fire // Ice
+		//   exact=Delver of Secrets ours Delver of Secrets // Delver of Secrets    want ... // Insectile
+		//                                                                          Aberration
+		//
+		// The last two are why a "whole name?" boolean is not enough to merge on: neither
+		// candidate is a whole-name match, so the answer turns on prefer_score — which only the
+		// owning partition can compute. `Delver of Secrets // Delver of Secrets` is a real
+		// art_series card, correctly ingested; it simply must not outrank the card itself.
+		const ranks = await this.all((e) => e.scryfallExactNameRank(folded, setCode));
+		let winner = -1;
+		let best: number[] | null = null;
+		for (const [p, rank] of ranks.entries()) {
+			// Strictly greater, so an exact tie keeps the LOWEST partition index — the same
+			// deterministic tiebreak firstNonNull gave, preserved for the ties it did decide.
+			if (rank !== null && beatsExactRank(rank, best)) {
+				best = rank;
+				winner = p;
+			}
+		}
+		if (winner < 0) return null;
+		return this.at(winner).scryfallExactName(folded, setCode, baseUrl);
+	}
+
+	/** The best rank any partition holds — the whole store's answer, for an Engine asked directly. */
+	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
+		const ranks = await this.all((e) => e.scryfallExactNameRank(folded, setCode));
+		let best: number[] | null = null;
+		for (const rank of ranks) {
+			if (rank !== null && beatsExactRank(rank, best)) {
+				best = rank;
+			}
+		}
+		return best;
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {

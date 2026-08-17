@@ -73,6 +73,21 @@ export function catalog(): string;
 export function exact_card_by_name(folded: string, set_code: string, fields_json: string): string;
 
 /**
+ * How well this partition's best `exact=` candidate matches, as `[tier, score]`, or `null`.
+ *
+ * Tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
+ * name); ties break on prefer_score. Compare these, do not interpret them.
+ *
+ * EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
+ * corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
+ * because a needle is often one card's whole name and another card's face name, and those two
+ * cards hash apart. Taking the first non-null answer discarded the ranking and returned whichever
+ * partition replied first. The router now ranks every partition with this and materializes only
+ * the winner, which is the same shape `fuzzy_candidates` already uses for the fuzzy race.
+ */
+export function exact_name_rank(folded: string, set_code: string): string;
+
+/**
  * Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
  * CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
  * from this same store moments ago, so a miss means the caller mixed partitions or generations.

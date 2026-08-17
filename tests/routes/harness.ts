@@ -300,6 +300,11 @@ export class FakeEngine implements Engine {
 		return at < 0 ? null : this.fixtureCard(at, baseUrl);
 	}
 
+	/** Every fixture name is a WHOLE name here, so a hit ranks at the top tier with a flat score. */
+	async scryfallExactNameRank(folded: string, _setCode: string): Promise<number[] | null> {
+		return this.scryfallExactNames.includes(folded) ? [2, 0] : null;
+	}
+
 	async scryfallCardByIllustrationId(
 		_illustrationId: string,
 		baseUrl: string,

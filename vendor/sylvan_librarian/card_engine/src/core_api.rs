@@ -1872,6 +1872,59 @@ impl BufferStore {
     ) -> Result<Option<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
+        let Some((_, _, cid, vpid)) = self.exact_name_best(folded, set_code) else {
+            return Ok(None);
+        };
+        Ok(Some(card_to_json(
+            &data.cards[cid],
+            printing_at(data, vpid),
+            &data.strings,
+            &data.coll_vocab,
+            &resolved_fields,
+        )))
+    }
+
+    /// The RANK `exact_card_by_name` answers with, without materializing the card.
+    ///
+    /// `(tier, prefer_score)`, higher wins, ties broken by score: tier 2 = the needle IS this
+    /// card's whole name, 1 = it matches a FACE of this card, 0 = it matches a FLAVOR name.
+    ///
+    /// WHY THIS IS PUBLIC. With a partitioned store the scan runs once per partition, and MORE
+    /// THAN ONE PARTITION CAN ANSWER: a needle is often one card's whole name and another card's
+    /// face name, and those two cards hash to different partitions. The router used to take the
+    /// first non-null answer in partition order, on the premise that "a folded name identifies an
+    /// oracle card, and an oracle card lives in exactly one partition". That premise stopped being
+    /// true when this scan learned to match faces and flavor names, and the ranking below — which
+    /// is the whole reason `exact=Lightning Bolt` does not answer `Emeritus of Conflict //
+    /// Lightning Bolt` — was being computed per partition and then thrown away.
+    ///
+    /// Measured on the ten-partition store, 2026-08-17, against api.scryfall.com:
+    ///
+    ///   exact=Ancestral Recall   -> Emeritus of Ideation // Ancestral Recall  (want Ancestral Recall)
+    ///   exact=Brainstorm         -> Harmonized Trio // Brainstorm             (want Brainstorm)
+    ///   exact=Fire               -> Start // Fire                             (want Fire // Ice)
+    ///   exact=Delver of Secrets  -> Delver of Secrets // Delver of Secrets    (want ... // Insectile
+    ///                                                                          Aberration; the
+    ///                                                                          doubled name is a
+    ///                                                                          real art_series card)
+    ///
+    /// The last two are the reason a bare "is it the whole name?" flag is not enough to merge on:
+    /// neither candidate is a whole-name match, so the answer turns on prefer_score, which only
+    /// the owning partition can compute.
+    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32)> {
+        self.exact_name_best(folded, set_code).map(|(tier, score, _, _)| (tier, score))
+    }
+
+    /// The shared scan behind `exact_card_by_name` and `exact_name_rank`: `(tier, score, cid, vpid)`.
+    fn exact_name_best(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32, usize, u32)> {
+        // Descending precedence. These values cross the wasm boundary and are compared — never
+        // interpreted — by the partition merge, so their ORDER is the contract and their
+        // magnitudes are not.
+        const TIER_WHOLE_NAME: u8 = 2;
+        const TIER_FACE_NAME: u8 = 1;
+        const TIER_FLAVOR_NAME: u8 = 0;
+
+        let data = self.data();
         // Ranked on (whole-name match, prefer_score), in that order.
         //
         // DELIBERATE DIVERGENCE from upstream, which orders on prefer_score alone. On this corpus
@@ -1879,7 +1932,9 @@ impl BufferStore {
         // because a two-faced card whose BACK face carries the name outscores the card actually
         // named that. Scryfall returns the whole-name match. Matching a face is right -- Scryfall
         // resolves `exact=Delver of Secrets` -- but it is a FALLBACK, not a peer.
-        let mut best: Option<(bool, f32, usize, usize)> = None;
+        // TIER, not a bool, because the flavor-name fallback below is a third rank and the
+        // partition merge has to order all three against each other with one comparison.
+        let mut best: Option<(u8, f32, usize, u32)> = None;
         for cid in name_scan_candidates(data, folded) {
             let cid = cid as usize;
             let card = &data.cards[cid];
@@ -1887,12 +1942,12 @@ impl BufferStore {
             if !folded_name_matches(stored, folded) {
                 continue;
             }
-            let whole = stored == folded;
+            let tier = if stored == folded { TIER_WHOLE_NAME } else { TIER_FACE_NAME };
             let Some((pid, score)) = self.best_printing_of(cid, set_code) else {
                 continue;
             };
-            if best.is_none_or(|(bw, bs, _, _)| (whole, score) > (bw, bs)) {
-                best = Some((whole, score, cid, pid));
+            if best.is_none_or(|(bt, bs, _, _)| (tier, score) > (bt, bs)) {
+                best = Some((tier, score, cid, pid as u32));
             }
         }
         // EXACT NEVER READS PRINTED NAMES — verified against api.scryfall.com on 2026-08-16,
@@ -1924,24 +1979,11 @@ impl BufferStore {
         // found nothing, so `exact=Titanoth Rex` still answers iko/174.
         if best.is_none()
             && let Some(rec) = record_of_exact_name(&data.indexes.flavor_names, &data.strings, folded)
-            && let Some((vpid, _)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
+            && let Some((vpid, score)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
         {
-            return Ok(Some(card_to_json(
-                &data.cards[card_of_vpid(data, vpid) as usize],
-                printing_at(data, vpid),
-                &data.strings,
-                &data.coll_vocab,
-                &resolved_fields,
-            )));
+            return Some((TIER_FLAVOR_NAME, score, card_of_vpid(data, vpid) as usize, vpid));
         }
-        let Some((_, _, cid, vpid)) = best else { return Ok(None) };
-        Ok(Some(card_to_json(
-            &data.cards[cid],
-            printing_at(data, vpid as u32),
-            &data.strings,
-            &data.coll_vocab,
-            &resolved_fields,
-        )))
+        best
     }
 
     /// A record's best printing passing the set filter, with its prefer score — the annex twin

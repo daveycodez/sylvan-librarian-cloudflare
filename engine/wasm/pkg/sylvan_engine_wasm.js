@@ -5,5 +5,5 @@ import { __wbg_set_wasm } from "./sylvan_engine_wasm_bg.js";
 __wbg_set_wasm(wasm);
 wasm.__wbindgen_start();
 export {
-    __init_panic_hook, autocomplete, begin_store_load, card_by_external_id, card_by_illustration_id, card_by_scryfall_id, card_count, cards_by_scryfall_ids, cards_containing_all_words, catalog, exact_card_by_name, fetch_rows, finish_store_load, fuzzy_candidates, fuzzy_card_by_name, init_store, printings_of_oracle_id, query, query_keys, query_rows, query_widens, random_search, scryfall_card_from_row, scryfall_search, size, sort_key_version, store_load_chunk, store_loaded, store_version, unload_store
+    __init_panic_hook, autocomplete, begin_store_load, card_by_external_id, card_by_illustration_id, card_by_scryfall_id, card_count, cards_by_scryfall_ids, cards_containing_all_words, catalog, exact_card_by_name, exact_name_rank, fetch_rows, finish_store_load, fuzzy_candidates, fuzzy_card_by_name, init_store, printings_of_oracle_id, query, query_keys, query_rows, query_widens, random_search, scryfall_card_from_row, scryfall_search, size, sort_key_version, store_load_chunk, store_loaded, store_version, unload_store
 } from "./sylvan_engine_wasm_bg.js";

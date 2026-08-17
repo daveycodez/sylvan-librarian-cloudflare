@@ -126,6 +126,12 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("scryfallExactName");
 			return val<Record<string, unknown> | null>("exact", null);
 		},
+		scryfallExactNameRank: async () => {
+			count("scryfallExactNameRank");
+			// A partition that can answer ranks; `exactRank` overrides the tier/score so a test
+			// can make a LATER partition win.
+			return val<number[] | null>("exactRank", "exact" in answers ? [2, 0] : null);
+		},
 		scryfallAutocomplete: async () => {
 			count("scryfallAutocomplete");
 			return val<string[]>("names", []);
@@ -451,10 +457,52 @@ describe("name-route combination rules", () => {
 		expect(raceFuzzyCandidates([[], []], 0.05).status).toBe("miss");
 	});
 
-	test("exact: fan-out, the single owner answers", async () => {
+	test("exact: rank every partition, materialize only the winner", async () => {
 		const { engine, of } = build({ 3: { exact: { name: "Opt" } } });
 		expect(await engine.scryfallExactName("opt", "", "https://x")).toEqual({ name: "Opt" });
-		expect(of("scryfallExactName").length).toBe(N);
+		// N cheap rank calls, then ONE card materialization — not N of them.
+		expect(of("scryfallExactNameRank").length).toBe(N);
+		expect(of("scryfallExactName").length).toBe(1);
+	});
+
+	test("exact: a WHOLE-name match in a later partition beats a face match in an earlier one", async () => {
+		// THE REGRESSION THIS PROTOCOL EXISTS FOR. Before the rank pass, `scryfallExactName` took
+		// the first non-null answer in partition order, on the premise that only one partition
+		// could answer. `exact_card_by_name` matches FACE and FLAVOR names too, so a needle is
+		// routinely one card's whole name and another card's face name — and those cards hash
+		// apart. Measured on the ten-partition store: `exact=Ancestral Recall` answered
+		// `Emeritus of Ideation // Ancestral Recall`, and `exact=Brainstorm` answered
+		// `Harmonized Trio // Brainstorm`, while single-archive production answered both
+		// correctly because there the ranking was global by construction.
+		const { engine, of } = build({
+			1: { exact: { name: "Emeritus of Ideation // Ancestral Recall" }, exactRank: [1, 9.9] },
+			3: { exact: { name: "Ancestral Recall" }, exactRank: [2, 0.1] },
+		});
+		expect(await engine.scryfallExactName("ancestralrecall", "", "https://x")).toEqual({
+			name: "Ancestral Recall",
+		});
+		// The face match sits in the LOWER partition index and carries the HIGHER score, so it
+		// wins under both of the rules this replaced.
+		expect(of("scryfallExactName").length).toBe(1);
+	});
+
+	test("exact: with no whole-name match anywhere, the best prefer_score wins", async () => {
+		// `exact=Fire` — no card is named just "Fire", so every candidate is a face match and the
+		// answer turns on prefer_score alone. Scryfall answers `Fire // Ice`; the port answered
+		// `Start // Fire` purely because it hashed to a lower partition.
+		const { engine } = build({
+			0: { exact: { name: "Start // Fire" }, exactRank: [1, 0.2] },
+			3: { exact: { name: "Fire // Ice" }, exactRank: [1, 0.7] },
+		});
+		expect(await engine.scryfallExactName("fire", "", "https://x")).toEqual({ name: "Fire // Ice" });
+	});
+
+	test("exact: an exact tie keeps the lowest partition index", async () => {
+		const { engine } = build({
+			1: { exact: { name: "Lower" }, exactRank: [1, 0.5] },
+			3: { exact: { name: "Higher" }, exactRank: [1, 0.5] },
+		});
+		expect(await engine.scryfallExactName("tie", "", "https://x")).toEqual({ name: "Lower" });
 	});
 
 	test("autocomplete: merged prefix-first, deduped, capped", () => {

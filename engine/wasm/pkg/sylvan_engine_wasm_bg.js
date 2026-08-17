@@ -274,6 +274,45 @@ export function exact_card_by_name(folded, set_code, fields_json) {
 }
 
 /**
+ * How well this partition's best `exact=` candidate matches, as `[tier, score]`, or `null`.
+ *
+ * Tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
+ * name); ties break on prefer_score. Compare these, do not interpret them.
+ *
+ * EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
+ * corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
+ * because a needle is often one card's whole name and another card's face name, and those two
+ * cards hash apart. Taking the first non-null answer discarded the ranking and returned whichever
+ * partition replied first. The router now ranks every partition with this and materializes only
+ * the winner, which is the same shape `fuzzy_candidates` already uses for the fuzzy race.
+ * @param {string} folded
+ * @param {string} set_code
+ * @returns {string}
+ */
+export function exact_name_rank(folded, set_code) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.exact_name_rank(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
  * CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
  * from this same store moments ago, so a miss means the caller mixed partitions or generations.
