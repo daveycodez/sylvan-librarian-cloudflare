@@ -11470,6 +11470,113 @@ fn exact_name_narrows_tight() {
     }
 }
 
+/// `!"Temple Garden // Temple Garden"` answers the ONE printing that prints that name.
+///
+/// Four layers, each hidden behind the one before it, which is why this pins all four rather than
+/// the leaf alone:
+///  1. the LEAF read the card's folded name and nothing else, so it answered False for a name only
+///     the reversible printing prints;
+///  2. the NARROWING dropped the card before any leaf ran — `narrow_rec`'s ExactName arm goes
+///     through a trigram index built from the CARD's collated name, and `templegardentemplegarden`
+///     shares no window with `templegarden`, so a leaf-only fix was dead code;
+///  3. the stored joined name had to be the FOLDED one, since `collate_name` does not lowercase;
+///  4. TIGHTNESS is a card-space claim and stops being true when a card is present for a name only
+///     SOME of its printings print — claiming it hands back every printing of the card.
+///
+/// Measured on api.scryfall.com 2026-08-17 with `include_extras` and `unique=prints`:
+/// `!"Temple Garden // Temple Garden"` 1, `!"Temple Garden"` 20 — and this engine answered 0 and
+/// 20 before, then 20 and 20 with layers 1-3 and no layer 4.
+#[test]
+fn exact_name_answers_the_joined_name_on_the_printing_that_prints_it() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let names = ["temple garden", "fog", "sol ring"];
+    let mut cards: Vec<OracleCard> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+            // `card_name_folded_id` stays NONE_STR, which is this store's "folded == lower" —
+            // these three names carry no diacritic, so `folded_name` reads the inline copy.
+            c.card_name_lower = InlineStr::from_str(name);
+            c
+        })
+        .collect();
+    assign_name_ranks(&mut cards, &[]);
+    // Temple Garden gets three printings; the third is the reversible one.
+    let mut data = store_of(cards, &[3, 1, 1], vocab);
+    let normal = interner.intern("normal".to_string());
+    let reversible = interner.intern("reversible_card".to_string());
+    let joined = interner.intern("Temple Garden // Temple Garden".to_string());
+    // The FOLDED form is what `exact_name_matches` compares — the display name above collates to
+    // `TempleGardenTempleGarden` and matches nothing, which is layer 3.
+    let joined_folded = interner.intern("temple garden // temple garden".to_string());
+    data.printings[0].card_layout_id = normal;
+    data.printings[1].card_layout_id = normal;
+    data.printings[2].card_layout_id = reversible;
+    data.cards[0].divergent = vec![crate::DivergentPrinting {
+        printing_layout_id: reversible,
+        card_name_id: joined,
+        card_name_folded_id: joined_folded,
+        face_layout_id: normal,
+        faces: Vec::new(),
+    }];
+    data.strings = interner.strings;
+    derive_name_collation(&mut data); // the assignment above discarded the collated ids store_of derived
+    data.indexes.name_trigram = build_trigram_index(&data.cards, |c| crate::collated_name_of(c, &data.strings));
+    data.indexes.name_divergent = crate::planes::build_name_divergent_ids(&data.cards);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let card = &archived.cards[0];
+
+    // Needles are COLLATED, which is the form the parser emits.
+    let joined_needle = "templegardentemplegarden";
+    let narrow = |needle: &str| {
+        super::narrow_rec(
+            &FilterExpr::ExactName(needle.to_string()),
+            &archived.indexes,
+            &archived.offsets,
+            &archived.cards,
+            &archived.strings,
+            false,
+        )
+        .expect("exact name must narrow")
+    };
+
+    // LAYER 2: the card is reachable at all, through `name_divergent` and not through the trigram
+    // index, which holds only `templegarden`. LAYER 4: and it arrives LOOSE, so the driver goes on
+    // to verify per printing instead of taking all three.
+    let n = narrow(joined_needle);
+    assert!(!n.tight, "a card present for a name only SOME of its printings print is not tight");
+    assert_eq!(n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card), vec![0u32]);
+
+    // ...while a needle the trigram index answered by itself keeps the cheap path — this is the
+    // overwhelmingly common case, and the reason the fix is not "decline when nothing is found".
+    for needle in ["templegarden", "fog", "nosuchcard"] {
+        assert!(narrow(needle).tight, "{needle}: answered by the trigram index alone, still exact");
+    }
+
+    // LAYER 1: the leaf answers for the printing, and only the reversible one prints that name.
+    let f = FilterExpr::ExactName(joined_needle.to_string());
+    for (pid, want) in [(0usize, false), (1, false), (2, true)] {
+        assert_eq!(f.matches(card, &archived.printings[pid], &archived.strings), want, "joined name on printing {pid}");
+    }
+    // Card space cannot settle it, which is what `leaf_compares_printing_field` and the estimator's
+    // `has_printing_varying_leaf` both now say.
+    assert!(matches!(f.eval_card(card, &archived.strings), Tri::PrintingDep), "the joined name cannot settle in card space");
+    // The card's OWN name is still every printing's, decided at card level with no divergent read.
+    let plain = FilterExpr::ExactName("templegarden".to_string());
+    assert!(matches!(plain.eval_card(card, &archived.strings), Tri::True), "the card's own name settles for every printing");
+
+    // End to end, in printing space: 1 against 3, the shape Scryfall answers.
+    for (needle, want) in [(joined_needle, 1usize), ("templegarden", 3), ("fog", 1)] {
+        let mut f = FilterExpr::ExactName(needle.to_string());
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "printing", "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, want, "printings for !{needle:?}");
+    }
+}
+
 // #649: fuzzy name: search is accent-folded. card_name_folded is precomputed in
 // Python (fold_accents(), NFKD strip-combining-marks) and the query word is folded
 // the same way before crossing into Rust, so a user typing "eowyn" (no diacritic)
