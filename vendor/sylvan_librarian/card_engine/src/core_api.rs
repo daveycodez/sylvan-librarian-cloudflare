@@ -1705,14 +1705,72 @@ impl BufferStore {
         Ok(buf)
     }
 
+    /// Whether a filter tree is the "no filter at all" one. Spelled against the wire shape the
+    /// parser emits (`{"node_type": "TrueNode"}`) rather than by binding the tree, because the
+    /// point is to skip the bind.
+    fn is_true_node(tree: &Value) -> bool {
+        tree.get("node_type").and_then(Value::as_str) == Some("TrueNode")
+    }
+
     /// Mirror of the pyo3 `sample_preferred()`, with the RNG seed supplied by
     /// the caller instead of drawn from OS entropy — wasm32-unknown-unknown
     /// has no ambient entropy source, so the Worker passes one in.
-    pub fn sample_preferred(&self, n: usize, seed: u64, fields: Option<Vec<String>>) -> Result<Vec<Value>, EngineError> {
+    ///
+    /// LOCAL ADDITION (Cloudflare port): `filter_tree`. Without it this export had no way to
+    /// exclude anything, so `/random_search` drew from the UNGATED corpus while both search
+    /// surfaces gated — 13.6% of 1,000 draws were `is:extra` (measured on the local store,
+    /// 2026-08-17). A route cannot fix that above the engine: the pool lives here.
+    ///
+    /// # The filtered pool is the QUERY's answer, not a second implementation of it
+    ///
+    /// A `Some(tree)` runs the ordinary paging path with the page opened to the whole match set,
+    /// and samples the rows it returns. That is deliberately not a new evaluator: "which cards may
+    /// this draw return" is then the same question, answered by the same code, as "which cards does
+    /// `/search` with that query return" — `random-differential.ts` checks exactly that equality
+    /// from the outside, and it could not if this walked its own candidate set.
+    ///
+    /// It costs one gather over this partition's cards. That is affordable BECAUSE the draw is
+    /// partition-local: N=10 puts ~3,850 cards in each object, so the enumeration and its sort are
+    /// a fraction of a millisecond, where the same shape over an unpartitioned 38k corpus would be
+    /// the wrong trade. `None` keeps the old O(n) sampling untouched, so nothing that does not ask
+    /// for a filter pays for one.
+    pub fn sample_preferred(
+        &self,
+        n: usize,
+        seed: u64,
+        filter_tree: Option<&Value>,
+        fields: Option<Vec<String>>,
+    ) -> Result<Vec<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
 
-        let pool_len = data.cards.len();
+        // The pool the draw samples: every card, or the cards the filter admits. A `TrueNode` is
+        // treated as no filter at all rather than run — it is what the callers send when they have
+        // no query, and paging the whole corpus to rediscover "everything matches" would be the
+        // one case where the filtered path is both slower and no more correct.
+        let filtered: Option<Vec<(&AOracleCard, &APrinting)>> = match filter_tree {
+            Some(tree) if !Self::is_true_node(tree) => {
+                let opts = QueryOptions {
+                    unique: "card".to_owned(),
+                    prefer: "default".to_owned(),
+                    orderby: "edhrec".to_owned(),
+                    direction: "asc".to_owned(),
+                    // The whole match set: this is the ONE caller that wants every row rather than a
+                    // page, and `GatherSelect` bounds its buffer by the limit, so the limit is what
+                    // opens it. `usize::MAX` would also disable the prune; the card count is the
+                    // same page with a buffer the store can actually hold.
+                    limit: data.cards.len(),
+                    offset: 0,
+                    fields: None,
+                    include_multilingual: false,
+                };
+                let (_params, _total, page, _widened) = self.run_page(tree, &opts)?;
+                Some(page)
+            }
+            _ => None,
+        };
+
+        let pool_len = filtered.as_ref().map_or(data.cards.len(), Vec::len);
         let take = n.min(pool_len);
         if take == 0 {
             return Ok(Vec::new());
@@ -1728,18 +1786,23 @@ impl BufferStore {
 
         Ok(chosen
             .iter()
-            .map(|&cid| {
-                let card = &data.cards[cid];
-                // The random pool is built from cards, so a card with no canonical printing would
-                // read an unrelated row rather than fail; see crate::preferred_vpid.
-                let preferred = crate::preferred_vpid(data, cid).unwrap_or_default() as usize;
-                card_to_json(
-                    card,
-                    &data.printings[preferred],
-                    &data.strings,
-                    &data.coll_vocab,
-                    &resolved_fields,
-                )
+            .map(|&i| {
+                let (card, printing) = match &filtered {
+                    // The printing the QUERY chose, not the card's default-preferred one. They
+                    // differ exactly when the filter rejects the default printing and admits
+                    // another — a card whose only non-extra printing is its second is the case —
+                    // and answering with the rejected printing would put an `is:extra` row in a
+                    // draw that just excluded them.
+                    Some(rows) => rows[i],
+                    None => {
+                        let card = &data.cards[i];
+                        // The random pool is built from cards, so a card with no canonical printing
+                        // would read an unrelated row rather than fail; see crate::preferred_vpid.
+                        let preferred = crate::preferred_vpid(data, i).unwrap_or_default() as usize;
+                        (card, &data.printings[preferred])
+                    }
+                };
+                card_to_json(card, printing, &data.strings, &data.coll_vocab, &resolved_fields)
             })
             .collect())
     }
@@ -3963,6 +4026,77 @@ mod tests {
         })
     }
 
+    /// The random draw takes a FILTER, and the pool it samples is the filter's answer.
+    ///
+    /// `/random_search` had no way to exclude anything: `sample_preferred` sampled `0..n_cards`
+    /// and the wasm export took no filter, so 13.6% of 1,000 draws on the built corpus came back
+    /// `is:extra` while both search surfaces hid exactly those rows.
+    ///
+    /// Three assertions, and the third is the one that makes this more than a smoke test:
+    ///   1. unfiltered, the pool is every card;
+    ///   2. filtered, EVERY draw is in the filter's answer, over enough seeds that a leak shows;
+    ///   3. the pool is the QUERY's answer — same cards as `query_value` with the same tree, so
+    ///      the draw cannot drift from what `/search` would say about the same filter.
+    #[test]
+    fn a_filtered_random_draw_samples_only_matching_cards() {
+        let mut rows = Vec::new();
+        for i in 0..12 {
+            let mut r = annex_row(&format!("Card {i}"), &format!("oracle-{i}"), &format!("scry-{i}"), "en", 1.0);
+            // A third of the corpus is the excluded class, which is close to the real store's
+            // share and leaves enough of both kinds that a uniform draw hits each.
+            if i % 3 == 0 {
+                r["card_is_tags"] = json!({"extra": true});
+            }
+            rows.push(r);
+        }
+        let (_b, store) = build_store(&rows);
+
+        let names = |rows: &[Value]| -> Vec<String> {
+            let mut v: Vec<String> = rows.iter().map(|r| r["name"].as_str().unwrap_or_default().to_owned()).collect();
+            v.sort();
+            v
+        };
+
+        // 1. No filter: the whole corpus is reachable.
+        let all = store.sample_preferred(12, 7, None, None).expect("unfiltered draw");
+        assert_eq!(all.len(), 12, "an unfiltered draw of the whole corpus returns every card");
+
+        // The tree `/random_search` sends: NOT is:extra.
+        let tree = json!({
+            "node_type": "NotNode",
+            "kwargs": { "operand": is_filter("extra") }
+        });
+        let want = store
+            .query_value(
+                &tree,
+                &QueryOptions { limit: 100, fields: Some(vec!["name".to_owned()]), ..QueryOptions::default() },
+            )
+            .expect("the same filter as a query");
+        assert_eq!(want.total, 8, "8 of the 12 fixture cards are not extras");
+
+        // 2. Every draw, over many seeds, is inside that answer.
+        let allowed: std::collections::HashSet<String> = names(&want.rows).into_iter().collect();
+        for seed in 0..40u64 {
+            let drawn = store.sample_preferred(3, seed, Some(&tree), None).expect("filtered draw");
+            assert_eq!(drawn.len(), 3, "seed {seed}: the filter admits 8 cards, so 3 are always available");
+            for row in &drawn {
+                let name = row["name"].as_str().unwrap_or_default();
+                assert!(allowed.contains(name), "seed {seed}: {name} is an is:extra card the filter excluded");
+            }
+        }
+
+        // 3. Asking for more than the filter admits yields the filter's answer EXACTLY — which is
+        //    the equality that keeps this route and `/search` from drifting apart.
+        let whole = store.sample_preferred(12, 1, Some(&tree), None).expect("draw the whole filtered pool");
+        assert_eq!(whole.len(), 8, "the pool is the match set, not the corpus");
+        assert_eq!(names(&whole), names(&want.rows));
+
+        // And a TrueNode is the unfiltered pool rather than a query, so the fast path stays.
+        let true_tree = json!({ "node_type": "TrueNode" });
+        let via_true = store.sample_preferred(12, 7, Some(&true_tree), None).expect("TrueNode draw");
+        assert_eq!(names(&via_true), names(&all), "a TrueNode filter draws exactly what no filter draws");
+    }
+
     /// `is:localizedname` reads the printing's printed name — and WIDENS, with no `lang:` written.
     ///
     /// The widening is not a convenience: api.scryfall.com answers 31,294 cards for a bare
@@ -5069,6 +5203,11 @@ mod tests {
             ("artist", "asc", "printing", false),
             ("artist", "desc", "printing", false),
             ("edhrec", "asc", "card", false),
+            // Both directions, for the reason `set` has both: `edhrec` is the one column whose
+            // ABSENT side sorts HIGHEST (see `absent_sorts_highest`), so descending is where the
+            // unranked cards LEAD. An encoder that moved the null on one side only still passes
+            // the ascending sweep — and `Gamma Wave` in the fixture is the row that has no rank.
+            ("edhrec", "desc", "card", false),
             ("usd", "desc", "printing", false),
             ("name", "asc", "printing", true),
             ("released", "asc", "printing", true),

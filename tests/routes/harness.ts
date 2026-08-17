@@ -138,7 +138,7 @@ function treeMatchesRow(tree: string, row: Record<string, unknown>): boolean {
 
 export class FakeEngine implements Engine {
 	lastSearch: EngineSearchOptions | null = null;
-	lastSampleArgs: { numCards: number; fields: string[] } | null = null;
+	lastSampleArgs: { numCards: number; fields: string[]; filterTreeJson?: string } | null = null;
 	searchError: Error | null = null;
 	cards: Record<string, unknown>[] = FIXTURE_CARDS;
 	totalCards = 17;
@@ -179,8 +179,12 @@ export class FakeEngine implements Engine {
 		return [...this.setsWithExtrasList];
 	}
 
-	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		this.lastSampleArgs = { numCards, fields };
+	async randomCardsAsObjects(
+		numCards: number,
+		fields: string[],
+		filterTreeJson?: string,
+	): Promise<Record<string, unknown>[]> {
+		this.lastSampleArgs = { numCards, fields, filterTreeJson };
 		const out: Record<string, unknown>[] = [];
 		for (let i = 0; i < Math.min(numCards, this.cards.length); i++) {
 			out.push(this.cards[i] as Record<string, unknown>);
@@ -188,8 +192,13 @@ export class FakeEngine implements Engine {
 		return out;
 	}
 
-	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		const rows = await this.randomCardsAsObjects(numCards, fields);
+	async randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult> {
+		const rows = await this.randomCardsAsObjects(numCards, fields, filterTreeJson);
 		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
 	}
 

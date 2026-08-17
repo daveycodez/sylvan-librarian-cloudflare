@@ -270,21 +270,36 @@ pub fn store_version() -> u32 {
     card_engine::store_format_version()
 }
 
-/// `n` randomly sampled oracle cards, each as its default-preferred printing —
-/// the engine behind /random_search. `seed` comes from the caller (JS
-/// `crypto.getRandomValues` or per-request entropy): the sampling itself is
-/// deterministic per seed. `fields_json` is a JSON list of field names, or
-/// "null"/"" for the default field set. Returns a JSON array of card objects.
+/// `n` randomly sampled oracle cards, each as the printing the FILTER chose (its
+/// default-preferred one when there is no filter) — the engine behind
+/// /random_search. `seed` comes from the caller (JS `crypto.getRandomValues` or
+/// per-request entropy): the sampling itself is deterministic per seed.
+/// `fields_json` is a JSON list of field names, or "null"/"" for the default
+/// field set. Returns a JSON array of card objects.
+///
+/// `filter_tree_json` is the LOCAL ADDITION: the same wire tree `search` takes,
+/// or "null"/"" for the unfiltered pool. Without it this export could not
+/// exclude anything and `/random_search` drew `is:extra` rows the search
+/// surfaces hide — the route had nothing to gate with, because the pool is
+/// here. A `TrueNode` costs nothing extra; see `sample_preferred`.
 #[wasm_bindgen]
-pub fn random_search(n: u32, seed: u64, fields_json: &str) -> Result<String, JsError> {
+pub fn random_search(n: u32, seed: u64, filter_tree_json: &str, fields_json: &str) -> Result<String, JsError> {
     let fields: Option<Vec<String>> = if fields_json.is_empty() || fields_json == "null" {
         None
     } else {
         serde_json::from_str(fields_json)
             .map_err(|e| JsError::new(&format!("bad fields JSON: {e}")))?
     };
+    let filter: Option<serde_json::Value> = if filter_tree_json.is_empty() || filter_tree_json == "null" {
+        None
+    } else {
+        Some(
+            serde_json::from_str(filter_tree_json)
+                .map_err(|e| JsError::new(&format!("bad filter JSON: {e}")))?,
+        )
+    };
     with_store(|store| {
-        let rows = store.sample_preferred(n as usize, seed, fields).map_err(js_err)?;
+        let rows = store.sample_preferred(n as usize, seed, filter.as_ref(), fields).map_err(js_err)?;
         Ok(serde_json::Value::Array(rows).to_string())
     })
 }
@@ -612,9 +627,27 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&cat).expect("valid catalog JSON");
         assert_eq!(v["card_types"]["Sorcery"], 1);
 
-        let sampled = random_search(3, 7, "null").expect("random_search");
+        let sampled = random_search(3, 7, "null", "null").expect("random_search");
         let v: serde_json::Value = serde_json::from_str(&sampled).expect("valid sample JSON");
         assert_eq!(v.as_array().unwrap().len(), 1);
+
+        // The FILTER argument over the same one-card store, both ways round: a tree the card
+        // fails empties the draw, and one it passes leaves it whole. `/random_search` sends
+        // `-is:extra -is:variation`, so an export that ignored the argument would look identical
+        // to a correct one on the unfiltered call above.
+        let excludes_sorcery = r#"{"node_type": "NotNode", "kwargs": {"operand": {"node_type": "CardBinaryOperatorNode",
+            "kwargs": {"op": ":", "lhs": {"node_type": "CardAttributeNode",
+            "kwargs": {"attribute_name": "card_types", "original_attribute": "t"}}, "rhs": ["sorcery"]}}}}"#;
+        let filtered = random_search(3, 7, excludes_sorcery, "null").expect("filtered random_search");
+        let v: serde_json::Value = serde_json::from_str(&filtered).expect("valid filtered sample JSON");
+        assert!(v.as_array().unwrap().is_empty(), "the only card is a Sorcery, and the filter excludes it");
+
+        let keeps_sorcery = r#"{"node_type": "CardBinaryOperatorNode", "kwargs": {"op": ":",
+            "lhs": {"node_type": "CardAttributeNode",
+            "kwargs": {"attribute_name": "card_types", "original_attribute": "t"}}, "rhs": ["sorcery"]}}"#;
+        let kept = random_search(3, 7, keeps_sorcery, "null").expect("filtered random_search");
+        let v: serde_json::Value = serde_json::from_str(&kept).expect("valid filtered sample JSON");
+        assert_eq!(v.as_array().unwrap().len(), 1, "the card matches, so the draw still finds it");
 
         // The /cards/* addressing surface, over the same loaded store. A hit and a miss each,
         // because a miss here IS the 404 — there is no SQL behind it to disagree. One archive

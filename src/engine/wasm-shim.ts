@@ -156,7 +156,7 @@ export interface EngineHandle {
 	scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
 	query_widens(filterTreeJson: string, optsJson: string): boolean;
 	catalog(): string;
-	random_search(n: number, seed: bigint, fieldsJson: string): string;
+	random_search(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string): string;
 	size(): number;
 	card_by_scryfall_id(scryfallId: string, fieldsJson: string): string;
 	cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;

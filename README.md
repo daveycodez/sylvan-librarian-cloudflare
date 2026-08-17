@@ -692,6 +692,21 @@ The complete list of intentional differences:
   printings against `/cards/search`'s two until the rule was extracted and shared.
   `scripts/search-differential.ts` is what now runs the two routes against each
   other, offline, over `parity-sweep`'s generated matrix.
+- **A missing sort value has a side, and the side depends on the COLUMN.**
+  `order=edhrec` is the default `orderby`, and every card with no EDHREC rank
+  used to lead the results — `perm_primary_key` gave every column one absent
+  rule (lowest ascending, last descending), which is right for a magnitude and
+  backwards for a rank. Measured one page per (column, direction) over `e:khm
+  unique=prints` on api.scryfall.com: `power`, `toughness`, `usd`, `eur` and
+  `tix` all LEAD ascending with their nulls, while `edhrec` and `penny` hold
+  none on an ascending page of 175 and lead DESCENDING with them (33 and 103
+  respectively). So `absent_sorts_highest` is a measured per-column table, not a
+  rule anyone can re-derive, and the unmeasured columns keep the old side
+  deliberately. The permutation is ARCHIVED, so this is a stored-content change:
+  generation 37, with no format bump because only the order inside two `Vec<u32>`
+  changes. `scripts/live-parity-cases.json` carries the anchor —
+  `e:khm order=edhrec dir=desc` page 1, where Scryfall leads with 33 unranked
+  printings — and it passes byte-for-byte after the rebuild.
 - **`/cards/random?q=…` runs the extras gate; `/random_search` cannot yet.** Both
   random routes drew from the ungated corpus while the differential above
   reported 406 ok — it reaches neither of them, which is why
@@ -706,15 +721,23 @@ The complete list of intentional differences:
   echo to read, telling a ~14% extras share from zero would take tens of draws
   from an endpoint that rate-limits this repo, and gating it on the strength of
   the `q` measurement would remove a sixth of the corpus from it on an
-  inference. **`/random_search` still leaks — 13.6% of 1,000 draws are
-  `is:extra`, measured** — because the wasm `random_search(n, seed, fieldsJson)`
-  takes no filter argument at all, so the route has nothing to gate with. The
-  fix is an engine change (`core_api.rs`, the wasm export, `wasm-shim.ts`,
-  `store.ts`, the RPC and partitioned surfaces, a wasm rebuild) with no stored
-  shape change, and the partitioned router's `card_count` weighting has to
-  become a match-count weighting in the same pass or a filtered draw favors the
-  wrong partition. `random-differential.ts` records the leak and turns red if it
-  ever closes silently.
+  inference. **`/random_search` is fixed too, and it took an engine argument to
+  do it**: the wasm export was `random_search(n, seed, fieldsJson)` — no filter
+  at all — so the route had nothing to gate with and 13.6% of 1,000 draws came
+  back `is:extra`. It is now `random_search(n, seed, filterTreeJson, fieldsJson)`
+  and the pool it samples is the FILTER'S OWN ANSWER, produced by the ordinary
+  paging path rather than by a second evaluator, so "what may this draw return"
+  and "what does `/search` return for that query" are the same question answered
+  by the same code. 1,000 draws, none `is:extra`, asserted flatly by
+  `random-differential.ts`. **This route excludes where `/search?q=` does not**,
+  which is a deliberate asymmetry: an empty search asks for everything, while the
+  random lane's extras-free answer was a property it always had — the importer
+  used to drop the class — so restoring it is the route's own behaviour rather
+  than a new policy. **The partition weighting stays `card_count`**, measured
+  rather than assumed: the gate's density is 86.29-87.93% across the ten
+  partitions, so the worst weight is off by 1.07% relative, and correcting it
+  would cost an N-way count fan-out (11 RPCs instead of 1) on a route the front
+  page calls on every load.
 - `card_is_tags` used to carry only three of upstream's `BOOLEAN_IS_TAGS`
   (`is:reserved`, `is:gamechanger`, `is:oversized`). Generation 21 took the
   stored vocabulary **from 3 entries to 30**: `BOOLEAN_IS_TAGS` grew and

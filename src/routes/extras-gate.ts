@@ -335,27 +335,53 @@ function withoutIsTags(tree: unknown, tags: readonly string[]): unknown {
 	if (!tree || typeof tree !== "object" || (tree as { node_type?: string }).node_type === "TrueNode") return tree;
 	return {
 		node_type: "AndNode",
+		kwargs: { operands: [tree, ...tags.map(notIsTagNode)] },
+	};
+}
+
+/** `NOT is:<tag>`, the one conjunct shape both the gate and the random draw exclude with. */
+function notIsTagNode(tag: string): unknown {
+	return {
+		node_type: "NotNode",
 		kwargs: {
-			operands: [
-				tree,
-				...tags.map((tag) => ({
-					node_type: "NotNode",
-					kwargs: {
-						operand: {
-							node_type: "CardBinaryOperatorNode",
-							kwargs: {
-								lhs: {
-									node_type: "CardAttributeNode",
-									kwargs: { attribute_name: "card_is_tags", original_attribute: "is" },
-								},
-								op: ":",
-								rhs: [tag],
-							},
-						},
+			operand: {
+				node_type: "CardBinaryOperatorNode",
+				kwargs: {
+					lhs: {
+						node_type: "CardAttributeNode",
+						kwargs: { attribute_name: "card_is_tags", original_attribute: "is" },
 					},
-				})),
-			],
+					op: ":",
+					rhs: [tag],
+				},
+			},
 		},
+	};
+}
+
+/**
+ * The default-lane exclusions ALONE, as a filter tree with no caller query under them — what a
+ * route searches with when it has no query at all and still must not answer from the extras class.
+ *
+ * `/random_search` is the caller, and it is the case `withoutIsTags`'s `TrueNode` exemption
+ * deliberately does NOT cover. Those are two different questions that look like one:
+ *
+ *   - `/search?q=` and `/cards/random` with no `q` ask for EVERYTHING, and the exemption keeps
+ *     that meaning intact. Scryfall's own bare `/cards/random` was never measured either way, so
+ *     narrowing it would be an inference (see cardsRandomHandler).
+ *   - `/random_search` asks for "some random cards" and has no query language to say anything
+ *     else. Its answer used to contain no extras at all — not by policy but because the importer
+ *     dropped the class — and 13.6% of 1,000 draws became tokens, art-series cards and
+ *     memorabilia the day the corpus started carrying them. That is a REGRESSION from an import
+ *     change, so restoring it is not a new policy for the route; it is the route's own behaviour.
+ *
+ * Spelled here rather than in the route so there is still exactly one definition of what the
+ * default lane excludes: adding a third exclusion to the gate adds it to the random draw too.
+ */
+export function defaultLaneExclusionTree(): unknown {
+	return {
+		node_type: "AndNode",
+		kwargs: { operands: [EXTRA_IS_TAG, VARIATION_IS_TAG].map(notIsTagNode) },
 	};
 }
 

@@ -165,10 +165,22 @@ export interface Engine {
 	 * of the store generation, so a set-scoped search costs no round trip of its own.
 	 */
 	setsWithExtras(): Promise<string[]>;
-	/** Random preferred-printing sample, mirroring upstream sample_preferred(). */
-	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
+	/**
+	 * Random preferred-printing sample, mirroring upstream sample_preferred().
+	 *
+	 * `filterTreeJson` is this port's addition and the reason `/random_search` can hide the extras
+	 * class at all: the draw happens inside the engine, over a pool the route cannot see, so a
+	 * gate above the engine has nothing to gate. Omit it (or pass a `TrueNode`) for the whole
+	 * corpus, which is what every caller did before the gate.
+	 */
+	randomCardsAsObjects(numCards: number, fields: string[], filterTreeJson?: string): Promise<Record<string, unknown>[]>;
 	/** The same sample, pre-encoded (see searchCardsAsJson). */
-	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
+	randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult>;
 	/** Number of cards in the store; 0 means "not loaded" upstream — here a loaded engine is never empty. */
 	cardCount(): Promise<number>;
 

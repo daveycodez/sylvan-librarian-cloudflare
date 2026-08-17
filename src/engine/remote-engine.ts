@@ -62,8 +62,13 @@ interface SearchEngineStub {
 		keywords: Record<string, number>;
 		setsWithExtras: string[];
 	}>;
-	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]>;
-	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult>;
+	randomCardsAsObjects(numCards: number, fields: string[], filterTreeJson?: string): Promise<Record<string, unknown>[]>;
+	randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult>;
 	cardCount(): Promise<number>;
 	// Every `/cards/*` reply carries the same shard-controller riders search does, and wraps its
 	// payload so a null card has something to carry them on.
@@ -441,12 +446,21 @@ export class RemoteEngine implements Engine {
 		return (await this.catalog()).setsWithExtras;
 	}
 
-	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return withRetry(() => this.stub.randomCardsAsObjects(numCards, fields));
+	randomCardsAsObjects(
+		numCards: number,
+		fields: string[],
+		filterTreeJson?: string,
+	): Promise<Record<string, unknown>[]> {
+		return withRetry(() => this.stub.randomCardsAsObjects(numCards, fields, filterTreeJson));
 	}
 
-	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		return withRetry(() => this.stub.randomCardsAsJson(numCards, fields, shape));
+	randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult> {
+		return withRetry(() => this.stub.randomCardsAsJson(numCards, fields, shape, filterTreeJson));
 	}
 
 	cardCount(): Promise<number> {

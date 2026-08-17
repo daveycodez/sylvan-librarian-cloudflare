@@ -408,7 +408,30 @@ export class PartitionedEngine implements Engine {
 	}
 
 	// ── random: one partition, weighted by its share of the cards ───────────────
-
+	//
+	// THE WEIGHT IS `card_count`, AND A FILTER DOES NOT CHANGE THAT — a deliberate choice, not an
+	// oversight carried over from the unfiltered draw. Weighting by cards is exactly right for an
+	// unfiltered sample and only approximately right for a filtered one: partition p should be
+	// picked in proportion to its share of the MATCHES, not of the cards, and the two differ by
+	// however much the filter's density varies across partitions.
+	//
+	// MEASURED, on the built corpus (generation 36, N=10, 38,626 cards): the extras gate — the one
+	// filter this route sends — admits 86.99% of cards overall and between 86.29% and 87.93% per
+	// partition, so the worst partition's weight is off by 1.07% RELATIVE. It is that small by
+	// construction rather than by luck: partitioning is `fnv1a64(oracle_id) % N`, and nothing about
+	// being a token or an art-series card correlates with an oracle id's hash.
+	//
+	// THE ALTERNATIVE WAS PRICED AND REJECTED. Correcting the weight means learning each
+	// partition's match count, which is an N-way count fan-out: 10 RPCs before the draw plus 1 to
+	// take it, on a route the front page calls on every load, against a free-tier budget where
+	// Durable Object requests are the metered resource. Eleven RPCs to remove a 1% weighting error
+	// is the wrong trade, and it would be the wrong trade even if the error were 5%.
+	//
+	// WHERE IT WOULD BE WRONG: a filter whose density varies by partition — a set-scoped or
+	// name-scoped one, where whole partitions can hold no match at all. Such a partition returns
+	// FEWER rows than asked (the engine samples the matches it has) rather than wrong ones, so the
+	// failure is visible in the count instead of silent in the distribution. No caller sends one
+	// today; `/cards/random` is the route for a user query, and it counts before it draws.
 	private weightedPartition(): number {
 		const parts = this.manifest.partitions ?? [];
 		const total = parts.reduce((s, p) => s + p.card_count, 0);
@@ -420,12 +443,21 @@ export class PartitionedEngine implements Engine {
 		return parts.length - 1;
 	}
 
-	randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return this.at(this.weightedPartition()).randomCardsAsObjects(numCards, fields);
+	randomCardsAsObjects(
+		numCards: number,
+		fields: string[],
+		filterTreeJson?: string,
+	): Promise<Record<string, unknown>[]> {
+		return this.at(this.weightedPartition()).randomCardsAsObjects(numCards, fields, filterTreeJson);
 	}
 
-	randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.at(this.weightedPartition()).randomCardsAsJson(numCards, fields, shape);
+	randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult> {
+		return this.at(this.weightedPartition()).randomCardsAsJson(numCards, fields, shape, filterTreeJson);
 	}
 
 	// ── oracle-keyed: exactly one RPC, with the stale-modulus retry ─────────────

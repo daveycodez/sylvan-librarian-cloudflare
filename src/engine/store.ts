@@ -274,16 +274,31 @@ class WasmEngine implements Engine {
 		return this.catalog().sets_with_extras;
 	}
 
-	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
+	async randomCardsAsObjects(
+		numCards: number,
+		fields: string[],
+		filterTreeJson?: string,
+	): Promise<Record<string, unknown>[]> {
 		// Engine sampling is deterministic per seed; per-request entropy keeps
 		// /random_search random, mirroring upstream's process-side RNG.
 		const seedBytes = crypto.getRandomValues(new BigUint64Array(1));
 		const seed = seedBytes[0] ?? 0n;
-		return JSON.parse(this.w.random_search(numCards, seed, JSON.stringify(fields))) as Record<string, unknown>[];
+		// "null" rather than an empty string for "no filter": both are accepted by the export, and
+		// the spelling matches `fields_json`'s own null convention one argument along.
+		const filter = filterTreeJson ?? "null";
+		return JSON.parse(this.w.random_search(numCards, seed, filter, JSON.stringify(fields))) as Record<
+			string,
+			unknown
+		>[];
 	}
 
-	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
-		const rows = await this.randomCardsAsObjects(numCards, fields);
+	async randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult> {
+		const rows = await this.randomCardsAsObjects(numCards, fields, filterTreeJson);
 		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
 	}
 

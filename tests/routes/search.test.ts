@@ -123,6 +123,38 @@ describe("search fields", () => {
 			"scryfall_id",
 		]);
 	});
+
+	// ── the default-lane exclusions, which this route could not apply at all ────
+	//
+	// The draw happens inside the engine, over a pool no route can see, so `/random_search`
+	// returned `is:extra` rows — 13.6% of 1,000 draws on the built corpus — while `/search` and
+	// `/cards/search` hid exactly those rows. The fix is an engine argument; this is the route
+	// half of it.
+
+	test("the draw is filtered, and by the same exclusions the search gate applies", async () => {
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), "/random_search?num_cards=3");
+		const tree = JSON.parse(engine.lastSampleArgs?.filterTreeJson ?? "null") as unknown;
+		const json = JSON.stringify(tree);
+		expect(json).toContain('"extra"');
+		expect(json).toContain('"variation"');
+		// NOT a wrapped TrueNode: there is no caller query here, so the exclusions ARE the filter.
+		expect(json).not.toContain("TrueNode");
+		expect((tree as { node_type?: string })?.node_type).toBe("AndNode");
+	});
+
+	test("every exclusion is a NEGATED is: term, so the draw excludes rather than requires", async () => {
+		// The failure this rules out is a filter that says `is:extra` where it means `-is:extra`,
+		// which would turn the front page into nothing but tokens and art series.
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), "/random_search?num_cards=3");
+		const tree = JSON.parse(engine.lastSampleArgs?.filterTreeJson ?? "null") as {
+			kwargs?: { operands?: { node_type?: string }[] };
+		};
+		const operands = tree.kwargs?.operands ?? [];
+		expect(operands.length).toBe(2);
+		expect(operands.every((o) => o.node_type === "NotNode")).toBe(true);
+	});
 });
 
 describe("search envelope", () => {

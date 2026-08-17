@@ -202,13 +202,20 @@ export function query_rows(filter_tree_json: string, opts_json: string): Uint8Ar
 export function query_widens(filter_tree_json: string, opts_json: string): boolean;
 
 /**
- * `n` randomly sampled oracle cards, each as its default-preferred printing —
- * the engine behind /random_search. `seed` comes from the caller (JS
- * `crypto.getRandomValues` or per-request entropy): the sampling itself is
- * deterministic per seed. `fields_json` is a JSON list of field names, or
- * "null"/"" for the default field set. Returns a JSON array of card objects.
+ * `n` randomly sampled oracle cards, each as the printing the FILTER chose (its
+ * default-preferred one when there is no filter) — the engine behind
+ * /random_search. `seed` comes from the caller (JS `crypto.getRandomValues` or
+ * per-request entropy): the sampling itself is deterministic per seed.
+ * `fields_json` is a JSON list of field names, or "null"/"" for the default
+ * field set. Returns a JSON array of card objects.
+ *
+ * `filter_tree_json` is the LOCAL ADDITION: the same wire tree `search` takes,
+ * or "null"/"" for the unfiltered pool. Without it this export could not
+ * exclude anything and `/random_search` drew `is:extra` rows the search
+ * surfaces hide — the route had nothing to gate with, because the pool is
+ * here. A `TrueNode` costs nothing extra; see `sample_preferred`.
  */
-export function random_search(n: number, seed: bigint, fields_json: string): string;
+export function random_search(n: number, seed: bigint, filter_tree_json: string, fields_json: string): string;
 
 /**
  * One engine row as a Scryfall card object, for the differential test that guards the port.

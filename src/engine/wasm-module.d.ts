@@ -32,7 +32,7 @@ declare module "sylvan-engine-wasm" {
 		scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
 		query_widens(filterTreeJson: string, optsJson: string): boolean;
 		catalog(): string;
-		random_search(n: number, seed: bigint, fieldsJson: string): string;
+		random_search(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string): string;
 		size(): number;
 		card_by_scryfall_id(scryfallId: string, fieldsJson: string): string;
 		cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
@@ -143,6 +143,10 @@ declare module "sylvan-engine-wasm" {
 	export function scryfall_card_from_row(rowJson: string, baseUrl: string): string;
 	/** {"card_types": {...}, "card_keywords": {...}} JSON. */
 	export function catalog(): string;
-	/** n sampled preferred printings; deterministic per seed. JSON array. */
-	export function random_search(n: number, seed: bigint, fieldsJson: string): string;
+	/**
+	 * n sampled printings; deterministic per seed. JSON array. `filterTreeJson` is the same wire
+	 * tree `search` takes ("null" for the whole corpus), and the sampled printing is the one that
+	 * filter chose rather than the card's default-preferred one.
+	 */
+	export function random_search(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string): string;
 }

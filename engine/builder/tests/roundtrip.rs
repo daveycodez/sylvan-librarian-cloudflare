@@ -247,7 +247,7 @@ fn build_load_query_roundtrip() {
     let keywords = store.common_card_keywords();
     assert_eq!(keywords.get("Trample"), Some(&1));
 
-    let sampled = store.sample_preferred(5, 42, None).expect("sample");
+    let sampled = store.sample_preferred(5, 42, None, None).expect("sample");
     assert_eq!(sampled.len(), 2, "clamped to the pool size");
 }
 

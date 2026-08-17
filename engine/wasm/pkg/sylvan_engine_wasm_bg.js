@@ -587,34 +587,44 @@ export function query_widens(filter_tree_json, opts_json) {
 }
 
 /**
- * `n` randomly sampled oracle cards, each as its default-preferred printing —
- * the engine behind /random_search. `seed` comes from the caller (JS
- * `crypto.getRandomValues` or per-request entropy): the sampling itself is
- * deterministic per seed. `fields_json` is a JSON list of field names, or
- * "null"/"" for the default field set. Returns a JSON array of card objects.
+ * `n` randomly sampled oracle cards, each as the printing the FILTER chose (its
+ * default-preferred one when there is no filter) — the engine behind
+ * /random_search. `seed` comes from the caller (JS `crypto.getRandomValues` or
+ * per-request entropy): the sampling itself is deterministic per seed.
+ * `fields_json` is a JSON list of field names, or "null"/"" for the default
+ * field set. Returns a JSON array of card objects.
+ *
+ * `filter_tree_json` is the LOCAL ADDITION: the same wire tree `search` takes,
+ * or "null"/"" for the unfiltered pool. Without it this export could not
+ * exclude anything and `/random_search` drew `is:extra` rows the search
+ * surfaces hide — the route had nothing to gate with, because the pool is
+ * here. A `TrueNode` costs nothing extra; see `sample_preferred`.
  * @param {number} n
  * @param {bigint} seed
+ * @param {string} filter_tree_json
  * @param {string} fields_json
  * @returns {string}
  */
-export function random_search(n, seed, fields_json) {
-    let deferred3_0;
-    let deferred3_1;
+export function random_search(n, seed, filter_tree_json, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
     try {
-        const ptr0 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.random_search(n, seed, ptr0, len0);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.random_search(n, seed, ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
         if (ret[3]) {
-            ptr2 = 0; len2 = 0;
+            ptr3 = 0; len3 = 0;
             throw takeFromExternrefTable0(ret[2]);
         }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
     } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 

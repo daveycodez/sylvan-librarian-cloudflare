@@ -1335,7 +1335,7 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
     // exactly the scan this is trying to catch).
     let f = |names: &[&str]| Some(names.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>());
     let sample = store
-        .sample_preferred(200, 42, f(&["scryfall_id", "oracle_id", "illustration_id", "name"]))
+        .sample_preferred(200, 42, None, f(&["scryfall_id", "oracle_id", "illustration_id", "name"]))
         .expect("sample");
     let get = |i: usize, k: &str| sample[i].get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
     let (sid, oid, name) = (get(0, "scryfall_id"), get(0, "oracle_id"), get(0, "name"));
@@ -1454,7 +1454,7 @@ fn cmd_routebench(store_path: &Path, iters: usize) {
         }
         None => eprintln!("  (no foreign rows in this store; printed-name lanes skipped)"),
     }
-    time("sample_preferred(75)", Box::new(|| format!("{} rows", store.sample_preferred(75, 7, None).expect("q").len())));
+    time("sample_preferred(75)", Box::new(|| format!("{} rows", store.sample_preferred(75, 7, None, None).expect("q").len())));
 
     // Paging: a deep offset is the shape that makes a streamed sort walk furthest, and it is the
     // one a crawler reaches by following next_page.
@@ -1477,7 +1477,7 @@ fn cmd_namecheck(store_path: &Path) {
     let bytes = std::fs::read(store_path).expect("read store");
     let store = BufferStore::from_bytes(&bytes).expect("load store");
     let f = |n: &[&str]| Some(n.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>());
-    let sample = store.sample_preferred(400, 11, f(&["name"])).expect("sample");
+    let sample = store.sample_preferred(400, 11, None, f(&["name"])).expect("sample");
 
     let mut lines: Vec<String> = Vec::new();
     for row in &sample {
@@ -1510,7 +1510,7 @@ fn cmd_namecheck(store_path: &Path) {
     // the SAME sampled ids on both sides of a change.
     {
         let ids = store
-            .sample_preferred(300, 5, f(&["scryfall_id"]))
+            .sample_preferred(300, 5, None, f(&["scryfall_id"]))
             .expect("sample ids")
             .into_iter()
             .filter_map(|v| v.get("scryfall_id").and_then(|s| s.as_str()).map(str::to_owned))
@@ -1784,8 +1784,8 @@ fn cmd_compare(a_path: &Path, b_path: &Path) {
     // every rebuild — two runs of the unpatched Vec path differ too. It backs
     // random_search, where cross-build stability was never a property.
     for seed in [1u64, 42, 999] {
-        let sa = a.sample_preferred(50, seed, None).expect("sample a");
-        let sb = b.sample_preferred(50, seed, None).expect("sample b");
+        let sa = a.sample_preferred(50, seed, None, None).expect("sample a");
+        let sb = b.sample_preferred(50, seed, None, None).expect("sample b");
         assert_eq!(sa.len(), sb.len(), "sample_preferred size, seed {seed}");
     }
     println!("match: sample_preferred sizes (content is build-order-random by design)");

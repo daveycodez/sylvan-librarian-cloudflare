@@ -1168,8 +1168,27 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      printings short and every guild missing 1-2. Meanwhile the builder's face overlay put face
  *      0's value at TOP level, where Scryfall sends none on any of its 12,098 faced printings —
  *      so all 156 faced printings with a watermark emitted a key Scryfall does not.
+ *
+ * 37 — A MISSING EDHREC RANK SORTS LAST, NOT FIRST, which moves a STORED ARRAY. The sort
+ *      permutations are archived (`SortPermutations` inside `CardIndexes`), so the null placement
+ *      is baked in at build: `perm_primary_key` put absent at the bottom of the key space for
+ *      every column, and `order=edhrec` — the DEFAULT `orderby`, so this was the front page and
+ *      every unordered `/search` — led with every card that has no EDHREC rank.
+ *
+ *      MEASURED, one page-1 request per (column, direction) over `e:khm unique=prints` on
+ *      2026-08-17: `order=edhrec` ascending runs 199, 378, 378 … 8068 with no null in its 175
+ *      rows and DESCENDING leads with 33 nulls; `order=penny` is the same shape (103 nulls).
+ *      Against that, `power`, `toughness`, `usd`, `eur` and `tix` all LEAD ascending with their
+ *      nulls. So the rule is per-column and the two families disagree — a rank that is absent
+ *      sorts after every rank, a magnitude that is absent sorts below every value — and
+ *      `absent_sorts_highest` is that table.
+ *
+ *      NO FORMAT CHANGE: the archive's shape is untouched (`Vec<u32>` permutations of the same
+ *      length), only the order inside two of them. `ARCHIVE_FORMAT_VERSION` therefore stays at
+ *      2026081702 — a store built by the old code is still READABLE by this one, it just answers
+ *      `order=edhrec` the old way, which is exactly what a content generation is for.
  */
-export const STORE_CONTENT_GENERATION = 36;
+export const STORE_CONTENT_GENERATION = 37;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

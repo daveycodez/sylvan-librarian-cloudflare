@@ -412,8 +412,12 @@ export class SearchEngine extends DurableObject<Env> {
 		};
 	}
 
-	async randomCardsAsObjects(numCards: number, fields: string[]): Promise<Record<string, unknown>[]> {
-		return (await this.engine()).randomCardsAsObjects(numCards, fields);
+	async randomCardsAsObjects(
+		numCards: number,
+		fields: string[],
+		filterTreeJson?: string,
+	): Promise<Record<string, unknown>[]> {
+		return (await this.engine()).randomCardsAsObjects(numCards, fields, filterTreeJson);
 	}
 
 	/**
@@ -435,12 +439,17 @@ export class SearchEngine extends DurableObject<Env> {
 	 * Logged only when it actually acquired, matching RemoteEngine.searchRpc —
 	 * a warm call is the boring case and says nothing worth a log line.
 	 */
-	async randomCardsAsJson(numCards: number, fields: string[], shape: ResultShape): Promise<EngineSerializedResult> {
+	async randomCardsAsJson(
+		numCards: number,
+		fields: string[],
+		shape: ResultShape,
+		filterTreeJson?: string,
+	): Promise<EngineSerializedResult> {
 		const warm = tryGetLoadedEngine(this.label) !== null;
 		const acquireStart = Date.now();
 		const engine = await this.engine();
 		const acquireMs = Date.now() - acquireStart;
-		const result = await engine.randomCardsAsJson(numCards, fields, shape);
+		const result = await engine.randomCardsAsJson(numCards, fields, shape, filterTreeJson);
 		if (!warm) {
 			console.log(
 				`[${this.label}] randomCardsAsObjects acquired its engine in ${acquireMs}ms (cold) for n=${numCards}`,

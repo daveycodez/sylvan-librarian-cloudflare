@@ -617,6 +617,12 @@
 			"path": "/cards/named?fuzzy=firion%20edificer"
 		},
 		{
+			"name": "search-order-edhrec-desc-unranked-first",
+			"method": "GET",
+			"path": "/cards/search?dir=desc&order=edhrec&q=e%3Akhm&unique=prints",
+			"note": "THE ANCHOR FOR THE NULL-RANK PLACEMENT, and the one page where it is visible. `order=edhrec` is the DEFAULT orderby, and a missing EDHREC rank used to sort as the LOWEST value here \u2014 first ascending, last descending \u2014 because `perm_primary_key` gave every column one absent side. api.scryfall.com does the opposite for a RANK: this page leads with 33 unranked printings and then runs 13065, 13021, 13021 downward, while ascending page 1 holds no null at all in its 175 rows. Descending is the direction that fits the evidence on ONE page, which is why the case is `dir=desc`: ascending puts the nulls at the far end of 425 rows, three pages away, where a page-1 comparison would pass against either rule. Generation 37 rebuilt the stored permutation; before it, this page opened with our highest real rank (29937 in this store) where Scryfall opens with 33 unranked rows, so the two disagreed on the first 33 ids. `edhrec_rank` is a VOLATILE key here \u2014 the two sides carry different bulk snapshots, 29937 against 13065 for the same page \u2014 so what this case compares is the ORDER, which is exactly what the null placement decides."
+		},
+		{
 			"name": "search-color-name-guild-azorius",
 			"method": "GET",
 			"path": "/cards/search?order=set&q=c%3Aazorius+e%3Akhm&unique=cards",

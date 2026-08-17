@@ -22,7 +22,7 @@ import {
 	UNIQUE_ON,
 } from "./enums";
 import { explainWireTree } from "./explanation";
-import { applyExtrasGate, type ExtrasGateSpellings } from "./extras-gate";
+import { applyExtrasGate, defaultLaneExclusionTree, type ExtrasGateSpellings } from "./extras-gate";
 import { httpError, NO_STORE_HEADER, searchCacheHeader } from "./http";
 import type { CardRow } from "./noscript";
 import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from "./param-binding";
@@ -506,8 +506,18 @@ export async function randomSearchHandler(
 	// Upstream returns an empty list while the store is loading; this port has
 	// no store-less mode, so an unloaded engine is a 503 (see module comment).
 	const engine = await ctx.getEngine();
-	// Pre-encoded next to the store, like /search — see runSearchJson.
-	const result = await engine.randomCardsAsJson(numCards, [...DEFAULT_RESULT_FIELDS], bound.shape as ResponseShape);
+	// THE DEFAULT-LANE EXCLUSIONS, which this route could not apply until the engine's sampler
+	// took a filter. The draw happens inside the store — the route never sees the pool — so
+	// `random_search(n, seed, fieldsJson)` with no filter argument meant there was nothing here to
+	// gate WITH, and 13.6% of 1,000 draws came back `is:extra` while both search surfaces hid the
+	// same rows. See `defaultLaneExclusionTree` for why this route excludes where `/search?q=`
+	// does not.
+	const result = await engine.randomCardsAsJson(
+		numCards,
+		[...DEFAULT_RESULT_FIELDS],
+		bound.shape as ResponseShape,
+		canonicalStringify(defaultLaneExclusionTree() as FilterValue),
+	);
 	return jsonBytesResponse(
 		[encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,"total_cards":${result.totalCards}}`)],
 		NO_STORE_HEADER,

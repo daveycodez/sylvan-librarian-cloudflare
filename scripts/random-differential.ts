@@ -33,15 +33,17 @@
 // `cardsRandomHandler`, both HARD cases fail deterministically (404 becomes a token) and the
 // sampled cases fail within a few draws.
 //
-// `/random_search` IS A RECORDED GAP, NOT A PASS. That route calls `engine.randomCardsAsJson`,
-// which bottoms out in the wasm `random_search(n, seed, fieldsJson)` — an export with NO filter
-// argument, so the route has nothing to gate WITH. Giving it one is an engine change (core_api.rs,
-// the wasm export, wasm-shim, store.ts, the RPC and partitioned surfaces) plus a wasm rebuild, and
-// the partitioned router's `card_count` weighting has to become a MATCH-count weighting at the same
-// time or a filtered draw silently favors the wrong partition. Until that lands, this file MEASURES
-// the leak — one `num_cards=1000` request classified against the store's own `is:extra` id set —
-// and fails if the leak DISAPPEARS, which is the live-parity `known_deviation` pattern: a recorded
-// deviation that cannot rot, because closing it turns the check red and points at this comment.
+// `/random_search` IS ASSERTED, and it was a recorded gap for exactly one commit. That route calls
+// `engine.randomCardsAsJson`, which bottomed out in the wasm `random_search(n, seed, fieldsJson)` —
+// an export with NO filter argument — so the route had nothing to gate WITH and 13.6% of 1,000
+// draws came back `is:extra`. `random_search(n, seed, filterTreeJson, fieldsJson)` is the fix, and
+// the assertion here is now the flat one the fix earns: over 1,000 draws in a single request, ZERO
+// may be `is:extra`, classified against the store's own extras id set rather than against a rule
+// re-derived here.
+//
+// 1,000 draws is not a token sample. At the leak's measured 13.6%, the chance of drawing 1,000
+// clean rows by luck is 0.864^1000 — that is not a number that happens, so a green run here is
+// proof of the filter and not of a quiet afternoon.
 
 // A module rather than a script, purely so top-level `await` is legal: this file imports nothing
 // (the two routes are reached over HTTP, like search-differential's) and exports nothing.
@@ -163,7 +165,7 @@ async function extraIds(): Promise<Set<string>> {
 
 // ─── the run ──────────────────────────────────────────────────────────────────
 
-type Verdict = "ok" | "FAILURE" | "SKIPPED" | "KNOWN-GAP";
+type Verdict = "ok" | "FAILURE" | "SKIPPED";
 
 interface Finding {
 	name: string;
@@ -253,36 +255,36 @@ for (const q of SAMPLED_QUERIES) {
 	record(name, "ok", `${draws} draws, all inside the gated ${gated.total} of ${all.total}`);
 }
 
-// ── 3. /random_search: the recorded gap ───────────────────────────────────────
+// ── 3. /random_search: no draw may be is:extra ────────────────────────────────
 
 {
-	const name = "random_search/ungated-corpus";
+	const name = "random_search/gated-corpus";
 	const extras = await extraIds();
 	const { status, body } = await getJson(`/random_search?num_cards=${bulkDraws}`);
 	const cards = body?.cards as { scryfall_id?: string; name?: string; set_code?: string }[] | undefined;
 	if (status !== 200 || !Array.isArray(cards) || cards.length === 0) {
 		record(name, "FAILURE", `/random_search answered ${status} with no cards`);
+	} else if (cards.length < bulkDraws) {
+		// A short draw is the partitioned router's one honest failure mode (see
+		// `weightedPartition`): a partition holding fewer matches than asked returns what it has.
+		// It cannot happen for the extras gate — every partition holds ~3,350 matching cards — so
+		// if it ever does, the interesting fact is the count, not the classification.
+		record(name, "FAILURE", `asked for ${bulkDraws} draws and got ${cards.length}`);
 	} else {
 		const hit = cards.filter((c) => extras.has(String(c.scryfall_id)));
-		const share = ((100 * hit.length) / cards.length).toFixed(1);
-		if (hit.length === 0) {
-			// 1,000 draws with zero extras is not luck at a ~14% share — it is the fix having landed.
+		if (hit.length > 0) {
+			const share = ((100 * hit.length) / cards.length).toFixed(1);
 			record(
 				name,
 				"FAILURE",
-				`GAP CLOSED: 0 of ${cards.length} draws are is:extra. If random_search now takes a filter, ` +
-					"delete this case and give it the same membership check the /cards/random cases use.",
-			);
-		} else {
-			record(
-				name,
-				"KNOWN-GAP",
-				`${hit.length}/${cards.length} draws (${share}%) are is:extra — the wasm random_search takes no filter. ` +
-					`e.g. ${hit
+				`${hit.length}/${cards.length} draws (${share}%) are is:extra — the draw is not applying the ` +
+					`default-lane exclusions. e.g. ${hit
 						.slice(0, 3)
 						.map((c) => `${String(c.name)} ${String(c.set_code)}`)
 						.join(", ")}`,
 			);
+		} else {
+			record(name, "ok", `${cards.length} draws, none is:extra`);
 		}
 	}
 }
