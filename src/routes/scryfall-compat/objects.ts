@@ -537,7 +537,12 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	// The joined name everywhere except edhrec on the layouts EDHREC files by front face.
 	const edhrecName =
 		hasFaces && !(layout !== undefined && EDHREC_JOINED_LAYOUTS.has(layout)) ? (name.split(" // ")[0] as string) : name;
-	const built = faces(row, scryfallId, twoImage, reversible ? { oracle_id: oracleId, cmc: num(row, "cmc") ?? null } : undefined);
+	const built = faces(
+		row,
+		scryfallId,
+		twoImage,
+		reversible ? { oracle_id: oracleId, cmc: num(row, "cmc") ?? null } : undefined,
+	);
 
 	const card: Record<string, unknown> = {
 		object: "card",
