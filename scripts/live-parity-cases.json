@@ -771,6 +771,87 @@
 			"method": "GET",
 			"path": "/cards/search?order=set&q=date%3A2021-02+e%3Akhm&unique=cards",
 			"note": "A partial date names a WINDOW one precision below the bare year: `date:2021-02` is February 2021, and equals `date>=2021-02 date<2021-03`. The parser consumed the month looking for a day and, finding none, returned the bare year -- silently dropping tokens it had already eaten -- so this answered the whole of 2021."
+		},
+		{
+			"name": "search-unique-cards-khm-gods",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=e%3Akhm+t%3Agod&unique=cards",
+			"note": "`e:khm t:god` asked under all three uniques on 2026-08-17, and the PAIRING is the point rather than any one count: without it a future reader cannot tell which mechanism moved a changed `unique=art` number. `unique=cards` is 13 -- the twelve paper gods plus `khm/A-40` A-Alrund, which is a different CARD and so a row of its own -- and it byte-compares clean, A-* row included."
+		},
+		{
+			"name": "search-unique-prints-khm-gods",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=e%3Akhm+t%3Agod&unique=prints",
+			"note": "The second half of that pairing: `unique=prints` is 26, those 13 cards' printings, byte-clean in the same order. So the corpus, the collector-number sort key and the Alchemy A-* rows all agree with api.scryfall.com under both uniques, and the ONLY thing that can move `unique=art` off 26 is the artwork dedupe itself -- which is what makes search-unique-art-khm-gods a statement about SCOPE and not about the store. Both counts are unmoved by 5d86e76's key change (`unique=printing` and `unique=card` do not move in either space)."
+		},
+		{
+			"name": "search-unique-art-khm-gods",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=e%3Akhm+t%3Agod&unique=art",
+			"known_deviation": {
+				"reason": "The one unique of the three that moves, and it moves by exactly one row: `khm/A-40`. Scryfall dedupes an artwork ACROSS cards, and A-Alrund carries Alrund's front and back illustrations unchanged, so its 26 printings collapse to 25 with the A-* row as the one that goes. This port's scope is PER-CARD — 5d86e76 made the key the whole face tuple, c7d8cf3 measured that dropping oracle_id from the scope reproduces both of Scryfall's numbers exactly (26 -> 25 here, 187 -> 174 on znr), and 5440875 deferred the change on purpose — so A-Alrund keeps an artwork of its own and this answers 26.\nWHY THIS IS RECORDED RATHER THAN FIXED: closing the scope needs a corpus-wide dense artwork id in place of `artwork_base[card] + gid`, a cross-partition dedupe in the gather (cross-card groups must be co-located in one partition to keep `unique=art` a per-partition row predicate, and today's partitioning is `fnv1a64/oracle_id/v1`), a deterministic tie-break on row identity that the per-card scope provably never needed, and a representative rule that search-unique-art-znr-creatures proves is not derivable at all. Sized on the served store it buys 102 cross-oracle groups over 417 rows.\nWHAT EACH SIDE STILL PROVES: both sides lead with khm/15 in the same order and differ only from data.3 on, where Scryfall has already dropped A-40 and moved khm/50 up. The sibling cases pin `unique=cards` 13 and `unique=prints` 26 byte-clean, so a change in the 25 or the 26 here is the artwork rule and nothing else.\nNOTE FOR A RUN AGAINST PRODUCTION: the deployed store has the Alchemy A-* rows missing from its search space entirely, and therefore answers 25 for a reason that has nothing to do with artwork. This case is written against the LOCAL corpus, the one the rest of this file already assumes (see search-include-multilingual-khm-page-1's 4035).",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 25,
+						"data.0.collector_number": "15",
+						"data.3.collector_number": "50",
+						"data.3.name": "Cosima, God of the Voyage // The Omenkeel"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 26,
+						"data.0.collector_number": "15",
+						"data.3.collector_number": "A-40",
+						"data.3.name": "A-Alrund, God of the Cosmos // A-Hakka, Whispering Raven"
+					}
+				}
+			}
+		},
+		{
+			"name": "search-unique-art-znr-creatures",
+			"method": "GET",
+			"path": "/cards/search?order=set&q=e%3Aznr+t%3Acreature&unique=art",
+			"known_deviation": {
+				"reason": "TWO mechanisms in one total, and only one of them is closable. 187 here against 174 on api.scryfall.com, a difference of exactly the 13 Alchemy rows znr/A-68, A-105, A-126, A-141, A-145, A-154, A-185, A-187, A-198, A-224, A-228, A-234 and A-238, which Scryfall folds into their paper originals by the same CROSS-CARD dedupe as search-unique-art-khm-gods.\nTHE OTHER FIVE ROWS ARE A PER-CARD REPRESENTATIVE CHOICE, AND IT IS NOT DERIVABLE — this is the half no scope change can reach. On five artworks the two sides keep different survivors: this engine answers znr/4, znr/23, znr/198, znr/220 and znr/225 where Scryfall answers znr/315, znr/318, znr/361, znr/365 and znr/367. Measured on 2026-08-17 by asking `e:znr t:creature` twice — `unique=prints` 230 rows against `unique=art` 174 — and labelling every merge. 39 of them are ONE shape: a base printing against its extended-art twin, agreeing on oracle_id, illustration_id, set, `released_at`, artist, rarity and frame effects, differing only in `extendedart`/`boosterfun` and the collector number. 35 resolve to the base printing and 4 to the extended-art one. znr/198 loses to znr/361 as well, in a three-row group that is not one of the 39, which is why the result differs on 5 rows and not 4. znr/5 against znr/316 is byte-for-byte the same comparison as znr/4 against znr/315 and goes the OTHER way.\nAn exhaustive sweep over every key api.scryfall.com puts on the card object finds no field whose ordering picks the winner and — the stronger statement — no field whose base-vs-extended delta even SEPARATES the 4 from the 35. Narrowed to a single pair the answer does not move: `e:znr (cn:4 or cn:315) unique=art` is still znr/315, `(cn:2 or cn:314)` is znr/2, `(cn:198 or cn:361)` is znr/361. So it is a fixed internal ordinal on Scryfall's side — `DISTINCT ON` over the filtered set against row identity in their own table — and not query noise, and nothing they publish exposes it. `prefer_score` DESC, what `group_representative` already uses, agrees with 58 of the 65 live-labelled decisions and no available alternative does better, so it stays. DO NOT re-derive this: the dead end has been walked to its end twice (c7d8cf3 over the bulk, 5440875 over the API), and it is here so nobody walks it a third time.\nThe recorded rows are the FIRST divergence on each side (data.2, the znr/4-against-znr/315 merge) plus the block Scryfall's five winners occupy, so a change in either the scope or the representative rule reports as drift.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 174,
+						"data.0.collector_number": "2",
+						"data.2.collector_number": "5",
+						"data.167.collector_number": "315",
+						"data.171.collector_number": "367"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 187,
+						"data.0.collector_number": "2",
+						"data.2.collector_number": "4",
+						"data.15.collector_number": "23"
+					}
+				}
+			}
+		},
+		{
+			"name": "search-unique-art-null-back-keeps-both-itlimoc",
+			"method": "GET",
+			"path": "/cards/search?include_extras=true&order=set&q=name%3A%22Growing+Rites+of+Itlimoc%22&unique=art",
+			"note": "The positive half of the face-tuple artwork key (5d86e76): an artwork is the ordered tuple of EVERY face's illustration id, not the front alone. Seven printings collapse to five on both sides, and the row that proves the key is `alci/26` against `lci/188` -- one front (`d097bf4c`) with two different backs (`92726e09` against `a4cc664f`) -- which a front-only key merges into a single artwork. The controls sit in the same answer: `lci/380` carries lci/188's tuple exactly and does merge, and `xln/191` + `pxln/191s` share (807e1577, fe41f4ca) and merge, while `pxtc/191` keeps that same front against back `7cec268a` and survives. Both sides agree on all five representatives, so this byte-compares rather than deviating -- and it is the reason `unique=art`'s scope question (search-unique-art-khm-gods) is about SCOPE and not about the key."
+		},
+		{
+			"name": "search-unique-art-prismatic-ending",
+			"method": "GET",
+			"path": "/cards/search?include_extras=true&order=set&q=%21%22Prismatic+Ending%22&unique=art",
+			"note": "The guard half of the same key, and what keeps the tuple from being a 161-row regression: an ABSENT illustration id is UNKNOWN, not a value. Eleven printings collapse to seven on both sides. `amh2/5` and `amh2/5s` are art-series rows carrying no illustration id at all, and an all-absent tuple matches only its own kind at the same arity -- so the two become ONE artwork. A literal tuple that read NULL as a value would answer 8; an all-absent row treated as a wildcard that folds into whichever artwork its card listed first would answer 6. The rest is ordinary front sharing and is here to keep the count honest: mb2/16 + mh2/25 + mh2/384 on `78feeb10`, soa/72 + soa/137 on `7d772ba3`, and pf26/3, sld/1868, soa/7 and spg/40 alone. (The third leg, a PARTIAL wildcard -- astx/66s's `(b7de5431, NULL)` against astx/66's `(b7de5431, c9d340c9)`, the 161 art-series signature variants -- is not pinned here: `!\"Memory Lapse\" include:extras unique=art` is 9 on both sides and drops astx/66s on both, but seven of its nine representatives are the per-card choice search-unique-art-znr-creatures records as underivable, so a case on it would be a large deviation and not a guard.)"
 		}
 	]
 }
