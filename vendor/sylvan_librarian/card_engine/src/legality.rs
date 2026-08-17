@@ -150,12 +150,51 @@ impl FormatRegistry {
     }
 
     /// Adopt an archive's format→shift assignments — see `sync_format_shifts`.
+    ///
+    /// STALENESS IS A CONTENT QUESTION, NOT A COUNT ONE. The trigger used to be
+    /// `registry.len() < archive.len()`, which asks only "does the archive name MORE formats than
+    /// I do". On a name-keyed map that misses every change that keeps the cardinality:
+    ///
+    ///   * a RENAME, which this corpus has actually seen — Scryfall renamed `brawl` to
+    ///     `standardbrawl` and `historicbrawl` to `brawl` in one pass;
+    ///   * one format retired and another added in the same dump.
+    ///
+    /// Shifts are handed out in first-seen order over an object whose keys arrive sorted, so
+    /// either shape re-slots every alphabetically-later format by one. A registry that declines to
+    /// adopt the new map then reads every card's legality word at its NEIGHBOUR's two bits, and
+    /// binds `legality:`/`banned:`/`restricted:` to the same wrong pair. Nothing errors: the words
+    /// still decode, to the wrong statuses, on a `/cards/*` body this port caches for 16 hours.
+    ///
+    /// It cannot bite the store as built TODAY — every Scryfall card carries the full `legalities`
+    /// object, so the first row of any build assigns all 22 formats in the same sorted order and
+    /// two archives of the same vocabulary carry identical maps. That is a property of Scryfall's
+    /// output, not of this function, and it is not the one the caller depends on.
     fn sync(&self, archived: &Archived<HashMap<String, u8>>) {
-        let behind = self.shifts().read().map(|m| m.len() < archived.len()).unwrap_or(false);
-        if !behind {
+        // The common path is one read lock and ~22 lookups: no write, no invalidation. A poisoned
+        // lock reads as "agrees" and does nothing, exactly as the count check's `unwrap_or(false)`
+        // did.
+        let agrees = self
+            .shifts()
+            .read()
+            .map(|m| archived.iter().all(|(format, shift)| m.get(format.as_str()) == Some(shift)))
+            .unwrap_or(true);
+        if agrees {
             return;
         }
         if let Ok(mut shifts) = self.shifts().write() {
+            // Inserting the archive's pairs is not enough once same-count changes are visible,
+            // because a retired name STILL HOLDS ITS SLOT: merge `{a:0, b:2, d:4}` over
+            // `{a:0, b:2, c:4}` and `order()` emits both `c` and `d` at bits 4-5, so the name that
+            // no longer exists reports the new one's status on every card. Drop exactly the
+            // entries this archive contradicts — a slot it hands to a DIFFERENT name — and leave
+            // every slot it never mentions alone, so a format assigned by an import running in
+            // this process and absent from this archive survives the sync.
+            let owner_of: HashMap<u8, &str> =
+                archived.iter().map(|(format, shift)| (*shift, format.as_str())).collect();
+            shifts.retain(|name, shift| match owner_of.get(&*shift) {
+                Some(owner) => *owner == name.as_str(),
+                None => true,
+            });
             for (format, shift) in archived.iter() {
                 shifts.insert(format.as_str().to_string(), *shift);
             }
@@ -278,6 +317,102 @@ mod tests {
 
     fn pairs(order: &FormatOrder) -> Vec<(&str, u8)> {
         order.iter().map(|(name, shift)| (name.as_str(), *shift)).collect()
+    }
+
+    /// The archive side of `sync`, built the way a store carries it: `CardData::format_shifts` is
+    /// a `HashMap<String, u8>`, so this serializes exactly that type and hands back the buffer for
+    /// the caller to `access`.
+    fn archived_shifts(pairs: &[(&str, u8)]) -> rkyv::util::AlignedVec {
+        let map: HashMap<String, u8> = pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect();
+        rkyv::to_bytes::<rkyv::rancor::Error>(&map).expect("serialize format shifts")
+    }
+
+    /// A registry's pairs, alphabetical — `order()`'s content in the shape the assertions read.
+    fn registry_pairs(registry: &FormatRegistry) -> Vec<(String, u8)> {
+        registry.order().iter().cloned().collect()
+    }
+
+    /// STALENESS IS CONTENT, NOT CARDINALITY. Two maps of the same SIZE can disagree about which
+    /// format owns which two bits, and a registry that answers "am I behind?" by comparing counts
+    /// says no to every one of them.
+    ///
+    /// The fixture is the shape that has actually happened to this corpus: a RENAME. Scryfall
+    /// renamed `brawl` to `standardbrawl`; the count is identical before and after, and the slot
+    /// the old name held is handed to the new one.
+    #[test]
+    fn a_same_count_archive_still_syncs() {
+        let registry = registry_of(&["brawl", "commander", "modern"]);
+        assert_eq!(registry_pairs(&registry), [("brawl".to_owned(), 0), ("commander".to_owned(), 2), ("modern".to_owned(), 4)]);
+
+        // Same three slots, one different NAME on the first. The count check saw `3 < 3` and
+        // returned, leaving `brawl` owning bits 0-1 for the life of the process.
+        let bytes = archived_shifts(&[("standardbrawl", 0), ("commander", 2), ("modern", 4)]);
+        let archived = rkyv::access::<Archived<HashMap<String, u8>>, rkyv::rancor::Error>(&bytes).expect("access");
+        assert_eq!(archived.len(), 3, "the fixture is only interesting because the counts MATCH");
+        registry.sync(archived);
+
+        assert_eq!(registry.shift("standardbrawl"), Some(0), "the archive's name must become bindable");
+        assert_eq!(
+            registry.shift("brawl"),
+            None,
+            "the retired name must not keep the slot — it would report standardbrawl's status on every card"
+        );
+        assert_eq!(
+            registry_pairs(&registry),
+            [("commander".to_owned(), 2), ("modern".to_owned(), 4), ("standardbrawl".to_owned(), 0)]
+        );
+
+        // What the caller actually reads: one name at bits 0-1, and it is the archive's.
+        let decoded = registry.decode_to_json(LEGALITY_BANNED);
+        assert_eq!(decoded.get("standardbrawl").and_then(serde_json::Value::as_str), Some("banned"));
+        assert!(decoded.get("brawl").is_none(), "a name the archive dropped must not appear in `legalities` at all");
+    }
+
+    /// A slot the archive never mentions belongs to whoever holds it. An import running in this
+    /// process assigns formats through `shift_or_assign` against the same registry, and dropping
+    /// those on every archive attach would un-assign a format mid-import.
+    ///
+    /// Also the growth case in one: an archive that is a strict SUPERSET still extends, which is
+    /// the only thing the old count check could see and must keep working.
+    #[test]
+    fn sync_keeps_slots_the_archive_does_not_claim_and_still_extends() {
+        let registry = registry_of(&["commander", "modern", "import_only"]); // 0, 2, 4
+
+        // The archive knows `commander` and `modern`, has never heard of `import_only`, and adds
+        // `alchemy` at a slot nobody holds.
+        let bytes = archived_shifts(&[("commander", 0), ("modern", 2), ("alchemy", 6)]);
+        let archived = rkyv::access::<Archived<HashMap<String, u8>>, rkyv::rancor::Error>(&bytes).expect("access");
+        registry.sync(archived);
+
+        assert_eq!(registry.shift("import_only"), Some(4), "a slot the archive is silent about is left alone");
+        assert_eq!(registry.shift("alchemy"), Some(6), "and a format only the archive knows is adopted");
+        assert_eq!(
+            registry_pairs(&registry),
+            [
+                ("alchemy".to_owned(), 6),
+                ("commander".to_owned(), 0),
+                ("import_only".to_owned(), 4),
+                ("modern".to_owned(), 2)
+            ]
+        );
+    }
+
+    /// The common path stays a pure read. `sync` runs on EVERY query (`bind_and_split_filter_value`
+    /// calls it before `build_filter`), so an agreeing archive must not take the write lock or bump
+    /// the generation — that would discard the cached order on every request and reintroduce the
+    /// per-row rebuild `order()` exists to avoid.
+    #[test]
+    fn an_agreeing_archive_does_not_touch_the_registry() {
+        let registry = registry_of(&["commander", "modern"]);
+        let before = registry.order();
+
+        // Exactly the registry's pairs, and then a SUBSET of them — neither is news.
+        for pairs in [&[("commander", 0u8), ("modern", 2)][..], &[("modern", 2)][..]] {
+            let bytes = archived_shifts(pairs);
+            let archived = rkyv::access::<Archived<HashMap<String, u8>>, rkyv::rancor::Error>(&bytes).expect("access");
+            registry.sync(archived);
+            assert!(Arc::ptr_eq(&before, &registry.order()), "an agreeing sync must not invalidate the cached order");
+        }
     }
 
     /// The cached order must follow the registry, or a format assigned after the first decode
