@@ -3490,6 +3490,7 @@ fn is_canonical_type_name(needle: &str) -> bool {
 }
 
 /// The catalog itself, for the test that asserts its shape.
+#[cfg(test)]
 pub(crate) fn canonical_type_names() -> &'static [&'static str] {
     &CANONICAL_TYPE_NAMES
 }
