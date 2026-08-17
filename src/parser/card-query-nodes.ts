@@ -407,8 +407,16 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			// matched literally instead, so it keeps neither fold; see StringValueNode. Measured
 			// on api.scryfall.com 2026-08-16: `name:ft` 1,628 against `name:"ft"` 362,
 			// `name:ofthe` 1,109 against `name:"ofthe"` 0, `name:limdul` 8 against
-			// `name:"limdul"` 0. Comparison ops (`name=`, `name!=`) keep the literal value on
-			// both sides, accent-sensitive, exactly as before.
+			// `name:"limdul"` 0.
+			//
+			// `=` IS `:` HERE — it is not a comparison on a string column, it carries no
+			// information of its own, and the bare/quoted split survives it INTACT. Measured on
+			// api.scryfall.com 2026-08-16: `name=ft` answers `name:ft`'s 1,628 (not `name:"ft"`'s
+			// 362), `name="ft"` answers `name:"ft"`'s 362, and `name=limdul` answers
+			// `name:limdul`'s 8. Gating on `:` alone sent `name=ft` down the literal path, where
+			// the engine compared the whole string for equality and answered nothing at all.
+			// `!=` is NOT in this class — it is the empty set on every string column, which
+			// `build_text_filter` answers on its own.
 			// `a:` gets the SAME split, on the same kind of evidence (api.scryfall.com, 2026-08-16):
 			// `a:gawel` answers 10 exactly as `a:gaweł` does, `a:rebecca-guay` answers
 			// `a:"rebecca guay"`'s 166, and `a:gu*ay` answers `a:guay`'s 197. An artist could only
@@ -421,7 +429,11 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			// answers `a:rebecca`'s 405 — so `bind` routes every artist form through one collated
 			// contains (`artist_contains_ids`). The branch below is kept because `card_name` still
 			// needs it, and because the collated node saves the engine the fold on the common path.
-			if ((attr === "card_name" || attr === "card_artist") && this.operator === ":" && !this.rhs.literal) {
+			if (
+				(attr === "card_name" || attr === "card_artist") &&
+				(this.operator === ":" || this.operator === "=") &&
+				!this.rhs.literal
+			) {
 				return { node_type: "CollatedNameValueNode", kwargs: { value: collateName(foldAccents(value)) } };
 			}
 			return { node_type: "StringValueNode", kwargs: { value } };

@@ -875,7 +875,7 @@ class Parser:
         raise ParseError(msg)
 
     def parse_date_value(self) -> QueryNode:
-        """Parse a date value: YYYY or YYYY-MM-DD (hyphens must have no surrounding spaces)."""
+        """Parse a date value: YYYY, YYYY-MM or YYYY-MM-DD (hyphens must have no surrounding spaces)."""
         tok = self.peek()
         if tok.type != TT.NUMBER:
             msg = f"Expected date, got {tok.value!r} at position {tok.pos}"
@@ -891,6 +891,7 @@ class Parser:
         ):
             self.consume()
             month_tok = self.consume()
+            month = int(month_tok.value)
             if (
                 self.peek().type == TT.MINUS
                 and not self.peek().space_before
@@ -899,7 +900,6 @@ class Parser:
             ):
                 self.consume()
                 day_tok = self.consume()
-                month = int(month_tok.value)
                 day = int(day_tok.value)
                 try:
                     datetime.date(year=year, month=month, day=day)
@@ -907,6 +907,27 @@ class Parser:
                     msg = f"Invalid date {year}-{month:02d}-{day:02d} at position {tok.pos}: {exc}"
                     raise ParseError(msg) from exc
                 return StringValueNode(f"{year}-{month:02d}-{day:02d}")
+            # YEAR-MONTH, with NO day: the month tokens are already consumed, and returning the
+            # bare year below dropped them on the floor -- silently, so `date:2021-02` answered
+            # the whole of `date:2021`.
+            #
+            # A partial date names a WINDOW, and the engine's released_at arm already reads six
+            # digits as [yyyymm01, yyyymm31] and picks each operator's end of it; this only has to
+            # hand it the six digits. The oracle is the one the bare-year fix used, a precision
+            # down: a year-month must equal the range its own ends describe. Measured on
+            # api.scryfall.com 2026-08-16, `date:2021-02` is 504 and `date>=2021-02 date<2021-03`
+            # is 504, against `date:2021`'s 3,834 -- the answer this used to give.
+            #
+            # A month outside 1..12 raises, exactly as an impossible DAY already does above.
+            # Scryfall 400s on `date:2021-13`, where this answered all of 2021.
+            #
+            # NOT zero-padding-strict: Scryfall 400s on `date:2021-2` and this reads it as
+            # 2021-02. That gap is pre-existing and shared with the day path (`date:2021-2-5` is a
+            # 400 there and answers here), and is left alone rather than widened.
+            if not 1 <= month <= 12:
+                msg = f"Invalid date {year}-{month:02d} at position {tok.pos}: month must be in 1..12"
+                raise ParseError(msg)
+            return StringValueNode(f"{year}-{month:02d}")
         return StringValueNode(str(year))
 
     def parse_year_value(self) -> QueryNode:

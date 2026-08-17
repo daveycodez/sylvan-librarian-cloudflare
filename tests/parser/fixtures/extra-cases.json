@@ -607,6 +607,10 @@
 		}
 	},
 	{
+		"query": "date!=2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "date:1991",
 		"error": {
 			"type": "ValueError",
@@ -623,6 +627,24 @@
 	{
 		"query": "date:2020-02-29",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"2020-02-29\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "date:2021-00",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"date:2021-00\""
+		}
+	},
+	{
+		"query": "date:2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "date:2021-13",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"date:2021-13\""
+		}
 	},
 	{
 		"query": "date:2024-1.5-07",
@@ -651,11 +673,31 @@
 		}
 	},
 	{
+		"query": "date<2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "date<=2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "date=2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "date=2025-13-01",
 		"error": {
 			"type": "ValueError",
 			"message": "Failed to parse query: \"date=2025-13-01\""
 		}
+	},
+	{
+		"query": "date>2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "date>=2021-02",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":\"2021-02\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "devotion:{g}{g}{g}",
@@ -1407,6 +1449,13 @@
 		"error": {
 			"type": "ValueError",
 			"message": "Failed to parse query: \"year:1991\""
+		}
+	},
+	{
+		"query": "year:2021-02",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"year:2021-02\""
 		}
 	},
 	{

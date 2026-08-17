@@ -488,6 +488,20 @@ EXTRA_CASES = [
     "date:2025-6-7",
     "date:2025-006-007",
     "date:2024-1.5-07",
+    # YEAR-MONTH, with no day. The corpus had no case of this at ANY precision, which is why the
+    # parser could consume the month tokens and then return the bare year -- silently, for as long
+    # as it did -- without a single fixture moving. Every operator is listed because the engine
+    # reads a different end of the window for each.
+    "date:2021-02",
+    "date=2021-02",
+    "date>=2021-02",
+    "date>2021-02",
+    "date<=2021-02",
+    "date<2021-02",
+    "date!=2021-02",
+    "date:2021-13",
+    "date:2021-00",
+    "year:2021-02",
     # is:/frame: synonym expansion (incl. nesting and negation)
     "is:vanilla",
     "is:dfc",

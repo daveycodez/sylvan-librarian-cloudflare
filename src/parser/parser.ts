@@ -712,7 +712,7 @@ export class Parser {
 		throw new InternalParseError(`Expected color value, got ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
 
-	/** Parse a date value: YYYY or YYYY-MM-DD (hyphens must have no surrounding spaces). */
+	/** Parse a date value: YYYY, YYYY-MM or YYYY-MM-DD (hyphens must have no surrounding spaces). */
 	parseDateValue(): QueryNode {
 		const tok = this.peek();
 		if (tok.type !== TT.NUMBER) {
@@ -729,6 +729,7 @@ export class Parser {
 		) {
 			this.consume();
 			const monthTok = this.consume();
+			const month = (monthTok.value as PyNumber).toBigIntTruncated();
 			if (
 				this.peek().type === TT.MINUS &&
 				!this.peek().spaceBefore &&
@@ -737,13 +738,36 @@ export class Parser {
 			) {
 				this.consume();
 				const dayTok = this.consume();
-				const month = (monthTok.value as PyNumber).toBigIntTruncated();
 				const day = (dayTok.value as PyNumber).toBigIntTruncated();
 				if (!isValidDate(Number(year), Number(month), Number(day))) {
 					throw new InternalParseError(`Invalid date ${year}-${pad2(month)}-${pad2(day)} at position ${tok.pos}`);
 				}
 				return new StringValueNode(`${year}-${pad2(month)}-${pad2(day)}`);
 			}
+			// YEAR-MONTH, with NO day: the month tokens are already consumed, and returning the
+			// bare year here dropped them on the floor — silently, so `date:2021-02` answered
+			// `date:2021`'s whole year. A partial date names a WINDOW (see `build_binary`'s
+			// released_at arm, which already reads yyyymm as [yyyymm01, yyyymm31] and is where
+			// the six operators pick their end of it); this only has to hand it the six digits.
+			//
+			// The oracle is the same shape the bare-year fix used, one precision down: a
+			// year-month must equal the half-open range its own ends describe. Measured on
+			// api.scryfall.com 2026-08-16, `date:2021-02` is 504 and `date>=2021-02 date<2021-03`
+			// is 504, while `date:2021` is 3,834 — the answer this returned. Every operator,
+			// against ours after the change: `date>=2021-02` 20,085, `date<2021-03` 21,269,
+			// `date<=2021-02` 21,269, `date>2021-02` 19,871, `date!=2021-02` 33,422.
+			//
+			// A month outside 1..12 throws, exactly as an impossible DAY already does one branch
+			// up. Scryfall 400s on `date:2021-13` ("All of your terms were ignored") where this
+			// answered the whole of 2021.
+			//
+			// NOT zero-padding-strict: Scryfall 400s on `date:2021-2` and this accepts it as
+			// 2021-02. That gap is pre-existing and shared with the day path (`date:2021-2-5` is
+			// a 400 there and 482 here), and is deliberately left alone rather than widened here.
+			if (month < 1n || month > 12n) {
+				throw new InternalParseError(`Invalid date ${year}-${pad2(month)} at position ${tok.pos}`);
+			}
+			return new StringValueNode(`${year}-${pad2(month)}`);
 		}
 		return new StringValueNode(year.toString());
 	}

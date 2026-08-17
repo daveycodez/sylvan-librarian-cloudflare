@@ -798,13 +798,19 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             # matched literally instead, so it keeps neither fold; see StringValueNode. Measured on
             # api.scryfall.com 2026-08-16: `name:ft` 1,628 against `name:"ft"` 362, `name:ofthe`
             # 1,109 against `name:"ofthe"` 0, `name:limdul` 8 against `name:"limdul"` 0.
-            # Comparison ops (name=, name!=) keep the literal value on both sides,
-            # accent-sensitive, exactly as before.
+            #
+            # `=` IS `:` HERE -- it is not a comparison on a string column, it carries no
+            # information of its own, and the bare/quoted split survives it INTACT. Measured on
+            # api.scryfall.com 2026-08-16: `name=ft` answers `name:ft`'s 1,628 (not `name:"ft"`'s
+            # 362), `name="ft"` answers `name:"ft"`'s 362, and `name=limdul` answers
+            # `name:limdul`'s 8. Gating on `:` alone sent `name=ft` down the literal path, where a
+            # whole-string equality then answered nothing at all. `!=` is NOT in this class -- it
+            # is the empty set on every string column.
             # `a:` gets the SAME split, on the same kind of evidence (api.scryfall.com, 2026-08-16):
             # `a:gawel` answers 10 exactly as `a:gaweł` does, `a:rebecca-guay` answers
             # `a:"rebecca guay"`'s 166, and `a:gu*ay` answers `a:guay`'s 197. An artist could only be
             # found under their own diacritics and punctuation before this.
-            if attr in ("card_name", "card_artist") and self.operator == ":" and not self.rhs.literal:
+            if attr in ("card_name", "card_artist") and self.operator in (":", "=") and not self.rhs.literal:
                 return {"node_type": "CollatedNameValueNode", "kwargs": {"value": collate_name(fold_accents(value))}}
             return {"node_type": "StringValueNode", "kwargs": {"value": value}}
 
