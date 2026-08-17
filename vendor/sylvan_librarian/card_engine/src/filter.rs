@@ -879,8 +879,13 @@ pub(crate) enum FilterExpr {
     /// ~3k mixed-case type lines costs ~160 us per query where `memmem` over the
     /// index's pre-lowercased copies costs ~5 us, and `t:` is the most common
     /// filter there is.
+    ///
+    /// `whole_word` is set when the needle NAMES A TYPE — see `CANONICAL_TYPE_NAMES`
+    /// — and the match is then anchored to type-word boundaries instead of being a
+    /// bare substring.
     TypeLineContains {
         needle: String,
+        whole_word: bool,
     },
     TypeLineMatch {
         gids: Vec<u32>,
@@ -1930,9 +1935,18 @@ impl FilterExpr {
                 // own `t:/…/` runs against the original line, where its pattern's own case
                 // expectations still mean what they say.
                 let (gids, line_ids) = match self {
-                    FilterExpr::TypeLineContains { needle } => {
+                    FilterExpr::TypeLineContains { needle, whole_word: false } => {
                         let finder = memmem::Finder::new(needle.as_bytes());
                         scan(idx, |d, _| idx.lower.get(d).is_some_and(|l| finder.find(l.as_bytes()).is_some()))
+                    }
+                    // The canonical-name arm. Same scan, same pre-lowercased copies; the finder is
+                    // asked for EVERY occurrence rather than the first, because the anchored one
+                    // need not be the leftmost ("Demigod Warrior" against `t:warrior`).
+                    FilterExpr::TypeLineContains { needle, whole_word: true } => {
+                        let finder = memmem::Finder::new(needle.as_bytes());
+                        scan(idx, |d, _| {
+                            idx.lower.get(d).is_some_and(|l| type_word_match(l.as_bytes(), &finder, needle.len()))
+                        })
                     }
                     FilterExpr::TextRegex { regex, .. } => {
                         scan(idx, |_, gid| str_at(strings, gid).is_some_and(|s| regex.is_match(s)))
@@ -2497,9 +2511,9 @@ impl FilterExpr {
             // `bind` alone, or the CARD_ENGINE_NO_TYPE_LINE_INDEX measurement mode. Correct, and
             // deliberately the slow way round: one allocation per card is what the index exists to
             // remove, so a path that starts paying it is easy to spot in a profile.
-            FilterExpr::TypeLineContains { needle } => {
+            FilterExpr::TypeLineContains { needle, whole_word } => {
                 match text_field_value(card, printing, strings, TextField::TypeLine) {
-                    StrVal::Known(s) => tri_bool(s.to_lowercase().contains(needle.as_str())),
+                    StrVal::Known(s) => tri_bool(type_line_hit(&s.to_lowercase(), needle, *whole_word)),
                     StrVal::Null => Tri::Null,
                     StrVal::PDep => Tri::PrintingDep,
                 }
@@ -3213,10 +3227,11 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
         return Ok(FilterExpr::Legality { shift: format_shift(format), expected });
     }
 
-    // A `t:` VALUE IS A SUBSTRING OF THE PRINTED TYPE LINE, not a member of the type/subtype
-    // vocabulary — for a single word exactly as much as for a quoted phrase.
+    // A `t:` VALUE IS A SUBSTRING OF THE PRINTED TYPE LINE — *unless* it NAMES A TYPE, and then it
+    // is anchored to the type word. Both halves are measured; see `CANONICAL_TYPE_NAMES` for the
+    // anchored half and its catalog.
     //
-    // Scryfall's rule, MEASURED against api.scryfall.com on 2026-08-16 over `e:khm` (323 prints)
+    // The substring half, MEASURED against api.scryfall.com on 2026-08-16 over `e:khm` (323 prints)
     // and not guessed:
     //
     //   t:creature 151   t:creat 151   t:reature 151   t:eatur 151   -> unanchored on both sides
@@ -3240,6 +3255,10 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
     // user's own `t:/…/`) into a `TypeLineMatch` by running it over the ~1,519 distinct type lines
     // in the corpus, which is both the case folding and the narrowing. See `TypeLineIndex`.
     //
+    // WHAT THE SUBSTRING RULE ALONE GETS WRONG, and it is not an edge: `t:god` answers 96 on
+    // api.scryfall.com and answered 104 here, the 8 extra being every **Demigod** in the corpus.
+    // The needle that names a type is matched against the type WORD.
+    //
     // WHICH OPERATORS. `:` and `>=` are containment and `=` is measurably the same substring test
     // on Scryfall (`t=creature` 151, `t="legendary creature"` 32 — set equality would answer 0
     // there, since no card's type array is exactly ["Creature"] once subtypes exist). `<`, `<=`
@@ -3260,7 +3279,9 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
             // `æ` expands here too: `t:"æ"` and `t:"ae"` both answer 213 on Scryfall. See
             // `crate::fold_ae` — the type line is one of the columns that folds THAT letter and
             // no other (`t:œ`, `t:ø`, `t:ß`, `t:þ`, `t:đ` and `t:ł` are each 404 there).
-            return Ok(FilterExpr::TypeLineContains { needle: crate::fold_ae(&needle.to_lowercase()) });
+            let needle = crate::fold_ae(&needle.to_lowercase());
+            let whole_word = is_canonical_type_name(&needle);
+            return Ok(FilterExpr::TypeLineContains { needle, whole_word });
         }
     }
 
@@ -3378,6 +3399,150 @@ pub(crate) fn exact_name_matches(stored: &str, needle: &str) -> bool {
 fn rhs_value_str(rhs: &Value) -> &str {
     rhs["kwargs"]["value"].as_str().unwrap_or("")
 }
+
+/// Whether a byte can be part of a type WORD, for `type_word_match`.
+///
+/// The type line's own punctuation is what separates one type from the next: a space, the em dash
+/// before the subtypes, the ` // ` face join, and the comma and question mark two joke type lines
+/// print. Everything else BINDS — and the three that bind are exactly the three the catalog spells
+/// inside a name: the hyphen (`Assembly-Worker`, `Power-Plant`), the apostrophe (`Urza's`,
+/// `C'tan`, `Shi'ar`) and the period (`B.O.B.`). Binding them is not cosmetic: it is what keeps
+/// `t:worker` off `Assembly-Worker` and `t:bolas` off the plane `Bolas's Meditation Realm`, which
+/// is what Scryfall answers, because neither type ARRAY holds the shorter name.
+fn type_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'\'' || b == b'-' || b == b'.'
+}
+
+/// Whether `needle` occurs in `line` bounded by type-word boundaries on both sides.
+///
+/// Every occurrence is tried, not just the leftmost: `t:warrior` has to match `Demigod Warrior`,
+/// whose first `warrior`-bearing position is the anchored one only because the earlier candidate
+/// does not exist — reverse the pair (`Warrior Demigod` against `t:god`) and the leftmost hit is
+/// the one that must be rejected.
+fn type_word_match(line: &[u8], finder: &memmem::Finder<'_>, needle_len: usize) -> bool {
+    let mut base = 0usize;
+    while let Some(rel) = finder.find(&line[base..]) {
+        let start = base + rel;
+        let end = start + needle_len;
+        let before_ok = start == 0 || !type_word_byte(line[start - 1]);
+        let after_ok = end >= line.len() || !type_word_byte(line[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        base = start + 1;
+        if base >= line.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// One `t:` needle against one ALREADY-LOWERCASED type line, for the callers that have no
+/// prebuilt `Finder` to reuse — the per-card fallback in `tri` and the tests. `bind_type_lines`
+/// deliberately does not come through here: it builds the finder once for the whole vocab scan.
+pub(crate) fn type_line_hit(lower: &str, needle: &str, whole_word: bool) -> bool {
+    if whole_word {
+        type_word_match(lower.as_bytes(), &memmem::Finder::new(needle.as_bytes()), needle.len())
+    } else {
+        lower.contains(needle)
+    }
+}
+
+/// Whether a `t:` needle NAMES A TYPE, in which case it matches the type word rather than any
+/// substring of the printed line.
+///
+/// `CANONICAL_TYPE_NAMES` is the union of the nine type catalogs api.scryfall.com publishes —
+/// `/catalog/supertypes`, `card-types`, `artifact-types`, `battle-types`, `creature-types`,
+/// `enchantment-types`, `land-types`, `planeswalker-types` and `spell-types` — fetched 2026-08-17,
+/// lowercased and sorted. 531 names.
+///
+/// THE CATALOGS ARE THE RULE, not "any word on a type line", and that distinction is measured
+/// rather than assumed. Every probe below is api.scryfall.com against this store on the same day:
+///
+/// ```text
+///   t:god     96 vs 104   ANCHORED   the 8 extra were every Demigod
+///   t:ape     45 vs 273   ANCHORED   "ape" also sits inside Shapeshifter and Spellshaper
+///   t:bat     54 vs  92   ANCHORED   and inside Wombat and Incubator
+///   t:ir    1906 = 1906   SUBSTRING  `Plane — Ir` is a real type line, and "Ir" is in no catalog
+///   t:las     43 =   43   SUBSTRING  `Plane — Las Vegas` likewise; Scryfall still matches Bolas
+///   t:art   4171 = 4171   SUBSTRING  `Creature — Art Lizard` likewise; Artifact still matches
+/// ```
+///
+/// The three SUBSTRING rows are the reason this is a fixed catalog and not a vocabulary derived
+/// from the corpus's own type lines: plane types are printed, are not published in any catalog,
+/// and Scryfall does NOT anchor on them. A corpus-derived vocabulary would have anchored `t:ir`
+/// and answered 0 where Scryfall answers 1,906.
+///
+/// WHAT IT STILL CANNOT DO. Scryfall matches the type ARRAY, which holds subtypes it never prints:
+/// `t:warrior` is 1,298 there against the printed line's 1,294, because `Burakos, Party Leader`
+/// answers to all four party classes while its `type_line` reads `Legendary Creature — Orc` on
+/// both sides. That residual is not derivable from any published field and is one card per party
+/// class.
+///
+/// A catalog is a SNAPSHOT: a creature type printed after the date above matches as a substring
+/// until this list is refreshed, which is the safe direction — the pre-fix behaviour, not a miss.
+fn is_canonical_type_name(needle: &str) -> bool {
+    CANONICAL_TYPE_NAMES.binary_search(&needle).is_ok()
+}
+
+/// The catalog itself, for the test that asserts its shape.
+pub(crate) fn canonical_type_names() -> &'static [&'static str] {
+    &CANONICAL_TYPE_NAMES
+}
+
+const CANONICAL_TYPE_NAMES: [&str; 531] = [
+    "abian", "adventure", "advisor", "aetherborn", "ajani", "alien", "ally", "aminatou", "andorian", "angel",
+    "angrath", "antelope", "ape", "arcane", "archer", "archon", "arlinn", "armadillo", "army", "artifact",
+    "artificer", "arzakon", "ashiok", "assassin", "assembly-worker", "astartes", "atog", "attraction", "aura",
+    "aurochs", "automaton", "avatar", "azra", "b.o.b.", "background", "badger", "bahamut", "balloon", "barbarian",
+    "bard", "basic", "basilisk", "basri", "bat", "battle", "bear", "beast", "beaver", "beeble", "beholder",
+    "berserker", "bird", "bison", "blinkmoth", "blood", "boar", "bobblehead", "bolas", "book", "borg", "boss",
+    "brainiac", "bringer", "brushwagg", "c'tan", "caitian", "calix", "camarid", "camel", "capybara", "caribou",
+    "carrier", "cartouche", "case", "cat", "cave", "centaur", "chandra", "chicken", "child", "chimera", "chorus",
+    "citizen", "class", "cleric", "cloud", "clown", "clue", "cockatrice", "comet", "conspiracy", "construct",
+    "contraption", "coward", "coyote", "crab", "creature", "crocodile", "curse", "custodes", "cyberman", "cyclops",
+    "dack", "dakkon", "dalek", "daretti", "dauthi", "davriel", "deb", "dellian", "demigod", "demon", "desert",
+    "deserter", "detective", "devil", "dihada", "dinosaur", "djinn", "doctor", "dog", "domri", "dovin", "dragon",
+    "drake", "dreadnought", "drix", "drone", "druid", "dryad", "duck", "dungeon", "dwarf", "dyfed", "echidna",
+    "efreet", "egg", "elder", "eldrazi", "elemental", "elephant", "elf", "elite", "elk", "ellywick", "elminster",
+    "elspeth", "emblem", "employee", "enchantment", "equipment", "ersta", "estrid", "eternal", "event", "eye",
+    "faerie", "feroz", "ferret", "fish", "flagbearer", "food", "forest", "fortification", "fox", "fractal",
+    "freyalise", "frog", "fungus", "gamer", "gamma", "gargoyle", "garruk", "gate", "germ", "giant", "gideon",
+    "giraffe", "gith", "glimmer", "gnoll", "gnome", "goat", "goblin", "god", "gold", "golem", "gorgon", "gorn",
+    "graveborn", "greensleeves", "gremlin", "griffin", "grist", "guest", "guff", "hag", "halfling", "hamster",
+    "harpy", "head", "hedgehog", "hellion", "hero", "hippo", "hippogriff", "homarid", "homunculus", "horror",
+    "horse", "huatli", "human", "hydra", "hyena", "illusion", "imp", "incarnation", "incubator", "infinity",
+    "inhuman", "inkling", "inquisitor", "insect", "instant", "inzerva", "island", "jace", "jackal", "jared", "jaya",
+    "jellyfish", "jeska", "juggernaut", "junk", "kaito", "kangaroo", "karn", "kasmina", "kavu", "kaya", "kelpien",
+    "kindred", "kiora", "kirin", "kithkin", "klingon", "knight", "kobold", "kor", "koth", "kraken", "kree", "lair",
+    "lamia", "lammasu", "land", "lanthanite", "leech", "legendary", "lemur", "lesson", "leviathan", "lhurgoyf",
+    "licid", "liliana", "lizard", "llama", "lobster", "locus", "lolth", "lukka", "luxior", "manticore", "map",
+    "master", "masticore", "mercenary", "merfolk", "metathran", "mine", "minion", "minotaur", "minsc", "mite",
+    "mole", "monger", "mongoose", "monk", "monkey", "monopoly", "moogle", "moonfolk", "mordenkainen", "mount",
+    "mountain", "mouse", "mutant", "myr", "mystic", "naga", "nahiri", "narset", "nautilus", "necron", "nephilim",
+    "nightmare", "nightstalker", "niko", "ninja", "nissa", "nixilis", "noble", "noggle", "nomad", "nymph",
+    "octopus", "officer", "ogre", "oko", "omen", "ongoing", "ooze", "orb", "orc", "orgg", "orion", "otter", "ouphe",
+    "ox", "oyster", "pangolin", "peasant", "pegasus", "pentavite", "performer", "pest", "phelddagrif", "phenomenon",
+    "phoenix", "phyrexian", "pilot", "pincher", "pirate", "plains", "plan", "plane", "planeswalker", "planet",
+    "plant", "platypus", "porcupine", "possum", "power-plant", "powerstone", "praetor", "primarch", "prism",
+    "processor", "q", "qu", "quintorius", "rabbit", "raccoon", "ral", "ranger", "rat", "rebel", "reflection",
+    "reveler", "rhino", "rigger", "robot", "rogue", "role", "room", "rowan", "rukh", "rune", "sable", "saga",
+    "saheeli", "salamander", "samurai", "samut", "sand", "saproling", "sarkhan", "satyr", "scarecrow", "scheme",
+    "scientist", "scion", "scorpion", "scout", "sculpture", "seal", "serf", "serpent", "serra", "servo", "shade",
+    "shaman", "shapeshifter", "shard", "shark", "sheep", "shi'ar", "shrine", "siege", "sifa", "siren", "sivitri",
+    "skeleton", "skrull", "skunk", "slith", "sliver", "sloth", "slug", "snail", "snake", "snow", "soldier",
+    "soltari", "sorcerer", "sorcery", "sorin", "spacecraft", "spawn", "specter", "spellshaper", "sphere", "sphinx",
+    "spider", "spike", "spirit", "splinter", "sponge", "spy", "squid", "squirrel", "starfish", "stone", "surrakar",
+    "survivor", "svega", "swamp", "symbiote", "synth", "szat", "talosian", "tamiyo", "tasha", "teddy", "teferi",
+    "tellarite", "tentacle", "terminus", "tetravite", "teyo", "tezzeret", "thalakos", "tholian", "thomil",
+    "thopter", "thrull", "tibalt", "tiefling", "time lord", "token", "tosk", "tower", "town", "toy", "trap",
+    "treasure", "treefolk", "trilobite", "triskelavite", "troll", "turtle", "tyranid", "tyvar", "ugin", "unicorn",
+    "urza", "urza's", "urzan", "utrom", "vampire", "vanguard", "varmint", "vedalken", "vehicle", "venser",
+    "villain", "vivien", "volver", "vorta", "vraska", "vronos", "vulcan", "wall", "walrus", "wanderer", "warlock",
+    "warrior", "weasel", "weird", "werewolf", "whale", "will", "windgrace", "wizard", "wolf", "wolverine", "wombat",
+    "world", "worm", "worzel", "wraith", "wrenn", "wurm", "xenagos", "xindi", "yanggu", "yanling", "yeti", "zariel",
+    "zombie", "zubera",
+];
 
 fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<FilterExpr, String> {
     let rhs_node_type = rhs["node_type"].as_str().unwrap_or("");

@@ -13165,11 +13165,16 @@ fn a_type_value_matches_the_type_line_as_a_substring() {
             }
         })
     };
-    // The compiled needle, checked the way `bind_type_lines` checks it: lowercase substring.
+    // The compiled needle, checked the way `bind_type_lines` checks it: lowercase substring, or a
+    // type-word-anchored match when the needle names a type.
     let matcher = |v: serde_json::Value| match super::build_filter(&v).unwrap() {
-        FilterExpr::TypeLineContains { needle } => {
-            move |line: &str| line.to_lowercase().contains(needle.as_str())
+        FilterExpr::TypeLineContains { needle, whole_word } => {
+            move |line: &str| super::filter::type_line_hit(&line.to_lowercase(), &needle, whole_word)
         }
+        other => panic!("expected a type-line substring, got {:?}", std::mem::discriminant(&other)),
+    };
+    let is_word_anchored = |v: serde_json::Value| match super::build_filter(&v).unwrap() {
+        FilterExpr::TypeLineContains { whole_word, .. } => whole_word,
         other => panic!("expected a type-line substring, got {:?}", std::mem::discriminant(&other)),
     };
 
@@ -13202,6 +13207,38 @@ fn a_type_value_matches_the_type_line_as_a_substring() {
     let lf = matcher(type_leaf("card_subtypes", ":", "Lf"));
     assert!(lf("Creature — Elf"));
     assert!(lf("Creature — Wolf")); // `t:lf` 25 vs `t:elf` 22 on khm
+
+    // A NEEDLE THAT NAMES A TYPE IS ANCHORED TO THE TYPE WORD. `t:god` is 96 on api.scryfall.com
+    // and was 104 here; the 8 extra were every Demigod. The catalog is Scryfall's own nine type
+    // catalogs — see `is_canonical_type_name` — and its boundary is a type-word boundary, so the
+    // needle still matches wherever in the line the word appears.
+    let god = matcher(type_leaf("card_subtypes", ":", "God"));
+    assert!(god("Legendary Creature — God"));
+    assert!(god("Creature — God Warrior")); // first word of the subtype run
+    assert!(!god("Creature — Demigod")); // the 8 rows the substring rule over-matched
+    // Not the leftmost occurrence: the anchored hit can come after a rejected one.
+    assert!(matcher(type_leaf("card_subtypes", ":", "Warrior"))("Creature — Demigod Warrior"));
+    // The punctuation the catalog spells INSIDE a name binds. `Urza` is a planeswalker type and
+    // `Urza's` a land type, two separate catalog entries, so the anchored `t:urza` must not reach
+    // the land — Scryfall's type array for `Land — Urza's Mine` holds `Urza's`, never `Urza`.
+    assert!(!is_word_anchored(type_leaf("card_subtypes", ":", "Worker"))); // in no catalog
+    assert!(matcher(type_leaf("card_subtypes", ":", "Worker"))("Artifact Creature — Assembly-Worker"));
+    assert!(matcher(type_leaf("card_subtypes", ":", "Assembly-Worker"))("Artifact Creature — Assembly-Worker"));
+    assert!(!matcher(type_leaf("card_subtypes", ":", "Urza"))("Land — Urza's Mine"));
+    assert!(matcher(type_leaf("card_subtypes", ":", "Urza's"))("Land — Urza's Mine"));
+    // A name in NO catalog stays a substring, and the two that prove it are printed types Scryfall
+    // publishes no catalog for: `t:ir` is 1,906 there (`Plane — Ir` exists and is not anchored) and
+    // `t:las` 43 (`Plane — Las Vegas`), both equal to this port's substring answer.
+    assert!(!is_word_anchored(type_leaf("card_subtypes", ":", "Ir")));
+    assert!(!is_word_anchored(type_leaf("card_subtypes", ":", "Las")));
+    assert!(matcher(type_leaf("card_subtypes", ":", "Ir"))("Creature — Bird"));
+    // Multi-word: `Time Lord` is the one catalog name with a space in it.
+    assert!(is_word_anchored(type_leaf("card_subtypes", ":", "Time Lord")));
+    assert!(!is_word_anchored(type_leaf("card_subtypes", ":", "Artifact Creature")));
+    // Supertypes and card types are catalogs too, so `t:creature` is anchored — and answers the
+    // same 18,753 either way, because "creature" never occurs inside another type word.
+    assert!(is_word_anchored(type_leaf("card_types", ":", "Creature")));
+    assert!(matcher(type_leaf("card_types", ":", "Creature"))("Legendary Artifact Creature — Golem"));
     // `:` and `=` are the same substring test on Scryfall (`t=creature` 151 = `t:creature`;
     // `t="legendary creature"` 32, where set equality would answer 0), and `>=` is containment.
     for op in [":", ">=", "="] {
@@ -13226,6 +13263,33 @@ fn a_type_value_matches_the_type_line_as_a_substring() {
         super::build_filter(&type_leaf("card_subtypes", "!=", "Goblin")).unwrap(),
         FilterExpr::Not(_)
     ));
+}
+
+/// The catalog `is_canonical_type_name` binary-searches has to BE sorted and unique, and the
+/// generator that produced it is not in this repo — so the invariant is asserted here rather than
+/// trusted. The nine catalog sizes are recorded with it: a refresh that drops a catalog on the
+/// floor changes the total, and a total nobody checks is how `t:` would quietly go back to
+/// substring-matching every creature type at once.
+#[test]
+fn the_canonical_type_catalog_is_sorted_unique_and_lowercase() {
+    let names = super::filter::canonical_type_names();
+    assert_eq!(names.len(), 531, "9 catalogs, api.scryfall.com 2026-08-17");
+    for pair in names.windows(2) {
+        assert!(pair[0] < pair[1], "{} !< {} — binary_search needs sorted+unique", pair[0], pair[1]);
+    }
+    for n in names {
+        assert_eq!(*n, n.to_lowercase(), "the needle is lowercased before the lookup");
+    }
+    // One membership per catalog, so a dropped file is a failure and not a silent narrowing.
+    for name in ["legendary", "creature", "equipment", "siege", "god", "aura", "urza's", "urza", "arcane"] {
+        assert!(names.binary_search(&name).is_ok(), "{name} must be in the catalog");
+    }
+    // And the negatives that keep `t:` a substring where Scryfall keeps it one — plane types are
+    // published in no catalog at all, which is why this is a fixed list and not the corpus's own
+    // type-line vocabulary.
+    for name in ["ir", "las", "vegas", "art", "worker", "gob", "demi"] {
+        assert!(names.binary_search(&name).is_err(), "{name} must NOT be in the catalog");
+    }
 }
 
 #[test]
