@@ -956,6 +956,19 @@ pub(crate) enum FilterExpr {
         /// semantics. Built all-unknown, so an unbound filter behaves as if
         /// every hybrid symbol were unknown (mirroring CollectionCmp).
         hybrid_ids: Vec<(u8, u8)>,
+        /// Each mana-vocab id's CMC CONTRIBUTION, indexed by id, resolved by bind() — 2 for a
+        /// TWOBRID (`{2/W}`), 1 for every other hybrid.
+        ///
+        /// Generic is `cmc - (what the pips account for)`, and a twobrid accounts for TWO. Without
+        /// this the subtraction credits it with one, and the shortfall becomes generic the card
+        /// does not have. Measured on api.scryfall.com 2026-08-17 — Beseech the Queen,
+        /// `{2/B}{2/B}{2/B}`, cmc 6, three pips: the true generic is 0, this read 6 - 3 = 3, and
+        /// `!"Beseech the Queen" m>={3}` answered the card where Scryfall answers nothing.
+        /// Corpus-wide, `m:{2/w} m:{2}` was 16 against Scryfall's 0.
+        ///
+        /// Empty until bind(), which is the same all-unknown posture `hybrid_ids` takes; a missing
+        /// id falls back to 1, the weight of every non-twobrid symbol.
+        hybrid_cmc: Vec<u8>,
         cmc: f32,
     },
 
@@ -1395,10 +1408,26 @@ fn hybrids_eq(card: &AHybrids, query: &[(u8, u8)]) -> bool {
 /// 1 each. Saturating and clamped at 0 so a cost this arithmetic cannot describe — a `{2/R}`, whose
 /// true cmc contribution is 2 rather than 1 — degrades to 0 instead of wrapping. Scryfall answers
 /// nothing to `m>={2/r}` and so does this, so that cost never reaches a comparison anyway.
-fn generic_of(core: u64, hybrids: impl Iterator<Item = u8>, cmc: f32) -> u8 {
-    let pips: u32 = (0..7).map(|l| u32::from(lane_get(core, l))).sum::<u32>() + hybrids.map(u32::from).sum::<u32>();
+fn generic_of(core: u64, hybrids: impl Iterator<Item = (u8, u8)>, cmc: f32, hybrid_cmc: &[u8]) -> u8 {
+    // Lanes 0..6 only: lane 7 is X, which is a real pip and contributes 0 to cmc, so subtracting
+    // it would invent generic. Every other single symbol contributes exactly 1.
+    let core_pips: u32 = (0..7).map(|l| u32::from(lane_get(core, l))).sum();
+    // A hybrid contributes its OWN weight, which is 2 for a twobrid and 1 for the rest — see
+    // `hybrid_cmc`. Unknown ids weigh 1, the common case and the safe one.
+    let hybrid_pips: u32 = hybrids
+        .map(|(id, n)| u32::from(hybrid_cmc.get(id as usize).copied().unwrap_or(1)) * u32::from(n))
+        .sum();
     let cmc = if cmc > 0.0 { cmc as u32 } else { 0 };
-    u8::try_from(cmc.saturating_sub(pips)).unwrap_or(u8::MAX)
+    u8::try_from(cmc.saturating_sub(core_pips + hybrid_pips)).unwrap_or(u8::MAX)
+}
+
+/// A mana symbol's contribution to converted mana cost: 2 for a TWOBRID (`2/W`), 1 otherwise.
+///
+/// Scryfall's cmc counts a twobrid as two — `{2/B}{2/B}{2/B}` is cmc 6, not 3 — while every other
+/// hybrid (`W/U`, `W/P`, `B/G/P`) counts one. The vocab interns the symbol without its braces, so
+/// the leading component is what decides it.
+fn hybrid_cmc_weight(sym: &str) -> u8 {
+    sym.split('/').next().and_then(|head| head.parse::<u8>().ok()).unwrap_or(1)
 }
 
 /// Interned name ids (ascending, deduplicated) of the `flavor_names` records satisfying `pred`.
@@ -1509,8 +1538,16 @@ impl FilterExpr {
                 }
             }
             FilterExpr::Not(inner) => inner.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, mana_vocab, flavor, strings),
-            FilterExpr::ManaCostCmp { hybrids, hybrid_ids, .. } if !hybrids.is_empty() => {
-                *hybrid_ids = bind_mana_hybrids(hybrids, mana_vocab);
+            // UNCONDITIONAL, unlike the other bind arms: the weights are read off the CARD's
+            // hybrids, not the query's, so `m:{2}` against a twobrid card needs them even though
+            // the query carries no hybrid symbol at all. Gating this on `!hybrids.is_empty()` —
+            // which is right for `hybrid_ids` — would have left the commonest twobrid query
+            // unweighted.
+            FilterExpr::ManaCostCmp { hybrids, hybrid_ids, hybrid_cmc, .. } => {
+                if !hybrids.is_empty() {
+                    *hybrid_ids = bind_mana_hybrids(hybrids, mana_vocab);
+                }
+                *hybrid_cmc = mana_vocab.iter().map(|s| hybrid_cmc_weight(s.as_str())).collect();
             }
             FilterExpr::CollectionCmp { value, value_id, .. } => {
                 let i = sorted_ids.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value.as_str());
@@ -2418,7 +2455,7 @@ impl FilterExpr {
                 tri_bool((word >> shift) & 0b11 == *expected)
             }
 
-            FilterExpr::ManaCostCmp { op, core, hybrid_ids, cmc, .. } => {
+            FilterExpr::ManaCostCmp { op, core, hybrid_ids, hybrid_cmc, cmc, .. } => {
                 // Containment/equality over the pip multiset = the same test
                 // per lane (SWAR, all eight at once) and per hybrid entry
                 // (sorted-slice walks; both sides empty on ~97% of cards).
@@ -2454,10 +2491,10 @@ impl FilterExpr {
                 // pip lane compare in the same direction, cmc's does too (cmc is their sum), so
                 // keeping it would be redundant on the Ge/Le/Eq paths and would re-admit exactly
                 // the cards this excludes.
-                let q_generic = generic_of(*core, hybrid_ids.iter().map(|&(_, n)| n), *cmc);
+                let q_generic = generic_of(*core, hybrid_ids.iter().copied(), *cmc, hybrid_cmc);
                 let matches = |mc: &Archived<ManaCost>| {
                     let card_core = u64::from(mc.core);
-                    let c_generic = generic_of(card_core, mc.hybrids.iter().map(|e| e.1), f32::from(mc.cmc));
+                    let c_generic = generic_of(card_core, mc.hybrids.iter().map(|e| (e.0, e.1)), f32::from(mc.cmc), hybrid_cmc);
                     let ge = || lanes_ge(card_core, *core, LANES8_HI) && hybrids_ge(&mc.hybrids, hybrid_ids) && c_generic >= q_generic;
                     let le = || lanes_ge(*core, card_core, LANES8_HI) && hybrids_le(&mc.hybrids, hybrid_ids) && c_generic <= q_generic;
                     let eq = || c_generic == q_generic && card_core == *core && hybrids_eq(&mc.hybrids, hybrid_ids);
@@ -2502,10 +2539,38 @@ impl FilterExpr {
                 // card-level cost is still the only cost there is, and still the 82%-of-cards path
                 // for the faceless majority, where core and cmc do describe the same cost.
                 let any_face_cost = card.faces.iter().any(|f| f.mana_cost.is_some());
-                tri_bool(
+                // NO PRINTED COST IS NOT A COST OF ZERO, and the packed form cannot tell them
+                // apart: a land and Ornithopter both arrive as {core: 0, hybrids: [], cmc: 0},
+                // because `{0}` parses as a number and so contributes no pip and no cmc. The
+                // INTERNED STRING is where the difference survives, and it survives as EMPTY
+                // rather than absent — Scryfall prints `"mana_cost": ""` on a land and `"{0}"` on
+                // Ornithopter, and the card object has to keep emitting both, so the id is real
+                // either way and only its contents separate them.
+                //
+                // Measured on api.scryfall.com 2026-08-17, unique=prints:
+                //
+                //   m:{0} t:land   195     this answered 12,254 — every land in the corpus
+                //   m={0}          293     this answered 12,713
+                //   m:{0}       93,355     this answered 105,839
+                //   -m:{0}      12,442     this answered 0, because m:{0} had matched everything
+                //
+                // A costless card fails the containment and exactness comparisons rather than
+                // matching the zero ones, which is what makes `-m:{0}` return the lands: the
+                // negation is of the leaf, and the leaf is false for them.
+                //
+                // `!=` IS THE EXCEPTION, and measurement is the only reason this is not a blanket
+                // false: `m!={w} t:land` is 12,249 on Scryfall, so a card with no cost DOES
+                // satisfy "not exactly {W}". That is consistent rather than special — `!=` asks
+                // whether the costs differ, and an absent cost differs from every queried one,
+                // while `:` `=` `>` `<` all ask about a cost the card does not have.
+                let has_cost = any_face_cost
+                    || str_at(strings, u32::from(card.mana_cost_text_id)).is_some_and(|s| !s.is_empty());
+                tri_bool(if has_cost {
                     (!any_face_cost && matches(&card.mana_cost))
-                        || card.faces.iter().any(|f| f.mana_cost.as_ref().is_some_and(matches)),
-                )
+                        || card.faces.iter().any(|f| f.mana_cost.as_ref().is_some_and(matches))
+                } else {
+                    matches!(op, CmpOp::Ne)
+                })
             }
 
             FilterExpr::Devotion { op, pips } => {
@@ -2884,7 +2949,7 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
         // where Scryfall answers 102, the same 102 as `m:{2}`.
         let cmc = mana_cmc(mana_str) + mana_bare_generic(mana_str) as f32;
         let cmp_op = match op { ":" => CmpOp::Ge, _ => str_op_to_cmp(op)? };
-        return Ok(FilterExpr::ManaCostCmp { op: cmp_op, core, hybrids, hybrid_ids, cmc });
+        return Ok(FilterExpr::ManaCostCmp { op: cmp_op, core, hybrids, hybrid_ids, hybrid_cmc: Vec::new(), cmc });
     }
 
     if attr == "devotion" {

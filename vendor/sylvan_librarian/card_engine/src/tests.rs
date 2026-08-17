@@ -2157,6 +2157,7 @@ fn fuzz_build_filter(spec: &FuzzSpec) -> FilterExpr {
             core: *core,
             hybrids: hybrids.clone(),
             hybrid_ids: Vec::new(), // bind() fills this from `hybrids` when non-empty
+            hybrid_cmc: Vec::new(), // bind() fills this from the store's mana vocab, always
             cmc: *cmc,
         },
         FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => FilterExpr::Devotion { op: *op, pips: *pips },
@@ -11520,6 +11521,20 @@ fn mana_fixture_store() -> CardData {
     }).collect();
     let mut data = store_of(cards, &[1usize; 8], vocab);
     data.mana_vocab = mana_vocab;
+    // EVERY card in a real store carries a mana_cost STRING, and it is the only place "no cost"
+    // and "a cost of {0}" differ — both pack to {core: 0, hybrids: [], cmc: 0}, because `{0}`
+    // parses as a number and contributes neither pip nor cmc. Scryfall prints "" on a land and
+    // "{0}" on Ornithopter, so the filter reads the string to tell them apart.
+    //
+    // The fixture left this NONE_STR on every card, which no store ever produces — and a fixture
+    // that cannot express the distinction cannot test it. Card 7 (index 6) is the costless one.
+    let empty_id = u32::try_from(data.strings.len()).expect("fixture strings fit u32");
+    data.strings.push(String::new());
+    let printed_id = u32::try_from(data.strings.len()).expect("fixture strings fit u32");
+    data.strings.push("{W}".to_string());
+    for (i, c) in data.cards.iter_mut().enumerate() {
+        c.mana_cost_text_id = if i == 6 { empty_id } else { printed_id };
+    }
     data
 }
 
@@ -11548,7 +11563,7 @@ fn mana_cmp_of(op: CmpOp, pips: &[(&str, u8)], cmc: f32, mana_vocab: &[String]) 
     if unknown > 0 {
         hybrid_ids.push((super::MANA_SYM_UNKNOWN, unknown));
     }
-    FilterExpr::ManaCostCmp { op, core, hybrids, hybrid_ids, cmc }
+    FilterExpr::ManaCostCmp { op, core, hybrids, hybrid_ids, hybrid_cmc: Vec::new(), cmc }
 }
 
 // Containment, exactness, and their strict/negated variants over the packed
@@ -11573,11 +11588,15 @@ fn mana_cost_cmp_packed_semantics() {
     assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("W", 1)], 1.0, &mv)), [1, 2, 3]);
     // Eq: same symbols, same counts, same cmc — {W} only, not {W}{W} or {W}{U}.
     assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("W", 1)], 1.0, &mv)), [1]);
-    // Le = card ⊆ query: {W}, {W}{W}, and the empty cost.
-    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("W", 2)], 2.0, &mv)), [1, 2, 7]);
+    // Le = card ⊆ query: {W} and {W}{W}. Card 7 PRINTS NO COST and so answers no mana comparison
+    // at all — not even the zero-ish ones. Measured on api.scryfall.com 2026-08-17: `m:{0} t:land`
+    // is 195, the cards that print a literal {0}, against the 12,254 lands this file used to
+    // return; and `-m:{0}` is 12,442, which is those lands arriving through the NEGATION because
+    // the leaf is false for them.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("W", 2)], 2.0, &mv)), [1, 2]);
     // Strict variants exclude the exact cost.
     assert_eq!(matches(&mana_cmp_of(CmpOp::Gt, &[("W", 1)], 1.0, &mv)), [2, 3]);
-    assert_eq!(matches(&mana_cmp_of(CmpOp::Lt, &[("W", 2)], 2.0, &mv)), [1, 7]);
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Lt, &[("W", 2)], 2.0, &mv)), [1]);
     // Hybrid pips are distinct symbols: {R/G} matches only through the vocab.
     assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("R/G", 1)], 1.0, &mv)), [4]);
     assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("R/G", 1)], 1.0, &mv)), [4]);
@@ -11600,13 +11619,16 @@ fn mana_cost_cmp_packed_semantics() {
     // builds the FilterExpr from typed pips and bypasses string parsing.)
     assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("X", 1)], 0.0, &mv)), [5]);
     assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("X", 1), ("R", 1)], 1.0, &mv)), [5]);
-    // A symbol no card carries: containment and exactness fail everywhere;
-    // card ⊆ query still holds for the empty cost (query-only symbols never
-    // constrain the subset direction — same as the HashMap semantics).
+    // A symbol no card carries: containment and exactness fail everywhere, and so now does the
+    // subset direction — card 7 was the only card that satisfied it, and it prints no cost, so it
+    // answers no mana comparison at all.
     assert_eq!(matches(&mana_cmp_of(CmpOp::Ge, &[("Q/Z", 1)], 1.0, &mv)), Vec::<u128>::new());
     assert_eq!(matches(&mana_cmp_of(CmpOp::Eq, &[("Q/Z", 1)], 1.0, &mv)), Vec::<u128>::new());
-    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("Q/Z", 1)], 2.0, &mv)), [7]);
-    // Ne is not-exactly-equal.
+    assert_eq!(matches(&mana_cmp_of(CmpOp::Le, &[("Q/Z", 1)], 2.0, &mv)), Vec::<u128>::new());
+    // Ne is not-exactly-equal, and card 7 IS in it: an absent cost differs from every queried
+    // cost. This is the one operator a costless card answers, measured rather than reasoned —
+    // `m!={w} t:land` is 12,249 on api.scryfall.com (2026-08-17), against the 191 a blanket
+    // "costless matches nothing" would give.
     assert_eq!(matches(&mana_cmp_of(CmpOp::Ne, &[("W", 1)], 1.0, &mv)), [2, 3, 4, 5, 6, 7, 8]);
 }
 
@@ -11647,6 +11669,14 @@ fn generic_mana_is_a_counted_pip_not_a_cmc() {
     }).collect();
     let mut data = store_of(cards, &[1usize; 5], vocab);
     data.mana_vocab = mana_vocab;
+    // All five of these cards PRINT a cost, so all five need a non-empty mana_cost string: the
+    // filter reads it to tell a costless card from one costing {0}, and NONE_STR (which no store
+    // emits) reads as costless.
+    let printed_id = u32::try_from(data.strings.len()).expect("fixture strings fit u32");
+    data.strings.push("{R}".to_string());
+    for c in data.cards.iter_mut() {
+        c.mana_cost_text_id = printed_id;
+    }
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let matches = |f: &FilterExpr| -> Vec<u128> {
