@@ -695,3 +695,163 @@ pre-existing entries were written the old way.
 
 This is the same defect class as everything above: a failure whose observable form is a false
 statement about the SUBJECT rather than an error in the INSTRUMENT.
+
+---
+
+# 16. `order=released`: which SET comes first inside a shared release date is NOT derivable
+
+The date grouping and the within-set collation are settled (`478815e`): `order=released` groups a
+shared release date by SET first, then by `(collector_number_int, collector_number)` inside the set.
+What was still open is the **set half** — given two sets whose cards share a release date, which set
+comes first. `set_rank`, the dense rank of the set CODE, is the proxy currently packed into
+`order=released`'s second key. This section is the attempt to replace that proxy with the real rule,
+and its result is a negative one: **there is no rule to find in anything a client can see.**
+
+Everything below is offline. api.scryfall.com was returning 60-second rate-limit bodies on every
+request, so not one probe was sent; the evidence is the on-disk per-day response cache
+(`live-parity-cache/`, 5,096 entries over 2026-08-16 and 2026-08-17) plus the cached `/sets`
+listing (1,047 sets) and the six 2026-08-16 bulk dumps.
+
+## 16.1 The evidence: 34 adjacent same-date set pairs, recovered from the cache
+
+The cache keys are hashes, so an entry does not record the path it answered. The ordering evidence
+was recovered structurally instead. 3,870 cached bodies are card Lists; a body is accepted as an
+`order=released` listing only if
+
+- its `released_at` sequence is monotone (which fixes the orientation, `asc` or `desc`), and
+- inside every `(date, set)` run the collector numbers ascend under the established
+  `(collector_number_int, collector_number)` collation once normalised to ascending, and
+- no set reappears inside a date group (the 102/102 contiguity result), and
+- at least one run is 3 cards long, so the collation test is not vacuous.
+
+That last clause is load-bearing. **A first pass without it admitted `order=name` listings and
+manufactured two false pairs** — `khm < akhm` came from a 3-row `Firja` listing that is alphabetical
+by NAME and only incidentally date-ascending, and it is exactly the kind of pair that would have
+sent the derivation off after an Art-Series rule. The strict pass rejects 149 of 188 candidate
+listings and keeps 39, yielding **34 distinct adjacent same-date set pairs, with zero
+contradictions** — no pair is observed in both orders anywhere in the cache.
+
+Four of the 34 are confirmed from BOTH an ascending and a descending listing (`3ed<fbb`,
+`4ed<4bb`, `sos<psos`, `tdm<tdc`), which independently re-confirms that `dir=desc` is the exact
+reversal of `dir=asc`.
+
+Sets whose cards carry a release date different from the SET's own date show up here and are kept —
+`fdn` cards dated 2026-04-24, `mar` cards dated 2026-06-26, `plst`, `pmei`, `pf26`, `psus`. The
+grouping key is the CARD's `released_at`, not the set's.
+
+## 16.2 Fit counts on those 34 pairs
+
+| key | fit |
+| --- | --- |
+| **set `code` ASC (what ships today)** | **30 / 34** |
+| `code` with digits stripped ASC | 30 / 34 (degenerate variant of the same) |
+| `icon_svg_uri` path ASC | 24 / 34 (also code-derived) |
+| `tcgplayer_id` DESC, nulls first | 22 / 34 |
+| `card_count` ASC | 21 / 34 |
+| `set_type` ASC | 20 / 34 |
+| `id` (set UUID) DESC | 18 / 34 |
+| `/sets` listing index ASC | 18 / 34 |
+| `name` DESC | 18 / 34 |
+| `set_type` in the API-docs enum order DESC | 17 / 34 |
+| `parent_set_code` grouping (`parent or self`) ASC | 11 / 34 |
+
+The set code's four misses are `4ed<4bb`, `snc<psnc`, `sos<psos`, `tdm<tdc` — in every one, a CHILD
+set whose code sorts earlier than its parent's is nevertheless placed AFTER the parent.
+
+To answer a question left open by the earlier pass: the rejected `id` IS the set UUID — `/sets`
+carries exactly one `id`, the UUID, and `uri` is derived from it. There is no second identifier to
+try. Byte order and reversed-byte order were both tested.
+
+## 16.3 Proof that no sort key over the visible fields exists
+
+A lexicographic sort key `(f1, f2, …)` can only fit the data if `f1` decides no observed pair
+WRONGLY — a key's first component never gets a second chance. Remove the pairs `f1` decides, and the
+same must hold of `f2` on what is left. Iterating that to a fixpoint is exact, not greedy: if a
+feature is zero-wrong on the remaining pairs it can always be inserted at that position without
+harm, so the fixpoint is independent of which zero-wrong feature is taken first.
+
+Run over **40 features** — every field `/sets` returns (`code`, `name`, `id`, `set_type`,
+`card_count`, `printed_size`, `digital`, `foil_only`, `nonfoil_only`, `tcgplayer_id`, `mtgo_code`,
+`arena_code`, `block_code`, `block`, `parent_set_code`, `released_at`, `icon_svg_uri`, plus the
+listing position) and derived forms of each (presence flags, lengths, the icon path, the icon cache
+buster, code with digits split off, `parent or self`, the parent's name, the parent's release date,
+the doc-order `set_type` enum, case- and punctuation-folded names) — in **both directions**, the
+fixpoint leaves **9 pairs undecided**:
+
+```
+4ed<4bb  ecc<ecl  eoc<eoe  hob<hoc  lcc<lci  soc<sos  tdm<tdc  tmc<tmt  trc<trk
+```
+
+**No lexicographic key over the visible set attributes, at any depth, in any order, reproduces the
+observed order.** Two flat contradictions inside those 9 say why:
+
+- `soc`(commander) before `sos`(expansion), but `tdm`(expansion) before `tdc`(commander). Any
+  `set_type` rank must put commander both before and after expansion.
+- `tmc`(child) before `tmt`(parent), but `tdm`(parent) before `tdc`(child). Any parent/child rule
+  must put the child both before and after the parent.
+
+Both come out of **one** cached response — a single 175-row `dir=desc` listing holds `sos, soc` …
+`tmt, tmc` … `tdc, tdm` … `khm, khc`. There is no orientation ambiguity to appeal to.
+
+## 16.4 The airtight version: two pairs identical in every visible field comparison, ordered opposite
+
+Stronger than "no lexicographic key": no comparator that reads the two sets' visible attributes and
+compares them can work, because two of the observed pairs have **the same sign on all 40 field
+comparisons and opposite observed orders**.
+
+| | `set_type` | `parent` | `card_count` | `tcgplayer_id` | `code` | `name` | `id` | `mtgo` | `block` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ecc` Lorwyn Eclipsed Commander | commander | `ecl` | 176 | 24464 | `ecc` | …Commander | `805b5a0c…` | `ecc` | `cmd` |
+| `ecl` Lorwyn Eclipsed | expansion | — | 408 | 24463 | `ecl` | — | `5d293ad8…` | `ecl` | — |
+| `tdc` Tarkir: Dragonstorm Commander | commander | `tdm` | 413 | 24234 | `tdc` | …Commander | `bca9779c…` | `tdc` | `cmd` |
+| `tdm` Tarkir: Dragonstorm | expansion | — | 427 | 24232 | `tdm` | — | `1361ca81…` | `tdm` | — |
+
+Child-vs-parent: same type pair, same block, child's code sorts EARLIER, child's name sorts LATER,
+child's card count LOWER, child's tcgplayer id HIGHER, child's UUID HIGHER, child's mtgo code
+earlier. Identical in every comparison. api.scryfall.com answers **`ecc` before `ecl`** and **`tdm`
+before `tdc`**. Different dates (2026-01-23 and 2025-04-11), so no "one import batch" escape.
+
+Two more witnesses of the same exact-signature kind: `lcc<lci` against `tdm<tdc`, and `tmc<tmt`
+against `tdm<tdc`. `eoc<eoe` and `trc<trk` are one field short of being a fourth and fifth (they
+differ from `tdm<tdc` only in `/sets` listing position and in UUID order respectively — neither of
+which fits the rest of the data).
+
+## 16.5 The dead lead, recorded so it is not re-run: the bulk dumps are id-sorted
+
+The hope was that a dump preserves an insertion sequence the API does not expose. It does not. Every
+2026-08-16 bulk file is sorted by its own identifier, with zero descents:
+
+| file | rows | order |
+| --- | --- | --- |
+| `default_cards` | — | `id` ascending |
+| `unique_artwork` | 54,143 | `id` ascending, 0 descents |
+| `art_tags` | 11,530 | `id` ascending, 0 descents |
+| `oracle_tags` | 4,522 | `id` ascending, 0 descents |
+| `oracle_cards` | 38,626 | `oracle_id` ascending, 0 descents (19,268 descents on `id`, which is the wrong key for that file) |
+
+A UUID sort carries no sequence information. The dumps cannot answer this question.
+
+## 16.6 What this is, most likely, and what would confirm it
+
+The shape of the residue fits a **stored sequence** — an internal auto-increment on Scryfall's sets
+table, i.e. the order the set rows were created. It is alphabetical by code most of the time because
+a release's sets are created in one batch; it deviates exactly where a set was added off-batch
+(`4bb` and `fbb`, the Foreign Black Border reprints; `psos`/`psnc`, promo sets filled in after the
+main set) or created in a different order (`tdc`). Nothing about that is a function of any field the
+API publishes.
+
+That story is not proven — it is the hypothesis consistent with a proof that the order is not
+derivable. What would confirm it is **temporal instability**: a stored sequence can be re-issued,
+a computed key cannot. The cache holds two consecutive days and they agree, which is far too short a
+baseline to say anything. That test needs months, not a session.
+
+## 16.7 Verdict, and why the code was not touched
+
+`assign_set_ranks` keeps ranking by set code. At **30/34** it is the best key available by a wide
+margin — the next INDEPENDENT candidate (`tcgplayer_id` DESC) fits 22 — and the 4 it misses are not
+reachable by any comparator that reads only what `/sets` publishes. No code changed, so no
+`set_rank` values changed, so no store rebuild and no generation bump is implied by this section.
+
+The four misses are worth naming as the permanent cost, since they will not be fixed: `4ed`/`4bb`,
+`snc`/`psnc`, `sos`/`psos`, `tdm`/`tdc`. Each puts one small set on the wrong side of one boundary
+inside one shared release date.
