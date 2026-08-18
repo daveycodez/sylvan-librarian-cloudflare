@@ -6,6 +6,14 @@ Grew out of the `frame:` synonym investigation
 (`frame:modern` returned 0 after a full scan — see [Frame synonyms](#related)); the `is:`
 namespace is the same failure mode at much larger scale.
 
+> **Correction (2026-08-17):** the `is:vanilla` conclusions below are historical, not the current
+> rule. It is now an engine-native predicate: the card must be a creature but not a land, and its
+> **front face's reminder-stripped oracle text** must be empty. This is byte-exact on the measured
+> corpus at 363 cards. It includes the 12 adventures whose creature front is blank even when the
+> other face prints text, includes `City's Blessing // Elemental` despite its non-creature front,
+> and excludes Dryad Arbor because lands are never vanilla. The old `t:creature o=""` rewrite and
+> its 359-card/−11 account must not be used as implementation guidance.
+
 ## The failure mode
 
 `is:` queries **parse correctly** and lower to a `card_is_tags` collection lookup — but
@@ -43,15 +51,13 @@ worth reverse-engineering.** Policy: **exact parity required and achievable for 
 acceptable for niche ones** (`is:bear` → `pow=2 tou=2 mv=2 -is:dfc`, close enough). Every rewrite
 carries an API-validated count test regardless, so the divergence is *known* rather than silent.
 
-**Where the residual lives (validated on `is:bear` and `is:vanilla`).** The correct primitive-level
-rewrite lands ~97–99%; the entire gap is consistently (a) multi-faced/Adventure **face evaluation**
-(Scryfall judges the relevant face; a whole-card text/stat test disagrees) plus (b) a few **type
-edge cases** (Vehicles/Spacecraft for `is:bear`; Dryad Arbor for `is:vanilla`). The gaps cluster
-rather than scatter, so the one lever that would tighten *all* rewrites is per-face evaluation —
-not per-predicate patching. And since this engine has its own multi-face model, those residuals may
-not even align with Scryfall's, which is a further argument for "clean rewrite + documented
-divergence" over chasing exact counts. Also: `o:""`/`o:/^$/` is a **trap** — the empty-match regex
-matches every card; "no text" must be written as the negation `-o:/./`.
+**Historical diagnosis.** The primitive rewrite landed ~97–99%, but the `is:vanilla` residual was
+later closed by an engine predicate rather than accepted: the relevant text is the front face's
+reminder-stripped text, while creature-ness is card-level and land exclusion is explicit. Dryad
+Arbor was therefore evidence for the land rule, not an unavoidable type edge case. The `is:bear`
+residual remains the separate face/stat problem described above. Also: `o:""`/`o:/^$/` is a
+**trap** — the empty-match regex matches every card; "no text" in ordinary query syntax must be
+written as the negation `-o:/./`.
 
 ## Four recovery paths
 
@@ -87,7 +93,7 @@ Confidence: ✓ = definition doc-confirmed / measured; ~ = approximate, **valida
 | `is:dfc` | `layout:transform or layout:modal_dfc or layout:meld` — gameplay DFCs. Scryfall's `is:dfc` also counts `art_series`/`reversible_card`/`double_faced_token` (~2394 art/token entries not in gameplay data), so the layout union is correct for our corpus | ✓ |
 | `is:bear` | `t:creature pow=2 tou=2 cmc=2` — the intuitive "2/2 for 2"; deliberately *not* Scryfall-exact (+~14 DFC creatures, −4 Vehicles/Spacecraft; their exact count isn't cross-verifiable) | ~ |
 | `is:colorshifted` | `frame:colorshifted` (frame-effect in `card_frame_data`) | ✓ **exact** (45) |
-| `is:vanilla` | our engine: `t:creature o=""` (empty-string equality — clean; the `o:/^$/` empty-match regex is a Scryfall-only trap that matches *all* creatures); −11 subset vs 359 = Adventure/DFC textless faces + Dryad Arbor | ~ |
+| `is:vanilla` | **Superseded:** engine-native front-face reminder-stripped empty text + card-level creature + non-land rule; exact at 363. Not `t:creature o=""`; see correction above. | ✓ **exact** |
 | `is:manland` | `t:land o:become o:creature o:/still a.* land/` — creature-land oracle-text heuristic; 48/49 vs Scryfall, 0 false positives, and its only miss (Alchemy-only Rising Chicane) is absent from our corpus → effectively exact here | ~ |
 | `has:watermark` | `card_watermark` present | ✓ |
 
@@ -144,7 +150,8 @@ none touching the #702 engine-routing branch:
    **Landed:** `api/parsing/rewrite.py` — a post-parse transform at the shared `parse_scryfall_query`
    seam (applies to both parsers; parity-tested; rebuilds only when a synonym actually fires), with
    `frame:modern/old/new`, `is:old`/`is:new`, `is:historic`/`is:permanent`/`is:party`/`is:outlaw`/
-   `is:vanilla`/`is:bear`, the layout family (`is:split/flip/transform/mdfc/meld/leveler`),
+   the historical `is:vanilla` rewrite (since superseded by the exact engine predicate)/`is:bear`,
+   the layout family (`is:split/flip/transform/mdfc/meld/leveler`),
    `is:dfc`, `is:colorshifted`, and `is:manland`, plus `test_rewrite.py`. **Bucket A is now complete**
    except the inherently-unsuitable ones, left deferred: `is:spell` (false positives), `is:modal`,
    `is:frenchvanilla`, `is:default`/`is:atypical`. `is:hybrid`/`is:phyrexian` moved to

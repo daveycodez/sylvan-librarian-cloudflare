@@ -2109,3 +2109,97 @@ printing-space name order, and the parity reduction keeps row ORDER, which is th
 §23.2 changes.
 
 **Scryfall requests for this task: 118**, serial, one per 1.1 s.
+
+## 24. The three residual stat rows, two missing guards, and the decisions left parked
+
+### 24.1 The three count gaps are two cards and one builder gate
+
+All three result sets were enumerated page by page on both sides and diffed by Scryfall id, not
+inferred from their totals:
+
+```text
+query       api.scryfall.com   here before   Scryfall-only id
+pow=3                    4079          4078   3d0076e3  Atinlay Igpay (unh/1)
+tou=3                    4349          4348   3d0076e3  Atinlay Igpay (unh/1)
+tou>=3.5                 5878          5877   ccae52dd  Old Fogey (und/67)
+```
+
+There are no here-only ids in any set. Both missing cards were already in the store, and both raw
+bulk rows carry ordinary numeric stat strings. The builder discarded them before parsing because
+it gated power/toughness on a modern parsed type: Atinlay's printed type line is `Eaturecray —
+Igpay`, and Old Fogey's is `Summon — Dinosaur`, so neither contains `Creature`, `Vehicle` or
+`Spacecraft`. Their served card objects consequently showed `power` and `toughness` as null.
+
+The fixed rule is general and narrower than inventing a type alias: an explicitly present raw
+`power` or `toughness` key is sufficient to preserve the stat group. Type parsing stays literal, so
+neither row is made to answer `t:creature`. The all-cards bulk has 18 printings with a stat behind a
+noncanonical type line (the two shapes above plus older `Summon` cards); this restores their actual
+printed values rather than naming two ids. A focused builder test pins both witnesses.
+
+After a generation-39 rebuild the three totals are exactly 4079, 4349 and 5878, and the two card
+objects serve `3/3` and `7/7`. This is a STORED-VALUE change with no archive or sort-key shape
+change: `STORE_CONTENT_GENERATION` 38 -> 39; `ARCHIVE_FORMAT_VERSION` stays 2026081704 and
+`SORT_KEY_VERSION` stays 2.
+
+**Routing:** upstream-material. The same creature-like gate came from upstream's column/check-
+constraint model, and the raw-key exception belongs beside any upstream implementation of the
+fractional/star stat work. Nothing was pushed or edited upstream from this repo.
+
+### 24.2 The two requested live guards are now real cases
+
+`scripts/live-parity-cases.json` now carries:
+
+* `q=is:vanilla` — 363 total, guarding front-face reminder-stripped text, card-level creature
+  status and the non-land rule in one result set.
+* `q=layout:reversible_card&order=name&unique=prints` — all 81 rows in printing space, preserving
+  position-for-position id order.
+
+Both pass. Their per-case `volatile` paths exclude only already-existing object-field differences
+orthogonal to the invariant: merged duplicate `flavor_text` on six vanilla rows, and reversible
+purchase/MTGO/EDHREC derivations. Totals, ids, order and every unrelated field remain compared.
+
+The two stale `done/` documents were corrected rather than left as traps. The historical narrative
+remains, but a dated correction and the classification table now say explicitly that `is:vanilla`
+is NOT `t:creature o=""`; it is the exact engine-native 363-card predicate.
+
+One unrelated live-vs-bulk drift surfaced while running all cases: Brazen Borrower `soc/190` is
+`mtgo_id` 148849 in the API and 148847 in Scryfall's own 2026-08-17 all-cards bulk. The local store
+correctly mirrors the bulk, and Cardhoarder's derived URL follows that id. Those two fields are now
+scoped volatile on the existing adventure-object case; its face/layout invariant remains strict.
+
+### 24.3 Decisions on the open tradeoffs
+
+**Keep the cn-prefix rank for now.** It improves the default `unique=cards` representative surface
+on the much larger measured corpus and fixes all six recorded merge witnesses. The 24/28 print-
+order regression is real, not discounted; splitting representative rank from within-card sequence
+is still the only no-trade design. Inspection showed that this is NOT the same small change as the
+price item below: the price path already has a sort-specific representative preference, while the
+cn-prefix conflict is embedded in the shared opaque ordinal and must preserve cross-partition byte
+comparability. No speculative split was shipped without a fresh N=2/N=10 proof.
+
+**Do not reproduce Scryfall's `order=usd` 200 -> 404 bug.** The existing known-deviation remains a
+deliberate divergence. Re-filtering a collapsed representative's raw `usd` after the coalesced key
+matched would violate the index/filter equality the price fix deliberately establishes and would
+remove results a caller explicitly filtered for. Parity is the project bar, but this behavior is a
+contradictory result-set mutation rather than an unknowable ordering, and preserving the coherent
+filter semantics wins here.
+
+**Keep cross-card `unique=art` parked.** Matching totals requires changing partition assignment so
+every cross-card artwork group is co-located; doing it as a gather-time filter would threaten
+prefix-sufficiency and pagination. The surviving representative remains proven underivable anyway.
+The two known-deviation cases retain the exact scope and representative evidence, so parking loses
+nothing.
+
+The Scryfall search enumeration used 84 serial requests, each followed by a 1.1 s gap. The harness
+defaults themselves are now 1.1 s in both `live-parity.ts` and `parity-sweep.ts` (up from 100/250
+ms), so future cache misses enforce the same ceiling automatically.
+
+### 24.4 Verification
+
+```text
+live-parity: 105 cases — 98 passed, 7 known-deviation, 0 drifted, 0 failed
+gate: green
+native vs wasm: 162 envelope cases, 2,226,996 rows row-for-row
+N=2 vs N=10: 162 envelope cases, 2,226,996 rows byte-for-byte
+broken-key control: still fails 38 cases (set, name, artist)
+```

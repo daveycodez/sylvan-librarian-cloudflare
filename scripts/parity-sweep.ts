@@ -47,8 +47,8 @@
 //   UNSUPPORTED  — a Scryfall search operator this port does not implement, probed on purpose.
 //   NEW          — everything else. These are the deliverable.
 //
-// Politeness to api.scryfall.com is non-negotiable and stricter than live-parity's, because several
-// agents share the budget: serial requests, a 250ms floor between them, Retry-After honored with
+// Politeness to api.scryfall.com is non-negotiable, because several agents share the budget:
+// serial requests, a 1.1s floor between them, Retry-After honored with
 // backoff, a browser-identifying UA, and a per-day on-disk response cache SHARED WITH live-parity
 // (same directory, same key derivation) so a path either harness already fetched today is free.
 //
@@ -109,8 +109,9 @@ function isLocalOrigin(url: string): boolean {
 	}
 }
 
-/** Minimum spacing between requests to api.scryfall.com. Above live-parity's 100ms on purpose. */
-const DEFAULT_GAP_MS = 250;
+/** Minimum spacing between serial requests to api.scryfall.com. The extra 100ms leaves scheduling
+ * margin around the operational one-request-per-second ceiling. */
+const DEFAULT_GAP_MS = 1_100;
 
 /** Shared with scripts/live-parity.ts — same directory, same key derivation, so cache hits cross. */
 const CACHE_ROOT =

@@ -1313,8 +1313,20 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      second, and that is deliberate rather than an oversight: it is a REBUILD TRIGGER compared
  *      against the PUBLISHED manifest, which is still generation 37, so 38 already forces the
  *      rebuild that both format versions need. Moving it again would name one rebuild twice.
+ *
+ * 39 — EXPLICITLY PRINTED POWER/TOUGHNESS SURVIVES A NONCANONICAL TYPE LINE. The builder used the
+ *      parsed `Creature`/Vehicle/Spacecraft type as a gate before reading the raw stat keys. That
+ *      drops two default-search cards Scryfall does search numerically: `Atinlay Igpay` prints
+ *      `Eaturecray — Igpay` and is the sole missing id from both `pow=3` and `tou=3`; `Old Fogey`
+ *      prints `Summon — Dinosaur` and is the sole missing id from `tou>=3.5`. The keys themselves
+ *      are now sufficient to preserve the value while type parsing remains literal, so neither
+ *      card is invented into `t:creature`.
+ *
+ *      GENERATION-ONLY: archive shapes and sort keys do not move; stored column values do. Every
+ *      affected row therefore needs a re-import, while `ARCHIVE_FORMAT_VERSION` and
+ *      `SORT_KEY_VERSION` stay unchanged.
  */
-export const STORE_CONTENT_GENERATION = 38;
+export const STORE_CONTENT_GENERATION = 39;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

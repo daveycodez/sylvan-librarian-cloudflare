@@ -983,24 +983,30 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     let planeswalker_loyalty = maybe_int(card.get("loyalty"));
     let planeswalker_loyalty_text = s(card, "loyalty");
 
-    // Lines 176-189: creature stats only for creatures/Vehicles/Spacecraft;
-    // explicit None otherwise (matches the DB check constraint).
+    // Lines 176-189 ordinarily attach stats only to creatures/Vehicles/Spacecraft. The raw
+    // Scryfall keys outrank that type-line inference, though: historical and joke printings can
+    // carry real power/toughness behind a noncanonical type line. `Atinlay Igpay` says
+    // `Eaturecray`, and old-template cards such as `Old Fogey` say `Summon`; api.scryfall.com still
+    // serves and searches their printed stats. Dropping the keys made `pow=3`/`tou=3` miss the
+    // former and `tou>=3.5` miss the latter even though both rows were present in the store.
     let is_creaturelike = card_types.iter().any(|t| t == "Creature")
         || card_subtypes.iter().any(|t| t == "Vehicle" || t == "Spacecraft");
+    let has_printed_stats = card.get("power").is_some() || card.get("toughness").is_some();
     // `maybe_stat_num` and not `maybe_int`: `*` and `?` are zero on both sides of a
     // power/toughness comparison and a printed HALF is kept as a half — see its doc comment for
     // the cards that pin each rule. The printed strings beside them are untouched, and they are
     // what the card object serves.
-    let (creature_power, creature_toughness, creature_power_text, creature_toughness_text) = if is_creaturelike {
-        (
-            maybe_stat_num(card.get("power")),
-            maybe_stat_num(card.get("toughness")),
-            s(card, "power"),
-            s(card, "toughness"),
-        )
-    } else {
-        (None, None, None, None)
-    };
+    let (creature_power, creature_toughness, creature_power_text, creature_toughness_text) =
+        if is_creaturelike || has_printed_stats {
+            (
+                maybe_stat_num(card.get("power")),
+                maybe_stat_num(card.get("toughness")),
+                s(card, "power"),
+                s(card, "toughness"),
+            )
+        } else {
+            (None, None, None, None)
+        };
 
     // Lines 192-195: color/keyword sets, stored as {key: true} JSONB objects.
     // card["colors"] and card["color_identity"] are indexed directly upstream
@@ -2464,6 +2470,31 @@ mod tests {
         assert_eq!(draft.creature_toughness, Some(1.0));
         assert_eq!(draft.creature_power_text.as_deref(), Some("*"));
         assert_eq!(draft.creature_toughness_text.as_deref(), Some("1+*"));
+    }
+
+    /// An explicitly printed stat is searchable even when the historical/joke type line does not
+    /// spell `Creature`. These are the complete residuals from enumerating all three live result
+    /// sets on 2026-08-17: Atinlay alone for `pow=3` and `tou=3`, Old Fogey alone for
+    /// `tou>=3.5`. Type parsing stays literal; preserving stats must not make either card answer
+    /// `t:creature` by inventing a modern type.
+    #[test]
+    fn printed_stats_survive_a_noncanonical_creature_type_line() {
+        for (name, type_line, power, toughness) in [
+            ("Atinlay Igpay", "Eaturecray \u{2014} Igpay", "3", "3"),
+            ("Old Fogey", "Summon \u{2014} Dinosaur", "7", "7"),
+        ] {
+            let mut card = minimal_card(name);
+            card["type_line"] = json!(type_line);
+            card["power"] = json!(power);
+            card["toughness"] = json!(toughness);
+
+            let draft = transform(&card).unwrap().unwrap();
+            assert_eq!(draft.creature_power, Some(power.parse().unwrap()));
+            assert_eq!(draft.creature_toughness, Some(toughness.parse().unwrap()));
+            assert_eq!(draft.creature_power_text.as_deref(), Some(power));
+            assert_eq!(draft.creature_toughness_text.as_deref(), Some(toughness));
+            assert!(!draft.card_types.iter().any(|value| value == "Creature"));
+        }
     }
 
     #[test]

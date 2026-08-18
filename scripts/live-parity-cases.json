@@ -211,7 +211,9 @@
 		{
 			"name": "cards-id-en-adventure-brazen-borrower",
 			"method": "GET",
-			"path": "/cards/25d309d6-9e56-441e-bd29-5c903d5221bf"
+			"path": "/cards/25d309d6-9e56-441e-bd29-5c903d5221bf",
+			"volatile": ["mtgo_id", "purchase_uris.cardhoarder"],
+			"note": "Scryfall's API currently reports MTGO id 148849 while its 2026-08-17 all-cards bulk row reports 148847; this store mirrors the bulk value and the derived Cardhoarder URL follows it. Those two source-vintage fields are outside this case's adventure/card-face invariant."
 		},
 		{
 			"name": "cards-id-en-flip-erayo",
@@ -932,6 +934,25 @@
 			"method": "GET",
 			"path": "/cards/search?include_extras=true&order=set&q=%21%22Prismatic+Ending%22&unique=art",
 			"note": "The guard half of the same key, and what keeps the tuple from being a 161-row regression: an ABSENT illustration id is UNKNOWN, not a value. Eleven printings collapse to seven on both sides. `amh2/5` and `amh2/5s` are art-series rows carrying no illustration id at all, and an all-absent tuple matches only its own kind at the same arity -- so the two become ONE artwork. A literal tuple that read NULL as a value would answer 8; an all-absent row treated as a wildcard that folds into whichever artwork its card listed first would answer 6. The rest is ordinary front sharing and is here to keep the count honest: mb2/16 + mh2/25 + mh2/384 on `78feeb10`, soa/72 + soa/137 on `7d772ba3`, and pf26/3, sld/1868, soa/7 and spg/40 alone. (The third leg, a PARTIAL wildcard -- astx/66s's `(b7de5431, NULL)` against astx/66's `(b7de5431, c9d340c9)`, the 161 art-series signature variants -- is not pinned here: `!\"Memory Lapse\" include:extras unique=art` is 9 on both sides and drops astx/66s on both, but seven of its nine representatives are the per-card choice search-unique-art-znr-creatures records as underivable, so a case on it would be a large deviation and not a guard.)"
+		},
+		{
+			"name": "search-is-vanilla-front-face-card-type-and-reminder-text",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Avanilla",
+			"volatile": ["**.flavor_text"],
+			"note": "One 363-card result pins the three independent rules behind `is:vanilla`: read the front face (including the 12 adventures whose creature front is blank while the other face prints text), test whether the CARD is a creature rather than whether the front face alone is one (`City's Blessing // Elemental`), and compare reminder-stripped oracle text (`Icehide Golem`, `Infinity Elemental`). The two plausible near-misses are distinguishable by count: any blank creature face answers 367, while admitting Dryad Arbor answers 364."
+		},
+		{
+			"name": "search-reversible-card-printing-name-order",
+			"method": "GET",
+			"path": "/cards/search?order=name&q=layout%3Areversible_card&unique=prints",
+			"volatile": [
+				"**.mtgo_id",
+				"**.purchase_uris.cardhoarder",
+				"**.purchase_uris.cardmarket",
+				"**.related_uris.edhrec"
+			],
+			"note": "The printing-space guard for the shared name rank: 81 reversible-card rows, currently with zero positional mismatches. `unique=prints` is essential because card collapse would hide the intra-card order this case exists to preserve."
 		},
 		{
 			"name": "search-usd-coalesce-is-on-the-search-key-not-the-column",

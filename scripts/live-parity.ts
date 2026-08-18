@@ -116,8 +116,9 @@ function isLocalOrigin(url: string): boolean {
 	}
 }
 
-/** Minimum spacing between requests to api.scryfall.com. */
-const MIN_SCRYFALL_GAP_MS = 100;
+/** Minimum spacing between serial requests to api.scryfall.com. The 100ms-era value was below the
+ * operational one-request-per-second ceiling; 1.1s leaves scheduling margin around that boundary. */
+const MIN_SCRYFALL_GAP_MS = 1_100;
 
 /**
  * Per-day Scryfall response cache. Defaults into the session scratchpad this harness was built

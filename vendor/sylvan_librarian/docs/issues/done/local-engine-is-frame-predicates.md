@@ -277,8 +277,10 @@ mechanisms are explicitly open — (2)'s cause and the `is:old`/`is:historic` ga
 `is:` and `frame:` are absent from `REALISTIC_FAMILY_WEIGHTS`, so the same caveat as
 [layout](../local-engine-layout-postings.md) applies: the 24% is a uniform-mode figure and the realistic
 share is unmodelled. Unlike layout, though, `frame:` IS in the realistic weights (0.5), and the
-`is:permanent`/`is:vanilla` shapes reach `card_types` and `oracle_text`, which are heavily weighted — so
-parts of this reach realistic traffic through other spellings.
+`is:permanent` and the current engine-native `is:vanilla` predicate reach `card_types` and
+`oracle_text`, which are heavily weighted — so parts of this reach realistic traffic through other
+spellings. (`is:vanilla` is no longer the historical `t:creature o=""` rewrite; see
+`00713-is-tag-recovery.md`'s correction note.)
 
 ## 5. The `And` arm's cost-based skip — SHIPPED (`3cfd441`)
 
