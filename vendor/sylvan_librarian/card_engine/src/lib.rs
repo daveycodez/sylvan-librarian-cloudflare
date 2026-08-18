@@ -5485,8 +5485,8 @@ fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     let (edhrec, edhrec_inv) = both(&|c| c.edhrec_rank.map(|v| v as f32), SortCol::EdhrecRank);
     let (cubecobra, cubecobra_inv) = both(&|c| c.cubecobra_score, SortCol::Cubecobra);
     let (cmc, cmc_inv) = both(&|c| c.cmc, SortCol::Cmc);
-    let (power, power_inv) = both(&|c| c.creature_power.map(|v| v as f32), SortCol::Power);
-    let (toughness, toughness_inv) = both(&|c| c.creature_toughness.map(|v| v as f32), SortCol::Toughness);
+    let (power, power_inv) = both(&|c| c.creature_power, SortCol::Power);
+    let (toughness, toughness_inv) = both(&|c| c.creature_toughness, SortCol::Toughness);
     // No `name` pair: `order=name` is a printing-space order and this is card space. See
     // `ArchivedSortPermutations::get`.
     SortPermutations {
@@ -17511,10 +17511,10 @@ fn build_card_data_sorted(
         // build_numeric_index_multi.
         cmc:            build_numeric_index(&cards, |c| c.cmc),
         power:          build_numeric_index_multi(&cards, |c, push| {
-            for v in face_stat_values(c, |c| c.creature_power, |f| f.creature_power) { push(f32::from(v)); }
+            for v in face_stat_values(c, |c| c.creature_power, |f| f.creature_power) { push(v); }
         }),
         toughness:      build_numeric_index_multi(&cards, |c, push| {
-            for v in face_stat_values(c, |c| c.creature_toughness, |f| f.creature_toughness) { push(f32::from(v)); }
+            for v in face_stat_values(c, |c| c.creature_toughness, |f| f.creature_toughness) { push(v); }
         }),
         rarity:         build_rarity_index(&printings, &offsets),
         subtypes:       subtypes_idx,

@@ -519,7 +519,7 @@ pub(crate) fn build_bit_planes(cards: &[OracleCard], printings: &[Printing], off
         for v in crate::face_stat_values(card, |c| c.creature_power, |f| f.creature_power) {
             set_numeric_plane(
                 &mut set,
-                Some(f32::from(v)),
+                Some(v),
                 PLANE_POWER,
                 Some((PLANE_POWER_LO, &mut power_lo)),
                 (PLANE_POWER_HI, &mut power_hi),
@@ -528,7 +528,7 @@ pub(crate) fn build_bit_planes(cards: &[OracleCard], printings: &[Printing], off
         for v in crate::face_stat_values(card, |c| c.creature_toughness, |f| f.creature_toughness) {
             set_numeric_plane(
                 &mut set,
-                Some(f32::from(v)),
+                Some(v),
                 PLANE_TOUGHNESS,
                 Some((PLANE_TOUGHNESS_LO, &mut toughness_lo)),
                 (PLANE_TOUGHNESS_HI, &mut toughness_hi),

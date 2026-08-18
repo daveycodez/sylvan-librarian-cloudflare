@@ -2572,8 +2572,8 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.legal_divergent = build_divergent_ids(&data.cards);
     data.indexes.sort_perms = build_sort_permutations(&data.cards);
     data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc);
-    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(f32::from));
-    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(f32::from));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power);
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness);
     // #743 arith-tuple postings — load-bearing like the numeric indexes above: an unbuilt index
     // (n_cards mismatch) makes arith_tuple_narrow decline, so building it here is what actually
     // exercises the new positive/negated narrowing through run_query in fuzz_row_identity_matches_reference.
@@ -6756,8 +6756,8 @@ fn bench_checked_vs_unchecked_access() {
         oracle_trigram: build_oracle_text_index(&cards, &strings),
         type_lines:     build_type_line_index(&cards, &strings),
         cmc:            build_numeric_index(&cards, |c| c.cmc),
-        power:          build_numeric_index(&cards, |c| c.creature_power.map(f32::from)),
-        toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(f32::from)),
+        power:          build_numeric_index(&cards, |c| c.creature_power),
+        toughness:      build_numeric_index(&cards, |c| c.creature_toughness),
         rarity:         build_rarity_index(&printings, &offsets),
         subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
         keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
@@ -7278,7 +7278,7 @@ fn all_match_promotion_correct_for_card_space_exact_predicate() {
     let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
     card1.creature_power = Some(1.0);
     let mut data = store_of(vec![card0, card1], &[2, 3], vocab);
-    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(f32::from));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
