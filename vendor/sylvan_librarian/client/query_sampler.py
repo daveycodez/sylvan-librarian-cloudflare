@@ -193,7 +193,7 @@ STATIC_VALUES: dict[str, list[str]] = {
     # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that column
     # carries only the booleans the import syncs from the bulk blob (db_info.BOOLEAN_IS_TAGS) —
     # `is:reserved` and `is:reprint` are the ones to reach for. Values with no key there match zero
-    # cards AND now raise a warning, as `is:token` does. All 73 are kept rather
+    # cards AND now raise a warning, as `is:token` does. All 74 are kept rather
     # than a token few: the family's share of traffic is set by its weight, not by how many values
     # it holds, and each expands to a genuinely different shape — layout lookups, type unions, an
     # oracle-text heuristic, a numeric conjunction.
@@ -271,7 +271,9 @@ STATIC_VALUES: dict[str, list[str]] = {
         "is:tricycleland",
         "is:triland",
         "is:triome",
-        "is:vanilla",
+        # NO `is:vanilla`: it stopped expanding and became an engine leaf, so it belongs to the same
+        # class as `is:localizedname` and `is:unique`, which are likewise absent. See
+        # `rewrite.ENGINE_IS_VALUES`.
         "is:watermark",
     ],
     "devotion": [
