@@ -25,7 +25,6 @@ EQUIVALENCES = [
     ("is:permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"),
     ("is:party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"),
     ("is:outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"),
-    ("is:vanilla", 't:creature o=""'),
     ("is:bear", "t:creature pow=2 tou=2 cmc=2"),
     # layout family
     ("is:split", "layout:split"),
@@ -296,9 +295,9 @@ def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
     """The `is:` values the ENGINE answers from a field are supported, and only from there.
 
     Two directions, and the second is the one that bites. Supported: a predicate that works and
-    still warns is worse than one that does neither. Stored nowhere: if `localizedname` or `unique`
-    ever became an importer tag as well, the engine would keep intercepting the leaf and the stored
-    tag would be dead weight nobody could observe.
+    still warns is worse than one that does neither. Stored nowhere: if `localizedname`, `unique` or
+    `vanilla` ever became an importer tag as well, the engine would keep intercepting the leaf and
+    the stored tag would be dead weight nobody could observe.
     """
     assert ENGINE_IS_VALUES <= SUPPORTED_IS_VALUES
     assert not (ENGINE_IS_VALUES & frozenset(BOOLEAN_IS_TAGS))
@@ -332,6 +331,9 @@ def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
         # them would be the exact defect SUPPORTED_IS_VALUES exists to remove, in reverse.
         "is:localizedname",
         "is:unique",
+        "is:vanilla",
+        # ...and through the `has:` alias, which resolves to the same engine leaf.
+        "has:vanilla",
     ],
 )
 def test_supported_is_values_do_not_warn(query: str) -> None:

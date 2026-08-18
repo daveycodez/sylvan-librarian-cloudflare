@@ -13943,6 +13943,110 @@ fn a_face_mana_cost_uses_its_own_cmc() {
     assert_eq!(agadeem.devotion, 0);
 }
 
+/// `is:vanilla` reads the FRONT face, and two more rules besides — every row below is a live probe
+/// against api.scryfall.com on 2026-08-17, scoped with `!"Full // Name"` so the reference answer is
+/// 1 or 404, or a whole-corpus count where the note says so.
+///
+/// The rows that choose the shape:
+///
+/// * `is:vanilla` is 363 there and `t:creature -o:/./` — the expansion this predicate replaces — is
+///   352 on BOTH sides. The 11-card gap is not one class.
+/// * `is:vanilla o:/./` is 12, all adventures whose creature FRONT prints nothing while the other
+///   half does. The merged row joins the two texts, so no predicate over it can see the blank
+///   front. This is the +12.
+/// * The BACK is not enough: `Kaslem's Stonetree`, `Ecstatic Awakener`, `Chosen of Markov` and
+///   `Skin Invasion` each have a blank creature back behind a front that prints, and `is:vanilla`
+///   over the four is 0. `is:vanilla is:dfc` is 18 and settles it the other way — `Servo // Thopter`
+///   and `Goblin // Blood` are in it (blank front, printing back) and `Elemental // Centaur` and
+///   `Fish // Kraken` are not (printing front, blank back).
+/// * The CREATURE test is the card's, not the front's: `City's Blessing // Elemental` and
+///   `Copy // Horror` are both in that 18 and neither FRONT is a creature.
+/// * `t:creature -o:/./ -is:vanilla` is exactly 1 — `Dryad Arbor`, a LAND creature. `is:vanilla
+///   t:land` is 0 with and without `include_extras`, while `t:creature t:land -o:/./` is 2 (Dryad
+///   Arbor and the `Forest Dryad` token). This is the −1, and 352 + 12 − 1 = 363.
+/// * `Icehide Golem` and `Infinity Elemental` ARE vanilla there and print reminder text and nothing
+///   else, so the text read is the SEARCHABLE form rather than the printed one.
+#[test]
+fn is_vanilla_reads_the_front_face_and_the_card_types() {
+    let mut interner = Interner::new();
+    let mut intern = |s: &str| interner.intern(s.to_string());
+    let blank = intern("");
+    let adventure_text = intern("Return target creature you don't control with mana value 3 or less to its owner's hand.");
+    let transform_text = intern("{T}, Tap an untapped Vampire you control: Transform this creature.");
+    let reminder_only = intern("({S} can be paid with one mana from a snow source.)");
+    let flying = intern("Flying");
+
+    // `text` is the card's SEARCHABLE column (the build already stripped it); `faces` are the
+    // PRINTED per-face strings, front first, which is where the strip has to happen instead.
+    let card_of = |types: u16, text: u32, faces: &[u32]| {
+        let mut vocab = VocabInterner::new();
+        let mut card = stub_card(1, types, &[], &mut vocab);
+        card.oracle_text_lower_id = text;
+        card.faces = faces
+            .iter()
+            .map(|&oracle_text_id| OracleFace {
+                card_name_id: NONE_STR,
+                mana_cost_text_id: NONE_STR,
+                type_line_id: NONE_STR,
+                oracle_text_id,
+                creature_power_text_id: NONE_STR,
+                creature_toughness_text_id: NONE_STR,
+                planeswalker_loyalty_text_id: NONE_STR,
+                defense_text_id: NONE_STR,
+                card_colors: None,
+                color_indicator: 0,
+                creature_power: None,
+                creature_toughness: None,
+                planeswalker_loyalty: None,
+                mana_cost: None,
+            })
+            .collect();
+        rkyv::to_bytes::<Error>(&card).expect("serialize").into_vec()
+    };
+
+    let strings_bytes = rkyv::to_bytes::<Error>(&interner.strings).expect("serialize strings");
+    let strings = rkyv::access::<AStrings, Error>(&strings_bytes).expect("access strings");
+    let vanilla = FilterExpr::VanillaFace;
+    let is_vanilla = |bytes: &[u8]| {
+        let card = rkyv::access::<Archived<OracleCard>, Error>(bytes).expect("access");
+        // Two-valued by construction: no arm of this predicate answers Null or PrintingDep.
+        vanilla.eval_card(card, strings) == Tri::True
+    };
+
+    // The 349 that were never in doubt: an unfaced creature with no text at all...
+    assert!(is_vanilla(&card_of(TYPE_CREATURE, blank, &[])));
+    // ...one with text, which is most of the corpus...
+    assert!(!is_vanilla(&card_of(TYPE_CREATURE, flying, &[])));
+    // ...and a textless NON-creature, since `is:vanilla -t:creature` is 0 there.
+    assert!(!is_vanilla(&card_of(TYPE_ARTIFACT, blank, &[])));
+
+    // THE +12. Beluna's Gatekeeper // Entry Denied: blank creature front, printing back. The merged
+    // column holds the join, which is why `-o:/./` answered 404 for it.
+    assert!(is_vanilla(&card_of(TYPE_CREATURE | TYPE_SORCERY, adventure_text, &[blank, adventure_text])));
+
+    // ...and its mirror, which is NOT vanilla: Chosen of Markov // Markov's Servant prints on the
+    // front and is blank on the back. An existential over faces would have matched this.
+    assert!(!is_vanilla(&card_of(TYPE_CREATURE, transform_text, &[transform_text, blank])));
+
+    // The creature test is the CARD's. City's Blessing // Elemental: the front is not a creature at
+    // all and the card is one, through the back — and it is vanilla there.
+    assert!(is_vanilla(&card_of(TYPE_CREATURE, blank, &[blank, flying])));
+
+    // THE −1. Dryad Arbor: unfaced, searchable text empty, and a LAND.
+    assert!(!is_vanilla(&card_of(TYPE_LAND | TYPE_CREATURE, blank, &[])));
+
+    // Icehide Golem: reminder text and nothing else. The card's own column is stripped at build; a
+    // FACE is not, so the predicate strips that one itself.
+    assert!(is_vanilla(&card_of(TYPE_ARTIFACT | TYPE_CREATURE, blank, &[])));
+    assert!(is_vanilla(&card_of(TYPE_ARTIFACT | TYPE_CREATURE, blank, &[reminder_only, flying])));
+
+    // Negation is the plain complement — the predicate is total, so `-is:vanilla` has no third set.
+    let not_vanilla = FilterExpr::Not(Box::new(FilterExpr::VanillaFace));
+    let card = card_of(TYPE_CREATURE, blank, &[]);
+    let card = rkyv::access::<Archived<OracleCard>, Error>(&card).expect("access");
+    assert!(not_vanilla.eval_card(card, strings) == Tri::False);
+}
+
 #[test]
 fn face_indexes_line_up_across_the_split() {
     // OracleFace and PrintingFace are two halves of one face, so index i must mean the same face

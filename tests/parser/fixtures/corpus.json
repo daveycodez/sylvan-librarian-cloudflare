@@ -2535,7 +2535,7 @@
 	},
 	{
 		"query": "is:vanilla",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"oracle_text\",\"original_attribute\":\"o\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\".\"},\"node_type\":\"RegexValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"AndNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_is_tags\",\"original_attribute\":\"is\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"vanilla\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "is:watermark",

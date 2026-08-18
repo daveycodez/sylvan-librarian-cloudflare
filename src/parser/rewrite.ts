@@ -47,26 +47,21 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"],
 	["is\u0000party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
 	["is\u0000outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"],
-	// `o=""` IS A TAUTOLOGY, and on api.scryfall.com too — which is why this expansion answered
-	// `t:creature` exactly, 18,753 against Scryfall's 363 for `is:vanilla`. Measured 2026-08-17:
-	// `o=""` and `o:""` are each a 400 there ("All of your terms were ignored"), and
-	// `t:creature o=""` answers 18,753 — the same number this port answers, so the term evaporates
-	// on BOTH sides and the conjunct was never the empty-text test it reads as. It cannot be one
-	// here either: `=` on a text column is a SUBSTRING test (see filter.rs's build_text_filter, and
-	// Scryfall's own `o=flying` = `o:flying` = 4,574), and every string contains the empty string.
+	// NO `is:vanilla` HERE — it is an ENGINE predicate now; see ENGINE_IS_VALUES below and
+	// `FilterExpr::VanillaFace`. Two rewrites lived here and neither could reach the answer:
+	// `t:creature o=""` was `t:creature` exactly (18,753, because `o=""` is a tautology on
+	// api.scryfall.com as much as here — `=` on a text column is a SUBSTRING test and every string
+	// contains the empty one), and `t:creature -o:/./` — the presence regex the `has:` family uses,
+	// negated — answered the same 352 on both sides and stopped 11 short of Scryfall's 363.
 	//
-	// The empty-text test that DOES exist is the presence regex the `has:` family already uses,
-	// negated: `-o:/./` is "no oracle text at all", and it answers the SAME 352 on api.scryfall.com
-	// and on this store — the two agree on the spelling, which is what makes it the honest
-	// replacement rather than a second guess.
-	//
-	// 352 and not 363, and the 11 are one class: Scryfall's `is:vanilla` is FACE-level. All 12 rows
-	// of its own `is:vanilla o:/./` are adventures and their kin, whose CREATURE face prints no
-	// rules text while the other face does (Beluna's Gatekeeper // Entry Denied), and this port's
-	// oracle text is the MERGED row — every face's text joined — so the regex sees the adventure
-	// half. Closing it needs a face-scoped predicate in the engine (`OracleFace` carries its own
-	// `oracle_text_id`), not a different rewrite; recorded rather than approximated.
-	["is\u0000vanilla", "t:creature -o:/./"],
+	// The 11 are not one class, which is why the last of it had to be enumerated card by card rather
+	// than reasoned about. 12 are the FRONT-FACE class: `is:vanilla o:/./` is 12 on api.scryfall.com
+	// and all 12 are adventures whose creature FRONT prints nothing while the Instant/Sorcery half
+	// does (Beluna's Gatekeeper // Entry Denied), and every rewrite expressible here reads the
+	// MERGED row, where the join hides the blank front. The 13th moves the other way: `Dryad Arbor`
+	// is in `t:creature -o:/./` on BOTH sides and is NOT `is:vanilla` on Scryfall, because a LAND is
+	// never vanilla there. +12 − 1 = the 11, and the engine's set is now Scryfall's own 363 card for
+	// card, not merely the same size.
 	["is\u0000watermark", "has:watermark"], // Scryfall accepts both spellings; 4,656 = 4,656
 	["is\u0000bear", "t:creature pow=2 tou=2 cmc=2"],
 	["is\u0000split", "layout:split"],
@@ -325,8 +320,21 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  * its own 16,318 have more than one printing. The set count spans every language, verified on the
  * 130 cards whose only second set is a foreign-only promo (Salvat, ps11, pmei): Scryfall calls none
  * of them unique.
+ *
+ * `vanilla` is "a creature whose FRONT FACE prints no rules text", and the face scope is the whole
+ * reason it is a predicate: every rewrite composes terms over the MERGED row, whose text is the
+ * faces' joined, so a blank front hides behind the half that prints. Three more rules ride on
+ * `FilterExpr::VanillaFace` rather than on anything spelled here, each measured against
+ * api.scryfall.com on 2026-08-17: the FRONT alone answers (a blank creature BACK is not enough —
+ * `is:vanilla` over `Kaslem's Stonetree`, `Ecstatic Awakener`, `Chosen of Markov` and
+ * `Skin Invasion` is 0), the creature test is the CARD's rather than that front's
+ * (`City's Blessing // Elemental` is vanilla there and its front is not a creature), and a LAND is
+ * never vanilla (`is:vanilla t:land` is 0 with and without `include_extras`, which is what keeps
+ * `Dryad Arbor` out). The text read is the SEARCHABLE one, reminder stripped — `Icehide Golem` and
+ * `Infinity Elemental` print only reminder text and are vanilla there. 352 → 363, and the 363 is
+ * Scryfall's own set card for card.
  */
-export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set(["localizedname", "unique"]);
+export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set(["localizedname", "unique", "vanilla"]);
 
 for (const [value, dsl] of HAS_EXPANSIONS) {
 	(DERIVED_EXPANSIONS as Map<string, string>).set(makeKey("has", value), dsl);

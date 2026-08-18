@@ -8,7 +8,12 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { balancePartialQuery, canonicalStringify, ParseError, parseScryfallQuery } from "../../src/parser";
-import { regexPlainLiteral, SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "../../src/parser/rewrite";
+import {
+	ENGINE_IS_VALUES,
+	regexPlainLiteral,
+	SUPPORTED_HAS_VALUES,
+	SUPPORTED_IS_VALUES,
+} from "../../src/parser/rewrite";
 
 // ── balance_partial_query: shared frontend/backend fixture contract ──────────
 // (upstream test_balance_parity.py against api/static/fixtures/balance_queries.json)
@@ -63,10 +68,11 @@ const EQUIVALENCES: Array<[string, string]> = [
 	["is:permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"],
 	["is:party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
 	["is:outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"],
-	// `o=""` was a tautology on both sides — `t:creature o=""` is 18,753 on api.scryfall.com too,
-	// exactly `t:creature`, while `is:vanilla` is 363 there. The presence regex, negated, is the
-	// empty-text test that exists: 352 on Scryfall and 352 here.
-	["is:vanilla", "t:creature -o:/./"],
+	// NO `is:vanilla` row — it stops expanding here and becomes an engine leaf; see the loop over
+	// ENGINE_IS_VALUES below. Two rewrites lived on this line and both fell short: `t:creature o=""`
+	// was `t:creature` exactly (18,753 on api.scryfall.com too — `o=""` is a tautology on both
+	// sides), and `t:creature -o:/./` answered 352 against Scryfall's 363, because the question is
+	// about the FRONT FACE and every rewrite here reads the merged row.
 	["is:bear", "t:creature pow=2 tou=2 cmc=2"],
 	["is:split", "layout:split"],
 	["is:flip", "layout:flip"],
@@ -103,6 +109,19 @@ describe("derived-predicate expansion", () => {
 		expect(root.node_type).toBe("CardBinaryOperatorNode");
 		expect(root.kwargs.op).toBe(":");
 	});
+
+	// The engine-answered values reach `FilterExpr` as a `card_is_tags` leaf and are intercepted
+	// there (filter.rs's build_filter). A rewrite claiming one would silently win over the engine
+	// leaf and answer a DIFFERENT question — which is exactly what `is:vanilla` did for as long as
+	// it expanded: `t:creature -o:/./` is 352 where the predicate is 363.
+	for (const value of ENGINE_IS_VALUES) {
+		test(`is:${value} stays a leaf for the engine`, () => {
+			expect(tree(`is:${value}`)).toBe(
+				'{"kwargs":{"lhs":{"kwargs":{"attribute_name":"card_is_tags","original_attribute":"is"},' +
+					`"node_type":"CardAttributeNode"},"op":":","rhs":["${value}"]},"node_type":"CardBinaryOperatorNode"}`,
+			);
+		});
+	}
 });
 
 // ── has: is a TOTAL alias of is: ─────────────────────────────────────────────
@@ -121,8 +140,9 @@ describe("has: aliases is:", () => {
 	});
 
 	// One per shape: a derived layout predicate, a computed text predicate, an importer boolean,
-	// and a set-shaped one. Each must expand to the identical tree under either spelling.
-	for (const value of ["split", "dfc", "frenchvanilla", "permanent", "promo", "etched", "commander"]) {
+	// a set-shaped one, and an ENGINE-answered one (`vanilla`, which expands to nothing at all —
+	// the alias has to reach the leaf itself, not a rewrite of it).
+	for (const value of ["split", "dfc", "frenchvanilla", "permanent", "promo", "etched", "commander", "vanilla"]) {
 		test(`has:${value} == is:${value}`, () => {
 			expect(tree(`has:${value}`)).toBe(tree(`is:${value}`));
 		});

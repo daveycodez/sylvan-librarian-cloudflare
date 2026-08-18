@@ -59,22 +59,11 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("is", "permanent"): "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle",  # +2 / 25954
     ("is", "party"): "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)",  # exact
     ("is", "outlaw"): "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling",  # exact
-    # `o=""` IS A TAUTOLOGY, on api.scryfall.com as much as here, so this expansion answered
-    # `t:creature` and nothing narrower: 18,753 against Scryfall's own `is:vanilla` 363. Measured
-    # 2026-08-17: `o=""` and `o:""` are each a 400 there ("All of your terms were ignored") and
-    # `t:creature o=""` is 18,753. It cannot narrow here either -- `=` on a text column is the
-    # same SUBSTRING test `:` is (`o=flying` = `o:flying` = 4,574), and every string contains the
-    # empty one.
-    #
-    # The empty-text test that exists is the presence regex `has:` already uses, negated. `-o:/./`
-    # answers 352 on api.scryfall.com and 352 on this corpus.
-    #
-    # 352 and not 363 because Scryfall's `is:vanilla` is FACE-level: all 12 rows of its own
-    # `is:vanilla o:/./` are adventures and their kin, whose CREATURE face prints no rules text
-    # while the other face does (Beluna's Gatekeeper // Entry Denied). The stored oracle_text is
-    # the merged row, so the regex sees the other half. Closing that needs a face-scoped
-    # predicate, not a different rewrite.
-    ("is", "vanilla"): "t:creature -o:/./",
+    # NO `is:vanilla` HERE -- it is an ENGINE predicate, see ENGINE_IS_VALUES below. It was
+    # `t:creature -o:/./` (352 on both sides) and before that `t:creature o=""`, which was
+    # `t:creature` and nothing narrower because `o=""` is a tautology on api.scryfall.com too.
+    # Neither rewrite can reach the last 11: the question is about the FRONT FACE, and every rewrite
+    # here composes predicates that read the MERGED row, whose text is the faces' joined.
     ("is", "watermark"): "has:watermark",  # Scryfall accepts both spellings; 4,656 = 4,656
     # The intuitive "2/2 for 2" bear. Deliberately NOT exactly Scryfall's is:bear (which is
     # single-faced and includes Vehicles/Spacecraft): vs Scryfall this is +~14 DFC creatures
@@ -355,7 +344,19 @@ _DERIVED_EXPANSIONS.update({("has", value): dsl for value, dsl in _HAS_EXPANSION
 # its own 16,318 have more than one printing. The set count spans every language, verified on the
 # 130 cards whose only second set is a foreign-only promo (Salvat, ps11, pmei): Scryfall calls none
 # of them unique.
-ENGINE_IS_VALUES: frozenset[str] = frozenset({"localizedname", "unique"})
+#
+# `vanilla` is "a creature whose FRONT FACE prints no rules text", and the face scope is the whole
+# reason it is here rather than a rewrite: every rewrite composes predicates over the MERGED row,
+# whose text is the faces' joined, so a blank front hides behind the half that does print. Measured
+# 2026-08-17 -- `is:vanilla o:/./` is 12 on api.scryfall.com and all 12 are adventures whose creature
+# front is blank (Beluna's Gatekeeper // Entry Denied), while the four cards with a blank creature
+# BACK behind a printing front (Kaslem's Stonetree, Ecstatic Awakener, Chosen of Markov, Skin
+# Invasion) are not vanilla there. The engine carries three more rules the parser cannot state: the
+# creature test is the CARD's rather than the front's (City's Blessing // Elemental is vanilla there
+# and its front is not a creature), the text is the SEARCHABLE form (reminder stripped, so Icehide
+# Golem counts), and a LAND is never vanilla (`is:vanilla t:land` is 0 there, which is what excludes
+# Dryad Arbor). 352 -> 363, and the 363 is Scryfall's own set card for card.
+ENGINE_IS_VALUES: frozenset[str] = frozenset({"localizedname", "unique", "vanilla"})
 
 
 # Every `is:` value this parser can answer at all: the derivable expansions above, the booleans the
