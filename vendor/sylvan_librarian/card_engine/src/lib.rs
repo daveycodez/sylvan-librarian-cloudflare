@@ -9110,20 +9110,36 @@ fn sort_col_secondary(p: &APrinting, sort_col: SortCol, descending: bool) -> u32
         // `assign_set_ranks` is what holds the shift to 16 bits (it asserts the rank fits); the
         // collector half is `u16` by declaration.
         SortCol::Released => (u32::from(p.set_rank) << 16) | u32::from(u16::from(p.collector_rank)),
-        // `name`'s second key is the same pair, for the same reason `released`'s is: once the
-        // primary ties, Scryfall's rows are set-grouped and collector-ordered inside a set. Under
-        // `order=name` the primary ties on every printing of one card AND on two DISTINCT cards
-        // that share a name, and it was the second of those this key was measured on — the six
-        // `Knight of the Kitchen Sink` cards come back `ust/12a…12f`, `Alien` comes back `mh2/123`
-        // then `unk/CR15a`, and the `Elemental // Elemental` tokens come back `tmsh`, `tpip`,
-        // `twho`. Before this key those ran in `oracle_id` order, which is a UUID hash and has no
-        // relation to anything Scryfall does; it was right only by accident.
+        // `name` DELIBERATELY HAS NONE, and the attempt is recorded because the evidence for it
+        // looked good and the measurement killed it.
         //
-        // It does NOT reach inside one card. A card's own printings all carry the same name, and
-        // the order among them is the `unique=cards` ordinal that `ranks.rs` fits and that no
-        // published field determines — this key orders them by (set, collector number), which is
-        // simply what the fallback has always been below the name.
-        SortCol::Name => (u32::from(p.set_rank) << 16) | u32::from(u16::from(p.collector_rank)),
+        // Two DISTINCT cards sharing a name tie on the whole primary and break on `cid`, i.e. on
+        // `oracle_id` — a UUID, so a hash order with no relation to anything Scryfall does. Giving
+        // `Name` the same (set, collector number) pair `released` carries fixes exactly that:
+        // measured against api.scryfall.com 2026-08-17, the six `Knight of the Kitchen Sink` cards
+        // come back `ust/12a…12f`, `Alien` `tmsh` `tpip` `twho/2` `twho/34`, and the two
+        // `Elemental // Elemental` tokens `tust/11` then `tust/17` — three name-groups right that
+        // were wrong.
+        //
+        // AND IT COSTS FAR MORE THAN IT BUYS, because a lexicographic second key cannot be told to
+        // apply only ACROSS cards. Under `order=name` the primary ties on every printing of ONE
+        // card too, and there the order Scryfall serves is the `unique=cards` ordinal — pin, date
+        // descending, collector number — which this port already reproduces for free, because
+        // printings are stored prefer-descending and `page_cmp`'s `cid`-then-`pid` tail walks them
+        // in that order. Inserting (set, collector number) above that tail reorders every
+        // multi-printing card alphabetically by set code. Measured on the same day: Scryfall
+        // answers `name:/^Fire/ t:instant` with `Fireblast` in `dmr/119, jvc/55, vma/159, dd2/55,
+        // vis/79 …` and the key made this port answer `dd2/55, dmr/119, dmr/319, f01/12 …`, on a
+        // query that had been ordering IDENTICALLY to Scryfall before. Three name-groups against
+        // the intra-card order of the whole corpus is not a trade.
+        //
+        // What that says about the underlying rule: Scryfall has ONE printing ordinal below the
+        // name, not two rules, and the (set, collector number) fit is what that ordinal happens to
+        // look like when each of the tied rows is the only printing of its own card. The ordinal
+        // itself is the one proven non-derivable over 254 candidate keys in both directions, so
+        // there is nothing better to reach for here — the residual is the `Everythingamajig` shape
+        // (`ust/147c, 147f, 147b, 147a, 147e, 147d`), which contradicts (set, collector number)
+        // outright, on the same five-group sample the fit came from.
         _ => return 0,
     };
     if descending { !key } else { key }
@@ -9190,10 +9206,11 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
 /// Leads every encoded key. A merge must refuse to compare keys of different versions — the
 /// version is what makes a layout change (a new segment, a re-ordered tiebreak) a loud
 /// mixed-generation error instead of a silently wrong page order.
-/// 1 -> 2: `SortCol::Name` gained a (set code, collector number) SECOND KEY, so its layout carries
-/// two segments where it carried none. A partition still emitting version 1 would sort a name tie
-/// by the oracle id in the tail while its siblings sorted it by the set — the silently-wrong page
-/// order this byte exists to turn into an error.
+/// 1 -> 2: `SortCol::Name`'s PRIMARY changed meaning — it writes the name THIS PRINTING prints,
+/// where version 1 wrote its card's, and the two differ on the 81 reversible printings. No segment
+/// was added or removed, so a version-1 key and a version-2 key are the same length and compare
+/// without complaint; they simply disagree about where those 81 rows belong, which is the silently
+/// wrong page order this byte exists to turn into an error.
 pub const SORT_KEY_VERSION: u8 = 2;
 
 /// One string-primary segment. Present values are the raw bytes plus a terminator OUTSIDE the
@@ -9321,10 +9338,10 @@ pub(crate) fn encode_sort_key(
     // one lacks numbers everything after it differently, which is the section header's whole
     // argument. The in-archive key packs the same pair as `(set_rank << 16) | collector_rank` and
     // `assign_set_ranks` ranks exactly `card_set_code`, so the two orders coincide.
-    if matches!(sort_col, SortCol::Released | SortCol::Name) {
+    if matches!(sort_col, SortCol::Released) {
         push_str_segment(&mut key, Some(p.card_set_code.as_str()), descending);
     }
-    if matches!(sort_col, SortCol::Set | SortCol::Released | SortCol::Name) {
+    if matches!(sort_col, SortCol::Set | SortCol::Released) {
         push_collector_segment(&mut key, data, p, descending);
     }
     // The collated NAME, not `name_rank`: the rank is assigned over the cards of THIS archive, so
