@@ -504,7 +504,7 @@ fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
         Value::String(s) => s.trim(),
         _ => return None,
     };
-    if !s.contains('*') {
+    if !s.contains(['*', '?']) {
         return None;
     }
     // Split into signed terms without splitting a leading sign off the first one: "7-*" is 7 and
@@ -518,11 +518,23 @@ fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
         if t.is_empty() {
             return false;
         }
-        // `*` and `*²` are both zero, so the star term contributes nothing; a numeric term
-        // parses, and anything else fails the whole value. Spelled as the two exact forms the
+        // `*`, `*²` and `?` are all zero, so such a term contributes nothing; a numeric term
+        // parses, and anything else fails the whole value. Spelled as the three exact forms the
         // corpus prints rather than "starts with a star": an unrecognised form then reads as
         // ABSENT, which is the pre-fix behaviour and the safe direction to be wrong in.
-        if matches!(t.as_str(), "*" | "*\u{b2}") {
+        //
+        // `?` IS MEASURED, not assumed by analogy with `*`. `Shellephant` (ust/121) prints `?`
+        // on both sides, and on api.scryfall.com 2026-08-17 `!"Shellephant" tou=0` is 1,
+        // `tou>=0` is 1 and `tou>0` is 0 — so Scryfall holds exactly 0, the same value it holds
+        // for a star. It is the whole of `toughness<1`'s 433-against-434: this port read `?` as
+        // ABSENT, and an absent value satisfies no comparison against its own column. The corpus
+        // prints `?` on three cards (Shellephant, `Loopy Lobster` cmb1, `Catch of the Day` mb2)
+        // and only Shellephant is in a set api.scryfall.com answers for at all.
+        //
+        // `∞` is NOT here, deliberately: `Infinity Elemental` is `ulst`, which Scryfall does not
+        // answer for either, so there is no measurement to follow — the same rule that keeps
+        // loyalty's two starred cards out of `stat_str_to_int_star`.
+        if matches!(t.as_str(), "*" | "*\u{b2}" | "?") {
             return true;
         }
         match t.parse::<i64>() {
@@ -2394,10 +2406,17 @@ mod tests {
         assert_eq!(maybe_stat_int(Some(&json!("2+*"))), Some(2));
         assert_eq!(maybe_stat_int(Some(&json!("7-*"))), Some(7));
         assert_eq!(maybe_stat_int(Some(&json!("*²"))), Some(0));
-        // A star-less value that is not a number stays absent — `?` is what the Un-cards print,
-        // and nothing measured says what it compares as.
-        assert_eq!(maybe_stat_int(Some(&json!("?"))), None);
+        // `?` IS ZERO TOO, and that is measured rather than reasoned from the star: `Shellephant`
+        // (ust/121) prints `?` on both sides, and on api.scryfall.com 2026-08-17
+        // `!"Shellephant" tou=0` is 1, `tou>=0` is 1 and `tou>0` is 0. It is the whole of
+        // `toughness<1` answering 433 against 434 — read as ABSENT, it satisfied no comparison at
+        // all.
+        assert_eq!(maybe_stat_int(Some(&json!("?"))), Some(0));
+        // Everything else that is not a number stays absent. `∞` is deliberately among them:
+        // `Infinity Elemental` is `ulst`, which api.scryfall.com does not answer for, so there is
+        // no measurement to follow and an unmeasured value is not extended.
         assert_eq!(maybe_stat_int(Some(&json!("X"))), None);
+        assert_eq!(maybe_stat_int(Some(&json!("\u{221e}"))), None);
         assert_eq!(maybe_stat_int(Some(&json!("*?"))), None);
         // And it reaches the row: the column is what `pow=`/`tou=` compares, the text beside it is
         // what the card object serves.

@@ -13911,7 +13911,12 @@ fn front_face_stats_match_card_columns() {
     // the three cards that pin the arithmetic; this is the same rule on a face's own string.
     assert_eq!(face_stat_nums(creature, Some("*"), Some("1+*"), None), (Some(0), Some(1), None));
     assert_eq!(face_stat_nums(creature, Some("2+*"), Some("7-*"), None), (Some(2), Some(7), None));
-    assert_eq!(face_stat_nums(creature, Some("*\u{b2}"), Some("?"), None), (Some(0), None, None));
+    // `?` IS ZERO TOO, on its own measurement rather than by analogy: `Shellephant` (ust/121)
+    // prints it on both sides and api.scryfall.com answers `tou=0` 1, `tou>=0` 1, `tou>0` 0.
+    // Read as absent it satisfied no comparison at all, which was the last row of `toughness<1`.
+    assert_eq!(face_stat_nums(creature, Some("*\u{b2}"), Some("?"), None), (Some(0), Some(0), None));
+    // `∞` stays absent — `Infinity Elemental` is `ulst`, unanswerable there, so nothing measured.
+    assert_eq!(face_stat_nums(creature, Some("\u{221e}"), None, None), (None, None, None));
     // Loyalty keeps the old rule: the two cards printing `*` there are funny-set cards
     // api.scryfall.com will not answer for at all, so there is nothing measured to follow.
     assert_eq!(face_stat_nums(Some("Planeswalker — Duck"), None, None, Some("*")), (None, None, None));

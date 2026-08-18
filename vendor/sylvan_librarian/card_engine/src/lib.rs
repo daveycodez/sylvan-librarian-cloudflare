@@ -328,8 +328,8 @@ fn stat_str_to_int(s: Option<&str>) -> Option<f64> {
     if v.is_finite() { Some(v.trunc()) } else { None }
 }
 
-/// The same rule for a printed POWER or TOUGHNESS, where `*` IS ZERO and the arithmetic printed
-/// around it still runs — `1+*` is 1, `7-*` is 7, `*` and `*²` are 0.
+/// The same rule for a printed POWER or TOUGHNESS, where `*` AND `?` ARE ZERO and the arithmetic
+/// printed around a star still runs — `1+*` is 1, `7-*` is 7, and `*`, `*²` and `?` are 0.
 ///
 /// The builder's `maybe_stat_int` (engine/builder/src/transform.rs) is the card-level twin and
 /// carries the three api.scryfall.com measurements that pin the arithmetic. THE TWO MUST MOVE
@@ -346,7 +346,7 @@ fn stat_str_to_int_star(s: Option<&str>) -> Option<f64> {
     if let Some(v) = stat_str_to_int(Some(s)) {
         return Some(v);
     }
-    if !s.contains('*') {
+    if !s.contains(['*', '?']) {
         return None;
     }
     let mut total = 0f64;
@@ -358,9 +358,10 @@ fn stat_str_to_int_star(s: Option<&str>) -> Option<f64> {
         if t.is_empty() {
             return false;
         }
-        // The two exact forms the corpus prints; anything else reads as absent, as it did before.
-        if matches!(t.as_str(), "*" | "*\u{b2}") {
-            return true; // `*` and `*²` are both zero
+        // The three exact forms the corpus prints; anything else reads as absent, as it did
+        // before. See `maybe_stat_int` for the api.scryfall.com measurements behind `?`.
+        if matches!(t.as_str(), "*" | "*\u{b2}" | "?") {
+            return true; // `*`, `*²` and `?` are all zero
         }
         match t.parse::<f64>() {
             Ok(n) if n.is_finite() => {
