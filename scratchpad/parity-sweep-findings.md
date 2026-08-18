@@ -1789,3 +1789,323 @@ case for `q=is:vanilla`. It is the shape that distinguishes all three rules at o
 reduction keeps the row SET, which is exactly what this predicate changes.
 
 **Scryfall requests for this task: 17**, serial, one per 1.2 s.
+
+---
+
+# 23. The rank keys, `order=name` in printing space, and the one where the diagnosis was wrong
+
+Four items, landed at `ARCHIVE_FORMAT_VERSION` **2026081703** / `STORE_CONTENT_GENERATION` **38**,
+every "after" below measured on a store rebuilt at that pair. Two of the four came out differently
+from their specification, and those two are the sections worth reading: §23.3 records a rule that is
+correct on the surface it was fitted to and a **regression** on a surface nobody had measured, and
+§23.5 records a defect whose named cause was not its cause.
+
+| item | before | after | Scryfall | |
+|---|---|---|---|---|
+| C1, four narrowed pairs | 0/4 | **3/4** | — | the 4th is §17.4's residual, predicted |
+| cn-prefix, five recorded `plst` losses | 0/5 | **5/5** | — | and `sld/901` with them |
+| `layout:reversible_card order=name` | 1 transposition | **0** | 81 rows | positionally identical |
+| C12, five name-groups | 2/5 | **2/5** | — | attempted, measured, BACKED OUT (§23.4) |
+| `toughness<1` | 433 | **434** | 434 | exact — the cause was `?`, not the fraction |
+| `power<1` | 1054 | **1058** | 1058 | exact |
+| `tou=0` / `pow=2` | 433 / 5733 | **432** / **5730** | 432 / 5730 | the fraction, over-catching its floor |
+| `tou=0.5` / `pow=2.5` | 0 / 0 | **1** / **3** | 1 / 3 | and the half becomes reachable |
+
+## 23.1 The printing rank gains TWO keys, and the order between them is reasoned, not fitted
+
+`PrintingRanks::seal` now orders a card's DISTINCT slots by
+
+```text
+pin ASC > NOT has_english > cn HAS AN ALPHABETIC PREFIX > released_at DESC > cn_sort_key ASC
+```
+
+**C1 (language).** Ranking is over DISTINCT slots, so `prefer_score`'s `+40` language term orders a
+slot's languages among themselves and nothing ordered slots against each other; `RANK_STEP` is 2048,
+so nothing riding under a rank can ever cross one. Verified live on the rebuild, one request per
+side, narrowed to the pin-excluded candidate sets §17.3 named:
+
+```text
+!"Active Volcano" (e:leg or e:bchr or e:chr)          chr/43:en   = chr/43:en    (was bchr/43:ja)
+!"Abomination" (e:leg or e:4bb or e:ren)              leg/87:en   = leg/87:en    (was ren/46:fr)
+!"Darksteel Juggernaut" (e:som or e:pmei)             som/150:en  = som/150:en   (was pmei/…:ja)
+!"Abyssal Specter" (e:8ed or e:ddc or e:dpa or e:ps11) ddc/40:en  ≠ dpa/18:en    (residual, predicted)
+```
+
+**§23.1a WHICH OF THE TWO KEYS GOES FIRST IS NOT DECIDABLE FROM ANY CORPUS HERE, and the reason is
+worth recording because it generalises.** Scryfall's default search is English-only, so every corpus
+§20 fitted the prefix key on is English throughout and cannot constrain the two against each other.
+Language first leaves §20.6's measured gain exactly intact — within an English scope `has_english` is
+constant, so the prefix is the effective first non-pin key — while the other order lets a prefixed
+ENGLISH slot lose to an unprefixed foreign-only one, which is the thing C1's four pairs refute. So
+the composition is settled by which order is a no-op on the evidence that exists, not by a fit.
+
+**cn-prefix.** All five losses §17.4 recorded now go the right way, and the sixth from §20.6 with
+them:
+
+```text
+!"Angelic Page" (e:plst or e:usg)              usg/4      !"Rushwood Legate" (e:plst or e:mmq)  mmq/266
+!"Venser, Shaper Savant" (e:plst or e:fut)     fut/46     !"Sol Ring" (e:sld or e:2x2)          sld/2560
+```
+
+## 23.2 `order=name` is a PRINTING-space order, and the permutation had to go for it
+
+81 printings print a name their card does not. `assign_name_ranks` now ranks cards and divergent
+printing names over ONE number line and `DivergentPrinting` stores its rank, so `sort_primary_f32`
+and `encode_sort_key` substitute the printing's name with no scaling and no offset.
+
+**The key alone would have been worse than the defect**, and this is the trap `REVERSIBLE-NAME-SORT.md`
+named. `encode_sort_key` and `sort_primary_f32` hold the printing; the permutation walk does not,
+because it is indexed by CARD and emits every printing of a card at that card's name position. Fixing
+one and not the other leaves the cross-partition MERGE and the in-partition WALK ordering by different
+rules, which is a repeated or dropped row at a page boundary. So `SortPermutations` loses its
+`name`/`name_inv` pair outright — removed from the struct, not left unread, so the fact is structural.
+Its one other reader was already gone: `narrow_rec`'s ExactName arm binary-searched that array and has
+gone through `indexes.name_trigram` since gen 35, which the struct's own doc comment still claimed
+otherwise. A stale comment on a dead index is exactly how this gets re-wired by accident.
+
+**Result:** `layout:reversible_card order=name unique=prints` is 81 rows on both sides with **0
+positional mismatches**, `Mechtitan Core` ahead of `Mechtitan // Mechtitan` as Scryfall orders them.
+
+**What it costs**, memprobe on the rebuilt production corpus, partition 0, 3,902 cards, limit 175,
+offset 0, 30 iterations — `order=name` moves out of the permutation band into the band four shipped
+columns already occupy:
+
+```text
+permutation-backed   edhrec 82us    cmc 79us    power 81us
+permutation-free     set 104us   artist 106us   released 115us   usd 154us
+name                 144-149us      (was 128us with the permutation)
+```
+
+`REVERSIBLE-NAME-SORT.md` parked this on the belief that dropping the fast path traded "a corpus-wide
+performance property for 81 rows". It costs ~17us per partition against a request that measures in
+milliseconds, and it is the same cost `order=set` has always paid. **The parking note over-priced it.**
+
+## 23.3 THE cn-PREFIX KEY IS A REGRESSION ON THE SURFACE §20 DID NOT MEASURE
+
+This is the finding of this section, and it contradicts §20.8's "every other slice improves".
+
+§20 fitted and validated the prefix key on **merges** — which printing a `unique=cards` scope keeps,
+i.e. the ARGMAX of the rank. It never scored the key on the **full print ORDER**, which is the same
+rank read as a sequence: printings are stored prefer-descending, so `prefer_score` IS the order
+`unique=prints order=name` returns, and §20.2 established that the two are the same ordinal (the
+merge winner is the first row of the print list, 463 of 468).
+
+Scored on corpus B's own shape — `!"<name>" unique=prints order=name`, whose primary ties on every
+row so the response IS Scryfall's internal ordinal — over **28 cards, 1,047 adjacent pairs**, with the
+pin taken from each card's own `unique=cards` answer and the old rule reconstructed over the same
+slots:
+
+```text
+pin > released DESC > cn ASC                   1008 / 1047 = .9628
++ demote alpha-prefixed cn (what shipped)       971 / 1047 = .9274
+```
+
+It loses on 24 of the 28 cards and gains on none. The mechanism is not mysterious: demoting a
+prefixed printing to the BOTTOM of its card fixes the argmax whenever a prefixed printing was wrongly
+winning, and scrambles the middle of the sequence, where Scryfall interleaves those same printings by
+date. `Fireblast` is the clean example — Scryfall runs `dmr/119, jvc/55, vma/159, dd2/55, vis/79,
+plst/VIS-79, dmr/319, …`, keeping `plst/VIS-79` at position 6 next to `vis/79`, and the key sends it
+to position 11.
+
+**Both surfaces are shipped**, so this is a genuine trade and not a mistake to unwind on sight:
+
+* merges gain — .9156 -> .9346 on §20's ten fitted-after scopes, 1,683 decisions;
+* print order loses — .9628 -> .9274 on 1,047 adjacent pairs of Scryfall's own order.
+
+**It cannot be split.** `prefer_score` is one stored value serving both the representative choice and
+the row order; there is no second ordering in the archive to put the prefix key in. A "demote only
+out of rank 0" variant does not reach §20.6's gain either, because a merge winner is the min-rank
+slot IN SCOPE and is usually not global rank 0.
+
+**It is left as shipped**, on the larger evidence base (20,321 labelled merge decisions against 1,047
+order pairs) and because §20.8 specified it, but the trade is now on the record with a number instead
+of being unmeasured. The reproduction is `scratchpad/printorder.py` in this session's scratch; it is
+56 requests, serial, and it re-runs against any rebuild. **Whoever revisits it should decide on which
+surface matters, not on which corpus is bigger.**
+
+Methodologically this is §20.7's own lesson arriving from the other direction. §20.7 established that
+a holdout drawn from the same scope family is not a holdout; §23.3 adds that a holdout drawn from the
+same *question* is not one either. Every corpus in §20 asked "which printing wins", and none asked
+"in what order do the rest follow".
+
+## 23.4 C12 was attempted, measured, and backed out — the second key cannot be scoped to cross-card
+
+Giving `SortCol::Name` the (set code, collector number) second key `released` carries fixed three of
+the five recorded name-groups outright: `ust/12a…12f`, `Alien` as `tmsh` `tpip` `twho/2` `twho/34`,
+and `Elemental // Elemental` as `tust/11` then `tust/17` — all previously in `oracle_id` order, which
+is a UUID hash and was right only by accident.
+
+**And a lexicographic second key applies to every tie on the primary, which under `order=name`
+includes every printing of ONE card.** There the correct order is the `unique=cards` ordinal, which
+this port already reproduces for free through `page_cmp`'s `cid`-then-`pid` tail over
+prefer-descending storage. The key sat above that tail and re-sorted every multi-printing card
+alphabetically by set code: `name:/^Fire/ t:instant` went from matching Scryfall's `Fireblast` run to
+answering `dd2/55, dmr/119, dmr/319, f01/12, …`. Three name-groups against the intra-card order of the
+whole corpus is not a trade, and it was reverted in the commit after the one that added it.
+
+**What that says about the rule underneath.** Scryfall has ONE printing ordinal below the name, not
+two rules. The (set, collector number) fit is what that ordinal looks like when each tied row happens
+to be the only printing of its own card — true of all three groups it fixed. The ordinal itself is
+§20.5's, proven non-derivable over 254 keys in both directions, and the fifth group contradicts (set,
+collector number) outright on the very sample the fit came from: `Everythingamajig` is `ust/147c,
+147f, 147b, 147a, 147e, 147d`. **So C12 is not "worth doing on a later budget" — it is the same
+non-derivable ordinal wearing a fifth hat, and the `oracle_id` tail stays.**
+
+## 23.5 `toughness<1` was never the fraction. It is `?`, and it cost nothing to fix
+
+The brief for this work named `Little Girl` (printed `½`) as the row missing from `toughness<1`, and
+put the fix at `ARCHIVE_FORMAT_VERSION` because an integer column cannot hold a half. Both halves of
+that are wrong, and the second follows from the first.
+
+**The missing row is `Shellephant` (ust/121), which prints `?` on both sides.** Diffing the two
+answers row by row — 434 names from api.scryfall.com against 433 here — leaves exactly one name, and
+it is not Little Girl. Scryfall holds exactly **0** for a `?`: `!"Shellephant" tou=0` is 1, `tou>=0`
+is 1, `tou>0` is 0. This port read `?` as ABSENT, and an absent value satisfies no comparison against
+its own column, so the row fell out of every power/toughness query rather than only the equality ones.
+
+`?` is therefore zero on the same terms `*` already is, in the same two parsers, and it needs no
+format change at all:
+
+```text
+toughness<1   433 -> 434   Scryfall 434   exact
+power<1      1054 -> 1058   Scryfall 1058   exact
+```
+
+`∞` is deliberately NOT included: `Infinity Elemental` is `ulst`, which api.scryfall.com does not
+answer for, so there is nothing measured to follow — the rule that already keeps loyalty's two starred
+cards out of this parser.
+
+**Little Girl is a real defect with the OPPOSITE SIGNATURE, which is why it was misdiagnosed.**
+Truncation cannot LOSE a row from `tou<1`, because 0 satisfies it exactly as 0.5 does. It
+OVER-CATCHES the integer it truncates to. Eleven Unhinged cards print a half, and every remaining
+power/toughness divergence on the rebuild is one of them:
+
+```text
+tou=0   Scryfall  432   here  433   +1   Little Girl
+pow=0   Scryfall 1054   here 1055   +1   Little Girl
+tou=1   Scryfall 3758   here 3759   +1   Fraction Jackson
+pow=2   Scryfall 5730   here 5733   +3   Smart Ass, Stone-Cold Basilisk, Vile Bile
+```
+
+(`is:commander` is 3,714 against 3,679 and is NOT this class — it is §21.3's shape residual.)
+
+**FIXED, on a second rebuild at `ARCHIVE_FORMAT_VERSION` 2026081704**, and the encoding is
+`Option<f32>` rather than the scaled integer the brief proposed. Both stat columns widen on
+`OracleCard` (272 -> 288 archived bytes) and `OracleFace`, the two parsers stop truncating, the
+spill codec goes 1 byte -> 4 per column, and `ArithTupleKey` holds `power_bits`/`toughness_bits`
+because an f32 is neither `Hash` nor `Eq` — with `+ 0.0` on the way in so the corpus's printed `-0`
+cannot intern as a second combination every comparison treats as equal to the first. Re-measured
+serially the same day:
+
+```text
+query      Scryfall   before   after
+tou=0           432      433     432    exact
+pow=0          1054     1055    1054    exact
+tou=1          3758     3759    3758    exact
+pow=2          5730     5733    5730    exact
+tou=0.5           1        0       1    the fraction becomes REACHABLE, not merely
+pow=2.5           3        0       3    absent from the integers it is not
+```
+
+**Why f32 and not the scaled integer, since the guidance started the other way.** `cmc` took
+exactly this shape for exactly this bug (`api/db/2026-08-12-01-fractional-mana-value.sql: integer ->
+real`), and the whole downstream is f32 already — `sort_primary_f32`, `sort_col_card_value`,
+`build_sort_permutations`, `NumericIndex = Vec<(f32, u32)>`, `planes.rs`'s `BucketBounds`, and
+`filter.rs` widening to f64 to compare. **Byte-comparability is not the discriminator**, contrary to
+the brief: `encode_sort_key` writes `f32_sort_bits` for every numeric column and that encoder is
+total-order-preserving over all f32s, fractions included, so both designs keep the partitioned keys
+sound. The discriminators that are real all point one way — a scaled integer cannot stay in `i8`
+(B.F.M. is 99/99 and doubles past `i8::MAX`), it needs a x2 at every read site including
+`sort_col_bound`, where a missed one is a silently mis-bounded permutation walk rather than a visible
+wrong count, and doubling collides with the numeric planes' `NUM_INTERIOR_HI = 12`, which would cost
+`pow=7`…`pow=12` their one-hot planes. **The card object never moves**: `power`/`toughness` JSON
+comes from the text ids, so the printed `½` a reader sees was never what this column held.
+
+**One test-design note worth keeping.** The fractional rows went into their OWN fixture rather than
+into `numeric_plane_fixture_store`. Adding a single off-lattice value there made three plane tests
+fail — `set_numeric_plane` routes it to the HI bucket, which widens that bucket's observed range for
+the whole fixture and makes `compile_plane` decline thresholds those tests exist to prove it accepts.
+That is exactly why `fractional_cmc_fixture_store` already stands apart, and it is a property of
+bucketed planes rather than of this change: **a fixture that mixes lattice and off-lattice values
+tests both cases more weakly than either alone.**
+
+**One residual, pre-existing and orthogonal.** `pow=3`, `tou=3` and `tou>=3.5` are each short by
+exactly one row. It is not a parse failure: over the whole 540,484-row corpus the only printed stat
+this port still fails to read is `∞` (Infinity Elemental, 3 rows), whose set `ulst` api.scryfall.com
+does not answer for. Before this change the same family read +2/+1 instead of -1 — the truncated
+halves were masking it, which is the second time in this section that one defect hid inside another's
+sign.
+
+## 23.6 The differential, which is the gate that mattered
+
+`memprobe compare-parts` over the whole 540,484-row corpus, twice — once after the name change and
+once after the C12 revert:
+
+```text
+match: 162 envelope cases, 12103092 rows byte-for-byte, N=2 vs N=10
+THE CUT DOES NOT CHANGE THE ANSWER
+CONTROL: the same differential FAILS on 38 cases when the sort key's primary is made
+         archive-local (orderings: set, name, artist)
+```
+
+The control still firing is the half that makes the pass mean something: the harness can still see a
+broken key, so byte-comparability across partitions — the property that makes per-partition
+`offset+limit` sound — is intact rather than untested. `bun run gate` is green end to end, including
+the wasm build fit per partition and all five route ratios (highest: autocomplete at 1.0% of a full
+scan, limit 3%).
+
+## 23.7 Versions, and the rule that decides them
+
+`ARCHIVE_FORMAT_VERSION` **2026081702 -> 2026081703 -> 2026081704**, `SORT_KEY_VERSION` **1 -> 2**,
+`STORE_CONTENT_GENERATION` **37 -> 38**.
+
+The format moved TWICE, once per layout change, because the two were measured and landed
+separately — §23.2's name order and §23.5's stat widening (`Archived<OracleCard>` 272 -> 288). The
+GENERATION did not move with the second, and that is deliberate: it is a rebuild trigger compared
+against the PUBLISHED manifest, still generation 37, so 38 already forces the rebuild both format
+versions need, and moving it again would name one rebuild twice.
+
+The first bump was for §23.2 alone: `DivergentPrinting` gains a field, every `OracleCard::name_rank` in
+the archive is a different number now that the two name sets share a number line, and
+`SortPermutations` losing a pair moves the offset of every field after it inside `CardIndexes`. None
+of those is a struct the header measures — it embeds `AOracleCard` and `APrinting` sizes only — so a
+gen-2026081702 store read by this code would find the edhrec inverse where the name permutation used
+to be. §23.1's rank keys are stored VALUES and needed no format change, and neither did §23.5's `?` rule,
+which adds not one byte.
+
+`SORT_KEY_VERSION` moved even though the key's LENGTH did not, which is the case worth naming. After
+the C12 revert `Name`'s key gains no segment; its primary just means something different for 81 rows.
+Two keys of the same shape that disagree about where 81 rows belong is precisely what a version byte
+has to catch, because nothing about their shape reveals it and the gather compares them bytewise.
+
+The generation carries all four of tonight's stored-value changes — `*` as zero, the `usd`/`eur`
+coalesce, the two rank keys, and the name order — in ONE bump, because a generation is a rebuild
+trigger and `store-age.ts` compares one number. **And it is the number `store-age.ts` compares: a
+format bump shipped without it takes the site dark, since the header rejects the published store and
+nothing schedules its replacement.**
+
+## 23.8 Routing
+
+`ranks.rs`, the sort-key encoding and `SortPermutations` are **Cloudflare-LOCAL**: upstream computes
+its representative from `prefer_score` alone (where `+40` does decide the language), serves from
+Postgres, and has no partition axis to encode a byte key for. Nothing in §23.1–§23.4 has an upstream
+hunk.
+
+**BOTH HALVES OF §23.5 ARE UPSTREAM-MATERIAL** and route to **#927** `multilingual-store`, beside the
+`*` rule they extend — `card_processing.py`'s stat parse and `card_engine`'s `stat_str_to_int_star`,
+which must move together for the same reason they did there (the numeric planes are built from FACE
+values). The `?` rule is four characters in each tree plus its test row. The FRACTION is larger and
+has a shape upstream already knows: an `integer -> real` migration on `magic.cards.creature_power`
+and `creature_toughness`, mirroring #923's
+`api/db/2026-08-12-01-fractional-mana-value.sql` for `cmc` exactly.
+
+Not pushed from here. #927 had three writers during this session, the `?` hunk touches the exact
+function one of them last edited, and the fraction needs a Postgres migration that cannot be
+exercised from this repo at all — a schema change proposed blind is worse than one routed explicitly.
+
+**Wanted, not added here** (`scripts/live-parity-cases.json` is another agent's): a `/cards/search`
+case for `q=layout:reversible_card&order=name&unique=prints`. It is the only shape that exercises a
+printing-space name order, and the parity reduction keeps row ORDER, which is the whole of what
+§23.2 changes.
+
+**Scryfall requests for this task: 118**, serial, one per 1.1 s.
