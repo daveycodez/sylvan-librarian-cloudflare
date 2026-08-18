@@ -280,21 +280,21 @@ fn face_num_values(card: &AOracleCard, f: NumField) -> FaceValues {
     match f {
         NumField::Power => {
             if let Some(v) = card.creature_power.as_ref() {
-                push(f64::from(*v));
+                push(f64::from(f32::from(*v)));
             }
             for face in card.faces.iter() {
                 if let Some(v) = face.creature_power.as_ref() {
-                    push(f64::from(*v));
+                    push(f64::from(f32::from(*v)));
                 }
             }
         }
         NumField::Toughness => {
             if let Some(v) = card.creature_toughness.as_ref() {
-                push(f64::from(*v));
+                push(f64::from(f32::from(*v)));
             }
             for face in card.faces.iter() {
                 if let Some(v) = face.creature_toughness.as_ref() {
-                    push(f64::from(*v));
+                    push(f64::from(f32::from(*v)));
                 }
             }
         }

@@ -603,8 +603,8 @@ pub(crate) fn card_from_json(
         // f32, so an integer cmc here was the only place the two disagreed. Mirrors
         // `card_from_pydict` in lib.rs, which this exists to be the non-pyo3 twin of.
         cmc: jv_opt_f32(d, "cmc"),
-        creature_power: jv_opt_i8(d, "creature_power"),
-        creature_toughness: jv_opt_i8(d, "creature_toughness"),
+        creature_power: jv_opt_f32(d, "creature_power"),
+        creature_toughness: jv_opt_f32(d, "creature_toughness"),
         planeswalker_loyalty: jv_opt_u8(d, "planeswalker_loyalty"),
         card_rarity_int: jv_opt_u8(d, "card_rarity_int"),
         collector_number_int: jv_opt_u16(d, "collector_number_int"),
@@ -1126,8 +1126,8 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     // build, so the widening needs no compatibility shim -- but they must move together, and
     // the decoder's matching `f32v` is the only other place that reads these bytes.
     e.opt(&r.cmc, |e, &v| e.f32v(v));
-    e.opt(&r.creature_power, |e, &v| e.u8v(v as u8));
-    e.opt(&r.creature_toughness, |e, &v| e.u8v(v as u8));
+    e.opt(&r.creature_power, |e, &v| e.f32v(v));
+    e.opt(&r.creature_toughness, |e, &v| e.f32v(v));
     e.opt(&r.planeswalker_loyalty, |e, &v| e.u8v(v));
     e.opt(&r.card_rarity_int, |e, &v| e.u8v(v));
     e.opt(&r.collector_number_int, |e, &v| e.u16v(v));
@@ -1191,8 +1191,8 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
         // The searchable half rides the spill with the rest of the face: a face whose numbers
         // survive here and not there is a face that is printable and unsearchable in production
         // only — the exact shape this column was added to close.
-        e.opt(&f.creature_power, |e, &v| e.u8v(v as u8));
-        e.opt(&f.creature_toughness, |e, &v| e.u8v(v as u8));
+        e.opt(&f.creature_power, |e, &v| e.f32v(v));
+        e.opt(&f.creature_toughness, |e, &v| e.f32v(v));
         e.opt(&f.planeswalker_loyalty, |e, &v| e.u8v(v));
         e.opt(&f.mana_cost, |e, m| {
             e.u64v(m.core);
@@ -1284,8 +1284,8 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         set_name_id: d.u32v(),
         released_at_int: d.opt(|d| d.u32v()),
         cmc: d.opt(|d| d.f32v()), // 4 bytes -- see encode_card_row's note
-        creature_power: d.opt(|d| d.u8v() as i8),
-        creature_toughness: d.opt(|d| d.u8v() as i8),
+        creature_power: d.opt(|d| d.f32v()),
+        creature_toughness: d.opt(|d| d.f32v()),
         planeswalker_loyalty: d.opt(|d| d.u8v()),
         card_rarity_int: d.opt(|d| d.u8v()),
         collector_number_int: d.opt(|d| d.u16v()),
@@ -1341,8 +1341,8 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
                     defense_text_id: d.u32v(),
                     card_colors: d.opt(|d| d.u8v()),
                     color_indicator: d.u8v(),
-                    creature_power: d.opt(|d| d.u8v() as i8),
-                    creature_toughness: d.opt(|d| d.u8v() as i8),
+                    creature_power: d.opt(|d| d.f32v()),
+                    creature_toughness: d.opt(|d| d.f32v()),
                     planeswalker_loyalty: d.opt(|d| d.u8v()),
                     mana_cost: d.opt(|d| {
                         let core = d.u64v();

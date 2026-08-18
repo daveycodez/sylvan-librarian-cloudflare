@@ -1295,11 +1295,24 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      loses to `usg/4`; .9156 -> .9346 on ten scopes chosen after the rule was fitted). See
  *      `engine/builder/src/ranks.rs`.
  *
- *      (4) `order=name` IS A PRINTING-SPACE ORDER, which is the half that also needs the format
- *      bump — see `ARCHIVE_FORMAT_VERSION`'s own entry. Two defects, one cause: the 81 reversible
- *      printings that print a name their card does not sorted under their CARD's name, and a tie
- *      between two DISTINCT cards sharing a name broke on `oracle_id`, which is a UUID hash.
+ *      (4) `order=name` IS A PRINTING-SPACE ORDER, which is one of the two halves that also need
+ *      the format bump — see `ARCHIVE_FORMAT_VERSION`'s own entry. The 81 reversible printings
+ *      that print a name their card does not sorted under their CARD's name.
  *      `SORT_KEY_VERSION` moves 1 -> 2 with it.
+ *
+ *      (5) POWER AND TOUGHNESS BECOME FRACTIONAL, the second half of the format bump. Eleven
+ *      Unhinged cards print a HALF and the integer columns truncated each onto the value it would
+ *      then wrongly ANSWER — `tou=0` was 433 here against 432, `pow=2` 5733 against 5730. A
+ *      separate rule in the same commit range makes a printed `?` zero, which is what
+ *      `toughness<1` was actually missing (`Shellephant`, 433 -> 434 exact) and which needs no
+ *      format change at all.
+ *
+ *      WHY THESE FIVE SHARE ONE GENERATION AND TWO FORMAT VERSIONS. `ARCHIVE_FORMAT_VERSION` moved
+ *      twice inside this generation, 2026081702 -> 2026081703 -> 2026081704, because the two
+ *      layout changes were measured and landed separately. The generation did NOT move with the
+ *      second, and that is deliberate rather than an oversight: it is a REBUILD TRIGGER compared
+ *      against the PUBLISHED manifest, which is still generation 37, so 38 already forces the
+ *      rebuild that both format versions need. Moving it again would name one rebuild twice.
  */
 export const STORE_CONTENT_GENERATION = 38;
 

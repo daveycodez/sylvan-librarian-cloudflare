@@ -184,8 +184,16 @@ pub struct RowDraft {
     /// round it to 0. Upstream made the same change in the column type (#923,
     /// api/db/2026-08-12-01-fractional-mana-value.sql: `integer` -> `real`).
     pub cmc: Option<f64>,
-    pub creature_power: Option<i64>,
-    pub creature_toughness: Option<i64>,
+    /// FRACTIONAL, for the same reason `cmc` above is: eleven Unhinged cards print a HALF power
+    /// or toughness (`Little Girl` is `.5`/`.5`, `Smart Ass` `2.5`/`1`, `Assquatch` `3.5`/`3.5`),
+    /// and an integer column silently truncates each to the value it rounds down to — where it
+    /// then wrongly ANSWERS that value. Measured on api.scryfall.com 2026-08-17: `tou=0` is 432
+    /// there and was 433 here (Little Girl), `pow=2` 5730 against 5733 (Smart Ass, Stone-Cold
+    /// Basilisk, Vile Bile). Every fraction in the corpus is a half, so nothing finer is needed —
+    /// but a float is what upstream's `cmc` migration already chose for this exact bug, and a
+    /// second convention (a scaled integer) would need a x2 at every read site to stay right.
+    pub creature_power: Option<f64>,
+    pub creature_toughness: Option<f64>,
     pub creature_power_text: Option<String>,
     pub creature_toughness_text: Option<String>,
     pub planeswalker_loyalty: Option<i64>,
@@ -493,11 +501,28 @@ fn maybe_int(v: Option<&Value>) -> Option<i64> {
 ///
 /// so `*` -> 0 and the sum is evaluated: `1+*` is 1, `7-*` is 7, `*` alone is 0. The whole
 /// corpus's starred forms are `*`, `1+*`, `*+1`, `2+*`, `7-*` and `*²` (one card, and `0²` is 0),
-/// which this expression grammar covers exactly — a term is a signed integer or a star, and the
-/// terms are added. Anything else (`?`, on the four Un-cards that print it) stays absent, which is
-/// the pre-existing behaviour and not a claim about what Scryfall does with it.
-fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
-    if let Some(n) = maybe_int(v) {
+/// which this expression grammar covers exactly — a term is a signed number or a star, and the
+/// terms are added.
+///
+/// `?` IS ALSO ZERO, measured rather than assumed by analogy: `Shellephant` (ust/121) prints it on
+/// both sides, and api.scryfall.com answers `!"Shellephant" tou=0` 1, `tou>=0` 1, `tou>0` 0. Read
+/// as ABSENT it satisfied no comparison at all, which was the whole of `toughness<1` answering 433
+/// against 434.
+///
+/// AND THE VALUE IS NOT ROUNDED, which is why this returns an `f64` and not the `i64` it used to.
+/// Eleven Unhinged cards print a half, and truncating each to its floor made it wrongly ANSWER the
+/// floor: `tou=0` was 433 against Scryfall's 432 (Little Girl, `.5`), `pow=2` 5733 against 5730
+/// (Smart Ass, Stone-Cold Basilisk, Vile Bile, all `2.5`). The twin of `a_fractional_mana_value_is_
+/// not_rounded`, and the same fix upstream applied to `cmc` in
+/// api/db/2026-08-12-01-fractional-mana-value.sql.
+///
+/// `∞` (Infinity Elemental) stays absent: it is `ulst`, which api.scryfall.com does not answer for
+/// at all, so there is no measurement to follow and an unmeasured form is not extended.
+fn maybe_stat_num(v: Option<&Value>) -> Option<f64> {
+    // `is_finite` is the guard `maybe_int` used to supply on the way past: Rust parses "inf" and
+    // "NaN" out of a string where Python's int() would raise, and neither belongs in a column the
+    // sort keys and the numeric planes read.
+    if let Some(n) = maybe_float(v).filter(|n| n.is_finite()) {
         return Some(n);
     }
     let s = match v? {
@@ -509,10 +534,10 @@ fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
     }
     // Split into signed terms without splitting a leading sign off the first one: "7-*" is 7 and
     // -0, "-1+*" is -1 and 0.
-    let mut total: i64 = 0;
-    let mut sign: i64 = 1;
+    let mut total: f64 = 0.0;
+    let mut sign: f64 = 1.0;
     let mut term = String::new();
-    let push = |term: &mut String, sign: i64, total: &mut i64| -> bool {
+    let push = |term: &mut String, sign: f64, total: &mut f64| -> bool {
         let t = term.trim().to_string();
         term.clear();
         if t.is_empty() {
@@ -537,12 +562,12 @@ fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
         if matches!(t.as_str(), "*" | "*\u{b2}" | "?") {
             return true;
         }
-        match t.parse::<i64>() {
-            Ok(n) => {
+        match t.parse::<f64>() {
+            Ok(n) if n.is_finite() => {
                 *total += sign * n;
                 true
             }
-            Err(_) => false,
+            _ => false,
         }
     };
     for (i, c) in s.char_indices() {
@@ -551,7 +576,7 @@ fn maybe_stat_int(v: Option<&Value>) -> Option<i64> {
                 if !push(&mut term, sign, &mut total) {
                     return None;
                 }
-                sign = if c == '-' { -1 } else { 1 };
+                sign = if c == '-' { -1.0 } else { 1.0 };
             }
             _ => term.push(c),
         }
@@ -962,13 +987,14 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
     // explicit None otherwise (matches the DB check constraint).
     let is_creaturelike = card_types.iter().any(|t| t == "Creature")
         || card_subtypes.iter().any(|t| t == "Vehicle" || t == "Spacecraft");
-    // `maybe_stat_int` and not `maybe_int`: `*` is zero on both sides of a power/toughness
-    // comparison — see its doc comment for the three cards that pin the arithmetic. The printed
-    // strings beside them are untouched, and they are what the card object serves.
+    // `maybe_stat_num` and not `maybe_int`: `*` and `?` are zero on both sides of a
+    // power/toughness comparison and a printed HALF is kept as a half — see its doc comment for
+    // the cards that pin each rule. The printed strings beside them are untouched, and they are
+    // what the card object serves.
     let (creature_power, creature_toughness, creature_power_text, creature_toughness_text) = if is_creaturelike {
         (
-            maybe_stat_int(card.get("power")),
-            maybe_stat_int(card.get("toughness")),
+            maybe_stat_num(card.get("power")),
+            maybe_stat_num(card.get("toughness")),
             s(card, "power"),
             s(card, "toughness"),
         )
@@ -2223,8 +2249,8 @@ pub fn finalize_row(
         m.insert("cmc".into(), opt_f64_val(r.cmc));
         m.insert("collector_number".into(), opt_str_val(&r.collector_number));
         m.insert("collector_number_int".into(), opt_i64_val(r.collector_number_int));
-        m.insert("creature_power".into(), opt_i64_val(r.creature_power));
-        m.insert("creature_toughness".into(), opt_i64_val(r.creature_toughness));
+        m.insert("creature_power".into(), opt_f64_val(r.creature_power));
+        m.insert("creature_toughness".into(), opt_f64_val(r.creature_toughness));
         m.insert("edhrec_rank".into(), opt_i64_val(r.edhrec_rank));
         m.insert("flavor_text".into(), Value::String(r.flavor_text));
         // {symbol: [1..n]} — the engine reads the list length as the pip count.
@@ -2393,31 +2419,40 @@ mod tests {
     #[test]
     fn a_starred_stat_is_zero_and_keeps_its_arithmetic() {
         // Everything `maybe_int` already read, unchanged.
-        assert_eq!(maybe_stat_int(Some(&json!("2"))), Some(2));
-        assert_eq!(maybe_stat_int(Some(&json!("1.5"))), Some(1));
-        assert_eq!(maybe_stat_int(Some(&json!("-1"))), Some(-1));
-        assert_eq!(maybe_stat_int(Some(&json!(3.0))), Some(3));
-        assert_eq!(maybe_stat_int(Some(&Value::Null)), None);
-        assert_eq!(maybe_stat_int(None), None);
+        assert_eq!(maybe_stat_num(Some(&json!("2"))), Some(2.0));
+        assert_eq!(maybe_stat_num(Some(&json!("-1"))), Some(-1.0));
+        assert_eq!(maybe_stat_num(Some(&json!(3.0))), Some(3.0));
+        // A PRINTED HALF IS KEPT, not truncated — the twin of `a_fractional_mana_value_is_not_
+        // rounded`. Eleven Unhinged cards print one, and rounding each to its floor made it
+        // wrongly ANSWER that floor: measured on api.scryfall.com 2026-08-17, `tou=0` is 432
+        // there and was 433 here (Little Girl `.5`), and `pow=2` 5730 against 5733 (Smart Ass,
+        // Stone-Cold Basilisk, Vile Bile, all `2.5`).
+        assert_eq!(maybe_stat_num(Some(&json!("1.5"))), Some(1.5));
+        assert_eq!(maybe_stat_num(Some(&json!(".5"))), Some(0.5));
+        assert_eq!(maybe_stat_num(Some(&json!("3.5"))), Some(3.5));
+        assert_eq!(maybe_stat_num(Some(&Value::Null)), None);
+        assert_eq!(maybe_stat_num(None), None);
         // Every starred form the corpus prints.
-        assert_eq!(maybe_stat_int(Some(&json!("*"))), Some(0));
-        assert_eq!(maybe_stat_int(Some(&json!("1+*"))), Some(1));
-        assert_eq!(maybe_stat_int(Some(&json!("*+1"))), Some(1));
-        assert_eq!(maybe_stat_int(Some(&json!("2+*"))), Some(2));
-        assert_eq!(maybe_stat_int(Some(&json!("7-*"))), Some(7));
-        assert_eq!(maybe_stat_int(Some(&json!("*²"))), Some(0));
+        assert_eq!(maybe_stat_num(Some(&json!("*"))), Some(0.0));
+        assert_eq!(maybe_stat_num(Some(&json!("1+*"))), Some(1.0));
+        assert_eq!(maybe_stat_num(Some(&json!("*+1"))), Some(1.0));
+        assert_eq!(maybe_stat_num(Some(&json!("2+*"))), Some(2.0));
+        assert_eq!(maybe_stat_num(Some(&json!("7-*"))), Some(7.0));
+        assert_eq!(maybe_stat_num(Some(&json!("*²"))), Some(0.0));
+        // The two rules compose: a star is 0 and the printed half beside it survives.
+        assert_eq!(maybe_stat_num(Some(&json!("1.5+*"))), Some(1.5));
         // `?` IS ZERO TOO, and that is measured rather than reasoned from the star: `Shellephant`
         // (ust/121) prints `?` on both sides, and on api.scryfall.com 2026-08-17
         // `!"Shellephant" tou=0` is 1, `tou>=0` is 1 and `tou>0` is 0. It is the whole of
         // `toughness<1` answering 433 against 434 — read as ABSENT, it satisfied no comparison at
         // all.
-        assert_eq!(maybe_stat_int(Some(&json!("?"))), Some(0));
+        assert_eq!(maybe_stat_num(Some(&json!("?"))), Some(0.0));
         // Everything else that is not a number stays absent. `∞` is deliberately among them:
         // `Infinity Elemental` is `ulst`, which api.scryfall.com does not answer for, so there is
         // no measurement to follow and an unmeasured value is not extended.
-        assert_eq!(maybe_stat_int(Some(&json!("X"))), None);
-        assert_eq!(maybe_stat_int(Some(&json!("\u{221e}"))), None);
-        assert_eq!(maybe_stat_int(Some(&json!("*?"))), None);
+        assert_eq!(maybe_stat_num(Some(&json!("X"))), None);
+        assert_eq!(maybe_stat_num(Some(&json!("\u{221e}"))), None);
+        assert_eq!(maybe_stat_num(Some(&json!("*?"))), None);
         // And it reaches the row: the column is what `pow=`/`tou=` compares, the text beside it is
         // what the card object serves.
         let mut card = minimal_card("Starry");
@@ -2425,8 +2460,8 @@ mod tests {
         card["power"] = json!("*");
         card["toughness"] = json!("1+*");
         let draft = transform(&card).unwrap().unwrap();
-        assert_eq!(draft.creature_power, Some(0));
-        assert_eq!(draft.creature_toughness, Some(1));
+        assert_eq!(draft.creature_power, Some(0.0));
+        assert_eq!(draft.creature_toughness, Some(1.0));
         assert_eq!(draft.creature_power_text.as_deref(), Some("*"));
         assert_eq!(draft.creature_toughness_text.as_deref(), Some("1+*"));
     }
@@ -2518,8 +2553,8 @@ mod tests {
     #[test]
     fn llanowar_elves_creature_fields() {
         let draft = transform(&fixture("llanowar_elves")).unwrap().unwrap();
-        assert_eq!(draft.creature_power, Some(1));
-        assert_eq!(draft.creature_toughness, Some(1));
+        assert_eq!(draft.creature_power, Some(1.0));
+        assert_eq!(draft.creature_toughness, Some(1.0));
         assert_eq!(draft.creature_power_text.as_deref(), Some("1"));
         assert_eq!(draft.produced_mana, vec!["G"]);
         assert_eq!(draft.card_subtypes, vec!["Elf", "Druid"]);
@@ -2559,8 +2594,8 @@ mod tests {
 
         // Stat group comes from the FRONT face, whole — 1/1, not the back's 3/2,
         // and never a mix of the two.
-        assert_eq!(draft.creature_power, Some(1));
-        assert_eq!(draft.creature_toughness, Some(1));
+        assert_eq!(draft.creature_power, Some(1.0));
+        assert_eq!(draft.creature_toughness, Some(1.0));
         assert_eq!(draft.creature_power_text.as_deref(), Some("1"));
         assert_eq!(draft.creature_toughness_text.as_deref(), Some("1"));
 

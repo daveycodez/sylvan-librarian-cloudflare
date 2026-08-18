@@ -2344,8 +2344,17 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
         // corpus's ~1% so loyalty predicates actually match something under the fuzzer's small stores.
         match fuzz_weighted(rng, &[(0u8, 55), (1, 6), (2, 39)]) {
             0 => {
-                let power = (i32::from(cmc) - 1 + rng.random_range(-1..=2)).clamp(0, 12) as i8;
-                let toughness = (i32::from(power) + rng.random_range(-1..=2)).clamp(1, 13) as i8;
+                let power = (i32::from(cmc) - 1 + rng.random_range(-1..=2)).clamp(0, 12);
+                let toughness = (power + rng.random_range(-1..=2)).clamp(1, 13);
+                // A HALF on a slice of the fuzzed cards, the same way `cmc` above gets one: the
+                // corpus's eleven printed halves are the reason these columns are f32, and a
+                // fuzzer that only ever emits integers cannot falsify the plane/index/sort-key
+                // agreement for a value that sits between two buckets.
+                let (power, toughness) = if i % 13 == 0 {
+                    (power as f32 + 0.5, toughness as f32 + 0.5)
+                } else {
+                    (power as f32, toughness as f32)
+                };
                 card.creature_power = Some(power);
                 card.creature_toughness = Some(toughness);
                 // Subtypes correlate with the creature type (real data: creature subtypes only
@@ -7265,9 +7274,9 @@ fn all_match_promotion_never_fires_for_printing_space_tight_results() {
 fn all_match_promotion_correct_for_card_space_exact_predicate() {
     let mut vocab = VocabInterner::new();
     let mut card0 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
-    card0.creature_power = Some(5);
+    card0.creature_power = Some(5.0);
     let mut card1 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
-    card1.creature_power = Some(1);
+    card1.creature_power = Some(1.0);
     let mut data = store_of(vec![card0, card1], &[2, 3], vocab);
     data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(f32::from));
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
@@ -9590,7 +9599,7 @@ fn run_query_plane_path_parity() {
 fn usd_inside_arithmetic_evaluates_in_dollars_not_cents() {
     let mut vocab = VocabInterner::new();
     let mut card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
-    card.creature_power = Some(52);
+    card.creature_power = Some(52.0);
     let mut data = store_of(vec![card], &[1], vocab);
     data.printings[0].price_usd = Some(5000); // $50.00
     data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
@@ -9643,14 +9652,19 @@ fn usd_compared_directly_against_another_field_evaluates_in_dollars() {
 fn numeric_plane_fixture_store() -> CardData {
     let mut vocab = VocabInterner::new();
     // (cmc, power, toughness); card 0 is a noncreature (power/toughness absent).
-    let specs: &[(f32, Option<i8>, Option<i8>)] = &[
+    let specs: &[(f32, Option<f32>, Option<f32>)] = &[
         (0.0, None, None),
-        (4.0, Some(-1), Some(-1)),
-        (12.0, Some(12), Some(12)),
-        (13.0, Some(15), Some(20)),
-        (14.0, Some(16), Some(25)),
-        (6.0, Some(3), Some(3)),
-        (3.0, Some(0), Some(0)),
+        (4.0, Some(-1.0), Some(-1.0)),
+        (12.0, Some(12.0), Some(12.0)),
+        (13.0, Some(15.0), Some(20.0)),
+        (14.0, Some(16.0), Some(25.0)),
+        (6.0, Some(3.0), Some(3.0)),
+        (3.0, Some(0.0), Some(0.0)),
+        // NO FRACTIONAL ROW HERE, deliberately. The columns can hold one since the eleven Unhinged
+        // cards stopped being truncated, but an off-lattice value widens the HI bucket's observed
+        // range for the WHOLE fixture and makes `compile_plane` decline thresholds these tests
+        // exist to prove it accepts. Fractions get their own store, exactly as `cmc`'s do — see
+        // `fractional_stat_fixture_store`.
     ];
     let cards = specs
         .iter()
@@ -9843,6 +9857,134 @@ fn fractional_cmc_plane_compilation_agrees_with_the_filter() {
     // would be a silent loss of the whole plane fast path for cmc, which no assertion above
     // could notice.
     assert!(compiled > 0, "every cmc threshold declined -- the plane path for cmc is gone, not just narrower");
+}
+
+// ─── fractional power / toughness ────────────────────────────────────────────
+// The `cmc` block above, one column family over. Eleven Unhinged cards print a HALF power or
+// toughness and the columns were `i8`, so each truncated onto its floor — and then ANSWERED that
+// floor. Measured on api.scryfall.com 2026-08-17: `tou=0` is 432 there and was 433 here (Little
+// Girl, `.5`/`.5`), `pow=2` is 5730 against 5733 (Smart Ass, Stone-Cold Basilisk, Vile Bile, all
+// `2.5`). Note the DIRECTION, which is what made this defect get diagnosed backwards: truncation
+// cannot lose a row from `tou<1`, because 0 satisfies it exactly as 0.5 does. It over-catches.
+
+/// Ascending, so card id == position is also the expected `order=power` sort order. The corpus's
+/// real shape: every printed fraction in Magic is a half, and the negatives are real too (Spinal
+/// Parasite is -1/-1).
+const FRACTIONAL_STATS: [(f32, f32); 6] = [(-1.0, -1.0), (0.0, 0.5), (0.5, 0.5), (1.5, 1.0), (2.5, 3.5), (3.5, 2.0)];
+
+/// A store whose power/toughness are the fractional shape, kept SEPARATE from
+/// `numeric_plane_fixture_store` for the reason recorded there: one off-lattice value widens the
+/// hi bucket for the whole fixture, so mixing the two would make each set of assertions weaker.
+fn fractional_stat_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = FRACTIONAL_STATS
+        .iter()
+        .enumerate()
+        .map(|(i, &(p, t))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.creature_power = Some(p);
+            c.creature_toughness = Some(t);
+            c
+        })
+        .collect();
+    let mut data = store_of(cards, &[1usize; FRACTIONAL_STATS.len()], vocab);
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power);
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data
+}
+
+/// End to end through `run_query`, in BOTH directions. `pow=0.5` must find the half-power cards,
+/// and `pow=0` must not — the second is the half an integer store gets wrong while still looking
+/// like it works, and it is the one that showed up against Scryfall.
+#[test]
+fn a_fractional_stat_is_not_truncated_to_its_floor() {
+    let data = fractional_stat_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let cases: [(NumField, CmpOp, f64, usize, &str); 8] = [
+        (NumField::Power, CmpOp::Eq, 0.5, 1, "pow=0.5 finds the half-power card"),
+        (NumField::Power, CmpOp::Eq, 0.0, 1, "pow=0 finds ONLY the zero card, not the 0.5 one"),
+        (NumField::Power, CmpOp::Eq, 2.0, 0, "pow=2 matches nothing: 2.5 is not 2"),
+        (NumField::Power, CmpOp::Eq, 3.0, 0, "pow=3 matches nothing: 3.5 is not 3"),
+        (NumField::Toughness, CmpOp::Eq, 0.0, 0, "tou=0 matches nothing: both 0.5s stay 0.5"),
+        (NumField::Toughness, CmpOp::Lt, 1.0, 3, "tou<1 keeps the -1 and BOTH halves"),
+        (NumField::Power, CmpOp::Gt, 2.0, 2, "pow>2 is 2.5 and 3.5, not 2.5's floor"),
+        (NumField::Power, CmpOp::Le, -1.0, 1, "the negative end still works"),
+    ];
+    for (field, op, rhs, want, why) in cases {
+        let mut f = FilterExpr::NumericCmp { lhs: NumExpr::Field(field), op, rhs: NumExpr::Const(rhs) };
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, want, "{why}");
+    }
+}
+
+/// Whatever the plane compiles, it must agree with the filter — the same contract
+/// `fractional_cmc_plane_compilation_agrees_with_the_filter` holds, over the columns that just
+/// changed type. An off-lattice value routes to the HI bucket rather than an interior one-hot, so
+/// the interesting failure is a plane that answers the FLOOR's cards.
+#[test]
+fn fractional_stat_plane_compilation_agrees_with_the_filter() {
+    let data = fractional_stat_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut bitmap: Vec<u64> = Vec::new();
+    let mut compiled = 0;
+    let thresholds: [f64; 8] = [-1.0, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.5];
+    for (label, field) in [("power", NumField::Power), ("toughness", NumField::Toughness)] {
+        for op in [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge] {
+            for &t in &thresholds {
+                let f = FilterExpr::NumericCmp { lhs: NumExpr::Field(field), op, rhs: NumExpr::Const(t) };
+                let Some(pe) = compile_plane(&f, &archived.indexes.planes, &archived.indexes.oracle_trigram.words) else {
+                    continue;
+                };
+                compiled += 1;
+                eval_planes(&pe, &archived.indexes.planes, &mut bitmap);
+                for (cid, card) in archived.cards.iter().enumerate() {
+                    let want = f.eval_card(card, &archived.strings) == Tri::True;
+                    assert_eq!(bitmap_contains(&bitmap, cid as u32), want, "{label} {op:?} {t}: plane disagrees at card {cid}");
+                }
+            }
+        }
+    }
+    assert!(compiled > 0, "every stat threshold declined -- the plane path for power/toughness is gone, not just narrower");
+}
+
+/// The tuple key holds BITS now, because an f32 is neither `Hash` nor `Eq`. A key that truncated
+/// would collapse (0.5, 0.5) onto (0, 0) and lose a combination; one that failed to normalize
+/// `-0.0` would invent one.
+#[test]
+fn fractional_stats_survive_the_arith_tuple_route() {
+    let data = fractional_stat_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    assert_eq!(
+        archived.indexes.arith_tuple.keys.len(),
+        FRACTIONAL_STATS.len(),
+        "each distinct (power, toughness) pair must intern as its own combination"
+    );
+    // `pow>tou` is true for exactly (1.5, 1.0) and (3.5, 2.0); under truncation (1, 1) would tie.
+    let mut f = FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Power),
+        op: CmpOp::Gt,
+        rhs: NumExpr::Field(NumField::Toughness),
+    };
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 2, "pow>tou is the 1.5/1 and 3.5/2 cards; truncation would tie the first");
+}
+
+/// A half step is a real position in the ordering, and `order=power` is a permuted column, so this
+/// is the sort permutation's own view of the same question `fractional_cmc_orders_between_its_
+/// integer_neighbours` asks of cmc.
+#[test]
+fn fractional_stats_order_between_their_integer_neighbours() {
+    let data = fractional_stat_fixture_store();
+    let perms = build_sort_permutations(&data.cards);
+    let asc = perms.power[0].clone();
+    let want: Vec<u32> = (0..FRACTIONAL_STATS.len() as u32).collect();
+    assert_eq!(asc, want, "FRACTIONAL_STATS is ascending by power, so the permutation must be identity");
 }
 
 /// A half step is a real position in the ordering, not a tie with its floor. Under an integer
@@ -12995,7 +13137,7 @@ fn arith_tuple_key_budget_catches_a_blown_domain() {
         .map(|i| {
             let mut c = stub_card(i as u128, TYPE_CREATURE, &[], &mut vocab);
             c.cmc = Some((i % 251) as f32);
-            c.creature_power = Some((i / 251) as i8);
+            c.creature_power = Some((i / 251) as f32);
             c
         })
         .collect();
@@ -13535,8 +13677,8 @@ fn two_faces() -> (Vec<OracleFace>, Vec<PrintingFace>) {
             card_colors: Some(0b0000_0001), // W
             color_indicator: 0,
             // The front's 2/2 and its {W} cost, parsed — the searchable half of the same face.
-            creature_power: Some(2),
-            creature_toughness: Some(2),
+            creature_power: Some(2.0),
+            creature_toughness: Some(2.0),
             planeswalker_loyalty: None,
             mana_cost: Some(face_mana_cost("{W}", &mut ManaVocabInterner::new()).unwrap()),
         },
@@ -13552,8 +13694,8 @@ fn two_faces() -> (Vec<OracleFace>, Vec<PrintingFace>) {
             card_colors: Some(0b0000_1000), // R
             color_indicator: 0b0000_1000,
             // A bigger back face with no cost of its own: the shape `pow>=3` used to miss.
-            creature_power: Some(5),
-            creature_toughness: Some(4),
+            creature_power: Some(5.0),
+            creature_toughness: Some(4.0),
             planeswalker_loyalty: None,
             mana_cost: None,
         },
@@ -13623,7 +13765,7 @@ fn single_faced_cards_carry_no_faces() {
 /// values per column, compared existentially over the CROSS PRODUCT, answers both as measured.
 #[test]
 fn a_face_satisfies_a_numeric_predicate_the_merged_row_cannot() {
-    fn card_with(faces: &[(Option<i8>, Option<i8>)]) -> Vec<u8> {
+    fn card_with(faces: &[(Option<f32>, Option<f32>)]) -> Vec<u8> {
         let mut vocab = VocabInterner::new();
         let mut card = stub_card(1, 0, &[], &mut vocab);
         // The merged row is the front face's group, exactly as _FACE_STAT_GROUPS leaves it.
@@ -13667,7 +13809,7 @@ fn a_face_satisfies_a_numeric_predicate_the_merged_row_cannot() {
     };
 
     // Delver of Secrets // Insectile Aberration: 1/1 front, 3/2 back.
-    let delver = card_with(&[(Some(1), Some(1)), (Some(3), Some(2))]);
+    let delver = card_with(&[(Some(1.0), Some(1.0)), (Some(3.0), Some(2.0))]);
     let delver = rkyv::access::<Archived<OracleCard>, Error>(&delver).expect("access");
     let strings: Vec<String> = Vec::new();
     let strings_bytes = rkyv::to_bytes::<Error>(&strings).expect("serialize strings");
@@ -13688,7 +13830,7 @@ fn a_face_satisfies_a_numeric_predicate_the_merged_row_cannot() {
 
     // Huntmaster of the Fells // Ravager of the Fells: 2/2 // 4/4. pow>tou -> 1 there, and no
     // single face has power above its own toughness.
-    let huntmaster = card_with(&[(Some(2), Some(2)), (Some(4), Some(4))]);
+    let huntmaster = card_with(&[(Some(2.0), Some(2.0)), (Some(4.0), Some(4.0))]);
     let huntmaster = rkyv::access::<Archived<OracleCard>, Error>(&huntmaster).expect("access");
     assert!(
         matches_tri(t(huntmaster, &field_vs_field(NumField::Power, CmpOp::Gt, NumField::Toughness)), Tri::True),
@@ -13697,20 +13839,20 @@ fn a_face_satisfies_a_numeric_predicate_the_merged_row_cannot() {
 
     // Thing in the Ice // Awoken Horror: 0/4 // 7/8. pow=tou -> 404 there, which a max-vs-max
     // reading (7 against 8) also gives — but pow>tou -> 1 there, which it does not.
-    let thing = card_with(&[(Some(0), Some(4)), (Some(7), Some(8))]);
+    let thing = card_with(&[(Some(0.0), Some(4.0)), (Some(7.0), Some(8.0))]);
     let thing = rkyv::access::<Archived<OracleCard>, Error>(&thing).expect("access");
     assert!(matches_tri(t(thing, &field_vs_field(NumField::Power, CmpOp::Eq, NumField::Toughness)), Tri::False));
     assert!(matches_tri(t(thing, &field_vs_field(NumField::Power, CmpOp::Gt, NumField::Toughness)), Tri::True));
 
     // A face with no value contributes none: the adventure half of Bonecrusher Giant // Stomp is
     // costless and statless, and `pow=4` still answers 1 without a NULL leaking in.
-    let bonecrusher = card_with(&[(Some(4), Some(3)), (None, None)]);
+    let bonecrusher = card_with(&[(Some(4.0), Some(3.0)), (None, None)]);
     let bonecrusher = rkyv::access::<Archived<OracleCard>, Error>(&bonecrusher).expect("access");
     assert!(matches_tri(t(bonecrusher, &num(NumField::Power, CmpOp::Eq, 4.0)), Tri::True));
     assert!(matches_tri(t(bonecrusher, &num(NumField::Power, CmpOp::Eq, 0.0)), Tri::False));
 
     // A card with no faces is unchanged, which is the 82% path: same single value, same NULL.
-    let plain = card_with(&[(Some(1), Some(1))]);
+    let plain = card_with(&[(Some(1.0), Some(1.0))]);
     let plain = rkyv::access::<Archived<OracleCard>, Error>(&plain).expect("access");
     assert!(matches_tri(t(plain, &num(NumField::Power, CmpOp::Ge, 3.0)), Tri::False));
     assert!(matches_tri(t(plain, &num(NumField::Loyalty, CmpOp::Ge, 1.0)), Tri::Null));
@@ -13905,28 +14047,33 @@ fn the_colour_planes_answer_exactly_what_tri_answers() {
 fn front_face_stats_match_card_columns() {
     // The printed forms the corpus actually holds, including the ones that are not numbers.
     let creature = Some("Creature — Human Wizard");
-    assert_eq!(face_stat_nums(creature, Some("3"), Some("2"), None), (Some(3), Some(2), None));
+    assert_eq!(face_stat_nums(creature, Some("3"), Some("2"), None), (Some(3.0), Some(2.0), None));
     // `*` IS ZERO and the arithmetic around it still runs — `tou<1` is 434 on api.scryfall.com
-    // against this port's 273 before the fix, 160 cards. The builder's `maybe_stat_int` carries
+    // against this port's 273 before the fix, 160 cards. The builder's `maybe_stat_num` carries
     // the three cards that pin the arithmetic; this is the same rule on a face's own string.
-    assert_eq!(face_stat_nums(creature, Some("*"), Some("1+*"), None), (Some(0), Some(1), None));
-    assert_eq!(face_stat_nums(creature, Some("2+*"), Some("7-*"), None), (Some(2), Some(7), None));
+    assert_eq!(face_stat_nums(creature, Some("*"), Some("1+*"), None), (Some(0.0), Some(1.0), None));
+    assert_eq!(face_stat_nums(creature, Some("2+*"), Some("7-*"), None), (Some(2.0), Some(7.0), None));
     // `?` IS ZERO TOO, on its own measurement rather than by analogy: `Shellephant` (ust/121)
     // prints it on both sides and api.scryfall.com answers `tou=0` 1, `tou>=0` 1, `tou>0` 0.
     // Read as absent it satisfied no comparison at all, which was the last row of `toughness<1`.
-    assert_eq!(face_stat_nums(creature, Some("*\u{b2}"), Some("?"), None), (Some(0), Some(0), None));
+    assert_eq!(face_stat_nums(creature, Some("*\u{b2}"), Some("?"), None), (Some(0.0), Some(0.0), None));
     // `∞` stays absent — `Infinity Elemental` is `ulst`, unanswerable there, so nothing measured.
     assert_eq!(face_stat_nums(creature, Some("\u{221e}"), None, None), (None, None, None));
     // Loyalty keeps the old rule: the two cards printing `*` there are funny-set cards
     // api.scryfall.com will not answer for at all, so there is nothing measured to follow.
     assert_eq!(face_stat_nums(Some("Planeswalker — Duck"), None, None, Some("*")), (None, None, None));
-    assert_eq!(face_stat_nums(creature, Some("-1"), Some("0"), None), (Some(-1), Some(0), None));
-    // int(float(...)) truncates, exactly as maybe_int does.
-    assert_eq!(face_stat_nums(creature, Some("1.5"), None, None), (Some(1), None, None));
+    assert_eq!(face_stat_nums(creature, Some("-1"), Some("0"), None), (Some(-1.0), Some(0.0), None));
+    // A PRINTED HALF IS KEPT, which is the whole reason this pair is f32 rather than i8. Eleven
+    // Unhinged cards print one and truncation made each ANSWER its floor: `pow=2` was 5733 here
+    // against api.scryfall.com's 5730 (Smart Ass, Stone-Cold Basilisk, Vile Bile, all `2.5`).
+    assert_eq!(face_stat_nums(creature, Some("1.5"), None, None), (Some(1.5), None, None));
+    assert_eq!(face_stat_nums(creature, Some(".5"), Some(".5"), None), (Some(0.5), Some(0.5), None));
+    // The arithmetic runs in the same units: a star is 0 and the printed half survives beside it.
+    assert_eq!(face_stat_nums(creature, Some("1.5+*"), None, None), (Some(1.5), None, None));
     // Not creature-like: the card-level column is None there, so the face's must be too.
     assert_eq!(face_stat_nums(Some("Legendary Planeswalker — Tibalt"), Some("2"), Some("2"), Some("5")), (None, None, Some(5)));
     // Vehicles and Spacecraft are inside the gate, as in card_processing.py.
-    assert_eq!(face_stat_nums(Some("Artifact — Vehicle"), Some("4"), Some("3"), None), (Some(4), Some(3), None));
+    assert_eq!(face_stat_nums(Some("Artifact — Vehicle"), Some("4"), Some("3"), None), (Some(4.0), Some(3.0), None));
     assert_eq!(face_stat_nums(Some("Land"), Some("9"), Some("9"), None), (None, None, None));
 }
 
@@ -14743,8 +14890,17 @@ fn the_archived_row_sizes_stay_pinned() {
     // printings pay nothing. That routing is a size decision and this assertion is where it was
     // made: `Printing` has no padding left — 2026081615 spent the last of it — so ONE byte there
     // rounds the row to 320 and costs 8.6 MB, against ~0.6 MB for the whole change here.
+    // 272 -> 288 with 2026081704, and again the PRINTING does not move: `creature_power` and
+    // `creature_toughness` went `Option<i8>` -> `Option<f32>` (2 archived bytes each -> 8) so the
+    // eleven Unhinged cards that print a HALF stop being truncated onto the integer they would
+    // then wrongly answer. Both columns are card-level and face-level; neither is on `Printing`,
+    // which is why a 6x widening of two columns costs ~618 KB over the 38,626 cards rather than
+    // the ~8.6 MB one byte on `Printing` would have. Sized here because that is the trade the
+    // encoding choice turned on: the alternative — a scaled integer at half-unit granularity —
+    // would have kept the row at 272 by staying in an integer, and could not, since B.F.M. is
+    // 99/99 and doubles past `i8::MAX`.
     assert_eq!(std::mem::size_of::<Archived<Printing>>(), 304);
-    assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 272);
+    assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 288);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
     // 32 -> 48 with 2026081702, and PINNED NOW because that is the size decision the watermark fix
     // turned on. `watermark` is per FACE, and `Printing` is the one row it could not go on: that

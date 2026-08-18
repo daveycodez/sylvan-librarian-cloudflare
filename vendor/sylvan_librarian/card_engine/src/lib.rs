@@ -325,14 +325,18 @@ pub(crate) fn mana_cmc(s: &str) -> f32 {
 /// the front face in `front_face_stats_match_card_columns`.
 fn stat_str_to_int(s: Option<&str>) -> Option<f64> {
     let v: f64 = s?.trim().parse().ok()?;
-    if v.is_finite() { Some(v.trunc()) } else { None }
+    if v.is_finite() { Some(v) } else { None }
 }
 
 /// The same rule for a printed POWER or TOUGHNESS, where `*` AND `?` ARE ZERO and the arithmetic
 /// printed around a star still runs — `1+*` is 1, `7-*` is 7, and `*`, `*²` and `?` are 0.
 ///
-/// The builder's `maybe_stat_int` (engine/builder/src/transform.rs) is the card-level twin and
-/// carries the three api.scryfall.com measurements that pin the arithmetic. THE TWO MUST MOVE
+/// A PRINTED HALF IS KEPT AS A HALF, which is why nothing here truncates any more: eleven Unhinged
+/// cards print one, and rounding each to its floor made it wrongly answer that floor (`pow=2` was
+/// 5733 here against api.scryfall.com's 5730). Same fix, same shape, as `cmc`'s.
+///
+/// The builder's `maybe_stat_num` (engine/builder/src/transform.rs) is the card-level twin and
+/// carries the api.scryfall.com measurements that pin every rule here. THE TWO MUST MOVE
 /// TOGETHER: `front_face_stats_match_card_columns` compares them on the front face of every card
 /// in the fixture store, and the numeric PLANES are built from face values
 /// (`face_stat_values`), so a face that read `*` as absent while the column read 0 would narrow
@@ -365,7 +369,7 @@ fn stat_str_to_int_star(s: Option<&str>) -> Option<f64> {
         }
         match t.parse::<f64>() {
             Ok(n) if n.is_finite() => {
-                *total += sign * n.trunc();
+                *total += sign * n;
                 true
             }
             _ => false,
@@ -398,13 +402,13 @@ pub(crate) fn face_stat_nums(
     power: Option<&str>,
     toughness: Option<&str>,
     loyalty: Option<&str>,
-) -> (Option<i8>, Option<i8>, Option<u8>) {
+) -> (Option<f32>, Option<f32>, Option<u8>) {
     let t = type_line.unwrap_or("");
     let creaturelike = t.contains("Creature") || t.contains("Vehicle") || t.contains("Spacecraft");
     let (p, tough) = if creaturelike {
         (
-            stat_str_to_int_star(power).map(|v| v as i8),
-            stat_str_to_int_star(toughness).map(|v| v as i8),
+            stat_str_to_int_star(power).map(|v| v as f32),
+            stat_str_to_int_star(toughness).map(|v| v as f32),
         )
     } else {
         (None, None)
@@ -520,8 +524,8 @@ struct OracleFace {
     // `mana_cost` carries the face's OWN cmc (the sum of its own pips, via `mana_cmc`), which is
     // the value `m=` compares: Fire's is 2 where the card's is 4. `devotion` is left zero -- the
     // devotion column stays card-level, unmeasured against Scryfall and unchanged by this.
-    creature_power: Option<i8>,
-    creature_toughness: Option<i8>,
+    creature_power: Option<f32>,
+    creature_toughness: Option<f32>,
     planeswalker_loyalty: Option<u8>,
     /// `None` when the face printed no mana cost at all -- a transform back, a flip back, the
     /// land half of an MDFC. Measured: `!"Delver of Secrets // Insectile Aberration" m=0` is 404
@@ -805,8 +809,13 @@ struct OracleCard {
     // sets, so today every stored value is integral and this only stops the TYPE from being
     // the thing that loses the fraction.
     cmc: Option<f32>,
-    creature_power: Option<i8>,       // can be negative (e.g. Char-Rumbler)
-    creature_toughness: Option<i8>,
+    // FRACTIONAL, and for the same reason `cmc` above is — eleven Unhinged cards print a HALF
+    // (Little Girl `.5`/`.5`, Smart Ass `2.5`/`1`, Assquatch `3.5`/`3.5`) and an `i8` truncated
+    // each to its floor, where it then wrongly ANSWERED that floor: `tou=0` was 433 here against
+    // api.scryfall.com's 432, `pow=2` 5733 against 5730. Still signed — Char-Rumbler and Spinal
+    // Parasite are -1.
+    creature_power: Option<f32>,
+    creature_toughness: Option<f32>,
     planeswalker_loyalty: Option<u8>, // always 1-12
     edhrec_rank: Option<u32>,         // up to ~30k unique cards
     cubecobra_score: Option<f32>,
@@ -1151,8 +1160,8 @@ struct CardRow {
     released_at_int: Option<u32>,
 
     cmc: Option<f32>,
-    creature_power: Option<i8>,
-    creature_toughness: Option<i8>,
+    creature_power: Option<f32>,
+    creature_toughness: Option<f32>,
     planeswalker_loyalty: Option<u8>,
     card_rarity_int: Option<u8>,
     collector_number_int: Option<u16>,
@@ -1219,8 +1228,8 @@ struct FaceRow {
     color_indicator: u8,
     // The searchable half — see OracleFace's own comment. Parsed here, at ingest, from the face's
     // own printed strings, so the spill codec and both readers carry one representation.
-    creature_power: Option<i8>,
-    creature_toughness: Option<i8>,
+    creature_power: Option<f32>,
+    creature_toughness: Option<f32>,
     planeswalker_loyalty: Option<u8>,
     mana_cost: Option<ManaCost>,
     illustration_id: u128,
@@ -3355,8 +3364,12 @@ fn numeric_candidates(idx: &Archived<NumericIndex>, op: CmpOp, val: f64, n_cards
 #[derive(Archive, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
 struct ArithTupleKey {
     cmc_bits: Option<u32>,
-    power: Option<i8>,
-    toughness: Option<i8>,
+    // BITS, for the same reason `cmc` is: an f32 is neither `Hash` nor `Eq`, and these two became
+    // f32 when the corpus's eleven printed halves stopped being truncated. `+ 0.0` on the way in
+    // normalizes `-0.0` (the corpus prints "-0") onto `0.0`, so two values that every comparison
+    // treats as equal cannot intern as two combinations and inflate the distinct-key budget.
+    power_bits: Option<u32>,
+    toughness_bits: Option<u32>,
     loyalty: Option<u8>,
 }
 
@@ -3421,8 +3434,8 @@ fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
     for (i, c) in cards.iter().enumerate() {
         // `face_stat_values` is empty when the card has no value at all for the column; a single
         // None slot keeps that card interning one combination with a NULL there, exactly as before.
-        let opt = |vs: Vec<i8>| -> Vec<Option<i8>> {
-            if vs.is_empty() { vec![None] } else { vs.into_iter().map(Some).collect() }
+        let opt = |vs: Vec<f32>| -> Vec<Option<u32>> {
+            if vs.is_empty() { vec![None] } else { vs.into_iter().map(|v| Some((v + 0.0).to_bits())).collect() }
         };
         let powers = opt(face_stat_values(c, |c| c.creature_power, |f| f.creature_power));
         let toughnesses = opt(face_stat_values(c, |c| c.creature_toughness, |f| f.creature_toughness));
@@ -3432,7 +3445,12 @@ fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
         for &power in &powers {
             for &toughness in &toughnesses {
                 for &loyalty in &loyalties {
-                    let key = ArithTupleKey { cmc_bits: c.cmc.map(f32::to_bits), power, toughness, loyalty };
+                    let key = ArithTupleKey {
+                        cmc_bits: c.cmc.map(|v| (v + 0.0).to_bits()),
+                        power_bits: power,
+                        toughness_bits: toughness,
+                        loyalty,
+                    };
                     let id = *interner.entry(key).or_insert_with(|| {
                         keys.push(key);
                         postings.push(Vec::new());
@@ -3491,8 +3509,8 @@ fn arith_tuple_narrow(filter: &FilterExpr, idx: &Archived<ArithTupleIndex>, n_ca
         // cmc goes back through `from_bits` first -- the same round trip `to_bits` made at
         // build time, so the key and the card widen from the identical f32.
         let cmc = key.cmc_bits.as_ref().map(|v| f64::from(f32::from_bits(u32::from(*v))));
-        let power = key.power.as_ref().map(|v| f64::from(*v));
-        let toughness = key.toughness.as_ref().map(|v| f64::from(*v));
+        let power = key.power_bits.as_ref().map(|v| f64::from(f32::from_bits(u32::from(*v))));
+        let toughness = key.toughness_bits.as_ref().map(|v| f64::from(f32::from_bits(u32::from(*v))));
         let loyalty = key.loyalty.as_ref().map(|v| f64::from(*v));
         let verdict = eval_arith_tuple_tri(lhs, *op, rhs, cmc, power, toughness, loyalty);
         if verdict == want {
@@ -16631,7 +16649,34 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                rules, which is a repeated or dropped row at a page boundary rather than a
 //                transposition. `SORT_KEY_VERSION` moves 1 -> 2 with it, because `SortCol::Name`
 //                also gained a (set code, collector number) second key.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081703;
+// 2026081703 -> 2026081704: POWER AND TOUGHNESS BECOME FRACTIONAL. `creature_power` and
+//                `creature_toughness` go `Option<i8>` -> `Option<f32>` on `OracleCard` (272 -> 288
+//                archived bytes) and on `OracleFace`, because eleven Unhinged cards print a HALF
+//                and an integer column truncated each onto the value it would then wrongly ANSWER.
+//                Measured on api.scryfall.com 2026-08-17: `tou=0` is 432 there and was 433 here
+//                (Little Girl `.5`), `pow=2` 5730 against 5733 (Smart Ass, Stone-Cold Basilisk,
+//                Vile Bile, all `2.5`). Note the direction — truncation cannot LOSE a row from
+//                `tou<1`, since 0 satisfies it exactly as 0.5 does; it over-catches the floor.
+//                A FLOAT AND NOT A SCALED INTEGER, following `cmc`, which took this same shape for
+//                this same bug (upstream #923, api/db/2026-08-12-01-fractional-mana-value.sql:
+//                `integer` -> `real`). Every fraction in the corpus is a half, so x2 would have
+//                sufficed arithmetically — and it cannot stay in an `i8` (B.F.M. is 99/99 and
+//                doubles past 127), it needs a x2 at every read site including `sort_col_bound`
+//                where a missed one is a silently mis-bounded permutation walk rather than a
+//                visible wrong count, and doubling collides with `NUM_INTERIOR_HI = 12`, costing
+//                `pow=7`..`pow=12` their interior one-hot planes. The float needs none of that:
+//                `sort_primary_f32`, `sort_col_card_value`, `build_sort_permutations`,
+//                `NumericIndex = Vec<(f32, u32)>`, `BucketBounds` and `filter.rs`'s widening to
+//                f64 were all already f32, and `encode_sort_key` already writes `f32_sort_bits`,
+//                which is total-order-preserving over every f32 — so the partitioned keys stay
+//                byte-comparable without a single unit conversion.
+//                THE SPILL CODEC MOVES WITH IT (1 byte -> 4 per column, card row and face row) and
+//                `ArithTupleKey` holds `power_bits`/`toughness_bits` because an f32 is neither
+//                `Hash` nor `Eq`, exactly as `cmc_bits` already did. THE CARD OBJECT DOES NOT
+//                MOVE: `power`/`toughness` JSON comes from `creature_power_text_id` /
+//                `creature_toughness_text_id` and never from the number, so the printed `½` a
+//                reader sees was never what this column held.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081704;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
