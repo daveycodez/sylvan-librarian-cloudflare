@@ -3721,6 +3721,7 @@ fn a_reversible_printing_prints_its_own_faces_name_and_face_layout() {
         card_name_folded_id: joined_name_folded,
         face_layout_id: normal,
         faces: vec![face(plain_name), face(plain_name)],
+        name_rank: 0,
     }];
     data.indexes.value_totals = build_all_value_totals(
         &data.cards,
@@ -11574,6 +11575,7 @@ fn exact_name_answers_the_joined_name_on_the_printing_that_prints_it() {
         card_name_folded_id: joined_folded,
         face_layout_id: normal,
         faces: Vec::new(),
+        name_rank: 0,
     }];
     data.strings = interner.strings;
     derive_name_collation(&mut data); // the assignment above discarded the collated ids store_of derived

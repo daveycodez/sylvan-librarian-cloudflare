@@ -922,6 +922,16 @@ struct DivergentPrinting {
     card_name_folded_id: u32,
     /// The joined top-level `name` those printings print ("Temple Garden // Temple Garden").
     card_name_id: u32,
+    /// Dense rank of `collate_name(card_name_folded_id)` in the SAME number line as
+    /// `OracleCard::name_rank` — `assign_name_ranks` ranks cards and these records together, over
+    /// the union of both name sets, so a printing's rank is directly comparable with any card's.
+    ///
+    /// `order=name` sorts a printing by THE NAME IT PRINTS, and these 81 print one their card does
+    /// not: `sld/1969` prints `Mechtitan // Mechtitan` where its card is `Mechtitan Core`, and
+    /// Scryfall orders it under `mechtitanmechtitan`. The rank has to be STORED rather than derived
+    /// at query time for the same reason `OracleCard::name_rank` is: it is a position in the
+    /// archive's whole name order, which no single row can compute.
+    name_rank: u32,
     /// Scryfall's FACE-level `layout` — a SECOND value those printings answer `layout:` with.
     ///
     /// Both faces of each of the 81 reversible printings carry the key and agree on its value
@@ -1405,6 +1415,33 @@ fn collated_name<'a>(card: &'a AOracleCard, strings: &'a AStrings) -> &'a str {
         return folded_name(card, strings);
     }
     str_at(strings, id).unwrap_or_else(|| folded_name(card, strings))
+}
+
+/// The name rank ONE PRINTING sorts by: its card's, or the divergent record's where this printing
+/// prints a name its card does not.
+///
+/// One definition, because three orderings must agree on it exactly — `sort_primary_f32` (every
+/// gathered plan's `SortCol::Name` key), `encode_sort_key`'s string twin below, and any future
+/// index over the same order. `assign_name_ranks` puts both ranks on one number line, so the
+/// substitution needs no scaling and no offset.
+pub(crate) fn printing_name_rank(card: &AOracleCard, p: &APrinting) -> u32 {
+    divergent_of(card, p).map_or_else(|| u32::from(card.name_rank), |d| u32::from(d.name_rank))
+}
+
+/// The COLLATED name one printing sorts by — `printing_name_rank`'s string twin, and the exact
+/// string that rank was assigned over.
+///
+/// Returns owned only for the 81 divergent printings (`collate_name` allocates); everything else
+/// borrows the card's interned collated name, which is the whole corpus bar those rows.
+pub(crate) fn printing_collated_name<'a>(
+    card: &'a AOracleCard,
+    p: &APrinting,
+    strings: &'a AStrings,
+) -> std::borrow::Cow<'a, str> {
+    match divergent_of(card, p) {
+        None => std::borrow::Cow::Borrowed(collated_name(card, strings)),
+        Some(d) => std::borrow::Cow::Owned(collate_name(str_at(strings, u32::from(d.card_name_folded_id)).unwrap_or(""))),
+    }
 }
 
 /// Sentinel for a printing with no artist (see Printing.card_artist_vid).
@@ -3981,26 +4018,48 @@ struct SortPermutations {
     cmc:       [Vec<u32>; 2],
     power:     [Vec<u32>; 2],
     toughness: [Vec<u32>; 2],
-    // Keyed on name_rank, so the ascending permutation is also the sorted-name
-    // lookup table: equal-name blocks are contiguous (rank is the primary key)
-    // and narrow_rec's ExactName arm binary-searches it.
-    name:      [Vec<u32>; 2],
+    // NO `name` PAIR, and its absence is load-bearing rather than an omission — see
+    // `ArchivedSortPermutations::get`. It was here, keyed on `OracleCard::name_rank`, until
+    // `order=name` became a printing-space order that a card-keyed permutation cannot express.
+    // The one other reader it once had is gone too: `narrow_rec`'s ExactName arm binary-searched
+    // this array and now goes through `indexes.name_trigram` instead.
+    //
     // Inverse of each column above, same [ascending, descending] layout.
     edhrec_inv:    [Vec<u32>; 2],
     cubecobra_inv: [Vec<u32>; 2],
     cmc_inv:       [Vec<u32>; 2],
     power_inv:     [Vec<u32>; 2],
     toughness_inv: [Vec<u32>; 2],
-    name_inv:      [Vec<u32>; 2],
 }
 
 impl ArchivedSortPermutations {
     /// The permutation for a streamable column/direction; None for the columns that have none.
     ///
-    /// Those are the printing-keyed ones -- rarity, the three prices, released, set and artist --
-    /// whose sort key depends on the prefer-chosen printing and so cannot be precomputed per card.
+    /// Those are the printing-keyed ones -- rarity, the three prices, released, set, artist and now
+    /// NAME -- whose sort key depends on the printing in hand and so cannot be precomputed per card.
     /// Colour is card-level and could have one; it does not yet, and returning None here costs only
     /// the streaming fast path, not correctness.
+    ///
+    /// # Why `Name` is on that list, which it was not
+    ///
+    /// `order=name` sorts a printing by THE NAME IT PRINTS, and 81 printings print one their card
+    /// does not — `sld/1969` prints `Mechtitan // Mechtitan` where its card is `Mechtitan Core`.
+    /// A card-space permutation emits every printing of a card at that card's name position, so
+    /// those 81 came out under the wrong name; measured against api.scryfall.com 2026-08-17, the
+    /// `layout:reversible_card` page has `mechtitancore…` before `mechtitanmechtitan` there and
+    /// the two transposed here.
+    ///
+    /// FIXING THE KEY WITHOUT DROPPING THE PERMUTATION WOULD HAVE BEEN WORSE THAN THE DEFECT.
+    /// `encode_sort_key` and `sort_primary_f32` have the printing in hand and can take the
+    /// divergent name in a few lines; the permutation walk cannot, because it is indexed by card.
+    /// Doing only the first would leave the cross-partition MERGE ordering by one rule and the
+    /// in-partition WALK by another, and a page boundary between two plans that disagree repeats
+    /// or drops rows — the exact class the opaque keys and the two-phase gather exist to prevent.
+    /// So the permutation went, and `name`/`name_inv` are not in the struct to be re-wired by
+    /// accident.
+    ///
+    /// It also unblocked the second half: `sort_col_secondary` can now give `Name` a (set,
+    /// collector number) second key, which a card-keyed permutation could never have expressed.
     fn get(&self, col: SortCol, descending: bool) -> Option<&Archived<Vec<u32>>> {
         let pair = match col {
             SortCol::EdhrecRank => &self.edhrec,
@@ -4008,8 +4067,8 @@ impl ArchivedSortPermutations {
             SortCol::Cmc        => &self.cmc,
             SortCol::Power      => &self.power,
             SortCol::Toughness  => &self.toughness,
-            SortCol::Name       => &self.name,
-            SortCol::Rarity
+            SortCol::Name
+            | SortCol::Rarity
             | SortCol::PriceUsd
             | SortCol::PriceEur
             | SortCol::PriceTix
@@ -4029,8 +4088,8 @@ impl ArchivedSortPermutations {
             SortCol::Cmc        => &self.cmc_inv,
             SortCol::Power      => &self.power_inv,
             SortCol::Toughness  => &self.toughness_inv,
-            SortCol::Name       => &self.name_inv,
-            SortCol::Rarity
+            SortCol::Name
+            | SortCol::Rarity
             | SortCol::PriceUsd
             | SortCol::PriceEur
             | SortCol::PriceTix
@@ -4121,16 +4180,38 @@ pub(crate) fn fold_ae(value: &str) -> String {
 /// Dense rank of `collate_name(folded name)` onto each card (equal collated names share a rank; the
 /// standard sort secondaries break their ties). Every card has a name, so unlike the other sort
 /// columns the rank is never absent.
+///
+/// RANKED OVER THE UNION OF CARD NAMES AND DIVERGENT PRINTING NAMES, on one number line. 81
+/// printings print a name their card does not (`DivergentPrinting`), `order=name` sorts a printing
+/// by the name IT prints, and a rank assigned over card names alone has no position for
+/// `mechtitanmechtitan` at all. Ranking both together is what makes `DivergentPrinting::name_rank`
+/// and `OracleCard::name_rank` comparable, which is the whole of what `sort_primary_f32` needs.
+///
+/// A divergent name that IS also some card's name shares that card's rank, exactly as two cards
+/// sharing a name do — this is a dense rank over the value, not over the row.
 fn assign_name_ranks(cards: &mut [OracleCard], strings: &[String]) {
-    let key = |c: &OracleCard| collated_name_of(c, strings).to_owned();
-    let mut ids: Vec<u32> = (0..cards.len() as u32).collect();
-    ids.sort_unstable_by(|&a, &b| key(&cards[a as usize]).cmp(&key(&cards[b as usize])));
+    // (collated name, card index, divergent index within that card). `None` addresses the card
+    // itself; `Some(d)` its d-th divergent record.
+    let mut keyed: Vec<(String, u32, Option<u32>)> = Vec::with_capacity(cards.len());
+    for (i, c) in cards.iter().enumerate() {
+        keyed.push((collated_name_of(c, strings).to_owned(), i as u32, None));
+        for (d, rec) in c.divergent.iter().enumerate() {
+            let folded = strings.get(rec.card_name_folded_id as usize).map_or("", String::as_str);
+            keyed.push((collate_name(folded), i as u32, Some(d as u32)));
+        }
+    }
+    keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut rank = 0u32;
-    for i in 0..ids.len() {
-        if i > 0 && key(&cards[ids[i - 1] as usize]) != key(&cards[ids[i] as usize]) {
+    for i in 0..keyed.len() {
+        if i > 0 && keyed[i - 1].0 != keyed[i].0 {
             rank += 1;
         }
-        cards[ids[i] as usize].name_rank = rank;
+        let (_, cid, div) = &keyed[i];
+        let card = &mut cards[*cid as usize];
+        match div {
+            None => card.name_rank = rank,
+            Some(d) => card.divergent[*d as usize].name_rank = rank,
+        }
     }
 }
 
@@ -4536,9 +4617,11 @@ fn sort_col_card_value(card: &AOracleCard, sort_col: SortCol) -> Option<f32> {
         SortCol::Cmc        => card.cmc.as_ref().map(|v| f32::from(*v)),
         SortCol::Power      => card.creature_power.as_ref().map(|v| f32::from(*v)),
         SortCol::Toughness  => card.creature_toughness.as_ref().map(|v| f32::from(*v)),
-        SortCol::Name       => Some(u32::from(card.name_rank) as f32),
-        // Unreachable: these have no permutation, so nothing walks them (see `get`).
-        SortCol::Rarity
+        // Unreachable: these have no permutation, so nothing walks them (see `get`). `Name` joined
+        // them when its permutation was dropped — a card-space value for it would be the CARD's
+        // name, which is the wrong answer for 81 printings and the reason the permutation went.
+        SortCol::Name
+        | SortCol::Rarity
         | SortCol::PriceUsd
         | SortCol::PriceEur
         | SortCol::PriceTix
@@ -5385,10 +5468,11 @@ fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     let (cmc, cmc_inv) = both(&|c| c.cmc, SortCol::Cmc);
     let (power, power_inv) = both(&|c| c.creature_power.map(|v| v as f32), SortCol::Power);
     let (toughness, toughness_inv) = both(&|c| c.creature_toughness.map(|v| v as f32), SortCol::Toughness);
-    let (name, name_inv) = both(&|c| Some(c.name_rank as f32), SortCol::Name);
+    // No `name` pair: `order=name` is a printing-space order and this is card space. See
+    // `ArchivedSortPermutations::get`.
     SortPermutations {
-        edhrec, cubecobra, cmc, power, toughness, name,
-        edhrec_inv, cubecobra_inv, cmc_inv, power_inv, toughness_inv, name_inv,
+        edhrec, cubecobra, cmc, power, toughness,
+        edhrec_inv, cubecobra_inv, cmc_inv, power_inv, toughness_inv,
     }
 }
 
@@ -8949,7 +9033,10 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
         SortCol::PriceTix   => p.price_tix.as_ref().map(|v| u32::from(*v) as f32),
         SortCol::Cubecobra  => card.cubecobra_score.as_ref().map(|v| f32::from(*v)),
         SortCol::EdhrecRank => card.edhrec_rank.as_ref().map(|v| u32::from(*v) as f32),
-        SortCol::Name       => Some(u32::from(card.name_rank) as f32),
+        // THE NAME THIS PRINTING PRINTS, not its card's. The two differ on 81 printings, which is
+        // the whole reason `divergent_of` and `DivergentPrinting::name_rank` exist; both ranks come
+        // off the one number line `assign_name_ranks` builds, so this is a plain substitution.
+        SortCol::Name       => Some(printing_name_rank(card, p) as f32),
         // Packed rather than raw: yyyymmdd exceeds the exact-f32 range (see released_sort_ord).
         SortCol::Released   => p.released_at_int.as_ref().map(|v| released_sort_ord(u32::from(*v)) as f32),
         SortCol::Color      => Some(color_sort_rank(card.card_colors, u16::from(card.card_types)) as f32),
@@ -9023,6 +9110,20 @@ fn sort_col_secondary(p: &APrinting, sort_col: SortCol, descending: bool) -> u32
         // `assign_set_ranks` is what holds the shift to 16 bits (it asserts the rank fits); the
         // collector half is `u16` by declaration.
         SortCol::Released => (u32::from(p.set_rank) << 16) | u32::from(u16::from(p.collector_rank)),
+        // `name`'s second key is the same pair, for the same reason `released`'s is: once the
+        // primary ties, Scryfall's rows are set-grouped and collector-ordered inside a set. Under
+        // `order=name` the primary ties on every printing of one card AND on two DISTINCT cards
+        // that share a name, and it was the second of those this key was measured on — the six
+        // `Knight of the Kitchen Sink` cards come back `ust/12a…12f`, `Alien` comes back `mh2/123`
+        // then `unk/CR15a`, and the `Elemental // Elemental` tokens come back `tmsh`, `tpip`,
+        // `twho`. Before this key those ran in `oracle_id` order, which is a UUID hash and has no
+        // relation to anything Scryfall does; it was right only by accident.
+        //
+        // It does NOT reach inside one card. A card's own printings all carry the same name, and
+        // the order among them is the `unique=cards` ordinal that `ranks.rs` fits and that no
+        // published field determines — this key orders them by (set, collector number), which is
+        // simply what the fallback has always been below the name.
+        SortCol::Name => (u32::from(p.set_rank) << 16) | u32::from(u16::from(p.collector_rank)),
         _ => return 0,
     };
     if descending { !key } else { key }
@@ -9089,7 +9190,11 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
 /// Leads every encoded key. A merge must refuse to compare keys of different versions — the
 /// version is what makes a layout change (a new segment, a re-ordered tiebreak) a loud
 /// mixed-generation error instead of a silently wrong page order.
-pub const SORT_KEY_VERSION: u8 = 1;
+/// 1 -> 2: `SortCol::Name` gained a (set code, collector number) SECOND KEY, so its layout carries
+/// two segments where it carried none. A partition still emitting version 1 would sort a name tie
+/// by the oracle id in the tail while its siblings sorted it by the set — the silently-wrong page
+/// order this byte exists to turn into an error.
+pub const SORT_KEY_VERSION: u8 = 2;
 
 /// One string-primary segment. Present values are the raw bytes plus a terminator OUTSIDE the
 /// alphabet (names never contain NUL), so a prefix compares before its extensions; descending
@@ -9191,7 +9296,7 @@ pub(crate) fn encode_sort_key(
     key.push(SORT_KEY_VERSION);
     match sort_col {
         SortCol::Name => {
-            push_str_segment(&mut key, Some(collated_name(card, &data.strings)), descending);
+            push_str_segment(&mut key, Some(printing_collated_name(card, p, &data.strings).as_ref()), descending);
         }
         SortCol::Set => push_str_segment(&mut key, Some(p.card_set_code.as_str()), descending),
         SortCol::Artist => {
@@ -9216,10 +9321,10 @@ pub(crate) fn encode_sort_key(
     // one lacks numbers everything after it differently, which is the section header's whole
     // argument. The in-archive key packs the same pair as `(set_rank << 16) | collector_rank` and
     // `assign_set_ranks` ranks exactly `card_set_code`, so the two orders coincide.
-    if matches!(sort_col, SortCol::Released) {
+    if matches!(sort_col, SortCol::Released | SortCol::Name) {
         push_str_segment(&mut key, Some(p.card_set_code.as_str()), descending);
     }
-    if matches!(sort_col, SortCol::Set | SortCol::Released) {
+    if matches!(sort_col, SortCol::Set | SortCol::Released | SortCol::Name) {
         push_collector_segment(&mut key, data, p, descending);
     }
     // The collated NAME, not `name_rank`: the rank is assigned over the cards of THIS archive, so
@@ -16490,7 +16595,25 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                A reader pairing this code with a pre-bump archive would find `PrintingFace`
 //                16 bytes short — caught by the header — but the header cannot see the other half:
 //                a stale archive's `watermarks` index would silently answer the front face only.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081702;
+// 2026081702 -> 2026081703: `order=name` BECAME A PRINTING-SPACE ORDER, which moves the archive in
+//                two directions at once and leaves nothing in the header able to see either.
+//                `DivergentPrinting` gains `name_rank`, and `assign_name_ranks` now ranks cards and
+//                divergent printing names over ONE number line, so every `OracleCard::name_rank` in
+//                the archive is a different number than it was. `SortPermutations` LOSES its
+//                `name`/`name_inv` pair, which moves the offset of every field after it inside
+//                `CardIndexes` — a generation-2026081702 store read by this code would find the
+//                edhrec inverse where the name forward permutation used to be. Neither struct is
+//                one the header measures (`DivergentPrinting` is behind a `Vec`, `SortPermutations`
+//                is inside `CardIndexes`), so this constant is the only thing that catches it.
+//                WHY THE PERMUTATION WENT, in one line, with the argument in
+//                `ArchivedSortPermutations::get`: 81 printings print a name their card does not,
+//                Scryfall sorts them by the name they print, and a card-keyed permutation emits
+//                every printing of a card at its card's name position. Fixing only the
+//                cross-partition key would have left the MERGE and the WALK ordering by different
+//                rules, which is a repeated or dropped row at a page boundary rather than a
+//                transposition. `SORT_KEY_VERSION` moves 1 -> 2 with it, because `SortCol::Name`
+//                also gained a (set code, collector number) second key.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026081703;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -17083,6 +17206,8 @@ fn build_card_data_sorted(
                     },
                     face_layout_id: row.card_face_layout_id,
                     faces: oracle_faces(&row.card_faces),
+                    // Filled by `assign_name_ranks`, which cannot run until every name is known.
+                    name_rank: 0,
                 });
             }
         }
