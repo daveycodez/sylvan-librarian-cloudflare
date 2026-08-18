@@ -1265,8 +1265,43 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      length), only the order inside two of them. `ARCHIVE_FORMAT_VERSION` therefore stays at
  *      2026081702 — a store built by the old code is still READABLE by this one, it just answers
  *      `order=edhrec` the old way, which is exactly what a content generation is for.
+ *
+ * 38 — ONE BUMP COVERING FOUR STORED-VALUE CHANGES that landed separately, plus the format bump to
+ *      `ARCHIVE_FORMAT_VERSION` 2026081703. Batched deliberately: a generation is a REBUILD
+ *      TRIGGER, not a changelog entry per commit, and `store-age.ts` compares one number.
+ *
+ *      THE RULE THIS ENTRY EXISTS TO KEEP. `store-age.ts` rebuilds on `content_generation` and not
+ *      on `format_version`, so a format bump shipped WITHOUT a generation bump takes the site dark:
+ *      the header rejects the published store and nothing schedules its replacement. Bump both, or
+ *      bump the generation alone; never the format alone.
+ *
+ *      (1) A PRINTED `*` IS ZERO, and the arithmetic around it still runs. `power`/`toughness`
+ *      substitute the star rather than dropping the row, in the builder's column and the engine's
+ *      per-face parse together (the numeric planes are built from FACE values, so a one-sided
+ *      change is a store whose planes disagree with its columns). `tou=0` goes 272 -> 432 against
+ *      Scryfall's 432, `toughness<1` 273 -> 433 against 434.
+ *
+ *      (2) `usd`/`eur` ARE `COALESCE(nonfoil, foil, etched)` in the SEARCH key, and this port read
+ *      the nonfoil column alone. The coalesce is written into the stored search key and the range
+ *      index, so it is content and not a query-time rewrite: `usd>=500` goes 84 -> 205 and
+ *      `eur>=400` 198 -> 375, both exact against api.scryfall.com. The DISPLAYED `prices.usd` is a
+ *      different question with a different answer and does not move.
+ *
+ *      (3) THE PRINTING RANK GAINS TWO KEYS, so `prefer_score` moves on every printing and with it
+ *      which printing represents a card under `unique=cards`. A slot with no English printing now
+ *      sorts after one with (four narrowed pairs measured live; a foreign-only set had been winning
+ *      on date alone because `RANK_STEP` 2048 is unreachable by `prefer_score`'s `+40` language
+ *      term), and a collector number with an alphabetic prefix sorts after one without (`plst/USG-4`
+ *      loses to `usg/4`; .9156 -> .9346 on ten scopes chosen after the rule was fitted). See
+ *      `engine/builder/src/ranks.rs`.
+ *
+ *      (4) `order=name` IS A PRINTING-SPACE ORDER, which is the half that also needs the format
+ *      bump — see `ARCHIVE_FORMAT_VERSION`'s own entry. Two defects, one cause: the 81 reversible
+ *      printings that print a name their card does not sorted under their CARD's name, and a tie
+ *      between two DISTINCT cards sharing a name broke on `oracle_id`, which is a UUID hash.
+ *      `SORT_KEY_VERSION` moves 1 -> 2 with it.
  */
-export const STORE_CONTENT_GENERATION = 37;
+export const STORE_CONTENT_GENERATION = 38;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {
