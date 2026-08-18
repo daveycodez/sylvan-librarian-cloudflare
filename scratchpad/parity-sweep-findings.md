@@ -1648,3 +1648,144 @@ Upstream, routed per hunk by where the code lives rather than by subject:
 **Wanted, not added here** (`scripts/live-parity-cases.json` is another agent's): a `/cards/search`
 case for `q=usd>=500&unique=prints` — the one shape that would have caught a coalesce written into
 the stored column, since the parity reduction strips price VALUES but not the row SET.
+
+## 22. `is:vanilla` — the residual closed, and the eleven were twelve forward and one back
+
+`is:vanilla` answered **352** here against api.scryfall.com's **363** after §21.4's rewrite fix. It
+now answers **363**, and card for card rather than merely to the same total: the full 363 was
+fetched in three pages and diffed by `oracle_id` against this store's own, and **both set
+differences are empty**. `has:vanilla` is 363 too, through the total alias §17.3/C9 established.
+
+**§21.4's diagnosis was right about the mechanism and incomplete about the arithmetic.** It read the
+gap as one class of 11. It is two classes, +12 and −1, and the second one moves the other way.
+
+### 22.1 The twelve, and why no rewrite reaches them
+
+`is:vanilla o:/./` is 12 on api.scryfall.com. All 12 are adventures whose creature FRONT prints
+nothing while the Instant/Sorcery half does:
+
+```text
+Beluna's Gatekeeper // Entry Denied     Minecart Daredevil // Ride the Rails
+Besotted Knight // Betroth the Beast    Shepherd of the Flock // Usher to Safety
+Cheeky House-Mouse // Squeak By         Silverflame Squire // On Alert
+Curious Pair // Treats to Share         Tuinvale Treefolk // Oaken Boon
+Embereth Shieldbreaker // Battle Display  Vantress Transmuter // Croaking Curse
+Garenbrig Carver // Shield's Might      Merfolk Secretkeeper // Venture Deeper
+```
+
+Every one has `card_faces[0].oracle_text == ""` exactly, confirmed on the Scryfall objects. The
+stored `oracle_text` is the merged row — the faces' texts joined — so every predicate a rewrite can
+compose sees the adventure half. This is not a rewrite that was chosen badly; it is a question the
+merged row cannot be asked.
+
+### 22.2 The one that goes the other way — and it is NOT a face question
+
+`t:creature -o:/./ -is:vanilla` is **exactly 1** on api.scryfall.com, and it is **Dryad Arbor**.
+It was in this port's 352 and is not in Scryfall's 363. Its land types grant `{T}: Add {G}` with
+nothing printed to say so, and Scryfall counts that as rules text.
+
+Measured, not inferred from one card: `is:vanilla t:land` is **0** there, with AND without
+`include_extras`, while `t:creature t:land -o:/./` is **2** — Dryad Arbor and the `Forest Dryad`
+token. Both candidates, neither vanilla. Over the whole 540,484-row import those same 2 rows are the
+only ones the land clause removes, because a creature with no printed text produces mana only
+through a land type.
+
+So the arithmetic is **352 + 12 − 1 = 363**, and §21.4's "the 11 are one class" was one card short in
+each direction.
+
+### 22.3 The FRONT face, not any face — the shape an existential got wrong
+
+The obvious reading of §22.1 is "some creature face is blank". That reading answers **367**, which
+was measured on the rebuilt store before it was corrected. The four extras are transform cards with a
+blank creature BACK behind a front that prints:
+
+```text
+Kaslem's Stonetree // Kaslem's Strider   Artifact (text)            // Artifact Creature — Golem ("")
+Ecstatic Awakener // Awoken Demon        Creature — Human Wizard    // Creature — Demon ("")
+Chosen of Markov // Markov's Servant     Creature — Human           // Creature — Vampire ("")
+Skin Invasion // Skin Shedder            Enchantment — Aura         // Creature — Insect Horror ("")
+```
+
+`is:vanilla` over those four is **0** on api.scryfall.com. The token rows settle it from the other
+direction: `is:vanilla is:dfc` is **18** there, and it HOLDS `Servo // Thopter`, `Goblin // Blood`,
+`Gremlin // Energy Reserve` and `Saproling // Elf Knight` (blank front, printing back) while LEAVING
+OUT `Elemental // Centaur`, `Fish // Kraken`, `Weird // Goblin`, `Incubator // Phyrexian`,
+`Illusion // Saproling`, `Snake // Zombie`, `Soldier // Soldier` and `Wurm // Saproling` (printing
+front, blank back). Both directions, on real cards, on the same axis.
+
+### 22.4 The creature test is the CARD's, not that front's
+
+Two of those 18 have a front that is not a creature at all — `City's Blessing // Elemental` and
+`Copy // Horror` — and Scryfall calls both vanilla. So the predicate is a pair of separately-scoped
+tests: **`card_types` for the type half** (creature somewhere, land nowhere) and **`faces[0]` for the
+text half**. Requiring the front itself to be a creature drops those two.
+
+### 22.5 The text is the SEARCHABLE form, and that is what makes Dryad Arbor a LAND question
+
+`Icehide Golem` ("({S} can be paid with one mana from a snow source.)") and `Infinity Elemental`
+("(This creature has INFINITE POWER.)") are both **`is:vanilla`** on api.scryfall.com and neither
+prints an empty string. So reminder text comes off before the blankness test — the same text `o:`
+searches, which is why all three of these are in `-o:/./` on both sides.
+
+That is also what rules OUT the tempting simpler story. "Vanilla means the raw `oracle_text` is
+empty" would have excluded Dryad Arbor for free — and would have excluded Icehide Golem and Infinity
+Elemental too, which Scryfall includes. The land clause is doing work no text rule can do.
+
+### 22.6 What shipped
+
+`FilterExpr::VanillaFace`, an engine predicate, reusing the gen-28 face machinery from task 31
+(`OracleFace::oracle_text_id`) rather than adding a parallel one. It reads three fields the archive
+already holds:
+
+```rust
+let bits = u16::from(card.card_types);
+if bits & TYPE_CREATURE == 0 || bits & TYPE_LAND != 0 { return false; }
+match card.faces.first() {
+    None => str_at(strings, card.oracle_text_lower_id).is_none_or(str::is_empty),
+    Some(front) => str_at(strings, front.oracle_text_id).is_none_or(text_blank_after_reminders),
+}
+```
+
+The unfaced arm reads the already-stripped `oracle_text_lower_id`; a FACE carries the printed string,
+so `strip_reminder_text` runs there — on the ONE front face, never a list. **Nothing is stored and no
+generation or format moves**: `card_types`, `oracle_text_lower_id` and `OracleFace::oracle_text_id`
+have all been in the archive since gen 28. The rebuilt blobs in `11c0f6b` were built from `c77bf49`
+plus only the three engine files, so they carry no other agent's in-flight tree.
+
+`vanilla` moves out of `_DERIVED_EXPANSIONS` into `ENGINE_IS_VALUES` beside `localizedname` and
+`unique`, in `rewrite.py` and its `src/parser/rewrite.ts` mirror, so the leaf reaches `filter.rs` as
+`card_is_tags` and is intercepted there. `SUPPORTED_IS_VALUES` still covers it, so `has:vanilla`
+follows for free and no warning appears.
+
+### 22.7 One thing this broke, caught by upstream CI and not by anything here
+
+`client/query_sampler.py`'s `STATIC_VALUES["tag"]` is asserted to be EXACTLY the expandable `is:`
+values (`test_is_tags_match_the_rewrite_table`) — the sampler ships in a client image with no `api/`
+to import. Removing the expansion left the two sides one value apart. Fixed on the PR branch AND in
+`vendor/` (`437aa14`), because a fix on a PR branch never reaches the vendored tree. The comment
+beside that list also claimed 73 against a list of 75; it is now the 74 it actually holds.
+
+### 22.8 Routing, and one doc left stale
+
+Both PRs are green as of this writing.
+
+* **#927** `multilingual-store` — `card_engine/src/{filter,estimator,tests}.rs` (`37ce298`). It
+  already owns the `localizedname`/`unique` interception this sits beside. Upstream has no
+  `strip_reminder_text` yet, so the port's `text_blank_after_reminders` is a non-allocating paren-
+  depth walk with a note to collapse onto the strip when that work lands.
+* **#926** `parser-lang-operator` — `api/parsing/rewrite.py`, `test_rewrite.py` (`ef75e81`) and the
+  sampler (`50ef3a5`). It already owns both `_DERIVED_EXPANSIONS` and `ENGINE_IS_VALUES`.
+
+**The split is not a new cross-PR dependency.** `localizedname` and `unique` are ALREADY split the
+same way — Python half on #926, Rust half on #927 — so `vanilla` follows an existing seam rather than
+cutting one. Nothing was merged between the branches.
+
+**Stale, not fixed here:** `vendor/sylvan_librarian/docs/issues/local-engine-empty-text-narrowing.md`
+is an open issue doc whose whole premise is that `is:vanilla` desugars to a `= ''` equality with no
+index. It no longer desugars to anything. It needs rewriting or closing, in both trees.
+
+**Wanted, not added here** (`scripts/live-parity-cases.json` is another agent's): a `/cards/search`
+case for `q=is:vanilla`. It is the shape that distinguishes all three rules at once, and the parity
+reduction keeps the row SET, which is exactly what this predicate changes.
+
+**Scryfall requests for this task: 17**, serial, one per 1.2 s.
