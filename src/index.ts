@@ -14,6 +14,7 @@ import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
 import { routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
+import { adminUnauthorized, isAdminPath } from "./routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "./routes/http";
 import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
 import { scryfallHttpError } from "./routes/scryfall-compat/respond";
@@ -142,6 +143,10 @@ function resolveAction(path: string): { key: string; positionalArgs: string[] } 
 async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/^\/+|\/+$/g, "") || "_root";
+
+	// The `/_admin` mount answers before routing, as upstream's AdminAuthMiddleware does: with no
+	// password configured every request under it is a 401, whatever the rest of the path says.
+	if (isAdminPath(path)) return adminUnauthorized();
 
 	const resolved = resolveAction(path);
 	// AN UNKNOWN PATH GETS SCRYFALL'S ERROR OBJECT, not upstream's routes listing.

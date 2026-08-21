@@ -1,7 +1,7 @@
 // Port of the page routes: _root (server-side rendered index with embedded
-// search results), card (/card/{set_code}/{collector_number}),
-// prefer_score_tuner, and the legacy index → / redirect
-// (api_resource.py:1494-1602, 1702-1728).
+// search results), card (/card/{set_code}/{collector_number}), and the legacy
+// index → / redirect. (prefer_score_tuner left with upstream #963: it lives
+// behind the Basic-Auth /_admin mount now — see src/routes/admin.ts.)
 
 import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
@@ -112,8 +112,6 @@ export function cardHandler(_ctx: RouteContext, positionalArgs: string[], params
 	const html = replaceAllLiteral(buildCardHtml(criticalCss()), SITE_NAME_PLACEHOLDER, siteName);
 	return new Response(html, { headers: { "content-type": "text/html", ...pageCacheHeader() } });
 }
-
-/** Return the prefer score tuner page (upstream prefer_score_tuner(); no cache header). */
 
 /** Send the legacy index paths to / (upstream _redirect_to_root, falcon.HTTPMovedPermanently). */
 export function redirectToRootHandler(): Response {
