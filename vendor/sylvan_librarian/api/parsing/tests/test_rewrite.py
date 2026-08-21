@@ -78,7 +78,7 @@ EQUIVALENCES = [
     ),
     (
         "is:phyrexian",
-        "m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{C/P} or m:{W/U/P} or m:{W/B/P} or "
+        "m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{W/U/P} or m:{W/B/P} or "
         "m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or "
         'm:{G/U/P} or o:"{w/p}" or o:"{u/p}" or o:"{b/p}" or o:"{r/p}" or o:"{g/p}" or o:"{c/p}" or '
         'o:"{w/u/p}" or o:"{w/b/p}" or o:"{u/b/p}" or o:"{u/r/p}" or o:"{b/r/p}" or o:"{b/g/p}" or '
@@ -182,6 +182,39 @@ def test_real_frame_value_not_rewritten(parse_query) -> None:
     assert root.operator == ":"
     assert root.lhs.original_attribute == "frame"
     assert root.rhs.value == "2003"
+
+
+# ── #982: not: is the same as -is: ────────────────────────────────────────────
+# (not: query, equivalent -is: query) -- the two must produce identical ASTs, including
+# on values with their own is:-expansion (vanilla, new, ...): not:vanilla negates the
+# same subtree is:vanilla expands to, not a raw card_is_tags lookup for a key nothing
+# ever stores.
+NOT_EQUIVALENCES = [
+    ("not:creature", "-is:creature"),
+    ("not:vanilla", "-is:vanilla"),
+    ("not:new", "-is:new"),
+    ("not:reprint", "-is:reprint"),
+]
+
+
+@pytest.mark.parametrize(
+    argnames=["not_query", "expansion"],
+    argvalues=NOT_EQUIVALENCES,
+    ids=[s for s, _ in NOT_EQUIVALENCES],
+)
+def test_not_expands_to_negated_is(parse_query, not_query: str, expansion: str) -> None:
+    """Each not: query parses to the same AST as the equivalent -is: query (both parsers)."""
+    assert parse_query(not_query) == parse_query(expansion)
+
+
+@pytest.mark.parametrize(
+    argnames=["not_query", "expansion"],
+    argvalues=NOT_EQUIVALENCES,
+    ids=[s for s, _ in NOT_EQUIVALENCES],
+)
+def test_not_generates_same_sql_as_negated_is(not_query: str, expansion: str) -> None:
+    """The rewrite is real end-to-end: not: and -is: emit identical SQL + params."""
+    assert generate_sql_query(parse_scryfall_query(not_query)) == generate_sql_query(parse_scryfall_query(expansion))
 
 
 # ── #734: plain-literal regex -> substring lowering ──────────────────────────

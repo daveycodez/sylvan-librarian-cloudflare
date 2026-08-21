@@ -56,19 +56,21 @@ function stub(routeName: keyof typeof LISTINGS, positionalCapacity = 0): RouteEn
 // Insertion order mirrors upstream registration (dir(cls) order over the
 // handler attribute names, each spec's paths in declaration order) so the 404
 // routes listing serializes identically.
-// Static files (/static/*, /favicon.ico, /robots.txt, /prefer_score_tuner.html)
-// are absent deliberately: they are served from public/ by Cloudflare's CDN and
-// never reach this Worker, so they need no route and cost no isolate. See
-// scripts/generate-assets.ts.
+// Static files (/static/*, /favicon.ico, /robots.txt) are absent deliberately:
+// they are served from public/ by Cloudflare's CDN and never reach this Worker,
+// so they need no route and cost no isolate. See scripts/generate-assets.ts.
+//
+// The admin surface is absent too, and for upstream's reason rather than this
+// port's: #963 moved every data-management route (import_*, setup_schema, the
+// backfills, ingest_cubecobra, prefer_score_tuner; get_migrations was deleted
+// outright) behind a Basic-Auth `/_admin` mount that hides them from this
+// listing. src/routes/admin.ts is what `/_admin/*` answers here.
 export const routes: RouteTable = {
 	// _redirect_to_root
 	index: entry(redirectToRootHandler, LISTINGS._redirect_to_root),
 	"index.html": entry(redirectToRootHandler, LISTINGS._redirect_to_root),
 	// _root
 	_root: entry(rootHandler, LISTINGS._root),
-	// Postgres-only backfills → 501 stubs
-	backfill_cubecobra_scores: stub("backfill_cubecobra_scores"),
-	backfill_prefer_scores: stub("backfill_prefer_scores"),
 	// card
 	card: entry(cardHandler, LISTINGS.card, 2),
 	// The Scryfall-compatible /cards/* surface (upstream #912). Order matters: it serializes into
@@ -90,21 +92,9 @@ export const routes: RouteTable = {
 		positionalCapacity: 0,
 		listing: LISTINGS["cards/collection"],
 	},
-	discover_is_tags_from_syntax: stub("discover_is_tags_from_syntax"),
 	get_catalog: entry(getCatalogHandler, LISTINGS.get_catalog),
 	get_common_keywords: stub("get_common_keywords"),
-	get_migrations: stub("get_migrations"),
 	get_pid: entry(getPidHandler, LISTINGS.get_pid),
-	import_all_is_tags: stub("import_all_is_tags"),
-	import_art_tags: stub("import_art_tags"),
-	import_card_by_name: stub("import_card_by_name"),
-	import_cards_by_search: stub("import_cards_by_search"),
-	import_data: stub("import_data"),
-	import_oracle_tags: stub("import_oracle_tags"),
-	// Postgres-only, like the backfills above: upstream loads the bulk rulings file into
-	// magic.rulings, and this deployment has no such table. See the README's deviations list.
-	import_rulings: stub("import_rulings"),
-	ingest_cubecobra: stub("ingest_cubecobra"),
 	random_search: entry(randomSearchHandler, LISTINGS.random_search),
 	// The reference half of the Scryfall surface (upstream #922). These sort HERE, and in this
 	// order, because the listing follows upstream attribute names — `scryfall_catalog`,
@@ -118,8 +108,6 @@ export const routes: RouteTable = {
 	sets: entry(setsHandler, LISTINGS.sets, 2),
 	symbology: entry(symbologyHandler, LISTINGS.symbology),
 	search: entry(searchHandler, LISTINGS.search),
-	// setup_schema takes *args upstream, so any number of trailing segments resolves
-	setup_schema: stub("setup_schema", Number.POSITIVE_INFINITY),
 };
 
 /**

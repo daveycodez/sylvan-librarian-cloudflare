@@ -234,6 +234,16 @@ DB_COLUMNS = [
         search_aliases=["is", "has"],
         parser_class=ParserClass.TEXT,
     ),
+    # A distinct FieldInfo from "is" above, sharing its db_column_name, so a `not:` leaf
+    # generates the identical SQL/explanation as `is:` on its own -- rewrite.py's
+    # negate_not_prefix distinguishes the two via original_attribute and supplies the
+    # negation Scryfall's docs describe ("not: is the same as -is:").
+    FieldInfo(
+        db_column_name="card_is_tags",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["not"],
+        parser_class=ParserClass.TEXT,
+    ),
     FieldInfo(
         db_column_name="card_rarity_int",
         field_type=FieldType.NUMERIC,
@@ -311,7 +321,6 @@ DB_COLUMNS = [
 KNOWN_CARD_ATTRIBUTES = set()
 NUMERIC_CARD_ATTRIBUTES: set[str] = set()
 SEARCH_NAME_TO_DB_NAME = {}
-DB_NAME_TO_FIELD_TYPE = {}
 
 ALIAS_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
 COLNAME_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
@@ -330,7 +339,6 @@ for col in DB_COLUMNS:
         NUMERIC_CARD_ATTRIBUTES.add(col.db_column_name.lower())
         NUMERIC_CARD_ATTRIBUTES.update(alias.lower() for alias in col.search_aliases)
     SEARCH_NAME_TO_DB_NAME[col.db_column_name.lower()] = col.db_column_name
-    DB_NAME_TO_FIELD_TYPE[col.db_column_name] = col.field_type
 
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias.lower()] = col.db_column_name
@@ -500,8 +508,6 @@ FORMAT_CODE_TO_NAME = {
     "v": "vintage",
     "h": "historic",
 }
-
-FORMAT_NAME_TO_CODE = {v: k for k, v in FORMAT_CODE_TO_NAME.items()}
 
 # The `is:` values Scryfall ships as BOOLEANS on every bulk card object, as
 # {card_is_tags key: raw blob key}. `_sync_boolean_is_tags` rebuilds the column from these after

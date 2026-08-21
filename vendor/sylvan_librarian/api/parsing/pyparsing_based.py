@@ -31,6 +31,7 @@ from api.parsing.db_info import (
     ParserClass,
 )
 from api.parsing.hand_parser import fold_typographic_quotes
+from api.parsing.mana_symbols import first_invalid_mana_symbol
 from api.parsing.nodes import (
     DIRECTIVE_NAMES,
     AndNode,
@@ -65,7 +66,10 @@ ParserElement.set_default_whitespace_chars(" \n\t\r,")
 # Constants
 NEGATION_TOKEN_COUNT = 2
 DEFAULT_OPERATORS = one_of(": > < >= <= = !=")
-COMPARISON_OPERATORS = frozenset([":", "=", "!=", ">", "<", ">=", "<="])
+# On Scryfall '!' is an alias for '=' on COLOR/MANA/NUMERIC/RARITY/YEAR/DATE only (verified live,
+# #903 cause C) — not on TEXT/LEGALITY, so those conditions keep using DEFAULT_OPERATORS. '!='
+# still wins over bare '!' here: DEFAULT_OPERATORS is tried first and already matches it whole.
+EQ_ALIAS_OPERATORS = DEFAULT_OPERATORS | Literal("!").set_parse_action(lambda: "=")
 
 _NUMERIC_LITERAL_RE = re.compile(r"^\d+(\.\d+)?$")
 _COMPARISON_OPERATORS = frozenset({">", "<", ">=", "<=", "=", "!=", ":"})
@@ -286,17 +290,44 @@ def create_mana_parsers() -> dict[str, ParserElement]:
         Dictionary containing mana parser elements
     """
     curly_mana_symbol = Regex(r"\{[^}]+\}")
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
+    # Any letter or digit, not an enumerated subset of them: which bare characters are actually
+    # valid mana atoms is first_invalid_mana_symbol's call below, not this tokenizer's. A narrower
+    # charset here just means some bare values (e.g. "hello", "snow") never reach that validator at
+    # all and silently fall through to a plain string comparison instead (#954) — the grammar has to
+    # recognize a value as mana-shaped before it can be rejected as invalid mana.
+    simple_mana_symbol = Regex(r"[0-9A-Za-z]")
     mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
 
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
         """Create a ManaValueNode for mana cost strings."""
-        return ManaValueNode(tokens[0].upper())
+        value = tokens[0].upper()
+        # Shared with hand_parser.parse_mana_value, so the two parsers reject the same symbols.
+        # parse_search_query turns a ValueError from a parse action into a query-level parse error.
+        invalid = first_invalid_mana_symbol(value)
+        if invalid is not None:
+            msg = f"Invalid mana symbol {invalid!r}"
+            raise ValueError(msg)
+        return ManaValueNode(value)
 
     mana_value = mixed_mana_pattern.set_parse_action(make_mana_value_node)
 
+    def make_mana_quoted_value_node(tokens: list[str]) -> ManaValueNode:
+        """Create a ManaValueNode for a quoted mana value.
+
+        Quoting a value is just an alternate way to type it, not an opt-out of
+        make_mana_value_node's alphabet check — the generic quoted_string element used by every
+        other attribute skips that check entirely, which let 'mana:"q"' through as an unvalidated
+        StringValueNode that resolved to an empty cost dict and matched every card.
+        """
+        return make_mana_value_node(tokens)
+
+    mana_quoted_value = (QuotedString('"', esc_char="\\") | QuotedString("'", esc_char="\\")).set_parse_action(
+        make_mana_quoted_value_node,
+    )
+
     return {
         "mana_value": mana_value,
+        "mana_quoted_value": mana_quoted_value,
         "mixed_mana_pattern": mixed_mana_pattern,
     }
 
@@ -342,6 +373,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     lparen = basic_parsers["lparen"]
     rparen = basic_parsers["rparen"]
     mana_value = mana_parsers["mana_value"]
+    mana_quoted_value = mana_parsers["mana_quoted_value"]
     color_value = color_parsers["color_value"]
 
     numeric_attr_word = create_attribute_parser(ParserClass.NUMERIC)
@@ -368,24 +400,27 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
 
     numeric_comparison_lhs = arithmetic_expr | paren_expr_term | numeric_attr_word | literal_number
     numeric_comparison_rhs = arithmetic_expr | signed_arithmetic_expr | paren_expr_term | numeric_attr_word | signed_literal_number
-    unified_numeric_comparison = numeric_comparison_lhs + DEFAULT_OPERATORS + numeric_comparison_rhs
+    unified_numeric_comparison = numeric_comparison_lhs + EQ_ALIAS_OPERATORS + numeric_comparison_rhs
     unified_numeric_comparison.set_parse_action(make_binary_operator_node)
 
-    mana_value_or_string = mana_value | quoted_string | string_value_word
-    mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string)
+    # No string_value_word fallback: a mana/devotion condition's rhs is always a validated
+    # ManaValueNode, one of these two, never an unchecked StringValueNode (#954) — mirroring
+    # hand_parser.parse_mana_value, which has no plain-string case for this attribute class either.
+    mana_value_or_string = mana_value | mana_quoted_value
+    mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string, operators=EQ_ALIAS_OPERATORS)
 
-    color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
+    color_condition = create_condition_parser(color_attr_word, color_value | quoted_string, operators=EQ_ALIAS_OPERATORS)
 
     regex_pattern = basic_parsers["regex_pattern"]
-    rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
+    rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word, operators=EQ_ALIAS_OPERATORS)
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
     text_condition = create_condition_parser(text_attr_word, regex_pattern | quoted_string | string_value_word)
 
     date_value = Regex(r"\d{4}(?:-\d{2}-\d{2})?")
-    date_condition = create_condition_parser(date_attr_word, date_value)
+    date_condition = create_condition_parser(date_attr_word, date_value, operators=EQ_ALIAS_OPERATORS)
 
     year_value = Regex(r"\d{4}")
-    year_condition = create_condition_parser(year_attr_word, year_value)
+    year_condition = create_condition_parser(year_attr_word, year_value, operators=EQ_ALIAS_OPERATORS)
 
     attr_attr_condition = (
         (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word)
@@ -649,12 +684,26 @@ def _get_implicit_and_tokenizer() -> ParserElement:
     string_value_tok = Regex(r"\w(?:(?:[\w.\-,]|'(?=\w))*[\w.,])?(?:'(?=\Z))?").set_parse_action(lambda t: t[0])
 
     curly_mana_symbol = Regex(r"\{[^}]+\}")
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
+    # Mirrors create_mana_parsers' simple_mana_symbol (#954): any letter or digit, so a bare run
+    # mixed with braces (e.g. "s{w}") still tokenizes as one unit instead of splitting at the brace.
+    simple_mana_symbol = Regex(r"[0-9A-Za-z]")
     mana_tok = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol)).set_parse_action(lambda t: t[0])
+
+    # A regex only opens in value position, so it is matched as a unit with the comparison operator
+    # that precedes it (emitting both tokens). A '/' anywhere else falls through to arithmetic_tok.
+    # Mirrors the lexer's rule in hand_parser.tokenize — without it the greedy QuotedString("/")
+    # swallows "2>1 name:" as a pattern in "power/2>1 name:/a/" (#908).
+    regex_after_op = comparison_tok + regex_raw
+
+    # A bare word in value position is a value even when it spells 'and'/'or' (#903 cause B) — so
+    # match it as a unit with the preceding operator, before and_tok/or_tok get a chance to see it
+    # as a standalone keyword. Mirrors regex_after_op's same trick for the same reason.
+    word_after_op = comparison_tok + string_value_tok
 
     one_token = (
         quoted_raw
-        | regex_raw
+        | regex_after_op
+        | word_after_op
         | lparen_tok
         | rparen_tok
         | and_tok
@@ -713,7 +762,9 @@ def _is_numeric_operand(t: str) -> bool:
 def _rhs_introduces_comparison(tokens: list[str], start_index: int) -> bool:
     """Return True if scanning forward from start_index hits a comparison operator before AND/OR/).
 
-    Used to disambiguate binary subtraction on the RHS of a comparison.
+    Used to disambiguate binary subtraction on the RHS of a comparison. A comparison operator
+    counts wherever it appears, including nested inside a parenthesized group — `cmc>1 -(t:elf)`
+    has its `:` one paren deep, and it still means the group is a filter, not an arithmetic term.
     """
     depth = 0
     for j in range(start_index, len(tokens)):
@@ -724,7 +775,7 @@ def _rhs_introduces_comparison(tokens: list[str], start_index: int) -> bool:
             if depth == 0:
                 return False
             depth -= 1
-        elif t in _COMPARISON_OPERATORS and depth == 0:
+        elif t in _COMPARISON_OPERATORS:
             return True
         elif t in {"AND", "OR"} and depth == 0:
             return False

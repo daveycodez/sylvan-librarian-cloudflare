@@ -195,7 +195,10 @@
 	},
 	{
 		"query": "!mythic m<=brawl",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"value\":\"mythic\"},\"node_type\":\"ExactNameNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":\"BRAWL\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"!mythic m<=brawl\""
+		}
 	},
 	{
 		"query": "!new",
@@ -318,7 +321,10 @@
 	},
 	{
 		"query": "(!\"the\" -(cmc+(cmc+1)!=(cmc+1))) AND devotion>dragon AND 3 + (cmc+1)>=cmc",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"value\":\"the\"},\"node_type\":\"ExactNameNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"DRAGON\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"(!\"the\" -(cmc+(cmc+1)!=(cmc+1))) AND devotion>dragon AND 3 + (cmc+1)>=cmc\""
+		}
 	},
 	{
 		"query": "(!dfc)",
@@ -383,14 +389,14 @@
 		"query": "((/dra(w|ws)/ -1 2024-02-29) keyword=\"lightning bolt\" !c) -(format:the OR goblin)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"((/dra(w|ws)/ -1 2024-02-29) keyword=\"lightning bolt\" !c) -(format:the OR goblin)\""
+			"message": "Failed to lex query: \"((/dra(w|ws)/ -1 2024-02-29) keyword=\"lightning bolt\" !c) -(format:the OR goblin)\""
 		}
 	},
 	{
 		"query": "((/dra(w|ws)/ OR cmc>=007 OR -devotion!=split) or -((cmc+1)-cmc>=loyalty) or (cmc>modern OR c)) or (e:AND) or power*tou<=0",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"((/dra(w|ws)/ OR cmc>=007 OR -devotion!=split) or -((cmc+1)-cmc>=loyalty) or (cmc>modern OR c)) or (e:AND) or power*tou<=0\""
+			"message": "Failed to lex query: \"((/dra(w|ws)/ OR cmc>=007 OR -devotion!=split) or -((cmc+1)-cmc>=loyalty) or (cmc>modern OR c)) or (e:AND) or power*tou<=0\""
 		}
 	},
 	{
@@ -402,10 +408,7 @@
 	},
 	{
 		"query": "((2024 or 1993 or -(cmc+1) / loyalty=cmc) and 0/cmc>=3)",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to parse query: \"((2024 or 1993 or -(cmc+1) / loyalty=cmc) and 0/cmc>=3)\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operands\":[{\"kwargs\":{\"value\":2024},\"node_type\":\"NumericValueNode\"},{\"kwargs\":{\"value\":1993},\"node_type\":\"NumericValueNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"planeswalker_loyalty\",\"original_attribute\":\"loyalty\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"OrNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
 		"query": "((banned!=\"a\\\"b\") and (cn:2015 or -!\"dragon\"))",
@@ -436,7 +439,7 @@
 		"query": "((cmc+1)/cmc<=3 (cmc-3>=0)) AND (subtype<\"\" AND flavor>={g/u} AND brawl) AND 2.5*tou>(cmc+1)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"((cmc+1)/cmc<=3 (cmc-3>=0)) AND (subtype<\"\" AND flavor>={g/u} AND brawl) AND 2.5*tou>(cmc+1)\""
+			"message": "Failed to parse query: \"((cmc+1)/cmc<=3 (cmc-3>=0)) AND (subtype<\"\" AND flavor>={g/u} AND brawl) AND 2.5*tou>(cmc+1)\""
 		}
 	},
 	{
@@ -594,20 +597,23 @@
 	},
 	{
 		"query": "(-(wm:0.0)) (m>mcgee) Éowyn",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_watermark\",\"original_attribute\":\"wm\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"0.0\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"MCGEE\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Eowyn\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"(-(wm:0.0)) (m>mcgee) Éowyn\""
+		}
 	},
 	{
 		"query": "(-/a\\/b/ and -(-devotion=AND OR format<=old)) OR -ǅungla OR *",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"(-/a\\/b/ and -(-devotion=AND OR format<=old)) OR -ǅungla OR *\""
+			"message": "Failed to lex query: \"(-/a\\/b/ and -(-devotion=AND OR format<=old)) OR -ǅungla OR *\""
 		}
 	},
 	{
 		"query": "(-/dra(w|ws)/ or (o>=vintage éclair='full art' \"\") or (c))",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"(-/dra(w|ws)/ or (o>=vintage éclair='full art' \"\") or (c))\""
+			"message": "Failed to lex query: \"(-/dra(w|ws)/ or (o>=vintage éclair='full art' \"\") or (c))\""
 		}
 	},
 	{
@@ -725,7 +731,7 @@
 		"query": "(/dra(w|ws)/ OR !\"ΣΙΓΜΑ\" OR -a>=æther)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"(/dra(w|ws)/ OR !\"ΣΙΓΜΑ\" OR -a>=æther)\""
+			"message": "Failed to lex query: \"(/dra(w|ws)/ OR !\"ΣΙΓΜΑ\" OR -a>=æther)\""
 		}
 	},
 	{
@@ -995,7 +1001,10 @@
 	},
 	{
 		"query": "(dfc OR (mana=Éowyn))",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"DFC\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"ÉOWYN\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"(dfc OR (mana=Éowyn))\""
+		}
 	},
 	{
 		"query": "(dfc or otag!={2}{W} or the)",
@@ -1088,7 +1097,10 @@
 	},
 	{
 		"query": "(name:the AND -(devotion<ﬁre)) OR oracle!=split OR 2.5+3>tou",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"The\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"FIRE\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"AndNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"oracle_text\",\"original_attribute\":\"oracle\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"split\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"value\":2.5},\"node_type\":\"NumericValueNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"(name:the AND -(devotion<ﬁre)) OR oracle!=split OR 2.5+3>tou\""
+		}
 	},
 	{
 		"query": "(name>=mcgee or Éowyn) usd!=OR",
@@ -1426,7 +1438,7 @@
 		"query": "-(-(kw!=ǅungla or ǅungla or f>wubrg) AND -produces!=\"lightning bolt\" AND 3*cmc<(cmc+1)) /^tap/ 0.0",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"-(-(kw!=ǅungla or ǅungla or f>wubrg) AND -produces!=\"lightning bolt\" AND 3*cmc<(cmc+1)) /^tap/ 0.0\""
+			"message": "Failed to lex query: \"-(-(kw!=ǅungla or ǅungla or f>wubrg) AND -produces!=\"lightning bolt\" AND 3*cmc<(cmc+1)) /^tap/ 0.0\""
 		}
 	},
 	{
@@ -1468,7 +1480,10 @@
 	},
 	{
 		"query": "-(art:æther or (m>or cmc * 0>=(cmc+1)) or kw=bolt) and devotion>2rr",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_art_tags\",\"original_attribute\":\"art\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"ther\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"OR\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"*\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_keywords\",\"original_attribute\":\"kw\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":[\"bolt\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"2RR\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"-(art:æther or (m>or cmc * 0>=(cmc+1)) or kw=bolt) and devotion>2rr\""
+		}
 	},
 	{
 		"query": "-(border>=will-o-the-wisp type:2ww) ((æther and usd/3:(cmc+1) and cn:colorless) or year<ﬁre or o<will-o-the-wisp) x",
@@ -1501,7 +1516,10 @@
 	},
 	{
 		"query": "-(flavor=2015 AND o<123 AND dragon) or m!=or",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"flavor_text\",\"original_attribute\":\"flavor\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"2015\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"oracle_text\",\"original_attribute\":\"o\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"123\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Dragon\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"OR\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"-(flavor=2015 AND o<123 AND dragon) or m!=or\""
+		}
 	},
 	{
 		"query": "-(keyword<={2}{W} and otag:legendary and tou-loyalty!=(cmc+1))",
@@ -1535,7 +1553,10 @@
 	},
 	{
 		"query": "-(o=brawl OR (m!=and or !dfc) OR loyalty / cmc!=loyalty) AND rg",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"oracle_text\",\"original_attribute\":\"o\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"brawl\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"AND\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"value\":\"dfc\"},\"node_type\":\"ExactNameNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"planeswalker_loyalty\",\"original_attribute\":\"loyalty\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"planeswalker_loyalty\",\"original_attribute\":\"loyalty\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Rg\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"-(o=brawl OR (m!=and or !dfc) OR loyalty / cmc!=loyalty) AND rg\""
+		}
 	},
 	{
 		"query": "-(oracle!=colorless)",
@@ -1563,14 +1584,14 @@
 		"query": "-({2}{W} (cmc+1) * loyalty<=loyalty *) ((/^tap/) or banned>=legendary) 2.5",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"-({2}{W} (cmc+1) * loyalty<=loyalty *) ((/^tap/) or banned>=legendary) 2.5\""
+			"message": "Failed to lex query: \"-({2}{W} (cmc+1) * loyalty<=loyalty *) ((/^tap/) or banned>=legendary) 2.5\""
 		}
 	},
 	{
 		"query": "-/a\\/b/ and (-!\"c\" OR number:/sacrifice a/ OR keyword>=rg)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"-/a\\/b/ and (-!\"c\" OR number:/sacrifice a/ OR keyword>=rg)\""
+			"message": "Failed to lex query: \"-/a\\/b/ and (-!\"c\" OR number:/sacrifice a/ OR keyword>=rg)\""
 		}
 	},
 	{
@@ -1678,7 +1699,7 @@
 		"query": "-and -((cn=vanilla) and -/dra(w|ws)/ and (name!=o'kagachi AND wm:old))",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"-and -((cn=vanilla) and -/dra(w|ws)/ and (name!=o'kagachi AND wm:old))\""
+			"message": "Failed to lex query: \"-and -((cn=vanilla) and -/dra(w|ws)/ and (name!=o'kagachi AND wm:old))\""
 		}
 	},
 	{
@@ -1823,7 +1844,7 @@
 		"query": "-keyword=will-o-the-wisp (m=dfc -o<=ǅungla -rarity=bolt)",
 		"error": {
 			"type": "ValueError",
-			"message": "Unknown rarity: bolt. Valid rarities are: ('common', 'c', 'uncommon', 'u', 'rare', 'r', 'special', 's', 'mythic', 'm', 'bonus', 'b')"
+			"message": "Failed to parse query: \"-keyword=will-o-the-wisp (m=dfc -o<=ǅungla -rarity=bolt)\""
 		}
 	},
 	{
@@ -1909,7 +1930,10 @@
 	},
 	{
 		"query": "-m!=goblin OR name:2ww OR (!\"æther\" OR -(changeling and name>=showcase and oracle>007) OR power / usd>2.5)",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"GOBLIN\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"2ww\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"value\":\"aether\"},\"node_type\":\"ExactNameNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Changeling\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":\"Showcase\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"oracle_text\",\"original_attribute\":\"oracle\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"7\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"price_usd\",\"original_attribute\":\"usd\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":2.5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"-m!=goblin OR name:2ww OR (!\"æther\" OR -(changeling and name>=showcase and oracle>007) OR power / usd>2.5)\""
+		}
 	},
 	{
 		"query": "-m=* OR otag>10E-105",
@@ -1920,7 +1944,10 @@
 	},
 	{
 		"query": "-mana!=straße",
-		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"STRASSE\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"-mana!=straße\""
+		}
 	},
 	{
 		"query": "-mcgee",
@@ -2055,7 +2082,7 @@
 		"query": "-subtype!=æther or ((kw:dragon or keyword<=brawl or c>x) and (-flavor:ΣΙΓΜΑ rg /^tap/)) or artist:straße",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"-subtype!=æther or ((kw:dragon or keyword<=brawl or c>x) and (-flavor:ΣΙΓΜΑ rg /^tap/)) or artist:straße\""
+			"message": "Failed to lex query: \"-subtype!=æther or ((kw:dragon or keyword<=brawl or c>x) and (-flavor:ΣΙΓΜΑ rg /^tap/)) or artist:straße\""
 		}
 	},
 	{
@@ -2150,7 +2177,7 @@
 		"query": "/a\\/b/ and -subtype>wubrg",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"/a\\/b/ and -subtype>wubrg\""
+			"message": "Failed to lex query: \"/a\\/b/ and -subtype>wubrg\""
 		}
 	},
 	{
@@ -2177,7 +2204,10 @@
 	},
 	{
 		"query": "0 + 3!=tou and ((devotion>the or new or 007))",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"THE\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"New\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"value\":7},\"node_type\":\"NumericValueNode\"}]},\"node_type\":\"OrNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"0 + 3!=tou and ((devotion>the or new or 007))\""
+		}
 	},
 	{
 		"query": "0 + cmc<tou OR (format>=vanilla or (-is!=Éowyn and -layout<æther and -\"a\\\"b\"))",
@@ -2238,7 +2268,10 @@
 	},
 	{
 		"query": "123 (devotion<=colorless)",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"value\":123},\"node_type\":\"NumericValueNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":\"COLORLESS\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"123 (devotion<=colorless)\""
+		}
 	},
 	{
 		"query": "2.5",
@@ -2544,7 +2577,7 @@
 		"query": "border<2ww (2.5-0=0 creature -subtype!=10E-105) /a\\/b/",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"border<2ww (2.5-0=0 creature -subtype!=10E-105) /a\\/b/\""
+			"message": "Failed to lex query: \"border<2ww (2.5-0=0 creature -subtype!=10E-105) /a\\/b/\""
 		}
 	},
 	{
@@ -2701,7 +2734,10 @@
 	},
 	{
 		"query": "cn>40k and (-(cn<0.0 layout<=2rr) and is>40k and mana>=goblin) and (-date!=2024-02-29)",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"collector_number\",\"original_attribute\":\"cn\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"40k\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"collector_number_int\",\"original_attribute\":\"cn\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":0.0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_layout\",\"original_attribute\":\"layout\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":\"2rr\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_is_tags\",\"original_attribute\":\"is\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":[\"40k\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":\"GOBLIN\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"released_at\",\"original_attribute\":\"date\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":\"2024-02-29\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"cn>40k and (-(cn<0.0 layout<=2rr) and is>40k and mana>=goblin) and (-date!=2024-02-29)\""
+		}
 	},
 	{
 		"query": "cn>=2024-02-29 produces=\"lightning bolt\" Naya>*",
@@ -2721,7 +2757,7 @@
 		"query": "color:old or -(oracle:x) or (/dra(w|ws)/ OR (2rr and e=AND))",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"color:old or -(oracle:x) or (/dra(w|ws)/ OR (2rr and e=AND))\""
+			"message": "Failed to lex query: \"color:old or -(oracle:x) or (/dra(w|ws)/ OR (2rr and e=AND))\""
 		}
 	},
 	{
@@ -2780,7 +2816,10 @@
 	},
 	{
 		"query": "devotion=o'kagachi",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"O'KAGACHI\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"devotion=o'kagachi\""
+		}
 	},
 	{
 		"query": "devotion>=*",
@@ -2793,7 +2832,7 @@
 		"query": "devotion>dragon /^tap/",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"devotion>dragon /^tap/\""
+			"message": "Failed to lex query: \"devotion>dragon /^tap/\""
 		}
 	},
 	{
@@ -2815,7 +2854,7 @@
 		"query": "dfc or /dra(w|ws)/",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"dfc or /dra(w|ws)/\""
+			"message": "Failed to lex query: \"dfc or /dra(w|ws)/\""
 		}
 	},
 	{
@@ -3032,7 +3071,7 @@
 		"query": "id>'full art' (-usd-2.5:usd) (-(kw>2015) OR (otag<=colorless and /dra(w|ws)/ and t<=brawl) OR border<=123)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"id>'full art' (-usd-2.5:usd) (-(kw>2015) OR (otag<=colorless and /dra(w|ws)/ and t<=brawl) OR border<=123)\""
+			"message": "Failed to lex query: \"id>'full art' (-usd-2.5:usd) (-(kw>2015) OR (otag<=colorless and /dra(w|ws)/ and t<=brawl) OR border<=123)\""
 		}
 	},
 	{
@@ -3205,10 +3244,7 @@
 	},
 	{
 		"query": "legal<=creature -((-cmc / usd:tou AND border<=creature AND ft=c) or 2.5 / power:cmc or -!the) e:'full art'",
-		"error": {
-			"type": "ValueError",
-			"message": "Failed to parse query: \"legal<=creature -((-cmc / usd:tou AND border<=creature AND ft=c) or 2.5 / power:cmc or -!the) e:'full art'\""
-		}
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"legal\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":[\"creature\"]},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"price_usd\",\"original_attribute\":\"usd\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_border\",\"original_attribute\":\"border\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":\"creature\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"flavor_text\",\"original_attribute\":\"ft\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"c\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"value\":2.5},\"node_type\":\"NumericValueNode\"},\"op\":\"/\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"value\":\"the\"},\"node_type\":\"ExactNameNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"OrNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_set_code\",\"original_attribute\":\"e\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"full art\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
 		"query": "legal=2ww",
@@ -3296,7 +3332,10 @@
 	},
 	{
 		"query": "m=æther",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"ÆTHER\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"m=æther\""
+		}
 	},
 	{
 		"query": "m>=u",
@@ -3304,7 +3343,10 @@
 	},
 	{
 		"query": "m>=ǅungla AND tou - usd>2.5 AND (!showcase)",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":\"ǄUNGLA\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"-\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"price_usd\",\"original_attribute\":\"usd\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":2.5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"value\":\"showcase\"},\"node_type\":\"ExactNameNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"m>=ǅungla AND tou - usd>2.5 AND (!showcase)\""
+		}
 	},
 	{
 		"query": "m>wubrg and (date=straße (name:æther or u or new) Naya<c)",
@@ -3575,7 +3617,7 @@
 		"query": "otag<2ww and ((0/power>tou) AND (0 - (cmc+1)!=0 AND changeling) AND banned!=/a\\/b/) and -is!=\"lightning bolt\"",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"otag<2ww and ((0/power>tou) AND (0 - (cmc+1)!=0 AND changeling) AND banned!=/a\\/b/) and -is!=\"lightning bolt\"\""
+			"message": "Failed to parse query: \"otag<2ww and ((0/power>tou) AND (0 - (cmc+1)!=0 AND changeling) AND banned!=/a\\/b/) and -is!=\"lightning bolt\"\""
 		}
 	},
 	{
@@ -3643,7 +3685,7 @@
 		"query": "power * 2.5>=(cmc+1) OR -(-usd/0>=usd AND devotion>=dfc AND banned>=/a\\/b/)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"power * 2.5>=(cmc+1) OR -(-usd/0>=usd AND devotion>=dfc AND banned>=/a\\/b/)\""
+			"message": "Failed to parse query: \"power * 2.5>=(cmc+1) OR -(-usd/0>=usd AND devotion>=dfc AND banned>=/a\\/b/)\""
 		}
 	},
 	{
@@ -3936,7 +3978,7 @@
 		"query": "tou / 2.5=0 OR legal=/a\\/b/ OR 3 + cmc<=0",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"tou / 2.5=0 OR legal=/a\\/b/ OR 3 + cmc<=0\""
+			"message": "Failed to parse query: \"tou / 2.5=0 OR legal=/a\\/b/ OR 3 + cmc<=0\""
 		}
 	},
 	{
@@ -3996,7 +4038,10 @@
 	},
 	{
 		"query": "type</a\\/b/ -(mana<2.5 and (cmc+tou:3 OR !old))",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"type\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"a/b\"},\"node_type\":\"RegexValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"2.5\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"+\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"value\":\"old\"},\"node_type\":\"ExactNameNode\"}]},\"node_type\":\"OrNode\"}]},\"node_type\":\"AndNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"AndNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"type</a\\/b/ -(mana<2.5 and (cmc+tou:3 OR !old))\""
+		}
 	},
 	{
 		"query": "type<2024-02-29 and (007)",
@@ -4074,7 +4119,7 @@
 		"query": "usd/power>2.5 AND unknownfield!=/^tap/",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to lex query: \"usd/power>2.5 AND unknownfield!=/^tap/\""
+			"message": "Failed to parse query: \"usd/power>2.5 AND unknownfield!=/^tap/\""
 		}
 	},
 	{
@@ -4151,7 +4196,10 @@
 	},
 	{
 		"query": "wubrg or (m=showcase)",
-		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Wubrg\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"SHOWCASE\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"wubrg or (m=showcase)\""
+		}
 	},
 	{
 		"query": "year!=/a\\/b/ AND !\"dfc\" AND -banned>=007",
@@ -4217,7 +4265,7 @@
 		"query": "year>=007 OR -/a\\/b/ OR -wm<split",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"year>=007 OR -/a\\/b/ OR -wm<split\""
+			"message": "Failed to lex query: \"year>=007 OR -/a\\/b/ OR -wm<split\""
 		}
 	},
 	{
@@ -4303,7 +4351,7 @@
 		"query": "éclair>=goblin ((ft!=brawl AND /a\\/b/) AND or) -((-flavor<colorless year:{g/u}) or f>new)",
 		"error": {
 			"type": "ValueError",
-			"message": "Failed to parse query: \"éclair>=goblin ((ft!=brawl AND /a\\/b/) AND or) -((-flavor<colorless year:{g/u}) or f>new)\""
+			"message": "Failed to lex query: \"éclair>=goblin ((ft!=brawl AND /a\\/b/) AND or) -((-flavor<colorless year:{g/u}) or f>new)\""
 		}
 	},
 	{

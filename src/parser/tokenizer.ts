@@ -7,6 +7,7 @@
 
 import { LexError } from "./errors";
 import { isAlphaCp, PyNumber } from "./pystr";
+import { braceCloseIndex, findCloseIndex, QUOTE_CHARS, unescapeSpan } from "./spans";
 
 export enum TT {
 	WORD = "WORD", // [a-zA-Z_][a-zA-Z0-9_.]* (includes digits-then-letters like "2rr")
@@ -124,6 +125,34 @@ function scanWordEnd(src: string[], n: number, j: number): number {
 	return j;
 }
 
+/**
+ * Find the `quote` closing a string opened before `start` and unescape its content, or null if the
+ * string is unterminated. The walk is spans.findCloseIndex — the balancer's — so the lexer and
+ * balancer can't drift on where an escaped quote ends; `sawEscape` comes free from it, so the common
+ * no-backslash case skips the unescape pass entirely.
+ */
+function closedQuote(
+	src: readonly string[],
+	start: number,
+	quote: string,
+): { closeIndex: number; content: string } | null {
+	const { closeIndex, sawEscape } = findCloseIndex(src, start, quote);
+	if (closeIndex === null) return null;
+	const content = src.slice(start, closeIndex).join("");
+	return { closeIndex, content: sawEscape ? unescapeSpan(content) : content };
+}
+
+/**
+ * Find the '/' closing a regex opened before `start`, unescaping ONLY `\/` → `/`; null if
+ * unterminated. Every other backslash sequence (`\d`) is left for the regex engine to interpret.
+ */
+function closedRegex(src: readonly string[], start: number): { closeIndex: number; content: string } | null {
+	const { closeIndex, sawEscape } = findCloseIndex(src, start, "/");
+	if (closeIndex === null) return null;
+	const content = src.slice(start, closeIndex).join("");
+	return { closeIndex, content: sawEscape ? content.replaceAll("\\/", "/") : content };
+}
+
 /** Lex a query string into a flat list of Tokens, terminated by an EOF token. */
 export function tokenize(source: string): Token[] {
 	const src = [...source]; // code points
@@ -150,10 +179,13 @@ export function tokenize(source: string): Token[] {
 		spaceBefore = false;
 		const c = cur;
 
-		// {mana symbol}
+		// {mana symbol}. braceCloseIndex is shared with the balancer (spans.ts): both have to agree
+		// that a '{...}' is opaque whatever it holds, or the balancer reads the ')' in '(mana:{)})'
+		// as query structure and rejects a query the lexer accepts — upstream #905's bug class,
+		// with braces in place of quotes.
 		if (c === "{") {
-			const end = src.indexOf("}", pos + 1);
-			if (end === -1) {
+			const end = braceCloseIndex(src, pos + 1);
+			if (end === null) {
 				throw new LexError(`Unclosed '{' at position ${pos}`);
 			}
 			pos = end + 1;
@@ -161,31 +193,16 @@ export function tokenize(source: string): Token[] {
 			continue;
 		}
 
-		// Quoted string
-		if (c === '"' || c === "'") {
-			const quote = c;
-			pos++;
-			const chars: string[] = [];
-			let closed = false;
-			while (pos < n) {
-				const ch = src[pos] as string;
-				if (ch === "\\" && pos + 1 < n) {
-					pos++;
-					chars.push(src[pos] as string);
-					pos++;
-				} else if (ch === quote) {
-					pos++;
-					closed = true;
-					break;
-				} else {
-					chars.push(ch);
-					pos++;
-				}
-			}
-			if (!closed) {
+		// Quoted string. The escape-skipping walk is the balancer's `findCloseIndex`, so the two
+		// cannot disagree that a backslash escapes the next character (upstream #905: the balancer
+		// read the ' in 'don\'t' as the close and appended a quote the lexer never wanted).
+		if (QUOTE_CHARS.has(c)) {
+			const closed = closedQuote(src, pos + 1, c);
+			if (closed === null) {
 				throw new LexError(`Unclosed quote at position ${start}`);
 			}
-			push(TT.QUOTED, chars.join(""), start, sb);
+			pos = closed.closeIndex + 1;
+			push(TT.QUOTED, closed.content, start, sb);
 			continue;
 		}
 
@@ -231,26 +248,24 @@ export function tokenize(source: string): Token[] {
 			continue;
 		}
 
-		// Slash: greedily try /regex/, fall back to arithmetic SLASH
+		// Slash: a regex only opens in value position — directly after a comparison operator, which
+		// is the only place the parser accepts one. Anywhere else '/' is arithmetic division.
+		//
+		// Without the guard the scan is greedy across the whole remaining query, so the division in
+		// "power/2>1 name:/a/" swallows "2>1 name:" as a pattern and the query cannot parse at all
+		// (upstream #908). Value position is unambiguous: division needs a left operand, and the
+		// operator just consumed that slot.
 		if (c === "/") {
-			let i = pos + 1;
-			let matched = false;
-			while (i < n) {
-				if (src[i] === "\\" && i + 1 < n) {
-					i += 2;
-				} else if (src[i] === "/") {
-					const pattern = slice(pos + 1, i).replaceAll("\\/", "/");
-					pos = i + 1;
-					push(TT.REGEX, pattern, start, sb);
-					matched = true;
-					break;
-				} else {
-					i += 1;
-				}
-			}
-			if (!matched) {
+			const prev = tokens.length > 0 ? tokens[tokens.length - 1] : undefined;
+			const inValuePosition = prev !== undefined && prev.type === TT.OP;
+			const closed = inValuePosition ? closedRegex(src, pos + 1) : null;
+			if (closed === null) {
+				// Division, or an unterminated regex falling back to division.
 				push(TT.SLASH, "/", start, sb);
 				pos += 1;
+			} else {
+				push(TT.REGEX, closed.content, start, sb);
+				pos = closed.closeIndex + 1;
 			}
 			continue;
 		}

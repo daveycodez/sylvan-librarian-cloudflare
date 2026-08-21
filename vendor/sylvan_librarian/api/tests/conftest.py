@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from api.admin_resource import AdminContext
 from api.api_resource import APIResource
+from api.app_context import AppContext
 from api.settings import settings
 from api.tests.support import override_attr
 
@@ -27,10 +29,11 @@ def engine_enabled_fixture() -> Generator[None]:
 
 @pytest.fixture(name="stub_api_resource")
 def stub_api_resource_fixture() -> Generator[APIResource]:
-    """A fresh APIResource per test, readiness stubbed, connection pool closed afterward.
+    """A fresh APIResource per test, readiness stubbed, both connection pools closed afterward.
 
     Function-scoped on purpose: it replaces per-class `setup_method` construction, and tests using it
-    mutate the instance (`_engine`, feature gates), so sharing one across a module would couple them.
+    mutate the instance (`app_context.engine`, feature gates), so sharing one across a module would
+    couple them.
 
     Two things it deliberately does *not* do:
 
@@ -42,10 +45,11 @@ def stub_api_resource_fixture() -> Generator[APIResource]:
     - It does not set up a schema or touch the database. Tests needing that want the `api_resource`
       fixture below instead.
     """
-    api = APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
-    override_attr(api, "_setup_complete", lambda: True)
+    api = APIResource(app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)))
+    override_attr(api.app_context, "setup_complete", lambda: True)
     yield api
-    api._conn_pool.close()
+    api.app_context.reader_pool.close()
+    api.app_context.writer_pool.close()
 
 
 @pytest.fixture(scope="module")
@@ -57,11 +61,12 @@ def api_resource(postgres_container: None) -> Generator[APIResource]:
     rows they created themselves (unique card names / oracle_ids), never about global counts.
     """
     api = APIResource(
-        last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        schema_setup_event=multiprocessing.Event(),
+        app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)),
+        admin_context=AdminContext(schema_setup_event=multiprocessing.Event()),
     )
-    override_attr(api, "_setup_complete", lambda: True)
-    override_attr(api, "_import_recent", lambda: True)
-    api.setup_schema()
+    override_attr(api.app_context, "setup_complete", lambda: True)
+    override_attr(api.admin, "_import_recent", lambda: True)
+    api.admin.setup_schema()
     yield api
-    api._conn_pool.close()
+    api.app_context.reader_pool.close()
+    api.app_context.writer_pool.close()

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from api.parsing.db_info import ARRAY_IS_TAGS, BOOLEAN_IS_TAGS
+from api.parsing.card_query_nodes import CardAttributeNode
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.nodes import (
     AndNode,
@@ -260,6 +261,12 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     # two overlap on the ten two-colour Phyrexian symbols ({G/W/P} ...), which are both, and they
     # part company on {B/P} (Phyrexian, not hybrid -- one colour) and {C/P} (the same).
     #
+    # {C/P} is in the symbology but NOT in the `m:` half below: no printed cost carries it
+    # (`mana:{C/P}` and `o:"{c/p}"` both answer zero on api.scryfall.com, 2026-08-21), and the
+    # mana-symbol validator (#909) rejects it in a query -- `{C/P}` is not one of the shapes it
+    # accepts -- so naming it would make the whole expansion a parse error for a term that can
+    # match nothing.
+    #
     # Verified against api.scryfall.com card for card -- all 603 `is:hybrid` and all 73
     # `is:phyrexian` fetched and diffed against the 2026-08-16 bulk: ZERO cards Scryfall names are
     # missed by either rule, and every extra this corpus would add comes from a set the import does
@@ -281,7 +288,7 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
         "m:{2/B} or m:{2/R} or m:{2/G} or m:{C/W} or m:{C/U} or m:{C/B} or m:{C/R} or m:{C/G}"
     ),
     ("is", "phyrexian"): (
-        "m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{C/P} or m:{W/U/P} or m:{W/B/P} or "
+        "m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{W/U/P} or m:{W/B/P} or "
         "m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or "
         'm:{G/U/P} or o:"{w/p}" or o:"{u/p}" or o:"{b/p}" or o:"{r/p}" or o:"{g/p}" or o:"{c/p}" or '
         'o:"{w/u/p}" or o:"{w/b/p}" or o:"{u/b/p}" or o:"{u/r/p}" or o:"{b/r/p}" or o:"{b/g/p}" or '
@@ -455,6 +462,47 @@ def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[Q
     return node, False
 
 
+def _swap_not_leaves(node: QueryNode) -> tuple[QueryNode, bool]:
+    """Replace `not:value` leaves with `NotNode(is:value)`; return `(node, changed)`.
+
+    Reuses the leaf's own operator and rhs untouched -- only `lhs` changes, from the `not`
+    FieldInfo to `is`'s -- so the wrapped leaf is indistinguishable from a user-typed
+    `is:value` and `expand_derived_predicates` (which runs next) still applies is:'s
+    expansion table to it (`not:vanilla` negates the same subtree `is:vanilla` expands to,
+    not a raw, never-populated `card_is_tags @> {"vanilla": true}` check).
+    """
+    cls = node.__class__
+    if cls is AndNode or cls is OrNode:
+        changed = False
+        operands = []
+        for op in node.operands:
+            new_op, op_changed = _swap_not_leaves(op)
+            operands.append(new_op)
+            changed |= op_changed
+        return (cls(operands), True) if changed else (node, False)
+    if cls is NotNode:
+        new_op, changed = _swap_not_leaves(node.operand)
+        return (NotNode(new_op), True) if changed else (node, False)
+    if isinstance(node, BinaryOperatorNode) and isinstance(node.lhs, CardAttributeNode) and node.lhs.original_attribute == "not":
+        is_lhs = CardAttributeNode("is", node.lhs.matched_parser_class)
+        return NotNode(type(node)(is_lhs, node.operator, node.rhs)), True
+    return node, False
+
+
+def negate_not_prefix(query: Query) -> Query:
+    """Rewrite `not:value` leaves into `NotNode(is:value)`.
+
+    Scryfall's docs: `is:` "has a convenient inverted mode `not:` which is the same as
+    `-is:`." Runs before `expand_derived_predicates` so a `not:`-spelled derived value
+    (`not:vanilla`, `not:new`, ...) gets is:'s expansion table applied underneath the
+    negation, same as if the user had written `-is:vanilla` directly.
+    """
+    root, changed = _swap_not_leaves(query.root)
+    if not changed:
+        return query
+    return flatten_nested_operations(Query(root))
+
+
 def _regex_plain_literal(pattern: str) -> str | None:
     r"""The exact substring an unanchored, metacharacter-free regex matches, else None.
 
@@ -596,7 +644,8 @@ def _collect_unsupported_is(node: QueryNode, found: list[str]) -> None:
     if key is None:
         return
     alias, value = key
-    supported = {"is": SUPPORTED_IS_VALUES, "has": SUPPORTED_HAS_VALUES}.get(alias)
+    # `not:` is `-is:` (negate_not_prefix runs after this), so its vocabulary is `is:`'s.
+    supported = {"is": SUPPORTED_IS_VALUES, "not": SUPPORTED_IS_VALUES, "has": SUPPORTED_HAS_VALUES}.get(alias)
     if supported is not None and value not in supported:
         found.append(
             f"Unsupported term \u201c{alias}:{value}\u201d: this server has no data for that predicate, so it matched no cards.",
@@ -624,7 +673,7 @@ def unsupported_is_warnings(query: Query) -> tuple[str, ...]:
 # The post-parse rewrite pipeline, applied in order at the shared parse seam. Add future AST
 # rewrites to this tuple — both parsers call `rewrite_query`, so a new pass lands in exactly one
 # place and is guaranteed identical treatment across parsers (enforced by test_parser_parity).
-_REWRITE_PASSES = (expand_derived_predicates, lower_literal_regexes)
+_REWRITE_PASSES = (negate_not_prefix, expand_derived_predicates, lower_literal_regexes)
 
 
 def rewrite_query(query: Query) -> Query:
@@ -634,9 +683,11 @@ def rewrite_query(query: Query) -> Query:
     `expand_derived_predicates` replaces. Directive extraction runs next so no later pass sees a
     DirectiveNode, and the collected pairs — like the warnings — are attached to the final Query
     afterward because each pass returns a fresh Query.
-    Order among the passes is significant: `expand_derived_predicates` runs before
-    `lower_literal_regexes` (a synonym may expand into a subtree that itself contains a regex
-    or other rewritable leaf), then any future pass appended to `_REWRITE_PASSES`.
+    Order among the passes is significant: `negate_not_prefix` runs first (a `not:`-spelled leaf
+    becomes `NotNode(is:...)`, so it reads as a plain `is:` leaf to everything after it), then
+    `expand_derived_predicates` (a synonym may expand into a subtree that itself contains a
+    regex or other rewritable leaf), then `lower_literal_regexes`, then any future pass
+    appended to `_REWRITE_PASSES`.
     """
     warnings = unsupported_is_warnings(query)
     query, directives = extract_directives(query)

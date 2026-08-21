@@ -174,10 +174,6 @@ fn jv_opt_f32(d: &Value, key: &str) -> Option<f32> {
     d.get(key).and_then(Value::as_f64).map(|n| n as f32)
 }
 
-fn jv_opt_i8(d: &Value, key: &str) -> Option<i8> {
-    jv_opt_f32(d, key).map(|v| v as i8)
-}
-
 fn jv_opt_u8(d: &Value, key: &str) -> Option<u8> {
     jv_opt_f32(d, key).map(|v| v as u8)
 }

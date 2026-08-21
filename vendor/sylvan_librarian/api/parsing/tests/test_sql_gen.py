@@ -207,6 +207,17 @@ def test_full_sql_translation(parse_query, input_query: str, expected_sql: str, 
             r"(%(p_dict_eydYJzogWzFdLCAnUic6IFsxXX0)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_MQ)s)",
             {"p_dict_eydYJzogWzFdLCAnUic6IFsxXX0": {"X": [1], "R": [1]}, "p_int_MQ": 1},
         ),
+        # Snow, likewise: bare 's' means the same thing as braced '{s}' (#954).
+        (
+            "mana:{S}",
+            r"(%(p_dict_eydTJzogWzFdfQ)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_MQ)s)",
+            {"p_dict_eydTJzogWzFdfQ": {"S": [1]}, "p_int_MQ": 1},
+        ),
+        (
+            "mana:s",
+            r"(%(p_dict_eydTJzogWzFdfQ)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_MQ)s)",
+            {"p_dict_eydTJzogWzFdfQ": {"S": [1]}, "p_int_MQ": 1},
+        ),
     ],
 )
 def test_full_sql_translation_jsonb_colors(parse_query, input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -726,6 +737,24 @@ def test_is_tag_sql_translation(parse_query, input_query: str, expected_sql: str
     observed_sql = parsed.to_sql(context)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+@pytest.mark.parametrize(
+    argnames="tag_value",
+    argvalues=["creature", "modal-dfc", "spell"],
+)
+def test_has_is_alias(parse_query, tag_value: str) -> None:
+    """Test that has: is a full synonym for is:.
+
+    Scryfall treats has: as a full synonym for is:, for every tag value -- not just the
+    handful of "does this card have X" examples its docs happen to show (has:indicator,
+    has:watermark). Confirmed live against api.scryfall.com: is:X and has:X return identical
+    card counts for every value tried.
+    """
+    is_context = QueryContext()
+    has_context = QueryContext()
+    assert parse_query(f"is:{tag_value}").to_sql(is_context) == parse_query(f"has:{tag_value}").to_sql(has_context)
+    assert is_context == has_context
 
 
 @pytest.mark.parametrize(
@@ -1552,3 +1581,29 @@ testcases_proper_subset_masks = {
 )
 def test_proper_subset_masks(query_mask: int, expected: list[int]) -> None:
     assert _proper_subset_masks(query_mask) == expected
+
+
+# ── #976: commander:/colour:/colours: as aliases, not a literal name search ──────────────
+# (alias query, canonical query) -- alias spelling must generate byte-identical SQL to the
+# canonical one, not fall through to a literal name search on card_name.
+COMMANDER_COLOUR_ALIAS_EQUIVALENCES = [
+    ("commander:wub", "id:wub"),
+    ("commander<=wub", "id<=wub"),
+    ("colour:blue", "color:blue"),
+    ("colours:wu", "colors:wu"),
+]
+
+
+@pytest.mark.parametrize(
+    argnames=["alias_query", "canonical_query"],
+    argvalues=COMMANDER_COLOUR_ALIAS_EQUIVALENCES,
+    ids=[q for q, _ in COMMANDER_COLOUR_ALIAS_EQUIVALENCES],
+)
+def test_commander_colour_alias_generates_same_sql(parse_query, alias_query: str, canonical_query: str) -> None:
+    """commander:/colour:/colours: generate identical SQL to id:/color:/colors:, for both parsers."""
+    alias_context = QueryContext()
+    canonical_context = QueryContext()
+    alias_sql = parse_query(alias_query).to_sql(alias_context)
+    canonical_sql = parse_query(canonical_query).to_sql(canonical_context)
+    assert alias_sql == canonical_sql
+    assert alias_context == canonical_context

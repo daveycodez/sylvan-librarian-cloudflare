@@ -17,6 +17,7 @@ import type {
 } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
 import { routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
+import { adminUnauthorized, isAdminPath } from "../../src/routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "../../src/routes/http";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
@@ -455,6 +456,9 @@ const DISALLOWED_QUERY_ARGS = new Set(["falcon_response", "request_host"]);
 export async function testDispatch(ctx: RouteContext, url: string, method = "GET"): Promise<Response> {
 	const parsed = new URL(url, "https://sylvan-librarian.com");
 	const path = parsed.pathname.replace(/^\/+|\/+$/g, "") || "_root";
+
+	// Mirrors dispatch: the /_admin mount is answered before routing (src/routes/admin.ts).
+	if (isAdminPath(path)) return adminUnauthorized();
 
 	let resolved: { key: string; positionalArgs: string[] } | null = null;
 	if (path in routes) {

@@ -3,7 +3,6 @@
 import multiprocessing
 import os
 import pathlib
-import time
 import unittest
 import uuid
 from collections.abc import Generator
@@ -16,18 +15,14 @@ import falcon.testing
 import pytest
 
 import api.api_resource as api_resource_module
-from api.api_resource import (
-    FALLBACK_SITE_NAME,
-    INTERNAL_ERROR_DESCRIPTION,
-    APIResource,
-    _hostname_to_site_name,
-    _split_words,
-    hostname_to_site_name,
-)
+from api.admin_resource import AdminContext
+from api.api_resource import INTERNAL_ERROR_DESCRIPTION, APIResource
 from api.enums import ResponseShape, UniqueOn
 from api.middlewares.caching_middleware import CachingMiddleware
 from api.settings import settings
+from api.tests.support import mock_app_context
 from api.utils.routing import BoundRoute, RouteSpec, route
+from api.utils.site_name import FALLBACK_SITE_NAME
 
 
 def make_bound_route(action: object, *, path: str = "search", positional_capacity: float = 0.0) -> BoundRoute:
@@ -139,27 +134,15 @@ def create_test_card(  # noqa: PLR0913, PLR0917
     return card
 
 
-@pytest.fixture(name="patch_conn_pool")
-def patch_conn_pool_fixture() -> MagicMock:
-    """Patch connection pool."""
-    mock_conn_pool = MagicMock()
-    with patch("api.api_resource.db_utils.make_pool") as mock_pool:
-        mock_pool.return_value = mock_conn_pool
-        yield mock_conn_pool
-
-
 class TestBaseAPIResourceTest:
     @pytest.fixture(autouse=True)
-    def setUp(self, request: pytest.FixtureRequest, patch_conn_pool: MagicMock) -> None:
+    def setUp(self, request: pytest.FixtureRequest) -> None:
         """Set up test fixtures."""
-        del patch_conn_pool
         self_reference = request.instance
 
-        self_reference.mock_conn_pool = MagicMock()
-        self_reference.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self_reference.api_resource._conn_pool = self_reference.mock_conn_pool
+        self_reference.app_context = mock_app_context()
+        self_reference.mock_conn_pool = self_reference.app_context.reader_pool
+        self_reference.api_resource = APIResource(app_context=self_reference.app_context)
 
 
 class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
@@ -168,7 +151,7 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
     def test_initialization_defaults(self) -> None:
         """Test APIResource initialization with default parameters."""
         api_resource = self.api_resource
-        assert api_resource._conn_pool == self.mock_conn_pool
+        assert api_resource.app_context.reader_pool == self.mock_conn_pool
 
         # Check that action map is populated
         assert "get_pid" in api_resource.routes
@@ -177,17 +160,18 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
 
         # Check that caches are initialized
         assert hasattr(api_resource, "_query_cache")
-        assert hasattr(api_resource, "_session")
+        # _session moved to the admin child, which owns the outbound Scryfall/CubeCobra calls.
+        assert hasattr(api_resource.admin, "_session")
 
     def test_initialization_with_custom_import_guard(self) -> None:
         """Test APIResource initialization with custom import guard."""
         custom_guard = multiprocessing.RLock()
         api_resource = APIResource(
-            import_guard=custom_guard,
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            app_context=mock_app_context(),
+            admin_context=AdminContext(import_guard=custom_guard),
         )
 
-        assert api_resource._import_guard == custom_guard
+        assert api_resource.admin.admin_context.import_guard == custom_guard
 
     def test_every_public_method_is_still_registered(self) -> None:
         """Test the marker migration left no previously-routed method behind.
@@ -316,7 +300,7 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
             def shadows_search(self, **_: object) -> None: ...
 
         with pytest.raises(RuntimeError, match="claimed by both"):
-            Colliding(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
+            Colliding(app_context=mock_app_context())
 
     @pytest.mark.parametrize(argnames=["path"], argvalues=[("/index",), ("/index.html",)])
     def test_index_path_redirects_instead_of_erroring(self, path: str) -> None:
@@ -377,11 +361,9 @@ class TestAPIResourceCoreMethods(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def test_get_pid_returns_process_id(self) -> None:
         """Test that get_pid returns the current process ID."""
@@ -395,11 +377,9 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def test_raise_not_found_raises_http_not_found(self) -> None:
         """Test _raise_not_found raises HTTPNotFound with route information."""
@@ -608,7 +588,7 @@ class TestSearchResponseShape(TestBaseAPIResourceTest):
         mock_engine = MagicMock()
         mock_engine.size.return_value = 100
         mock_engine.sample_preferred.return_value = iter(self.search_results["cards"])
-        with patch.object(self.api_resource, "_engine", mock_engine):
+        with patch.object(self.api_resource.app_context, "engine", mock_engine):
             result = self.api_resource.random_search(
                 falcon_response=MagicMock(),
                 num_cards=2,
@@ -651,6 +631,7 @@ class TestIdentityLetters(unittest.TestCase):
         """A colorless identity is an empty list, matching Scryfall's JSON."""
         assert api_resource_module._identity_letters({}) == []
         assert api_resource_module._identity_letters(None) == []
+
 
 class TestSearchQueryDirectives(TestBaseAPIResourceTest):
     """In-query directives (unique:/sort:/order:/direction:/prefer:) apply before either search path.
@@ -773,24 +754,9 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
-
-    def test_serve_static_file_reads_file_content(self) -> None:
-        """Test _serve_static_file reads and serves file content."""
-        mock_response = MagicMock()
-
-        with patch("api.api_resource.pathlib.Path") as mock_path:
-            mock_file = MagicMock()
-            mock_file.open.return_value.__enter__.return_value.read.return_value = "file content"
-            mock_path.return_value = mock_file
-
-            self.api_resource._serve_static_file(filename="test.html", falcon_response=mock_response)
-
-            assert mock_response.text == "file content"
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def test_index_html_serves_static_file(self) -> None:
         """Test _root serves the index.html file."""
@@ -912,79 +878,30 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         assert mock_response.content_type == "text/plain"
 
 
-class TestHtmlMinification(unittest.TestCase):
-    """_minify_html reduces page weight.
-
-    Must not corrupt the per-request placeholders that _build_base_html's cached output still
-    needs substituted afterward (SERVER_SIDE_RESULTS, SERVER_SIDE_EMBEDDED_DATA).
-    """
-
-    def setUp(self) -> None:
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
-
-    def test_minifies_whitespace_by_default(self) -> None:
-        # minify_html also drops the redundant closing </p> (valid HTML5 tag-omission), hence
-        # "<div><p>x</div>" rather than a literal whitespace-only collapse.
-        assert api_resource_module._minify_html("<div>   <p>x</p>   </div>") == "<div><p>x</div>"
-
-    def test_disabled_flag_returns_input_unchanged(self) -> None:
-        original = api_resource_module._MINIFY_HTML_ENABLED
-        api_resource_module._MINIFY_HTML_ENABLED = False
-        try:
-            html = "<div>   <p>x</p>   </div>"
-            assert api_resource_module._minify_html(html) == html
-        finally:
-            api_resource_module._MINIFY_HTML_ENABLED = original
-
-    def test_server_side_placeholders_survive_minification(self) -> None:
-        mock_response = MagicMock()
-        self.api_resource._root(falcon_response=mock_response)
-        assert "<!-- SERVER_SIDE_RESULTS -->" in mock_response.text
-        assert "<!-- SERVER_SIDE_EMBEDDED_DATA -->" in mock_response.text
-
-    def test_search_results_still_embed_after_minification(self) -> None:
-        mock_response = MagicMock()
-        mock_search_results = {
-            "cards": [{"name": "Elvish Mystic", "set_code": "m14", "collector_number": "1"}],
-            "total_cards": 1,
-            "query": "elf",
-        }
-        with patch.object(self.api_resource, "_search", return_value=mock_search_results):
-            self.api_resource._root(falcon_response=mock_response, q="elf")
-        assert "window.EMBEDDED_SEARCH_RESULTS = {" in mock_response.text
-        assert "Elvish Mystic" in mock_response.text
-
-
 class TestAPIResourceErrorHandling(unittest.TestCase):
     """Test error handling in APIResource methods."""
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def test_import_card_by_name_validates_card_name_parameter(self) -> None:
         """Test import_card_by_name validates card_name parameter."""
         with pytest.raises(ValueError, match="card_name parameter is required"):
-            self.api_resource.import_card_by_name(card_name="")
+            self.api_resource.admin.import_card_by_name(card_name="")
 
         with pytest.raises(ValueError, match="card_name parameter is required"):
-            self.api_resource.import_card_by_name(card_name=None)
+            self.api_resource.admin.import_card_by_name(card_name=None)
 
     def test_import_cards_by_search_validates_search_query_parameter(self) -> None:
         """Test import_cards_by_search validates search_query parameter."""
         with pytest.raises(ValueError, match="search_query parameter is required"):
-            self.api_resource.import_cards_by_search(search_query="")
+            self.api_resource.admin.import_cards_by_search(search_query="")
 
         with pytest.raises(ValueError, match="search_query parameter is required"):
-            self.api_resource.import_cards_by_search(search_query=None)
+            self.api_resource.admin.import_cards_by_search(search_query=None)
 
 
 class TestAPIResourceCaching(unittest.TestCase):
@@ -997,11 +914,9 @@ class TestAPIResourceCaching(unittest.TestCase):
         # Enable caching for these tests
         settings.enable_cache = True
         # Now create the APIResource with caching enabled
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def tearDown(self) -> None:
         """Restore original cache setting."""
@@ -1014,9 +929,10 @@ class TestAPIResourceCaching(unittest.TestCase):
         mock_cursor = MagicMock()
         mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
         with (
-            patch.object(self.api_resource, "_conn_pool") as mock_pool,
+            # _upsert_cards runs via the shared AppContext's writer_pool, not the reader_pool.
+            patch.object(self.api_resource.admin.app_context, "writer_pool") as mock_pool,
             patch(
-                "api.api_resource._bulk_upsert",
+                "api.admin_resource._bulk_upsert",
                 return_value={"inserted": 1, "updated": 0, "unchanged": 0},
             ),
         ):
@@ -1039,7 +955,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             )
 
             # Call _upsert_cards directly to test cache clearing
-            self.api_resource._upsert_cards([valid_card])
+            self.api_resource.admin._upsert_cards([valid_card])
 
             # Cache should be cleared after successful load
             assert "test_key" not in self.api_resource._query_cache
@@ -1053,10 +969,10 @@ class TestAPIResourceCaching(unittest.TestCase):
                 prices={},
             )
 
-            gen_before = self.api_resource._cache_generation.value
-            self.api_resource._upsert_cards([valid_card])
+            gen_before = self.api_resource.app_context.cache_generation.value
+            self.api_resource.admin._upsert_cards([valid_card])
             # Generation increment is the cross-worker invalidation signal
-            assert self.api_resource._cache_generation.value > gen_before
+            assert self.api_resource.app_context.cache_generation.value > gen_before
 
     def test_random_search_uses_engine_sample_preferred(self) -> None:
         """random_search delegates to engine.sample_preferred() when the engine is loaded."""
@@ -1067,7 +983,7 @@ class TestAPIResourceCaching(unittest.TestCase):
         mock_engine.size.return_value = 2
         mock_engine.sample_preferred.return_value = fake_cards
 
-        with patch.object(self.api_resource, "_engine", mock_engine):
+        with patch.object(self.api_resource.app_context, "engine", mock_engine):
             result = self.api_resource.random_search(num_cards=2)
 
         mock_engine.sample_preferred.assert_called_once_with(2)
@@ -1082,7 +998,7 @@ class TestAPIResourceCaching(unittest.TestCase):
         mock_engine.size.return_value = 0
 
         with (
-            patch.object(self.api_resource, "_engine", mock_engine),
+            patch.object(self.api_resource.app_context, "engine", mock_engine),
             patch.object(self.api_resource, "_trigger_background_reload_if_needed"),
         ):
             result = self.api_resource.random_search(num_cards=1)
@@ -1101,7 +1017,7 @@ class TestAPIResourceCaching(unittest.TestCase):
         mock_engine = MagicMock()
         mock_engine.size.return_value = 0
 
-        with patch.object(self.api_resource, "_engine", mock_engine):
+        with patch.object(self.api_resource.app_context, "engine", mock_engine):
             with pytest.raises(falcon.HTTPServiceUnavailable):
                 self.api_resource.get_catalog()
 
@@ -1127,7 +1043,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             "Haste": 3,
         }
 
-        with patch.object(self.api_resource, "_engine", mock_engine):
+        with patch.object(self.api_resource.app_context, "engine", mock_engine):
             result = self.api_resource.get_catalog()
 
         assert result == {
@@ -1166,7 +1082,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             "Deathtouch": 2,
         }
 
-        with patch.object(self.api_resource, "_engine", mock_engine):
+        with patch.object(self.api_resource.app_context, "engine", mock_engine):
             result = self.api_resource.get_catalog()
 
         assert list(result["types"]) == ["Aura", "Aurochs", "Kindred", "Tribal", "Wall"]
@@ -1182,160 +1098,16 @@ class TestAPIResourceCaching(unittest.TestCase):
         assert "test_key" not in self.api_resource._query_cache
 
         # Test that generation increment invalidates the search gen cache
-        gen_before = self.api_resource._cache_generation.value
-        self.api_resource._clear_caches()
-        assert self.api_resource._cache_generation.value == gen_before + 1
-
-
-_HOSTNAME_TESTCASES = {
-    "tolarian_acade_my": {
-        "expected": "Tolarian Academy",
-        "raw_host": "tolarian-acade.my",
-    },
-    "strips_com_tld": {
-        "expected": "Sylvan Librarian",
-        "raw_host": "sylvan-librarian.com",
-    },
-    "strips_port": {
-        "expected": "Sylvan Librarian",
-        "raw_host": "sylvan-librarian.com:443",
-    },
-    "strips_www_prefix": {
-        "expected": "Sylvan Librarian",
-        "raw_host": "www.sylvan-librarian.com",
-    },
-    "strips_subdomain_com": {
-        "expected": "Sylvan Librarian",
-        "raw_host": "foo.sylvan-librarian.com",
-    },
-    "strips_subdomain_non_strip_tld": {
-        "expected": "Tolarian Academy",
-        "raw_host": "foo.tolarian-acade.my",
-    },
-    "localhost_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "localhost",
-    },
-    "localhost_with_port_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "localhost:8080",
-    },
-    "ip_address_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "192.168.1.1",
-    },
-    "ip_with_port_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "192.168.1.1:5000",
-    },
-    "empty_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "",
-    },
-    "invalid_chars_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": 'evil"><script>.com',
-    },
-    "all_hyphens_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "----",
-    },
-    "all_dots_returns_fallback": {
-        "expected": FALLBACK_SITE_NAME,
-        "raw_host": "...",
-    },
-}
-
-
-_SPLIT_WORDS_TESTCASES: dict[str, dict] = {
-    "whole_word": {
-        "s": "apple",
-        "expected": ["apple"],
-    },
-    "two_words": {
-        "s": "applepie",
-        "expected": ["apple", "pie"],
-    },
-    "three_words": {
-        "s": "applebananacherry",
-        "expected": ["apple", "banana", "cherry"],
-    },
-    "no_split_possible": {
-        "s": "xyzqwerty",
-        "expected": None,
-    },
-    "split_prefers_middle": {
-        # "the" (len 3) at position 0 and "oak" (len 3) at end; "lion" in the middle is found first
-        "s": "thelionoak",
-        "expected": ["the", "lion", "oak"],
-    },
-    "prefers_fewest_words": {
-        # Two valid splits: ["abcde", "fghij"] (k=5, center) and ["abc", "de", "fghij"] (k=3).
-        # Middle-out tries k=5 first and commits to the 2-word split.
-        "s": "abcdefghij",
-        "expected": ["abcde", "fghij"],
-    },
-}
-
-_SMALL_WORDS: frozenset[str] = frozenset(
-    ["apple", "pie", "banana", "cherry", "the", "lion", "oak", "abcde", "fghij", "abc", "de", "sylvan", "librarian"]
-)
-
-
-class TestSplitWords:
-    """Tests for _split_words() using a controlled word set."""
-
-    @pytest.mark.parametrize(
-        argnames=sorted(next(iter(_SPLIT_WORDS_TESTCASES.values()))),
-        argvalues=[[v for k, v in sorted(_SPLIT_WORDS_TESTCASES[name].items())] for name in sorted(_SPLIT_WORDS_TESTCASES)],
-        ids=sorted(_SPLIT_WORDS_TESTCASES),
-    )
-    def test_split_words(self, expected: list[str] | None, s: str) -> None:
-        assert _split_words(s, _SMALL_WORDS) == expected
-
-
-_HOSTNAME_DICT_TESTCASES: dict[str, dict] = {
-    "no_dash_splits_into_words": {
-        "expected": "Sylvan Librarian",
-        "raw_host": "sylvanlibrarian.com",
-    },
-}
-
-
-class TestHostnameSiteNameWithDict:
-    """Tests for hostname_to_site_name() with a controlled word set patched in."""
-
-    @pytest.mark.parametrize(
-        argnames=sorted(next(iter(_HOSTNAME_DICT_TESTCASES.values()))),
-        argvalues=[[v for k, v in sorted(_HOSTNAME_DICT_TESTCASES[name].items())] for name in sorted(_HOSTNAME_DICT_TESTCASES)],
-        ids=sorted(_HOSTNAME_DICT_TESTCASES),
-    )
-    def test_hostname_to_site_name_with_dict(self, monkeypatch: pytest.MonkeyPatch, expected: str, raw_host: str) -> None:
-        monkeypatch.setattr("api.api_resource._WORDS", _SMALL_WORDS)
-        _hostname_to_site_name.cache_clear()
-        assert hostname_to_site_name(raw_host) == expected
-
-
-class TestHostnameSiteName:
-    """Tests for hostname_to_site_name()."""
-
-    @pytest.mark.parametrize(
-        argnames=sorted(next(iter(_HOSTNAME_TESTCASES.values()))),
-        argvalues=[[v for k, v in sorted(_HOSTNAME_TESTCASES[name].items())] for name in sorted(_HOSTNAME_TESTCASES)],
-        ids=sorted(_HOSTNAME_TESTCASES),
-    )
-    def test_hostname_to_site_name(self, expected: str, raw_host: str) -> None:
-        assert hostname_to_site_name(raw_host) == expected
+        gen_before = self.api_resource.app_context.cache_generation.value
+        self.api_resource.admin._clear_caches()
+        assert self.api_resource.app_context.cache_generation.value == gen_before + 1
 
 
 class TestRootSiteNameInjection(unittest.TestCase):
     """Tests that _root injects the derived site name into the HTML."""
 
     def setUp(self) -> None:
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = MagicMock()
+        self.api_resource = APIResource(app_context=mock_app_context())
 
     def test_valid_hostname_replaces_fallback_in_html(self) -> None:
         mock_response = MagicMock()
@@ -1353,10 +1125,7 @@ class TestCardSiteNameInjection(unittest.TestCase):
     """Tests that card() injects the derived site name into card page HTML."""
 
     def setUp(self) -> None:
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = MagicMock()
+        self.api_resource = APIResource(app_context=mock_app_context())
 
     def test_valid_hostname_replaces_fallback_in_card_html(self) -> None:
         mock_response = MagicMock()

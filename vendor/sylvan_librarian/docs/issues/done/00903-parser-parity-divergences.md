@@ -122,9 +122,42 @@ silent-zero-rows case. **B** is the narrowest.
 
 ## What shipped so far
 
-No fixes — only the pin. [`test_parser_parity.py`](../../api/parsing/tests/test_parser_parity.py)
-gains `test_known_parser_divergences`, parameterized over all 15 wild queries plus 4 minimal repros,
-each `xfail(strict=True)`. Fixing any cause turns its entries into `XPASS(strict)` failures, so a
-fix cannot land without deleting the entries it resolves — the list can only shrink.
+First, only the pin: [`test_parser_parity.py`](../../api/parsing/tests/test_parser_parity.py) gained
+`test_known_parser_divergences`, parameterized over all 15 wild queries plus 4 minimal repros, each
+`xfail(strict=True)`. Fixing any cause turns its entries into `XPASS(strict)` failures, so a fix
+cannot land without deleting the entries it resolves — the list can only shrink.
 
 The shared assertion moved into `assert_parsers_agree()` so both parity tests use one comparison.
+
+**A fixed**: `_rhs_introduces_comparison` now counts a comparison operator at any paren depth, not
+just depth 0 — a one-line change (dropping `and depth == 0` from the comparison branch). All 12
+cause-A entries removed from `KNOWN_DIVERGENCES`; regression cases added to
+[`implicit_and_cases.py`](../../api/parsing/tests/implicit_and_cases.py) covering the numeric-LHS,
+year-LHS, and single-vs-`OR`-group shapes.
+
+**C fixed**: `!` now aliases `=` on COLOR/MANA/NUMERIC/RARITY/YEAR/DATE in both parsers — the hand
+parser accepts a `BANG` token wherever it accepted `OP` for those classes (`parse_word_primary` in
+`hand_parser.py`); pyparsing gained an `EQ_ALIAS_OPERATORS = DEFAULT_OPERATORS | Literal("!").set_parse_action(lambda: "=")`
+used only by the five eligible `condition`s (`mana_condition`, `color_condition`,
+`rarity_condition`, `date_condition`, `year_condition`) plus `unified_numeric_comparison`;
+`legality_condition`/`text_condition` are untouched, so `!=` still wins over bare `!` by
+longest-match and TEXT/LEGALITY still fall through to the pre-existing exact-name fallback. All 4
+cause-C entries removed from `KNOWN_DIVERGENCES`.
+
+Residual, out of scope for this fix: pyparsing hard-rejects `field!value` on TEXT/LEGALITY fields
+(e.g. `t!creature`) regardless of class, where the hand parser has always had the fallback
+reading — this divergence was never in the wild-corpus sweep (no such query appeared), so it isn't
+one of the tracked 15 and is left for a future pass.
+
+**B fixed**: added `word_after_op = comparison_tok + string_value_tok` to
+`_get_implicit_and_tokenizer`'s `one_token` alternation, ahead of `and_tok`/`or_tok`/`comparison_tok`
+— mirroring `regex_after_op`'s existing trick of matching a value together with the operator that
+precedes it, so a bare word right after `:`/`=`/etc. is captured as one unit before the AND/OR
+keyword check ever gets a look at it. All 3 cause-B entries removed.
+
+All 15 wild-corpus queries (19 including minimal repros) now agree between the two parsers.
+`test_known_parser_divergences` and `KNOWN_DIVERGENCES` were removed from
+[`test_parser_parity.py`](../../api/parsing/tests/test_parser_parity.py) — nothing left to pin —
+and replaced with `test_reserved_word_as_value_parity` covering the 3 cause-B queries directly. A
+future wild-corpus sweep (see "How they were found" above) is the way to check for new divergences,
+should parser changes introduce any.

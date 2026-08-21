@@ -38,7 +38,6 @@ const CDN_ASSETS: [url: string, file: string][] = [
 	["/static/social-preview.webp", "static/social-preview.webp"],
 	["/favicon.ico", "favicon.ico"],
 	["/robots.txt", "robots.txt"],
-	["/prefer_score_tuner.html", "prefer_score_tuner.html"],
 ];
 
 describe("CDN static assets", () => {
@@ -58,7 +57,6 @@ describe("CDN static assets", () => {
 		["static/social-preview.webp", "social-preview.webp"],
 		["favicon.ico", "favicon.ico"],
 		["robots.txt", "robots.txt"],
-		["prefer_score_tuner.html", "prefer_score_tuner.html"],
 	];
 	for (const [file, vendored] of VERBATIM) {
 		test(`${file} is byte-identical to the vendored file`, () => {

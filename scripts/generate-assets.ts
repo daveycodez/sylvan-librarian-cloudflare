@@ -84,7 +84,8 @@ const cdnAssets: [string, string][] = [
 	// Upstream serves the icon from the root as well.
 	["favicon.ico", join(staticDir, "favicon.ico")],
 	["robots.txt", join(staticDir, "robots.txt")],
-	["prefer_score_tuner.html", join(staticDir, "prefer_score_tuner.html")],
+	// NOT prefer_score_tuner.html: upstream #963 moved it behind the Basic-Auth /_admin mount, so
+	// it is no longer part of the public surface this directory mirrors.
 ];
 
 // ── Content-hashed filenames ─────────────────────────────────────────────────

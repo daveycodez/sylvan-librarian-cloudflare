@@ -2,14 +2,14 @@
 
 # ruff: noqa: PT011
 
-import multiprocessing
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from api.admin_resource import AdminResource
 from api.api_resource import APIResource
+from api.tests.support import mock_app_context
 
 
 class TestImportCardsBySearch(unittest.TestCase):
@@ -17,57 +17,50 @@ class TestImportCardsBySearch(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
-
-    def test_import_cards_by_search_function_exists(self) -> None:
-        """Test that import_cards_by_search method exists and is callable."""
-        assert hasattr(self.api_resource, "import_cards_by_search")
-        assert callable(self.api_resource.import_cards_by_search)
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def test_import_cards_by_search_validates_input(self) -> None:
         """Test that import_cards_by_search validates search_query parameter."""
         with pytest.raises(ValueError) as context:
-            self.api_resource.import_cards_by_search(search_query="")
+            self.api_resource.admin.import_cards_by_search(search_query="")
 
         assert str(context.value) == "search_query parameter is required"
 
         with pytest.raises(ValueError) as context:
-            self.api_resource.import_cards_by_search(search_query=None)
+            self.api_resource.admin.import_cards_by_search(search_query=None)
 
         assert str(context.value) == "search_query parameter is required"
 
-    @patch.object(APIResource, "_scryfall_search")
+    @patch.object(AdminResource, "_scryfall_search")
     def test_import_cards_by_search_returns_not_found_for_empty_results(self, mock_search: MagicMock) -> None:
         """Test that import_cards_by_search returns not_found status when no cards are found."""
         # Mock Scryfall API to return empty list
         mock_search.return_value = []
 
-        result = self.api_resource.import_cards_by_search(search_query="name:NonexistentCard")
+        result = self.api_resource.admin.import_cards_by_search(search_query="name:NonexistentCard")
 
         assert result["status"] == "not_found"
         assert result["search_query"] == "name:NonexistentCard"
         assert "No cards found for search query" in result["message"]
         assert result["cards_loaded"] == 0
 
-    @patch.object(APIResource, "_scryfall_search")
+    @patch.object(AdminResource, "_scryfall_search")
     def test_import_cards_by_search_returns_error_for_scryfall_exceptions(self, mock_search: MagicMock) -> None:
         """Test that import_cards_by_search returns error status for Scryfall API exceptions."""
         # Mock Scryfall API to raise exception
         mock_search.side_effect = ValueError("API Error")
 
-        result = self.api_resource.import_cards_by_search(search_query="name:TestCard")
+        result = self.api_resource.admin.import_cards_by_search(search_query="name:TestCard")
 
         assert result["status"] == "error"
         assert result["search_query"] == "name:TestCard"
         assert "Error fetching cards from Scryfall" in result["message"]
         assert result["cards_loaded"] == 0
 
-    @patch.object(APIResource, "_scryfall_search")
-    @patch.object(APIResource, "_upsert_cards")
+    @patch.object(AdminResource, "_scryfall_search")
+    @patch.object(AdminResource, "_upsert_cards")
     def test_import_cards_by_search_returns_success_for_valid_cards(self, mock_load: MagicMock, mock_search: MagicMock) -> None:
         """Test that import_cards_by_search returns success status for valid cards."""
         mock_search.return_value = [
@@ -80,8 +73,8 @@ class TestImportCardsBySearch(unittest.TestCase):
             "message": "Successfully loaded 2 cards",
         }
 
-        with patch.object(self.api_resource, "_reload_engine"):
-            result = self.api_resource.import_cards_by_search(search_query="cmc<=2")
+        with patch.object(self.api_resource.app_context, "reload_engine"):
+            result = self.api_resource.admin.import_cards_by_search(search_query="cmc<=2")
 
         assert result["status"] == "success"
         assert result["search_query"] == "cmc<=2"
@@ -91,9 +84,9 @@ class TestImportCardsBySearch(unittest.TestCase):
     def test_import_cards_by_search_handles_artist_search_example(self) -> None:
         """Test the example artist search mentioned in the issue."""
         with (
-            patch.object(self.api_resource, "_scryfall_search") as mock_search,
-            patch.object(self.api_resource, "_upsert_cards") as mock_load,
-            patch.object(self.api_resource, "_reload_engine"),
+            patch.object(self.api_resource.admin, "_scryfall_search") as mock_search,
+            patch.object(self.api_resource.admin, "_upsert_cards") as mock_load,
+            patch.object(self.api_resource.app_context, "reload_engine"),
         ):
             # Mock Scryfall API to return Sun Titan cards by Todd Lockwood
             mock_search.return_value = [
@@ -112,7 +105,7 @@ class TestImportCardsBySearch(unittest.TestCase):
                 "message": "Successfully loaded 1 cards",
             }
 
-            result = self.api_resource.import_cards_by_search(search_query="artist:lockwood game:paper sun titan")
+            result = self.api_resource.admin.import_cards_by_search(search_query="artist:lockwood game:paper sun titan")
 
             assert result["status"] == "success"
             assert result["search_query"] == "artist:lockwood game:paper sun titan"

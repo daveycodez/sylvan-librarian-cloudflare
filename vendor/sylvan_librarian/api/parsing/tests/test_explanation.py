@@ -82,6 +82,95 @@ def test_explain_empty_query(parse_query) -> None:
     assert explanation == ""
 
 
+@pytest.mark.parametrize(argnames="query_str", argvalues=['mana:""', 'devotion:""'])
+def test_explain_empty_mana_value(parse_query, query_str: str) -> None:
+    """Empty mana/devotion values must produce an empty explanation.
+
+    An empty mana/devotion value parses to a ManaValueNode (#909), not a StringValueNode — the
+    empty-value guard has to cover both or this regresses to a garbled explanation (#950).
+    """
+    parsed_query = parse_query(query_str)
+    explanation = parsed_query.to_human_explanation()
+    assert explanation == ""
+
+
+@pytest.mark.parametrize(
+    argnames=["query_str", "expected_explanation"],
+    argvalues=[
+        # `:` (contains / JSONB containment) against "" is always vacuous -- no real
+        # constraint, so it explains to nothing.
+        ('o:""', ""),
+        ('name:""', ""),
+        # `=` against "" is the opposite: a real, narrow constraint (the field is exactly
+        # empty), so it must render as its own clause instead of collapsing.
+        ('o=""', "the oracle text is empty"),
+        ('name=""', "the name is empty"),
+        ('mana=""', "the mana cost is empty"),
+        ('devotion=""', "the devotion is empty"),
+    ],
+)
+def test_explain_empty_value_operator_dependent(parse_query, query_str: str, expected_explanation: str) -> None:
+    """Whether an empty value collapses to "" depends on the operator, not just the value.
+
+    Verified against the live SQL each spelling produces: `:`/JSONB-containment against ""
+    is a tautology (`LIKE '%'`, `{} <@ anything`), `=` against "" is a genuine filter
+    (`oracle_text = ''`), so only the former is safe to drop from an explanation.
+    """
+    parsed_query = parse_query(query_str)
+    explanation = parsed_query.to_human_explanation()
+    assert explanation == expected_explanation
+
+
+@pytest.mark.parametrize(
+    argnames=["query_str", "expected_explanation"],
+    argvalues=[
+        # `=` is real equality against the whole field on these text columns (verified
+        # against the SQL: `name=X` -> `card_name = X`, `name:X` -> `LIKE %X%`, same split
+        # for oracle_text/card_types/card_artist) -- Scryfall itself treats `o=`/`o:` as
+        # pure synonyms, but this codebase's own `=` diverges deliberately (rewrite.py's
+        # is:vanilla relies on it to express "no oracle text at all"), so the explanation
+        # must say "is X", not "contains X", to describe what actually gets checked.
+        ("name=bolt", "the name is bolt"),
+        ("name:bolt", "the name contains bolt"),
+        ("o=flying", "the oracle text is flying"),
+        ("o:flying", "the oracle text contains flying"),
+        ("type=goblin", "the type is goblin"),
+        ("type:goblin", "the type contains goblin"),
+        ("artist=nielsen", "the artist is nielsen"),
+        ("artist:nielsen", "the artist contains nielsen"),
+    ],
+)
+def test_explain_equals_vs_contains(parse_query, query_str: str, expected_explanation: str) -> None:
+    """= reads as "is" (equality) and : reads as "contains" (substring), matching the SQL."""
+    parsed_query = parse_query(query_str)
+    explanation = parsed_query.to_human_explanation()
+    assert explanation == expected_explanation
+
+
+@pytest.mark.parametrize(
+    argnames=["query_str", "expected_explanation"],
+    argvalues=[
+        # `o=""` is a real, narrow constraint (the oracle text is exactly empty) and must render as
+        # its own clause, not vanish. Upstream reaches this through is:vanilla's expansion to
+        # `t:creature o=""`; here is:vanilla is an engine predicate (see rewrite.py), so the
+        # expansion is spelled out.
+        ('t:creature o=""', "the type contains creature and the oracle text is empty"),
+        ('-(t:creature o="")', "not (the type contains creature and the oracle text is empty)"),
+        # A typeahead balancer auto-closing a half-typed "urza'" produces `name:urza''`,
+        # which parses as `name:urza AND name:''` -- the second operand uses `:` against an
+        # empty value, which is always vacuous (LIKE '%' matches everything) and explains to
+        # "", so it must be filtered out of the AND join rather than left as a dangling
+        # connector.
+        ("name:urza''", "the name contains urza"),
+    ],
+)
+def test_explain_filters_empty_string_operand(parse_query, query_str: str, expected_explanation: str) -> None:
+    """A vacuous (`:`) empty-value operand drops out of the join; a narrow (`=`) one doesn't."""
+    parsed_query = parse_query(query_str)
+    explanation = parsed_query.to_human_explanation()
+    assert explanation == expected_explanation
+
+
 def test_explain_multiple_and_conditions(parse_query) -> None:
     """Test explanation with multiple AND conditions."""
     parsed_query = parse_query("power>3 toughness>3 cmc=5")
