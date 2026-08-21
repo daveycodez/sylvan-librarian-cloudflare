@@ -59,10 +59,10 @@ class TestSearchRouting:
     @pytest.fixture(autouse=True)
     def _api(self, stub_api_resource: APIResource) -> None:
         self.api_resource = stub_api_resource
-        self.api_resource._engine = MagicMock()
+        self.api_resource.app_context.engine = MagicMock()
 
     def test_routes_to_sql_when_engine_empty(self) -> None:
-        self.api_resource._engine.size.return_value = 0
+        self.api_resource.app_context.engine.size.return_value = 0
         sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
         with (
             patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
@@ -74,7 +74,7 @@ class TestSearchRouting:
         assert result is sentinel
 
     def test_routes_to_engine_when_engine_has_data(self) -> None:
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
         with (
             patch.object(self.api_resource, "_search_engine", return_value=sentinel) as mock_engine,
@@ -86,7 +86,7 @@ class TestSearchRouting:
         assert result is sentinel
 
     def test_falls_back_to_sql_when_engine_raises(self) -> None:
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
         with (
             patch.object(self.api_resource, "_search_engine", side_effect=RuntimeError("engine failed")),
@@ -108,7 +108,7 @@ class TestSearchRouting:
         class _Panic(BaseException):
             pass
 
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
         with (
             patch.object(self.api_resource, "_search_engine", side_effect=_Panic("engine panicked")),
@@ -118,10 +118,85 @@ class TestSearchRouting:
         mock_sql.assert_called_once()
         assert result is sentinel
 
-    @pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+    def test_engine_declining_a_query_falls_back_without_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A query the engine cannot build is a user error, not an alertable engine failure.
+
+        _search_engine logs a QueryError at info and lets it propagate unwrapped. That reaches the
+        SQL fallback, which used to re-log it at warning with a stack trace — so every keystroke
+        inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an alertable
+        event. The Rust regex crate also rejects patterns Postgres accepts, so this path is reached
+        by working queries too; either way the SQL path decides the outcome.
+        """
+        from card_engine import QueryError  # noqa: PLC0415
+
+        self.api_resource.app_context.engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "o:/^[/"}
+        with (
+            patch.object(
+                self.api_resource,
+                "_search_engine",
+                side_effect=QueryError("nope"),
+            ),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
+            caplog.at_level("INFO"),
+        ):
+            result = self.api_resource._search(query="o:/^[/", limit=10)
+
+        mock_sql.assert_called_once()
+        assert result is sentinel
+        assert [r.levelname for r in caplog.records if "falling back to SQL" in r.getMessage()] == ["INFO"]
+        assert not [r for r in caplog.records if r.exc_info]
+
+    def test_an_unrelated_bad_request_from_the_engine_still_warns_with_a_traceback(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Only QueryError is a decline — a bare HTTPBadRequest from elsewhere is not.
+
+        Classifying by isinstance(e, falcon.HTTPBadRequest) used to treat any HTTPBadRequest raised
+        anywhere in _search_engine's call chain as a benign decline, purely because nothing else
+        happened to raise that type. Classifying by isinstance(e, QueryError) instead is true by
+        construction: QueryError is card_engine's own exception type, so an HTTPBadRequest raised for
+        some other reason must still surface as an alertable failure.
+        """
+        self.api_resource.app_context.engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
+        with (
+            patch.object(
+                self.api_resource,
+                "_search_engine",
+                side_effect=falcon.HTTPBadRequest(title="Invalid Search Query", description="nope"),
+            ),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
+            caplog.at_level("INFO"),
+        ):
+            result = self.api_resource._search(query="name:opt", limit=10)
+
+        mock_sql.assert_called_once()
+        assert result is sentinel
+        warnings = [r for r in caplog.records if "falling back to SQL" in r.getMessage()]
+        assert [r.levelname for r in warnings] == ["WARNING"]
+        assert all(r.exc_info for r in warnings)
+
+    def test_a_real_engine_failure_still_warns_with_a_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Quieting the declined-query case must not quiet an engine that actually broke."""
+        self.api_resource.app_context.engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
+        with (
+            patch.object(self.api_resource, "_search_engine", side_effect=RuntimeError("engine failed")),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel),
+            caplog.at_level("INFO"),
+        ):
+            self.api_resource._search(query="name:opt", limit=10)
+
+        warnings = [r for r in caplog.records if "falling back to SQL" in r.getMessage()]
+        assert [r.levelname for r in warnings] == ["WARNING"]
+        assert all(r.exc_info for r in warnings)
+
+    @pytest.mark.parametrize(argnames=["exc"], argvalues=[(KeyboardInterrupt,), (SystemExit,)])
     def test_interpreter_shutdown_signals_still_propagate(self, exc: type[BaseException]) -> None:
         """Widening the catch to BaseException must not swallow Ctrl-C or interpreter exit."""
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         with (
             patch.object(self.api_resource, "_search_engine", side_effect=exc()),
             patch.object(self.api_resource, "_search_sql") as mock_sql,
@@ -136,7 +211,7 @@ class TestSearchRouting:
         assert exc_info.value.title == "Invalid Limit"
 
     def test_raises_service_unavailable_when_setup_incomplete(self) -> None:
-        override_attr(self.api_resource, "_setup_complete", lambda: False)
+        override_attr(self.api_resource.app_context, "setup_complete", lambda: False)
         with pytest.raises(falcon.HTTPServiceUnavailable) as exc_info:
             self.api_resource._search(query="name:opt")
         assert exc_info.value.title == "Service Unavailable"
@@ -194,20 +269,33 @@ class TestSearchEngineDirect:
     @pytest.fixture(autouse=True)
     def _api(self, stub_api_resource: APIResource) -> None:
         self.api_resource = stub_api_resource
-        self.api_resource._engine = MagicMock()
+        self.api_resource.app_context.engine = MagicMock()
 
     def test_total_cards_and_cards_forwarded(self) -> None:
         mock_cards = [{"name": "Lightning Bolt"}, {"name": "Counterspell"}]
-        self.api_resource._engine.query.return_value = (2, mock_cards)
+        self.api_resource.app_context.engine.query.return_value = (2, mock_cards)
         result = self.api_resource._search_engine(**search_kwargs("type:instant"))
         assert result["total_cards"] == 2
         assert result["cards"] == mock_cards
 
     def test_engine_called_with_limit(self) -> None:
-        self.api_resource._engine.query.return_value = (0, [])
+        self.api_resource.app_context.engine.query.return_value = (0, [])
         self.api_resource._search_engine(**search_kwargs("name:opt", limit=5))
-        call_kwargs = self.api_resource._engine.query.call_args.kwargs
+        call_kwargs = self.api_resource.app_context.engine.query.call_args.kwargs
         assert call_kwargs["limit"] == 5
+
+    def test_query_error_propagates_unwrapped(self) -> None:
+        """QueryError reaches the caller as itself, not wrapped in a dedicated exception type.
+
+        _search_engine used to wrap it in a dedicated _EngineDeclinedQueryError; it no longer does,
+        since QueryError is already engine-specific and nothing else in this call chain raises it —
+        the wrapper added a type only _search's own handler understood, for no benefit.
+        """
+        from card_engine import QueryError  # noqa: PLC0415
+
+        self.api_resource.app_context.engine.query.side_effect = QueryError("cannot build")
+        with pytest.raises(QueryError):
+            self.api_resource._search_engine(**search_kwargs("o:/^[/"))
 
 
 class TestResultFieldSelection:
@@ -261,17 +349,17 @@ class TestResultFieldRouting:
     @pytest.fixture(autouse=True)
     def _api(self, stub_api_resource: APIResource) -> None:
         self.api_resource = stub_api_resource
-        self.api_resource._engine = MagicMock()
+        self.api_resource.app_context.engine = MagicMock()
 
     def test_fields_passed_to_sql_path(self) -> None:
-        self.api_resource._engine.size.return_value = 0
+        self.api_resource.app_context.engine.size.return_value = 0
         sentinel = {"cards": [], "total_cards": 0, "query": ""}
         with patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql:
             self.api_resource._search(query="", fields=["name", "illustration_id"])
         assert mock_sql.call_args.kwargs["fields"] == ["name", "illustration_id"]
 
     def test_fields_passed_to_engine_path(self) -> None:
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": ""}
         with patch.object(self.api_resource, "_search_engine", return_value=sentinel) as mock_engine:
             self.api_resource._search(query="", fields=["name", "price_usd"])
@@ -284,7 +372,7 @@ class TestEngineFeatureGate:
     @pytest.fixture(autouse=True)
     def _api(self, stub_api_resource: APIResource) -> Generator[None]:
         self.api_resource = stub_api_resource
-        self.api_resource._engine = MagicMock()
+        self.api_resource.app_context.engine = MagicMock()
         saved_enable_engine = settings.enable_engine
         yield
         settings.enable_engine = saved_enable_engine
@@ -297,7 +385,7 @@ class TestEngineFeatureGate:
 
     def test_disabled_routes_to_sql_even_with_populated_store(self) -> None:
         settings.enable_engine = False
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         with (
             patch.object(self.api_resource, "_run_query", return_value=self._mock_result()),
             patch.object(self.api_resource, "_search_engine") as mock_engine,
@@ -312,19 +400,19 @@ class TestEngineFeatureGate:
         settings.enable_engine = False
         with patch.object(self.api_resource, "_run_query", return_value=self._mock_result()):
             self.api_resource._search(query="name:opt", limit=10)
-        self.api_resource._engine.size.assert_not_called()
-        self.api_resource._engine.query.assert_not_called()
+        self.api_resource.app_context.engine.size.assert_not_called()
+        self.api_resource.app_context.engine.query.assert_not_called()
 
     def test_disabled_reload_is_a_noop(self) -> None:
         settings.enable_engine = False
-        with patch.object(self.api_resource, "_conn_pool") as mock_pool:
-            self.api_resource._reload_engine()
+        with patch.object(self.api_resource.app_context, "writer_pool") as mock_pool:
+            self.api_resource.app_context.reload_engine()
         mock_pool.connection.assert_not_called()
-        self.api_resource._engine.reload.assert_not_called()
+        self.api_resource.app_context.engine.reload.assert_not_called()
 
     def test_enabled_routes_to_engine(self) -> None:
         settings.enable_engine = True
-        self.api_resource._engine.size.return_value = 87
+        self.api_resource.app_context.engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
         with patch.object(self.api_resource, "_search_engine", return_value=sentinel) as mock_engine:
             result = self.api_resource._search(query="name:opt", limit=10)
@@ -334,15 +422,15 @@ class TestEngineFeatureGate:
     def test_enabled_reload_streams_batches(self) -> None:
         settings.enable_engine = True
         # Empty store, or the populated-store fast path skips the reload.
-        self.api_resource._engine.size.return_value = 0
-        self.api_resource._engine.reload_begin.return_value = True
+        self.api_resource.app_context.engine.size.return_value = 0
+        self.api_resource.app_context.engine.reload_begin.return_value = True
         batch1, batch2 = [{"card_name": "A"}], [{"card_name": "B"}]
-        with patch.object(self.api_resource, "_conn_pool") as mock_pool:
+        with patch.object(self.api_resource.app_context, "writer_pool") as mock_pool:
             mock_cursor = MagicMock()
             mock_cursor.fetchmany.side_effect = [batch1, batch2, []]
             mock_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
-            self.api_resource._reload_engine()
-        engine = self.api_resource._engine
+            self.api_resource.app_context.reload_engine()
+        engine = self.api_resource.app_context.engine
         engine.reload_begin.assert_called_once()
         assert [c.args[0] for c in engine.add_batch.call_args_list] == [batch1, batch2]
         engine.reload_commit.assert_called_once()
@@ -350,28 +438,28 @@ class TestEngineFeatureGate:
 
     def test_enabled_reload_skips_when_another_worker_published(self) -> None:
         settings.enable_engine = True
-        self.api_resource._engine.size.return_value = 0
-        self.api_resource._engine.reload_begin.return_value = False
-        with patch.object(self.api_resource, "_conn_pool") as mock_pool:
+        self.api_resource.app_context.engine.size.return_value = 0
+        self.api_resource.app_context.engine.reload_begin.return_value = False
+        with patch.object(self.api_resource.app_context, "writer_pool") as mock_pool:
             mock_cursor = MagicMock()
             mock_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
-            self.api_resource._reload_engine()
-        self.api_resource._engine.add_batch.assert_not_called()
-        self.api_resource._engine.reload_commit.assert_not_called()
+            self.api_resource.app_context.reload_engine()
+        self.api_resource.app_context.engine.add_batch.assert_not_called()
+        self.api_resource.app_context.engine.reload_commit.assert_not_called()
 
     def test_enabled_reload_aborts_on_failure(self) -> None:
         settings.enable_engine = True
-        self.api_resource._engine.size.return_value = 0
-        self.api_resource._engine.reload_begin.return_value = True
-        self.api_resource._engine.add_batch.side_effect = RuntimeError("boom")
-        with patch.object(self.api_resource, "_conn_pool") as mock_pool:
+        self.api_resource.app_context.engine.size.return_value = 0
+        self.api_resource.app_context.engine.reload_begin.return_value = True
+        self.api_resource.app_context.engine.add_batch.side_effect = RuntimeError("boom")
+        with patch.object(self.api_resource.app_context, "writer_pool") as mock_pool:
             mock_cursor = MagicMock()
             mock_cursor.fetchmany.side_effect = [[{"card_name": "A"}], []]
             mock_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
             with pytest.raises(RuntimeError, match="boom"):
-                self.api_resource._reload_engine()
-        self.api_resource._engine.reload_abort.assert_called_once()
-        self.api_resource._engine.reload_commit.assert_not_called()
+                self.api_resource.app_context.reload_engine()
+        self.api_resource.app_context.engine.reload_abort.assert_called_once()
+        self.api_resource.app_context.engine.reload_commit.assert_not_called()
 
 
 if __name__ == "__main__":

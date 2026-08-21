@@ -99,8 +99,11 @@ class ApiWorker(multiprocessing.Process):
             falcon.App: The configured Falcon application instance.
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
+        from api.admin_resource import AdminContext  # pylint: disable=import-outside-toplevel
         from api.api_resource import APIResource  # pylint: disable=import-outside-toplevel
+        from api.app_context import AppContext  # pylint: disable=import-outside-toplevel
         from api.middlewares import (
+            AdminAuthMiddleware,
             CachingMiddleware,
             CompressionMiddleware,
             CORSMiddleware,
@@ -123,6 +126,7 @@ class ApiWorker(multiprocessing.Process):
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
+                AdminAuthMiddleware(),  # ahead of caching: a rejected admin request must never hit the cache
                 QueryLogMiddleware(),  # process_response fires before TimingMiddleware's
                 CachingMiddleware(cache=shared_cache),
                 CompressionMiddleware(),
@@ -131,13 +135,16 @@ class ApiWorker(multiprocessing.Process):
             ],
         )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
-        sink = APIResource(
+        # Built here, post-fork: reader/writer pools and the query engine can't cross a fork the
+        # way a multiprocessing.Value/Lock can, so each worker builds its own AppContext from the
+        # primitives the master created before forking.
+        app_context = AppContext(
             cache_generation=cache_generation,
             engine_reload_guard=engine_reload_guard,
-            import_guard=import_guard,
             last_import_time=last_import_time,
-            schema_setup_event=schema_setup_event,
-        )  # Create the main API resource
+        )
+        admin_context = AdminContext(import_guard=import_guard, schema_setup_event=schema_setup_event)
+        sink = APIResource(app_context=app_context, admin_context=admin_context)  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 
         json_handler = falcon.media.JSONHandler(
