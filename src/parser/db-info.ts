@@ -183,6 +183,16 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["is", "has"],
 		parserClass: ParserClass.TEXT,
 	},
+	// A distinct FieldInfo from "is" above, sharing its column, so a `not:` leaf is an `is:` leaf
+	// to everything downstream — rewrite.ts's negateNotPrefix distinguishes the two via
+	// originalAttribute and supplies the negation Scryfall's docs describe ("not: is the same as
+	// -is:"). Upstream #987.
+	{
+		dbColumnName: "card_is_tags",
+		fieldType: FieldType.JSONB_OBJECT,
+		searchAliases: ["not"],
+		parserClass: ParserClass.TEXT,
+	},
 	{
 		dbColumnName: "card_rarity_int",
 		fieldType: FieldType.NUMERIC,

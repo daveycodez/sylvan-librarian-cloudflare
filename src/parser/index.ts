@@ -16,6 +16,7 @@ import { ParseError } from "./errors";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterTree, LoweredRegexTerm, Query } from "./nodes";
 import { parseQuery } from "./parser";
 import { rewriteQuery } from "./rewrite";
+import { braceCloseIndex, findCloseIndex, opensRegex, QUOTE_CHARS } from "./spans";
 import { foldTypographicQuotes } from "./tokenizer";
 
 export { ParseError } from "./errors";
@@ -84,69 +85,107 @@ export function parseScryfallQueryWithDirectives(query: string | null | undefine
 	};
 }
 
+/** The suffix that closes a span left open — escaping a dangling `\` first, or the closer would escape THAT. */
+function closerForPartialSpan(danglingEscape: boolean, closer: string): string {
+	return (danglingEscape ? "\\" : "") + closer;
+}
+
 /**
- * Balance quotes and parentheses for typeahead searches
+ * Balance parentheses for typeahead searches, skipping over quotes, regexes and mana symbols
  * (mirrors api.parsing.parsing_f.balance_partial_query).
+ *
+ * Parentheses are the only construct that nests, so tracking depth is a counter rather than a
+ * stack. The opaque spans never go on it: each one is resolved to its closer and stepped over
+ * whole, which is what keeps the quotes, parens and metacharacters inside them from being read as
+ * structure. The span rules come from spans.ts so the balancer and the lexer cannot drift apart —
+ * where they disagree, the balancer "fixes" a quote the lexer never saw (upstream #905).
  */
 export function balancePartialQuery(queryIn: string): string {
 	// The balancer and the lexer must agree about which characters are quotes, or a typed `name:‘`
 	// balances to nothing here and then fails to lex as an unclosed `name:'` after parseQuery
 	// folds it. Same fold, same position: before anything reads a character as a delimiter.
-	let query = foldTypographicQuotes(queryIn);
-	const charToMirror: Record<string, string> = {
-		"(": ")",
-		"'": "'", // single quote is own mirror
-		'"': '"', // double quote is own mirror
-		")": "(",
-	};
-	const unbalancedClosingChars = new Set([")"]);
-	const quoteChars = new Set(["'", '"']);
+	const query = foldTypographicQuotes(queryIn);
+	const chars = [...query];
+	let openParens = 0;
+	// Closer for whichever span is still open at the end of the query. Only one is ever needed,
+	// because everything after an unterminated opener is span content — there is nothing left to
+	// open, and nothing after it to close. That is also why it can be appended before the parens:
+	// an unterminated span is necessarily the innermost thing open.
+	let spanSuffix = "";
 
 	// An apostrophe preceded by a word character and followed by either another word character or
 	// NOTHING is part of the word rather than an opening quote — the same rule scanWordEnd applies
 	// in the tokenizer, and the two must agree exactly or the balancer emits something the lexer
-	// rejects. Without the "or nothing", "urza'" balanced to "urza''", which parses as `urza` AND
-	// an empty quoted string: the search widened to every card containing "urza" and the
-	// explanation rendered "the name contains Urza and " with nothing after the "and".
+	// rejects. Without the "or nothing", "urza'" balanced to "urza''", which parses as `urza` AND an
+	// empty quoted string: the search widened to every card containing "urza" and the explanation
+	// rendered "the name contains Urza and " with nothing after the "and".
 	const wordChar = /[\p{L}\p{N}_.]/u;
 
-	const currentStack: string[] = [];
-	const chars = [...query];
-	for (const [index, char] of chars.entries()) {
-		// When inside a quoted string, only the matching closing quote ends it.
-		const top = currentStack[currentStack.length - 1];
-		if (top !== undefined && quoteChars.has(top)) {
-			if (char === top) {
-				currentStack.pop();
-			}
-			continue;
-		}
+	let pos = 0;
+	while (pos < chars.length) {
+		const char = chars[pos] as string;
+		pos += 1;
 
 		if (
 			char === "'" &&
-			index > 0 &&
-			wordChar.test(chars[index - 1] as string) &&
-			(index + 1 >= chars.length || wordChar.test(chars[index + 1] as string))
+			pos - 1 > 0 &&
+			wordChar.test(chars[pos - 2] as string) &&
+			(pos === chars.length || wordChar.test(chars[pos] as string))
 		) {
 			continue; // apostrophe inside a word, or trailing one mid-type
 		}
 
-		const mirroredChar = charToMirror[char];
-		if (!mirroredChar) {
+		// A quoted string, a /regex/ and a {mana symbol} are all opaque: the quotes and parens inside
+		// them are content, not delimiters.
+		if (QUOTE_CHARS.has(char)) {
+			const { closeIndex, danglingEscape } = findCloseIndex(chars, pos, char);
+			if (closeIndex === null) {
+				spanSuffix = closerForPartialSpan(danglingEscape, char);
+				break;
+			}
+			pos = closeIndex + 1;
 			continue;
 		}
-		if (currentStack.length > 0 && currentStack[currentStack.length - 1] === mirroredChar) {
-			currentStack.pop();
-		} else {
-			if (unbalancedClosingChars.has(char)) {
+
+		// A '/' in value position opens a regex; anywhere else it is division, an ordinary character.
+		if (char === "/") {
+			if (opensRegex(chars, pos - 1)) {
+				const { closeIndex, danglingEscape } = findCloseIndex(chars, pos, "/");
+				if (closeIndex === null) {
+					// Still being typed. Close the regex rather than reading on, or the metacharacters
+					// the user has typed so far get balanced as query structure: `o:/[)` is a partial
+					// `o:/[)]/`, not a stray ')'.
+					spanSuffix = closerForPartialSpan(danglingEscape, "/");
+					break;
+				}
+				pos = closeIndex + 1;
+			}
+			continue;
+		}
+
+		// A '{mana symbol}' is opaque whatever it holds, and an unterminated one gets closed for the
+		// same reason an unterminated quote does: the lexer demands a '}' for every '{', so leaving
+		// it open would make 'mana:{' — a prefix of 'mana:{W}' — unlexable while it is being typed.
+		// No escapes exist inside a mana symbol, so there is no dangling-backslash case here.
+		if (char === "{") {
+			const closeIndex = braceCloseIndex(chars, pos);
+			if (closeIndex === null) {
+				spanSuffix = "}";
+				break;
+			}
+			pos = closeIndex + 1;
+			continue;
+		}
+
+		if (char === "(") {
+			openParens += 1;
+		} else if (char === ")") {
+			if (openParens === 0) {
 				throw new ParseError(`Unbalanced closing character '${char}' cannot be balanced`);
 			}
-			currentStack.push(char);
+			openParens -= 1;
 		}
 	}
-	while (currentStack.length > 0) {
-		const char = currentStack.pop() as string;
-		query += charToMirror[char] as string;
-	}
-	return query;
+
+	return query + spanSuffix + ")".repeat(openParens);
 }
