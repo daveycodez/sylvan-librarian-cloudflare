@@ -333,7 +333,7 @@ attach plumbing are all gone. (`all_parts` lives on `Printing`, not on
 `OracleCard` — it is printing-level, which it did not look like.)
 
 **Generations 20 onward diverge from that layout deliberately**, and the current
-generation is 32. The multilingual annex, `DivergentPrinting`,
+generation is 39. The multilingual annex, `DivergentPrinting`,
 `PrintedNameIndex`, `TypeLineIndex` and the partition cut are all this port's,
 not upstream's. "Matches #912 exactly" describes generation 19 and nothing
 after it; `src/engine/store-kv.ts`'s generation log is the authority on what
@@ -394,8 +394,9 @@ The complete list of intentional differences:
   **not** in the card store: rulings hang off `oracle_id` rather than off a
   printing, only this route reads them, and 26MB in the archive would be paid
   for by every store load.
-  `import_rulings` stays a 501 stub, like the other Postgres-backed admin
-  routes — the nightly import replaced it, not this endpoint.
+  `import_rulings` is not a public route: like every import it sits behind
+  upstream's `/_admin` mount (#963), which this port answers with the mount's
+  own 401 — the nightly import replaced it, not an endpoint.
   Two consequences worth knowing: a deployment that has never run the rulings
   phase answers **503** on these routes rather than an empty `List` (an empty
   list would be a claim about the card), which
@@ -663,13 +664,23 @@ The complete list of intentional differences:
   `TRUSTED_API_KEYS` bypass (comma-separated, one key per caller). Cache hits
   never count.
 - **Static files are served by the CDN, not the Worker.** `/static/*`,
-  `/favicon.ico`, `/robots.txt` and the tuner page come from `public/` and
-  never invoke the Worker, which is what took cold start down to the platform
+  `/favicon.ico` and `/robots.txt` come from `public/` and never invoke the
+  Worker, which is what took cold start down to the platform
   floor. Bytes are byte-identical to upstream's; the response headers are not —
   content types come from the platform (`text/javascript` where upstream sends
   `application/javascript`) and cache lifetimes are set for this deployment in
   `public/_headers`. Parity is kept where it matters, on the query endpoints.
-- Postgres-only admin/import routes answer `501`. `get_pid` returns `0`.
+- **The `/_admin` mount is a permanent 401.** Upstream #963/#966 moved every
+  data-management route — `import_*`, `setup_schema`, the backfills,
+  `ingest_cubecobra`, `prefer_score_tuner` — behind HTTP Basic Auth against
+  `ADMIN_PASSWORD`, hid them from the public 404 listing, and rejects every
+  request under the mount when no password is set. This deployment has no
+  password and no Postgres behind the routes (the Cloudflare import pipeline
+  replaced them), so `/_admin/*` answers upstream's rejection verbatim — 401,
+  `WWW-Authenticate: Basic realm="admin"`, `Cache-Control: no-store`,
+  `{"error": "Unauthorized"}` — and the old public paths are plain 404s, as
+  they are upstream. `get_common_keywords`, still public upstream, answers
+  `501`. `get_pid` returns `0`.
 - ~~**`set:` on a memorabilia set returns nothing.**~~ **REVERSED — nothing is
   dropped at import any more, and the rejected alternative is what ships.**
   Upstream #918 stops importing `set_type: memorabilia` printings; this port
