@@ -270,7 +270,10 @@ async function main() {
   document.getElementById('card-loading').style.display = 'none';
 
   try {
-    const printingFields = 'set_code,collector_number,set_name,illustration_id,price_usd,prefer_score';
+    // scryfall_id is what buildImageUrl derives the CDN path from — without it every
+    // alternate-printing thumbnail renders src="". It is the id, not a display field,
+    // which is exactly how it went missing from a list assembled by looking at the strip.
+    const printingFields = 'scryfall_id,set_code,collector_number,set_name,illustration_id,price_usd,prefer_score';
     const resp = await fetch(
       `/search?q=${encodeURIComponent(`!"${escapeExactName(card.name)}"`)}&unique=printing&fields=${printingFields}`
     );

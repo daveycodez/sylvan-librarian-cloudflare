@@ -3,7 +3,7 @@
   Cache-Control: public, max-age=31536000, immutable
 /static/app.4bf5ac43f7e6.min.js
   Cache-Control: public, max-age=31536000, immutable
-/static/card.8b33b18e4f7c.js
+/static/card.038598a3e75c.js
   Cache-Control: public, max-age=31536000, immutable
 /static/styles.35f91419b5dc.css
   Cache-Control: public, max-age=31536000, immutable
@@ -12,6 +12,8 @@
 /static/app.886245d9204f.min.js
   Cache-Control: public, max-age=31536000, immutable
 /static/app.f8102a6a2b17.min.js
+  Cache-Control: public, max-age=31536000, immutable
+/static/card.8b33b18e4f7c.js
   Cache-Control: public, max-age=31536000, immutable
 /static/card.c1969495d9f9.js
   Cache-Control: public, max-age=31536000, immutable
