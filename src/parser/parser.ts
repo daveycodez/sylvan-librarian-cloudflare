@@ -68,7 +68,9 @@ const ALIAS_TO_PC: ReadonlyMap<string, ParserClass> = (() => {
 // On Scryfall '!' is an alias for '=' on these classes only (verified live, upstream #903 cause
 // C) — on TEXT/LEGALITY it isn't an operator at all, and a trailing bang there falls through to
 // the existing exact-name-prefix reading of the next factor instead. NUMERIC takes it too, in its
-// own branch below.
+// own branch below. The alias also only holds when the bang is GLUED to both sides: measured
+// live, `c!w` is 5,071 where `c !w` is 0 and `c! w` / `cmc! 3` are not the alias either — a
+// spaced bang keeps the exact-name-prefix reading a space always had.
 const BANG_ALIAS_CLASSES: ReadonlySet<ParserClass> = new Set([PC.COLOR, PC.MANA, PC.RARITY, PC.YEAR, PC.DATE]);
 
 // Aliases that have BOTH a NUMERIC and a TEXT mapping (only cn / number today).
@@ -377,8 +379,9 @@ export class Parser {
 
 		// ── NUMERIC attribute ──
 		if (pc === PC.NUMERIC) {
-			if (nextTok.type === TT.OP || nextTok.type === TT.BANG) {
-				const op = nextTok.type === TT.BANG ? "=" : (nextTok.value as string);
+			const numBangAlias = nextTok.type === TT.BANG && !nextTok.spaceBefore && !this.peek(1).spaceBefore;
+			if (nextTok.type === TT.OP || numBangAlias) {
+				const op = numBangAlias ? "=" : (nextTok.value as string);
 				this.consume();
 				return new CardBinaryOperatorNode(new CardAttributeNode(wl, PC.NUMERIC), op, this.parseNumExprValue());
 			}
@@ -404,7 +407,12 @@ export class Parser {
 		}
 
 		// ── known non-NUMERIC attribute ──
-		const bangAlias = pc !== undefined && nextTok.type === TT.BANG && BANG_ALIAS_CLASSES.has(pc);
+		const bangAlias =
+			pc !== undefined &&
+			nextTok.type === TT.BANG &&
+			!nextTok.spaceBefore &&
+			!this.peek(1).spaceBefore &&
+			BANG_ALIAS_CLASSES.has(pc);
 		if (pc !== undefined && (nextTok.type === TT.OP || bangAlias)) {
 			const op = bangAlias ? "=" : (nextTok.value as string);
 			this.consume();
