@@ -26,7 +26,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.15 # match Workers Builds
+          # Matches the bun the tests actually run under in development, NOT
+          # Workers Builds' 1.2.15 — that one only runs `bun install` (tests
+          # never run there), and it predates bun's CompressionStream, which
+          # store-kv.ts's gzipBytes needs. Pinning to it failed 4 tests on the
+          # first-ever CI run.
+          bun-version: 1.4.0
       # postinstall is gated on WORKERS_CI=1, so this does NOT pull 450MB of
       # Scryfall data or touch any KV namespace.
       - run: bun install --frozen-lockfile
@@ -47,7 +52,7 @@ jobs:
           key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.15
+          bun-version: 1.4.0 # see the js job's pin comment
       - run: bun install --frozen-lockfile
       # clippy.sh pins its own toolchain (the one upstream CI runs); with-rust.sh
       # installs rustup if the runner image ever drops it.

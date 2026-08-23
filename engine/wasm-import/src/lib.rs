@@ -143,6 +143,14 @@ const EMIT_TAGDATA: u32 = 7;
 /// the native builder writes to `routing-keys.tsv`, so one parser reads both publishers' output.
 const EMIT_ROUTING: u32 = 8;
 
+// `wasm_import_module = "env"` is load-bearing, not decoration: the host
+// instantiates with `imports.env.emit` / `imports.env.pull_row`
+// (src/engine/import-wasm.ts), and older rustc emitted bare extern blocks as
+// "env" imports by default — newer rust-lld instead treats them as undefined
+// symbols and fails the link ("undefined symbol: emit", first seen on CI's
+// stable while local 1.90 linked clean). The attribute says explicitly what
+// the old default assumed.
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn emit(kind: u32, ptr: *const u8, len: usize);
     fn pull_row(index: u32, dest: *mut u8, cap: usize) -> i32;
