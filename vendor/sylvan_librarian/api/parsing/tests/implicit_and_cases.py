@@ -45,7 +45,10 @@ TESTCASES = [
     {"query": "a 'b c' d", "expected": "a AND 'b c' AND d", "id": "single_quoted_between"},
     # Regex patterns (slash-delimited, single token)
     {"query": "name:/bolt/", "expected": "name:/bolt/", "id": "regex_single"},
-    {"query": "/foo/ /bar/", "expected": "/foo/ AND /bar/", "id": "two_regex"},
+    # A regex only opens in value position, so two of them means two conditions. The bare form
+    # ("/foo/ /bar/") is not a supported shape — see the raises coverage in
+    # test_pyparsing_preprocess.py and test_regex_patterns.py.
+    {"query": "name:/foo/ o:/bar/", "expected": "name:/foo/ AND o:/bar/", "id": "two_regex"},
     {"query": "name:/bolt/ type:instant", "expected": "name:/bolt/ AND type:instant", "id": "regex_and_attr"},
     # Regex with escaped slash (searching for "/" in pattern, e.g. "life/death")
     {"query": r"name:/life\/death/", "expected": r"name:/life\/death/", "id": "regex_escaped_slash"},
@@ -100,6 +103,20 @@ TESTCASES = [
     {"query": "(power + 1) - (cmc - 1) > 0", "expected": "(power+1)-(cmc-1)>0", "id": "arith_sub_paren_minus_paren_spaces"},
     # Arithmetic subtraction on the RHS of a comparison: must NOT get AND (regression guard)
     {"query": "power>cmc-1", "expected": "power>cmc-1", "id": "cmp_rhs_arith_sub"},
+    # Comparison LHS, minus, then a paren group whose comparison operator is nested one level
+    # deep (#903 cause A): the group is a filter to negate, not an arithmetic term, even though
+    # the ':'/'=' is invisible to a scan that only looks at depth 0.
+    {"query": "cmc>1 -(t:elf)", "expected": "cmc>1 AND -(t:elf)", "id": "cmp_then_group_with_nested_comparison"},
+    {
+        "query": "pow=3 -(name:force or type:elf)",
+        "expected": "pow=3 AND -(name:force OR type:elf)",
+        "id": "cmp_then_group_with_nested_comparison_or",
+    },
+    {
+        "query": "year:2019 -(oracle:exile or type:enchantment)",
+        "expected": "year:2019 AND -(oracle:exile OR type:enchantment)",
+        "id": "cmp_then_group_with_nested_comparison_year_lhs",
+    },
     {"query": "power > cmc - 1", "expected": "power>cmc-1", "id": "cmp_rhs_arith_sub_spaces"},
     {"query": "toughness>=power-cmc", "expected": "toughness>=power-cmc", "id": "cmp_rhs_arith_sub_attrs"},
     {"query": "toughness >= power - cmc", "expected": "toughness>=power-cmc", "id": "cmp_rhs_arith_sub_attrs_spaces"},

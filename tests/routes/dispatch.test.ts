@@ -1,6 +1,6 @@
 // Dispatch-level behavior: the 404 routes listing (upstream
 // _build_routes_listing shape and ordering), 405 + Allow, positional
-// capacities, get_pid, and the Postgres-only 501 stubs.
+// capacities, get_pid, the get_common_keywords 501 stub, and the /_admin mount.
 
 import { describe, expect, test } from "bun:test";
 import { buildRoutesListing } from "../../src/routes";
@@ -31,41 +31,32 @@ describe("404 routes listing", () => {
 		// still pinned by the test below; nothing about the registration order changed, only where
 		// the listing is served. Kept as its own assertion so a future reader does not conclude the
 		// listing is dead code and delete it.
-		expect(Object.keys(buildRoutesListing()).length).toBeGreaterThan(20);
+		expect(Object.keys(buildRoutesListing()).length).toBeGreaterThan(15);
 	});
 
 	test("listing keys follow upstream registration order", () => {
+		// Upstream #963 moved the admin routes (import_*, setup_schema, the backfills,
+		// ingest_cubecobra, discover_is_tags_from_syntax, prefer_score_tuner) behind the
+		// `/_admin` mount and off this listing, and deleted get_migrations outright.
+		// get_common_keywords stayed public, so it stays here.
 		expect(Object.keys(buildRoutesListing())).toEqual([
 			"index",
 			"index.html",
 			"_root",
-			"backfill_cubecobra_scores",
-			"backfill_prefer_scores",
 			"card",
-			// The Scryfall-compatible surface (upstream #912). `cards` sorts before
-			// `discover_is_tags_from_syntax` the same way `card` does, and its five named
-			// sub-routes follow it: dir(cls) puts a class's attributes in name order, and the
-			// exact paths register consecutively behind the handler that declares them.
+			// The Scryfall-compatible surface (upstream #912). `cards` sorts after `card` and
+			// before `get_catalog`, and its five named sub-routes follow it: dir(cls) puts a
+			// class's attributes in name order, and the exact paths register consecutively behind
+			// the handler that declares them.
 			"cards",
 			"cards/search",
 			"cards/named",
 			"cards/autocomplete",
 			"cards/random",
 			"cards/collection",
-			"discover_is_tags_from_syntax",
 			"get_catalog",
 			"get_common_keywords",
-			"get_migrations",
 			"get_pid",
-			"import_all_is_tags",
-			"import_art_tags",
-			"import_card_by_name",
-			"import_cards_by_search",
-			"import_data",
-			"import_oracle_tags",
-			// Postgres-only, so a 501 stub like the backfills; sorts here by attribute name.
-			"import_rulings",
-			"ingest_cubecobra",
 			"random_search",
 			// The reference surface (upstream #922). Four separate handlers, so they sort by
 			// attribute name — scryfall_catalog, scryfall_parse_mana, scryfall_sets,
@@ -76,7 +67,6 @@ describe("404 routes listing", () => {
 			"sets",
 			"symbology",
 			"search",
-			"setup_schema",
 		]);
 	});
 
@@ -104,10 +94,27 @@ describe("404 routes listing", () => {
 		expect(listing.kwargs.limit).toEqual({ type: "int", default: 100 });
 		expect(listing.kwargs.shape).toEqual({ type: "ResponseShape", default: "rows" });
 	});
+});
 
-	test("keyword-only params without defaults are positional args in the listing", () => {
-		const listing = buildRoutesListing().import_card_by_name as { args: { name: string; type: string }[] };
-		expect(listing.args).toEqual([{ name: "card_name", type: "str" }]);
+describe("the /_admin mount (upstream #963 + #966)", () => {
+	test("every path under /_admin is a 401 with a Basic challenge and no-store", async () => {
+		// Upstream rejects every request under the mount when ADMIN_PASSWORD is unset; this port
+		// never has one (and no Postgres behind the routes), so this is the complete behavior.
+		for (const path of ["/_admin", "/_admin/", "/_admin/import_data", "/_admin/setup_schema/x/y"]) {
+			const res = await testDispatch(ctx, path);
+			expect(res.status).toBe(401);
+			expect(res.headers.get("WWW-Authenticate")).toBe('Basic realm="admin"');
+			expect(res.headers.get("Cache-Control")).toBe("no-store");
+			expect(await json(res)).toEqual({ error: "Unauthorized" });
+		}
+	});
+
+	test("the old public admin paths are plain 404s, like any unknown path", async () => {
+		for (const path of ["/import_data", "/setup_schema", "/get_migrations", "/prefer_score_tuner", "/import_rulings"]) {
+			const res = await testDispatch(ctx, path);
+			expect(res.status).toBe(404);
+			expect((await json(res)).code).toBe("not_found");
+		}
 	});
 });
 
@@ -175,10 +182,6 @@ describe("positional capacity", () => {
 		expect((await testDispatch(ctx, "/get_pid/extra")).status).toBe(404);
 		expect((await testDispatch(ctx, "/robots.txt/x")).status).toBe(404);
 	});
-
-	test("setup_schema absorbs any number of segments (upstream *args)", async () => {
-		expect((await testDispatch(ctx, "/setup_schema/a/b/c")).status).toBe(501);
-	});
 });
 
 describe("get_pid", () => {
@@ -190,31 +193,16 @@ describe("get_pid", () => {
 	});
 });
 
-describe("Postgres-only routes answer 501", () => {
-	const stubbed = [
-		"/setup_schema",
-		"/import_data",
-		"/get_migrations",
-		"/get_common_keywords",
-		"/backfill_prefer_scores",
-		"/backfill_cubecobra_scores",
-		"/ingest_cubecobra",
-		"/discover_is_tags_from_syntax",
-		"/import_oracle_tags",
-		"/import_art_tags",
-		"/import_all_is_tags",
-		"/import_card_by_name",
-		"/import_cards_by_search",
-	];
-	for (const path of stubbed) {
-		test(`${path} → 501 Not Implemented`, async () => {
-			const res = await testDispatch(ctx, path);
-			expect(res.status).toBe(501);
-			const body = await json(res);
-			expect(body.title).toBe("Not Implemented");
-			expect(String(body.description)).toContain("replaced by the Cloudflare import pipeline in this port");
-		});
-	}
+describe("the one Postgres-backed route still on the public surface", () => {
+	// get_common_keywords stayed public upstream (#963 moved only the data-management routes), and
+	// it reads a SQL file against a database this deployment does not have.
+	test("/get_common_keywords → 501 Not Implemented", async () => {
+		const res = await testDispatch(ctx, "/get_common_keywords");
+		expect(res.status).toBe(501);
+		const body = await json(res);
+		expect(body.title).toBe("Not Implemented");
+		expect(String(body.description)).toContain("Postgres-backed route upstream");
+	});
 });
 
 // The FONTS fragment is vendored verbatim and loads mana-subset.css (and the

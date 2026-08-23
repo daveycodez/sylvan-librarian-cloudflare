@@ -1220,12 +1220,12 @@ describe("GET /cards and /cards/...", () => {
 		}
 	});
 
-	test("import_rulings is a 501 stub like the other Postgres-only routes", async () => {
-		// Upstream's admin route loads the bulk file into Postgres; here the nightly import
-		// publishes rulings to KV, so the route it replaced stays a stub even though the data
-		// it used to load is now served.
-		const res = await testDispatch(ctx, "/import_rulings");
-		expect(res.status).toBe(501);
+	test("import_rulings is not a public route", async () => {
+		// Upstream's route loads the bulk file into Postgres and, like every other import, lives
+		// behind the Basic-Auth /_admin mount since #963; here the nightly import publishes rulings
+		// to KV. The old public path is a plain 404 and the mount is a 401 (src/routes/admin.ts).
+		expect((await testDispatch(ctx, "/import_rulings")).status).toBe(404);
+		expect((await testDispatch(ctx, "/_admin/import_rulings")).status).toBe(401);
 	});
 });
 

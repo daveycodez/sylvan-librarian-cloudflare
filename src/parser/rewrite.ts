@@ -1,12 +1,13 @@
 /**
  * Port of api/parsing/rewrite.py — post-parse AST rewrites.
  *
- * Two passes, applied in order at the shared parse seam:
- *  1. expand_derived_predicates — `is:` / frame synonyms re-parsed from DSL strings
- *  2. lower_literal_regexes — plain-literal `field:/regex/` leaves become substrings
+ * Three passes, applied in order at the shared parse seam:
+ *  1. negate_not_prefix — `not:value` leaves become `NotNode(is:value)` (upstream #987)
+ *  2. expand_derived_predicates — `is:` / frame synonyms re-parsed from DSL strings
+ *  3. lower_literal_regexes — plain-literal `field:/regex/` leaves become substrings
  */
 
-import { CardAttributeNode } from "./card-query-nodes";
+import { CardAttributeNode, CardBinaryOperatorNode } from "./card-query-nodes";
 import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS } from "./db-info";
 import {
 	AndNode,
@@ -232,6 +233,12 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// The two overlap on the ten two-colour Phyrexian symbols ({G/W/P} …), which are both, and
 	// they part company on {B/P} (Phyrexian, not hybrid — one colour) and {C/P} (the same).
 	//
+	// {C/P} is in the symbology but NOT in the `m:` half below: no printed cost carries it
+	// (`mana:{C/P}` and `o:"{c/p}"` both answer zero on api.scryfall.com, 2026-08-21), and the
+	// mana-symbol validator (upstream #909) rejects it in a query — `{C/P}` is not one of the
+	// shapes it accepts — so naming it would make the whole expansion a parse error for a term
+	// that can match nothing.
+	//
 	// Verified against api.scryfall.com card for card — all 603 `is:hybrid` and all 73
 	// `is:phyrexian` fetched and diffed against the 2026-08-16 bulk: ZERO cards Scryfall names are
 	// missed by either rule, and every extra this corpus would add comes from a set this import
@@ -255,7 +262,7 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	],
 	[
 		makeKey("is", "phyrexian"),
-		"m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{C/P} or m:{W/U/P} or m:{W/B/P} or " +
+		"m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{W/U/P} or m:{W/B/P} or " +
 			"m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or " +
 			'm:{G/U/P} or o:"{w/p}" or o:"{u/p}" or o:"{b/p}" or o:"{r/p}" or o:"{g/p}" or o:"{c/p}" or ' +
 			'o:"{w/u/p}" or o:"{w/b/p}" or o:"{u/b/p}" or o:"{u/r/p}" or o:"{b/r/p}" or o:"{b/g/p}" or ' +
@@ -649,7 +656,9 @@ function collectUnsupportedIs(node: QueryNode, found: string[]): void {
 	const sep = key.indexOf("\u0000");
 	const alias = key.slice(0, sep);
 	const value = key.slice(sep + 1);
-	const supported = alias === "is" ? SUPPORTED_IS_VALUES : alias === "has" ? SUPPORTED_HAS_VALUES : null;
+	// `not:` is `-is:` (negateNotPrefix runs after this), so its vocabulary is `is:`'s.
+	const supported =
+		alias === "is" || alias === "not" ? SUPPORTED_IS_VALUES : alias === "has" ? SUPPORTED_HAS_VALUES : null;
 	if (supported === null || supported.has(value)) return;
 	found.push(
 		`Unsupported term \u201c${alias}:${value}\u201d: this server has no data for that predicate, so it matched no cards.`,
@@ -675,7 +684,64 @@ export function unsupportedIsWarnings(query: Query): string[] {
 	return found;
 }
 
-const REWRITE_PASSES: ReadonlyArray<(q: Query) => Query> = [expandDerivedPredicates, lowerLiteralRegexes];
+/**
+ * Replace `not:value` leaves with `NotNode(is:value)`; return `[node, changed]`.
+ *
+ * Reuses the leaf's own operator and rhs untouched — only `lhs` changes, from the `not` FieldInfo
+ * to `is`'s — so the wrapped leaf is indistinguishable from a user-typed `is:value` and
+ * expandDerivedPredicates (which runs next) still applies is:'s expansion table to it (`not:vanilla`
+ * negates the same subtree `is:vanilla` expands to).
+ */
+function swapNotLeaves(node: QueryNode): [QueryNode, boolean] {
+	const cls = (node as object).constructor;
+	if (cls === AndNode || cls === OrNode) {
+		let changed = false;
+		const operands: QueryNode[] = [];
+		for (const op of (node as AndNode | OrNode).operands) {
+			const [newOp, opChanged] = swapNotLeaves(op);
+			operands.push(newOp);
+			changed ||= opChanged;
+		}
+		return changed ? [cls === AndNode ? new AndNode(operands) : new OrNode(operands), true] : [node, false];
+	}
+	if (cls === NotNode) {
+		const [newOp, changed] = swapNotLeaves((node as NotNode).operand);
+		return changed ? [new NotNode(newOp), true] : [node, false];
+	}
+	if (
+		node instanceof BinaryOperatorNode &&
+		node.lhs instanceof CardAttributeNode &&
+		node.lhs.originalAttribute === "not"
+	) {
+		const isLhs = new CardAttributeNode("is", node.lhs.matchedParserClass);
+		// `type(node)(...)`: the leaf is always a CardBinaryOperatorNode here (the parser builds no
+		// other BinaryOperatorNode with a CardAttributeNode lhs), and rebuilding through that class
+		// is what keeps the constructor's own lowering intact.
+		return [new NotNode(new CardBinaryOperatorNode(isLhs, node.operator, node.rhs)), true];
+	}
+	return [node, false];
+}
+
+/**
+ * Rewrite `not:value` leaves into `NotNode(is:value)`.
+ *
+ * Scryfall's docs: `is:` "has a convenient inverted mode `not:` which is the same as `-is:`". Runs
+ * FIRST so every later pass sees a plain `is:` leaf under a NotNode; flattening afterward folds the
+ * new NotNode into whatever surrounds it exactly as a typed `-is:` would have been.
+ */
+export function negateNotPrefix(query: Query): Query {
+	const [root, changed] = swapNotLeaves(query.root);
+	if (!changed) {
+		return query;
+	}
+	return flattenNestedOperations(new Query(root));
+}
+
+const REWRITE_PASSES: ReadonlyArray<(q: Query) => Query> = [
+	negateNotPrefix,
+	expandDerivedPredicates,
+	lowerLiteralRegexes,
+];
 
 /** Apply every post-parse AST rewrite, in order. The single seam both parsers call. */
 export function rewriteQuery(queryIn: Query): Query {

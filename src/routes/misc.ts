@@ -57,6 +57,6 @@ export function notImplementedHandler(routeName: string): RouteEntry["handler"] 
 		httpError(
 			501,
 			"Not Implemented",
-			`${routeName} is a Postgres-backed admin route upstream; it was replaced by the Cloudflare import pipeline in this port.`,
+			`${routeName} is a Postgres-backed route upstream; this port has no Postgres, and nothing feeds it.`,
 		);
 }

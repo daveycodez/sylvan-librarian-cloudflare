@@ -44,25 +44,39 @@ git -C "$WORK/upstream" worktree add --quiet "$WORK/base" "$BASE_SHA"
 #
 # One "upstream/path<TAB>port description" per line rather than an associative
 # array: macOS ships bash 3.2, where `declare -A` is a syntax the shell parses
-# as an indexed array and every subscript then explodes under `set -u`.
-PORTS=$(
-    cat <<'PORTS_EOF'
+# as an indexed array and every subscript then explodes under `set -u`. And it
+# is `read -d ''`, not `PORTS=$(cat <<EOF ...)`: bash 3.2 scans a `$( )` body
+# for its closing paren with comment rules on, so a `#912` inside the heredoc
+# swallows the rest of that line — including the `)` that ends the row — and
+# the script dies with "unexpected EOF while looking for matching `)'".
+read -r -d '' PORTS <<'PORTS_EOF' || true
 api/parsing/hand_parser.py	src/parser/ (TS port; regenerate fixtures: tests/parser/)
 api/parsing/rewrite.py	src/parser/rewrite.ts (TS port)
 api/parsing/nodes.py	src/parser/nodes.ts (TS port)
 api/parsing/card_query_nodes.py	src/parser/card-query-nodes.ts (TS port)
 api/parsing/db_info.py	src/parser/db-info.ts (TS port; field aliases)
+api/parsing/parsing_f.py	src/parser/index.ts (TS port; balancePartialQuery mirrors balance_partial_query)
+api/parsing/spans.py	src/parser/spans.ts (TS port; the lexer and balancer share it)
+api/parsing/mana_symbols.py	src/parser/mana-symbols.ts (TS port)
+api/enums.py	src/routes/enums.ts (TS port)
 api/card_processing.py	engine/builder/src/transform.rs (Rust port)
 api/tag_import.py	engine/builder/src/tags.rs (Rust port)
 api/scryfall_bulk_data_fetcher.py	engine/builder/src/bulk.rs (Rust port)
 api/api_resource.py	src/routes/ (TS port of user-facing routes)
-api/noscript_helpers.py	src/routes/root.ts (TS port)
+api/noscript_helpers.py	src/routes/noscript.ts + src/routes/pages.ts (TS port)
+api/admin_resource.py	src/routes/admin.ts (the /_admin mount is mirrored as a permanent 401; nothing behind it is ported)
+api/middlewares/admin_auth_middleware.py	src/routes/admin.ts (401 shape: status, WWW-Authenticate, no-store, body)
+api/static/app.js	scripts/generate-assets.ts (re-run it; tests/routes/statics.test.ts pins byte-equality)
+api/static/card.js	scripts/generate-assets.ts (re-run it)
+api/static/styles.css	scripts/generate-assets.ts (re-run it)
+api/static/index.html	scripts/generate-assets.ts (re-run it; assets.gen.txt)
+api/static/card.html	scripts/generate-assets.ts (re-run it; assets.gen.txt)
+api/static/fixtures/balance_queries.json	tests/parser/semantics.test.ts reads it directly; port balancer must keep passing
 api/scryfall_compat/routes.py	src/routes/scryfall-compat/routes.ts (TS port; response envelope: respond.ts)
 api/scryfall_compat/objects.py	src/routes/scryfall-compat/objects.ts + vendor card_engine/src/card_object.rs (three-file lockstep, parity-gated: tests/routes/card-object-parity.test.ts)
 api/scryfall_compat/responder.py	src/routes/scryfall-compat/respond.ts (TS port; today the envelope lives in routes.py — this row fires if upstream splits it out)
 card_engine/src/card_object.rs	VENDORED AHEAD of upstream main (exists only on the #912 scryfall-cards-api branch); on change, re-review objects.ts and regenerate card-object parity fixtures
 PORTS_EOF
-)
 
 # Echo the port description for an upstream path, or nothing if it has no port.
 port_for() {

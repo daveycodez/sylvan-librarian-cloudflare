@@ -14,6 +14,7 @@ import {
 	ParserClass as PC,
 } from "./db-info";
 import { InternalParseError, LexError, ParseError } from "./errors";
+import { firstInvalidManaSymbol } from "./mana-symbols";
 import {
 	AndNode,
 	BinaryOperatorNode,
@@ -33,6 +34,21 @@ import {
 import { type PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
 import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
 
+/** Python `repr()` of a plain string, for the one message that interpolates `{invalid!r}`. */
+function pyRepr(s: string): string {
+	const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
+	let body = "";
+	for (const ch of s) {
+		if (ch === "\\") body += "\\\\";
+		else if (ch === quote) body += `\\${quote}`;
+		else if (ch === "\n") body += "\\n";
+		else if (ch === "\r") body += "\\r";
+		else if (ch === "\t") body += "\\t";
+		else body += ch;
+	}
+	return `${quote}${body}${quote}`;
+}
+
 // ── Alias → parser-class lookup ──────────────────────────────────────────────
 
 // Build once from db-info; prefer NUMERIC for dual-class aliases (cn, number)
@@ -48,6 +64,14 @@ const ALIAS_TO_PC: ReadonlyMap<string, ParserClass> = (() => {
 	}
 	return map;
 })();
+
+// On Scryfall '!' is an alias for '=' on these classes only (verified live, upstream #903 cause
+// C) — on TEXT/LEGALITY it isn't an operator at all, and a trailing bang there falls through to
+// the existing exact-name-prefix reading of the next factor instead. NUMERIC takes it too, in its
+// own branch below. The alias also only holds when the bang is GLUED to both sides: measured
+// live, `c!w` is 5,071 where `c !w` is 0 and `c! w` / `cmc! 3` are not the alias either — a
+// spaced bang keeps the exact-name-prefix reading a space always had.
+const BANG_ALIAS_CLASSES: ReadonlySet<ParserClass> = new Set([PC.COLOR, PC.MANA, PC.RARITY, PC.YEAR, PC.DATE]);
 
 // Aliases that have BOTH a NUMERIC and a TEXT mapping (only cn / number today).
 const DUAL_NUM_TEXT: ReadonlySet<string> = (() => {
@@ -355,8 +379,10 @@ export class Parser {
 
 		// ── NUMERIC attribute ──
 		if (pc === PC.NUMERIC) {
-			if (nextTok.type === TT.OP) {
-				const op = this.consume().value as string;
+			const numBangAlias = nextTok.type === TT.BANG && !nextTok.spaceBefore && !this.peek(1).spaceBefore;
+			if (nextTok.type === TT.OP || numBangAlias) {
+				const op = numBangAlias ? "=" : (nextTok.value as string);
+				this.consume();
 				return new CardBinaryOperatorNode(new CardAttributeNode(wl, PC.NUMERIC), op, this.parseNumExprValue());
 			}
 			if (ARITH_OPS.has(nextTok.type) && !nextTok.spaceBefore) {
@@ -381,8 +407,15 @@ export class Parser {
 		}
 
 		// ── known non-NUMERIC attribute ──
-		if (pc !== undefined && nextTok.type === TT.OP) {
-			const op = this.consume().value as string;
+		const bangAlias =
+			pc !== undefined &&
+			nextTok.type === TT.BANG &&
+			!nextTok.spaceBefore &&
+			!this.peek(1).spaceBefore &&
+			BANG_ALIAS_CLASSES.has(pc);
+		if (pc !== undefined && (nextTok.type === TT.OP || bangAlias)) {
+			const op = bangAlias ? "=" : (nextTok.value as string);
+			this.consume();
 			return new CardBinaryOperatorNode(new CardAttributeNode(wl, pc), op, this.parseValueForClass(pc, wl));
 		}
 		if (pc !== undefined) {
@@ -629,25 +662,37 @@ export class Parser {
 	/** Parse a mana cost value: a sequence of mana symbols, words, or numbers (no gaps). */
 	parseManaValue(): QueryNode {
 		const tok = this.peek();
+		let value: string;
 		if (tok.type === TT.QUOTED) {
 			this.consume();
-			return new StringValueNode(pyStr(tok.value));
-		}
-		const parts: string[] = [];
-		for (;;) {
-			const t = this.peek();
-			if (t.type === TT.MANA || t.type === TT.WORD || t.type === TT.NUMBER) {
-				if (parts.length > 0 && t.spaceBefore) break;
-				this.consume();
-				parts.push(pyStr(t.value));
-			} else {
-				break;
+			value = pyUpper(pyStr(tok.value));
+		} else {
+			const parts: string[] = [];
+			for (;;) {
+				const t = this.peek();
+				if (t.type === TT.MANA || t.type === TT.WORD || t.type === TT.NUMBER) {
+					if (parts.length > 0 && t.spaceBefore) break;
+					this.consume();
+					parts.push(pyStr(t.value));
+				} else {
+					break;
+				}
 			}
+			if (parts.length === 0) {
+				throw new InternalParseError(`Expected mana value at position ${this.peek().pos}`);
+			}
+			value = pyUpper(parts.join(""));
 		}
-		if (parts.length === 0) {
-			throw new InternalParseError(`Expected mana value at position ${this.peek().pos}`);
+		// A mana cost can only hold certain symbols, so anything else is a query that cannot match.
+		// '{Q}' is a real symbol (untap) but never appears in a cost, which is why this asks what a
+		// cost may contain rather than what Magic prints. Quoting a value is just an alternate way to
+		// type it (e.g. to protect spaces), not an opt-out of this check — a quoted `mana:"q"` used to
+		// skip straight to StringValueNode, so it silently matched every card via an empty cost dict.
+		const invalid = firstInvalidManaSymbol(value);
+		if (invalid !== null) {
+			throw new InternalParseError(`Invalid mana symbol ${pyRepr(invalid)} at position ${tok.pos}`);
 		}
-		return new ManaValueNode(pyUpper(parts.join("")));
+		return new ManaValueNode(value);
 	}
 
 	/** Parse a simple string value: quoted string or bare word. */
