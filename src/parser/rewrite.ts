@@ -8,7 +8,7 @@
  */
 
 import { CardAttributeNode, CardBinaryOperatorNode } from "./card-query-nodes";
-import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS } from "./db-info";
+import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, FIELD_IS_TAGS } from "./db-info";
 import {
 	AndNode,
 	BinaryOperatorNode,
@@ -124,14 +124,14 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// reaches newer enters-tapped-gain-life cycles Scryfall's list lacks.
 	["is\u0000battleland", "otag:cycle-tangoland"], // 10
 	// The Amonkhet/Hour cycling duals. Scryfall spells them three ways; all three are 10.
-	["is\u0000bicycleland", "otag:cycle-bicycle-land"], // 10, exact
-	["is\u0000bikeland", "otag:cycle-bicycle-land"], // 10, exact
+	["is\u0000bicycleland", "otag:cycle-dual-cycling-land"], // 10, exact
+	["is\u0000bikeland", "otag:cycle-dual-cycling-land"], // 10, exact
 	["is\u0000bondland", "otag:cycle-bondland"], // 10
 	["is\u0000bounceland", "otag:bounceland"], // 17, exact
 	["is\u0000canland", "otag:cycle-horizon-land"], // 6; Scryfall's other spelling of canopyland
 	["is\u0000canopyland", "otag:cycle-horizon-land"], // 6, exact
 	["is\u0000checkland", "otag:cycle-checkland"], // 10, exact
-	["is\u0000cycleland", "otag:cycle-bicycle-land"], // 10; third spelling of bikeland
+	["is\u0000cycleland", "otag:cycle-dual-cycling-land"], // 10; third spelling of bikeland
 	["is\u0000creatureland", "t:land o:become o:creature o:/still a.* land/"],
 	["is\u0000dual", "otag:cycle-abu-dual-land"], // 10, the ABUR duals, exact
 	["is\u0000fastland", "otag:cycle-fastland"], // 10, exact
@@ -140,10 +140,7 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000gainland", "otag:gainland"], // 42, self-updating superset of Scryfall's 15
 	["is\u0000karoo", "otag:bounceland"], // 17; Scryfall's other spelling of bounceland
 	["is\u0000manland", "t:land o:become o:creature o:/still a.* land/"],
-	// Land, and the name says so — there is no cycle tag for these, and upstream's own
-	// CUSTOM_IS_TAGS note describes them the same way ("land and name contains pathway").
-	// 10 = 10 against api.scryfall.com.
-	["is\u0000pathway", "t:land name:pathway"],
+	["is\u0000pathway", "otag:cycle-pathway"], // 10, exact
 	["is\u0000painland", "otag:cycle-painland"], // 10, exact
 	["is\u0000scryland", "otag:cycle-block-ths-scry-land"], // 10, exact
 	// shadowland/snarl: the reveal-or-tapped lands that reveal a BASIC LAND TYPE
@@ -155,17 +152,14 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000shockland", "otag:shockland"], // 11, includes Multiversal Passage
 	["is\u0000slowland", "otag:cycle-slowland"], // 10, exact
 	["is\u0000snarl", "t:land o:/reveal an? (Plains|Island|Swamp|Mountain|Forest)/"], // same family
-	// The MKM cycle, and Scryfall's list is still exactly those 10 — `cycle-dual-surveil-land`
-	// holds the same set today, and the SOS cycle sits under its own slug that Scryfall has not
-	// adopted, so the MKM slug is the one that tracks their answer rather than drifting past it.
-	["is\u0000surveilland", "otag:cycle-mkm-surveil-land"], // 10, exact
+	["is\u0000surveilland", "otag:cycle-dual-surveil-land"], // 10, exact
 	["is\u0000storageland", "otag:cycle-fem-storage-land or otag:cycle-mmq-storage-land or otag:cycle-tsp-storage-land"], // 15 vs 12
 	["is\u0000tangoland", "otag:cycle-tangoland"], // 10; Scryfall accepts both names
 	["is\u0000triland", "otag:cycle-ala-shardland or otag:cycle-ktk-wedgeland"], // 10, name-verified
 	["is\u0000triome", "otag:cycle-iko-triome or otag:cycle-snc-triland"], // 10, name-verified
-	// Scryfall's `is:tricycleland` is the triomes, name for name (the five IKO plus the five SNC)
-	// — not a third cycling-land cycle, despite the spelling.
-	["is\u0000tricycleland", "otag:cycle-iko-triome or otag:cycle-snc-triland"], // 10, name-verified
+	// Same 10 cards as is:triome above (verified by name) — another case of Scryfall accepting
+	// two names for one cycle, like tangoland/battleland.
+	["is\u0000tricycleland", "otag:tricycle-land"], // 10, exact
 	// ── Non-land derivables ──────────────────────────────────────────────────
 	// Commander eligibility: legendary permanents with a printed toughness
 	// (creatures, Vehicles, Spacecraft -- toughness>=0, the parser-friendly
@@ -268,10 +262,13 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 			'o:"{w/u/p}" or o:"{w/b/p}" or o:"{u/b/p}" or o:"{u/r/p}" or o:"{b/r/p}" or o:"{b/g/p}" or ' +
 			'o:"{r/g/p}" or o:"{r/w/p}" or o:"{g/w/p}" or o:"{g/u/p}"',
 	],
-	// Spelling aliases of tags the importer stores (db-info BOOLEAN_IS_TAGS / ARRAY_IS_TAGS).
+	// Spelling aliases of tags the importer stores (db-info BOOLEAN_IS_TAGS).
 	// Aliased rather than stored twice: a second copy of a 3,228-card tag is bytes for nothing.
 	["is\u0000full", "is:fullart"],
 	["is\u0000promostamped", "is:stamped"],
+	// The stored tag follows Scryfall's own syntax page (`is:judge_gift`); Scryfall accepts the
+	// short spelling too, so it aliases on rather than storing the same rows twice.
+	["is\u0000judge", "is:judge_gift"],
 ]);
 
 /**
@@ -357,6 +354,7 @@ for (const [value, dsl] of HAS_EXPANSIONS) {
 export const SUPPORTED_IS_VALUES: ReadonlySet<string> = new Set([
 	...BOOLEAN_IS_TAGS.keys(),
 	...ARRAY_IS_TAGS.keys(),
+	...FIELD_IS_TAGS.keys(),
 	...COMPUTED_IS_TAGS,
 	...ENGINE_IS_VALUES,
 	...[...DERIVED_EXPANSIONS.keys()].filter((k) => k.startsWith("is\u0000")).map((k) => k.slice("is\u0000".length)),
