@@ -1,0 +1,93 @@
+# PR and main-push CI: the cheap half of scripts/gate.sh, plus a production
+# smoke test after main deploys.
+#
+# Exists because of 2026-08-23: a branch push republished the shared card index
+# at a generation production could not read, and every /search 500ed for ~2.5
+# hours with nothing watching. Tests here would not have caught that infra
+# mistake (import-store.sh's preview guard now prevents it), but the smoke job
+# turns "production search is broken" from a user report into a red X on the
+# commit that did it.
+#
+# NOT run here, deliberately (they stay in `bun run gate`, which is the
+# pre-push bar): the perf ratios (need a built store and stable hardware), the
+# wasm-vs-native answer differential (needs the corpus), and the per-partition
+# wasm fit (needs the manifest). CI is the floor, not the gate.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.15 # match Workers Builds
+      # postinstall is gated on WORKERS_CI=1, so this does NOT pull 450MB of
+      # Scryfall data or touch any KV namespace.
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run check
+      - run: bun test tests
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.15
+      - run: bun install --frozen-lockfile
+      # clippy.sh pins its own toolchain (the one upstream CI runs); with-rust.sh
+      # installs rustup if the runner image ever drops it.
+      - run: CLIPPY_FORCE=1 scripts/clippy.sh
+      - run: scripts/with-rust.sh cargo test --release --workspace
+      # The nightly importer runs wasm32, not native — a native-only dependency
+      # reaching shared code leaves every step above green while the real
+      # artifact is broken. Same link flags as the gate.
+      - run: |
+          scripts/with-rust.sh rustup target add wasm32-unknown-unknown
+          scripts/with-rust.sh cargo rustc --release -p sylvan-wasm-import \
+            --target wasm32-unknown-unknown -- -C link-arg=--max-memory=130023424
+          scripts/with-rust.sh cargo check --release -p sylvan-engine-wasm --target wasm32-unknown-unknown
+
+  # After a main push, Workers Builds deploys on its own schedule (a store
+  # rebuild can take ~7 minutes). This job polls production /search until it
+  # answers with cards, and FAILS after 25 minutes of it not doing so — the
+  # alarm the 2026-08-23 outage did not have.
+  smoke:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: production /search answers with cards
+        run: |
+          url='https://sylvan-librarian.deckgen.workers.dev/search?q=lightning+bolt'
+          deadline=$((SECONDS + 1500))
+          ok=0
+          while [[ $SECONDS -lt $deadline ]]; do
+            body=$(curl -s --max-time 20 "$url" || true)
+            count=$(printf '%s' "$body" | head -c 100000 | jq -r '.cards | length' 2>/dev/null || echo 0)
+            [[ "$count" =~ ^[0-9]+$ ]] || count=0
+            if [[ "$count" -gt 0 ]]; then
+              ok=$((ok + 1))
+              echo "search answered with $count cards ($ok/3)"
+              [[ $ok -ge 3 ]] && exit 0
+            else
+              ok=0
+              echo "search not answering yet: $(printf '%s' "$body" | head -c 120)"
+            fi
+            sleep 30
+          done
+          echo "::error::production /search still failing 25 minutes after the push"
+          exit 1
