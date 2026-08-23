@@ -112,9 +112,10 @@ if [[ "$STORE_AGE_STATUS" -eq 0 && -n "$age" ]]; then
     # skip is a skip, not just the fact of one.
     sed 's/^/    /' "$STORE_AGE_ERR"
 else
-    # Exit 2+ is "could not tell", not "no store" — the state that silently
-    # costs a full rebuild on every deploy. Either way, print the reason.
-    if [[ "$STORE_AGE_STATUS" -ge 2 ]]; then
+    # Exit 2 is "could not tell", not "no store" — the state that silently
+    # costs a full rebuild on every deploy. Exit 3 is "nothing published", which
+    # store-age has already said on stderr. Either way, print the reason.
+    if [[ "$STORE_AGE_STATUS" -eq 2 ]]; then
         echo "!!! Could not determine whether a store is live — importing to be safe."
     fi
     sed 's/^/    /' "$STORE_AGE_ERR"
@@ -122,10 +123,39 @@ fi
 BRANCH="${WORKERS_CI_BRANCH:-}"
 PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-main}"
 
-if [[ -n "$STORE_AGE" && -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then
-    echo "==> Preview build on '$BRANCH' (production is '$PRODUCTION_BRANCH') and a store"
-    echo "    built $STORE_AGE is already live — leaving the shared card index alone."
-    exit 0
+# A preview build NEVER writes the shared card index. The one exception is a
+# namespace nothing has ever been published to (store-age exit 3) — a fresh
+# fork whose default branch is not `main` still has to get a first index, and
+# shipping nothing is worse than shipping a preview-built one.
+#
+# The guard used to fire only when the live store was ALSO current for this
+# branch's code ([[ -n "$STORE_AGE" ]]), which is exactly never in the case
+# that matters: on 2026-08-23 a preview branch carrying a STORE_CONTENT_GENERATION
+# bump saw the generation-39 store as "unusable", fell through this check,
+# republished the shared index at generation 40, and retention then dropped the
+# generation-39 chunks — production, still deployed at 39, lost every /search
+# until the branch merged. A preview whose code cannot read the live store gets
+# a broken PREVIEW, which is the correct trade: preview versions take no
+# traffic, and the fix ships by merging, not by letting the preview redefine
+# what production reads.
+if [[ -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then
+    if [[ -n "$STORE_AGE" ]]; then
+        echo "==> Preview build on '$BRANCH' (production is '$PRODUCTION_BRANCH') and a store"
+        echo "    built $STORE_AGE is already live — leaving the shared card index alone."
+        exit 0
+    elif [[ "$STORE_AGE_STATUS" -eq 3 ]]; then
+        echo "==> Preview build on '$BRANCH', but nothing has ever been published to this"
+        echo "    namespace — seeding the first card index so the deploy is not empty."
+    else
+        echo "==> Preview build on '$BRANCH' (production is '$PRODUCTION_BRANCH'): the live store"
+        echo "    is not usable by THIS branch's code (reason above), but production still reads"
+        echo "    it — REFUSING to overwrite the shared card index from a preview build."
+        echo "    This preview's /search may not work until the branch merges and production"
+        echo "    rebuilds the store to match. (FORCE_IMPORT=1 overrides, and overwrites it.)"
+        if [[ "${FORCE_IMPORT:-}" != "1" ]]; then
+            exit 0
+        fi
+    fi
 fi
 
 if [[ "${FORCE_IMPORT:-}" != "1" && -n "$STORE_AGE" ]]; then
@@ -143,7 +173,7 @@ if [[ -n "$STORE_AGE" ]]; then
     # Only reachable with FORCE_IMPORT=1; every other path with a live store
     # returned above.
     echo "==> FORCE_IMPORT=1 — rebuilding even though a store built $STORE_AGE is live."
-elif [[ "$STORE_AGE_STATUS" -ge 2 ]]; then
+elif [[ "$STORE_AGE_STATUS" -eq 2 ]]; then
     echo "==> Could not read the live store's state — running the full bulk import to be safe."
 else
     echo "==> The live store is missing or superseded (reason above) — running the full bulk import."

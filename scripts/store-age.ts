@@ -16,8 +16,9 @@
 //
 //   bun scripts/store-age.ts        -> "2h ago" (exit 0)
 //   bun scripts/store-age.ts --local   same, against the dev namespace
-//                                      exit 1: no usable store — an ANSWER
+//                                      exit 1: a store EXISTS but is unusable — an ANSWER
 //                                      exit 2: could not tell — a FAILURE
+//                                      exit 3: nothing has ever been published — an ANSWER
 //
 // "Usable" means a manifest that parses and carries a build time, a byte
 // count and a chunk count, AND describes data Scryfall has not superseded.
@@ -35,8 +36,11 @@
 // that predates a change in this repo. It is deliberately loose, because the
 // upstream comparison is what should normally decide.
 //
-// Both non-zero exits make the caller import, which costs build minutes but
-// never leaves a deploy without an index. They are still kept apart, because
+// Every non-zero exit makes a PRODUCTION caller import, which costs build
+// minutes but never leaves a deploy without an index. A PREVIEW caller must
+// distinguish them: 3 (empty namespace) may be seeded from any branch, while 1
+// (a live-but-superseded store) must NOT be overwritten from one — that
+// overwrite is the 2026-08-23 outage. They are also kept apart from 2, because
 // they mean opposite things about the deployment: 1 says the store really is
 // missing or stale, 2 says this script could not reach KV — and a 2 reported
 // as a 1 is a broken query that presents as an eternally-empty database, which
@@ -147,10 +151,16 @@ if ((await proc.exited) !== 0) {
 		.join("\n  ")
 		.trim();
 	// A namespace that has never been published to simply has no manifest key.
-	// That is an ANSWER — "nothing here yet" — not a failure to ask.
+	// That is an ANSWER — "nothing here yet" — not a failure to ask, and it gets
+	// its OWN exit code (3) because a caller on a preview branch must tell it
+	// apart from "a store exists but is superseded" (1): seeding an empty
+	// namespace from a preview build is a favour, while overwriting a live
+	// production store from one is the 2026-08-23 outage — a branch build
+	// republished the shared index at generation 40, retention dropped the
+	// generation-39 chunks, and production (still on 39) lost every search.
 	if (/not found|does not exist|no value/i.test(detail)) {
 		console.error(`store-age: ${WHERE} holds no manifest at ${MANIFEST_KEY} — nothing has been published.`);
-		process.exit(1);
+		process.exit(3);
 	}
 	console.error(`store-age: could not read the manifest from ${WHERE} —\n  ${detail}`);
 	process.exit(2);
@@ -158,7 +168,7 @@ if ((await proc.exited) !== 0) {
 const json = out.trim();
 if (!json) {
 	console.error(`store-age: ${WHERE} holds no manifest — nothing has been seeded yet.`);
-	process.exit(1);
+	process.exit(3);
 }
 
 let manifest: {
