@@ -242,6 +242,14 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// leaf is an integer compare against the mana vocab, where a regex over the cost string
 	// mismatches in both directions (measured: 5 under, 35 over).
 	//
+	// STILL A REWRITE HERE, while upstream stores both as tags. Upstream #1001 moved them into
+	// `BOOLEAN_IS_TAGS` with regexes that under-match badly — 569 of 603 for `is:hybrid`, 33 of 73
+	// for `is:phyrexian` — which upstream PR #1011 corrects, and the vendored `db_info.py` carries
+	// the corrected pair ahead of the pin. The port does NOT follow it into the store: these
+	// rewrites already answer exactly, so storing the tags would buy alignment and a little speed
+	// at the cost of two more archive values, a builder that has to re-derive them, and a store
+	// generation. Revisit when #1011 lands and the next generation bump is being spent anyway.
+	//
 	// The `o:` half of `is:phyrexian` is not decoration. Scryfall's rule is the symbol ANYWHERE on
 	// the card, not only in the cost — 36 of its 73 cards carry no Phyrexian symbol in any cost at
 	// all (Spellskite, the Souleaters, every `{2}{B/P}: transform` back face) — and dropping it

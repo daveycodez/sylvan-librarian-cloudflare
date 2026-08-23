@@ -454,19 +454,29 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
     "universesbeyond": "cards.raw_card_blob->'promo_types' @> '\"universesbeyond\"'",
     # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
     "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
+    # -- mana-symbol classes (#1001, corrected by #1011) ---------------------------------
+    #
+    # FOUR hybrid families, not one: the ten `{W/U}` symbols, the twobrid `{2/W}` cycle, the
+    # colourless-hybrid `{C/W}` cycle and Phyrexian-hybrid `{W/U/P}`. `{C/P}` is excluded because
+    # colourless Phyrexian is not hybrid and Scryfall agrees (`is:hybrid o:"{c/p}"` is empty).
+    "hybrid": r"cards.mana_cost_text ~ '\{([0-9]+|[WUBRGC])/[WUBRGC](/P)?\}'",
+    # Phyrexian is ANYWHERE on the card: 36 of the 73 carry the symbol in rules text and nowhere
+    # else, so the cost alone answers 37. `{C/P}` IS in this class -- it exists on cards even
+    # though #909's validator rejects it as a query term, which is the case a stored tag answers
+    # and an `m:` rewrite cannot.
+    "phyrexian": (
+        r"cards.mana_cost_text ~ '\{([WUBRGC]/)?[WUBRGC]/P\}' "
+        r"OR cards.oracle_text ~* '\{([wubrgc]/)?[wubrgc]/p\}'"
+    ),
 }
 
-# NOT STORED, deliberately, though upstream's expression table has room for them now:
+# NOT STORED, deliberately: `masterpiece`. `st:masterpiece` is the same predicate as upstream's
+# `set_type = 'masterpiece'` expression and is exact (empty set difference on api.scryfall.com,
+# 2026-08-16), so storing it would be a second copy of an answer a rewrite already gives for no
+# archive bytes.
 #
-# `masterpiece` -- `st:masterpiece` is the same predicate as upstream's `set_type = 'masterpiece'`
-# expression and is exact (empty set difference on api.scryfall.com, 2026-08-16). A rewrite that
-# already answers exactly costs no archive bytes, so storing it would be a second copy of an
-# answer we have.
-#
-# `hybrid` / `phyrexian` -- #1001 replaces the rewrite with a `mana_cost_text` regex, and MEASURED
-# AGAINST SCRYFALL THAT LOSES CARDS (2026-08-23, unique=cards): `is:hybrid` is 603 there, and
-# `\{[WUBRG]/[WUBRG]\}` -- the ten two-colour symbols -- misses 24 of them, because Scryfall counts
-# the twobrid `{2/W}` and colourless-hybrid `{C/W}` cycles as hybrid too. `is:phyrexian` is 73, and
-# `\{[WUBRG]/P\}` misses 40: Scryfall's rule is the symbol ANYWHERE on the card, not only in the
-# cost, so Spellskite, the Souleaters and every `{2}{B/P}: transform` back face carry it in rules
-# text alone. The rewrites in rewrite.py cover both cases and stay until an expression can too.
+# `hybrid` and `phyrexian` ARE stored, but not with the regexes #1001 landed: measured against
+# Scryfall on 2026-08-23 (unique=cards, simulated over the cards it returns), `\{[WUBRG]/[WUBRG]\}`
+# answers 569 of `is:hybrid`'s 603 and `\{[WUBRG]/P\}` answers 33 of `is:phyrexian`'s 73. The
+# widened pair above is exact on the single-face corpus and is upstream PR #1011; this tree carries
+# it ahead of the pin, which is why these two entries differ from a76f0cb.
