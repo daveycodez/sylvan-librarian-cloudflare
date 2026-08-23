@@ -268,14 +268,14 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     # The `o:` half of `is:phyrexian` is not decoration. Scryfall's rule is the symbol ANYWHERE on
     # the card, not only in the cost -- 36 of its 73 cards carry no Phyrexian symbol in any cost at
     # all (Spellskite, the Souleaters, every `{2}{B/P}: transform` back face) -- and dropping it
-    # leaves half the answer behind. `is:hybrid` is cost-only by the same measurement: 216 cards
-    # carry a hybrid symbol in their rules text and Scryfall calls none of them hybrid.
-    ("is", "hybrid"): (
-        "m:{W/U} or m:{W/B} or m:{U/B} or m:{U/R} or m:{B/R} or m:{B/G} or m:{R/G} or m:{R/W} or "
-        "m:{G/W} or m:{G/U} or m:{W/U/P} or m:{W/B/P} or m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or "
-        "m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or m:{G/U/P} or m:{2/W} or m:{2/U} or "
-        "m:{2/B} or m:{2/R} or m:{2/G} or m:{C/W} or m:{C/U} or m:{C/B} or m:{C/R} or m:{C/G}"
-    ),
+    # leaves half the answer behind.
+    #
+    # `is:hybrid` USED TO SIT HERE and does not any more: it is a stored tag on both sides now
+    # (upstream's BOOLEAN_IS_TAGS in db_info.py, the port's HYBRID_IS_TAG in the builder). No `m:`
+    # union can express it, because Scryfall's `m:` matches a symbol on ANY face while `is:hybrid`
+    # asks only about the FRONT -- the union answered 605 against Scryfall's 603, the extras being
+    # the two `prepare` printings hybrid on the back alone. It stays cost-only either way: 216
+    # cards carry a hybrid symbol in their rules text and Scryfall calls none of them hybrid.
     ("is", "phyrexian"): (
         "m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{W/U/P} or m:{W/B/P} or "
         "m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or "

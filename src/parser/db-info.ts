@@ -288,7 +288,15 @@ export const ALIAS_TO_FIELD_INFOS: ReadonlyMap<string, readonly FieldInfo[]> = (
  */
 export const EXTRA_IS_TAG = "extra";
 
-export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([EXTRA_IS_TAG]);
+/**
+ * `is:hybrid`. Computed by the importer from the FRONT face's mana cost, which is the only place
+ * that question can be answered: Scryfall's `m:` matches a symbol on any face, so the `m:` union
+ * this replaced answered 605 where Scryfall answers 603 — the extras being the two `prepare`
+ * printings hybrid on the back alone. Spelled once here and once as the builder's `HYBRID_IS_TAG`.
+ */
+export const HYBRID_IS_TAG = "hybrid";
+
+export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([EXTRA_IS_TAG, HYBRID_IS_TAG]);
 
 export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["booster", "booster"],

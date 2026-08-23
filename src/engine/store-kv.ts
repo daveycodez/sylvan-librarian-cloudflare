@@ -1342,8 +1342,21 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: `DenseBits` does not change shape and no index type moves, so
  *      `ARCHIVE_FORMAT_VERSION` and `SORT_KEY_VERSION` stay unchanged — the stored VALUES move,
  *      which is exactly what this constant covers.
+ *
+ *   41 `is:hybrid` becomes a STORED tag (`HYBRID_IS_TAG`), taking the vocabulary from 39 to 40.
+ *
+ *      It was a 30-term `m:` union in the parser, and no such union can be right: Scryfall's `m:`
+ *      matches a symbol on ANY face while its `is:hybrid` asks only about the FRONT, so the union
+ *      answered 605 against Scryfall's 603 — the two extras being the `prepare` printings whose
+ *      only hybrid pip is on the back (Abigale, Poet Laureate // Heroic Stanza and Lluwen,
+ *      Exchange Student // Pest Friend). The importer is the only place holding the faces, so it
+ *      is the only place that can answer it; the rule (front face on a two-sided layout, the whole
+ *      cost otherwise) was verified over all 603 of Scryfall's cards for 603 matches and 0 extras.
+ *
+ *      A Worker on a generation-40 store answers `is:hybrid` ZERO — the tag is simply not in it —
+ *      which is exactly the silent-wrong-answer this constant exists to prevent.
  */
-export const STORE_CONTENT_GENERATION = 40;
+export const STORE_CONTENT_GENERATION = 41;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

@@ -242,26 +242,25 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// leaf is an integer compare against the mana vocab, where a regex over the cost string
 	// mismatches in both directions (measured: 5 under, 35 over).
 	//
-	// STILL A REWRITE HERE, while upstream stores both as tags. Upstream #1001 moved them into
-	// `BOOLEAN_IS_TAGS` with regexes that under-match badly — 569 of 603 for `is:hybrid`, 33 of 73
-	// for `is:phyrexian` — which upstream PR #1011 corrects, and the vendored `db_info.py` carries
-	// the corrected pair ahead of the pin. The port does NOT follow it into the store: these
-	// rewrites already answer exactly, so storing the tags would buy alignment and a little speed
-	// at the cost of two more archive values, a builder that has to re-derive them, and a store
-	// generation. Revisit when #1011 lands and the next generation bump is being spent anyway.
+	// `is:hybrid` IS NOT HERE ANY MORE — it is a stored tag (`HYBRID_IS_TAG` in the builder,
+	// `COMPUTED_IS_TAGS` in db-info.ts), because no `m:` union can express it. Scryfall's `m:`
+	// matches a symbol on ANY face, while its `is:hybrid` asks only about the FRONT, so the
+	// 30-term union below used to answer 605 against Scryfall's 603 — the two extras being the
+	// `prepare` printings whose only hybrid pip is on the back. That gap is not a wider or
+	// narrower symbol list; it is the wrong question, and the importer is the only place with the
+	// faces in hand to ask the right one.
+	//
+	// `is:phyrexian` STAYS a rewrite, and the asymmetry is deliberate: its rule is the symbol
+	// ANYWHERE on the card, which the `o:` half below already answers exactly (73 of 73, measured
+	// card for card), so storing it would buy nothing but an archive value. Upstream stores both
+	// (#1001, corrected by our #1011) and the vendored `db_info.py` mirrors that; the port agrees
+	// on `hybrid` and deliberately differs on `phyrexian`.
 	//
 	// The `o:` half of `is:phyrexian` is not decoration. Scryfall's rule is the symbol ANYWHERE on
 	// the card, not only in the cost — 36 of its 73 cards carry no Phyrexian symbol in any cost at
 	// all (Spellskite, the Souleaters, every `{2}{B/P}: transform` back face) — and dropping it
 	// leaves half the answer behind. `is:hybrid` is cost-only by the same measurement: 216 cards
 	// carry a hybrid symbol in their rules text and Scryfall calls none of them hybrid.
-	[
-		makeKey("is", "hybrid"),
-		"m:{W/U} or m:{W/B} or m:{U/B} or m:{U/R} or m:{B/R} or m:{B/G} or m:{R/G} or m:{R/W} or " +
-			"m:{G/W} or m:{G/U} or m:{W/U/P} or m:{W/B/P} or m:{U/B/P} or m:{U/R/P} or m:{B/R/P} or " +
-			"m:{B/G/P} or m:{R/G/P} or m:{R/W/P} or m:{G/W/P} or m:{G/U/P} or m:{2/W} or m:{2/U} or " +
-			"m:{2/B} or m:{2/R} or m:{2/G} or m:{C/W} or m:{C/U} or m:{C/B} or m:{C/R} or m:{C/G}",
-	],
 	[
 		makeKey("is", "phyrexian"),
 		"m:{W/P} or m:{U/P} or m:{B/P} or m:{R/P} or m:{G/P} or m:{W/U/P} or m:{W/B/P} or " +

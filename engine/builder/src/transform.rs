@@ -776,6 +776,59 @@ fn required_str(card: &Map<String, Value>, name: &str, field: &'static str) -> R
 /// parser's COMPUTED_IS_TAGS; the two must agree or `is:extra` warns instead of filtering.
 pub const EXTRA_IS_TAG: &str = "extra";
 
+/// `is:hybrid`, computed here because no Scryfall field carries it and no `m:` rewrite can.
+///
+/// Scryfall's `m:` matches a symbol on ANY face — `m:{W/B}` finds Abigale, Poet Laureate, whose
+/// hybrid pip is on its back face — but `is:hybrid` asks only about the FRONT. The port used to
+/// expand `is:hybrid` into a 30-term `m:` union, which therefore answered 605 where Scryfall
+/// answers 603, the two extras being exactly the `prepare` printings hybrid on the back alone
+/// (Abigale, Poet Laureate // Heroic Stanza and Lluwen, Exchange Student // Pest Friend). No union
+/// of `m:` terms can express it, because `m:` itself is any-face on Scryfall too.
+pub const HYBRID_IS_TAG: &str = "hybrid";
+
+/// The layouts that are two pieces of cardboard, for [`hybrid_cost_of`]. A split, adventure or
+/// flip card is ONE face with two halves printed on it, so its whole cost counts; a transform,
+/// modal-DFC, reversible or `prepare` card has a genuine back, and only the front counts.
+const TWO_SIDED_LAYOUTS: [&str; 6] =
+    ["art_series", "double_faced_token", "modal_dfc", "prepare", "reversible_card", "transform"];
+
+/// The mana cost `is:hybrid` reads: the front face's on a two-sided card, the whole cost otherwise.
+///
+/// Verified by simulating this rule over the 603 cards api.scryfall.com returns for `is:hybrid`
+/// (2026-08-23): it matches all 603 and adds none, where reading the whole cost matches 603 and
+/// adds 2, and reading `card_faces[0]` unconditionally loses the right half of every split.
+fn hybrid_cost_of<'a>(card: &'a Map<String, Value>, faces: Option<&'a [Value]>) -> Option<&'a str> {
+    let two_sided = card.get("layout").and_then(Value::as_str).is_some_and(|l| TWO_SIDED_LAYOUTS.contains(&l));
+    if let Some(front) = faces.filter(|_| two_sided).and_then(|f| f.first()).and_then(Value::as_object) {
+        return front.get("mana_cost").and_then(Value::as_str);
+    }
+    card.get("mana_cost").and_then(Value::as_str)
+}
+
+/// Whether a mana symbol (as `mana_cost_str_to_counts` spells it, braces stripped) is HYBRID.
+///
+/// Four families, which is Scryfall's own line: the ten two-colour symbols, the twobrid `2/W`
+/// cycle, colourless-hybrid `C/W`, and Phyrexian-hybrid `W/U/P`. `W/P` and `C/P` are Phyrexian and
+/// NOT hybrid — `is:hybrid o:"{c/p}"` is empty on Scryfall — which is why the segment after the
+/// first slash must be a colour.
+fn is_hybrid_symbol(symbol: &str) -> bool {
+    let parts: Vec<&str> = symbol.split('/').collect();
+    let colour = |p: &str| p.len() == 1 && "WUBRGC".contains(p);
+    let left = |p: &str| colour(p) || (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    match parts.as_slice() {
+        [a, b] => left(a) && colour(b),
+        [a, b, c] => left(a) && colour(b) && *c == "P",
+        _ => false,
+    }
+}
+
+/// `is:hybrid` for one card, from the cost [`hybrid_cost_of`] selects.
+fn has_hybrid_cost(card: &Map<String, Value>, faces: Option<&[Value]>) -> bool {
+    hybrid_cost_of(card, faces)
+        .map(|cost| mana_cost_str_to_counts(cost).into_iter().any(|(sym, _)| is_hybrid_symbol(&sym)))
+        .unwrap_or(false)
+}
+
 /// The `layout` values whose printings Scryfall calls EXTRAS and hides from a default
 /// `/cards/search`, plus the two non-layout signals that do the same job.
 ///
@@ -1259,6 +1312,18 @@ impl RowDraft {
             self.card_is_tags.push(EXTRA_IS_TAG.to_owned());
         }
     }
+
+    /// Set or clear `is:hybrid`. Called once per PRINTING from `transform_row`, after the faces
+    /// are merged, because the answer depends on the card's layout and its faces rather than on
+    /// the single merged cost.
+    fn set_hybrid(&mut self, is_hybrid: bool) {
+        let present = self.card_is_tags.iter().any(|t| t == HYBRID_IS_TAG);
+        if is_hybrid && !present {
+            self.card_is_tags.push(HYBRID_IS_TAG.to_owned());
+        } else if !is_hybrid && present {
+            self.card_is_tags.retain(|t| t != HYBRID_IS_TAG);
+        }
+    }
 }
 
 /// The printed full name for the engine's printed-name index, folded exactly like
@@ -1492,6 +1557,9 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         row.printed_name_folded = printed_name_folded(card, &row.card_faces);
         row.flavor_name_folded = row.flavor_name.as_deref().map(|v| fold_accents(&v.to_lowercase()));
         row.is_canonical = is_canonical;
+        // From `card` and its FACES, not from the merged row: the merge keeps the front's
+        // `mana_cost_jsonb`, but a split card's right half is a face and still counts.
+        row.set_hybrid(has_hybrid_cost(card, Some(faces)));
         return Ok(Some(row));
     }
 
@@ -1505,6 +1573,7 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
     row.printed_name_folded = printed_name_folded(card, &row.card_faces);
     row.flavor_name_folded = row.flavor_name.as_deref().map(|v| fold_accents(&v.to_lowercase()));
     row.is_canonical = is_canonical;
+    row.set_hybrid(has_hybrid_cost(card, None));
     Ok(Some(row))
 }
 
