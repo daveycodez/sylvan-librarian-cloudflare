@@ -47,9 +47,9 @@ from cachebox import TTLCache
 from api.card_processing import preprocess_card
 from api.db.bulk_upsert import bulk_upsert as _bulk_upsert
 
-# BOOLEAN_IS_TAGS/ARRAY_IS_TAGS live in db_info because the parser reads them too
+# BOOLEAN_IS_TAGS lives in db_info because the parser reads it too
 # (rewrite.SUPPORTED_IS_VALUES) and cannot import this module.
-from api.parsing.db_info import ARRAY_IS_TAGS, BOOLEAN_IS_TAGS
+from api.parsing.db_info import BOOLEAN_IS_TAGS
 from api.scryfall_bulk_data_fetcher import BulkDataKey, ScryfallBulkDataFetcher
 from api.settings import settings
 from api.tag_import import import_art_tags as _import_art_tags
@@ -94,43 +94,35 @@ IMPORT_LOCK_TIMEOUT = 2
 # total, and it halves the logged parameter too (see log_parameter_max_length in the pg config).
 _UPSERT_PAGE_SIZE = 3_000
 
-# One statement for both managed tables. `bool_map` is BOOLEAN_IS_TAGS ({tag: blob key}), tested
-# with `-> key = 'true'`; `array_map` is ARRAY_IS_TAGS flattened to {tag: [blob key, member]},
-# tested with `-> key ? member` — jsonb's array-containment operator, which is an index-friendly
-# test and the same question `promo_types @> '["boosterfun"]'` asks. The two managed sets are
-# removed together before either is re-added, so a tag MOVING between the tables converges in one
-# import instead of surviving as a stale key.
-_SYNC_IS_TAGS_SQL = """
-WITH bool_map(tag, blob_key) AS (
-    SELECT key, value FROM jsonb_each_text(%(bool_map)s::jsonb)
-),
-array_map(tag, blob_key, member) AS (
-    SELECT key, value ->> 0, value ->> 1 FROM jsonb_each(%(array_map)s::jsonb)
-),
-managed(tag) AS (
-    SELECT tag FROM bool_map UNION SELECT tag FROM array_map
-),
-proposed AS (
+def _build_boolean_is_tags_sql(tags: dict[str, str]) -> str:
+    """Build the one-shot BOOLEAN_IS_TAGS sync statement from `tags`.
+
+    Each `(tag, expr)` pair becomes one row of a VALUES list correlated against the outer
+    `cards` row (`expr` reads `cards.raw_card_blob`), so `expr` may be any boolean SQL
+    expression -- not just "this top-level key is literally true" -- letting one mechanism
+    cover both plain booleans and promo_types/keywords/finishes array membership or
+    nested-object lookups. `tags` is a static, developer-authored module constant, never
+    user input, so embedding its keys and expressions as literal SQL text here (rather than
+    binding them as query parameters, which can't carry per-tag SQL syntax anyway) is safe.
+    """
+    managed = ", ".join(f"'{tag}'" for tag in tags)
+    values = ",\n                        ".join(f"('{tag}', ({expr}))" for tag, expr in tags.items())
+    return f"""
+WITH proposed AS (
     SELECT
         cards.scryfall_id,
-        (cards.card_is_tags - (SELECT array_agg(managed.tag) FROM managed))
+        (cards.card_is_tags - ARRAY[{managed}]::text[])
             || COALESCE(
                    (
-                       SELECT jsonb_object_agg(bool_map.tag, true)
-                       FROM bool_map
-                       WHERE cards.raw_card_blob -> bool_map.blob_key = 'true'::jsonb
+                       SELECT jsonb_object_agg(t.tag, true)
+                       FROM (VALUES
+                        {values}
+                       ) AS t(tag, is_true)
+                       WHERE t.is_true
                    ),
-                   '{}'::jsonb
-               )
-            || COALESCE(
-                   (
-                       SELECT jsonb_object_agg(array_map.tag, true)
-                       FROM array_map
-                       WHERE cards.raw_card_blob -> array_map.blob_key ? array_map.member
-                   ),
-                   '{}'::jsonb
+                   '{{}}'::jsonb
                ) AS proposed_is_tags
-    FROM magic.cards
+    FROM magic.cards cards
 )
 UPDATE magic.cards
 SET card_is_tags = proposed.proposed_is_tags
@@ -140,21 +132,20 @@ WHERE
     cards.card_is_tags IS DISTINCT FROM proposed.proposed_is_tags
 """
 
+
+_SYNC_BOOLEAN_IS_TAGS_SQL = _build_boolean_is_tags_sql(BOOLEAN_IS_TAGS)
+
+# The `is:` values that still need a per-tag Scryfall sweep. Anything derivable from a card's own
+# row belongs in db_info.BOOLEAN_IS_TAGS instead, and must NOT be listed here as well: the sync
+# statement strips every key it manages before re-adding the true ones, so a sweep result under a
+# managed name is wiped on the next import.
 CUSTOM_IS_TAGS = [
     "historic",  # artifact, legendary, saga
-    "pathway",  # land and name contains pathway
     "permanent",  # ...
-    "reprint",
     "spell",  # ...
     "unique",  # has exactly one printing
     "old",  # 93/97 frame
     "new",  # newer frames
-    "foil",  # foil version of a card
-    "nonfoil",  # non-foil version of a card
-    "datestamped",  # can get from the json promo_types array
-    "universesbeyond",  # can get from the json promo_types array
-    # I don't know how to do this, I just don't want to make the normal requests
-    "booster",
     "default",
 ]
 
@@ -628,9 +619,12 @@ class AdminResource:
             )
             db_oracle_ids = {r["oracle_id"] for r in cursor.fetchall()}
 
+        cards_updated = 0
         for cubecobra_page in self._fetch_cubecobra_data(db_oracle_ids):
-            logger.info("Fetched %d oracle_ids from CubeCobra", len(cubecobra_page))
-            cards_updated = self._insert_cubecobra_data(cubecobra_page)
+            num_fetched = len(cubecobra_page)
+            updated_on_page = self._insert_cubecobra_data(cubecobra_page)
+            logger.info("Fetched %d oracle_ids from CubeCobra, updated %d cards", num_fetched, updated_on_page)
+            cards_updated += updated_on_page
         logger.info("CubeCobra ingest complete: %d card rows updated", cards_updated)
 
         backfill_result = self.backfill_cubecobra_scores()
@@ -737,13 +731,12 @@ class AdminResource:
         }
 
     def _sync_boolean_is_tags(self, conn: Connection) -> int:
-        """Sync the blob-backed is: tags (BOOLEAN_IS_TAGS + ARRAY_IS_TAGS) from raw_card_blob.
+        """Sync the row-derived is: tags (BOOLEAN_IS_TAGS) from each card's own columns.
 
-        Rebuilds each card's managed keys as (existing minus managed) plus the keys whose blob
-        boolean is true and the keys whose blob array carries the mapped member, touching only
-        rows whose result actually differs -- so list churn (a card entering or leaving the
-        game-changer roster, a promo type added to a printing) converges on every import, and
-        unrelated card_is_tags entries are never disturbed.
+        Rebuilds each card's managed keys as (existing minus managed) plus the keys whose
+        blob-derived expression is true, touching only rows whose result actually differs
+        -- so list churn (a card entering or leaving the game-changer roster) converges on
+        every import, and unrelated card_is_tags entries are never disturbed.
 
         Args:
         ----
@@ -755,13 +748,7 @@ class AdminResource:
 
         """
         with conn.cursor() as cursor:
-            cursor.execute(
-                _SYNC_IS_TAGS_SQL,
-                {
-                    "bool_map": orjson.dumps(BOOLEAN_IS_TAGS).decode("utf-8"),
-                    "array_map": orjson.dumps(ARRAY_IS_TAGS).decode("utf-8"),
-                },
-            )
+            cursor.execute(_SYNC_BOOLEAN_IS_TAGS_SQL)
             updated_count = cursor.rowcount
         conn.commit()
         if updated_count:

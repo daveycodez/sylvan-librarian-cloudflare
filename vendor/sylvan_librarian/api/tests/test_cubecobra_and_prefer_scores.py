@@ -139,6 +139,44 @@ class TestFetchCubecobraData:
 
 
 # ---------------------------------------------------------------------------
+# ingest_cubecobra
+# ---------------------------------------------------------------------------
+
+
+class TestIngestCubecobra:
+    def _mock_response(self, cards: list[dict]) -> MagicMock:
+        resp = MagicMock()
+        resp.json.return_value = {"data": cards}
+        return resp
+
+    def test_empty_first_page_does_not_raise(self, api_resource: APIResource) -> None:
+        """Regression test for #965: an empty first page must not leave cards_updated unbound."""
+        with patch.object(api_resource.admin, "_session") as mock_session, patch("api.api_resource.time.sleep"):
+            mock_session.get.side_effect = [self._mock_response([])]
+            result = api_resource.admin.ingest_cubecobra()
+
+        assert result["status"] == "success"
+        assert result["cards_updated"] == 0
+
+    def test_sums_cards_updated_across_pages(self, api_resource: APIResource) -> None:
+        """cards_updated must total every page, not just the last one fetched."""
+        oid1 = _insert_card(api_resource, make_raw_card(name=f"Ingest Page A {uuid.uuid4()}"))
+        oid2 = _insert_card(api_resource, make_raw_card(name=f"Ingest Page B {uuid.uuid4()}"))
+        page1 = [{"oracle_id": str(oid1), "elo": 1000, "cubeCount": 5, "pickCount": 10}]
+        page2 = [{"oracle_id": str(oid2), "elo": 900, "cubeCount": 3, "pickCount": 6}]
+
+        with patch.object(api_resource.admin, "_session") as mock_session, patch("api.api_resource.time.sleep"):
+            mock_session.get.side_effect = [
+                self._mock_response(page1),
+                self._mock_response(page2),
+                self._mock_response([]),
+            ]
+            result = api_resource.admin.ingest_cubecobra()
+
+        assert result["cards_updated"] == 2
+
+
+# ---------------------------------------------------------------------------
 # backfill_prefer_scores
 # ---------------------------------------------------------------------------
 

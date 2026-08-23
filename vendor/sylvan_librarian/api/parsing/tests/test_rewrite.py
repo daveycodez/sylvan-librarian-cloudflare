@@ -10,7 +10,7 @@ import pytest
 
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.nodes import RegexValueNode
-from api.parsing.db_info import ARRAY_IS_TAGS, BOOLEAN_IS_TAGS
+from api.parsing.db_info import BOOLEAN_IS_TAGS
 from api.parsing.rewrite import _DERIVED_EXPANSIONS, ENGINE_IS_VALUES, SUPPORTED_IS_VALUES, _regex_plain_literal
 
 # (synonym query, canonical expansion) — the two must produce identical ASTs.
@@ -109,12 +109,12 @@ EQUIVALENCES = [
     # Scryfall's second names for land cycles we already carry, and the ones we did not.
     ("is:karoo", "otag:bounceland"),
     ("is:canland", "otag:cycle-horizon-land"),
-    ("is:bikeland", "otag:cycle-bicycle-land"),
-    ("is:cycleland", "otag:cycle-bicycle-land"),
-    ("is:bicycleland", "otag:cycle-bicycle-land"),
-    ("is:surveilland", "otag:cycle-mkm-surveil-land"),
-    ("is:tricycleland", "otag:cycle-iko-triome or otag:cycle-snc-triland"),
-    ("is:pathway", "t:land name:pathway"),
+    ("is:bikeland", "otag:cycle-dual-cycling-land"),
+    ("is:cycleland", "otag:cycle-dual-cycling-land"),
+    ("is:bicycleland", "otag:cycle-dual-cycling-land"),
+    ("is:surveilland", "otag:cycle-dual-surveil-land"),
+    ("is:tricycleland", "otag:tricycle-land"),
+    ("is:pathway", "otag:cycle-pathway"),
     # Frame effects and layouts that were already expressible and simply had no entry.
     ("is:showcase", "frame:showcase"),
     ("is:extendedart", "frame:extendedart"),
@@ -299,18 +299,19 @@ def test_regex_plain_literal(expected: str | None, pattern: str) -> None:
 # ─── The `is:` vocabulary, and what happens outside it ────────────────────────
 
 
-def test_array_is_tags_name_a_real_blob_array() -> None:
-    """Every ARRAY_IS_TAGS entry points at a bulk array key, not a boolean or a scalar.
+def test_boolean_is_tag_expressions_read_the_row_they_are_correlated_against() -> None:
+    """Every BOOLEAN_IS_TAGS expression names the `cards` alias, and only columns a card row has.
 
-    The mappings were read off Scryfall's own card objects rather than guessed, and the two keys
-    that appear (`promo_types`, `finishes`) are the only arrays this table has any business
-    naming. A third would mean somebody wrote a scalar field here, where the containment test
-    silently answers false for every card — the silent-zero shape this whole table exists to end.
+    Upstream #1000 turned this table from {tag: blob key} into {tag: SQL expression}, which is what
+    lets one mechanism cover plain booleans, array membership and single-field lookups -- but an
+    expression is only correct inside `_build_boolean_is_tags_sql`'s correlated subquery, where the
+    outer row is aliased `cards`. One that forgot the alias would reference nothing and the tag
+    would be silently false for every card: the silent-zero shape this whole table exists to end.
     """
-    assert {key for key, _ in ARRAY_IS_TAGS.values()} == {"promo_types", "finishes"}
-    # ...and no tag is claimed by both tables, which would make the two halves of the sync
-    # statement fight over one key.
-    assert not (frozenset(ARRAY_IS_TAGS) & frozenset(BOOLEAN_IS_TAGS))
+    assert all("cards." in expr for expr in BOOLEAN_IS_TAGS.values())
+    columns = {"cards.raw_card_blob", "cards.mana_cost_text"}
+    for tag, expr in BOOLEAN_IS_TAGS.items():
+        assert any(col in expr for col in columns), (tag, expr)
 
 
 def test_every_stored_is_tag_is_a_supported_value() -> None:
@@ -321,7 +322,6 @@ def test_every_stored_is_tag_is_a_supported_value() -> None:
     grew its own copy again.
     """
     assert frozenset(BOOLEAN_IS_TAGS) <= SUPPORTED_IS_VALUES
-    assert frozenset(ARRAY_IS_TAGS) <= SUPPORTED_IS_VALUES
 
 
 def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
@@ -334,7 +334,6 @@ def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
     """
     assert ENGINE_IS_VALUES <= SUPPORTED_IS_VALUES
     assert not (ENGINE_IS_VALUES & frozenset(BOOLEAN_IS_TAGS))
-    assert not (ENGINE_IS_VALUES & frozenset(ARRAY_IS_TAGS))
     # ...and no rewrite claims them either: an expansion would silently win over the engine leaf.
     assert not (ENGINE_IS_VALUES & {value for alias, value in _DERIVED_EXPANSIONS if alias == "is"})
 

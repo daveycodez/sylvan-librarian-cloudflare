@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from api.parsing.db_info import ARRAY_IS_TAGS, BOOLEAN_IS_TAGS
+from api.parsing.db_info import BOOLEAN_IS_TAGS
 from api.parsing.card_query_nodes import CardAttributeNode
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.nodes import (
@@ -40,19 +40,14 @@ if TYPE_CHECKING:
 #
 # `frame:modern/old/new` are undocumented-but-live Scryfall aliases (the syntax docs list
 # only the numeric frames + frame-effects); mirrored because they see real use. `is:old`
-# and `is:new` ARE documented.
-#
-# `is:new` was `frame:2015` here, on the belief that it was the 2015 frame ONLY and
-# deliberately narrower than `frame:new`. Measured 2026-08-16, that is false in both
-# directions: `is:new -(frame:2003 or frame:2015 or frame:future)` and its converse are BOTH
-# empty on api.scryfall.com, and `frame:new -is:new` is empty too -- `is:new` IS `frame:new`,
-# exactly. The old mapping under-matched by 9,201 cards, every one of them a 2003 frame.
+# and `is:new` ARE documented, and match their `frame:` counterparts exactly (live count
+# 2026-08-22: `is:new` = `frame:new` = 90058, vs `frame:2015` alone at 72564 -- issue #974).
 _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("frame", "modern"): "frame:2003",
     ("frame", "old"): "frame:1993 or frame:1997",
     ("frame", "new"): "frame:2003 or frame:2015 or frame:future",
     ("is", "old"): "frame:1993 or frame:1997",
-    ("is", "new"): "frame:2003 or frame:2015 or frame:future",  # == frame:new, exact both ways
+    ("is", "new"): "frame:2003 or frame:2015 or frame:future",
     # Type / subtype based. `kw:changeling` (an ability keyword, subtype is Shapeshifter) picks up
     # the all-creature-type cards Scryfall counts. Note party IS creature-restricted while outlaw is
     # NOT (it also matches Kindred non-creature cards carrying an outlaw subtype).
@@ -132,14 +127,14 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     # last validated against api.scryfall.com on 2026-08-07.
     ("is", "battleland"): "otag:cycle-tangoland",  # 10
     # The Amonkhet/Hour cycling duals. Scryfall spells them three ways; all three are 10.
-    ("is", "bicycleland"): "otag:cycle-bicycle-land",  # 10, exact
-    ("is", "bikeland"): "otag:cycle-bicycle-land",  # 10, exact
+    ("is", "bicycleland"): "otag:cycle-dual-cycling-land",  # 10, exact
+    ("is", "bikeland"): "otag:cycle-dual-cycling-land",  # 10, exact
     ("is", "bondland"): "otag:cycle-bondland",  # 10
     ("is", "bounceland"): "otag:bounceland",  # 17, exact
     ("is", "canland"): "otag:cycle-horizon-land",  # 6; Scryfall's other spelling of canopyland
     ("is", "canopyland"): "otag:cycle-horizon-land",  # 6, exact
     ("is", "checkland"): "otag:cycle-checkland",  # 10, exact
-    ("is", "cycleland"): "otag:cycle-bicycle-land",  # 10; third spelling of bikeland
+    ("is", "cycleland"): "otag:cycle-dual-cycling-land",  # 10; third spelling of bikeland
     ("is", "creatureland"): "t:land o:become o:creature o:/still a.* land/",
     ("is", "dual"): "otag:cycle-abu-dual-land",  # 10, the ABUR duals, exact
     ("is", "fastland"): "otag:cycle-fastland",  # 10, exact
@@ -148,11 +143,8 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("is", "gainland"): "otag:gainland",  # 42, self-updating superset of Scryfall's 15
     ("is", "karoo"): "otag:bounceland",  # 17; Scryfall's other spelling of bounceland
     ("is", "manland"): "t:land o:become o:creature o:/still a.* land/",
-    # Land, and the name says so -- there is no cycle tag for these, and upstream's own
-    # CUSTOM_IS_TAGS note describes them the same way ("land and name contains pathway").
-    # 10 = 10 against api.scryfall.com.
-    ("is", "pathway"): "t:land name:pathway",
     ("is", "painland"): "otag:cycle-painland",  # 10, exact
+    ("is", "pathway"): "otag:cycle-pathway",  # 10, exact
     ("is", "scryland"): "otag:cycle-block-ths-scry-land",  # 10, exact
     # shadowland/snarl: the reveal-or-tapped lands that reveal a BASIC LAND
     # TYPE card -- the basic-type regex is what separates them from the
@@ -163,20 +155,17 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("is", "shockland"): "otag:shockland",  # 11, includes Multiversal Passage
     ("is", "slowland"): "otag:cycle-slowland",  # 10, exact
     ("is", "snarl"): "t:land o:/reveal an? (Plains|Island|Swamp|Mountain|Forest)/",  # same family; Scryfall accepts both
-    # The MKM cycle, and Scryfall's list is still exactly those 10 -- `cycle-dual-surveil-land`
-    # holds the same set today, and the SOS cycle sits under its own slug that Scryfall has not
-    # adopted, so the MKM slug is the one that tracks their answer rather than drifting past it.
-    ("is", "surveilland"): "otag:cycle-mkm-surveil-land",  # 10, exact
     (
         "is",
         "storageland",
     ): "otag:cycle-fem-storage-land or otag:cycle-mmq-storage-land or otag:cycle-tsp-storage-land",  # 15 vs 12
+    ("is", "surveilland"): "otag:cycle-dual-surveil-land",  # 10, exact
     ("is", "tangoland"): "otag:cycle-tangoland",  # 10; Scryfall accepts both names
+    # Same 10 cards as is:triome below (verified by name) -- another case of Scryfall
+    # accepting two names for one cycle, like tangoland/battleland above.
+    ("is", "tricycleland"): "otag:tricycle-land",  # 10, exact
     ("is", "triland"): "otag:cycle-ala-shardland or otag:cycle-ktk-wedgeland",  # 10, name-verified
     ("is", "triome"): "otag:cycle-iko-triome or otag:cycle-snc-triland",  # 10, name-verified
-    # Scryfall's `is:tricycleland` is the triomes, name for name (the five IKO plus the five
-    # SNC) -- not a third cycling-land cycle, despite the spelling.
-    ("is", "tricycleland"): "otag:cycle-iko-triome or otag:cycle-snc-triland",  # 10, name-verified
     # ── Non-land derivables ──────────────────────────────────────────────
     # Commander eligibility, refined per review: legendary permanents with a
     # printed toughness (creatures, Vehicles, Spacecraft -- toughness>=0, the
@@ -294,10 +283,13 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
         'o:"{w/u/p}" or o:"{w/b/p}" or o:"{u/b/p}" or o:"{u/r/p}" or o:"{b/r/p}" or o:"{b/g/p}" or '
         'o:"{r/g/p}" or o:"{r/w/p}" or o:"{g/w/p}" or o:"{g/u/p}"'
     ),
-    # Spelling aliases of tags the importer stores (db_info.BOOLEAN_IS_TAGS / ARRAY_IS_TAGS).
+    # Spelling aliases of tags the importer stores (db_info.BOOLEAN_IS_TAGS).
     # Aliased rather than stored twice: a second copy of a 3,228-card tag is bytes for nothing.
     ("is", "full"): "is:fullart",
     ("is", "promostamped"): "is:stamped",
+    # The stored tag follows Scryfall's own syntax page (`is:judge_gift`); Scryfall accepts the
+    # short spelling too, so it aliases on rather than storing the same rows twice.
+    ("is", "judge"): "is:judge_gift",
 }
 
 # Scryfall's `has:` family, which asks whether a field is PRESENT rather than what it holds. The
@@ -373,7 +365,6 @@ ENGINE_IS_VALUES: frozenset[str] = frozenset({"localizedname", "unique", "vanill
 # tag added to the importer from being reported unsupported by the parser.
 SUPPORTED_IS_VALUES: frozenset[str] = (
     frozenset(BOOLEAN_IS_TAGS)
-    | frozenset(ARRAY_IS_TAGS)
     | ENGINE_IS_VALUES
     | frozenset(value for alias, value in _DERIVED_EXPANSIONS if alias == "is")
 )
