@@ -1325,8 +1325,25 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: archive shapes and sort keys do not move; stored column values do. Every
  *      affected row therefore needs a re-import, while `ARCHIVE_FORMAT_VERSION` and
  *      `SORT_KEY_VERSION` stay unchanged.
+ *
+ * 40 — THE `is:` TAG VOCABULARY GROWS AGAIN, AND ONE DENSE VALUE'S POPCOUNT WAS OVER-COUNTED.
+ *      Exactly the case generation 21's note said to bump for. The upstream sync to a76f0cb brings
+ *      #1000's eight further stored tags (`arena_league`, `intro_pack`, `judge_gift`,
+ *      `media_insert`, `partner`, `planeswalker_deck`, `player_rewards`, `set_promo`) plus
+ *      `scryfallpreview`, taking the stored vocabulary from 30 entries to 39, and RENAMES `judge`
+ *      to `judge_gift` (Scryfall's own syntax-page spelling; `is:judge` aliases onto it in the
+ *      parser). A rename is a delete and an add as far as an archive is concerned, so a Worker on
+ *      an older store would answer `is:judge_gift` zero with no warning.
+ *
+ *      Riding along: #1003's popcount fix. `DenseBits.count` came from `postings.len()`, which
+ *      over-counts when a row id appears twice in one value's postings; it is now popcounted from
+ *      the scattered bitmap, so the stored count can differ from what the last build wrote.
+ *
+ *      GENERATION-ONLY: `DenseBits` does not change shape and no index type moves, so
+ *      `ARCHIVE_FORMAT_VERSION` and `SORT_KEY_VERSION` stay unchanged — the stored VALUES move,
+ *      which is exactly what this constant covers.
  */
-export const STORE_CONTENT_GENERATION = 39;
+export const STORE_CONTENT_GENERATION = 40;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

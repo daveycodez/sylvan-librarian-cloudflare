@@ -365,140 +365,6 @@ CARD_TYPES = {
     "Tribal",
 }
 
-COLOR_CODE_TO_NAME = {
-    "b": "black",
-    "c": "colorless",
-    "g": "green",
-    "r": "red",
-    "u": "blue",
-    "w": "white",
-}
-
-COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
-
-# Every colour NAME Scryfall's search accepts, as the letter set that name spells.
-#
-# The guild / shard / wedge vocabulary is what players actually type -- `c:azorius` is a normal
-# thing to write and this parser answered it with a parse error -- so the whole table was measured
-# rather than guessed, one request each against api.scryfall.com (`c:<value> e:khm`, 2026-08-16),
-# and every accepted name then checked against its letter spelling over the WHOLE corpus. Kaldheim
-# holds exactly one card of three colours or more, so a set-scoped check would have agreed with
-# almost any mapping; the corpus-wide pairs are the ones that pin it: `c:bant` = `c:gwu` = 153,
-# `c:esper` = `c:wub` = 146, `c:yore-tiller` = `c:wubr` = 62, `c:witch-maw` = `c:gwub` = 63,
-# `c:rainbow` = `c:wubrg` = 60, `c:brown` = `c:c` = 4,300, and so on for all 24 pairs.
-#
-# It is a BOUNDARY rather than a superset. `yore`, `glint`, `dune`, `ink` and `witch` on their own
-# come back "Unknown color ..." -- the un-hyphenated four-colour nicknames are NOT in Scryfall's
-# table, only the hyphenated forms and the five one-word synonyms are -- and so do `five`, `mono`,
-# `guild`, `shard`, `wedge`, `nephilim` and `chromatic`.
-#
-# `all` spells `wubrgc` where `rainbow` spells `wubrg`, and the difference is measured rather than
-# cosmetic: for card_colors and card_color_identity the `c` drops out, so `c:all` = `c:wubrg` = 60,
-# while for produced_mana it does not, so `produces:all` matches nothing (no card produces all six)
-# where `produces:rainbow` = `produces:wubrg` = 13. One table serves all three columns because
-# `get_colors_comparison_object` already draws exactly that line.
-#
-# NOT here: the colour-COUNT names, which spell no letters at all -- see COLOR_COUNT_NAMES below.
-COLOR_ALIAS_TO_CODES = {
-    # the five colours, colourless, and the British and slang spellings of the latter
-    "white": "w",
-    "blue": "u",
-    "black": "b",
-    "red": "r",
-    "green": "g",
-    "colorless": "c",
-    "colourless": "c",
-    "brown": "c",
-    # the ten Ravnica guilds
-    "azorius": "wu",
-    "dimir": "ub",
-    "rakdos": "br",
-    "gruul": "rg",
-    "selesnya": "gw",
-    "orzhov": "wb",
-    "izzet": "ur",
-    "golgari": "bg",
-    "boros": "rw",
-    "simic": "gu",
-    # the five Alara shards
-    "bant": "gwu",
-    "esper": "wub",
-    "grixis": "ubr",
-    "jund": "brg",
-    "naya": "rgw",
-    # the five Khans wedges
-    "abzan": "wbg",
-    "jeskai": "urw",
-    "sultai": "bgu",
-    "mardu": "rwb",
-    "temur": "gur",
-    # the five four-colour names, hyphenated (the Nephilim) and as one word
-    "yore-tiller": "wubr",
-    "glint-eye": "ubrg",
-    "dune-brood": "brgw",
-    "ink-treader": "rgwu",
-    "witch-maw": "gwub",
-    "artifice": "wubr",
-    "chaos": "ubrg",
-    "aggression": "brgw",
-    "altruism": "rgwu",
-    "growth": "gwub",
-    # all five colours, and all six values
-    "rainbow": "wubrg",
-    "all": "wubrgc",
-}
-
-# The colour values that are a COUNT rather than a set of letters.
-#
-# `c:m` is not "the colour m" -- there is no such colour. It is Scryfall's word for MULTICOLOURED,
-# and it compares the NUMBER of colours in the column, which is why it cannot live in
-# COLOR_ALIAS_TO_CODES beside `azorius`: there are no letters to expand. `gold` and the
-# `multicolor` spellings are the same value under other names; every one of the six answers the
-# identical count (`c:m` = `c:gold` = `c:multicolor` = `c:multicolored` = `c:multicolour` =
-# `c:multicoloured` = 44 in Kaldheim, where `c:2` = 43 and `c>=2` = 44).
-#
-# THE OPERATOR TABLE IS MEASURED, and it is not "substitute the number 2". Corpus-wide against
-# api.scryfall.com, 2026-08-16:
-#
-#   c:m = c=m = c>m = c>=m = 4,607 = `c>=2`          (`c=2` is 3,811 and `c>2` is 796)
-#   c<m = c!=m           = 29,049 = `c<2`            (`c!=2` is 29,836)
-#   c<=m                 = 33,599 = EVERY CARD       (`c<=2` is 32,812)
-#
-# `>` is the surprise on the high side -- `c>m` is `c>=2`, not `c>2` -- and `!=` is the surprise on
-# the low side: `c!=m` is `c<2`, the negation of "is multicoloured", NOT `c!=2`, which would also
-# admit the 796 three-and-more-colour cards. `<=` is a tautology rather than `c<=2`, pinned against
-# a second term so it cannot be read as "the whole corpus": `c<=m t:creature` = `t:creature`
-# = `c<=5 t:creature` = 18,753 where `c<=2 t:creature` = 18,140.
-#
-# The identity spellings take the same table on their own column: `id:m` = `id=m` = `id>m` =
-# `id>=m` = 5,831 = `id>=2`, `id<m` = `id!=m` = 27,768 = `id<2` (`id!=2` is 28,824), and
-# `id<=m` = 33,599 = every card (`id<=2` is 32,543).
-#
-# `produces:` takes the same table, but over SIX values rather than five, and that asymmetry is
-# measured rather than tidy: produced_mana is the one colour-ish column whose array can literally
-# contain "C" (Sol Ring produces ["C"] while its colors and color_identity are both []). So
-# `produces=6` = 106 = `produces:all` -- a count no five-key popcount can even reach -- the 481
-# cards that produce colorless and nothing else answer `produces=1` rather than `produces=0`, the
-# three producing exactly {C,W} land in `produces=2` and not `produces=1`, and counts 0..6 partition
-# the corpus exactly (30,996 + 1,143 + 504 + 147 + 10 + 693 + 106 = 33,599). The colour columns must
-# keep counting five: `c:all` = `c:wubrg` = `c=5` = 60, and `c=6` is not a valid query there at all
-# ("Unknown color 6"). Both halves are pinned by tests so the asymmetry is not "fixed" later.
-#
-# `produces:m` = `produces=m` = `produces>m` = `produces>=m` = 1,460 = `produces>=2`
-# (`produces=2` is 504), while `produces<m` = `produces!=m` = 1,143 = `produces=1` -- NOT
-# `produces<2` (32,139), which sweeps in the cards that produce nothing -- and `produces<=m` =
-# 2,603 = `produces>=1` rather than every card.
-COLOR_COUNT_NAMES = frozenset(
-    {
-        "m",
-        "gold",
-        "multicolor",
-        "multicolour",
-        "multicolored",
-        "multicoloured",
-    }
-)
-
 FORMAT_CODE_TO_NAME = {
     "m": "modern",
     "s": "standard",
@@ -509,12 +375,19 @@ FORMAT_CODE_TO_NAME = {
     "h": "historic",
 }
 
-# The `is:` values Scryfall ships as BOOLEANS on every bulk card object, as
-# {card_is_tags key: raw blob key}. `_sync_boolean_is_tags` rebuilds the column from these after
-# each import -- no per-tag API sweep, unlike api_resource.CUSTOM_IS_TAGS, and no accumulation in
-# the import loop -- and `rewrite.SUPPORTED_IS_VALUES` reads the keys so the parser knows which
-# `is:` values have data behind them. Adding a field here is the whole change on both sides; it
-# lives in db_info rather than api_resource because the parser cannot import that module.
+# The `is:` values derivable from a card's own row, as {card_is_tags key: boolean SQL expression}.
+# `_sync_boolean_is_tags` rebuilds the column from these after each import -- no per-tag API sweep,
+# unlike admin_resource.CUSTOM_IS_TAGS, and no accumulation in the import loop -- and
+# `rewrite.SUPPORTED_IS_VALUES` reads the keys so the parser knows which `is:` values have data
+# behind them. Adding a tag here is the whole change on both sides; it lives in db_info rather than
+# admin_resource because the parser cannot import that module.
+#
+# Each expression must reference the row alias `cards` (it runs inside a correlated subquery, not a
+# plain WHERE). Upstream #1000 generalized this from {tag: blob key} to an arbitrary expression,
+# which is what lets one mechanism cover plain top-level booleans, promo_types/keywords/finishes
+# array membership, single-field lookups (set_type, preview.source) and, per #1001,
+# `mana_cost_text` regexes -- the last of which replaces a brittle ~15-term OR rewrite for
+# `is:hybrid`/`is:phyrexian` over an open, growing symbol set.
 #
 # `promo`/`reprint`/`foil` were held back once over their cardinality -- they cover 6,125 / 17,150 /
 # 29,829 cards against `reserved`'s 571 -- so the memory question was asked before landing them and
@@ -522,57 +395,88 @@ FORMAT_CODE_TO_NAME = {
 # archives totalling 363.02 MiB before and 364.17 MiB after. +1.16 MiB, +0.32%, for three of the
 # densest tags in the vocabulary, because a value carried by that share of the corpus stores as a
 # bitmap plane rather than a posting list. `foil` is Scryfall's deprecated top-level boolean, which
-# says the same thing as `finishes` containing "foil"; reading the boolean keeps every entry here on
-# the one shape `_sync_boolean_is_tags` can express in SQL.
+# says the same thing as `finishes` containing "foil".
+#
+# Spelling: the KEY is the word a player types, so it follows Scryfall's own syntax page --
+# `is:judge_gift`, not `is:judgegift` (the concatenated form is the promo_types MEMBER, on the
+# right-hand side). `rewrite.py` carries `is:judge` as an alias onto it, because Scryfall accepts
+# that spelling too.
 BOOLEAN_IS_TAGS: dict[str, str] = {
-    "booster": "booster",
-    "digital": "digital",
-    "foil": "foil",
-    "fullart": "full_art",
-    "gamechanger": "game_changer",
-    "hires": "highres_image",
-    "nonfoil": "nonfoil",
-    "promo": "promo",
-    "reprint": "reprint",
-    "reserved": "reserved",
-    "spotlight": "story_spotlight",
-    "textless": "textless",
-    "variation": "variation",
+    # -- plain top-level booleans on the bulk card object --------------------------------
+    "booster": "cards.raw_card_blob->'booster' = 'true'::jsonb",
+    "digital": "cards.raw_card_blob->'digital' = 'true'::jsonb",
+    "foil": "cards.raw_card_blob->'foil' = 'true'::jsonb",
+    "fullart": "cards.raw_card_blob->'full_art' = 'true'::jsonb",
+    "gamechanger": "cards.raw_card_blob->'game_changer' = 'true'::jsonb",
+    "hires": "cards.raw_card_blob->'highres_image' = 'true'::jsonb",
+    "nonfoil": "cards.raw_card_blob->'nonfoil' = 'true'::jsonb",
+    "oversized": "cards.raw_card_blob->'oversized' = 'true'::jsonb",
+    "promo": "cards.raw_card_blob->'promo' = 'true'::jsonb",
+    "reprint": "cards.raw_card_blob->'reprint' = 'true'::jsonb",
+    "reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb",
+    "spotlight": "cards.raw_card_blob->'story_spotlight' = 'true'::jsonb",
+    "textless": "cards.raw_card_blob->'textless' = 'true'::jsonb",
+    "variation": "cards.raw_card_blob->'variation' = 'true'::jsonb",
+    # -- array membership (promo_types, finishes, keywords) ------------------------------
+    #
+    # Every promo_types mapping was established by READING the cards Scryfall returns rather than
+    # by guessing the spelling: `is:X` was fetched from api.scryfall.com on 2026-08-16 and the
+    # `promo_types` arrays of the results intersected, which is what turns `is:judge_gift` into
+    # `judgegift` and `is:stamped` into `stamped` (its results also all carry `promopack`, which is
+    # the broader tag and not the one asked for). `is:prerelease` and `is:rebalanced` are the same
+    # shape -- both intersections carry a second, broader member (`datestamped`, `alchemy`) that
+    # has its own `is:` value, so the narrower one is the mapping.
+    "arena_league": "cards.raw_card_blob->'promo_types' @> '\"arenaleague\"'",
+    "boosterfun": "cards.raw_card_blob->'promo_types' @> '\"boosterfun\"'",
+    "buyabox": "cards.raw_card_blob->'promo_types' @> '\"buyabox\"'",
+    "convention": "cards.raw_card_blob->'promo_types' @> '\"convention\"'",
+    "datestamped": "cards.raw_card_blob->'promo_types' @> '\"datestamped\"'",
+    "etched": "cards.raw_card_blob->'finishes' @> '\"etched\"'",
+    "fnm": "cards.raw_card_blob->'promo_types' @> '\"fnm\"'",
+    "gameday": "cards.raw_card_blob->'promo_types' @> '\"gameday\"'",
+    "giftbox": "cards.raw_card_blob->'promo_types' @> '\"giftbox\"'",
+    "glossy": "cards.raw_card_blob->'promo_types' @> '\"glossy\"'",
+    "instore": "cards.raw_card_blob->'promo_types' @> '\"instore\"'",
+    "intro_pack": "cards.raw_card_blob->'promo_types' @> '\"intropack\"'",
+    "judge_gift": "cards.raw_card_blob->'promo_types' @> '\"judgegift\"'",
+    "league": "cards.raw_card_blob->'promo_types' @> '\"league\"'",
+    "media_insert": "cards.raw_card_blob->'promo_types' @> '\"mediainsert\"'",
+    # "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
+    # against the corpus), so checking for "Partner" alone already covers both.
+    "partner": "cards.raw_card_blob->'keywords' @> '\"Partner\"'",
+    "planeswalker_deck": "cards.raw_card_blob->'promo_types' @> '\"planeswalkerdeck\"'",
+    "player_rewards": "cards.raw_card_blob->'promo_types' @> '\"playerrewards\"'",
+    "prerelease": "cards.raw_card_blob->'promo_types' @> '\"prerelease\"'",
+    "rebalanced": "cards.raw_card_blob->'promo_types' @> '\"rebalanced\"'",
+    "release": "cards.raw_card_blob->'promo_types' @> '\"release\"'",
+    "set_promo": "cards.raw_card_blob->'promo_types' @> '\"setpromo\"'",
+    "stamped": "cards.raw_card_blob->'promo_types' @> '\"stamped\"'",
+    "universesbeyond": "cards.raw_card_blob->'promo_types' @> '\"universesbeyond\"'",
+    # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
+    "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
+    # -- mana-symbol classes (#1001, corrected by #1011) ---------------------------------
+    #
+    # FOUR hybrid families, not one: the ten `{W/U}` symbols, the twobrid `{2/W}` cycle, the
+    # colourless-hybrid `{C/W}` cycle and Phyrexian-hybrid `{W/U/P}`. `{C/P}` is excluded because
+    # colourless Phyrexian is not hybrid and Scryfall agrees (`is:hybrid o:"{c/p}"` is empty).
+    "hybrid": r"cards.mana_cost_text ~ '\{([0-9]+|[WUBRGC])/[WUBRGC](/P)?\}'",
+    # Phyrexian is ANYWHERE on the card: 36 of the 73 carry the symbol in rules text and nowhere
+    # else, so the cost alone answers 37. `{C/P}` IS in this class -- it exists on cards even
+    # though #909's validator rejects it as a query term, which is the case a stored tag answers
+    # and an `m:` rewrite cannot.
+    "phyrexian": (
+        r"cards.mana_cost_text ~ '\{([WUBRGC]/)?[WUBRGC]/P\}' "
+        r"OR cards.oracle_text ~* '\{([wubrgc]/)?[wubrgc]/p\}'"
+    ),
 }
 
-# The `is:` values Scryfall ships as membership in a bulk ARRAY rather than as a boolean, as
-# `card_is_tags key -> (raw blob array key, member)`. Same contract as BOOLEAN_IS_TAGS in every
-# other respect — `_sync_is_tags` rebuilds both from raw_card_blob in one statement, and the
-# parser reads both keys for `SUPPORTED_IS_VALUES`.
+# NOT STORED, deliberately: `masterpiece`. `st:masterpiece` is the same predicate as upstream's
+# `set_type = 'masterpiece'` expression and is exact (empty set difference on api.scryfall.com,
+# 2026-08-16), so storing it would be a second copy of an answer a rewrite already gives for no
+# archive bytes.
 #
-# Every mapping below was established by READING the cards Scryfall returns rather than by
-# guessing the spelling: `is:X` was fetched from api.scryfall.com on 2026-08-16 and the
-# `promo_types` arrays of the results intersected, which is what turns `is:judge` into
-# `judgegift` and `is:stamped` into `stamped` (its results also all carry `promopack`, which is
-# the broader tag and not the one asked for). `is:prerelease` and `is:rebalanced` are the same
-# shape — both intersections carry a second, broader member (`datestamped`, `alchemy`) that has
-# its own `is:` value, so the narrower one is the mapping.
-#
-# NOT here, deliberately: `is:intro` (set-shaped — the results share set_type box/core, no promo
-# type), `is:masterpiece` (set_type masterpiece), `is:alchemy` (set_type alchemy) and
-# `is:scryfallpreview` (7 cards, no shared promo type). Those want a set-type predicate, not a
-# tag, and are left warning until one exists.
-ARRAY_IS_TAGS: dict[str, tuple[str, str]] = {
-    "boosterfun": ("promo_types", "boosterfun"),
-    "buyabox": ("promo_types", "buyabox"),
-    "convention": ("promo_types", "convention"),
-    "datestamped": ("promo_types", "datestamped"),
-    "etched": ("finishes", "etched"),
-    "fnm": ("promo_types", "fnm"),
-    "gameday": ("promo_types", "gameday"),
-    "giftbox": ("promo_types", "giftbox"),
-    "glossy": ("promo_types", "glossy"),
-    "instore": ("promo_types", "instore"),
-    "judge": ("promo_types", "judgegift"),
-    "league": ("promo_types", "league"),
-    "prerelease": ("promo_types", "prerelease"),
-    "rebalanced": ("promo_types", "rebalanced"),
-    "release": ("promo_types", "release"),
-    "stamped": ("promo_types", "stamped"),
-    "universesbeyond": ("promo_types", "universesbeyond"),
-}
+# `hybrid` and `phyrexian` ARE stored, but not with the regexes #1001 landed: measured against
+# Scryfall on 2026-08-23 (unique=cards, simulated over the cards it returns), `\{[WUBRG]/[WUBRG]\}`
+# answers 569 of `is:hybrid`'s 603 and `\{[WUBRG]/P\}` answers 33 of `is:phyrexian`'s 73. The
+# widened pair above is exact on the single-face corpus and is upstream PR #1011; this tree carries
+# it ahead of the pin, which is why these two entries differ from a76f0cb.

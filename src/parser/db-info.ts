@@ -313,10 +313,15 @@ export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([
  *
  * Every mapping was established by READING the cards Scryfall returns rather than by guessing the
  * spelling: `is:X` was fetched from api.scryfall.com on 2026-08-16 and the `promo_types` arrays of
- * the results intersected. That is what turns `is:judge` into `judgegift`, and what separates
+ * the results intersected. That is what turns `is:judge_gift` into `judgegift`, and what separates
  * `is:stamped` from the broader `promopack` its results also all carry.
+ *
+ * The KEY is the word a player types, which is Scryfall's own syntax-page spelling
+ * (`is:judge_gift`, `is:set_promo`); the concatenated form is the promo_types MEMBER. `rewrite.ts`
+ * carries `is:judge` as an alias onto `judge_gift` rather than storing those rows twice.
  */
 export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new Map([
+	["arena_league", ["promo_types", "arenaleague"]],
 	["boosterfun", ["promo_types", "boosterfun"]],
 	["buyabox", ["promo_types", "buyabox"]],
 	["convention", ["promo_types", "convention"]],
@@ -327,14 +332,35 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["giftbox", ["promo_types", "giftbox"]],
 	["glossy", ["promo_types", "glossy"]],
 	["instore", ["promo_types", "instore"]],
-	["judge", ["promo_types", "judgegift"]],
+	["intro_pack", ["promo_types", "intropack"]],
+	["judge_gift", ["promo_types", "judgegift"]],
 	["league", ["promo_types", "league"]],
+	["media_insert", ["promo_types", "mediainsert"]],
+	// "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified against
+	// the corpus), so checking for "Partner" alone already covers both.
+	["partner", ["keywords", "Partner"]],
+	["planeswalker_deck", ["promo_types", "planeswalkerdeck"]],
+	["player_rewards", ["promo_types", "playerrewards"]],
 	["prerelease", ["promo_types", "prerelease"]],
 	["rebalanced", ["promo_types", "rebalanced"]],
 	["release", ["promo_types", "release"]],
+	["set_promo", ["promo_types", "setpromo"]],
 	["stamped", ["promo_types", "stamped"]],
 	["universesbeyond", ["promo_types", "universesbeyond"]],
 ] as [string, readonly [string, string]][]);
+
+/**
+ * The `is:` values that read a NESTED single field rather than a top-level boolean or an array, as
+ * `card_is_tags key -> [outer blob key, inner key, value]`. Mirrors the builder's `FIELD_IS_TAGS`.
+ *
+ * Upstream expresses the same question as a SQL expression
+ * (`raw_card_blob->'preview'->>'source' = 'Scryfall'`), which neither the Rust builder nor this
+ * table has an equivalent of, so the one shape it actually uses gets its own small table rather
+ * than an expression evaluator.
+ */
+export const FIELD_IS_TAGS: ReadonlyMap<string, readonly [string, string, string]> = new Map([
+	["scryfallpreview", ["preview", "source", "Scryfall"]],
+] as [string, readonly [string, string, string]][]);
 
 export const CARD_SUPERTYPES: ReadonlySet<string> = new Set(["Basic", "Legendary", "Snow", "World"]);
 
@@ -411,6 +437,14 @@ export const COLOR_ALIAS_TO_CODES: ReadonlyMap<string, string> = new Map([
 	["golgari", "bg"],
 	["boros", "rw"],
 	["simic", "gu"],
+	// the five Strixhaven colleges — verified live the same way, corpus-wide: c:lorehold =
+	// c:rw = 682, c:prismari = c:ur = 668, c:quandrix = c:gu = 638, c:silverquill = c:wb = 614,
+	// c:witherbloom = c:bg = 606.
+	["lorehold", "rw"],
+	["prismari", "ur"],
+	["quandrix", "gu"],
+	["silverquill", "wb"],
+	["witherbloom", "bg"],
 	// the five Alara shards
 	["bant", "gwu"],
 	["esper", "wub"],

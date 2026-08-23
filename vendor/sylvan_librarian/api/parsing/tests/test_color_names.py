@@ -12,6 +12,10 @@ The list is a boundary rather than a superset: `yore`, `glint`, `dune`, `ink` an
 their own are rejected by Scryfall, so the un-hyphenated four-colour nicknames are not in its
 table, and neither are `five`, `mono`, `guild`, `shard` or `wedge`.
 
+The five Strixhaven colleges (Lorehold, Prismari, Quandrix, Silverquill, Witherbloom) were added
+later, verified the same way: `c:witherbloom` = `c:bg` = 606 corpus-wide, and so on for all five.
+`college`, `colleges`, and `strixhaven` are rejected by Scryfall, same boundary-not-superset rule.
+
 A second vocabulary lives here too: the colour-COUNT names (`m`, `gold`, `multicolor(ed)`,
 `multicolour(ed)`), which spell no letters at all and compare the NUMBER of colours in the column.
 They are measured the same way and asserted against the numeric comparison each one means -- on
@@ -22,7 +26,7 @@ import pytest
 
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.card_query_nodes import _color_count_masks
-from api.parsing.db_info import COLOR_ALIAS_TO_CODES
+from api.parsing.colors import COLOR_ALIAS_TO_CODES
 from api.parsing.pyparsing_based import parse_search_query
 
 # (name query, the letter query it must mean). Every pair verified live before landing.
@@ -44,6 +48,12 @@ COLOR_NAME_CASES = [
     ("c:golgari", "c:bg"),
     ("c:boros", "c:rw"),
     ("c:simic", "c:gu"),
+    # the five Strixhaven colleges
+    ("c:lorehold", "c:rw"),
+    ("c:prismari", "c:ur"),
+    ("c:quandrix", "c:gu"),
+    ("c:silverquill", "c:wb"),
+    ("c:witherbloom", "c:bg"),
     ("c:bant", "c:gwu"),
     ("c:esper", "c:wub"),
     ("c:grixis", "c:ubr"),
@@ -96,7 +106,7 @@ def test_color_name_matches_letters(query: str, canonical_query: str) -> None:
 # The colour-COUNT names, as the numeric comparison each one means. `m` is not a colour and spells
 # no letters: it is Scryfall's word for MULTICOLOURED and compares the NUMBER of colours in the
 # column, so the operator does not survive verbatim either. Every pair below was measured
-# corpus-wide against api.scryfall.com on 2026-08-16 -- see db_info.COLOR_COUNT_NAMES for the
+# corpus-wide against api.scryfall.com on 2026-08-16 -- see colors.COLOR_COUNT_NAMES for the
 # counts, including the two readings that are NOT "substitute the number 2": `c>m` is `c>=2` rather
 # than `c>2` (4,607 against 796), and `c!=m` is `c<2` rather than `c!=2` (29,049 against 29,836).
 COLOR_COUNT_CASES = [

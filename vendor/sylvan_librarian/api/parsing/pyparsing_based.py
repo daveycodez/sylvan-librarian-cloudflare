@@ -23,9 +23,8 @@ from pyparsing import (
 )
 
 from api.parsing.card_query_nodes import CardAttributeNode, ExactNameNode, to_card_query_ast
+from api.parsing.colors import COLOR_ALIAS_TO_CODES, COLOR_COUNT_NAMES
 from api.parsing.db_info import (
-    COLOR_ALIAS_TO_CODES,
-    COLOR_COUNT_NAMES,
     NUMERIC_CARD_ATTRIBUTES,
     PARSER_CLASS_TO_FIELD_INFOS,
     ParserClass,

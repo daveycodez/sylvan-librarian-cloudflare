@@ -88,9 +88,14 @@ const BOOLEAN_IS_TAGS: &[(&str, &str)] = &[
 ///
 /// Every mapping was established by READING the cards Scryfall returns rather than by guessing
 /// the spelling: `is:X` was fetched from api.scryfall.com on 2026-08-16 and the `promo_types`
-/// arrays of the results intersected. That is what turns `is:judge` into `judgegift`, and what
-/// separates `is:stamped` from the broader `promopack` its results also all carry.
+/// arrays of the results intersected. That is what turns `is:judge_gift` into `judgegift`, and
+/// what separates `is:stamped` from the broader `promopack` its results also all carry.
+///
+/// The KEY is the word a player types, which is Scryfall's own syntax-page spelling
+/// (`is:judge_gift`, `is:set_promo`); the concatenated form is the promo_types MEMBER. The parser
+/// carries `is:judge` as an alias onto `judge_gift` rather than storing those rows twice.
 const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
+    ("arena_league", "promo_types", "arenaleague"),
     ("boosterfun", "promo_types", "boosterfun"),
     ("buyabox", "promo_types", "buyabox"),
     ("convention", "promo_types", "convention"),
@@ -101,14 +106,30 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("giftbox", "promo_types", "giftbox"),
     ("glossy", "promo_types", "glossy"),
     ("instore", "promo_types", "instore"),
-    ("judge", "promo_types", "judgegift"),
+    ("intro_pack", "promo_types", "intropack"),
+    ("judge_gift", "promo_types", "judgegift"),
     ("league", "promo_types", "league"),
+    ("media_insert", "promo_types", "mediainsert"),
+    // "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
+    // against the corpus), so checking for "Partner" alone already covers both.
+    ("partner", "keywords", "Partner"),
+    ("planeswalker_deck", "promo_types", "planeswalkerdeck"),
+    ("player_rewards", "promo_types", "playerrewards"),
     ("prerelease", "promo_types", "prerelease"),
     ("rebalanced", "promo_types", "rebalanced"),
     ("release", "promo_types", "release"),
+    ("set_promo", "promo_types", "setpromo"),
     ("stamped", "promo_types", "stamped"),
     ("universesbeyond", "promo_types", "universesbeyond"),
 ];
+
+/// `is:` values that read a NESTED single field rather than a top-level boolean or an array, as
+/// `(card_is_tags key, outer blob key, inner key, value)`. Mirrors db_info.BOOLEAN_IS_TAGS'
+/// single-field-lookup entries; upstream expresses the same question as a SQL expression
+/// (`raw_card_blob->'preview'->>'source' = 'Scryfall'`), which a Rust builder has no equivalent
+/// of, so the one shape it actually uses gets its own small table instead of an expression
+/// evaluator.
+const FIELD_IS_TAGS: &[(&str, &str, &str, &str)] = &[("scryfallpreview", "preview", "source", "Scryfall")];
 
 /// Scryfall's set_type for products that are collectible objects rather than tournament-legal
 /// printings. Mirrors api/card_processing.py's MEMORABILIA_SET_TYPE.
@@ -1053,6 +1074,14 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
                 .iter()
                 .filter(|(_, blob_key, member)| array_contains(card, blob_key, member))
                 .map(|(tag, _, _)| (*tag).to_owned()),
+        )
+        .chain(
+            FIELD_IS_TAGS
+                .iter()
+                .filter(|(_, outer, inner, want)| {
+                    card.get(*outer).and_then(|v| v.get(*inner)).and_then(Value::as_str) == Some(*want)
+                })
+                .map(|(tag, _, _, _)| (*tag).to_owned()),
         )
         .collect();
 
