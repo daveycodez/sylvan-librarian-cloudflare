@@ -1,9 +1,24 @@
 use memchr::memmem;
 use rkyv::Archived;
 use serde_json::Value;
-use super::regex_compat::{CompiledRegex, QUERY_REGEX_FLAGS};
+use super::regex_compat::{CompiledRegex, QUERY_REGEX_FLAGS, REGEX_COMPILE_ERR_PREFIX};
 use super::{AOracleCard, APrinting, AStrings, ManaCost, str_at, mana_lane, lane_add, lane_get, lanes_ge, LANES8_HI, mana_pip_counts, mana_cmc, mana_bare_generic, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, NO_TYPE_LINE_INDEX, PrintedNameIndex, OracleTextIndex, SortedTrigramIndex, TypeLineIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
+
+/// Compile a query regex for public search.
+///
+/// The engine choice, the ARE-escape translation and the backtrack budget all live in
+/// `regex_compat`; this adds the one thing only the query layer knows — that a pattern the
+/// engine cannot compile is a FATAL query error rather than a decline, so the prefix routes
+/// it away from the SQL retry that every other `build_filter` failure takes.
+pub(crate) fn compile_search_regex(pattern: &str) -> Result<CompiledRegex, String> {
+    CompiledRegex::new(pattern).map_err(|e| format!("{REGEX_COMPILE_ERR_PREFIX}{e}"))
+}
+
+#[cfg(test)]
+pub(crate) fn compile_search_regex_for_test(pattern: &str) -> CompiledRegex {
+    compile_search_regex(pattern).expect("test regex should compile")
+}
 
 // ─── Comparison / arithmetic operators ───────────────────────────────────────
 
@@ -498,10 +513,13 @@ fn card_colors(card: &AOracleCard, f: ColorField) -> u8 {
 // carry neither key. Mana VALUE is card-level for the identical reason — see
 // `num_field_is_face_scoped`.
 
-/// One card's colour comparison against one mask. The single definition the two structures that
-/// decide a colour leaf share: `tri`'s ColorCmp arm below, and `planes::compile_plane`, which
-/// evaluates it at COMPILE time against every possible mask to pick the planes to OR. Stating the
-/// operator once is what makes the plane expression and `tri` unable to disagree about it.
+/// One card's colour comparison against one mask. The single definition the THREE structures that
+/// decide a colour leaf share: `tri`'s ColorCmp arm below; `planes::compile_plane`, which evaluates
+/// it at COMPILE time against every possible mask to pick the planes to OR; and
+/// `exact_result_total`'s color arm, which runs it over every stored combination in the totals
+/// table. Stating the operator once is what makes the plane expression, the totals lookup and `tri`
+/// unable to disagree about it — a query bare enough to reach the totals table still has to agree
+/// with the residual path a compound query would fall back to.
 pub(crate) fn color_cmp(bits: u8, op: CmpOp, mask: u8) -> bool {
     match op {
         // mask == 0 means the query was literally "c"/"colorless" (see
@@ -1204,7 +1222,6 @@ pub(crate) const TEXT_SCAN_NS100: u32 = 2_300;
 ///   left as a known conservative overestimate, not fixed here (would need a
 ///   regex_tier() classification change, not just a constant recalibration).
 pub(crate) const REGEX_MACHINERY_NS100: u32 = 5_000;
-
 /// A pattern that needed the backtracking engine — lookaround or a
 /// backreference (`CompiledRegex::Backtrack`).
 ///
@@ -1310,8 +1327,22 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
 ///   REGEX_MACHINERY_NS100 — everything else: bare literal (measured the
 ///                         same cost as live metacharacters, not the same as
 ///                         TextContains — see REGEX_MACHINERY_NS100's doc)
+///   REGEX_BACKTRACK_NS100 — lookarounds and other fancy-regex backtracking
+///                         features (see bench_regex_backtrack_tier)
 pub(crate) fn regex_tier(pattern: &str) -> u32 {
-    let mut p = pattern.strip_prefix(QUERY_REGEX_FLAGS).unwrap_or(pattern);
+    // Both spellings: this tree compiles under `QUERY_REGEX_FLAGS`, upstream under a bare `(?i)`,
+    // and the shared tier tests pass patterns in either form.
+    let p = pattern
+        .strip_prefix(QUERY_REGEX_FLAGS)
+        .or_else(|| pattern.strip_prefix("(?i)"))
+        .unwrap_or(pattern);
+    // `verify_cost_tier` answers this from the compiled `CompiledRegex::is_backtracking()`, which
+    // is authoritative — it knows which engine actually took the pattern. This arm is for the
+    // callers that hold only the pattern string, and must agree with it.
+    if pattern_requires_backtrack(p) {
+        return REGEX_BACKTRACK_NS100;
+    }
+    let mut p = p;
     let anchored_start = p.starts_with('^');
     if anchored_start {
         p = &p[1..];
@@ -1336,6 +1367,40 @@ pub(crate) fn regex_tier(pattern: &str) -> u32 {
         }
     }
     if anchored_start || anchored_end { SET_LOOKUP_NS100 } else { REGEX_MACHINERY_NS100 }
+}
+
+/// True when *pattern* needs fancy-regex's backtracking VM (lookarounds, etc.).
+pub(crate) fn pattern_requires_backtrack(pattern: &str) -> bool {
+    const LOOKAROUNDS: &[&str] = &["(?=", "(?!", "(?<=", "(?<!"];
+    let bytes = pattern.as_bytes();
+    let mut in_class = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => in_class = true,
+            b']' if in_class => in_class = false,
+            b'(' if !in_class && i + 1 < bytes.len() && bytes[i + 1] == b'?' => {
+                let rest = &pattern[i..];
+                if LOOKAROUNDS.iter().any(|tok| rest.starts_with(tok)) {
+                    return true;
+                }
+                if rest.starts_with("(?>") || rest.starts_with("(?(") {
+                    return true;
+                }
+            }
+            b'\\' if !in_class && i + 1 < bytes.len() => {
+                let nxt = bytes[i + 1];
+                if (b'1'..=b'9').contains(&nxt) || matches!(nxt, b'g' | b'G' | b'k' | b'K') {
+                    return true;
+                }
+                i += 1;
+            }
+            _ if !in_class && pattern[i..].starts_with("(?P=") => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Whether a node can NEVER settle the card-level pass — it compares only
@@ -2345,6 +2410,12 @@ impl FilterExpr {
         residual: &[&FilterExpr],
         residual_is_or: bool,
     ) -> bool {
+        // A query whose regex already blew its backtrack budget has a wrong answer either way;
+        // stop paying for the rest of the walk (`CompiledRegex::is_match` short-circuits per leaf,
+        // this short-circuits the whole residual).
+        if super::regex_compat::regex_match_failed() {
+            return false;
+        }
         if residual_is_or {
             residual.iter().any(|c| c.tri(card, Some(printing), strings) == Tri::True)
         } else {
@@ -3651,7 +3722,7 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
 
     if rhs_node_type == "RegexValueNode" {
         let pattern  = rhs["kwargs"]["value"].as_str().unwrap_or("");
-        let re = CompiledRegex::new(pattern)?;
+        let re = compile_search_regex(pattern)?;
         // Every field the store holds as a string can carry a regex: `~*`
         // applies to all of them on the SQL path, and restricting the engine to
         // the first four only sent the rest to that path as a decline. The

@@ -31,6 +31,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
+from api.parsing.query_budget import MAX_GROUP_DEPTH, QueryBudgetExceeded
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
@@ -417,12 +418,13 @@ def _bare_name_node(value: str) -> CardBinaryOperatorNode:
 class Parser:
     """Recursive descent parser for Scryfall query syntax."""
 
-    __slots__ = ("pos", "tokens")
+    __slots__ = ("group_depth", "pos", "tokens")
 
     def __init__(self, tokens: list[Token]) -> None:
         """Initialise the parser with the token list produced by tokenize()."""
         self.tokens = tokens
         self.pos = 0
+        self.group_depth = 0
 
     # ── token access ─────────────────────────────────────────────────────────
 
@@ -544,13 +546,19 @@ class Parser:
 
     def parse_group(self) -> QueryNode:
         """Parse a parenthesised sub-expression."""
-        self.consume()  # LPAREN
-        if self.peek().type == TT.RPAREN:
-            msg = "Empty parentheses are not allowed"
-            raise ParseError(msg)
-        inner = self.parse_expr()
-        self.expect(TT.RPAREN)
-        return inner
+        if self.group_depth >= MAX_GROUP_DEPTH:
+            raise QueryBudgetExceeded(kind="depth")
+        self.group_depth += 1
+        try:
+            self.consume()  # LPAREN
+            if self.peek().type == TT.RPAREN:
+                msg = "Empty parentheses are not allowed"
+                raise ParseError(msg)
+            inner = self.parse_expr()
+            self.expect(TT.RPAREN)
+            return inner
+        finally:
+            self.group_depth -= 1
 
     def parse_exact_name(self) -> QueryNode:
         """Parse an exact-name expression: !word or !"quoted string"."""
@@ -1010,12 +1018,8 @@ class Parser:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
-def parse_query(src: str | None) -> Query:
-    """Parse a Scryfall query string into a Query AST.
-
-    Drop-in replacement for parse_search_query; handles implicit AND natively
-    without a separate preprocessing pass.
-    """
+def parse_str_to_query(src: str | None) -> Query:
+    """Parse a query string into a Query AST (lex + parse + flatten only)."""
     if not src or not src.strip():
         return Query(TrueNode())
     # Before the lexer, because a curly quote has to BE a quote by the time a term boundary is
@@ -1027,8 +1031,12 @@ def parse_query(src: str | None) -> Query:
     except LexError as exc:
         msg = f'Failed to lex query: "{src}"'
         raise ValueError(msg) from exc
+    except QueryBudgetExceeded:
+        raise
     try:
         result = Parser(tokens).parse()
+    except QueryBudgetExceeded:
+        raise
     except ParseError as exc:
         msg = f'Failed to parse query: "{src}"'
         raise ValueError(msg) from exc

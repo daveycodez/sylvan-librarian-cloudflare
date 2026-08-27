@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { buildImageUrl, createCardHtml, scryfallImageUrl } from "../../src/routes/noscript";
-import { installFakeParser, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, installFakeParser, json, makeCtx, testDispatch } from "./harness";
 
 beforeEach(() => {
 	installFakeParser();
@@ -66,6 +66,28 @@ describe("_root with a search query", () => {
 		expect(html).toContain('<span class="mana-symbol ms ms-g ms-cost"></span>');
 		// Card images link to the card page.
 		expect(html).toContain('<a href="/card/m19/314" class="card-page-link">');
+	});
+
+	// THE EMBEDDED ENVELOPE SITS INSIDE A <script> BLOCK, and an HTML parser scanning for
+	// `</script` does not know it is inside a JSON string literal. A card whose oracle text held
+	// that sequence would close the block early and everything after it would parse as markup — so
+	// every `<` is escaped to `\u003c`, which is the same string to JSON.parse and invisible to the
+	// tokenizer (upstream #1037).
+	test("a '<' in a card field cannot close the embedded script block", async () => {
+		const engine = new FakeEngine();
+		engine.cards = [{ name: "</script><img src=x onerror=alert(1)>", set_code: "m19", collector_number: "1" }];
+		engine.totalCards = 1;
+		const html = await (await testDispatch(makeCtx({ engine }), "/?q=elf")).text();
+
+		const embedded = html.slice(html.indexOf("window.EMBEDDED_SEARCH_RESULTS"));
+		// The payload is one line; the real `</script>` is several lines later. If the card name had
+		// gone in raw, a closing tag would appear on the assignment line itself.
+		const payload = embedded.slice(0, embedded.indexOf("\n"));
+		expect(payload).not.toContain("</script");
+		expect(payload).toContain("\\u003c/script");
+		// And it is still the same JSON: the escape is a JSON escape, not a mangling.
+		const parsed = JSON.parse(payload.slice(payload.indexOf("{"), payload.lastIndexOf("}") + 1));
+		expect(parsed.cards[0].name).toBe("</script><img src=x onerror=alert(1)>");
 	});
 
 	test("bad enum on _root is a binding 400, not a soft failure", async () => {

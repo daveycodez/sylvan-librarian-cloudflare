@@ -6,7 +6,7 @@
 import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
-import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
+import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER, serializeEmbeddedJson } from "./html";
 import { pageCacheHeader, searchPageCacheHeader } from "./http";
 import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
@@ -75,7 +75,7 @@ export async function rootHandler(
 			}
 
 			// Embed the full envelope for JavaScript enhancement.
-			const searchResultsJson = JSON.stringify(searchResults);
+			const searchResultsJson = serializeEmbeddedJson(searchResults);
 			const embeddedData = `// Server-side embedded search results\n      window.EMBEDDED_SEARCH_RESULTS = ${searchResultsJson};\n      `;
 			htmlContent = replaceAllLiteral(htmlContent, "<!-- SERVER_SIDE_EMBEDDED_DATA -->", embeddedData);
 

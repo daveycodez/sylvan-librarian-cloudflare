@@ -119,6 +119,24 @@ function valueToString(value: unknown): string {
 	return typeof value === "string" ? value : String(value);
 }
 
+/**
+ * A colour explanation: the name, then the letters as `{W}`-style bracket tokens
+ * (mirrors card_query_nodes._color_codes_to_explanation, upstream #1051).
+ *
+ * The tokens are there so a reader is not left to remember which colours a name means, and the
+ * frontend turns exactly this fixed A–Z/digit vocabulary into mana-font icons: `showResults()` runs
+ * the whole message through `convertManaSymbols()` AFTER escaping it. That makes this the one place
+ * a server-composed string is allowed to steer frontend rendering, and it is safe only because the
+ * token alphabet is closed — every character in it comes from COLOR_CODE_TO_NAME's keys, never from
+ * the query.
+ */
+function colorCodesToExplanation(codes: readonly string[]): string {
+	const lower = codes.map((c) => String(c).toLowerCase());
+	const names = lower.map((c) => capitalize(COLOR_CODE_TO_NAME[c] ?? c)).join("/");
+	const tokens = lower.map((c) => `{${c.toUpperCase()}}`).join("");
+	return `${names} (${tokens})`;
+}
+
 /** Mirror of CardBinaryOperatorNode._explain_value plus the wire-array shapes. */
 function explainRhs(rhs: unknown, lhs: WireNode | null): string {
 	const attr = lhs && lhs.node_type === "CardAttributeNode" ? attributeName(lhs) : "";
@@ -127,10 +145,11 @@ function explainRhs(rhs: unknown, lhs: WireNode | null): string {
 		// JSONB comparisons ship the rhs as a plain list of normalized entries.
 		if (attr === "card_colors" || attr === "card_color_identity" || attr === "produced_mana") {
 			if (rhs.length === 0) {
-				// Only a "colorless" query produces an empty color object.
-				return "Colorless";
+				// Only a "colorless" query produces an empty color object — and upstream spells its
+				// token out as `{C}` rather than leaving the parentheses empty.
+				return colorCodesToExplanation(["c"]);
 			}
-			return rhs.map((code) => capitalize(COLOR_CODE_TO_NAME[String(code).toLowerCase()] ?? String(code))).join("/");
+			return colorCodesToExplanation(rhs.map(String));
 		}
 		return rhs.map(valueToString).join(", ");
 	}
@@ -157,7 +176,7 @@ function explainRhs(rhs: unknown, lhs: WireNode | null): string {
 			const trimmed = value.trim();
 			if (attr === "card_colors" || attr === "card_color_identity") {
 				if (trimmed.length === 1 && COLOR_CODE_TO_NAME[trimmed.toLowerCase()]) {
-					return capitalize(COLOR_CODE_TO_NAME[trimmed.toLowerCase()] as string);
+					return colorCodesToExplanation([trimmed]);
 				}
 				const maxColors = 5;
 				if (
@@ -165,7 +184,7 @@ function explainRhs(rhs: unknown, lhs: WireNode | null): string {
 					trimmed.length > 0 &&
 					[...trimmed].every((c) => COLOR_CODE_TO_NAME[c.toLowerCase()])
 				) {
-					return [...trimmed.toLowerCase()].map((c) => capitalize(COLOR_CODE_TO_NAME[c] as string)).join("/");
+					return colorCodesToExplanation([...trimmed]);
 				}
 			}
 			return trimmed;

@@ -22,12 +22,16 @@ They are measured the same way and asserted against the numeric comparison each 
 the two colour columns only, because Scryfall counts produced_mana over six values.
 """
 
+from functools import partial
+
 import pytest
 
-from api.parsing import generate_sql_query, parse_scryfall_query
+from api.parsing import generate_sql_query, parse_query, parse_scryfall_query
 from api.parsing.card_query_nodes import _color_count_masks
 from api.parsing.colors import COLOR_ALIAS_TO_CODES
-from api.parsing.pyparsing_based import parse_search_query
+from api.parsing.pyparsing_based import parse_str_to_query as pyparsing_parse_str_to_query
+
+parse_with_pyparsing = partial(parse_query, parser_fn=pyparsing_parse_str_to_query)
 
 # (name query, the letter query it must mean). Every pair verified live before landing.
 COLOR_NAME_CASES = [
@@ -100,7 +104,7 @@ COLOR_NAME_CASES = [
 def test_color_name_matches_letters(query: str, canonical_query: str) -> None:
     """A colour name produces exactly the SQL its letter spelling does, in both parsers."""
     assert generate_sql_query(parse_scryfall_query(query)) == generate_sql_query(parse_scryfall_query(canonical_query))
-    assert generate_sql_query(parse_search_query(query)) == generate_sql_query(parse_search_query(canonical_query))
+    assert generate_sql_query(parse_with_pyparsing(query)) == generate_sql_query(parse_with_pyparsing(canonical_query))
 
 
 # The colour-COUNT names, as the numeric comparison each one means. `m` is not a colour and spells

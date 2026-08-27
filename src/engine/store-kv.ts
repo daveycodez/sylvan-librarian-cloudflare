@@ -1355,8 +1355,22 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *      A Worker on a generation-40 store answers `is:hybrid` ZERO — the tag is simply not in it —
  *      which is exactly the silent-wrong-answer this constant exists to prevent.
+ *
+ *   42 THE `layout` INDEX AND THE COLOUR VALUE-TOTALS ARRIVE, SO THE ARCHIVE'S SHAPE MOVES.
+ *
+ *      The upstream sync to 4983094 brings #1015's `CardIndexes.layout` — a `HybridTagIndex` that
+ *      finally gives `layout:`, and the `is:split`/`is:dfc`/`is:meld`/… family that rewrites to it,
+ *      real candidate narrowing — and #1007's exact per-combination `ValueTotals` for
+ *      `colors`/`color_identity`/`produced_mana`. Both live entirely inside `CardIndexes`, whose
+ *      size the archive header does not record, which is why `ARCHIVE_FORMAT_VERSION` moves to
+ *      2026082601 as well: the header cannot catch either on its own.
+ *
+ *      BUMPED IN PAIR, and this is the case store-age.ts makes it necessary for. That module
+ *      decides whether to rebuild by comparing `content_generation`, not `format_version` — so a
+ *      format bump alone leaves the published store in place, every `/cards/*` read rejects it as
+ *      the wrong format, and the site goes dark rather than stale. Bump both or bump neither.
  */
-export const STORE_CONTENT_GENERATION = 41;
+export const STORE_CONTENT_GENERATION = 42;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

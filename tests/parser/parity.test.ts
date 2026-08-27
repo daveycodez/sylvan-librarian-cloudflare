@@ -24,7 +24,13 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalStringify, ParseError, parseScryfallQuery } from "../../src/parser";
+import {
+	canonicalStringify,
+	InvalidRegexPatternError,
+	ParseError,
+	parseScryfallQuery,
+	QueryBudgetExceeded,
+} from "../../src/parser";
 import { artTagAliases, oracleTagAliases } from "../../src/parser/tag-aliases.gen";
 
 /** The two attributes this port resolves aliases for, and the dump each draws on. */
@@ -158,17 +164,31 @@ for (const file of fixtureFiles) {
 					const tree = parseScryfallQuery(fixture.query);
 					expect(canonicalStringify(tree)).toBe(applyTagAliases(fixture.tree));
 				} else if (fixture.error !== undefined) {
-					// Python surfaces every failure as ValueError; the port surfaces
-					// ParseError with the identical message.
-					expect(fixture.error.type).toBe("ValueError");
 					let thrown: unknown;
 					try {
 						parseScryfallQuery(fixture.query);
 					} catch (exc) {
 						thrown = exc;
 					}
-					expect(thrown).toBeInstanceOf(ParseError);
-					expect((thrown as ParseError).message).toBe(fixture.error.message);
+					if (fixture.error.type === "QueryBudgetExceeded") {
+						// The budget's user-facing message is a fixed constant on both sides — it
+						// deliberately says nothing about WHICH bound was hit — so it compares exactly.
+						expect(thrown).toBeInstanceOf(QueryBudgetExceeded);
+						expect((thrown as Error).message).toBe(fixture.error.message);
+					} else if (fixture.error.type === "InvalidRegexPatternError") {
+						// TYPE ONLY. The reason is quoted from whichever regex parser read the
+						// pattern — CPython's `sre` upstream, V8's `RegExp` here — and the two
+						// describe the same malformed pattern in different words ("missing ),
+						// unterminated subpattern" vs "Unterminated group"). Pinning the sentence
+						// would pin V8's wording, which is not a property of this port.
+						expect(thrown).toBeInstanceOf(InvalidRegexPatternError);
+					} else {
+						// Python surfaces every remaining failure as ValueError; the port surfaces
+						// ParseError with the identical message.
+						expect(fixture.error.type).toBe("ValueError");
+						expect(thrown).toBeInstanceOf(ParseError);
+						expect((thrown as ParseError).message).toBe(fixture.error.message);
+					}
 				} else {
 					throw new Error(`fixture entry for ${JSON.stringify(fixture.query)} has neither tree nor error`);
 				}

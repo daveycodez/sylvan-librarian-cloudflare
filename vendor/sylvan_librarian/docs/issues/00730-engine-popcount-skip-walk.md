@@ -1,8 +1,15 @@
 # Engine: Popcount-Skip Walk for Deep Pagination, Generalized to All Distinct-Ons
 
-Status: todo, filed as [#730](https://github.com/jbylund/sylvan_librarian/issues/730). Deferred
-optimization split out of the #724 printing-space compose work
-([00724](done/00724-engine-printing-existential-planes.md)).
+Status: **prototyped, measured, and a calibrated decision rule found for Card mode — not wired in.**
+Filed as
+[#730](https://github.com/jbylund/sylvan_librarian/issues/730). Deferred optimization split out of
+the #724 printing-space compose work ([00724](done/00724-engine-printing-existential-planes.md)). See
+[local-engine-compose-perm-popcount-skip-prototype.md](local-engine-compose-perm-popcount-skip-prototype.md)
+for the prototypes, correctness tests, and real-corpus crossover measurements this doc's "the idea"
+section asked for, and
+[reference-engine-compose-perm-cards-visited-estimator.md](reference-engine-compose-perm-cards-visited-estimator.md)
+for why the alternative (a better cost-model *estimate* of the forward walk's depth) turned out to be
+the harder path, which is what led back to this doc.
 
 ## Two ways to page a match bitmap
 
@@ -67,7 +74,51 @@ without a bitmap. **2.4–2.9 µs per query against 0.2–0.3 µs to scatter int
 against 5.5 µs when every printing matches — O(k log k) with two dependent random loads per element, against an
 O(k) scatter. Numbers in `card_engine/src/bench_membership_check.rs`. The scatter is the right shape.
 
-## Why deferred
+## Progress: prototyped, measured, not yet worth the deferral reasoning below
+
+A later session, arriving from the cost-model side (trying to *estimate* `walk_grouped_page`'s depth
+accurately enough to price it — see the estimator doc linked above), ended up building exactly what
+this doc proposed instead of a better estimate. `#[cfg(test)]` prototypes for all three distinct-ons
+(`walk_card_page_via_popcount_skip`, `walk_printing_page_via_popcount_skip`,
+`walk_artwork_page_via_popcount_skip`), each verified against `walk_grouped_page` row-for-row across
+360 random-bitmap cases, and measured on real corpus data: a genuine crossover in every mode, old
+cheaper at shallow offsets, the popcount-skip approach 1.2-4x cheaper by offset 8,000-25,000
+(`otag:triggered-ability`, this session's own worked clumped-tag example). Full numbers in
+[local-engine-compose-perm-popcount-skip-prototype.md](local-engine-compose-perm-popcount-skip-prototype.md).
+
+Also prototyped: a v1 decision rule (which strategy to run, decided at acquire time) for the one
+population with a validated depth estimate (`unique=printing`, bare leaf, EDHREC —
+`WalkCheckpoints`), and a follow-on design question — whether the scatter phase can select the page
+directly in one pass instead of a separate skip+re-walk, and if so with what data structure — split
+into [reference-engine-compose-popcount-skip-topk-select.md](reference-engine-compose-popcount-skip-topk-select.md).
+**Answered, negatively**: built and measured both a heap and a specialized batch-prune one-phase
+selector; both lose to the three-phase design in the offset range that matters, because a live
+top-*k* structure's cost grows with `offset + limit` in a way the three-phase design's cheap-count /
+bounded-materialize split avoids. The three-phase design is the one to keep.
+
+None of this is wired into the fastpath yet — see the prototype doc's own open items before the
+reasoning below about whether it's worth building applies.
+
+## The decision rule: answered for Card mode
+
+The open item above — no validated way to decide walk-vs-three-phase outside the narrow
+`unique=printing`/bare-leaf/EDHREC population — now has a real answer for `Mode::Card`, the
+population this doc's own #856/#857 second-consumer angle cares about most.
+`sigma(knob)`, a statistical margin over a closed-form no-clumping model (not `WalkCheckpoints` —
+generic negative-hypergeometric statistics from just offset/limit/matches/n_cards), beats every other
+policy tested through p99 against 2,705 real queries and tracks the theoretical best-possible policy
+almost exactly. Real residual risk stated plainly: it assumes matches are placed independently of
+sort position, which real filter/sort-correlated outliers violate — not yet a problem at this
+corpus's size.
+
+Ships as a concrete, independently-landable 7-step plan (see the sigma doc below); tracked as a
+checklist in this issue's own GitHub description.
+
+A real, unrelated cost-model bug (`PrintingCompose`/`Perm` under-costs the walk ~5.5x at the median)
+was found as a side effect of this measurement and filed separately as #1025, since it doesn't depend
+on any of the above shipping.
+
+## Why deferred (the original reasoning, before the above)
 
 Deep pagination is rare, and unifying the three modes onto one walk was the larger win. This is a
 targeted optimization to build once/if deep-offset compose queries prove hot — measure the offset
@@ -80,6 +131,15 @@ worth serving. Which is currently **unmeasured**: it never appeared in #856's sa
 
 ## Related
 
+- [local-engine-compose-perm-popcount-skip-prototype.md](local-engine-compose-perm-popcount-skip-prototype.md)
+  — the prototypes, correctness tests, and crossover measurements for all three distinct-ons.
+- [reference-engine-compose-popcount-skip-topk-select.md](reference-engine-compose-popcount-skip-topk-select.md)
+  — collapsing the skip+re-walk into the scatter itself, and which structure should hold the page.
+- [reference-engine-compose-perm-cards-visited-estimator.md](reference-engine-compose-perm-cards-visited-estimator.md)
+  — the cost-model-estimation path that turned out to be the harder alternative to this doc's own idea.
+- [local-engine-compose-perm-sigma-decision-rule.md](local-engine-compose-perm-sigma-decision-rule.md)
+  — the sigma decision rule for Card mode, and the 7-step landing plan tracked in this issue.
+- #1025 — the independent cost-model bug found while measuring the decision rule above.
 - [00724](done/00724-engine-printing-existential-planes.md) — the printing-space compose plan whose
   unification this splits off from.
 - `run_query_streamed_popcount` (`card_engine/src/lib.rs`) — the existing card-space popcount-skip walk

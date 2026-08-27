@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import psycopg
 
-from api.admin_resource import AdminResource
+from api.admin_resource import AdminResource, _build_boolean_is_tags_sql
 from api.api_resource import APIResource
 from api.card_processing import preprocess_card
 from api.db.bulk_upsert import bulk_upsert
@@ -65,6 +65,19 @@ class TestUpsertCardsStatus:
 # ---------------------------------------------------------------------------
 # Boolean-backed is: tags (reserved / game_changer)
 # ---------------------------------------------------------------------------
+
+
+class TestBuildBooleanIsTagsSql:
+    """_build_boolean_is_tags_sql always binds chunk scope via query parameters."""
+
+    def test_sql_uses_bound_chunk_parameters(self) -> None:
+        sql = _build_boolean_is_tags_sql({"reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb"})
+        assert "jsonb_build_object" in sql
+        assert "jsonb_strip_nulls" in sql
+        assert "hashtext(cards.scryfall_id::text)" in sql
+        assert "%(num_chunks)s" in sql
+        assert "%(chunk_index)s" in sql
+        assert "jsonb_object_agg" not in sql
 
 
 def _is_tags_for(api_resource: APIResource, scryfall_id: str) -> dict:

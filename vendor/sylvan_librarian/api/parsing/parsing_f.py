@@ -1,16 +1,9 @@
-"""Public entry points for Scryfall query parsing."""
+"""Public entry points for Scryfall query parsing helpers."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from api.parsing.hand_parser import _is_word_cont, fold_typographic_quotes
-from api.parsing.hand_parser import parse_query as _parse_query
-from api.parsing.rewrite import rewrite_query
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, opens_regex
-
-if TYPE_CHECKING:
-    from api.parsing.nodes import Query
 
 
 def _closer_for_partial_span(dangling_escape: bool, closer: str) -> str:
@@ -108,17 +101,3 @@ def balance_partial_query(query: str) -> str:
             open_parens -= 1
 
     return query + span_suffix + ")" * open_parens
-
-
-def parse_scryfall_query(query: str) -> Query:
-    """Parse a Scryfall search query into a card-specific AST.
-
-    Args:
-        query: The search query string to parse.
-
-    Returns:
-        A Scryfall-specific Query AST.
-    """
-    # parse => transform => rest: the whole rewrite pipeline runs on the common AST at this shared
-    # seam, so it applies identically regardless of which parser _parse_query is.
-    return rewrite_query(_parse_query(query))

@@ -32,6 +32,7 @@ import {
 	TrueNode,
 } from "./nodes";
 import { type PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
+import { MAX_GROUP_DEPTH, QueryBudgetExceeded } from "./query-budget";
 import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
 
 /** Python `repr()` of a plain string, for the one message that interpolates `{invalid!r}`. */
@@ -143,6 +144,9 @@ function pad2(v: bigint): string {
 /** Recursive descent parser for Scryfall query syntax. */
 export class Parser {
 	private pos = 0;
+
+	/** Current `(` nesting depth, bounded by MAX_GROUP_DEPTH. Siblings do not accumulate. */
+	private groupDepth = 0;
 
 	constructor(private readonly tokens: Token[]) {}
 
@@ -288,14 +292,33 @@ export class Parser {
 		throw new InternalParseError(`Unexpected ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
 
+	/**
+	 * Parse a parenthesised sub-expression, bounded by MAX_GROUP_DEPTH.
+	 *
+	 * The counter is incremented for the duration of the nested parse and restored in `finally`, so
+	 * SIBLING groups do not accumulate: `(a) (b)` is depth 1 twice, not 2. It is the nesting that
+	 * costs stack, and nesting is what the bound is about.
+	 *
+	 * QueryBudgetExceeded is NOT an InternalParseError, deliberately: `parseQuery`'s catch turns
+	 * those into `Failed to parse query: "…"`, and a budget rejection must keep its own
+	 * non-disclosing message rather than being reported as a syntax error.
+	 */
 	parseGroup(): QueryNode {
-		this.consume(); // LPAREN
-		if (this.peek().type === TT.RPAREN) {
-			throw new InternalParseError("Empty parentheses are not allowed");
+		if (this.groupDepth >= MAX_GROUP_DEPTH) {
+			throw new QueryBudgetExceeded("depth");
 		}
-		const inner = this.parseExpr();
-		this.expect(TT.RPAREN);
-		return inner;
+		this.groupDepth += 1;
+		try {
+			this.consume(); // LPAREN
+			if (this.peek().type === TT.RPAREN) {
+				throw new InternalParseError("Empty parentheses are not allowed");
+			}
+			const inner = this.parseExpr();
+			this.expect(TT.RPAREN);
+			return inner;
+		} finally {
+			this.groupDepth -= 1;
+		}
 	}
 
 	parseExactName(): QueryNode {

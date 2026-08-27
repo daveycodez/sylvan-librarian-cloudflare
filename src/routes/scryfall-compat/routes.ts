@@ -545,6 +545,10 @@ export async function cardsSearchHandler(
 		// note survives exactly the case that needs it.
 		warnings.push(...parsed.warnings);
 	} catch (err) {
+		const budgetMessage = parser.queryBudgetMessage(err);
+		if (budgetMessage !== null) {
+			return scryfallJson(badRequestError(budgetMessage, warnings), pretty, CARDS_CACHE);
+		}
 		if (parser.isParseError(err)) {
 			return scryfallJson(badRequestError(`Failed to parse query: "${q}"`, warnings), pretty, CARDS_CACHE);
 		}
@@ -879,6 +883,10 @@ export async function cardsRandomHandler(
 			loweredRegexTerms = parsed.loweredRegexTerms;
 			expandedDerivedTerms = parsed.expandedDerivedTerms;
 		} catch (err) {
+			const budgetMessage = parser.queryBudgetMessage(err);
+			if (budgetMessage !== null) {
+				return scryfallJson(badRequestError(budgetMessage), pretty, RANDOM_CACHE);
+			}
 			if (parser.isParseError(err)) {
 				return scryfallJson(badRequestError(`Failed to parse query: "${q}"`), pretty, RANDOM_CACHE);
 			}

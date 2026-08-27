@@ -1,7 +1,7 @@
 {
   "repo": "https://github.com/jbylund/sylvan_librarian",
-  "commit": "a76f0cb4bc2d7feabb06d7e8919648a4ca511fa4",
-  "vendored_at": "2026-08-23",
+  "commit": "49830944184512c281500b0ae0144c929f596925",
+  "vendored_at": "2026-08-26",
   "vendor_path": "vendor/sylvan_librarian",
   "notes": "Pinned upstream snapshot. All files under vendor/ derive from this commit; local patches on top are tracked by git history in this repo. Update with scripts/sync-upstream.sh, which three-way-merges upstream changes into the vendored tree and reports files whose TypeScript/Rust ports (see PORTS map in the script) must be re-reviewed. The R2 store snapshot is version-coupled to this commit: the builder and the wasm engine must always come from the same vendored tree."
 }
