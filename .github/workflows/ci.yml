@@ -3,10 +3,20 @@
 #
 # Exists because of 2026-08-23: a branch push republished the shared card index
 # at a generation production could not read, and every /search 500ed for ~2.5
-# hours with nothing watching. Tests here would not have caught that infra
-# mistake (import-store.sh's preview guard now prevents it), but the smoke job
-# turns "production search is broken" from a user report into a red X on the
-# commit that did it.
+# hours with nothing watching. The smoke job turns "production search is broken"
+# from a user report into a red X on the commit that did it.
+#
+# 2026-08-27 was the same outage again, by a different route, and it is why the
+# `js` job's `bun test tests` now carries tests/engine/wasm-blob-freshness.test.ts.
+# The committed wasm engine blob is not rebuilt by anything — not here, not by
+# Workers Builds — so a commit that bumps ARCHIVE_FORMAT_VERSION without running
+# `bun run build` ships an engine that cannot read the store the deploy publishes.
+# That check is PRE-merge, which is the difference that matters: the smoke job can
+# only tell you production is already down.
+#
+# An earlier version of this comment claimed "import-store.sh's preview guard now
+# prevents it". It did not — the guard read WORKERS_CI_BRANCH and failed OPEN when
+# that was unset, which is exactly what happened on 2026-08-27. It fails closed now.
 #
 # NOT run here, deliberately (they stay in `bun run gate`, which is the
 # pre-push bar): the perf ratios (need a built store and stable hardware), the

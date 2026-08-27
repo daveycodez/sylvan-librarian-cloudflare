@@ -123,6 +123,26 @@ fi
 BRANCH="${WORKERS_CI_BRANCH:-}"
 PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-main}"
 
+# INSIDE WORKERS BUILDS, AN UNKNOWN BRANCH IS TREATED AS A PREVIEW, NOT AS PRODUCTION.
+#
+# The guard below used to require `-n "$BRANCH"` before it would refuse anything, which made it
+# FAIL OPEN: if WORKERS_CI_BRANCH were ever missing — a build image change, an older trigger, a
+# manual re-run — every branch silently became "production" and could republish the shared index.
+# On 2026-08-27 the guard printed nothing at all and a branch build ran the full import, which is
+# what that failure looks like from the log.
+#
+# WORKERS_CI is set by Workers Builds and nothing else (ci-postinstall.sh gates on the same
+# variable), so it is the reliable half of the pair: knowing we are in a build is enough to demand
+# a positive match on the branch before touching the shared store. A human running this script
+# locally has neither variable and keeps the old behaviour.
+if [[ "${WORKERS_CI:-}" == "1" && -z "$BRANCH" ]]; then
+    echo "==> Workers Builds did not tell us the branch (WORKERS_CI_BRANCH is unset)."
+    echo "    Treating this as a PREVIEW build, which is the safe direction: the cost of being"
+    echo "    wrong here is a preview without a fresh store, and the cost of the other guess is"
+    echo "    production reading an index this build was not entitled to replace."
+    BRANCH="<unknown>"
+fi
+
 # A preview build NEVER writes the shared card index. The one exception is a
 # namespace nothing has ever been published to (store-age exit 3) — a fresh
 # fork whose default branch is not `main` still has to get a first index, and
@@ -138,7 +158,7 @@ PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-main}"
 # a broken PREVIEW, which is the correct trade: preview versions take no
 # traffic, and the fix ships by merging, not by letting the preview redefine
 # what production reads.
-if [[ -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then
+if [[ -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then  # fail-closed: see the WORKERS_CI block above
     if [[ -n "$STORE_AGE" ]]; then
         echo "==> Preview build on '$BRANCH' (production is '$PRODUCTION_BRANCH') and a store"
         echo "    built $STORE_AGE is already live — leaving the shared card index alone."
