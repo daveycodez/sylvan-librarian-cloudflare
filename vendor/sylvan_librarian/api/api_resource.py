@@ -30,6 +30,12 @@ from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, U
 from api.middlewares.timing import record_span
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import generate_sql_query, parse_scryfall_query
+from api.parsing.query_budget import (
+    QUERY_REGEX_REJECTED_MESSAGE,
+    InvalidRegexPatternError,
+    QueryBudgetExceeded,
+    bounded_query_log_context,
+)
 from api.settings import settings
 from api.utils import db_utils, error_monitoring
 from api.utils.css_utils import build_critical_css
@@ -39,13 +45,15 @@ from api.utils.page_rendering import (
     STATIC_DIR,
     build_base_html,
     build_card_html,
+    serialize_embedded_json,
     serve_static_file,
 )
 from api.utils.param_binding import ParamCoercionError
 from api.utils.routing import build_route_table, build_routes_listing, route
 from api.utils.site_name import hostname_to_site_name
 from api.utils.timer import Timer
-from card_engine import QueryError as _QueryError
+from card_engine import FatalQueryError as _FatalQueryError
+from card_engine import RetryableQueryError as _RetryableQueryError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -107,6 +115,14 @@ INTERNAL_ERROR_DESCRIPTION = "An internal error occurred."
 # search methods keep it optional (per review) and route/internal defaults can
 # never drift apart.
 DEFAULT_OFFSET = 0
+PAGINATION_BASE_TIMESTAMP = 1_409_018_789
+PAGINATION_GROWTH_INTERVAL_SECONDS = 3_155
+
+
+def pagination_ceiling() -> int:
+    """Return the continuously growing pagination ceiling for limit and offset."""
+    return int((time.time() - PAGINATION_BASE_TIMESTAMP) // PAGINATION_GROWTH_INTERVAL_SECONDS)
+
 
 # `order=color`, as SQL. The eleven buckets Scryfall sorts colour into, measured 2026-08-09 over 923
 # cards spanning every colour shape: mono WUBRG, then multicolour by HOW MANY colours (guild pairs
@@ -695,11 +711,15 @@ class APIResource:
             fields: Which fields to return per card (comma-separated in the query string). Defaults
                 to the usual 9 (name, set_code, collector_number, power, toughness, mana_cost,
                 oracle_text, set_name, type_line). See RESULT_FIELD_COLUMNS for the full vocabulary.
-            limit: Maximum number of results to return.
+            limit: Maximum number of results to return. Must be between 0 and the
+                continuously growing pagination ceiling (approximately 10,000 additional
+                results per year). Defaults to 100.
             offset: Number of results to skip before the first returned card, in the
                 same sort order the query uses -- limit/offset together give clients
                 pagination over the full result set (total_cards is always the
-                unpaginated count).
+                unpaginated count). Must be between 0 and the continuously growing
+                pagination ceiling (approximately 10,000 additional results per year).
+                Defaults to 0.
             orderby: Field to sort by.
             shape: Shape of the "cards" list: 'rows' (list of card objects, default) or
                 'columnar' (one list per field, keyed by field name — smaller on the wire).
@@ -727,31 +747,27 @@ class APIResource:
 
     def _validate_offset(self, offset: int) -> int:
         """Validate the offset and return it if valid."""
-        if not isinstance(offset, int) or offset < 0:
+        ceiling = pagination_ceiling()
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or offset > ceiling:
             raise falcon.HTTPBadRequest(
                 title="Invalid Offset",
-                description="Offset must be a non-negative integer.",
+                description=f"Offset must be an integer between 0 and {ceiling}.",
             )
         return offset
 
     def _validate_limit(self, limit: int | None) -> int | None:
         """Validate the limit and return it if valid."""
         if limit is None:
-            pass
-        elif isinstance(limit, int):
-            if limit < 0:
-                raise falcon.HTTPBadRequest(
-                    title="Invalid Limit",
-                    description="Limit must be a positive integer.",
-                )
-        else:
+            return None
+        ceiling = pagination_ceiling()
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0 or limit > ceiling:
             raise falcon.HTTPBadRequest(
                 title="Invalid Limit",
-                description="Limit must be an integer.",
+                description=f"Limit must be an integer between 0 and {ceiling}.",
             )
         return limit
 
-    def _search(  # noqa: PLR0913
+    def _search(  # noqa: PLR0912, PLR0913, PLR0915
         self,
         *,
         direction: SortDirection = SortDirection.ASC,
@@ -789,6 +805,25 @@ class APIResource:
         try:
             with timer("parse"):
                 parsed_query = parse_scryfall_query(query)
+        except QueryBudgetExceeded as err:
+            log_ctx = bounded_query_log_context(query)
+            logger.info(
+                "Query budget exceeded (%s) preview=%r digest=%s",
+                err.kind,
+                log_ctx["query_preview"],
+                log_ctx["query_digest"],
+            )
+            raise falcon.HTTPBadRequest(
+                title="Invalid Search Query",
+                description=err.user_message,
+            ) from err
+        except InvalidRegexPatternError as err:
+            _raise_query_bad_request(
+                exc_name="InvalidRegexPattern",
+                query=query,
+                description=err.user_message_for_query(query),
+                err=err,
+            )
         except ValueError as err:
             _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
 
@@ -842,17 +877,27 @@ class APIResource:
                 # BaseExceptions that must still propagate are the ones that are not failures.
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
-                # _QueryError (raised by card_engine, not this module) means the engine declined to
-                # build the query, not that it broke — _search_engine has already logged it at info.
-                # It reaches here for several different reasons (an unsupported regex feature, an
-                # attribute the engine hasn't wired a filter up for, ...), and the SQL path resolves
-                # all of them correctly on its own. Re-logging it at warning with a stack trace turned
-                # every keystroke inside a character class into an alertable event for a user typo.
-                # Fall through quietly; anything else really is an engine failure and keeps its
-                # traceback. isinstance rather than a dedicated wrapper type: QueryError is already
-                # engine-specific and nothing else in this call chain raises it, so wrapping it added
-                # a type only this handler understood without narrowing what gets caught.
-                declined = isinstance(e, _QueryError)
+                if isinstance(e, _FatalQueryError):
+                    log_ctx = bounded_query_log_context(query)
+                    logger.info(
+                        "Fatal query error from engine (%s) preview=%r digest=%s",
+                        e,
+                        log_ctx["query_preview"],
+                        log_ctx["query_digest"],
+                    )
+                    raise falcon.HTTPBadRequest(
+                        title="Invalid Search Query",
+                        description=QUERY_REGEX_REJECTED_MESSAGE,
+                    ) from e
+                # _RetryableQueryError means the engine declined to build the query, not that it
+                # broke — _search_engine has already logged it at info. It reaches here for
+                # several different reasons (an unsupported regex feature on the linear path, an
+                # attribute the engine hasn't wired a filter up for, ...), and the SQL path
+                # resolves all of them correctly on its own. Re-logging it at warning with a stack
+                # trace turned every keystroke inside a character class into an alertable event for
+                # a user typo. Fall through quietly; anything else really is an engine failure and
+                # keeps its traceback.
+                declined = isinstance(e, _RetryableQueryError)
                 logger.log(
                     logging.INFO if declined else logging.WARNING,
                     "Engine %s %r, falling back to SQL: %s",
@@ -920,8 +965,8 @@ class APIResource:
                     offset=offset,
                     fields=fields,
                 )
-        except _QueryError:
-            logger.info("QueryError caught for query '%s', declining to SQL", query)
+        except _RetryableQueryError:
+            logger.info("RetryableQueryError caught for query '%s', declining to SQL", query)
             raise
         # `cards` is already a plain, freshly-built, unshared list -- card_engine's query()
         # eagerly materializes a PyList before returning, it's never a lazy iterator -- so
@@ -1242,7 +1287,7 @@ class APIResource:
                     )
 
                 # Convert search results to JSON and embed for JavaScript enhancement
-                search_results_json = orjson.dumps(search_results).decode("utf-8")
+                search_results_json = serialize_embedded_json(search_results)
                 embedded_data = f"""// Server-side embedded search results
       window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
       """

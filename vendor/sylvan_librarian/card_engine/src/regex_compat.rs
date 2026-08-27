@@ -21,6 +21,7 @@
 //! keeps every existing optimization — most importantly the #734 trigram
 //! narrowing, whose `regex_syntax::parse` reads the same pattern string.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use regex::Regex;
@@ -31,10 +32,57 @@ use regex::Regex;
 /// only per candidate string. The ceiling matters because a lookaround pattern
 /// has no literal factor for the trigram narrow to read, so it is evaluated
 /// against the whole corpus: the bound is what keeps a pathological pattern
-/// from turning one request into a CPU sink. PostgreSQL's own regex engine
-/// backtracks under a comparable (memory-shaped) ceiling, so this is the same
-/// class of limit the SQL path already imposed, not a new one.
-const BACKTRACK_LIMIT: usize = 1_000_000;
+/// from turning one request into a CPU sink.
+///
+/// 8192 is upstream's calibrated public-search figure (#1047,
+/// docs/issues/security-regex-execution-budget.md), adopted verbatim rather than
+/// kept at the 1,000,000 this file first shipped. Two reasons the number can be
+/// this tight here: upstream compiles EVERY pattern on `fancy_regex` and only
+/// backtracking ones actually spend budget, which is exactly the set that reaches
+/// this arm — so the two trees bound the same patterns — and exhausting it is no
+/// longer a wrong answer but a reported one (see `REGEX_MATCH_FAILED` below).
+const BACKTRACK_LIMIT: usize = 8192;
+
+/// Prefix on a compile error that must surface as an unsupported-regex rejection
+/// rather than an engine decline: the pattern is invalid for the public search
+/// surface, so retrying it on the SQL path would fail the same way.
+pub(crate) const REGEX_COMPILE_ERR_PREFIX: &str = "regex_compile:";
+
+/// Prefix on a runtime match failure — `is_match` exhausting [`BACKTRACK_LIMIT`].
+pub(crate) const REGEX_MATCH_ERR_PREFIX: &str = "regex_match:";
+
+thread_local! {
+    /// Set when an `is_match` on this thread aborted on the backtrack limit.
+    ///
+    /// The flag is what lets `is_match` keep returning a plain `bool` — the shape
+    /// every per-card `Tri` call site wants — while a query that hit the ceiling
+    /// still fails loudly instead of silently under-matching. Once set, every
+    /// later match on the thread short-circuits to `false`: the answer is already
+    /// known to be wrong, so there is nothing to gain by computing more of it.
+    static REGEX_MATCH_FAILED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a match on this thread has already aborted on the backtrack limit.
+pub(crate) fn regex_match_failed() -> bool {
+    REGEX_MATCH_FAILED.with(Cell::get)
+}
+
+/// Reset before bind/evaluate so a prior query on this thread cannot poison the next.
+pub(crate) fn clear_regex_match_failed() {
+    REGEX_MATCH_FAILED.with(|c| c.set(false));
+}
+
+/// Take and clear the failure flag; `Some(message)` when a match aborted at runtime.
+pub(crate) fn take_regex_match_failed() -> Option<String> {
+    REGEX_MATCH_FAILED.with(|c| {
+        if c.get() {
+            c.set(false);
+            Some(format!("{REGEX_MATCH_ERR_PREFIX}regex execution limit exceeded"))
+        } else {
+            None
+        }
+    })
+}
 
 /// A compiled query regex, on whichever engine can express it.
 ///
@@ -90,16 +138,34 @@ impl CompiledRegex {
 
     /// Does this pattern match anywhere in `haystack`?
     ///
-    /// Exceeding `BACKTRACK_LIMIT` reads as "no match". That is a real
-    /// divergence from PostgreSQL, which raises instead — but the alternative
-    /// is threading a fallible result through per-card `Tri` evaluation, and
-    /// the limit is high enough that a pattern reaching it is pathological
-    /// rather than merely complex.
+    /// Exceeding `BACKTRACK_LIMIT` returns `false` AND raises
+    /// [`REGEX_MATCH_FAILED`], which the query entry points read once at the end
+    /// and turn into an unsupported-regex error. That is what this used to get
+    /// wrong: the limit was treated as "no match", a silent divergence from
+    /// PostgreSQL (which raises) justified by not wanting to thread a fallible
+    /// result through per-card `Tri` evaluation. The thread-local is the answer
+    /// to that objection — the signature stays `bool` and the failure still
+    /// escapes.
+    ///
+    /// The `Fast` arm cannot fail: the linear engine has no backtracking to run
+    /// out of, which is the whole reason a pattern stays on it.
     #[inline]
     pub(crate) fn is_match(&self, haystack: &str) -> bool {
         match self {
             CompiledRegex::Fast(re) => re.is_match(haystack),
-            CompiledRegex::Backtrack(re) => re.is_match(haystack).unwrap_or(false),
+            CompiledRegex::Backtrack(re) => {
+                if REGEX_MATCH_FAILED.with(Cell::get) {
+                    return false;
+                }
+                match re.is_match(haystack) {
+                    Ok(m) => m,
+                    Err(fancy_regex::Error::RuntimeError(_)) => {
+                        REGEX_MATCH_FAILED.with(|c| c.set(true));
+                        false
+                    }
+                    Err(_) => false,
+                }
+            }
         }
     }
 

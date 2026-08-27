@@ -75,10 +75,10 @@ describe("explainWireTree", () => {
 		expect(explainWireTree(bin(attr("card_types"), ":", ["Elf"]))).toBe("the type contains Elf");
 	});
 
-	test("colors expand from wire arrays to slash-joined names", () => {
-		expect(explainWireTree(bin(attr("card_colors"), ":", ["W", "U"]))).toBe("the color is White/Blue");
-		expect(explainWireTree(bin(attr("card_color_identity", "id"), "<=", ["G"]))).toBe("color identity ≤ Green");
-		expect(explainWireTree(bin(attr("card_colors"), ":", []))).toBe("the color is Colorless");
+	test("colors expand from wire arrays to slash-joined names plus their mana tokens", () => {
+		expect(explainWireTree(bin(attr("card_colors"), ":", ["W", "U"]))).toBe("the color is White/Blue ({W}{U})");
+		expect(explainWireTree(bin(attr("card_color_identity", "id"), "<=", ["G"]))).toBe("color identity ≤ Green ({G})");
+		expect(explainWireTree(bin(attr("card_colors"), ":", []))).toBe("the color is Colorless ({C})");
 	});
 
 	test("a numeric colour rhs is a COUNT of colors, not a colour", () => {
@@ -117,7 +117,7 @@ describe("explainWireTree", () => {
 				node_type: "OrNode",
 				kwargs: { operands: [{ node_type: "AndNode", kwargs: { operands: [a, b] } }, c] },
 			}),
-		).toBe("((the type contains Elf and the mana value ≤ 2) or the color is Green)");
+		).toBe("((the type contains Elf and the mana value ≤ 2) or the color is Green ({G}))");
 		expect(explainWireTree({ node_type: "NotNode", kwargs: { operand: a } })).toBe("not (the type contains Elf)");
 	});
 
@@ -140,8 +140,8 @@ describe("explainWireTree over the real parser", () => {
 	// (titlecased/folded strings), documented in src/routes/explanation.ts.
 	const cases: [query: string, explanation: string][] = [
 		["t:elf", "the type contains Elf"],
-		["c:wu", "the color is White/Blue"],
-		["id<=g", "color identity ≤ Green"],
+		["c:wu", "the color is White/Blue ({W}{U})"],
+		["id<=g", "color identity ≤ Green ({G})"],
 		["cmc>=3", "the mana value ≥ 3"],
 		["pow>2 tou<5", "the power > 2 and the toughness < 5"],
 		['o:"draw a card"', "the oracle text contains draw a card"],
@@ -149,9 +149,9 @@ describe("explainWireTree over the real parser", () => {
 		["banned:legacy", "it's legal in legacy"],
 		["r:rare", "the rarity contains rare"],
 		["s:neo", "the set contains neo"],
-		["(t:elf cmc<2) or c:g", "((the type contains Elf and the mana value < 2) or the color is Green)"],
+		["(t:elf cmc<2) or c:g", "((the type contains Elf and the mana value < 2) or the color is Green ({G}))"],
 		["-t:creature", "not (the type contains Creature)"],
-		["c:c", "the color is Colorless"],
+		["c:c", "the color is Colorless ({C})"],
 		["year:2020", "release date contains 2020"],
 		["usd>10", "price (USD) > 10"],
 	];

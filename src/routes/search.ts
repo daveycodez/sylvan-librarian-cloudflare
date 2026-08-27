@@ -164,18 +164,40 @@ export class EngineQueryError extends Error {
 	}
 }
 
+/**
+ * The upper bound on `limit` and `offset`, growing continuously with wall-clock time
+ * (upstream #1036: `pagination_ceiling`).
+ *
+ * ~10,000 additional results per year, from a fixed epoch — so the ceiling tracks a corpus that
+ * only ever grows, without anyone having to remember to raise a constant. It bounds a real cost:
+ * `offset` is walked, not seeked, so an unbounded one buys an attacker a full-corpus walk per
+ * request for the price of a query string. The magic numbers are upstream's, kept verbatim so the
+ * two deployments answer the same request the same way on the same day.
+ */
+const PAGINATION_BASE_TIMESTAMP = 1_409_018_789;
+const PAGINATION_GROWTH_INTERVAL_SECONDS = 3_155;
+
+export function paginationCeiling(): number {
+	return Math.floor((Date.now() / 1000 - PAGINATION_BASE_TIMESTAMP) / PAGINATION_GROWTH_INTERVAL_SECONDS);
+}
+
 /** Upstream _validate_limit; the non-int branch is unreachable over HTTP (coercion runs first). */
 export function validateLimit(limit: number | null): number | null {
-	if (limit !== null && limit < 0) {
-		throw new SearchBadRequest("Invalid Limit", "Limit must be a positive integer.");
+	if (limit === null) {
+		return null;
+	}
+	const ceiling = paginationCeiling();
+	if (limit < 0 || limit > ceiling) {
+		throw new SearchBadRequest("Invalid Limit", `Limit must be an integer between 0 and ${ceiling}.`);
 	}
 	return limit;
 }
 
 /** Upstream _validate_offset; like validateLimit, the non-int branch is unreachable over HTTP. */
 export function validateOffset(offset: number): number {
-	if (offset < 0) {
-		throw new SearchBadRequest("Invalid Offset", "Offset must be a non-negative integer.");
+	const ceiling = paginationCeiling();
+	if (offset < 0 || offset > ceiling) {
+		throw new SearchBadRequest("Invalid Offset", `Offset must be an integer between 0 and ${ceiling}.`);
 	}
 	return offset;
 }
@@ -281,6 +303,10 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 			expandedDerivedTerms: parsed.expandedDerivedTerms,
 		};
 	} catch (err) {
+		const budgetMessage = parser.queryBudgetMessage(err);
+		if (budgetMessage !== null) {
+			throw new SearchBadRequest("Invalid Search Query", budgetMessage);
+		}
 		if (parser.isParseError(err)) {
 			throw new SearchBadRequest("Invalid Search Query", `Failed to parse query: "${query}"`);
 		}

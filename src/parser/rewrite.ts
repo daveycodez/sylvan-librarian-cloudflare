@@ -15,9 +15,11 @@ import {
 	type DirectiveFound,
 	DirectiveNode,
 	type ExpandedDerivedTerm,
+	type FilterValue,
 	flattenNestedOperations,
 	type LoweredRegexTerm,
 	NotNode,
+	nodeToJson,
 	OrNode,
 	Query,
 	type QueryNode,
@@ -29,6 +31,7 @@ import {
 } from "./nodes";
 import { parseQuery } from "./parser";
 import { pyLower } from "./pystr";
+import { canonicalStringify } from "./serialize";
 
 // (original alias, lowercased value) -> expansion DSL string. Mirrors
 // rewrite._DERIVED_EXPANSIONS exactly (validated upstream against Scryfall).
@@ -747,6 +750,132 @@ const REWRITE_PASSES: ReadonlyArray<(q: Query) => Query> = [
 	expandDerivedPredicates,
 	lowerLiteralRegexes,
 ];
+
+/**
+ * A hashable key for one operand, order-insensitive within a compound
+ * (mirrors rewrite._operand_dedup_key).
+ *
+ * A compound's key folds its children into a SET, so `AND(cmc<2, c=w)` and `AND(c=w, cmc<2)` are
+ * one operand under a shared OR — which is the case a written-order key would miss and the whole
+ * reason the key is not just the serialized subtree. Leaves fall through to their canonical JSON,
+ * this port's stand-in for upstream's `hash(node)`: structural equality is what both express, and
+ * these nodes have no identity beyond their fields.
+ */
+function operandDedupKey(node: QueryNode): string {
+	if (node instanceof AndNode || node instanceof OrNode) {
+		const inner = node.operands.map(operandDedupKey).sort();
+		// Deduped before joining, so a compound that itself repeats an operand keys the same as one
+		// that does not -- the set, not the multiset, exactly as `frozenset` gives upstream.
+		const unique = [...new Set(inner)];
+		return `${node.nodeType}(${unique.join(",")})`;
+	}
+	if (node instanceof NotNode) {
+		return `NotNode(${operandDedupKey(node.operand)})`;
+	}
+	return `leaf:${canonicalStringify(dedupScrub(nodeToJson(node)) as FilterValue)}`;
+}
+
+/**
+ * Drop `original_attribute` from a wire tree, so the key reads a node's IDENTITY rather than its
+ * spelling.
+ *
+ * Upstream keys leaves on `hash(node)`, and Python's `AttributeNode.__hash__` is
+ * `(class name, attribute_name)` — the alias the user typed is not part of it. So `c=w` and
+ * `color=w` are ONE operand there and must be here: they name the same column with the same
+ * operand, and `cmc<2 c=w cmc<2 color=w` collapses to two leaves in upstream's fixtures. The wire
+ * JSON is the only structural view of a node this port has, and this is the single field in it that
+ * upstream's hash does not read — every other kwarg (`value`, `op`, `lhs`, `rhs`) is in both.
+ *
+ * Which alias SURVIVES is the first one written, because `deduplicateOperandList` keeps the first
+ * occurrence; that matches upstream and is what the fixtures pin.
+ */
+function dedupScrub(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(dedupScrub);
+	}
+	// A PyNumber carries the int/float distinction in a class instance, not in own properties —
+	// rebuilding it as a plain object would erase it. Only plain objects are walked.
+	if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+		const out: Record<string, unknown> = {};
+		for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+			if (key === "original_attribute") continue;
+			out[key] = dedupScrub(inner);
+		}
+		return out;
+	}
+	return value;
+}
+
+/** Drop duplicate operands, keeping the first. Order-insensitive within one compound. */
+function deduplicateOperandList(operands: readonly QueryNode[]): QueryNode[] {
+	const seen = new Set<string>();
+	const unique: QueryNode[] = [];
+	for (const operand of operands) {
+		const key = operandDedupKey(operand);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		unique.push(operand);
+	}
+	return unique;
+}
+
+/** Bottom-up flatten, dedupe, and unwrap singleton And/Or nodes. */
+function normalizeCompoundOperands(node: QueryNode): { node: QueryNode; changed: boolean } {
+	if (node instanceof AndNode || node instanceof OrNode) {
+		const ctor = node instanceof AndNode ? AndNode : OrNode;
+		let changed = false;
+		const operands: QueryNode[] = [];
+		for (const operand of node.operands) {
+			const normalized = normalizeCompoundOperands(operand);
+			changed ||= normalized.changed;
+			// Same-type children merge upward: the pass runs bottom-up, so a child that BECAME this
+			// type during its own normalization is absorbed here rather than needing a second sweep.
+			if (normalized.node instanceof ctor) {
+				operands.push(...(normalized.node as AndNode | OrNode).operands);
+				changed = true;
+			} else {
+				operands.push(normalized.node);
+			}
+		}
+		const deduped = deduplicateOperandList(operands);
+		if (deduped.length !== operands.length) changed = true;
+		if (deduped.length <= 1) {
+			return deduped.length === 1 ? { node: deduped[0] as QueryNode, changed: true } : { node, changed };
+		}
+		if (!changed) return { node, changed: false };
+		return { node: new ctor(deduped), changed: true };
+	}
+	if (node instanceof NotNode) {
+		const normalized = normalizeCompoundOperands(node.operand);
+		return normalized.changed ? { node: new NotNode(normalized.node), changed: true } : { node, changed: false };
+	}
+	return { node, changed: false };
+}
+
+/**
+ * Flatten nested AND/OR chains, drop duplicate operands, unwrap singleton compounds
+ * (port of rewrite.flatten_and_deduplicate_compounds, upstream #1050).
+ *
+ * Runs LATE — after `validateRegexPatterns` — so two identical regex leaves still both count
+ * toward the public leaf limit. Deduping first would let `o:/…/ o:/…/ …` past a budget the
+ * repetition is exactly what the budget is for.
+ *
+ * The out-of-band term lists ride across the fresh Query. Upstream's version drops them, because
+ * `Query.directives` there is written after this pass by a caller that re-reads it; here
+ * `parseScryfallQueryWithDirectives` reads them off the returned object, so losing them would
+ * silently stop applying every in-query `sort:`/`unique:` the moment a query also contained a
+ * duplicate operand.
+ */
+export function flattenAndDeduplicateCompounds(queryIn: Query): Query {
+	const { node: root, changed } = normalizeCompoundOperands(flattenNestedOperations(queryIn.root));
+	if (!changed) return queryIn;
+	const out = new Query(root);
+	out.directives = queryIn.directives;
+	out.warnings = queryIn.warnings;
+	out.loweredRegexTerms = queryIn.loweredRegexTerms;
+	out.expandedDerivedTerms = queryIn.expandedDerivedTerms;
+	return out;
+}
 
 /** Apply every post-parse AST rewrite, in order. The single seam both parsers call. */
 export function rewriteQuery(queryIn: Query): Query {

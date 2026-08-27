@@ -16,7 +16,9 @@ measured rules (api.scryfall.com, 2026-08-08):
 import pytest
 
 from api.parsing import generate_sql_query, parse_scryfall_query
-from api.parsing.pyparsing_based import parse_search_query
+# Upstream #1050 split the front-end parser from the post-parse pipeline; the old
+# `parse_search_query` was the two together, which is what these tests compare against.
+from api.parsing.tests.conftest import parse_with_pyparsing as parse_search_query
 
 # (query with punctuation, equivalent query without it)
 EQUIVALENT_CASES = [

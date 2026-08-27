@@ -47,7 +47,6 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.rewrite import rewrite_query
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -619,19 +618,8 @@ def get_parse_expr() -> ParserElement:  # noqa: PLR0915
     return expr
 
 
-def parse_search_query(query: str | None) -> Query:
-    """Parse a search query string into a Query AST using the pyparsing grammar.
-
-    Args:
-        query: The search query string to parse. Can be None or empty.
-
-    Returns:
-        Query: A Query AST node containing the parsed query structure.
-            For empty queries, returns a default query that is always true.
-
-    Raises:
-        ValueError: If parsing fails due to syntax errors or invalid operators.
-    """
+def parse_str_to_query(query: str | None) -> Query:
+    """Parse a query string into a Query AST (pyparsing front end, no post-parse pipeline)."""
     original_query = query
     if query is None or not query.strip():
         return Query(TrueNode())
@@ -644,11 +632,9 @@ def parse_search_query(query: str | None) -> Query:
 
     try:
         parsed = expr.parse_string(query, parse_all=True)
-        # parse => transform => rest, mirroring parse_scryfall_query so the whole rewrite pipeline
-        # applies identically to both parsers (kept in lockstep by test_parser_parity).
         if parsed:
-            return rewrite_query(to_card_query_ast(flatten_nested_operations(Query(parsed[0]))))
-        return rewrite_query(to_card_query_ast(Query(BinaryOperatorNode("name", ":", ""))))
+            return to_card_query_ast(flatten_nested_operations(Query(parsed[0])))
+        return to_card_query_ast(Query(BinaryOperatorNode("name", ":", "")))
     except (ValueError, TypeError, IndexError) as e:
         msg = "main query parsing"
         raise create_parsing_error(msg, e, query) from e

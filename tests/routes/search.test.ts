@@ -3,6 +3,8 @@
 // engine-error deviation (loud 500 instead of upstream's SQL fallback).
 
 import { beforeEach, describe, expect, test } from "bun:test";
+import { MAX_QUERY_UTF8_BYTES, QUERY_TOO_LONG_MESSAGE } from "../../src/parser";
+import { paginationCeiling } from "../../src/routes/search";
 import { FakeEngine, FakeParseError, installFakeParser, json, makeCtx, testDispatch } from "./harness";
 
 beforeEach(() => {
@@ -61,8 +63,58 @@ describe("search param coercion", () => {
 	test("negative limit is upstream's Invalid Limit 400, with the search cache header", async () => {
 		const res = await testDispatch(makeCtx(), "/search?limit=-1");
 		expect(res.status).toBe(400);
-		expect(await json(res)).toEqual({ title: "Invalid Limit", description: "Limit must be a positive integer." });
+		expect(await json(res)).toEqual({
+			title: "Invalid Limit",
+			description: `Limit must be an integer between 0 and ${paginationCeiling()}.`,
+		});
 		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
+	});
+
+	// The ceiling grows with wall-clock time (upstream #1036), so the test asks the same function
+	// the route does rather than pinning today's number — a literal here would start failing on its
+	// own about 3,155 seconds after it was written.
+	test("a limit past the pagination ceiling is refused, and the ceiling itself is not", async () => {
+		const ceiling = paginationCeiling();
+		expect(ceiling).toBeGreaterThan(0);
+
+		const over = await testDispatch(makeCtx(), `/search?limit=${ceiling + 1}`);
+		expect(over.status).toBe(400);
+		expect((await json(over)).title).toBe("Invalid Limit");
+
+		const at = await testDispatch(makeCtx(), `/search?q=elf&limit=${ceiling}`);
+		expect(at.status).toBe(200);
+	});
+
+	test("an offset past the pagination ceiling is refused", async () => {
+		const res = await testDispatch(makeCtx(), `/search?offset=${paginationCeiling() + 1}`);
+		expect(res.status).toBe(400);
+		expect((await json(res)).title).toBe("Invalid Offset");
+	});
+
+	// A query refused on a public BOUND is a 400 carrying the budget's own message. It must not be
+	// reported as `Failed to parse query: "…"` — the query parsed — and it must not escape to a 500,
+	// which is where these errors landed before the routes learned to recognize them.
+	test("a query over a public budget is a 400 with the budget's own message", async () => {
+		const res = await testDispatch(makeCtx(), "/search?q=BUDGET_FAIL");
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({
+			title: "Invalid Search Query",
+			description: "Search query exceeds the maximum allowed length.",
+		});
+	});
+
+	// The byte budget is refused at DISPATCH, before any handler — so the fake parser is never
+	// consulted and no engine call is made. Both aliases, independently: an oversized `query` that
+	// the request never uses is still refused, which is what keeps it out of a cache key.
+	test.each([["q"], ["query"]])("an over-length %s is refused before the handler runs", async (param) => {
+		const engine = new FakeEngine();
+		const long = "o:aaaaaaaa ".repeat(400);
+		expect(long.length).toBeGreaterThan(MAX_QUERY_UTF8_BYTES);
+
+		const res = await testDispatch(makeCtx({ engine }), `/search?${param}=${encodeURIComponent(long)}`);
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({ title: "Invalid Search Query", description: QUERY_TOO_LONG_MESSAGE });
+		expect(engine.lastSearch).toBeNull();
 	});
 
 	test("unknown string params are dropped as query noise", async () => {

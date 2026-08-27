@@ -92,3 +92,18 @@ export function buildCardHtml(criticalCss: string): string {
 }
 
 export { replaceAllLiteral };
+
+/**
+ * Serialize `data` to JSON safe for inlining inside an HTML `<script>` block
+ * (mirrors api.utils.page_rendering.serialize_embedded_json, upstream #1037).
+ *
+ * Replaces every literal `<` with `\u003c`, so a string containing `</script>` or `<!--` cannot
+ * close the script context early. JSON.stringify does not escape `<` — it is an ordinary character
+ * in a JSON string — but an HTML parser scanning for `</script` does not know it is inside a string
+ * literal, so a card whose oracle text held that sequence would end the block and everything after
+ * it would be parsed as markup. `\u003c` is the same string to a JSON reader and invisible to the
+ * HTML tokenizer, which is why the escape is applied AFTER serialization rather than to the values.
+ */
+export function serializeEmbeddedJson(data: unknown): string {
+	return JSON.stringify(data).replaceAll("<", "\\u003c");
+}

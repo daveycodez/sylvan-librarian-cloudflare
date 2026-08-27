@@ -66,6 +66,11 @@ pub enum EngineErrorKind {
     Query,
     /// `fields` named an unknown field (was card_engine.UnknownFieldError).
     UnknownField,
+    /// A query regex is unsupported, malformed, or exhausted its execution budget
+    /// (was card_engine.UnsupportedRegexError). Distinct from `Query` because it is
+    /// FATAL: it names a defect in the query text itself, so there is no retry —
+    /// unlike an engine decline, which the SQL path may still serve.
+    UnsupportedRegex,
 }
 
 /// Plain error carried by the pure-Rust core paths.
@@ -91,6 +96,10 @@ impl EngineError {
     pub(crate) fn unknown_field(msg: impl Into<String>) -> Self {
         EngineError { kind: EngineErrorKind::UnknownField, msg: msg.into() }
     }
+
+    pub(crate) fn unsupported_regex(msg: impl Into<String>) -> Self {
+        EngineError { kind: EngineErrorKind::UnsupportedRegex, msg: msg.into() }
+    }
 }
 
 impl std::fmt::Display for EngineError {
@@ -112,6 +121,7 @@ impl From<EngineError> for pyo3::PyErr {
             EngineErrorKind::Value => pyo3::exceptions::PyValueError::new_err(e.msg),
             EngineErrorKind::Query => super::QueryError::new_err(e.msg),
             EngineErrorKind::UnknownField => super::UnknownFieldError::new_err(e.msg),
+            EngineErrorKind::UnsupportedRegex => super::UnsupportedRegexError::new_err(e.msg),
         }
     }
 }

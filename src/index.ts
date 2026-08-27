@@ -13,6 +13,7 @@ import { readManifest } from "./engine/store-kv";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
+import { checkSearchParamLengths, QueryBudgetExceeded } from "./parser";
 import { routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
 import { adminUnauthorized, isAdminPath } from "./routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "./routes/http";
@@ -203,6 +204,32 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	const params: Record<string, string> = {};
 	for (const [k, v] of url.searchParams) {
 		if (!DISALLOWED_QUERY_ARGS.has(k)) params[k] = v;
+	}
+
+	// THE QUERY BYTE BUDGET, refused HERE rather than inside the parser (upstream's
+	// SearchBudgetMiddleware, #1041).
+	//
+	// The parser enforces the same bound and would reject the same string a few frames later, so
+	// this is not what makes the limit hold — it is what makes it cheap. An over-budget query never
+	// reaches a handler, a rate-limit decision, a cache key or an engine call, which is the whole
+	// point of a bound whose purpose is to refuse work.
+	//
+	// BOTH ALIASES, independently, exactly as upstream checks them: `q` and `query` are the same
+	// parameter to every route that takes one, and an oversized UNUSED alias must not ride along
+	// into a cache key either. Every route that reads a query reads it under one of those two names,
+	// so this needs no per-route table — a request carrying neither is untouched.
+	try {
+		checkSearchParamLengths(url.searchParams);
+	} catch (err) {
+		if (!(err instanceof QueryBudgetExceeded)) throw err;
+		// The message is a fixed constant that names no bound and echoes no input: a rejection is
+		// exactly when the query is most likely to be hostile, so it is neither quoted back nor
+		// logged in full.
+		return securityHeaders(
+			scryfallSurface
+				? scryfallHttpError("bad_request", 400, err.userMessage)
+				: httpError(400, "Invalid Search Query", err.userMessage),
+		);
 	}
 
 	const requestHost = request.headers.get("X-Proxy-Host") ?? url.host;

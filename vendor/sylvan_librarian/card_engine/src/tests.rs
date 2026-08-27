@@ -1,7 +1,7 @@
 use super::{
     and_child_rank, assign_name_ranks, AStrings, face_mana_cost, face_stat_nums, lane_get, mana_lane, ManaVocabInterner,
     build_numeric_index, build_oracle_text_index, build_trigram_index, build_type_line_index,
-    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
+    build_rarity_index, build_flavor_index, build_hybrid_tag_index, build_layout_hybrid_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, assign_artist_ranks, assign_set_ranks, assign_foreign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
@@ -12,6 +12,7 @@ use super::{
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
+    push_card_matches,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
@@ -1658,6 +1659,7 @@ enum FuzzLeaf {
     Date { op: CmpOp, value: u32 },     // printing-varying (released_at, DateCmp)
     Year { op: CmpOp, year: i32 },      // printing-varying (released_at, YearCmp)
     Border { value: String },           // printing-varying
+    Layout { value: String },           // card-invariant (#1015's narrow_rec arm; see fuzz_leaf_layout)
     Legality { shift: Option<u8>, expected: u64 }, // printing-dependent for divergent cards
     // Arithmetic (NumExpr::Arith), mixing a card-level and a printing-level field — exercises
     // field_num on both operands and PrintingDep propagation through arithmetic. `shape` selects
@@ -1766,6 +1768,15 @@ fn fuzz_leaf_border(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
     // evaluated correctly via the residual path.
     const BORDERS: [&str; 5] = ["black", "white", "borderless", "gold", "yellow"];
     FuzzSpec::Leaf(FuzzLeaf::Border { value: BORDERS[rng.random_range(0..BORDERS.len())].to_string() })
+}
+fn fuzz_leaf_layout(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    // Mostly draws from FUZZ_LAYOUTS (the same values `fuzz_store` assigns cards from), so the leaf
+    // reliably hits both the "normal"-sized dense bucket and the sparser tail values. 10% of the time
+    // an unassigned value, to exercise `len_of` returning `None` (the "no card has this layout" arm).
+    if rng.random_bool(0.1) {
+        return FuzzSpec::Leaf(FuzzLeaf::Layout { value: "unassigned_layout".to_string() });
+    }
+    FuzzSpec::Leaf(FuzzLeaf::Layout { value: FUZZ_LAYOUTS[rng.random_range(0..FUZZ_LAYOUTS.len())].to_string() })
 }
 fn fuzz_leaf_legality(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
     // 10% of the time an absent format (shift: None), which matches nothing.
@@ -2021,7 +2032,7 @@ fn fuzz_leaf_devotion(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
 }
 
 fn fuzz_leaf(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
-    match rng.random_range(0..27u8) {
+    match rng.random_range(0..28u8) {
         0 => fuzz_leaf_color(rng),
         1 => fuzz_leaf_type(rng),
         2 => fuzz_leaf_cmc(rng),
@@ -2048,6 +2059,7 @@ fn fuzz_leaf(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
         23 => fuzz_leaf_name_exact(rng),
         24 => fuzz_leaf_mana_cost(rng),
         25 => fuzz_leaf_devotion(rng),
+        26 => fuzz_leaf_layout(rng),
         _ => fuzz_leaf_arith(rng),
     }
 }
@@ -2164,6 +2176,7 @@ fn fuzz_build_filter(spec: &FuzzSpec) -> FilterExpr {
         },
         FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => FilterExpr::Devotion { op: *op, pips: *pips, hybrid_colors: Vec::new() },
         FuzzSpec::Leaf(FuzzLeaf::Border { value }) => FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: value.clone() },
+        FuzzSpec::Leaf(FuzzLeaf::Layout { value }) => FilterExpr::TextExact { field: TextField::Layout, op: CmpOp::Eq, value: value.clone() },
         FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => FilterExpr::Legality { shift: *shift, expected: *expected },
         FuzzSpec::And(v) => FilterExpr::And(v.iter().map(fuzz_build_filter).collect()),
         FuzzSpec::Or(v) => FilterExpr::Or(v.iter().map(fuzz_build_filter).collect()),
@@ -2251,6 +2264,7 @@ fn fuzz_describe(spec: &FuzzSpec) -> String {
         }
         FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => format!("devotion{}{pips:#014x}", fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::Border { value }) => format!("border=={value}"),
+        FuzzSpec::Leaf(FuzzLeaf::Layout { value }) => format!("layout=={value}"),
         FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => format!("legality(shift={shift:?}, expected={expected:#04b})"),
         FuzzSpec::And(v) => format!("AND({})", v.iter().map(fuzz_describe).collect::<Vec<_>>().join(", ")),
         FuzzSpec::Or(v) => format!("OR({})", v.iter().map(fuzz_describe).collect::<Vec<_>>().join(", ")),
@@ -2557,6 +2571,11 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
     data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
     data.indexes.oracle_tags = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
+    // layout: same load-bearing property, and the one this list was missing -- every card above
+    // already gets a layout via FUZZ_LAYOUTS, but with this unbuilt `layout:`/`is:split`-shaped
+    // predicates narrowed to the empty set (`len_of` returns `None`) instead of matching, disagreeing
+    // with the residual `matches` reference the moment a fuzzed query drew a `FuzzLeaf::Layout` leaf.
+    data.indexes.layout = build_layout_hybrid_index(&data.cards, &data.printings, &data.indexes.printing_to_card, &data.strings);
     data.indexes.art_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
     data.indexes.is_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
     data.indexes.frame_data = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_frame_data);
@@ -3561,6 +3580,25 @@ fn value_totals_are_exact_in_all_three_spaces() {
             value_id: None,
         }));
     }
+    // The five siblings `frame_data` already covered here: each gets an exact total from `HybridTagIndex`
+    // in its OWN space for nothing (card for subtypes/keywords/oracle_tags, printing for art_tags/is_tags)
+    // -- this table's job is the other two, the same gap frame_data closed for its dimension.
+    for (label, field, values) in [
+        ("subtypes", CollField::Subtypes, FUZZ_SUBTYPES.as_slice()),
+        ("keywords", CollField::Keywords, FUZZ_KEYWORDS.as_slice()),
+        ("oracle_tags", CollField::OracleTags, FUZZ_ORACLE_TAGS.as_slice()),
+        ("art_tags", CollField::ArtTags, FUZZ_ART_TAGS.as_slice()),
+        ("is_tags", CollField::IsTags, FUZZ_IS_TAGS.as_slice()),
+    ] {
+        for &(value, _) in values {
+            leaves.push((format!("{label}:{value}"), FilterExpr::CollectionCmp {
+                field,
+                op: CmpOp::Ge,
+                value: value.to_string(),
+                value_id: None,
+            }));
+        }
+    }
     for shift in FUZZ_SHIFTS {
         for expected in 0..4u64 {
             leaves.push((format!("legality shift={shift} status={expected}"), FilterExpr::Legality {
@@ -3843,6 +3881,56 @@ fn the_two_printing_dependence_tables_agree_on_every_text_field() {
     assert!(crate::filter::touches_printing_field(&layout), "layout is a printing-level field");
 }
 
+/// `exact_result_total`'s `ColorCmp` arm (colors/color_identity/produced_mana) must be exact in all
+/// three spaces, for every op against every one of the 32 possible WUBRG masks, against the same
+/// brute-force reference the fuzz differential uses.
+///
+/// This arm is not yet reachable via real routing (`is_printing_composable` has no `ColorCmp` arm,
+/// so `PrintingCompose` never applies to a bare color query), which is exactly why it needs its own
+/// direct sweep rather than relying on the fuzz differential to exercise it incidentally.
+#[test]
+fn value_totals_are_exact_for_color_fields() {
+    // Same rationale as `value_totals_are_exact_in_all_three_spaces`: this only asserts something
+    // when the table is switched on.
+    if !*EXACT_VALUE_TOTALS {
+        return;
+    }
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut nonzero = 0usize;
+    let mut checked = 0usize;
+    for (label, field) in [
+        ("colors", ColorField::Colors),
+        ("color_identity", ColorField::ColorIdentity),
+        ("produced_mana", ColorField::ProducedMana),
+    ] {
+        for op in [CmpOp::Ge, CmpOp::Eq, CmpOp::Le, CmpOp::Lt, CmpOp::Gt, CmpOp::Ne] {
+            for mask in 0u8..32 {
+                let f = FilterExpr::ColorCmp { field, op, mask };
+                for (mode_label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
+                    let got = exact_result_total(&f, &archived.indexes, mode)
+                        .unwrap_or_else(|| panic!("{label} op={op:?} mask={mask} / {mode_label}: the table must answer, not decline"));
+                    assert_eq!(
+                        got,
+                        fuzz_reference_total(archived, &f, mode_label),
+                        "{label} op={op:?} mask={mask} / {mode_label}",
+                    );
+                    nonzero += usize::from(got > 0);
+                    checked += 1;
+                }
+            }
+        }
+    }
+    // Otherwise a table that answered 0 to everything would pass every assertion above.
+    assert!(nonzero > 0, "no color-field case produced a nonzero total; the sweep is not exercising the table");
+    assert_eq!(checked, 3 * 6 * 32 * 3, "field x op x mask x mode combinations swept");
+}
+
 /// `exact_result_total`'s rarity arm must be exact in all three spaces, for every op against every
 /// rarity value, against the same brute-force reference the fuzz differential uses.
 ///
@@ -4046,9 +4134,108 @@ fn routed_agrees_with_gathered_scan_across_page_sizes() {
     }
 }
 
+/// Six parallel count vectors returned by `linear_range_card_counts_reference`.
+struct RangeCardCountsRef {
+    below: Vec<u32>,
+    below_artworks: Vec<u32>,
+    at_or_above: Vec<u32>,
+    at_or_above_artworks: Vec<u32>,
+    at: Vec<u32>,
+    at_artworks: Vec<u32>,
+}
+
+/// O(n) independent reference for `RangeCardCounts`: forward pass for `below`, backward pass for
+/// `at_or_above` and per-block `at`. Same artwork-id derivation as the builder
+/// (`artwork_base[card] + artwork_group_id`).
+fn linear_range_card_counts_reference(
+    idx: &Archived<PrintingValueIndex>,
+    p2c: &Archived<Vec<u32>>,
+    printings: &Archived<Vec<Printing>>,
+    artwork_base: &Archived<Vec<u32>>,
+    n_cards: usize,
+) -> RangeCardCountsRef {
+    let n_values = idx.keys.len();
+    if idx.pids.is_empty() {
+        return RangeCardCountsRef {
+            below: Vec::new(),
+            below_artworks: Vec::new(),
+            at_or_above: Vec::new(),
+            at_or_above_artworks: Vec::new(),
+            at: Vec::new(),
+            at_artworks: Vec::new(),
+        };
+    }
+    let n_artworks = artwork_base.last().map(|b| u32::from(*b)).unwrap_or(0) as usize;
+    let ids = |pid: usize| {
+        let cid = u32::from(p2c[pid]) as usize;
+        let aid = u32::from(artwork_base[cid]) as usize + u16::from(printings[pid].artwork_group_id) as usize;
+        (cid, aid)
+    };
+    let bump = |seen: &mut [u64], n: &mut u32, id: usize| {
+        let (w, bit) = (id >> 6, 1u64 << (id & 63));
+        if seen[w] & bit == 0 {
+            seen[w] |= bit;
+            *n += 1;
+        }
+    };
+
+    let mut below = Vec::with_capacity(n_values);
+    let mut below_artworks = Vec::with_capacity(n_values);
+    let mut seen_c = vec![0u64; n_cards.div_ceil(64)];
+    let mut seen_a = vec![0u64; n_artworks.div_ceil(64)];
+    let (mut nc, mut na) = (0u32, 0u32);
+    for b in 0..n_values {
+        below.push(nc);
+        below_artworks.push(na);
+        for t in idx.run(b) {
+            let (cid, aid) = ids(idx.pid_at(t));
+            bump(&mut seen_c, &mut nc, cid);
+            bump(&mut seen_a, &mut na, aid);
+        }
+    }
+
+    let mut at_or_above = vec![0; n_values];
+    let mut at = vec![0; n_values];
+    let mut at_or_above_artworks = vec![0; n_values];
+    let mut at_artworks = vec![0; n_values];
+    seen_c.fill(0);
+    seen_a.fill(0);
+    nc = 0;
+    na = 0;
+    let mut block_c = vec![0u64; n_cards.div_ceil(64)];
+    let mut block_a = vec![0u64; n_artworks.div_ceil(64)];
+    let (mut touched_c, mut touched_a): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+    for b in (0..n_values).rev() {
+        touched_c.clear();
+        touched_a.clear();
+        for t in idx.run(b) {
+            let (cid, aid) = ids(idx.pid_at(t));
+            bump(&mut seen_c, &mut nc, cid);
+            bump(&mut seen_a, &mut na, aid);
+            for (blk, touched, id) in [(&mut block_c, &mut touched_c, cid), (&mut block_a, &mut touched_a, aid)] {
+                let (w, bit) = (id >> 6, 1u64 << (id & 63));
+                if blk[w] & bit == 0 {
+                    blk[w] |= bit;
+                    touched.push(id);
+                }
+            }
+        }
+        at_or_above[b] = nc;
+        at[b] = touched_c.len() as u32;
+        at_or_above_artworks[b] = na;
+        at_artworks[b] = touched_a.len() as u32;
+        for (blk, touched) in [(&mut block_c, &touched_c), (&mut block_a, &touched_a)] {
+            for &id in touched {
+                blk[id >> 6] &= !(1u64 << (id & 63));
+            }
+        }
+    }
+    RangeCardCountsRef { below, below_artworks, at_or_above, at_or_above_artworks, at, at_artworks }
+}
+
 /// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided
-/// cut and every single value, on all three range indexes, checked against a brute-force distinct
-/// count over the store for cards and for artworks alike.
+/// cut and every single value, on all three range indexes, checked against an independent linear
+/// reference over the store for cards and for artworks alike.
 ///
 /// Exhaustive over the distinct values rather than sampled. There are only a few thousand per
 /// dimension — the same property that makes the table affordable — and this investigation's errors
@@ -4062,6 +4249,7 @@ fn range_card_counts_are_exact() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let indexes = &archived.indexes;
     let p2c = &indexes.printing_to_card;
+    let n_cards = archived.cards.len();
 
     for (name, idx, counts) in [
         ("released_at", &indexes.released_at, &indexes.released_at_cards),
@@ -4078,28 +4266,14 @@ fn range_card_counts_are_exact() {
         assert_eq!(counts.values.len(), counts.at_or_above_artworks.len(), "{name}: parallel vectors");
         assert_eq!(counts.values.len(), counts.at_artworks.len(), "{name}: parallel vectors");
 
-        // Brute force: distinct cards, and distinct artworks, among printings whose value satisfies
-        // the predicate. The artwork id is global -- `artwork_base[card] + artwork_group_id` -- so a
-        // group id colliding across two cards must not merge them, which is why the base is added.
-        let distinct = |keep: &dyn Fn(u32) -> bool| -> (u32, u32) {
-            let (mut cards, mut arts) = (std::collections::HashSet::new(), std::collections::HashSet::new());
-            for (i, key) in idx.keys.iter().enumerate() {
-                if !keep(u32::from(*key)) {
-                    continue;
-                }
-                for t in idx.run(i) {
-                    let pid = idx.pid_at(t);
-                    let cid = u32::from(p2c[pid]);
-                    cards.insert(cid);
-                    arts.insert(u32::from(archived.indexes.artwork_base[cid as usize]) + u32::from(u16::from(archived.printings[pid].artwork_group_id)));
-                }
-            }
-            (cards.len() as u32, arts.len() as u32)
-        };
+        let reference =
+            linear_range_card_counts_reference(idx, p2c, &archived.printings, &indexes.artwork_base, n_cards);
 
         for (i, value) in counts.values.iter().enumerate() {
             let v = u32::from(*value);
-            let (lt, ge, eq) = (distinct(&|x| x < v), distinct(&|x| x >= v), distinct(&|x| x == v));
+            let lt = (reference.below[i], reference.below_artworks[i]);
+            let ge = (reference.at_or_above[i], reference.at_or_above_artworks[i]);
+            let eq = (reference.at[i], reference.at_artworks[i]);
             assert_eq!((u32::from(counts.below[i]), u32::from(counts.below_artworks[i])), lt, "{name}: below[{i}] at {v}");
             assert_eq!(
                 (u32::from(counts.at_or_above[i]), u32::from(counts.at_or_above_artworks[i])),
@@ -5485,7 +5659,7 @@ fn plan_cost_model_matches_gold() {
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
                 // Tier reflects the residual AFTER memoize (what the walk pays).
                 let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
-                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, n_cards);
                 let feats = PlanFeatures {
                     n_cards, n_printings,
                     matches: total as u32,
@@ -5499,6 +5673,7 @@ fn plan_cost_model_matches_gold() {
                     offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
                 };
@@ -5731,7 +5906,7 @@ fn plan_cost_refit() {
                 );
                 let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref());
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
-                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, n_cards);
                 let feats = PlanFeatures {
                     n_cards, n_printings, matches: total as u32, eval_domain,
                     scan_units: su,
@@ -5741,6 +5916,7 @@ fn plan_cost_refit() {
                     limit: limit as u32, offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
                 };
@@ -5936,7 +6112,7 @@ fn printing_range_route_probe() {
             let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Printing), &mut res, pe.as_ref());
             let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
             let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
-            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, eval_domain);
+            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, n_cards);
             let feats = PlanFeatures {
                 n_cards, n_printings, matches: total as u32, eval_domain,
                 scan_units: su,
@@ -5946,6 +6122,7 @@ fn printing_range_route_probe() {
                 limit: LIMIT as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
             };
@@ -6309,6 +6486,7 @@ fn plan_regret_report() {
                 offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
             };
@@ -6439,6 +6617,7 @@ fn plan_regret_fuzz() {
                 limit: limit as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
             };
@@ -6762,6 +6941,7 @@ fn bench_checked_vs_unchecked_access() {
         subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
         keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
         oracle_tags:    build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
+        layout:         build_layout_hybrid_index(&cards, &printings, &build_printing_to_card(&offsets), &strings),
         art_tags:       build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
         is_tags:        build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
         frame_data:     HybridTagIndex::default(),
@@ -7133,7 +7313,7 @@ fn flavor_match_bind_eval_and_narrow() {
     }
     let mut rx = FilterExpr::TextRegex {
         field: super::TextField::FlavorTextLower,
-        regex: super::regex_compat::CompiledRegex::new("qu.et").unwrap(),
+        regex: crate::filter::compile_search_regex_for_test("qu.et"),
     };
     bound(&mut rx);
     assert!(rx.matches(card0, &archived.printings[1], &archived.strings));
@@ -7479,6 +7659,69 @@ fn hybrid_tag_index_splits_dense_from_sparse_at_the_size_crossover() {
     }
 }
 
+// `stub_card`/`store_of` (and any fuzz or bench fixture built from them without overwriting
+// `Printing::card_layout_id`) leaves the field at `NONE_STR`, same as a real printing would only if
+// `layout:` import ever used `intern_opt`. `build_layout_hybrid_index` must skip those printings
+// rather than indexing `strings[NONE_STR as usize]`, which panics -- this previously crashed
+// `bench_checked_vs_unchecked_access` before it could measure anything.
+//
+// PRINTING space, not the card space upstream's version of this test asserts over: layout is a
+// printing field in this tree, so the empty case is a printing with no layout.
+#[test]
+fn layout_hybrid_index_skips_printings_with_no_layout() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let split_id = interner.intern("split".to_string());
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[2], vocab);
+    data.printings[1].card_layout_id = split_id;
+
+    let idx = build_layout_hybrid_index(
+        &data.cards,
+        &data.printings,
+        &build_printing_to_card(&data.offsets),
+        &interner.strings,
+    );
+    let split_count = idx.dense.get("split").map(|b| b.count as usize).or_else(|| idx.sparse.get("split").map(|v| v.len()));
+    assert_eq!(split_count, Some(1), "the printing with a layout is indexed");
+    assert_eq!(idx.dense.len() + idx.sparse.len(), 1, "the NONE_STR printing contributes no bucket");
+}
+
+/// The face-layout UNION, which is the half of `layout:` a card-space index cannot express: a
+/// printing whose faces declare their own layout answers `layout:` with BOTH values.
+///
+/// This is the 77-row difference between Scryfall's `layout:normal` (106,635) and the printings
+/// whose own layout is `normal` (106,558), reduced to one row. Narrowing that posted only the
+/// printing's own layout would drop those rows from the candidate set, where no downstream
+/// verification can put them back.
+#[test]
+fn layout_hybrid_index_posts_the_face_layout_too() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let reversible = interner.intern("reversible_card".to_string());
+    let normal = interner.intern("normal".to_string());
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[1], vocab);
+    data.printings[0].card_layout_id = reversible;
+    data.cards[0].divergent = vec![crate::DivergentPrinting {
+        printing_layout_id: reversible,
+        card_name_id: NONE_STR,
+        card_name_folded_id: NONE_STR,
+        face_layout_id: normal,
+        faces: Vec::new(),
+        name_rank: 0,
+    }];
+
+    let idx = build_layout_hybrid_index(
+        &data.cards,
+        &data.printings,
+        &build_printing_to_card(&data.offsets),
+        &interner.strings,
+    );
+    let count = |v: &str| idx.dense.get(v).map(|b| b.count as usize).or_else(|| idx.sparse.get(v).map(|p| p.len()));
+    assert_eq!(count("reversible_card"), Some(1), "its own layout");
+    assert_eq!(count("normal"), Some(1), "and its faces' -- the row Scryfall's layout:normal counts");
+}
 
 // Streamed selection must agree with the gathered path. Two stores identical
 // except for the presence of sort permutations: the perm-less store takes the
@@ -11891,7 +12134,7 @@ fn contains_scan() -> FilterExpr {
 }
 
 fn machinery_regex() -> FilterExpr {
-    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: super::regex_compat::CompiledRegex::new("draw .* cards?").unwrap() }
+    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: crate::filter::compile_search_regex_for_test("draw .* cards?") }
 }
 
 // Pattern-shape cost classification: anchored literals are memcmp-cheap
@@ -11900,8 +12143,9 @@ fn machinery_regex() -> FilterExpr {
 // shares REGEX_MACHINERY_NS100.
 #[test]
 fn regex_tier_classifies_pattern_shapes() {
-    use super::{regex_tier, REGEX_MACHINERY_NS100, SET_LOOKUP_NS100};
+    use super::{regex_tier, REGEX_BACKTRACK_NS100, REGEX_MACHINERY_NS100, SET_LOOKUP_NS100};
     assert_eq!(regex_tier("(?im)^flying$"), SET_LOOKUP_NS100);
+    assert_eq!(regex_tier("(?i)^flying$"), SET_LOOKUP_NS100, "upstream's bare (?i) prefix strips too");
     assert_eq!(regex_tier("dragon$"), SET_LOOKUP_NS100);
     assert_eq!(regex_tier("(?im)^\\{t\\}: add"), SET_LOOKUP_NS100, "escaped punctuation is literal");
     assert_eq!(regex_tier("^gob"), SET_LOOKUP_NS100);
@@ -11911,6 +12155,35 @@ fn regex_tier_classifies_pattern_shapes() {
     assert_eq!(regex_tier("(?im)^\\d+$"), REGEX_MACHINERY_NS100, "class escapes are machinery");
     assert_eq!(regex_tier("a|b"), REGEX_MACHINERY_NS100);
     assert_eq!(regex_tier("ends with backslash\\"), REGEX_MACHINERY_NS100, "dangling escape: not literal");
+    assert_eq!(regex_tier("(?i)draw (?!two)"), REGEX_BACKTRACK_NS100);
+    assert_eq!(regex_tier("(?=.*sacrifice)draw"), REGEX_BACKTRACK_NS100);
+    assert_eq!(regex_tier("(?<=draw )a card"), REGEX_BACKTRACK_NS100);
+}
+
+/// A pattern that exhausts its backtrack budget must REPORT, not quietly answer "no match".
+///
+/// Compiled through the real `compile_search_regex` rather than a hand-built `fancy_regex`: the
+/// lookahead is what routes it to `CompiledRegex::Backtrack`, and routing is half the property
+/// under test — a pattern that stayed on the linear engine would pass this by never failing.
+#[test]
+fn regex_backtrack_exhaustion_surfaces_as_match_failure() {
+    use crate::regex_compat::{clear_regex_match_failed, take_regex_match_failed, REGEX_MATCH_ERR_PREFIX};
+
+    clear_regex_match_failed();
+    // The lookahead is INSIDE the repeat deliberately. `(?=a)(a+)+b` -- upstream's pattern, which
+    // it exercises against a hand-built limit of 8 -- does not exhaust 8192 here: fancy_regex hands
+    // the fancy-free `(a+)+b` tail to the linear engine, so the only backtracking left is the one
+    // lookahead. Nesting it inside the `+` is what forces the backtracking VM to run the whole
+    // repeat, and is also why this budget so rarely bites a real query.
+    let re = crate::filter::compile_search_regex_for_test("((?=a)a+)+b");
+    assert!(re.is_backtracking(), "the lookahead must route this to the backtracking engine");
+    let hay = format!("{}c", "a".repeat(60));
+    assert!(!re.is_match(&hay));
+    let msg = take_regex_match_failed().expect("backtrack exhaustion must set failure flag");
+    assert!(msg.starts_with(REGEX_MATCH_ERR_PREFIX));
+
+    // And the flag is one-shot: taking it clears it, so the next query starts clean.
+    assert!(take_regex_match_failed().is_none(), "the flag must not survive being taken");
 }
 
 // And children reorder cheapest-tier-first regardless of written order, and
@@ -11930,6 +12203,20 @@ fn verify_order_sorts_and_children_cheap_first() {
     assert!(matches!(children[2], FilterExpr::TypeCmp { .. }));
     assert!(matches!(children[3], FilterExpr::TextContains { .. }));
     assert!(matches!(children[4], FilterExpr::TextRegex { .. }));
+}
+
+#[test]
+fn verify_order_puts_lookaround_regex_last() {
+    let lookaround = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: crate::filter::compile_search_regex_for_test("draw (?!two)"),
+    };
+    let mut f = FilterExpr::And(vec![lookaround, contains_scan(), type_mask()]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &f else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
+    assert!(matches!(children[1], FilterExpr::TextContains { .. }));
+    assert!(matches!(children[2], FilterExpr::TextRegex { .. }));
 }
 
 // Within the memoized-set tier, And children refine to ascending set size
@@ -12754,6 +13041,91 @@ fn range_compose_kernel_costs() {
             "{hi:>8}  {set_prtg:>10}  {scatter_ns:>10}  {per_prtg:>11.3}  {proj_ns:>10}  {exists_cards:>10}  {walk_ns:>9}"
         );
     }
+}
+
+/// `GatheredScan`'s artwork-mode overhead: `push_card_matches`'s `Mode::Artwork` branch does a
+/// `group_best`/`touched` dedupe scan over every printing in `[start, end)` that `Mode::Printing`
+/// does not — see the doc on `STREAM_ARTWORK_SEEN_PER_CARD_NS` for `StreamedSelect`'s analogous
+/// (but differently-shaped: fixed per-CARD there, per-PRINTING here) overhead. `cost::plan_cost`'s
+/// `GatheredScan` arm charges no such term at all, unlike `StreamedSelect`'s.
+///
+/// Calls `push_card_matches` directly (not through a full query) with `all_match: true` so no
+/// residual evaluation cost pollutes the measurement -- isolating exactly the mode-dependent match-
+/// collection cost the two modes' loop bodies differ by, over the same real card/printing data. An
+/// end-to-end `explain_analyze` A/B (`unique=printing` vs `unique=artwork`, same filter) was tried
+/// first and was unusable: `matches_pushed` differs sharply between modes (printing pushes every
+/// printing, artwork only distinct groups), so `GATHER_PUSH_PER_MATCH_NS`'s much larger swing
+/// dominates the raw delta and even its SIGN. A pooled OLS regression over natural corpus queries
+/// (cards_visited/printing_span/matches_pushed as features, `is_artwork*printing_span` for the term
+/// of interest) came back with a negative coefficient and a negative per-match rate too --
+/// multicollinearity between those three features in real query data, not a real negative cost.
+///
+/// `cargo test --release gather_artwork_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "gather-artwork kernel cost; needs real.store; cargo test --release gather_artwork_kernel_costs -- --ignored --nocapture"]
+fn gather_artwork_kernel_costs() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 15;
+    const ITERS: usize = 150;
+    // Enough cards that the printing span dwarfs per-call fixed overhead (Instant::now, branch
+    // mispredicts on the first card of a round), so the resulting rate is dominated by the loop body.
+    const N_CARDS: usize = 5000;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let offsets = &archived.offsets;
+    let printings = &archived.printings;
+    let strings = &archived.strings;
+    let indexes = &archived.indexes;
+    let max_groups = usize::from(u16::from(indexes.max_artwork_groups));
+    let printing_span: u64 =
+        (0..N_CARDS).map(|cid| u64::from(u32::from(offsets[cid + 1])) - u64::from(u32::from(offsets[cid]))).sum();
+
+    let bench_mode = |mode: Mode| -> u128 {
+        let mut group_best: Vec<Option<(u32, f64)>> = vec![None; max_groups];
+        let mut touched: Vec<u16> = Vec::new();
+        let mut out: Vec<(u128, u32, u32)> = Vec::with_capacity(4096);
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            out.clear();
+            let t0 = Instant::now();
+            for cid in 0..N_CARDS {
+                let card = &archived.cards[cid];
+                let start = u32::from(offsets[cid]) as usize;
+                let end = u32::from(offsets[cid + 1]) as usize;
+                black_box(push_card_matches(
+                    card, cid as u32, printings, &indexes.artwork_group_col, start, end, true, &[], false, mode,
+                    Prefer::Default, SortCol::EdhrecRank, false, strings, None, &mut out, &mut group_best, &mut touched,
+                ));
+            }
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+        }
+        best
+    };
+
+    let printing_ns = bench_mode(Mode::Printing);
+    let artwork_ns = bench_mode(Mode::Artwork);
+    let delta = artwork_ns as i128 - printing_ns as i128;
+    println!("\ngather-artwork kernel costs ({N_CARDS} cards, {printing_span} printings)");
+    println!("  Printing: {printing_ns} ns total, {:.4} ns/printing", printing_ns as f64 / printing_span.max(1) as f64);
+    println!("  Artwork:  {artwork_ns} ns total, {:.4} ns/printing", artwork_ns as f64 / printing_span.max(1) as f64);
+    println!(
+        "  delta: {delta} ns / {printing_span} printings = {:.4} ns/printing (candidate GATHER_ARTWORK_PER_PRINTING_NS)",
+        delta as f64 / printing_span.max(1) as f64
+    );
 }
 
 /// #724 build-side correctness oracle: projecting a printing-space border plane up to card-existence

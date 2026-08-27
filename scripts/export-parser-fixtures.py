@@ -85,7 +85,11 @@ sys.modules["api.utils.db_utils"] = _db_utils_stub
 
 import pytest  # noqa: E402
 
-from api.parsing.parsing_f import balance_partial_query, parse_scryfall_query  # noqa: E402
+from api.parsing.parsing_f import balance_partial_query  # noqa: E402
+# Upstream #1050 moved the production pipeline behind post_parse.parse_query; `parse_scryfall_query`
+# is the hand-parser partial of it. Import it from the package root, which is where the seam lives
+# now — parsing_f is down to the balancer.
+from api.parsing import parse_scryfall_query  # noqa: E402
 from api.parsing.card_query_nodes import slugify_tag  # noqa: E402
 
 # ── query collection ─────────────────────────────────────────────────────────

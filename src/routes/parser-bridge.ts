@@ -5,10 +5,12 @@
 import {
 	type DirectiveFound,
 	type ExpandedDerivedTerm,
+	InvalidRegexPatternError,
 	type LoweredRegexTerm,
 	ParseError,
 	parseScryfallQuery,
 	parseScryfallQueryWithDirectives,
+	QueryBudgetExceeded,
 } from "../parser";
 
 export interface WireParser {
@@ -40,12 +42,31 @@ export interface WireParser {
 	};
 	/** True when err is the parser's ParseError (upstream: ValueError subclass → 400). */
 	isParseError(err: unknown): boolean;
+	/**
+	 * The user-facing message for a query the parser refused on a public BOUND rather than on
+	 * syntax (upstream #1041/#1047), or null when `err` is not one of those.
+	 *
+	 * Separate from `isParseError` because the answer is different, not just the wording: a budget
+	 * rejection must NOT be reported as `Failed to parse query: "…"`. The query parsed fine — the
+	 * message would be false, and echoing the query back is exactly what these messages avoid,
+	 * since the input is attacker-shaped by the time a bound is reached. Without this the errors
+	 * escape both handlers and land as 500s.
+	 */
+	queryBudgetMessage(err: unknown): string | null;
 }
 
 const realParser: WireParser = {
 	parseScryfallQuery: (query: string) => parseScryfallQuery(query),
 	parseWithDirectives: (query: string) => parseScryfallQueryWithDirectives(query),
 	isParseError: (err: unknown) => err instanceof ParseError,
+	queryBudgetMessage: (err: unknown) => {
+		if (err instanceof QueryBudgetExceeded) return err.userMessage;
+		// A malformed pattern is the one case in this family that DOES quote the input back — the
+		// user typed a broken regex and needs to see which part broke, exactly as the SQL path's
+		// InvalidRegularExpression handler tells them upstream.
+		if (err instanceof InvalidRegexPatternError) return err.reason;
+		return null;
+	},
 };
 
 let testOverride: WireParser | null = null;

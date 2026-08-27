@@ -1,5 +1,6 @@
 """Comprehensive tests for APIResource class functionality."""
 
+import json
 import multiprocessing
 import os
 import pathlib
@@ -607,16 +608,139 @@ class TestSearchResponseShape(TestBaseAPIResourceTest):
         assert list(api_resource_module._columnarize_cards(cards)) == ["b", "a"]
 
 
-class TestOffsetValidation(TestBaseAPIResourceTest):
-    """offset must be a non-negative integer; violations are 400s, not silent clamps."""
+class TestPaginationCeiling(unittest.TestCase):
+    """The pagination ceiling grows continuously at approximately 10,000 per year."""
 
-    def test_negative_offset_rejected(self) -> None:
-        with pytest.raises(falcon.HTTPBadRequest):
-            self.api_resource._validate_offset(-1)
+    def test_base_timestamp_starts_at_zero(self) -> None:
+        with patch("api.api_resource.time.time", return_value=api_resource_module.PAGINATION_BASE_TIMESTAMP):
+            assert api_resource_module.pagination_ceiling() == 0
+
+    def test_ceiling_increases_once_per_growth_interval(self) -> None:
+        interval = api_resource_module.PAGINATION_GROWTH_INTERVAL_SECONDS
+        timestamp = api_resource_module.PAGINATION_BASE_TIMESTAMP + (120_000 * interval)
+
+        with patch("api.api_resource.time.time", return_value=timestamp + interval - 1):
+            assert api_resource_module.pagination_ceiling() == 120_000
+
+        with patch("api.api_resource.time.time", return_value=timestamp + interval):
+            assert api_resource_module.pagination_ceiling() == 120_001
+
+    def test_ceiling_is_an_integer(self) -> None:
+        timestamp = api_resource_module.PAGINATION_BASE_TIMESTAMP + (
+            120_000.5 * api_resource_module.PAGINATION_GROWTH_INTERVAL_SECONDS
+        )
+        with patch("api.api_resource.time.time", return_value=timestamp):
+            ceiling = api_resource_module.pagination_ceiling()
+        assert ceiling == 120_000
+        assert isinstance(ceiling, int)
+
+
+class TestLimitValidation(TestBaseAPIResourceTest):
+    """limit must be None or an integer within [0, ceiling]; violations are 400s."""
+
+    def test_none_limit_passes_through(self) -> None:
+        assert self.api_resource._validate_limit(None) is None
+
+    def test_zero_limit_is_valid(self) -> None:
+        assert self.api_resource._validate_limit(0) == 0
+
+    def test_default_limit_is_valid(self) -> None:
+        assert self.api_resource._validate_limit(100) == 100
+
+    def test_exact_boundary_ceiling_is_valid(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        assert self.api_resource._validate_limit(ceiling) == ceiling
+
+    def test_max_plus_one_limit_rejected(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._validate_limit(ceiling + 1)
+        assert exc_info.value.title == "Invalid Limit"
+        assert exc_info.value.description == f"Limit must be an integer between 0 and {ceiling}."
+
+    def test_negative_limit_rejected(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._validate_limit(-1)
+        assert exc_info.value.title == "Invalid Limit"
+        assert exc_info.value.description == f"Limit must be an integer between 0 and {ceiling}."
+
+    @pytest.mark.parametrize("invalid_value", [True, False, "100", 10.5, [100], {"limit": 100}])
+    def test_non_integer_limit_rejected(self, invalid_value: Any) -> None:
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._validate_limit(invalid_value)
+        assert exc_info.value.title == "Invalid Limit"
+
+
+class TestOffsetValidation(TestBaseAPIResourceTest):
+    """offset must be an integer within [0, ceiling]; violations are 400s, not silent clamps."""
+
+    def test_zero_offset_is_valid(self) -> None:
+        assert self.api_resource._validate_offset(0) == 0
 
     def test_valid_offsets_pass_through(self) -> None:
-        assert self.api_resource._validate_offset(0) == 0
         assert self.api_resource._validate_offset(175) == 175
+
+    def test_exact_boundary_ceiling_is_valid(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        assert self.api_resource._validate_offset(ceiling) == ceiling
+
+    def test_max_plus_one_offset_rejected(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._validate_offset(ceiling + 1)
+        assert exc_info.value.title == "Invalid Offset"
+        assert exc_info.value.description == f"Offset must be an integer between 0 and {ceiling}."
+
+    def test_negative_offset_rejected(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._validate_offset(-1)
+        assert exc_info.value.title == "Invalid Offset"
+        assert exc_info.value.description == f"Offset must be an integer between 0 and {ceiling}."
+
+    @pytest.mark.parametrize("invalid_value", [True, False, "0", 175.5, [0], {"offset": 0}])
+    def test_non_integer_offset_rejected(self, invalid_value: Any) -> None:
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._validate_offset(invalid_value)
+        assert exc_info.value.title == "Invalid Offset"
+
+
+class TestSearchPaginationBounds:
+    """Search endpoint independently enforces the dynamic ceiling for limit and offset."""
+
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
+        mock_engine = MagicMock()
+        mock_engine.size.return_value = 100
+        self.api_resource.app_context.engine = mock_engine
+
+    def test_search_accepts_zero_limit(self) -> None:
+        with patch.object(self.api_resource, "_search_engine", return_value={"cards": [], "total_cards": 100}):
+            result = self.api_resource._search(query="name:bolt", limit=0)
+            assert result["cards"] == []
+
+    def test_search_accepts_both_at_ceiling_independently(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with patch.object(self.api_resource, "_search_engine", return_value={"cards": [], "total_cards": 100}) as mock_engine:
+            self.api_resource._search(query="name:bolt", limit=ceiling, offset=ceiling)
+            mock_engine.assert_called_once()
+            call_kwargs = mock_engine.call_args[1]
+            assert call_kwargs["limit"] == ceiling
+            assert call_kwargs["offset"] == ceiling
+
+    def test_search_rejects_limit_above_ceiling(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._search(query="name:bolt", limit=ceiling + 1)
+        assert exc_info.value.title == "Invalid Limit"
+
+    def test_search_rejects_offset_above_ceiling(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._search(query="name:bolt", offset=ceiling + 1)
+        assert exc_info.value.title == "Invalid Offset"
 
 
 class TestIdentityLetters(unittest.TestCase):
@@ -807,6 +931,30 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
 
         # Verify it sets appropriate cache control header (shorter for search results)
         mock_response.set_header.assert_called_with("Cache-Control", "public, max-age=90")
+
+    def test_index_html_with_hostile_query_escapes_script_context(self) -> None:
+        """Test _root prevents script context breakout when query/results contain closing script tags."""
+        mock_response = MagicMock()
+        hostile_query = "</script><script>alert('xss')</script>"
+        mock_search_results = {
+            "cards": [{"name": "<script>alert(1)</script>", "set_code": "m14", "collector_number": "1"}],
+            "total_cards": 1,
+            "query": hostile_query,
+        }
+
+        with patch.object(self.api_resource, "_search", return_value=mock_search_results):
+            self.api_resource._root(falcon_response=mock_response, q=hostile_query)
+
+        # Response must not contain unescaped closing script tags in embedded JSON
+        marker = "window.EMBEDDED_SEARCH_RESULTS = "
+        assert marker in mock_response.text
+        start = mock_response.text.index(marker) + len(marker)
+        end = mock_response.text.index(";", start)
+        embedded_json = mock_response.text[start:end]
+
+        assert "<" not in embedded_json
+        assert "</script>" not in embedded_json
+        assert json.loads(embedded_json) == mock_search_results
 
     def test_index_html_with_query_embeds_results_count_in_status_message(self) -> None:
         """Test _root injects the results count into the #statusMessage container.

@@ -16,6 +16,7 @@ import type {
 	SearchPageEnvelope,
 } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
+import { checkSearchParamLengths, QueryBudgetExceeded } from "../../src/parser";
 import { routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
 import { adminUnauthorized, isAdminPath } from "../../src/routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "../../src/routes/http";
@@ -359,10 +360,20 @@ export class FakeEngine implements Engine {
 /** Sentinel error the fake parser throws for queries containing "PARSE_FAIL". */
 export class FakeParseError extends Error {}
 
+/**
+ * Sentinel the fake parser throws for queries containing "BUDGET_FAIL" — the shape of a public
+ * bound being hit (upstream #1041/#1047), which the routes must answer differently from a syntax
+ * error: the budget's own message, not `Failed to parse query: "…"`.
+ */
+export class FakeBudgetError extends Error {}
+
 /** Deterministic fake wire trees, shaped like the real engine-wire JSON. */
 export function fakeParse(query: string): unknown {
 	if (query.includes("PARSE_FAIL")) {
 		throw new FakeParseError(`cannot parse: ${query}`);
+	}
+	if (query.includes("BUDGET_FAIL")) {
+		throw new FakeBudgetError("Search query exceeds the maximum allowed length.");
 	}
 	if (query === "") {
 		return { node_type: "TrueNode", kwargs: {} };
@@ -390,6 +401,7 @@ export function installFakeParser(parse: (query: string) => unknown = fakeParse)
 			expandedDerivedTerms: [],
 		}),
 		isParseError: (err) => err instanceof FakeParseError,
+		queryBudgetMessage: (err) => (err instanceof FakeBudgetError ? err.message : null),
 	});
 }
 
@@ -499,6 +511,19 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 		if (!DISALLOWED_QUERY_ARGS.has(k)) {
 			params[k] = v;
 		}
+	}
+
+	// Mirrors dispatch: the query byte budget is refused before any handler runs (upstream's
+	// SearchBudgetMiddleware). Both `q` and `query`, independently.
+	try {
+		checkSearchParamLengths(parsed.searchParams);
+	} catch (err) {
+		if (!(err instanceof QueryBudgetExceeded)) throw err;
+		return securityHeaders(
+			scryfallSurface
+				? scryfallHttpError("bad_request", 400, err.userMessage)
+				: httpError(400, "Invalid Search Query", err.userMessage),
+		);
 	}
 
 	try {

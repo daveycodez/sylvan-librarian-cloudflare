@@ -1,9 +1,9 @@
 """Post-parse query rewriting: expand derived predicates into subtrees of primitives.
 
-Applied once at the shared parse seam (`parse_scryfall_query`), so both the production
-hand parser and the legacy pyparsing parser get identical treatment: the transform
-operates on the common AST, after parsing and before SQL / Rust-engine serialization
-(`parse => transform => rest`). Nothing parser-specific lives here.
+Applied once at the shared post-parse seam (`post_parse.finalize_query`), so both the
+production hand parser and the legacy pyparsing parser get identical treatment: the
+transform operates on the common AST, after parsing and before SQL / Rust-engine
+serialization (`parse => finalize_query => rest`). Nothing parser-specific lives here.
 
 Each expansion is written as a DSL string and re-parsed with the production parser, so a
 definition is expressed in the same language it targets and stays correct by construction
@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from api.parsing.db_info import BOOLEAN_IS_TAGS
 from api.parsing.card_query_nodes import CardAttributeNode
-from api.parsing.hand_parser import parse_query as _parse_query
+from api.parsing.hand_parser import parse_str_to_query as _parse_str_to_query
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -415,16 +415,6 @@ def _leaf_key(node: QueryNode) -> tuple[str, str] | None:
     return (alias, value.lower())
 
 
-def _parse_expansion(dsl: str) -> QueryNode:
-    """Parse an expansion DSL string into a subtree (the production parser's output root).
-
-    Uses the production hand parser directly (not `parse_scryfall_query`) so expansion of
-    a synonym does not recurse back through this transform; nesting is handled explicitly
-    by `_expand` re-walking the result.
-    """
-    return _parse_query(dsl).root
-
-
 def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[QueryNode, bool]:
     """Expand derived-predicate leaves in `node`; return `(node, changed)`.
 
@@ -446,9 +436,9 @@ def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[Q
         return (NotNode(new_op), True) if changed else (node, False)
     key = _leaf_key(node)
     if key is not None and key in _DERIVED_EXPANSIONS and key not in in_progress:
-        # Recurse into the expansion so a definition may itself reference another derived
-        # predicate; `in_progress` breaks any (mis)configured cycle (a -> ... -> a).
-        subtree, _ = _expand(_parse_expansion(_DERIVED_EXPANSIONS[key]), in_progress | {key})
+        # Parse the expansion with the hand parser only (not ``parse_scryfall_query``), so synonym
+        # expansion does not recurse through this transform; ``in_progress`` breaks any cycle.
+        subtree, _ = _expand(_parse_str_to_query(_DERIVED_EXPANSIONS[key]).root, in_progress | {key})
         return subtree, True
     return node, False
 
@@ -659,6 +649,67 @@ def unsupported_is_warnings(query: Query) -> tuple[str, ...]:
     found: list[str] = []
     _collect_unsupported_is(query.root, found)
     return tuple(found)
+def _operand_dedup_key(node: QueryNode) -> tuple:
+    """Hashable key for order-insensitive dedup within one AND/OR operand list."""
+    cls = node.__class__
+    if cls is AndNode or cls is OrNode:
+        return (cls.__name__, frozenset(_operand_dedup_key(op) for op in node.operands))
+    if cls is NotNode:
+        return ("NotNode", _operand_dedup_key(node.operand))
+    return ("leaf", hash(node))
+
+
+def _deduplicate_operand_list(operands: list[QueryNode]) -> list[QueryNode]:
+    """Drop duplicate operands, keeping the first (order-insensitive within one compound)."""
+    seen: set[tuple] = set()
+    unique: list[QueryNode] = []
+    for operand in operands:
+        key = _operand_dedup_key(operand)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(operand)
+    return unique
+
+
+def _normalize_compound_operands(node: QueryNode) -> tuple[QueryNode, bool]:
+    """Bottom-up flatten, dedupe, and unwrap singleton And/Or nodes."""
+    cls = node.__class__
+    if cls is AndNode or cls is OrNode:
+        changed = False
+        operands: list[QueryNode] = []
+        for operand in node.operands:
+            normalized, operand_changed = _normalize_compound_operands(operand)
+            changed |= operand_changed
+            if isinstance(normalized, cls):
+                operands.extend(normalized.operands)
+                changed = True
+            else:
+                operands.append(normalized)
+        deduped = _deduplicate_operand_list(operands)
+        if len(deduped) != len(operands):
+            changed = True
+        if len(deduped) <= 1:
+            return (deduped[0], True) if deduped else (node, changed)
+        if not changed:
+            return node, False
+        return cls(deduped), True
+    if cls is NotNode:
+        normalized, changed = _normalize_compound_operands(node.operand)
+        return (NotNode(normalized), True) if changed else (node, False)
+    return node, False
+
+
+def flatten_and_deduplicate_compounds(query: Query) -> Query:
+    """Flatten nested AND/OR chains, drop duplicate operands, unwrap singleton compounds.
+
+    A single bottom-up pass merges same-type children, dedupes with order-insensitive keys
+    (``AND(cmc<2, c=w)`` equals ``AND(c=w, cmc<2)`` under a shared OR), then unwraps.
+    """
+    root, changed = _normalize_compound_operands(flatten_nested_operations(query.root))
+    if not changed:
+        return query
+    return Query(root)
 
 
 # The post-parse rewrite pipeline, applied in order at the shared parse seam. Add future AST
@@ -679,6 +730,10 @@ def rewrite_query(query: Query) -> Query:
     `expand_derived_predicates` (a synonym may expand into a subtree that itself contains a
     regex or other rewritable leaf), then `lower_literal_regexes`, then any future pass
     appended to `_REWRITE_PASSES`.
+
+    ``flatten_and_deduplicate_compounds`` runs later in ``post_parse.finalize_query`` — after
+    regex-budget validation — so duplicate identical regex leaves still count toward the public
+    leaf limit.
     """
     warnings = unsupported_is_warnings(query)
     query, directives = extract_directives(query)

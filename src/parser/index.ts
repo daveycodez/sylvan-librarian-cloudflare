@@ -15,7 +15,9 @@
 import { ParseError } from "./errors";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterTree, LoweredRegexTerm, Query } from "./nodes";
 import { parseQuery } from "./parser";
-import { rewriteQuery } from "./rewrite";
+import { checkQueryByteLength } from "./query-budget";
+import { validateRegexPatterns } from "./regex-budget";
+import { flattenAndDeduplicateCompounds, rewriteQuery } from "./rewrite";
 import { braceCloseIndex, findCloseIndex, opensRegex, QUOTE_CHARS } from "./spans";
 import { foldTypographicQuotes } from "./tokenizer";
 
@@ -30,16 +32,45 @@ export type {
 } from "./nodes";
 export { parseQuery } from "./parser";
 export { PyNumber } from "./pystr";
-export { rewriteQuery } from "./rewrite";
+export {
+	boundedQueryLogContext,
+	checkQueryByteLength,
+	checkSearchParamLengths,
+	InvalidRegexPatternError,
+	MAX_QUERY_UTF8_BYTES,
+	QUERY_REGEX_REJECTED_MESSAGE,
+	QUERY_TOO_LONG_MESSAGE,
+	QueryBudgetExceeded,
+} from "./query-budget";
+export { validateRegexPatterns } from "./regex-budget";
+export { flattenAndDeduplicateCompounds, rewriteQuery } from "./rewrite";
 export { canonicalStringify } from "./serialize";
 export { foldTypographicQuotes } from "./tokenizer";
 
 /**
+ * The shared post-parse pipeline (mirrors api.parsing.post_parse.finalize_query, upstream #1050):
+ * semantic rewrites, then the static regex limits, then flatten+dedupe normalization.
+ *
+ * The order is load-bearing in both directions. Rewrites run FIRST because `lowerLiteralRegexes`
+ * turns a literal `/…/` into a plain string, and a pattern that will never reach a regex engine
+ * should not be charged against the regex budget. Dedupe runs LAST, after that budget, so
+ * repeating one expensive pattern ten times still counts as ten leaves.
+ */
+export function finalizeQuery(queryIn: Query): Query {
+	const query = rewriteQuery(queryIn);
+	validateRegexPatterns(query);
+	return flattenAndDeduplicateCompounds(query);
+}
+
+/**
  * Parse a Scryfall search query into a card-specific AST
- * (mirrors api.parsing.parsing_f.parse_scryfall_query: parse => rewrite).
+ * (mirrors api.parsing.parse_scryfall_query: byte-length check => parse => finalize).
  */
 export function parseScryfallQueryAst(query: string | null | undefined): Query {
-	return rewriteQuery(parseQuery(query));
+	if (query !== null && query !== undefined) {
+		checkQueryByteLength(query);
+	}
+	return finalizeQuery(parseQuery(query));
 }
 
 /**

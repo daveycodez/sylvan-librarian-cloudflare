@@ -35,11 +35,11 @@ use memchr::memmem;
 use regex::Regex;
 use rkyv::Archived;
 
-use super::regex_compat::CompiledRegex;
 use super::{
     archive_header, archive_payload, expand_text_ids, str_at, trigram_candidates, CardData, CmpOp, ColorField, CollField, FilterExpr,
     Mmap, NumExpr, NumField, TextField, TextSearchField, TYPE_CREATURE, ARCHIVE_HEADER_LEN, REGEX_MACHINERY_NS100,
 };
+use crate::filter::compile_search_regex_for_test;
 
 const ITERS: usize = 50;
 const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
@@ -140,19 +140,27 @@ fn bench_verify_cost_clusters() {
     println!("\n-- regex shapes --");
     let anchored_ns = run(
         "TextRegex (anchored literal)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: CompiledRegex::new("^flying$").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("^flying$") },
     );
     let bare_ns = run(
         "TextRegex (bare literal)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: CompiledRegex::new("flying").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("flying") },
     );
     let machinery_ns = run(
         "TextRegex (machinery, literal prefix)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: CompiledRegex::new("draw .* cards?").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("draw .* cards?") },
     );
     let machinery_noprefix_ns = run(
         "TextRegex (machinery, no prefix)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: CompiledRegex::new("^[aeiou]").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("^[aeiou]") },
+    );
+    let lookaround_ns = run(
+        "TextRegex (neg lookahead)",
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("draw (?!two)") },
+    );
+    let lookbehind_ns = run(
+        "TextRegex (lookbehind)",
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("(?<=draw )a card") },
     );
 
     println!("\n-- cluster summary (ns/card) --");
@@ -163,6 +171,80 @@ fn bench_verify_cost_clusters() {
     println!("  regex bare literal : {bare_ns:.3}");
     println!("  regex machinery (literal prefix) : {machinery_ns:.3}");
     println!("  regex machinery (no prefix)      : {machinery_noprefix_ns:.3}");
+    println!("  regex lookaround                 : {lookaround_ns:.3}");
+    println!("  regex lookbehind                 : {lookbehind_ns:.3}");
+    if machinery_ns > 0.0 {
+        println!(
+            "  lookaround / machinery ratio     : {:.1}x",
+            lookaround_ns / machinery_ns
+        );
+    }
+}
+
+/// Times linear vs lookaround regex kernels on the bundled text corpus oracle
+/// strings (~9k rows). Does not need benchmarks/verify-order/real.store.
+///
+///     cargo test --release bench_regex_backtrack_tier -- --ignored --nocapture
+#[test]
+#[ignore = "micro-benchmark; uses testdata/text_corpus.txt"]
+fn bench_regex_backtrack_tier() {
+    use crate::filter::{pattern_requires_backtrack, REGEX_BACKTRACK_NS100, REGEX_MACHINERY_NS100};
+
+    let texts: Vec<String> = include_str!("../testdata/text_corpus.txt")
+        .split('\x1e')
+        .filter_map(|rec| {
+            let mut f = rec.split('\x1f');
+            f.next()?;
+            Some(f.next()?.to_lowercase())
+        })
+        .collect();
+    let n = texts.len();
+    println!("\n{n} oracle strings from testdata/text_corpus.txt");
+
+    let patterns: &[(&str, bool)] = &[
+        ("flying", false),
+        ("draw .* cards?", false),
+        ("^flying$", false),
+        ("draw (?!two)", true),
+        ("(?=.*sacrifice)draw", true),
+        ("(?<=draw )a card", true),
+        ("(?<!non)artifact", true),
+    ];
+
+    let mut machinery_ns = 0.0f64;
+    let mut backtrack_ns = 0.0f64;
+
+    for &(pat, expect_backtrack) in patterns {
+        assert_eq!(pattern_requires_backtrack(pat), expect_backtrack, "{pat}");
+        let re = compile_search_regex_for_test(pat);
+        let ns = time_kernel(&format!("  {pat:<28}"), n, || {
+            texts.iter().filter(|s| re.is_match(s)).count() as u32
+        });
+        if expect_backtrack {
+            backtrack_ns = backtrack_ns.max(ns);
+        } else {
+            machinery_ns = machinery_ns.max(ns);
+        }
+        let tier = crate::filter::regex_tier(re.as_str());
+        let tier_name = if tier == REGEX_BACKTRACK_NS100 {
+            "BACKTRACK"
+        } else if tier == REGEX_MACHINERY_NS100 {
+            "MACHINERY"
+        } else {
+            "OTHER"
+        };
+        println!("    -> regex_tier={tier_name} ({tier})");
+    }
+
+    if machinery_ns > 0.0 && backtrack_ns > 0.0 {
+        let ratio = backtrack_ns / machinery_ns;
+        let suggested = (REGEX_MACHINERY_NS100 as f64 * ratio).round() as u32;
+        println!("\n  max machinery ns/card : {machinery_ns:.3}");
+        println!("  max backtrack ns/card : {backtrack_ns:.3}");
+        println!("  ratio                 : {ratio:.1}x");
+        println!("  REGEX_MACHINERY_NS100 : {REGEX_MACHINERY_NS100}");
+        println!("  suggested BACKTRACK   : {suggested} (current {REGEX_BACKTRACK_NS100})");
+    }
 }
 
 /// Three ways to answer the same metacharacter-free substring query
