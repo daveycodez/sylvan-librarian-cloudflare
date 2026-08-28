@@ -24,11 +24,13 @@ export interface ImportEmitHandlers {
 	 * the same text the native builder writes to `routing-keys.tsv`. */
 	onRoutingKeys?(bytes: Uint8Array): void;
 	onStats?(stats: Record<string, number>): void;
+	/** The resumable inflater's raw output: one emit per inflateFeed call. */
+	onInflate?(bytes: Uint8Array): void;
 	/** Serve spilled row blob #index (add order) during the store build. */
 	pullRow?(index: number): Uint8Array | null;
 }
 
-const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7, ROUTING: 8 } as const;
+const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7, ROUTING: 8, INFLATE: 9 } as const;
 
 interface ImportExports {
 	memory: WebAssembly.Memory;
@@ -55,6 +57,12 @@ interface ImportExports {
 	format_version(): number;
 	current_alloc(): number;
 	peak_alloc(): number;
+	inflate_begin(): void;
+	inflate_restore(ptr: number, len: number): bigint;
+	inflate_feed(ptr: number, len: number, maxOut: bigint): bigint;
+	inflate_status(): number;
+	inflate_save(dest: number, cap: number): bigint;
+	inflate_total_out(): bigint;
 }
 
 const decoder = new TextDecoder();
@@ -109,6 +117,9 @@ export class ImportWasm {
 						return;
 					case EMIT.ROUTING:
 						h.onRoutingKeys?.(view(ptr, len).slice());
+						return;
+					case EMIT.INFLATE:
+						h.onInflate?.(view(ptr, len).slice());
 						return;
 					default:
 						throw new Error(`wasm-import emitted unknown kind ${kind}`);
@@ -300,6 +311,64 @@ export class ImportWasm {
 		const rc = this.ex.build_store_stream();
 		if (rc < 0n) throw new Error("wasm-import build_store_stream failed");
 		return rc;
+	}
+
+	// ── resumable inflate (the recode phase's cross-alarm decompressor) ──────
+
+	/** Fresh gzip decoder positioned at compressed byte 0. */
+	inflateBegin(): void {
+		this.ex.inflate_begin();
+	}
+
+	/**
+	 * Restore a serialized decoder state. Returns the compressed-byte offset
+	 * to resume feeding from, or null when the blob is refused (wrong layout
+	 * version, wrong shape, implausible fields) — refusal is NOT an error to
+	 * throw on: the caller falls back to its from-byte-0 path.
+	 */
+	inflateRestore(state: Uint8Array): number | null {
+		const ptr = this.ex.alloc(state.length);
+		new Uint8Array(this.ex.memory.buffer, ptr, state.length).set(state);
+		const rc = this.ex.inflate_restore(ptr, state.length);
+		return rc < 0n ? null : Number(rc);
+	}
+
+	/**
+	 * Feed compressed bytes, producing AT MOST `maxOut` raw bytes through
+	 * `onInflate` (a single emit). Returns input bytes consumed; a caller
+	 * whose bytes were not all consumed re-feeds the remainder after
+	 * draining the output. Throws on a corrupt stream.
+	 */
+	inflateFeed(bytes: Uint8Array, maxOut: number): number {
+		const ptr = this.ex.alloc(bytes.length);
+		new Uint8Array(this.ex.memory.buffer, ptr, bytes.length).set(bytes);
+		const rc = this.ex.inflate_feed(ptr, bytes.length, BigInt(maxOut));
+		if (rc < 0n) throw new Error("wasm-import inflate_feed failed (see [wasm-import] log)");
+		return Number(rc);
+	}
+
+	/** True at a verified gzip member end — the only clean EOF position. */
+	inflateAtBoundary(): boolean {
+		return this.ex.inflate_status() === 1;
+	}
+
+	/** Raw bytes the decoder has produced so far. */
+	inflateTotalOut(): number {
+		return Number(this.ex.inflate_total_out());
+	}
+
+	/** Serialize the decoder state (~33KB; buffer freed here, staged_order style). */
+	inflateSave(): Uint8Array {
+		const cap = 64 * 1024;
+		const ptr = this.ex.alloc(cap);
+		try {
+			const n = Number(this.ex.inflate_save(ptr, cap));
+			if (n < 0) throw new Error("wasm-import inflate_save failed (see [wasm-import] log)");
+			// Copied out immediately: the view dies with the next allocation.
+			return new Uint8Array(this.ex.memory.buffer, ptr, n).slice();
+		} finally {
+			this.ex.dealloc(ptr, cap);
+		}
 	}
 }
 

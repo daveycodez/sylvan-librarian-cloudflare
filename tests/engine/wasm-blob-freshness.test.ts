@@ -83,6 +83,7 @@ describe("committed wasm blobs are built from this source tree", () => {
 			"engine/wasm/src/lib.rs",
 			"engine/wasm-import/src",
 			"engine/builder/src",
+			"engine/inflate/src",
 			"Cargo.toml",
 			".cargo/config.toml",
 			"Cargo.lock",

@@ -35,6 +35,9 @@
 //!   8 compat chunk                   residue-archive bytes, in order. Interleaves with kind 5:
 //!                                    the residue is written mid-build, before the search indexes
 //!                                    exist, which is what keeps the build's peak under the cap.
+//!   9 inflated bytes                 the resumable inflater's raw output, one
+//!                                    emit per inflate_feed call (see the
+//!                                    resumable-inflate section below)
 //!
 //! Exports drive the phases in order; all buffers passed in are allocated
 //! with `alloc` and consumed (freed) by the callee:
@@ -963,6 +966,127 @@ pub extern "C" fn build_store_stream() -> i64 {
             log(&format!("build_store_stream: finish: {e}"));
             -1
         }
+    }
+}
+
+// ─── resumable inflate (the recode phase's cross-alarm decompressor) ─────────
+//
+// A gzip decoder whose whole state serializes (engine/inflate), so a recode
+// alarm can stop mid-stream, persist ~33KB, and the NEXT alarm — a different
+// isolate, a different wasm instance — continues from the exact bit position
+// instead of re-decompressing the whole prefix. Separate from ImportState on
+// purpose: the recode phase runs on transient instances, long before the
+// stateful tags→build group exists, and reset() must not clear a checkpoint
+// restore.
+//
+// Protocol (all i64 returns: >= 0 success, -1 failure with an EMIT_LOG line):
+//   inflate_begin()                    fresh decoder at stream byte 0
+//   inflate_restore(ptr, len) -> i64   restore a state blob; returns the
+//                                      compressed-byte offset to resume
+//                                      feeding from, or -1 (version/shape
+//                                      mismatch — caller falls back)
+//   inflate_feed(ptr, len, max_out)    decode; raw bytes leave as ONE
+//                       -> i64         EMIT_INFLATE per call (≤ max_out);
+//                                      returns input bytes consumed (feed the
+//                                      remainder again after draining output)
+//   inflate_status() -> i32            1 = at a verified gzip member end (the
+//                                      only clean EOF position), else 0
+//   inflate_save(dest, cap) -> i64     serialize into a host buffer (host
+//                                      allocs AND deallocs, staged_order
+//                                      style); returns blob length
+//   inflate_total_out() -> i64         raw bytes produced so far (the caller
+//                                      cross-checks it against its own count
+//                                      before trusting a checkpoint)
+
+const EMIT_INFLATE: u32 = 9;
+
+static INFLATE: Mutex<Option<sylvan_inflate::Inflater>> = Mutex::new(None);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn inflate_begin() {
+    *INFLATE.lock().unwrap() = Some(sylvan_inflate::Inflater::new());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn inflate_restore(ptr: *mut u8, len: usize) -> i64 {
+    let bytes = take_buf(ptr, len);
+    match sylvan_inflate::Inflater::restore(&bytes) {
+        Ok(inf) => {
+            let offset = inf.total_in() as i64;
+            *INFLATE.lock().unwrap() = Some(inf);
+            offset
+        }
+        Err(e) => {
+            log(&format!("inflate_restore: {e}"));
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn inflate_feed(ptr: *mut u8, len: usize, max_out: u64) -> i64 {
+    let input = take_buf(ptr, len);
+    let mut guard = INFLATE.lock().unwrap();
+    let Some(inf) = guard.as_mut() else {
+        log("inflate_feed: no inflater (inflate_begin/inflate_restore first)");
+        return -1;
+    };
+    // Min in u64 BEFORE the usize cast: wasm32's usize is 32 bits, and an
+    // oversized cap must clamp, not truncate. The ceiling is a sanity bound
+    // well past any member window.
+    let cap = max_out.min(64 << 20) as usize;
+    let mut out = Vec::with_capacity(cap.min(input.len().saturating_mul(6).max(4096)));
+    match inf.feed(&input, cap, &mut out) {
+        Ok((consumed, _stop)) => {
+            if !out.is_empty() {
+                emit_bytes(EMIT_INFLATE, &out);
+            }
+            consumed as i64
+        }
+        Err(e) => {
+            log(&format!("inflate_feed: {e}"));
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn inflate_status() -> i32 {
+    match INFLATE.lock().unwrap().as_ref() {
+        Some(inf) if inf.at_member_boundary() => 1,
+        _ => 0,
+    }
+}
+
+// Same raw-pointer posture as staged_order (see its comment): making the
+// export `unsafe` would change the ABI surface the coordinator links against.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[unsafe(no_mangle)]
+pub extern "C" fn inflate_save(dest: *mut u8, cap: usize) -> i64 {
+    let guard = INFLATE.lock().unwrap();
+    let Some(inf) = guard.as_ref() else {
+        log("inflate_save: no inflater");
+        return -1;
+    };
+    let blob = inf.save();
+    if blob.len() > cap {
+        log(&format!("inflate_save: state {} bytes exceeds host buffer {cap}", blob.len()));
+        return -1;
+    }
+    // Fill the host's buffer without taking ownership (it deallocs, like
+    // staged_order's).
+    // Safety: the host allocated `cap` bytes at `dest` via alloc() and does
+    // not touch them until this returns; `blob.len() <= cap` is checked.
+    let dest_slice = unsafe { std::slice::from_raw_parts_mut(dest, blob.len()) };
+    dest_slice.copy_from_slice(&blob);
+    blob.len() as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn inflate_total_out() -> i64 {
+    match INFLATE.lock().unwrap().as_ref() {
+        Some(inf) => inf.total_out() as i64,
+        None => -1,
     }
 }
 

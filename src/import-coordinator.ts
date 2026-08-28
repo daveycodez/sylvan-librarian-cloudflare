@@ -72,7 +72,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { addressAnnouncedEngine, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
-import { dropGroupWasm, groupWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
+import { dropGroupWasm, groupWasm, type ImportWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import { staleKeys } from "./engine/kv-versions";
 import {
 	CATALOG_NAMES,
@@ -146,7 +146,17 @@ import {
 	serializePpPublish,
 	TARGET_PARTITION_BYTES,
 } from "./import-publish";
-import { MEMBER_RAW_BYTES, memberBytes, recodeAlarm, skipBytes } from "./import-recode";
+import {
+	InflateRecodeSource,
+	MEMBER_RAW_BYTES,
+	memberBytes,
+	RECODE_ALARM_BUDGET_SECONDS,
+	RECODE_CHECKPOINT_VERSION,
+	RECODE_RESUMED_WINDOW_SECONDS_PER_GIB,
+	type ResumableInflate,
+	recodeAlarm,
+	skipBytes,
+} from "./import-recode";
 import {
 	blobBytes,
 	blobGroups,
@@ -521,6 +531,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 				kind TEXT NOT NULL, seq INTEGER NOT NULL,
 				raw_start INTEGER NOT NULL, raw_len INTEGER NOT NULL, bytes BLOB NOT NULL,
 				PRIMARY KEY (kind, seq)
+			);
+			-- The resumable recode path's decoder checkpoint: the wasm gzip
+			-- inflater's serialized state (~33KB, its own layout version inside,
+			-- engine/inflate) as of EXACTLY raw_done decompressed bytes — written
+			-- in the same transaction as the window it describes, so it can never
+			-- disagree with recode_raw_done; a row whose version or raw_done does
+			-- not match is dead weight the next alarm ignores (falling back to
+			-- the from-byte-0 stream) and the next commit replaces.
+			CREATE TABLE IF NOT EXISTS recode_checkpoint (
+				kind TEXT PRIMARY KEY, version INTEGER NOT NULL,
+				raw_done INTEGER NOT NULL, state BLOB NOT NULL
 			);
 			-- part_hashes: count × 8 bytes, little-endian u64 — the i-th entry is the
 			-- fnv1a64(oracle_id) partition hash of the batch's i-th length-prefixed
@@ -1022,6 +1043,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const next = phaseAfterFetch(kind);
 		if (next.startsWith("recode:")) {
 			this.ctx.storage.transactionSync(() => {
+				// A checkpoint is a position in ONE compressed stream; a fresh
+				// fetch is a different stream, so any leftover row is poison.
+				this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
 				this.metaSet("recode_raw_done", "0");
 				this.metaSet("phase", next);
 			});
@@ -1034,26 +1058,38 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/**
 	 * Re-compress as many recode windows as one alarm's work budget affords
-	 * into independent MEMBER_RAW_BYTES-raw gzip members (stage_members rows).
+	 * into independent MEMBER_RAW_BYTES-raw gzip members (stage_members rows),
+	 * routed down one of two paths:
 	 *
-	 * Each alarm re-streams the original stage_blobs gzip from seq 0 ONCE,
-	 * discards up to the persisted checkpoint (`recode_raw_done`), and then
-	 * cuts windows until the budget runs out (recodeAlarm) — the prefix is
-	 * paid per ALARM, not per window, and the worst alarm is bounded by the
-	 * budget at any dump size. The single-window-per-alarm shape died nightly
-	 * from 2026-08-22: at ~2GB raw the deepest window's prefix discard pushed
-	 * one alarm past the 30s CPU cap (see the measured constants in
-	 * import-recode.ts).
+	 * RESUMABLE (the normal path): the wasm gzip inflater (engine/inflate via
+	 * engine/wasm-import) whose serialized state persists per window in
+	 * recode_checkpoint, so an alarm continues decompressing EXACTLY where the
+	 * last one stopped — no prefix work at all, at any dump size, forever.
+	 * Taken when the staged stream is gzip and either the phase is at byte 0
+	 * (a fresh decoder) or a trustworthy checkpoint exists (version match,
+	 * raw_done match, and the wasm accepts the blob's own layout stamp).
+	 *
+	 * FALLBACK (the 2026-08-28 budget path, kept verbatim): re-stream the
+	 * original stage_blobs gzip from seq 0 through DecompressionStream,
+	 * discard to `recode_raw_done`, then cut windows — prefix charged up
+	 * front, sound to ~2.9GiB raw. Taken when no trustworthy checkpoint
+	 * exists mid-phase (a deploy changed the state layout, a refused blob),
+	 * when the staged dump is not gzip at all, or after ANY resumable-path
+	 * error (`recode_engine_fallback`, cleared by metaClear at the next run):
+	 * the error path deletes the checkpoint, marks the flag, and lets the
+	 * alarm end with zero progress rather than running both paths against one
+	 * 30s CPU allowance.
 	 *
 	 * Each window commits in its OWN transactionSync as it completes — never
 	 * hold two windows' members (~60–70MB compressed each) in memory at once.
-	 * Resumable mid-phase and mid-alarm: a window's checkpoint commits in the
-	 * same transaction as its members, and a killed or retried alarm cannot
-	 * duplicate members — member seq is derived from raw_start, and each
-	 * window's write deletes seq >= its own start before inserting, so a
-	 * re-run replaces exactly what a dead alarm may have half-committed
-	 * (nothing, given the transaction, but the delete also covers a checkpoint
-	 * rolled back under members that landed).
+	 * Resumable mid-phase and mid-alarm: a window's raw_done checkpoint (and
+	 * on the resumable path the decoder state) commits in the same transaction
+	 * as its members, and a killed or retried alarm cannot duplicate members —
+	 * member seq is derived from raw_start, and each window's write deletes
+	 * seq >= its own start before inserting, so a re-run replaces exactly what
+	 * a dead alarm may have half-committed (nothing, given the transaction,
+	 * but the delete also covers a checkpoint rolled back under members that
+	 * landed).
 	 *
 	 * The final window deletes the original all_cards stage_blobs INSIDE its
 	 * own transaction — first of the progressive staging purges, and
@@ -1062,34 +1098,236 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 */
 	private async stepRecode(kind: DumpKind): Promise<void> {
 		const rawDone = Number(this.metaGet("recode_raw_done") ?? 0);
-		const { windows, rawEnd, exhausted } = await recodeAlarm(this.stagedBlobBytes(kind), rawDone, (window) => {
-			this.ctx.storage.transactionSync(() => {
-				this.sqlRun(
-					"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
-					kind,
-					Math.floor(window.rawStart / MEMBER_RAW_BYTES),
-				);
-				for (const m of window.members) {
+		// The budget's rates are measured numbers, and the resumable path's
+		// wasm-inflate rate is the soft one (a dev-machine ratio scaled to
+		// production — see RECODE_RESUMED_WINDOW_SECONDS_PER_GIB). If a rate
+		// is badly underestimated, an alarm overruns 30s and the runtime KILLS
+		// it — uncaught, so `retries` never moves, but phase_attempts (counted
+		// durably BEFORE each attempt) does. Halving the budget per kill turns
+		// "die identically forever" into "converge to windows that fit": the
+		// exact spiral the old recode died of nightly, closed structurally.
+		const attempts = (await this.ctx.storage.get<number>("phase_attempts")) ?? 1;
+		const budgetSeconds = Math.max(RECODE_ALARM_BUDGET_SECONDS / 2 ** Math.max(0, attempts - 1), 1);
+		if (this.metaGet("recode_engine_fallback") !== "1" && this.stagedIsGzip(kind)) {
+			const wasm = transientWasm();
+			const compOffset = this.restoreRecodeCheckpoint(kind, rawDone, wasm);
+			if (compOffset !== null) {
+				try {
+					await this.stepRecodeResumable(kind, rawDone, wasm, compOffset, budgetSeconds);
+					return;
+				} catch (err) {
+					// Fail toward the proven path. Windows committed before the
+					// error stand (idempotent grid); the checkpoint goes so no
+					// later alarm trusts a decoder this error may have poisoned,
+					// and the flag stops re-trying a path that just burned CPU —
+					// two paths against one 30s allowance is how retries die.
+					console.error(`Recode resumable path failed; phase continues on the from-byte-0 fallback: ${err}`);
+					this.ctx.storage.transactionSync(() => {
+						this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
+						this.metaSet("recode_engine_fallback", "1");
+					});
+					return;
+				}
+			}
+		}
+		await this.stepRecodeFallback(kind, rawDone, budgetSeconds);
+	}
+
+	/** The resumable-path alarm: `wasm` holds a decoder positioned at exactly
+	 * `rawDone` raw / `compOffset` compressed bytes. */
+	private async stepRecodeResumable(
+		kind: DumpKind,
+		rawDone: number,
+		wasm: ImportWasm,
+		compOffset: number,
+		budgetSeconds: number,
+	): Promise<void> {
+		const source = new InflateRecodeSource(
+			ImportCoordinator.resumableInflate(wasm),
+			this.stagedCompressedBytes(kind, compOffset),
+			rawDone,
+		);
+		const { windows, rawEnd, exhausted } = await recodeAlarm(
+			source.stream(),
+			rawDone,
+			(window) => {
+				this.ctx.storage.transactionSync(() => {
 					this.sqlRun(
-						"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
+						"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
 						kind,
-						m.seq,
-						m.rawStart,
-						m.rawLen,
-						exactBuffer(m.bytes),
+						Math.floor(window.rawStart / MEMBER_RAW_BYTES),
 					);
-				}
-				this.metaSet("recode_raw_done", String(window.rawEnd));
-				if (window.exhausted) {
-					this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
-					this.metaSet("phase", phaseAfterStaged(kind));
-				}
-			});
-		});
+					for (const m of window.members) {
+						this.sqlRun(
+							"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
+							kind,
+							m.seq,
+							m.rawStart,
+							m.rawLen,
+							exactBuffer(m.bytes),
+						);
+					}
+					this.metaSet("recode_raw_done", String(window.rawEnd));
+					// The old checkpoint describes an offset this transaction
+					// obsoletes either way; only a state that provably sits at
+					// EXACTLY the committed offset replaces it.
+					this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
+					if (window.exhausted) {
+						this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
+						this.metaSet("phase", phaseAfterStaged(kind));
+					} else if (source.produced === window.rawEnd && wasm.inflateTotalOut() === window.rawEnd) {
+						this.sqlRun(
+							"INSERT INTO recode_checkpoint (kind, version, raw_done, state) VALUES (?, ?, ?, ?)",
+							kind,
+							RECODE_CHECKPOINT_VERSION,
+							window.rawEnd,
+							exactBuffer(wasm.inflateSave()),
+						);
+					} else {
+						// A decoder ahead of (or behind) the commit would make a
+						// LYING checkpoint — no checkpoint beats a wrong one; the
+						// next alarm pays the fallback prefix instead.
+						console.error(
+							`Recode checkpoint skipped: decoder at ${source.produced}/${wasm.inflateTotalOut()} raw ` +
+								`bytes, window committed at ${window.rawEnd}`,
+						);
+					}
+				});
+			},
+			{ resumed: true, gzipSecondsPerGib: RECODE_RESUMED_WINDOW_SECONDS_PER_GIB, budgetSeconds },
+		);
+		console.log(
+			`Recode alarm (resumable): ${kind} raw bytes ${rawDone}-${rawEnd} in ${windows} window(s)` +
+				`${exhausted ? " (done; original stage blobs dropped)" : ""}`,
+		);
+	}
+
+	/** The pre-checkpoint alarm shape, byte-identical output to the resumable
+	 * path (same raw stream, same member grid, same gzipBytes). */
+	private async stepRecodeFallback(kind: DumpKind, rawDone: number, budgetSeconds: number): Promise<void> {
+		const { windows, rawEnd, exhausted } = await recodeAlarm(
+			this.stagedBlobBytes(kind),
+			rawDone,
+			(window) => {
+				this.ctx.storage.transactionSync(() => {
+					this.sqlRun(
+						"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
+						kind,
+						Math.floor(window.rawStart / MEMBER_RAW_BYTES),
+					);
+					for (const m of window.members) {
+						this.sqlRun(
+							"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
+							kind,
+							m.seq,
+							m.rawStart,
+							m.rawLen,
+							exactBuffer(m.bytes),
+						);
+					}
+					this.metaSet("recode_raw_done", String(window.rawEnd));
+					if (window.exhausted) {
+						this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
+						this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
+						this.metaSet("phase", phaseAfterStaged(kind));
+					}
+				});
+			},
+			{ budgetSeconds },
+		);
 		console.log(
 			`Recode alarm: ${kind} raw bytes ${rawDone}-${rawEnd} in ${windows} window(s)` +
 				`${exhausted ? " (done; original stage blobs dropped)" : ""}`,
 		);
+	}
+
+	/**
+	 * Rebuild the wasm decoder for a resumable recode alarm. Returns the
+	 * compressed-byte offset to feed from — 0 for the fresh decoder that
+	 * bootstraps the phase — or null when nothing trustworthy exists and the
+	 * caller must take the fallback path: no row, a version stamp from other
+	 * code (the row's OR the state blob's own, checked inside the wasm), a
+	 * raw_done that does not match the live meta (a rolled-back transaction's
+	 * orphan — impossible while both write in one transaction, checked
+	 * anyway), or a decoder that restores to a different offset than the row
+	 * claims. A checkpoint is never "repaired": wrong is fallback.
+	 */
+	private restoreRecodeCheckpoint(kind: DumpKind, rawDone: number, wasm: ImportWasm): number | null {
+		if (rawDone === 0) {
+			wasm.inflateBegin();
+			return 0;
+		}
+		const row = this.sqlAll<{ version: number; raw_done: number; state: ArrayBuffer }>(
+			"SELECT version, raw_done, state FROM recode_checkpoint WHERE kind = ?",
+			kind,
+		)[0];
+		if (!row || Number(row.version) !== RECODE_CHECKPOINT_VERSION || Number(row.raw_done) !== rawDone) return null;
+		const compOffset = wasm.inflateRestore(new Uint8Array(row.state));
+		if (compOffset === null || wasm.inflateTotalOut() !== rawDone) return null;
+		return compOffset;
+	}
+
+	/** The wasm module's resumable-inflate surface, shaped for InflateRecodeSource. */
+	private static resumableInflate(wasm: ImportWasm): ResumableInflate {
+		return {
+			feed: (bytes, maxOut) => {
+				let output: Uint8Array | null = null;
+				wasm.setHandlers({
+					onInflate: (b) => {
+						output = b;
+					},
+				});
+				try {
+					return { consumed: wasm.inflateFeed(bytes, maxOut), output };
+				} finally {
+					wasm.setHandlers({});
+				}
+			},
+			atBoundary: () => wasm.inflateAtBoundary(),
+			totalOut: () => wasm.inflateTotalOut(),
+			save: () => wasm.inflateSave(),
+		};
+	}
+
+	/** True when a staged dump's bytes carry the gzip magic — the resumable
+	 * path only speaks gzip; anything else keeps the sniffing blob path. */
+	private stagedIsGzip(kind: DumpKind): boolean {
+		const head = this.sqlAll<{ head: ArrayBuffer }>(
+			"SELECT substr(bytes, 1, 2) AS head FROM stage_blobs WHERE kind = ? AND seq = 0",
+			kind,
+		)[0];
+		if (!head) return false;
+		const bytes = new Uint8Array(head.head as ArrayBuffer);
+		return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+	}
+
+	/**
+	 * A staged dump's COMPRESSED bytes from `fromByte` onward — the resumable
+	 * inflater's input. Row lengths are read first (no blob transfer) so the
+	 * skipped prefix is never hauled through memory; only the rows actually
+	 * fed are fetched whole.
+	 */
+	private async *stagedCompressedBytes(kind: DumpKind, fromByte: number): AsyncGenerator<Uint8Array> {
+		const sizes = this.sqlAll<{ seq: number; len: number }>(
+			"SELECT seq, LENGTH(bytes) AS len FROM stage_blobs WHERE kind = ? ORDER BY seq",
+			kind,
+		);
+		let skip = fromByte;
+		for (const { seq, len } of sizes) {
+			if (skip >= Number(len)) {
+				skip -= Number(len);
+				continue;
+			}
+			const row = this.sqlAll<{ bytes: ArrayBuffer }>(
+				"SELECT bytes FROM stage_blobs WHERE kind = ? AND seq = ?",
+				kind,
+				seq,
+			)[0];
+			if (!row) throw new Error(`recode: stage blob ${kind}#${seq} vanished mid-stream`);
+			const bytes = new Uint8Array(row.bytes as ArrayBuffer);
+			yield skip > 0 ? bytes.subarray(skip) : bytes;
+			skip = 0;
+		}
 	}
 
 	/** Stream a staged dump's RAW stage_blobs rows, decompressed. Detects gzip
@@ -2959,6 +3197,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			"stage_files",
 			"stage_blobs",
 			"stage_members",
+			"recode_checkpoint",
 			"draft_batches",
 			"spill_batches",
 			"ordered_rows",

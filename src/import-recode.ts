@@ -46,7 +46,8 @@ export const RECODE_GZIP_SECONDS_PER_GIB = 74;
 
 /**
  * Measured CPU cost of decompress-and-discard of the staged gzip prefix, in
- * seconds per GiB of raw prefix.
+ * seconds per GiB of raw prefix — the FALLBACK path's charge; the resumable
+ * path (below) has no prefix at all.
  *
  * Same 2026-08-27 probe: successive 256MiB windows cost 18.9s, 20.9s, 25.3s,
  * 25.1s, 28.1s, 29.1s — a fit of ≈ 18.9s + prefix-GiB × 8.2s. The window at
@@ -58,18 +59,54 @@ export const RECODE_GZIP_SECONDS_PER_GIB = 74;
 export const RECODE_DISCARD_SECONDS_PER_GIB = 8.2;
 
 /**
- * Work budget one recode alarm may spend, in modeled seconds (charged as
- * window-GiB × RECODE_GZIP_SECONDS_PER_GIB plus prefix-GiB ×
- * RECODE_DISCARD_SECONDS_PER_GIB), leaving real headroom under the 30s cap.
+ * Modeled CPU cost of one RESUMABLE-path window, in seconds per GiB of raw
+ * window bytes: gzip of the members plus the wasm inflater that replaces
+ * DecompressionStream as the window's byte source.
  *
- * The budget must assume the worst: a FRESH alarm pays the full current
- * prefix discard before its first window (a mid-alarm stop point never
- * carries over — the next alarm re-streams from byte 0), so the prefix charge
- * is levied up front whether this invocation is a resume or a retry. There is
- * no CPU clock to consult instead: Date.now/performance.now do not advance
- * during synchronous CPU in Workers.
+ * Derivation (probe 2026-08-28, bun on the dev machine, 256MiB of card-shaped
+ * JSONL at the dump's ~4.2:1 ratio): the wasm inflater ran 4.2x the platform
+ * DecompressionStream on identical input. Scaling production's measured
+ * 8.2s/GiB native inflate by that ratio ≈ 34s/GiB for the wasm path; the
+ * window charge is then gzip-only (74 − 8.2 ≈ 66, the 2026-08-27 window rate
+ * minus the native inflate it embedded) plus 34 ≈ 100s/GiB, padded to 110
+ * because the bun-vs-workerd ratio transfer is the soft step. Overcharging is
+ * the safe direction: windows shrink and alarms multiply, but none overruns.
+ * If production observability shows a materially different per-window rate,
+ * correct this the way the 2026-08-27 constants were set: from cpuTimeMs.
+ */
+export const RECODE_RESUMED_WINDOW_SECONDS_PER_GIB = 110;
+
+/**
+ * Work budget one recode alarm may spend, in modeled seconds, leaving real
+ * headroom under the 30s cap. There is no CPU clock to consult instead:
+ * Date.now/performance.now do not advance during synchronous CPU in Workers.
+ *
+ * Two charging models share the budget:
+ *
+ * - RESUMABLE path (checkpointed wasm inflater, `resumed: true`): no prefix
+ *   charge — the stream continues from the persisted decoder state — and
+ *   each window charged at RECODE_RESUMED_WINDOW_SECONDS_PER_GIB. Every
+ *   alarm is pure window work, bounded by this budget at ANY dump size,
+ *   which is what retired the decade fuse: the old model's prefix term grew
+ *   with the dump until (past ~3.6GiB raw) the discard alone exceeded the
+ *   cap.
+ *
+ * - FALLBACK path (DecompressionStream from byte 0): the prefix discard is
+ *   charged up front at RECODE_DISCARD_SECONDS_PER_GIB — the worst case, a
+ *   fresh alarm re-streaming to the checkpoint — and windows at
+ *   RECODE_GZIP_SECONDS_PER_GIB. Kept verbatim from the 2026-08-28 budget
+ *   fix for streams with no usable checkpoint (first alarm ever, a version-
+ *   stamped layout change mid-run, a refused blob), sound to ~2.9GiB raw.
  */
 export const RECODE_ALARM_BUDGET_SECONDS = 23;
+
+/**
+ * Version stamp on the recode_checkpoint ROW (the wasm state blob carries its
+ * own, engine/inflate's STATE_VERSION, checked by the wasm on restore). Bump
+ * when the row's meaning changes — e.g. what raw_done must equal, or what the
+ * state blob is a state OF — so an old row is refused, not reinterpreted.
+ */
+export const RECODE_CHECKPOINT_VERSION = 1;
 
 /**
  * Raw bytes per independent gzip member — the seek granularity.
@@ -250,6 +287,13 @@ export interface RecodeAlarmOptions {
 	memberRaw?: number;
 	gzipSecondsPerGib?: number;
 	discardSecondsPerGib?: number;
+	/**
+	 * The source is ALREADY positioned at `rawDone` (a restored inflater
+	 * checkpoint): no skip on the first window, no prefix charge — the whole
+	 * budget buys windows. Without it, the source starts at byte 0 and the
+	 * prefix is skipped and charged (the fallback model).
+	 */
+	resumed?: boolean;
 }
 
 const GIB = 1024 * 1024 * 1024;
@@ -290,9 +334,11 @@ export async function recodeAlarm(
 	const discardRate = opts.discardSecondsPerGib ?? RECODE_DISCARD_SECONDS_PER_GIB;
 	const gzipCost = (bytes: number) => (bytes / GIB) * gzipRate;
 
-	// The prefix charge, up front: even a mid-phase alarm re-streams from byte
-	// 0 and discards to the checkpoint before its first window.
-	let spent = (rawDone / GIB) * discardRate;
+	// The prefix charge, up front: a non-resumed mid-phase alarm re-streams
+	// from byte 0 and discards to the checkpoint before its first window. A
+	// resumed source has no prefix — that zero IS the fix for the prefix term
+	// growing with the dump.
+	let spent = opts.resumed ? 0 : (rawDone / GIB) * discardRate;
 	let cur = rawDone;
 	let windows = 0;
 	let carry: Uint8Array | undefined;
@@ -309,7 +355,7 @@ export async function recodeAlarm(
 				cur,
 				units * memberRaw,
 				memberRaw,
-				windows === 0 ? rawDone : 0,
+				windows === 0 && !opts.resumed ? rawDone : 0,
 			);
 			await commit(result);
 			windows += 1;
@@ -347,6 +393,84 @@ function resumedSource(carry: Uint8Array | undefined, it: AsyncIterator<Uint8Arr
 			},
 		}),
 	};
+}
+
+/**
+ * The slice of the wasm import module the resumable recode source drives — an
+ * interface rather than the ImportWasm class, so the source logic is testable
+ * against a bare wasm instance (tests/import/) or a scripted fake.
+ */
+export interface ResumableInflate {
+	/** Feed compressed bytes, producing AT MOST `maxOut` raw bytes; returns
+	 * input bytes consumed (re-feed the remainder) and the bytes produced. */
+	feed(bytes: Uint8Array, maxOut: number): { consumed: number; output: Uint8Array | null };
+	/** True at a verified gzip member end — the only clean EOF position. */
+	atBoundary(): boolean;
+	/** Raw bytes produced since compressed byte 0 (checkpoint cross-check). */
+	totalOut(): number;
+	/** Serialize the decoder state (persisted as the checkpoint blob). */
+	save(): Uint8Array;
+}
+
+const NO_BYTES = new Uint8Array(0);
+
+/**
+ * The resumable path's byte source: compressed stage_blobs rows in, raw bytes
+ * out through the wasm inflater — with every feed CAPPED at the next
+ * MEMBER_RAW_BYTES grid line, so no yielded chunk ever crosses a member
+ * boundary. That alignment is what makes checkpoints exact: recode windows
+ * are whole members, recodeWindow stops at a chunk edge, so when a window
+ * commits, the decoder has produced PRECISELY window.rawEnd bytes (tracked in
+ * `produced`, cross-checked against the wasm's own count before a checkpoint
+ * is trusted to disk) — never a lookahead byte more.
+ */
+export class InflateRecodeSource {
+	/** Raw offset the decoder sits at: rawStart plus every byte yielded. */
+	produced: number;
+	private pending: Uint8Array | undefined;
+	private rowsDone = false;
+
+	constructor(
+		private readonly inflate: ResumableInflate,
+		/** Compressed bytes, starting at the decoder's compressed offset. */
+		private readonly rows: AsyncIterator<Uint8Array>,
+		rawStart: number,
+		private readonly memberRaw = MEMBER_RAW_BYTES,
+	) {
+		this.produced = rawStart;
+	}
+
+	async *stream(): AsyncGenerator<Uint8Array> {
+		for (;;) {
+			if ((!this.pending || this.pending.length === 0) && !this.rowsDone) {
+				const next = await this.rows.next();
+				if (next.done) this.rowsDone = true;
+				else this.pending = next.value;
+			}
+			const input = this.pending && this.pending.length > 0 ? this.pending : NO_BYTES;
+			const cap = this.memberRaw - (this.produced % this.memberRaw);
+			const { consumed, output } = this.inflate.feed(input, cap);
+			if (this.pending) {
+				this.pending = consumed >= this.pending.length ? undefined : this.pending.subarray(consumed);
+			}
+			if (output && output.length > 0) {
+				this.produced += output.length;
+				yield output;
+				continue;
+			}
+			if ((!this.pending || this.pending.length === 0) && this.rowsDone) {
+				// Out of input, out of output: the end — clean only on a
+				// verified member boundary.
+				if (this.inflate.atBoundary()) return;
+				throw new Error("recode: staged gzip stream is truncated (ends mid-member)");
+			}
+			if (consumed === 0 && input.length > 0) {
+				// The decoder must consume or produce on every feed; anything
+				// else would spin this loop forever.
+				throw new Error("recode: inflater made no progress");
+			}
+		}
+	}
 }
 
 /**
