@@ -25,12 +25,13 @@ COLOR_CODE_TO_NAME = {
 # table, only the hyphenated forms and the five one-word synonyms are -- and so do `five`, `mono`,
 # `guild`, `shard`, `wedge`, `nephilim` and `chromatic`.
 #
-# `all` spells `wubrgc` where `rainbow` spells `wubrg`, and the difference is measured rather than
-# cosmetic: for card_colors and card_color_identity the `c` drops out, so `c:all` = `c:wubrg` = 60,
-# while for produced_mana it does not, so `produces:all` matches nothing (no card produces all six)
-# where `produces:rainbow` = `produces:wubrg` = 13. One table serves all three columns because
-# `get_colors_comparison_object` already draws exactly that line. It also fully replaces the old
-# name -> single-letter-code table (`white` -> `w`, etc.), so there is only one lookup path.
+# `all` spells `wubrgc` where `rainbow` spells `wubrg`. Both are in this table because it is the
+# VOCABULARY -- Scryfall accepts both words -- but neither is compared as a SET of letters: they are
+# COUNTS, and the letters they spell are read only for how many values they come to on the column
+# being asked. See COLOR_SPREAD_COUNT_NAMES below.
+#
+# It also fully replaces the old name -> single-letter-code table (`white` -> `w`, etc.), so there
+# is only one lookup path.
 COLOR_ALIAS_TO_CODES = {
     # the five colours, colourless, and the British and slang spellings of the latter
     "white": "w",
@@ -138,3 +139,46 @@ COLOR_COUNT_NAMES = frozenset(
         "multicoloured",
     }
 )
+
+
+# The two colour names that mean "the WHOLE spread of this column", which is a COUNT.
+#
+# `rainbow` and `all` live in COLOR_ALIAS_TO_CODES because Scryfall accepts both words and that map
+# is the vocabulary. They are not compared as the letters they spell, though, and this is the one
+# place in the colour vocabulary where a name and its own letter spelling ANSWER DIFFERENTLY. The
+# letters are read only for how many values they come to on the column asked:
+#
+#   rainbow  spells wubrg  -> 5 on every column
+#   all      spells wubrgc -> 5 on card_colors / card_color_identity (the C drops out), 6 on
+#                             produced_mana (where C is a producible value) -- the same asymmetry
+#                             COLOR_COUNT_NAMES' `produces=6` paragraph already carries
+#
+# and THE OPERATOR IS CARRIED THROUGH VERBATIM, with `:` meaning `=` -- which is exactly what the
+# numeric colour-count path does with `c:2` already. No surprises, unlike the `m` and `any` tables.
+#
+# MEASURED against api.scryfall.com 2026-08-28, corpus-wide (33,599 cards), on all three columns:
+#
+#   c:rainbow = c:all = c>=all = c=all           =     60 = `c=5`      c>all = 0 = `c>5`
+#   c<rainbow = c<all = c!=rainbow               = 33,540 = `c<5` = `c!=5`
+#   id:rainbow = id:all = id=rainbow = id>=all   =    129 = `id=5`     id>rainbow = 0
+#   id<rainbow = id<all = id!=rainbow = id!=all  = 33,470 = `id<5` = `id!=5`
+#   id<=rainbow = id<=all                        = 33,599 = every card
+#   produces:rainbow = produces=rainbow          =    693 = `produces=5`
+#   produces>=rainbow                            =    799 = `produces>=5`
+#   produces<rainbow                             = 32,800 = `produces<5`
+#   produces<=rainbow                            = 33,493 = `produces<=5`
+#   produces>rainbow                             =    106 = `produces>5`
+#   produces!=rainbow                            = 32,906 = `produces!=5`
+#   produces:all = produces=all = produces>=all  =    106 = `produces=6`   produces>all = 0
+#   produces<all = produces!=all                 = 33,493 = `produces<6`   produces<=all = 33,599
+#
+# TWO ROWS REFUTE THE SET READING, and they are why this is a table and not a letter expansion.
+# `id:wubrg` is 33,599 -- EVERY card -- because `id:` is a subset test, while `id:rainbow` is 129;
+# and `produces:wubrg` is 799 where `produces:rainbow` is 693, because a superset-of-WUBRG test also
+# admits the 106 cards that produce a sixth value.
+#
+# The doc-comment this replaces claimed `produces:all` matched nothing and that `produces:rainbow`
+# = `produces:wubrg` = 13. Both are refuted above by direct probe on the same day the rest of this
+# table was measured; card_engine's own `color_count` had the right number for `produces:all` (106)
+# all along, so the two comments had been contradicting each other.
+COLOR_SPREAD_COUNT_NAMES = frozenset({"rainbow", "all"})

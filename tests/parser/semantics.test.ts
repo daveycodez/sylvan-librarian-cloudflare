@@ -124,6 +124,188 @@ describe("derived-predicate expansion", () => {
 	}
 });
 
+// ── produces:any ─────────────────────────────────────────────────────────────
+//
+// `any` is a colour-COUNT name on produced_mana and nowhere else. Measured against
+// api.scryfall.com 2026-08-28, corpus-wide AND against a `t:creature` second base — every equality
+// below held on both, which is what rules out a coincidence of the whole-corpus totals:
+//
+//   produces:any = produces=any = produces>any = produces>=any = produces!=any
+//                        = 2,603 = `produces>=1`   (t:creature: 756)
+//   produces<any         = 30,996 = `produces=0`   (t:creature: 17,997)
+//   produces<=any        = 32,139 = `produces<=1`  (t:creature: 18,369)
+//
+// This port dropped the term entirely instead: `any` was in neither name table, so the value
+// parser threw, the compat layer removed the expression, and `t:legendary t:creature produces:any`
+// answered `t:legendary t:creature`'s 3,625 where Scryfall answers 194.
+//
+// `!=` GROUPS WITH `:` here, which is NOT how the `m` table behaves (`produces!=m` is the low side,
+// `produces=1`). The asymmetry is measured on both bases; do not tidy it.
+const PRODUCES_ANY_EQUIVALENCES: Array<[string, string]> = [
+	["produces:any", "produces>=1"],
+	["produces=any", "produces>=1"],
+	["produces>any", "produces>=1"],
+	["produces>=any", "produces>=1"],
+	["produces!=any", "produces>=1"],
+	["produces<any", "produces=0"],
+	["produces<=any", "produces<=1"],
+];
+
+describe("produces:any is a colour COUNT, on one column only", () => {
+	for (const [written, meaning] of PRODUCES_ANY_EQUIVALENCES) {
+		test(`${written} == ${meaning}`, () => {
+			expect(tree(written)).toBe(tree(meaning));
+		});
+	}
+
+	test("the whole operator table is pinned, both sides of every row", () => {
+		// The rows that SEPARATE the three answers, stated as inequalities so a table collapsed to
+		// one value cannot pass: `<` is not `<=`, and neither is `:`.
+		expect(tree("produces<any")).not.toBe(tree("produces<=any"));
+		expect(tree("produces<=any")).not.toBe(tree("produces:any"));
+		// And `any` is not `m` under any operator — the two tables disagree on every row.
+		for (const op of [":", "=", ">", ">=", "<", "<=", "!="]) {
+			expect(tree(`produces${op}any`)).not.toBe(tree(`produces${op}m`));
+		}
+	});
+
+	test("the value is case-insensitive and survives quoting, like every other colour name", () => {
+		expect(tree("produces:ANY")).toBe(tree("produces>=1"));
+		expect(tree('produces:"any"')).toBe(tree("produces>=1"));
+	});
+
+	// THE CONSTRAINT, and the half a global name table would break. Scryfall does not accept `any`
+	// on the colour columns: `c:any` alone answers "All of your terms were ignored", and both
+	// `t:creature c:any` and `t:creature id:any` answer `t:creature`'s 18,753 — REJECTED and
+	// dropped, not applied. The parse error here is what the compat layer turns into that drop.
+	test("c:/id: reject any, on every spelling of both colour columns", () => {
+		for (const alias of ["c", "color", "colors", "colour", "colours", "ci", "id", "identity", "commander"]) {
+			expect(() => parseScryfallQuery(`${alias}:any`)).toThrow(ParseError);
+		}
+		// Quoted, the value parser is bypassed and serialization is what refuses it — the same
+		// place `c:"purple"` is refused.
+		expect(() => parseScryfallQuery('c:"any"')).toThrow(new ParseError("Invalid color string: any"));
+	});
+
+	test("the colour columns keep every name they already had", () => {
+		expect(tree("c:azorius")).toBe(tree("c:wu"));
+		expect(tree("c:m")).toBe(tree("c>=2"));
+		expect(tree("id:gold")).toBe(tree("id>=2"));
+	});
+});
+
+// ── rainbow / all ────────────────────────────────────────────────────────────
+//
+// The two colour names that mean "the WHOLE spread of this column", which is a COUNT and not the
+// letters they spell. Measured against api.scryfall.com 2026-08-28, corpus-wide (33,599 cards) —
+// the full table and the two rows that refute the letter reading are at db-info's
+// COLOR_SPREAD_COUNT_NAMES.
+//
+// This port compared them as letters, so `id:rainbow` — a subset test against all five colours —
+// answered EVERY card (151 on `e:khm t:creature`, where Scryfall answers 1) and `produces:rainbow`
+// answered 799 against Scryfall's 693.
+//
+// `all` is the only value in the colour vocabulary whose meaning depends on the COLUMN: 5 where the
+// C bit drops out, 6 on produced_mana where it does not.
+const SPREAD_EQUIVALENCES: Array<[string, string]> = [
+	["c:rainbow", "c=5"],
+	["c:all", "c=5"],
+	["c=rainbow", "c=5"],
+	["c>=all", "c>=5"],
+	["c<rainbow", "c<5"],
+	["c!=rainbow", "c!=5"],
+	["c>all", "c>5"],
+	["c<=rainbow", "c<=5"],
+	["id:rainbow", "id=5"],
+	["id:all", "id=5"],
+	["id>=rainbow", "id>=5"],
+	["id<all", "id<5"],
+	["id!=all", "id!=5"],
+	["produces:rainbow", "produces=5"],
+	["produces=rainbow", "produces=5"],
+	["produces>=rainbow", "produces>=5"],
+	["produces<rainbow", "produces<5"],
+	["produces<=rainbow", "produces<=5"],
+	["produces>rainbow", "produces>5"],
+	["produces!=rainbow", "produces!=5"],
+	["produces:all", "produces=6"],
+	["produces=all", "produces=6"],
+	["produces>=all", "produces>=6"],
+	["produces<all", "produces<6"],
+	["produces!=all", "produces!=6"],
+];
+
+describe("rainbow and all are the column's whole SPREAD, as a count", () => {
+	for (const [written, meaning] of SPREAD_EQUIVALENCES) {
+		test(`${written} == ${meaning}`, () => {
+			expect(tree(written)).toBe(tree(meaning));
+		});
+	}
+
+	test("`all` is the COLUMN's width, and `rainbow` is five everywhere", () => {
+		// The one value in the colour vocabulary whose meaning depends on which column it is on.
+		expect(tree("produces:all")).not.toBe(tree("c:all"));
+		expect(tree("produces:all")).not.toBe(tree("produces:rainbow"));
+		expect(tree("c:all")).toBe(tree("c:rainbow"));
+		expect(tree("id:all")).toBe(tree("id:rainbow"));
+	});
+
+	test("neither name is its own letter spelling any more", () => {
+		// `id:` is a SUBSET test, so `id:wubrg` is every card where `id:rainbow` is the five-colour
+		// ones; and `produces:wubrg` also admits the cards that produce a sixth value.
+		expect(tree("id:rainbow")).not.toBe(tree("id:wubrg"));
+		expect(tree("produces:rainbow")).not.toBe(tree("produces:wubrg"));
+		expect(tree("produces:all")).not.toBe(tree("produces:wubrgc"));
+		// ...and no OTHER colour name moved: a guild is still the letters it spells.
+		expect(tree("id:azorius")).toBe(tree("id:wu"));
+		expect(tree("c:esper")).toBe(tree("c:wub"));
+		expect(tree("produces:bant")).toBe(tree("produces:gwu"));
+	});
+
+	test("the value is case-insensitive and survives quoting, like every other colour name", () => {
+		expect(tree("id:RAINBOW")).toBe(tree("id=5"));
+		expect(tree('produces:"all"')).toBe(tree("produces=6"));
+	});
+});
+
+// ── c>=colorless ─────────────────────────────────────────────────────────────
+//
+// EVERY CARD IS A SUPERSET OF NOTHING. `>=` against colourless on a colour column is a tautology on
+// Scryfall — `c>=c` is 33,599, the whole corpus, and 151 on the `e:khm t:creature` base — where
+// this port answered the 4,300 colourless cards (2 on that base). The engine's mask compare cannot
+// tell `:` from `>=` (both are CmpOp::Ge by then) and its empty-mask special case is right for `:`,
+// so the `>=` row is separated in the parser as the tautology `>= 0`.
+//
+// The full measurement, and the six operator rows that did NOT move, are at card-query-nodes'
+// COLORLESS_BY_OPERATOR.
+describe("c>=colorless is a tautology, and only that one operator moved", () => {
+	for (const spelling of ["c", "colorless", "colourless", "brown"]) {
+		test(`c>=${spelling} and id>=${spelling} are the whole corpus`, () => {
+			// `c<=m` already spells a tautology this way, so this is not a new node shape.
+			expect(tree(`c>=${spelling}`)).toBe(tree("c<=m"));
+			expect(tree(`id>=${spelling}`)).toBe(tree("id<=m"));
+		});
+	}
+
+	test("every other operator still compares against the empty colour set", () => {
+		// The engine answers all six of these correctly as a mask compare, so the parser must NOT
+		// lower them — `c:c` in particular is the 4,300 colourless cards, not every card.
+		for (const op of [":", "=", "!=", "<", "<=", ">"]) {
+			expect(tree(`c${op}colorless`)).toBe(tree(`c${op}c`));
+			expect(tree(`c${op}c`)).toContain('"rhs":[]');
+		}
+	});
+
+	test("produced_mana is untouched, because colourless is a real value there", () => {
+		// Sol Ring's produced_mana is ["C"] while its colors and color_identity are both [] — so on
+		// this one column `c` is the C lane, `produces>=c` is an ordinary mask compare (685 on
+		// Scryfall, 2026-08-28), and none of the tautology above applies.
+		expect(tree("produces>=c")).toContain('"rhs":["C"]');
+		expect(tree("produces>=colorless")).toBe(tree("produces>=c"));
+		expect(tree("produces>=c")).not.toBe(tree("c>=c"));
+	});
+});
+
 // ── has: is a TOTAL alias of is: ─────────────────────────────────────────────
 //
 // The parity sweep found `has:split` answering a 404 here against 126 on api.scryfall.com. The

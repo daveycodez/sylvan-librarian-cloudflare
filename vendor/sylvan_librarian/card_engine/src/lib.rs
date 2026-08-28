@@ -11914,7 +11914,7 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
                 ColorField::ProducedMana => &vt.produced_mana,
             };
             return Some(
-                table.iter().filter(|(bits, _)| color_cmp(**bits, *op, *mask)).map(|(_, t)| t.get(mode)).sum(),
+                table.iter().filter(|(bits, _)| color_cmp(**bits, *op, *mask, *field)).map(|(_, t)| t.get(mode)).sum(),
             );
         }
         _ => {}

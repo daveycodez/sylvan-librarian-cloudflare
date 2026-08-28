@@ -416,13 +416,13 @@ export const COLOR_NAME_TO_CODE: ReadonlyMap<string, string> = new Map(
  * table, only the hyphenated forms and the five one-word synonyms are — and so do `five`, `mono`,
  * `guild`, `shard`, `wedge`, `nephilim` and `chromatic`.
  *
- * `all` spells `wubrgc` where `rainbow` spells `wubrg`, and the difference is measured rather than
- * cosmetic: for card_colors and card_color_identity the `c` drops out, so `c:all` = `c:wubrg` = 60,
- * while for produced_mana it does not, so `produces:all` matches nothing (no card produces all six)
- * where `produces:rainbow` = `produces:wubrg` = 13. One table serves all three columns because
- * `getColorsComparisonKeys` already draws exactly that line.
+ * `all` spells `wubrgc` where `rainbow` spells `wubrg`. Both are in this table because it is the
+ * VOCABULARY — Scryfall accepts both words, and the compat layer reads this map to decide that —
+ * but neither is compared as a SET of letters: they are COUNTS, and the letters they spell are read
+ * only for how many values they come to on the column being asked. See COLOR_SPREAD_COUNT_NAMES.
  *
- * NOT here: the colour-COUNT names, which spell no letters at all — see COLOR_COUNT_NAMES below.
+ * NOT compared as letters either: the colour-COUNT names, which spell nothing at all — see
+ * COLOR_COUNT_NAMES below.
  */
 export const COLOR_ALIAS_TO_CODES: ReadonlyMap<string, string> = new Map([
 	// the five colours, colourless, and the British and slang spellings of the latter
@@ -530,6 +530,87 @@ export const COLOR_COUNT_NAMES: ReadonlySet<string> = new Set([
 	"multicolour",
 	"multicolored",
 	"multicoloured",
+]);
+
+/**
+ * The two colour names that mean "the WHOLE spread of this column", which is a COUNT.
+ *
+ * `rainbow` and `all` live in COLOR_ALIAS_TO_CODES because Scryfall accepts both words and that
+ * map is the vocabulary. They are not compared as the letters they spell, though, and this is the
+ * one place in the colour vocabulary where a name and its own letter spelling ANSWER DIFFERENTLY.
+ * The letters are read only for how many values they come to on the column asked:
+ *
+ *   rainbow  spells wubrg  -> 5 on every column
+ *   all      spells wubrgc -> 5 on card_colors / card_color_identity (the C drops out), 6 on
+ *                             produced_mana (where C is a producible value) — the same asymmetry
+ *                             COLOR_COUNT_NAMES' `produces=6` paragraph already carries
+ *
+ * and THE OPERATOR IS CARRIED THROUGH VERBATIM, with `:` meaning `=` — which is exactly what the
+ * numeric colour-count path does with `c:2` already. No surprises, unlike the `m` and `any` tables.
+ *
+ * MEASURED against api.scryfall.com 2026-08-28, corpus-wide (33,599 cards), on all three columns:
+ *
+ *   c:rainbow = c:all = c>=all = c=all           =     60 = `c=5`      c>all = 0 = `c>5`
+ *   c<rainbow = c<all = c!=rainbow               = 33,540 = `c<5` = `c!=5`
+ *   id:rainbow = id:all = id=rainbow = id>=all   =    129 = `id=5`     id>rainbow = 0
+ *   id<rainbow = id<all = id!=rainbow = id!=all  = 33,470 = `id<5` = `id!=5`
+ *   id<=rainbow = id<=all                        = 33,599 = every card
+ *   produces:rainbow = produces=rainbow          =    693 = `produces=5`
+ *   produces>=rainbow                            =    799 = `produces>=5`
+ *   produces<rainbow                             = 32,800 = `produces<5`
+ *   produces<=rainbow                            = 33,493 = `produces<=5`
+ *   produces>rainbow                             =    106 = `produces>5`
+ *   produces!=rainbow                            = 32,906 = `produces!=5`
+ *   produces:all = produces=all = produces>=all  =    106 = `produces=6`   produces>all = 0
+ *   produces<all = produces!=all                 = 33,493 = `produces<6`   produces<=all = 33,599
+ *
+ * TWO ROWS REFUTE THE SET READING, and they are why this is a table and not a letter expansion.
+ * `id:wubrg` is 33,599 — EVERY card — because `id:` is a subset test, while `id:rainbow` is 129;
+ * and `produces:wubrg` is 799 where `produces:rainbow` is 693, because a superset-of-WUBRG test
+ * also admits the 106 cards that produce a sixth value. Reading either name as its letters is what
+ * made `id:rainbow` answer the unfiltered corpus here.
+ *
+ * The doc-comment this replaces claimed `produces:all` matched nothing and that
+ * `produces:rainbow` = `produces:wubrg` = 13. Both are refuted above by direct probe on the same
+ * day the rest of this table was measured; card_engine's own `color_count` had the right number
+ * for `produces:all` (106) all along, so the two comments had been contradicting each other.
+ */
+export const COLOR_SPREAD_COUNT_NAMES: ReadonlySet<string> = new Set(["rainbow", "all"]);
+
+/**
+ * The colour-COUNT names that are valid on ONE column only, as `db column -> names`.
+ *
+ * `any` is the whole table today, and it belongs to produced_mana alone. It is not a set of
+ * letters and not a synonym for `m` — it asks whether the card produces ANYTHING — so it lowers
+ * to its own (operator, count) pairs, written out at card-query-nodes' PRODUCED_ANY_BY_OPERATOR.
+ *
+ * MEASURED against api.scryfall.com 2026-08-28, corpus-wide AND against a `t:creature` second
+ * base, so no equality below can be read as an accident of the whole-corpus totals:
+ *
+ *   produces:any = produces=any = produces>any = produces>=any = produces!=any
+ *                        = 2,603 = `produces>=1`   (t:creature: 756)
+ *   produces<any         = 30,996 = `produces=0`   (t:creature: 17,997)
+ *   produces<=any        = 32,139 = `produces<=1`  (t:creature: 18,369)
+ *
+ * `!=` GROUPS WITH `:` HERE, which is NOT how the `m` table above behaves — there `produces!=m`
+ * is the low side (`produces=1`) while `produces:m` is the high side. The asymmetry between the
+ * two tables is measured on both bases and is deliberately not tidied: `produces!=any` is 2,603,
+ * the same as `produces:any`, not the 30,996 a mirror of the `m` table would give.
+ *
+ * `<` and `<=` are the two that separate `any` from every count spelling: `produces<any` is
+ * `produces=0` (the cards that produce nothing), while `produces<=any` is `produces<=1` — which
+ * is `produces=0` plus the 1,143 single-value producers, and is NOT the whole corpus the way
+ * `c<=m` is.
+ *
+ * SCOPED, AND THE SCOPE IS THE POINT. Scryfall does not accept `any` on the colour columns at
+ * all: `c:any` on its own answers "All of your terms were ignored", and both `t:creature c:any`
+ * and `t:creature id:any` answer `t:creature`'s 18,753 — the term is REJECTED and dropped, not
+ * applied. So `any` must never join COLOR_COUNT_NAMES, which every colour column reads; it is
+ * reachable only through the column named here, and `c:any` / `id:any` keep the parse error that
+ * makes the compat layer drop them exactly as Scryfall does.
+ */
+export const COLUMN_SCOPED_COUNT_NAMES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["produced_mana", new Set(["any"])],
 ]);
 
 export const FORMAT_CODE_TO_NAME: ReadonlyMap<string, string> = new Map([

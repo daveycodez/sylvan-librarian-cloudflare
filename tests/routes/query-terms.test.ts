@@ -6,6 +6,8 @@
 // responses. See src/routes/scryfall-compat/query-terms.ts for the request that produced each.
 
 import { describe, expect, test } from "bun:test";
+import { parseScryfallQuery } from "../../src/parser";
+import { COLOR_ALIAS_TO_CODES, COLOR_COUNT_NAMES, COLUMN_SCOPED_COUNT_NAMES } from "../../src/parser/db-info";
 import { foldSmartQuotes, scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
 
 describe("typographic quote folding", () => {
@@ -619,6 +621,26 @@ describe("colour values Scryfall refuses, and the sentence it refuses them with"
 		}
 	});
 
+	test("produces:any is honoured here, and c:any / id:any are still dropped", () => {
+		// `any` is a produced_mana name and nothing else. Measured against api.scryfall.com
+		// 2026-08-28: `produces:any` = 2,603 = `produces>=1`, so warning would claim a term was
+		// dropped that Scryfall applied — while `c:any` on its own answers "All of your terms were
+		// ignored" and `t:creature c:any` = `t:creature` = 18,753, so the drop is what Scryfall
+		// does there. This port dropped BOTH, which is what made `produces:any` match everything.
+		for (const op of [":", "=", ">", ">=", "<", "<=", "!="]) {
+			expect(scryfallTermPolicy(`produces${op}any e:khm`).warnings).toEqual([]);
+		}
+		expect(scryfallTermPolicy("produces:ANY e:khm").warnings).toEqual([]);
+		for (const kw of ["c", "color", "colors", "colour", "colours", "ci", "id", "identity", "commander"]) {
+			expect(scryfallTermPolicy(`${kw}:any e:khm`).warnings).toEqual([
+				`Invalid expression “${kw}:any” was ignored. Unknown color “a”`,
+			]);
+		}
+		// Alone, with nothing left standing: every term ignored, exactly as Scryfall answers it.
+		expect(scryfallTermPolicy("c:any").allIgnored).toBe(true);
+		expect(scryfallTermPolicy("produces:any").allIgnored).toBe(false);
+	});
+
 	test("the identity spellings Scryfall REFUSES are unknown keywords, not colour values", () => {
 		// Scryfall's identity vocabulary is a boundary — `id`/`identity`/`ci`/`commander` and
 		// nothing else — so these answer "Unknown keyword", NOT a colour complaint. `coloridentity`
@@ -635,19 +657,170 @@ describe("colour values Scryfall refuses, and the sentence it refuses them with"
 		// The `m` rule is decided BEFORE the colored-and-colorless contradiction and BEFORE the
 		// unknown-letter sentence, and gaining the count names must not move that line: `c:mc`
 		// spells a `c` next to an `m` and still answers the `m` sentence, not the contradiction.
-		for (const [term, rest] of [
-			["c:mw", "w"],
-			["c:wm", "w"],
-			["c:mc", "c"],
-			["c!=mw", "w"],
-			["id:mw", "w"],
-			["produces:mw", "w"],
+		for (const [term, hint] of [
+			["c:mw", "c>w"],
+			["c:wm", "c>w"],
+			["c:mc", "c>c"],
+			["c!=mw", "c>w"],
+			["id:mw", "id>w"],
+			["produces:mw", "produces>w"],
 		] as [string, string][]) {
 			expect(scryfallTermPolicy(`${term} e:khm`).warnings).toEqual([
-				`Invalid expression “${term}” was ignored. Using “m” with other colors is no longer supported. Use c>${rest} instead.`,
+				`Invalid expression “${term}” was ignored. Using “m” with other colors is no longer supported. Use ${hint} instead.`,
 			]);
 		}
 	});
+
+	// MEASURED 2026-08-28, one request each, anchor `e:khm` = 323. The hint echoes THE KEYWORD THE
+	// USER TYPED — ten spellings, ten different hints — where this port said `c>` for all ten. The
+	// `c:` spelling agreed by coincidence, which is why the divergence hid until the value-axis
+	// sweep put a colour-count name on the other columns (42 cases).
+	const HINT_BY_KEYWORD: [string, string, string][] = [
+		["c", "mw", "c>w"],
+		["color", "mw", "color>w"],
+		["colors", "mw", "colors>w"],
+		["colour", "mw", "colour>w"],
+		["colours", "mw", "colours>w"],
+		["ci", "mw", "ci>w"],
+		["id", "mw", "id>w"],
+		["identity", "mw", "identity>w"],
+		["commander", "mw", "commander>w"],
+		["produces", "mw", "produces>w"],
+		// the two the sweep actually caught, verbatim off the live responses
+		["id", "mono", "id>no"],
+		["produces", "nephilim", "produces>ehiln"],
+	];
+	for (const [keyword, value, hint] of HINT_BY_KEYWORD) {
+		test(`${keyword}:${value} hints ${hint}`, () => {
+			expect(scryfallTermPolicy(`${keyword}:${value} e:khm`).warnings).toEqual([
+				`Invalid expression “${keyword}:${value}” was ignored. Using “m” with other colors is no longer supported. Use ${hint} instead.`,
+			]);
+		});
+	}
+
+	test("the keyword echoed in the hint is LOWERCASED however it was typed", () => {
+		// Measured 2026-08-28: `C:MW e:khm` comes back "… Use c>w instead." and `Id:mw` "… Use
+		// id>w instead." — the hint is the keyword folded to lower case, never the letters as
+		// typed. Asserted on the HINT only: Scryfall also lower-cases the expression it echoes
+		// (`Invalid expression “c:mw”` for `C:MW`) where this port echoes the term verbatim, which
+		// is a separate divergence in the echo and not in the colour rule.
+		expect(scryfallTermPolicy("C:MW e:khm").warnings[0]).toContain("Use c>w instead.");
+		expect(scryfallTermPolicy("Id:mw e:khm").warnings[0]).toContain("Use id>w instead.");
+	});
+});
+
+/**
+ * THE ANTI-DRIFT ASSERTION.
+ *
+ * The compat layer's colour-name table and the parser's are one vocabulary, and keeping them as two
+ * hand-written lists cost us the same bug twice: `produces:any` (fixed 3288c89) and then all five
+ * Strixhaven colleges, which the parser has spelled since 2026-08-16 while the compat table did
+ * not — so `c:lorehold e:khm t:creature` answered the UNFILTERED 151 with a warning where Scryfall
+ * answers 2, across three columns and seven operators (105 sweep cases).
+ *
+ * query-terms now DERIVES its table from db-info, so an addition can no longer be missed. What
+ * derivation cannot police is the other direction — the parser gaining a name Scryfall REFUSES,
+ * which would turn a warning Scryfall emits into a silent answer — so that is what this asserts,
+ * name by name, over the whole vocabulary and on every colour column.
+ */
+describe("the compat colour vocabulary is the parser's colour vocabulary", () => {
+	const SET_NAMES = [...COLOR_ALIAS_TO_CODES.keys()];
+	const COUNT_NAMES = [...COLOR_COUNT_NAMES];
+	const ALL_NAMES = [...SET_NAMES, ...COUNT_NAMES];
+	// Only `any` today, and it is produced_mana's alone — see db-info's COLUMN_SCOPED_COUNT_NAMES.
+	const PRODUCES_ONLY = [...(COLUMN_SCOPED_COUNT_NAMES.get("produced_mana") ?? [])];
+	// `produces:` refuses the WORDS for colorless, because colorless is a producible value there
+	// spelled `c`. Derived from the codes, exactly as query-terms derives it.
+	const COLORLESS_WORDS = SET_NAMES.filter((n) => COLOR_ALIAS_TO_CODES.get(n) === "c");
+
+	test("every name the parser spells survives the policy on c: and id:, unwarned", () => {
+		for (const name of ALL_NAMES) {
+			for (const keyword of ["c", "id"]) {
+				const verdict = scryfallTermPolicy(`${keyword}:${name} e:khm`);
+				expect({ name, keyword, ...verdict }).toMatchObject({ query: `${keyword}:${name} e:khm`, warnings: [] });
+			}
+		}
+	});
+
+	test("every name the compat layer keeps, the parser can actually parse", () => {
+		// The half derivation cannot give us: a name kept here that the parser cannot spell is a
+		// 400 where Scryfall answers. Both directions are now bonded, not just documented.
+		for (const name of ALL_NAMES) {
+			for (const keyword of ["c", "id"]) {
+				expect(() => parseScryfallQuery(`${keyword}:${name}`)).not.toThrow();
+			}
+		}
+		for (const name of [...ALL_NAMES.filter((n) => !COLORLESS_WORDS.includes(n)), ...PRODUCES_ONLY]) {
+			expect(() => parseScryfallQuery(`produces:${name}`)).not.toThrow();
+		}
+	});
+
+	test("produces: takes the same vocabulary minus the words for colorless, plus its scoped names", () => {
+		expect(COLORLESS_WORDS.sort()).toEqual(["brown", "colorless", "colourless"]);
+		for (const name of ALL_NAMES.filter((n) => !COLORLESS_WORDS.includes(n))) {
+			expect(scryfallTermPolicy(`produces:${name} e:khm`).warnings).toEqual([]);
+		}
+		for (const name of PRODUCES_ONLY) {
+			expect(scryfallTermPolicy(`produces:${name} e:khm`).warnings).toEqual([]);
+		}
+	});
+
+	test("the scoped names stay scoped: c:any and id:any are still dropped", () => {
+		// The one entry the colour columns must NOT gain. `t:creature c:any` = `t:creature` =
+		// 18,753 on Scryfall — the term is rejected and dropped, not applied.
+		for (const keyword of ["c", "id"]) {
+			for (const name of PRODUCES_ONLY) {
+				expect(scryfallTermPolicy(`${keyword}:${name} e:khm`).warnings).toEqual([
+					`Invalid expression “${keyword}:${name}” was ignored. Unknown color “${[...new Set(name)].sort()[0]}”`,
+				]);
+			}
+		}
+	});
+
+	test("the words for colorless are refused on produces: and nowhere else", () => {
+		expect(scryfallTermPolicy("produces:colorless e:khm").warnings).toEqual([
+			"Invalid expression “produces:colorless” was ignored. Unknown color “e”",
+		]);
+		expect(scryfallTermPolicy("produces:brown e:khm").warnings).toEqual([
+			"Invalid expression “produces:brown” was ignored. Unknown color “n”",
+		]);
+		expect(scryfallTermPolicy("c:colorless e:khm").warnings).toEqual([]);
+		expect(scryfallTermPolicy("c:brown e:khm").warnings).toEqual([]);
+	});
+
+	test("the boundary is still a boundary: the names Scryfall refuses are still refused", () => {
+		// Derivation must not have widened the table. These came back "Unknown color …" or the `m`
+		// sentence live (2026-08-16), and none of them may become a silent answer.
+		for (const name of ["yore", "glint", "dune", "ink", "witch", "five", "mono", "nephilim", "chromatic", "guild"]) {
+			expect(scryfallTermPolicy(`c:${name} e:khm`).warnings.length).toBe(1);
+		}
+	});
+
+	// THE FIVE COLLEGES, which is what the derivation was for. Scryfall's counts against
+	// `e:khm t:creature` (151 unfiltered), measured 2026-08-28: c:lorehold 2, c:prismari 2,
+	// c:quandrix 3, c:silverquill 2, c:witherbloom 4 — and id:lorehold 52, produces:lorehold 5,
+	// so the term is honoured on all three columns rather than dropped.
+	const COLLEGES: [string, string][] = [
+		["lorehold", "rw"],
+		["prismari", "ur"],
+		["quandrix", "gu"],
+		["silverquill", "wb"],
+		["witherbloom", "bg"],
+	];
+	for (const [college, letters] of COLLEGES) {
+		test(`${college} resolves on c:, id: and produces:, and spells ${letters}`, () => {
+			expect(COLOR_ALIAS_TO_CODES.get(college)).toBe(letters);
+			for (const keyword of ["c", "id", "produces"]) {
+				for (const op of [":", "=", "!=", "<", "<=", ">", ">="]) {
+					const term = `${keyword}${op}${college}`;
+					expect({ term, ...scryfallTermPolicy(`${term} e:khm`) }).toMatchObject({
+						query: `${term} e:khm`,
+						warnings: [],
+					});
+				}
+			}
+		});
+	}
 });
 
 test("a long expression is echoed at 20 characters, ellipsis included", () => {

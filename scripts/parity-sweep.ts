@@ -2,6 +2,7 @@
 //
 //   bun scripts/parity-sweep.ts [--origin <url>] [--only <substr>] [--group <name>] [--limit N]
 //                               [--no-pages] [--no-objects] [--gap <ms>] [--out <dir>] [--key <k>]
+//                               [--no-key]
 //
 // The default origin is a local dev server, where the per-IP limiter is not enforced. Point
 // --origin at the DEPLOYMENT and it is: export TRUSTED_API_KEY first (see live-parity.ts's header
@@ -45,6 +46,10 @@
 //   IN-FLIGHT    — matches a family under active repair right now (IN_FLIGHT below).
 //   VINTAGE      — explained by the store being built from an older bulk dump than the live API.
 //   UNSUPPORTED  — a Scryfall search operator this port does not implement, probed on purpose.
+//   VOCAB-GAP-*  — one side parsed the query and DROPPED a term the other side applied, which the
+//                  `warnings` field says out loud. `-OURS` is a value Scryfall accepts and this
+//                  port's vocabulary lacks; `-THEIRS` is a value this port accepts and Scryfall
+//                  rejects. See "THE VALUE AXIS" below for why this is its own class.
 //   NEW          — everything else. These are the deliverable.
 //
 // Politeness to api.scryfall.com is non-negotiable, because several agents share the budget:
@@ -61,7 +66,10 @@ import { fileURLToPath } from "node:url";
 // The port's OWN catalog list drives the `/catalog/*` coverage, so a name added here without being
 // added upstream (or the reverse) shows up as a divergence rather than as a case nobody wrote.
 import { CATALOG_NAMES } from "../src/engine/reference-kv";
-import { DB_COLUMNS, type FieldInfo } from "../src/parser/db-info";
+// The colour VALUE vocabularies, imported rather than retyped, so the value axis below tracks them
+// as they grow: a name added to either table is swept the day it lands, which is the property that
+// would have caught `produces:any` at the moment it was written down anywhere.
+import { COLOR_ALIAS_TO_CODES, COLOR_COUNT_NAMES, DB_COLUMNS, type FieldInfo } from "../src/parser/db-info";
 import { foldAccents } from "../src/parser/pystr";
 import {
 	CARD_ORDERING,
@@ -163,6 +171,19 @@ let trustedKey: string | undefined = process.env[TRUSTED_KEY_ENV] || undefined;
  * matrix is the point; a second hand-written query list would drift from this one immediately.
  */
 let dumpCases: string | undefined;
+/**
+ * Run a REMOTE origin with no bypass key, deliberately.
+ *
+ * The pre-flight refusal below is a convenience, not the protection. The protection is in
+ * `fetchOurs`: it aborts the WHOLE RUN on the first 429 rather than filing it, so a keyless run
+ * either completes or stops with one clear sentence — it cannot fill the report with divergences
+ * that are really auth, which is the failure the refusal exists to prevent. This flag is for a run
+ * whose pacing is known to sit under the limiter (the value axis is gated by the 1.1s Scryfall
+ * floor, so it asks this origin for well under one request a second against a 25-per-10s default)
+ * and where the key is simply not to hand. It changes nothing about what happens if the limiter
+ * does fire.
+ */
+let allowKeyless = false;
 
 {
 	const args = process.argv.slice(2);
@@ -183,6 +204,7 @@ let dumpCases: string | undefined;
 		else if (arg === "--out") outDir = value();
 		else if (arg === "--key") trustedKey = value();
 		else if (arg === "--dump-cases") dumpCases = value();
+		else if (arg === "--no-key") allowKeyless = true;
 		else throw new Error(`unknown flag: ${arg}`);
 	}
 }
@@ -190,11 +212,12 @@ let dumpCases: string | undefined;
 // A REMOTE origin with no key is refused BEFORE any case runs, for the reason in live-parity.ts:
 // discovering it case by case turns a missing export into a page of invented divergences.
 // `--dump-cases` runs no case at all, so it is exempt — the matrix is generated, not fetched.
-if (!trustedKey && !isLocalOrigin(origin) && !dumpCases) {
+if (!trustedKey && !isLocalOrigin(origin) && !dumpCases && !allowKeyless) {
 	console.error(`parity-sweep: ${origin} enforces a per-IP rate limit, and no bypass key was given.`);
 	console.error("");
 	console.error(`  export ${TRUSTED_KEY_ENV}=<one of the Worker's TRUSTED_API_KEYS>   # then re-run`);
 	console.error("  # or pass --key <k> for a one-off; the default origin is a local dev server, which needs neither");
+	console.error("  # or --no-key to run anyway: fetchOurs aborts on the first 429, so the worst case is a clean stop");
 	console.error("");
 	console.error("Without it every case answers 429 and the sweep files rate limiting as divergences.");
 	process.exit(2);
@@ -1299,6 +1322,127 @@ for (const [column, values] of Object.entries(ENUM_DOMAINS)) {
 	}
 }
 
+// ─── THE VALUE AXIS: the colour vocabularies, every name × every operator ─────
+//
+// Everything above varies COLUMN and OPERATOR. Nothing above varied the VALUE, and that is a whole
+// class of divergence the matrix was structurally unable to emit.
+//
+// `produces:any` is the case that made it a rule. Scryfall accepts `any` on produced_mana and
+// nowhere else (`produces:any` = `produces>=1`; `c:any` and `id:any` are rejected and dropped), and
+// this port answered the UNFILTERED count for it — a silent wrong answer, live, for the whole life
+// of the column. The per-column probe that was supposed to cover produced_mana was this, entire:
+//
+//     produced_mana: { eq: ["produces:wubrg", "produces:c t:land e:khm"], neg: "-produces:g …" }
+//
+// All letter-forms. `any` is not an operator and not a column — it is a VALUE the vocabulary lacks,
+// and a matrix that crosses columns with operators cannot reach one no matter how far it is run.
+//
+// THE ORACLE IS THE `warnings` FIELD, which makes this cheap and mechanical. Both sides announce a
+// term they parsed, rejected and DROPPED in the same sentence — `Invalid expression “…” was
+// ignored. <reason>` — so one request per side settles it with no token-removal step and no
+// reasoning about counts:
+//
+//   ours warns, theirs does not   VOCAB-GAP-OURS    a value Scryfall applies and we silently drop
+//   theirs warns, ours does not   VOCAB-GAP-THEIRS  a value we apply and Scryfall rejects
+//   both warn                     agreement, and the reason text is compared byte-for-byte anyway
+//   neither warns                 agreement; the counts then answer whether we AGREE about it
+//
+// Both directions are their own classification rather than NEW, because a dropped term is a
+// different repair from a wrong result and the summary should say which one it is at a glance.
+//
+// GENERATED FROM THE VOCABULARY TABLES THEMSELVES (`COLOR_ALIAS_TO_CODES`, `COLOR_COUNT_NAMES`),
+// imported at the top of this file. That is the property that matters: a name added to either table
+// is swept from the day it lands, so this family cannot go uncovered the way `produces:` did.
+//
+// AND FROM VALUES WE DO NOT KNOW ABOUT, which is the other half and the actual lesson of `any`: a
+// matrix generated only from OUR vocabulary can never discover a value Scryfall accepts and we
+// lack. `VALUE_AXIS_CANDIDATES` below is a short probe list of plausible-but-unimplemented spellings
+// — it is not a vocabulary and nothing here claims they work.
+//
+// ANCHORED, because the oracle needs a query that survives losing the term: `c:any` ALONE is 400
+// "All of your terms were ignored" on both sides, which says nothing. `e:khm t:creature` is 151
+// rows on both sides, so the whole result fits one page and the membership comparison stays exact
+// while the warnings do the vocabulary work.
+//
+// ONE ALIAS PER COLUMN. `color:` / `identity:` are the `aliases` group's job — it already spells
+// every synonym against the same value — and crossing them here would triple the request count to
+// re-ask a question that is answered.
+//
+// OPT-IN (`--group value-vocab`). A default sweep does not pay for it: see `OPT_IN_GROUPS`.
+
+const VALUE_AXIS_GROUP = "value-vocab";
+
+/** 151 rows on both sides — one page, so membership stays exact — and it survives the dropped term. */
+const VALUE_AXIS_ANCHOR = "e:khm t:creature";
+
+/** Every operator the colour columns take, with a filename-safe name for the case id. */
+const VALUE_AXIS_OPERATORS: [op: string, slug: string][] = [
+	[":", "colon"],
+	["=", "eq"],
+	["!=", "ne"],
+	["<", "lt"],
+	["<=", "le"],
+	[">", "gt"],
+	[">=", "ge"],
+];
+
+/** The three columns whose values are a colour vocabulary rather than a free string. */
+const VALUE_AXIS_KEYWORDS: [keyword: string, column: string][] = [
+	["c", "card_colors"],
+	["id", "card_color_identity"],
+	["produces", "produced_mana"],
+];
+
+/**
+ * A CANDIDATE PROBE LIST, not a vocabulary — plausible spellings drawn from Scryfall's documented
+ * syntax and from how players actually type, none of which this port implements.
+ *
+ * They are here to be WRONG in an informative direction. Most double as negative controls:
+ * db-info's own doc-comment records `yore`, `glint`, `dune`, `ink`, `witch`, `five`, `mono`,
+ * `guild`, `shard`, `wedge`, `nephilim` and `chromatic` as measured-to-be-REJECTED upstream, so the
+ * sweep should find both sides refusing them with the same sentence — and the day one of them
+ * starts working upstream, this list is what says so. `any` is the one already known to be real,
+ * and it is kept here rather than promoted, because the point of the list is that it holds values
+ * the vocabulary does NOT have.
+ *
+ * Keep it short. It is a probe, and every entry costs 21 requests per side.
+ */
+const VALUE_AXIS_CANDIDATES = [
+	"any",
+	"none",
+	"mono",
+	"five",
+	"chromatic",
+	"guild",
+	"shard",
+	"wedge",
+	"nephilim",
+	"yore",
+	"glint",
+	"dune",
+	"ink",
+	"witch",
+];
+
+/** The swept values, with where each came from, first source winning if the tables ever overlap. */
+const valueAxisValues = new Map<string, string>();
+for (const name of COLOR_ALIAS_TO_CODES.keys()) if (!valueAxisValues.has(name)) valueAxisValues.set(name, "alias");
+for (const name of COLOR_COUNT_NAMES) if (!valueAxisValues.has(name)) valueAxisValues.set(name, "count-name");
+for (const name of VALUE_AXIS_CANDIDATES) if (!valueAxisValues.has(name)) valueAxisValues.set(name, "candidate");
+
+for (const [keyword, column] of VALUE_AXIS_KEYWORDS) {
+	for (const [value, source] of valueAxisValues) {
+		for (const [op, slug] of VALUE_AXIS_OPERATORS) {
+			add(
+				`value-${keyword}-${slug}-${value}`,
+				VALUE_AXIS_GROUP,
+				search(`${keyword}${op}${value} ${VALUE_AXIS_ANCHOR}`, { order: "name" }),
+				[`value:${column}:${value}`, `value-source:${source}`],
+			);
+		}
+	}
+}
+
 // ─── THE REACH OF THE GENERATOR: what this matrix can and cannot emit ─────────
 //
 // A harness whose blind spots are undocumented reads as thorough while being structurally unable to
@@ -2052,6 +2196,22 @@ type Classification =
 	 * cannot otherwise tell you.
 	 */
 	| "BLIND-SPOT"
+	/**
+	 * One side PARSED the query and dropped a term the other side applied — a value vocabulary
+	 * difference, which the `warnings` field states outright.
+	 *
+	 * `-OURS` is the `produces:any` shape: Scryfall accepts the value, this port's vocabulary lacks
+	 * it, so the term is ignored and the answer is the UNFILTERED count. `-THEIRS` is the reverse —
+	 * this port applies a filter Scryfall refuses — and is a finding for the same reason in the
+	 * other direction.
+	 *
+	 * Two classifications rather than one NEW, because the repair differs by direction and because
+	 * every OTHER divergence on such a case (total_cards, membership, ordering) is a CONSEQUENCE of
+	 * the dropped term rather than an independent bug: they take this class too, so one vocabulary
+	 * hole reads as one problem instead of four.
+	 */
+	| "VOCAB-GAP-OURS"
+	| "VOCAB-GAP-THEIRS"
 	| "NEW";
 
 /**
@@ -2081,6 +2241,50 @@ function importPolicyExclusion(card: Json | undefined): string | undefined {
 	const typeLine = card.type_line;
 	if (typeof typeLine === "string" && /(^|\s)(Card|Token)($|\s|—)/.test(typeLine.split("//")[0] ?? typeLine))
 		return "unplayable Card/Token type line";
+	return undefined;
+}
+
+/**
+ * The sentence BOTH sides use for a term they parsed, rejected and dropped.
+ *
+ * `Invalid expression “<term>” was ignored. <reason>` — src/routes/scryfall-compat/query-terms.ts
+ * reproduces Scryfall's wording, truncation and reason text deliberately, so the `was ignored`
+ * clause is the stable part to key on: the quoted term and the reason differ per term, and matching
+ * either would turn a wording change into a false vocabulary gap.
+ */
+const IGNORED_TERM_RE = /was ignored/;
+
+/** The ignore-and-drop warnings on one response, ignoring every other kind of warning. */
+function ignoredTermWarnings(body: Json | undefined): string[] {
+	if (!isObject(body)) return [];
+	const warnings = body.warnings;
+	if (!Array.isArray(warnings)) return [];
+	return warnings.filter((w): w is string => typeof w === "string" && IGNORED_TERM_RE.test(w));
+}
+
+/**
+ * THE VOCABULARY ORACLE: one side dropped a term the other applied.
+ *
+ * Both sides warning is AGREEMENT, not a gap — the two reason strings are still compared
+ * byte-for-byte by the warnings check, which is where a wording divergence belongs. Neither side
+ * warning is agreement too, and the counts then say whether they agree about what the value MEANS.
+ */
+function vocabAsymmetry(
+	ours: Json | undefined,
+	theirs: Json | undefined,
+): { classification: Classification; detail: string } | undefined {
+	const oursIgnored = ignoredTermWarnings(ours);
+	const theirsIgnored = ignoredTermWarnings(theirs);
+	if (oursIgnored.length > 0 && theirsIgnored.length === 0)
+		return {
+			classification: "VOCAB-GAP-OURS",
+			detail: `this port DROPPED a term Scryfall applied — ${oursIgnored.join(" | ")}`,
+		};
+	if (theirsIgnored.length > 0 && oursIgnored.length === 0)
+		return {
+			classification: "VOCAB-GAP-THEIRS",
+			detail: `Scryfall DROPPED a term this port applied — ${theirsIgnored.join(" | ")}`,
+		};
 	return undefined;
 }
 
@@ -2314,8 +2518,17 @@ async function runCase(c: SweepCase): Promise<void> {
 	const oursBody = parse(ours.body);
 	const theirsBody = parse(theirs.body);
 	const flight = inFlightForCase(c);
-	const baseClass: Classification = c.unsupported ? "UNSUPPORTED" : flight ? "IN-FLIGHT" : "NEW";
-	const baseLabel = c.unsupported ? "unsupported-operator" : (flight?.name ?? "");
+	// The vocabulary oracle runs BEFORE anything else is classified, because a dropped term explains
+	// every other divergence this case can produce: the total, the membership, the ordering. Folding
+	// it into `baseClass` means one vocabulary hole is reported as one problem rather than four
+	// independent NEW findings that all trace to the same missing value.
+	const vocab = vocabAsymmetry(oursBody, theirsBody);
+	const baseClass: Classification = c.unsupported
+		? "UNSUPPORTED"
+		: flight
+			? "IN-FLIGHT"
+			: (vocab?.classification ?? "NEW");
+	const baseLabel = c.unsupported ? "unsupported-operator" : (flight?.name ?? (vocab ? "vocab-gap" : ""));
 
 	// 1. status
 	if (ours.status !== theirs.status) {
@@ -2586,15 +2799,18 @@ async function runCase(c: SweepCase): Promise<void> {
 		});
 	}
 
-	// 5. warnings
+	// 5. warnings — and, when exactly one side dropped a term, THE VOCABULARY ORACLE
 	const oursWarn = Array.isArray(oursBody.warnings) ? oursBody.warnings : undefined;
 	const theirsWarn = Array.isArray(theirsBody.warnings) ? theirsBody.warnings : undefined;
 	if (canonical((oursWarn ?? null) as Json) !== canonical((theirsWarn ?? null) as Json)) {
+		const wire = `scryfall warnings ${excerpt((theirsWarn ?? null) as Json)} vs ours ${excerpt((oursWarn ?? null) as Json)}`;
 		record({
 			classification: c.unsupported ? "UNSUPPORTED" : baseClass,
 			label: baseLabel || "warnings",
-			kind: "warnings",
-			detail: `scryfall warnings ${excerpt((theirsWarn ?? null) as Json)} vs ours ${excerpt((oursWarn ?? null) as Json)}`,
+			// Named apart from a plain warnings mismatch: a wording difference is a text bug, and a
+			// term one side honours and the other ignores is a wrong ANSWER wearing a warning.
+			kind: vocab ? "vocab-gap" : "warnings",
+			detail: vocab ? `${vocab.detail}; ${wire}` : wire,
 			caseName: c.name,
 			path: c.path,
 		});
@@ -3110,7 +3326,26 @@ async function runPageWalk(walk: PageWalk): Promise<void> {
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
-const selected = cases.filter((c) => (!only || c.name.includes(only)) && (!group || c.group === group)).slice(0, limit);
+/**
+ * Groups GENERATED in full — so `cases`, the group census and the reach grid all describe them —
+ * but not SELECTED by an unfiltered sweep, because they are large enough to change what a default
+ * run costs. Name the group (or narrow with `--only`) to run one.
+ *
+ * `value-vocab` is 1,365 cases as of writing: 65 colour values (45 names + 6 count names + 14
+ * candidates) × 7 operators × 3 columns. That is one Scryfall request each — about 25 minutes at
+ * the 1.1s floor on a cold day cache, free on a second run the same day — and the size moves with
+ * the vocabulary tables, which is the point. A default sweep should not pay it.
+ *
+ * It filters `selected`, so it also keeps the group out of a bare `--dump-cases`: that dump is
+ * scripts/search-differential.ts's corpus, and quadrupling that harness is a separate decision from
+ * adding the axis here. `--dump-cases --group value-vocab` writes it when it IS wanted.
+ */
+const OPT_IN_GROUPS = new Set([VALUE_AXIS_GROUP]);
+
+const selected = cases
+	.filter((c) => (!only || c.name.includes(only)) && (!group || c.group === group))
+	.filter((c) => !OPT_IN_GROUPS.has(c.group) || group === c.group || only !== undefined)
+	.slice(0, limit);
 
 // `--dump-cases`: the matrix as data, and then stop. Placed HERE — after generation, before the
 // first request — so a dump costs nobody a Scryfall call. `--only`/`--group`/`--limit` narrow it
@@ -3133,7 +3368,7 @@ console.log(
 const byGroup = new Map<string, number>();
 for (const c of cases) byGroup.set(c.group, (byGroup.get(c.group) ?? 0) + 1);
 for (const c of peripheral) byGroup.set(c.group, (byGroup.get(c.group) ?? 0) + 1);
-console.log(`groups: ${[...byGroup].map(([g, n]) => `${g}=${n}`).join(" ")}`);
+console.log(`groups: ${[...byGroup].map(([g, n]) => `${g}=${n}${OPT_IN_GROUPS.has(g) ? " (opt-in)" : ""}`).join(" ")}`);
 
 // ── the harness's own reach, before a single divergence is measured ──
 //
@@ -3360,6 +3595,17 @@ const report = {
 			anchorExemptions: ANCHOR_EXEMPTIONS,
 			enumDomains: ENUM_DOMAINS,
 			enumDomainCases,
+			// The VALUE axis as data: which vocabulary was swept, where each name came from, and
+			// against what. A run's report therefore records the vocabulary it actually saw, so a
+			// later addition to either db-info table is visible as a diff between two reports.
+			valueAxis: {
+				group: VALUE_AXIS_GROUP,
+				anchor: VALUE_AXIS_ANCHOR,
+				keywords: VALUE_AXIS_KEYWORDS.map(([keyword, column]) => `${keyword} (${column})`),
+				operators: VALUE_AXIS_OPERATORS.map(([op]) => op),
+				values: Object.fromEntries(valueAxisValues),
+				candidates: VALUE_AXIS_CANDIDATES,
+			},
 		},
 		columnsCovered,
 		aliasesCovered: [...new Set(aliasesCovered)],
@@ -3390,6 +3636,20 @@ const blindSpots = findings.filter((f) => f.classification === "BLIND-SPOT");
 if (blindSpots.length > 0) {
 	console.log(`\nHARNESS BLIND SPOTS: ${blindSpots.length} (not divergences — things this sweep cannot see)`);
 	for (const f of blindSpots) console.log(`  ${f.kind}: ${f.detail}`);
+}
+
+// Printed separately from the NEW count for the same reason the blind spots are: these are not
+// "some field differs", they are a TERM one side honoured and the other threw away, and the fix is
+// a vocabulary entry rather than a comparison. Burying them in a NEW total is how `produces:any`
+// would be read as one more count divergence among many.
+const vocabGaps = findings.filter((f) => f.classification.startsWith("VOCAB-GAP"));
+if (vocabGaps.length > 0) {
+	const gapCases = new Set(vocabGaps.map((f) => f.caseName));
+	console.log(
+		`\nVOCABULARY GAPS: ${vocabGaps.length} finding(s) across ${gapCases.size} case(s) — a value one side applies and the other ignores`,
+	);
+	for (const f of vocabGaps.filter((f) => f.kind === "vocab-gap"))
+		console.log(`  ${f.classification} ${f.caseName}: ${f.detail}`);
 }
 
 const newFindings = findings.filter((f) => f.classification === "NEW");

@@ -755,10 +755,26 @@ fn le_expr(base: usize, width: usize, mask: u16) -> PlaneExpr {
     and_of(outp.into_iter().map(|p| PlaneExpr::Not(Box::new(p))).collect())
 }
 
+/// bits != 0 over the planes of one field: at least one plane set.
+///
+/// The "produces at least one value" conjunct `filter::color_cmp` carries on produced_mana's two
+/// subset operators — see its own note for the api.scryfall.com counts. Stated here as well because
+/// the two card-level colour columns never reach that function on this path: they compile through
+/// `cmp_expr`'s plane algebra instead, and the estimator reports that compilation as EXACT, so a
+/// plane expression that disagreed with `color_cmp` would be a silently wrong answer rather than a
+/// slow one.
+fn nonempty_expr(base: usize, width: usize) -> PlaneExpr {
+    or_of((0..width).map(|b| PlaneExpr::Plane((base + b) as u16)).collect())
+}
+
 /// Compile one field's comparison to plane algebra. `ge_any` selects the Ge
 /// shape: ColorCmp's Ge is all-of (bits & mask == mask), TypeCmp's is any-of
-/// (bits & mask != 0) — see their tri() arms.
-fn cmp_expr(base: usize, width: usize, mask: u16, op: CmpOp, ge_any: bool) -> PlaneExpr {
+/// (bits & mask != 0) — see their tri() arms. `nonempty` adds `color_cmp`'s
+/// produced_mana conjunct to the two subset operators.
+fn cmp_expr(base: usize, width: usize, mask: u16, op: CmpOp, ge_any: bool, nonempty: bool) -> PlaneExpr {
+    let subset = |e: PlaneExpr| {
+        if nonempty { and_of(vec![e, nonempty_expr(base, width)]) } else { e }
+    };
     let ge = || {
         let (inp, _) = in_out_planes(base, width, mask);
         if ge_any { or_of(inp) } else { and_of(inp) }
@@ -773,9 +789,12 @@ fn cmp_expr(base: usize, width: usize, mask: u16, op: CmpOp, ge_any: bool) -> Pl
         CmpOp::Ge if !ge_any && mask == 0 => eq_expr(base, width, mask),
         CmpOp::Ge => ge(),
         CmpOp::Eq => eq_expr(base, width, mask),
-        CmpOp::Le => le_expr(base, width, mask),
+        CmpOp::Le => subset(le_expr(base, width, mask)),
         CmpOp::Ne => PlaneExpr::Not(Box::new(eq_expr(base, width, mask))),
-        CmpOp::Lt => and_of(vec![le_expr(base, width, mask), PlaneExpr::Not(Box::new(eq_expr(base, width, mask)))]),
+        CmpOp::Lt => subset(and_of(vec![
+            le_expr(base, width, mask),
+            PlaneExpr::Not(Box::new(eq_expr(base, width, mask))),
+        ])),
         CmpOp::Gt => and_of(vec![ge(), PlaneExpr::Not(Box::new(eq_expr(base, width, mask)))]),
     }
 }
@@ -1411,22 +1430,32 @@ pub(crate) fn compile_plane(filter: &FilterExpr, bounds: &rkyv::Archived<BitPlan
                 // what the union plane holds (`∃m: b ∈ m` ⟺ `b ∈ ⋃m`), so the most common colour
                 // query in the corpus stays a single plane read instead of an OR of 32.
                 if matches!(op, CmpOp::Ge) && mask.count_ones() == 1 {
-                    return Some(cmp_expr(base, COLOR_PLANES, u16::from(*mask), *op, false));
+                    return Some(cmp_expr(base, COLOR_PLANES, u16::from(*mask), *op, false, false));
                 }
                 return Some(or_of(
                     (0..COLOR_MASK_PLANES)
-                        .filter(|&m| crate::filter::color_cmp(m as u8, *op, *mask))
+                        .filter(|&m| crate::filter::color_cmp(m as u8, *op, *mask, *field))
                         .map(|m| PlaneExpr::Plane((PLANE_COLOR_MASK + m) as u16))
                         .collect(),
                 ));
             }
-            Some(cmp_expr(base, COLOR_PLANES, u16::from(*mask), *op, false))
+            // produced_mana's two subset operators carry `color_cmp`'s "produces at least one
+            // value" conjunct; `colors` above never needs it (it took the per-value OR, which is
+            // built from `color_cmp` itself) and neither colour column has it at all.
+            Some(cmp_expr(
+                base,
+                COLOR_PLANES,
+                u16::from(*mask),
+                *op,
+                false,
+                matches!(field, ColorField::ProducedMana),
+            ))
         }
         FilterExpr::TypeCmp { mask, op } => {
             if mask & !((1 << TYPE_PLANES) - 1) != 0 {
                 return None;
             }
-            Some(cmp_expr(PLANE_TYPES, TYPE_PLANES, *mask, *op, true))
+            Some(cmp_expr(PLANE_TYPES, TYPE_PLANES, *mask, *op, true, false))
         }
         // Devotion is card-level and two-valued (tri_bool always), so its
         // bit-sliced planes compile exactly within the saturation boundary.

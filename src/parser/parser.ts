@@ -10,6 +10,7 @@ import {
 	ALIAS_TO_FIELD_INFOS,
 	COLOR_ALIAS_TO_CODES,
 	COLOR_COUNT_NAMES,
+	COLUMN_SCOPED_COUNT_NAMES,
 	type ParserClass,
 	ParserClass as PC,
 } from "./db-info";
@@ -94,6 +95,28 @@ const NUMERIC_ALIASES: ReadonlySet<string> = new Set(
 // rather than letter strings. What separates them is what CardBinaryOperatorNode does with the
 // result, not whether this parser will accept it.
 const VALID_COLOR_NAMES: ReadonlySet<string> = new Set([...COLOR_ALIAS_TO_CODES.keys(), ...COLOR_COUNT_NAMES]);
+
+// ...but ACCEPTANCE IS PER-COLUMN, because one name is. `any` is a produced_mana value and nothing
+// else — Scryfall rejects `c:any` and `id:any` outright and ignores the term — so the vocabulary is
+// precomputed per db column rather than being one global set. Every other name is in every column's
+// set, which is why this reads as a widening of VALID_COLOR_NAMES and never as a restriction of it.
+const VALID_COLOR_NAMES_BY_COLUMN: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+	[...COLUMN_SCOPED_COUNT_NAMES].map(([column, names]) => [column, new Set([...VALID_COLOR_NAMES, ...names])]),
+);
+
+/**
+ * The colour names one COLOR alias accepts as a value.
+ *
+ * The alias is resolved to its db column the same way CardAttributeNode does — through
+ * ALIAS_TO_FIELD_INFOS, filtered to the COLOR class — so every spelling of a column shares one
+ * answer and no list of alias spellings has to be kept in step here.
+ */
+function validColorNamesFor(attr: string): ReadonlySet<string> {
+	const fieldInfos = ALIAS_TO_FIELD_INFOS.get(pyLower(attr)) ?? [];
+	const column = fieldInfos.find((fi) => fi.parserClass === PC.COLOR)?.dbColumnName;
+	return (column === undefined ? undefined : VALID_COLOR_NAMES_BY_COLUMN.get(pyLower(column))) ?? VALID_COLOR_NAMES;
+}
+
 const COLOR_LETTERS: ReadonlySet<string> = new Set("wubrgcWUBRGC");
 const MIN_MTG_YEAR = 1992n;
 const MAX_YEAR = 2040n;
@@ -609,7 +632,7 @@ export class Parser {
 			return this.parseNumExprValue();
 		}
 		if (pc === PC.COLOR) {
-			return this.parseColorValue();
+			return this.parseColorValue(attr);
 		}
 		if (pc === PC.MANA) {
 			return this.parseManaValue();
@@ -732,8 +755,14 @@ export class Parser {
 		throw new InternalParseError(`Expected string value, got ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
 
-	/** Parse a color value: a color name, a combination of color letters, or a bare integer count. */
-	parseColorValue(): QueryNode {
+	/**
+	 * Parse a color value: a color name, a combination of color letters, or a bare integer count.
+	 *
+	 * `attr` is the alias as the user typed it (`produces`, `c`, `id`), and it is load-bearing:
+	 * `any` is a name on produced_mana only — see validColorNamesFor.
+	 */
+	parseColorValue(attr: string): QueryNode {
+		const validNames = validColorNamesFor(attr);
 		const tok = this.peek();
 		if (tok.type === TT.NUMBER) {
 			// Scryfall numeric color syntax: id>=3 / c=2 compare the NUMBER of colors in the
@@ -764,14 +793,14 @@ export class Parser {
 				!this.peek(1).spaceBefore &&
 				this.peek(2).type === TT.WORD &&
 				!this.peek(2).spaceBefore &&
-				VALID_COLOR_NAMES.has(pyLower(`${val}-${pyStr(this.peek(2).value)}`))
+				validNames.has(pyLower(`${val}-${pyStr(this.peek(2).value)}`))
 			) {
 				this.consume();
 				this.consume();
 				const tail = this.consume();
 				return new StringValueNode(`${val}-${pyStr(tail.value)}`);
 			}
-			if (!VALID_COLOR_NAMES.has(pyLower(val)) && ![...val].every((c) => COLOR_LETTERS.has(c))) {
+			if (!validNames.has(pyLower(val)) && ![...val].every((c) => COLOR_LETTERS.has(c))) {
 				throw new InternalParseError(`Invalid color value ${val} at position ${tok.pos}`);
 			}
 			this.consume();
