@@ -59,12 +59,20 @@ const SOURCE_DIRS = [
 	"engine/builder/src",
 ];
 
-/** Manifests that pin the dependency graph and the feature flags those sources compile under. */
+/**
+ * Manifests that pin the dependency graph and the feature flags those sources compile under —
+ * plus the two build-affecting files that live OUTSIDE any crate: the root Cargo.toml (workspace
+ * membership and [profile.release]) and .cargo/config.toml (the wasm32 rustflags). Either can
+ * change the emitted bytes without touching a src/ file, so omitting them let the guard bless a
+ * stale blob (CodeRabbit finding on PR #5, 2026-08-28).
+ */
 const SOURCE_FILES = [
 	"vendor/sylvan_librarian/card_engine/Cargo.toml",
 	"engine/wasm/Cargo.toml",
 	"engine/wasm-import/Cargo.toml",
 	"engine/builder/Cargo.toml",
+	"Cargo.toml",
+	".cargo/config.toml",
 	"Cargo.lock",
 ];
 

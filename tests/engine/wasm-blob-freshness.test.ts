@@ -83,10 +83,17 @@ describe("committed wasm blobs are built from this source tree", () => {
 			"engine/wasm/src/lib.rs",
 			"engine/wasm-import/src",
 			"engine/builder/src",
+			"Cargo.toml",
+			".cargo/config.toml",
 			"Cargo.lock",
 		]) {
 			expect(inputs.some((f) => f.startsWith(crate))).toBe(true);
 		}
-		expect(BLOBS.length).toBe(2);
+		// The exact production paths, spelled here rather than read back from the implementation —
+		// a wrong two-entry BLOBS list must fail this test, not satisfy a length check.
+		expect(BLOBS).toEqual([
+			"engine/wasm/pkg/sylvan_engine_wasm_bg.wasm",
+			"engine/wasm-import/pkg/sylvan_wasm_import.wasm",
+		]);
 	});
 });
