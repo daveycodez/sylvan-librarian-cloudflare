@@ -489,6 +489,30 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			if (fieldInfo.parserClass === PC.MANA) {
 				return nodeToJson(this.rhs);
 			}
+			// THE SAME BUG THE JSONB_ARRAY BRANCH ABOVE FIXES FOR `t:`, one field type further
+			// along, and it was still live on every collection column. The comparison-key readers
+			// below take a STRING and slug it into a tag name, so a regex arrived as its raw
+			// pattern and came out a literal: `otag:/^remov/` became the tag `rem` and
+			// `kw:/f.y/` became the keyword `fy`. Neither tag exists, so both answered 404 — not
+			// a decline the caller could see, but a DIFFERENT QUERY, answered confidently.
+			// Measured on production 2026-08-28 before this line existed: `kw:/^fly/` 404,
+			// `otag:/^remov/` 404, `is:/^prom/` 404, `frame:/^199/` 404.
+			//
+			// Passing the node through hands the decision to the engine, whose `build_text_filter`
+			// has no arm for these columns and says so (`regex not supported on card_keywords`),
+			// which the route turns into a 400. A plain-literal regex never reaches here at all —
+			// `lowerLiteralRegexes` has already turned `is:/promo/` into `is:promo` — so the
+			// superset those answer (6,126 for `is:/promo/`) is untouched.
+			//
+			// SCOPED TO `:` AND `=`, which is where a regex is a regex — `lowerLiteralRegexes`
+			// lowers only `:`, and `=` IS `:` on these columns. `kw>/x/` and `frame<=/x/` keep
+			// upstream's slug, both because the fixture corpus pins them (tests/parser/fixtures,
+			// which is never patched) and because there is nothing to fix: Scryfall answers a
+			// comparison on a non-comparable keyword with the empty set, and so does the compat
+			// layer, before either spelling reaches a parser.
+			if (this.rhs instanceof RegexValueNode && (this.operator === ":" || this.operator === "=")) {
+				return nodeToJson(this.rhs);
+			}
 			// Numeric color syntax (id>=3 / c=2): pass the raw NumericValueNode so the Rust engine
 			// builds a color-count comparison instead of a mask compare.
 			if (this.rhs instanceof NumericValueNode) {

@@ -538,3 +538,51 @@ describe("failure semantics", () => {
 		expect(canonicalStringify(parseScryfallQuery(null))).toBe('{"kwargs":{},"node_type":"TrueNode"}');
 	});
 });
+
+describe("a regex on a collection column reaches the engine as a regex", () => {
+	/**
+	 * WHAT THIS PINS is a wrong ANSWER, not a missing feature. `card_keywords`, `card_frame_data`,
+	 * `card_oracle_tags`, `card_art_tags` and `card_is_tags` are JSONB_OBJECT columns whose
+	 * comparison-key readers take a STRING and slug it into a tag name. A `RegexValueNode` handed
+	 * to one of them came out as the letters its pattern happens to contain: `otag:/^remov/`
+	 * became the tag `rem`, `kw:/f.y/` became the keyword `fy`. No such tag exists, so production
+	 * answered 404 to each on 2026-08-28 — a different query, answered with confidence, and the
+	 * exact shape the JSONB_ARRAY branch above it had already been fixed for (`t:/^drag/`).
+	 *
+	 * The node now passes through, and the engine's `build_text_filter` — which has no arm for
+	 * these columns — declines with `regex not supported on card_keywords`, which the route
+	 * reports as a 400.
+	 */
+	const COLLECTION_REGEX: [query: string, attribute: string][] = [
+		["kw:/f.y/", "card_keywords"],
+		["keyword:/^fly/", "card_keywords"],
+		["frame:/^199/", "card_frame_data"],
+		["otag:/^remov/", "card_oracle_tags"],
+		["function:/^remov/", "card_oracle_tags"],
+		["art:/^drag/", "card_art_tags"],
+		["is:/^prom/", "card_is_tags"],
+		["not:/^prom/", "card_is_tags"],
+	];
+
+	for (const [query, attribute] of COLLECTION_REGEX) {
+		test(`${query} keeps its pattern`, () => {
+			const tree = canonicalStringify(parseScryfallQuery(query));
+			expect(tree).toContain('"node_type":"RegexValueNode"');
+			expect(tree).toContain(`"attribute_name":"${attribute}"`);
+		});
+	}
+
+	test("a plain-literal pattern still lowers, so the answers it gives are untouched", () => {
+		// Production, 2026-08-28: `is:/promo/` 6,126, `kw:/flying/` 3,285, `otag:/removal/` 6,430.
+		for (const query of ["is:/promo/", "kw:/flying/", "otag:/removal/", "frame:/1997/"]) {
+			expect(canonicalStringify(parseScryfallQuery(query))).not.toContain("RegexValueNode");
+		}
+	});
+
+	test("a comparison keeps upstream's slug, which the fixture corpus pins", () => {
+		// `>` `>=` `<` `<=` `!=` on these columns are answered by the empty set on both sides
+		// before a parser is reached, so there is nothing here to correct — and the exported
+		// fixtures (`-frame<=/a\/b/`, `is>/a\/b/`) are never patched.
+		expect(canonicalStringify(parseScryfallQuery("frame<=/ab/"))).not.toContain("RegexValueNode");
+	});
+});
