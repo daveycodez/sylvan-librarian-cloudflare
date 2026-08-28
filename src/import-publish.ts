@@ -94,12 +94,22 @@ export function projectedStoreBytes(stagedDraftBytes: number): number {
  * persisted state and can never re-derive a different N, which matters because
  * N is baked into every already-published chunk key and every draft's
  * partition assignment.
+ *
+ * `targetBytes` exists for ONE caller: the local end-to-end harness
+ * (scripts/import-harness), which runs a corpus a fiftieth of the real one and
+ * would otherwise always land on MIN_PARTITION_COUNT — a two-partition loop has
+ * a first partition and a last one and no partition that is neither, which is
+ * exactly the position (partition 2 of 10) the 2026-08-28 production run died
+ * in. Production never passes it; the default IS TARGET_PARTITION_BYTES.
  */
-export function partitionCountFor(stagedDraftBytes: number): number {
+export function partitionCountFor(stagedDraftBytes: number, targetBytes = TARGET_PARTITION_BYTES): number {
 	if (!Number.isFinite(stagedDraftBytes) || stagedDraftBytes < 0) {
 		throw new Error(`cannot size partitions from ${stagedDraftBytes} staged draft bytes`);
 	}
-	const wanted = Math.ceil(projectedStoreBytes(stagedDraftBytes) / TARGET_PARTITION_BYTES);
+	if (!Number.isFinite(targetBytes) || targetBytes <= 0) {
+		throw new Error(`cannot size partitions against a ${targetBytes}-byte target`);
+	}
+	const wanted = Math.ceil(projectedStoreBytes(stagedDraftBytes) / targetBytes);
 	return Math.min(MAX_PARTITION_COUNT, Math.max(MIN_PARTITION_COUNT, wanted));
 }
 

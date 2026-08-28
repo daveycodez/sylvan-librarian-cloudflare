@@ -129,6 +129,17 @@ import {
 	writeRoutingFilter,
 } from "./engine/store-kv";
 import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types";
+import {
+	AGG_FETCH_BATCHES,
+	AGG_SLICE_BATCHES,
+	FINALIZE_FETCH_BATCHES,
+	FINALIZE_SLICE_BATCHES,
+	MAX_DAY_ROWS_READ,
+	MAX_DAY_ROWS_WRITTEN,
+	MAX_RUN_ROWS_READ,
+	MAX_RUN_ROWS_WRITTEN,
+	REORDER_SLICE_ROWS,
+} from "./import-budget";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
 import { DUMP_KINDS, type DumpKind, phaseAfterFetch, phaseAfterStaged, TRANSFORM_KIND } from "./import-phases";
 import {
@@ -230,44 +241,6 @@ const MAX_WASM_REWINDS = 3;
  */
 const PURGE_PASSES = 1;
 
-/**
- * What one import run may spend of the Durable Objects storage meters before
- * it stops itself. The free plan allows 5,000,000 rows read and 100,000
- * written per DAY, across everything — so these are deliberately a fraction of
- * that, leaving the day's allowance for serving.
- *
- * A healthy run costs far less: roughly 150k reads, dominated by the build
- * phase's ~98k row lookups, and a few thousand writes. Tripping this ceiling
- * therefore does not mean "a big import"; it means the same work is being done
- * repeatedly, which is exactly how 4.5M reads were once spent in a day —
- * blocking the storage API account-wide and knocking every search DO onto a
- * 15-second load.
- *
- * Better to abandon a run and serve yesterday's index than to finish one and
- * take search down until midnight UTC.
- */
-const MAX_RUN_ROWS_READ = 1_000_000;
-const MAX_RUN_ROWS_WRITTEN = 40_000;
-
-/**
- * The same ceilings, per UTC DAY across all runs — the ones that actually
- * match the limit being protected.
- *
- * A per-run budget alone bounds nothing durable: startImport clears the run's
- * counters, so every fresh run gets a fresh allowance, and a run that stalls
- * is restartable after STALE_RUN_MS. Enough restarts and the day is gone
- * anyway, one "within budget" run at a time. These counters therefore survive
- * metaClear (see metaClear's key filter) and reset only when the date does,
- * exactly like the meter they stand in for.
- *
- * Well under the account's 5M/100k so the serving path keeps its share: a
- * SearchEngine wake reads its local store copy, and losing THAT to an
- * exhausted meter is what turns a background import problem into 15-second
- * searches.
- */
-const MAX_DAY_ROWS_READ = 1_500_000;
-const MAX_DAY_ROWS_WRITTEN = 60_000;
-
 /** Meta keys under this prefix are day-scoped and survive a run reset. */
 const DAY_PREFIX = "day:";
 
@@ -300,8 +273,6 @@ const TRANSFORM_SLICE_LINES = 10_000;
  * stagedBytes documents for small kinds: worst slice gunzips a ~360MB prefix
  * (~1-2s) plus an id-only serde parse of its own window (~1s). */
 const CANONICAL_SLICE_LINES = 24_000;
-/** Draft batches aggregated / finalized per slice (~1-2s of wasm CPU each). */
-const AGG_SLICE_BATCHES = 8;
 /** Draft batches folded into the corpus-wide finalize tables per slice.
  *
  * Bigger than AGG_SLICE_BATCHES because the work per draft is far smaller — three fields off a
@@ -313,18 +284,6 @@ const SCORES_SLICE_BATCHES = 24;
 /** Batch rows materialized as JS buffers at once inside a scores slice (~15MB) — the same
  * resident-bytes budget the agg slice keeps. */
 const SCORES_FETCH_BATCHES = 8;
-/** Finalize buffers ~2KB of row JSON per row in JS while the wasm heap holds
- * tags+aggregates+interners (~90MB at full corpus) — small slices keep the
- * isolate total well under 128MB. */
-const FINALIZE_SLICE_BATCHES = 4;
-/**
- * Build positions rewritten per reorder slice. Each slice indexes the spill and
- * then reads the groups it needs, so it trades slice count against two
- * whole-spill passes: 8 slices over ~98k rows is ~16 passes, ~400 reads against
- * the 97,802 the random-seek build did. Sized for memory as much as reads —
- * a slice's rows are copied out and held until its transaction commits.
- */
-const REORDER_SLICE_ROWS = 12_500;
 /** Drafts per SQLite batch row (~1.5MB of draft JSON, under the 2MB value cap). */
 // Draft batching is by BYTES (BLOB_GROUP_BYTES, via blobGroups) rather than by draft count.
 //
@@ -1727,10 +1686,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.sqlAll<{ n: number }>("SELECT COALESCE(SUM(length(bytes)), 0) AS n FROM draft_batches WHERE seq >= 0")[0]
 				?.n ?? 0,
 		);
-		const partitionCount = partitionCountFor(stagedDraftBytes);
+		// The target is overridable for ONE caller — the local end-to-end
+		// harness (scripts/import-harness), whose corpus is small enough that
+		// the real target would always yield MIN_PARTITION_COUNT. Same posture
+		// as SCRYFALL_BULK_URL above: never set in wrangler.jsonc, so
+		// production reads the constant.
+		const targetBytes =
+			Number((this.env as { IMPORT_TARGET_PARTITION_BYTES?: string }).IMPORT_TARGET_PARTITION_BYTES) ||
+			TARGET_PARTITION_BYTES;
+		const partitionCount = partitionCountFor(stagedDraftBytes, targetBytes);
 		console.log(
 			`Partition loop: ${stagedDraftBytes} staged draft bytes project to ${partitionCount} partition(s) ` +
-				`of ~${(TARGET_PARTITION_BYTES / 1048576).toFixed(0)}MB`,
+				`of ~${(targetBytes / 1048576).toFixed(0)}MB`,
 		);
 
 		this.ctx.storage.transactionSync(() => {
@@ -2151,19 +2118,31 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
 		const done = Number(this.metaGet("agg_batch_done") ?? 0);
-		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
-			"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
-			done,
-			AGG_SLICE_BATCHES,
-		);
-		for (const row of rows) {
-			// Batches are walked whole and filtered, not pre-split by partition:
-			// the batch is the durable unit the cursor counts, and the filter
-			// preserves emission order within and across batches.
-			const drafts = this.partitionDrafts(row, pp);
-			if (drafts.length > 0) wasm.aggDrafts(lengthPrefixed(drafts));
+		// Fetched in AGG_FETCH_BATCHES-sized groups rather than one query for
+		// the whole slice — the split stepScores documents: the slice is a CPU
+		// budget, the group is the resident-bytes budget, and materializing a
+		// 64-batch slice at once would be ~120MB against a 128MB isolate.
+		let fed = 0;
+		while (fed < AGG_SLICE_BATCHES) {
+			const want = Math.min(AGG_FETCH_BATCHES, AGG_SLICE_BATCHES - fed);
+			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
+				"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+				done + fed,
+				want,
+			);
+			for (const row of rows) {
+				// Batches are walked whole and filtered, not pre-split by partition:
+				// the batch is the durable unit the cursor counts, and the filter
+				// preserves emission order within and across batches.
+				const drafts = this.partitionDrafts(row, pp);
+				if (drafts.length > 0) wasm.aggDrafts(lengthPrefixed(drafts));
+			}
+			fed += rows.length;
+			// Short group means the staging ran out, which is the seal condition
+			// below — never "this group happened to be small".
+			if (rows.length < want) break;
 		}
-		if (rows.length < AGG_SLICE_BATCHES) {
+		if (fed < AGG_SLICE_BATCHES) {
 			const winners = wasm.aggFinish();
 			console.log(`Aggregation sealed for partition ${pp.partition}/${pp.partitions.length}: ${winners} winners`);
 			wasm.finalizeBegin();
@@ -2176,7 +2155,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				this.metaSet("phase", "finalize");
 			});
 		} else {
-			this.metaSet("agg_batch_done", String(done + rows.length));
+			this.metaSet("agg_batch_done", String(done + fed));
 		}
 	}
 
@@ -2196,19 +2175,27 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.setHandlers({
 			onSpill: (b) => spillBuf.push(b),
 		});
-		const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
-			"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
-			done,
-			FINALIZE_SLICE_BATCHES,
-		);
 		let staged = 0n;
-		for (const row of rows) {
-			// Same partition filter, same batches, same order as stepAgg — the
-			// finalize pass's contract with the aggregation it follows.
-			const drafts = this.partitionDrafts(row, pp);
-			if (drafts.length > 0) staged = wasm.finalizeDrafts(lengthPrefixed(drafts));
+		// Same fetch-group split as stepAgg and stepScores: FINALIZE_SLICE_BATCHES
+		// is the CPU budget, FINALIZE_FETCH_BATCHES the resident-bytes one.
+		let fed = 0;
+		while (fed < FINALIZE_SLICE_BATCHES) {
+			const want = Math.min(FINALIZE_FETCH_BATCHES, FINALIZE_SLICE_BATCHES - fed);
+			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
+				"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+				done + fed,
+				want,
+			);
+			for (const row of rows) {
+				// Same partition filter, same batches, same order as stepAgg — the
+				// finalize pass's contract with the aggregation it follows.
+				const drafts = this.partitionDrafts(row, pp);
+				if (drafts.length > 0) staged = wasm.finalizeDrafts(lengthPrefixed(drafts));
+			}
+			fed += rows.length;
+			if (rows.length < want) break;
 		}
-		const finished = rows.length < FINALIZE_SLICE_BATCHES;
+		const finished = fed < FINALIZE_SLICE_BATCHES;
 		if (finished) staged = wasm.finalizeEnd();
 		wasm.setHandlers({});
 
@@ -2226,7 +2213,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				base += group.length;
 			}
 			this.metaSet("spill_base", String(base));
-			this.metaSet("finalize_batch_done", String(done + rows.length));
+			this.metaSet("finalize_batch_done", String(done + fed));
 			if (finished) {
 				this.metaSet("staged_rows", String(staged));
 				// Progressive staging purge, LAST-partition-only (plan B3, and the
@@ -2244,7 +2231,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			}
 		});
 		console.log(
-			`Finalize slice (partition ${pp.partition}): ${rows.length} batches, ${staged} rows staged` +
+			`Finalize slice (partition ${pp.partition}): ${fed} batches, ${staged} rows staged` +
 				`${finished ? " (done)" : ""}` +
 				`${finished && pp.partition === pp.partitions.length - 1 ? " — draft staging dropped (last partition)" : ""}`,
 		);
