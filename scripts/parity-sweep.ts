@@ -710,59 +710,115 @@ function search(q: string, params: Record<string, string> = {}): string {
  * negation and 0 under a dropped one, which is the exact shape of the family that went unseen.
  */
 const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quoted?: string; regex?: string }> = {
-	card_artist: { eq: ["a:guay"], neg: "-a:guay", quoted: 'a:"rebecca guay"' },
-	card_colors: { eq: ["c:rg", "c:colorless"], neg: "-c:w t:goblin", cmp: ["c>=uw t:instant", "c<wubrg t:dragon"] },
-	card_color_identity: { eq: ["ci:wu t:instant"], neg: "-ci:c e:khm", cmp: ["ci<=wubr e:dom t:legendary"] },
-	card_frame_data: { eq: ["frame:1997 t:goblin", "frame:future"], neg: "-frame:2015 e:tsr" },
-	card_keywords: { eq: ["kw:cascade", "keyword:flying e:khm"], neg: "-kw:flying t:angel" },
+	card_artist: { eq: ["a:guay"], neg: "-a:guay", quoted: 'a:"rebecca guay"', regex: "a:/^rebecca/" },
+	card_colors: {
+		eq: ["c:rg", "c:colorless"],
+		neg: "-c:w t:goblin",
+		cmp: ["c>=uw t:instant", "c<wubrg t:dragon"],
+		regex: "c:/w/",
+	},
+	card_color_identity: {
+		eq: ["ci:wu t:instant"],
+		neg: "-ci:c e:khm",
+		cmp: ["ci<=wubr e:dom t:legendary"],
+		regex: "ci:/w/",
+	},
+	card_frame_data: { eq: ["frame:1997 t:goblin", "frame:future"], neg: "-frame:2015 e:tsr", regex: "frame:/^199/" },
+	card_keywords: { eq: ["kw:cascade", "keyword:flying e:khm"], neg: "-kw:flying t:angel", regex: "kw:/^fly/" },
 	card_name: {
 		eq: ["name:bolt"],
 		neg: "-name:the t:dragon r:mythic",
 		quoted: 'name:"lightning bolt"',
 		regex: "name:/^Ancient/",
 	},
-	card_subtypes: { eq: ["subtype:eldrazi"], neg: "-subtype:human t:cleric" },
-	card_types: { eq: ["t:planeswalker r:mythic", "t:legendary t:artifact e:bro"], neg: "-t:creature e:khm" },
-	cmc: { eq: ["cmc:16", "mv:0 t:creature e:khm"], neg: "-cmc:3 e:lea", cmp: ["cmc>=13", "mv<1 t:artifact e:mh1"] },
-	creature_power: { eq: ["pow:12"], neg: "-pow:2 t:dwarf e:khm", cmp: ["pow>=13", "power<0"] },
-	creature_toughness: { eq: ["tou:13"], neg: "-tou:1 t:elf e:khm", cmp: ["tou>=14", "toughness<1"] },
-	planeswalker_loyalty: { eq: ["loy:7"], neg: "-loy:3 t:planeswalker e:war", cmp: ["loyalty>=6"] },
+	card_subtypes: { eq: ["subtype:eldrazi"], neg: "-subtype:human t:cleric", regex: "subtype:/^gob/" },
+	card_types: {
+		eq: ["t:planeswalker r:mythic", "t:legendary t:artifact e:bro"],
+		neg: "-t:creature e:khm",
+		regex: "t:/^legendary/",
+	},
+	cmc: {
+		eq: ["cmc:16", "mv:0 t:creature e:khm"],
+		neg: "-cmc:3 e:lea",
+		cmp: ["cmc>=13", "mv<1 t:artifact e:mh1"],
+		regex: "cmc:/1/",
+	},
+	creature_power: { eq: ["pow:12"], neg: "-pow:2 t:dwarf e:khm", cmp: ["pow>=13", "power<0"], regex: "pow:/1/" },
+	creature_toughness: {
+		eq: ["tou:13"],
+		neg: "-tou:1 t:elf e:khm",
+		cmp: ["tou>=14", "toughness<1"],
+		regex: "tou:/1/",
+	},
+	planeswalker_loyalty: {
+		eq: ["loy:7"],
+		neg: "-loy:3 t:planeswalker e:war",
+		cmp: ["loyalty>=6"],
+		regex: "loy:/3/",
+	},
 	mana_cost_jsonb: {
 		eq: ["m:{R}{R}{R}", "mana:{2}{W}{W} t:enchantment"],
 		neg: "-m:{U} t:merfolk e:lci",
 		cmp: ["m>={3}{G}{G}{G} t:elf"],
+		regex: "m:/p/ mv=1",
 	},
-	devotion: { eq: ["devotion:{u}{u}{u}{u}"], neg: "-devotion:{r} t:dwarf e:khm" },
-	price_usd: { eq: ["usd:0.15 e:khm"], neg: "-usd:0.15 e:khm", cmp: ["usd>=500", "usd<0.30 e:khm t:land"] },
-	price_eur: { eq: ["eur:0.02 e:khm"], cmp: ["eur>=400", "eur<0.30 e:khm t:elf"] },
-	price_tix: { eq: ["tix:0.02 e:khm"], cmp: ["tix>=40", "tix<0.05 e:khm t:land"] },
-	produced_mana: { eq: ["produces:wubrg", "produces:c t:land e:khm"], neg: "-produces:g t:land e:khm" },
+	devotion: { eq: ["devotion:{u}{u}{u}{u}"], neg: "-devotion:{r} t:dwarf e:khm", regex: "devotion:/u/" },
+	price_usd: {
+		eq: ["usd:0.15 e:khm"],
+		neg: "-usd:0.15 e:khm",
+		cmp: ["usd>=500", "usd<0.30 e:khm t:land"],
+		regex: "usd:/1/",
+	},
+	price_eur: { eq: ["eur:0.02 e:khm"], cmp: ["eur>=400", "eur<0.30 e:khm t:elf"], regex: "eur:/1/" },
+	price_tix: { eq: ["tix:0.02 e:khm"], cmp: ["tix>=40", "tix<0.05 e:khm t:land"], regex: "tix:/1/" },
+	produced_mana: {
+		eq: ["produces:wubrg", "produces:c t:land e:khm"],
+		neg: "-produces:g t:land e:khm",
+		regex: "produces:/g/",
+	},
 	oracle_text: {
 		eq: ["o:cascade", "o:proliferate t:instant"],
 		neg: "-o:flying t:bird",
 		quoted: 'o:"draw two cards" e:khm',
 		regex: "o:/^Whenever you cast/ e:khm",
 	},
-	flavor_text: { eq: ["ft:dominaria t:legendary"], neg: "-ft:the e:lea", quoted: 'ft:"the multiverse"' },
+	flavor_text: {
+		eq: ["ft:dominaria t:legendary"],
+		neg: "-ft:the e:lea",
+		quoted: 'ft:"the multiverse"',
+		regex: "ft:/^the /",
+	},
 	card_oracle_tags: {
 		eq: ["otag:removal e:khm", "function:ramp e:khm", "oracletag:counterspell e:khm", "oracle_tags:draw e:khm"],
 		neg: "-otag:removal e:khm t:instant",
+		regex: "otag:/^remov/",
 	},
 	card_art_tags: {
 		eq: ["art:dragon e:khm", "atag:skull e:khm", "arttag:snow e:khm", "art_tags:forest e:khm"],
 		neg: "-art:human e:khm t:creature",
+		regex: "art:/^drag/",
 	},
 	card_is_tags: {
 		eq: ["is:split", "is:commander e:khm", "is:promo e:khm", "is:reprint e:khm", "is:permanent e:khm t:legendary"],
 		neg: "-is:reprint e:khm r:mythic",
+		regex: "is:/^prom/",
 	},
 	card_rarity_int: {
 		eq: ["r:mythic e:khm", "rarity:bonus"],
 		neg: "-r:common e:khm t:dwarf",
 		cmp: ["r>=rare e:khm t:creature", "r<uncommon e:khm t:land"],
+		regex: "r:/rare/",
 	},
-	card_set_code: { eq: ["e:lea t:land", "s:khm t:god", "set:tsp t:legendary"], neg: "-e:khm t:god" },
-	collector_number: { eq: ["cn:1 t:land", "number:250 e:khm"], cmp: ["cn>=380 e:khm", "cn<3 e:lea"] },
+	card_set_code: {
+		eq: ["e:lea t:land", "s:khm t:god", "set:tsp t:legendary"],
+		neg: "-e:khm t:god",
+		regex: "s:/^kh/",
+	},
+	collector_number: {
+		eq: ["cn:1 t:land", "number:250 e:khm"],
+		cmp: ["cn>=380 e:khm", "cn<3 e:lea"],
+		regex: "cn:/^1/",
+	},
 	card_legalities: {
 		eq: [
 			"f:pauper t:dwarf r:common e:khm",
@@ -772,14 +828,32 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 			"format:premodern t:goblin",
 		],
 		neg: "-f:commander e:khm",
+		regex: "f:/modern/",
 	},
-	card_lang: { eq: ["lang:ja e:khm t:god", "lang:any e:khm t:god"], neg: "-lang:en e:khm t:god" },
-	card_layout: { eq: ["layout:transform e:mid", "layout:saga e:khm"], neg: "-layout:normal e:mid" },
-	card_border: { eq: ["border:borderless e:khm", "border:silver t:goblin"], neg: "-border:black e:sld" },
-	card_watermark: { eq: ["wm:izzet t:instant", "watermark:mirran"], neg: "-wm:phyrexian e:nph t:creature" },
+	card_lang: {
+		eq: ["lang:ja e:khm t:god", "lang:any e:khm t:god"],
+		neg: "-lang:en e:khm t:god",
+		regex: "lang:/^ja/",
+	},
+	card_layout: {
+		eq: ["layout:transform e:mid", "layout:saga e:khm"],
+		neg: "-layout:normal e:mid",
+		regex: "layout:/^trans/",
+	},
+	card_border: {
+		eq: ["border:borderless e:khm", "border:silver t:goblin"],
+		neg: "-border:black e:sld",
+		regex: "border:/^black/",
+	},
+	card_watermark: {
+		eq: ["wm:izzet t:instant", "watermark:mirran"],
+		neg: "-wm:phyrexian e:nph t:creature",
+		regex: "wm:/^az/",
+	},
 	released_at: {
 		eq: ["date:2021-02-05 t:god", "year:1993 t:land"],
 		cmp: ["date>=2026-01-01 t:god", "year<1994 t:legendary", "date<=1994-04-01 t:land"],
+		regex: "date:/199/",
 	},
 };
 
@@ -1202,6 +1276,57 @@ const COLOUR_CASES: [string, string][] = [
 ];
 for (const [name, q] of COLOUR_CASES)
 	add(`colour-${name}`, "colours", search(q, { order: "name" }), [`colour:${name}`]);
+
+// ── the regex DIALECT ──
+//
+// The per-column `regex` slot above asks "does this keyword take a pattern at all". This asks the
+// other half — WHAT the pattern means — and it is the half that had never been asked. Scryfall's
+// dialect is documented at <https://scryfall.com/docs/regular-expressions>, and it carries nine
+// non-standard `\s…` SHORTHANDS which a plain regex engine reads as `\s` (whitespace) followed by
+// letters. That reading is not an error and not an empty result: it is a WRONG NUMBER.
+// `o:/\sm/` answered 10,791 here against Scryfall's 11,057 for a year, and `o:/\smp/` answered
+// zero against 42, because no oracle text contains whitespace then "mp".
+//
+// Every case below is one a count comparison catches and nothing else here would: the queries
+// parse cleanly on both sides, emit no warning, and simply disagree.
+const REGEX_DIALECT: [string, string][] = [
+	// The nine shorthands, corpus-wide (an anchored base makes several of them zero on both sides,
+	// which is exactly the vacuous comparison `anchorProbes` exists to reject).
+	["shorthand-symbol", "o:/\\ss/"],
+	["shorthand-mana", "o:/\\sm/"],
+	["shorthand-colored", "o:/\\sc/"],
+	["shorthand-hybrid", "o:/\\smh/"],
+	["shorthand-phyrexian", "o:/\\smp/"],
+	["shorthand-repeated", "o:/\\smr/"],
+	["shorthand-pt", "o:/\\spt/"],
+	["shorthand-plus", "o:/\\spp/"],
+	["shorthand-minus", "o:/\\smm/"],
+	// The shorthand BEATS the whitespace reading, which is the property that makes the family
+	// dangerous rather than merely missing: `o:/\smana/` is 404 on Scryfall and `o:/ mana/` is
+	// 2,782, so a query that looks like it asks for one asks for the other.
+	["shorthand-vs-whitespace", "o:/\\smana/"],
+	["literal-space", "o:/ mana/"],
+	// The shorthands are a property of the DIALECT, not of the column: they fire on all four
+	// regex-capable keywords.
+	["shorthand-on-flavor", "ft:/\\sm/"],
+	["shorthand-on-type", "t:/\\sm/"],
+	["shorthand-on-name", "name:/\\sm/"],
+	// `~` — Scryfall's alias for the card's own name. Unimplemented here (it needs a pattern
+	// recompiled per card), and 19,228 there.
+	["self-reference", "o:/~/"],
+	// NEWLINE, which is where the two corpora differ for a reason that is neither vintage nor
+	// dialect: Scryfall matches each FACE separately and this store joins them with "\n//\n", so a
+	// back face beginning "Draw…" answers a `\n`-anchored pattern here and not there.
+	// `o:/\ndraw/` is 381 against 389, the eight extras every one a `//` two-face card.
+	["newline-class", "o:/\\ndraw/"],
+	["whitespace-class", "o:/\\sdraw/"],
+	["explicit-class", "o:/[ \\n]draw/"],
+	// Uppercase escapes: Scryfall case-folds the whole pattern, so `\S` IS `\s` there
+	// (`o:/\Sdraw/` = `o:/\sdraw/` = 3,604) while this engine reads it as non-whitespace.
+	["uppercase-escape", "o:/\\Sdraw/"],
+];
+for (const [name, q] of REGEX_DIALECT)
+	add(`regex-${name}`, "regex-dialect", search(q, { order: "name" }), [`regex:dialect:${name}`]);
 
 // ── generic-bearing mana ──
 //
