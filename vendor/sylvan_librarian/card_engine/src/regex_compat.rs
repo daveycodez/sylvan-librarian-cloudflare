@@ -158,17 +158,20 @@ const SELF_REF_THIS_PHRASES: &[&str] = &[
 /// Where `~` is being expanded, which decides WHICH alternatives it gets.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum SelfRefScope {
-    /// No expansion: `~` is the literal tilde. `name:/~/`, `t:/~/` and `mana:/~/` are all 404 on
-    /// api.scryfall.com (2026-08-28) — `name:` could not be, if `~` were the card's name there.
+    /// No expansion: `~` is the literal tilde.
+    ///
+    /// EVERY COLUMN BUT THE TWO ORACLE ONES, and `ft:` is the one that took two measurements to
+    /// place. `name:/~/`, `t:/~/` and `mana:/~/` are all 404 on api.scryfall.com (2026-08-28) —
+    /// `name:` could not be, if `~` were the card's name there. `ft:/~/` is 2, which looks like
+    /// an alias answering thinly and is not: the two cards are Blighted Agent and Urabrask the
+    /// Hidden, whose Phyrexian-script flavor text contains a literal `~`, and the plain substring
+    /// `ft:"~"` returns the same two. The phrase family confirms it from the other side —
+    /// `ft:/this creature/` is 6 and `ft:/this creature/ -ft:/~/` is the same 6, so not one of
+    /// those six matches. Expanding names on flavor answered 680 against 2.
     None,
     /// Rules text: the card's names AND the "this <noun>" phrase family. `o:/~/` 19,228,
-    /// `fo:/~/` 22,037.
+    /// `fo:/~/` 22,037 — the difference being the reminder text `fo:` keeps.
     Oracle,
-    /// Flavor text: the NAMES ONLY. The phrase family is rules templating and does not apply
-    /// here, which is a measurement rather than a guess: `ft:/this creature/` is 6 on
-    /// api.scryfall.com and `ft:/this creature/ -ft:/~/` is the same 6 — not one of those six
-    /// matches `~` — while `ft:/~/` is 2. Expanding the phrases here answered 715.
-    Flavor,
 }
 
 /// The alternation `~` expands to: the sentinel that stands in for whichever of the card's own
@@ -179,15 +182,12 @@ pub(crate) enum SelfRefScope {
 /// punctuation Scryfall's `\b<name>\b` demands a word character AFTER the punctuation, so
 /// `!"Kaboom!" o:/~/` is 404 even though the card's text opens "Kaboom! deals damage" — and a
 /// sentinel wearing its own `\b` would have called it a match. See `with_self_reference`.
-fn self_reference_alternation(scope: SelfRefScope) -> String {
-    match scope {
-        SelfRefScope::Flavor => format!("(?:{SELF_REF_SENTINEL})"),
-        _ => format!(
-            r"(?:\bthis (?:{})\b|{})",
-            SELF_REF_THIS_PHRASES.join("|"),
-            SELF_REF_SENTINEL
-        ),
-    }
+fn self_reference_alternation(_scope: SelfRefScope) -> String {
+    format!(
+        r"(?:\bthis (?:{})\b|{})",
+        SELF_REF_THIS_PHRASES.join("|"),
+        SELF_REF_SENTINEL
+    )
 }
 
 /// Replace every `~` outside a bracket expression with [`self_reference_alternation`].

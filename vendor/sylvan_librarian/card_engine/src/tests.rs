@@ -12747,7 +12747,11 @@ fn self_reference_composes_binds_per_face_and_refuses_to_narrow() {
     };
     assert!(expanded("oracle_text", "o"), "o:/~/ is 19,228");
     assert!(expanded("oracle_text", "fo"), "fo:/~/ is 22,037");
-    assert!(expanded("flavor_text", "ft"), "ft:/~/ is 2");
+    // FLAVOR IS NOT ONE OF THEM, and its count is the trap: `ft:/~/` is 2 on api.scryfall.com,
+    // small enough to read as an alias answering thinly. The two cards are Blighted Agent and
+    // Urabrask the Hidden, whose Phyrexian-script flavor text carries a LITERAL tilde — the plain
+    // substring `ft:"~"` returns the same two. Expanding names here answered 680.
+    assert!(!expanded("flavor_text", "ft"), "ft:/~/ is a literal tilde, and its 2 are real ones");
     assert!(!expanded("card_name", "name"), "name:/~/ is 404 — the tilde stays literal");
     assert!(!expanded("card_types", "t"), "t:/~/ is 404");
     assert!(!expanded("mana_cost_jsonb", "mana"), "mana:/~/ is 404");

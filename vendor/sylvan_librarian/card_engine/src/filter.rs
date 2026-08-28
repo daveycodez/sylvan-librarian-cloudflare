@@ -1163,10 +1163,32 @@ pub(crate) enum TextField {
     Watermark,
     CollectorNumber,
     TypeLine,
-    /// The printed mana cost STRING, e.g. `{1}{R}` — or `{1}{R} // {1}{U}` on a split card, which
-    /// is Scryfall's own top-level `mana_cost` and the very string its `mana:/…/` runs against.
-    /// Stored as printed (mixed case, braces intact); every query regex carries `(?i)`, so the
-    /// case-folding Scryfall applies is already the compile's.
+    /// The printed mana cost STRING, e.g. `{1}{R}`. Stored as printed (mixed case, braces
+    /// intact); every query regex carries `(?i)`, so the case-folding Scryfall applies is already
+    /// the compile's.
+    ///
+    /// A MEASURED RESIDUAL LIVES HERE, and it is a property of the IMPORT rather than of this
+    /// arm. On a FACED card this column holds the FRONT face's cost, because
+    /// `merge_face_drafts` leaves `mana_cost_text` out of `_FACE_JOINED_TEXTS` and takes the
+    /// front's scalar. Scryfall's top-level `mana_cost` does two other things, and the rule is
+    /// LAYOUT, derived over every faced card in the 2026-05-31 bulk dump with no exceptions:
+    ///
+    ///   split / adventure / prepare / flip          the faces JOINED with " // "
+    ///   transform / modal_dfc / double_faced_token
+    ///   / reversible_card / art_series              ABSENT
+    ///
+    /// So `mana:/ /` is 435 there and 0 here, and the same 435 split-shaped cards cost a handful
+    /// of rows either way: `mana:/{r}/` 6,853 against 6,811, `mana:/}{/` 26,815 against 26,775,
+    /// `mana:/2/` 8,315 against 8,248, `mana:/^{r}$/` 526 against 529 (the front-only reading
+    /// gains three). Every unfaced card — 92% of the corpus — is exact, and so are the rows this
+    /// column was fixed for (`mana:/p/ mv=1` is 9 on both sides).
+    ///
+    /// Not fixed here on purpose: the discriminator is the layout, which is a PRINTING value
+    /// (`Printing::card_layout_id`), and reading it would make this field printing-dependent —
+    /// a change to `num_pdep`'s classification and to the `Tri::PrintingDep` it implies, with its
+    /// own measurement to do. The cost-shaped alternatives do not work: "join when every face has
+    /// a cost" disagrees with Scryfall on 122 cards, every one a modal DFC or a reversible whose
+    /// two halves both carry one.
     ManaCostText,
 }
 
@@ -4129,9 +4151,12 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
             TextField::OracleTextLower | TextField::FullOracleTextLower => {
                 compile_search_regex_self_referential(pattern, SelfRefScope::Oracle)?
             }
-            // Flavor gets the NAMES only — the phrase family is rules templating, and expanding
-            // it here answered 715 against api.scryfall.com's 2 for `ft:/~/`.
-            TextField::FlavorTextLower => compile_search_regex_self_referential(pattern, SelfRefScope::Flavor)?,
+            // FLAVOR IS NOT AN ORACLE COLUMN for this purpose, which took two measurements to
+            // establish. `ft:/~/` is 2 on api.scryfall.com — a number small enough to read as an
+            // alias answering thinly — and the two cards are Blighted Agent and Urabrask the
+            // Hidden, whose Phyrexian-script flavor text carries a literal `~`; the plain
+            // substring `ft:"~"` returns the same two. Expanding names here answered 680, and
+            // expanding the phrase family answered 715.
             _ => compile_search_regex(pattern)?,
         };
         return Ok(FilterExpr::TextRegex { field, regex: re });

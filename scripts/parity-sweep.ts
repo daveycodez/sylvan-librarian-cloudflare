@@ -1335,8 +1335,10 @@ const REGEX_DIALECT: [string, string][] = [
 	["this-spell-subset", "o:/this spell/ -o:/~/"],
 	["this-ability-not-alias", "o:/this ability/ -o:/~/"],
 	["this-door-not-alias", "o:/this door/ -o:/~/"],
-	// The columns: `fo:` keeps reminder text and answers MORE (22,037 against 19,228), `ft:` is 2,
-	// and `name:`/`t:`/`mana:` do not expand `~` at all — it stays the literal tilde there.
+	// The columns: `fo:` keeps reminder text and answers MORE (22,037 against 19,228), and
+	// `ft:`/`name:`/`t:`/`mana:` do not expand `~` at all — it stays the literal tilde there.
+	// `ft:/~/`'s 2 are the trap: Blighted Agent and Urabrask the Hidden, whose Phyrexian-script
+	// flavor text carries a real tilde, which `ft:"~"` finds as a plain substring.
 	["self-reference-full-oracle", "fo:/~/"],
 	["self-reference-flavor", "ft:/~/"],
 	["self-reference-name", "name:/~/"],
@@ -1404,6 +1406,10 @@ const REGEX_DIALECT: [string, string][] = [
 	["mana-slash-empty", "mana:/^$/"],
 	// The " // " a SPLIT card's cost carries is Scryfall's own field, not a join this port
 	// invented — which is why this column is not split per face the way the oracle columns are.
+	// KNOWN DIVERGENT, and swept for that reason: this store's `mana_cost_text` holds the FRONT
+	// face's cost where Scryfall's top-level field holds the faces joined (split / adventure /
+	// prepare / flip) or nothing at all (transform / modal_dfc / …). `mana:/ /` is 435 there and 0
+	// here; see TextField::ManaCostText for the layout table and the rows it costs.
 	["mana-slash-split-seam", "mana:/ /"],
 	["mana-slash-split-escaped", "mana:/\\/\\//"],
 	["mana-slash-hybrid-shorthand", "mana:/\\smh/"],
