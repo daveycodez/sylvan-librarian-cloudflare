@@ -928,6 +928,12 @@ const FUNNY_EXTRA_SETS: &[&str] = &[
 /// saw an empty string; both its faces are `Token Legendary Artifact Creature — Construct`. The
 /// rule now falls back to the faces when the card states no type line of its own, which closes it
 /// and leaves 44 — the Arena duplicates, which genuinely carry nothing.
+///
+/// FIVE DUNGEON PRINTINGS LEFT THE CLASS (2026-08-27). Bare `t:dungeon` answered 4 unique names
+/// here against api.scryfall.com's 5: the layout rule hid tclb/20 `Undercity // The Initiative`
+/// (layout `double_faced_token`, front face a Dungeon) and the memorabilia rule hid its oclb twin
+/// and the three oversized oafr dungeons, all of which Scryfall serves bare. Dungeons are the
+/// exception, not those rules — see the Dungeon check in the body for the measurement.
 fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     let legalities = card
         .get("legalities")
@@ -969,6 +975,33 @@ fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     // neither is `promo`.
     if s(card, "border_color").as_deref() == Some("silver") && s(card, "set_type").as_deref() == Some("promo") {
         return Ok(true);
+    }
+    // A DUNGEON IS SERVED, WHATEVER ITS PRINTING SAYS. Scryfall's editorial exception, measured
+    // 2026-08-27: the corpus holds 10 Dungeon-typed printings and `t:dungeon is:extra` answers
+    // exactly 1 — phtr/2 Dungeon Master, a funny-set planeswalker whose set the list above already
+    // hides. Bare `t:dungeon&unique=prints` serves the other 9: the three tafr dungeons, their
+    // three oversized oafr twins, tclb/0 Baldur's Gate Wilderness, and BOTH printings of
+    // `Undercity // The Initiative` — tclb/20, the corpus's ONLY served `double_faced_token`s
+    // (`layout:double_faced_token -is:extra` answers those 2 and nothing else), and oclb/20, which
+    // is memorabilia besides. Without this the layout rule below hid tclb/20 (bare `t:dungeon`
+    // answered 4 unique names against Scryfall's 5) and the memorabilia rule hid the four
+    // oversized printings (4 prints bare against Scryfall's 9).
+    //
+    // THE FRONT FACE DECIDES, like `is:hybrid`: the joined line `Dungeon — Undercity // Card`
+    // parses to card types `["Dungeon"]` because `parse_type_line` partitions on the FIRST em
+    // dash, and the back face's `Card` lands among the subtypes where neither this rule nor the
+    // "Card"/"Token" rule below reads it. Placed AFTER the funny/digital/silver rules — a future
+    // funny-set dungeon stays hidden with its set-mates, as phtr/2 would if its type ever said
+    // Dungeon — and BEFORE layout and memorabilia, the two rules it has to override.
+    let front_type_line = s(card, "type_line").filter(|t| !t.is_empty()).or_else(|| {
+        card.get("card_faces")
+            .and_then(Value::as_array)
+            .and_then(|faces| faces.first())
+            .and_then(Value::as_object)
+            .and_then(|face| s(face, "type_line"))
+    });
+    if front_type_line.is_some_and(|tl| parse_type_line(&tl).0.iter().any(|t| t == "Dungeon")) {
+        return Ok(false);
     }
     if s(card, "layout").as_deref().is_some_and(|l| EXTRA_LAYOUTS.contains(&l)) {
         return Ok(true);
@@ -3095,6 +3128,23 @@ mod tests {
         c["name"] = json!("Echo // Echo");
         c["layout"] = json!("reversible_card");
         assert!(!tag(&c), "a reversible duplicate is an ordinary printing");
+        // A Dungeon, in the two shapes other rules would otherwise hide (2026-08-27: bare
+        // `t:dungeon&unique=prints` serves 9 of the corpus's 10 Dungeon-typed printings).
+        // tclb/20 `Undercity // The Initiative` is the corpus's only served `double_faced_token`,
+        // and its back face's `Card` type sits harmlessly among the subtypes after the em-dash
+        // split...
+        let mut c = minimal_card("Undercity // The Initiative");
+        c["layout"] = json!("double_faced_token");
+        c["type_line"] = json!("Dungeon \u{2014} Undercity // Card");
+        c["legalities"] = json!({"vintage": "not_legal"});
+        assert!(!tag(&c), "a double-faced-token dungeon is served");
+        // ...and oafr/20-22 and oclb/20 are oversized memorabilia printings Scryfall serves.
+        let mut c = minimal_card("Dungeon of the Mad Mage");
+        c["set_type"] = json!("memorabilia");
+        c["type_line"] = json!("Dungeon");
+        c["oversized"] = json!(true);
+        c["legalities"] = json!({"vintage": "not_legal"});
+        assert!(!tag(&c), "an oversized memorabilia dungeon is served");
         // A playtest promo that is PLAYABLE: sld/SCTLR Counterspell is legal in modern and appears
         // in a bare `!"Counterspell"&unique=prints`, so the flag alone hides nothing.
         let mut c = minimal_card("Playable Playtest");
@@ -3157,6 +3207,14 @@ mod tests {
         c["border_color"] = json!("silver");
         c["set_type"] = json!("promo");
         assert!(tag(&c), "a silver-bordered promo is an extra");
+        // ...and the ONE Dungeon-typed extra: phtr/2 Dungeon Master, a funny-set PLANESWALKER
+        // whose "Dungeon Master" is a subtype — the exemption reads card types, so it never sees
+        // this printing, and the funny list fires first regardless.
+        let mut c = minimal_card("Dungeon Master");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("phtr");
+        c["type_line"] = json!("Legendary Planeswalker \u{2014} Dungeon Master");
+        assert!(tag(&c), "the Heroes of the Realm Dungeon Master stays hidden");
         // A Secret Lair sticker sheet (sld/335-339), whose only tell is the type line.
         let mut c = minimal_card("Sticker sheet");
         c["type_line"] = json!("Stickers");
