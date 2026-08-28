@@ -8,7 +8,12 @@ import unicodedata
 
 from titlecase import titlecase
 
-from api.parsing.colors import COLOR_ALIAS_TO_CODES, COLOR_CODE_TO_NAME, COLOR_COUNT_NAMES
+from api.parsing.colors import (
+    COLOR_ALIAS_TO_CODES,
+    COLOR_CODE_TO_NAME,
+    COLOR_COUNT_NAMES,
+    COLOR_SPREAD_COUNT_NAMES,
+)
 from api.parsing.db_info import (
     ALIAS_TO_FIELD_INFOS,
     CARD_SUPERTYPES,
@@ -662,6 +667,85 @@ _PRODUCED_COUNT_BY_OPERATOR: typing.Final = {
 
 _COLOR_COUNT_ATTRIBUTES: typing.Final = ("card_colors", "card_color_identity", "produced_mana")
 
+# `rainbow` / `all` -- "the whole spread of this column" -- per operator. The operator is carried
+# through VERBATIM here, `:` meaning `=`, which is what the numeric colour-count path already does
+# with `c:2`; the counts and the two rows that refute the letter reading are written out at
+# colors.COLOR_SPREAD_COUNT_NAMES. Spelled as an explicit seven-row table rather than "pass the
+# operator through" so it reads beside the two tables above and so a row nobody measured cannot
+# appear by accident.
+_SPREAD_BY_OPERATOR: typing.Final = {
+    ":": "=",
+    "=": "=",
+    "!=": "!=",
+    "<": "<",
+    "<=": "<=",
+    ">": ">",
+    ">=": ">=",
+}
+
+# How many values the whole spread of one column comes to -- the width `all` spells there.
+_COLOR_COLUMN_WIDTH: typing.Final = {"card_colors": 5, "card_color_identity": 5, "produced_mana": 6}
+
+# Every spelling of colourless that names NO colour on a colour column. Derived from the vocabulary
+# rather than retyped, so it cannot drift: exactly the names COLOR_ALIAS_TO_CODES maps to the single
+# code `c`, plus that code itself. On card_colors and card_color_identity
+# `get_colors_comparison_object` drops the `c`, so all four spellings compare against an EMPTY key
+# dict; on produced_mana the `c` survives as a real value and none of this applies.
+_COLORLESS_SPELLINGS: typing.Final = frozenset(
+    {"c"} | {name for name, codes in COLOR_ALIAS_TO_CODES.items() if codes == "c"}
+)
+
+# `c>=colorless` -- and only `>=` -- per operator, on the two columns where colourless is the empty
+# set.
+#
+# EVERY CARD IS A SUPERSET OF NOTHING, and Scryfall says so. card_engine's mask compare has a
+# standing special case that reads an empty mask under `Ge` as exact equality (`bits == 0`), which
+# is right for `:` and wrong for `>=` -- the two share CmpOp::Ge downstream and cannot be told apart
+# there, so the `>=` row is separated HERE, as the tautology `>= 0` the `c<=m` row already spells
+# the same way.
+#
+# MEASURED against api.scryfall.com 2026-08-28, corpus-wide (33,599) AND against the
+# `e:khm t:creature` base (151), on both columns and all four spellings:
+#
+#   c>=c = c>=colorless = c>=colourless = c>=brown = 33,599 = every card   (base: 151)
+#   id>=c                                         = 33,599 = every card   (base: 151)
+#
+# and NO OTHER OPERATOR MOVES -- each was probed and each already agreed, which is why this table
+# has one row instead of seven:
+#
+#   c:c = c=c = c<=c = 4,300 (base 2)    c<c = 0 (base 0)    c>c = c!=c = 29,396 (base 149)
+#   id:c = id=c = id<=c = 2,959 (base 2)                     id>c = id!=c = 30,640 (base 149)
+_COLORLESS_BY_OPERATOR: typing.Final = {
+    ">=": (">=", 0),  # every card is a superset of the empty set -- a tautology, spelled as a count
+}
+
+
+def _lowered_count(column: str, value: str, operator: str) -> tuple[str, int] | None:
+    """Return the (operator, count) a colour VALUE lowers through, or None to compare letters.
+
+    Args:
+        column: The db column the comparison is against.
+        value: The stripped, lowercased colour value as written.
+        operator: The comparison operator as written.
+
+    Returns:
+        The (operator, count) pair for the numeric colour-count comparison, or None when the value
+        compares as letters and no lowering applies.
+    """
+    if value in COLOR_COUNT_NAMES:
+        table = _PRODUCED_COUNT_BY_OPERATOR if column == "produced_mana" else _COLOR_COUNT_BY_OPERATOR
+        return table.get(operator)
+    if value in COLOR_SPREAD_COUNT_NAMES:
+        lowered_op = _SPREAD_BY_OPERATOR.get(operator)
+        width = _COLOR_COLUMN_WIDTH.get(column)
+        if lowered_op is None or width is None:
+            return None
+        # `rainbow` is five values on every column; `all` is the column's own width.
+        return (lowered_op, width if value == "all" else 5)
+    if column != "produced_mana" and value in _COLORLESS_SPELLINGS:
+        return _COLORLESS_BY_OPERATOR.get(operator)
+    return None
+
 
 class CardBinaryOperatorNode(BinaryOperatorNode):
     """Card-specific binary operator node with custom SQL generation."""
@@ -685,10 +769,8 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             isinstance(lhs, CardAttributeNode)
             and isinstance(rhs, StringValueNode)
             and lhs.attribute_name in _COLOR_COUNT_ATTRIBUTES
-            and rhs.value.strip().lower() in COLOR_COUNT_NAMES
         ):
-            table = _PRODUCED_COUNT_BY_OPERATOR if lhs.attribute_name == "produced_mana" else _COLOR_COUNT_BY_OPERATOR
-            lowered = table.get(operator)
+            lowered = _lowered_count(lhs.attribute_name, rhs.value.strip().lower(), operator)
             if lowered is not None:
                 operator, count = lowered
                 rhs = NumericValueNode(count)

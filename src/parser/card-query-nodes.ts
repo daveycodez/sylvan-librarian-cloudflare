@@ -14,6 +14,7 @@ import {
 	COLOR_ALIAS_TO_CODES,
 	COLOR_CODE_TO_NAME,
 	COLOR_COUNT_NAMES,
+	COLOR_SPREAD_COUNT_NAMES,
 	COLUMN_SCOPED_COUNT_NAMES,
 	type FieldInfo,
 	FieldType,
@@ -303,19 +304,99 @@ const COLUMN_SCOPED_COUNT_TABLES: ReadonlyMap<string, ReadonlyMap<string, readon
 const COLOR_COUNT_ATTRIBUTES: ReadonlySet<string> = new Set(["card_colors", "card_color_identity", "produced_mana"]);
 
 /**
- * The (operator → operator, count) table a colour VALUE lowers through on one column, or
- * undefined when the value spells letters and no lowering applies.
+ * `rainbow` / `all` — "the whole spread of this column" — per operator. The operator is carried
+ * through VERBATIM here, `:` meaning `=`, which is what the numeric colour-count path already does
+ * with `c:2`; the counts and the two rows that refute the letter reading are written out at
+ * db-info's COLOR_SPREAD_COUNT_NAMES.
+ *
+ * Spelled as an explicit seven-row table rather than "pass the operator through" so it reads beside
+ * the three tables above and so a row nobody measured cannot appear by accident.
+ */
+const SPREAD_BY_OPERATOR: ReadonlyMap<string, string> = new Map([
+	[":", "="],
+	["=", "="],
+	["!=", "!="],
+	["<", "<"],
+	["<=", "<="],
+	[">", ">"],
+	[">=", ">="],
+]);
+
+/** How many values the whole spread of one column comes to — the width `all` spells there. */
+const COLOR_COLUMN_WIDTH: ReadonlyMap<string, number> = new Map([
+	["card_colors", 5],
+	["card_color_identity", 5],
+	["produced_mana", 6],
+]);
+
+/**
+ * Every spelling of colourless that names NO colour on a colour column.
+ *
+ * Derived from the vocabulary rather than retyped, so it cannot drift: it is exactly the names
+ * COLOR_ALIAS_TO_CODES maps to the single code `c`, plus that code itself. On card_colors and
+ * card_color_identity `getColorsComparisonKeys` drops the `c`, so all four spellings compare
+ * against an EMPTY key list; on produced_mana the `c` survives as a real value and none of this
+ * applies.
+ */
+const COLORLESS_SPELLINGS: ReadonlySet<string> = new Set([
+	"c",
+	...[...COLOR_ALIAS_TO_CODES].filter(([, codes]) => codes === "c").map(([name]) => name),
+]);
+
+/**
+ * `c>=colorless` — and only `>=` — per operator, on the two columns where colourless is the empty
+ * set.
+ *
+ * EVERY CARD IS A SUPERSET OF NOTHING, and Scryfall says so. The engine's mask compare has a
+ * standing special case that reads an empty mask under `Ge` as exact equality (`bits == 0`), which
+ * is right for `:` and wrong for `>=` — the two share CmpOp::Ge downstream and cannot be told
+ * apart there, so the `>=` row is separated HERE, as the tautology `>= 0` the `c<=m` row already
+ * spells the same way.
+ *
+ * MEASURED against api.scryfall.com 2026-08-28, corpus-wide (33,599) AND against the
+ * `e:khm t:creature` base (151), on both columns and all four spellings:
+ *
+ *   c>=c = c>=colorless = c>=colourless = c>=brown = 33,599 = every card   (base: 151)
+ *   id>=c                                         = 33,599 = every card   (base: 151)
+ *
+ * and NO OTHER OPERATOR MOVES — each was probed and each already agreed, which is why this table
+ * has one row instead of seven:
+ *
+ *   c:c = c=c = c<=c = 4,300 (base 2)    c<c = 0 (base 0)    c>c = c!=c = 29,396 (base 149)
+ *   id:c = id=c = id<=c = 2,959 (base 2)                     id>c = id!=c = 30,640 (base 149)
+ *
+ * The `c=c` + `c!=c` sum overshoots the corpus by 97 rather than partitioning it, because `colors`
+ * is compared per FACE (see card_engine's `face_color_masks`): 97 cards have both a colourless
+ * face and a coloured one and answer to both terms. `c>=c`'s 33,599 is the corpus exactly.
+ */
+const COLORLESS_BY_OPERATOR: ReadonlyMap<string, readonly [string, number]> = new Map([
+	[">=", [">=", 0]], // every card is a superset of the empty set — a tautology, spelled as a count
+] as [string, readonly [string, number]][]);
+
+/**
+ * The (operator → operator, count) pair a colour VALUE lowers through on one column, or undefined
+ * when the value compares as letters and no lowering applies.
  *
  * The column-scoped names are asked FIRST and are gated on the column: `any` reaches its table
  * only on produced_mana, so `c:any` falls through to the letter path and stays the error Scryfall's
- * own rejection of the term corresponds to.
+ * own rejection of the term corresponds to. The colourless spellings are the mirror image — gated
+ * OFF produced_mana, where colourless is a producible value rather than the empty set.
  */
-function countTableFor(column: string, value: string): ReadonlyMap<string, readonly [string, number]> | undefined {
+function loweredCount(column: string, value: string, operator: string): readonly [string, number] | undefined {
 	if (COLUMN_SCOPED_COUNT_NAMES.get(column)?.has(value)) {
-		return COLUMN_SCOPED_COUNT_TABLES.get(value);
+		return COLUMN_SCOPED_COUNT_TABLES.get(value)?.get(operator);
 	}
 	if (COLOR_COUNT_NAMES.has(value)) {
-		return column === "produced_mana" ? PRODUCED_COUNT_BY_OPERATOR : COLOR_COUNT_BY_OPERATOR;
+		return (column === "produced_mana" ? PRODUCED_COUNT_BY_OPERATOR : COLOR_COUNT_BY_OPERATOR).get(operator);
+	}
+	if (COLOR_SPREAD_COUNT_NAMES.has(value)) {
+		const op = SPREAD_BY_OPERATOR.get(operator);
+		const width = COLOR_COLUMN_WIDTH.get(column);
+		// `rainbow` is five values on every column; `all` is the column's own width.
+		return op === undefined || width === undefined ? undefined : [op, value === "all" ? width : 5];
+	}
+	if (column !== "produced_mana" && COLORLESS_SPELLINGS.has(value)) {
+		return COLORLESS_BY_OPERATOR.get(operator);
 	}
 	return undefined;
 }
@@ -340,7 +421,7 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			rhs instanceof StringValueNode &&
 			COLOR_COUNT_ATTRIBUTES.has(lhs.attributeName)
 		) {
-			const lowered = countTableFor(lhs.attributeName, pyLower(pyStrip(rhs.value)))?.get(operator);
+			const lowered = loweredCount(lhs.attributeName, pyLower(pyStrip(rhs.value)), operator);
 			if (lowered !== undefined) {
 				super(lhs, lowered[0], new NumericValueNode(PyNumber.int(BigInt(lowered[1]))));
 				return;

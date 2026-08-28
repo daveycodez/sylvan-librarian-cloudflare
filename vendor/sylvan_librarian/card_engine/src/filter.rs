@@ -520,19 +520,57 @@ fn card_colors(card: &AOracleCard, f: ColorField) -> u8 {
 /// table. Stating the operator once is what makes the plane expression, the totals lookup and `tri`
 /// unable to disagree about it — a query bare enough to reach the totals table still has to agree
 /// with the residual path a compound query would fall back to.
-pub(crate) fn color_cmp(bits: u8, op: CmpOp, mask: u8) -> bool {
+pub(crate) fn color_cmp(bits: u8, op: CmpOp, mask: u8, field: ColorField) -> bool {
     match op {
         // mask == 0 means the query was literally "c"/"colorless" (see
         // get_colors_comparison_object on the Python side), not "at
         // least zero colors" -- bits & 0 == 0 is vacuously true for
         // every card, so Ge must fall back to exact equality here.
+        //
+        // That is right for `:` and WRONG for `>=`, which Scryfall answers as the tautology every
+        // card is a superset of nothing (`c>=colorless` = 33,599 = the corpus, 2026-08-28). The two
+        // spellings share CmpOp::Ge by the time they reach here and cannot be told apart, so the
+        // `>=` case is separated in the PARSER instead, as the count comparison `>= 0` -- see
+        // card_query_nodes' _COLORLESS_BY_OPERATOR. This line keeps answering for `:`.
         CmpOp::Ge => if mask == 0 { bits == 0 } else { bits & mask == mask },
         CmpOp::Eq => bits == mask,
-        CmpOp::Le => bits & !mask == 0,
-        CmpOp::Lt => bits & !mask == 0 && bits != mask,
+        // A CARD THAT PRODUCES NOTHING IS NOT A PRODUCER OF ANYTHING, and the two subset operators
+        // are where that bites: `bits & !mask == 0` is vacuously true of the empty set, so without
+        // the extra conjunct `produces<w` and `produces<=w` sweep in every card that produces no
+        // mana at all. Scryfall excludes them, measured against api.scryfall.com 2026-08-28,
+        // corpus-wide (33,599 cards) and against the `e:khm t:creature` base (151):
+        //
+        //   produces<w  = produces<white  = 0      (base 0)   -- the empty set is the only proper
+        //                                                        subset of {W}, and it is excluded
+        //   produces<=w = produces<=white = 72     (base 0)   = `produces=w`, exactly {W}
+        //   produces<wu                   = 163               = {W} 72 + {U} 91, no empty set
+        //   produces<=wu                  = 211               = those plus {W,U}'s 48
+        //   produces<c                    = 0                 -- C is a real produced value, and
+        //   produces<=c                   = 481                  it behaves like any other lane
+        //
+        // This port answered 139 on `e:khm t:creature produces<white` -- the 139 creatures in the
+        // set that produce nothing -- for `<` and `<=` alike.
+        //
+        // ONLY these two operators, and only on this column. `produces!=w` is 33,527 = 33,599 - 72,
+        // so `!=` DOES admit the non-producers; `=`, `>` and `>=` exclude them on their own for any
+        // non-empty mask, which produced_mana's always is (`produces:c` is the C lane, not the
+        // empty set). The two colour columns keep the plain subset test: `c<w` = 4,300 = `c:c` and
+        // `id<w` = 2,959 = `id:c` -- colourless cards ARE in a colour column's `<` and `<=`, which
+        // is the whole of what makes `id<=wu` the commander query it is.
+        //
+        // planes::cmp_expr carries the identical conjunct for the plane path; the two must agree
+        // because the estimator reports the plane compilation as exact.
+        CmpOp::Le => bits & !mask == 0 && produces_something(bits, field),
+        CmpOp::Lt => bits & !mask == 0 && bits != mask && produces_something(bits, field),
         CmpOp::Gt => bits & mask == mask && bits != mask,
         CmpOp::Ne => bits != mask,
     }
+}
+
+/// The "at least one produced value" conjunct `color_cmp`'s two subset operators carry on
+/// produced_mana, and nothing at all on the two colour columns.
+fn produces_something(bits: u8, field: ColorField) -> bool {
+    !matches!(field, ColorField::ProducedMana) || bits != 0
 }
 
 /// How many colours one mask counts as, for `c=2` / `id>=3` / `produces=6`.
@@ -2710,8 +2748,8 @@ impl FilterExpr {
                 // mask answers for the 82% of cards with no faces and for every card-level column,
                 // where `face_color_masks` declines and this is exactly the pre-gen-28 line.
                 tri_bool(match face_color_masks(card, *field) {
-                    Some(masks) => masks.into_iter().any(|bits| color_cmp(bits, *op, *mask)),
-                    None => color_cmp(card_colors(card, *field), *op, *mask),
+                    Some(masks) => masks.into_iter().any(|bits| color_cmp(bits, *op, *mask, *field)),
+                    None => color_cmp(card_colors(card, *field), *op, *mask, *field),
                 })
             }
 

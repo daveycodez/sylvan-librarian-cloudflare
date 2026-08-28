@@ -100,6 +100,14 @@ describe("explainWireTree", () => {
 		expect(explainWireTree(parseScryfallQuery("produces:any"))).toBe("the number of kinds of mana produced ≥ 1");
 		expect(explainWireTree(parseScryfallQuery("produces<any"))).toBe("the number of kinds of mana produced is 0");
 		expect(explainWireTree(parseScryfallQuery("produces<=any"))).toBe("the number of kinds of mana produced ≤ 1");
+		// `rainbow` / `all` lower the same way, and `all` is the one value whose count depends on
+		// the column — five where the C bit drops out, six on produced_mana.
+		expect(explainWireTree(parseScryfallQuery("id:rainbow"))).toBe("the number of colors in the color identity is 5");
+		expect(explainWireTree(parseScryfallQuery("c:all"))).toBe("the number of colors is 5");
+		expect(explainWireTree(parseScryfallQuery("produces:all"))).toBe("the number of kinds of mana produced is 6");
+		// And `c>=colorless`, the tautology, reads as the count it is lowered to rather than as a
+		// sentence about a colour set that has no members.
+		expect(explainWireTree(parseScryfallQuery("c>=colorless"))).toBe("the number of colors ≥ 0");
 	});
 
 	test("legalities and rarity", () => {

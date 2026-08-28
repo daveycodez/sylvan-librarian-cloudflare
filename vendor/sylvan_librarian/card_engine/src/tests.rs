@@ -3881,6 +3881,102 @@ fn the_two_printing_dependence_tables_agree_on_every_text_field() {
     assert!(crate::filter::touches_printing_field(&layout), "layout is a printing-level field");
 }
 
+/// A card that produces NOTHING is not a producer of anything, so produced_mana's two subset
+/// operators exclude it — and the two colour columns do NOT, which is the asymmetry this pins.
+///
+/// Measured against api.scryfall.com 2026-08-28 and written out at `filter::color_cmp`:
+/// `produces<w` is 0 corpus-wide (the empty set is the only proper subset of {W}, and it is
+/// excluded) and `produces<=w` is 72 = `produces=w`, while `c<w` is 4,300 = `c:c` and `id<w` is
+/// 2,959 = `id:c` — colourless cards ARE in a colour column's `<` and `<=`.
+#[test]
+fn producing_nothing_is_outside_every_produces_subset_comparison() {
+    let w = 0b0_0001u8;
+    let wu = 0b0_0011u8;
+    let colorless_produced = 0b10_0000u8; // the C lane, which only produced_mana has
+
+    for op in [CmpOp::Le, CmpOp::Lt] {
+        assert!(
+            !crate::filter::color_cmp(0, op, w, ColorField::ProducedMana),
+            "{op:?}: a card producing nothing is not a producer of a subset of {{W}}",
+        );
+        assert!(
+            !crate::filter::color_cmp(0, op, colorless_produced, ColorField::ProducedMana),
+            "{op:?}: the C lane is an ordinary produced value, and nothing is still not a subset of it",
+        );
+        // The same bits on the two colour columns mean "colourless", which IS in scope there.
+        for (label, field) in [("colors", ColorField::Colors), ("color_identity", ColorField::ColorIdentity)] {
+            assert!(
+                crate::filter::color_cmp(0, op, w, field),
+                "{op:?} on {label}: a colourless card is a subset of {{W}} — this is what `id<=wu` is for",
+            );
+        }
+    }
+
+    // `<=` keeps the exact hit and `<` drops it, on produced_mana as everywhere else.
+    assert!(crate::filter::color_cmp(w, CmpOp::Le, w, ColorField::ProducedMana), "{{W}} <= {{W}}");
+    assert!(!crate::filter::color_cmp(w, CmpOp::Lt, w, ColorField::ProducedMana), "{{W}} is not a PROPER subset of itself");
+    assert!(crate::filter::color_cmp(w, CmpOp::Lt, wu, ColorField::ProducedMana), "{{W}} is a proper subset of {{W,U}}");
+
+    // ONLY the two subset operators. `!=` admits the non-producers on Scryfall (`produces!=w` is
+    // 33,527 = 33,599 - 72), and `=` / `>` / `>=` exclude them on their own for any non-empty mask.
+    assert!(crate::filter::color_cmp(0, CmpOp::Ne, w, ColorField::ProducedMana), "`produces!=w` keeps the non-producers");
+    for op in [CmpOp::Eq, CmpOp::Gt, CmpOp::Ge] {
+        assert!(!crate::filter::color_cmp(0, op, w, ColorField::ProducedMana), "{op:?} excludes the empty set unaided");
+    }
+}
+
+/// The PLANE compilation of a colour leaf must select exactly the cards `matches` does, for every
+/// field, operator and mask — the contract the estimator reports as exact, so a disagreement here
+/// is a silently wrong answer rather than a slow one.
+///
+/// It is produced_mana's `<` / `<=` that made this worth its own sweep: those two carry a conjunct
+/// (`filter::color_cmp`'s "produces at least one value") that lives in `cmp_expr` on this path and
+/// in `color_cmp` on the other, so the two are separate statements of one rule.
+#[test]
+fn color_planes_select_exactly_what_matches_does() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_828);
+    let data = fuzz_store_n(&mut rng, 512);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let n_cards = archived.cards.len();
+
+    let mut bits = Vec::new();
+    let mut compiled = 0usize;
+    let mut nonzero = 0usize;
+    for (label, field) in [
+        ("colors", ColorField::Colors),
+        ("color_identity", ColorField::ColorIdentity),
+        ("produced_mana", ColorField::ProducedMana),
+    ] {
+        for op in [CmpOp::Ge, CmpOp::Eq, CmpOp::Le, CmpOp::Lt, CmpOp::Gt, CmpOp::Ne] {
+            // 0..64 rather than 0..32: produced_mana's C lane is the sixth bit, and it is exactly
+            // the column whose subset operators changed.
+            for mask in 0u8..64 {
+                let f = FilterExpr::ColorCmp { field, op, mask };
+                let Some(expr) = compile_plane(&f, bounds, words) else { continue };
+                compiled += 1;
+                eval_planes(&expr, bounds, &mut bits);
+                for cid in 0..n_cards {
+                    let card = &archived.cards[cid];
+                    let start = u32::from(archived.offsets[cid]) as usize;
+                    let want = f.matches(card, &archived.printings[start], &archived.strings);
+                    assert_eq!(
+                        bitmap_contains(&bits, cid as u32),
+                        want,
+                        "{label} op={op:?} mask={mask:#08b}: card {cid} membership mismatch",
+                    );
+                    nonzero += usize::from(want);
+                }
+            }
+        }
+    }
+    assert_eq!(compiled, 3 * 6 * 64, "every field x op x mask must compile to a plane expression");
+    assert!(nonzero > 0, "no colour case matched anything; the sweep is not exercising the planes");
+}
+
 /// `exact_result_total`'s `ColorCmp` arm (colors/color_identity/produced_mana) must be exact in all
 /// three spaces, for every op against every one of the 32 possible WUBRG masks, against the same
 /// brute-force reference the fuzz differential uses.

@@ -1191,7 +1191,7 @@
 	},
 	{
 		"query": "c:all",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_colors\",\"original_attribute\":\"c\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"W\",\"U\",\"B\",\"R\",\"G\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_colors\",\"original_attribute\":\"c\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "c:altruism",
@@ -1411,7 +1411,7 @@
 	},
 	{
 		"query": "c:rainbow",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_colors\",\"original_attribute\":\"c\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"W\",\"U\",\"B\",\"R\",\"G\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_colors\",\"original_attribute\":\"c\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "c:rakdos",
@@ -4608,7 +4608,7 @@
 	},
 	{
 		"query": "produces:all",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"W\",\"U\",\"B\",\"R\",\"G\",\"C\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "produces:c",
@@ -4635,7 +4635,7 @@
 	},
 	{
 		"query": "produces:rainbow",
-		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"W\",\"U\",\"B\",\"R\",\"G\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "produces:wu",
