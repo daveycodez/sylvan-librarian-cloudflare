@@ -856,10 +856,12 @@ export interface TermPolicyResult {
  * and not an ASCII fold.
  *
  * DOWNCASE FIRST, THEN TRUNCATE: `F:ABCDEFGHIJKLMNOPQRS` (21 characters) answers
- * “f:abcdefghijklmnopq…”, the lower-cased text cut to the same 20. The order is observable only in
- * the codepoints that change length when downcased, but it is also the cheaper claim — every row
- * above reads as ONE downcased query being re-rendered, and the reason sentences agree: see
- * `classifyLeaf`, where format, language and rarity all name a downcased value.
+ * “f:abcdefghijklmnopq…”, the lower-cased text cut to the same 20. That order is observable only on
+ * a codepoint that CHANGES LENGTH when downcased, so it was measured on one: `f:İABCDEFGHIJKLMNOPQ`
+ * is exactly 20 characters as typed and would come back whole if the cut ran first, but `İ`
+ * (U+0130) downcases to `i` + U+0307 and the answer is “f:i̇abcdefghijklmno…” — 21 characters
+ * downcased, then cut. The slice is by CODE POINT for the same reason: cutting UTF-16 units would
+ * sever that combining mark from its `i`.
  *
  * Both answer shapes format identically: `C:MW` alone is the 400 whose `details` is "All of your
  * terms were ignored.", carrying the SAME “c:mw” warning that `C:MW e:khm` carries on its 200.

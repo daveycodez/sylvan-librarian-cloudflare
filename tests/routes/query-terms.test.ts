@@ -936,6 +936,17 @@ describe("the echoed expression is lower-cased, keyword AND value", () => {
 		expect(scryfallTermPolicy("F:ABCDEFGHIJKLMNOPQRS e:khm").warnings).toEqual([
 			"Invalid expression “f:abcdefghijklmnopq…” was ignored. Unknown game format “abcdefghijklmnopqrs”",
 		]);
+		// THE ORDER IS ONLY OBSERVABLE ON A CODEPOINT THAT CHANGES LENGTH WHEN DOWNCASED, so here is
+		// one. `f:İABCDEFGHIJKLMNOPQ` is 20 characters as typed — under truncate-then-downcase it
+		// would come back WHOLE — but `İ` (U+0130) downcases to `i` + U+0307, which makes it 21 and
+		// pushes it over the cut. q=f:İABCDEFGHIJKLMNOPQ e:khm → 200, 323, and the live warning is
+		// the string below character for character: cut after `…mno`, and the reason naming the full
+		// 19-character downcased value. Ruby's `String#downcase` and JS's `toLowerCase()` agree on
+		// this expansion, and slicing by CODE POINT rather than by UTF-16 unit is what keeps the
+		// combining mark from being severed from its `i`.
+		expect(scryfallTermPolicy("f:İABCDEFGHIJKLMNOPQ e:khm").warnings).toEqual([
+			"Invalid expression “f:i̇abcdefghijklmno…” was ignored. Unknown game format “i̇abcdefghijklmnopq”",
+		]);
 	});
 
 	test("the 400 all-ignored answer carries the SAME downcased warning", () => {
