@@ -13825,6 +13825,10 @@ fn scryfall_regex_shorthands_expand() {
     assert!(!m(r"\smr", "{g}{w}, {t}, sacrifice this land"), "two ADJACENT symbols are not enough");
     assert!(m(r"\smr", "{g}{w}{w}, {t}, sacrifice this land"), "but {{w}}{{w}} inside the same run is");
     assert!(!m(r"\smr", "{t}: add {g}."));
+    // The pawprint repeats in the `Season of ...` mode lines and Scryfall does NOT count it:
+    // `o:/\smr/` is 1,189 there and was 1,194 here, the five extras being exactly those cards.
+    assert!(!m(r"\smr", "{p}{p} -- draw a card for each creature that died"));
+    assert!(m(r"\sm", "{p} -- draw a card"), "\\sm still counts the pawprint");
 
     // \smh — hybrid, and monocolor Phyrexian is not hybrid (172 against 213 for every symbol
     // carrying a slash).

@@ -1059,7 +1059,7 @@ describe("the regex surface, alias by alias", () => {
 		// PLAIN LITERALS on a collection column, which never reach a regex engine at all:
 		// `lowerLiteralRegexes` has already turned them into the substring they spell, and the
 		// answers are real (`is:/promo/` 6,126, `kw:/flying/` 3,285, `st:/expansion/` 24,741,
-		// `frame:/1997/` 6,750, `otag:/removal/` 6,430, `art:/dragon/` 1,147). Scryfall drops
+		// `frame:/1997/` 6,750, `otag:/removal/` 6,430, `art:/dragon/` 1,149). Scryfall drops
 		// each of these; removing a working answer to match a warning buys a searcher nothing.
 		frame: "frame:/1997/",
 		keyword: "keyword:/flying/",

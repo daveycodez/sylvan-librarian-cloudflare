@@ -203,6 +203,15 @@ impl CompiledRegex {
 /// Phyrexian one, contradicting its own docs page, which offers `{P}` as a `\smp` example.
 const MANA_SYMBOL: &str = r"\{(?:[0-9]+|[wubrgcsxyz]|[^{}]*/[^{}]*|h[wubrg]?|p|½)\}";
 
+/// The same vocabulary MINUS the bare `{P}`, which is what `\smr` repeats over.
+///
+/// Scryfall's `\sm` counts the Bloomburrow PAWPRINT as a mana symbol and its two DERIVED
+/// shorthands do not: `\smp` excludes it (42, not 47) and so does `\smr`. Measured on the
+/// deployment after the shorthands landed, 2026-08-28: `o:/\smr/` answered 1,194 against
+/// Scryfall's 1,189, and the five extras were exactly the `Season of …` cards, whose
+/// `{P}{P} —` mode lines are a repeated pawprint and nothing else.
+const REPEATABLE_MANA_SYMBOL: &str = r"\{(?:[0-9]+|[wubrgcsxyz]|[^{}]*/[^{}]*|h[wubrg]?|½)\}";
+
 /// Scryfall's non-standard regex shorthands, as `(suffix after \s, expansion)`.
 ///
 /// <https://scryfall.com/docs/regular-expressions> documents these as "not formal character
@@ -307,7 +316,7 @@ pub(crate) fn translate_query_escapes(pattern: &str) -> String {
             }
             if next == 's' {
                 if chars.get(i) == Some(&'m') && chars.get(i + 1) == Some(&'r') {
-                    out.push_str(&format!("(?:(?<smr{smr_seq}>{MANA_SYMBOL})\\k<smr{smr_seq}>)"));
+                    out.push_str(&format!("(?:(?<smr{smr_seq}>{REPEATABLE_MANA_SYMBOL})\\k<smr{smr_seq}>)"));
                     smr_seq += 1;
                     i += 2;
                     continue;
