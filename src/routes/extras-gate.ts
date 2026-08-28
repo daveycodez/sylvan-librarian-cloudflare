@@ -105,6 +105,42 @@ const EXTRAS_DERIVED_TRIGGERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The `t:` VALUES that force extras on — Scryfall's syntax docs say the vanguard, plane, scheme
+ * and phenomenon classes are "hidden by default… You must either search for their type (using the
+ * type: keyword) or a set that contains them", and this table is that sentence measured rather
+ * than believed, because the docs' list and the echo's list are NOT the same list.
+ *
+ * All ten candidate values were probed for the `include_extras` echo, one query each (2026-08-27,
+ * `<term> or cmc=3` sent with `include_extras=false`, the verdict read out of the `next_page`
+ * echo; `plane`, `vanguard` and `emblem` re-probed against `or t:goblin` with identical
+ * verdicts). Six fire:
+ *
+ *   t:token -> true    t:plane -> true     t:phenomenon -> true
+ *   t:scheme -> true   t:vanguard -> true  t:emblem -> true
+ *
+ * and the other four echo false — t:dungeon, t:attraction, t:contraption, t:sticker (t:stickers
+ * too) — every one of them a card class as "extra" as the six, which is why the docs' sentence
+ * could not be trusted as the rule. `t:creature` and `t:goblin` were probed as controls and echo
+ * false. A per-value table again: re-derive it by re-running the probe, not by reasoning.
+ *
+ * `or` propagates (`t:plane or t:goblin` echoes true) and the regex spelling removes the trigger
+ * exactly as it does for `t:token` — `t:/plane/ or cmc=3` echoes false — so the `lowered` check
+ * below covers the new values through the same `family()` unification. NEGATION DOES NOT
+ * PROPAGATE, unlike `-e:lea t:land` and `-f:premodern t:land`: `-t:plane t:land` echoes false and
+ * so does `-t:token t:land` (measured 2026-08-27). This walk does not track `Not` and fires on
+ * all six under negation — that was already true of `t:token` before the other five joined it, a
+ * recorded residual and not a new one.
+ */
+const EXTRAS_TYPE_TRIGGERS: ReadonlySet<string> = new Set([
+	"token",
+	"plane",
+	"phenomenon",
+	"scheme",
+	"vanguard",
+	"emblem",
+]);
+
+/**
  * The `is:` value behind `include_variations`, and the whole of that gate's auto-enable rule.
  *
  * Spelled here rather than imported from `db-info` beside `EXTRA_IS_TAG` because it is not the same
@@ -147,7 +183,8 @@ function mentionsIsTag(node: unknown, tag: string): boolean {
  * and `-e:war t:land` is false. And it is a FORCE, not a default: `include_extras=false` sent
  * explicitly is overridden, in the echo and in the rows.
  *
- * Unconditional triggers: `a:`, `wm:`, `layout:`, `name:/…/`, `t:token`, and four `is:` values
+ * Unconditional triggers: `a:`, `wm:`, `layout:`, `name:/…/`, six `t:` values (`token` and five
+ * hidden card classes — see `EXTRAS_TYPE_TRIGGERS`), and four `is:` values
  * (`b:` belongs here too — this parser has no block operator, so the term cannot reach us). Each
  * fires on the TERM: `a:"Wesley Burt"` triggers although `a:"Wesley Burt" is:extra` is 0,
  * `name:/zzzqq/` matches nothing and still triggers, `layout:normal` triggers. Deliberately NOT
@@ -273,8 +310,8 @@ function walkExtrasTriggers(node: unknown, out: ExtrasTriggers, lowered: Lowered
 		if (attr === "card_name" && (rhs as { node_type?: string })?.node_type === "RegexValueNode" && !fromExpansion) {
 			out.forced = true;
 		}
-		// `t:token` and four `is:` values are the VALUE-specific triggers; both arrive as a string
-		// array (the parser expands a type or is-tag term into its comparison keys).
+		// Six `t:` values and four `is:` values are the VALUE-specific triggers; both arrive as a
+		// string array (the parser expands a type or is-tag term into its comparison keys).
 		// `banned:` at ANY value, and `f:`/`format:`/`legal:` at exactly `premodern`. Both bind to
 		// `card_legalities`, so the alias is what separates them — `banned:legacy`, `banned:vintage`,
 		// `banned:modern` and `banned:pauper` all echo true while `restricted:vintage` echoes false,
@@ -289,7 +326,8 @@ function walkExtrasTriggers(node: unknown, out: ExtrasTriggers, lowered: Lowered
 			if (values.includes("premodern")) out.forced = true;
 		}
 		if (attr === "card_types" || attr === "card_subtypes" || attr === "card_is_tags") {
-			const wanted = (v: string) => (attr === "card_is_tags" ? UNCONDITIONAL_EXTRAS_IS_TAGS.has(v) : v === "token");
+			const wanted = (v: string) =>
+				attr === "card_is_tags" ? UNCONDITIONAL_EXTRAS_IS_TAGS.has(v) : EXTRAS_TYPE_TRIGGERS.has(v);
 			if (values.some((v) => wanted(v) && !lowered(attr, v) && !derived(attr, v))) {
 				out.forced = true;
 			}

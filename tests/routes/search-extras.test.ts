@@ -75,6 +75,8 @@ describe("/search applies the extras gate", () => {
 			"wm:mirran",
 			"layout:normal",
 			"t:token",
+			"t:plane",
+			"t:vanguard",
 			"is:oversized",
 			"border:silver",
 			"banned:legacy",
@@ -83,6 +85,9 @@ describe("/search applies the extras gate", () => {
 		]) {
 			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: false });
 		}
+		// A class as hidden as the planes that Scryfall's echo nonetheless refuses to reveal — the
+		// control that keeps the type triggers a measured table (2026-08-27) and not a rule.
+		expect(gatesClosed(await treeFor(engine, "t:dungeon")), "t:dungeon").toMatchObject({ extra: true });
 	});
 
 	test("a set term admits extras only when that set holds one", async () => {
