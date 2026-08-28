@@ -1,6 +1,6 @@
 // The nightly import, end to end, on this machine, with a cost meter on it.
 //
-//   bun run harness:import                  # default: ~6k printings, N=4
+//   bun run harness:import                  # default: 6k printings, 28k lines, N=7
 //   bun run harness:import -- --printings 12000 --partition-bytes 4000000
 //   bun run harness:import -- --statements  # also print the per-statement table
 //
@@ -122,11 +122,13 @@ function parseArgs(argv: string[]): Options {
 	};
 	return {
 		printings: num("printings", 6000),
-		// Small enough that the synthetic corpus lands on N=4 rather than the
-		// MIN_PARTITION_COUNT floor: partitions 0 (first), 1-2 (neither first
-		// nor last — the ones production died on) and 3 (last, the one that
-		// drops draft_batches) all get exercised. See IMPORT_TARGET_PARTITION_BYTES
-		// in src/import-coordinator.ts.
+		// Small enough that the default corpus lands on N=7 rather than the
+		// MIN_PARTITION_COUNT floor of 2: a two-partition loop has a first
+		// partition and a last one and no partition that is NEITHER, which is
+		// exactly the position production died in (partition 2 of 10). At 7,
+		// partitions 1-5 are all middle partitions — the ones that must leave
+		// draft_batches alone for the readers behind them. See
+		// IMPORT_TARGET_PARTITION_BYTES in src/import-coordinator.ts.
 		partitionBytes: num("partition-bytes", 4_000_000),
 		// Nothing in a healthy slice takes 60s locally; the 2026-08-28 stalls
 		// were promises that never settled, and this is what turns that into a
