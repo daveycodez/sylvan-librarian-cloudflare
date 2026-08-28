@@ -6,6 +6,7 @@ members = [
     "engine/wasm-builder-probe",
     "engine/wasm-import",
     "engine/builder",
+    "engine/inflate",
 ]
 
 # Tuned for the wasm engine (size + speed inside a Worker isolate); built

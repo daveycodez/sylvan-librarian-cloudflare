@@ -1,0 +1,16 @@
+# A gzip/DEFLATE inflater whose whole decode state is a plain, versioned,
+# serializable struct — the recode phase's "resume decompression exactly where
+# the last alarm stopped" primitive (see src/lib.rs for why no existing
+# inflater could be used). Deliberately dependency-free: the state layout is
+# owned by this repo, and the crate is compiled into the committed
+# sylvan-wasm-import blob. flate2 appears only as a dev-dependency — an
+# INDEPENDENT gzip implementation for the differential tests to compress with
+# and inflate against; it never reaches the shipped wasm.
+
+[package]
+name = "sylvan-inflate"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+flate2 = "1"
