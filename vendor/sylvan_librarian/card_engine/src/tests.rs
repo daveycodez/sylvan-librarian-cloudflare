@@ -12409,6 +12409,273 @@ fn face_joined_text_matches_per_face() {
     );
 }
 
+// `~` IS AN ALIAS FOR THE CARD'S OWN SELF-REFERENCE, and `o:/~/` was answering 404 here against
+// 19,228 on api.scryfall.com — a silent zero, the worst answer this API can give. Two things were
+// wrong and only one of them was the engine: `regexPlainLiteral` read `~` as an ordinary
+// character and lowered `o:/~/` to the substring search `o:~`, which no oracle text satisfies.
+//
+// THE RULE IS MEASURED CARD BY CARD, and the 27 rows below are the derivation, not a sample: each
+// is a real card, its stored text as this store holds it (reminder-stripped, lowercased, faces
+// joined), and the verdict api.scryfall.com gives for `!"<name>" o:/~/` on 2026-08-28.
+//
+// `~` expands to an ALTERNATION of three things:
+//
+//   1. the face's own name                       lightning bolt deals 3 damage
+//   2. its LEGENDARY SHORT NAME — the name cut at the earliest of ",", " the ", " of "
+//                                                rankle / odric / eron / svyelun / storm
+//   3. a fixed list of "this <noun>" phrases     this creature / this spell / this land / …
+//
+// and each alternative is WORD-BOUNDED, which is the whole of why "On the Job", "Get the Point"
+// and "In the Presence of Ages" do NOT match: their short names ("on", "get", "in") appear only
+// inside "control", "target" and "into". "Hurska Sweet-Tooth" is the other half of the short-name
+// rule — its text says "whenever hurska attacks" and it still does not match, because its name
+// carries none of the three separators.
+//
+// The phrase list is TYPE-INDEPENDENT: Full Steam Ahead and Martyrdom are an instant and a
+// sorcery that never name themselves, and match on a "this creature" inside an ability they grant
+// to something ELSE. And it is not every "this <noun>": Surge of Brilliance ("this turn"), Mulch
+// ("this way"), Crown of Gondor ("this ability") and Eldrazi Temple ("this mana") are all misses.
+//
+// Four rows are the REMINDER-TEXT trap, and they are why the fixture stores the stripped text:
+// Iguana Parrot, Jungle Weaver, Waking the Trolls and Shields of Velis Vel each carry an alias
+// phrase, every one of them inside parentheses that `o:` does not search. All four are misses on
+// Scryfall, and a model built on the unstripped text calls all four matches.
+const TILDE_CASES: &[(&str, &str, bool)] = &[
+    ("lightning bolt", "lightning bolt deals 3 damage to any target.", true),
+    ("rankle, master of pranks", "flying, haste\nwhenever rankle deals combat damage to a player, choose any number —\n• each player discards a card.\n• each player loses 1 life and draws a card.\n• each player sacrifices a creature of their choice.", true),
+    ("odric, master tactician", "first strike\nwhenever odric and at least three other creatures attack, you choose which creatures block this combat and how those creatures block.", true),
+    ("eron the relentless", "haste\n{r}{r}{r}: regenerate eron.", true),
+    ("svyelun of sea and sky", "svyelun has indestructible as long as you control at least two other merfolk.\nwhenever svyelun attacks, draw a card.\nother merfolk you control have ward {1}.", true),
+    ("storm of memories", "storm\nexile an instant or sorcery card with mana value 3 or less from your graveyard at random. you may cast it without paying its mana cost. if that spell would be put into a graveyard, exile it instead.", true),
+    ("on the job", "creatures you control get +2/+1 until end of turn. investigate.", false),
+    ("get the point", "destroy target creature. scry 1.", false),
+    ("in the presence of ages", "reveal the top four cards of your library. you may put a creature card and/or a land card from among them into your hand. put the rest into your graveyard.", false),
+    ("hurska sweet-tooth", "whenever hurska attacks, create a food token.\nwhenever you gain life, you may pay {g/w}. when you do, target creature gets +x/+x until end of turn, where x is the amount of life you gained.", false),
+    ("kor outfitter", "when this creature enters, you may attach target equipment you control to target creature you control.", true),
+    ("altar's reap", "as an additional cost to cast this spell, sacrifice a creature.\ndraw two cards.", true),
+    ("orzhov guildgate", "this land enters tapped.\n{t}: add {w} or {b}.", true),
+    ("psychic venom", "enchant land\nwhenever enchanted land becomes tapped, this aura deals 2 damage to that land's controller.", true),
+    ("rogue class", "\nwhenever a creature you control deals combat damage to a player, exile the top card of that player's library face down. you may look at it for as long as it remains exiled.\n{1}{u}{b}: level 2\ncreatures you control have menace.\n{2}{u}{b}: level 3\nyou may play cards exiled with this class, and you may spend mana as though it were mana of any color to cast those spells.", true),
+    ("surge of brilliance", "paradox — draw a card for each spell you've cast this turn from anywhere other than your hand.\nforetell {1}{u}", false),
+    ("mulch", "reveal the top four cards of your library. put all land cards revealed this way into your hand and the rest into your graveyard.", false),
+    ("crown of gondor", "equipped creature gets +1/+1 for each creature you control.\nwhen a legendary creature you control enters, if there is no monarch, you become the monarch.\nequip {4}. this ability costs {3} less to activate if you're the monarch.", false),
+    ("eldrazi temple", "{t}: add {c}.\n{t}: add {c}{c}. spend this mana only to cast colorless eldrazi spells or activate abilities of colorless eldrazi.", false),
+    ("iguana parrot", "flying, vigilance\nprowess", false),
+    ("jungle weaver", "reach\ncycling {2}", false),
+    ("waking the trolls", "\ni — destroy target land.\nii — put target land card from a graveyard onto the battlefield under your control.\niii — choose target opponent. if they control fewer lands than you, create a number of 4/4 green troll warrior creature tokens with trample equal to the difference.", false),
+    ("shields of velis vel", "changeling\ncreatures target player controls get +0/+1 and gain all creature types until end of turn.", false),
+    ("full steam ahead", "until end of turn, each creature you control gets +2/+2 and gains trample and \"this creature can't be blocked by more than one creature.\"", true),
+    ("martyrdom", "until end of turn, target creature you control gains \"{0}: the next 1 damage that would be dealt to target creature, planeswalker, or player this turn is dealt to this creature instead.\" only you may activate this ability.", true),
+    ("vraska's fall", "each opponent sacrifices a creature or planeswalker of their choice and gets a poison counter.", false),
+    ("forest", "", false),
+];
+
+#[test]
+fn self_reference_alias_matches_scryfall_card_for_card() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let cards: Vec<OracleCard> = TILDE_CASES
+        .iter()
+        .enumerate()
+        .map(|(i, (name, text, _))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.card_name_lower = InlineStr::from_str(name);
+            c.oracle_text_lower_id = interner.intern((*text).to_string());
+            c
+        })
+        .collect();
+    let n = cards.len();
+    let mut data = store_of(cards, &vec![1usize; n], vocab);
+    for (i, (name, text, _)) in TILDE_CASES.iter().enumerate() {
+        data.cards[i].card_name_lower = InlineStr::from_str(name);
+        data.cards[i].oracle_text_lower_id = interner.intern((*text).to_string());
+    }
+    data.strings = interner.strings;
+    derive_name_collation(&mut data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let f = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: crate::filter::compile_search_regex_self_referential("~").expect("~ must compile"),
+    };
+    for (i, (name, _, expected)) in TILDE_CASES.iter().enumerate() {
+        let got = f.matches(&archived.cards[i], &archived.printings[i], &archived.strings);
+        assert_eq!(got, *expected, "o:/~/ on {name}");
+    }
+}
+
+// The COMPOSED forms, the columns that do NOT expand `~`, and the narrowing decline — everything
+// the card-for-card table above cannot ask because it only ever runs the bare `~`.
+#[test]
+fn self_reference_composes_binds_per_face_and_refuses_to_narrow() {
+    use crate::filter::{compile_search_regex_self_referential as sre, compile_search_regex as re};
+
+    // ── the compiled shape ──
+    //
+    // `~` is an alternation, so it stays on the LINEAR engine: no backreference, no lookaround,
+    // and therefore no `fancy_regex` and no backtrack budget.
+    let bare = sre("~").expect("~ compiles");
+    assert!(!bare.is_backtracking(), "~ must not push a pattern onto the backtracking engine");
+    assert!(bare.has_self_reference());
+    // An ESCAPED tilde expands too, because Scryfall's does: `o:/\~/` answers the same 19,228 as
+    // `o:/~/` there (2026-08-28), so the backslash does not protect it.
+    assert!(sre(r"\~").expect(r"\~ compiles").has_self_reference());
+    // Bracket expressions are left alone, the same policy the `\s…` shorthands keep: substituting
+    // an alternation into a class would turn a pattern that reads perfectly well into an error.
+    assert!(!sre("[~]").expect("[~] compiles").has_self_reference());
+    // And a pattern with no `~` is untouched, so nothing else pays for this.
+    assert!(!sre("draw a card").expect("compiles").has_self_reference());
+    assert!(!re("~").expect("compiles").has_self_reference(), "the plain entry point never expands");
+
+    // ── the composed patterns, against the same real texts the table above uses ──
+    let hit = |pattern: &str, name: &str, text: &str| -> bool {
+        let mut vocab = VocabInterner::new();
+        let mut interner = Interner::new();
+        let mut cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+        cards[0].card_name_lower = InlineStr::from_str(name);
+        let mut data = store_of(cards, &[1], vocab);
+        data.cards[0].card_name_lower = InlineStr::from_str(name);
+        data.cards[0].oracle_text_lower_id = interner.intern(text.to_string());
+        data.strings = interner.strings;
+        derive_name_collation(&mut data);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let f = FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: sre(pattern).expect("compiles") };
+        f.matches(&archived.cards[0], &archived.printings[0], &archived.strings)
+    };
+
+    let bolt = ("lightning bolt", "lightning bolt deals 3 damage to any target.");
+    let rankle = ("rankle, master of pranks", "flying, haste\nwhenever rankle deals combat damage to a player,");
+    let storm = ("storm of memories", "storm\nexile an instant or sorcery card with mana value 3 or less");
+
+    // `o:/~ deals/` is 2,910 corpus-wide, and these two are in it — one through the full name, one
+    // through the short one.
+    assert!(hit("~ deals", bolt.0, bolt.1));
+    assert!(hit("~ deals", rankle.0, rankle.1));
+    // `o:/^~ deals/` is 779: the self-reference has to START a line, which Bolt's does and
+    // Rankle's ("whenever rankle deals…") does not.
+    assert!(hit("^~ deals", bolt.0, bolt.1));
+    assert!(!hit("^~ deals", rankle.0, rankle.1));
+    // `o:/^~$/` is exactly 1 corpus-wide, and this is the card: a line that is nothing but the
+    // short name, left behind when the Storm keyword's reminder text was stripped.
+    assert!(hit("^~$", storm.0, storm.1));
+    assert!(!hit("^~$", bolt.0, bolt.1));
+    // `o:/~ turn/` is 1 there against `o:/this turn/`'s 2,533 — the single sharpest evidence that
+    // `~` is NOT the bare word "this".
+    assert!(!hit("~ turn", "some card", "target creature gets +2/+2 until end of this turn."));
+    // ...and it IS the whole phrase, so a card whose text has the phrase matches.
+    assert!(hit("~", "some card", "when this creature enters, draw a card."));
+
+    // A literal beside the alias still has to be there.
+    assert!(!hit("~ flies", bolt.0, bolt.1));
+
+    // ── `~` BINDS PER FACE, not per card ──
+    //
+    // Measured over the three cards in the corpus whose only self-reference-shaped text is the
+    // OTHER face's name: none of them matches `o:/~/` on api.scryfall.com (2026-08-28). The
+    // fixture is that shape — face B's text names face A and nothing else.
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let mut cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
+    cards[0].card_name_lower = InlineStr::from_str("treasure map // treasure cove");
+    let front_name = interner.intern("treasure map".to_string());
+    let back_name = interner.intern("treasure cove".to_string());
+    let front_text = interner.intern("scry 1.".to_string());
+    let back_text = interner.intern("transformed from treasure map.".to_string());
+    let mut data = store_of(cards, &[1], vocab);
+    data.cards[0].card_name_lower = InlineStr::from_str("treasure map // treasure cove");
+    data.cards[0].oracle_text_lower_id = interner.intern("scry 1.\n//\ntransformed from treasure map.".to_string());
+    data.cards[0].faces = vec![
+        oracle_face_named(front_name, front_text),
+        oracle_face_named(back_name, back_text),
+    ];
+    data.strings = interner.strings;
+    derive_name_collation(&mut data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let per_face = |pattern: &str| {
+        let f = FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: sre(pattern).expect("compiles") };
+        f.matches(&archived.cards[0], &archived.printings[0], &archived.strings)
+    };
+    assert!(!per_face("~"), "the BACK face naming the FRONT is not a self-reference");
+    // ...and the same card matches once a face names ITSELF, so this is a binding rule and not a
+    // blanket refusal on faced cards.
+    assert!(per_face("treasure map"), "the literal is still there — only the alias is bound");
+
+    // ── THE #734 TRIGRAM NARROW MUST DECLINE ──
+    //
+    // The sentinel stands in for the card's own name, which the matcher writes into a COPY of the
+    // text at evaluation time. It is in no stored string and therefore in no trigram posting, so
+    // a factor taken from a `~` pattern would narrow to a candidate set that excludes the very
+    // cards this fix exists to find — the same silent zero, reintroduced one layer down.
+    //
+    // `o:/~ deals 3 damage/` is the shape that makes it concrete: " deals 3 damage" survives the
+    // substitution and would look like a perfectly good factor, and narrowing on it is still
+    // wrong, because the run is only guaranteed in the SUBSTITUTED text.
+    use super::regex_required_factors;
+    assert!(
+        regex_required_factors(sre("~ deals 3 damage").expect("compiles").as_str()).is_empty(),
+        "a ~ pattern must be unnarrowable"
+    );
+    assert!(regex_required_factors(sre("~").expect("compiles").as_str()).is_empty());
+    assert!(regex_required_factors(sre(r"\~").expect("compiles").as_str()).is_empty());
+    // ...and the SAME pattern without the alias still narrows, so this is a decline scoped to the
+    // sentinel rather than a regression in the narrower.
+    assert_eq!(
+        regex_required_factors(re("deals 3 damage").expect("compiles").as_str()),
+        vec!["deals 3 damage".to_string()]
+    );
+
+    // ── the columns that do NOT expand `~` ──
+    //
+    // `name:/~/` is 404 on api.scryfall.com (2026-08-28). If `~` were the card's name there, that
+    // query would be the whole corpus; it is nothing, so the alias is simply not expanded on
+    // `name:` and the tilde stays the literal character no card name contains. `t:` and `mana:`
+    // are 404 too. Asserted through `build_filter`, which is what actually chooses the entry
+    // point, rather than by calling the compiler directly.
+    let node = |attr: &str, orig: &str| {
+        serde_json::json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": attr, "original_attribute": orig}},
+                "op": ":",
+                "rhs": {"node_type": "RegexValueNode", "kwargs": {"value": "~"}},
+            },
+        })
+    };
+    let expanded = |attr: &str, orig: &str| match super::build_filter(&node(attr, orig)) {
+        Ok(FilterExpr::TextRegex { regex, .. }) => regex.has_self_reference(),
+        _ => panic!("{attr} must build a text regex"),
+    };
+    assert!(expanded("oracle_text", "o"), "o:/~/ is 19,228");
+    assert!(expanded("oracle_text", "fo"), "fo:/~/ is 22,037");
+    assert!(expanded("flavor_text", "ft"), "ft:/~/ is 2");
+    assert!(!expanded("card_name", "name"), "name:/~/ is 404 — the tilde stays literal");
+    assert!(!expanded("card_types", "t"), "t:/~/ is 404");
+    assert!(!expanded("mana_cost_jsonb", "mana"), "mana:/~/ is 404");
+}
+
+/// One face carrying just the two ids `~` reads: its own name, and whether it contributed text.
+fn oracle_face_named(card_name_id: u32, oracle_text_id: u32) -> OracleFace {
+    OracleFace {
+        card_name_id,
+        oracle_text_id,
+        mana_cost_text_id: NONE_STR,
+        type_line_id: NONE_STR,
+        creature_power_text_id: NONE_STR,
+        creature_toughness_text_id: NONE_STR,
+        planeswalker_loyalty_text_id: NONE_STR,
+        defense_text_id: NONE_STR,
+        card_colors: None,
+        color_indicator: 0,
+        creature_power: None,
+        creature_toughness: None,
+        planeswalker_loyalty: None,
+        mana_cost: None,
+    }
+}
+
 // FLAVOR TEXT IS JOINED THE SAME WAY, and it does NOT reach the eval arm above: `ft:/…/` is
 // rewritten at bind time into a `FlavorMatch` id set, so a fix applied only to evaluation would
 // have left the column exactly as broken as it was. `ft:/\/\//` is 262 in production and 404 on

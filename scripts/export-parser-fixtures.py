@@ -231,6 +231,20 @@ EXTRA_CASES = [
     "mana>=/{r}/",
     "devotion:/r/",
     "devotion=/{r}/",
+    # ── `~`, Scryfall's self-reference alias, is a METACHARACTER ──
+    # Reading it as an ordinary tilde made `lower_literal_regexes` turn `o:/~/` into the substring
+    # search `o:~`, which no oracle text satisfies: 404 here against 19,228 on api.scryfall.com
+    # (2026-08-28). The escaped form is the alias too — `o:/\~/` answers the same 19,228 there.
+    "o:/~/",
+    "o:/\\~/",
+    "o:/~ deals/",
+    "o:/^~$/",
+    "o:/[~]/",
+    "fo:/~/",
+    "ft:/~/",
+    "name:/~/",
+    "t:/~/",
+    "o:/flying/",
     # empty / whitespace
     "",
     "   ",

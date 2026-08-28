@@ -695,3 +695,54 @@ describe("slash-delimited mana values are a real regex", () => {
 		expect(() => parseScryfallQuery("devotion:{r}")).not.toThrow();
 	});
 });
+
+// ── `~` is a METACHARACTER, not a tilde ─────────────────────────────────────
+//
+// `o:/~/` answers 19,228 on api.scryfall.com and answered 404 here — a silent zero, and half of
+// it was on this side of the parser. `regexPlainLiteral` read `~` as an ordinary character, so
+// `lowerLiteralRegexes` turned `o:/~/` into the substring search `o:~`, and no oracle text on
+// earth contains a tilde. The engine never saw a pattern at all.
+describe("the ~ self-reference alias survives the plain-literal lowering", () => {
+	const rhsType = (query: string): string | undefined => {
+		const tree = JSON.parse(canonicalStringify(parseScryfallQuery(query))) as {
+			kwargs?: { rhs?: { node_type?: string } };
+		};
+		return tree.kwargs?.rhs?.node_type;
+	};
+
+	// Every column Scryfall takes a regex on, because the lowering is column-blind and the alias
+	// has to reach the engine on each of them.
+	for (const query of ["o:/~/", "oracle:/~/", "fo:/~/", "ft:/~/", "flavor:/~/", "name:/~/", "t:/~/"]) {
+		test(`${query} stays a regex`, () => {
+			expect(rhsType(query)).toBe("RegexValueNode");
+		});
+	}
+
+	// An ESCAPED tilde too, because Scryfall's is not escaped either: `o:/\~/` answers the same
+	// 19,228 as `o:/~/` there (2026-08-28), so the backslash does not turn the alias back into a
+	// character.
+	test("an escaped tilde is still the alias", () => {
+		expect(rhsType("o:/\\~/")).toBe("RegexValueNode");
+		expect(regexPlainLiteral("\\~")).toBeNull();
+		expect(regexPlainLiteral("~")).toBeNull();
+	});
+
+	// Composed forms — the ones a name-only reading would get wrong rather than empty.
+	// `o:/~ deals/` is 2,910 there and `o:/^~$/` is exactly 1.
+	for (const query of ["o:/~ deals/", "o:/^~$/", "o:/^~ deals/", "o:/~ enters/"]) {
+		test(`${query} stays a regex`, () => {
+			expect(rhsType(query)).toBe("RegexValueNode");
+		});
+	}
+
+	// ...and nothing else moves: a plain literal with no tilde is still lowered to the substring
+	// it spells, which is what keeps `o:/flying/` index-backed rather than a full scan.
+	test("a tilde-free plain literal is still lowered", () => {
+		expect(rhsType("o:/flying/")).toBe("StringValueNode");
+		expect(regexPlainLiteral("flying")).toBe("flying");
+		// A tilde inside a BRACKET expression is left alone by the engine's expansion, but the
+		// lowering is deliberately coarser: any tilde at all makes the pattern non-plain, so the
+		// class reaches the engine as a class instead of being flattened to a literal.
+		expect(regexPlainLiteral("[~]")).toBeNull();
+	});
+});

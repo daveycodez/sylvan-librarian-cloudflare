@@ -500,8 +500,16 @@ def _regex_plain_literal(pattern: str) -> str | None:
             nxt = next(it, None)
             if nxt is None or (nxt.isascii() and nxt.isalnum()):
                 return None  # class escape (\d \w \b …) or a dangling backslash
+            # `\~` is still the self-reference alias, not an escaped tilde: `o:/\~/` answers the
+            # same 19,228 as `o:/~/` on api.scryfall.com (2026-08-28), so the backslash does not
+            # turn it back into a character.
+            if nxt == "~":
+                return None
             out.append(nxt)
-        elif c in ".*+?()[]{}|^$":
+        # `~` IS A METACHARACTER in Scryfall's dialect -- an automatic alias for the card's own
+        # name. Reading it as the literal tilde turned `o:/~/` into the substring search `o:~`,
+        # which no oracle text on earth satisfies: 404 against 19,228 there.
+        elif c in ".*+?()[]{}|^$~":
             return None
         else:
             out.append(c)

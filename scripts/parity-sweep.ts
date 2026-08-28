@@ -1311,9 +1311,37 @@ const REGEX_DIALECT: [string, string][] = [
 	["shorthand-on-flavor", "ft:/\\sm/"],
 	["shorthand-on-type", "t:/\\sm/"],
 	["shorthand-on-name", "name:/\\sm/"],
-	// `~` — Scryfall's alias for the card's own name. Unimplemented here (it needs a pattern
-	// recompiled per card), and 19,228 there.
+	// `~` — Scryfall's alias for the card's own SELF-REFERENCE, which is a wider thing than its
+	// name: an alternation of the face name, the legendary short name (the name cut at the
+	// earliest of ",", " the ", " of "), and a fixed list of "this <noun>" phrases. `o:/~/` is
+	// 19,228 there and only 3,046 of those match through a name at all (`o:/~/ -o:/this/`), so a
+	// name-only reading answers a sixth of it — which is why the composed forms below are swept
+	// alongside the bare one rather than trusting a single count.
 	["self-reference", "o:/~/"],
+	["self-reference-escaped", "o:/\\~/"],
+	["self-reference-deals", "o:/~ deals/"],
+	["self-reference-enters", "o:/~ enters/"],
+	["self-reference-line-start", "o:/^~/"],
+	["self-reference-line-start-deals", "o:/^~ deals/"],
+	["self-reference-whole-line", "o:/^~$/"],
+	// `~ turn` is 1 against `this turn`'s 2,533 — the sharpest evidence that `~` is not the bare
+	// word "this", and the row a too-eager expansion would blow up first.
+	["self-reference-turn", "o:/~ turn/"],
+	["this-turn", "o:/this turn/"],
+	["self-reference-creature", "o:/~ creature/"],
+	// The phrase family is a SUPERSET question in one direction: every card containing one of the
+	// aliases matches `~`, and no card containing a non-alias "this <noun>" matches through it.
+	["this-creature-subset", "o:/this creature/ -o:/~/"],
+	["this-spell-subset", "o:/this spell/ -o:/~/"],
+	["this-ability-not-alias", "o:/this ability/ -o:/~/"],
+	["this-door-not-alias", "o:/this door/ -o:/~/"],
+	// The columns: `fo:` keeps reminder text and answers MORE (22,037 against 19,228), `ft:` is 2,
+	// and `name:`/`t:`/`mana:` do not expand `~` at all — it stays the literal tilde there.
+	["self-reference-full-oracle", "fo:/~/"],
+	["self-reference-flavor", "ft:/~/"],
+	["self-reference-name", "name:/~/"],
+	["self-reference-type", "t:/~/"],
+	["self-reference-mana", "mana:/~/"],
 	// NEWLINE, which is where the two corpora used to differ for a reason that was neither vintage
 	// nor dialect: Scryfall matches each FACE separately and this store joins them with "\n//\n",
 	// so a back face beginning "Draw…" answered a `\n`-adjacent pattern here and not there.

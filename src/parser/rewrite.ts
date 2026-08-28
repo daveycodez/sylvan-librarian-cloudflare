@@ -501,7 +501,13 @@ function expand(
 	return [node, false];
 }
 
-const REGEX_METACHARS = new Set(".*+?()[]{}|^$");
+// `~` IS A METACHARACTER IN SCRYFALL'S DIALECT, and leaving it out of this set was the whole of
+// the `o:/~/` bug on this side of the parser: `regexPlainLiteral` read it as the literal tilde,
+// `lowerLiteralRegexes` turned `o:/~/` into the substring search `o:~`, and no oracle text on
+// earth contains a tilde — 404 here against 19,228 on api.scryfall.com. An ESCAPED tilde counts
+// too, because Scryfall's does: `o:/\~/` answers the same 19,228 there (2026-08-28), so the
+// backslash does not turn the alias back into a character.
+const REGEX_METACHARS = new Set(".*+?()[]{}|^$~");
 
 function isAsciiAlnum(c: string): boolean {
 	return /^[0-9A-Za-z]$/.test(c);
@@ -522,6 +528,8 @@ export function regexPlainLiteral(pattern: string): string | null {
 			if (nxt === undefined || isAsciiAlnum(nxt)) {
 				return null; // class escape (\d \w \b …) or a dangling backslash
 			}
+			// `\~` is still the self-reference alias, not an escaped tilde — see REGEX_METACHARS.
+			if (nxt === "~") return null;
 			out.push(nxt);
 		} else if (REGEX_METACHARS.has(c)) {
 			return null;

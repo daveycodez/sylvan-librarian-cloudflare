@@ -90,11 +90,140 @@ pub(crate) fn take_regex_match_failed() -> Option<String> {
 /// the backtracking arm is behind an `Arc` here for the same reason — see
 /// `FilterExpr`'s `Clone` note.
 #[derive(Clone, Debug)]
-pub(crate) enum CompiledRegex {
+enum RegexEngine {
     /// The linear-time engine. Every pattern that can be, is.
     Fast(Regex),
     /// The backtracking engine: lookaround and backreferences only.
     Backtrack(Arc<fancy_regex::Regex>),
+}
+
+/// One compiled query pattern, plus the one fact about it the matcher needs on every candidate.
+///
+/// `self_reference` is CACHED rather than re-derived, and the reason is a cost the fix would
+/// otherwise have charged to queries that do not use it: the matcher asks this question once per
+/// candidate card, and answering it by scanning the compiled source for the sentinel is a scan of
+/// ~250 bytes × the whole corpus on EVERY regex query, `~` or not.
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledRegex {
+    engine: RegexEngine,
+    self_reference: bool,
+}
+
+/// The character `~` compiles to, and the one this engine writes into a card's own text in place
+/// of its name before matching. See `translate_self_reference`.
+///
+/// U+10400 DESERET CAPITAL LETTER LONG I, chosen for two properties and not for taste. It is
+/// `\p{Alphabetic}`, so the `\b` the compiled alternation puts around it means exactly what the
+/// `\b` around the phrase alternatives means — the boundary is enforced by the regex engine
+/// rather than by a hand-rolled scan that would have to re-implement Unicode `\w`. And it is
+/// absent from the corpus: the whole 2026-05-31 bulk dump carries 17 astral-plane characters in
+/// its searchable text, every one an Egyptian hieroglyph from the Amonkhet flavor text
+/// (U+130xx-U+133xx), and nothing in the Deseret block at all.
+pub(crate) const SELF_REF_SENTINEL: char = '\u{10400}';
+
+/// The self-reference phrases `~` aliases, for EVERY card and independent of its own card types.
+///
+/// Scryfall's docs call `~` "an automatic alias for the current card name or “this spell” if the
+/// card mentions itself", which understates it twice over: the phrase family is much wider than
+/// "this spell", and it is not conditioned on the card's own type. Both halves are measured.
+///
+/// TYPE-INDEPENDENCE, three instants that never name themselves and whose only self-reference-
+/// shaped text is inside an ability they GRANT to something else — all three match `o:/~/` on
+/// api.scryfall.com 2026-08-28: Full Steam Ahead, Martyrdom, Storm the Citadel. So the expansion
+/// is a fixed alternation, not a per-card choice keyed to the card's types.
+///
+/// THE MEMBERSHIP, one probe per phrase against a card whose text contains that phrase and
+/// nothing else self-referential (`!"<card>" o:/~/`, 2026-08-28). In: creature (Kor Outfitter),
+/// spell (Altar's Reap), land (Orzhov Guildgate), artifact (Midnight Clock), enchantment
+/// (Beastmaster Ascension), card (Bone Dragon), aura (Psychic Venom), token (Rite of the Raging
+/// Storm), equipment (Gate Smasher), vehicle (Voyager Glidecar), permanent (Hidden Stag), saga
+/// (The War Games), siege (Invasion of Tolvada), class (Rogue Class), spacecraft (Uthros
+/// Scanship), case (Case of the Filched Falcon).
+///
+/// OUT, and each of these is a card that does NOT match: turn (Surge of Brilliance), way (Mulch),
+/// ability (Crown of Gondor), mana (Eldrazi Temple), combat (Neyith of the Dire Hunt), one
+/// (Temporal Manipulation), effect (Edgewalker), process (Professor Onyx), phase (Najeela, the
+/// Blade-Blossom), game (Commander's Insignia), only (Ondu Spiritdancer), step (Y'shtola Rhul),
+/// main (Aggravated Assault), and — the one that says this list is hand-maintained upstream
+/// rather than derived from the type system — DOOR (Ticket Booth // Tunnel of Hate). Rooms say
+/// "when you unlock this door" and Scryfall does not count it.
+///
+/// Possessives need no entry of their own: `\bthis creature\b` matches inside "this creature's"
+/// because `'` is not a word character, and Howlgeist ("this creature's") confirms it.
+const SELF_REF_THIS_PHRASES: &[&str] = &[
+    "creature", "spell", "land", "artifact", "enchantment", "card", "aura", "token", "equipment",
+    "vehicle", "permanent", "saga", "siege", "class", "spacecraft", "case",
+];
+
+/// The alternation `~` expands to: the fixed phrases, plus the sentinel that stands in for
+/// whichever of the card's own names the substitution found.
+fn self_reference_alternation() -> String {
+    format!(
+        r"(?:\bthis (?:{})\b|\b{}\b)",
+        SELF_REF_THIS_PHRASES.join("|"),
+        SELF_REF_SENTINEL
+    )
+}
+
+/// Replace every `~` outside a bracket expression with [`self_reference_alternation`].
+///
+/// An ESCAPED tilde expands too, which is Scryfall's behaviour and not an oversight here:
+/// `o:/\~/` answers the same 19,228 as `o:/~/` (2026-08-28), so the backslash does not protect
+/// it. Bracket expressions are left alone for the same reason the `\s…` shorthands are — see
+/// `translate_query_escapes`.
+pub(crate) fn translate_self_reference(pattern: &str) -> String {
+    if !pattern.contains('~') {
+        return pattern.to_string();
+    }
+    let expansion = self_reference_alternation();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len() + expansion.len());
+    let mut class_pos: Option<usize> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' {
+            // `\~` loses the backslash and expands; every other escape is copied whole so the
+            // class-tracking below never sees an escaped `[` or `]` as a delimiter.
+            match chars.get(i + 1) {
+                Some('~') if class_pos.is_none() => {
+                    out.push_str(&expansion);
+                    i += 2;
+                    continue;
+                }
+                Some(&next) => {
+                    out.push('\\');
+                    out.push(next);
+                    class_pos = class_pos.map(|n| n + 2);
+                    i += 2;
+                    continue;
+                }
+                None => {
+                    out.push('\\');
+                    break;
+                }
+            }
+        }
+        if c == '~' && class_pos.is_none() {
+            out.push_str(&expansion);
+            i += 1;
+            continue;
+        }
+        match class_pos {
+            None => {
+                if c == '[' {
+                    class_pos = Some(0);
+                }
+            }
+            Some(0) if c == '^' => {}
+            Some(0) if c == ']' => class_pos = Some(1),
+            Some(_) if c == ']' => class_pos = None,
+            Some(n) => class_pos = Some(n + 1),
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// The inline flags every query regex is compiled with, and the exact prefix the two callers that
@@ -122,15 +251,36 @@ impl CompiledRegex {
     /// both reject the pattern it is malformed rather than merely non-linear,
     /// and the first message is the one that names the actual syntax problem.
     pub(crate) fn new(pattern: &str) -> Result<Self, String> {
-        let translated = translate_query_escapes(pattern);
+        Self::compile(pattern, false)
+    }
+
+    /// Compile with `~` expanded to the self-reference alternation.
+    ///
+    /// A SEPARATE ENTRY POINT BECAUSE THE COLUMN DECIDES, and Scryfall's answer says so out loud:
+    /// `name:/~/` is 404 on api.scryfall.com (2026-08-28). If `~` were the card's name there, that
+    /// query would be the whole corpus; it is nothing, so the alias is simply not expanded on
+    /// `name:`. `t:/~/` and `mana:/~/` are 404 too — vacuously, since no type line or mana cost
+    /// carries a self-reference — and on all three `~` stays the literal tilde no such field
+    /// contains. The columns that DO expand it are the text ones: `o:/~/` 19,228, `fo:/~/` 22,037
+    /// (the difference being reminder text, which `fo:` keeps), `ft:/~/` 2.
+    pub(crate) fn new_self_referential(pattern: &str) -> Result<Self, String> {
+        Self::compile(pattern, true)
+    }
+
+    fn compile(pattern: &str, expand: bool) -> Result<Self, String> {
+        let source = if expand { translate_self_reference(pattern) } else { pattern.to_string() };
+        // The EXPANSION is what matters, not the request: `o:/draw/` asked for expansion and got
+        // none, so it must not pay the substitution or lose the narrow.
+        let self_reference = source.contains(SELF_REF_SENTINEL);
+        let translated = translate_query_escapes(&source);
         let cased = format!("{QUERY_REGEX_FLAGS}{translated}");
         match Regex::new(&cased) {
-            Ok(re) => Ok(CompiledRegex::Fast(re)),
+            Ok(re) => Ok(CompiledRegex { engine: RegexEngine::Fast(re), self_reference }),
             Err(linear_err) => match fancy_regex::RegexBuilder::new(&cased)
                 .backtrack_limit(BACKTRACK_LIMIT)
                 .build()
             {
-                Ok(re) => Ok(CompiledRegex::Backtrack(Arc::new(re))),
+                Ok(re) => Ok(CompiledRegex { engine: RegexEngine::Backtrack(Arc::new(re)), self_reference }),
                 Err(_) => Err(format!("invalid regex '{pattern}': {linear_err}")),
             },
         }
@@ -151,9 +301,9 @@ impl CompiledRegex {
     /// out of, which is the whole reason a pattern stays on it.
     #[inline]
     pub(crate) fn is_match(&self, haystack: &str) -> bool {
-        match self {
-            CompiledRegex::Fast(re) => re.is_match(haystack),
-            CompiledRegex::Backtrack(re) => {
+        match &self.engine {
+            RegexEngine::Fast(re) => re.is_match(haystack),
+            RegexEngine::Backtrack(re) => {
                 if REGEX_MATCH_FAILED.with(Cell::get) {
                     return false;
                 }
@@ -176,16 +326,23 @@ impl CompiledRegex {
     /// pattern and yields no factors — so those patterns lose the trigram
     /// narrow and scan, which is correct, just not fast.
     pub(crate) fn as_str(&self) -> &str {
-        match self {
-            CompiledRegex::Fast(re) => re.as_str(),
-            CompiledRegex::Backtrack(re) => re.as_str(),
+        match &self.engine {
+            RegexEngine::Fast(re) => re.as_str(),
+            RegexEngine::Backtrack(re) => re.as_str(),
         }
     }
 
     /// True when this pattern needed the backtracking engine. Cost only.
     #[inline]
     pub(crate) fn is_backtracking(&self) -> bool {
-        matches!(self, CompiledRegex::Backtrack(_))
+        matches!(self.engine, RegexEngine::Backtrack(_))
+    }
+
+    /// True when `~` was expanded into this pattern, so matching it needs the per-card
+    /// substitution — and so the #734 trigram narrow must decline.
+    #[inline]
+    pub(crate) fn has_self_reference(&self) -> bool {
+        self.self_reference
     }
 }
 
