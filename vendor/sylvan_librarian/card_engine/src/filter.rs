@@ -949,6 +949,30 @@ fn replace_bounded(text: &str, needle: &str) -> String {
 /// separator's own characters create. Undoing the join removes exactly those and nothing else.
 /// A single-face card has no separator, so `split` yields the one segment and the cost is one scan
 /// for the needle that is not there.
+/// The face-join rule for `TextSearchField`, the substring side's enum. Same three columns, and
+/// the same reason — see `field_joins_faces`.
+fn search_field_joins_faces(field: TextSearchField) -> bool {
+    matches!(
+        field,
+        TextSearchField::OracleTextLower | TextSearchField::FullOracleTextLower | TextSearchField::FlavorTextLower
+    )
+}
+
+/// `str::contains`, PER FACE on the joined columns.
+///
+/// A substring can only span a face boundary by containing the separator's own characters, which
+/// is rare enough to look ignorable and is not: `o:/\/\//` is a PLAIN LITERAL, so
+/// `lowerLiteralRegexes` turns it into this predicate before the engine sees a pattern at all —
+/// and it answered 849 here against 1 on api.scryfall.com (2026-08-28), the one real card being
+/// SP//dr. The regex arm's fix does not reach it, because by then it is not a regex.
+fn contains_per_face(needle: &str, field: TextSearchField, s: &str) -> bool {
+    if search_field_joins_faces(field) {
+        s.split(FACE_TEXT_SEPARATOR).any(|face| face.contains(needle))
+    } else {
+        s.contains(needle)
+    }
+}
+
 /// The face split alone, for the two callers that have no card in hand.
 fn regex_matches_face_split(regex: &CompiledRegex, field: TextField, s: &str) -> bool {
     if field_joins_faces(field) {
@@ -2239,7 +2263,12 @@ impl FilterExpr {
             FilterExpr::TextContains { field: TextSearchField::FlavorTextLower, word } => {
                 let mask = flavor_fingerprint(word.as_str());
                 let finder = memmem::Finder::new(word.as_bytes()); // built once, reused (see ArtistLower)
-                let (gids, dense_ids) = flavor_match_sets(flavor, strings, mask, |s| finder.find(s.as_bytes()).is_some());
+                // PER FACE, like every other verify on a joined column: `ft:"//"` is 404 on
+                // api.scryfall.com and was 262 here, every one of them the separator this store
+                // wrote between two faces' flavor texts.
+                let (gids, dense_ids) = flavor_match_sets(flavor, strings, mask, |s| {
+                    s.split(FACE_TEXT_SEPARATOR).any(|face| finder.find(face.as_bytes()).is_some())
+                });
                 *self = FilterExpr::FlavorMatch { gids, dense_ids };
             }
             FilterExpr::TextExact { field: TextField::FlavorTextLower, op, value } => {
@@ -2545,7 +2574,13 @@ impl FilterExpr {
                 let mut gids: Vec<u32> = Vec::with_capacity(dense.len());
                 for d in dense {
                     let gid = u32::from(oracle.gids[d as usize]);
-                    if str_at(strings, gid).is_some_and(|s| finder.find(s.as_bytes()).is_some()) {
+                    // PER FACE, like the unmemoized arm: the trigram narrow above reads the joined
+                    // text and is a superset either way, but this verify is the answer, and a
+                    // needle straddling the invented separator must not survive it.
+                    let hit = |s: &str| {
+                        s.split(FACE_TEXT_SEPARATOR).any(|face| finder.find(face.as_bytes()).is_some())
+                    };
+                    if str_at(strings, gid).is_some_and(hit) {
                         gids.push(gid);
                     }
                 }
@@ -2883,7 +2918,7 @@ impl FilterExpr {
 
             FilterExpr::TextContains { field, word } => {
                 match text_search_field_value(card, printing, strings, *field) {
-                    StrVal::Known(s) => tri_bool(s.contains(word.as_str())),
+                    StrVal::Known(s) => tri_bool(contains_per_face(word.as_str(), *field, s)),
                     StrVal::Null => Tri::Null,
                     StrVal::PDep => Tri::PrintingDep,
                 }

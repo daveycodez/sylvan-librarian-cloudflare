@@ -12376,6 +12376,22 @@ fn face_joined_text_matches_per_face() {
     assert_eq!(hits("^flying"), vec![0, 1, 2]);
     assert_eq!(hits("zzzqqq"), Vec::<usize>::new());
 
+    // THE SUBSTRING PATH NEEDS THE SAME SPLIT, and it is the one the user actually reaches:
+    // `o:/\/\//` is a PLAIN LITERAL, so `lowerLiteralRegexes` turns it into a contains-predicate
+    // before the engine ever sees a pattern — which is why the regex arm's fix left it answering
+    // 849 against api.scryfall.com's 1. Same three cards, asked as a substring.
+    let contains = |needle: &str| -> Vec<usize> {
+        let f = FilterExpr::TextContains {
+            field: TextSearchField::OracleTextLower,
+            word: needle.to_string(),
+        };
+        (0..3).filter(|&i| f.matches(&archived.cards[i], &archived.printings[i], &archived.strings)).collect()
+    };
+    assert_eq!(contains("//"), Vec::<usize>::new(), "the separator is not oracle text");
+    assert_eq!(contains("\n//\n"), Vec::<usize>::new());
+    assert_eq!(contains("draw a card"), vec![0, 1, 2], "and the control still answers");
+    assert_eq!(contains("flying"), vec![0, 1, 2]);
+
     // `fo:` reads a DIFFERENT column, joined by the same rule, so it splits too: `fo:/\ndraw/` is
     // 389 here against 381 there — the same eight cards, on a column whose whole point is that it
     // keeps the reminder text the oracle column drops.
