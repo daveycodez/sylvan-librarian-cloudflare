@@ -12516,14 +12516,40 @@ const TILDE_CASES: &[(&str, &str, bool)] = &[
 /// keyword action and "has fear" is the keyword, neither being the card naming itself — which is
 /// data this port does not have.
 ///
-/// 20 cards corpus-wide before the boundary rule above removed the punctuation-named half of
-/// them, against `o:/~/`'s 19,228. Asserted in the direction this engine actually answers, so the
-/// day it changes on either side, this table says so.
+/// 12 cards corpus-wide after the boundary rule above removed the punctuation-named half of them,
+/// against `o:/~/`'s 19,228. Asserted in the direction this engine actually answers, so the day it
+/// changes on either side, this table says so.
 const TILDE_KNOWN_DIVERGENT: &[(&str, &str)] = &[
     ("fear", "enchant creature\nenchanted creature has fear."),
     ("lifelink", "enchant creature\nenchanted creature has lifelink."),
     ("regenerate", "regenerate target creature."),
     ("black waltz no. 3", "flying, deathtouch\nwhenever you cast a noncreature spell, black waltz no. 3 deals 2 damage to each opponent."),
+];
+
+/// THE RESIDUAL'S OTHER HALF: cards Scryfall matches and this does not, and the same explanation
+/// read forwards.
+///
+/// Every one is a LEGENDARY whose name carries none of the three separators `legendary_short_name`
+/// knows — no comma, no " the ", no " of " — and whose text uses the short name Wizards gave it:
+/// "Zurgo can't block", "When Hazezon enters", "When Drizzt enters", "Put a +1/+1 counter on King
+/// Darien". `!"<name>" o:/~/` is 1 on api.scryfall.com for all four (2026-08-28).
+///
+/// NO STRING RULE REACHES THEM. "First word" is refuted twice over in this table alone: "King
+/// Darien XLVIII" cuts to "King Darien", two words, and "Hurska Sweet-Tooth" — legendary, in the
+/// corpus, its text reading "Whenever Hurska attacks" — does NOT match. Restricting a first-word
+/// rule to legendaries does not save it either, because Hurska is one. What is left is that
+/// Scryfall knows each legend's official short name as DATA, which this port does not have, and
+/// which is the same account that explains the four over-matches above: "Regenerate target
+/// creature" is the keyword action and "has fear" is the keyword, neither being a card naming
+/// itself, and no string search can tell the difference.
+///
+/// 4 on the name half — where the whole difference is 3,054 against 3,046 — and about 40 corpus
+/// wide once the cards that also carry a phrase are counted, against 19,228.
+const TILDE_MISSING_CURATED_SHORT_NAME: &[(&str, &str)] = &[
+    ("zurgo bellstriker", "zurgo can't block creatures with power 2 or greater.\ndash {1}{r}"),
+    ("hazezon tamar", "when hazezon enters, create x 1/1 sand warrior creature tokens."),
+    ("drizzt do'urden", "double strike\nwhen drizzt enters, create guenhwyvar, a legendary 4/1 green cat creature token with trample."),
+    ("king darien xlviii", "other creatures you control get +1/+1.\nsacrifice king darien: creature tokens you control get +1/+1."),
 ];
 
 #[test]
@@ -12596,6 +12622,44 @@ fn self_reference_known_divergences_are_pinned() {
         assert!(
             f.matches(&archived.cards[i], &archived.printings[i], &archived.strings),
             "{name} matches here and is 404 on api.scryfall.com — if this flips, the residual moved"
+        );
+    }
+}
+
+/// The other half of the residual — see `TILDE_MISSING_CURATED_SHORT_NAME`.
+#[test]
+fn self_reference_curated_short_names_are_pinned_as_missing() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let cards: Vec<OracleCard> = TILDE_MISSING_CURATED_SHORT_NAME
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.card_name_lower = InlineStr::from_str(name);
+            c
+        })
+        .collect();
+    let n = cards.len();
+    let mut data = store_of(cards, &vec![1usize; n], vocab);
+    for (i, (name, text)) in TILDE_MISSING_CURATED_SHORT_NAME.iter().enumerate() {
+        data.cards[i].card_name_lower = InlineStr::from_str(name);
+        data.cards[i].oracle_text_lower_id = interner.intern((*text).to_string());
+    }
+    data.strings = interner.strings;
+    derive_name_collation(&mut data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let f = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: crate::filter::compile_search_regex_self_referential("~", crate::regex_compat::SelfRefScope::Oracle)
+            .expect("~ must compile"),
+    };
+    for (i, (name, _)) in TILDE_MISSING_CURATED_SHORT_NAME.iter().enumerate() {
+        assert!(
+            !f.matches(&archived.cards[i], &archived.printings[i], &archived.strings),
+            "{name} is 1 on api.scryfall.com and is missed here — if this flips, the residual moved"
         );
     }
 }
