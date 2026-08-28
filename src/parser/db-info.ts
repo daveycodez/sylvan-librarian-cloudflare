@@ -532,6 +532,42 @@ export const COLOR_COUNT_NAMES: ReadonlySet<string> = new Set([
 	"multicoloured",
 ]);
 
+/**
+ * The colour-COUNT names that are valid on ONE column only, as `db column -> names`.
+ *
+ * `any` is the whole table today, and it belongs to produced_mana alone. It is not a set of
+ * letters and not a synonym for `m` — it asks whether the card produces ANYTHING — so it lowers
+ * to its own (operator, count) pairs, written out at card-query-nodes' PRODUCED_ANY_BY_OPERATOR.
+ *
+ * MEASURED against api.scryfall.com 2026-08-28, corpus-wide AND against a `t:creature` second
+ * base, so no equality below can be read as an accident of the whole-corpus totals:
+ *
+ *   produces:any = produces=any = produces>any = produces>=any = produces!=any
+ *                        = 2,603 = `produces>=1`   (t:creature: 756)
+ *   produces<any         = 30,996 = `produces=0`   (t:creature: 17,997)
+ *   produces<=any        = 32,139 = `produces<=1`  (t:creature: 18,369)
+ *
+ * `!=` GROUPS WITH `:` HERE, which is NOT how the `m` table above behaves — there `produces!=m`
+ * is the low side (`produces=1`) while `produces:m` is the high side. The asymmetry between the
+ * two tables is measured on both bases and is deliberately not tidied: `produces!=any` is 2,603,
+ * the same as `produces:any`, not the 30,996 a mirror of the `m` table would give.
+ *
+ * `<` and `<=` are the two that separate `any` from every count spelling: `produces<any` is
+ * `produces=0` (the cards that produce nothing), while `produces<=any` is `produces<=1` — which
+ * is `produces=0` plus the 1,143 single-value producers, and is NOT the whole corpus the way
+ * `c<=m` is.
+ *
+ * SCOPED, AND THE SCOPE IS THE POINT. Scryfall does not accept `any` on the colour columns at
+ * all: `c:any` on its own answers "All of your terms were ignored", and both `t:creature c:any`
+ * and `t:creature id:any` answer `t:creature`'s 18,753 — the term is REJECTED and dropped, not
+ * applied. So `any` must never join COLOR_COUNT_NAMES, which every colour column reads; it is
+ * reachable only through the column named here, and `c:any` / `id:any` keep the parse error that
+ * makes the compat layer drop them exactly as Scryfall does.
+ */
+export const COLUMN_SCOPED_COUNT_NAMES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["produced_mana", new Set(["any"])],
+]);
+
 export const FORMAT_CODE_TO_NAME: ReadonlyMap<string, string> = new Map([
 	["m", "modern"],
 	["s", "standard"],

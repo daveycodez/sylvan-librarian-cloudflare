@@ -124,6 +124,76 @@ describe("derived-predicate expansion", () => {
 	}
 });
 
+// ── produces:any ─────────────────────────────────────────────────────────────
+//
+// `any` is a colour-COUNT name on produced_mana and nowhere else. Measured against
+// api.scryfall.com 2026-08-28, corpus-wide AND against a `t:creature` second base — every equality
+// below held on both, which is what rules out a coincidence of the whole-corpus totals:
+//
+//   produces:any = produces=any = produces>any = produces>=any = produces!=any
+//                        = 2,603 = `produces>=1`   (t:creature: 756)
+//   produces<any         = 30,996 = `produces=0`   (t:creature: 17,997)
+//   produces<=any        = 32,139 = `produces<=1`  (t:creature: 18,369)
+//
+// This port dropped the term entirely instead: `any` was in neither name table, so the value
+// parser threw, the compat layer removed the expression, and `t:legendary t:creature produces:any`
+// answered `t:legendary t:creature`'s 3,625 where Scryfall answers 194.
+//
+// `!=` GROUPS WITH `:` here, which is NOT how the `m` table behaves (`produces!=m` is the low side,
+// `produces=1`). The asymmetry is measured on both bases; do not tidy it.
+const PRODUCES_ANY_EQUIVALENCES: Array<[string, string]> = [
+	["produces:any", "produces>=1"],
+	["produces=any", "produces>=1"],
+	["produces>any", "produces>=1"],
+	["produces>=any", "produces>=1"],
+	["produces!=any", "produces>=1"],
+	["produces<any", "produces=0"],
+	["produces<=any", "produces<=1"],
+];
+
+describe("produces:any is a colour COUNT, on one column only", () => {
+	for (const [written, meaning] of PRODUCES_ANY_EQUIVALENCES) {
+		test(`${written} == ${meaning}`, () => {
+			expect(tree(written)).toBe(tree(meaning));
+		});
+	}
+
+	test("the whole operator table is pinned, both sides of every row", () => {
+		// The rows that SEPARATE the three answers, stated as inequalities so a table collapsed to
+		// one value cannot pass: `<` is not `<=`, and neither is `:`.
+		expect(tree("produces<any")).not.toBe(tree("produces<=any"));
+		expect(tree("produces<=any")).not.toBe(tree("produces:any"));
+		// And `any` is not `m` under any operator — the two tables disagree on every row.
+		for (const op of [":", "=", ">", ">=", "<", "<=", "!="]) {
+			expect(tree(`produces${op}any`)).not.toBe(tree(`produces${op}m`));
+		}
+	});
+
+	test("the value is case-insensitive and survives quoting, like every other colour name", () => {
+		expect(tree("produces:ANY")).toBe(tree("produces>=1"));
+		expect(tree('produces:"any"')).toBe(tree("produces>=1"));
+	});
+
+	// THE CONSTRAINT, and the half a global name table would break. Scryfall does not accept `any`
+	// on the colour columns: `c:any` alone answers "All of your terms were ignored", and both
+	// `t:creature c:any` and `t:creature id:any` answer `t:creature`'s 18,753 — REJECTED and
+	// dropped, not applied. The parse error here is what the compat layer turns into that drop.
+	test("c:/id: reject any, on every spelling of both colour columns", () => {
+		for (const alias of ["c", "color", "colors", "colour", "colours", "ci", "id", "identity", "commander"]) {
+			expect(() => parseScryfallQuery(`${alias}:any`)).toThrow(ParseError);
+		}
+		// Quoted, the value parser is bypassed and serialization is what refuses it — the same
+		// place `c:"purple"` is refused.
+		expect(() => parseScryfallQuery('c:"any"')).toThrow(new ParseError("Invalid color string: any"));
+	});
+
+	test("the colour columns keep every name they already had", () => {
+		expect(tree("c:azorius")).toBe(tree("c:wu"));
+		expect(tree("c:m")).toBe(tree("c>=2"));
+		expect(tree("id:gold")).toBe(tree("id>=2"));
+	});
+});
+
 // ── has: is a TOTAL alias of is: ─────────────────────────────────────────────
 //
 // The parity sweep found `has:split` answering a 404 here against 126 on api.scryfall.com. The

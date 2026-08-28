@@ -14,6 +14,7 @@ import {
 	COLOR_ALIAS_TO_CODES,
 	COLOR_CODE_TO_NAME,
 	COLOR_COUNT_NAMES,
+	COLUMN_SCOPED_COUNT_NAMES,
 	type FieldInfo,
 	FieldType,
 	FORMAT_CODE_TO_NAME,
@@ -275,7 +276,49 @@ const PRODUCED_COUNT_BY_OPERATOR: ReadonlyMap<string, readonly [string, number]>
 	["<=", [">=", 1]],
 ] as [string, readonly [string, number]][]);
 
+/**
+ * `produces:any` — "produces anything at all" — per operator. Measured; the counts on both bases
+ * and the reason `any` is produced_mana-only are written out at db-info's COLUMN_SCOPED_COUNT_NAMES.
+ *
+ * The `!=` row is what makes this a THIRD table rather than a reuse of the two above: `any` puts
+ * `!=` with `:` on the high side (2,603 = `produces>=1`), where `m` puts it on the low side. And
+ * the `<` / `<=` rows are the first in this file to need `=0` and `<=1` — both are ordinary
+ * numeric comparisons the engine's ColorCountCmp already answers, so they cost nothing downstream.
+ */
+const PRODUCED_ANY_BY_OPERATOR: ReadonlyMap<string, readonly [string, number]> = new Map([
+	[":", [">=", 1]],
+	["=", [">=", 1]],
+	[">", [">=", 1]],
+	[">=", [">=", 1]],
+	["!=", [">=", 1]],
+	["<", ["=", 0]],
+	["<=", ["<=", 1]],
+] as [string, readonly [string, number]][]);
+
+/** The column-scoped count names' tables, keyed by the NAME — the column decides reachability. */
+const COLUMN_SCOPED_COUNT_TABLES: ReadonlyMap<string, ReadonlyMap<string, readonly [string, number]>> = new Map([
+	["any", PRODUCED_ANY_BY_OPERATOR],
+]);
+
 const COLOR_COUNT_ATTRIBUTES: ReadonlySet<string> = new Set(["card_colors", "card_color_identity", "produced_mana"]);
+
+/**
+ * The (operator → operator, count) table a colour VALUE lowers through on one column, or
+ * undefined when the value spells letters and no lowering applies.
+ *
+ * The column-scoped names are asked FIRST and are gated on the column: `any` reaches its table
+ * only on produced_mana, so `c:any` falls through to the letter path and stays the error Scryfall's
+ * own rejection of the term corresponds to.
+ */
+function countTableFor(column: string, value: string): ReadonlyMap<string, readonly [string, number]> | undefined {
+	if (COLUMN_SCOPED_COUNT_NAMES.get(column)?.has(value)) {
+		return COLUMN_SCOPED_COUNT_TABLES.get(value);
+	}
+	if (COLOR_COUNT_NAMES.has(value)) {
+		return column === "produced_mana" ? PRODUCED_COUNT_BY_OPERATOR : COLOR_COUNT_BY_OPERATOR;
+	}
+	return undefined;
+}
 
 export class CardBinaryOperatorNode extends BinaryOperatorNode {
 	override readonly nodeType: string = "CardBinaryOperatorNode";
@@ -285,7 +328,8 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 	 *
 	 * `c:m` and its five synonyms are a NUMBER of colours, not a set of them, so the value has no
 	 * letters to compare and the operator does not survive verbatim either (`c>m` is `c>=2` and
-	 * `c!=m` is `c<2`). Doing it in the constructor is what keeps the two upstream parsers from
+	 * `c!=m` is `c<2`). `produces:any` is the same shape on the one column that accepts it, under
+	 * its own table. Doing it in the constructor is what keeps the two upstream parsers from
 	 * disagreeing — the hand parser builds this node directly, the pyparsing one via
 	 * `to_card_query_ast` — and it means the rest of the pipeline only ever sees the ordinary
 	 * numeric node that `c>=2` already produces, on every path: engine JSON and explanation alike.
@@ -294,11 +338,9 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 		if (
 			lhs instanceof CardAttributeNode &&
 			rhs instanceof StringValueNode &&
-			COLOR_COUNT_ATTRIBUTES.has(lhs.attributeName) &&
-			COLOR_COUNT_NAMES.has(pyLower(pyStrip(rhs.value)))
+			COLOR_COUNT_ATTRIBUTES.has(lhs.attributeName)
 		) {
-			const table = lhs.attributeName === "produced_mana" ? PRODUCED_COUNT_BY_OPERATOR : COLOR_COUNT_BY_OPERATOR;
-			const lowered = table.get(operator);
+			const lowered = countTableFor(lhs.attributeName, pyLower(pyStrip(rhs.value)))?.get(operator);
 			if (lowered !== undefined) {
 				super(lhs, lowered[0], new NumericValueNode(PyNumber.int(BigInt(lowered[1]))));
 				return;

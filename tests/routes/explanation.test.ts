@@ -94,6 +94,12 @@ describe("explainWireTree", () => {
 		expect(explainWireTree(parseScryfallQuery("c!=gold"))).toBe("the number of colors < 2");
 		expect(explainWireTree(parseScryfallQuery("c<=multicoloured"))).toBe("the number of colors ≥ 0");
 		expect(explainWireTree(parseScryfallQuery("id>gold"))).toBe("the number of colors in the color identity ≥ 2");
+		// `produces:any` lowers the same way, so the explanation is an ordinary count sentence and
+		// this path needed no case of its own. Its `<` row is the only one in the colour vocabulary
+		// that lowers to `= 0`.
+		expect(explainWireTree(parseScryfallQuery("produces:any"))).toBe("the number of kinds of mana produced ≥ 1");
+		expect(explainWireTree(parseScryfallQuery("produces<any"))).toBe("the number of kinds of mana produced is 0");
+		expect(explainWireTree(parseScryfallQuery("produces<=any"))).toBe("the number of kinds of mana produced ≤ 1");
 	});
 
 	test("legalities and rarity", () => {

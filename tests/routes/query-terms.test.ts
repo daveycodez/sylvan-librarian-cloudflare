@@ -619,6 +619,26 @@ describe("colour values Scryfall refuses, and the sentence it refuses them with"
 		}
 	});
 
+	test("produces:any is honoured here, and c:any / id:any are still dropped", () => {
+		// `any` is a produced_mana name and nothing else. Measured against api.scryfall.com
+		// 2026-08-28: `produces:any` = 2,603 = `produces>=1`, so warning would claim a term was
+		// dropped that Scryfall applied — while `c:any` on its own answers "All of your terms were
+		// ignored" and `t:creature c:any` = `t:creature` = 18,753, so the drop is what Scryfall
+		// does there. This port dropped BOTH, which is what made `produces:any` match everything.
+		for (const op of [":", "=", ">", ">=", "<", "<=", "!="]) {
+			expect(scryfallTermPolicy(`produces${op}any e:khm`).warnings).toEqual([]);
+		}
+		expect(scryfallTermPolicy("produces:ANY e:khm").warnings).toEqual([]);
+		for (const kw of ["c", "color", "colors", "colour", "colours", "ci", "id", "identity", "commander"]) {
+			expect(scryfallTermPolicy(`${kw}:any e:khm`).warnings).toEqual([
+				`Invalid expression “${kw}:any” was ignored. Unknown color “a”`,
+			]);
+		}
+		// Alone, with nothing left standing: every term ignored, exactly as Scryfall answers it.
+		expect(scryfallTermPolicy("c:any").allIgnored).toBe(true);
+		expect(scryfallTermPolicy("produces:any").allIgnored).toBe(false);
+	});
+
 	test("the identity spellings Scryfall REFUSES are unknown keywords, not colour values", () => {
 		// Scryfall's identity vocabulary is a boundary — `id`/`identity`/`ci`/`commander` and
 		// nothing else — so these answer "Unknown keyword", NOT a colour complaint. `coloridentity`

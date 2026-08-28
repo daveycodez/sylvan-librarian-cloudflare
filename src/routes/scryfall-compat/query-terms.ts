@@ -518,10 +518,20 @@ const COLOR_NAMES: ReadonlySet<string> = new Set([
 	"growth",
 ]);
 
-/** `produces:` accepts the same names minus the three words for colorless. Measured, see below. */
-const PRODUCES_NAMES: ReadonlySet<string> = new Set(
-	[...COLOR_NAMES].filter((n) => n !== "colorless" && n !== "colourless" && n !== "brown"),
-);
+/**
+ * `produces:` accepts the same names minus the three words for colorless, PLUS `any`. Measured,
+ * see below and db-info's COLUMN_SCOPED_COUNT_NAMES.
+ *
+ * `any` is the only entry this table has that COLOR_NAMES must not gain: on the colour columns
+ * Scryfall refuses it and drops the term (`t:creature c:any` = `t:creature` = 18,753, and `c:any`
+ * alone answers "All of your terms were ignored"), while on produced_mana it is HONOURED —
+ * `produces:any` = 2,603 = `produces>=1`. So it is added here and nowhere else, and `c:any` /
+ * `id:any` keep the "Unknown color “a”" drop they already answered.
+ */
+const PRODUCES_NAMES: ReadonlySet<string> = new Set([
+	...[...COLOR_NAMES].filter((n) => n !== "colorless" && n !== "colourless" && n !== "brown"),
+	"any",
+]);
 
 /** The letters a colour set is spelled with: the five colours, colourless, and multicolour. */
 const COLOR_LETTERS = "wubrgcm";
