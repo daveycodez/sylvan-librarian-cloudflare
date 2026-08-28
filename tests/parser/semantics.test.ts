@@ -466,6 +466,58 @@ describe("plain-literal regex lowering", () => {
 	}
 });
 
+// ── metacharacters beside a non-ASCII literal ────────────────────────────────
+//
+// Every pattern here parsed, passed the regex budget, and reached the engine — where
+// `pattern_requires_backtrack` sliced the pattern string at a byte offset that could land inside a
+// multi-byte character and panicked the wasm isolate, so /cards/search answered 500. The parser
+// half of that is what this pins: which of these arrive as a REGEX leaf (and so are byte-walked at
+// all) and which `lowerLiteralRegexes` turns into a plain substring first. The split is exactly
+// why a bare non-ASCII literal was the one shape that worked in production.
+//
+// Counts measured on api.scryfall.com 2026-08-28.
+describe("non-ASCII literals mixed with metacharacters", () => {
+	// Regex leaves — each one 500'd on this port before the engine fix. `—` is U+2014 EM DASH
+	// (E2 80 94), `é` is U+00E9 (C3 A9).
+	const regexLeaves: Array<[string, number]> = [
+		["o:/[a-z]—/", 245],
+		["o:/\\w—/", 382],
+		["o:/[a-z]é/", 5],
+		["o:/.—/", 3461],
+		["o:/—[^{]*$/", 2846],
+		// Controls that always worked, and must keep working: an ASCII class, and one with a
+		// quantifier.
+		["o:/[a-z]x/", 5212],
+		["o:/[a-z]*x/", 6886],
+	];
+	for (const [query, scryfallCount] of regexLeaves) {
+		test(`${query} reaches the engine as a regex leaf (Scryfall: ${scryfallCount})`, () => {
+			const root = parseScryfallQuery(query);
+			const rhs = root.kwargs.rhs as { node_type: string };
+			expect(rhs.node_type).toBe("RegexValueNode");
+		});
+	}
+
+	// THE ONE THAT NEVER CRASHED, and the reason: a pattern of nothing but literal characters is
+	// lowered to a substring leaf here, so it never reaches the byte walk at all. `o:/x—/` was 7
+	// on both engines throughout (2026-08-28) while `o:/.—/` was a 500.
+	test("a bare non-ASCII literal is lowered to a substring leaf", () => {
+		expect(tree("o:/x—/")).toBe(tree('o:"x—"'));
+		const rhs = parseScryfallQuery("o:/x—/").kwargs.rhs as { node_type: string };
+		expect(rhs.node_type).not.toBe("RegexValueNode");
+	});
+
+	// Negative controls: api.scryfall.com answers 404 for both (2026-08-28), so this port refusing
+	// them is parity, not a defect — but they must still PARSE, or the refusal would come from the
+	// wrong layer.
+	for (const query of ["o:/a+—/", "o:/(a|b)—/"]) {
+		test(`${query} parses as a regex leaf (both engines answer nothing)`, () => {
+			const rhs = parseScryfallQuery(query).kwargs.rhs as { node_type: string };
+			expect(rhs.node_type).toBe("RegexValueNode");
+		});
+	}
+});
+
 // ── failure semantics ────────────────────────────────────────────────────────
 
 describe("failure semantics", () => {

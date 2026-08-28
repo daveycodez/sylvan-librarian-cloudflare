@@ -13656,6 +13656,70 @@ fn linear_patterns_do_not_reach_the_backtracking_engine() {
     }
 }
 
+/// A metacharacter next to a NON-ASCII literal must classify, not panic.
+///
+/// `pattern_requires_backtrack` byte-walks the pattern, and its `(?P=` probe used to slice
+/// `pattern[i..]` on the catch-all arm — i.e. at every byte position, including the continuation
+/// bytes of a multi-byte character. In the wasm engine that panic is an aborted isolate, so
+/// /cards/search answered 500 rather than declining: measured against production 2026-08-28,
+/// `o:/.—/` logged `sylvan-engine-wasm panic: byte index 2 is not a char boundary; it is inside
+/// '—' (bytes 1..4) of `.—``.
+///
+/// Counts measured on api.scryfall.com 2026-08-28, all of which this port answered with a 500:
+/// `o:/[a-z]—/` 245, `o:/\w—/` 382, `o:/[a-z]é/` 5, `o:/.—/` 3461, `o:/—[^{]*$/` 2846.
+#[test]
+fn metacharacters_beside_a_non_ascii_literal_classify_without_panicking() {
+    use super::filter::{pattern_requires_backtrack, regex_tier};
+    use super::regex_compat::CompiledRegex;
+
+    // Every byte offset in each of these is visited by the scan, and in the failing shapes at
+    // least one of them is a UTF-8 continuation byte.
+    for pattern in [r"[a-z]—", r"\w—", "[a-z]é", ".—", r"—[^{]*$", "x—", "[a-z]x", "[a-z]*x"] {
+        assert!(!pattern_requires_backtrack(pattern), "{pattern:?} has no backtracking construct");
+
+        // The LINEAR engine takes all of them: the `regex` crate compiles `&str` patterns with
+        // Unicode on, so a class beside a multi-byte literal was never a compile problem — which
+        // is why the panic, not a decline, was the whole bug. #907's trigram narrowing rides on
+        // this arm, so a pattern quietly moving to `fancy_regex` would be a silent slowdown.
+        let re = CompiledRegex::new(pattern).unwrap_or_else(|e| panic!("{pattern:?} should compile, got {e}"));
+        assert!(!re.is_backtracking(), "{pattern:?} should stay on the linear engine");
+
+        // Priced through the compiled pattern, `QUERY_REGEX_FLAGS` prefix and all — the shape
+        // `verify_cost_tier` actually passes.
+        assert_eq!(regex_tier(re.as_str()), super::REGEX_MACHINERY_NS100, "{pattern:?}");
+    }
+
+    // The matching half, so the fix is not merely "it no longer crashes". `—` is U+2014 EM DASH,
+    // three bytes (E2 80 94); `é` is U+00E9, two.
+    assert!(CompiledRegex::new(r"[a-z]—").unwrap().is_match("sacrifice—then draw"));
+    assert!(!CompiledRegex::new(r"[a-z]—").unwrap().is_match("sacrifice —then draw"));
+    assert!(CompiledRegex::new(".—").unwrap().is_match("kicker—{2}"));
+    assert!(CompiledRegex::new("[a-z]é").unwrap().is_match("fabergé egg"));
+    assert!(CompiledRegex::new(r"—[^{]*$").unwrap().is_match("landfall—whenever a land enters"));
+
+    // `(?P=` still reads as backtracking, now from the arm that can actually see it: on the
+    // catch-all it was unreachable, because a `(?P=name)` is met with `bytes[i] == b'('` and
+    // `bytes[i + 1] == b'?'`, which the group arm matches first.
+    assert!(pattern_requires_backtrack("(?P<n>a)(?P=n)"));
+    assert!(pattern_requires_backtrack("(?>a+)b"));
+}
+
+/// Both engines refuse these, so this port must keep refusing them.
+///
+/// Measured on api.scryfall.com 2026-08-28: `o:/a+—/` and `o:/(a|b)—/` both answer 404
+/// (`Your query didn't match any cards`), not a result set. They are here as negative controls —
+/// the non-ASCII fix must not turn a shared refusal into a divergence — and they still have to
+/// classify without panicking, which is the property the fix is actually about.
+#[test]
+fn non_ascii_shapes_scryfall_also_declines_still_classify() {
+    use super::filter::pattern_requires_backtrack;
+    for pattern in [r"a+—", "(a|b)—"] {
+        assert!(!pattern_requires_backtrack(pattern), "{pattern:?}");
+        let re = super::regex_compat::CompiledRegex::new(pattern).unwrap();
+        assert!(!re.is_backtracking(), "{pattern:?}");
+    }
+}
+
 #[test]
 fn lookaround_matches_what_it_should() {
     let re = super::regex_compat::CompiledRegex::new(r"draw (?!two)").unwrap();
