@@ -44,7 +44,12 @@
  */
 
 import { foldTypographicQuotes } from "../../parser";
-import { ALIAS_TO_FIELD_INFOS } from "../../parser/db-info";
+import {
+	ALIAS_TO_FIELD_INFOS,
+	COLOR_ALIAS_TO_CODES,
+	COLOR_COUNT_NAMES,
+	COLUMN_SCOPED_COUNT_NAMES,
+} from "../../parser/db-info";
 import { DIRECTIVE_TABLES } from "../enums";
 
 /**
@@ -461,76 +466,67 @@ const UUID_V4_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a
  * four-colour nicknames are not in Scryfall's table and this list is a boundary rather than a
  * superset. An all-digit value (`c:0`, `c:2`) is a count and always fine.
  *
- * The parser now knows every one of them itself — the set-valued names through
- * `COLOR_ALIAS_TO_CODES`, and the `m` family (`m`, `gold`, `multicolor(ed)`, `multicolour(ed)`)
- * through `COLOR_COUNT_NAMES`, which is a colour COUNT rather than a set and lowers to the numeric
+ * The parser knows every one of them itself — the set-valued names through `COLOR_ALIAS_TO_CODES`,
+ * and the `m` family (`m`, `gold`, `multicolor(ed)`, `multicolour(ed)`) through
+ * `COLOR_COUNT_NAMES`, which is a colour COUNT rather than a set and lowers to the numeric
  * comparison (`c:m` = `c>=2` = 44 in Kaldheim, where `c:2` = 43). So what this table still decides
  * is only which values Scryfall REFUSES: it has to stay a superset of the parser's vocabulary,
  * because a name listed here that the parser cannot spell is a 400 where Scryfall answers, and a
  * name missing here that the parser CAN spell is a warning where Scryfall is silent.
+ *
+ * WHICH IS WHY IT IS DERIVED AND NOT WRITTEN OUT. Two hand-kept mirrors of one vocabulary drifted
+ * twice — `produces:any` (fixed 3288c89) and then the five Strixhaven colleges, which the parser
+ * has spelled since 2026-08-16 while this list did not, so `c:lorehold e:khm t:creature` answered
+ * the UNFILTERED 151 with a warning where Scryfall answers 2. The invariant the doc-comment above
+ * declares is now the definition: this set IS the parser's column-independent colour vocabulary,
+ * so a name added to db-info is known here on the same commit and can never be a warning again.
+ *
+ * The measured boundary survives the derivation because the boundary lives in db-info: the names
+ * Scryfall REFUSES (`yore`, `glint`, `dune`, `ink`, `witch`, `five`, `mono`, `nephilim`,
+ * `chromatic`) are absent from COLOR_ALIAS_TO_CODES for exactly the same measured reason they were
+ * absent here, and `any` is scoped away from the colour columns in COLUMN_SCOPED_COUNT_NAMES
+ * rather than living in COLOR_COUNT_NAMES. The one direction derivation cannot police — the parser
+ * gaining a name Scryfall does NOT accept — is what the vocabulary test in
+ * tests/routes/query-terms.test.ts asserts, name by name, against the live-measured boundary.
  */
-const COLOR_NAMES: ReadonlySet<string> = new Set([
-	"white",
-	"blue",
-	"black",
-	"red",
-	"green",
-	"colorless",
-	"colourless",
-	"multicolor",
-	"multicolour",
-	"multicolored",
-	"multicoloured",
-	"gold",
-	"m",
-	"brown",
-	"rainbow",
-	"all",
-	"azorius",
-	"dimir",
-	"rakdos",
-	"gruul",
-	"selesnya",
-	"orzhov",
-	"izzet",
-	"golgari",
-	"boros",
-	"simic",
-	"bant",
-	"esper",
-	"grixis",
-	"jund",
-	"naya",
-	"abzan",
-	"jeskai",
-	"sultai",
-	"mardu",
-	"temur",
-	"yore-tiller",
-	"glint-eye",
-	"dune-brood",
-	"ink-treader",
-	"witch-maw",
-	"artifice",
-	"chaos",
-	"aggression",
-	"altruism",
-	"growth",
-]);
+const COLOR_NAMES: ReadonlySet<string> = new Set([...COLOR_ALIAS_TO_CODES.keys(), ...COLOR_COUNT_NAMES]);
 
 /**
- * `produces:` accepts the same names minus the three words for colorless, PLUS `any`. Measured,
- * see below and db-info's COLUMN_SCOPED_COUNT_NAMES.
+ * The names that belong to `produces:` alone — `any` today, and whatever else db-info ever scopes
+ * to produced_mana. Read out of COLUMN_SCOPED_COUNT_NAMES by resolving `produces` to its db column
+ * through ALIAS_TO_FIELD_INFOS, the same resolution the parser's own validColorNamesFor performs,
+ * so the column name is never spelled twice.
  *
  * `any` is the only entry this table has that COLOR_NAMES must not gain: on the colour columns
  * Scryfall refuses it and drops the term (`t:creature c:any` = `t:creature` = 18,753, and `c:any`
  * alone answers "All of your terms were ignored"), while on produced_mana it is HONOURED —
- * `produces:any` = 2,603 = `produces>=1`. So it is added here and nowhere else, and `c:any` /
- * `id:any` keep the "Unknown color “a”" drop they already answered.
+ * `produces:any` = 2,603 = `produces>=1`. Scoping it in db-info is what keeps `c:any` / `id:any`
+ * on the "Unknown color “a”" drop they already answered.
  */
+const PRODUCES_ONLY_NAMES: ReadonlySet<string> = new Set(
+	[...COLUMN_SCOPED_COUNT_NAMES]
+		.filter(([column]) => (ALIAS_TO_FIELD_INFOS.get("produces") ?? []).some((fi) => fi.dbColumnName === column))
+		.flatMap(([, names]) => [...names]),
+);
+
+/**
+ * The WORDS for colorless, which `produces:` does not accept — derived as the names that spell the
+ * bare `c`, because that is what makes them refusable there rather than any property of the words.
+ *
+ * Measured: `produces:colorless` answers "Unknown color “e”" and `produces:brown` "Unknown color
+ * “n”", where `c:colorless` and `c:brown` are both simply names. Colorless is a producible VALUE on
+ * produced_mana, spelled `c` — `produces:wubrgc` is honoured — so Scryfall's produces table holds
+ * the letter and not the three words for it. Deriving the exclusion from the code means a fourth
+ * synonym for colorless added to COLOR_ALIAS_TO_CODES is excluded here on the same commit.
+ */
+const COLORLESS_WORDS: ReadonlySet<string> = new Set(
+	[...COLOR_ALIAS_TO_CODES].filter(([, code]) => code === "c").map(([name]) => name),
+);
+
+/** `produces:` accepts the same names minus the words for colorless, PLUS its own scoped names. */
 const PRODUCES_NAMES: ReadonlySet<string> = new Set([
-	...[...COLOR_NAMES].filter((n) => n !== "colorless" && n !== "colourless" && n !== "brown"),
-	"any",
+	...[...COLOR_NAMES].filter((n) => !COLORLESS_WORDS.has(n)),
+	...PRODUCES_ONLY_NAMES,
 ]);
 
 /** The letters a colour set is spelled with: the five colours, colourless, and multicolour. */
@@ -563,6 +559,17 @@ const COLORED_LETTERS = "wubrg";
  * `m1`→1, `mono-red`→denor, `monocolor`→clnor, `monocolored`→cdeln, `nephilim`→ehiln (not
  * "ehilnp"), `chromatic`→achio (not "achiort"), `spectrum`→ceprs (not "ceprstu"), `prismatic`→acipr.
  *
+ * THE HINT ECHOES THE KEYWORD THE USER TYPED, not a canonical `c`. Measured 2026-08-28, one
+ * request each, anchor `e:khm` = 323: `c:mw` → "Use c>w", `color:mw` → "Use color>w", and the same
+ * for `colors`, `colour`, `colours`, `id`, `identity`, `ci`, `commander` and `produces` — ten
+ * spellings, ten different hints. This port said `c>` for all ten, which agreed only on the `c:`
+ * spelling and is why the divergence hid: `id:mono` is "Use id>no" and `produces:nephilim` is
+ * "Use produces>ehiln" where this port answered "Use c>no" and "Use c>ehiln" (42 sweep cases).
+ * The hint's keyword is LOWERCASED however it was typed — `C:MW` answers "Use c>w instead." —
+ * which is exactly what `keyword` already holds, so it is echoed as-is. (Scryfall ALSO lower-cases
+ * the expression it quotes, `Invalid expression “c:mw”` for `C:MW`, where this port echoes the
+ * term verbatim. That is a divergence in the echo, not in the colour rule, and is left alone here.)
+ *
  * And the letter it names is the ALPHABETICALLY FIRST unrecognized one, which took nine values to
  * establish and no two of which agree on any simpler rule: `glint`→i, `yore`→e, `dune`→d,
  * `null`→l, `void`→d, `spirit`→i, `land`→a, `five`→e, `qq`→q. Not the first in the string, not the
@@ -586,7 +593,7 @@ function colorReason(value: string, keyword: string): string | null {
 			.sort()
 			.join("")
 			.slice(0, COLORED_LETTERS.length);
-		return `Using \u201cm\u201d with other colors is no longer supported. Use c>${rest} instead.`;
+		return `Using \u201cm\u201d with other colors is no longer supported. Use ${keyword}>${rest} instead.`;
 	}
 	if (keyword !== "produces" && known.has("c") && [...known].some((ch) => COLORED_LETTERS.includes(ch))) {
 		return "A card cannot be both colored and colorless.";
