@@ -283,6 +283,29 @@ describe("GET /cards/search", () => {
 		}
 	});
 
+	test("the hidden card classes trigger by their type, and their equally-hidden neighbours do not", async () => {
+		// Scryfall's syntax docs promise the vanguard/plane/scheme/phenomenon classes back when the
+		// query names their type, and the echo agrees — then adds `t:emblem` and refuses
+		// `t:dungeon`, `t:attraction`, `t:contraption` and `t:sticker`, classes every bit as
+		// hidden. Probed 2026-08-27, one echo per value; the gap this pins: `t:plane` answers 185
+		// on api.scryfall.com and this route answered 404. See `EXTRAS_TYPE_TRIGGERS`.
+		const engine = new FakeEngine();
+		const treeOf = () => JSON.stringify(JSON.parse(engine.lastSearch?.filterTreeJson ?? "null"));
+		for (const q of ["t%3Aplane", "t%3Aphenomenon", "t%3Ascheme", "t%3Avanguard", "t%3Aemblem"]) {
+			await testDispatch(makeCtx({ engine }), `/cards/search?q=${q}`);
+			expect(treeOf(), q).not.toContain('"extra"');
+		}
+		for (const q of ["t%3Adungeon", "t%3Aattraction", "t%3Acreature"]) {
+			await testDispatch(makeCtx({ engine }), `/cards/search?q=${q}`);
+			expect(treeOf(), q).toContain('"extra"');
+		}
+		// The regex spelling removes the trigger for the new values exactly as it does for
+		// `t:/token/`: `t:/plane/ or cmc=3` echoes false on api.scryfall.com (2026-08-27), and the
+		// `lowered` suppression reaches it through the same `family()` unification.
+		await testDispatch(makeCtx({ engine }), "/cards/search?q=t%3A%2Fplane%2F");
+		expect(treeOf()).toContain('"extra"');
+	});
+
 	test("a name: REGEX triggers whether or not the rewrite lowered it to a literal", async () => {
 		// The trigger is on the SPELLING, and `lowerLiteralRegexes` erases the spelling: a
 		// metacharacter-free `name:/…/` becomes `name:"…"` in the wire tree, byte for byte, because
