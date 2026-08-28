@@ -43,7 +43,7 @@ export {
 	QueryBudgetExceeded,
 } from "./query-budget";
 export { validateRegexPatterns } from "./regex-budget";
-export { flattenAndDeduplicateCompounds, rewriteQuery } from "./rewrite";
+export { flattenAndDeduplicateCompounds, regexPlainLiteral, rewriteQuery } from "./rewrite";
 export { canonicalStringify } from "./serialize";
 export { foldTypographicQuotes } from "./tokenizer";
 

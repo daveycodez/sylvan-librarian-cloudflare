@@ -43,12 +43,13 @@
  * typographic-quote fold), which is the property that keeps this off the hot path's conscience.
  */
 
-import { foldTypographicQuotes } from "../../parser";
+import { foldTypographicQuotes, regexPlainLiteral } from "../../parser";
 import {
 	ALIAS_TO_FIELD_INFOS,
 	COLOR_ALIAS_TO_CODES,
 	COLOR_COUNT_NAMES,
 	COLUMN_SCOPED_COUNT_NAMES,
+	ParserClass,
 } from "../../parser/db-info";
 import { DIRECTIVE_TABLES } from "../enums";
 
@@ -690,6 +691,131 @@ function devotionReason(value: string): string | null {
 	return null;
 }
 
+/**
+ * The keywords a `field:/pattern/` actually REACHES a regex engine on here.
+ *
+ * Scryfall's own list is four columns, and its docs page names them:
+ * <https://scryfall.com/docs/regular-expressions> gives `type:`/`t:`, `oracle:`/`o:`,
+ * `flavor:`/`ft:` and `name:`, and every other keyword answers
+ * `Unknown regular expression keyword “X”.` — verified one probe per alias against
+ * api.scryfall.com on 2026-08-28, all 80 spellings `DB_COLUMNS` carries.
+ *
+ * THIS SET IS WIDER THAN SCRYFALL'S, deliberately and measurably (upstream #907): the engine runs
+ * a compiled pattern against every string column the store holds, so on this deployment
+ * `a:/^rebecca/` is 170, `s:/^kh/` 442, `cn:/^1/` 17,483, `layout:/^trans/` 401,
+ * `border:/^black/` 32,817 and `wm:/^az/` 107, where Scryfall ignores the term and warns.
+ * Answering where Scryfall warns costs a searcher nothing — the same rule `color_identity` and
+ * `coloridentity` are kept under in db-info — so those stay.
+ *
+ * `fo`/`fulloracle` join `oracle`/`o`: Scryfall takes a regex on them too (`fo:/\(this creature/`
+ * is 1,098 there, a pattern the reminder-stripped column cannot match at all).
+ */
+const REGEX_CAPABLE_KEYWORDS: ReadonlySet<string> = new Set([
+	// Scryfall's four.
+	"name",
+	"type",
+	"t",
+	"oracle",
+	"o",
+	"fo",
+	"fulloracle",
+	"flavor",
+	"ft",
+	// This port's addition: every other string column the engine stores.
+	"artist",
+	"a",
+	"set",
+	"s",
+	"e",
+	"number",
+	"cn",
+	"layout",
+	"border",
+	"watermark",
+	"wm",
+]);
+
+/**
+ * The keywords where Scryfall never sees a regex AT ALL: `/…/` is read as part of the VALUE, and
+ * the value's own validator is what speaks. Left to the validators below for that reason.
+ *
+ * Measured 2026-08-28. On the colour columns the slashes are simply not colour letters and are
+ * skipped: `c:/w/` is 7,105 — exactly `c:w` — and `c:/wu/` is 718, exactly `c:wu`; `id:/w/` is
+ * 7,993 and `produces:/g/` is 1,274. On `mana:` the same thing happens in the symbol lexer:
+ * `mana:/p/ mv=1` is 9, every one Phyrexian, and identical to `mana:/\smp/ mv=1`. `set_type:` and
+ * `oracle_id:` answer `Unknown set type “/^exp/”` and `You must provide a valid v4 UUID.` — their
+ * value sentences, not the regex one — while the OTHER spellings of the same two columns
+ * (`st:`, `settype:`, `oracleid:`) do get the regex sentence, which is why this is a set of
+ * spellings rather than of columns.
+ *
+ * This port answers none of the colour/mana four: matching them means teaching the colour and
+ * mana value lexers to skip a `/`, which is a grammar change upstream does not have. They are
+ * reported as a divergence rather than papered over here.
+ */
+const REGEX_VALUE_FIRST_KEYWORDS: ReadonlySet<string> = new Set([
+	"c",
+	"color",
+	"colors",
+	"colour",
+	"colours",
+	"id",
+	"identity",
+	"ci",
+	"commander",
+	"produces",
+	"mana",
+	"m",
+	"oracle_id",
+]);
+
+/**
+ * The one keyword whose regex-shaped value gets a VALUE sentence rather than the regex one.
+ *
+ * `set_type:/^exp/` answers `Unknown set type “/^exp/”` on api.scryfall.com while `st:/^exp/` and
+ * `settype:/^exp/` answer `Unknown regular expression keyword …` — the same per-SPELLING split
+ * `oracle_id:` and `oracleid:` show (2026-08-28). This port had no set-type value validator at
+ * all, so all three spellings were `400 Failed to parse query` where Scryfall drops the term and
+ * answers the rest: `st:/^exp/ t:goblin` is 563 there.
+ */
+const SET_TYPE_VALUE_KEYWORD = "set_type";
+
+/** Whether `raw` is a `/…/` regex literal rather than an ordinary value. */
+function isRegexLiteral(raw: string): boolean {
+	return raw.length >= 2 && raw.startsWith("/") && raw.endsWith("/");
+}
+
+/**
+ * The `Unknown regular expression keyword` sentence, or null when the term is fine.
+ *
+ * Two shapes reach here and only one of them is Scryfall's business. A PLAIN-LITERAL pattern on a
+ * TEXT column never runs as a regex at all: `lowerLiteralRegexes` turns `is:/promo/` into
+ * `is:promo` before the engine sees it, and that answers 6,126 here. Dropping it would remove a
+ * working answer to buy nothing, so this fires only when the pattern needs a real engine — or
+ * when the column's value parser cannot take a regex TOKEN in the first place, which is every
+ * class but TEXT (`date:/1993/` is a parse error here however plain the pattern is).
+ *
+ * WHAT IT REPLACES, all measured on production 2026-08-28 against api.scryfall.com's 563 for the
+ * same query anchored with `t:goblin`:
+ *
+ *   kw:/^fly/ t:goblin      404 — the term became the keyword `fly` and matched nothing
+ *   otag:/^remov/ t:goblin  404 — became the tag `remov`
+ *   st:/^exp/ t:goblin      400 Failed to parse query
+ *   date:/199/ t:goblin     400 Failed to parse query
+ *
+ * The first two are the dangerous class: a different query, answered without a word.
+ */
+function regexKeywordReason(keyword: string, rawValue: string): string | null {
+	if (!isRegexLiteral(rawValue)) return null;
+	if (REGEX_CAPABLE_KEYWORDS.has(keyword) || REGEX_VALUE_FIRST_KEYWORDS.has(keyword)) return null;
+	const infos = ALIAS_TO_FIELD_INFOS.get(keyword) ?? [];
+	const textOnly = infos.length > 0 && infos.every((fi) => fi.parserClass === ParserClass.TEXT);
+	if (textOnly && regexPlainLiteral(rawValue.slice(1, -1)) !== null) return null;
+	if (keyword === SET_TYPE_VALUE_KEYWORD) {
+		return `Unknown set type \u201c${rawValue.toLowerCase()}\u201d`;
+	}
+	return `Unknown regular expression keyword \u201c${keyword}\u201d.`;
+}
+
 /** Keyword groups, by the alias spellings this parser and Scryfall share. */
 const FORMAT_KEYWORDS: ReadonlySet<string> = new Set(["f", "format", "legal", "banned", "restricted"]);
 const LANGUAGE_KEYWORDS: ReadonlySet<string> = new Set(["lang", "language"]);
@@ -1113,6 +1239,12 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (NOT_SCRYFALL_KEYWORDS.has(keyword) || (!KNOWN_KEYWORDS.has(keyword) && !SCRYFALL_ONLY_KEYWORDS.has(keyword))) {
 		return { keep: false, reason: `Unknown keyword “${negated ? "-" : ""}${keyword}”.` };
 	}
+
+	// AFTER the unknown-keyword rule, because Scryfall orders them that way: `types:/creature/`
+	// and `subtype:/goblin/` come back `Unknown keyword`, not `Unknown regular expression
+	// keyword`, since neither spelling is a Scryfall keyword at all. See regexKeywordReason.
+	const regexReasonForKeyword = regexKeywordReason(keyword, rawValue);
+	if (regexReasonForKeyword !== null) return { keep: false, reason: regexReasonForKeyword };
 
 	if (negated && equality) {
 		if (MANA_VALUE_KEYWORDS.has(keyword)) return { keep: false, reason: MANA_VALUE_REASON };

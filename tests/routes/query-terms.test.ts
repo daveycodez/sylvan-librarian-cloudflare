@@ -13,7 +13,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { parseScryfallQuery } from "../../src/parser";
-import { COLOR_ALIAS_TO_CODES, COLOR_COUNT_NAMES, COLUMN_SCOPED_COUNT_NAMES } from "../../src/parser/db-info";
+import {
+	COLOR_ALIAS_TO_CODES,
+	COLOR_COUNT_NAMES,
+	COLUMN_SCOPED_COUNT_NAMES,
+	DB_COLUMNS,
+} from "../../src/parser/db-info";
 import { foldSmartQuotes, scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
 
 describe("typographic quote folding", () => {
@@ -989,5 +994,203 @@ describe("parentheses that do not balance", () => {
 		for (const q of ['name:"(a"', "o:/\\(this creature/", "(t:creature or t:land) e:khm", "m:{2}{R}"]) {
 			expect(scryfallTermPolicy(q).unclosedParens).toBe(false);
 		}
+	});
+});
+
+/**
+ * THE WHOLE REGEX SURFACE, one row per search alias `DB_COLUMNS` carries.
+ *
+ * Generated from a probe of api.scryfall.com on 2026-08-28 — every one of the 80 spellings, one
+ * request each, `<alias>:/pattern/` with a pattern that means something on that column — and from
+ * the Scryfall docs page the probe agrees with:
+ * <https://scryfall.com/docs/regular-expressions> grants a regex to `type:`/`t:`, `oracle:`/`o:`,
+ * `flavor:`/`ft:` and `name:` and to nothing else.
+ *
+ * FOUR OUTCOMES, and this table is how they are told apart:
+ *
+ *  1. BOTH ANSWER. `name:/^Ancient/` 38 = 38, `t:/creature/` 18,753 = 18,753,
+ *     `o:/^whenever/` 6,255 = 6,255 on all four oracle spellings, `ft:/^the /` 2,423 / 2,451
+ *     (the 28 are a corpus-vintage difference, not a dialect one).
+ *  2. SCRYFALL ANSWERS, THIS PORT DID NOT. `st:/^exp/ t:goblin` and `date:/199/ t:goblin` are 563
+ *     there and were `400 Failed to parse query` here; `kw:/^fly/ t:goblin` is 563 there and was
+ *     404 here — the term having silently become the keyword `fly`. Fixed: the whole family is
+ *     ignored-and-warned now, in Scryfall's own words.
+ *  3. BOTH REJECT. Every `Unknown keyword` row below: `types`, `subtype`, `subtypes`,
+ *     `color_identity`, `coloridentity`, `oracle_tags`, `art_tags` are not Scryfall keywords at
+ *     all, so neither side ever reaches the regex question.
+ *  4. SCRYFALL IS NOT RUNNING A REGEX. The colour and mana columns read `/…/` as part of the
+ *     VALUE: `c:/w/` is 7,105 = `c:w`, `c:/wu/` is 718 = `c:wu`, `id:/w/` 7,993,
+ *     `produces:/g/` 1,274, and `mana:/p/ mv=1` is 9 — every one Phyrexian, identical to
+ *     `mana:/\smp/ mv=1`. Matching those means teaching the colour and mana value lexers to skip
+ *     a `/`, which upstream's grammar does not do; they keep this port's sentence and are NOT
+ *     changed here.
+ *
+ * A FIFTH, which is this port's own and deliberate: the rows under "answered here, warned by
+ * Scryfall" are a SUPERSET. `a:/^rebecca/` 170, `s:/^kh/` 442, `cn:/^1/` 17,483,
+ * `layout:/^trans/` 401, `border:/^black/` 32,817, `wm:/^az/` 107 — every string column the
+ * engine stores takes a pattern (#907), and Scryfall answers each of those
+ * `Unknown regular expression keyword`.
+ */
+describe("the regex surface, alias by alias", () => {
+	/** `<alias>:/…/` spellings the policy KEEPS, with what the engine then does with them. */
+	const KEPT: Record<string, string> = {
+		// Scryfall's own four columns — outcome 1.
+		name: "name:/^Ancient/",
+		type: "type:/creature/",
+		t: "t:/creature/",
+		oracle: "oracle:/^whenever/",
+		o: "o:/^whenever/",
+		fo: "fo:/^whenever/",
+		fulloracle: "fulloracle:/^whenever/",
+		flavor: "flavor:/^the /",
+		ft: "ft:/^the /",
+		// This port's superset: the other string columns the engine stores.
+		artist: "artist:/^rebecca/",
+		a: "a:/^rebecca/",
+		set: "set:/^kh/",
+		s: "s:/^kh/",
+		e: "e:/^kh/",
+		number: "number:/^1/",
+		cn: "cn:/^1/",
+		layout: "layout:/^trans/",
+		border: "border:/^black/",
+		watermark: "watermark:/^guild/",
+		wm: "wm:/^guild/",
+		// PLAIN LITERALS on a collection column, which never reach a regex engine at all:
+		// `lowerLiteralRegexes` has already turned them into the substring they spell, and the
+		// answers are real (`is:/promo/` 6,126, `kw:/flying/` 3,285, `st:/expansion/` 24,741,
+		// `frame:/1997/` 6,750, `otag:/removal/` 6,430, `art:/dragon/` 1,147). Scryfall drops
+		// each of these; removing a working answer to match a warning buys a searcher nothing.
+		frame: "frame:/1997/",
+		keyword: "keyword:/flying/",
+		kw: "kw:/flying/",
+		otag: "otag:/removal/",
+		oracletag: "oracletag:/removal/",
+		function: "function:/removal/",
+		art: "art:/dragon/",
+		atag: "atag:/dragon/",
+		arttag: "arttag:/dragon/",
+		is: "is:/promo/",
+		has: "has:/promo/",
+		not: "not:/promo/",
+		settype: "settype:/expansion/",
+		st: "st:/expansion/",
+		set_type: "set_type:/expansion/",
+		// Outcome 4: Scryfall reads the slashes as value characters and ANSWERS. This port does
+		// not, and the parse error it raises downstream is the divergence — the policy keeps the
+		// term either way, so nothing here is a claim that the two agree.
+		mana: "mana:/p/",
+		m: "m:/p/",
+	};
+
+	/** `<alias>:/…/` spellings the policy DROPS, with the exact sentence Scryfall answers. */
+	const DROPPED: Record<string, [query: string, reason: string]> = {
+		// Outcome 3 — not Scryfall keywords, so the regex question never arises on either side.
+		subtype: ["subtype:/goblin/", "Unknown keyword \u201csubtype\u201d."],
+		subtypes: ["subtypes:/goblin/", "Unknown keyword \u201csubtypes\u201d."],
+		types: ["types:/creature/", "Unknown keyword \u201ctypes\u201d."],
+		color_identity: ["color_identity:/w/", "Unknown keyword \u201ccolor_identity\u201d."],
+		coloridentity: ["coloridentity:/w/", "Unknown keyword \u201ccoloridentity\u201d."],
+		oracle_tags: ["oracle_tags:/draw/", "Unknown keyword \u201coracle_tags\u201d."],
+		art_tags: ["art_tags:/dragon/", "Unknown keyword \u201cart_tags\u201d."],
+		// Outcome 4 — Scryfall answers these as VALUES; this port's colour reader speaks instead.
+		color: ["color:/w/", "Unknown color \u201c/\u201d"],
+		colors: ["colors:/w/", "Unknown color \u201c/\u201d"],
+		colour: ["colour:/w/", "Unknown color \u201c/\u201d"],
+		colours: ["colours:/w/", "Unknown color \u201c/\u201d"],
+		c: ["c:/w/", "Unknown color \u201c/\u201d"],
+		id: ["id:/w/", "Unknown color \u201c/\u201d"],
+		identity: ["identity:/w/", "Unknown color \u201c/\u201d"],
+		ci: ["ci:/w/", "Unknown color \u201c/\u201d"],
+		commander: ["commander:/w/", "Unknown color \u201c/\u201d"],
+		produces: ["produces:/g/", "Unknown color \u201c/\u201d"],
+		// ...and the two spellings whose VALUE sentence Scryfall gives verbatim, per spelling.
+		oracle_id: ["oracle_id:/^0000/", "You must provide a valid v4 UUID."],
+		// THE VALUE VALIDATOR GETS THERE FIRST on these three, even for a plain-literal pattern
+		// that the parser would happily lower — `/ja/` is not a language and `/abcd/` is not a
+		// UUID, so the term is dropped before the regex question is asked. Scryfall drops them
+		// too and says `Unknown regular expression keyword …` instead; the OUTCOME is identical
+		// and only the sentence differs, so this port keeps the sentence it can justify.
+		lang: ["lang:/ja/", "Unknown language `/ja/`"],
+		language: ["language:/ja/", "Unknown language `/ja/`"],
+		oracleid: ["oracleid:/abcd/", "You must provide a valid v4 UUID."],
+		// Outcome 2, now fixed — a real pattern on a column with no regex path. Every sentence
+		// below was read off api.scryfall.com; `st:` and `date:` were `400 Failed to parse query`
+		// here before this rule, and the collection columns silently answered a DIFFERENT query.
+		cmc: ["cmc:/1/", "Unknown regular expression keyword \u201ccmc\u201d."],
+		mv: ["mv:/1/", "Unknown regular expression keyword \u201cmv\u201d."],
+		manavalue: ["manavalue:/1/", "Unknown regular expression keyword \u201cmanavalue\u201d."],
+		power: ["power:/1/", "Unknown regular expression keyword \u201cpower\u201d."],
+		pow: ["pow:/1/", "Unknown regular expression keyword \u201cpow\u201d."],
+		toughness: ["toughness:/1/", "Unknown regular expression keyword \u201ctoughness\u201d."],
+		tou: ["tou:/1/", "Unknown regular expression keyword \u201ctou\u201d."],
+		loyalty: ["loyalty:/3/", "Unknown regular expression keyword \u201cloyalty\u201d."],
+		loy: ["loy:/3/", "Unknown regular expression keyword \u201cloy\u201d."],
+		devotion: ["devotion:/u/", "Unknown regular expression keyword \u201cdevotion\u201d."],
+		usd: ["usd:/1/", "Unknown regular expression keyword \u201cusd\u201d."],
+		eur: ["eur:/1/", "Unknown regular expression keyword \u201ceur\u201d."],
+		tix: ["tix:/1/", "Unknown regular expression keyword \u201ctix\u201d."],
+		rarity: ["rarity:/rare/", "Unknown regular expression keyword \u201crarity\u201d."],
+		r: ["r:/rare/", "Unknown regular expression keyword \u201cr\u201d."],
+		format: ["format:/modern/", "Unknown regular expression keyword \u201cformat\u201d."],
+		f: ["f:/modern/", "Unknown regular expression keyword \u201cf\u201d."],
+		legal: ["legal:/modern/", "Unknown regular expression keyword \u201clegal\u201d."],
+		banned: ["banned:/modern/", "Unknown regular expression keyword \u201cbanned\u201d."],
+		restricted: ["restricted:/modern/", "Unknown regular expression keyword \u201crestricted\u201d."],
+		date: ["date:/199/", "Unknown regular expression keyword \u201cdate\u201d."],
+		year: ["year:/199/", "Unknown regular expression keyword \u201cyear\u201d."],
+	};
+
+	/**
+	 * The rows above cover a PLAIN-LITERAL pattern on the collection columns; these are the same
+	 * columns asked a pattern that needs a real engine, which is the shape that was answering a
+	 * different query. Scryfall drops all of them with the same sentence.
+	 */
+	const DROPPED_ONLY_WHEN_REAL: [query: string, reason: string][] = [
+		["kw:/^fly/", "Unknown regular expression keyword \u201ckw\u201d."],
+		["keyword:/^fly/", "Unknown regular expression keyword \u201ckeyword\u201d."],
+		["otag:/^remov/", "Unknown regular expression keyword \u201cotag\u201d."],
+		["function:/^remov/", "Unknown regular expression keyword \u201cfunction\u201d."],
+		["art:/^drag/", "Unknown regular expression keyword \u201cart\u201d."],
+		["is:/^prom/", "Unknown regular expression keyword \u201cis\u201d."],
+		["has:/^prom/", "Unknown regular expression keyword \u201chas\u201d."],
+		["not:/^prom/", "Unknown regular expression keyword \u201cnot\u201d."],
+		["frame:/^199/", "Unknown regular expression keyword \u201cframe\u201d."],
+		["lang:/^ja/", "Unknown regular expression keyword \u201clang\u201d."],
+		["oracleid:/^0000/", "Unknown regular expression keyword \u201coracleid\u201d."],
+		["st:/^exp/", "Unknown regular expression keyword \u201cst\u201d."],
+		["settype:/^exp/", "Unknown regular expression keyword \u201csettype\u201d."],
+		// The one spelling that gets a VALUE sentence instead — Scryfall's own split.
+		["set_type:/^exp/", "Unknown set type \u201c/^exp/\u201d"],
+	];
+
+	for (const [alias, term] of Object.entries(KEPT)) {
+		test(`${alias}: keeps a regex`, () => {
+			const result = scryfallTermPolicy(`${term} t:goblin`);
+			expect(result.query).toBe(`${term} t:goblin`);
+			expect(result.warnings).toEqual([]);
+		});
+	}
+
+	for (const [alias, [term, reason]] of Object.entries(DROPPED)) {
+		test(`${alias}: a regex is ignored and named`, () => {
+			const result = scryfallTermPolicy(`${term} t:goblin`);
+			expect(result.query).toBe("t:goblin");
+			expect(result.warnings).toEqual([`Invalid expression \u201c${term}\u201d was ignored. ${reason}`]);
+		});
+	}
+
+	for (const [term, reason] of DROPPED_ONLY_WHEN_REAL) {
+		test(`${term} needs an engine, so it is ignored and named`, () => {
+			const result = scryfallTermPolicy(`${term} t:goblin`);
+			expect(result.query).toBe("t:goblin");
+			expect(result.warnings).toEqual([`Invalid expression \u201c${term}\u201d was ignored. ${reason}`]);
+		});
+	}
+
+	test("every alias in the vocabulary is classified", () => {
+		const classified = new Set([...Object.keys(KEPT), ...Object.keys(DROPPED)]);
+		const missing = [...new Set(DB_COLUMNS.flatMap((c) => c.searchAliases))].filter((a) => !classified.has(a));
+		expect(missing).toEqual([]);
 	});
 });
