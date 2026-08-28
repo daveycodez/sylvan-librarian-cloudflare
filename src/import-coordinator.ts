@@ -146,7 +146,7 @@ import {
 	serializePpPublish,
 	TARGET_PARTITION_BYTES,
 } from "./import-publish";
-import { MEMBER_RAW_BYTES, memberBytes, recodeWindow, skipBytes } from "./import-recode";
+import { MEMBER_RAW_BYTES, memberBytes, recodeAlarm, skipBytes } from "./import-recode";
 import {
 	blobBytes,
 	blobGroups,
@@ -1033,54 +1033,61 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// ── phase: recode (all_cards → independent gzip members) ──────────────────
 
 	/**
-	 * Re-compress one RECODE_WINDOW_RAW window of the staged dump into
-	 * independent MEMBER_RAW_BYTES-raw gzip members (stage_members rows).
+	 * Re-compress as many recode windows as one alarm's work budget affords
+	 * into independent MEMBER_RAW_BYTES-raw gzip members (stage_members rows).
 	 *
-	 * Each slice re-streams the original stage_blobs gzip from seq 0 and
-	 * discards up to the persisted checkpoint (`recode_raw_done`) — the same
-	 * resume shape the transform phase uses, paid ~8 times here so it never has
-	 * to be paid ~55 times there. Worst slice ≈ 12–15s CPU (decompress a ~1.75GB
-	 * prefix + gzip 256MB); see the constants in import-recode.ts for the math.
+	 * Each alarm re-streams the original stage_blobs gzip from seq 0 ONCE,
+	 * discards up to the persisted checkpoint (`recode_raw_done`), and then
+	 * cuts windows until the budget runs out (recodeAlarm) — the prefix is
+	 * paid per ALARM, not per window, and the worst alarm is bounded by the
+	 * budget at any dump size. The single-window-per-alarm shape died nightly
+	 * from 2026-08-22: at ~2GB raw the deepest window's prefix discard pushed
+	 * one alarm past the 30s CPU cap (see the measured constants in
+	 * import-recode.ts).
 	 *
-	 * Resumable mid-phase: the checkpoint commits in the same transaction as the
-	 * slice's members, and a killed or retried slice cannot duplicate members —
-	 * member seq is derived from raw_start, and the write deletes seq >= the
-	 * resume point before inserting, so a re-run replaces exactly what the dead
-	 * slice may have half-committed (nothing, given the transaction, but the
-	 * delete also covers a checkpoint rolled back under members that landed).
+	 * Each window commits in its OWN transactionSync as it completes — never
+	 * hold two windows' members (~60–70MB compressed each) in memory at once.
+	 * Resumable mid-phase and mid-alarm: a window's checkpoint commits in the
+	 * same transaction as its members, and a killed or retried alarm cannot
+	 * duplicate members — member seq is derived from raw_start, and each
+	 * window's write deletes seq >= its own start before inserting, so a
+	 * re-run replaces exactly what a dead alarm may have half-committed
+	 * (nothing, given the transaction, but the delete also covers a checkpoint
+	 * rolled back under members that landed).
 	 *
-	 * The final slice deletes the original all_cards stage_blobs INSIDE its own
-	 * transaction — first of the progressive staging purges, and load-bearing
-	 * for the 5GB pool: dump-as-blobs (~392MB) plus dump-as-members (~392MB)
-	 * must not both persist for the rest of the run.
+	 * The final window deletes the original all_cards stage_blobs INSIDE its
+	 * own transaction — first of the progressive staging purges, and
+	 * load-bearing for the 5GB pool: dump-as-blobs (~392MB) plus
+	 * dump-as-members (~392MB) must not both persist for the rest of the run.
 	 */
 	private async stepRecode(kind: DumpKind): Promise<void> {
 		const rawDone = Number(this.metaGet("recode_raw_done") ?? 0);
-		const { members, rawEnd, exhausted } = await recodeWindow(this.stagedBlobBytes(kind), rawDone);
-		this.ctx.storage.transactionSync(() => {
-			this.sqlRun(
-				"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
-				kind,
-				Math.floor(rawDone / MEMBER_RAW_BYTES),
-			);
-			for (const m of members) {
+		const { windows, rawEnd, exhausted } = await recodeAlarm(this.stagedBlobBytes(kind), rawDone, (window) => {
+			this.ctx.storage.transactionSync(() => {
 				this.sqlRun(
-					"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
+					"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
 					kind,
-					m.seq,
-					m.rawStart,
-					m.rawLen,
-					exactBuffer(m.bytes),
+					Math.floor(window.rawStart / MEMBER_RAW_BYTES),
 				);
-			}
-			this.metaSet("recode_raw_done", String(rawEnd));
-			if (exhausted) {
-				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
-				this.metaSet("phase", phaseAfterStaged(kind));
-			}
+				for (const m of window.members) {
+					this.sqlRun(
+						"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
+						kind,
+						m.seq,
+						m.rawStart,
+						m.rawLen,
+						exactBuffer(m.bytes),
+					);
+				}
+				this.metaSet("recode_raw_done", String(window.rawEnd));
+				if (window.exhausted) {
+					this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
+					this.metaSet("phase", phaseAfterStaged(kind));
+				}
+			});
 		});
 		console.log(
-			`Recode slice: ${kind} raw bytes ${rawDone}-${rawEnd} into ${members.length} member(s)` +
+			`Recode alarm: ${kind} raw bytes ${rawDone}-${rawEnd} in ${windows} window(s)` +
 				`${exhausted ? " (done; original stage blobs dropped)" : ""}`,
 		);
 	}

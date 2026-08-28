@@ -13,7 +13,16 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { gzipBytes } from "../../src/engine/store-kv";
-import { MEMBER_RAW_BYTES, memberBytes, RECODE_WINDOW_RAW, recodeWindow, skipBytes } from "../../src/import-recode";
+import {
+	MEMBER_RAW_BYTES,
+	memberBytes,
+	RECODE_WINDOW_RAW,
+	type RecodeAlarmOptions,
+	type RecodeAlarmProgress,
+	recodeAlarm,
+	recodeWindow,
+	skipBytes,
+} from "../../src/import-recode";
 import { exactBuffer } from "../../src/import-spill";
 
 /** Scaled-down grid: same shapes (window a multiple of the member size, a
@@ -199,6 +208,52 @@ class Harness {
 		}
 	}
 
+	/**
+	 * One recode ALARM, exactly as the rewritten stepRecode runs it: multiple
+	 * windows off one pass over the staged stream, each committed in its own
+	 * transaction. `spans` records the committed windows; `killAfter` throws
+	 * before committing window killAfter+1 — the CPU-kill shape, where earlier
+	 * windows' transactions have already landed.
+	 */
+	async recodeAlarmStep(
+		opts: RecodeAlarmOptions = {},
+		spans?: Array<{ rawStart: number; rawEnd: number }>,
+		killAfter?: number,
+	): Promise<RecodeAlarmProgress> {
+		const rawDone = Number(this.metaGet("recode_raw_done") ?? 0);
+		let committed = 0;
+		return await recodeAlarm(
+			this.stagedBlobBytes(),
+			rawDone,
+			(window) => {
+				if (killAfter !== undefined && committed >= killAfter) throw new Error("simulated mid-alarm kill");
+				this.db.transaction(() => {
+					this.db.run("DELETE FROM stage_members WHERE kind = ? AND seq >= ?", [
+						this.kind,
+						Math.floor(window.rawStart / (opts.memberRaw ?? MEMBER_RAW)),
+					]);
+					for (const m of window.members) {
+						this.db.run("INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)", [
+							this.kind,
+							m.seq,
+							m.rawStart,
+							m.rawLen,
+							blobParam(m.bytes),
+						]);
+					}
+					this.metaSet("recode_raw_done", String(window.rawEnd));
+					if (window.exhausted) {
+						this.db.run("DELETE FROM stage_blobs WHERE kind = ?", [this.kind]);
+						this.metaSet("phase", "fetch:default_cards");
+					}
+				})();
+				committed += 1;
+				spans?.push({ rawStart: window.rawStart, rawEnd: window.rawEnd });
+			},
+			{ windowRaw: WINDOW_RAW, memberRaw: MEMBER_RAW, ...opts },
+		);
+	}
+
 	/** ImportCoordinator.stagedBytes, mirrored: member seek, blob fallback. */
 	async *stagedBytes(kind = this.kind, fromRawOffset = 0): AsyncGenerator<Uint8Array> {
 		const start = this.db
@@ -344,6 +399,120 @@ describe("recode resume and retry", () => {
 		const raw = makeRaw(RAW_BYTES);
 		const h = await Harness.staged(raw);
 		expect(recodeWindow(h.stagedBlobBytes(), 0, MEMBER_RAW * 2 + 1, MEMBER_RAW)).rejects.toThrow(/multiple/);
+	});
+});
+
+describe("recode alarm (multi-window, budgeted)", () => {
+	/** Unit-scaled rates: 1 modeled "second" per MEMBER_RAW bytes, so budgets
+	 * read as member counts. GIB / MEMBER_RAW converts the per-GiB rate. */
+	const PER_MEMBER = (1024 * 1024 * 1024) / MEMBER_RAW;
+
+	test("a generous budget recodes the whole dump in one alarm, one window per commit", async () => {
+		const raw = makeRaw(RAW_BYTES);
+		const whole = await Harness.staged(raw);
+		await whole.recodeAll(); // the single-window baseline
+
+		const h = await Harness.staged(raw);
+		const spans: Array<{ rawStart: number; rawEnd: number }> = [];
+		const progress = await h.recodeAlarmStep(
+			{ budgetSeconds: 1000, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: PER_MEMBER },
+			spans,
+		);
+		expect(progress.exhausted).toBe(true);
+		expect(progress.windows).toBe(3); // 4 + 4 + 2.35 members, same grid as 3 slices
+		expect(spans).toEqual([
+			{ rawStart: 0, rawEnd: 4 * MEMBER_RAW },
+			{ rawStart: 4 * MEMBER_RAW, rawEnd: 8 * MEMBER_RAW },
+			{ rawStart: 8 * MEMBER_RAW, rawEnd: RAW_BYTES },
+		]);
+		// Byte-identical to the single-window-per-alarm recode, member for member.
+		expect(h.members()).toEqual(whole.members());
+		expect(await collect(h.stagedBytes())).toEqual(raw);
+		expect(h.blobCount()).toBe(0);
+		expect(h.metaGet("phase")).toBe("fetch:default_cards");
+	});
+
+	test("the budget stops the alarm between windows, and the next alarm resumes", async () => {
+		const raw = makeRaw(RAW_BYTES);
+		const h = await Harness.staged(raw);
+		// gzip = 1/member, no discard charge, budget 8 members: exactly 2 windows.
+		const opts = { budgetSeconds: 8, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: 0 };
+		const first = await h.recodeAlarmStep(opts);
+		expect(first).toEqual({ windows: 2, rawEnd: 8 * MEMBER_RAW, exhausted: false });
+		expect(h.metaGet("recode_raw_done")).toBe(String(8 * MEMBER_RAW));
+		expect(h.blobCount()).toBeGreaterThan(0); // mid-phase: input still owned
+
+		const second = await h.recodeAlarmStep(opts);
+		expect(second).toEqual({ windows: 1, rawEnd: RAW_BYTES, exhausted: true });
+
+		const whole = await Harness.staged(raw);
+		await whole.recodeAll();
+		expect(h.members()).toEqual(whole.members());
+		expect(await collect(h.stagedBytes())).toEqual(raw);
+	});
+
+	test("the window shrinks to fit the remaining budget instead of overrunning", async () => {
+		const raw = makeRaw(RAW_BYTES);
+		const h = await Harness.staged(raw);
+		// Budget 6: a full 4-member window (cost 4), then remaining 2 affords
+		// only the halved 2-member window — never a second full one.
+		const spans: Array<{ rawStart: number; rawEnd: number }> = [];
+		const first = await h.recodeAlarmStep(
+			{ budgetSeconds: 6, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: 0 },
+			spans,
+		);
+		expect(first).toEqual({ windows: 2, rawEnd: 6 * MEMBER_RAW, exhausted: false });
+		expect(spans.map((s) => s.rawEnd - s.rawStart)).toEqual([4 * MEMBER_RAW, 2 * MEMBER_RAW]);
+
+		// Mixed window sizes still compose: the member grid never moved.
+		await h.recodeAlarmStep({ budgetSeconds: 1000, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: 0 });
+		const whole = await Harness.staged(raw);
+		await whole.recodeAll();
+		expect(h.members()).toEqual(whole.members());
+		expect(await collect(h.stagedBytes())).toEqual(raw);
+	});
+
+	test("the prefix discard is charged up front, and a fresh alarm still cuts one window", async () => {
+		const raw = makeRaw(RAW_BYTES);
+		const h = await Harness.staged(raw);
+		await h.recodeAlarmStep({ budgetSeconds: 8, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: 0 });
+		expect(h.metaGet("recode_raw_done")).toBe(String(8 * MEMBER_RAW));
+		// Now charge the discard too: the 8-member prefix alone eats the whole
+		// budget, so no window fits — but a fresh alarm must make progress, so
+		// it cuts exactly one member-floored window (progress over purity).
+		const spans: Array<{ rawStart: number; rawEnd: number }> = [];
+		const starved = await h.recodeAlarmStep(
+			{ budgetSeconds: 8, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: PER_MEMBER },
+			spans,
+		);
+		expect(starved).toEqual({ windows: 1, rawEnd: 9 * MEMBER_RAW, exhausted: false });
+		expect(spans).toEqual([{ rawStart: 8 * MEMBER_RAW, rawEnd: 9 * MEMBER_RAW }]);
+	});
+
+	test("an alarm killed between window commits retries to identical members", async () => {
+		const raw = makeRaw(RAW_BYTES);
+		const whole = await Harness.staged(raw);
+		await whole.recodeAll();
+
+		const h = await Harness.staged(raw);
+		// Window 1's transaction lands; the kill hits before window 2's commit —
+		// the worst a CPU kill leaves behind under per-window transactions.
+		await expect(
+			h.recodeAlarmStep({ budgetSeconds: 1000, gzipSecondsPerGib: PER_MEMBER, discardSecondsPerGib: 0 }, undefined, 1),
+		).rejects.toThrow(/kill/);
+		expect(h.metaGet("recode_raw_done")).toBe(String(4 * MEMBER_RAW));
+		expect(h.members().length).toBe(4);
+
+		// The retry pays the prefix again, resumes from the checkpoint, and must
+		// neither duplicate nor lose members.
+		const retry = await h.recodeAlarmStep({
+			budgetSeconds: 1000,
+			gzipSecondsPerGib: PER_MEMBER,
+			discardSecondsPerGib: PER_MEMBER,
+		});
+		expect(retry.exhausted).toBe(true);
+		expect(h.members()).toEqual(whole.members());
+		expect(await collect(h.stagedBytes())).toEqual(raw);
 	});
 });
 
