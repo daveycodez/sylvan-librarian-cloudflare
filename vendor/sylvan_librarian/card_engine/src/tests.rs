@@ -13773,17 +13773,17 @@ fn query_regex_flags_stay_strippable() {
 
 #[test]
 fn are_word_boundary_escapes_translate() {
-    use super::regex_compat::translate_are_escapes;
+    use super::regex_compat::translate_query_escapes;
     // \y and \Z have exact regex-crate spellings, so these stay linear.
-    assert_eq!(translate_are_escapes(r"\yizzet\y"), r"\bizzet\b");
-    assert_eq!(translate_are_escapes(r"\Yizzet"), r"\Bizzet");
-    assert_eq!(translate_are_escapes(r"card\Z"), r"card\z");
+    assert_eq!(translate_query_escapes(r"\yizzet\y"), r"\bizzet\b");
+    assert_eq!(translate_query_escapes(r"\Yizzet"), r"\Bizzet");
+    assert_eq!(translate_query_escapes(r"card\Z"), r"card\z");
     // \m and \M have none, so they become lookaround (and thus backtracking).
-    assert_eq!(translate_are_escapes(r"\mdraw"), r"(?<!\w)(?=\w)draw");
-    assert_eq!(translate_are_escapes(r"draw\M"), r"draw(?<=\w)(?!\w)");
+    assert_eq!(translate_query_escapes(r"\mdraw"), r"(?<!\w)(?=\w)draw");
+    assert_eq!(translate_query_escapes(r"draw\M"), r"draw(?<=\w)(?!\w)");
     // Untouched: anything that already means the same thing in both dialects.
-    assert_eq!(translate_are_escapes(r"\bfoo\d+\s"), r"\bfoo\d+\s");
-    assert_eq!(translate_are_escapes(r"\\y"), r"\\y");
+    assert_eq!(translate_query_escapes(r"\bfoo\d+\s"), r"\bfoo\d+\s");
+    assert_eq!(translate_query_escapes(r"\\y"), r"\\y");
 
     let boundary = super::regex_compat::CompiledRegex::new(r"\yizzet\y").unwrap();
     assert!(!boundary.is_backtracking(), r"\y should translate to \b, not force backtracking");
@@ -13792,16 +13792,100 @@ fn are_word_boundary_escapes_translate() {
 }
 
 #[test]
+fn scryfall_regex_shorthands_expand() {
+    use super::regex_compat::{translate_query_escapes, CompiledRegex};
+
+    // The shorthand family is documented at https://scryfall.com/docs/regular-expressions and
+    // every count below was measured on api.scryfall.com, corpus-wide, 2026-08-28. The strings
+    // matched here are real oracle text: `{W/P}` is Blinding Souleater's, `{U}{U}{U}` is
+    // Aboshan's, `{H}` is Rage Extractor's, `{P}` is the Bloomburrow pawprint.
+    let m = |pattern: &str, haystack: &str| CompiledRegex::new(pattern).unwrap().is_match(haystack);
+
+    // \sm — any mana symbol (11,057). It is NOT whitespace followed by "m": that reading answered
+    // 10,791, a plausible wrong number.
+    assert!(m(r"\sm", "{t}: add {g}."));
+    assert!(m(r"\sm", "{h} in its mana cost"), "{{H}} is a mana symbol");
+    assert!(m(r"\sm", "put a {p} counter"), "{{P}} pawprint counts as mana for \\sm");
+    assert!(!m(r"\sm", "draw a card"));
+    // ...and "m" after it is a literal, so `\smana` is a symbol then "ana" and matches nothing —
+    // `o:/\smana/` is 404 on Scryfall where `o:/ mana/` is 2,782.
+    assert!(!m(r"\smana", "adds one mana of any color"));
+
+    // \smp — any Phyrexian card symbol (42). `{P}` is the PAWPRINT and is excluded, which
+    // contradicts Scryfall's own docs example and is what the count says.
+    assert!(m(r"\smp", "{w/p}, {t}: tap target creature."));
+    assert!(m(r"\smp", "a spell with {h} in its mana cost"));
+    assert!(!m(r"\smp", "put a {p} counter on it"));
+    assert!(!m(r"\smp", "{u}{u}{u}: tap all creatures"));
+
+    // \smr — the SAME mana symbol twice in a row (1,189), not merely two adjacent ones: on
+    // Scryfall `o:/\{g\}\{w\}/ -o:/\smr/` is 63.
+    assert!(m(r"\smr", "{u}{u}{u}: tap all creatures without flying."));
+    assert!(m(r"\smr", "{5}{r/g}{r/g}: put a +1/+1 counter"));
+    assert!(!m(r"\smr", "{g}{w}, {t}, sacrifice this land"), "two ADJACENT symbols are not enough");
+    assert!(m(r"\smr", "{g}{w}{w}, {t}, sacrifice this land"), "but {{w}}{{w}} inside the same run is");
+    assert!(!m(r"\smr", "{t}: add {g}."));
+
+    // \smh — hybrid, and monocolor Phyrexian is not hybrid (172 against 213 for every symbol
+    // carrying a slash).
+    assert!(m(r"\smh", "{r/g}: this creature gets +1/+0"));
+    assert!(!m(r"\smh", "{w/p}, {t}: tap target creature."));
+
+    // \sc — a COLORED mana symbol (6,676); the half-mana symbols are not colored, which is the
+    // single card separating 6,676 from 6,677.
+    assert!(m(r"\sc", "{t}: add {g}."));
+    assert!(!m(r"\sc", "{hr}, {t}: sacrifice a creature"));
+    assert!(!m(r"\sc", "{t}: add {c}."));
+
+    // \ss — any card symbol (12,446), the widest of the three.
+    assert!(m(r"\ss", "{t}: add {c}."));
+    assert!(m(r"\ss", "{chaos} roll the planar die"));
+    assert!(!m(r"\ss", "draw a card"));
+
+    // The power/toughness trio (3,185 / 7,160 / 841).
+    assert!(m(r"\spt", "create a 3/3 green hydra"));
+    assert!(m(r"\spp", "put a +1/+1 counter on it"));
+    assert!(!m(r"\spp", "create a 3/3 green hydra"));
+    assert!(m(r"\smm", "target creature gets -1/-1 until end of turn"));
+    assert!(!m(r"\smm", "put a +1/+1 counter on it"));
+
+    // A quantifier binds to the WHOLE shorthand, which is why each expansion is parenthesized.
+    assert!(m(r"\sm{3}", "{u}{u}{u}: tap all creatures"));
+    assert!(!m(r"\sm{3}", "{t}: add {g}."));
+
+    // \s that is not a shorthand is still whitespace, and inside a class nothing is rewritten —
+    // Scryfall's own substitution breaks `[\sm]` into an unbalanced-parenthesis error there.
+    assert_eq!(translate_query_escapes(r"\sdraw"), r"\sdraw");
+    assert_eq!(translate_query_escapes(r"[\sm]"), r"[\sm]");
+    assert!(m(r"\sdraw", "flying\ndraw a card"));
+
+    // Only \smr needs the backtracking engine; the rest keep the linear one and with it the #734
+    // trigram narrow.
+    for pattern in [r"\sm", r"\sc", r"\ss", r"\smh", r"\smp", r"\spt", r"\spp", r"\smm"] {
+        assert!(
+            !CompiledRegex::new(pattern).unwrap().is_backtracking(),
+            "{pattern} must stay on the linear engine"
+        );
+    }
+    assert!(CompiledRegex::new(r"\smr").unwrap().is_backtracking(), r"\smr needs a backreference");
+
+    // Two \smr in one pattern get their own capture names, and a capture the USER wrote keeps its
+    // own number — the reason the group is named rather than numbered.
+    assert!(m(r"\smr.*\smr", "{u}{u} then later {g}{g}"));
+    assert!(m(r"(a)\smr", "a{u}{u}"));
+}
+
+#[test]
 fn are_escapes_are_literal_inside_bracket_expressions() {
-    use super::regex_compat::translate_are_escapes;
+    use super::regex_compat::translate_query_escapes;
     // Inside […] these are ordinary escapes, not constraints.
-    assert_eq!(translate_are_escapes(r"[\y\m]"), r"[\y\m]");
+    assert_eq!(translate_query_escapes(r"[\y\m]"), r"[\y\m]");
     // A `]` in first position is a literal member (POSIX), so it does not close
     // the class — the \y after it is still inside.
-    assert_eq!(translate_are_escapes(r"[]\y]"), r"[]\y]");
-    assert_eq!(translate_are_escapes(r"[^]\y]"), r"[^]\y]");
+    assert_eq!(translate_query_escapes(r"[]\y]"), r"[]\y]");
+    assert_eq!(translate_query_escapes(r"[^]\y]"), r"[^]\y]");
     // ...and once the class really does close, translation resumes.
-    assert_eq!(translate_are_escapes(r"[abc]\y"), r"[abc]\b");
+    assert_eq!(translate_query_escapes(r"[abc]\y"), r"[abc]\b");
 }
 
 #[test]

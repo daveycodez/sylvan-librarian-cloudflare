@@ -122,7 +122,7 @@ impl CompiledRegex {
     /// both reject the pattern it is malformed rather than merely non-linear,
     /// and the first message is the one that names the actual syntax problem.
     pub(crate) fn new(pattern: &str) -> Result<Self, String> {
-        let translated = translate_are_escapes(pattern);
+        let translated = translate_query_escapes(pattern);
         let cased = format!("{QUERY_REGEX_FLAGS}{translated}");
         match Regex::new(&cased) {
             Ok(re) => Ok(CompiledRegex::Fast(re)),
@@ -189,8 +189,70 @@ impl CompiledRegex {
     }
 }
 
+/// One mana symbol, as Scryfall's `\sm` shorthand means it.
+///
+/// MEASURED, not derived from the symbology table: every alternative below is a card the corpus
+/// actually holds, and the whole expression was checked by asking api.scryfall.com for BOTH counts
+/// on 2026-08-28 — `o:/\sm/` and `o:/<this>/` are 11,057 apiece, corpus-wide.
+///
+/// Four alternatives exist only because a probe found the card that needs them, and each is one
+/// card wide: `{½}` (Cheap Ass), `{H}` — Scryfall's spelling of the generic Phyrexian symbol
+/// (Rage Extractor) — `{HR}`/`{HW}` half-mana (Mons's Goblin Waiters), and `{P}`, which is
+/// Bloomburrow's PAWPRINT and not Phyrexian at all (the five `Season of …` cards). The last is why
+/// `\smp` below cannot simply reuse this: Scryfall counts `{P}` as a mana symbol and NOT as a
+/// Phyrexian one, contradicting its own docs page, which offers `{P}` as a `\smp` example.
+const MANA_SYMBOL: &str = r"\{(?:[0-9]+|[wubrgcsxyz]|[^{}]*/[^{}]*|h[wubrg]?|p|½)\}";
+
+/// Scryfall's non-standard regex shorthands, as `(suffix after \s, expansion)`.
+///
+/// <https://scryfall.com/docs/regular-expressions> documents these as "not formal character
+/// classes, it is just shorthand we have added", and they are the reason a `\s` in a query regex
+/// cannot be read as whitespace without looking at what follows it. THE FAILURE THEY CAUSED HERE
+/// WAS SILENT: `o:/\smp/` answers 42 on api.scryfall.com and answered ZERO here, because no
+/// oracle text on earth contains whitespace followed by "mp" — and `o:/\sm/`, worse, answered a
+/// plausible 10,791 against Scryfall's 11,057, a wrong number that looks like a right one.
+///
+/// EVERY EXPANSION IS A MEASURED EQUALITY, established by asking api.scryfall.com for the count
+/// of the shorthand and the count of the expansion and requiring them to agree, corpus-wide,
+/// 2026-08-28:
+///
+/// | shorthand | means                        | count  | expansion agrees |
+/// |-----------|------------------------------|--------|------------------|
+/// | `\ss`     | any card symbol              | 12,446 | yes              |
+/// | `\sm`     | any mana symbol              | 11,057 | yes              |
+/// | `\sc`     | any COLORED mana symbol      |  6,676 | yes              |
+/// | `\smh`    | any hybrid card symbol       |    172 | yes              |
+/// | `\smp`    | any Phyrexian card symbol    |     42 | yes              |
+/// | `\smr`    | any REPEATED mana symbol     |  1,189 | see below        |
+/// | `\spt`    | an X/X power/toughness       |  3,185 | yes              |
+/// | `\spp`    | a +X/+X                      |  7,160 | yes              |
+/// | `\smm`    | a -X/-X                      |    841 | yes              |
+///
+/// `\sc` excludes the half-mana symbols and `\smh` excludes the MONOCOLOR Phyrexian ones, both
+/// measured rather than assumed: `\{[^{}]*[wubrg][^{}]*\}` is 6,677 against `\sc`'s 6,676 (the
+/// extra is `{HR}`), and every symbol carrying a `/` is 213 against `\smh`'s 172 (the 41
+/// difference is exactly `o:/\/p}/`, the `{X/P}` cards).
+///
+/// LONGEST MATCH. `\smm` is the -X/-X shorthand and not `\sm` followed by a literal `m`, and the
+/// same holds for `\smr`/`\smh`/`\smp` against `\sm`. Scryfall reads them the same way and its
+/// choice is observable: `o:/\smana/` is 404 there — `\sm` then "ana" — where this port answered
+/// 2,784, the count for whitespace followed by "mana".
+///
+/// Each expansion is wrapped in `(?:…)` so a quantifier binds to the whole shorthand: `\sm{2}`
+/// is two mana symbols, not one symbol whose closing brace repeats.
+const SCRYFALL_SHORTHANDS: &[(&str, &str)] = &[
+    // Three characters first, so the longest match wins.
+    ("mh", r"(?:\{(?:[^{}]*/[^{}]*/[^{}]*|[^{}]*/[^{}p])\})"),
+    ("mp", r"(?:\{(?:[^{}]*/p|h)\})"),
+    ("mm", r"(?:-[0-9x*]+/-[0-9x*]+)"),
+    ("pt", r"(?:[0-9x*]+/[0-9x*]+)"),
+    ("pp", r"(?:\+[0-9x*]+/\+[0-9x*]+)"),
+    ("s", r"(?:\{[^{}]*\})"),
+    ("c", r"(?:\{[0-9wubrgcpxyz/½]*[wubrg][0-9wubrgcpxyz/½]*\})"),
+];
+
 /// Rewrite PostgreSQL ARE escapes that the `regex` crate spells differently or
-/// cannot spell at all.
+/// cannot spell at all, and expand Scryfall's `\s…` shorthands.
 ///
 /// | ARE  | meaning              | rewritten to      |
 /// |------|----------------------|-------------------|
@@ -205,28 +267,65 @@ impl CompiledRegex {
 /// the pattern to the backtracking engine — correct, and rare enough to be
 /// worth the access path.
 ///
+/// The `\s…` half is [`SCRYFALL_SHORTHANDS`] plus `\smr`, which is the one shorthand no static
+/// expansion can express: "the SAME mana symbol twice" needs a backreference, so it compiles a
+/// named group and `\k<…>` and therefore lands on `fancy_regex` — losing the #734 trigram narrow
+/// along with it. Every other shorthand stays on the linear engine, and the group is NAMED (and
+/// numbered per occurrence) so it cannot collide with a capture the user wrote.
+///
 /// Bracket expressions are copied through untouched: inside `[…]` these are
 /// ordinary escapes, not constraints. A `]` in the first position of a class is
-/// literal (POSIX), so it does not close it.
-pub(crate) fn translate_are_escapes(pattern: &str) -> String {
+/// literal (POSIX), so it does not close it. Scryfall does NOT skip classes —
+/// `o:/[\sm]/` comes back "parentheses () not balanced" there, its own substitution having
+/// broken the class — and reproducing that particular bug would turn a query that reads
+/// perfectly well ("whitespace or the letter m") into an error.
+pub(crate) fn translate_query_escapes(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len());
-    let mut chars = pattern.chars().peekable();
     // Position within the current bracket expression, if any: `Some(n)` means
     // n characters have been consumed since `[`, which is how the leading-`]`
     // rule is applied without a second scan.
     let mut class_pos: Option<usize> = None;
+    // Distinguishes the capture groups two `\smr`s in one pattern would otherwise share.
+    let mut smr_seq = 0usize;
+    let mut i = 0usize;
 
-    while let Some(c) = chars.next() {
+    while i < chars.len() {
+        let c = chars[i];
         if c == '\\' {
-            let Some(next) = chars.next() else {
+            i += 1;
+            let Some(&next) = chars.get(i) else {
                 out.push('\\');
                 break;
             };
+            i += 1;
             if class_pos.is_some() {
                 out.push('\\');
                 out.push(next);
                 class_pos = class_pos.map(|n| n + 2);
                 continue;
+            }
+            if next == 's' {
+                if chars.get(i) == Some(&'m') && chars.get(i + 1) == Some(&'r') {
+                    out.push_str(&format!("(?:(?<smr{smr_seq}>{MANA_SYMBOL})\\k<smr{smr_seq}>)"));
+                    smr_seq += 1;
+                    i += 2;
+                    continue;
+                }
+                if chars.get(i) == Some(&'m')
+                    && !matches!(chars.get(i + 1), Some('h') | Some('p') | Some('m'))
+                {
+                    out.push_str(&format!("(?:{MANA_SYMBOL})"));
+                    i += 1;
+                    continue;
+                }
+                if let Some((suffix, expansion)) = SCRYFALL_SHORTHANDS.iter().find(|(suffix, _)| {
+                    suffix.chars().enumerate().all(|(k, sc)| chars.get(i + k) == Some(&sc))
+                }) {
+                    out.push_str(expansion);
+                    i += suffix.chars().count();
+                    continue;
+                }
             }
             match next {
                 'y' => out.push_str(r"\b"),
@@ -257,6 +356,7 @@ pub(crate) fn translate_are_escapes(pattern: &str) -> String {
             Some(n) => class_pos = Some(n + 1),
         }
         out.push(c);
+        i += 1;
     }
     out
 }
