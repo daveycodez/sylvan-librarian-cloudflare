@@ -567,8 +567,9 @@ const COLORED_LETTERS = "wubrg";
  * "Use produces>ehiln" where this port answered "Use c>no" and "Use c>ehiln" (42 sweep cases).
  * The hint's keyword is LOWERCASED however it was typed — `C:MW` answers "Use c>w instead." —
  * which is exactly what `keyword` already holds, so it is echoed as-is. (Scryfall ALSO lower-cases
- * the expression it quotes, `Invalid expression “c:mw”` for `C:MW`, where this port echoes the
- * term verbatim. That is a divergence in the echo, not in the colour rule, and is left alone here.)
+ * the expression it quotes — `Invalid expression “c:mw”` for `C:MW`. That is a property of the
+ * echo rather than of the colour rule, and it belongs to every ignored term, not just this one;
+ * `ignoredWarning` carries the measurements and does the downcasing.)
  *
  * And the letter it names is the ALPHABETICALLY FIRST unrecognized one, which took nine values to
  * establish and no two of which agree on any simpler rule: `glint`→i, `yore`→e, `dune`→d,
@@ -820,11 +821,54 @@ export interface TermPolicyResult {
 	allIgnored: boolean;
 }
 
-/** `Invalid expression “<term>” was ignored. <reason>`, with Scryfall's truncation. */
+/**
+ * `Invalid expression “<term>” was ignored. <reason>`, with Scryfall's truncation and its DOWNCASE.
+ *
+ * THE ECHOED EXPRESSION IS LOWER-CASED IN FULL — keyword AND value — not echoed as typed. This
+ * port echoed the term verbatim, so every warning about a term carrying a capital letter carried
+ * the wrong text. Measured 2026-08-28, one request each, anchor `e:khm` = 323 unless noted:
+ *
+ *   C:mw              → “c:mw”              keyword upper, value lower
+ *   c:MW              → “c:mw”              keyword lower, value upper
+ *   C:MW              → “c:mw”              both upper — the three rows together SEPARATE the two
+ *                                           halves, and neither half survives. One probe on
+ *                                           `C:MW` alone could not have told them apart.
+ *   c:MonoColor       → “c:monocolor”       (hint "Use c>clnor", already lower)
+ *   Id:NePhIlIm       → “id:nephilim”       alternating case, non-`c` colour spelling
+ *   F:NOTAFORMAT      → “f:notaformat”
+ *   R:NotARare        → “r:notarare”
+ *   R>NotARare        → “r>notarare”        a comparison operator echoes the same way
+ *   Lang:ZZ           → “lang:zz”
+ *   SubType:Eldrazi   → “subtype:eldrazi”   an UNKNOWN keyword is downcased the same way
+ *   NotAKeyword:MiXeD → “notakeyword:mixed”
+ *   Oracleid:NotAUuid → “oracleid:notauuid”
+ *   Devotion:XyZ      → “devotion:xyz”
+ *   Cmc:NotANumber    → “cmc:notanumber”
+ *   -SubType:Human    → “-subtype:human”    the negation prefix is kept, the rest downcased
+ *
+ * The value is downcased even where its case is unambiguously load-bearing to the thing it spells,
+ * which is what makes this a downcase of the TEXT and not a normalization of a case-insensitive
+ * vocabulary: `O:/[Unclosed/` comes back “o:/[unclosed/” — the contents of a regex literal — and
+ * `SubType:"Big Elf"` comes back “subtype:"big elf"”, quotes preserved and the quoted words
+ * downcased. Nothing is corrupted by echoing it that way, because the term is being reported as
+ * IGNORED: the text is display, never input, and the query handed to the parser is untouched.
+ * Non-ASCII is downcased too (`SubType:ÉLDRÄZI` → “subtype:éldräzi”), so this is `toLowerCase()`
+ * and not an ASCII fold.
+ *
+ * DOWNCASE FIRST, THEN TRUNCATE: `F:ABCDEFGHIJKLMNOPQRS` (21 characters) answers
+ * “f:abcdefghijklmnopq…”, the lower-cased text cut to the same 20. The order is observable only in
+ * the codepoints that change length when downcased, but it is also the cheaper claim — every row
+ * above reads as ONE downcased query being re-rendered, and the reason sentences agree: see
+ * `classifyLeaf`, where format, language and rarity all name a downcased value.
+ *
+ * Both answer shapes format identically: `C:MW` alone is the 400 whose `details` is "All of your
+ * terms were ignored.", carrying the SAME “c:mw” warning that `C:MW e:khm` carries on its 200.
+ */
 function ignoredWarning(term: string, reason: string): string {
-	const chars = [...term];
+	const lowered = term.toLowerCase();
+	const chars = [...lowered];
 	const echoed =
-		chars.length > EXPRESSION_ECHO_LIMIT ? `${chars.slice(0, EXPRESSION_ECHO_LIMIT - 1).join("")}\u2026` : term;
+		chars.length > EXPRESSION_ECHO_LIMIT ? `${chars.slice(0, EXPRESSION_ECHO_LIMIT - 1).join("")}\u2026` : lowered;
 	return `Invalid expression \u201c${echoed}\u201d was ignored. ${reason}`;
 }
 
@@ -1076,6 +1120,20 @@ function classifyLeaf(term: string): LeafVerdict {
 	}
 
 	const value = unquote(rawValue);
+	/**
+	 * The value as the REASON sentences name it, which is downcased — the same downcase the echoed
+	 * expression gets (see `ignoredWarning`), and the second half of the same divergence. Measured
+	 * 2026-08-28, anchor `e:khm` = 323: `F:NOTAFORMAT` answers `Unknown game format “notaformat”`,
+	 * `Lang:ZZ` answers ``Unknown language `zz` `` and `R:NotARare` answers
+	 * `Unknown rarity “notarare.”` — three sentences that had been echoing the value verbatim, so a
+	 * capital letter in the value came back capitalized where Scryfall lower-cases it. The
+	 * membership tests below already downcased to decide; only the sentences did not.
+	 *
+	 * This is deliberately NOT applied to the whole leaf: `value` still carries the user's case
+	 * into every predicate that survives, and the colour and devotion readers do their own
+	 * downcasing where their vocabulary calls for it.
+	 */
+	const loweredValue = value.toLowerCase();
 
 	// A numeric column asked for something that is not a number. With `:`/`=` Scryfall ignores the
 	// term; with a comparison it keeps it and matches nothing (`q=cmc>=notanumber` is a 404, not a
@@ -1091,11 +1149,11 @@ function classifyLeaf(term: string): LeafVerdict {
 		}
 	}
 
-	if (FORMAT_KEYWORDS.has(keyword) && !SCRYFALL_FORMATS.has(value.toLowerCase())) {
-		return { keep: false, reason: `Unknown game format \u201c${value}\u201d` };
+	if (FORMAT_KEYWORDS.has(keyword) && !SCRYFALL_FORMATS.has(loweredValue)) {
+		return { keep: false, reason: `Unknown game format \u201c${loweredValue}\u201d` };
 	}
-	if (LANGUAGE_KEYWORDS.has(keyword) && !SCRYFALL_LANGUAGES.has(value.toLowerCase())) {
-		return { keep: false, reason: `Unknown language \`${value}\`` };
+	if (LANGUAGE_KEYWORDS.has(keyword) && !SCRYFALL_LANGUAGES.has(loweredValue)) {
+		return { keep: false, reason: `Unknown language \`${loweredValue}\`` };
 	}
 	// EVERY operator, not only `:`/`=`. Rarity is an ordered enum, so `r>rare` is a comparison
 	// Scryfall really performs — and it checks the value under a comparison exactly as it does
@@ -1105,10 +1163,10 @@ function classifyLeaf(term: string): LeafVerdict {
 	// `equality` guard here this port answered the four comparisons `400 Failed to parse query`
 	// instead: nothing removed the term, and the parser's rarity value parser rejects a word that
 	// is not a rarity.
-	if (RARITY_KEYWORDS.has(keyword) && !SCRYFALL_RARITIES.has(value.toLowerCase())) {
+	if (RARITY_KEYWORDS.has(keyword) && !SCRYFALL_RARITIES.has(loweredValue)) {
 		// The period INSIDE the quotes is Scryfall's, not a typo here: the live body reads
 		// `Unknown rarity “notarare.”`.
-		return { keep: false, reason: `Unknown rarity \u201c${value}.\u201d` };
+		return { keep: false, reason: `Unknown rarity \u201c${loweredValue}.\u201d` };
 	}
 	// Devotion checks its value under every operator and in both polarities — see devotionReason.
 	if (DEVOTION_KEYWORDS.has(keyword)) {

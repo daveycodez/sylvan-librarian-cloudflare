@@ -1,9 +1,15 @@
 // Scryfall's ignore-and-continue query policy, term by term.
 //
-// Every expectation here is a MEASUREMENT against api.scryfall.com on 2026-08-16, not a design:
-// the warning sentences, the 20-character expression echo, which characters fold, which keywords
+// Every expectation here is a MEASUREMENT against api.scryfall.com, not a design: the warning
+// sentences, the 20-character expression echo, its DOWNCASE, which characters fold, which keywords
 // Scryfall does not know and which of its own it refuses to negate were all read off live
 // responses. See src/routes/scryfall-compat/query-terms.ts for the request that produced each.
+// Dated 2026-08-16 unless a comment says otherwise; the colour hints and the echo downcase are
+// 2026-08-28.
+//
+// A row typed in lower case cannot measure a case rule. Two of the tests here quoted a mixed-case
+// term back verbatim and passed for months because every OTHER row was already lower-case — so a
+// case-sensitive expectation belongs on a query whose case is MIXED, and on both halves of it.
 
 import { describe, expect, test } from "bun:test";
 import { parseScryfallQuery } from "../../src/parser";
@@ -701,11 +707,18 @@ describe("colour values Scryfall refuses, and the sentence it refuses them with"
 	test("the keyword echoed in the hint is LOWERCASED however it was typed", () => {
 		// Measured 2026-08-28: `C:MW e:khm` comes back "… Use c>w instead." and `Id:mw` "… Use
 		// id>w instead." — the hint is the keyword folded to lower case, never the letters as
-		// typed. Asserted on the HINT only: Scryfall also lower-cases the expression it echoes
-		// (`Invalid expression “c:mw”` for `C:MW`) where this port echoes the term verbatim, which
-		// is a separate divergence in the echo and not in the colour rule.
-		expect(scryfallTermPolicy("C:MW e:khm").warnings[0]).toContain("Use c>w instead.");
-		expect(scryfallTermPolicy("Id:mw e:khm").warnings[0]).toContain("Use id>w instead.");
+		// typed. The WHOLE sentence is asserted now, echo included: this test used to stop at the
+		// hint and leave the quoted expression unmeasured, which is exactly where the port was
+		// wrong. See "the echoed expression is lower-cased" below for the rule.
+		//
+		// q=C:MW e:khm  → 200, 323, one warning, verbatim:
+		expect(scryfallTermPolicy("C:MW e:khm").warnings).toEqual([
+			"Invalid expression “c:mw” was ignored. Using “m” with other colors is no longer supported. Use c>w instead.",
+		]);
+		// q=Id:mw e:khm → 200, 323, one warning, verbatim:
+		expect(scryfallTermPolicy("Id:mw e:khm").warnings).toEqual([
+			"Invalid expression “id:mw” was ignored. Using “m” with other colors is no longer supported. Use id>w instead.",
+		]);
 	});
 });
 
@@ -830,6 +843,126 @@ test("a long expression is echoed at 20 characters, ellipsis included", () => {
 	const cut = scryfallTermPolicy("f:abcdefghijklmnopqrs").warnings[0] as string;
 	expect(cut).toContain("\u201cf:abcdefghijklmnopq\u2026\u201d");
 	expect(cut).toContain("Unknown game format \u201cabcdefghijklmnopqrs\u201d");
+});
+
+describe("the echoed expression is lower-cased, keyword AND value", () => {
+	// MEASURED 2026-08-28 against api.scryfall.com, one request per row, anchor `e:khm` = 323 — the
+	// exact query is the first column and the assertion is that response's `warnings[0]`, verbatim.
+	//
+	// `C:MW` alone cannot decide this: both halves are upper-case, so it is equally consistent with
+	// a keyword-only downcase and with a whole-expression downcase. The three colour rows below are
+	// the separator — `C:mw` and `c:MW` each contradict one of the two readings, and both come back
+	// fully lower-cased — and the rows after them show the rule has nothing to do with colour
+	// vocabulary: it holds for an unknown keyword, for a quoted string, and for the contents of a
+	// regex literal, where case is unambiguously load-bearing to what the value spells.
+	//
+	// Echoing a downcased value is safe precisely because the term is being reported as IGNORED:
+	// this text is display, and the query handed to the parser keeps the user's case (asserted at
+	// the bottom of this block).
+	const ECHO: [string, string][] = [
+		// keyword upper, value lower — contradicts "only the value is downcased"
+		[
+			"C:mw e:khm",
+			"Invalid expression “c:mw” was ignored. Using “m” with other colors is no longer supported. Use c>w instead.",
+		],
+		// keyword lower, value upper — contradicts "only the keyword is downcased"
+		[
+			"c:MW e:khm",
+			"Invalid expression “c:mw” was ignored. Using “m” with other colors is no longer supported. Use c>w instead.",
+		],
+		// both upper — the probe that started this, and the one that could not decide it
+		[
+			"C:MW e:khm",
+			"Invalid expression “c:mw” was ignored. Using “m” with other colors is no longer supported. Use c>w instead.",
+		],
+		[
+			"c:MonoColor e:khm",
+			"Invalid expression “c:monocolor” was ignored. Using “m” with other colors is no longer supported. Use c>clnor instead.",
+		],
+		[
+			"Id:NePhIlIm e:khm",
+			"Invalid expression “id:nephilim” was ignored. Using “m” with other colors is no longer supported. Use id>ehiln instead.",
+		],
+		// The REASON names a downcased value too, wherever it names one at all — the second half of
+		// the same divergence, and invisible to every pre-existing test because they all typed
+		// lower-case values.
+		["F:NOTAFORMAT e:khm", "Invalid expression “f:notaformat” was ignored. Unknown game format “notaformat”"],
+		["R:NotARare e:khm", "Invalid expression “r:notarare” was ignored. Unknown rarity “notarare.”"],
+		["R>NotARare e:khm", "Invalid expression “r>notarare” was ignored. Unknown rarity “notarare.”"],
+		["Lang:ZZ e:khm", "Invalid expression “lang:zz” was ignored. Unknown language `zz`"],
+		// A keyword Scryfall does not know is downcased exactly like one it does.
+		["SubType:Eldrazi e:khm", "Invalid expression “subtype:eldrazi” was ignored. Unknown keyword “subtype”."],
+		["NotAKeyword:MiXeD e:khm", "Invalid expression “notakeyword:mixed” was ignored. Unknown keyword “notakeyword”."],
+		// The negation prefix survives; everything after it is downcased.
+		["-SubType:Human e:khm", "Invalid expression “-subtype:human” was ignored. Unknown keyword “-subtype”."],
+		[
+			"Oracleid:NotAUuid e:khm",
+			"Invalid expression “oracleid:notauuid” was ignored. You must provide a valid v4 UUID.",
+		],
+		[
+			"Devotion:XyZ e:khm",
+			"Invalid expression “devotion:xyz” was ignored. Devotion can only match single color or hybrid mana.",
+		],
+		[
+			"Cmc:NotANumber e:khm",
+			"Invalid expression “cmc:notanumber” was ignored. The value must be a number, or “even”/“odd”",
+		],
+		// A regex literal's CONTENTS are downcased in the echo — the strongest evidence available
+		// that this is a downcase of the TEXT and not a normalization of a case-insensitive
+		// vocabulary, since `/[Unclosed/` and `/[unclosed/` are different patterns.
+		[
+			"O:/[Unclosed/ e:khm",
+			"Invalid expression “o:/[unclosed/” was ignored. Invalid regular expression: brackets [] not balanced.",
+		],
+		[
+			"Name:/(Unclosed/ e:khm",
+			"Invalid expression “name:/(unclosed/” was ignored. Invalid regular expression: parentheses () not balanced.",
+		],
+		// Quotes are PRESERVED and the quoted words downcased — the echo is the source text, not a
+		// term re-rendered from a parse.
+		['SubType:"Big Elf" e:khm', 'Invalid expression “subtype:"big elf"” was ignored. Unknown keyword “subtype”.'],
+		// Not an ASCII fold: `É` and `Ä` come back as `é` and `ä`.
+		["SubType:ÉLDRÄZI e:khm", "Invalid expression “subtype:éldräzi” was ignored. Unknown keyword “subtype”."],
+	];
+	for (const [q, warning] of ECHO) {
+		test(q, () => {
+			expect(scryfallTermPolicy(q).warnings).toEqual([warning]);
+		});
+	}
+
+	test("the downcase happens BEFORE the 20-character cut", () => {
+		// q=F:ABCDEFGHIJKLMNOPQRS e:khm → 200, 323, `warnings[0]` verbatim below: the echo is the
+		// LOWER-CASED text cut to 20, and the reason names the full value, also lower-cased.
+		expect(scryfallTermPolicy("F:ABCDEFGHIJKLMNOPQRS e:khm").warnings).toEqual([
+			"Invalid expression “f:abcdefghijklmnopq…” was ignored. Unknown game format “abcdefghijklmnopqrs”",
+		]);
+	});
+
+	test("the 400 all-ignored answer carries the SAME downcased warning", () => {
+		// q=C:MW → 400 bad_request, details "All of your terms were ignored.", and a warnings array
+		// character-for-character the one `C:MW e:khm` carries on its 200. The two answer shapes
+		// format the echo identically, so this cannot be right on one path and wrong on the other.
+		const alone = scryfallTermPolicy("C:MW");
+		expect(alone.allIgnored).toBe(true);
+		expect(alone.warnings).toEqual(scryfallTermPolicy("C:MW e:khm").warnings);
+		// q=SubType:Eldrazi → 400, the same details, "Invalid expression “subtype:eldrazi” …".
+		const unknown = scryfallTermPolicy("SubType:Eldrazi");
+		expect(unknown.allIgnored).toBe(true);
+		expect(unknown.warnings).toEqual(["Invalid expression “subtype:eldrazi” was ignored. Unknown keyword “subtype”."]);
+	});
+
+	test("the QUERY handed to the parser keeps the user's case", () => {
+		// The downcase is display-only, and this is the assertion that keeps it that way. `T:Creature
+		// e:khm` is 151 on Scryfall with no `warnings` key at all (measured 2026-08-28), so a term
+		// that SURVIVES must reach the parser untouched — `o:` and `name:` values above all.
+		expect(scryfallTermPolicy("T:Creature e:khm").warnings).toEqual([]);
+		expect(scryfallTermPolicy("T:Creature e:khm").query).toBe("T:Creature e:khm");
+		expect(scryfallTermPolicy('o:"Draw A Card" Name:Bolt').query).toBe('o:"Draw A Card" Name:Bolt');
+		// And a survivor keeps its case even when a sibling is dropped and downcased in the warning.
+		const mixed = scryfallTermPolicy('C:MW o:"Draw A Card"');
+		expect(mixed.query).toBe('o:"Draw A Card"');
+		expect(mixed.warnings[0]).toContain("“c:mw”");
+	});
 });
 
 describe("parentheses that do not balance", () => {
