@@ -806,6 +806,47 @@ fn extra_text_field_values<'a>(
 /// multi-valued field means the scalar is absent AND no face supplies one. A faced printing whose
 /// back alone carries the watermark is therefore False-or-True, never Null — the front's absence
 /// is not the printing's.
+/// The separator `merge_face_drafts` joins a card's face texts with — the builder's own
+/// `FACE_TEXT_SEPARATOR`, kept in step with `_FACE_TEXT_SEPARATOR` in
+/// api/card_processing.py. THIS STORE INVENTED IT. Scryfall never joins: it matches each face
+/// separately, so any pattern that can see a character of this separator sees something that is
+/// not in Scryfall's haystack at all.
+pub(crate) const FACE_TEXT_SEPARATOR: &str = "\n//\n";
+
+/// Whether a field's stored value is a face JOIN rather than one face's text.
+///
+/// Three of them, and exactly the three `_FACE_JOINED_TEXTS` names — but only two SEPARATORS.
+/// `type_line` joins with " // " and is NOT here, because that string is Scryfall's own: its
+/// top-level `type_line` for a split card is "Instant // Instant", and `t:/\/\//` answers 930
+/// there (2026-08-28) where `o:/^\/\/$/` answers nothing at all. The newline form is the invented
+/// one, and it is the only one worth undoing.
+fn field_joins_faces(field: TextField) -> bool {
+    matches!(
+        field,
+        TextField::OracleTextLower | TextField::FullOracleTextLower | TextField::FlavorTextLower
+    )
+}
+
+/// `regex.is_match`, run PER FACE on the fields whose stored value is a join.
+///
+/// `o:/\ndraw/` is 381 on api.scryfall.com and was 389 here (2026-08-28). The eight extras are
+/// every one a two-face card whose BACK face opens with "Draw": the separator ends in a newline,
+/// so "\n//\nDraw…" contains "\ndraw" and the joined string answers a pattern no face answers.
+///
+/// Splitting is the WHOLE difference, and a small one by construction, because `QUERY_REGEX_FLAGS`
+/// already carries `m` without `s`: `^` and `$` bind at every line boundary and `.` never crosses
+/// one, so the only positions a pattern can reach across a face boundary are the ones the
+/// separator's own characters create. Undoing the join removes exactly those and nothing else.
+/// A single-face card has no separator, so `split` yields the one segment and the cost is one scan
+/// for the needle that is not there.
+fn regex_matches_faces(regex: &CompiledRegex, field: TextField, s: &str) -> bool {
+    if field_joins_faces(field) {
+        s.split(FACE_TEXT_SEPARATOR).any(|face| regex.is_match(face))
+    } else {
+        regex.is_match(s)
+    }
+}
+
 fn tri_over_values(
     card: &AOracleCard,
     printing: Option<&APrinting>,
@@ -2013,7 +2054,12 @@ impl FilterExpr {
                 *self = FilterExpr::FlavorMatch { gids, dense_ids };
             }
             FilterExpr::TextRegex { field: TextField::FlavorTextLower, regex } => {
-                let (gids, dense_ids) = flavor_match_sets(flavor, strings, 0, |s| regex.is_match(s));
+                // PER FACE, exactly as the unmemoized arm is: flavor text is joined with the same
+                // invented separator oracle text is (`_FACE_JOINED_TEXTS`), and this rewrite is
+                // the path a bare `ft:/…/` actually takes, so leaving it whole would have kept
+                // the bug alive everywhere it matters.
+                let (gids, dense_ids) =
+                    flavor_match_sets(flavor, strings, 0, |s| regex_matches_faces(regex, TextField::FlavorTextLower, s));
                 *self = FilterExpr::FlavorMatch { gids, dense_ids };
             }
             _ => {}
@@ -2763,8 +2809,10 @@ impl FilterExpr {
             }
 
             FilterExpr::TextRegex { field, regex } => {
-                // Existential over the same values the exact arm tests, for the same reason.
-                tri_over_values(card, printing, strings, *field, |s| regex.is_match(s))
+                // Existential over the same values the exact arm tests, for the same reason —
+                // and PER FACE within each of them, on the fields whose stored value is a join
+                // this store invented. See `regex_matches_faces`.
+                tri_over_values(card, printing, strings, *field, |s| regex_matches_faces(regex, *field, s))
             }
 
             FilterExpr::ColorCmp { field, op, mask } => {

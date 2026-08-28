@@ -12301,6 +12301,167 @@ fn order_name_sorts_and_paginates() {
     assert_eq!(ids("desc"), [2, 4], "secondaries keep their order under desc");
 }
 
+// A `\n`-ADJACENT PATTERN MATCHED AT A SEPARATOR THIS STORE INVENTED. `merge_face_drafts` joins a
+// card's face texts with "\n//\n" (upstream's `_FACE_TEXT_SEPARATOR`) while Scryfall never joins —
+// it matches each face separately — so every character of that separator is a position in our
+// haystack and in nobody else's. Measured 2026-08-28, production against api.scryfall.com:
+//
+//   o:/\ndraw/       389 here    381 there    the 8 extras every one a two-face card whose BACK
+//                                             face opens with "Draw"
+//   o:/\sdraw/     3,611       3,604
+//   o:/\nwhenever/ 3,885       3,839
+//   o:/\/\//         849           1          the ONE real card is "SP//dr"
+//   o:/^\/\/$/       848         404          a line that is exactly "//" exists nowhere upstream
+//   ft:/\/\//        262         404          flavor text is joined the same way
+//
+// The fix is to split the stored value back on the separator and run the pattern per segment. It
+// can only ever REMOVE matches — a face match implies a joined match — which is why the controls
+// below matter as much as the rows above.
+#[test]
+fn face_joined_text_matches_per_face() {
+    use crate::filter::compile_search_regex_for_test as re;
+
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[1, 1, 1], vocab);
+    let mut interner = Interner::new();
+    // Card 0 is the bug, shaped exactly like the eight: a two-face card whose BACK face opens with
+    // "draw" and whose faces contain no internal "\ndraw" of their own.
+    data.cards[0].oracle_text_lower_id = interner.intern("flying\n//\ndraw a card.".to_string());
+    // Card 1 is the control that must NOT change: a single face whose own newline precedes "draw".
+    data.cards[1].oracle_text_lower_id = interner.intern("flying\ndraw a card.".to_string());
+    // Card 2 is a two-face card with a REAL internal "\ndraw" on the back face — the case that
+    // proves splitting does not throw the baby out.
+    data.cards[2].oracle_text_lower_id = interner.intern("flying\n//\nhaste\ndraw a card.".to_string());
+    // `fo:` reads its own column, joined by the same rule — same three shapes, so the same three
+    // verdicts must come back from it.
+    for i in 0..3 {
+        data.cards[i].oracle_full_lower_id = data.cards[i].oracle_text_lower_id;
+    }
+    data.strings = interner.strings;
+    derive_name_collation(&mut data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let hits = |pattern: &str| -> Vec<usize> {
+        let f = FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: re(pattern) };
+        (0..3).filter(|&i| f.matches(&archived.cards[i], &archived.printings[i], &archived.strings)).collect()
+    };
+
+    // THE BUG, and the whole of it: card 0 leaves, cards 1 and 2 stay.
+    assert_eq!(hits(r"\ndraw"), vec![1, 2], "a `\\n` before the separator's own newline is not a match");
+    // `\s` reaches the separator's newlines too, which is the same eight cards under another
+    // spelling (3,611 against 3,604 in production).
+    assert_eq!(hits(r"\sdraw"), vec![1, 2]);
+    // The separator itself is unreachable now — 849 -> 1 and 848 -> 0 in production.
+    assert_eq!(hits(r"\/\/"), Vec::<usize>::new(), "the separator is not oracle text");
+    assert_eq!(hits(r"^\/\/$"), Vec::<usize>::new(), "and neither is the line it sits on");
+
+    // ANCHORS BIND PER FACE, which is what Scryfall does: `!"Harmonized Trio // Brainstorm"
+    // o:/^draw three/` is 1 there (2026-08-28). Both readings already answered this one — `(?m)`
+    // makes `^` match after the separator's trailing newline as well — so it is a control on the
+    // split rather than evidence for it, and it is here because a split done wrong (on "//" alone,
+    // say, leaving a stray "\n") would break it.
+    assert_eq!(hits("^draw"), vec![0, 1, 2], "each face's first line still starts a line");
+    assert_eq!(hits("^flying$"), vec![0, 1, 2], "and the front face's line still ends");
+    assert_eq!(hits("^haste$"), vec![2]);
+
+    // Controls: nothing that never touched the separator moves.
+    assert_eq!(hits("draw a card"), vec![0, 1, 2]);
+    assert_eq!(hits("flying"), vec![0, 1, 2]);
+    assert_eq!(hits("^flying"), vec![0, 1, 2]);
+    assert_eq!(hits("zzzqqq"), Vec::<usize>::new());
+
+    // `fo:` reads a DIFFERENT column, joined by the same rule, so it splits too: `fo:/\ndraw/` is
+    // 389 here against 381 there — the same eight cards, on a column whose whole point is that it
+    // keeps the reminder text the oracle column drops.
+    let full_hits = |pattern: &str| -> Vec<usize> {
+        let f = FilterExpr::TextRegex { field: TextField::FullOracleTextLower, regex: re(pattern) };
+        (0..3).filter(|&i| f.matches(&archived.cards[i], &archived.printings[i], &archived.strings)).collect()
+    };
+    assert_eq!(full_hits(r"\ndraw"), vec![1, 2]);
+    assert_eq!(full_hits(r"\/\/"), Vec::<usize>::new());
+    assert_eq!(full_hits("draw a card"), vec![0, 1, 2], "the control still answers");
+
+    // THE TYPE LINE IS NOT SPLIT, and that is a measurement rather than an omission: its separator
+    // is " // ", which is Scryfall's OWN top-level `type_line` for a split card, not a join this
+    // store invented. `t:/\/\//` is 930 on api.scryfall.com (2026-08-28) — it sees the separator
+    // there too — where `o:/^\/\/$/` sees nothing.
+    let mut vocab2 = VocabInterner::new();
+    let mut cards2 = vec![stub_card(9, TYPE_CREATURE, &[], &mut vocab2)];
+    let mut it2 = Interner::new();
+    let type_line = it2.intern("instant // instant".to_string());
+    cards2[0].type_line_id = type_line;
+    let mut d2 = store_of(cards2, &[1], vocab2);
+    d2.cards[0].type_line_id = type_line;
+    d2.strings = it2.strings;
+    derive_name_collation(&mut d2);
+    let b2 = rkyv::to_bytes::<Error>(&d2).expect("serialize");
+    let a2 = rkyv::access::<Archived<CardData>, Error>(&b2).expect("access");
+    let tl = FilterExpr::TextRegex { field: TextField::TypeLine, regex: re(r"\/\/") };
+    assert!(
+        tl.matches(&a2.cards[0], &a2.printings[0], &a2.strings),
+        "the type line's ' // ' is Scryfall's own and must stay visible"
+    );
+}
+
+// FLAVOR TEXT IS JOINED THE SAME WAY, and it does NOT reach the eval arm above: `ft:/…/` is
+// rewritten at bind time into a `FlavorMatch` id set, so a fix applied only to evaluation would
+// have left the column exactly as broken as it was. `ft:/\/\//` is 262 in production and 404 on
+// api.scryfall.com (2026-08-28) — 262 printings whose only "//" is the one this store wrote.
+#[test]
+fn face_joined_flavor_text_matches_per_face() {
+    use crate::filter::compile_search_regex_for_test as re;
+
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let mut data = store_of(cards, &[1, 1], vocab);
+    let mut interner = Interner::new();
+    // Printing 0: two faces, the back one opening on "draw" — the bug's shape.
+    data.printings[0].flavor_text_lower_id = interner.intern("a quiet forest\n//\ndraw near, traveler".to_string());
+    // Printing 1: one face whose own newline precedes "draw" — the control.
+    data.printings[1].flavor_text_lower_id = interner.intern("a quiet forest\ndraw near, traveler".to_string());
+    data.strings = interner.strings;
+    derive_name_collation(&mut data);
+    data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let hits = |pattern: &str| -> Vec<usize> {
+        let mut f = FilterExpr::TextRegex { field: TextField::FlavorTextLower, regex: re(pattern) };
+        f.bind(
+            &archived.coll_vocab,
+            &archived.coll_vocab_sorted,
+            &archived.artist_vocab,
+            &archived.artist_vocab_collated,
+            &archived.artist_entities,
+            &archived.mana_vocab,
+            &archived.indexes.flavor,
+            &archived.strings,
+        );
+        // The rewrite is the point: if this is still a TextRegex, the bind arm never fired and the
+        // assertion below would be testing the wrong code path.
+        assert!(matches!(f, FilterExpr::FlavorMatch { .. }), "ft:/…/ must bind to a FlavorMatch");
+        (0..2).filter(|&i| f.matches(&archived.cards[i], &archived.printings[i], &archived.strings)).collect()
+    };
+
+    assert_eq!(hits(r"\ndraw"), vec![1], "the separator's newline is not flavor text");
+    assert_eq!(hits(r"\/\/"), Vec::<usize>::new());
+    assert_eq!(hits(r"^\/\/$"), Vec::<usize>::new());
+    // Controls: the two real faces still answer, and anchors still bind at each face's edges.
+    assert_eq!(hits("draw near"), vec![0, 1]);
+    assert_eq!(hits("^draw near"), vec![0, 1]);
+    // Both, and for two different reasons: printing 0's front FACE is that whole line, and
+    // printing 1's first line is too — `(?m)` was already making `$` bind at every newline, which
+    // is why splitting changes nothing an anchor could see except at the separator itself.
+    assert_eq!(hits("^a quiet forest$"), vec![0, 1]);
+    assert_eq!(hits("zzzqqq"), Vec::<usize>::new());
+}
+
 // ─── Verifier cost ordering ───────────────────────────────────────────────────
 
 fn type_mask() -> FilterExpr {

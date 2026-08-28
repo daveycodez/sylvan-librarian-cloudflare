@@ -1314,13 +1314,31 @@ const REGEX_DIALECT: [string, string][] = [
 	// `~` — Scryfall's alias for the card's own name. Unimplemented here (it needs a pattern
 	// recompiled per card), and 19,228 there.
 	["self-reference", "o:/~/"],
-	// NEWLINE, which is where the two corpora differ for a reason that is neither vintage nor
-	// dialect: Scryfall matches each FACE separately and this store joins them with "\n//\n", so a
-	// back face beginning "Draw…" answers a `\n`-anchored pattern here and not there.
-	// `o:/\ndraw/` is 381 against 389, the eight extras every one a `//` two-face card.
+	// NEWLINE, which is where the two corpora used to differ for a reason that was neither vintage
+	// nor dialect: Scryfall matches each FACE separately and this store joins them with "\n//\n",
+	// so a back face beginning "Draw…" answered a `\n`-adjacent pattern here and not there.
+	// `o:/\ndraw/` is 381 against the 389 this answered.
 	["newline-class", "o:/\\ndraw/"],
 	["whitespace-class", "o:/\\sdraw/"],
 	["explicit-class", "o:/[ \\n]draw/"],
+	// The separator itself, which is the sharpest form of the same question: a line that is
+	// exactly "//" exists in NO Scryfall oracle text (`o:/^\/\/$/` is 404 there and was 848
+	// here), and the only card whose text really contains "//" is SP//dr (`o:/\/\//` 1 against
+	// 849). Flavor text is joined by the same rule (`ft:/\/\//` 404 against 262) and `fo:` reads
+	// its own copy of it (381 against 389).
+	["face-separator-line", "o:/^\\/\\/$/"],
+	["face-separator", "o:/\\/\\//"],
+	["face-separator-flavor", "ft:/\\/\\//"],
+	["face-separator-full-oracle", "fo:/\\ndraw/"],
+	["newline-whenever", "o:/\\nwhenever/"],
+	// ...and the TYPE LINE, which is NOT the same question and must not move: its " // " is
+	// Scryfall's own top-level `type_line`, not a join this store invented, so `t:/\/\//` sees it
+	// on both sides (930 there).
+	["type-line-separator", "t:/\\/\\//"],
+	// Anchors, which `(?m)` already bound per LINE — these are controls on the face split rather
+	// than evidence for it, and they are here because a split done wrong would break them.
+	["anchored-face-start", "o:/^draw three/"],
+	["anchored-line-end", "o:/lifelink$/"],
 	// Uppercase escapes: Scryfall case-folds the whole pattern, so `\S` IS `\s` there
 	// (`o:/\Sdraw/` = `o:/\sdraw/` = 3,604) while this engine reads it as non-whitespace.
 	["uppercase-escape", "o:/\\Sdraw/"],
