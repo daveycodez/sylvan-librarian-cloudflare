@@ -155,14 +155,39 @@ const SELF_REF_THIS_PHRASES: &[&str] = &[
     "vehicle", "permanent", "saga", "siege", "class", "spacecraft", "case",
 ];
 
-/// The alternation `~` expands to: the fixed phrases, plus the sentinel that stands in for
-/// whichever of the card's own names the substitution found.
-fn self_reference_alternation() -> String {
-    format!(
-        r"(?:\bthis (?:{})\b|\b{}\b)",
-        SELF_REF_THIS_PHRASES.join("|"),
-        SELF_REF_SENTINEL
-    )
+/// Where `~` is being expanded, which decides WHICH alternatives it gets.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum SelfRefScope {
+    /// No expansion: `~` is the literal tilde. `name:/~/`, `t:/~/` and `mana:/~/` are all 404 on
+    /// api.scryfall.com (2026-08-28) — `name:` could not be, if `~` were the card's name there.
+    None,
+    /// Rules text: the card's names AND the "this <noun>" phrase family. `o:/~/` 19,228,
+    /// `fo:/~/` 22,037.
+    Oracle,
+    /// Flavor text: the NAMES ONLY. The phrase family is rules templating and does not apply
+    /// here, which is a measurement rather than a guess: `ft:/this creature/` is 6 on
+    /// api.scryfall.com and `ft:/this creature/ -ft:/~/` is the same 6 — not one of those six
+    /// matches `~` — while `ft:/~/` is 2. Expanding the phrases here answered 715.
+    Flavor,
+}
+
+/// The alternation `~` expands to: the sentinel that stands in for whichever of the card's own
+/// names the substitution found, plus — on rules text only — the fixed phrase family.
+///
+/// The sentinel is BARE, with no `\b` of its own, because the substitution has already checked
+/// the boundary against the NAME's edges. That is not a simplification: for a name ending in
+/// punctuation Scryfall's `\b<name>\b` demands a word character AFTER the punctuation, so
+/// `!"Kaboom!" o:/~/` is 404 even though the card's text opens "Kaboom! deals damage" — and a
+/// sentinel wearing its own `\b` would have called it a match. See `with_self_reference`.
+fn self_reference_alternation(scope: SelfRefScope) -> String {
+    match scope {
+        SelfRefScope::Flavor => format!("(?:{SELF_REF_SENTINEL})"),
+        _ => format!(
+            r"(?:\bthis (?:{})\b|{})",
+            SELF_REF_THIS_PHRASES.join("|"),
+            SELF_REF_SENTINEL
+        ),
+    }
 }
 
 /// Replace every `~` outside a bracket expression with [`self_reference_alternation`].
@@ -171,11 +196,11 @@ fn self_reference_alternation() -> String {
 /// `o:/\~/` answers the same 19,228 as `o:/~/` (2026-08-28), so the backslash does not protect
 /// it. Bracket expressions are left alone for the same reason the `\s…` shorthands are — see
 /// `translate_query_escapes`.
-pub(crate) fn translate_self_reference(pattern: &str) -> String {
+pub(crate) fn translate_self_reference(pattern: &str, scope: SelfRefScope) -> String {
     if !pattern.contains('~') {
         return pattern.to_string();
     }
-    let expansion = self_reference_alternation();
+    let expansion = self_reference_alternation(scope);
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len() + expansion.len());
     let mut class_pos: Option<usize> = None;
@@ -251,7 +276,7 @@ impl CompiledRegex {
     /// both reject the pattern it is malformed rather than merely non-linear,
     /// and the first message is the one that names the actual syntax problem.
     pub(crate) fn new(pattern: &str) -> Result<Self, String> {
-        Self::compile(pattern, false)
+        Self::compile(pattern, SelfRefScope::None)
     }
 
     /// Compile with `~` expanded to the self-reference alternation.
@@ -263,12 +288,16 @@ impl CompiledRegex {
     /// carries a self-reference — and on all three `~` stays the literal tilde no such field
     /// contains. The columns that DO expand it are the text ones: `o:/~/` 19,228, `fo:/~/` 22,037
     /// (the difference being reminder text, which `fo:` keeps), `ft:/~/` 2.
-    pub(crate) fn new_self_referential(pattern: &str) -> Result<Self, String> {
-        Self::compile(pattern, true)
+    pub(crate) fn new_self_referential(pattern: &str, scope: SelfRefScope) -> Result<Self, String> {
+        Self::compile(pattern, scope)
     }
 
-    fn compile(pattern: &str, expand: bool) -> Result<Self, String> {
-        let source = if expand { translate_self_reference(pattern) } else { pattern.to_string() };
+    fn compile(pattern: &str, scope: SelfRefScope) -> Result<Self, String> {
+        let source = if scope == SelfRefScope::None {
+            pattern.to_string()
+        } else {
+            translate_self_reference(pattern, scope)
+        };
         // The EXPANSION is what matters, not the request: `o:/draw/` asked for expansion and got
         // none, so it must not pay the substitution or lose the narrow.
         let self_reference = source.contains(SELF_REF_SENTINEL);

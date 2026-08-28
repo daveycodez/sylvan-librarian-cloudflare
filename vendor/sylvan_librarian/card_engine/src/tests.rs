@@ -12468,6 +12468,46 @@ const TILDE_CASES: &[(&str, &str, bool)] = &[
     ("martyrdom", "until end of turn, target creature you control gains \"{0}: the next 1 damage that would be dealt to target creature, planeswalker, or player this turn is dealt to this creature instead.\" only you may activate this ability.", true),
     ("vraska's fall", "each opponent sacrifices a creature or planeswalker of their choice and gets a poison counter.", false),
     ("forest", "", false),
+    // ── the two edges the first implementation got wrong, each measured the same way ──
+    //
+    // THE `A-` PREFIX IS NOT PART OF THE SELF-REFERENCE. An Alchemy rebalance is named
+    // "A-Blood Artist" and its text says "Whenever Blood Artist or another creature dies", so the
+    // name as printed never appears at all — and `!"A-Blood Artist" o:/~/` is 1. Not a rounding
+    // error: `name:/^a-/ o:/~/` is 138 there, against a corpus-wide `o:/~/` gap of 144 before the
+    // unprefixed form was offered as an alternative.
+    ("a-blood artist", "whenever blood artist or another creature dies, target opponent loses 1 life and you gain 1 life.", true),
+    ("a-dragon's rage channeler", "whenever you cast a noncreature spell, surveil 1.\ndelirium — as long as there are four or more card types among cards in your graveyard, dragon's rage channeler gets +2/+0, has flying, and attacks each combat if able.", true),
+    // THE WORD BOUNDARY IS THE NAME'S, NOT THE SENTINEL'S. `\b(?:name|…)\b` demands a word
+    // character on the far side of a name that ends in punctuation, and "Kaboom! deals damage"
+    // has a space there — so `!"Kaboom!" o:/~/` is 404 despite the card naming itself in the
+    // plainest way imaginable. A sentinel wearing its own `\b` called it a match.
+    ("kaboom!", "choose any number of target players or planeswalkers. for each of them, reveal cards from the top of your library until you reveal a nonland card, kaboom! deals damage equal to that card's mana value to that player or planeswalker, then you put the revealed cards on the bottom of your library in any order.", false),
+    // Controls for that edge: names ending in a word character still match, one word and two.
+    ("shock", "shock deals 2 damage to any target.", true),
+    ("searing blaze", "searing blaze deals 1 damage to target player or planeswalker and 1 damage to target creature that player or that planeswalker's controller controls.", true),
+    ("flashback", "target instant or sorcery card in your graveyard gains flashback until end of turn. the flashback cost is equal to its mana cost.", true),
+];
+
+/// THE RESIDUAL, pinned rather than papered over: four cards where Scryfall says NO and this
+/// engine says yes, each one named after a game term that its own text happens to use.
+///
+/// Measured 2026-08-28 — `!"<name>" o:/~/` is 404 on api.scryfall.com for every row — and no rule
+/// derived here accounts for them. CASE-SENSITIVITY is the obvious candidate and is falsified in
+/// both directions: "Regenerate" and "Black Waltz No. 3" carry their names in the text in EXACT
+/// case and still do not match, while "Flashback" above matches on nothing but a lowercase
+/// "flashback". The likeliest explanation is that Scryfall's alias comes from Wizards' own
+/// CARDNAME templating rather than from a string search — "Regenerate target creature" is the
+/// keyword action and "has fear" is the keyword, neither being the card naming itself — which is
+/// data this port does not have.
+///
+/// 20 cards corpus-wide before the boundary rule above removed the punctuation-named half of
+/// them, against `o:/~/`'s 19,228. Asserted in the direction this engine actually answers, so the
+/// day it changes on either side, this table says so.
+const TILDE_KNOWN_DIVERGENT: &[(&str, &str)] = &[
+    ("fear", "enchant creature\nenchanted creature has fear."),
+    ("lifelink", "enchant creature\nenchanted creature has lifelink."),
+    ("regenerate", "regenerate target creature."),
+    ("black waltz no. 3", "flying, deathtouch\nwhenever you cast a noncreature spell, black waltz no. 3 deals 2 damage to each opponent."),
 ];
 
 #[test]
@@ -12497,7 +12537,8 @@ fn self_reference_alias_matches_scryfall_card_for_card() {
 
     let f = FilterExpr::TextRegex {
         field: TextField::OracleTextLower,
-        regex: crate::filter::compile_search_regex_self_referential("~").expect("~ must compile"),
+        regex: crate::filter::compile_search_regex_self_referential("~", crate::regex_compat::SelfRefScope::Oracle)
+            .expect("~ must compile"),
     };
     for (i, (name, _, expected)) in TILDE_CASES.iter().enumerate() {
         let got = f.matches(&archived.cards[i], &archived.printings[i], &archived.strings);
@@ -12505,11 +12546,51 @@ fn self_reference_alias_matches_scryfall_card_for_card() {
     }
 }
 
+/// The four rows Scryfall answers differently — see `TILDE_KNOWN_DIVERGENT`.
+#[test]
+fn self_reference_known_divergences_are_pinned() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let cards: Vec<OracleCard> = TILDE_KNOWN_DIVERGENT
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.card_name_lower = InlineStr::from_str(name);
+            c
+        })
+        .collect();
+    let n = cards.len();
+    let mut data = store_of(cards, &vec![1usize; n], vocab);
+    for (i, (name, text)) in TILDE_KNOWN_DIVERGENT.iter().enumerate() {
+        data.cards[i].card_name_lower = InlineStr::from_str(name);
+        data.cards[i].oracle_text_lower_id = interner.intern((*text).to_string());
+    }
+    data.strings = interner.strings;
+    derive_name_collation(&mut data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let f = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: crate::filter::compile_search_regex_self_referential("~", crate::regex_compat::SelfRefScope::Oracle)
+            .expect("~ must compile"),
+    };
+    for (i, (name, _)) in TILDE_KNOWN_DIVERGENT.iter().enumerate() {
+        assert!(
+            f.matches(&archived.cards[i], &archived.printings[i], &archived.strings),
+            "{name} matches here and is 404 on api.scryfall.com — if this flips, the residual moved"
+        );
+    }
+}
+
 // The COMPOSED forms, the columns that do NOT expand `~`, and the narrowing decline — everything
 // the card-for-card table above cannot ask because it only ever runs the bare `~`.
 #[test]
 fn self_reference_composes_binds_per_face_and_refuses_to_narrow() {
-    use crate::filter::{compile_search_regex_self_referential as sre, compile_search_regex as re};
+    use crate::filter::{compile_search_regex as re, compile_search_regex_self_referential};
+    use crate::regex_compat::SelfRefScope;
+    let sre = |p: &str| compile_search_regex_self_referential(p, SelfRefScope::Oracle);
 
     // ── the compiled shape ──
     //
