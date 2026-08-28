@@ -8,7 +8,7 @@
  */
 
 import { CardAttributeNode, CardBinaryOperatorNode } from "./card-query-nodes";
-import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, FIELD_IS_TAGS } from "./db-info";
+import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, FIELD_IS_TAGS, ParserClass } from "./db-info";
 import {
 	AndNode,
 	BinaryOperatorNode,
@@ -533,6 +533,18 @@ export function regexPlainLiteral(pattern: string): string | null {
 	return joined === "" ? null : joined; // empty pattern matches everything -> leave it a regex
 }
 
+/**
+ * Whether a leaf's LHS names a column where a bare value is a SUBSTRING test.
+ *
+ * An unresolvable attribute (no field infos — a keyword the compat layer has already decided to
+ * warn about) keeps the old behaviour of lowering, so nothing that used to answer stops.
+ */
+function isTextColumnLeaf(node: BinaryOperatorNode): boolean {
+	if (!(node.lhs instanceof CardAttributeNode)) return true;
+	const infos = node.lhs.fieldInfos;
+	return infos.length === 0 || infos.some((fi) => fi.parserClass === ParserClass.TEXT);
+}
+
 /** Rewrite plain-literal regex leaves to substring leaves, in place, recording which terms. */
 function lowerRegexLeaves(node: QueryNode, lowered: LoweredRegexTerm[]): void {
 	if (node instanceof AndNode || node instanceof OrNode) {
@@ -540,6 +552,14 @@ function lowerRegexLeaves(node: QueryNode, lowered: LoweredRegexTerm[]): void {
 	} else if (node instanceof NotNode) {
 		lowerRegexLeaves(node.operand, lowered);
 	} else if (node instanceof BinaryOperatorNode && node.operator === ":" && node.rhs instanceof RegexValueNode) {
+		// TEXT COLUMNS ONLY, because "the substring this pattern spells" is only a legal value
+		// where a bare value IS a substring test. `mana:` is the one non-text column that can
+		// carry a pattern (see Parser.parseManaValue), and there the two readings are different
+		// queries: measured on api.scryfall.com 2026-08-28, `mana:/p/ mv=1` is 9 — every one
+		// Phyrexian, the pattern run against the cost STRING — while the lowered `mana:p` is
+		// `Invalid expression “mana:p” was ignored. Unknown mana symbols “P”.` and answers the
+		// unfiltered 3,244. Lowering it would have thrown the whole filter away silently.
+		if (!isTextColumnLeaf(node)) return;
 		const literal = regexPlainLiteral(node.rhs.value);
 		if (literal !== null) {
 			// LITERAL, not a bare word: a regex matches the stored name as written, so the

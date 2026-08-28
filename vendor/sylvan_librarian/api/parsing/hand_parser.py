@@ -69,8 +69,33 @@ _BANG_ALIAS_CLASSES: frozenset[ParserClass] = frozenset(
 # result, not whether this parser will accept it.
 _VALID_COLOR_NAMES: frozenset[str] = frozenset(COLOR_ALIAS_TO_CODES) | COLOR_COUNT_NAMES
 _COLOR_LETTERS: frozenset[str] = frozenset("wubrgcWUBRGC")
+
+# The MANA-class aliases that take a REGEX, which is `mana`/`m` and NOT `devotion`. One parser
+# class, two answers, measured on api.scryfall.com 2026-08-28: `mana:/p/ mv=1` is 9 and
+# `devotion:/r/` is `Unknown regular expression keyword "devotion"`, while `devotion:{r}` still
+# answers 5,290 -- a statement about the pattern form, not about the column.
+_MANA_REGEX_ALIASES: frozenset[str] = frozenset({"mana", "m"})
 _MIN_MTG_YEAR: int = 1992
 _MAX_YEAR: int = 2040
+
+
+def _color_value_from_text(text: str, pos: int) -> QueryNode:
+    """One already-assembled colour value, validated exactly as the WORD and NUMBER arms do.
+
+    Only the slash-delimited form reaches this: the arms in parse_color_value own their own token
+    bookkeeping (the hyphen glue, the float check), and the point of this helper is that the
+    delimited text is subject to the SAME two acceptances -- a name, or nothing but colour letters
+    -- so `c:/xyz/` produces the very sentence `c:xyz` does.
+    """
+    # A bare integer is a colour COUNT here, exactly as it is for a NUMBER token: `c:/2/` is 3,811
+    # on api.scryfall.com and so is `c:2`. Digits only, and non-empty, so `c://` stays the
+    # empty-value case the letters test below accepts vacuously.
+    if text and all("0" <= c <= "9" for c in text):
+        return NumericValueNode(int(text))
+    if text.lower() not in _VALID_COLOR_NAMES and not all(c in _COLOR_LETTERS for c in text):
+        msg = f"Invalid color value {text!r} at position {pos}"
+        raise ParseError(msg)
+    return StringValueNode(text)
 
 
 def _validate_mtg_year(value: int | float, pos: int) -> int:
@@ -667,7 +692,7 @@ class Parser:
         if pc is not None and (next_tok.type == TT.OP or bang_alias):
             op = "=" if bang_alias else next_tok.value
             self.consume()
-            return CardBinaryOperatorNode(CardAttributeNode(wl, pc), op, self.parse_value_for_class(pc, wl))
+            return CardBinaryOperatorNode(CardAttributeNode(wl, pc), op, self.parse_value_for_class(pc, wl, op))
         if pc is not None:
             # alias recognised but no operator → might still be a hyphenated bare word (e.g. "a-b-c")
             return self.parse_hyphenated_name(word)
@@ -801,7 +826,7 @@ class Parser:
 
     # ── value parsers ─────────────────────────────────────────────────────────
 
-    def parse_value_for_class(self, pc: ParserClass, attr: str) -> QueryNode:
+    def parse_value_for_class(self, pc: ParserClass, attr: str, op: str) -> QueryNode:
         """Route to the correct value parser based on the attribute's parser class."""
         if pc == ParserClass.TEXT:
             return self.parse_text_value(attr)
@@ -810,7 +835,7 @@ class Parser:
         if pc == ParserClass.COLOR:
             return self.parse_color_value()
         if pc == ParserClass.MANA:
-            return self.parse_mana_value()
+            return self.parse_mana_value(attr, op)
         if pc in (ParserClass.RARITY, ParserClass.LEGALITY):
             return self.parse_string_value()
         if pc == ParserClass.DATE:
@@ -866,9 +891,39 @@ class Parser:
         msg = f"Expected value for {attr!r}, got {tok.value!r} at position {tok.pos}"
         raise ParseError(msg)
 
-    def parse_mana_value(self) -> QueryNode:
-        """Parse a mana cost value: a sequence of mana symbols, words, or numbers (no gaps)."""
+    def parse_mana_value(self, attr: str, op: str) -> QueryNode:
+        r"""Parse a mana cost value: a sequence of mana symbols, words, or numbers (no gaps).
+
+        `mana:/.../` IS A REAL REGEX, run against the printed mana cost STRING -- not, as the
+        slash form's colour twin below, a value with the delimiters skipped. Both readings answer
+        the two rows that first raised the question (`mana:/p/ mv=1` and `mana:/\smp/ mv=1` are
+        both 9, every one Phyrexian), so the discriminating probes are the ones a value reading
+        cannot produce at all. Measured on api.scryfall.com 2026-08-28:
+
+            mana:/^{2}/          400 "Invalid regular expression: quantifier operand invalid."
+            mana:/g|w/ mv=1      1,276      alternation, which is not a mana symbol
+            mana:/[wu]/ mv=1     1,193      a character class, likewise
+            mana:/^{r}$/           526      anchored, against mana:{r}'s 6,852
+            mana:/}{/           26,815      every multi-symbol cost, a pure string artefact
+            mana:/rr/              404      because "{R}{R}" has no "rr" in it
+            mana:/2/             8,315      against mana:2's 19,692 -- the character, not generic
+            mana:/^$/            1,350      the cards with no mana cost at all
+            mana:/ /               435      = mana:/\/\// -- split costs join "{1}{R} // {1}{U}"
+            mana:/\smh/            605      Scryfall's own \s... shorthands apply here too
+
+        The error sentence is the conclusive one: Scryfall compiled it.
+
+        SCOPED TO `:` AND `=`, AND TO `mana`/`m`, because Scryfall's is. On every other operator
+        the slashes go back to being value characters and the symbol lexer rejects them, quoting
+        the slashes back -- `mana!=/^tap/` is `Unknown mana symbols "/^TAP/"` and `mana>=/{r}/` is
+        `Unknown mana symbols "//"` -- while `mana=/{r}/` is 6,853, exactly `mana:/{r}/`.
+        `devotion:/r/` shares this parser class and is `Unknown regular expression keyword
+        "devotion"`, so the alias set is part of the rule rather than a guard on it.
+        """
         tok = self.peek()
+        if tok.type == TT.REGEX and attr.lower() in _MANA_REGEX_ALIASES and op in (":", "="):
+            self.consume()
+            return RegexValueNode(str(tok.value))
         if tok.type == TT.QUOTED:
             self.consume()
             value = str(tok.value).upper()
@@ -911,8 +966,37 @@ class Parser:
         raise ParseError(msg)
 
     def parse_color_value(self) -> QueryNode:
-        """Parse a color value: a color name, a combination of color letters, or a bare integer color count."""
+        """Parse a color value: a color name, a combination of color letters, or a bare integer color count.
+
+        A SLASH-DELIMITED VALUE IS NOT A REGEX HERE. Scryfall reads `/.../` on a colour column as
+        ordinary value text; every measured pair on api.scryfall.com 2026-08-28 is an exact
+        equality with the undelimited spelling:
+
+            c:/w/            7,105 = c:w              id:/w/           7,993 = id:w
+            c:/wu/             718 = c:wu             ci:/w/           7,993 = commander:/w/
+            c:/white/        7,105 = c:white          produces:/g/     1,274 = produces:g
+            c:/yore-tiller/     62 = c:yore-tiller    colour:/w/       7,105
+            c:/2/            3,811 = c:2              c>=/2/           4,607 = c>=2
+
+        The two NUMERIC rows are why the arm re-reads the delimited text as a value rather than
+        just handing back a string: `c:2` is a colour COUNT, and `c:/2/` is the same count.
+
+        THE FAILURE MODE IS THE UNDELIMITED ONE TOO, byte for byte: `c:/xyz/`, `id:/xyz/` and
+        `produces:/xyz/` all come back `400 All of your terms were ignored.` with `Invalid
+        expression "c:/xyz/" was ignored. Unknown color "x"` -- the same sentence `c:xyz` gets,
+        quoting the term AS TYPED. Validating the delimited text through exactly the WORD path
+        below is what reproduces that rather than approximating it.
+
+        NOT DONE, measured and left alone: Scryfall skips non-colour characters ANYWHERE in a
+        colour value, not only at the delimiters (`c:w|u` and `c:w-u` are both 718, `c:/{w}/` is
+        7,105, `c://` and `c:""` are both the whole corpus). Those spellings do not survive the
+        tokenizer as one token, so widening the rule would be a grammar change rather than a
+        value change.
+        """
         tok = self.peek()
+        if tok.type == TT.REGEX:
+            self.consume()
+            return _color_value_from_text(str(tok.value), tok.pos)
         if tok.type == TT.QUOTED:
             self.consume()
             return StringValueNode(str(tok.value))

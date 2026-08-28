@@ -577,8 +577,20 @@ const COLORED_LETTERS = "wubrg";
  * `null`→l, `void`→d, `spirit`→i, `land`→a, `five`→e, `qq`→q. Not the first in the string, not the
  * last — the first in sorted order.
  */
+/** The text between a `/…/` value's delimiters, or the value unchanged when it has none. */
+function stripRegexDelimiters(value: string): string {
+	return value.length >= 2 && value.startsWith("/") && value.endsWith("/") ? value.slice(1, -1) : value;
+}
+
 function colorReason(value: string, keyword: string): string | null {
-	const lower = value.toLowerCase();
+	// A SLASH-DELIMITED VALUE IS ORDINARY VALUE TEXT on these columns — Scryfall runs no regex
+	// here, and the delimiters are simply not colour letters. Validating them WOULD have named
+	// `/` as the unknown colour, which is neither what Scryfall says nor a term it drops:
+	// measured on api.scryfall.com 2026-08-28, `c:/w/` is 7,105 (= `c:w`, honoured, no warning at
+	// all) while `c:/xyz/` is `Invalid expression “c:/xyz/” was ignored. Unknown color “x”` — the
+	// expression echoed WITH its slashes and the letter named from WITHOUT them. Stripping here
+	// and leaving the echo alone is exactly that split.
+	const lower = stripRegexDelimiters(value).toLowerCase();
 	// `produces:` reads a NARROWER name table than the colour columns do: `produces:brown` comes
 	// back "Unknown color “n”" and `produces:colorless` "Unknown color “e”", where `c:brown` and
 	// `c:colorless` are both fine — colorless is a producible VALUE there, spelled `c`, and the
@@ -620,6 +632,16 @@ const COLOR_KEYWORDS: ReadonlySet<string> = new Set([
 
 /** The keyword whose value is a devotion cost. */
 const DEVOTION_KEYWORDS: ReadonlySet<string> = new Set(["devotion"]);
+
+/** The cost column's two spellings — `devotion` shares the parser class and NOT this behaviour. */
+const MANA_COST_KEYWORDS: ReadonlySet<string> = new Set(["mana", "m"]);
+
+/**
+ * What Scryfall's mana lexer consumes before it complains, so the leftover it quotes can be
+ * reproduced. `mana>=/{r}/` names only `//`, which says the braces, the colour letters and the
+ * digits were all read as symbols and only the delimiters survived.
+ */
+const MANA_COST_VALUE_CHARS: ReadonlySet<string> = new Set("{}/0123456789wubrgcsxyzphWUBRGCSXYZPH");
 
 /** Colour letters, and the rest of the alphabet a mana symbol may be spelled from. */
 const DEVOTION_COLORS = "wubrg";
@@ -741,16 +763,20 @@ const REGEX_CAPABLE_KEYWORDS: ReadonlySet<string> = new Set([
  *
  * Measured 2026-08-28. On the colour columns the slashes are simply not colour letters and are
  * skipped: `c:/w/` is 7,105 — exactly `c:w` — and `c:/wu/` is 718, exactly `c:wu`; `id:/w/` is
- * 7,993 and `produces:/g/` is 1,274. On `mana:` the same thing happens in the symbol lexer:
- * `mana:/p/ mv=1` is 9, every one Phyrexian, and identical to `mana:/\smp/ mv=1`. `set_type:` and
- * `oracle_id:` answer `Unknown set type “/^exp/”` and `You must provide a valid v4 UUID.` — their
- * value sentences, not the regex one — while the OTHER spellings of the same two columns
- * (`st:`, `settype:`, `oracleid:`) do get the regex sentence, which is why this is a set of
- * spellings rather than of columns.
+ * 7,993 and `produces:/g/` is 1,274. `set_type:` and `oracle_id:` answer `Unknown set type
+ * “/^exp/”` and `You must provide a valid v4 UUID.` — their value sentences, not the regex one —
+ * while the OTHER spellings of the same two columns (`st:`, `settype:`, `oracleid:`) do get the
+ * regex sentence, which is why this is a set of spellings rather than of columns.
  *
- * This port answers none of the colour/mana four: matching them means teaching the colour and
- * mana value lexers to skip a `/`, which is a grammar change upstream does not have. They are
- * reported as a divergence rather than papered over here.
+ * `mana`/`m` ARE HERE FOR THE OPPOSITE REASON, and this file used to have it backwards. The
+ * slashes are not value characters there: `mana:/…/` is a genuine regex, run against the printed
+ * cost string, and `mana:/^{2}/` proves it by answering `400 Invalid regular expression:
+ * quantifier operand invalid.` — the compiler's own sentence. It belongs on this list anyway,
+ * because the whole list means "do not emit the regex-KEYWORD sentence, let the value parser
+ * decide": under `:` and `=` the parser builds a RegexValueNode, and under every other operator
+ * it falls back to the symbol lexer, which is what reproduces Scryfall's `Unknown mana symbols
+ * “/^TAP/”` for `mana!=/^tap/`. `devotion` shares the parser class and is NOT here — it takes the
+ * regex sentence, exactly as Scryfall's `Unknown regular expression keyword “devotion”` does.
  */
 const REGEX_VALUE_FIRST_KEYWORDS: ReadonlySet<string> = new Set([
 	"c",
@@ -1301,6 +1327,18 @@ function classifyLeaf(term: string): LeafVerdict {
 		// The period INSIDE the quotes is Scryfall's, not a typo here: the live body reads
 		// `Unknown rarity “notarare.”`.
 		return { keep: false, reason: `Unknown rarity \u201c${loweredValue}.\u201d` };
+	}
+	// `mana:/…/` IS a regex and `mana>=/…/` is not, so the delimiters are a VALUE error on every
+	// operator but `:` and `=`. Measured on api.scryfall.com 2026-08-28: `mana=/{r}/` is 6,853
+	// (honoured, the pattern compiled against the cost string) while `mana!=/^tap/` comes back
+	// `Invalid expression “mana!=/^tap/” was ignored. Unknown mana symbols “/^TAP/”.` and
+	// `mana>=/{r}/` `Unknown mana symbols “//”.` — the `{R}` accepted and the two delimiters left
+	// over, which is what makes the second echo the two characters rather than the whole value.
+	// Scoped to the slash form: everything else this column rejects is a pre-existing gap this
+	// does not widen.
+	if (MANA_COST_KEYWORDS.has(keyword) && !equality && isRegexLiteral(rawValue)) {
+		const leftover = [...stripRegexDelimiters(rawValue)].every((c) => MANA_COST_VALUE_CHARS.has(c)) ? "//" : rawValue;
+		return { keep: false, reason: unknownManaSymbols(leftover) };
 	}
 	// Devotion checks its value under every operator and in both polarities — see devotionReason.
 	if (DEVOTION_KEYWORDS.has(keyword)) {

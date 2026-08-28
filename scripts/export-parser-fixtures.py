@@ -196,6 +196,41 @@ def collect_from_ast() -> set[str]:
 # Supplementary edge cases: Python/TS divergence traps the upstream corpus does
 # not cover directly. Ground truth still comes from the Python parser below.
 EXTRA_CASES = [
+    # ── slash-delimited values on the colour and mana families ──
+    # The COLOUR family reads `/.../` as ordinary value text (the slashes are not colour letters
+    # and are skipped) and the MANA family runs it as a real regex against the printed cost
+    # string. One grammar arm each, and both are invisible to the upstream corpus, which never
+    # spells either. Measured on api.scryfall.com 2026-08-28; see hand_parser.parse_color_value
+    # and parse_mana_value for the tables.
+    "c:/w/",
+    "c:/wu/",
+    "c:/white/",
+    "c:/yore-tiller/",
+    "c:/2/",
+    "c>=/2/",
+    "c:/xyz/",
+    "color:/w/",
+    "colour:/w/",
+    "colors:/w/",
+    "colours:/w/",
+    "id:/w/",
+    "id:/xyz/",
+    "identity:/w/",
+    "ci:/w/",
+    "commander:/w/",
+    "produces:/g/",
+    "produces:/xyz/",
+    # The mana half: a regex on `:` and `=`, a value everywhere else, and never on `devotion`.
+    "mana:/p/",
+    "mana:/\\smp/",
+    "mana:/^{r}$/",
+    "mana:/g|w/",
+    "mana=/{r}/",
+    "m:/p/",
+    "mana!=/^tap/",
+    "mana>=/{r}/",
+    "devotion:/r/",
+    "devotion=/{r}/",
     # empty / whitespace
     "",
     "   ",

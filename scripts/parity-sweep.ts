@@ -1324,6 +1324,52 @@ const REGEX_DIALECT: [string, string][] = [
 	// Uppercase escapes: Scryfall case-folds the whole pattern, so `\S` IS `\s` there
 	// (`o:/\Sdraw/` = `o:/\sdraw/` = 3,604) while this engine reads it as non-whitespace.
 	["uppercase-escape", "o:/\\Sdraw/"],
+	// THE SLASH FORM ON THE COLOUR AND MANA FAMILIES, which is where `/…/` means two DIFFERENT
+	// things and neither of them is "the pattern this column runs". On the colour columns Scryfall
+	// runs no regex at all — the delimiters are ordinary value characters and get skipped — so
+	// each row below is paired with its undelimited twin and the two must answer the same number.
+	["colour-slash", "c:/w/"],
+	["colour-plain", "c:w"],
+	["colour-slash-pair", "c:/wu/"],
+	["colour-slash-name", "c:/white/"],
+	["colour-slash-fourname", "c:/yore-tiller/"],
+	// A bare integer inside the delimiters is a colour COUNT, which no regex reading can produce.
+	["colour-slash-count", "c:/2/"],
+	["colour-plain-count", "c:2"],
+	["colour-slash-count-cmp", "c>=/2/"],
+	["identity-slash", "id:/w/"],
+	["commander-slash", "commander:/w/"],
+	["produces-slash", "produces:/g/"],
+	// ...and the FAILURE half, which the `warnings` oracle catches rather than the count: the term
+	// is dropped with `Unknown color “x”`, the letter named from INSIDE the delimiters.
+	["colour-slash-garbage", "c:/xyz/"],
+	["produces-slash-garbage", "produces:/xyz/"],
+	// The mana family is the opposite reading: a real regex, run against the printed cost string.
+	// Every row here is one a value reading cannot answer at all.
+	["mana-slash", "mana:/p/ mv=1"],
+	["mana-slash-shorthand", "mana:/\\smp/ mv=1"],
+	["mana-slash-alternation", "mana:/g|w/ mv=1"],
+	["mana-slash-class", "mana:/[wu]/ mv=1"],
+	["mana-slash-anchored", "mana:/^{r}$/"],
+	["mana-slash-brace-seam", "mana:/}{/"],
+	["mana-slash-adjacent", "mana:/rr/"],
+	["mana-slash-digit", "mana:/2/"],
+	["mana-plain-generic", "mana:2"],
+	["mana-slash-empty", "mana:/^$/"],
+	// The " // " a SPLIT card's cost carries is Scryfall's own field, not a join this port
+	// invented — which is why this column is not split per face the way the oracle columns are.
+	["mana-slash-split-seam", "mana:/ /"],
+	["mana-slash-split-escaped", "mana:/\\/\\//"],
+	["mana-slash-hybrid-shorthand", "mana:/\\smh/"],
+	["mana-slash-eq", "mana=/{r}/"],
+	["mana-alias-slash", "m:/p/ mv=1"],
+	// ...and the operators where the delimiters go back to being value characters, each with its
+	// own ignored-term sentence rather than a count.
+	["mana-slash-ne", "mana!=/^tap/"],
+	["mana-slash-ge", "mana>=/{r}/"],
+	// `devotion` shares the parser class and is NOT regex-capable — the regex-KEYWORD sentence.
+	["devotion-slash", "devotion:/r/"],
+	["devotion-plain", "devotion:{r}"],
 ];
 for (const [name, q] of REGEX_DIALECT)
 	add(`regex-${name}`, "regex-dialect", search(q, { order: "name" }), [`regex:dialect:${name}`]);

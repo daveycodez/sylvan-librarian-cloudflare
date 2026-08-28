@@ -1076,9 +1076,23 @@ describe("the regex surface, alias by alias", () => {
 		settype: "settype:/expansion/",
 		st: "st:/expansion/",
 		set_type: "set_type:/expansion/",
-		// Outcome 4: Scryfall reads the slashes as value characters and ANSWERS. This port does
-		// not, and the parse error it raises downstream is the divergence — the policy keeps the
-		// term either way, so nothing here is a claim that the two agree.
+		// Outcome 4, now ANSWERED rather than merely kept. The colour family reads the slashes as
+		// ordinary value characters and the mana family runs a real regex on the cost string;
+		// either way the term survives the policy AND the parser, and the counts agree with
+		// api.scryfall.com 2026-08-28: `c:/w/` 7,105 (= `c:w`), `c:/wu/` 718, `id:/w/` 7,993,
+		// `produces:/g/` 1,274, `mana:/p/ mv=1` 9. These ten rows sat in DROPPED until the value
+		// lexers learned the slash form, each pinned to `Unknown color “/”` — a sentence Scryfall
+		// never says, naming a character that is not a colour question.
+		color: "color:/w/",
+		colors: "colors:/w/",
+		colour: "colour:/w/",
+		colours: "colours:/w/",
+		c: "c:/w/",
+		id: "id:/w/",
+		identity: "identity:/w/",
+		ci: "ci:/w/",
+		commander: "commander:/w/",
+		produces: "produces:/g/",
 		mana: "mana:/p/",
 		m: "m:/p/",
 	};
@@ -1093,17 +1107,13 @@ describe("the regex surface, alias by alias", () => {
 		coloridentity: ["coloridentity:/w/", "Unknown keyword \u201ccoloridentity\u201d."],
 		oracle_tags: ["oracle_tags:/draw/", "Unknown keyword \u201coracle_tags\u201d."],
 		art_tags: ["art_tags:/dragon/", "Unknown keyword \u201cart_tags\u201d."],
-		// Outcome 4 — Scryfall answers these as VALUES; this port's colour reader speaks instead.
-		color: ["color:/w/", "Unknown color \u201c/\u201d"],
-		colors: ["colors:/w/", "Unknown color \u201c/\u201d"],
-		colour: ["colour:/w/", "Unknown color \u201c/\u201d"],
-		colours: ["colours:/w/", "Unknown color \u201c/\u201d"],
-		c: ["c:/w/", "Unknown color \u201c/\u201d"],
-		id: ["id:/w/", "Unknown color \u201c/\u201d"],
-		identity: ["identity:/w/", "Unknown color \u201c/\u201d"],
-		ci: ["ci:/w/", "Unknown color \u201c/\u201d"],
-		commander: ["commander:/w/", "Unknown color \u201c/\u201d"],
-		produces: ["produces:/g/", "Unknown color \u201c/\u201d"],
+		// Outcome 4, the FAILURE half — the delimiters are stripped before the value is judged, so
+		// the letter named is the one inside them. Both sentences measured 2026-08-28: `c:/xyz/`
+		// answers `Invalid expression “c:/xyz/” was ignored. Unknown color “x”`, echoing the term
+		// WITH its slashes and naming the colour from WITHOUT them, exactly as `c:xyz` does.
+		colorbad: ["c:/xyz/", "Unknown color \u201cx\u201d"],
+		identitybad: ["id:/xyz/", "Unknown color \u201cx\u201d"],
+		producesbad: ["produces:/xyz/", "Unknown color \u201cx\u201d"],
 		// ...and the two spellings whose VALUE sentence Scryfall gives verbatim, per spelling.
 		oracle_id: ["oracle_id:/^0000/", "You must provide a valid v4 UUID."],
 		// THE VALUE VALIDATOR GETS THERE FIRST on these three, even for a plain-literal pattern
@@ -1175,6 +1185,36 @@ describe("the regex surface, alias by alias", () => {
 	for (const [alias, [term, reason]] of Object.entries(DROPPED)) {
 		test(`${alias}: a regex is ignored and named`, () => {
 			const result = scryfallTermPolicy(`${term} t:goblin`);
+			expect(result.query).toBe("t:goblin");
+			expect(result.warnings).toEqual([`Invalid expression \u201c${term}\u201d was ignored. ${reason}`]);
+		});
+	}
+
+	/**
+	 * `mana:/…/` is a regex and `mana>=/…/` is not, so the delimiters are a VALUE error on every
+	 * operator but `:` and `=`. Both sentences read off api.scryfall.com 2026-08-28 — and the two
+	 * differ in WHAT they echo, which is the evidence that Scryfall's lexer consumed the `{R}` and
+	 * choked on the leftover rather than rejecting the whole value.
+	 */
+	const MANA_SLASH_BY_OPERATOR: [query: string, reason: string | null][] = [
+		["mana:/p/", null], // 9 at mv=1, every one Phyrexian
+		["mana=/{r}/", null], // 6,853, exactly mana:/{r}/
+		["m:/p/", null],
+		["mana!=/^tap/", "Unknown mana symbols \u201c/^TAP/\u201d."],
+		["mana>=/{r}/", "Unknown mana symbols \u201c//\u201d."],
+		// `devotion` shares the parser class and gets the regex-KEYWORD sentence instead, which is
+		// why the alias set is part of the rule rather than a guard on it.
+		["devotion:/r/", "Unknown regular expression keyword \u201cdevotion\u201d."],
+	];
+
+	for (const [term, reason] of MANA_SLASH_BY_OPERATOR) {
+		test(`${term}: ${reason === null ? "kept" : "ignored and named"}`, () => {
+			const result = scryfallTermPolicy(`${term} t:goblin`);
+			if (reason === null) {
+				expect(result.query).toBe(`${term} t:goblin`);
+				expect(result.warnings).toEqual([]);
+				return;
+			}
 			expect(result.query).toBe("t:goblin");
 			expect(result.warnings).toEqual([`Invalid expression \u201c${term}\u201d was ignored. ${reason}`]);
 		});

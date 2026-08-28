@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from api.parsing.db_info import BOOLEAN_IS_TAGS
+from api.parsing.db_info import BOOLEAN_IS_TAGS, ParserClass
 from api.parsing.card_query_nodes import CardAttributeNode
 from api.parsing.hand_parser import parse_str_to_query as _parse_str_to_query
 from api.parsing.nodes import (
@@ -508,6 +508,18 @@ def _regex_plain_literal(pattern: str) -> str | None:
     return "".join(out) or None  # empty pattern matches everything -> leave it a regex
 
 
+def _is_text_column_leaf(node: BinaryOperatorNode) -> bool:
+    """Whether a leaf's LHS names a column where a bare value is a SUBSTRING test.
+
+    An unresolvable attribute (no field infos) keeps the old behaviour of lowering, so nothing
+    that used to answer stops.
+    """
+    if not isinstance(node.lhs, CardAttributeNode):
+        return True
+    field_infos = node.lhs.field_infos
+    return not field_infos or any(fi.parser_class == ParserClass.TEXT for fi in field_infos)
+
+
 def _lower_regex_leaves(node: QueryNode) -> None:
     """Rewrite plain-literal regex leaves to substring leaves, in place.
 
@@ -522,6 +534,15 @@ def _lower_regex_leaves(node: QueryNode) -> None:
     elif isinstance(node, NotNode):
         _lower_regex_leaves(node.operand)
     elif isinstance(node, BinaryOperatorNode) and node.operator == ":" and isinstance(node.rhs, RegexValueNode):
+        # TEXT COLUMNS ONLY, because "the substring this pattern spells" is only a legal value
+        # where a bare value IS a substring test. `mana:` is the one non-text column that can
+        # carry a pattern (see hand_parser.parse_mana_value), and there the two readings are
+        # different queries: measured on api.scryfall.com 2026-08-28, `mana:/p/ mv=1` is 9 --
+        # every one Phyrexian, the pattern run against the cost STRING -- while the lowered
+        # `mana:p` is `Invalid expression "mana:p" was ignored. Unknown mana symbols "P".` and
+        # answers the unfiltered 3,244. Lowering it throws the whole filter away silently.
+        if not _is_text_column_leaf(node):
+            return
         literal = _regex_plain_literal(node.rhs.value)
         if literal is not None:
             # LITERAL, not a bare word: a regex matches the stored name as written, so the

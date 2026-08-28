@@ -32,7 +32,7 @@ import {
 	StringValueNode,
 	TrueNode,
 } from "./nodes";
-import { type PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
+import { PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
 import { MAX_GROUP_DEPTH, QueryBudgetExceeded } from "./query-budget";
 import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
 
@@ -116,6 +116,17 @@ function validColorNamesFor(attr: string): ReadonlySet<string> {
 	const column = fieldInfos.find((fi) => fi.parserClass === PC.COLOR)?.dbColumnName;
 	return (column === undefined ? undefined : VALID_COLOR_NAMES_BY_COLUMN.get(pyLower(column))) ?? VALID_COLOR_NAMES;
 }
+
+/**
+ * The MANA-class aliases that take a REGEX, which is `mana`/`m` and NOT `devotion`.
+ *
+ * One parser class, two answers, measured on api.scryfall.com 2026-08-28: `mana:/p/ mv=1` is 9
+ * and `devotion:/r/` is `400 All of your terms were ignored.` with `Invalid expression
+ * “devotion:/r/” was ignored. Unknown regular expression keyword “devotion”.` — the same sentence
+ * every non-whitelisted keyword gets. `devotion:{r}` still answers 5,290, so this is a statement
+ * about the pattern form and not about the column.
+ */
+const MANA_REGEX_ALIASES: ReadonlySet<string> = new Set(["mana", "m"]);
 
 const COLOR_LETTERS: ReadonlySet<string> = new Set("wubrgcWUBRGC");
 const MIN_MTG_YEAR = 1992n;
@@ -462,7 +473,7 @@ export class Parser {
 		if (pc !== undefined && (nextTok.type === TT.OP || bangAlias)) {
 			const op = bangAlias ? "=" : (nextTok.value as string);
 			this.consume();
-			return new CardBinaryOperatorNode(new CardAttributeNode(wl, pc), op, this.parseValueForClass(pc, wl));
+			return new CardBinaryOperatorNode(new CardAttributeNode(wl, pc), op, this.parseValueForClass(pc, wl, op));
 		}
 		if (pc !== undefined) {
 			// alias recognised but no operator → might still be a hyphenated bare word (e.g. "a-b-c")
@@ -624,7 +635,7 @@ export class Parser {
 
 	// ── value parsers ─────────────────────────────────────────────────────────
 
-	parseValueForClass(pc: ParserClass, attr: string): QueryNode {
+	parseValueForClass(pc: ParserClass, attr: string, op: string): QueryNode {
 		if (pc === PC.TEXT) {
 			return this.parseTextValue(attr);
 		}
@@ -635,7 +646,7 @@ export class Parser {
 			return this.parseColorValue(attr);
 		}
 		if (pc === PC.MANA) {
-			return this.parseManaValue();
+			return this.parseManaValue(attr, op);
 		}
 		if (pc === PC.RARITY || pc === PC.LEGALITY) {
 			return this.parseStringValue();
@@ -705,10 +716,48 @@ export class Parser {
 		throw new InternalParseError(`Expected value for ${attr}, got ${pyStr(tok.value)} at position ${tok.pos}`);
 	}
 
-	/** Parse a mana cost value: a sequence of mana symbols, words, or numbers (no gaps). */
-	parseManaValue(): QueryNode {
+	/**
+	 * Parse a mana cost value: a sequence of mana symbols, words, or numbers (no gaps).
+	 *
+	 * `mana:/…/` IS A REAL REGEX, run against the printed mana cost STRING — not, as the slash
+	 * form's colour twin one method down, a value with the delimiters skipped. Both readings
+	 * answer the two rows that first raised the question (`mana:/p/ mv=1` and `mana:/\smp/ mv=1`
+	 * are both 9, every one Phyrexian), so the discriminating probes are the ones a value reading
+	 * cannot produce at all. Measured on api.scryfall.com 2026-08-28:
+	 *
+	 *   mana:/^{2}/          400 "Invalid regular expression: quantifier operand invalid."
+	 *   mana:/g|w/ mv=1      1,276      alternation, which is not a mana symbol
+	 *   mana:/[wu]/ mv=1     1,193      a character class, likewise
+	 *   mana:/^{r}$/           526      anchored, against mana:{r}'s 6,852
+	 *   mana:/}{/           26,815      every multi-symbol cost, a pure string artefact
+	 *   mana:/rr/              404      because "{R}{R}" has no "rr" in it
+	 *   mana:/2/             8,315      against mana:2's 19,692 — the character, not the generic
+	 *   mana:/^$/            1,350      the cards with no mana cost at all
+	 *   mana:/ /               435      = mana:/\/\// — split costs join as "{1}{R} // {1}{U}"
+	 *   mana:/\smh/            605      Scryfall's own \s… shorthands apply here too
+	 *
+	 * The error sentence is the conclusive one: Scryfall compiled it. `m:` behaves identically
+	 * (`m:/p/ mv=1` is 9), and `mana:/~/` is 404 — the self-reference alias is not expanded on
+	 * this column, so `~` stays the literal tilde no cost contains.
+	 *
+	 * `mana:` is NOT on Scryfall's documented regex-keyword list (which names only `type:`,
+	 * `oracle:`, `flavor:` and `name:`); the docs page is simply incomplete here, and the
+	 * measurement is what this follows.
+	 *
+	 * THE ARM IS SCOPED TO `:` AND `=`, AND TO `mana`/`m`, because Scryfall's is. On every other
+	 * operator the slashes go back to being value characters and the symbol lexer rejects them,
+	 * QUOTING THE SLASHES BACK — `mana!=/^tap/` is `Unknown mana symbols “/^TAP/”` and
+	 * `mana>=/{r}/` is `Unknown mana symbols “//”` (the `{R}` accepted, the delimiters not), while
+	 * `mana=/{r}/` is 6,853, exactly `mana:/{r}/`. Falling through to the symbol path below is
+	 * what reproduces both sentences, so the condition is the whole fix and not a guard on it.
+	 */
+	parseManaValue(attr: string, op: string): QueryNode {
 		const tok = this.peek();
 		let value: string;
+		if (tok.type === TT.REGEX && MANA_REGEX_ALIASES.has(pyLower(attr)) && (op === ":" || op === "=")) {
+			this.consume();
+			return new RegexValueNode(pyStr(tok.value));
+		}
 		if (tok.type === TT.QUOTED) {
 			this.consume();
 			value = pyUpper(pyStr(tok.value));
@@ -760,10 +809,44 @@ export class Parser {
 	 *
 	 * `attr` is the alias as the user typed it (`produces`, `c`, `id`), and it is load-bearing:
 	 * `any` is a name on produced_mana only — see validColorNamesFor.
+	 *
+	 * A SLASH-DELIMITED VALUE IS NOT A REGEX HERE, and that is the whole of the REGEX arm below.
+	 * Scryfall reads `/…/` on a colour column as ordinary value text; every measured pair on
+	 * api.scryfall.com 2026-08-28 is an exact equality with the undelimited spelling:
+	 *
+	 *   c:/w/            7,105 = c:w              id:/w/           7,993 = id:w
+	 *   c:/wu/             718 = c:wu             ci:/w/           7,993 = commander:/w/
+	 *   c:/white/        7,105 = c:white          produces:/g/     1,274 = produces:g
+	 *   c:/yore-tiller/     62 = c:yore-tiller    colour:/w/       7,105
+	 *   c:/2/            3,811 = c:2              c>=/2/           4,607 = c>=2
+	 *
+	 * The two NUMERIC rows are why the arm re-reads the delimited text as a value rather than
+	 * just handing back a string: `c:2` is a colour COUNT, and `c:/2/` is the same count. A regex
+	 * reading cannot produce any of these — `/2/` against a colour set has nothing to match, and
+	 * `/white/` even less.
+	 *
+	 * THE FAILURE MODE IS THE UNDELIMITED ONE TOO, byte for byte, which is what keeps the
+	 * ignored-term warnings intact: `c:/xyz/`, `id:/xyz/` and `produces:/xyz/` all come back
+	 * `400 All of your terms were ignored.` with `Invalid expression “c:/xyz/” was ignored.
+	 * Unknown color “x”` — the same sentence `c:xyz` gets, quoting the term AS TYPED (slashes
+	 * included) and naming the first offending letter. Validating the delimited text through
+	 * exactly the WORD path below is what reproduces that rather than approximating it.
+	 *
+	 * WHAT THIS ARM DOES NOT DO, measured and left alone: Scryfall skips characters that are
+	 * neither colour letters nor part of a name ANYWHERE in a colour value, not only at the
+	 * delimiters — `c:w|u` and `c:w-u` are both 718, `c:/{w}/` is 7,105, and the empty `c://` and
+	 * `c:""` are both 33,599, the whole corpus. Those spellings do not survive this port's
+	 * tokenizer as one token at all (`|` is no token and `-` is MINUS), so widening the rule
+	 * would be a grammar change rather than a value change. `c:/{w}/` and `c:/w-u/` therefore
+	 * still raise here; both are pinned in the test table as the measured remainder.
 	 */
 	parseColorValue(attr: string): QueryNode {
 		const validNames = validColorNamesFor(attr);
 		const tok = this.peek();
+		if (tok.type === TT.REGEX) {
+			this.consume();
+			return this.colorValueFromText(pyStr(tok.value), tok.pos, validNames);
+		}
 		if (tok.type === TT.NUMBER) {
 			// Scryfall numeric color syntax: id>=3 / c=2 compare the NUMBER of colors in the
 			// field, so a bare integer is a valid color value.
@@ -807,6 +890,27 @@ export class Parser {
 			return new StringValueNode(val);
 		}
 		throw new InternalParseError(`Expected color value, got ${pyStr(tok.value)} at position ${tok.pos}`);
+	}
+
+	/**
+	 * One already-assembled colour value, validated exactly as the WORD and NUMBER arms above do.
+	 *
+	 * Only the slash-delimited form reaches this: the two arms above own their own token
+	 * bookkeeping (the hyphen glue, the float check), and the point of this helper is that the
+	 * delimited text is subject to the SAME two acceptances — a name, or nothing but colour
+	 * letters — so `c:/xyz/` produces the very sentence `c:xyz` does.
+	 */
+	colorValueFromText(text: string, pos: number, validNames: ReadonlySet<string>): QueryNode {
+		// A bare integer is a colour COUNT here, exactly as it is for a NUMBER token: `c:/2/` is
+		// 3,811 on api.scryfall.com and so is `c:2`. Digits only, and non-empty, so `c://` stays
+		// the empty-value case the letters test below accepts vacuously.
+		if (text.length > 0 && [...text].every((c) => c >= "0" && c <= "9")) {
+			return new NumericValueNode(PyNumber.int(BigInt(text)));
+		}
+		if (!validNames.has(pyLower(text)) && ![...text].every((c) => COLOR_LETTERS.has(c))) {
+			throw new InternalParseError(`Invalid color value ${text} at position ${pos}`);
+		}
+		return new StringValueNode(text);
 	}
 
 	/** Parse a date value: YYYY, YYYY-MM or YYYY-MM-DD (hyphens must have no surrounding spaces). */

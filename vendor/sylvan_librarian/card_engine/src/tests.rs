@@ -9586,6 +9586,88 @@ fn build_filter_numeric_color_rhs() {
     assert!(matches!(f, FilterExpr::ColorCountCmp { field: ColorField::ProducedMana, op: CmpOp::Ge, count: 1 }));
 }
 
+// `mana:/…/` IS A REGEX ON THE PRINTED COST STRING, not a pip multiset, and the rows below are
+// the ones a pip reading cannot produce. All measured on api.scryfall.com 2026-08-28:
+//
+//   mana:/^{2}/   400 "Invalid regular expression: quantifier operand invalid." — Scryfall
+//                     COMPILED it, which is the conclusive evidence for the reading
+//   mana:/}{/     26,815   every multi-symbol cost, a pure string artefact
+//   mana:/rr/        404   because "{R}{R}" has no "rr" in it
+//   mana:/2/       8,315   the CHARACTER, against mana:2's 19,692 generic reading
+//   mana:/^$/      1,350   the cards with no mana cost at all
+//   mana:/ /         435   = mana:/\/\// — a split cost is "{1}{R} // {1}{U}"
+//   mana:/^{r}$/     526   anchored, against mana:{r}'s 6,852
+//   mana:/{r}/     6,853   against mana:{r}'s 6,852 — one card wide, and a superset
+//   mana:/\smh/      605   Scryfall's own \s… shorthands apply on this column too
+//   mana:/p/ mv=1      9   every one Phyrexian, and identical to mana:/\smp/ mv=1
+#[test]
+fn mana_regex_runs_against_the_cost_string() {
+    let node = |attr: &str, op: &str, pattern: &str| {
+        serde_json::json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": attr, "original_attribute": "mana"}},
+                "op": op,
+                "rhs": {"node_type": "RegexValueNode", "kwargs": {"value": pattern}},
+            },
+        })
+    };
+
+    // The column routes to the cost STRING, not to ManaCostCmp.
+    let f = super::build_filter(&node("mana_cost_jsonb", ":", "p")).expect("mana:/p/ must build");
+    let regex = match f {
+        FilterExpr::TextRegex { field: TextField::ManaCostText, regex } => regex,
+        _ => panic!("mana:/p/ must be a cost-string regex"),
+    };
+    // Stored as PRINTED, and every query pattern carries (?i) — so a lowercase pattern finds the
+    // uppercase cost, which is the case-folding Scryfall applies to the whole pattern.
+    assert!(regex.is_match("{W/P}"), "the 9 mv=1 Phyrexian costs");
+    assert!(!regex.is_match("{1}{R}"));
+
+    let m = |pattern: &str, cost: &str| {
+        match super::build_filter(&node("mana_cost_jsonb", ":", pattern)).expect("must build") {
+            FilterExpr::TextRegex { regex, .. } => regex.is_match(cost),
+            _ => panic!("expected a cost-string regex"),
+        }
+    };
+    // `}{` — the artefact that exists only in the string form.
+    assert!(m("}{", "{1}{R}"));
+    assert!(!m("}{", "{R}"));
+    // ...and its mirror: "rr" is never in "{R}{R}", which is why mana:/rr/ is 404.
+    assert!(!m("rr", "{R}{R}"));
+    // A digit is the CHARACTER in the cost, not the generic component.
+    assert!(m("2", "{2}{W}"));
+    assert!(!m("2", "{1}{1}"), "no card prints {{1}}{{1}}, but the point is that 1+1 is not 2 here");
+    // Anchors bind to the whole cost, so `^{r}$` is the mono-{R} cards and not every card with an
+    // {R} pip — 526 against 6,852.
+    assert!(m("^{r}$", "{R}"));
+    assert!(!m("^{r}$", "{1}{R}"));
+    // An empty cost is a real value, and `^$` selects exactly the 1,350 cards that have one.
+    assert!(m("^$", ""));
+    assert!(!m("^$", "{R}"));
+    // A SPLIT card's cost carries Scryfall's own " // ", which is why mana:/ / is 435 rather than
+    // zero — and why this field is NOT split per face the way the oracle columns are.
+    assert!(m(" ", "{1}{R} // {1}{U}"));
+    assert!(m(r"\/\/", "{1}{R} // {1}{U}"));
+    assert!(!m(" ", "{1}{R}"));
+    // Scryfall's own dialect shorthands apply on this column too.
+    assert!(m(r"\smh", "{R/G}"));
+    assert!(!m(r"\smh", "{R}{G}"));
+    // `=` is `:` here; every other operator never reaches this node (the parser keeps the slashes
+    // as value characters), so only the two spellings the parser can emit are asserted.
+    let f = super::build_filter(&node("mana_cost_jsonb", "=", "^$")).expect("mana=/^$/ must build");
+    assert!(matches!(f, FilterExpr::TextRegex { field: TextField::ManaCostText, .. }));
+
+    // `devotion` shares the parser class and is NOT regex-capable on Scryfall
+    // (`Unknown regular expression keyword “devotion”`), so nothing should ever hand this arm a
+    // pattern for it — and if something did, the pip reader would see a RegexValueNode with no
+    // "value" string and build the empty cost rather than a regex.
+    assert!(
+        matches!(super::build_filter(&node("devotion", ":", "r")), Err(ref e) if e == "regex not supported on devotion"),
+        "devotion is not regex-capable on Scryfall either"
+    );
+}
+
 // A PARTIAL DATE IS A RANGE, NOT A POINT. `date:2021` means "released in 2021", so each operator
 // reads off the end of the window it needs — the zero-padded reading this replaced used the START
 // for all six, which is right for `<` and `>=` and wrong for the other four.

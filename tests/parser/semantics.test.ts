@@ -586,3 +586,112 @@ describe("a regex on a collection column reaches the engine as a regex", () => {
 		expect(canonicalStringify(parseScryfallQuery("frame<=/ab/"))).not.toContain("RegexValueNode");
 	});
 });
+
+// ── the colour and mana families take a SLASH-DELIMITED value ────────────────
+//
+// Two different rules behind one spelling, and the whole point of the pair of tests below is that
+// they are not the same rule. On the COLOUR columns Scryfall runs no regex at all — the slashes
+// are ordinary value characters and get skipped — while on `mana:` it compiles one and runs it
+// against the printed cost STRING. Every row measured on api.scryfall.com 2026-08-28.
+describe("slash-delimited colour values", () => {
+	// Each pair must parse to the SAME tree as the undelimited spelling, which is the strongest
+	// form of "the slashes are not a regex": not merely "answers something", but "is that query".
+	const EQUIVALENT: [slashed: string, plain: string, scryfall: string][] = [
+		["c:/w/", "c:w", "7,105"],
+		["c:/wu/", "c:wu", "718"],
+		["c:/white/", "c:white", "7,105"],
+		["c:/yore-tiller/", "c:yore-tiller", "62"],
+		["c:/2/", "c:2", "3,811"],
+		["c>=/2/", "c>=2", "4,607"],
+		["color:/w/", "color:w", "7,105"],
+		["colour:/w/", "colour:w", "7,105"],
+		["colors:/w/", "colors:w", "7,105"],
+		["colours:/w/", "colours:w", "7,105"],
+		["id:/w/", "id:w", "7,993"],
+		["identity:/w/", "identity:w", "7,993"],
+		["ci:/w/", "ci:w", "7,993"],
+		["commander:/w/", "commander:w", "7,993"],
+		["produces:/g/", "produces:g", "1,274"],
+	];
+
+	for (const [slashed, plain, scryfall] of EQUIVALENT) {
+		test(`${slashed} parses as ${plain} (Scryfall ${scryfall})`, () => {
+			expect(canonicalStringify(parseScryfallQuery(slashed))).toBe(canonicalStringify(parseScryfallQuery(plain)));
+		});
+	}
+
+	// The FAILURE mode is the undelimited one too, which is what keeps the ignored-term warning
+	// byte-identical: `c:/xyz/` is `Unknown color “x”` on api.scryfall.com, naming the letter from
+	// inside the delimiters. Same throw here as `c:xyz`, so the compat layer produces one sentence
+	// for both. See tests/routes/query-terms.test.ts for the sentence itself.
+	for (const bad of ["c:/xyz/", "id:/xyz/", "produces:/xyz/"]) {
+		test(`${bad} raises exactly as its undelimited twin does`, () => {
+			expect(() => parseScryfallQuery(bad)).toThrow(ParseError);
+			expect(() => parseScryfallQuery(bad.replace(/\//g, ""))).toThrow(ParseError);
+		});
+	}
+
+	// MEASURED AND NOT FIXED. Scryfall skips characters that are neither colour letters nor part
+	// of a name ANYWHERE in the value, not only at the delimiters — `c:w|u` and `c:w-u` are both
+	// 718, `c:/{w}/` is 7,105, and the empty `c://` and `c:""` are both 33,599, the whole corpus.
+	// Those spellings do not survive this port's tokenizer as one token, so widening the rule is a
+	// grammar change rather than a value change. Pinned here so the remainder is a decision.
+	for (const unfixed of ["c:/{w}/", "c:/w-u/", "c://"]) {
+		test(`${unfixed} still raises — the punctuation-skipping remainder`, () => {
+			expect(() => parseScryfallQuery(unfixed)).toThrow(ParseError);
+		});
+	}
+});
+
+describe("slash-delimited mana values are a real regex", () => {
+	const regexRhs = (query: string): string | null => {
+		const tree = JSON.parse(canonicalStringify(parseScryfallQuery(query))) as {
+			kwargs?: { rhs?: { node_type?: string; kwargs?: { value?: string } } };
+		};
+		const rhs = tree.kwargs?.rhs;
+		return rhs?.node_type === "RegexValueNode" ? (rhs.kwargs?.value ?? null) : null;
+	};
+
+	// `:` and `=`, on both spellings of the column — the four shapes Scryfall compiles.
+	// `mana:/p/ mv=1` is 9 there, every one Phyrexian; `mana=/{r}/` is 6,853, exactly `mana:/{r}/`.
+	for (const query of ["mana:/p/", "mana=/{r}/", "m:/p/", "m=/{r}/"]) {
+		test(`${query} keeps the pattern as a regex`, () => {
+			expect(regexRhs(query)).not.toBeNull();
+		});
+	}
+
+	// A PLAIN-LITERAL PATTERN IS NOT LOWERED HERE, which is the half that would have been silent:
+	// `lowerLiteralRegexes` turns `o:/p/` into the substring `o:p`, and doing the same to
+	// `mana:/p/` would have produced `mana:p` — `Invalid expression “mana:p” was ignored. Unknown
+	// mana symbols “P”.` on api.scryfall.com, the unfiltered 3,244 instead of the 9.
+	test("mana:/p/ is not lowered to the substring mana:p", () => {
+		expect(regexRhs("mana:/p/")).toBe("p");
+		expect(() => parseScryfallQuery("mana:p")).toThrow(ParseError);
+	});
+
+	// Scryfall's own dialect reaches this column: `mana:/\smp/ mv=1` is the same 9 as `mana:/p/`.
+	test("the \\s… shorthands survive to the engine", () => {
+		expect(regexRhs("mana:/\\smp/")).toBe("\\smp");
+	});
+
+	// EVERY OTHER OPERATOR IS A VALUE AGAIN, and the value lexer rejects the delimiters:
+	// `mana!=/^tap/` is `Unknown mana symbols “/^TAP/”` and `mana>=/{r}/` is
+	// `Unknown mana symbols “//”`, where `mana=/{r}/` is 6,853.
+	for (const query of ["mana!=/^tap/", "mana>=/{r}/", "mana</^tap/", "mana>/{r}/", "mana<=/{r}/"]) {
+		test(`${query} is a value error, not a pattern`, () => {
+			expect(() => parseScryfallQuery(query)).toThrow(ParseError);
+		});
+	}
+
+	// `devotion` shares the parser class and is NOT regex-capable: `devotion:/r/` is
+	// `Unknown regular expression keyword “devotion”` on api.scryfall.com, while `devotion:{r}`
+	// still answers 5,290.
+	for (const query of ["devotion:/r/", "devotion=/{r}/"]) {
+		test(`${query} is not a pattern — the alias set is part of the rule`, () => {
+			expect(() => parseScryfallQuery(query)).toThrow(ParseError);
+		});
+	}
+	test("devotion:{r} still parses", () => {
+		expect(() => parseScryfallQuery("devotion:{r}")).not.toThrow();
+	});
+});

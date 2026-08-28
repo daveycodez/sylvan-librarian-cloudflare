@@ -793,7 +793,8 @@ fn extra_text_field_values<'a>(
         | TextField::SetCode
         | TextField::Border
         | TextField::CollectorNumber
-        | TextField::TypeLine => ExtraStrs::Empty,
+        | TextField::TypeLine
+        | TextField::ManaCostText => ExtraStrs::Empty,
     }
 }
 
@@ -893,6 +894,11 @@ pub(crate) enum TextField {
     Watermark,
     CollectorNumber,
     TypeLine,
+    /// The printed mana cost STRING, e.g. `{1}{R}` — or `{1}{R} // {1}{U}` on a split card, which
+    /// is Scryfall's own top-level `mana_cost` and the very string its `mana:/…/` runs against.
+    /// Stored as printed (mixed case, braces intact); every query regex carries `(?i)`, so the
+    /// case-folding Scryfall applies is already the compile's.
+    ManaCostText,
 }
 
 fn text_field_value<'a>(
@@ -921,6 +927,9 @@ fn text_field_value<'a>(
         // all of them — and reading it here keeps `t:/…/` card-invariant
         // instead of forcing a printing walk.
         TextField::TypeLine        => opt_sv(str_at(strings, u32::from(card.type_line_id))),
+        // Card-level, like TypeLine: `merge_face_drafts` keeps the front's, and for a SPLIT card
+        // the raw Scryfall field it comes from is already both halves joined with " // ".
+        TextField::ManaCostText    => opt_sv(str_at(strings, u32::from(card.mana_cost_text_id))),
     }
 }
 
@@ -1545,7 +1554,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
             | TextField::OracleTextLower
             | TextField::FullOracleTextLower
             | TextField::ArtistLower
-            | TextField::TypeLine => false,
+            | TextField::TypeLine
+            | TextField::ManaCostText => false,
         },
         // Exhaustive over CollField (no `matches!`), same reason as num_pdep.
         FilterExpr::CollectionCmp { field, .. } => match field {
@@ -3795,6 +3805,25 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
             // the SQL path's `type_line ~* …` reads — not the type/subtype
             // bitmasks `t:goblin` compiles to, which cannot answer a regex.
             "card_types" | "card_subtypes" => TextField::TypeLine,
+            // `mana:/…/` IS A REGEX, and it runs against the printed cost STRING rather than
+            // against the pip multiset every other spelling of this column compiles to. Measured
+            // on api.scryfall.com 2026-08-28, with the rows a pip reading cannot produce:
+            //
+            //   mana:/^{2}/   400 "Invalid regular expression: quantifier operand invalid."
+            //   mana:/}{/     26,815   every multi-symbol cost — a pure string artefact
+            //   mana:/rr/        404   because "{R}{R}" has no "rr" in it
+            //   mana:/2/       8,315   the CHARACTER, against mana:2's 19,692 generic reading
+            //   mana:/^$/      1,350   the cards with no mana cost at all
+            //   mana:/ /         435   = mana:/\/\// — a split cost is "{1}{R} // {1}{U}"
+            //   mana:/^{r}$/     526   anchored, against mana:{r}'s 6,852
+            //
+            // NOT split per face, deliberately and unlike the oracle/flavor columns: the store's
+            // `mana_cost_text` is Scryfall's OWN joined field rather than a join this port
+            // invented, so the " // " a split card carries is in Scryfall's haystack too — which
+            // is exactly what the 435 above measures. `devotion` shares this parser class and is
+            // absent on purpose: `devotion:/r/` is `Unknown regular expression keyword
+            // “devotion”` there, and the parser never emits a pattern for it.
+            "mana_cost_jsonb" => TextField::ManaCostText,
             _ => return Err(format!("regex not supported on {attr}")),
         };
         return Ok(FilterExpr::TextRegex { field, regex: re });
