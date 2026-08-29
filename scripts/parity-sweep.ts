@@ -1348,6 +1348,12 @@ const REGEX_DIALECT: [string, string][] = [
 	// `ft:/~/`'s 2 are the trap: Blighted Agent and Urabrask the Hidden, whose Phyrexian-script
 	// flavor text carries a real tilde, which `ft:"~"` finds as a plain substring.
 	["self-reference-full-oracle", "fo:/~/"],
+	// ...and the ONE row here that is a deliberate divergence rather than a target. `fo:` keeps the
+	// reminder text `o:` strips, so it can only match MORE — yet `o:/~/ -fo:/~/` is 8 on Scryfall
+	// and 0 here. Turn the Tide settles it: no parenthetical anywhere in its oracle text, so both
+	// columns hold the same string, and Scryfall still answers 1 and 0. The sane direction agrees
+	// exactly (`fo:/~/ -o:/~/` is 2,817 on both), so this row is expected to differ by 8.
+	["self-reference-stripped-not-full", "o:/~/ -fo:/~/"],
 	["self-reference-flavor", "ft:/~/"],
 	["self-reference-name", "name:/~/"],
 	["self-reference-type", "t:/~/"],

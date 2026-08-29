@@ -180,8 +180,20 @@ pub(crate) enum SelfRefScope {
     /// `ft:/this creature/` is 6 and `ft:/this creature/ -ft:/~/` is the same 6, so not one of
     /// those six matches. Expanding names on flavor answered 680 against 2.
     None,
-    /// Rules text: the card's names AND the "this <noun>" phrase family. `o:/~/` 19,228,
-    /// `fo:/~/` 22,037 — the difference being the reminder text `fo:` keeps.
+    /// Rules text: the card's names AND the "this <noun>" phrase family. `o:/~/` 19,228 here and
+    /// on api.scryfall.com — card for card, verified by diffing the full id sets both ways
+    /// (2026-08-28). `fo:/~/` is 22,045 here against 22,037 there, and that gap is the THIRD
+    /// deliberate non-reproduction in this dialect.
+    ///
+    /// `fo:` keeps the reminder text `o:` strips, so it can only ever match MORE. Scryfall breaks
+    /// that: `o:/~/ -fo:/~/` is 8 there and 0 here, eight cards matching the stripped column and
+    /// not the full one. Turn the Tide is the one that settles it — its oracle text is "Creatures
+    /// your opponents control get -2/-0 until end of turn." with no parenthetical anywhere, so its
+    /// two columns hold the SAME STRING and Scryfall still answers 1 and 0. The other seven are
+    /// Choice of Damnations, Flashback, For the Common Good, Hand of Vecna, Library of Lat-Nam,
+    /// Library of Leng and Turn the Tables, each matching on a short name or its own full name.
+    ///
+    /// The direction that makes sense agrees exactly: `fo:/~/ -o:/~/` is 2,817 on both.
     Oracle,
 }
 
