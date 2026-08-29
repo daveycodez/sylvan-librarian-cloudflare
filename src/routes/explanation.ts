@@ -125,7 +125,8 @@ function valueToString(value: unknown): string {
  *
  * The tokens are there so a reader is not left to remember which colours a name means, and the
  * frontend turns exactly this fixed A–Z/digit vocabulary into mana-font icons: `showResults()` runs
- * the whole message through `convertManaSymbols()` AFTER escaping it. That makes this the one place
+ * the whole message through `formatCardText()`, which escapes it and THEN substitutes (upstream
+ * #1039 folded the two steps into one entry point). That makes this the one place
  * a server-composed string is allowed to steer frontend rendering, and it is safe only because the
  * token alphabet is closed — every character in it comes from COLOR_CODE_TO_NAME's keys, never from
  * the query.

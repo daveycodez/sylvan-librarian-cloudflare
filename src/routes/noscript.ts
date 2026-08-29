@@ -162,19 +162,36 @@ const MANA_TEXT_MAP: Record<string, string> = {
 
 const MANA_SYMBOL_RE = /\{[^}]{1,5}\}/g;
 
-/** Convert mana cost symbols to HTML with CSS classes. */
-export function convertManaSymbols(text: string, isModal = false): string {
+/**
+ * Format raw card text: HTML-escape exactly once, then replace recognized mana tokens with
+ * fixed span markup, optionally turning newlines into `<br>` (upstream #1039's
+ * `format_card_text`, the single safe entry point both `convertManaSymbols` and
+ * `formatOracleText` now go through).
+ *
+ * ESCAPE FIRST, SUBSTITUTE SECOND, and the order is the whole point. The callers used to hand
+ * raw `mana_cost`/`oracle_text` straight to the symbol substitution, which emitted whatever the
+ * card printed — so `Look at a card & say "done".` reached the page as raw `&` and `"`. Escaping
+ * cannot damage the token vocabulary: `{`, `}`, `/` and the letters are all left alone by
+ * `escapeHtml`, so `{W/U}` is still `{W/U}` after it and still matches.
+ */
+export function formatCardText(text: string, isModal = false, convertNewlines = false): string {
 	if (!text) {
 		return "";
 	}
 	const symbolClass = isModal ? "modal-mana-symbol" : "mana-symbol";
-	return text.replace(MANA_SYMBOL_RE, (symbol) => {
+	const formatted = escapeHtml(text).replace(MANA_SYMBOL_RE, (symbol) => {
 		const cssClasses = MANA_MAP[symbol];
 		if (cssClasses) {
 			return `<span class="${symbolClass} ${cssClasses}"></span>`;
 		}
 		return symbol; // Return unchanged if not in map
 	});
+	return convertNewlines ? formatted.replaceAll("\n", "<br>") : formatted;
+}
+
+/** Convert mana cost symbols to HTML with CSS classes. */
+export function convertManaSymbols(text: string, isModal = false): string {
+	return formatCardText(text, isModal, false);
 }
 
 /** Convert mana symbols to Unicode text (for alt text) — matches JS convertManaSymbolsToText. */
@@ -185,12 +202,9 @@ export function convertManaSymbolsToText(text: string): string {
 	return text.replace(MANA_SYMBOL_RE, (symbol) => MANA_TEXT_MAP[symbol] ?? symbol);
 }
 
-/** Format oracle text with mana symbols and line breaks. */
+/** Format oracle text with mana symbols and line breaks (accepts raw text). */
 export function formatOracleText(oracleText: string, isModal = false): string {
-	if (!oracleText) {
-		return "";
-	}
-	return convertManaSymbols(oracleText, isModal).replaceAll("\n", "<br>");
+	return formatCardText(oracleText, isModal, true);
 }
 
 /**

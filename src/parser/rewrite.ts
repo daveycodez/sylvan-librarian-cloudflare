@@ -895,7 +895,12 @@ function normalizeCompoundOperands(node: QueryNode): { node: QueryNode; changed:
  * duplicate operand.
  */
 export function flattenAndDeduplicateCompounds(queryIn: Query): Query {
-	const { node: root, changed } = normalizeCompoundOperands(flattenNestedOperations(queryIn.root));
+	// No separate pre-flatten (upstream #1054 removed one here): `normalizeCompoundOperands` already
+	// merges a same-type child into its parent's operand list as part of its own bottom-up walk (the
+	// `normalized.node instanceof ctor` branch above), which is exactly what `flattenNestedOperations`
+	// does — so calling it first flattened the same chains twice, rebuilding every node with nothing
+	// left for the second pass to change.
+	const { node: root, changed } = normalizeCompoundOperands(queryIn.root);
 	if (!changed) return queryIn;
 	const out = new Query(root);
 	out.directives = queryIn.directives;

@@ -72,6 +72,7 @@ api/static/styles.css	scripts/generate-assets.ts (re-run it)
 api/static/index.html	scripts/generate-assets.ts (re-run it; assets.gen.txt)
 api/static/card.html	scripts/generate-assets.ts (re-run it; assets.gen.txt)
 api/static/fixtures/balance_queries.json	tests/parser/semantics.test.ts reads it directly; port balancer must keep passing
+api/static/fixtures/card_text_escaping_cases.json	tests/routes/noscript.test.ts reads it directly; formatCardText must keep matching all four variants
 api/scryfall_compat/routes.py	src/routes/scryfall-compat/routes.ts (TS port; response envelope: respond.ts)
 api/scryfall_compat/objects.py	src/routes/scryfall-compat/objects.ts + vendor card_engine/src/card_object.rs (three-file lockstep, parity-gated: tests/routes/card-object-parity.test.ts)
 api/scryfall_compat/responder.py	src/routes/scryfall-compat/respond.ts (TS port; today the envelope lives in routes.py — this row fires if upstream splits it out)
