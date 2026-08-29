@@ -1255,28 +1255,29 @@ pub(crate) enum TextField {
     /// intact); every query regex carries `(?i)`, so the case-folding Scryfall applies is already
     /// the compile's.
     ///
-    /// A MEASURED RESIDUAL LIVES HERE, and it is a property of the IMPORT rather than of this
-    /// arm. On a FACED card this column holds the FRONT face's cost, because
-    /// `merge_face_drafts` leaves `mana_cost_text` out of `_FACE_JOINED_TEXTS` and takes the
-    /// front's scalar. Scryfall's top-level `mana_cost` does two other things, and the rule is
-    /// LAYOUT, derived over every faced card in the 2026-05-31 bulk dump with no exceptions:
+    /// MATCHED WHOLE, NOT PER FACE, and it is the only joined column here that is. `o:` and `ft:`
+    /// are split back at `FACE_TEXT_SEPARATOR` before matching because the separator between their
+    /// faces is a string this store invented and Scryfall has no counterpart to. This column's
+    /// separator is `" // "`, and Scryfall's own `mana:` haystack contains it — so splitting here
+    /// would invent a divergence rather than close one.
     ///
-    ///   split / adventure / prepare / flip          the faces JOINED with " // "
-    ///   transform / modal_dfc / double_faced_token
-    ///   / reversible_card / art_series              ABSENT
+    /// The builder writes the faces' NON-EMPTY costs joined with `" // "` — see
+    /// `transform::joined_face_cost`, which carries the per-card probes. The shape, on
+    /// api.scryfall.com 2026-08-28: `!"Extus, Oriq Overlord // Awaken the Blood Avatar"` (a modal
+    /// DFC, whose card object has NO top-level `mana_cost`) answers `mana:/\/\//` 1 and
+    /// `mana:/{b}{b} \/\/ /` 1, so the seam is in the haystack and a pattern spans it; `!"Fire //
+    /// Ice" mana:/^{u}$/` answers 0, so the back half alone is not a value of its own. Corpus-wide,
+    /// `mana:/\/\// is:mdfc` is 40 of 100.
     ///
-    /// So `mana:/ /` is 435 there and 0 here, and the same 435 split-shaped cards cost a handful
-    /// of rows either way: `mana:/{r}/` 6,853 against 6,811, `mana:/}{/` 26,815 against 26,775,
-    /// `mana:/2/` 8,315 against 8,248, `mana:/^{r}$/` 526 against 529 (the front-only reading
-    /// gains three). Every unfaced card — 92% of the corpus — is exact, and so are the rows this
-    /// column was fixed for (`mana:/p/ mv=1` is 9 on both sides).
+    /// The residual this replaced was the FRONT face's cost, written by the import's face overlay.
+    /// Scryfall against what the front-only column answered, same date: `mana:/ /` 435 against 0,
+    /// `mana:/{r}/` 6,853 against 6,811, `mana:/}{/` 26,815 against 26,775, `mana:/2/` 8,315
+    /// against 8,248, `mana:/^$/` 1,350 against 1,355.
     ///
-    /// Not fixed here on purpose: the discriminator is the layout, which is a PRINTING value
-    /// (`Printing::card_layout_id`), and reading it would make this field printing-dependent —
-    /// a change to `num_pdep`'s classification and to the `Tri::PrintingDep` it implies, with its
-    /// own measurement to do. The cost-shaped alternatives do not work: "join when every face has
-    /// a cost" disagrees with Scryfall on 122 cards, every one a modal DFC or a reversible whose
-    /// two halves both carry one.
+    /// EMPTY IS A VALUE, and dropping empty faces from the join is what keeps it one. `!"Westvale
+    /// Abbey // Ormendahl, Profane Prince"`, both faces costless, answers `mana:/^$/` 1 and
+    /// `mana:/\/\//` 0 — `" // "` would have failed both. `!"Delver of Secrets // Insectile
+    /// Aberration"` answers `mana:/^{u}$/` 1 and `mana:/^{u} /` 0 for the same reason.
     ManaCostText,
 }
 
@@ -1306,8 +1307,9 @@ fn text_field_value<'a>(
         // all of them — and reading it here keeps `t:/…/` card-invariant
         // instead of forcing a printing walk.
         TextField::TypeLine        => opt_sv(str_at(strings, u32::from(card.type_line_id))),
-        // Card-level, like TypeLine: `merge_face_drafts` keeps the front's, and for a SPLIT card
-        // the raw Scryfall field it comes from is already both halves joined with " // ".
+        // Card-level, like TypeLine, and on a faced card ALREADY the faces' costs joined " // " —
+        // `transform::joined_face_cost` writes it that way because that is Scryfall's own `mana:`
+        // haystack. No face walk here for the same reason there is no split: the join is the value.
         TextField::ManaCostText    => opt_sv(str_at(strings, u32::from(card.mana_cost_text_id))),
     }
 }
@@ -4221,10 +4223,12 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
             //   mana:/ /         435   = mana:/\/\// — a split cost is "{1}{R} // {1}{U}"
             //   mana:/^{r}$/     526   anchored, against mana:{r}'s 6,852
             //
-            // NOT split per face, deliberately and unlike the oracle/flavor columns: the store's
-            // `mana_cost_text` is Scryfall's OWN joined field rather than a join this port
-            // invented, so the " // " a split card carries is in Scryfall's haystack too — which
-            // is exactly what the 435 above measures. `devotion` shares this parser class and is
+            // NOT split per face, deliberately and unlike the oracle/flavor columns: the " // "
+            // in this store's `mana_cost_text` is in SCRYFALL's haystack too, so splitting it
+            // would invent a divergence — which is exactly what the 435 above measures, and it
+            // covers the two-image layouts as well (`mana:/\/\// is:mdfc` is 40 of 100 there,
+            // even though an MDFC's card object carries no top-level `mana_cost` at all). See
+            // TextField::ManaCostText. `devotion` shares this parser class and is
             // absent on purpose: `devotion:/r/` is `Unknown regular expression keyword
             // “devotion”` there, and the parser never emits a pattern for it.
             "mana_cost_jsonb" => TextField::ManaCostText,

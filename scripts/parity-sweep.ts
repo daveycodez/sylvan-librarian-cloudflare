@@ -1418,12 +1418,12 @@ const REGEX_DIALECT: [string, string][] = [
 	["mana-slash-digit", "mana:/2/"],
 	["mana-plain-generic", "mana:2"],
 	["mana-slash-empty", "mana:/^$/"],
-	// The " // " a SPLIT card's cost carries is Scryfall's own field, not a join this port
-	// invented — which is why this column is not split per face the way the oracle columns are.
-	// KNOWN DIVERGENT, and swept for that reason: this store's `mana_cost_text` holds the FRONT
-	// face's cost where Scryfall's top-level field holds the faces joined (split / adventure /
-	// prepare / flip) or nothing at all (transform / modal_dfc / …). `mana:/ /` is 435 there and 0
-	// here; see TextField::ManaCostText for the layout table and the rows it costs.
+	// The " // " a faced card's cost carries is in Scryfall's own `mana:` haystack, not a join
+	// this port invented — which is why this column is not split per face the way the oracle
+	// columns are. It was KNOWN DIVERGENT until the builder stopped storing the FRONT face's cost
+	// alone (`transform::joined_face_cost`): `mana:/ /` was 435 there against 0 here. The seam is
+	// NOT a one-image-layout property — `mana:/\/\// is:mdfc` is 40 of 100 on api.scryfall.com,
+	// where the card object has no top-level `mana_cost` at all.
 	["mana-slash-split-seam", "mana:/ /"],
 	["mana-slash-split-escaped", "mana:/\\/\\//"],
 	["mana-slash-hybrid-shorthand", "mana:/\\smh/"],

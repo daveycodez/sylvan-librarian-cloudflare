@@ -1384,8 +1384,62 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      bumped for. `ARCHIVE_FORMAT_VERSION` moves 2026082601 -> 2026082801 in the same commit, and
  *      this constant moves with it for the reason spelled out directly above: store-age.ts reads
  *      THIS number, not the format version, so a lone format bump is a dark site.
+ *
+ *   44 A FACED CARD'S PRINTED COST BECOMES EVERY FACE'S, JOINED — the last measured `mana:/…/`
+ *      divergence.
+ *
+ *      `mana_cost_text` held the FRONT face's cost, because the importer's face overlay writes
+ *      face 0's `mana_cost` onto the merged dict and `merge_face_drafts` keeps it. Scryfall's
+ *      `mana:` haystack is the faces' NON-EMPTY costs joined with `" // "`, and the builder now
+ *      writes that (`transform::joined_face_cost`). Measured against api.scryfall.com 2026-08-28,
+ *      Scryfall against what a generation-43 store answers:
+ *
+ *        mana:/ /      435    43 answers 0        no stored cost had ever held a space
+ *        mana:/{r}/  6,853    43 answers 6,811    the back halves
+ *        mana:/}{/  26,815    43 answers 26,775
+ *        mana:/2/    8,315    43 answers 8,248
+ *        mana:/^$/   1,350    43 answers 1,355    the other direction — a faced card whose FRONT
+ *                                                 is costless but whose BACK is not read as empty
+ *
+ *      THE RULE IS NOT SCRYFALL'S TOP-LEVEL `mana_cost` FIELD, which is what an audit of the card
+ *      objects suggests and what the old note in TextField::ManaCostText said. That field is
+ *      present on exactly the one-image layouts (split/adventure/prepare/flip, 949 of 949 in the
+ *      2026-08-28 default_cards bulk) and ABSENT on the two-image ones — and Scryfall answers
+ *      `mana:/\/\//` for the two-image layouts anyway: 40 of 100 for `is:mdfc`, 1 for
+ *      `!"Extus, Oriq Overlord // Awaken the Blood Avatar"`, whose card object carries no
+ *      `mana_cost` at all. The card OBJECT and the SEARCH column are two different questions;
+ *      storing the field verbatim would have left every two-image card with no cost string.
+ *      Where the field does exist the join reproduces it byte for byte, which is the check that
+ *      makes deriving safe.
+ *
+ *      GENERATION-ONLY, and deliberately so: no struct changes shape, no index moves, no row size
+ *      moves — a stored VALUE changes, which is exactly what this constant covers and what
+ *      `ARCHIVE_FORMAT_VERSION` does not. Same call as generations 24, 31, 40 and 41. It also
+ *      costs less on the deploy: a format bump makes every reader reject the live store the
+ *      instant the Worker ships, so `/cards/*` is DARK until the republish lands, where a
+ *      generation bump leaves a readable store serving front-face costs for the few minutes the
+ *      rebuild takes.
+ *
+ *      CARD OBJECTS DO NOT MOVE. `/cards/*` derives the one-image layouts' top-level `mana_cost`
+ *      in `joinedManaCost` (objects.ts) and omits it on the two-image ones, and that derivation is
+ *      deliberately kept rather than switched to the column — the column now has a value on the
+ *      two-image layouts, and reading it there would emit a key Scryfall does not send. What DOES
+ *      move is `/search`'s `mana_cost` result field, which is the column: a split card reads
+ *      `"{1}{R} // {1}{U}"` where it read `"{1}{R}"`, and an MDFC reads both halves. That is the
+ *      string Scryfall prints on the card object for the layouts that have one.
+ *
+ *      RESIDUAL, MEASURED AND NOT CLOSED: a REVERSIBLE printing prints faces its card does not,
+ *      and `mana_cost_text` is an OracleCard column. `!"Jinnie Fay, Jetmir's Second"` has 7
+ *      printings on api.scryfall.com and `mana:/\/\//` matches 2 of them — the reversible pair —
+ *      so Scryfall answers this per PRINTING. Corpus-wide `mana:/\/\// is:reversible` is 58 cards
+ *      / 68 printings of `mana:/ /`'s 435, so a generation-44 store answers roughly 377 there and
+ *      is exact on the other four rows above. Closing it means a joined cost interned on
+ *      `DivergentPrinting` beside its `face_layout_id` (an archive LAYOUT change, so a real
+ *      `ARCHIVE_FORMAT_VERSION` bump) and `TextField::ManaCostText` reclassified as
+ *      printing-dependent — a `num_pdep` change with its own cost measurement to do, which is why
+ *      it is not folded in here.
  */
-export const STORE_CONTENT_GENERATION = 43;
+export const STORE_CONTENT_GENERATION = 44;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

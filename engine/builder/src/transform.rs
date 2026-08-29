@@ -1392,6 +1392,68 @@ fn union_list(into: &mut Vec<String>, from: &[String]) {
     }
 }
 
+/// The searchable printed mana cost of a FACED card: its faces' non-empty costs joined `" // "`.
+///
+/// THIS IS NOT A JOIN THIS PORT INVENTED, and that is the whole reason `mana:/…/` may keep
+/// matching the stored value whole while `o:` and `ft:` have to be split back per face
+/// (`FACE_TEXT_SEPARATOR`). Scryfall's `mana:` haystack IS this string. Established by probing
+/// api.scryfall.com on 2026-08-28, one card per shape — every count below is that card's own
+/// `!"…"` query ANDed with the pattern, so the corpus filters cannot confound it:
+///
+///   Fire // Ice            split      faces {1}{R} / {1}{U}
+///     mana:/{r} \/\/ /       1     the seam is in the haystack
+///     mana:/^{u}$/           0     ...and the BACK half alone is not: not matched per face
+///   Extus, Oriq Overlord    modal_dfc  faces {1}{W}{B}{B} / {6}{B}{R}, NO top-level mana_cost
+///     mana:/\/\//            1     the seam is there anyway — this is the decisive row
+///     mana:/{b}{b} \/\/ /    1     ...spanning it, so it is one string and not a set
+///     mana:/{r}$/            1     ...ending in the BACK face's last pip
+///   Delver of Secrets      transform  faces {U} / ""
+///     mana:/^{u}$/           1     the empty back face contributes NOTHING, not even a seam
+///     mana:/^{u} /           0
+///     mana:/^$/              0
+///   Westvale Abbey         transform  faces "" / ""
+///     mana:/^$/              1     ...so an all-empty card is EMPTY, not " // "
+///     mana:/\/\//            0
+///   Agadeem's Awakening    modal_dfc  faces {X}{B}{B}{B} / ""
+///     mana:/^{x}{b}{b}{b}$/  1
+///
+/// Corpus-wide, same date: `mana:/\/\// is:mdfc` is 40 of 100 — two-image layouts reach the seam
+/// in bulk, not as a one-card curiosity — and `mana:/^$/ is:artseries` is 2,243 of 2,243, every
+/// art-series face carrying `"mana_cost": ""`.
+///
+/// WHY NOT SCRYFALL'S OWN TOP-LEVEL `mana_cost`: because it does not exist on the layouts above.
+/// Over all 5,193 faced printings in the 2026-08-28 default_cards bulk the field is present on
+/// exactly the ONE-IMAGE layouts (split 350, adventure 459, prepare 95, flip 45) and absent on the
+/// two-image ones (art_series 2,650, transform 1,065, modal_dfc 328, double_faced_token 120,
+/// reversible_card 81) — 0 exceptions. Its card OBJECT omits the key there and its SEARCH index
+/// does not, so the card object and the search column are two different questions. Where Scryfall
+/// does send the field, this function reproduces it byte for byte: 949 of 949 in that bulk.
+///
+/// Empty faces are DROPPED rather than joined through, which is what makes Delver `"{U}"` instead
+/// of `"{U} // "` and Westvale `""` instead of `" // "`. `pin_joined_face_cost` covers both.
+///
+/// The costs this closed, api.scryfall.com against the front-only column, 2026-08-28:
+///
+///   mana:/ /      435    was 0        no stored cost had ever contained a space
+///   mana:/{r}/  6,853    was 6,811    the back halves
+///   mana:/}{/  26,815    was 26,775
+///   mana:/2/    8,315    was 8,248
+///   mana:/^$/   1,350    was 1,355    the other direction: faced cards whose FRONT is costless
+///                                     but whose BACK is not stopped reading as empty
+///
+/// `mana_cost_jsonb` DELIBERATELY STAYS THE FRONT'S. It is the pip multiset `m:` compiles to,
+/// `merge_face_drafts` keeps face 0's, and card_engine's ManaCost arm reads it paired with the
+/// card's `cmc` — see the `generic_of` note there. This moves the printed STRING and nothing
+/// else; `m:`, `devotion:` and `mv=` are untouched.
+fn joined_face_cost(faces: &[Value]) -> String {
+    faces
+        .iter()
+        .filter_map(|face| face.get("mana_cost").and_then(Value::as_str))
+        .filter(|cost| !cost.is_empty())
+        .collect::<Vec<_>>()
+        .join(" // ")
+}
+
 /// Upstream's `_FACE_JOINED_TEXTS` rule for one field.
 ///
 /// Python filters on truthiness (`if part`), so an EMPTY string is dropped just
@@ -1558,6 +1620,9 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         // layout entirely (77 `normal`, 3 `adventure`, 1 `token`), which is why the corpus reported
         // zero reversible cards and `is:dfc` missed all ten `sld` printings the sweep still flagged.
         row.card_layout = s(card, "layout").map(|v| v.to_lowercase());
+        // ...and the printed MANA COST, which the face overlay had been reducing to the FRONT
+        // face's. See [`joined_face_cost`] for the rule and the measurements behind it.
+        row.mana_cost_text = Some(joined_face_cost(faces));
         row.set_extra(verdict);
         row.printed_type_line = s(card, "printed_type_line");
         row.printed_text = s(card, "printed_text");
@@ -2885,6 +2950,125 @@ mod tests {
         let solo = transform(&solo).unwrap().unwrap();
         assert!(solo.card_faces.is_empty());
         assert_eq!(solo.card_artist.as_deref(), Some("Greg Hildebrandt & Tim Hildebrandt"));
+    }
+
+    /// `mana_cost_text` IS THE FACES JOINED, and the join is Scryfall's `mana:` haystack rather
+    /// than a string this port invented — see [`joined_face_cost`].
+    ///
+    /// One card per faced layout, each named and each probed against api.scryfall.com on
+    /// 2026-08-28 with a pattern the FRONT face's cost alone cannot answer. The probe is the
+    /// card's own `!"…"` ANDed with the pattern, so the corpus filters cannot confound the count.
+    #[test]
+    fn a_faced_cards_mana_cost_is_every_faces_joined() {
+        // name, layout, face costs, expected stored value, and the probe that pins it.
+        let cases: [(&str, &str, &[&str], &str); 9] = [
+            // mana:/{g}$/ 1 — the LAST face's pip, where the front is {X}{W}.
+            (
+                "Who // What // When // Where // Why",
+                "split",
+                &["{X}{W}", "{2}{R}", "{2}{U}", "{3}{B}", "{1}{G}"],
+                "{X}{W} // {2}{R} // {2}{U} // {3}{B} // {1}{G}",
+            ),
+            // mana:/{u} \/\/ / 1, mana:/^$/ 0.
+            ("Obyra's Attendants // Desperate Parry", "adventure", &["{4}{U}", "{1}{U}"], "{4}{U} // {1}{U}"),
+            // mana:/{b} \/\/ {b}/ 1.
+            ("Scathing Shadelock // Venomous Words", "prepare", &["{4}{B}", "{B}"], "{4}{B} // {B}"),
+            // THE EMPTY BACK FACE IS DROPPED, not joined through: mana:/{u}$/ 1 and mana:/\/\// 0.
+            // A `" // "` tail would have answered the second 1.
+            ("Erayo, Soratami Ascendant // Erayo's Essence", "flip", &["{1}{U}", ""], "{1}{U}"),
+            // Same shape, the other one-image/two-image side of the layout table:
+            // mana:/^{u}$/ 1, mana:/^{u} / 0, mana:/^$/ 0.
+            ("Delver of Secrets // Insectile Aberration", "transform", &["{U}", ""], "{U}"),
+            // THE DECISIVE ROW. A modal DFC's card object carries NO top-level `mana_cost` at all,
+            // and Scryfall still answers mana:/\/\// 1 for it — 40 of 100 corpus-wide
+            // (`mana:/\/\// is:mdfc`). Storing Scryfall's own field would have stored nothing here.
+            (
+                "Shaile, Dean of Radiance // Embrose, Dean of Shadow",
+                "modal_dfc",
+                &["{1}{W}", "{2}{B}{B}"],
+                "{1}{W} // {2}{B}{B}",
+            ),
+            // mana:/\/\// 1 (`mana:/\/\// is:reversible` is 58 cards / 68 printings).
+            (
+                "Jinnie Fay, Jetmir's Second // Jinnie Fay, Jetmir's Second",
+                "reversible_card",
+                &["{R/G}{G}{G/W}", "{R/G}{G}{G/W}"],
+                "{R/G}{G}{G/W} // {R/G}{G}{G/W}",
+            ),
+            // ALL FACES EMPTY IS EMPTY, never " // ": mana:/^$/ 1 with include:extras.
+            ("Punchcard // Punchcard", "double_faced_token", &["", ""], ""),
+            // ...and the same for art series, where it is the whole class:
+            // `mana:/^$/ is:artseries` is 2,243 of 2,243.
+            ("Fell Beast's Shriek // Fell Beast's Shriek", "art_series", &["", ""], ""),
+        ];
+
+        for (name, layout, costs, want) in cases {
+            let mut card = minimal_card(name);
+            card["layout"] = json!(layout);
+            card["card_faces"] = Value::Array(
+                costs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, cost)| json!({"name": format!("{name} face {i}"), "mana_cost": cost, "type_line": "Creature"}))
+                    .collect(),
+            );
+            let draft = transform(&card).unwrap().expect("imported");
+            assert_eq!(draft.mana_cost_text.as_deref(), Some(want), "{layout}: {name}");
+        }
+    }
+
+    /// Where Scryfall DOES send a top-level `mana_cost`, the join reproduces it byte for byte.
+    ///
+    /// 949 of 949 faced printings that carry the field in the 2026-08-28 default_cards bulk — the
+    /// one-image layouts, all of them. This is the check that makes deriving safe rather than
+    /// merely convenient: the two fixtures carry Scryfall's own string, and it is compared against
+    /// what `joined_face_cost` produces from the same object's faces.
+    #[test]
+    fn the_join_reproduces_scryfalls_own_top_level_cost() {
+        for name in ["fire_ice", "prepare_es"] {
+            let card = fixture(name);
+            let scryfalls = card["mana_cost"].as_str().expect("a one-image layout carries the field");
+            let draft = transform(&card).unwrap().unwrap();
+            assert_eq!(draft.mana_cost_text.as_deref(), Some(scryfalls), "{name}");
+        }
+    }
+
+    /// `mana_cost_jsonb` DID NOT MOVE, and the pairing is what makes that load-bearing.
+    ///
+    /// The pip multiset `m:` compiles to stays the FRONT face's, paired with the card's own `cmc`
+    /// — card_engine's ManaCost arm reads them together (see its `generic_of` note). Only the
+    /// printed STRING joins. `mana:/p/ mv=1` is 9 on api.scryfall.com and on this store both
+    /// before and after (2026-08-28).
+    #[test]
+    fn joining_the_cost_string_leaves_the_pip_multiset_alone() {
+        let split = transform(&fixture("fire_ice")).unwrap().unwrap();
+        assert_eq!(split.mana_cost_text.as_deref(), Some("{1}{R} // {1}{U}"));
+        assert_eq!(split.mana_cost_jsonb, vec![("R".to_string(), 1)], "Fire's pips, not Fire+Ice's");
+
+        // An unfaced card takes neither path: its own string, its own pips, untouched by any of
+        // this. `mana:/^$/` is 1,350 on api.scryfall.com and an empty cost is a VALUE that
+        // answers it — `joined_face_cost` never sees this card at all.
+        let mut land = minimal_card("Basic Waste");
+        land["mana_cost"] = json!("");
+        land["type_line"] = json!("Land");
+        let land = transform(&land).unwrap().unwrap();
+        assert_eq!(land.mana_cost_text.as_deref(), Some(""), "empty is a value, never an absence");
+        assert!(land.mana_cost_jsonb.is_empty());
+    }
+
+    /// The join rule itself, at the unit the corpus cases above exercise through `transform`.
+    #[test]
+    fn pin_joined_face_cost() {
+        let faces = |costs: &[&str]| -> Vec<Value> { costs.iter().map(|c| json!({"mana_cost": c})).collect() };
+        assert_eq!(joined_face_cost(&faces(&["{1}{R}", "{1}{U}"])), "{1}{R} // {1}{U}");
+        // Empty faces drop out entirely rather than contributing a bare separator.
+        assert_eq!(joined_face_cost(&faces(&["{U}", ""])), "{U}");
+        assert_eq!(joined_face_cost(&faces(&["", "{U}"])), "{U}");
+        assert_eq!(joined_face_cost(&faces(&["", ""])), "");
+        // ...and so does a face with no `mana_cost` key. 0 of the 10,395 faces in the 2026-08-28
+        // default_cards bulk are missing it, so this is a shape guard rather than a live case.
+        assert_eq!(joined_face_cost(&[json!({"name": "no cost"}), json!({"mana_cost": "{G}"})]), "{G}");
+        assert_eq!(joined_face_cost(&[]), "");
     }
 
     /// The card's OWN layout survives the face overlay — the same rule as the artist above, on the

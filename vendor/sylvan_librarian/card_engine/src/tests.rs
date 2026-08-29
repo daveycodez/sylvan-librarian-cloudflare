@@ -9832,11 +9832,54 @@ fn mana_regex_runs_against_the_cost_string() {
     // An empty cost is a real value, and `^$` selects exactly the 1,350 cards that have one.
     assert!(m("^$", ""));
     assert!(!m("^$", "{R}"));
-    // A SPLIT card's cost carries Scryfall's own " // ", which is why mana:/ / is 435 rather than
-    // zero — and why this field is NOT split per face the way the oracle columns are.
+    // A FACED card's stored cost is every face's, joined " // " (`transform::joined_face_cost`),
+    // which is why mana:/ / is 435 rather than zero — and why this field is NOT split per face the
+    // way the oracle columns are: the seam is in Scryfall's haystack too.
     assert!(m(" ", "{1}{R} // {1}{U}"));
     assert!(m(r"\/\/", "{1}{R} // {1}{U}"));
     assert!(!m(" ", "{1}{R}"));
+
+    // THE FOUR MEASURED ROWS, against the string the builder now stores for one card of each
+    // faced layout. Every value here is what `joined_face_cost` produces from that card's real
+    // face costs; every count is api.scryfall.com on 2026-08-28, with what a front-face-only
+    // column answered beside it. See transform::joined_face_cost for the per-card probes.
+    //
+    //   mana:/ /     435  was 0      mana:/}{/  26,815  was 26,775
+    //   mana:/{r}/ 6,853  was 6,811  mana:/2/    8,315  was 8,248
+    //   mana:/^$/  1,350  was 1,355
+    let stored: [(&str, &str, &str); 9] = [
+        ("split", "Who // What // When // Where // Why", "{X}{W} // {2}{R} // {2}{U} // {3}{B} // {1}{G}"),
+        ("adventure", "Obyra's Attendants // Desperate Parry", "{4}{U} // {1}{U}"),
+        ("prepare", "Scathing Shadelock // Venomous Words", "{4}{B} // {B}"),
+        ("flip", "Erayo, Soratami Ascendant // Erayo's Essence", "{1}{U}"),
+        ("transform", "Delver of Secrets // Insectile Aberration", "{U}"),
+        ("modal_dfc", "Shaile, Dean of Radiance // Embrose, Dean of Shadow", "{1}{W} // {2}{B}{B}"),
+        ("reversible_card", "Jinnie Fay, Jetmir's Second", "{R/G}{G}{G/W} // {R/G}{G}{G/W}"),
+        ("double_faced_token", "Punchcard // Punchcard", ""),
+        ("art_series", "Fell Beast's Shriek", ""),
+    ];
+    // `mana:/ /` — the seam, and it reaches the TWO-IMAGE layouts as well. That is the row a
+    // reading of Scryfall's top-level `mana_cost` field gets wrong: an MDFC's card object carries
+    // no such key, and `mana:/\/\// is:mdfc` is still 40 of 100 there.
+    let seam: Vec<&str> = stored.iter().filter(|(_, _, cost)| m(" ", cost)).map(|(lay, _, _)| *lay).collect();
+    assert_eq!(seam, ["split", "adventure", "prepare", "modal_dfc", "reversible_card"]);
+    // `mana:/^$/` — the empty faces are DROPPED from the join rather than joined through, so a
+    // card whose faces are all costless is EMPTY and one whose front alone is costless is not.
+    let empty: Vec<&str> = stored.iter().filter(|(_, _, cost)| m("^$", cost)).map(|(lay, _, _)| *lay).collect();
+    assert_eq!(empty, ["double_faced_token", "art_series"]);
+    // `mana:/{r}/` and `mana:/2/` — the two rows the BACK half alone moves. Flip and transform
+    // keep the front's string here, so neither gains: their backs are costless.
+    let has_r: Vec<&str> = stored.iter().filter(|(_, _, cost)| m("{r}", cost)).map(|(lay, _, _)| *lay).collect();
+    assert_eq!(has_r, ["split"], "Who//What's {{2}}{{R}} is on the SECOND face — the front is {{X}}{{W}}");
+    let has_2: Vec<&str> = stored.iter().filter(|(_, _, cost)| m("2", cost)).map(|(lay, _, _)| *lay).collect();
+    assert_eq!(has_2, ["split", "modal_dfc"], "Shaile's {{2}}{{B}}{{B}} is on the BACK face");
+    // `mana:/}{/` — the brace seam, unmoved by any of this: it needs two symbols in one face.
+    let brace_seam: Vec<&str> = stored.iter().filter(|(_, _, cost)| m("}{", cost)).map(|(lay, _, _)| *lay).collect();
+    assert_eq!(
+        brace_seam,
+        ["split", "adventure", "prepare", "flip", "modal_dfc", "reversible_card"],
+        "a two-symbol cost on ANY ONE face is enough; Delver's whole joined cost is the single {{U}}"
+    );
     // Scryfall's own dialect shorthands apply on this column too.
     assert!(m(r"\smh", "{R/G}"));
     assert!(!m(r"\smh", "{R}{G}"));

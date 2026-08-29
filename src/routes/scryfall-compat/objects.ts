@@ -500,8 +500,13 @@ function prices(row: EngineRow): Record<string, string | null> {
  * that do not. Fire // Ice is `"{1}{R} // {1}{U}"`; flipped Erayo, whose back face carries
  * `"mana_cost": ""`, is `"{1}{U}"` and not `"{1}{U} // "`.
  *
- * Derived rather than stored because the ingest cannot preserve it: transform_row overlays each
- * face onto the parent card, so the stored top-level cost is the FRONT face's alone.
+ * STILL DERIVED, though `mana_cost_text` now holds this exact string (`joined_face_cost` in the
+ * builder, added for `mana:/…/`). Reading the column here would be wrong in the one direction that
+ * matters: the column carries the join on EVERY faced layout because Scryfall's search index does,
+ * while the card object carries it only on the one-image ones — so a column read would emit
+ * `mana_cost` on transform/MDFC/reversible/art-series cards, where Scryfall sends no such key.
+ * The two agree wherever the key exists (949 of 949 faced printings with a top-level `mana_cost`
+ * in the 2026-08-28 bulk), and the caller's `twoImage` gate is what decides that they are asked.
  */
 function joinedManaCost(stored: Record<string, unknown>[]): string {
 	return stored
