@@ -11,8 +11,9 @@
 //
 //   - The normalized cost REORDERS colored pips into canonical colour order, so `RUW` comes back as
 //     `{U}{R}{W}` (Jeskai) rather than as written. `canonicalColors` is that rule.
-//   - Emission order is X, then generic, then colored pips, then `{C}`, regardless of input order,
-//     with generic summed into one symbol: `2XWU` is `{X}{2}{W}{U}`, and `1{1}` is `{2}`.
+//   - Emission order is X, then generic, then every other pip in `GET /symbology` catalog order,
+//     regardless of input order, with generic summed into one symbol: `2XWU` is `{X}{2}{W}{U}`, and
+//     `1{1}` is `{2}`. `PIP_ORDER` is that rule.
 
 /** The colour wheel. Every canonical ordering is a walk around this cycle. */
 const WUBRG = ["W", "U", "B", "R", "G"] as const;
@@ -24,8 +25,114 @@ const COLORLESS_PIPS = new Set(["C", "S"]);
 /** Variable pips, which contribute nothing to mana value. */
 const VARIABLE_PIPS = new Set(["X", "Y", "Z"]);
 
-/** Half-mana symbols are written {HW}; the half applies to the symbol after the H. */
+/**
+ * Half-mana symbols are written {HW}; the half applies to the symbol after the H. `GET /symbology`
+ * lists exactly these two (2026-08-28), and reading `H` as a prefix over any colour was one symbol
+ * too generous: `?cost={HB}` is a 422 on api.scryfall.com, measured the same day.
+ */
+const HALF_SYMBOLS = new Set(["HW", "HR"]);
 const HALF_MANA = 0.5;
+
+/**
+ * Every hybrid symbol api.scryfall.com knows, in the order `GET /symbology` lists them.
+ *
+ * Fetched whole on 2026-08-28: 84 symbols, 36 of them hybrids, and this is all 36. The inventory is
+ * the rule — a hybrid parses if and only if it is one of these — because no rule stated in terms of
+ * the halves gets the boundary right. This port used to require exactly TWO halves, which rejects
+ * the ten PHYREXIAN HYBRIDS below: `{W/U/P}` and its nine siblings are printed symbols, and four
+ * live cards carry one in their mana cost (`is:phyrexian is:hybrid`, 2026-08-28 — Ajani, Sleeper
+ * Agent `{1}{G}{G/W/P}{W}`; Tamiyo, Compleated Sage `{2}{G}{G/U/P}{U}`; Nahiri, the Unforgiving
+ * `{1}{R}{R/W/P}{W}`; Lukka, Bound to Ruin `{2}{R}{R/G/P}{G}`). Loosening the count to "two or
+ * three" would be just as wrong in the other direction: `{W/U/B}` and `{3/W}` are still 422s.
+ *
+ * The order is load-bearing twice over — it is also the order hybrids are EMITTED in, see PIP_ORDER.
+ */
+const HYBRID_SYMBOLS = [
+	// Colour pairs.
+	"W/U",
+	"W/B",
+	"B/R",
+	"B/G",
+	"U/B",
+	"U/R",
+	"R/G",
+	"R/W",
+	"G/W",
+	"G/U",
+	// Phyrexian hybrids — one of two colours, or 2 life. All ten colour pairs exist.
+	"B/G/P",
+	"B/R/P",
+	"G/U/P",
+	"G/W/P",
+	"R/G/P",
+	"R/W/P",
+	"U/B/P",
+	"U/R/P",
+	"W/B/P",
+	"W/U/P",
+	// Colorless hybrids.
+	"C/W",
+	"C/U",
+	"C/B",
+	"C/R",
+	"C/G",
+	// Twobrid.
+	"2/W",
+	"2/U",
+	"2/B",
+	"2/R",
+	"2/G",
+	// Phyrexian.
+	"W/P",
+	"U/P",
+	"B/P",
+	"R/P",
+	"G/P",
+	"C/P",
+] as const;
+
+/**
+ * Every SPELLING that names one of those symbols, mapped to the spelling Scryfall answers with.
+ *
+ * A two-part hybrid may be written either way round and comes back canonical — measured one request
+ * each on 2026-08-28, once per family: `{U/W}`→`{W/U}`, `{W/2}`→`{2/W}`, `{P/W}`→`{W/P}`,
+ * `{W/C}`→`{C/W}`. A three-part one may NOT: `{U/W/P}` and `{P/W/U}` are both 422s where `{W/U/P}`
+ * parses, so the ten Phyrexian hybrids are accepted only as spelled above.
+ */
+const HYBRID_CANONICAL = new Map<string, string>(
+	HYBRID_SYMBOLS.flatMap((symbol) => {
+		const parts = symbol.split("/");
+		const spellings: [string, string][] = [[symbol, symbol]];
+		if (parts.length === 2) spellings.push([`${parts[1]}/${parts[0]}`, symbol]);
+		return spellings;
+	}),
+);
+
+/**
+ * The order pips are EMITTED in: `GET /symbology` catalog order, for everything a cost can carry
+ * besides generic and variable pips (fetched 2026-08-28).
+ *
+ * Measured, one request per row on 2026-08-28, each written both ways round to prove it is a sort
+ * and not the writing order:
+ *
+ *   ?cost={G}{G/W}{W}    {G/W}{G}{W}     a hybrid comes out ahead of a plain pip of its colour
+ *   ?cost={W}{HW}        {HW}{W}         so does a half pip
+ *   ?cost={R}{HR}{R/W}   {R/W}{HR}{R}    and a hybrid comes out ahead of a half pip
+ *   ?cost={W}{C/P}       {C/P}{W}        a colourless hybrid sorts with the hybrids, not at the end
+ *   ?cost={S}{C}         {C}{S}          the colorless pips have an order of their own
+ *
+ * Between two hybrids it is THIS list's order and not the colour order, which is the one thing a
+ * colour-rank sort cannot express: `{G/W}{W/U}` answers `{W/U}{G/W}` and `{G/U}{W/B}` answers
+ * `{W/B}{G/U}`, both of which put the later colour first. Same for half pips: `{HR}{HW}` answers
+ * `{HW}{HR}` though Boros orders R before W.
+ *
+ * The five PLAIN colour pips are the exception, and the only one: `RUW` answers `{U}{R}{W}`, so they
+ * come out in canonical colour order rather than catalog order. They occupy five consecutive catalog
+ * slots, so ranking them within that block says exactly that — see `PLAIN_PIP_AT`.
+ */
+const PIP_ORDER: string[] = [...HYBRID_SYMBOLS, "HW", "HR", "W", "U", "B", "R", "G", "C", "S"];
+const PIP_INDEX = new Map(PIP_ORDER.map((symbol, index) => [symbol, index]));
+const PLAIN_PIP_AT = PIP_INDEX.get("W") as number;
 
 /** A fragment of the cost could not be understood as mana. */
 export class ManaCostError extends Error {
@@ -79,17 +186,14 @@ function symbolColors(symbol: string): Set<string> {
 function symbolValue(symbol: string): number {
 	if (/^\d+$/.test(symbol)) return Number.parseInt(symbol, 10);
 	if (VARIABLE_PIPS.has(symbol)) return 0;
-	if (symbol.startsWith("H") && symbol.length > 1) return HALF_MANA;
+	if (HALF_SYMBOLS.has(symbol)) return HALF_MANA;
 	if (symbol.includes("/")) {
-		// A hybrid has exactly TWO halves. `{W/U/B}` is not a Magic symbol and Scryfall rejects it
-		// (422, measured 2026-08-16); this port summed it to 1 and answered a three-coloured
-		// `mana_cost` for a cost that cannot be printed. Each half must also be a colour, a generic
-		// amount, or Phyrexian `P` — the same three things the value rule below knows how to price.
-		const halves = symbol.split("/");
-		const priceable = (part: string): boolean => /^\d+$/.test(part) || part in COLOR_INDEX || part === "P";
-		if (halves.length !== 2 || !halves.every(priceable)) throw new UnparseableSymbol();
-		// A hybrid is worth its more expensive half: {2/W} is 2, {W/U} and {W/P} are 1.
-		return Math.max(...halves.map((part) => (/^\d+$/.test(part) ? Number.parseInt(part, 10) : 1)));
+		// A hybrid parses if and only if it is one of the 36 symbols Scryfall lists — see
+		// HYBRID_SYMBOLS for why the inventory rather than a rule about the halves.
+		const canonical = HYBRID_CANONICAL.get(symbol);
+		if (canonical === undefined) throw new UnparseableSymbol();
+		// A hybrid is worth its most expensive part: {2/W} is 2, {W/U}, {W/U/P} and {C/P} are 1.
+		return Math.max(...canonical.split("/").map((part) => (/^\d+$/.test(part) ? Number.parseInt(part, 10) : 1)));
 	}
 	if (COLORLESS_PIPS.has(symbol) || symbol in COLOR_INDEX) return 1;
 	throw new UnparseableSymbol();
@@ -161,11 +265,22 @@ function tokenize(raw: string): Token[] {
  * The last row is the rule the others are a degenerate case of: what comes back is the fragment with
  * everything Scryfall could read removed. `{QQQ}` keeps all three Qs because none of them is a
  * symbol; `{W/U/B}` keeps only its punctuation.
+ *
+ * What counts as "could read" is exactly the ten ONE-CHARACTER mana symbols — the five colours,
+ * `{C}`, `{S}` and the three variables. `P`, `H` and digits are NOT struck, which this used to get
+ * wrong by inferring the set from what the parser prices rather than measuring it. Five more rows,
+ * one request each on 2026-08-28, all of them costs the inventory above now rejects:
+ *
+ *   ?cost={U/W/P}     “{//P}”    a Phyrexian hybrid spelled backwards — the P survives
+ *   ?cost={2/W/P}     “{2//P}”   and so does the generic half
+ *   ?cost={3/W}       “{3/}”     there is no {3/W}; only {2/X} twobrids exist
+ *   ?cost={H/W}       “{H/}”     H survives too
+ *   ?cost={HB}        “{H}”      there is no {HB} either; only {HW} and {HR}
  */
 function reportedFragment(token: Token): string {
 	if (!token.braced) return token.spelling;
 	const residue = [...token.symbol]
-		.filter((ch) => !(ch in COLOR_INDEX) && !COLORLESS_PIPS.has(ch) && !VARIABLE_PIPS.has(ch) && !/[\dPH]/.test(ch))
+		.filter((ch) => !(ch in COLOR_INDEX) && !COLORLESS_PIPS.has(ch) && !VARIABLE_PIPS.has(ch))
 		.join("");
 	return `{${residue}}`;
 }
@@ -173,21 +288,16 @@ function reportedFragment(token: Token): string {
 /**
  * Assemble the normalized cost string. A cost whose symbols all cancel to nothing renders as `{0}`.
  */
-function renderCost(
-	variables: string[],
-	generic: number,
-	colored: string[],
-	colorless: string[],
-	colors: string[],
-): string {
+function renderCost(variables: string[], generic: number, pips: string[], colors: string[]): string {
 	const rank = new Map(colors.map((color, index) => [color, index]));
+	// Catalog order, with the five plain colour pips ranked inside their own block of the catalog so
+	// that they alone come out in canonical colour order. Every pip that reaches here is a symbol
+	// Scryfall lists, so the lookup always hits.
 	const sortKey = (symbol: string, at: number): [number, number] => {
-		// A multi-colour symbol sorts by its earliest colour, which keeps hybrids next to the pips
-		// they share a colour with rather than at one end.
-		const own = [...symbolColors(symbol)].map((color) => rank.get(color) ?? rank.size);
-		return [own.length > 0 ? Math.min(...own) : rank.size, at];
+		const own = rank.get(symbol);
+		return [own === undefined ? (PIP_INDEX.get(symbol) ?? PIP_ORDER.length) : PLAIN_PIP_AT + own, at];
 	};
-	const ordered = colored
+	const ordered = pips
 		.map((symbol, at) => ({ symbol, key: sortKey(symbol, at) }))
 		.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1])
 		.map((entry) => entry.symbol);
@@ -199,7 +309,6 @@ function renderCost(
 	const parts = [...variables].sort().map((symbol) => `{${symbol}}`);
 	if (generic) parts.push(`{${generic}}`);
 	parts.push(...ordered.map((symbol) => `{${symbol}}`));
-	parts.push(...colorless.map((symbol) => `{${symbol}}`));
 	return parts.join("") || "{0}";
 }
 
@@ -233,8 +342,10 @@ export function parseManaCost(raw: string): Record<string, unknown> {
 
 	let generic = 0;
 	const variables: string[] = [];
-	const colored: string[] = [];
-	const colorless: string[] = [];
+	// One list for every pip that is neither generic nor variable — colored, colorless and hybrid
+	// alike — because their emission order is one catalog order and not three buckets: `{W}{C/P}`
+	// answers `{C/P}{W}`, so a colourless hybrid comes out AHEAD of a coloured pip.
+	const pips: string[] = [];
 	const colorSet = new Set<string>();
 	let total = 0;
 
@@ -263,8 +374,8 @@ export function parseManaCost(raw: string): Record<string, unknown> {
 		for (const color of symbolColors(token.symbol)) colorSet.add(color);
 		if (/^\d+$/.test(token.symbol)) generic += Number.parseInt(token.symbol, 10);
 		else if (VARIABLE_PIPS.has(token.symbol)) variables.push(token.symbol);
-		else if (COLORLESS_PIPS.has(token.symbol)) colorless.push(token.symbol);
-		else colored.push(token.symbol);
+		// A hybrid is emitted in the spelling Scryfall answers with, not the one it was written in.
+		else pips.push(HYBRID_CANONICAL.get(token.symbol) ?? token.symbol);
 	}
 	if (bad !== "") {
 		throw new ManaCostError(
@@ -274,7 +385,7 @@ export function parseManaCost(raw: string): Record<string, unknown> {
 
 	// An empty cost is null, but a cost that was written and happens to be free is `{0}`: Scryfall
 	// answers `cost=` with null and `cost=0` with "{0}", so the two cannot share a branch.
-	const cost = tokens.length > 0 ? renderCost(variables, generic, colored, colorless, canonicalColors(colorSet)) : null;
+	const cost = tokens.length > 0 ? renderCost(variables, generic, pips, canonicalColors(colorSet)) : null;
 
 	return {
 		object: "mana_cost",
