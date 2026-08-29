@@ -150,9 +150,20 @@ pub(crate) const SELF_REF_SENTINEL: char = '\u{10400}';
 ///
 /// Possessives need no entry of their own: `\bthis creature\b` matches inside "this creature's"
 /// because `'` is not a word character, and Howlgeist ("this creature's") confirms it.
+///
+/// CONTRAPTION and ATTRACTION were the last two in, and they are worth their own paragraph
+/// because they are the largest single block the phrase family carries: the Un-set assembled
+/// permanents say "Whenever you crank this Contraption" and "When you visit this Attraction", and
+/// nothing else in their text is self-referential. Counted whole rather than sampled, on
+/// api.scryfall.com 2026-08-28 — `o:/this contraption/` is 45 and `o:/this contraption/ o:/~/` is
+/// the same 45; `o:/this attraction/` is 10 and `o:/this attraction/ o:/~/` is the same 10. Every
+/// card the phrase reaches is a card `~` reaches, which is what makes them members rather than a
+/// coincidence, and the two probes in the format above are Arms Depot and Ferris Wheel, both 1.
+/// Their absence was 47 of the 53 names `o:/~/` missed here.
 const SELF_REF_THIS_PHRASES: &[&str] = &[
     "creature", "spell", "land", "artifact", "enchantment", "card", "aura", "token", "equipment",
-    "vehicle", "permanent", "saga", "siege", "class", "spacecraft", "case",
+    "vehicle", "permanent", "saga", "siege", "class", "spacecraft", "case", "contraption",
+    "attraction",
 ];
 
 /// Where `~` is being expanded, which decides WHICH alternatives it gets.

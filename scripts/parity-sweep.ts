@@ -1333,8 +1333,16 @@ const REGEX_DIALECT: [string, string][] = [
 	// aliases matches `~`, and no card containing a non-alias "this <noun>" matches through it.
 	["this-creature-subset", "o:/this creature/ -o:/~/"],
 	["this-spell-subset", "o:/this spell/ -o:/~/"],
+	["this-contraption-subset", "o:/this contraption/ -o:/~/"],
+	["this-attraction-subset", "o:/this attraction/ -o:/~/"],
 	["this-ability-not-alias", "o:/this ability/ -o:/~/"],
 	["this-door-not-alias", "o:/this door/ -o:/~/"],
+	// A PERIOD IN AN ALIAS KILLS IT. Sixty-nine cards carry a `.` in the name and 15 of them match
+	// `~`, every one through a phrase or through a short name the comma left period-free (Nick
+	// Fury, Phoebe). The row that would move first if the rule were dropped is the second one:
+	// nine cards whose only self-reference-shaped text is a name form with a period in it.
+	["self-reference-period-name", "o:/~/ name:/\\./"],
+	["period-name-not-alias", "name:/\\./ -o:/~/ -o:/this /"],
 	// The columns: `fo:` keeps reminder text and answers MORE (22,037 against 19,228), and
 	// `ft:`/`name:`/`t:`/`mana:` do not expand `~` at all — it stays the literal tilde there.
 	// `ft:/~/`'s 2 are the trap: Blighted Agent and Urabrask the Hidden, whose Phyrexian-script
