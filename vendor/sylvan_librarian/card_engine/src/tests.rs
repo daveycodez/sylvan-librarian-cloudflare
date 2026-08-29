@@ -15829,6 +15829,18 @@ fn scryfall_regex_shorthands_expand() {
     assert!(m(r"\spp", "put a +1/+1 counter on it"));
     assert!(!m(r"\spp", "create a 3/3 green hydra"));
     assert!(m(r"\smm", "target creature gets -1/-1 until end of turn"));
+
+    // THE UPPERCASE CLASS ESCAPES ARE A DELIBERATE NON-REPRODUCTION. Scryfall downcases the whole
+    // pattern before compiling, so `\S` reaches its engine as `\s`: `o:/\Sdraw/` and `o:/\sdraw/`
+    // are BOTH 3,604 there (2026-08-28), which two patterns describing opposite things cannot be
+    // unless one is not being read. Here `\S` keeps its meaning, and `\Sm` is "non-whitespace,
+    // then m" rather than a mana symbol — the shorthands are lowercase-only for the same reason.
+    assert_eq!(translate_query_escapes(r"\Sdraw"), r"\Sdraw", "\\S is passed through, not folded to \\s");
+    assert_eq!(translate_query_escapes(r"\Sm"), r"\Sm", "and it is not the head of a shorthand");
+    assert!(m(r"\Sdraw", "you may redraw your opening hand"));
+    assert!(!m(r"\Sdraw", "draw a card"), "a string start is not non-whitespace");
+    assert!(!m(r"\Sdraw", "target player may draw a card"), "and neither is a space");
+    assert!(m(r"\sdraw", "target player may draw a card"), "which is what the lowercase one is for");
     assert!(!m(r"\smm", "put a +1/+1 counter on it"));
 
     // A quantifier binds to the WHOLE shorthand, which is why each expansion is parenthesized.

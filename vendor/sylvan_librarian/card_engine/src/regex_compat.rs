@@ -485,6 +485,27 @@ const SCRYFALL_SHORTHANDS: &[(&str, &str)] = &[
 /// `o:/[\sm]/` comes back "parentheses () not balanced" there, its own substitution having
 /// broken the class — and reproducing that particular bug would turn a query that reads
 /// perfectly well ("whitespace or the letter m") into an error.
+///
+/// THE UPPERCASE CLASS ESCAPES ARE A DELIBERATE NON-REPRODUCTION, and the only place in this
+/// dialect where matching Scryfall was chosen against. Scryfall downcases the WHOLE pattern before
+/// it compiles anything, so `\S` arrives at its engine as `\s` and the negation is simply lost.
+/// Measured 2026-08-28 against api.scryfall.com, with this engine's answer beside it:
+///
+/// | query | Scryfall | here |
+/// |---|---|---|
+/// | `o:/\sdraw/` | 3,604 | 3,604 |
+/// | `o:/\Sdraw/` | 3,604 | 1 |
+/// | `o:/\Wdraw/` | 0 | 3,605 |
+/// | `o:/\Ddraw/` | 0 | 3,605 |
+///
+/// `\S` answering the same 3,604 as `\s` is the whole proof: "non-whitespace then draw" and
+/// "whitespace then draw" cannot both be 3,604 unless one of them is not being read. `\W` and `\D`
+/// are the same fold seen from the other side — downcased to `\w` and `\d`, which no oracle text
+/// satisfies before "draw", they answer nothing at all rather than the thousands they describe.
+///
+/// Reproducing this would mean case-folding the pattern here too, which costs every uppercase
+/// escape a user could write and buys a bug. The shorthands above are lowercase-only for the same
+/// reason the fold is not copied: `\Sm` is "non-whitespace, then m", not a mana symbol.
 pub(crate) fn translate_query_escapes(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len());
