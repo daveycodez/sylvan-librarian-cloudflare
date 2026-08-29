@@ -267,18 +267,14 @@ pub(crate) fn jsonb_obj_to_legality_bits(d: &Bound<PyDict>, key: &str) -> u64 {
 #[cfg(feature = "python")]
 pub(crate) fn legality_bits_to_pydict<'a>(py: Python<'a>, bits: u64) -> PyResult<pyo3::Bound<'a, PyDict>> {
     let dict = PyDict::new(py);
-    if let Ok(shifts) = format_shifts().read() {
-        let mut entries: Vec<(String, u8)> = shifts.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        entries.sort();
-        for (format, shift) in entries {
-            let word = match (bits >> shift) & 0b11 {
-                LEGALITY_LEGAL => "legal",
-                LEGALITY_RESTRICTED => "restricted",
-                LEGALITY_BANNED => "banned",
-                _ => "not_legal",
-            };
-            dict.set_item(format, word)?;
-        }
+    for (format, shift) in FORMAT_REGISTRY.order().iter() {
+        let word = match (bits >> shift) & 0b11 {
+            LEGALITY_LEGAL => "legal",
+            LEGALITY_RESTRICTED => "restricted",
+            LEGALITY_BANNED => "banned",
+            _ => "not_legal",
+        };
+        dict.set_item(format.as_str(), word)?;
     }
     Ok(dict)
 }
@@ -481,5 +477,73 @@ mod tests {
                 "a format the word says nothing about must not pick up its neighbour's status"
             );
         }
+    }
+}
+
+/// Perf-audit finding #4: `legality_bits_to_pydict` used to clone the whole format registry
+/// into a fresh `Vec` and sort it on every call -- once per output row whenever `legalities`
+/// is requested. Compares that against the cached, pre-sorted `Arc<[(String, u8)]>` snapshot
+/// `FormatRegistry::order()` now serves, over a registry sized like the real one (22 formats,
+/// per this module's header comment).
+///
+///     cargo test --release bench_legality_dict_cost -- --ignored --nocapture
+#[cfg(test)]
+mod bench_legality_dict_cost {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    use super::{format_shift_or_assign, format_shifts, FORMAT_REGISTRY};
+
+    const ITERS: usize = 200_000;
+    const FORMATS: &[&str] = &[
+        "standard", "pioneer", "modern", "legacy", "pauper", "vintage", "penny", "commander",
+        "oathbreaker", "standardbrawl", "brawl", "alchemy", "paupercommander", "duel", "oldschool",
+        "premodern", "predh", "historic", "timeless", "gladiator", "explorer", "future",
+    ];
+
+    fn seed_registry() {
+        for f in FORMATS {
+            format_shift_or_assign(f);
+        }
+        assert_eq!(format_shifts().read().unwrap().len(), FORMATS.len());
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_legality_dict_cost() {
+        seed_registry();
+        let bits: u64 = 0x5555_5555; // arbitrary — content doesn't affect either path's cost
+
+        // Pre-fix behavior: clone every (String, u8) entry out of the map into a fresh Vec, sort it.
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            let shifts = format_shifts().read().unwrap();
+            let mut entries: Vec<(String, u8)> = shifts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            entries.sort();
+            black_box(&entries);
+            for (_, shift) in &entries {
+                black_box((black_box(bits) >> shift) & 0b11);
+            }
+        }
+        let clone_sort_ns = start.elapsed().as_nanos() as f64 / ITERS as f64;
+
+        // Fixed: reuse the cached, pre-sorted Arc snapshot.
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            let entries = FORMAT_REGISTRY.order();
+            black_box(&entries);
+            for (_, shift) in entries.iter() {
+                black_box((black_box(bits) >> shift) & 0b11);
+            }
+        }
+        let cached_ns = start.elapsed().as_nanos() as f64 / ITERS as f64;
+
+        println!("clone+sort per row (pre-fix): {clone_sort_ns:.1} ns/call");
+        println!("cached Arc snapshot (fixed):  {cached_ns:.1} ns/call");
+        println!(
+            "delta: {:.1} ns/call ({:.0}% reduction)",
+            clone_sort_ns - cached_ns,
+            100.0 * (clone_sort_ns - cached_ns) / clone_sort_ns
+        );
     }
 }

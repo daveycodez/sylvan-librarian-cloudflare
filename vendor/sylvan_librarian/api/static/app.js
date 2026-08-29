@@ -9,6 +9,14 @@ const HTML_ESCAPE_RE = /[&<>"]/g;
 const HTML_ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
 const htmlEscapeChar = c => HTML_ESCAPE_MAP[c];
 
+// Hoisted so queryUtf8ByteLength() doesn't allocate a new TextEncoder on every call —
+// TextEncoder is stateless and safe to reuse across calls.
+const QUERY_BYTE_ENCODER = new TextEncoder();
+
+// Debounce delay for the resize listener, to avoid recomputing grid columns (and writing
+// style.gridTemplateColumns) on every one of the many resize events a drag-resize fires.
+const RESIZE_DEBOUNCE_MS = 150;
+
 // Invert a columnar cards payload ({field: [values, ...]}) back into an array of
 // card objects. Row-shaped payloads (already arrays) pass through untouched, so
 // consumers are indifferent to which shape the server sent (e.g. a stale cached
@@ -92,6 +100,7 @@ class CardSearch {
 
     this.debounceTimeout = null;
     this.debounceDelay = 50; // milliseconds
+    this.resizeTimeout = null;
     this.currentController = null;
     this.currentRequestUrl = null; // URL of the in-flight request, if any
     this.imageObserver = null;
@@ -390,9 +399,14 @@ class CardSearch {
       this.toggleOrderDirection();
     });
 
-    // Add resize listener to update columns dynamically
+    // Add resize listener to update columns dynamically. Debounced because a drag-resize
+    // fires many resize events per second, and each recompute writes gridTemplateColumns,
+    // forcing a style/layout recalc.
     window.addEventListener('resize', () => {
-      this.updateGridColumns(this.currentCardCount);
+      clearTimeout(this.resizeTimeout);
+      this.resizeTimeout = setTimeout(() => {
+        this.updateGridColumns(this.currentCardCount);
+      }, RESIZE_DEBOUNCE_MS);
     });
   }
 
@@ -749,7 +763,7 @@ class CardSearch {
   }
 
   queryUtf8ByteLength(query) {
-    return new TextEncoder().encode(query).length;
+    return QUERY_BYTE_ENCODER.encode(query).length;
   }
 
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
@@ -1240,9 +1254,9 @@ class CardSearch {
         if ((truncated.match(/\{/g) || []).length > (truncated.match(/\}/g) || []).length) {
           truncated = truncated.substring(0, truncated.lastIndexOf('{'));
         }
-        oracleHtml = `<div class="card-text">${this.formatOracleText(truncated, false)}...</div>`;
+        oracleHtml = `<div class="card-text">${this.formatCardText(truncated, false, true)}...</div>`;
       } else {
-        oracleHtml = `<div class="card-text">${this.formatOracleText(card.oracle_text, false)}</div>`;
+        oracleHtml = `<div class="card-text">${this.formatCardText(card.oracle_text, false, true)}</div>`;
       }
     }
 
@@ -1251,7 +1265,7 @@ class CardSearch {
            ${imageHtml}
            <div class="card-name-mana-row">
                <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-               ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
+               ${card.mana_cost ? `<div class="card-mana">${this.formatCardText(card.mana_cost, false, false)}</div>` : ''}
            </div>
            ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
            ${oracleHtml}
@@ -1321,10 +1335,10 @@ class CardSearch {
       <div class="modal-card-info">
         <div class="modal-card-name-mana-row">
           <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-          ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
+          ${card.mana_cost ? `<div class="modal-card-mana">${this.formatCardText(card.mana_cost, true, false)}</div>` : ''}
         </div>
         ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
-        ${card.oracle_text ? `<div class="modal-card-text">${this.formatOracleText(card.oracle_text, true)}</div>` : ''}
+        ${card.oracle_text ? `<div class="modal-card-text">${this.formatCardText(card.oracle_text, true, true)}</div>` : ''}
         ${(() => {
           const hasPowerToughness =
             card.power !== null && card.power !== undefined && card.toughness !== null && card.toughness !== undefined;
@@ -1498,11 +1512,8 @@ class CardSearch {
     }
     if (this.statusMessage) {
       const cssClass = count === 0 ? 'no-results' : 'results-count';
-      // Escape first, then convert: escaping preserves protection for any raw query text
-      // embedded in msg, and convertManaSymbols only ever turns an exact, server-controlled
-      // {W}/{U}/etc. token vocabulary into markup -- never anything derived from unescaped
-      // user text -- so this composes safely with the escaping rather than replacing it.
-      this.statusMessage.innerHTML = `<div class="${cssClass}">${this.convertManaSymbols(this.escapeHtml(msg))}</div>`;
+      // Format the status message safely: formatCardText escapes HTML and replaces recognized mana tokens
+      this.statusMessage.innerHTML = `<div class="${cssClass}">${this.formatCardText(msg)}</div>`;
     }
   }
 
@@ -1605,10 +1616,15 @@ class CardSearch {
     });
   }
 
-  convertManaSymbols(manaCost, isModal = false) {
-    if (!manaCost) return '';
+  formatCardText(text, isModal = false, convertNewlines = false) {
+    if (typeof isModal === 'object' && isModal !== null) {
+      convertNewlines = isModal.convertNewlines || false;
+      isModal = isModal.isModal || false;
+    }
+    if (text === null || text === undefined || text === '') return '';
 
     const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
+    const escaped = this.escapeHtml(text);
 
     // Use cached regex pattern and map for performance
     // Reset regex state before use (important for 'g' flag)
@@ -1616,25 +1632,23 @@ class CardSearch {
 
     // Replace all symbols in a single pass using a callback function
     // Only replace if the symbol exists in our map, otherwise return unchanged
-    return manaCost.replace(this.manaSymbolsRegex, match => {
+    const formatted = escaped.replace(this.manaSymbolsRegex, match => {
       const replacement = this.manaSymbolsMap.get(match);
       if (replacement === undefined) {
         return match;
       }
       return `<span class="${symbolClass} ${replacement}"></span>`;
     });
+
+    return convertNewlines ? formatted.replace(/\n/g, '<br>') : formatted;
+  }
+
+  convertManaSymbols(manaCost, isModal = false) {
+    return this.formatCardText(manaCost, isModal, false);
   }
 
   formatOracleText(oracleText, isModal = false) {
-    if (!oracleText) return '';
-
-    // First convert mana symbols
-    let formatted = this.convertManaSymbols(oracleText, isModal);
-
-    // Then convert newlines to HTML line breaks
-    formatted = formatted.replace(/\n/g, '<br>');
-
-    return formatted;
+    return this.formatCardText(oracleText, isModal, true);
   }
 
   updateOrderToggleAppearance() {

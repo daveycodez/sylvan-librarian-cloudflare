@@ -109,7 +109,7 @@ Use `keyword:` or `k:` to search for keyword abilities.
 ```
 keyword:flying
 keyword:vigilance
-k:trample
+kw:trample
 ```
 
 ### Rarity

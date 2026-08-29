@@ -1369,8 +1369,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      decides whether to rebuild by comparing `content_generation`, not `format_version` — so a
  *      format bump alone leaves the published store in place, every `/cards/*` read rejects it as
  *      the wrong format, and the site goes dark rather than stale. Bump both or bump neither.
+ *
+ *   43 THE SORT PERMUTATIONS GAIN A THIRD PARALLEL FAMILY, SO THE ARCHIVE'S SHAPE MOVES AGAIN.
+ *
+ *      The upstream sync to 66a09c30 brings #1030/#1061's sigma decision rule, and with it
+ *      `SortPermutations::*_printings_prefix`: per-order prefix sums of each permutation's per-card
+ *      printing spans, so a bound on cards visited converts to a sound bound on printings examined
+ *      with one lookup instead of an O(bound) walk. Five families here rather than upstream's six —
+ *      `order=name` is a printing-space order in this tree and has no card-keyed permutation to
+ *      take spans along.
+ *
+ *      IT SITS INSIDE `SortPermutations`, INSIDE `CardIndexes`, so it moves the offset of every
+ *      field after it and the header records none of it — the same blind spot generation 42 was
+ *      bumped for. `ARCHIVE_FORMAT_VERSION` moves 2026082601 -> 2026082801 in the same commit, and
+ *      this constant moves with it for the reason spelled out directly above: store-age.ts reads
+ *      THIS number, not the format version, so a lone format bump is a dark site.
  */
-export const STORE_CONTENT_GENERATION = 42;
+export const STORE_CONTENT_GENERATION = 43;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

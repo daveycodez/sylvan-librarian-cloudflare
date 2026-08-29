@@ -10,7 +10,7 @@ use super::{
     EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
     PhysicalPlan, PlanScope, CandidatePlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
-    walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
+    walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_compose_fastpath, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
     push_card_matches,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
@@ -342,7 +342,7 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         name_unigrams: build_name_unigram_index(&cards, &[]),
         legal_divergent: build_divergent_ids(&cards),
         name_divergent: crate::planes::build_name_divergent_ids(&cards),
-        sort_perms: build_sort_permutations(&cards),
+        sort_perms: build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
@@ -2589,7 +2589,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
     data.indexes.legal_divergent = build_divergent_ids(&data.cards);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
     data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc);
     data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power);
     data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness);
@@ -4737,7 +4737,13 @@ fn compose_paging_prediction_matches_the_branch_taken() {
                             // arm names the labels that are legal for it, so a wrong branch in the
                             // OTHER direction (`Gather` predicted, walk taken) still fails.
                             let legal: &[PagingTaken] = match predicted {
-                                ComposePaging::Perm => &[PagingTaken::Perm],
+                                // `PermThreePhase` is `Perm`'s own step-5 internal choice (see its
+                                // doc), not a different top-level strategy -- legal here too. Gated
+                                // off by default (`COMPOSE_SIGMA_ENABLED`), so this fuzz sweep cannot
+                                // exercise it yet; widened now so flipping that guard on later
+                                // (elsewhere, e.g. a dedicated subprocess test) doesn't fail here on
+                                // a legality gap nobody noticed.
+                                ComposePaging::Perm => &[PagingTaken::Perm, PagingTaken::PermThreePhase],
                                 ComposePaging::OrderbyWalk => &[PagingTaken::OrderbyWalk, PagingTaken::GatherWalkDeclined],
                                 // Bare `Gather` only. `GatherWalkDeclined` here would mean the
                                 // fastpath found a walk available where acquire predicted none,
@@ -5126,12 +5132,52 @@ fn plan_stats_never_leak_between_participants() {
                             p.paging_taken, PagingTaken::NotEntered,
                             "compose ran but recorded no paging branch, so leak 2 has no source: {case}",
                         );
+                        // Same statement `SILENT_PLANS` gets above: `plan_self_ns` reads dispatch
+                        // time from `ns_setup + ns_loop + ns_finish`, so a compose run that published
+                        // nothing here would price as zero. Unlike `SILENT_PLANS`, compose's split is
+                        // two fields (`ns_build`/`ns_paging`, landing in `ns_setup`/`ns_loop`), not
+                        // three, but the sum still has to be positive on every real run.
+                        assert!(
+                            p.ns_setup + p.ns_loop + p.ns_finish > 0,
+                            "compose produced a page but published no phase timing, so it prices as zero: {case}",
+                        );
+                        let phase_ns = p.ns_setup + p.ns_loop + p.ns_finish;
+                        assert!(
+                            phase_ns <= p.ns_round_total && phase_ns.saturating_mul(2) >= p.ns_round_total,
+                            "compose phases leave more than half the measured round unaccounted: \
+                             phases={phase_ns} round={} {case}",
+                            p.ns_round_total,
+                        );
+                        // `set_printings` (`popcount(pbits)`) and `result_total` are computed from
+                        // the same composed bitmap (directly equal in Mode::Printing; in Mode::Card/
+                        // Artwork, `result_total` is a projection of it that can only be nonzero if
+                        // some printing bit is), so they must agree on whether anything matched at
+                        // all -- one implies the other in both directions, regardless of mode.
+                        assert_eq!(
+                            p.set_printings > 0, p.result_total > 0,
+                            "set_printings and result_total disagree on whether this query matched anything: \
+                             set_printings={} result_total={} {case}",
+                            p.set_printings, p.result_total,
+                        );
                         compose_labelled += 1;
                     }
                 }
             }
         }
     }
+
+    // Empty pages have no paging branch, but the build still includes the exact-total calculation
+    // and the empty-page decision. Exercise that exit explicitly: the general coverage sweep uses
+    // offset 0, so it cannot prove the empty path reports build time and zero paging time.
+    let empty_params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 60, CORPUS_SIZE * 2);
+    let empty_filter = fuzz_bound_filter(specs.last().expect("specs is non-empty"), archived);
+    take_phase_stats();
+    printing_compose_fastpath(&ctx, &empty_params, &empty_filter, true)
+        .expect("PrintingCompose must serve the explicit empty-page case");
+    let empty_phases = take_phase_stats();
+    assert_eq!(empty_phases.paging_taken, PagingTaken::EmptyPage);
+    assert!(empty_phases.ns_setup > 0, "empty compose page omitted its build timing");
+    assert_eq!(empty_phases.ns_loop, 0, "empty compose page reported paging work it never ran");
 
     println!(
         "stat isolation: {silent_checked} uninstrumented-plan runs ({range_labelled} range-labelled), \
@@ -7059,7 +7105,7 @@ fn bench_checked_vs_unchecked_access() {
         rarity_cards:   RangeCardCounts::default(),
         value_totals:   ValueTotals::default(),
         pair_totals:    PairTotals::default(),
-        sort_perms:     build_sort_permutations(&cards),
+        sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
@@ -7845,7 +7891,7 @@ fn streamed_selection_matches_gathered() {
             p.price_usd = Some((pid % 7) as u32 * 100 + 50); // $0.50, $1.50, ... $6.50
         }
         if with_perms {
-            data.indexes.sort_perms = build_sort_permutations(&data.cards);
+            data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
             reassign_artwork_grouping(&mut data);
         }
         rkyv::to_bytes::<Error>(&data).expect("serialize")
@@ -8095,10 +8141,38 @@ fn sort_permutations_put_a_missing_magnitude_lowest() {
     cards[0].cmc = Some(5.0);
     cards[1].cmc = None;
     cards[2].cmc = Some(1.0);
-    let data = store_of(cards, &[1, 1, 1], vocab);
-    let perms = build_sort_permutations(&data.cards);
+    // Uneven spans (2, 1, 3 printings) so the printing-prefix sums below are a real function of the
+    // permutation's order rather than the identity.
+    let mut data = store_of(cards, &[2, 1, 3], vocab);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
+    let perms = &data.indexes.sort_perms;
     assert_eq!(perms.cmc[0], vec![1, 2, 0], "asc: null, 1, 5");
     assert_eq!(perms.cmc[1], vec![0, 2, 1], "desc: 5, 1, null");
+    // Spans taken along each permutation: asc visits cards 1, 2, 0 (1 + 3 + 2 printings), desc
+    // visits 0, 2, 1 (2 + 3 + 1).
+    assert_eq!(perms.cmc_printings_prefix[0], vec![0, 1, 4, 6], "asc printing spans follow card order");
+    assert_eq!(perms.cmc_printings_prefix[1], vec![0, 2, 5, 6], "desc printing spans follow card order");
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    assert_eq!(
+        archived
+            .indexes
+            .sort_perms
+            .printings_examined_upper(SortCol::Cmc, false, 1.01, archived.cards.len()),
+        Some(4),
+        "fractional card bounds ceil before the O(1) printing-prefix lookup",
+    );
+    // `order=name` is printing-space in this tree, so it has no card-keyed permutation and no
+    // printing-prefix family to look one up in.
+    assert_eq!(
+        archived
+            .indexes
+            .sort_perms
+            .printings_examined_upper(SortCol::Name, false, 1.0, archived.cards.len()),
+        None,
+        "a column with no card-space permutation has no printing prefix either",
+    );
 }
 
 /// And a missing RANK goes where the highest value goes — LAST ascending, FIRST descending, the
@@ -8123,7 +8197,7 @@ fn sort_permutations_put_a_missing_rank_highest() {
     cards[1].edhrec_rank = None;
     cards[2].edhrec_rank = Some(12);
     let data = store_of(cards, &[1, 1, 1], vocab);
-    let perms = build_sort_permutations(&data.cards);
+    let perms = build_sort_permutations(&data.cards, &data.offsets);
     assert_eq!(perms.edhrec[0], vec![2, 0, 1], "asc: 12, 500, unranked LAST");
     assert_eq!(perms.edhrec[1], vec![1, 0, 2], "desc: unranked FIRST, 500, 12");
     // The inverses are built per direction rather than derived, so they have to move with it.
@@ -8324,6 +8398,119 @@ fn watermark_narrowing() {
         }
         _ => panic!("watermark Or must narrow now that both children narrow"),
     }
+}
+
+// #731 step 2: card-invariant broadcast leaves (`color:`/`id:`/`produces:`, `cmc`/`power`/
+// `toughness`, `devotion`) join the PrintingCompose leaf table via `broadcast_card_bits_to_printings`
+// — the same mechanism #753 already ships for `type:`/`kw:`/`otag:`. Same differential shape as
+// `set_watermark_compose_leaves`: `compose_printing_bits` must agree, printing for printing, with the
+// general residual path, for the bare leaf, its negation, and mixes with an already-composable leaf
+// (`set:`). Also asserts rarity/legality/border — which also compile via `compile_plane` but are
+// EXISTENTIAL, not card-invariant — are NOT accepted by this path (the #667/#680 shared-witness guard).
+#[test]
+fn card_invariant_broadcast_compose_leaves() {
+    let mut vocab = VocabInterner::new();
+    // card0: green, cmc=2. card1: red, cmc=5. card2: green+red, cmc=2.
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    cards[0].card_colors = super::color_to_bit("G");
+    cards[0].cmc = Some(2.0);
+    cards[1].card_colors = super::color_to_bit("R");
+    cards[1].cmc = Some(5.0);
+    cards[2].card_colors = super::color_to_bit("G") | super::color_to_bit("R");
+    cards[2].cmc = Some(2.0);
+    let mut data = store_of(cards, &[2, 2, 2], vocab); // pids 0,1 | 2,3 | 4,5
+    let set_codes_by_pid = ["dmu", "lea", "dmu", "dmu", "lea", "neo"];
+    for (p, code) in data.printings.iter_mut().zip(set_codes_by_pid) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    let mut set_codes: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+    }
+    data.indexes.set_codes = set_codes;
+    // `store_of` doesn't build these (a lightweight fixture, not the full reload_commit path) --
+    // `color_cmp_value_total`/`arith_tuple_count`/`bare_numeric_field_count` need them built to answer
+    // anything but zero, and `printing_compose_indexes_built` now requires `arith_tuple` specifically
+    // before PrintingCompose is even applicable, for exactly this reason.
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc);
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power);
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness);
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: super::color_to_bit("G") };
+    let cmc2 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(2.0) };
+    let set = |code: &str| FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: code.to_string() };
+
+    let brute = |f: &FilterExpr| -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut residual: Vec<&FilterExpr> = Vec::new();
+        let mut is_or = false;
+        for c in 0..archived.cards.len() {
+            let card = &archived.cards[c];
+            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or, 0);
+            let (lo, hi) = (u32::from(archived.offsets[c]), u32::from(archived.offsets[c + 1]));
+            for pid in lo..hi {
+                let matched = match tri {
+                    Tri::True => true,
+                    Tri::False => false,
+                    Tri::PrintingDep => FilterExpr::residual_matches(card, &archived.printings[pid as usize], &archived.strings, &residual, is_or),
+                    Tri::Null => false,
+                };
+                if matched {
+                    out.push(pid);
+                }
+            }
+        }
+        out
+    };
+    let composed = |f: &FilterExpr| -> Vec<u32> {
+        let bits = super::compose_printing_bits(f, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+        (0..n_printings as u32).filter(|&p| bits[p as usize >> 6] & (1u64 << (p & 63)) != 0).collect()
+    };
+
+    let cases: Vec<(&str, FilterExpr)> = vec![
+        ("c:g", green.clone()),
+        ("-c:g", FilterExpr::Not(Box::new(green.clone()))),
+        ("cmc=2", cmc2.clone()),
+        ("c:g cmc=2", FilterExpr::And(vec![green.clone(), cmc2.clone()])),
+        ("c:g set:dmu", FilterExpr::And(vec![green.clone(), set("dmu")])),
+        ("c:g or cmc=2", FilterExpr::Or(vec![green.clone(), cmc2.clone()])),
+    ];
+    for (label, f) in &cases {
+        assert!(super::is_printing_composable(f, &archived.indexes), "{label} must be printing-composable");
+        let mut got = composed(f);
+        got.sort_unstable();
+        let mut want = brute(f);
+        want.sort_unstable();
+        assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
+    }
+
+    // `-cmc=2` must NOT compose: `cmc`/`power`/`toughness` are nullable, and a bit-complement would
+    // wrongly include null-valued cards the same way `-watermark:` would (three-valued logic: Not(Null)
+    // is still Null, not True) — `compile_plane_neg`'s `contains_unnegatable_numeric` guard already
+    // declines this for exactly that reason, and this path inherits it for free via `compile_plane`.
+    let not_cmc2 = FilterExpr::Not(Box::new(cmc2.clone()));
+    assert!(!super::is_printing_composable(&not_cmc2, &archived.indexes), "-cmc=2 must stay off the compose path (nullable field)");
+
+    // Rarity/legality/border also compile via `compile_plane` but are EXISTENTIAL, not card-invariant
+    // — `is_broadcast_leaf_shape` must reject them, so they stay on their own native-printing-index
+    // arms (already `true` in `is_printing_composable` via those dedicated arms, not this one).
+    let rarity = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(0.0) };
+    assert!(!super::is_broadcast_leaf_shape(&rarity), "rarity must not be treated as a card-invariant broadcast leaf");
+    let border = FilterExpr::TextExact { field: super::TextField::Border, op: CmpOp::Eq, value: "black".to_string() };
+    assert!(!super::is_broadcast_leaf_shape(&border), "border must not be treated as a card-invariant broadcast leaf");
 }
 
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
@@ -10402,7 +10589,7 @@ fn fractional_stats_survive_the_arith_tuple_route() {
 #[test]
 fn fractional_stats_order_between_their_integer_neighbours() {
     let data = fractional_stat_fixture_store();
-    let perms = build_sort_permutations(&data.cards);
+    let perms = build_sort_permutations(&data.cards, &data.offsets);
     let asc = perms.power[0].clone();
     let want: Vec<u32> = (0..FRACTIONAL_STATS.len() as u32).collect();
     assert_eq!(asc, want, "FRACTIONAL_STATS is ascending by power, so the permutation must be identity");
@@ -10413,7 +10600,7 @@ fn fractional_stats_order_between_their_integer_neighbours() {
 #[test]
 fn fractional_cmc_orders_between_its_integer_neighbours() {
     let data = fractional_cmc_fixture_store();
-    let perms = build_sort_permutations(&data.cards);
+    let perms = build_sort_permutations(&data.cards, &data.offsets);
     assert_eq!(perms.cmc[0], vec![0, 1, 2, 3, 4, 5], "asc: 0, 0.5, 1, 2.5, 3, 16.5");
     assert_eq!(perms.cmc[1], vec![5, 4, 3, 2, 1, 0], "desc: the exact reverse -- no ties to preserve");
 }
@@ -12018,7 +12205,7 @@ fn named_store() -> CardData {
         .collect();
     assign_name_ranks(&mut cards, &[]);
     let mut data = store_of(cards, &[1; 6], vocab);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
     // ExactName narrows through this index, not the permutation — a face name is not addressable
     // by a range over the joined name (see narrow_rec's ExactName arm).
     data.indexes.name_trigram = build_trigram_index(&data.cards, |c| crate::collated_name_of(c, &data.strings));
@@ -13899,6 +14086,1117 @@ fn gather_artwork_kernel_costs() {
     );
 }
 
+/// A printing-space bitmap with each bit independently set at probability `density`, tail padding
+/// above `n_printings` cleared -- a real composed bitmap never sets those, and
+/// `printing_bits_to_card_bits`'s cursor walk assumes it (a set bit past the last real printing has
+/// no card to advance the cursor to). Shared by both popcount-skip prototypes' differential tests:
+/// the algorithms' correctness doesn't depend on what the bitmap MEANS, only on its shape.
+fn random_pbits(rng: &mut rand::rngs::SmallRng, words: usize, n_printings: usize, density: f64) -> Vec<u64> {
+    use rand::RngExt;
+    let mut pbits = vec![0u64; words];
+    for word in &mut pbits {
+        for bit in 0..64u32 {
+            if rng.random_bool(density) {
+                *word |= 1u64 << bit;
+            }
+        }
+    }
+    for pid in n_printings..words * 64 {
+        pbits[pid / 64] &= !(1u64 << (pid % 64));
+    }
+    pbits
+}
+
+/// `walk_card_page_via_popcount_skip`'s prototype scatter+skip technique must produce the IDENTICAL
+/// page `walk_grouped_page`'s card-by-card walk does, for it to be a candidate replacement rather than
+/// just a faster wrong answer. Checked against random printing bitmaps (not a specific composed
+/// filter's semantics -- the algorithm's correctness doesn't depend on what the bitmap MEANS, only on
+/// its shape) across several densities (sparse and dense exercise different code paths: a sparse
+/// bitmap's scatter loop does little work and its skip-scan crosses many empty words; a dense one is
+/// closer to `walk_grouped_page`'s own no-early-stop worst case), several sort columns with a real
+/// permutation (this technique is not EDHREC-specific, unlike `WalkCheckpoints` -- see
+/// `local-engine-compose-perm-cards-visited-estimator.md`), both directions, and several page points
+/// including ones past the total (must agree on `Vec::new()`, not panic).
+///
+/// `cargo test --release walk_card_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release walk_card_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture"]
+fn walk_card_page_via_popcount_skip_matches_walk_grouped_page() {
+    use rand::SeedableRng;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const TRIALS_PER_DENSITY: usize = 3;
+    const PAGE_POINTS: [(usize, usize); 5] = [(0, 1), (0, 50), (10, 200), (5_000, 100), (1_000_000, 20)]; // last: past the total
+    const SORT_COLS: [(super::SortCol, &str); 3] =
+        [(super::SortCol::EdhrecRank, "edhrec"), (super::SortCol::Cmc, "cmc"), (super::SortCol::Name, "name")];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+    for &density in &DENSITIES {
+        for _ in 0..TRIALS_PER_DENSITY {
+            let pbits = random_pbits(&mut rng, words, n_printings, density);
+            for &(sort_col, label) in &SORT_COLS {
+                for descending in [false, true] {
+                    let order = archived.indexes.sort_perms.order(sort_col, descending, n_cards).expect("permutation exists");
+                    for &(offset, limit) in &PAGE_POINTS {
+                        let params = kernel_params(Mode::Card, sort_col, descending, limit, offset);
+                        let (old_page, _) = super::walk_grouped_page(&ctx, &params, &pbits, order.perm);
+                        let (new_page, _) = super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order);
+                        let old_ids: Vec<(*const _, *const _)> = old_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        let new_ids: Vec<(*const _, *const _)> = new_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        assert_eq!(
+                            old_ids, new_ids,
+                            "density={density}, sort={label}, desc={descending}, offset={offset}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Step 4 of `docs/issues/local-engine-compose-perm-sigma-decision-rule.md`: get real, same-process
+/// nanosecond costs for both `Perm` branches, rather than trusting either side's cost from a
+/// different process or a hand-fit model. `walk_grouped_page` (today's production Card-mode walk)
+/// and `walk_card_page_via_popcount_skip` (#1030's promoted prototype) are timed back-to-back, same
+/// process, same corpus, same input, over a (density, offset) grid -- density stands in for how
+/// selective the composed filter is, offset for how deep the page sits.
+///
+/// This replaces the Python harness's `ThreePhaseModel`, which needed `--three-phase-rate-ns-per-
+/// match`/`--three-phase-fixed-ns`/`--three-phase-floor-ns` supplied by hand on the CLI, sourced from
+/// an earlier kernel-bench of the not-yet-promoted prototype (`local-engine-compose-perm-cards-
+/// visited-estimator.md`'s own kernel, in fact -- the ~1.9 ns/card figure that doc found and then
+/// distrusted in favor of a natural-query regression). This measures the ACTUAL promoted
+/// implementation directly, so there is nothing left to distrust on that side.
+///
+/// Prints a table rather than asserting anything -- there is no "right" cost to check against here,
+/// only real numbers for step 5's dispatch decision and step 7's eventual live validation to use.
+/// Card mode only, matching the plan's "Card mode first" scope; `Printing`/`Artwork` would need their
+/// own pass once `walk_printing_page_via_popcount_skip`/`walk_artwork_page_via_popcount_skip` are
+/// candidates for wiring too.
+///
+/// `cargo test --release perm_walk_vs_three_phase_same_process_rates -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release perm_walk_vs_three_phase_same_process_rates -- --ignored --nocapture"]
+fn perm_walk_vs_three_phase_same_process_rates() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const LIMIT: usize = 20;
+    // Mirrors OFFSET_SWEEP in bench_compose_card_visited_safety_bound.py: real Perm-paging traffic
+    // is offset~0-heavy by design, which can't exercise the deep tail this comparison is for.
+    const OFFSETS: [usize; 10] = [0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000];
+    // Same four densities the correctness differential test above uses -- sparse and dense exercise
+    // different code paths in both implementations, so the SAME grid that validated correctness is
+    // the right one to cost.
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4);
+
+    println!("\nperm walk vs three-phase, same-process real costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>10}  {:>8}  {:>10}  {:>12}  {:>14}  {:>8}", "density", "offset", "matches", "walk_ns", "three_phase_ns", "ratio");
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        // The exact count of distinct matching cards, computed directly from the bitmap once per
+        // density -- NOT derived from a page's length, which undercounts whenever the walk exhausts
+        // the permutation before filling (a real risk at low density / deep offset, exactly the
+        // population this whole comparison is about).
+        let matches = {
+            let mut card_seen = vec![false; n_cards];
+            let mut count = 0usize;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    if !card_seen[cid] {
+                        card_seen[cid] = true;
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        for &offset in &OFFSETS {
+            let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, offset);
+
+            let mut walk_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_grouped_page(&ctx, &params, &pbits, order.perm));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    walk_best = walk_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            let mut three_phase_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    three_phase_best = three_phase_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            println!(
+                "{density:>10}  {offset:>8}  {matches:>10}  {walk_best:>12}  {three_phase_best:>14}  {:>8.3}",
+                three_phase_best as f64 / walk_best.max(1) as f64,
+            );
+        }
+    }
+}
+
+/// Step 6 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md: quick sanity check on
+/// whether `sigma_bound`'s knob sensitivity (the original offline analysis's "2.0-4.0 barely matters"
+/// finding) still holds now that both sides of the decision are the ACTUAL validated pieces --
+/// `three_phase_cost_ns`'s 17-point interpolation, not the old hand-fit placeholder that finding was
+/// measured against -- rather than assuming a finding measured under different components survives.
+///
+/// Reuses `perm_walk_vs_three_phase_same_process_rates`'s exact density x offset grid (real walk_ns
+/// AND real three_phase_ns already measured there), so this needs no new measurement infrastructure.
+/// For each knob, `should_use_three_phase` decides per cell using the SAME inputs
+/// `compose_perm_three_phase_order` would at runtime; the reported latency is the REAL measured cost
+/// of whichever side got picked, not a re-predicted one, so this doesn't just re-check the decision
+/// function's own confidence in itself.
+///
+/// Cheap and coarse on purpose: 40 grid cells on a deliberately stress-heavy offset sweep (real Perm
+/// traffic is offset~0-heavy, per the sibling test's own doc), not the ~2,700 real sampled queries the
+/// original offline analysis used. A quick "did anything obviously break" check before deciding
+/// whether the full real-query re-analysis (the Python harness, updated to use the validated model) is
+/// worth building.
+///
+/// `cargo test --release sigma_knob_sensitivity_sweep -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release sigma_knob_sensitivity_sweep -- --ignored --nocapture"]
+fn sigma_knob_sensitivity_sweep() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    // 200/5000, not this file's usual 20/200 -- three_phase_walk_rate_fit's own history is the
+    // reason: at 20/200 a single point showed 20.7% run-to-run CV that looked like a real anomaly
+    // and wasn't, just under-sampling. The knob decision this sweep informs deserves the same rigor.
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
+    const LIMIT: usize = 20;
+    const OFFSETS: [usize; 10] = [0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000];
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const KNOBS: [f64; 11] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4); // same seed as perm_walk_vs_three_phase_same_process_rates: identical grid
+
+    struct Cell {
+        matches: usize,
+        k: usize,
+        set_printings: usize,
+        walk_ns: f64,
+        three_phase_ns: f64,
+    }
+    let mut cells = Vec::with_capacity(DENSITIES.len() * OFFSETS.len());
+
+    println!("\nsigma knob sensitivity sweep: measuring real (walk_ns, three_phase_ns) per cell (real.store: {n_cards} cards, {n_printings} printings)");
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+        let matches = {
+            let mut card_seen = vec![false; n_cards];
+            let mut count = 0usize;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    if !card_seen[cid] {
+                        card_seen[cid] = true;
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        for &offset in &OFFSETS {
+            let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, offset);
+
+            let mut walk_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_grouped_page(&ctx, &params, &pbits, order.perm));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    walk_best = walk_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            let mut three_phase_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    three_phase_best = three_phase_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            cells.push(Cell {
+                matches,
+                k: offset.saturating_add(LIMIT),
+                set_printings,
+                walk_ns: walk_best as f64,
+                three_phase_ns: three_phase_best as f64,
+            });
+        }
+    }
+    println!("  measured {} cells ({} densities x {} offsets)", cells.len(), DENSITIES.len(), OFFSETS.len());
+
+    println!("\n{:>6}  {:>9}  {:>10}  {:>10}  {:>10}  {:>10}", "knob", "%diverted", "min_ns", "median_ns", "p90_ns", "max_ns");
+    for &knob in &KNOBS {
+        let mut diverted = 0usize;
+        let mut realized: Vec<f64> = Vec::with_capacity(cells.len());
+        for cell in &cells {
+            let divert = super::sigma_bound::should_use_three_phase(n_cards, n_printings, cell.matches, cell.k, cell.set_printings, knob);
+            if divert {
+                diverted += 1;
+            }
+            realized.push(if divert { cell.three_phase_ns } else { cell.walk_ns });
+        }
+        realized.sort_by(f64::total_cmp);
+        let n = realized.len();
+        let pctile = |p: f64| -> f64 { realized[((p / 100.0) * (n - 1) as f64).round() as usize] };
+        println!(
+            "{knob:>6.1}  {:>8.1}%  {:>10.0}  {:>10.0}  {:>10.0}  {:>10.0}",
+            100.0 * diverted as f64 / n as f64,
+            realized[0],
+            pctile(50.0),
+            pctile(90.0),
+            realized[n - 1],
+        );
+    }
+}
+
+/// Bridge between step 4 and step 5 of `docs/issues/local-engine-compose-perm-sigma-decision-rule.md`:
+/// fit a closed-form `ns ~= a*matches + b` cost model for `walk_card_page_via_popcount_skip` (#1030)
+/// from real, same-process measurements, replacing the Python harness's hand-supplied
+/// `--three-phase-rate-ns-per-match`/`--three-phase-fixed-ns`/`--three-phase-floor-ns`, which were
+/// sourced from an earlier kernel-bench of the not-yet-promoted prototype -- the same category of
+/// stale-adjacent-measurement mistake step 1 fixed on the walk side.
+///
+/// `perm_walk_vs_three_phase_same_process_rates` already showed `three_phase_ns` tracks `matches`
+/// tightly and barely moves with `offset` (a popcount-skip scan's cost is structural, not
+/// position-dependent), so this fits at a single offset (0) over many densities instead of the fuller
+/// density x offset grid that comparison needed -- one input varies here, not two.
+///
+/// Prints the fit plus a predicted-vs-actual self-check (the same discipline
+/// `compose_walk_kernel_costs`'s own fit reports) so a low R² or a wrong-signed rate is visible before
+/// anyone plugs these numbers into the Python harness's CLI flags.
+///
+/// `cargo test --release three_phase_walk_rate_fit -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_walk_rate_fit -- --ignored --nocapture"]
+fn three_phase_walk_rate_fit() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    // 200/5000, not the 20/200 most kernel benches in this file use: a first attempt at this fit
+    // found one point with 20.7% run-to-run CV against neighbors at 5-9%, looking like a genuine
+    // per-point hardware anomaly. It wasn't -- at 200/5000 that same point's CV dropped to 1.6%,
+    // matching every other point's 1-4%. 200 iterations simply wasn't enough for `min()` to reliably
+    // converge to the true floor at every point; more trials fixes that at the source, more
+    // effectively than averaging across many separately under-sampled runs would have.
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
+    const LIMIT: usize = 20;
+    // A wider, denser spread than the correctness/rate-comparison tests use -- this fit's quality
+    // depends on covering the real range of `matches` densely, not on covering the same handful of
+    // representative points those tests were built around. Extends to 0.8/1.0 (full saturation) so
+    // the breakpoint table below covers the whole domain, not just up to 0.6. 0.03/0.25/0.3 are
+    // TARGETED additions, not a uniform densify: `three_phase_cost_ns_predicts_held_out_densities`'s
+    // first run found its two worst held-out points inside the 0.02-0.05 and 0.2-0.4 gaps
+    // specifically (57.5% and 42.1% over-prediction), so bisecting those two gaps is where more
+    // points actually pay for themselves, rather than adding density evenly across gaps that already
+    // interpolate well.
+    const DENSITIES: [f64; 17] = [
+        0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.2, 0.25, 0.3, 0.4, 0.6, 0.8, 1.0,
+    ];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(5);
+    let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0);
+
+    println!("\nthree-phase walk rate fit, real same-process measurements (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>10}  {:>10}  {:>12}  {:>12}", "density", "matches", "set_printings", "three_phase_ns");
+    // (matches, set_printings, ns) -- both candidate cost drivers kept so the fit below can check
+    // which one the real cost actually tracks, rather than assuming `matches` is it.
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+        let matches = {
+            let mut card_seen = vec![false; n_cards];
+            let mut count = 0usize;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    if !card_seen[cid] {
+                        card_seen[cid] = true;
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box(&page);
+        }
+
+        println!("{density:>10}  {matches:>10}  {set_printings:>12}  {best:>12}");
+        rows.push((matches as f64, set_printings as f64, best as f64));
+    }
+
+    // Single-variable OLS WITH intercept (`ns = a*x + b`): unlike `compose_walk_kernel_costs`'s
+    // no-intercept two-term fit, there is exactly one real fixed cost here (the scatter/scan's
+    // structural overhead at zero matches), so forcing the intercept to zero would misattribute it
+    // into the per-unit rate instead of reporting it honestly. Returns (a, b, r_squared).
+    let fit = |xs: &[f64], ys: &[f64]| -> (f64, f64, f64) {
+        let n = xs.len() as f64;
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+        for (&x, &y) in xs.iter().zip(ys) {
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        let det = n * sxx - sx * sx;
+        assert!(det.abs() > 1e-6, "inputs too collinear to fit a slope — widen the DENSITIES spread");
+        let a = (n * sxy - sx * sy) / det;
+        let b = (sy - a * sx) / n;
+        let mean_y = sy / n;
+        let (mut sum_sq_err, mut sum_sq_tot) = (0.0, 0.0);
+        for (&x, &y) in xs.iter().zip(ys) {
+            sum_sq_err += (y - (a * x + b)).powi(2);
+            sum_sq_tot += (y - mean_y).powi(2);
+        }
+        (a, b, 1.0 - sum_sq_err / sum_sq_tot.max(1e-9))
+    };
+
+    let matches_xs: Vec<f64> = rows.iter().map(|&(m, _, _)| m).collect();
+    let printings_xs: Vec<f64> = rows.iter().map(|&(_, p, _)| p).collect();
+    let ys: Vec<f64> = rows.iter().map(|&(_, _, ns)| ns).collect();
+
+    // `matches` (distinct cards) is what the sigma-decision-rule doc's own inputs are named in terms
+    // of, so it is the natural variable to WANT this fit against -- but `random_pbits` sets bits
+    // independently per PRINTING, and cards average ~3 printings apiece, so at high density most
+    // matching cards have several printings set while `matches` itself saturates at `n_cards`. If the
+    // scatter step's real cost tracks total SET PRINTING BITS instead (each is a separate scatter/skip
+    // unit of work), `matches` alone will systematically undershoot at high density -- exactly the
+    // shape a plain look at the printed table above should already suggest. Fit both and let R² settle
+    // which one this implementation's real cost actually follows, rather than assuming.
+    let (a_m, b_m, r2_m) = fit(&matches_xs, &ys);
+    let (a_p, b_p, r2_p) = fit(&printings_xs, &ys);
+    println!("\nthree-phase walk rate fit: two candidate variables, same real (ns) column");
+    println!("  ns = {a_m:.4}*matches + {b_m:.4}         R² = {r2_m:.4}");
+    println!("  ns = {a_p:.4}*set_printings + {b_p:.4}    R² = {r2_p:.4}");
+
+    let (label, a, b, xs) =
+        if r2_p > r2_m { ("set_printings", a_p, b_p, &printings_xs) } else { ("matches", a_m, b_m, &matches_xs) };
+    println!("\n  {label} wins (higher R²) -- using it for the reported fit and self-check below.");
+
+    let floor_ns = ys.iter().copied().fold(f64::INFINITY, f64::min);
+    println!("  a (ns/{label}) = {a:.4}");
+    println!("  b (fixed_ns)      = {b:.4}");
+    println!("  floor_ns          = {floor_ns:.4}  (minimum observed, for ThreePhaseModel's max(rate*x+fixed, floor))");
+    println!("\n  --three-phase-rate-ns-per-match {a:.4} --three-phase-fixed-ns {b:.4} --three-phase-floor-ns {floor_ns:.0}");
+    if label == "set_printings" {
+        println!(
+            "  NOTE: fit against set_printings, not matches -- the Python harness's ThreePhaseModel.estimate(matches)\n\
+             \x20 signature would need to change to estimate(set_printings) too, or this needs re-deriving in terms of\n\
+             \x20 a quantity the runtime dispatch decision (step 5) actually has cheaply in hand at that point."
+        );
+    }
+
+    println!("\n  predicted vs actual (self-check, {label}):");
+    for (i, &(matches, set_printings, ns)) in rows.iter().enumerate() {
+        let x = xs[i];
+        let predicted = (a * x + b).max(floor_ns);
+        println!(
+            "    matches={matches:<10} set_printings={set_printings:<12} actual={ns:<12} predicted={predicted:<12.1} ratio={:.3}",
+            predicted / ns.max(1.0)
+        );
+    }
+
+    // A single line badly misprices this curve (R² caps well short of 1.0 no matter which variable
+    // wins above, because the real shape is a fixed floor at low density then a super-linear rise --
+    // see `three_phase_scatter_phase_kernel_costs` for why). Piecewise-linear interpolation between
+    // real measured points is exact at every knot and reasonable between them, without pretending the
+    // true curve is a line. Printed as a ready-to-paste `const` for `sigma_bound::THREE_PHASE_BREAKPOINTS`.
+    let mut breakpoints: Vec<(f64, f64)> = rows.iter().map(|&(_, set_printings, ns)| (set_printings, ns)).collect();
+    breakpoints.sort_by(|a, b| a.0.total_cmp(&b.0));
+    println!("\n  breakpoint table for piecewise-linear interpolation (set_printings -> ns), sorted:");
+    println!("const THREE_PHASE_BREAKPOINTS: [(u32, f64); {}] = [", breakpoints.len());
+    for (x, y) in &breakpoints {
+        println!("    ({}, {y:.1}),", *x as u32);
+    }
+    println!("];");
+}
+
+/// Root-causing `three_phase_walk_rate_fit`'s unexplained residual structure: isolate
+/// `walk_card_page_via_popcount_skip`'s SCATTER phase alone (the loop over `pbits`' set printings
+/// that builds the rank-ordered `permuted` existence bitmap -- lib.rs's own doc calls this the
+/// `O(popcount(pbits))` term) from the skip+emit phases that follow it, the same isolation technique
+/// `compose_walk_kernel_costs` already uses for `walk_grouped_page`.
+///
+/// Result: this reproduces the full function's U-shaped ns/unit curve almost exactly (compare this
+/// test's output to `three_phase_walk_rate_fit`'s table -- they agree to within a few hundred ns at
+/// every density), so the non-linearity lives entirely in scatter, not in skip/emit.
+///
+/// Two sub-findings from probing the two ends of that U separately:
+///
+/// - **The high cost at low density (~458ns floor below ~100 set printings) is NOT the per-call
+///   `vec![0u64; n_blocks]` allocation.** Hoisting that allocation out of the timed region (tested by
+///   hand, not committed as a second variant) left the same ~458ns floor unchanged. The real
+///   explanation: the outer `for (i, &word) in pbits.iter().enumerate())` loop always scans every one
+///   of `pbits.len()` (~1,529) words checking for zero, regardless of how many are actually set --
+///   at very low density that fixed linear scan, not the sparse handful of real hits, is most of the
+///   cost. This amortizes away as density rises past roughly 5-10%.
+/// - **The rising cost past ~20% density is real and still in scatter**, and got MORE pronounced, not
+///   less, once the allocation was removed -- ruling that out as a confound rather than explaining the
+///   rise. The likely mechanism (plausible, not proven -- no perf-counter access in this harness,
+///   same limitation `reference-engine-compose-perm-cards-visited-estimator.md`'s own kernel-bench
+///   investigation hit): `order.inv[cid]` and the `permuted` write are both accessed at positions with
+///   no relationship to the printing-scan order, so as density grows toward covering most of
+///   `n_cards`, the DISTINCT working set of cache lines touched in `order.inv` (~31,724 entries) grows
+///   toward the whole array, plausibly exceeding a cache level's capacity partway through this sweep.
+///
+/// `cargo test --release three_phase_scatter_phase_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_scatter_phase_kernel_costs -- --ignored --nocapture"]
+fn three_phase_scatter_phase_kernel_costs() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const DENSITIES: [f64; 12] =
+        [0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4, 0.6];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(5); // same seed as three_phase_walk_rate_fit: identical pbits per density
+
+    println!("\nscatter-phase-only kernel costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>10}  {:>12}  {:>12}  {:>10}", "density", "set_printings", "scatter_ns", "ns/unit");
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+        let n_blocks = n_cards.div_ceil(64);
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let mut permuted = vec![0u64; n_blocks];
+            let t0 = Instant::now();
+            let mut total: usize = 0;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    let rank = u32::from(order.inv[cid]) as usize;
+                    let (block, bit) = (rank / 64, 1u64 << (rank % 64));
+                    if permuted[block] & bit == 0 {
+                        permuted[block] |= bit;
+                        total += 1;
+                    }
+                }
+            }
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box((&permuted, total));
+        }
+
+        println!("{density:>10}  {set_printings:>12}  {best:>12}  {:>10.4}", best as f64 / set_printings.max(1) as f64);
+    }
+}
+
+/// `walk_printing_page_via_popcount_skip`'s general (not card-invariance-gated) weighted scatter must
+/// produce the IDENTICAL page `walk_grouped_page`'s `Mode::Printing` branch does -- same rationale
+/// and same random-bitmap methodology as the `Mode::Card` differential test above, since one matching
+/// card can now contribute more than one row and the weighted scatter has its own off-by-one surface
+/// (block-level skip, then a fine per-printing skip within the located block) that a bare existence
+/// scatter doesn't.
+///
+/// `cargo test --release walk_printing_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release walk_printing_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture"]
+fn walk_printing_page_via_popcount_skip_matches_walk_grouped_page() {
+    use rand::SeedableRng;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const TRIALS_PER_DENSITY: usize = 3;
+    const PAGE_POINTS: [(usize, usize); 5] = [(0, 1), (0, 50), (10, 200), (5_000, 100), (1_000_000, 20)]; // last: past the total
+    const SORT_COLS: [(super::SortCol, &str); 3] =
+        [(super::SortCol::EdhrecRank, "edhrec"), (super::SortCol::Cmc, "cmc"), (super::SortCol::Name, "name")];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    for &density in &DENSITIES {
+        for _ in 0..TRIALS_PER_DENSITY {
+            let pbits = random_pbits(&mut rng, words, n_printings, density);
+            for &(sort_col, label) in &SORT_COLS {
+                for descending in [false, true] {
+                    let order = archived.indexes.sort_perms.order(sort_col, descending, n_cards).expect("permutation exists");
+                    for &(offset, limit) in &PAGE_POINTS {
+                        let params = kernel_params(Mode::Printing, sort_col, descending, limit, offset);
+                        let (old_page, _) = super::walk_grouped_page(&ctx, &params, &pbits, order.perm);
+                        let (new_page, _) = super::walk_printing_page_via_popcount_skip(&ctx, &params, &pbits, order);
+                        let old_ids: Vec<(*const _, *const _)> = old_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        let new_ids: Vec<(*const _, *const _)> = new_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        assert_eq!(
+                            old_ids, new_ids,
+                            "density={density}, sort={label}, desc={descending}, offset={offset}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `walk_artwork_page_via_popcount_skip`'s weighted-by-distinct-group scatter must produce the
+/// IDENTICAL page `walk_grouped_page`'s `Mode::Artwork` branch does -- same methodology as the other
+/// two differential tests, but the one most likely to catch a real bug: the scatter's per-card group
+/// dedup (`seen_groups`) and the emit phase's own group/prefer-score grouping have to agree on what
+/// counts as "one row" for a card with several matching printings, or the two implementations would
+/// diverge exactly where a card straddles multiple artwork groups.
+///
+/// `cargo test --release walk_artwork_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release walk_artwork_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture"]
+fn walk_artwork_page_via_popcount_skip_matches_walk_grouped_page() {
+    use rand::SeedableRng;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const TRIALS_PER_DENSITY: usize = 3;
+    const PAGE_POINTS: [(usize, usize); 5] = [(0, 1), (0, 50), (10, 200), (5_000, 100), (1_000_000, 20)]; // last: past the total
+    const SORT_COLS: [(super::SortCol, &str); 3] =
+        [(super::SortCol::EdhrecRank, "edhrec"), (super::SortCol::Cmc, "cmc"), (super::SortCol::Name, "name")];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(2);
+    for &density in &DENSITIES {
+        for _ in 0..TRIALS_PER_DENSITY {
+            let pbits = random_pbits(&mut rng, words, n_printings, density);
+            for &(sort_col, label) in &SORT_COLS {
+                for descending in [false, true] {
+                    let order = archived.indexes.sort_perms.order(sort_col, descending, n_cards).expect("permutation exists");
+                    for &(offset, limit) in &PAGE_POINTS {
+                        let params = kernel_params(Mode::Artwork, sort_col, descending, limit, offset);
+                        let (old_page, _) = super::walk_grouped_page(&ctx, &params, &pbits, order.perm);
+                        let (new_page, _) = super::walk_artwork_page_via_popcount_skip(&ctx, &params, &pbits, order);
+                        let old_ids: Vec<(*const _, *const _)> = old_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        let new_ids: Vec<(*const _, *const _)> = new_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        assert_eq!(
+                            old_ids, new_ids,
+                            "density={density}, sort={label}, desc={descending}, offset={offset}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `walk_grouped_page`'s per-CARD fixed overhead vs its per-PRINTING bit-test cost, isolated the way
+/// `gather_artwork_kernel_costs` isolates `GATHER_ARTWORK_PER_PRINTING_NS`: reproduce the `Mode::
+/// Printing` loop body directly (`pbits` all-zero, so nothing ever matches and no downstream sort/
+/// emit work runs -- that's `COMPOSE_WALK_EMIT_PER_ROW_NS`'s job, not this kernel's), over several
+/// EDHREC-order card ranges chosen to vary the average printings/card sharply. That variation is the
+/// whole point: `local-engine-compose-perm-cards-visited-estimator.md` measured the first ranks of
+/// ascending EDHREC order at ~73 printings/card (reprint-heavy staples) against a corpus mean of ~3,
+/// so a two-term regression (ns ~= a*cards + b*printings) can actually separate the two rates here --
+/// unlike `local-engine-compose-build-rates.md`'s pooled-OLS-over-natural-queries attempt, which hit
+/// multicollinearity between cards_visited/printings_walked/matches and came back unusable.
+///
+/// `cargo test --release compose_walk_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "compose-walk kernel cost; needs real.store; cargo test --release compose_walk_kernel_costs -- --ignored --nocapture"]
+fn compose_walk_kernel_costs() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let offsets = &archived.offsets;
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    // Materialized once, outside the timed section -- `walk_grouped_page` itself takes the archived
+    // permutation directly, but a plain `Vec<u32>` lets this kernel slice arbitrary rank RANGES the
+    // real function's own always-start-at-0 signature can't address.
+    let perm: Vec<u32> =
+        archived.indexes.sort_perms.get(super::SortCol::EdhrecRank, false).expect("edhrec perm").iter().map(|x| u32::from(*x)).collect();
+    // All-zero: no printing is ever "set", so `is_set` is always false, `scratch` never receives a
+    // push, and the loop never does the sort/skip/emit work below it -- exactly the isolation
+    // `gather_artwork_kernel_costs` gets from `all_match: true`, just for the opposite reason (there,
+    // every printing matches and residual cost is what's removed; here, none does, and match-handling
+    // cost is what's removed). What's left is only the walk itself: `cards_visited`'s per-step
+    // overhead and `printings_walked`'s per-printing bit-test, which is exactly what
+    // `COMPOSE_WALK_STEP_NS` and the candidate `COMPOSE_WALK_CARD_STEP_NS` are meant to price.
+    let pbits: Vec<u64> = vec![0u64; n_printings.div_ceil(64)];
+    let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
+
+    // (start, end) rank ranges spanning very different printings/card densities -- the labels are
+    // for readability, the regression only reads each range's own measured (cards, printings).
+    let ranges: [(usize, usize, &str); 6] = [
+        (0, 200, "edhrec top 200 (staples)"),
+        (200, 2_000, "edhrec 200-2k"),
+        (2_000, 6_000, "edhrec 2k-6k"),
+        (10_000, 16_000, "edhrec 10k-16k"),
+        (20_000, 28_000, "edhrec 20k-28k"),
+        (n_cards - 6_000, n_cards, "edhrec tail"),
+    ];
+
+    let bench_range = |start: usize, end: usize| -> (u128, u64, u64) {
+        let mut best = u128::MAX;
+        let (mut cards_visited, mut printings_examined) = (0u64, 0u64);
+        let mut scratch: Vec<Match> = Vec::new();
+        for it in 0..(WARMUP + ITERS) {
+            let (mut cv, mut pe) = (0u64, 0u64);
+            let t0 = Instant::now();
+            for &cid in &perm[start..end] {
+                let c = cid as usize;
+                let s = u32::from(offsets[c]) as usize;
+                let e = u32::from(offsets[c + 1]) as usize;
+                cv += 1;
+                pe += (e - s) as u64;
+                scratch.clear();
+                for pid in s..e {
+                    if is_set(pid) {
+                        scratch.push((0u128, cid, pid as u32)); // unreachable: pbits is all-zero
+                    }
+                }
+                if scratch.is_empty() {
+                    continue;
+                }
+                unreachable!("pbits is all-zero; scratch can never receive a push");
+            }
+            black_box(&scratch);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+                cards_visited = cv;
+                printings_examined = pe;
+            }
+        }
+        (best, cards_visited, printings_examined)
+    };
+
+    println!("\ncompose-walk kernel costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>28}  {:>8}  {:>10}  {:>10}  {:>12}", "range", "cards", "printings", "ns", "ns/card@0pr");
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+    for &(start, end, label) in &ranges {
+        let (ns, cards, printings) = bench_range(start, end);
+        println!("{label:>28}  {cards:>8}  {printings:>10}  {ns:>10}  {:>12.3}", ns as f64 / cards.max(1) as f64);
+        rows.push((cards as f64, printings as f64, ns as f64));
+    }
+
+    // Two-term, no-intercept OLS (`ns ~= a*cards + b*printings`): all-zero pbits means the loop body
+    // has no per-call fixed setup an intercept would legitimately absorb, so forcing one to zero
+    // spends both degrees of freedom on the two rates the kernel exists to separate. Normal equations
+    // for a 2x2 system, solved directly rather than pulling in a linear-algebra crate for two numbers.
+    let (mut sxx, mut sxy, mut syy, mut sxz, mut syz) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for &(cards, printings, ns) in &rows {
+        sxx += cards * cards;
+        sxy += cards * printings;
+        syy += printings * printings;
+        sxz += cards * ns;
+        syz += printings * ns;
+    }
+    let det = sxx * syy - sxy * sxy;
+    println!("\ncompose-walk kernel costs: two-term fit (ns = a*cards + b*printings, no intercept)");
+    if det.abs() < 1e-6 {
+        println!("  singular normal equations (ranges too collinear) — cannot separate the two rates");
+    } else {
+        let a = (syy * sxz - sxy * syz) / det; // candidate COMPOSE_WALK_CARD_STEP_NS
+        let b = (sxx * syz - sxy * sxz) / det; // candidate COMPOSE_WALK_STEP_NS, re-fit
+        println!("  a (ns/card)     = {a:.4}   <- candidate COMPOSE_WALK_CARD_STEP_NS");
+        println!("  b (ns/printing) = {b:.4}   <- candidate COMPOSE_WALK_STEP_NS, re-fit");
+        for &(cards, printings, ns) in &rows {
+            let pred = a * cards + b * printings;
+            println!("    cards={cards:>8.0}  printings={printings:>10.0}  meas={ns:>10.0}  pred={pred:>10.0}  pred/meas={:.3}", pred / ns);
+        }
+    }
+}
+
+/// Real-traffic wall-clock comparison of `walk_grouped_page` (`Mode::Card`) against the prototype
+/// `walk_card_page_via_popcount_skip`, over real keyword/oracle-tag values chosen to span the two
+/// regimes the two algorithms trade off on -- see `local-engine-compose-perm-cards-visited-estimator.md`:
+///
+/// - a COMMON value (`keyword:flying`, matches most of the corpus) at a SHALLOW page: the old walk
+///   should win, since it stops almost immediately and the new one pays a full scatter over every
+///   match regardless of how little of the walk was actually needed.
+/// - a SPARSE, CLUMPED value (`otag:triggered-ability` -- this session's own worked example, whose
+///   matches sit disproportionately among reprint-heavy EDHREC-early staples) at a deep page: the old
+///   walk has to step past many non-matching cards to accumulate enough matches, while the new one's
+///   cost is bounded by the match count alone, independent of where those matches happen to sit.
+///
+/// `cargo test --release compose_walk_popcount_skip_vs_walk -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release compose_walk_popcount_skip_vs_walk -- --ignored --nocapture"]
+fn compose_walk_popcount_skip_vs_walk() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+
+    let pbits_for = |field_ids: Option<Vec<u32>>| -> Vec<u64> {
+        let ids = field_ids.expect("value exists in this corpus");
+        super::broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings)
+    };
+    let flying = pbits_for(archived.indexes.keywords.ids_of("flying"));
+    let triggered = pbits_for(archived.indexes.oracle_tags.ids_of("triggered-ability"));
+
+    let bench = |label: &str, pbits: &[u64], offset: usize, limit: usize| {
+        let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec perm");
+        let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, limit, offset);
+        let mut old_best = u128::MAX;
+        let mut new_best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_grouped_page(&ctx, &params, pbits, order.perm).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                old_best = old_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, pbits, order).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                new_best = new_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        println!(
+            "{label:<48} offset={offset:<8} limit={limit:<5} old={old_best:>8}ns  new={new_best:>8}ns  old/new={:.2}x",
+            old_best as f64 / new_best.max(1) as f64
+        );
+    };
+
+    println!("\ncompose walk: popcount-skip prototype vs walk_grouped_page ({n_cards} cards, {n_printings} printings)");
+    bench("keyword:flying (common, shallow page)", &flying, 0, 20);
+    bench("keyword:flying (common, deep-ish page)", &flying, 2_000, 20);
+    for &offset in &[0usize, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000] {
+        bench("otag:triggered-ability (offset sweep)", &triggered, offset, 20);
+    }
+}
+
+/// Same real-traffic comparison as `compose_walk_popcount_skip_vs_walk`, `Mode::Printing` instead of
+/// `Mode::Card` -- `walk_printing_page_via_popcount_skip` against `walk_grouped_page`'s `Printing`
+/// branch. The general (not card-invariance-shortcut) weighted scatter costs more per match than the
+/// bare existence one (a card-space lookup plus a rank lookup per matching PRINTING, not per matching
+/// card), so the crossover point is expected to sit further out than the `Mode::Card` sweep found --
+/// this measures where, rather than assuming the same offset carries over.
+///
+/// `cargo test --release compose_printing_walk_popcount_skip_vs_walk -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release compose_printing_walk_popcount_skip_vs_walk -- --ignored --nocapture"]
+fn compose_printing_walk_popcount_skip_vs_walk() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+
+    let pbits_for = |field_ids: Option<Vec<u32>>| -> Vec<u64> {
+        let ids = field_ids.expect("value exists in this corpus");
+        super::broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings)
+    };
+    let flying = pbits_for(archived.indexes.keywords.ids_of("flying"));
+    let triggered = pbits_for(archived.indexes.oracle_tags.ids_of("triggered-ability"));
+
+    let bench = |label: &str, pbits: &[u64], offset: usize, limit: usize| {
+        let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec perm");
+        let params = kernel_params(Mode::Printing, SortCol::EdhrecRank, false, limit, offset);
+        let mut old_best = u128::MAX;
+        let mut new_best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_grouped_page(&ctx, &params, pbits, order.perm).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                old_best = old_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_printing_page_via_popcount_skip(&ctx, &params, pbits, order).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                new_best = new_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        println!(
+            "{label:<48} offset={offset:<8} limit={limit:<5} old={old_best:>8}ns  new={new_best:>8}ns  old/new={:.2}x",
+            old_best as f64 / new_best.max(1) as f64
+        );
+    };
+
+    println!("\ncompose PRINTING-mode walk: popcount-skip prototype vs walk_grouped_page ({n_cards} cards, {n_printings} printings)");
+    bench("keyword:flying (common, shallow page)", &flying, 0, 20);
+    bench("keyword:flying (common, deep-ish page)", &flying, 2_000, 20);
+    for &offset in &[0usize, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000] {
+        bench("otag:triggered-ability (offset sweep)", &triggered, offset, 20);
+    }
+}
+
+/// Same real-traffic comparison again, `Mode::Artwork` instead of `Mode::Printing` --
+/// `walk_artwork_page_via_popcount_skip` against `walk_grouped_page`'s `Artwork` branch. The scatter
+/// here does more per-printing work than either other mode (a linear `seen_groups` scan on top of
+/// the card/rank lookups), so the crossover is expected to sit further out still; this measures
+/// where, rather than assuming it.
+///
+/// `cargo test --release compose_artwork_walk_popcount_skip_vs_walk -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release compose_artwork_walk_popcount_skip_vs_walk -- --ignored --nocapture"]
+fn compose_artwork_walk_popcount_skip_vs_walk() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+
+    let pbits_for = |field_ids: Option<Vec<u32>>| -> Vec<u64> {
+        let ids = field_ids.expect("value exists in this corpus");
+        super::broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings)
+    };
+    let flying = pbits_for(archived.indexes.keywords.ids_of("flying"));
+    let triggered = pbits_for(archived.indexes.oracle_tags.ids_of("triggered-ability"));
+
+    let bench = |label: &str, pbits: &[u64], offset: usize, limit: usize| {
+        let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec perm");
+        let params = kernel_params(Mode::Artwork, SortCol::EdhrecRank, false, limit, offset);
+        let mut old_best = u128::MAX;
+        let mut new_best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_grouped_page(&ctx, &params, pbits, order.perm).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                old_best = old_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_artwork_page_via_popcount_skip(&ctx, &params, pbits, order).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                new_best = new_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        println!(
+            "{label:<48} offset={offset:<8} limit={limit:<5} old={old_best:>8}ns  new={new_best:>8}ns  old/new={:.2}x",
+            old_best as f64 / new_best.max(1) as f64
+        );
+    };
+
+    println!("\ncompose ARTWORK-mode walk: popcount-skip prototype vs walk_grouped_page ({n_cards} cards, {n_printings} printings)");
+    bench("keyword:flying (common, shallow page)", &flying, 0, 20);
+    bench("keyword:flying (common, deep-ish page)", &flying, 2_000, 20);
+    for &offset in &[0usize, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000] {
+        bench("otag:triggered-ability (offset sweep)", &triggered, offset, 20);
+    }
+}
+
 /// #724 build-side correctness oracle: projecting a printing-space border plane up to card-existence
 /// (`printing_bits_to_card_bits`) must equal #664's card-space border plane for the same value —
 /// both mean "this card has a printing with border=value" (existence projection). Diffed for the
@@ -14909,7 +16207,7 @@ fn exact_name_narrow_finds_a_back_face_and_declines_where_it_cannot() {
         .collect();
     assign_name_ranks(&mut cards, &[]);
     let mut data = store_of(cards, &[1; 4], vocab);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
     data.indexes.name_trigram = build_trigram_index(&data.cards, |c| crate::collated_name_of(c, &data.strings));
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -16343,4 +17641,357 @@ fn annex_artwork_groups_key_on_the_face_tuple_too() {
     assert_eq!(foreign[1].artwork_group_id, 1, "same front, different back: a new artwork");
     assert_eq!(foreign[2].artwork_group_id, 0, "an absent back unifies with the canonical tuple");
     assert_eq!(printings[0].artwork_group_id, 0, "the canonical side never moves");
+}
+
+/// `super::sigma_bound`'s Rust port must agree with the Python original
+/// (`scripts/bench_compose_card_visited_safety_bound.py`) it was translated from -- that Python side
+/// is already Monte-Carlo-verified against simulated random placements (`selfcheck_nhg_moments`), so
+/// this test's job is narrower: catch a translation slip (an off-by-one, a wrong operator, a
+/// mishandled edge case), not re-derive the math.
+///
+/// Fixture generated once from the Python functions directly (not hand-computed) over a spread of
+/// cases chosen to hit every edge branch: `k > matches` (page never fills), `matches == 0`, `k == 0`,
+/// `matches == n_cards` (zero variance), `matches == n_cards == k`, tiny scale (`n_cards` a handful),
+/// and realistic corpus scale (`n_cards` ~1e5). Regenerate with:
+///
+/// ```python
+/// from scripts.bench_compose_card_visited_safety_bound import worst_case_bound, uniform_mean, nhg_variance, sigma_bound
+/// # ... build the (n_cards, matches, k) list, dump worst_case_bound/uniform_mean/nhg_variance/sigma
+/// # per knob in card_engine/testdata/sigma_bound_fixture.json
+/// ```
+#[test]
+fn sigma_bound_matches_python_fixture() {
+    use super::sigma_bound::{nhg_variance, sigma_bound, uniform_mean, worst_case_bound};
+
+    // Relative tolerance: the two sides do the same floating-point arithmetic in a different
+    // language, not a different derivation, so agreement should be tight -- this only needs to be
+    // loose enough to absorb f64 rounding-order differences, not a translation bug.
+    const REL_TOL: f64 = 1e-9;
+    fn agrees(got: f64, want: f64, case: &str) {
+        let diff = (got - want).abs();
+        let scale = want.abs().max(1.0);
+        assert!(
+            diff / scale <= REL_TOL,
+            "{case}: got {got}, want {want} (relative diff {})",
+            diff / scale,
+        );
+    }
+
+    let fixture_str = include_str!("../testdata/sigma_bound_fixture.json");
+    let fixture: serde_json::Value = serde_json::from_str(fixture_str).expect("fixture is valid JSON");
+    let rows = fixture.as_array().expect("fixture is a JSON array");
+    assert!(rows.len() >= 10, "fixture should cover a real spread of cases, got {}", rows.len());
+
+    for row in rows {
+        let n_cards = row["n_cards"].as_u64().expect("n_cards") as usize;
+        let matches = row["matches"].as_u64().expect("matches") as usize;
+        let k = row["k"].as_u64().expect("k") as usize;
+        let case = format!("n_cards={n_cards} matches={matches} k={k}");
+
+        agrees(worst_case_bound(n_cards, matches, k), row["worst_case_bound"].as_f64().unwrap(), &format!("worst_case_bound({case})"));
+        agrees(uniform_mean(n_cards, matches, k), row["uniform_mean"].as_f64().unwrap(), &format!("uniform_mean({case})"));
+        agrees(nhg_variance(n_cards, matches, k), row["nhg_variance"].as_f64().unwrap(), &format!("nhg_variance({case})"));
+
+        let sigmas = row["sigma"].as_object().expect("sigma is a JSON object keyed by knob");
+        assert!(!sigmas.is_empty(), "sigma table should carry at least one knob for {case}");
+        for (knob_str, want) in sigmas {
+            let knob: f64 = knob_str.parse().expect("knob key parses as f64");
+            agrees(sigma_bound(n_cards, matches, k, knob), want.as_f64().unwrap(), &format!("sigma_bound({case}, knob={knob})"));
+        }
+    }
+}
+
+/// `sigma_bound::three_phase_cost_ns`'s interpolation must reproduce every measured breakpoint
+/// exactly (it is a lookup, not a model that merely passes near them) and never report a lower cost
+/// for more set printings -- the physical invariant the raw measurements' own run-to-run noise
+/// violated locally, which is exactly why `THREE_PHASE_BREAKPOINTS`'s y-values are a running max of
+/// the raw numbers, not the raw numbers themselves.
+#[test]
+fn three_phase_cost_ns_matches_breakpoints_and_is_monotonic() {
+    use super::sigma_bound::{three_phase_cost_ns, THREE_PHASE_BREAKPOINTS};
+
+    for &(x, y) in &THREE_PHASE_BREAKPOINTS {
+        let got = three_phase_cost_ns(x as usize);
+        assert!((got - y).abs() < 1e-6, "breakpoint ({x}, {y}): interpolation returned {got}");
+    }
+
+    // Clamped below the first and above the last breakpoint -- see that function's own doc for why
+    // extrapolating a two-regime curve past its measured range isn't attempted.
+    let (first, last) = (THREE_PHASE_BREAKPOINTS[0], THREE_PHASE_BREAKPOINTS[THREE_PHASE_BREAKPOINTS.len() - 1]);
+    assert_eq!(three_phase_cost_ns(0), first.1);
+    assert_eq!(three_phase_cost_ns(10), first.1);
+    assert_eq!(three_phase_cost_ns(last.0 as usize + 50_000), last.1);
+
+    // Monotonic non-decreasing across a fine sweep spanning the whole domain -- more set printings
+    // must never interpolate to a cheaper cost, which a naive per-segment interpolation over
+    // non-monotonic input (had the table not been cleaned up) could produce locally.
+    let mut prev = three_phase_cost_ns(0);
+    for x in (0..=(last.0 as usize + 1_000)).step_by(37) {
+        let cur = three_phase_cost_ns(x);
+        assert!(cur >= prev - 1e-6, "non-monotonic at set_printings={x}: {cur} < {prev}");
+        prev = cur;
+    }
+}
+
+/// How well `three_phase_cost_ns` actually predicts -- against densities NOT in
+/// `THREE_PHASE_BREAKPOINTS`, not the breakpoints themselves (interpolation is exact there by
+/// construction, which would say nothing about prediction quality). Held-out densities are the
+/// log-midpoint between each pair of fitted breakpoints, so every held-out point sits maximally far
+/// from its nearest knots -- the worst case for a piecewise-linear model, not a favorable one.
+///
+/// `cargo test --release three_phase_cost_ns_predicts_held_out_densities -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_cost_ns_predicts_held_out_densities -- --ignored --nocapture"]
+fn three_phase_cost_ns_predicts_held_out_densities() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    // 200/5000, matching three_phase_walk_rate_fit's own trial count -- at 20/200 this validation's
+    // own reported mean/worst-case ratio swung wildly across repeat runs (mean 0.874-1.022, worst
+    // case 7.0%-28.2%, across 8 runs), which meant a single validation pass wasn't trustworthy
+    // evidence either. This isn't unique to the fit; any min-of-N measurement in this file needs
+    // enough N, not just enough repeated runs.
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
+    const LIMIT: usize = 20;
+    // Log-midpoint of each pair of fitted densities -- deliberately the point on the curve farthest
+    // from both of its bracketing knots. Matches THREE_PHASE_BREAKPOINTS's 17 fitted densities
+    // (0.0002 .. 1.0, including the 0.03/0.25/0.3 gap-bisecting additions), so this always tests
+    // prediction quality against the CURRENT table's actual gaps, not stale ones from a smaller table.
+    const HELD_OUT_DENSITIES: [f64; 16] = [
+        0.000316, 0.000707, 0.001414, 0.003162, 0.007071, 0.014142, 0.024495, 0.038730, 0.070711, 0.141421, 0.223607,
+        0.273861, 0.346410, 0.489898, 0.692820, 0.894427,
+    ];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(6); // distinct seed from the fitting run
+    let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0);
+
+    println!("\nthree_phase_cost_ns: held-out prediction quality (densities NOT used to fit the table)");
+    println!("{:>10}  {:>12}  {:>12}  {:>12}  {:>8}", "density", "set_printings", "actual_ns", "predicted", "ratio");
+    let mut ratios: Vec<f64> = Vec::new();
+    for &density in &HELD_OUT_DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box(&page);
+        }
+
+        let predicted = super::sigma_bound::three_phase_cost_ns(set_printings);
+        let ratio = predicted / best.max(1) as f64;
+        println!("{density:>10.6}  {set_printings:>12}  {best:>12}  {predicted:>12.1}  {ratio:>8.3}");
+        ratios.push(ratio);
+    }
+
+    let n = ratios.len() as f64;
+    let mean = ratios.iter().sum::<f64>() / n;
+    let worst = ratios.iter().map(|r| (r - 1.0).abs()).fold(0.0, f64::max);
+    println!("\n  mean ratio = {mean:.3}  (1.0 = perfect)");
+    println!("  worst |ratio - 1| = {worst:.3}");
+}
+
+/// `three_phase_cost_ns_predicts_held_out_densities` answers "how good is the fit at 16 chosen
+/// points"; this answers the more useful question -- across a properly randomized sample spanning
+/// the whole domain, what FRACTION of the time does the prediction actually land close to the real
+/// cost, not just what the single worst case happens to be. A worst case can be rare and still leave
+/// the prediction useful for most decisions it's actually used for.
+///
+/// Densities are drawn log-uniform over the whole fitted range (`~0.0002` to `1.0`) -- linear-uniform
+/// would oversample the dense end and barely touch the sparse end, where real `Perm` traffic actually
+/// lives. Same `WARMUP=200, ITERS=5000` trial count as the fit itself and the same reason: at this
+/// file's usual 20/200, the error distribution this test reports would itself be noisy enough to
+/// misread.
+///
+/// `cargo test --release three_phase_cost_ns_error_distribution -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_cost_ns_error_distribution -- --ignored --nocapture"]
+fn three_phase_cost_ns_error_distribution() {
+    use rand::{RngExt, SeedableRng};
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
+    const LIMIT: usize = 20;
+    const N_SAMPLES: usize = 150;
+    const DENSITY_MIN: f64 = 0.0002;
+    const DENSITY_MAX: f64 = 1.0;
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(7); // distinct from both the fit's (5) and the spot-check's (6)
+    let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0);
+    let (log_min, log_max) = (DENSITY_MIN.ln(), DENSITY_MAX.ln());
+
+    let mut abs_errors: Vec<f64> = Vec::with_capacity(N_SAMPLES);
+    for _ in 0..N_SAMPLES {
+        let density = rng.random_range(log_min..log_max).exp();
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box(&page);
+        }
+
+        let predicted = super::sigma_bound::three_phase_cost_ns(set_printings);
+        let actual = best.max(1) as f64;
+        abs_errors.push((predicted - actual).abs() / actual);
+    }
+
+    abs_errors.sort_by(f64::total_cmp);
+    let n = abs_errors.len();
+    let pctile = |p: f64| -> f64 { abs_errors[((p / 100.0) * (n - 1) as f64).round() as usize] };
+    let within = |threshold: f64| -> f64 { 100.0 * abs_errors.iter().filter(|&&e| e <= threshold).count() as f64 / n as f64 };
+
+    println!("\nthree_phase_cost_ns error distribution ({n} random log-uniform samples, density {DENSITY_MIN}-{DENSITY_MAX})");
+    println!("  within  5% error: {:>5.1}%", within(0.05));
+    println!("  within 10% error: {:>5.1}%", within(0.10));
+    println!("  within 20% error: {:>5.1}%", within(0.20));
+    println!("  within 30% error: {:>5.1}%", within(0.30));
+    println!("  p50 error = {:.3}  p75 = {:.3}  p90 = {:.3}  p95 = {:.3}  max = {:.3}", pctile(50.0), pctile(75.0), pctile(90.0), pctile(95.0), abs_errors[n - 1]);
+}
+
+/// `should_use_three_phase`'s directional sanity: it must divert to three-phase for the population
+/// it exists for (sparse matches, a deep page -- where `walk_grouped_page` has to scan nearly the
+/// whole permutation to fill a page), and must NOT divert for the opposite population (dense matches,
+/// a shallow page -- where the classic walk is cheap and three-phase would pay a full scatter for no
+/// reason). Pure function, no real.store needed -- see `perm_walk_vs_three_phase_same_process_rates`
+/// (step 4) for where these two regimes' real measured costs came from in the first place.
+#[test]
+fn should_use_three_phase_picks_the_right_side_of_the_crossover() {
+    use super::sigma_bound::should_use_three_phase;
+    const N_CARDS: usize = 31_724;
+    const N_PRINTINGS: usize = 97_812;
+    const KNOB: f64 = 3.0; // COMPOSE_SIGMA_KNOB's default
+
+    // Sparse (50 matches) + deep page (k=200 > matches, so sigma_bound falls back to the exact
+    // worst-case bound): the walk must be predicted expensive, three-phase cheap.
+    assert!(
+        should_use_three_phase(N_CARDS, N_PRINTINGS, 50, 200, 50, KNOB),
+        "sparse matches + deep page should divert to three-phase"
+    );
+
+    // Dense (25,000 of 31,724 cards match) + shallow page (k=20): the walk fills almost immediately,
+    // three-phase pays a full scatter over ~58,725 set printings regardless -- must NOT divert.
+    assert!(
+        !should_use_three_phase(N_CARDS, N_PRINTINGS, 25_000, 20, 58_725, KNOB),
+        "dense matches + shallow page should NOT divert to three-phase"
+    );
+}
+
+/// `compose_perm_three_phase_order` is what step 5 actually wires into `printing_compose_fastpath` --
+/// exercising it directly, with `enabled` as an explicit argument, is what lets this run every time
+/// (no real.store, no fragile per-test toggling of `COMPOSE_SIGMA_ENABLED`'s `LazyLock`, which caches
+/// its env read on first access -- exactly the reason this function takes `enabled` as a plain
+/// argument instead of reading the static itself). Covers what `PagingTaken::PermThreePhase`'s own doc
+/// claims but the acquire/executor legality sweep can't check while the guard is off: the gate really
+/// is off unless `enabled` says so, `Mode::Printing`/`Mode::Artwork` never divert (the promoted walk
+/// is `Mode::Card`-only) regardless of `enabled`, and a real `SortOrder` comes back when it does fire.
+#[test]
+fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
+    use rand::SeedableRng;
+    const CORPUS_SIZE: usize = 3_000;
+    const KNOB: f64 = 3.0;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(8);
+    let data = fuzz_store_n(&mut rng, CORPUS_SIZE);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    let card_matches = |pbits: &[u64]| -> usize {
+        let mut card_seen = vec![false; n_cards];
+        let mut count = 0usize;
+        for (i, &word) in pbits.iter().enumerate() {
+            let mut w = word;
+            while w != 0 {
+                let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                w &= w - 1;
+                let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                if !card_seen[cid] {
+                    card_seen[cid] = true;
+                    count += 1;
+                }
+            }
+        }
+        count
+    };
+
+    let set_printings_of = |pbits: &[u64]| -> usize { pbits.iter().map(|w| w.count_ones() as usize).sum() };
+
+    // Sparse + deep offset: should_use_three_phase's own unit test already proved this population
+    // says "divert". A fresh bitmap per call keeps the three sub-checks below independent.
+    let sparse_params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 20, 200);
+
+    let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
+    let total = card_matches(&pbits);
+    assert!(
+        super::compose_perm_three_phase_order(&ctx, &sparse_params, set_printings_of(&pbits), Mode::Card, SortCol::EdhrecRank, false, total, false, KNOB)
+            .is_none(),
+        "enabled=false must never divert, regardless of population"
+    );
+
+    let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
+    let total = card_matches(&pbits);
+    let order =
+        super::compose_perm_three_phase_order(&ctx, &sparse_params, set_printings_of(&pbits), Mode::Card, SortCol::EdhrecRank, false, total, true, KNOB);
+    assert!(order.is_some(), "enabled=true + sparse + deep offset should divert to three-phase");
+
+    for (label, mode) in [("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
+        let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
+        let total = card_matches(&pbits); // not meaningful for these modes, but the mode gate must short-circuit before using it
+        let params = kernel_params(mode, SortCol::EdhrecRank, false, 20, 200);
+        assert!(
+            super::compose_perm_three_phase_order(&ctx, &params, set_printings_of(&pbits), mode, SortCol::EdhrecRank, false, total, true, KNOB).is_none(),
+            "{label}: the promoted walk is Mode::Card-only, so this must never divert regardless of enabled"
+        );
+    }
 }

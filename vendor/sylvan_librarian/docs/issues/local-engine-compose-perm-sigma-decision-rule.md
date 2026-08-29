@@ -70,8 +70,13 @@ real production traffic's actual query shapes rather than a uniform sampler.
 
 ## What shipping this looks like, in independently-landable chunks
 
-1. **Fix the cost model first, separately**: [local-engine-compose-walk-cost-model-miscalibrated.md](local-engine-compose-walk-cost-model-miscalibrated.md).
-   Unrelated in scope to this doc's own decision rule — found as a side effect, ships on its own.
+1. **Fix the cost model first, separately**: [01025-engine-compose-walk-cost-miscalibrated.md](01025-engine-compose-walk-cost-miscalibrated.md).
+   Unrelated in scope to this doc's own decision rule — found as a side effect. **Only half of this
+   ships on its own**: the enabling `ns_build`/`ns_paging` split is genuinely independent and lands via
+   [#1009](https://github.com/jbylund/sylvan_librarian/pull/1009), but the refit itself turned out not
+   to be a standalone follow-up — it's gated on the same `cards_visited` feature-estimation gap
+   blocking [local-engine-p3-p4-joint-refit-vs-compose.md](local-engine-p3-p4-joint-refit-vs-compose.md)'s
+   joint refit. See `01025`'s own Status for the current split.
 2. **Promote the three-phase walk out of `#[cfg(test)]`**, Card mode first. Zero behavior change:
    nothing calls it yet. Correctness is already covered (360-case differential test against
    `walk_grouped_page`, passing).
@@ -99,6 +104,10 @@ real production traffic's actual query shapes rather than a uniform sampler.
    mismatch) before it settled — a shadow run on real traffic is worth more than trusting the model
    further.
 
+Once 6-7 land, a follow-up becomes worth doing: `cost.rs`'s `plan_cost` for `PrintingCompose`/`Perm`
+still prices only the classic walk, not `min(walk_ns, three_phase_ns)` — see
+[local-engine-compose-perm-cost-model-min-branch.md](local-engine-compose-perm-cost-model-min-branch.md).
+
 Steps 2, 3, and 6 are mechanical and low-risk, and don't depend on the others — good candidates to
 land first and separately. Step 4 is the one that actually decides whether 5 is safe to build.
 
@@ -119,7 +128,10 @@ write-ups only, safe to build on incrementally per the chunks above.
   — the one-phase-selector detour this decision-rule work grew out of; measured and rejected.
 - [00730-engine-popcount-skip-walk.md](00730-engine-popcount-skip-walk.md) — the filed issue this
   whole arc implements.
-- [local-engine-compose-walk-cost-model-miscalibrated.md](local-engine-compose-walk-cost-model-miscalibrated.md)
+- [01025-engine-compose-walk-cost-miscalibrated.md](01025-engine-compose-walk-cost-miscalibrated.md)
   — the independent cost-model finding this work surfaced.
+- [local-engine-compose-perm-cost-model-min-branch.md](local-engine-compose-perm-cost-model-min-branch.md)
+  — once step 5 validates, `plan_cost` itself should reflect `Perm`'s cheaper branch as a `min` term;
+  blocked on the same kind of cheap-estimate problem, sequenced behind steps 6-7.
 - `scripts/bench_compose_card_visited_safety_bound.py` — the harness all the numbers in this doc
   come from.

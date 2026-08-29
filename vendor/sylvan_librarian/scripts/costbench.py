@@ -137,6 +137,9 @@ PLAN_KEYS = frozenset(
         "printing_span",
         "printings_examined",
         "matches_pushed",
+        # PrintingCompose only (0 for every other plan): popcount(pbits), the composed printing-space
+        # bitmap. Keyed variable for sigma_bound::three_phase_cost_ns's grading, not matches.
+        "set_printings",
     # Permutation entries StreamedSelect's walk stepped. Realized ground truth for the estimate
     # `page_span * n_cards / matches`, which assumes matches are spread uniformly through the
     # permutation -- an assumption worth grading rather than trusting.
@@ -316,10 +319,11 @@ def plan_self_ns(plan: dict, acquire: dict) -> float | None:
 
     **The executor**, from `ns_setup + ns_loop + ns_finish`. Contiguous by construction, so the sum IS
     the executor -- exact, with nothing to overshoot. Every plan publishes these; the two materializing
-    ones split them three ways, and the four others report one undivided span in `ns_loop` because they
-    have no three phases to attribute between. Verified against the old netted figure on 45k paired
-    rows before the switch: median ratio 0.998 (GatheredScan) and 0.997 (StreamedSelect), 0.08us of the
-    round unaccounted.
+    ones split them three ways, `PrintingCompose` splits them two ways (`ns_setup` for the build,
+    `ns_loop` for the paging branch, no `ns_finish`), and the three remaining plans report one
+    undivided span in `ns_loop` because they have no phases to attribute between at all. Verified
+    against the old netted figure on 45k paired rows before the switch: median ratio 0.998
+    (GatheredScan) and 0.997 (StreamedSelect), 0.08us of the round unaccounted.
 
     **Plus any shared artifact DISPATCH pays for**, which depends on the acquire and not on the plan:
 
@@ -350,11 +354,11 @@ def plan_self_ns(plan: dict, acquire: dict) -> float | None:
 # ── statistics and tables ─────────────────────────────────────────────────────────────────────
 
 
-def percentile(sorted_vals: list[float], pct: int) -> float:
+def percentile(sorted_vals: list[float], pct: float) -> float:
     """Nearest-rank percentile; no interpolation, so every printed number is a real observation."""
     if not sorted_vals:
         return float("nan")
-    idx = min(round(pct / 100.0 * len(sorted_vals) + 0.5) - 1, len(sorted_vals) - 1)
+    idx = min(math.ceil(pct / 100.0 * len(sorted_vals)) - 1, len(sorted_vals) - 1)
     return sorted_vals[max(idx, 0)]
 
 

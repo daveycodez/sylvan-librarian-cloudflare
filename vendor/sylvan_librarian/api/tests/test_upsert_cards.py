@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import uuid
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import psycopg
+import pytest
 
 from api.admin_resource import AdminResource, _build_boolean_is_tags_sql
 from api.api_resource import APIResource
@@ -17,9 +17,6 @@ from api.db.bulk_upsert import bulk_upsert
 from api.scryfall_bulk_data_fetcher import BulkDataKey
 from api.tests.helpers import make_raw_card
 from api.tests.support import mock_app_context
-
-if TYPE_CHECKING:
-    import pytest
 
 # ---------------------------------------------------------------------------
 # Status-code tests
@@ -147,18 +144,36 @@ class TestBooleanIsTags:
         api_resource.admin._upsert_cards([card])
         assert _is_tags_for(api_resource, card["id"]).get("spotlight") is True
 
-    def test_hybrid_mana_symbol_lands_as_is_tag(self, api_resource: APIResource) -> None:
-        """hybrid/phyrexian read mana_cost_text, not raw_card_blob.
+    @pytest.mark.parametrize(
+        "mana_cost",
+        [
+            "{R/G}",  # the ten two-colour symbols
+            "{2/W}",  # the twobrid cycle -- 19 of Scryfall's is:hybrid cards have only these
+            "{C/U}",  # colourless-hybrid -- 1 card
+            "{G/W/P}",  # Phyrexian-hybrid -- 4 cards
+        ],
+    )
+    def test_every_hybrid_family_lands_as_is_tag(self, api_resource: APIResource, mana_cost: str) -> None:
+        """Hybrid reads the front face's cost, and counts all FOUR hybrid families.
 
-        A regex, not a rewrite, per docs/issues/done/00713-is-tag-recovery.md (an open,
-        growing symbol set makes an enumerated rewrite brittle).
+        A regex, not a rewrite, per docs/issues/done/00713-is-tag-recovery.md (an open, growing
+        symbol set makes an enumerated rewrite brittle) -- but the regex has to be as wide as the
+        set it stands in for. Reading only `{W/U}`-style symbols answered 569 of Scryfall's 603.
         """
-        card = make_raw_card(name="Hybrid Mana Import Test")
-        card["mana_cost"] = "{R/G}"
+        card = make_raw_card(name=f"Hybrid Mana Import Test {mana_cost}")
+        card["mana_cost"] = mana_cost
         api_resource.admin._upsert_cards([card])
         tags = _is_tags_for(api_resource, card["id"])
         assert tags.get("hybrid") is True
-        assert "phyrexian" not in tags
+
+    def test_colourless_phyrexian_is_not_hybrid(self, api_resource: APIResource) -> None:
+        """`{C/P}` is Phyrexian, not hybrid, and Scryfall agrees: `is:hybrid o:"{c/p}"` is empty."""
+        card = make_raw_card(name="Colourless Phyrexian Import Test")
+        card["mana_cost"] = "{C/P}"
+        api_resource.admin._upsert_cards([card])
+        tags = _is_tags_for(api_resource, card["id"])
+        assert "hybrid" not in tags
+        assert tags.get("phyrexian") is True
 
     def test_phyrexian_mana_symbol_lands_as_is_tag(self, api_resource: APIResource) -> None:
         card = make_raw_card(name="Phyrexian Mana Import Test")
@@ -168,13 +183,17 @@ class TestBooleanIsTags:
         assert tags.get("phyrexian") is True
         assert "hybrid" not in tags
 
-    def test_plain_mana_cost_does_not_set_hybrid_or_phyrexian(self, api_resource: APIResource) -> None:
-        card = make_raw_card(name="Plain Mana Import Test")
-        card["mana_cost"] = "{2}{W}{W}"
+    def test_phyrexian_is_anywhere_on_the_card_not_only_the_cost(self, api_resource: APIResource) -> None:
+        """The cost is the SMALLER half: 36 of Scryfall's 73 carry the symbol in rules text only.
+
+        Reading `mana_cost_text` alone answers 33 of the 73 -- Spellskite, the Souleaters and every
+        `{2}{B/P}: transform` back face put the symbol in rules text and nowhere else.
+        """
+        card = make_raw_card(name="Phyrexian In Rules Text")
+        card["mana_cost"] = "{2}{U}"
+        card["oracle_text"] = "{W/P}: Draw a card."
         api_resource.admin._upsert_cards([card])
-        tags = _is_tags_for(api_resource, card["id"])
-        assert "hybrid" not in tags
-        assert "phyrexian" not in tags
+        assert _is_tags_for(api_resource, card["id"]).get("phyrexian") is True
 
     def test_promo_types_membership_lands_as_is_tag(self, api_resource: APIResource) -> None:
         card = make_raw_card(name="FNM Import Test")
