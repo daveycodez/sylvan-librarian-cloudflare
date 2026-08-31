@@ -126,6 +126,17 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("scryfallExactName");
 			return val<Record<string, unknown> | null>("exact", null);
 		},
+		scryfallCollectionNames: async (identifiers: { folded: string }[]) => {
+			count("scryfallCollectionNames");
+			// One card for every identifier this partition was ASKED about — the router only asks
+			// for the ones it won, so the length is the test's assertion surface.
+			return identifiers.map(() => val<Record<string, unknown> | null>("collectionCard", null));
+		},
+		scryfallCollectionNameRanks: async (identifiers: { folded: string }[]) => {
+			count("scryfallCollectionNameRanks");
+			const ranks = val<(number[] | null)[]>("collectionRanks", []);
+			return identifiers.map((_, i) => ranks[i] ?? null);
+		},
 		scryfallExactNameRank: async () => {
 			count("scryfallExactNameRank");
 			// A partition that can answer ranks; `exactRank` overrides the tier/score so a test
@@ -396,6 +407,62 @@ describe("batches and catalogs", () => {
 		const cards = await engine.scryfallFirstOfEach(["f1", "f2"], "https://x");
 		expect(cards).toEqual([{ name: "X" }, { name: "X" }]);
 		expect(of("scryfallFirstOfEach").length).toBe(N);
+	});
+
+	test("collection names: N rank RPCs, then one materialize RPC per WINNING partition", async () => {
+		// The two-round protocol, and why it is not `firstNonNull` per identifier: partition 1 has
+		// a FACE match for the first needle and partition 2 has a WHOLE-name match, and the higher
+		// tier has to win however the partitions are ordered. Partition 1 answers a rank and is
+		// never asked for a card.
+		const { engine, of } = build({
+			1: { collectionRanks: [[1, 0], null], collectionCard: { name: "face" } },
+			2: {
+				collectionRanks: [
+					[2, 0],
+					[2, 0],
+				],
+				collectionCard: { name: "whole" },
+			},
+		});
+		const cards = await engine.scryfallCollectionNames(
+			[
+				{ folded: "a", setCode: "" },
+				{ folded: "b", setCode: "" },
+			],
+			"https://x",
+		);
+		expect(cards).toEqual([{ name: "whole" }, { name: "whole" }]);
+		expect(of("scryfallCollectionNameRanks").length).toBe(N);
+		expect(of("scryfallCollectionNames").length).toBe(1);
+	});
+
+	test("collection names: each identifier comes back from the partition that won IT", async () => {
+		const { engine, of } = build({
+			1: { collectionRanks: [[2, 0], null], collectionCard: { name: "p1" } },
+			2: { collectionRanks: [null, [2, 0]], collectionCard: { name: "p2" } },
+		});
+		const cards = await engine.scryfallCollectionNames(
+			[
+				{ folded: "a", setCode: "" },
+				{ folded: "b", setCode: "" },
+			],
+			"https://x",
+		);
+		expect(cards).toEqual([{ name: "p1" }, { name: "p2" }]);
+		expect(of("scryfallCollectionNames").length).toBe(2);
+	});
+
+	test("collection names: a needle no partition ranks is a null IN PLACE, and costs no second round", async () => {
+		const { engine, of } = build();
+		expect(await engine.scryfallCollectionNames([{ folded: "zzz", setCode: "" }], "https://x")).toEqual([null]);
+		expect(of("scryfallCollectionNameRanks").length).toBe(N);
+		expect(of("scryfallCollectionNames").length).toBe(0);
+	});
+
+	test("collection names: an empty batch touches no partition at all", async () => {
+		const { engine, calls } = build();
+		expect(await engine.scryfallCollectionNames([], "https://x")).toEqual([]);
+		expect(calls.length).toBe(0);
 	});
 
 	test("catalog: N summed", async () => {

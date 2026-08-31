@@ -78,6 +78,7 @@ import type {
 	EngineSerializedResult,
 	Env,
 	FuzzyCandidateWire,
+	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -563,6 +564,25 @@ export class SearchEngine extends DurableObject<Env> {
 	): Promise<{ rank: number[] | null } & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			rank: await engine.scryfallExactNameRank(folded, setCode),
+		}));
+	}
+
+	async scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<ScryfallMaybeCardsReply & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => ({
+			cards: await engine.scryfallCollectionNames(identifiers, baseUrl),
+		}));
+	}
+
+	async scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		reportedShards?: number,
+	): Promise<{ ranks: (number[] | null)[] } & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => ({
+			ranks: await engine.scryfallCollectionNameRanks(identifiers),
 		}));
 	}
 

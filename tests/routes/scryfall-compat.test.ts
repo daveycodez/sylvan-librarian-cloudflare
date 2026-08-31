@@ -929,6 +929,91 @@ describe("POST /cards/collection", () => {
 		expect(body.not_found).toEqual([]);
 	});
 
+	test("a `{name}` identifier is an EXACT name lookup, not a containment one", async () => {
+		// THE BUG THIS REPLACED. The identifier used to become the filter tree `name="…"`, which is
+		// the CONTAINMENT operator, ordered by edhrec and cut to one row: on the real corpus
+		// `{"name":"Delver of Secrets"}` answered `Literal Delver of Secrets` (unk/CU06) — a
+		// different card, whose name merely CONTAINS the needle. api.scryfall.com answers
+		// `Delver of Secrets // Insectile Aberration` (inr/60), and a needle that is nobody's name
+		// is not_found rather than whichever card carries it as a substring — measured there with
+		// `{"name":"Delver"}`, since a shorter needle is not automatically nobody's name (`Elves`
+		// looks like one and is a card, ffdn/9).
+		const engine = new FakeEngine();
+		const body = await json(
+			await testDispatch(
+				postCtx({ identifiers: [{ name: "Elves" }, { name: "Llanowar Elves" }] }, engine),
+				"/cards/collection",
+				"POST",
+			),
+		);
+		const data = body.data as Record<string, unknown>[];
+		expect(data.length).toBe(1);
+		expect(data[0]?.name).toBe("Llanowar Elves");
+		expect(body.not_found).toEqual([{ name: "Elves" }]);
+	});
+
+	test("a FACE name resolves the two-faced card and the JOINED name is not_found", async () => {
+		// The collection identifier's key rule, which is NOT `/cards/named?exact=`'s. Measured on
+		// api.scryfall.com 2026-08-31, one identifier per request: `{"name":"Delver of Secrets"}`
+		// and `{"name":"Insectile Aberration"}` both answer the card, and
+		// `{"name":"Delver of Secrets // Insectile Aberration"}` is not_found — where
+		// `exact=Delver of Secrets // Insectile Aberration` answers it.
+		const engine = new FakeEngine();
+		engine.collectionNames = ["Delver of Secrets // Insectile Aberration", "Elvish Mystic"];
+		const body = await json(
+			await testDispatch(
+				postCtx(
+					{
+						identifiers: [
+							{ name: "Delver of Secrets" },
+							{ name: "Insectile Aberration" },
+							{ name: "Delver of Secrets // Insectile Aberration" },
+						],
+					},
+					engine,
+				),
+				"/cards/collection",
+				"POST",
+			),
+		);
+		expect((body.data as unknown[]).length).toBe(2);
+		expect(body.not_found).toEqual([{ name: "Delver of Secrets // Insectile Aberration" }]);
+	});
+
+	test("a `{name}` identifier is trimmed, folded and collated before it is looked up", async () => {
+		// Scryfall resolves `{"name":"  Lightning Bolt  "}`, `{"name":"DELVER OF SECRETS"}`,
+		// `{"name":"limduls vault"}` and `{"name":"delverofsecrets"}` (measured 2026-08-31), so the
+		// route trims and lowercases and the engine collates. The needle the engine SEES is what
+		// this pins; the collating itself is the engine's test.
+		const engine = new FakeEngine();
+		await testDispatch(postCtx({ identifiers: [{ name: "  LLANOWAR Elves\n" }] }, engine), "/cards/collection", "POST");
+		expect(engine.collectionNameBatches[0]).toEqual([{ folded: "llanowar elves", setCode: "" }]);
+	});
+
+	test("every `{name}` identifier in a batch goes over in ONE engine call", async () => {
+		// 75 identifiers is the documented cap, and one round trip each would be 75 — the reason
+		// the engine surface takes a batch at all.
+		const engine = new FakeEngine();
+		const identifiers = [{ name: "Llanowar Elves" }, { name: "Elvish Mystic" }, { name: "Llanowar Elves" }];
+		const body = await json(await testDispatch(postCtx({ identifiers }, engine), "/cards/collection", "POST"));
+		expect(engine.collectionNameBatches.length).toBe(1);
+		expect(engine.collectionNameBatches[0]?.length).toBe(3);
+		expect((body.data as unknown[]).length).toBe(3);
+	});
+
+	test("a `{name, set}` identifier carries its set to the engine", async () => {
+		// `{"name":"Delver of Secrets","set":"mid"}` answers mid/47 on api.scryfall.com and
+		// `{"name":"Delver of Secrets","set":"unk"}` is not_found — the set is a filter on the
+		// lookup, not a hint.
+		const engine = new FakeEngine();
+		await testDispatch(
+			postCtx({ identifiers: [{ name: "Llanowar Elves", set: "m19" }] }, engine),
+			"/cards/collection",
+			"POST",
+		);
+		expect(engine.collectionNameBatches[0]).toEqual([{ folded: "llanowar elves", setCode: "m19" }]);
+	});
+
 	test("two identifiers naming one card answer TWICE — `data` is one entry per identifier", async () => {
 		// The opposite of what this port used to do. Measured 2026-08-16: three identical `{id}`
 		// identifiers return three card objects and 75 identical `{name}` identifiers return 75, so

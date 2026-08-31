@@ -72,6 +72,7 @@ import type {
 	EngineSearchResult,
 	EngineSerializedResult,
 	Env,
+	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -448,6 +449,31 @@ class WasmEngine implements Engine {
 			this.w.exact_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow | null;
 		return row === null ? null : toScryfallCard(row, baseUrl);
+	}
+
+	/**
+	 * The collection identifiers' own name rule, one card each — see the engine's
+	 * `collection_card_by_name` for what separates it from `exact_card_by_name`.
+	 *
+	 * Looped HERE rather than by the caller: the loop is inside the Durable Object, so 75
+	 * identifiers cost 75 wasm calls and ONE RPC instead of 75 round trips.
+	 */
+	async scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		return identifiers.map(({ folded, setCode }) => {
+			const row = JSON.parse(
+				this.w.collection_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
+			) as EngineRow | null;
+			return row === null ? null : toScryfallCard(row, baseUrl);
+		});
+	}
+
+	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
+		return identifiers.map(
+			({ folded, setCode }) => JSON.parse(this.w.collection_name_rank(folded, setCode)) as number[] | null,
+		);
 	}
 
 	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

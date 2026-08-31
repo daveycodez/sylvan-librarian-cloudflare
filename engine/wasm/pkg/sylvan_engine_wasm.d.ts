@@ -64,6 +64,25 @@ export function cards_containing_all_words(words_json: string, set_code: string,
 export function catalog(): string;
 
 /**
+ * The best printing a COLLECTION IDENTIFIER's `name` names, or `null` — `POST /cards/collection`.
+ *
+ * NOT `exact_card_by_name` with a different caller: a collection identifier reads a card's FACE
+ * names when the name splits in exactly two and its whole name otherwise, where `exact=` also
+ * reads the joined name and the flavor names. `{"name":"Fire // Ice"}` is not_found on
+ * api.scryfall.com and `exact=Fire // Ice` is Fire // Ice — see `collection_card_by_name`.
+ *
+ * `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
+ * the collating happens in the engine. `set_code` is "" for no set restriction.
+ */
+export function collection_card_by_name(folded: string, set_code: string, fields_json: string): string;
+
+/**
+ * How well this partition's best collection-identifier candidate matches, as `[tier, score]`, or
+ * `null` — the twin of `exact_name_rank`, and there for the same partitioned router.
+ */
+export function collection_name_rank(folded: string, set_code: string): string;
+
+/**
  * The best printing of a card whose FOLDED name matches exactly, or `null`.
  *
  * `folded` must already be lowercased and accent-folded by the caller (foldAccents in

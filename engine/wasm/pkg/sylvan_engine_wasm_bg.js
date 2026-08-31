@@ -238,6 +238,76 @@ export function catalog() {
 }
 
 /**
+ * The best printing a COLLECTION IDENTIFIER's `name` names, or `null` — `POST /cards/collection`.
+ *
+ * NOT `exact_card_by_name` with a different caller: a collection identifier reads a card's FACE
+ * names when the name splits in exactly two and its whole name otherwise, where `exact=` also
+ * reads the joined name and the flavor names. `{"name":"Fire // Ice"}` is not_found on
+ * api.scryfall.com and `exact=Fire // Ice` is Fire // Ice — see `collection_card_by_name`.
+ *
+ * `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
+ * the collating happens in the engine. `set_code` is "" for no set restriction.
+ * @param {string} folded
+ * @param {string} set_code
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function collection_card_by_name(folded, set_code, fields_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.collection_card_by_name(ptr0, len0, ptr1, len1, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * How well this partition's best collection-identifier candidate matches, as `[tier, score]`, or
+ * `null` — the twin of `exact_name_rank`, and there for the same partitioned router.
+ * @param {string} folded
+ * @param {string} set_code
+ * @returns {string}
+ */
+export function collection_name_rank(folded, set_code) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.collection_name_rank(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * The best printing of a card whose FOLDED name matches exactly, or `null`.
  *
  * `folded` must already be lowercased and accent-folded by the caller (foldAccents in

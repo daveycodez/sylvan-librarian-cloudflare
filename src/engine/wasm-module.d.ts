@@ -42,6 +42,8 @@ declare module "sylvan-engine-wasm" {
 		autocomplete(prefix: string, limit: number): string;
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
+		collection_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
+		collection_name_rank(folded: string, setCode: string): string;
 		card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 		cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
 		linearMemoryBytes(): number;
@@ -76,6 +78,13 @@ declare module "sylvan-engine-wasm" {
 	export function exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	/** `[tier, score]` for this store's best `exact=` candidate, or `null`. Compare, never interpret. */
 	export function exact_name_rank(folded: string, setCode: string): string;
+	/**
+	 * The best printing a COLLECTION IDENTIFIER's `name` names, or JSON `null` — a different key
+	 * rule from `exact_card_by_name`'s, not a different caller. Same needle shape.
+	 */
+	export function collection_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
+	/** `[tier, score]` for this store's best collection-identifier candidate, or `null`. */
+	export function collection_name_rank(folded: string, setCode: string): string;
 	/** The best printing carrying this illustration id, or JSON `null`. */
 	export function card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	/** One card per distinct name containing every word, best printing each. JSON array. */

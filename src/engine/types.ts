@@ -245,6 +245,19 @@ export interface Engine {
 	 * in different partitions. Compare the pair; do not interpret either half.
 	 */
 	scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null>;
+	/**
+	 * A `POST /cards/collection` `{name}` identifier batch, resolved to one card each.
+	 *
+	 * NOT `scryfallExactName` looped: the two surfaces read different keys (see the engine's
+	 * `collection_card_by_name`), and a collection POST carries up to 75 identifiers, which
+	 * looped would be 75 round trips per partition.
+	 */
+	scryfallCollectionNames(identifiers: NameIdentifier[], baseUrl: string): Promise<(Record<string, unknown> | null)[]>;
+	/**
+	 * `[tier, score]` per identifier for this engine's best candidate, or null — the batched twin
+	 * of `scryfallExactNameRank`, and there for the same partitioned router.
+	 */
+	scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]>;
 	/** `illustration_id`, one of the collection endpoint's identifiers; not a searchable field. */
 	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/**
@@ -263,6 +276,18 @@ export interface Engine {
 	 * identifiers). One RPC for the whole batch so 75 identifiers are not 75 round trips.
 	 */
 	scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]>;
+}
+
+/**
+ * One `POST /cards/collection` `{"name": …, "set": …}` identifier, as the engine takes it.
+ *
+ * `folded` is lowercased and accent-folded by the route (foldAccents in src/parser/pystr.ts), the
+ * same shape `/cards/named?exact=` hands over; the engine collates it. `setCode` is "" for an
+ * identifier that names no set.
+ */
+export interface NameIdentifier {
+	folded: string;
+	setCode: string;
 }
 
 /**

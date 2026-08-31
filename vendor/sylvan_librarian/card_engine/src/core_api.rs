@@ -1982,17 +1982,18 @@ impl BufferStore {
             .collect()
     }
 
-    /// The best printing of a card whose FOLDED name matches exactly, optionally within one set.
+    /// The best printing of a card the needle NAMES, optionally within one set.
     ///
     /// LOCAL ADDITION (Cloudflare port). Upstream does this in SQL and has no engine equivalent,
-    /// so `/cards/named?exact=` would be the one route with nothing behind it here. The predicate
-    /// is upstream's, verbatim: the whole folded name, OR either half of a `Front // Back` name --
+    /// so `/cards/named?exact=` would be the one route with nothing behind it here. The keys are
+    /// `name_key_tier`'s, plus the joined name of a two-faced card and the flavor names --
     /// Scryfall resolves `exact=Delver of Secrets` to the two-faced card, and matching only the
     /// combined name would 404 it.
     ///
     /// `folded` must already be lowercased and accent-folded by the caller, the same way
-    /// `card_name_folded` was at import (foldAccents in src/parser/pystr.ts). A scan, for the same
-    /// reason the fuzzy match is one: ~31,700 names, nothing stored, and it runs in the DO.
+    /// `card_name_folded` was at import (foldAccents in src/parser/pystr.ts); the collating is
+    /// done here. A scan, for the same reason the fuzzy match is one: ~31,700 names, nothing
+    /// stored, and it runs in the DO.
     pub fn exact_card_by_name(
         &self,
         folded: &str,
@@ -2001,7 +2002,7 @@ impl BufferStore {
     ) -> Result<Option<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some((_, _, cid, vpid)) = self.exact_name_best(folded, set_code) else {
+        let Some((_, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Exact) else {
             return Ok(None);
         };
         Ok(Some(card_to_json(
@@ -2041,18 +2042,71 @@ impl BufferStore {
     /// neither candidate is a whole-name match, so the answer turns on prefer_score, which only
     /// the owning partition can compute.
     pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32)> {
-        self.exact_name_best(folded, set_code).map(|(tier, score, _, _)| (tier, score))
+        self.name_best(folded, set_code, NameScope::Exact).map(|(tier, score, _, _)| (tier, score))
     }
 
-    /// The shared scan behind `exact_card_by_name` and `exact_name_rank`: `(tier, score, cid, vpid)`.
-    fn exact_name_best(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32, usize, u32)> {
-        // Descending precedence. These values cross the wasm boundary and are compared — never
-        // interpreted — by the partition merge, so their ORDER is the contract and their
-        // magnitudes are not.
-        const TIER_WHOLE_NAME: u8 = 2;
-        const TIER_FACE_NAME: u8 = 1;
-        const TIER_FLAVOR_NAME: u8 = 0;
+    /// The best printing a COLLECTION IDENTIFIER's `name` resolves to -- `POST /cards/collection`'s
+    /// `{"name": ...}`, whose rule is NOT `exact=`'s -- optionally within one set.
+    ///
+    /// LOCAL ADDITION (Cloudflare port), like `exact_card_by_name` above it: upstream has no
+    /// collection route at all. Measured against api.scryfall.com on 2026-08-31, ONE IDENTIFIER
+    /// PER REQUEST -- a collection response's `data` is not in identifier order, and a batched
+    /// probe silently mis-attributes its answers to the wrong needles:
+    ///
+    ///   {"name":"Delver of Secrets"}                   -> Delver of Secrets // Insectile Aberration
+    ///   {"name":"Insectile Aberration"}                -> the same card (a BACK face names it)
+    ///   {"name":"Delver of Secrets // Insectile ..."}  -> not_found   <- and `exact=` HITS it
+    ///   {"name":"Fire // Ice"}, {"name":"Wear // Tear"},
+    ///   {"name":"Bonecrusher Giant // Stomp"}          -> not_found, all three
+    ///   {"name":"Who // What // When // Where // Why"} -> und/75 (a FIVE-part name IS a key)
+    ///   {"name":"Who"}                                 -> not_found (so does `exact=Who`)
+    ///   {"name":"Godzilla, King of the Monsters"}      -> not_found   <- `exact=` answers Zilortha
+    ///   {"name":"limduls vault"}                       -> Lim-Dul's Vault (collated, like `!`)
+    ///
+    /// So a collection identifier reads `name_key_tier`'s keys and NOTHING else: the two face
+    /// names when the name splits in exactly two, the whole name otherwise, never both, and never
+    /// a flavor name. That difference is the whole of it -- the ranking, the set filter and the
+    /// printing chosen are `exact=`'s, and every needle both surfaces accept answers the same card
+    /// on both (`Lightning Bolt` msc/806, `Brainstorm` tle/155, `Titanoth Rex` iko/174, ...).
+    pub fn collection_card_by_name(
+        &self,
+        folded: &str,
+        set_code: Option<&str>,
+        fields: Option<Vec<String>>,
+    ) -> Result<Option<Value>, EngineError> {
+        let resolved_fields = resolve_fields_json(fields)?;
+        let data = self.data();
+        let Some((_, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Collection) else {
+            return Ok(None);
+        };
+        Ok(Some(card_to_json(
+            &data.cards[cid],
+            printing_at(data, vpid),
+            &data.strings,
+            &data.coll_vocab,
+            &resolved_fields,
+        )))
+    }
 
+    /// `collection_card_by_name`'s rank, for the partitioned router -- the twin of
+    /// `exact_name_rank`, and public for the same reason: more than one partition can answer, and
+    /// the first non-null is not the best one.
+    pub fn collection_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32)> {
+        self.name_best(folded, set_code, NameScope::Collection).map(|(tier, score, _, _)| (tier, score))
+    }
+
+    /// The shared scan behind all four name entry points: `(tier, score, cid, vpid)`.
+    ///
+    /// `folded` is COLLATED here and compared against collated names, because that is what
+    /// Scryfall compares — on `exact=` and on a collection `{"name"}` identifier alike. Measured
+    /// on api.scryfall.com, 2026-08-31: `delverofsecrets`, `insectileaberration`, `lightningbolt`,
+    /// `Lightning-Bolt`, `limduls vault`, `Kongming Sleeping Dragon` and `whowhatwhenwherewhy` all
+    /// resolve on both surfaces, where the folded comparison this used to do answered 404 on every
+    /// one of them (`!"limduls vault"` already compared collated; the two name surfaces did not).
+    /// The FLAVOR pass at the bottom stays FOLDED: its index is keyed on folded names, and a
+    /// collated probe of it would miss the spelling that works today.
+    fn name_best(&self, folded: &str, set_code: Option<&str>, scope: NameScope) -> Option<(u8, f32, usize, u32)> {
+        let needle = crate::collate_name(folded);
         let data = self.data();
         // Ranked on (whole-name match, prefer_score), in that order.
         //
@@ -2064,14 +2118,17 @@ impl BufferStore {
         // TIER, not a bool, because the flavor-name fallback below is a third rank and the
         // partition merge has to order all three against each other with one comparison.
         let mut best: Option<(u8, f32, usize, u32)> = None;
-        for cid in name_scan_candidates(data, folded) {
+        for cid in name_scan_candidates(data, &needle) {
             let cid = cid as usize;
             let card = &data.cards[cid];
-            let stored = crate::folded_name(card, &data.strings);
-            if !folded_name_matches(stored, folded) {
+            let Some(tier) = name_key_tier(
+                crate::folded_name(card, &data.strings),
+                crate::collated_name(card, &data.strings),
+                &needle,
+                scope,
+            ) else {
                 continue;
-            }
-            let tier = if stored == folded { TIER_WHOLE_NAME } else { TIER_FACE_NAME };
+            };
             let Some((pid, score)) = self.best_printing_of(cid, set_code) else {
                 continue;
             };
@@ -2106,7 +2163,13 @@ impl BufferStore {
         // A flavor name resolves to the PRINTING that carries it, not the card's default — which
         // is why this pass answers with the record's own vpid. It runs only when the oracle scan
         // found nothing, so `exact=Titanoth Rex` still answers iko/174.
-        if best.is_none()
+        //
+        // A COLLECTION IDENTIFIER READS NONE OF IT. Same route, same day, same needles:
+        // `{"name":"Godzilla, King of the Monsters"}`, `{"name":"Yojimbo"}` and
+        // `{"name":"Godzilla, Primeval Champion"}` are all not_found there while `exact=` answers
+        // Zilortha, Solitude and Titanoth Rex — so the fallback is scoped, not shared.
+        if scope == NameScope::Exact
+            && best.is_none()
             && let Some(rec) = record_of_exact_name(&data.indexes.flavor_names, &data.strings, folded)
             && let Some((vpid, score)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
         {
@@ -2976,8 +3039,9 @@ fn opt_cents_value(v: Option<u32>) -> Value {
 /// The index was right there; these routes predate the habit of reaching for it.
 ///
 /// SOUND for `exact=`, whose needle is a CONTIGUOUS SUBSTRING of the stored folded name by
-/// construction — `folded_name_matches` accepts the whole name or one side of a " // " split — so a
-/// matching name contains every trigram of the needle and cannot be outside the intersection.
+/// construction — `name_key_tier` accepts the whole collated name, or one collated side of a
+/// " // " split, and the collated name IS the two collated sides concatenated — so a matching name
+/// contains every trigram of the needle and cannot be outside the intersection.
 ///
 /// The containment stage matches with the name's SEPARATORS IGNORED, which is weaker than
 /// contiguous, so this index cannot decide that question alone: `cards_containing_all_words` unions
@@ -3157,14 +3221,45 @@ fn contains_unseparated(hay: &str, needle: &str) -> bool {
     false
 }
 
-fn folded_name_matches(stored: &str, needle: &str) -> bool {
-    if stored == needle {
-        return true;
+/// Descending precedence for the name scan. These values cross the wasm boundary and are compared
+/// — never interpreted — by the partition merge, so their ORDER is the contract and their
+/// magnitudes are not.
+const TIER_WHOLE_NAME: u8 = 2;
+const TIER_FACE_NAME: u8 = 1;
+const TIER_FLAVOR_NAME: u8 = 0;
+
+/// Which name keys a lookup may match. `/cards/named?exact=` reads a strict SUPERSET of what a
+/// `POST /cards/collection` `{"name"}` identifier does — see `collection_card_by_name` for the
+/// measurements that separate them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameScope {
+    Exact,
+    Collection,
+}
+
+/// The tier at which `needle` — already COLLATED — is one of this card's name keys, or None for a
+/// card the needle does not name. `folded` and `collated` are the card's own two stored spellings
+/// of its name (`folded_name` and `collated_name`).
+fn name_key_tier(folded: &str, collated: &str, needle: &str, scope: NameScope) -> Option<u8> {
+    let mut halves = folded.split(" // ");
+    let front = halves.next().unwrap_or("");
+    let back = halves.next();
+    // EXACTLY two halves. A name with more of them has no face keys at all: measured on
+    // api.scryfall.com 2026-08-31, `exact=Who`, `exact=What` and `{"name":"Who"}` are each
+    // not_found, while `exact=Who // What // When // Where // Why` and the same identifier answer
+    // und/75 — the FIVE-part name is the key, and its parts are not. A `split_once` read this as
+    // "Who" + "What // When // Where // Why" and answered the card on the front half alone.
+    if let Some(back) = back.filter(|_| halves.next().is_none()) {
+        // Collated AFTER the split, because the `" // "` join is itself non-alphanumeric:
+        // collapsing first would make the boundary vanish and let a needle straddle it.
+        if crate::collate_name(front) == needle || crate::collate_name(back) == needle {
+            return Some(TIER_FACE_NAME);
+        }
+        // The joined name is `exact=`'s key and NOT a collection identifier's — the one place the
+        // two surfaces disagree about a card that exists. See `collection_card_by_name`.
+        return (scope == NameScope::Exact && collated == needle).then_some(TIER_WHOLE_NAME);
     }
-    match stored.split_once(" // ") {
-        Some((front, back)) => front == needle || back == needle,
-        None => false,
-    }
+    (collated == needle).then_some(TIER_WHOLE_NAME)
 }
 
 /// JSON twin of `faces_to_pylist`: text from the oracle card, art from this printing.
@@ -4531,6 +4626,77 @@ mod tests {
         let (_b, store) = build_store(&[a1, other]);
         let (status, _) = store.fuzzy_card_by_name("fire dragen", floor, lead, None).expect("fuzzy");
         assert_eq!(status, "ambiguous", "two cards' near-tied names still read ambiguous");
+    }
+
+    /// The two name surfaces over one scan: a collection identifier's `name` reads a card's FACE
+    /// names when the name splits in exactly two and its whole name otherwise; `exact=` reads that
+    /// set PLUS the joined name.
+    ///
+    /// Measured against api.scryfall.com on 2026-08-31, one identifier per request:
+    /// `{"name":"Delver of Secrets"}` and `{"name":"Insectile Aberration"}` both answer the card,
+    /// `{"name":"Delver of Secrets // Insectile Aberration"}` is not_found while
+    /// `exact=Delver of Secrets // Insectile Aberration` is the card, `{"name":"Who"}` and
+    /// `exact=Who` are both not_found, and `{"name":"Who // What // When // Where // Why"}` and
+    /// `exact=` of the same string are both und/75.
+    #[test]
+    fn a_collection_identifier_reads_faces_where_exact_also_reads_the_joined_name() {
+        let two = annex_row("Delver of Secrets // Insectile Aberration", "oracle-dfc", "row-dfc", "en", 200.0);
+        let five = annex_row("Who // What // When // Where // Why", "oracle-five", "row-five", "en", 150.0);
+        let store = build_store(&[two, five]).1;
+        let exact = |n: &str| store.exact_card_by_name(n, None, None).expect("exact").is_some();
+        let coll = |n: &str| store.collection_card_by_name(n, None, None).expect("collection").is_some();
+
+        // A FACE names the card on both surfaces, front and back alike.
+        for needle in ["delver of secrets", "insectile aberration"] {
+            assert!(exact(needle), "exact= resolves a face name");
+            assert!(coll(needle), "a collection identifier resolves a face name");
+        }
+        // The JOINED name is the one card both surfaces disagree about.
+        let joined = "delver of secrets // insectile aberration";
+        assert!(exact(joined), "exact= answers the joined name");
+        assert!(!coll(joined), "a collection identifier does not");
+
+        // MORE than two halves: the whole name is the key and its parts are not, on both.
+        let five_name = "who // what // when // where // why";
+        assert!(exact(five_name) && coll(five_name), "the five-part name is a key on both");
+        assert!(!exact("who") && !coll("who"), "and none of its parts is, on either");
+    }
+
+    /// Both name surfaces compare COLLATED names — punctuation and spacing removed — which is what
+    /// Scryfall compares. Measured 2026-08-31 on api.scryfall.com: `exact=limduls vault`,
+    /// `exact=Lightning-Bolt`, `exact=delverofsecrets` and the same three as collection
+    /// identifiers all resolve, where a folded comparison answers 404 on every one.
+    #[test]
+    fn name_lookups_compare_collated_names() {
+        let mut vault = annex_row("Lim-Dûl's Vault", "oracle-vault", "row-vault", "en", 200.0);
+        vault["card_name_folded"] = json!("lim-dul's vault");
+        let dfc = annex_row("Delver of Secrets // Insectile Aberration", "oracle-dfc", "row-dfc", "en", 150.0);
+        let store = build_store(&[vault, dfc]).1;
+        for needle in ["limduls vault", "lim-duls vault", "limdulsvault"] {
+            assert!(store.exact_card_by_name(needle, None, None).expect("exact").is_some(), "exact= {needle}");
+            assert!(store.collection_card_by_name(needle, None, None).expect("coll").is_some(), "collection {needle}");
+        }
+        // A FACE collates the same way, and the join it sits beside does not leak into it.
+        assert!(store.collection_card_by_name("delverofsecrets", None, None).expect("coll").is_some());
+        assert!(store.collection_card_by_name("secretsinsectile", None, None).expect("coll").is_none());
+    }
+
+    /// A FLAVOR name is `exact=`'s fallback and no part of a collection identifier.
+    ///
+    /// api.scryfall.com, 2026-08-31: `exact=Godzilla, King of the Monsters` answers Zilortha and
+    /// `{"name":"Godzilla, King of the Monsters"}` is not_found; likewise `Yojimbo` (Solitude) and
+    /// `Godzilla, Primeval Champion` (Titanoth Rex).
+    #[test]
+    fn a_flavor_name_answers_exact_and_never_a_collection_identifier() {
+        let mut zilortha = annex_row("Zilortha, Strength Incarnate", "oracle-z", "row-z", "en", 200.0);
+        zilortha["flavor_name"] = json!("Godzilla, King of the Monsters");
+        zilortha["flavor_name_folded"] = json!("godzilla, king of the monsters");
+        let store = build_store(&[zilortha]).1;
+        let needle = "godzilla, king of the monsters";
+        assert!(store.exact_card_by_name(needle, None, None).expect("exact").is_some(), "exact= reads it");
+        assert!(store.collection_card_by_name(needle, None, None).expect("coll").is_none(), "a collection id does not");
+        // The oracle name still answers both.
+        assert!(store.collection_card_by_name("zilortha, strength incarnate", None, None).expect("coll").is_some());
     }
 
     /// `exact=` is scoped to the ORACLE name and never reads printed names — the negative

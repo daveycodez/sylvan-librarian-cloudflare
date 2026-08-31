@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
-import { cardName, setAndCollectorNumber, TRUE_TREE } from "../../src/routes/scryfall-compat/trees";
+import { setAndCollectorNumber, TRUE_TREE } from "../../src/routes/scryfall-compat/trees";
 
 // The REAL parser, deliberately, not `loadParser()`: tests/routes/harness.ts installs a fake
 // through setParserForTests, and once any route test has imported it this file would be comparing
@@ -37,10 +37,5 @@ describe("hand-built filter trees match the parser", () => {
 
 	test("a named language", () => {
 		expect(setAndCollectorNumber("m15", "18", "ja")).toBe(viaParser('set=m15 cn="18" lang=ja'));
-	});
-
-	test("a card name, with and without a set", () => {
-		expect(cardName("Lightning Bolt")).toBe(viaParser('name="Lightning Bolt"'));
-		expect(cardName("Lightning Bolt", "lea")).toBe(viaParser('name="Lightning Bolt" set=lea'));
 	});
 });

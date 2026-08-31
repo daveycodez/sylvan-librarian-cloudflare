@@ -23,8 +23,12 @@
 //                                      partition (1-2 for a short collection,
 //                                      N for a wide one), plus the partitions
 //                                      no hint covered; total never above N
-//   collection (firstOfEach)           N — a {set,collector_number} or {name}
-//                                      identifier is not an id the filter holds
+//   collection (firstOfEach)           N — a {set,collector_number} identifier
+//                                      is not an id the routing filter holds
+//   collection ({name})                N ranks, then one materialize RPC per
+//                                      partition that WON an identifier: 2N
+//                                      worst case for a batch of 75, and N+1
+//                                      for the batch that all lands in one
 //   named exact / fuzzy / containing   N, combined (see each method's rules)
 //   autocomplete                       N, merged prefix-first
 //
@@ -54,6 +58,7 @@ import {
 	type Env,
 	FUZZY_SIMILARITY_LEAD,
 	type FuzzyCandidateWire,
+	type NameIdentifier,
 	type ResultShape,
 	type ScryfallFuzzyResult,
 	type SearchPageEnvelope,
@@ -670,6 +675,66 @@ export class PartitionedEngine implements Engine {
 		for (const rank of ranks) {
 			if (rank !== null && beatsExactRank(rank, best)) {
 				best = rank;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * A collection POST's `{name}` identifiers, ranked across every partition and materialized
+	 * from the winners: TWO rounds of at most N RPCs, whatever the batch size.
+	 *
+	 * The rank round is `scryfallExactName`'s protocol run 75-wide — the same reason it exists
+	 * there applies here identifier by identifier, since a needle is often one card's whole name
+	 * and another card's face name and those two cards hash apart. The materialize round asks each
+	 * partition ONLY for the identifiers it won, so a batch that all lands in one partition costs
+	 * one call and a batch spread across ten costs ten — never one per identifier.
+	 */
+	async scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		if (identifiers.length === 0) return [];
+		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers));
+		const winner = new Array<number>(identifiers.length).fill(-1);
+		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
+		for (const [p, ranks] of perPartition.entries()) {
+			for (let i = 0; i < identifiers.length; i++) {
+				const rank = ranks[i] ?? null;
+				// Strictly greater, so an exact tie keeps the LOWEST partition index — the same
+				// deterministic tiebreak the single-needle path gives.
+				if (rank !== null && beatsExactRank(rank, best[i] ?? null)) {
+					best[i] = rank;
+					winner[i] = p;
+				}
+			}
+		}
+		const claimed = new Map<number, number[]>();
+		for (const [i, p] of winner.entries()) {
+			if (p < 0) continue;
+			const positions = claimed.get(p);
+			if (positions) positions.push(i);
+			else claimed.set(p, [i]);
+		}
+		const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
+		await Promise.all(
+			[...claimed].map(async ([p, positions]) => {
+				const asked = positions.map((i) => identifiers[i] as NameIdentifier);
+				const cards = await this.at(p).scryfallCollectionNames(asked, baseUrl);
+				for (const [k, position] of positions.entries()) out[position] = cards[k] ?? null;
+			}),
+		);
+		return out;
+	}
+
+	/** The best rank any partition holds per identifier — for an Engine asked directly. */
+	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
+		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers));
+		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
+		for (const ranks of perPartition) {
+			for (let i = 0; i < identifiers.length; i++) {
+				const rank = ranks[i] ?? null;
+				if (rank !== null && beatsExactRank(rank, best[i] ?? null)) best[i] = rank;
 			}
 		}
 		return best;

@@ -11,12 +11,14 @@ import type {
 	EngineSearchOptions,
 	EngineSerializedResult,
 	Env,
+	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
 } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
 import { checkSearchParamLengths, QueryBudgetExceeded } from "../../src/parser";
+import { collateName } from "../../src/parser/pystr";
 import { routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
 import { adminUnauthorized, isAdminPath } from "../../src/routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "../../src/routes/http";
@@ -314,6 +316,40 @@ export class FakeEngine implements Engine {
 	/** Every fixture name is a WHOLE name here, so a hit ranks at the top tier with a flat score. */
 	async scryfallExactNameRank(folded: string, _setCode: string): Promise<number[] | null> {
 		return this.scryfallExactNames.includes(folded) ? [2, 0] : null;
+	}
+
+	/** Names the fake resolves as collection identifiers, one per fixture card, in fixture order. */
+	collectionNames: string[] = FIXTURE_CARDS.map((c) => String(c.name));
+
+	/** Every batch the routes handed over — the fake's proof that 75 identifiers are one call. */
+	collectionNameBatches: NameIdentifier[][] = [];
+
+	/**
+	 * A collection identifier's `name` keys: the two FACE names when the name splits in exactly
+	 * two, the whole name otherwise, each COLLATED — the engine's rule in miniature, so a route
+	 * test can tell the two name surfaces apart without a real store.
+	 */
+	private collectionAt(folded: string): number {
+		const needle = collateName(folded);
+		return this.collectionNames.findIndex((name) => {
+			const halves = name.toLowerCase().split(" // ");
+			return (halves.length === 2 ? halves : [name.toLowerCase()]).some((k) => collateName(k) === needle);
+		});
+	}
+
+	async scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		this.collectionNameBatches.push(identifiers);
+		return identifiers.map(({ folded }) => {
+			const at = this.collectionAt(folded);
+			return at < 0 ? null : this.fixtureCard(at, baseUrl);
+		});
+	}
+
+	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
+		return identifiers.map(({ folded }) => (this.collectionAt(folded) < 0 ? null : [2, 0]));
 	}
 
 	async scryfallCardByIllustrationId(

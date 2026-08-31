@@ -167,6 +167,8 @@ export interface EngineHandle {
 	autocomplete(prefix: string, limit: number): string;
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	exact_name_rank(folded: string, setCode: string): string;
+	collection_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
+	collection_name_rank(folded: string, setCode: string): string;
 	card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
 	linearMemoryBytes(): number;
@@ -215,6 +217,8 @@ export function engineFor(label: string): EngineHandle {
 		autocomplete: wrap("autocomplete"),
 		exact_card_by_name: wrap("exact_card_by_name"),
 		exact_name_rank: wrap("exact_name_rank"),
+		collection_card_by_name: wrap("collection_card_by_name"),
+		collection_name_rank: wrap("collection_name_rank"),
 		card_by_illustration_id: wrap("card_by_illustration_id"),
 		cards_containing_all_words: wrap("cards_containing_all_words"),
 		linearMemoryBytes: () => instances.get(label)?.memory?.buffer.byteLength ?? 0,

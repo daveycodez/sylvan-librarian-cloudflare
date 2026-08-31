@@ -77,16 +77,9 @@ export function setAndCollectorNumber(setCode: string, collectorNumber: string, 
 	);
 }
 
-/**
- * A collection identifier's `name`, optionally within a set.
- *
- * `=` on `card_name`, which is the PRINTED name, matching upstream's
- * `lower(card_name) = lower(%(name)s)`. Upstream also accepts the front half of a `Front // Back`
- * name here; that half is handled by the caller falling back to the exact-name engine path, which
- * folds and matches either face.
- */
-export function cardName(name: string, setCode?: string): string {
-	const clauses = [textEquals("card_name", "name", name)];
-	if (setCode) clauses.push(textEquals("card_set_code", "set", setCode));
-	return wire(and(...clauses));
-}
+// A collection identifier's `name` HAS NO TREE HERE, deliberately. It was `name="…"`, which is
+// the CONTAINMENT operator: `{"name":"Delver of Secrets"}` answered `Literal Delver of Secrets`
+// (unk/CU06), because the containment matched it too and the edhrec order this file's caller asks
+// for put it first. The identifier is an exact NAME lookup with its own key rule and its own
+// ranking, neither of which a filter tree can express — it goes through the engine's
+// `collection_card_by_name` instead. See `resolveIdentifiers`.

@@ -24,7 +24,7 @@
 
 import { encodeUtf8 } from "../../engine/bytes";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
-import type { Engine } from "../../engine/types";
+import type { Engine, NameIdentifier } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -54,7 +54,7 @@ import {
 } from "./objects";
 import { scryfallTermPolicy } from "./query-terms";
 import { asBool, scryfallJson, scryfallListJson } from "./respond";
-import { cardName, setAndCollectorNumber, TRUE_TREE } from "./trees";
+import { setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
 const EXTERNAL_ID_NAMESPACES = ["multiverse", "mtgo", "arena", "tcgplayer", "cardmarket"] as const;
@@ -1055,7 +1055,14 @@ export async function cardsCollectionHandler(
  *
  * Batched rather than looped because each lookup is a Durable Object RPC: 75 identifiers resolved
  * one at a time would be 75 round trips. Every kind that is a query becomes a filter tree here and
- * goes over in one call; the id-shaped kinds go over in one call each.
+ * goes over in one call; the id-shaped kinds go over in one call each; the `{name}` kind goes over
+ * as one batch through the engine's own name rule (see `Engine.scryfallCollectionNames`).
+ *
+ * THE WHOLE ROUTE IS BOUNDED BY THE PARTITION COUNT, not by the identifier count: with N
+ * partitions a batch mixing all four kinds is at most N (ids) + N (trees) + 2N (names, ranked then
+ * materialized from the winners) RPCs however many identifiers it carries — which at today's N=10
+ * leaves room under the free plan's 50-subrequest ceiling, and would not if any kind were resolved
+ * per identifier.
  */
 async function resolveIdentifiers(
 	engine: Engine,
@@ -1065,6 +1072,7 @@ async function resolveIdentifiers(
 	const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
 	const byScryfallId: { at: number; id: string }[] = [];
 	const byTree: { at: number; tree: string }[] = [];
+	const byName: { at: number; identifier: NameIdentifier }[] = [];
 	// The remaining kinds each need their own engine entry point, so they are gathered per kind
 	// and awaited together rather than serialized.
 	const singles: Promise<void>[] = [];
@@ -1096,7 +1104,15 @@ async function resolveIdentifiers(
 		} else if (id.set !== undefined && id.collector_number !== undefined) {
 			byTree.push({ at, tree: setAndCollectorNumber(String(id.set), String(id.collector_number)) });
 		} else if (id.name !== undefined) {
-			byTree.push({ at, tree: cardName(String(id.name), id.set === undefined ? undefined : String(id.set)) });
+			// FOLDED AND TRIMMED, the way `/cards/named?exact=` hands its needle over; the engine
+			// collates from there. Scryfall trims too — `{"name":"  Lightning Bolt  "}` resolves.
+			byName.push({
+				at,
+				identifier: {
+					folded: foldAccents(String(id.name).trim().toLowerCase()),
+					setCode: id.set === undefined ? "" : String(id.set),
+				},
+			});
 		}
 	}
 
@@ -1111,6 +1127,20 @@ async function resolveIdentifiers(
 					// The batch skips misses, so results are matched back BY ID rather than by position.
 					const byId = new Map(cards.map((c) => [String(c.id).toLowerCase(), c]));
 					for (const { at, id } of byScryfallId) out[at] = byId.get(id.toLowerCase()) ?? null;
+				}),
+		);
+	}
+	if (byName.length > 0) {
+		// ONE call for every name identifier in the batch — the engine ranks them across the
+		// partitions together. See `Engine.scryfallCollectionNames`.
+		singles.push(
+			engine
+				.scryfallCollectionNames(
+					byName.map((e) => e.identifier),
+					baseUrl,
+				)
+				.then((cards) => {
+					for (const [i, entry] of byName.entries()) out[entry.at] = cards[i] ?? null;
 				}),
 		);
 	}

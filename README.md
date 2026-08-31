@@ -485,6 +485,27 @@ The complete list of intentional differences:
   two-faced card whose back face carries the name and whose score is higher.
   Matching a face is right and Scryfall does it (`exact=Delver of Secrets`
   resolves), but as a fallback rather than a peer. Reported upstream.
+- **A collection identifier's `name` reads a NARROWER key set than
+  `/cards/named?exact=`, and both compare collated names.** `POST
+  /cards/collection`'s `{"name": …}` matches a card's two FACE names when its
+  name splits in exactly two and its whole name otherwise — never both, and
+  never a flavor name; `exact=` matches that set plus the joined name and the
+  flavor names. Measured against api.scryfall.com on 2026-08-31, one identifier
+  per request (a collection response's `data` is not in identifier order, so a
+  batched probe attributes its answers to the wrong needles):
+  `{"name":"Delver of Secrets"}` and `{"name":"Insectile Aberration"}` answer
+  *Delver of Secrets // Insectile Aberration* (inr/60),
+  `{"name":"Delver of Secrets // Insectile Aberration"}` is `not_found` where
+  `exact=` of that string is the card, `{"name":"Who"}` and `exact=Who` are both
+  `not_found` while `{"name":"Who // What // When // Where // Why"}` is und/75,
+  and `{"name":"Godzilla, King of the Monsters"}` is `not_found` where `exact=`
+  answers *Zilortha, Strength Incarnate*. Both surfaces compare with punctuation
+  and spacing removed, the way `!"…"` already did: `limduls vault`,
+  `Lightning-Bolt` and `delverofsecrets` all resolve on both. The identifier used
+  to be built as the filter tree `name="…"` — the CONTAINMENT operator, ordered
+  by edhrec and cut to one row — so `{"name":"Delver of Secrets"}` answered
+  *Literal Delver of Secrets* (unk/CU06), a different card whose name merely
+  contains the needle.
 - **The corpus is multilingual, which is a deviation from upstream rather than
   from Scryfall.** Upstream imports `default_cards`; this port imports
   `all_cards` and keeps non-English printings in an annex on each partition's

@@ -412,6 +412,38 @@ pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> 
     })
 }
 
+/// The best printing a COLLECTION IDENTIFIER's `name` names, or `null` — `POST /cards/collection`.
+///
+/// NOT `exact_card_by_name` with a different caller: a collection identifier reads a card's FACE
+/// names when the name splits in exactly two and its whole name otherwise, where `exact=` also
+/// reads the joined name and the flavor names. `{"name":"Fire // Ice"}` is not_found on
+/// api.scryfall.com and `exact=Fire // Ice` is Fire // Ice — see `collection_card_by_name`.
+///
+/// `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
+/// the collating happens in the engine. `set_code` is "" for no set restriction.
+#[wasm_bindgen]
+pub fn collection_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    with_store(|store| {
+        let found = store.collection_card_by_name(folded, set, fields).map_err(js_err)?;
+        Ok(found.unwrap_or(serde_json::Value::Null).to_string())
+    })
+}
+
+/// How well this partition's best collection-identifier candidate matches, as `[tier, score]`, or
+/// `null` — the twin of `exact_name_rank`, and there for the same partitioned router.
+#[wasm_bindgen]
+pub fn collection_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> {
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    with_store(|store| {
+        Ok(match store.collection_name_rank(folded, set) {
+            Some((tier, score)) => format!("[{tier},{score}]"),
+            None => "null".to_string(),
+        })
+    })
+}
+
 /// The best printing carrying this illustration id, or `null`.
 #[wasm_bindgen]
 pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Result<String, JsError> {

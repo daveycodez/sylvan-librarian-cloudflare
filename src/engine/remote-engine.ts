@@ -14,6 +14,7 @@ import type {
 	EngineSearchResult,
 	EngineSerializedResult,
 	FuzzyCandidateWire,
+	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -116,6 +117,15 @@ interface SearchEngineStub {
 		setCode: string,
 		reportedShards?: number,
 	): Promise<{ rank: number[] | null } & Telemetry>;
+	scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
+	scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		reportedShards?: number,
+	): Promise<{ ranks: (number[] | null)[] } & Telemetry>;
 	scryfallCardByIllustrationId(
 		illustrationId: string,
 		baseUrl: string,
@@ -542,6 +552,23 @@ export class RemoteEngine implements Engine {
 			this.stub.scryfallExactNameRank(folded, setCode, currentShardWidth(this.region)),
 		);
 		return rank;
+	}
+
+	async scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		const { cards } = await this.searchRpc(() =>
+			this.stub.scryfallCollectionNames(identifiers, baseUrl, currentShardWidth(this.region)),
+		);
+		return cards;
+	}
+
+	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
+		const { ranks } = await this.searchRpc(() =>
+			this.stub.scryfallCollectionNameRanks(identifiers, currentShardWidth(this.region)),
+		);
+		return ranks;
 	}
 
 	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

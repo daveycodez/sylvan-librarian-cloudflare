@@ -4023,7 +4023,7 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
 /// those and missed all the rest.
 ///
 /// This is the `!` SEARCH operator and nothing else. `/cards/named?exact=` deliberately answers on
-/// ORACLE names alone (see `core_api::folded_name_matches` and the route's own note) — the two
+/// ORACLE names alone (see `core_api::name_key_tier` and the route's own note) — the two
 /// surfaces share a rule shape, not a scope, and conflating them would widen a route Scryfall keeps
 /// narrow.
 pub(crate) fn exact_name_matches(stored: &str, needle: &str) -> bool {
