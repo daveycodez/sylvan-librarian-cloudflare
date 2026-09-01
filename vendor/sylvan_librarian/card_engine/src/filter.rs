@@ -4014,20 +4014,40 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
 /// The faces are split BEFORE collating, because the `" // "` join is itself non-alphanumeric:
 /// collapsing first would make every face boundary vanish and let a needle straddle it.
 ///
-/// The whole name, or **either side of the `" // "` join** — a multi-face card answers to each of
-/// its face names on its own. Measured against api.scryfall.com on 2026-08-16:
-/// `!"Lightning Bolt"` returns two cards, `Lightning Bolt` and `Emeritus of Conflict // Lightning
-/// Bolt` (sos/113), whose *second* face carries the name; `!"Fire"` returns `Fire // Ice`,
-/// `!"Stomp"` returns `Bonecrusher Giant // Stomp`, `!"Insectile Aberration"` returns
-/// `Delver of Secrets // Insectile Aberration`. Comparing only the joined name found the first of
-/// those and missed all the rest.
+/// The whole name, or — when the name has EXACTLY TWO halves — either side of the `" // "` join.
+/// A two-faced card answers to each of its face names on its own. Measured against
+/// api.scryfall.com on 2026-08-16: `!"Lightning Bolt"` returns two cards, `Lightning Bolt` and
+/// `Emeritus of Conflict // Lightning Bolt` (sos/113), whose *second* face carries the name;
+/// `!"Fire"` returns `Fire // Ice`, `!"Stomp"` returns `Bonecrusher Giant // Stomp`,
+/// `!"Insectile Aberration"` returns `Delver of Secrets // Insectile Aberration`. Comparing only
+/// the joined name found the first of those and missed all the rest.
+///
+/// TWO, and not "any part". `split(" // ")` yields every part, so a longer name answered to each
+/// of its own — measured on api.scryfall.com 2026-08-31, `include_extras=true` throughout because
+/// und/75 is extras-gated: `!"Who"` answers 0 there and answered 1 here, `!"What"` answers 0 there
+/// and answered 1 here, both of them `Who // What // When // Where // Why`, the one printed name
+/// with more than two parts. Its whole name stays a key —
+/// `!"Who // What // When // Where // Why"` answers 1 on both sides. Nothing two-halved moves:
+/// `!"Stomp"` answers 1 on both, `!"Fire"` answers 2 on both (`Fire // Ice` and `Start // Fire`),
+/// and the joined name of a two-half card is a key as well
+/// (`!"Curse of the Fire Penguin // Curse of the Fire Penguin Creature"`, 1 on both). The
+/// collation is untouched: `!"limduls vault"` still answers `Lim-Dûl's Vault`, 1 on both.
 ///
 /// This is the `!` SEARCH operator and nothing else. `/cards/named?exact=` deliberately answers on
 /// ORACLE names alone (see `core_api::name_key_tier` and the route's own note) — the two
 /// surfaces share a rule shape, not a scope, and conflating them would widen a route Scryfall keeps
 /// narrow.
 pub(crate) fn exact_name_matches(stored: &str, needle: &str) -> bool {
-    crate::collate_name(stored) == needle || stored.split(" // ").any(|face| crate::collate_name(face) == needle)
+    if crate::collate_name(stored) == needle {
+        return true;
+    }
+    // `split_once` and then a reject, rather than `split(...).any(...)`: the face keys exist only
+    // for a name that is exactly two halves, and a third part means there are none.
+    let Some((front, back)) = stored.split_once(" // ") else { return false };
+    if back.contains(" // ") {
+        return false;
+    }
+    crate::collate_name(front) == needle || crate::collate_name(back) == needle
 }
 
 fn rhs_value_str(rhs: &Value) -> &str {

@@ -8179,8 +8179,9 @@ fn narrow_rec(
 
     match filter {
         FilterExpr::ExactName(needle) => {
-            // `!"…"` names a card by its whole name OR by either side of the `" // "` join
-            // (filter::exact_name_matches, with the live measurements). The ascending name
+            // `!"…"` names a card by its whole name OR, when that name is exactly two halves, by
+            // either side of the `" // "` join (filter::exact_name_matches, with the live
+            // measurements — a name with more parts than two has no face keys). The ascending name
             // permutation answers only the first of those: it is keyed on name_rank — i.e. on
             // card_name_lower byte order — so an equal-name block is a contiguous binary-searched
             // range, but a card whose *back* face carries the needle sorts under its front face's

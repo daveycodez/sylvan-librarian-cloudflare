@@ -16219,6 +16219,38 @@ fn strip_reminder_text_matches_scryfalls_measured_rule() {
 }
 
 #[test]
+fn exact_name_face_keys_need_exactly_two_halves() {
+    // A FIVE-part name answers to its whole name and to none of its parts. `split(" // ")` yields
+    // every part, so this function handed `Who // What // When // Where // Why` (und/75, the one
+    // printed name with more than two parts) a key for each of the five. Measured on
+    // api.scryfall.com 2026-08-31, `include_extras=true` because und/75 is extras-gated:
+    // `!"Who"` and `!"What"` each answer 0 there and each answered 1 here, while
+    // `!"Who // What // When // Where // Why"` answers 1 on both.
+    use super::filter::exact_name_matches;
+    let five = "who // what // when // where // why";
+    assert!(exact_name_matches(five, "whowhatwhenwherewhy"), "the whole name is always a key");
+    for part in ["who", "what", "when", "where", "why"] {
+        assert!(!exact_name_matches(five, part), "{part} is a part of a five-part name, not a key");
+    }
+    // Two halves keep BOTH face keys and the joined one. `!"Stomp"` answers 1 on Scryfall the same
+    // day, `!"Fire"` answers 2 (`Fire // Ice` and `Start // Fire`), and the joined name of a
+    // two-half card is a key as well: `!"Curse of the Fire Penguin // Curse of the Fire Penguin
+    // Creature"` answers 1 there too.
+    let two = "curse of the fire penguin // curse of the fire penguin creature";
+    assert!(exact_name_matches(two, "curseofthefirepenguin"), "the front face names the card");
+    assert!(exact_name_matches(two, "curseofthefirepenguincreature"), "so does the back face");
+    assert!(
+        exact_name_matches(two, "curseofthefirepenguincurseofthefirepenguincreature"),
+        "and so does the joined name"
+    );
+    assert!(exact_name_matches("bonecrusher giant // stomp", "stomp"));
+    assert!(exact_name_matches("fire // ice", "fire"));
+    // THREE is already too many, not just five — the rule is the count, not this one card.
+    assert!(!exact_name_matches("a // b // c", "b"));
+    assert!(exact_name_matches("a // b // c", "abc"));
+}
+
+#[test]
 fn exact_name_matches_either_face() {
     // `!"Lightning Bolt"` returns TWO cards on api.scryfall.com (2026-08-16): `Lightning Bolt` and
     // `Emeritus of Conflict // Lightning Bolt` (sos/113), whose SECOND face carries the name. The
