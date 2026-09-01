@@ -242,16 +242,32 @@ fn slug(name: &str) -> String {
 const TWO_IMAGE_LAYOUTS: [&str; 5] =
     ["art_series", "double_faced_token", "modal_dfc", "reversible_card", "transform"];
 
-/// The multi-face layouts whose `related_uris.edhrec` link keeps the JOINED name.
+/// The multi-face layouts a SEARCH LINK spells with the JOINED name — `related_uris.edhrec` and
+/// every marketplace fallback in `purchase_uris`, which take the same string.
 ///
 /// EDHREC files a transforming or adventuring card under its front face (`cc=Delver+of+Secrets`,
 /// `cc=Brazen+Borrower`, `cc=Erayo%2C+Soratami+Ascendant`, `cc=Agadeem%27s+Awakening`) and a split
 /// or double-backed card under both halves (`cc=Fire+%2F%2F+Ice`, `cc=Wear+%2F%2F+Tear`,
 /// `cc=Temple+Garden+%2F%2F+Temple+Garden`, `cc=Punchcard+%2F%2F+Punchcard`) — all eight verified
 /// against api.scryfall.com. `art_series` sits with the front-face group, not with the other
-/// two-image layouts. The `tcgplayer_infinite_*` links in the same object keep the joined name on
-/// EVERY layout, split included, so this rule is deliberately scoped to `edhrec` alone.
-const EDHREC_JOINED_LAYOUTS: [&str; 3] = ["double_faced_token", "reversible_card", "split"];
+/// two-image layouts.
+///
+/// THE MARKETPLACES SPLIT THE SAME WAY, which is why this list is no longer edhrec's alone.
+/// Measured on api.scryfall.com 2026-08-31, on printings whose ids are missing so the SEARCH form
+/// is the one emitted:
+///
+///   split              Bind // Liberate                      cardhoarder `Bind // Liberate`
+///   reversible_card    Mechtitan // Mechtitan                cardhoarder `Mechtitan // Mechtitan`
+///   double_faced_token Snake // Zombie                       cardmarket, cardhoarder AND the
+///                                                            tcgplayer search inside Scryfall's
+///                                                            partner redirect, all `Snake // Zombie`
+///   adventure          Champions of Archery // Join the …    cardmarket, cardhoarder `Champions of Archery`
+///   flip               Curse of the Fire Penguin // …        cardhoarder `Curse of the Fire Penguin`
+///   art_series         Aang and Katara // Aang and Katara    cardmarket, cardhoarder `Aang and Katara`
+///
+/// The `tcgplayer_infinite_*` links in `related_uris` are the exception that stays: they keep the
+/// joined name on EVERY layout, split or not.
+const JOINED_SEARCH_LAYOUTS: [&str; 3] = ["double_faced_token", "reversible_card", "split"];
 
 /// The layout whose printings keep NOTHING of the card at top level — see `write_scryfall_card`.
 ///
@@ -410,12 +426,12 @@ fn write_prices(out: &mut Vec<u8>, row: &Map<String, Value>) {
 /// fact lives on Scryfall's side of the wire and is not derivable from the row, so they stay a
 /// known limit rather than a rule.
 ///
-/// `edhrec` takes `edhrec_name`, which is the front face's on most multi-face layouts — see
-/// EDHREC_JOINED_LAYOUTS. The two tcgplayer searches take the joined name on every layout.
+/// `edhrec` takes `search_name`, which is the front face's on most multi-face layouts — see
+/// JOINED_SEARCH_LAYOUTS. The two tcgplayer searches take the joined name on every layout.
 fn write_related_uris(
     out: &mut Vec<u8>,
     name: &str,
-    edhrec_name: &str,
+    search_name: &str,
     multiverse_first: Option<u64>,
     lang: &str,
 ) {
@@ -439,7 +455,7 @@ fn write_related_uris(
             "tcgplayer_infinite_decks",
             format!("https://www.tcgplayer.com/search/decks?productLineName=magic&q={quoted}"),
         ),
-        ("edhrec", format!("https://edhrec.com/route/?cc={}", quote_plus(edhrec_name))),
+        ("edhrec", format!("https://edhrec.com/route/?cc={}", quote_plus(search_name))),
     ] {
         write_key(out, &mut first, key);
         write_json_str(out, &url);
@@ -467,8 +483,14 @@ fn front_face_name(name: &str) -> &str {
 /// form on all three, because marketplace product ids are carried by the English printing alone —
 /// they never reach an annex row, and inventing one would point at the wrong product. Emitting
 /// nothing was the alternative, and it made `purchase_uris` an empty object on 426,416 printings.
-fn write_purchase_uris(out: &mut Vec<u8>, row: &Map<String, Value>, name: &str) {
-    let quoted = quote_plus(front_face_name(name));
+///
+/// `search_name` IS `write_related_uris`' — the caller decides the string, and the three
+/// marketplaces split by layout exactly the way edhrec does (the measurements are on
+/// JOINED_SEARCH_LAYOUTS). This used to take the joined name and cut the front face off it here,
+/// which spelled `Snake // Zombie` as `Snake` and `Who // What // When // Where // Why` as `Who`
+/// against a Scryfall that searches for the whole string on both.
+fn write_purchase_uris(out: &mut Vec<u8>, row: &Map<String, Value>, search_name: &str) {
+    let quoted = quote_plus(search_name);
     out.push(b'{');
     let mut first = true;
     write_key(out, &mut first, "tcgplayer");
@@ -614,8 +636,10 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     // their own `oracle_id` and `cmc` instead -- the card's, on both faces, 0 of 81 disagreeing --
     // which is why omitting the top-level pair loses nothing.
     let reversible = layout == Some(REVERSIBLE_LAYOUT);
-    // The joined name everywhere except edhrec on the layouts EDHREC files by front face.
-    let edhrec_name = if faces.is_some() && !layout.is_some_and(|l| EDHREC_JOINED_LAYOUTS.contains(&l)) {
+    // The name a SEARCH LINK spells: the joined one, except on the layouts whose searches take the
+    // front face (see JOINED_SEARCH_LAYOUTS). `related_uris.edhrec` and every `purchase_uris`
+    // fallback take THIS string; the two `tcgplayer_infinite_*` links take the joined `name`.
+    let search_name = if faces.is_some() && !layout.is_some_and(|l| JOINED_SEARCH_LAYOUTS.contains(&l)) {
         front_face_name(name)
     } else {
         name
@@ -746,7 +770,7 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_prices(out, row);
     write_key(out, &mut first, "related_uris");
     let multiverse_first = list_of(row, "multiverse_ids").and_then(|ids| ids.first()).and_then(Value::as_u64);
-    write_related_uris(out, name, edhrec_name, multiverse_first, lang);
+    write_related_uris(out, name, search_name, multiverse_first, lang);
     // A printing NO MARKETPLACE SELLS omits the key rather than carrying three dead links, and
     // the rule is the marketplaces rather than `digital` — measured 2026-08-16: prm/80925
     // (games ["mtgo"], digital true) HAS purchase_uris, ymid/59 and khm/A-198 (games ["arena"],
@@ -759,7 +783,7 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     });
     if sold {
         write_key(out, &mut first, "purchase_uris");
-        write_purchase_uris(out, row, name);
+        write_purchase_uris(out, row, search_name);
     }
 
     // A multi-face card carries its faces and NOT the top-level ORACLE TEXT they replace; a
@@ -1261,19 +1285,54 @@ mod tests {
         );
     }
 
-    /// The name-derived searches use the FRONT FACE name; `related_uris`' tcgplayer_infinite_*
-    /// links keep the joined one. Both verified live on mom/230/es.
+    /// The name-derived searches take the SAME string `related_uris.edhrec` does — the front face
+    /// on a transforming card, the JOINED name on the three JOINED_SEARCH_LAYOUTS — while
+    /// `related_uris`' tcgplayer_infinite_* links keep the joined one on every layout. The front
+    /// half is verified live on mom/230/es; the joined half on api.scryfall.com 2026-08-31, on
+    /// printings missing the ids so the search form is what Scryfall emits: `Snake // Zombie`
+    /// (cc2/9, double_faced_token) searches cardmarket, cardhoarder and — inside Scryfall's own
+    /// partner redirect — tcgplayer for `Snake // Zombie`, and `Bind // Liberate` (split) and
+    /// `Mechtitan // Mechtitan` (reversible_card) do the same with their joined names, where
+    /// `Champions of Archery // Join the Group` (adventure) and `Curse of the Fire Penguin // …`
+    /// (flip) search for their front faces.
     #[test]
-    fn purchase_uris_search_uses_the_front_face_name() {
-        let card = build(json!({"name": "Invasion of Alara // Awaken the Maelstrom",
-            "scryfall_id": "01000000-0000-0000-0000-000000000004"}));
+    fn purchase_uris_search_splits_by_layout_the_way_edhrec_does() {
+        let transform = build(json!({"name": "Invasion of Alara // Awaken the Maelstrom",
+            "scryfall_id": "01000000-0000-0000-0000-000000000004", "layout": "transform",
+            "card_faces": [{"name": "Invasion of Alara"}, {"name": "Awaken the Maelstrom"}]}));
         assert_eq!(
-            card["purchase_uris"]["tcgplayer"],
+            transform["purchase_uris"]["tcgplayer"],
             "https://www.tcgplayer.com/search/magic/product?productLineName=magic&q=Invasion+of+Alara&view=grid"
         );
         assert_eq!(
-            card["related_uris"]["tcgplayer_infinite_articles"],
+            transform["related_uris"]["tcgplayer_infinite_articles"],
             "https://www.tcgplayer.com/search/articles?productLineName=magic&q=Invasion+of+Alara+%2F%2F+Awaken+the+Maelstrom"
+        );
+
+        // A JOINED-SEARCH layout: all three marketplaces spell the whole name, and so does edhrec.
+        let split = build(json!({"name": "Bind // Liberate",
+            "scryfall_id": "01000000-0000-0000-0000-000000000004", "layout": "split",
+            "card_faces": [{"name": "Bind"}, {"name": "Liberate"}]}));
+        let uris = &split["purchase_uris"];
+        assert_eq!(uris["cardhoarder"], "https://www.cardhoarder.com/cards?data%5Bsearch%5D=Bind+%2F%2F+Liberate");
+        assert_eq!(
+            uris["cardmarket"],
+            "https://www.cardmarket.com/en/Magic/Products/Search?searchString=Bind+%2F%2F+Liberate"
+        );
+        assert_eq!(
+            uris["tcgplayer"],
+            "https://www.tcgplayer.com/search/magic/product?productLineName=magic&q=Bind+%2F%2F+Liberate&view=grid"
+        );
+        assert_eq!(split["related_uris"]["edhrec"], "https://edhrec.com/route/?cc=Bind+%2F%2F+Liberate");
+
+        // The five-part name that started this: `Who`, not `Who // What // When // Where // Why`,
+        // is what a search for und/75 used to carry.
+        let five = build(json!({"name": "Who // What // When // Where // Why",
+            "scryfall_id": "01000000-0000-0000-0000-000000000004", "layout": "split",
+            "card_faces": [{"name": "Who"}, {"name": "What"}, {"name": "When"}, {"name": "Where"}, {"name": "Why"}]}));
+        assert_eq!(
+            five["purchase_uris"]["cardhoarder"],
+            "https://www.cardhoarder.com/cards?data%5Bsearch%5D=Who+%2F%2F+What+%2F%2F+When+%2F%2F+Where+%2F%2F+Why"
         );
     }
 

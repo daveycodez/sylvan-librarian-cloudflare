@@ -210,10 +210,19 @@ const TWO_IMAGE_LAYOUTS = new Set(["art_series", "double_faced_token", "modal_df
  * or double-backed card under both halves (`cc=Fire+%2F%2F+Ice`, `cc=Wear+%2F%2F+Tear`,
  * `cc=Temple+Garden+%2F%2F+Temple+Garden`, `cc=Punchcard+%2F%2F+Punchcard`) — all eight verified
  * against api.scryfall.com. `art_series` sits with the front-face group, not with the other
- * two-image layouts. The `tcgplayer_infinite_*` links in the same object keep the joined name on
- * EVERY layout, split included, so this rule is deliberately scoped to `edhrec` alone.
+ * two-image layouts.
+ *
+ * THE MARKETPLACES SPLIT THE SAME WAY, which is why this list is no longer edhrec's alone — every
+ * `purchase_uris` search fallback takes the same string. Measured on api.scryfall.com 2026-08-31,
+ * on printings missing the ids so the search form is what Scryfall emits: `Snake // Zombie`
+ * (double_faced_token) searches cardmarket, cardhoarder and the tcgplayer link inside Scryfall's
+ * partner redirect for `Snake // Zombie`; `Bind // Liberate` (split) and `Mechtitan // Mechtitan`
+ * (reversible_card) likewise; while `Champions of Archery // Join the Group` (adventure),
+ * `Curse of the Fire Penguin // …` (flip) and `Aang and Katara // Aang and Katara` (art_series)
+ * all search for their FRONT face. The `tcgplayer_infinite_*` links in `related_uris` are the one
+ * exception: they keep the joined name on every layout, split included.
  */
-const EDHREC_JOINED_LAYOUTS = new Set(["double_faced_token", "reversible_card", "split"]);
+const JOINED_SEARCH_LAYOUTS = new Set(["double_faced_token", "reversible_card", "split"]);
 
 /**
  * Top-level keys a two-image layout does not carry, because they belong to a face there.
@@ -427,10 +436,10 @@ function quotePlus(value: string): string {
 }
 
 /**
- * `edhrec` takes `edhrecName`, which is the front face's on most multi-face layouts — see
- * EDHREC_JOINED_LAYOUTS. The two tcgplayer searches take the joined name on every layout.
+ * `edhrec` takes `searchName`, which is the front face's on most multi-face layouts — see
+ * JOINED_SEARCH_LAYOUTS. The two tcgplayer searches take the joined name on every layout.
  */
-function relatedUris(name: string, edhrecName: string, multiverseIds: unknown[], lang: string): Record<string, string> {
+function relatedUris(name: string, searchName: string, multiverseIds: unknown[], lang: string): Record<string, string> {
 	const out: Record<string, string> = {};
 	const firstId = multiverseIds[0];
 	if (typeof firstId === "number") {
@@ -440,7 +449,7 @@ function relatedUris(name: string, edhrecName: string, multiverseIds: unknown[],
 	const quoted = quotePlus(name);
 	out.tcgplayer_infinite_articles = `https://www.tcgplayer.com/search/articles?productLineName=magic&q=${quoted}`;
 	out.tcgplayer_infinite_decks = `https://www.tcgplayer.com/search/decks?productLineName=magic&q=${quoted}`;
-	out.edhrec = `https://edhrec.com/route/?cc=${quotePlus(edhrecName)}`;
+	out.edhrec = `https://edhrec.com/route/?cc=${quotePlus(searchName)}`;
 	return out;
 }
 
@@ -453,16 +462,19 @@ function relatedUris(name: string, edhrecName: string, multiverseIds: unknown[],
  * search (verified live across khm). Every foreign printing takes the search form on all three —
  * marketplace product ids belong to the English printing and never reach an annex row.
  *
- * The search text is the FRONT FACE name (`Invasion of Alara`, not
- * `Invasion of Alara // Awaken the Maelstrom`): the joined name matches no product. Note that
- * `related_uris`' tcgplayer_infinite_* links do carry the joined name — verified live — so the
- * two are deliberately not the same string.
+ * The search text is `searchName` — the FRONT FACE name (`Invasion of Alara`, not
+ * `Invasion of Alara // Awaken the Maelstrom`, which matches no product) on most layouts, and the
+ * JOINED name on the three JOINED_SEARCH_LAYOUTS, where Scryfall searches for the whole string
+ * (measured: `Snake // Zombie`, `Bind // Liberate`, `Mechtitan // Mechtitan`). This used to cut
+ * the front face off here regardless, which spelled `Snake // Zombie` as `Snake`. Note that
+ * `related_uris`' tcgplayer_infinite_* links carry the joined name on EVERY layout — verified
+ * live — so those two are still deliberately not this string.
  */
-function purchaseUris(row: EngineRow, name: string): Record<string, string> {
+function purchaseUris(row: EngineRow, searchName: string): Record<string, string> {
 	const tcg = num(row, "tcgplayer_id");
 	const cm = num(row, "cardmarket_id");
 	const mtgo = num(row, "mtgo_id");
-	const q = quotePlus(name.split(" // ")[0] as string);
+	const q = quotePlus(searchName);
 	return {
 		tcgplayer: tcg
 			? `https://www.tcgplayer.com/product/${tcg}?page=1`
@@ -593,9 +605,11 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	// `oracle_id` and `cmc` instead — the card's, on both faces, 0 of 81 disagreeing — which is why
 	// omitting the top-level pair loses nothing. Mirrors `REVERSIBLE_LAYOUT` in card_object.rs.
 	const reversible = layout === "reversible_card";
-	// The joined name everywhere except edhrec on the layouts EDHREC files by front face.
-	const edhrecName =
-		hasFaces && !(layout !== undefined && EDHREC_JOINED_LAYOUTS.has(layout)) ? (name.split(" // ")[0] as string) : name;
+	// The name a SEARCH LINK spells: the joined one, except on the layouts whose searches take the
+	// front face (see JOINED_SEARCH_LAYOUTS). `related_uris.edhrec` and every `purchase_uris`
+	// fallback take THIS string; the two `tcgplayer_infinite_*` links take the joined `name`.
+	const searchName =
+		hasFaces && !(layout !== undefined && JOINED_SEARCH_LAYOUTS.has(layout)) ? (name.split(" // ")[0] as string) : name;
 	const built = faces(
 		row,
 		scryfallId,
@@ -674,7 +688,7 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		booster: bool(row, "booster"),
 		story_spotlight: bool(row, "story_spotlight"),
 		prices: prices(row),
-		related_uris: relatedUris(name, edhrecName, list(row, "multiverse_ids"), lang),
+		related_uris: relatedUris(name, searchName, list(row, "multiverse_ids"), lang),
 		// A printing NO MARKETPLACE SELLS omits the key rather than carrying three dead links.
 		// The rule is the marketplaces, not `digital` — measured 2026-08-16:
 		//
@@ -689,7 +703,7 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 		// clause left `passes_filters`); before that it could not have been wrong here.
 		// ABSENT `games` emits: the omission is a positive statement ("this printing is sold
 		// nowhere"), and a row that never carried the column has made no such statement.
-		...(soldSomewhere(row) ? { purchase_uris: purchaseUris(row, name) } : {}),
+		...(soldSomewhere(row) ? { purchase_uris: purchaseUris(row, searchName) } : {}),
 	};
 
 	// A multi-face card carries its faces and NOT the top-level ORACLE TEXT they replace; a

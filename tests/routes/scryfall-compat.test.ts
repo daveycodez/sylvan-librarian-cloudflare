@@ -1591,6 +1591,33 @@ describe("the card object", () => {
 		expect(related.tcgplayer_infinite_articles).toContain("Invasion+of+Alara+%2F%2F+Awaken+the+Maelstrom");
 	});
 
+	test("purchase_uris search takes the JOINED name on a split, a reversible and a double-faced token", () => {
+		// The same three layouts `related_uris.edhrec` joins for — measured on api.scryfall.com
+		// 2026-08-31, on printings missing the marketplace ids so the SEARCH form is what Scryfall
+		// emits: `Snake // Zombie` (cc2/9, double_faced_token) searches cardmarket, cardhoarder and
+		// the tcgplayer link inside Scryfall's partner redirect for `Snake // Zombie`, and
+		// `Bind // Liberate` (split) and `Mechtitan // Mechtitan` (reversible_card) do the same.
+		// Cutting the front face off here spelled the first of those `Snake`.
+		const card = toScryfallCard({
+			...row,
+			name: "Bind // Liberate",
+			layout: "split",
+			tcgplayer_id: undefined,
+			card_faces: [{ name: "Bind" }, { name: "Liberate" }],
+		});
+		const uris = card.purchase_uris as Record<string, string>;
+		expect(uris.cardhoarder).toBe("https://www.cardhoarder.com/cards?data%5Bsearch%5D=Bind+%2F%2F+Liberate");
+		expect(uris.cardmarket).toBe(
+			"https://www.cardmarket.com/en/Magic/Products/Search?searchString=Bind+%2F%2F+Liberate",
+		);
+		expect(uris.tcgplayer).toBe(
+			"https://www.tcgplayer.com/search/magic/product?productLineName=magic&q=Bind+%2F%2F+Liberate&view=grid",
+		);
+		expect((card.related_uris as Record<string, string>).edhrec).toBe(
+			"https://edhrec.com/route/?cc=Bind+%2F%2F+Liberate",
+		);
+	});
+
 	test("a multi-face card carries card_faces and NOT the text they replace", () => {
 		const card = toScryfallCard({
 			...row,
