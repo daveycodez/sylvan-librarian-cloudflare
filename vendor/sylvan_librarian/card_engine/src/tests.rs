@@ -208,6 +208,7 @@ fn test_tag_index_str_lookup() {
 fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut VocabInterner) -> OracleCard {
     OracleCard {
         card_name_lower: InlineStr::from_str(""),
+        card_name_lower_id: NONE_STR,
         card_name_folded_id: NONE_STR,
         card_name_collated_id: NONE_STR,
         card_colors: 0,
@@ -17538,13 +17539,27 @@ fn autocomplete_is_prefix_matched_sorted_and_capped() {
         c.card_name_lower = InlineStr::from_str(name);
         cards.push(c);
     }
+    // A name PAST THE INLINE BOUND, carried in the strings table the way the builder carries the
+    // 36 real ones: the catalog must offer the whole string, not the 61-byte cut. Before
+    // `lower_name`, this scan read the inline field and completed to "our market research shows
+    // that players like really long card".
+    let long = "our market research shows that players like really long card names so we made this card";
+    let mut c = stub_card(99, 0, &[], &mut vocab);
+    c.card_name_lower = InlineStr::from_str(long);
+    c.card_name_lower_id = 0;
+    cards.push(c);
+    let strings = vec![long.to_owned()];
+
     let bytes = rkyv::to_bytes::<Error>(&cards).expect("serialize");
     let a = rkyv::access::<Archived<Vec<OracleCard>>, Error>(&bytes).expect("access");
-    assert_eq!(autocomplete_names(a, "sho", 20), vec!["shock", "shockwave"]);
-    assert_eq!(autocomplete_names(a, "SHO", 20), vec!["shock", "shockwave"], "case-insensitive");
-    assert_eq!(autocomplete_names(a, "sh", 20), vec!["shatter", "shock", "shockwave"], "sorted");
-    assert_eq!(autocomplete_names(a, "sh", 1).len(), 1, "capped");
-    assert!(autocomplete_names(a, "zzz", 20).is_empty());
+    let sbytes = rkyv::to_bytes::<Error>(&strings).expect("serialize strings");
+    let st = rkyv::access::<AStrings, Error>(&sbytes).expect("access strings");
+    assert_eq!(autocomplete_names(a, st, "sho", 20), vec!["shock", "shockwave"]);
+    assert_eq!(autocomplete_names(a, st, "SHO", 20), vec!["shock", "shockwave"], "case-insensitive");
+    assert_eq!(autocomplete_names(a, st, "sh", 20), vec!["shatter", "shock", "shockwave"], "sorted");
+    assert_eq!(autocomplete_names(a, st, "sh", 1).len(), 1, "capped");
+    assert!(autocomplete_names(a, st, "zzz", 20).is_empty());
+    assert_eq!(autocomplete_names(a, st, "our market", 20), vec![long], "the WHOLE name, not the inline cut");
 }
 
 #[test]
@@ -17584,6 +17599,13 @@ fn the_archived_row_sizes_stay_pinned() {
     // encoding choice turned on: the alternative — a scaled integer at half-unit granularity —
     // would have kept the row at 272 by staying in an integer, and could not, since B.F.M. is
     // 99/99 and doubles past `i8::MAX`.
+    // 288 STAYS 288 THROUGH `card_name_lower_id`, and that is the decision this line records.
+    // The overflow id the 36 over-long names need is a u32, and the row had no spare four bytes:
+    // adding one took it to 304 — a 16-byte rounding, ~618 KB of archive over 38,626 cards, for a
+    // field 0.09% of them read. So it came out of the INLINE instead, `InlineStr<61>` -> `<57>`:
+    // the u32 after a 62-byte inline started at 64 with two padding bytes in front of it, and a
+    // 58-byte inline puts the id at 60 inside the same 64. The names between 58 and 61 bytes take
+    // the strings-table path as a result, which is one interned string each.
     assert_eq!(std::mem::size_of::<Archived<Printing>>(), 304);
     assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 288);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);

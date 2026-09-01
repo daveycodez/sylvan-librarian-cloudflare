@@ -551,9 +551,9 @@ pub(crate) fn card_from_json(
     let released_at_int: Option<u32> = released_at.replace('-', "").parse().ok();
     // Raw strings from the JSON object; interned to ids as the struct is built below.
     let card_name = jv_opt_str(d, "card_name").unwrap_or_default();
-    let card_name_lower = InlineStr::<61>::from_str(&card_name.to_lowercase());
+    let card_name_lower = card_name.to_lowercase();
     // Already lowercased + accent-folded upstream (fold_accents(), #649); read as-is.
-    let card_name_folded = InlineStr::<61>::from_str(&jv_opt_str(d, "card_name_folded").unwrap_or_default());
+    let card_name_folded = jv_opt_str(d, "card_name_folded").unwrap_or_default();
     let oracle_text = jv_opt_str(d, "oracle_text").unwrap_or_default();
     let oracle_text_lower_id = it.intern(strip_reminder_text(&oracle_text).to_lowercase());
     let oracle_full_lower_id = it.intern(oracle_text.to_lowercase());
@@ -1098,8 +1098,8 @@ impl<'a> RowDec<'a> {
 
 fn encode_card_row(r: &CardRow) -> Vec<u8> {
     let mut e = RowEnc(Vec::with_capacity(256));
-    e.str_inline(r.card_name_lower.as_str());
-    e.str_inline(r.card_name_folded.as_str());
+    e.str_inline(&r.card_name_lower);
+    e.str_inline(&r.card_name_folded);
     e.u8v(r.card_colors);
     e.u8v(r.card_color_identity);
     e.u8v(r.produced_mana);
@@ -1260,8 +1260,8 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
 fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
     let mut d = RowDec { buf, at: 0 };
     let row = CardRow {
-        card_name_lower: InlineStr::from_str(&d.str_owned()),
-        card_name_folded: InlineStr::from_str(&d.str_owned()),
+        card_name_lower: d.str_owned(),
+        card_name_folded: d.str_owned(),
         card_colors: d.u8v(),
         card_color_identity: d.u8v(),
         produced_mana: d.u8v(),
@@ -4660,6 +4660,35 @@ mod tests {
         let five_name = "who // what // when // where // why";
         assert!(exact(five_name) && coll(five_name), "the five-part name is a key on both");
         assert!(!exact("who") && !coll("who"), "and none of its parts is, on either");
+    }
+
+    /// A name too long for the inline field survives the build WHOLE — the 36 over-long names in
+    /// `all_cards`, of which this is the one that is not a doubled `X // X`.
+    ///
+    /// `InlineStr<61>` (now `<57>`) cuts silently, and the folded and collated ids used to be
+    /// derived from the cut string, so the back face vanished from every surface at once.
+    /// Measured on production 2026-08-31, before the fix: `!"Curse of the Fire Penguin Creature"`,
+    /// `name:"fire penguin creature"` and `/cards/named?exact=` of the same string all answered
+    /// nothing, while `!"Curse of the Fire Penguin Creatu"` — the 61-byte cut — answered the card.
+    /// api.scryfall.com answers the first three and not the fourth.
+    #[test]
+    fn a_name_past_the_inline_bound_survives_the_build() {
+        let long = "Curse of the Fire Penguin // Curse of the Fire Penguin Creature";
+        assert!(long.len() > 61, "the fixture has to be over the bound to test anything");
+        let store = build_store(&[annex_row(long, "oracle-long", "row-long", "en", 200.0)]).1;
+        let hit = |n: &str| store.exact_card_by_name(n, None, None).expect("exact").is_some();
+
+        assert!(hit(&long.to_lowercase()), "the whole joined name");
+        assert!(hit("curse of the fire penguin"), "the front face, which the cut never lost");
+        assert!(hit("curse of the fire penguin creature"), "the BACK face, which it did");
+        assert!(hit("curseofthefirepenguincreature"), "and the collated spelling of it");
+        assert!(
+            store.collection_card_by_name("curse of the fire penguin creature", None, None).expect("coll").is_some(),
+            "a collection identifier reads the same repaired key"
+        );
+        // The cut spelling is nobody's name. This is the assertion that fails on the old build:
+        // it answered the card, which is how the truncation was found.
+        assert!(!hit("curse of the fire penguin creatu"), "the 61-byte cut is not a key");
     }
 
     /// Both name surfaces compare COLLATED names — punctuation and spacing removed — which is what

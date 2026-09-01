@@ -1624,6 +1624,27 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         // face's. See [`joined_face_cost`] for the rule and the measurements behind it.
         row.mana_cost_text = Some(joined_face_cost(faces));
         row.set_extra(verdict);
+        // ...and the TYPE LINE, which the merge JOINS and Scryfall does not always. Every face's
+        // line run together with `" // "` is exactly what api.scryfall.com's own row says for a
+        // two-faced card — `Bind // Liberate` is "Instant // Instant" there, `Fire // Ice`
+        // likewise — and it is NOT what it says for the one card in the corpus with five faces:
+        // und/75 carries the bare "Instant", where this port answered
+        // "Instant // Instant // Instant // Instant // Instant" (measured 2026-08-31, and it is
+        // why the collection identifier for that card could not be byte-compared).
+        //
+        // Taking the card's OWN line wherever it has one settles both cases at once: it IS the
+        // join on every layout where the two agree, and Scryfall's string on the one where they
+        // do not. A reversible printing carries no top-level type line at all — all 81 of them,
+        // the same measurement `REVERSIBLE_LAYOUT` rests on — so those keep the joined value.
+        //
+        // `card_types`/`card_subtypes` are NOT recomputed from it, deliberately: `merge_face_drafts`
+        // unions each face's own parse, which is the only reading that survives a joined line
+        // (`parse_type_line` splits on the FIRST em dash, so parsing
+        // "Legendary Creature — Human Archer // Sorcery — Adventure" puts "Sorcery" among the
+        // SUBTYPES). The union is right and stays.
+        if let Some(type_line) = s(card, "type_line").filter(|t| !t.is_empty()) {
+            row.type_line = Some(type_line);
+        }
         row.printed_type_line = s(card, "printed_type_line");
         row.printed_text = s(card, "printed_text");
         // ...and the ARTIST, for the same reason and on measured evidence. A card drawn by two
@@ -3543,6 +3564,50 @@ mod tests {
         assert_eq!(draft.card_faces[0]["defense"], json!("7"));
         // Absent on the face that has none, for the same reason as loyalty above.
         assert!(!draft.card_faces[1].contains_key("defense"));
+    }
+
+    #[test]
+    fn the_cards_own_type_line_outranks_the_joined_faces() {
+        // The join is right wherever Scryfall agrees with it and wrong on the one card that has
+        // five faces. Measured on api.scryfall.com 2026-08-31: `Bind // Liberate` (split) says
+        // "Instant // Instant" — the join — and und/75 says the bare "Instant" against a join of
+        // five. Taking the card's own line covers both.
+        let mut two = minimal_card("Bind // Liberate");
+        two["layout"] = json!("split");
+        two["type_line"] = json!("Instant // Instant");
+        two["card_faces"] = json!([
+            {"name": "Bind", "type_line": "Instant", "oracle_text": "x"},
+            {"name": "Liberate", "type_line": "Instant", "oracle_text": "y"},
+        ]);
+        let draft = transform(&two).unwrap().unwrap();
+        assert_eq!(draft.type_line.as_deref(), Some("Instant // Instant"), "the join and the card agree");
+
+        let mut five = minimal_card("Who // What // When // Where // Why");
+        five["layout"] = json!("split");
+        five["type_line"] = json!("Instant");
+        five["card_faces"] = json!([
+            {"name": "Who", "type_line": "Instant", "oracle_text": "a"},
+            {"name": "What", "type_line": "Instant", "oracle_text": "b"},
+            {"name": "When", "type_line": "Instant", "oracle_text": "c"},
+            {"name": "Where", "type_line": "Instant", "oracle_text": "d"},
+            {"name": "Why", "type_line": "Instant", "oracle_text": "e"},
+        ]);
+        let draft = transform(&five).unwrap().unwrap();
+        assert_eq!(draft.type_line.as_deref(), Some("Instant"), "the card's own line, not five joined");
+        // The TYPES stay the per-face union — the thing a joined line cannot be parsed back into.
+        assert_eq!(draft.card_types, vec!["Instant".to_owned()]);
+        assert!(draft.card_subtypes.is_empty());
+
+        // A card with no top-level line of its own — every reversible printing — keeps the join.
+        let mut none = minimal_card("A // B");
+        none["layout"] = json!("reversible_card");
+        none.as_object_mut().unwrap().remove("type_line");
+        none["card_faces"] = json!([
+            {"name": "A", "type_line": "Artifact", "oracle_text": "x"},
+            {"name": "B", "type_line": "Land", "oracle_text": "y"},
+        ]);
+        let draft = transform(&none).unwrap().unwrap();
+        assert_eq!(draft.type_line.as_deref(), Some("Artifact // Land"), "no card line, so the join stands");
     }
 
     #[test]

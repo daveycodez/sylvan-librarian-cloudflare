@@ -1438,8 +1438,36 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      `ARCHIVE_FORMAT_VERSION` bump) and `TextField::ManaCostText` reclassified as
  *      printing-dependent — a `num_pdep` change with its own cost measurement to do, which is why
  *      it is not folded in here.
+ *
+ *   45 — THE 61-BYTE NAME CUT, and the one entry in this list that is NOT generation-only.
+ *
+ *      `OracleCard.card_name_lower` was an `InlineStr<61>`, whose `from_str` truncates in silence,
+ *      and 36 names in `all_cards` are longer than that — the doubled `X // X` art-series and
+ *      reversible names, `Curse of the Fire Penguin // Curse of the Fire Penguin Creature`, and
+ *      the 141-character Unhinged elemental. The folded and collated ids were DERIVED from the cut
+ *      string, so one truncation reached every name surface at once. Measured on production
+ *      2026-08-31:
+ *
+ *        !"Curse of the Fire Penguin Creature"    0 here    1 on api.scryfall.com
+ *        name:"fire penguin creature"             0 here    1 there
+ *        named?exact= of the same string          404 here  the card there
+ *        !"Curse of the Fire Penguin Creatu"      1 HERE    0 there — the cut spelling, which is
+ *                                                           how the truncation was found
+ *
+ *      The row carries `card_name_lower_id` now, holding the whole string whenever the inline does
+ *      not, and the inline narrows to 57 bytes so that id lands in padding the row already had:
+ *      `the_archived_row_sizes_stay_pinned` still reads 288, where a 62nd byte would have rounded
+ *      it to 304 and cost ~618 KB of archive for a field 36 cards read.
+ *
+ *      A FORMAT BUMP AS WELL, unlike 24/31/40/41/44: the struct changes shape, so
+ *      ARCHIVE_FORMAT_VERSION moves to 2026083101 with it. That carries a deploy cost the
+ *      generation-only entries do not — the RUNNING Worker rejects the new-format store from the
+ *      moment the import publishes it until the new code is live, so `/cards/*` is dark for the
+ *      minute or two between the two steps of `scripts/deploy.sh`. Bumping BOTH is what keeps that
+ *      window to those two steps: `store-age.ts` rebuilds on this constant and not on the format,
+ *      so a format bump alone would leave the old store in place and every reader refusing it.
  */
-export const STORE_CONTENT_GENERATION = 44;
+export const STORE_CONTENT_GENERATION = 45;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

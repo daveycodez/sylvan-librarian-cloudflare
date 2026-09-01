@@ -1148,7 +1148,7 @@ fn face_self_names(card: &AOracleCard, strings: &AStrings, segments: usize) -> V
             return contributing.iter().map(|n| self_names_of(n)).collect();
         }
     }
-    let mut all = self_names_of(card.card_name_lower.as_str());
+    let mut all = self_names_of(crate::lower_name(card, strings));
     for face in card.faces.iter() {
         if let Some(name) = str_at(strings, u32::from(face.card_name_id)) {
             for n in self_names_of(&name.to_lowercase()) {
@@ -1220,9 +1220,9 @@ fn text_search_field_value<'a>(
 ) -> StrVal<'a> {
     match field {
         // LITERAL (`name:"…"`, and a plain-literal regex lowered to one): the stored lowercase
-        // name, with neither fold. The query value keeps its diacritics in Python for the same
-        // reason.
-        TextSearchField::NameLower       => StrVal::Known(card.card_name_lower.as_str()),
+        // name, WHOLE (`lower_name`, not the 61-byte inline — see its note), with neither fold.
+        // The query value keeps its diacritics in Python for the same reason.
+        TextSearchField::NameLower       => StrVal::Known(crate::lower_name(card, strings)),
         // COLLATED (`name:word`): accent-folded (#649) AND separator-folded, the query word
         // through `collate_name(fold_accents(...))` in Python, so this must match.
         TextSearchField::NameCollated    => StrVal::Known(crate::collated_name(card, strings)),
@@ -1288,7 +1288,7 @@ fn text_field_value<'a>(
     field: TextField,
 ) -> StrVal<'a> {
     match field {
-        TextField::NameLower       => StrVal::Known(card.card_name_lower.as_str()),
+        TextField::NameLower       => StrVal::Known(crate::lower_name(card, strings)),
         TextField::OracleTextLower => opt_sv(str_at(strings, u32::from(card.oracle_text_lower_id))),
         TextField::FullOracleTextLower => opt_sv(str_at(strings, u32::from(card.oracle_full_lower_id))),
         // PRINTING-level since gen 30 (see Printing::card_layout_id): a reversible printing and an
@@ -2617,7 +2617,7 @@ impl FilterExpr {
                 let finder = memmem::Finder::new(word.as_bytes()); // built once, reused across the verify scan
                 let verify = |cid: u32| -> bool {
                     let card = &cards[cid as usize];
-                    let hay = if literal { card.card_name_lower.as_str() } else { crate::collated_name(card, strings) };
+                    let hay = if literal { crate::lower_name(card, strings) } else { crate::collated_name(card, strings) };
                     finder.find(hay.as_bytes()).is_some()
                 };
 

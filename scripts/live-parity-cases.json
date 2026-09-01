@@ -1035,28 +1035,7 @@
 					}
 				]
 			},
-			"note": "MORE than two halves: the whole name is the key. The pair to collection-name-five-part-half-not-found, which is not.\nRECORDED RATHER THAN BYTE-COMPARED, AND NOT BECAUSE ANYONE CHOSE TO DIFFER. The identifier resolves to und/75 on both sides — which is the whole of what this case is for — and the CARD OBJECT for the only five-faced card in the corpus then differs in ONE remaining place:\n  type_line  scryfall \"Instant\"  ours \"Instant // Instant // Instant // Instant // Instant\"\nScryfall's own bulk row carries the bare \"Instant\" (verified on api.scryfall.com/cards/und/75) while it joins the faces on every other multi-face layout (`Bind // Liberate` is \"Instant // Instant\" there), so the join is right in general and this one row is not — a card-object fix with its own rebuild, not a name-rule one. The pair this case recorded also included purchase_uris.cardhoarder, which searched for \"Who\" where Scryfall searches the whole name; that half is FIXED (the marketplace searches take the same joined-or-front string edhrec does) and is no longer part of the deviation.",
-			"known_deviation": {
-				"reason": "Two card-object fields on und/75, unfixed and unrelated to the name rule this case pins.",
-				"scryfall": {
-					"status": 200,
-					"expect": {
-						"data.0.name": "Who // What // When // Where // Why",
-						"data.0.set": "und",
-						"data.0.collector_number": "75",
-						"data.0.type_line": "Instant"
-					}
-				},
-				"ours": {
-					"status": 200,
-					"expect": {
-						"data.0.name": "Who // What // When // Where // Why",
-						"data.0.set": "und",
-						"data.0.collector_number": "75",
-						"data.0.type_line": "Instant // Instant // Instant // Instant // Instant"
-					}
-				}
-			}
+			"note": "MORE than two halves: the whole name is the key. The pair to collection-name-five-part-half-not-found, which is not.\nBYTE-COMPARED AGAIN as of the 61-byte-name and type_line fixes. This case spent a few hours recording two card-object divergences on und/75 instead — type_line joined five faces where Scryfall's own row says the bare \"Instant\", and purchase_uris searched for \"Who\" where Scryfall searches the whole name — and both are closed, so the recording came off rather than being left to rot."
 		},
 		{
 			"name": "collection-name-five-part-half-not-found",
