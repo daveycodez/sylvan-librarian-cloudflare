@@ -34,12 +34,15 @@ export const UNIQUE_ON = {
  * instants measured.
  *
  * `borderless` is THIS API'S OWN, not Scryfall's (there it is an unknown value, ignored with a
- * warning): "the best-looking printing that is still this card". Three tiers over the printings
- * carrying NO flavor name — borderless, then any other frame variant, then the plain printings,
- * default order inside each — and a flavor-named printing is never a candidate, because it is
- * drawn and sold as someone else. Najeela, the Blade-Blossom's four borderless printings are
- * Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514; Thrasios,
- * Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which is Tidus.
+ * warning): "the best-looking printing that is still this card". Over the printings carrying NO
+ * flavor name, in-universe printings rank above Universes Beyond ones outright, and inside each
+ * half three tiers — borderless, then any other frame variant, then the plain printings — with
+ * the default order deciding inside a tier. A flavor-named printing is never a candidate,
+ * because it is drawn and sold as someone else: Najeela, the Blade-Blossom's four borderless
+ * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
+ * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which
+ * is Tidus. A Universes Beyond printing under the card's own name stays a candidate, below every
+ * in-universe one: Force of Negation answers the Hildebrandt 2x2/346 over the Avatar tle/13.
  */
 export const PREFER_ORDER = {
 	name: "PreferOrder",

@@ -17179,12 +17179,33 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
     // id 3: etched + inverted, black border, same name — the cmr/514 shape.
     data.printings[2].card_border_id = black;
     data.printings[2].compat.frame_effects = vec![inverted, etched];
-    // id 4: borderless and same-named, ranked last by default.
+    // id 4: borderless and same-named, in-universe, ranked last by default.
     data.printings[3].card_border_id = borderless;
     data.printings[3].compat.promo_types = vec![];
     data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    data.printings[3].card_is_tags = vec![];
 
     assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "same-named borderless, however low it ranks");
+    // Universes Beyond under the card's own name is a candidate, but every in-universe printing
+    // outranks it: tag id 4 and the etched in-universe id 3 wins; strip id 3's variant and the
+    // PLAIN in-universe id 1 still wins over the UB borderless.
+    let ub = data.printings[1].card_is_tags[0];
+    data.printings[3].card_is_tags = vec![ub];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "in-universe variant over a Universes Beyond borderless");
+    let etched_fx = data.printings[2].compat.frame_effects.clone();
+    data.printings[2].compat.frame_effects = vec![];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "in-universe plain over a Universes Beyond borderless");
+    // ...and among Universes Beyond printings only, the frame tiers still decide: tag them all
+    // and the borderless id 4 wins again.
+    for p in &mut data.printings {
+        p.card_is_tags = vec![ub];
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "all Universes Beyond: borderless first");
+    for p in &mut data.printings {
+        p.card_is_tags = vec![];
+    }
+    data.printings[1].card_is_tags = vec![ub];
+    data.printings[2].compat.frame_effects = etched_fx;
     data.printings[3].card_border_id = black;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "no same-named borderless: the etched variant beats the crossover");
     data.printings[2].flavor_name_id = spider_gwen;

@@ -38,9 +38,10 @@ class PreferOrder(enum.StrEnum):
     ATYPICAL = enum.auto()
     UNIVERSESBEYOND = enum.auto()
     NOTUNIVERSESBEYOND = enum.auto()
-    # This API's own, not Scryfall's: the best-looking printing that is still this card --
-    # borderless, then any other frame variant, then plain, over the printings with no flavor
-    # name; a flavor-named (crossover) printing is never a candidate. See the engine's `Prefer`.
+    # This API's own, not Scryfall's: the best-looking printing that is still this card -- over
+    # the printings with no flavor name, in-universe above Universes Beyond, and within each
+    # borderless, then any other frame variant, then plain; a flavor-named (crossover) printing
+    # is never a candidate. See the engine's `Prefer`.
     BORDERLESS = enum.auto()
 
 

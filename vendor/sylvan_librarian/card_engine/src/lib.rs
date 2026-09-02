@@ -9325,14 +9325,17 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 }
 
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
-/// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Three
-/// tiers over the printings that carry NO flavor name — borderless, then any other frame
-/// variant, then the plain printings — default order inside each; a flavor-named printing is
+/// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
+/// printings that carry NO flavor name, in-universe printings rank above Universes Beyond ones
+/// outright, and inside each of those halves three tiers — borderless, then any other frame
+/// variant, then the plain printings — default order inside each. A flavor-named printing is
 /// never a candidate, because it is drawn and sold as someone else (Najeela's four borderless
 /// printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon; Thrasios's fca/58 is Tidus).
-/// Najeela answers her etched cmr/514 over every crossover, Thrasios his Special Guests spg/16
-/// over the Final Fantasy fca/58. A card's original printing never carries a flavor name, so
-/// the first tier that is non-empty always exists. `EurLow`,
+/// A Universes Beyond printing under the card's OWN name is a candidate, ranked below every
+/// in-universe one: Force of Negation answers the Hildebrandt borderless 2x2/346 over the
+/// Avatar tle/13, and a card whose only variants are Universes Beyond answers its plain
+/// printing. Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
+/// original printing never carries a flavor name, so a candidate always exists. `EurLow`,
 /// `EurHigh`, `TixLow` and `TixHigh` are the eur/tix twins of the usd pair; `prefer_for_sort`
 /// also reaches for the `*Low` ones to express "cheapest printing" under a price ordering.
 ///
@@ -9460,18 +9463,22 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
         Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
-        // Three tiers, and a flavor-named printing sits below all of them: with at least one
-        // same-named printing on every card, it can never be the answer.
+        // Six steps: in-universe {borderless, variant, plain} above Universes Beyond {the same
+        // three}, and a flavor-named printing below all of them — with at least one same-named
+        // printing on every card, it can never be the answer.
         Prefer::Borderless(ids) => {
             if printing_has_flavor_name(p) {
-                default_score()
-            } else if printing_is_borderless(p, strings) {
-                3.0 * CLASS_BONUS + default_score()
-            } else if printing_is_frame_variant(p, &ids, strings) {
-                2.0 * CLASS_BONUS + default_score()
-            } else {
-                CLASS_BONUS + default_score()
+                return default_score();
             }
+            let frame_tier = if printing_is_borderless(p, strings) {
+                3.0
+            } else if printing_is_frame_variant(p, &ids, strings) {
+                2.0
+            } else {
+                1.0
+            };
+            let universe_tier = if printing_is_universes_beyond(p, &ids) { 0.0 } else { 3.0 };
+            (universe_tier + frame_tier) * CLASS_BONUS + default_score()
         }
     }
 }
