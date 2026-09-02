@@ -1,8 +1,8 @@
 {
-	"source_hash": "dcc7eb14e0c3884049e237ca34f179d1eab825426191f41e4fac7f8060a64844",
+	"source_hash": "2717b1bcfe5c230a73d8dc4141b15a159910d2c847020a9ef0c2511001dac7fa",
 	"archive_format_version": 2026083101,
 	"blob_hashes": {
-		"engine/wasm/pkg/sylvan_engine_wasm_bg.wasm": "ebf74a620cef61dfdc42527661b214487f861c74eddb579d20b382f6f49d8876",
+		"engine/wasm/pkg/sylvan_engine_wasm_bg.wasm": "20442f8b4f29b5e829e8d8522d337554f82468071ff867d0f24c001264cf0753",
 		"engine/wasm-import/pkg/sylvan_wasm_import.wasm": "1e54812b727e99ded3cc240f715004c9682082edc9ed840fd162cd2bcbcaf12f"
 	}
 }

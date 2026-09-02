@@ -2502,7 +2502,8 @@ impl BufferStore {
         let prefer = super::QueryParams::from_strs("printing", &scope.prefer, "name", "asc", 1, 0)
             .bind_prefer(&data.coll_vocab)
             .prefer;
-        Ok(BoundScope { prefer, filter })
+        let extra_vid = data.coll_vocab.iter().position(|s| s.as_str() == crate::EXTRA_IS_TAG).map(|p| p as u16);
+        Ok(BoundScope { prefer, filter, extra_vid })
     }
 
     /// `best_printing_of` under a collection scope: the best printing that passes the set filter
@@ -2510,6 +2511,15 @@ impl BufferStore {
     /// same `prefer_score` `unique=cards` picks a representative with, so `?q=prefer:atypical`
     /// on a collection answers the printing `prefer:atypical` answers on a search. No scope is
     /// exactly `best_printing_of`.
+    ///
+    /// THE POOL EXCLUDES EXTRAS, the same default exclusion `/cards/search` ANDs into every query
+    /// (`-is:extra` unless `include_extras`): art-series cards, tokens and the rest of the
+    /// memorabilia are never a preference's answer. Without it, Birgi, God of Storytelling under
+    /// `prefer:borderless` answered akhm/31 — her ART-SERIES card, which is borderless, carries
+    /// no flavor name and is in-universe, so it won the top tier over every real printing — and
+    /// `prefer:atypical` the same, since borderless is atypical. Any card whose only "borderless"
+    /// object is its art-series card had the same hole. A scope that names no extras term cannot
+    /// mean "prefer the art-series card", so the exclusion is unconditional here.
     fn best_printing_of_scoped(&self, cid: usize, set_code: Option<&str>, scope: Option<&BoundScope>) -> Option<(usize, f64)> {
         let Some(scope) = scope else {
             return self.best_printing_of(cid, set_code).map(|(pid, score)| (pid, f64::from(score)));
@@ -2520,6 +2530,7 @@ impl BufferStore {
         let passes = |pid: usize| {
             let p = &data.printings[pid];
             set_code.is_none_or(|s| p.card_set_code.as_str().eq_ignore_ascii_case(s))
+                && scope.extra_vid.is_none_or(|vid| !p.card_is_tags.iter().any(|t| u16::from(*t) == vid))
                 && scope
                     .filter
                     .as_ref()
@@ -3361,6 +3372,9 @@ pub struct CollectionScope {
 struct BoundScope {
     prefer: super::Prefer,
     filter: Option<crate::FilterExpr>,
+    /// The `extra` `is:` tag's vocab id, or None when this store never interned it (a fixture, a
+    /// corpus with no extras). See `best_printing_of_scoped` for what it excludes.
+    extra_vid: Option<u16>,
 }
 
 /// The tier at which `needle` — already COLLATED — is one of this card's name keys, or None for a
@@ -4581,7 +4595,15 @@ mod tests {
         borderless["card_set_code"] = json!("fin");
         borderless["collector_number"] = json!("318");
         borderless["card_border"] = json!("borderless");
-        let store = build_store(&[plain, promo, borderless]).1;
+        // The art-series card: borderless, no flavor name, in-universe, ranked ABOVE fin/318 — and
+        // an extra, which is what keeps it out of every preference's pool (Birgi's akhm/31 shape).
+        let mut art_series = annex_row("Clive, Ifrit's Dominant", "oracle-c", "row-c-art", "en", 150.0);
+        art_series["card_set_code"] = json!("afin");
+        art_series["collector_number"] = json!("31");
+        art_series["card_border"] = json!("borderless");
+        art_series["card_layout"] = json!("art_series");
+        art_series["card_is_tags"] = json!({ "extra": true });
+        let store = build_store(&[plain, promo, art_series, borderless]).1;
 
         let fields = Some(vec!["collector_number".to_owned()]);
         let pick = |scope: Option<&CollectionScope>| -> Option<String> {
@@ -4596,7 +4618,9 @@ mod tests {
         let atypical = CollectionScope { prefer: "atypical".to_owned(), filter_tree: None };
         assert_eq!(pick(Some(&atypical)).as_deref(), Some("133s"), "the date stamp is atypical and ranks first");
         let scoped = CollectionScope { prefer: "atypical".to_owned(), filter_tree: Some(not_datestamped.clone()) };
-        assert_eq!(pick(Some(&scoped)).as_deref(), Some("318"), "filtered to the borderless printing");
+        assert_eq!(pick(Some(&scoped)).as_deref(), Some("318"), "filtered to the borderless printing, never the art-series extra");
+        let borderless_pref = CollectionScope { prefer: "borderless".to_owned(), filter_tree: None };
+        assert_eq!(pick(Some(&borderless_pref)).as_deref(), Some("318"), "the art-series card is borderless and outranks fin/318, and still never wins");
         let default_scoped = CollectionScope { prefer: "default".to_owned(), filter_tree: Some(not_datestamped) };
         assert_eq!(pick(Some(&default_scoped)).as_deref(), Some("133"), "a filter alone keeps the default order");
         let none_pass = CollectionScope {
