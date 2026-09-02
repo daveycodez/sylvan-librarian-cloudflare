@@ -221,10 +221,20 @@ _DIRECTIVE_UNIQUE: dict[str, UniqueOn] = {
 }
 _DIRECTIVE_ORDER: dict[str, CardOrdering] = {str(member): member for member in CardOrdering}
 _DIRECTIVE_DIRECTION: dict[str, SortDirection] = {str(member): member for member in SortDirection}
-# Scryfall-shaped queries spell the usd prefers with a hyphen; the enum values use underscores.
+# Scryfall-shaped queries spell the price prefers with a hyphen and the Universes Beyond pair with
+# a short form too; the enum values use underscores. `default` is OVERRIDDEN: a written
+# `prefer:default` is Scryfall's "default Magic frame" preference (PreferOrder.DEFAULT_FRAME), not
+# this parameter's "no preference" -- see the enum's docstring for the measured difference.
 _DIRECTIVE_PREFER: dict[str, PreferOrder] = {str(member): member for member in PreferOrder} | {
     "usd-low": PreferOrder.USD_LOW,
     "usd-high": PreferOrder.USD_HIGH,
+    "eur-low": PreferOrder.EUR_LOW,
+    "eur-high": PreferOrder.EUR_HIGH,
+    "tix-low": PreferOrder.TIX_LOW,
+    "tix-high": PreferOrder.TIX_HIGH,
+    "ub": PreferOrder.UNIVERSESBEYOND,
+    "notub": PreferOrder.NOTUNIVERSESBEYOND,
+    "default": PreferOrder.DEFAULT_FRAME,
 }
 
 
@@ -739,7 +749,8 @@ class APIResource:
             shape: Shape of the "cards" list: 'rows' (list of card objects, default) or
                 'columnar' (one list per field, keyed by field name — smaller on the wire).
             unique: Unique on field (card, printing, artwork).
-            prefer: Prefer order (oldest, newest, usd_low, usd_high, promo).
+            prefer: Prefer order (oldest, newest, usd_low, usd_high, eur_low, eur_high, tix_low,
+                tix_high, promo, default_frame, atypical, universesbeyond, notuniversesbeyond).
 
         Returns:
             Dict containing search results and metadata.
@@ -1066,8 +1077,19 @@ class APIResource:
             PreferOrder.NEWEST: ("released_at", "DESC"),
             PreferOrder.USD_LOW: ("price_usd", "ASC"),
             PreferOrder.USD_HIGH: ("price_usd", "DESC"),
+            PreferOrder.EUR_LOW: ("price_eur", "ASC"),
+            PreferOrder.EUR_HIGH: ("price_eur", "DESC"),
+            PreferOrder.TIX_LOW: ("price_tix", "ASC"),
+            PreferOrder.TIX_HIGH: ("price_tix", "DESC"),
             PreferOrder.PROMO: ("edhrec_rank", "ASC"),  # Use edhrec_rank as fallback for promo
             PreferOrder.DEFAULT: ("prefer_score", "DESC"),
+            # The four class prefers need per-printing frame and tag facts this SQL path does not
+            # join; the engine path (card_engine's `PreferClassIds`) answers them, and here they
+            # fall back to the default order rather than a wrong one.
+            PreferOrder.DEFAULT_FRAME: ("prefer_score", "DESC"),
+            PreferOrder.ATYPICAL: ("prefer_score", "DESC"),
+            PreferOrder.UNIVERSESBEYOND: ("prefer_score", "DESC"),
+            PreferOrder.NOTUNIVERSESBEYOND: ("prefer_score", "DESC"),
         }
         prefer_column, prefer_direction = prefer_mapping.get(
             prefer,

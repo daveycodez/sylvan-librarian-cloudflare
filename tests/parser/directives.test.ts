@@ -77,6 +77,30 @@ describe("the hyphenated prefer spellings are reachable", () => {
 	test("the underscored spellings keep working", () => {
 		expect(fold("prefer:usd_low").prefer).toBe("usd_low");
 	});
+
+	// The rest of Scryfall's `prefer:` vocabulary (its syntax page, read 2026-09-02): the eur and
+	// tix price pairs under the same hyphen rule, and the two Universes Beyond spellings each.
+	test("every prefer spelling Scryfall's syntax page lists is accepted", () => {
+		expect(fold("prefer:eur-low").prefer).toBe("eur_low");
+		expect(fold("prefer:eur-high").prefer).toBe("eur_high");
+		expect(fold("prefer:tix-low").prefer).toBe("tix_low");
+		expect(fold("prefer:tix-high").prefer).toBe("tix_high");
+		expect(fold("prefer:atypical").prefer).toBe("atypical");
+		expect(fold("prefer:promo").prefer).toBe("promo");
+		expect(fold("prefer:universesbeyond").prefer).toBe("universesbeyond");
+		expect(fold("prefer:ub").prefer).toBe("universesbeyond");
+		expect(fold("prefer:notuniversesbeyond").prefer).toBe("notuniversesbeyond");
+		expect(fold("prefer:notub").prefer).toBe("notuniversesbeyond");
+	});
+
+	// `prefer:default` is Scryfall's "default Magic frame", which demotes an atypical-frame
+	// printing that a bare query would return (Chaos Warp's future-frame mbc/72, measured). It is
+	// therefore NOT this parameter's "no preference" value, and a written directive must reach the
+	// engine as the frame preference.
+	test("prefer:default is the default-frame preference, not no preference", () => {
+		expect(fold("prefer:default").prefer).toBe("default_frame");
+		expect(BASE.prefer).toBe("default");
+	});
 });
 
 describe("the directive tables are derived, not hardcoded", () => {
@@ -90,10 +114,16 @@ describe("the directive tables are derived, not hardcoded", () => {
 		expect(DIRECTIVE_ORDER.size).toBe(CARD_ORDERING.values.length);
 	});
 
-	test("every PreferOrder is a valid prefer directive, plus the two aliases", () => {
+	// ...with ONE deliberate exception: `prefer:default` is Scryfall's default-FRAME preference
+	// and maps to `default_frame`, so the parameter's own "no preference" value is the one enum
+	// member a directive cannot name. Every other member is its own directive, and the eight
+	// aliases are Scryfall's hyphenated price spellings and the two short Universes Beyond forms.
+	test("every PreferOrder but the no-preference value is a valid prefer directive, plus the aliases", () => {
 		for (const prefer of PREFER_ORDER.values) {
+			if (prefer === "default") continue;
 			expect(DIRECTIVE_PREFER.get(prefer)).toBe(prefer);
 		}
-		expect(DIRECTIVE_PREFER.size).toBe(PREFER_ORDER.values.length + 2);
+		expect(DIRECTIVE_PREFER.get("default")).toBe("default_frame");
+		expect(DIRECTIVE_PREFER.size).toBe(PREFER_ORDER.values.length + 8);
 	});
 });

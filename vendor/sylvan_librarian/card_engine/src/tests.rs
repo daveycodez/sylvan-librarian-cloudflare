@@ -22,7 +22,7 @@ use super::{
     CompatFields, ExternalIdIndex, RelatedCard, build_external_id_index, find_printing_by_external_id,
     EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER,
     FuzzyOutcome, autocomplete_names, fuzzy_name_match, fuzzy_similarity, iso8601_utc_to_epoch_secs,
-    VOCAB_NONE, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
+    VOCAB_NONE, COMPAT_FULL_ART, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
     TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
     TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
 };
@@ -17062,6 +17062,114 @@ fn an_explicit_prefer_still_beats_the_price_orderby() {
     // `oldest`/`newest` are price-blind: store_of makes the LAST printing the oldest.
     assert_eq!(representative(&data, "oldest", "usd", "desc"), 3);
     assert_eq!(representative(&data, "newest", "usd", "desc"), 1);
+}
+
+/// A four-printing card for the CLASS prefers, in default order: id 1 the default (plain 2015
+/// frame, black border, nonfoil), id 2 a showcase frame from a Universes Beyond set, id 3 a
+/// borderless printing, id 4 a foil-only surge-foil variant. Every marker the measured class
+/// reads has a printing here that carries ONLY it, so a wrong arm shows up as the wrong id.
+fn class_prefer_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let showcase = vocab.intern("showcase".to_owned()).expect("vocab");
+    let legendary = vocab.intern("legendary".to_owned()).expect("vocab");
+    let boosterfun = vocab.intern("boosterfun".to_owned()).expect("vocab");
+    let surgefoil = vocab.intern("surgefoil".to_owned()).expect("vocab");
+    let ub = vocab.intern("universesbeyond".to_owned()).expect("vocab");
+    let frame_2015 = vocab.intern("2015".to_owned()).expect("vocab");
+    let mut data = store_of(vec![card], &[4], vocab);
+    data.strings.push("black".to_owned());
+    data.strings.push("borderless".to_owned());
+    let (black, borderless) = ((data.strings.len() - 2) as u32, (data.strings.len() - 1) as u32);
+    for p in &mut data.printings {
+        p.card_border_id = black;
+        p.card_frame_data = vec![frame_2015];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        // A rules frame on every printing: it must not count as atypical.
+        p.compat.frame_effects = vec![legendary];
+    }
+    // id 2: showcase, Universes Beyond (the set's ordinary rows carry `surgefoil` too — not a variant).
+    data.printings[1].compat.frame_effects = vec![legendary, showcase];
+    data.printings[1].compat.promo_types = vec![ub, surgefoil, boosterfun];
+    data.printings[1].card_is_tags = vec![ub];
+    // id 3: borderless, nothing else.
+    data.printings[2].card_border_id = borderless;
+    // id 4: the ★ variant — surge foil as the ONLY finish, and Universes Beyond.
+    data.printings[3].compat.promo_types = vec![ub, surgefoil];
+    data.printings[3].compat.finishes = FINISH_FOIL;
+    data.printings[3].card_is_tags = vec![ub];
+    data
+}
+
+/// `prefer:atypical` answers the BEST atypical printing (the class first, default order inside
+/// it), `prefer:default` — `default_frame` here — the best default-frame one, and the two
+/// Universes Beyond prefers read the stored tag. See `PreferClassIds` for the measured class.
+#[test]
+fn class_prefers_pick_the_best_printing_in_the_class() {
+    let data = class_prefer_store();
+    // No preference: the default order's first printing, whatever its frame.
+    assert_eq!(representative(&data, "default", "name", "asc"), 1);
+    // The class first, then the default order: id 2 (showcase) outranks id 3 (borderless) and
+    // id 4 (foil-only surge foil), all three atypical.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 2);
+    assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
+    assert_eq!(representative(&data, "universesbeyond", "name", "asc"), 2);
+    assert_eq!(representative(&data, "notuniversesbeyond", "name", "asc"), 1);
+}
+
+/// Each marker on its own moves a printing into the atypical class — and the two look-alikes
+/// that must NOT: a rules frame effect (`legendary`) and `surgefoil` on a printing that also
+/// comes nonfoil.
+#[test]
+fn every_atypical_marker_counts_and_the_look_alikes_do_not() {
+    let mut data = class_prefer_store();
+    // Strip id 2's showcase: its remaining `legendary` + nonfoil `surgefoil` + `boosterfun`...
+    let legendary = data.printings[1].compat.frame_effects[0];
+    data.printings[1].compat.frame_effects = vec![legendary];
+    // ...`boosterfun` alone still counts, so id 2 stays the pick.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 2);
+    let ub = data.printings[1].card_is_tags[0];
+    let surgefoil = data.printings[1].compat.promo_types[1];
+    data.printings[1].compat.promo_types = vec![ub, surgefoil];
+    // Now id 2 is a plain legendary frame with a nonfoil surge-foil word: NOT atypical, so the
+    // borderless id 3 is the best of the class.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 3);
+    // Make id 3 black-bordered again and only the foil-only ★ variant remains.
+    data.printings[2].card_border_id = data.printings[0].card_border_id;
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 4);
+    // Give id 4 a nonfoil finish too and NOTHING is atypical: the class prefer is the default order.
+    data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 1);
+    // Full art, textless and the future frame each count alone.
+    data.printings[2].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 3);
+    data.printings[2].compat.flags = COMPAT_TEXTLESS;
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 3);
+    data.printings[2].compat.flags = 0;
+    let future = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("Future".to_owned());
+    data.printings[3].card_frame_data = vec![future];
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 4);
+    // ...and the default-frame prefer is its exact complement.
+    assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
+}
+
+/// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
+/// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
+/// under a price ordering and are now spellable.
+#[test]
+#[allow(clippy::inconsistent_digit_grouping, clippy::zero_prefixed_literal)]
+fn eur_and_tix_prefers_pick_by_price() {
+    let data = priced_store(&[
+        (Some(9_00), Some(1_00), None),       // id 1 — prefer-best, cheapest EUR, unpriced TIX
+        (Some(5_00), Some(5_00), Some(0_50)), // id 2 — dearest EUR, cheapest TIX
+        (Some(1_00), Some(3_00), Some(3_00)), // id 3 — dearest TIX
+    ]);
+    assert_eq!(representative(&data, "eur_high", "name", "asc"), 2);
+    assert_eq!(representative(&data, "eur_low", "name", "asc"), 1);
+    assert_eq!(representative(&data, "tix_high", "name", "asc"), 3);
+    assert_eq!(representative(&data, "tix_low", "name", "asc"), 2);
+    assert_eq!(representative(&data, "usd_high", "name", "asc"), 1);
 }
 
 /// `order=artist` treats an artistless printing the way every other ordering treats an absent

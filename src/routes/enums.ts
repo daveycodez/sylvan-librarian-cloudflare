@@ -14,9 +14,43 @@ export const UNIQUE_ON = {
 	values: ["card", "printing", "artwork"],
 } as const satisfies EnumSpec;
 
+/**
+ * Every `prefer:` Scryfall's syntax page lists (measured against api.scryfall.com 2026-09-02),
+ * under this API's underscored spellings; `DIRECTIVE_PREFER` carries Scryfall's own spellings.
+ *
+ * `default` is "no preference": the engine's own printing order, which reproduces what Scryfall
+ * returns when no `prefer:` is written. `default_frame` is Scryfall's `prefer:default` — "the
+ * default Magic frame" — and NOT the same thing: on api.scryfall.com the two differ on exactly
+ * the cards whose no-prefer printing is an atypical frame (Chaos Warp's future-frame mbc/72 is
+ * the one in 450 measured), which `prefer:default` demotes and a bare query does not. The
+ * directive maps to `default_frame` so a written `prefer:default` does what it does there; the
+ * parameter's own default stays "no preference" so an unadorned search keeps Scryfall's order.
+ *
+ * `atypical` is the complement of `default_frame`; the measured class is documented on the
+ * engine's `PreferClassIds`. `universesbeyond`/`notuniversesbeyond` read the stored
+ * `universesbeyond` tag. The price pairs pick the dearest or cheapest printing by the same
+ * search-price chain (`usd`, then `usd_foil`, then `usd_etched`) the `usd` ordering reads —
+ * Scryfall's `prefer:eur-high` answers a printing whose only price is `eur_foil`, 38 of 100 red
+ * instants measured.
+ */
 export const PREFER_ORDER = {
 	name: "PreferOrder",
-	values: ["default", "oldest", "newest", "usd_low", "usd_high", "promo"],
+	values: [
+		"default",
+		"oldest",
+		"newest",
+		"usd_low",
+		"usd_high",
+		"eur_low",
+		"eur_high",
+		"tix_low",
+		"tix_high",
+		"promo",
+		"default_frame",
+		"atypical",
+		"universesbeyond",
+		"notuniversesbeyond",
+	],
 } as const satisfies EnumSpec;
 
 // Declaration order, not alphabetical-by-accident: ParamCoercionError renders "expected one of:"
@@ -109,13 +143,22 @@ export const DIRECTIVE_DIRECTION: ReadonlyMap<string, SortDirection> = new Map(
 	SORT_DIRECTION.values.map((v) => [v, v] as const),
 );
 
-// Derived, PLUS the two hyphenated spellings Scryfall accepts. Those are
-// enumerated upstream too: the enum members carry underscores (`usd_low`), so
-// no derivation produces `usd-low`.
+// Derived, PLUS Scryfall's own spellings. Those are enumerated upstream too: the enum members
+// carry underscores (`usd_low`), so no derivation produces `usd-low`; `ub`/`notub` are the short
+// forms the syntax page lists beside the long ones; and `default` is OVERRIDDEN, because a
+// written `prefer:default` is Scryfall's "default Magic frame" preference, not this parameter's
+// "no preference" — see PREFER_ORDER.
 export const DIRECTIVE_PREFER: ReadonlyMap<string, PreferOrder> = new Map<string, PreferOrder>([
 	...PREFER_ORDER.values.map((v) => [v, v] as const),
 	["usd-low", "usd_low"],
 	["usd-high", "usd_high"],
+	["eur-low", "eur_low"],
+	["eur-high", "eur_high"],
+	["tix-low", "tix_low"],
+	["tix-high", "tix_high"],
+	["ub", "universesbeyond"],
+	["notub", "notuniversesbeyond"],
+	["default", "default_frame"],
 ]);
 
 // ENUMERATED, mirroring upstream literally, because this port's enum values are

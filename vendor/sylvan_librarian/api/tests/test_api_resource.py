@@ -813,6 +813,28 @@ class TestSearchQueryDirectives(TestBaseAPIResourceTest):
         assert kwargs["direction"] == "desc"
         assert kwargs["prefer"] == "oldest"
 
+    def test_every_prefer_spelling_scryfall_lists_reaches_the_engine(self) -> None:
+        """Scryfall's syntax page (read 2026-09-02) spells the price prefers with a hyphen and the
+        Universes Beyond pair in a long and a short form; each reaches the engine as the enum value.
+        `prefer:default` is Scryfall's default-FRAME preference, which is not this parameter's "no
+        preference" (they differ on a card whose no-prefer printing is an atypical frame), so it
+        reaches the engine as `default_frame`."""
+        for written, expected in (
+            ("eur-low", "eur_low"),
+            ("eur-high", "eur_high"),
+            ("tix-low", "tix_low"),
+            ("tix-high", "tix_high"),
+            ("atypical", "atypical"),
+            ("ub", "universesbeyond"),
+            ("universesbeyond", "universesbeyond"),
+            ("notub", "notuniversesbeyond"),
+            ("notuniversesbeyond", "notuniversesbeyond"),
+            ("default", "default_frame"),
+        ):
+            mock_engine, result = self._engine_search(f"t:goblin prefer:{written}")
+            assert mock_engine.query.call_args.kwargs["prefer"] == expected, written
+            assert not result.get("warnings"), written
+
     def test_dir_is_the_short_spelling_of_direction(self) -> None:
         """`dir:desc` reaches the engine exactly as `direction:desc` does (Scryfall accepts both)."""
         mock_engine, _ = self._engine_search("t:goblin sort:usd dir:desc")

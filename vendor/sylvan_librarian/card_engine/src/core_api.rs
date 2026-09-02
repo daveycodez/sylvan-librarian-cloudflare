@@ -1554,7 +1554,8 @@ impl BufferStore {
             &opts.direction,
             opts.limit,
             opts.offset,
-        );
+        )
+        .bind_prefer(&data.coll_vocab);
         let (plane_expr, mut filter_expr, sort_bound, unsplit) =
             super::bind_and_split_filter_value(filter_tree, &opts.unique, data, params.sort_col)?;
 

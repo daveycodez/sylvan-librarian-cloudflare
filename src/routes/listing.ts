@@ -51,7 +51,7 @@ export const LISTINGS = {
             shape: Shape of the "cards" list: 'rows' (list of card objects, default) or
                 'columnar' (one list per field, keyed by field name — smaller on the wire).
             unique: Unique on field.
-            prefer: Prefer order (oldest, newest, usd-low, usd-high, promo).
+            prefer: Prefer order (oldest, newest, usd_low, usd_high, eur_low, eur_high, tix_low, tix_high, promo, default_frame, atypical, universesbeyond, notuniversesbeyond).
 
         Returns:
             Dict containing search results and metadata.

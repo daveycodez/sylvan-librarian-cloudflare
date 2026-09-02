@@ -37,7 +37,7 @@ describe("search param coercion", () => {
 		expect(res.status).toBe(400);
 		const body = await json(res);
 		expect(body.description).toBe(
-			"Invalid value for 'prefer': 'usd-low' (expected one of: default, oldest, newest, usd_low, usd_high, promo)",
+			"Invalid value for 'prefer': 'usd-low' (expected one of: default, oldest, newest, usd_low, usd_high, eur_low, eur_high, tix_low, tix_high, promo, default_frame, atypical, universesbeyond, notuniversesbeyond)",
 		);
 	});
 

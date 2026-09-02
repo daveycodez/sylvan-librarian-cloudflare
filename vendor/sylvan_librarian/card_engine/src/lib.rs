@@ -9203,11 +9203,140 @@ fn narrow_rec(
 
 // ─── Sort / select / limit ────────────────────────────────────────────────────
 
-/// `EurLow`/`TixLow` have no `prefer=` spelling — they are not user-selectable, and
-/// `prefer_from_str` cannot produce them. They exist only so `prefer_for_sort` can
-/// express "cheapest printing" for the two price columns that have no `usd_low` twin.
+/// The vocabulary ids a CLASS-shaped prefer reads off a printing, resolved once per query by
+/// `QueryParams::bind_prefer` rather than by a string compare per printing. `VOCAB_NONE` for a
+/// word the store's vocab does not hold (a corpus with no showcase printing, a fixture), which
+/// simply never matches. Unbound — `from_strs` without a `bind_prefer` — every id is `VOCAB_NONE`,
+/// so a class prefer degrades to the default order rather than misfiring.
+///
+/// THE CLASS IS SCRYFALL'S, MEASURED, NOT GUESSED. `prefer:atypical` ("atypical Magic frames")
+/// and `prefer:default` ("default Magic frame") were probed on api.scryfall.com on 2026-09-02
+/// over 450 cards with six or more printings (100 red instants, 175 legendary creatures, 175
+/// non-creature enchantments), each card's chosen printing compared against every printing of
+/// it in this store, and every candidate rule scored as "the first printing in default order
+/// that is in the class, else the default printing". What survives, and what does not:
+///
+///   - frame effects `inverted`, `showcase`, `extendedart`, `etched`, `shatteredglass` count;
+///     `legendary`, `enchantment`, `spree`, `companion` do NOT (166 `prefer:default` picks carry
+///     the legendary frame — it is a rules frame, not a variant). Return the Favor's otj/142
+///     `spree` printing survives `prefer:default` there.
+///   - `border_color: borderless` counts; WHITE does not (29 `prefer:default` picks are white-
+///     bordered, and Ancient Grudge's white mb2 playtest printing loses to tsr/151).
+///   - `full_art`, `textless`, and the `future` frame count (Chaos Warp's mbc/72 is the one
+///     card in 450 whose no-prefer pick and `prefer:default` pick DIFFER there — the future
+///     frame is atypical, and only `prefer:default` demotes it).
+///   - `promo` alone does NOT count: FNM, player-rewards, judge, media-insert, arena-league and
+///     game-day promos are the standard frame in foil, and Scryfall keeps the set printing over
+///     every one of them (Fiery Temper inr/154 over f16/11, Feldon moc/277 over j15/7). What
+///     counts is the promo TREATMENT: `datestamped` (prerelease), `stamped` (promo pack),
+///     `boosterfun` (retro, showcase and extended variants), `embossed`, and `surgefoil` when
+///     the printing is FOIL-ONLY (the 40k/pip ★ variants — the same word on a set's ordinary
+///     nonfoil rows is not a variant, and 6 `prefer:default` picks carry it).
+///   - `digital` is neither in nor out: me3/88 is a `prefer:default` pick and prm/35122 (full
+///     art) an `atypical` one.
+///
+/// 435 of the 450 `atypical` picks and 448 of the 450 `prefer:default` picks agree under this
+/// rule; the 15 and 2 that remain are ORDER differences inside the class (the same printing is
+/// atypical on both sides, the store ranks another atypical one above it), not class errors —
+/// the two `prefer:default` misses are the two no-prefer misses, Lightning Bolt and Seething
+/// Song, where this store's default order already differs from Scryfall's.
+///
+/// `prefer:universesbeyond` / `notuniversesbeyond` read the `universesbeyond` `is:` tag, which
+/// is `promo_types` membership (see db-info ARRAY_IS_TAGS): 99 and 94 of 100 red instants agree,
+/// the misses again order differences inside the class.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct PreferClassIds {
+    /// `CompatFields.frame_effects` members: inverted, showcase, extendedart, etched, shatteredglass.
+    frame_effects: [u16; 5],
+    /// `CompatFields.promo_types` members: boosterfun, datestamped, stamped, embossed.
+    promo_types: [u16; 4],
+    /// `promo_types` member that counts only on a foil-only printing.
+    surgefoil: u16,
+    /// `Printing.card_frame_data` member "Future" (the builder title-cases the frame).
+    future_frame: u16,
+    /// `Printing.card_is_tags` member `universesbeyond`.
+    universesbeyond: u16,
+}
+
+impl PreferClassIds {
+    const UNBOUND: PreferClassIds = PreferClassIds {
+        frame_effects: [VOCAB_NONE; 5],
+        promo_types: [VOCAB_NONE; 4],
+        surgefoil: VOCAB_NONE,
+        future_frame: VOCAB_NONE,
+        universesbeyond: VOCAB_NONE,
+    };
+
+    fn bind(coll_vocab: &AStrings) -> Self {
+        let id = |word: &str| -> u16 {
+            coll_vocab.iter().position(|s| s.as_str() == word).map_or(VOCAB_NONE, |i| i as u16)
+        };
+        PreferClassIds {
+            frame_effects: [id("inverted"), id("showcase"), id("extendedart"), id("etched"), id("shatteredglass")],
+            promo_types: [id("boosterfun"), id("datestamped"), id("stamped"), id("embossed")],
+            surgefoil: id("surgefoil"),
+            future_frame: id("Future"),
+            universesbeyond: id("universesbeyond"),
+        }
+    }
+}
+
+/// Is this printing an ATYPICAL frame in Scryfall's sense? See `PreferClassIds` for the measured
+/// rule; `strings` is for the border, which is an interned string rather than a vocab id.
+fn printing_is_atypical(p: &APrinting, ids: &PreferClassIds, strings: &AStrings) -> bool {
+    let has = |list: &Archived<Vec<u16>>, want: u16| want != VOCAB_NONE && list.iter().any(|v| u16::from(*v) == want);
+    if compat_flag(&p.compat, COMPAT_FULL_ART) || compat_flag(&p.compat, COMPAT_TEXTLESS) {
+        return true;
+    }
+    if str_at(strings, u32::from(p.card_border_id)) == Some("borderless") {
+        return true;
+    }
+    if ids.frame_effects.iter().any(|&fx| has(&p.compat.frame_effects, fx)) {
+        return true;
+    }
+    if ids.promo_types.iter().any(|&pt| has(&p.compat.promo_types, pt)) {
+        return true;
+    }
+    if has(&p.card_frame_data, ids.future_frame) {
+        return true;
+    }
+    // Surge foil is a variant only where it is the printing's ONLY finish — a set's ordinary
+    // nonfoil rows carry the same promo_type and are the default frame.
+    p.compat.finishes == FINISH_FOIL && has(&p.compat.promo_types, ids.surgefoil)
+}
+
+/// Is this printing a Universes Beyond one — does it carry the `universesbeyond` `is:` tag?
+fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
+    ids.universesbeyond != VOCAB_NONE && p.card_is_tags.iter().any(|v| u16::from(*v) == ids.universesbeyond)
+}
+
+/// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference". `EurLow`,
+/// `EurHigh`, `TixLow` and `TixHigh` are the eur/tix twins of the usd pair; `prefer_for_sort`
+/// also reaches for the `*Low` ones to express "cheapest printing" under a price ordering.
+///
+/// The four CLASS prefers carry their vocabulary ids — see `PreferClassIds` for the measured
+/// class and `QueryParams::bind_prefer` for where the ids come from. `DefaultFrame` is Scryfall's
+/// `prefer:default` ("default Magic frame"), the complement of `Atypical`; it is NOT `Default`,
+/// which is this API's "no preference" and reproduces Scryfall's ordering when no prefer is
+/// written — the two differ on exactly the cards whose default pick is an atypical frame (Chaos
+/// Warp, 1 in 450), which is where Scryfall's own no-prefer and `prefer:default` differ too.
 #[derive(Clone, Copy)]
-enum Prefer { Oldest, Newest, UsdLow, UsdHigh, EurLow, TixLow, Promo, Default }
+enum Prefer {
+    Oldest,
+    Newest,
+    UsdLow,
+    UsdHigh,
+    EurLow,
+    EurHigh,
+    TixLow,
+    TixHigh,
+    Promo,
+    Default,
+    DefaultFrame(PreferClassIds),
+    Atypical(PreferClassIds),
+    UniversesBeyond(PreferClassIds),
+    NotUniversesBeyond(PreferClassIds),
+}
 
 fn prefer_from_str(s: &str) -> Prefer {
     match s {
@@ -9215,7 +9344,15 @@ fn prefer_from_str(s: &str) -> Prefer {
         "newest"   => Prefer::Newest,
         "usd_low"  => Prefer::UsdLow,
         "usd_high" => Prefer::UsdHigh,
+        "eur_low"  => Prefer::EurLow,
+        "eur_high" => Prefer::EurHigh,
+        "tix_low"  => Prefer::TixLow,
+        "tix_high" => Prefer::TixHigh,
         "promo"    => Prefer::Promo,
+        "default_frame"      => Prefer::DefaultFrame(PreferClassIds::UNBOUND),
+        "atypical"           => Prefer::Atypical(PreferClassIds::UNBOUND),
+        "universesbeyond"    => Prefer::UniversesBeyond(PreferClassIds::UNBOUND),
+        "notuniversesbeyond" => Prefer::NotUniversesBeyond(PreferClassIds::UNBOUND),
         _          => Prefer::Default,
     }
 }
@@ -9269,7 +9406,13 @@ fn mode_from_unique(unique: &str) -> Mode {
 /// Prefer score for one printing of a card; higher wins, and selection uses a
 /// strict > so the first-in-store-order printing wins ties (matching the tie
 /// behavior of the dedup paths this replaced).
-fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer) -> f64 {
+fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &AStrings) -> f64 {
+    // A class prefer is "the class first, then the default order": every member outscores every
+    // non-member, and inside each half the store's own prefer_score decides — which is what makes
+    // `prefer:atypical` answer the store's BEST atypical printing rather than its first one.
+    const CLASS_BONUS: f64 = 1.0e9;
+    let default_score = || p.prefer_score.as_ref().map(|v| f32::from(*v)).unwrap_or(0.0) as f64;
+    let class_score = |member: bool| if member { CLASS_BONUS + default_score() } else { default_score() };
     match prefer {
         Prefer::Oldest  => -(p.released_at_int.as_ref().map(|v| u32::from(*v)).unwrap_or(99_999_999) as f64),
         Prefer::Newest  => p.released_at_int.as_ref().map(|v| u32::from(*v)).unwrap_or(0) as f64,
@@ -9282,11 +9425,17 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer) -> f64 {
         Prefer::UsdLow  => -search_price_usd_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(f64::INFINITY),
         Prefer::UsdHigh => search_price_usd_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(0.0),
         Prefer::EurLow  => -search_price_eur_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(f64::INFINITY),
+        Prefer::EurHigh => search_price_eur_cents(p).map(|v| f64::from(v) / 100.0).unwrap_or(0.0),
         Prefer::TixLow  => -p.price_tix.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
+        Prefer::TixHigh => p.price_tix.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(0.0),
         // Card-level (edhrec is oracle-scoped): every printing ties, so the
         // first printing in store order is chosen — same as before the split.
         Prefer::Promo   => -(card.edhrec_rank.as_ref().map(|r| u32::from(*r) as f64).unwrap_or(f64::INFINITY)),
-        Prefer::Default => p.prefer_score.as_ref().map(|v| f32::from(*v)).unwrap_or(0.0) as f64,
+        Prefer::Default => default_score(),
+        Prefer::Atypical(ids) => class_score(printing_is_atypical(p, &ids, strings)),
+        Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
+        Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
+        Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
     }
 }
 
@@ -9844,6 +9993,9 @@ struct QueryCtx<'a> {
     offsets: &'a AOffsets,
     strings: &'a AStrings,
     indexes: &'a Archived<CardIndexes>,
+    /// The collection vocab, for `QueryParams::bind_prefer` — a class prefer resolves its words
+    /// against it once per query.
+    coll_vocab: &'a AStrings,
 }
 
 impl<'a> From<&'a Archived<CardData>> for QueryCtx<'a> {
@@ -9854,6 +10006,7 @@ impl<'a> From<&'a Archived<CardData>> for QueryCtx<'a> {
             offsets: &data.offsets,
             strings: &data.strings,
             indexes: &data.indexes,
+            coll_vocab: &data.coll_vocab,
         }
     }
 }
@@ -9912,6 +10065,20 @@ impl QueryParams {
     /// method can't drift in how they interpret them — the four-line
     /// `orderby_to_col`/`== "desc"`/`prefer_from_str`/`mode_from_unique` block
     /// each used to repeat.
+    /// Resolve a class prefer's words against this store's vocab. Every production entry point
+    /// calls this after `from_strs`; a caller that does not gets `PreferClassIds::UNBOUND`, under
+    /// which a class prefer is the default order rather than a wrong one.
+    fn bind_prefer(mut self, coll_vocab: &AStrings) -> Self {
+        self.prefer = match self.prefer {
+            Prefer::DefaultFrame(_) => Prefer::DefaultFrame(PreferClassIds::bind(coll_vocab)),
+            Prefer::Atypical(_) => Prefer::Atypical(PreferClassIds::bind(coll_vocab)),
+            Prefer::UniversesBeyond(_) => Prefer::UniversesBeyond(PreferClassIds::bind(coll_vocab)),
+            Prefer::NotUniversesBeyond(_) => Prefer::NotUniversesBeyond(PreferClassIds::bind(coll_vocab)),
+            other => other,
+        };
+        self
+    }
+
     fn from_strs(unique: &str, prefer: &str, orderby: &str, direction: &str, limit: usize, page_offset: usize) -> Self {
         // `prefer` depends on `sort_col`, so bind the column first — see `prefer_for_sort`.
         // This is the only `QueryParams` constructor, which is what makes one call here enough
@@ -10214,7 +10381,7 @@ fn push_card_matches(
                         if !satisfies(pid) {
                             continue;
                         }
-                        let score = prefer_score(card, &printings[pid], prefer);
+                        let score = prefer_score(card, &printings[pid], prefer, strings);
                         if chosen.is_none_or(|(_, s)| score > s) {
                             chosen = Some((pid as u32, score));
                         }
@@ -10237,7 +10404,7 @@ fn push_card_matches(
                     if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
                         continue;
                     }
-                    let score = prefer_score(card, p, prefer);
+                    let score = prefer_score(card, p, prefer, strings);
                     if chosen.is_none_or(|(_, s)| score > s) {
                         chosen = Some((pid as u32, score));
                     }
@@ -10297,7 +10464,7 @@ fn push_card_matches(
                     if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) { continue; }
                     let gid = u16::from(p.artwork_group_id) as usize;
                     debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-                    let score = prefer_score(card, p, prefer);
+                    let score = prefer_score(card, p, prefer, strings);
                     match &group_best[gid] {
                         None => {
                             group_best[gid] = Some((pid as u32, score));
@@ -12285,6 +12452,7 @@ fn group_representative(
     cid: usize,
     pid: usize,
     probes: &mut u64,
+    strings: &AStrings,
 ) -> usize {
     if matches!(mode, Mode::Printing) {
         return pid;
@@ -12314,7 +12482,7 @@ fn group_representative(
         if first_match_wins {
             return q;
         }
-        let score = prefer_score(card, &printings[q], prefer);
+        let score = prefer_score(card, &printings[q], prefer, strings);
         match best {
             // `score <= b` keeps the incumbent, so equal scores leave the LOWEST pid in place -- the
             // same tie resolution `walk_grouped_page`'s strict `score > *best` produces.
@@ -12371,7 +12539,7 @@ fn walk_value_orderby_page<'a>(
     pbits: &[u64],
     total: usize,
 ) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
-    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, descending, limit, page_offset, .. } = *params;
     // The walk enumerates only index-resident rows and detects leftovers with a SUFFIX test, so on
     // ascending it is correct only when the index covers every printing (see
@@ -12404,7 +12572,7 @@ fn walk_value_orderby_page<'a>(
             let cid = u32::from(printing_to_card[pid]) as usize;
             if grouped {
                 resolutions += 1;
-                if group_representative(cards, printings, offsets, pbits, mode, prefer, cid, pid, &mut examined) != pid {
+                if group_representative(cards, printings, offsets, pbits, mode, prefer, cid, pid, &mut examined, strings) != pid {
                     continue;
                 }
             }
@@ -13781,7 +13949,7 @@ fn walk_grouped_page<'a>(
     pbits: &[u64],
     perm: &Archived<Vec<u32>>,
 ) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
-    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let max_artwork_groups = u16::from(indexes.max_artwork_groups);
     let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
@@ -13832,7 +14000,7 @@ fn walk_grouped_page<'a>(
                         _ => 0, // Card: everything collapses into one group
                     };
                     debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-                    let score = prefer_score(card, &printings[pid], prefer);
+                    let score = prefer_score(card, &printings[pid], prefer, strings);
                     match &group_best[gid] {
                         None => {
                             group_best[gid] = Some((pid as u32, score));
@@ -13904,7 +14072,7 @@ fn walk_card_page_via_popcount_skip<'a>(
     order: SortOrder<'_>,
 ) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
     debug_assert!(matches!(params.mode, Mode::Card), "prototype is Mode::Card only");
-    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { prefer, limit, page_offset, .. } = *params;
     let n_cards = cards.len();
     let mut work = ComposePageWork::default();
@@ -13977,7 +14145,7 @@ fn walk_card_page_via_popcount_skip<'a>(
                 if !is_set(pid) {
                     continue;
                 }
-                let score = prefer_score(card, &printings[pid], prefer);
+                let score = prefer_score(card, &printings[pid], prefer, strings);
                 if best.is_none_or(|(_, s)| score > s) {
                     best = Some((pid as u32, score));
                 }
@@ -14127,7 +14295,7 @@ fn walk_artwork_page_via_popcount_skip<'a>(
     order: SortOrder<'_>,
 ) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
     debug_assert!(matches!(params.mode, Mode::Artwork), "prototype is Mode::Artwork only");
-    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let n_cards = cards.len();
     let max_artwork_groups = usize::from(u16::from(indexes.max_artwork_groups));
@@ -14207,7 +14375,7 @@ fn walk_artwork_page_via_popcount_skip<'a>(
             }
             let gid = u16::from(printings[pid].artwork_group_id) as usize;
             debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-            let score = prefer_score(card, &printings[pid], prefer);
+            let score = prefer_score(card, &printings[pid], prefer, strings);
             match &group_best[gid] {
                 None => {
                     group_best[gid] = Some((pid as u32, score));
@@ -14258,7 +14426,7 @@ fn gather_composed_page<'a>(
     pbits: &[u64],
     card_bits: Option<&[u64]>,
 ) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
-    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let max_artwork_groups = u16::from(indexes.max_artwork_groups);
     let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
@@ -14339,7 +14507,7 @@ fn gather_composed_page<'a>(
                         _ => 0, // Card: everything collapses into one group
                     };
                     debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-                    let score = prefer_score(card, &printings[pid], prefer);
+                    let score = prefer_score(card, &printings[pid], prefer, strings);
                     match &group_best[gid] {
                         None => {
                             group_best[gid] = Some((pid as u32, score));
@@ -14862,7 +15030,7 @@ fn exec_gathered_scan<'a>(
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // First of the three phase boundaries — everything down to the match loop is `ns_setup`.
     let t_start = crate::clock::Instant::now();
-    let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let all_match_known = prep.all_match_known;
     let existential_plane = existential_plane_for(mode, plane, indexes);
@@ -14966,7 +15134,7 @@ fn run_query<'a>(
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // #702: plan selection is one cost-based routing layer (`run_query_routed`,
     // `argmin cost::plan_cost` over the applicable plans), not a hand-tuned decision tree.
-    let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, page_offset);
+    let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, page_offset).bind_prefer(ctx.coll_vocab);
     // `None`: this wrapper receives an already-split filter and has no unsplit form to offer, so compose
     // is costed exactly as it was before the split became non-destructive. See `bind_and_split_filter`.
     run_query_routed(ctx, &params, filter, None, plane)
@@ -16109,7 +16277,7 @@ fn annex_representative(
     let canonical: Vec<(&APrinting, f64)> = widened_rows(data, cid)
         .filter(|&(vpid, _)| vpid < n)
         .filter(|(_, p)| FilterExpr::residual_matches(card, p, &data.strings, &loose, false))
-        .map(|(_, p)| (p, prefer_score(card, p, params.prefer)))
+        .map(|(_, p)| (p, prefer_score(card, p, params.prefer, &data.strings)))
         .collect();
     let slot_score = |a: &APrinting| -> Option<f64> {
         canonical
@@ -16126,7 +16294,7 @@ fn annex_representative(
         if vpid < n || !FilterExpr::residual_matches(card, p, &data.strings, &full, false) {
             continue;
         }
-        let key = (slot_score(p), prefer_score(card, p, params.prefer));
+        let key = (slot_score(p), prefer_score(card, p, params.prefer, &data.strings));
         // Strict >, so the earliest row wins a tie — the same rule phase 1 uses, and what keeps
         // this a REORDERING of equally-ranked rows rather than a new preference.
         if best.is_none_or(|(_, sc, own)| (key.0, key.1) > (sc, own)) {
@@ -16210,7 +16378,7 @@ fn run_query_widened<'a>(
                     if !matches(card, p) {
                         continue;
                     }
-                    let score = prefer_score(card, p, params.prefer);
+                    let score = prefer_score(card, p, params.prefer, &data.strings);
                     if best.is_none_or(|(_, s)| score > s) {
                         best = Some((vpid, score));
                     }
@@ -16244,7 +16412,7 @@ fn run_query_widened<'a>(
                         continue;
                     }
                     let gid = u16::from(p.artwork_group_id) as usize;
-                    let score = prefer_score(card, p, params.prefer);
+                    let score = prefer_score(card, p, params.prefer, &data.strings);
                     match group_best[gid] {
                         None => {
                             group_best[gid] = Some((vpid, score));
@@ -16932,7 +17100,7 @@ fn run_query_streamed_popcount<'a>(
     // `ns_loop`, the emit walk is `ns_finish`. Shared by BOTH popcount plans, so instrumenting here
     // covers `PlanePopcountOrder` and `CardRangePopcount` at once.
     let t_start = crate::clock::Instant::now();
-    let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { prefer, limit, page_offset, .. } = *params;
     let SortOrder { perm, inv: inv_perm } = order;
     let planes = &indexes.planes;
@@ -17034,7 +17202,7 @@ fn run_query_streamed_popcount<'a>(
                         if !satisfies(pid) {
                             continue;
                         }
-                        let score = prefer_score(card, &printings[pid], prefer);
+                        let score = prefer_score(card, &printings[pid], prefer, strings);
                         if best.is_none_or(|(_, s)| score > s) {
                             best = Some((pid as u32, score));
                         }
@@ -17093,7 +17261,7 @@ fn run_query_streamed<'a>(
     // First of the three phase boundaries — everything down to the match loop is `ns_setup`, which
     // for this executor is dominated by the `counts` zeroing below. See `PhaseStats::ns_setup`.
     let t_start = crate::clock::Instant::now();
-    let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
+    let QueryCtx { cards, printings, offsets, strings, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset, .. } = *params;
     let artwork_groups = &indexes.artwork_groups;
     let artwork_group_col = &indexes.artwork_group_col;
@@ -19573,7 +19741,7 @@ impl QueryEngine {
         // run_query evaluates in a few hundred word ops instead of per-card
         // dispatch. Shared verbatim with explain()/explain_analyze() — see
         // bind_and_split_filter.
-        let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
+        let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset).bind_prefer(&data.coll_vocab);
         let (plane_expr, mut filter_expr, sort_bound, unsplit) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
 
         let ctx = QueryCtx::from(data);
@@ -19667,7 +19835,7 @@ impl QueryEngine {
         let mmap = self.get_mmap()?;
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
-        let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
+        let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset).bind_prefer(&data.coll_vocab);
         let (plane_expr, mut filter_expr, sort_bound, unsplit) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
 
         // `prefer` is accepted and passed through, but note what it does NOT yet change:
@@ -19716,7 +19884,7 @@ impl QueryEngine {
         let mmap = self.get_mmap()?;
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
-        let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
+        let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset).bind_prefer(&data.coll_vocab);
         let (plane_expr, filter_expr, sort_bound, unsplit) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
 
         // Release the GIL for the timing loop: it's pure Rust (no Python calls) and
