@@ -17154,6 +17154,48 @@ fn every_atypical_marker_counts_and_the_look_alikes_do_not() {
     assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
 }
 
+/// `prefer:borderless` is "the best-looking printing that is still this card": Najeela's shape.
+/// Four printings in default order — the plain original, a borderless CROSSOVER (a flavor
+/// name: Spider-Gwen), an etched inverted same-named variant, and a same-named borderless one
+/// ranked last. Borderless-and-same-named wins; drop its border and the etched variant wins over
+/// the crossover borderless; give that one a flavor name too and the plain original wins — a
+/// flavor-named printing is never the answer.
+#[test]
+fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
+    let mut data = class_prefer_store();
+    let inverted = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("inverted".to_owned());
+    let etched = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("etched".to_owned());
+    data.strings.push("Spider-Gwen, Web-Warrior".to_owned());
+    let spider_gwen = (data.strings.len() - 1) as u32;
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    // id 1: the plain original (class_prefer_store's id 1 already is).
+    // id 2: borderless, but sold as Spider-Gwen.
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].compat.frame_effects = vec![inverted];
+    data.printings[1].compat.promo_types = vec![];
+    data.printings[1].flavor_name_id = spider_gwen;
+    // id 3: etched + inverted, black border, same name — the cmr/514 shape.
+    data.printings[2].card_border_id = black;
+    data.printings[2].compat.frame_effects = vec![inverted, etched];
+    // id 4: borderless and same-named, ranked last by default.
+    data.printings[3].card_border_id = borderless;
+    data.printings[3].compat.promo_types = vec![];
+    data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "same-named borderless, however low it ranks");
+    data.printings[3].card_border_id = black;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "no same-named borderless: the etched variant beats the crossover");
+    data.printings[2].flavor_name_id = spider_gwen;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "every variant is a crossover: the plain original");
+    // ...while `prefer:atypical` still reaches the crossover borderless, which is its measured job.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 2);
+    // A FACE flavor name excludes just the same.
+    data.printings[2].flavor_name_id = NONE_STR;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3);
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

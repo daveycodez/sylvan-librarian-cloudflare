@@ -91,6 +91,8 @@ describe("the hyphenated prefer spellings are reachable", () => {
 		expect(fold("prefer:ub").prefer).toBe("universesbeyond");
 		expect(fold("prefer:notuniversesbeyond").prefer).toBe("notuniversesbeyond");
 		expect(fold("prefer:notub").prefer).toBe("notuniversesbeyond");
+		// ...and this API's own value, which Scryfall does not have.
+		expect(fold("prefer:borderless").prefer).toBe("borderless");
 	});
 
 	// `prefer:default` is Scryfall's "default Magic frame", which demotes an atypical-frame

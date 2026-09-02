@@ -3088,10 +3088,7 @@ impl FilterExpr {
             // both is a real False, not an SQL NULL, for the same reason as PrintedNamePresent.
             FilterExpr::FlavorNamePresent => {
                 let Some(p) = printing else { return Tri::PrintingDep };
-                tri_bool(
-                    u32::from(p.flavor_name_id) != super::NONE_STR
-                        || p.faces.iter().any(|f| u32::from(f.flavor_name_id) != super::NONE_STR),
-                )
+                tri_bool(super::printing_has_flavor_name(p))
             }
 
             FilterExpr::SingleSet => tri_bool(card.single_set),

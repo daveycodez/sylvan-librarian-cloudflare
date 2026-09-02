@@ -750,7 +750,8 @@ class APIResource:
                 'columnar' (one list per field, keyed by field name — smaller on the wire).
             unique: Unique on field (card, printing, artwork).
             prefer: Prefer order (oldest, newest, usd_low, usd_high, eur_low, eur_high, tix_low,
-                tix_high, promo, default_frame, atypical, universesbeyond, notuniversesbeyond).
+                tix_high, promo, default_frame, atypical, universesbeyond, notuniversesbeyond,
+                borderless).
 
         Returns:
             Dict containing search results and metadata.
@@ -1090,6 +1091,7 @@ class APIResource:
             PreferOrder.ATYPICAL: ("prefer_score", "DESC"),
             PreferOrder.UNIVERSESBEYOND: ("prefer_score", "DESC"),
             PreferOrder.NOTUNIVERSESBEYOND: ("prefer_score", "DESC"),
+            PreferOrder.BORDERLESS: ("prefer_score", "DESC"),
         }
         prefer_column, prefer_direction = prefer_mapping.get(
             prefer,

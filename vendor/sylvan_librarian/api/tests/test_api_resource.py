@@ -830,6 +830,7 @@ class TestSearchQueryDirectives(TestBaseAPIResourceTest):
             ("notub", "notuniversesbeyond"),
             ("notuniversesbeyond", "notuniversesbeyond"),
             ("default", "default_frame"),
+            ("borderless", "borderless"),
         ):
             mock_engine, result = self._engine_search(f"t:goblin prefer:{written}")
             assert mock_engine.query.call_args.kwargs["prefer"] == expected, written

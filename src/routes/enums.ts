@@ -32,6 +32,14 @@ export const UNIQUE_ON = {
  * search-price chain (`usd`, then `usd_foil`, then `usd_etched`) the `usd` ordering reads —
  * Scryfall's `prefer:eur-high` answers a printing whose only price is `eur_foil`, 38 of 100 red
  * instants measured.
+ *
+ * `borderless` is THIS API'S OWN, not Scryfall's (there it is an unknown value, ignored with a
+ * warning): "the best-looking printing that is still this card". Three tiers over the printings
+ * carrying NO flavor name — borderless, then any other frame variant, then the plain printings,
+ * default order inside each — and a flavor-named printing is never a candidate, because it is
+ * drawn and sold as someone else. Najeela, the Blade-Blossom's four borderless printings are
+ * Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514; Thrasios,
+ * Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which is Tidus.
  */
 export const PREFER_ORDER = {
 	name: "PreferOrder",
@@ -50,6 +58,7 @@ export const PREFER_ORDER = {
 		"atypical",
 		"universesbeyond",
 		"notuniversesbeyond",
+		"borderless",
 	],
 } as const satisfies EnumSpec;
 

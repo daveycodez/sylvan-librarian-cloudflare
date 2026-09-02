@@ -71,6 +71,7 @@ class TestPreferOrder(unittest.TestCase):
         assert PreferOrder.ATYPICAL == "atypical"
         assert PreferOrder.UNIVERSESBEYOND == "universesbeyond"
         assert PreferOrder.NOTUNIVERSESBEYOND == "notuniversesbeyond"
+        assert PreferOrder.BORDERLESS == "borderless"
 
     def test_search_accepts_prefer_parameter(self) -> None:
         """Test that search method accepts prefer parameter without error."""
@@ -91,5 +92,11 @@ class TestPreferOrder(unittest.TestCase):
         assert "price_tix" in self._search_sql("cmc=3", PreferOrder.TIX_HIGH)["compiled"]
         # The class prefers have no SQL expression; the engine path answers them, and the SQL
         # path keeps the default order rather than raising on an unmapped member.
-        for member in (PreferOrder.DEFAULT_FRAME, PreferOrder.ATYPICAL, PreferOrder.UNIVERSESBEYOND, PreferOrder.NOTUNIVERSESBEYOND):
+        for member in (
+            PreferOrder.DEFAULT_FRAME,
+            PreferOrder.ATYPICAL,
+            PreferOrder.UNIVERSESBEYOND,
+            PreferOrder.NOTUNIVERSESBEYOND,
+            PreferOrder.BORDERLESS,
+        ):
             assert "prefer_score" in self._search_sql("cmc=3", member)["compiled"]
