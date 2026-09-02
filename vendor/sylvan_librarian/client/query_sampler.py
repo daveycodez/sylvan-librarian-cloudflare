@@ -272,8 +272,8 @@ STATIC_VALUES: dict[str, list[str]] = {
         "is:triland",
         "is:triome",
         # NO `is:vanilla`: it stopped expanding and became an engine leaf, so it belongs to the same
-        # class as `is:localizedname` and `is:unique`, which are likewise absent. See
-        # `rewrite.ENGINE_IS_VALUES`.
+        # class as `is:localizedname`, `is:unique` and `is:flavorname`, which are likewise absent.
+        # See `rewrite.ENGINE_IS_VALUES`.
         "is:watermark",
     ],
     "devotion": [

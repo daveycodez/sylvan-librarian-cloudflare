@@ -557,6 +557,7 @@ EXTRA_CASES = [
     "year:2021-02",
     # is:/frame: synonym expansion (incl. nesting and negation)
     "is:vanilla",
+    "is:flavorname",
     "is:dfc",
     "-is:old",
     "frame:modern is:new",

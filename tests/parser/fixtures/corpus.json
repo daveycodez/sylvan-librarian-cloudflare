@@ -2677,6 +2677,10 @@
 		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_is_tags\",\"original_attribute\":\"is\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"reprint\"]},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
 	},
 	{
+		"query": "is:flavorname",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_is_tags\",\"original_attribute\":\"is\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"flavorname\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "is:flip",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_layout\",\"original_attribute\":\"layout\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"flip\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},

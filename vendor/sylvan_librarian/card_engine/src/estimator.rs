@@ -116,8 +116,9 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         FilterExpr::Legality { .. } => true,
         // The language is a per-printing fact (CompatFields.lang_id).
         FilterExpr::LangMatch { .. } | FilterExpr::SetTypeMatch { .. } => true,
-        // ...and so is the printed name (Printing.printed_name_folded_id).
-        FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } => true,
+        // ...and so are the printed name (Printing.printed_name_folded_id) and the flavor name
+        // (Printing.flavor_name_id, or a PrintingFace's).
+        FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
         FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(has_printing_varying_leaf),
         FilterExpr::Not(inner) => has_printing_varying_leaf(inner),
         // A REVERSIBLE PRINTING PRINTS ITS OWN JOINED NAME ("Temple Garden // Temple Garden"
@@ -494,8 +495,11 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // (and widens, so it is unreachable here for the same reason LangMatch is), and `is:unique`
         // a bool on the card. Both are a full-scan verify, and "unknown" says exactly that.
         // `is:vanilla` joins them: a per-face text walk with no index behind it, so a full-scan
-        // verify and nothing to count through.
+        // verify and nothing to count through. `is:flavorname` too: the flavor-name index is
+        // keyed by NAME, so presence is a field read on the printing (and its faces), and it
+        // widens like `is:localizedname` does.
         FilterExpr::PrintedNamePresent
+        | FilterExpr::FlavorNamePresent
         | FilterExpr::SingleSet
         | FilterExpr::VanillaFace
         | FilterExpr::FlavorNameIn { .. } => unknown(n),

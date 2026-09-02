@@ -322,9 +322,20 @@ describe("has: aliases is:", () => {
 	});
 
 	// One per shape: a derived layout predicate, a computed text predicate, an importer boolean,
-	// a set-shaped one, and an ENGINE-answered one (`vanilla`, which expands to nothing at all —
-	// the alias has to reach the leaf itself, not a rewrite of it).
-	for (const value of ["split", "dfc", "frenchvanilla", "permanent", "promo", "etched", "commander", "vanilla"]) {
+	// a set-shaped one, and two ENGINE-answered ones (`vanilla` and `flavorname`, which expand to
+	// nothing at all — the alias has to reach the leaf itself, not a rewrite of it; `has:flavorname`
+	// is 476 on api.scryfall.com, the same as `is:flavorname`).
+	for (const value of [
+		"split",
+		"dfc",
+		"frenchvanilla",
+		"permanent",
+		"promo",
+		"etched",
+		"commander",
+		"vanilla",
+		"flavorname",
+	]) {
 		test(`has:${value} == is:${value}`, () => {
 			expect(tree(`has:${value}`)).toBe(tree(`is:${value}`));
 		});

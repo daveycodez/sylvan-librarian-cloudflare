@@ -347,8 +347,17 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  * `Dryad Arbor` out). The text read is the SEARCHABLE one, reminder stripped — `Icehide Golem` and
  * `Infinity Elemental` print only reminder text and are vanilla there. 352 → 363, and the 363 is
  * Scryfall's own set card for card.
+ *
+ * `flavorname` is "this printing carries a flavor name", the alternate SOLD-AS name (Godzilla, the
+ * Secret Lair crossovers) — a presence test on `Printing.flavor_name_id` OR any of its faces'.
+ * Per-PRINTING, like `localizedname`: Command Tower's sld/1864 row matches and its other 111 do
+ * not. Measured against api.scryfall.com on 2026-09-01: 476 cards / 661 printings, 15 of them
+ * carrying the key on their faces alone (vow/341, sld/1807) and 6 of them Japanese rows returned
+ * with no `lang:` written — so, like `localizedname`, its presence WIDENS the query to the annex.
+ * Before it was listed here it parsed, reached the engine as a tag no row carries, and answered a
+ * 404 for `clive is:flavorname` where Scryfall answers the three alternate-name Clives.
  */
-export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set(["localizedname", "unique", "vanilla"]);
+export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set(["localizedname", "unique", "vanilla", "flavorname"]);
 
 for (const [value, dsl] of HAS_EXPANSIONS) {
 	(DERIVED_EXPANSIONS as Map<string, string>).set(makeKey("has", value), dsl);

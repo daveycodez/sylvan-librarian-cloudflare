@@ -328,8 +328,8 @@ def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
     """The `is:` values the ENGINE answers from a field are supported, and only from there.
 
     Two directions, and the second is the one that bites. Supported: a predicate that works and
-    still warns is worse than one that does neither. Stored nowhere: if `localizedname`, `unique` or
-    `vanilla` ever became an importer tag as well, the engine would keep intercepting the leaf and
+    still warns is worse than one that does neither. Stored nowhere: if `localizedname`, `unique`,
+    `vanilla` or `flavorname` ever became an importer tag as well, the engine would keep intercepting the leaf and
     the stored tag would be dead weight nobody could observe.
     """
     assert ENGINE_IS_VALUES <= SUPPORTED_IS_VALUES
@@ -364,8 +364,10 @@ def test_engine_answered_is_values_are_supported_and_stored_nowhere() -> None:
         "is:localizedname",
         "is:unique",
         "is:vanilla",
+        "is:flavorname",
         # ...and through the `has:` alias, which resolves to the same engine leaf.
         "has:vanilla",
+        "has:flavorname",
     ],
 )
 def test_supported_is_values_do_not_warn(query: str) -> None:

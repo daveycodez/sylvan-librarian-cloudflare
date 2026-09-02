@@ -4367,6 +4367,67 @@ mod tests {
         assert!(langs.contains(&"de"));
     }
 
+    /// `is:flavorname` reads the printing's flavor name — top-level OR on a face — and WIDENS.
+    ///
+    /// api.scryfall.com, 2026-09-01: 476 cards / 661 printings. 6 of the 661 are Japanese rows
+    /// returned with no `lang:` written (iko/387 ja prints "Mechagodzilla, the Weapon" over
+    /// 結晶の巨人), and 15 carry the key on their FACES alone and never at the top level (vow/341
+    /// is "Dracula the Voyager" // "Casket of Native Earth"). One printing per shape here, plus
+    /// an English sibling and a plain card that must both stay out.
+    #[test]
+    fn is_flavorname_reads_either_place_the_key_lives_and_widens() {
+        let mut top = annex_row("Vial Smasher the Fierce", "oracle-v", "row-v-en", "en", 200.0);
+        top["flavor_name"] = json!("Clive Rosfield");
+        top["flavor_name_folded"] = json!("clive rosfield");
+        let mut ja = annex_row("Crystalline Giant", "oracle-g", "row-g-ja", "ja", 90.0);
+        ja["is_canonical"] = json!(false);
+        ja["printed_name"] = json!("結晶の巨人");
+        ja["printed_name_folded"] = json!("結晶の巨人");
+        ja["flavor_name"] = json!("Mechagodzilla, the Weapon");
+        ja["flavor_name_folded"] = json!("mechagodzilla, the weapon");
+        let g_en = annex_row("Crystalline Giant", "oracle-g", "row-g-en", "en", 200.0);
+        let mut faced = annex_row("Edgar, Charmed Groom // Edgar Markov's Coffin", "oracle-e", "row-e-en", "en", 150.0);
+        faced["card_layout"] = json!("transform");
+        faced["card_faces"] = json!([
+            { "name": "Edgar, Charmed Groom", "type_line": "Legendary Creature — Vampire Noble",
+              "oracle_text": "", "colors": ["W", "B"], "flavor_name": "Dracula the Voyager" },
+            { "name": "Edgar Markov's Coffin", "type_line": "Legendary Artifact",
+              "oracle_text": "", "colors": ["W", "B"], "flavor_name": "Casket of Native Earth" },
+        ]);
+        let plain = annex_row("Other Card", "oracle-o", "row-o-en", "en", 100.0);
+        let store = build_store(&[top, ja, g_en, faced, plain]).1;
+
+        let opts = QueryOptions {
+            unique: "printing".to_owned(),
+            fields: Some(vec!["name".to_owned(), "lang".to_owned(), "flavor_name".to_owned(), "card_faces".to_owned()]),
+            include_multilingual: false,
+            ..QueryOptions::default()
+        };
+        let out = store.query_value(&is_filter("flavorname"), &opts).expect("flavorname");
+        assert_eq!(out.total, 3, "the top-level English row, the Japanese annex row, and the face-only transform");
+        let got: Vec<(String, String)> = out
+            .rows
+            .iter()
+            .map(|r| (r["name"].as_str().unwrap().to_owned(), r["lang"].as_str().unwrap().to_owned()))
+            .collect();
+        assert!(got.contains(&("Vial Smasher the Fierce".to_owned(), "en".to_owned())));
+        assert!(got.contains(&("Crystalline Giant".to_owned(), "ja".to_owned())), "widened: the ja row with no lang: written");
+        assert!(!got.contains(&("Crystalline Giant".to_owned(), "en".to_owned())), "its English sibling carries no flavor name");
+        let edgar = out.rows.iter().find(|r| r["name"].as_str().unwrap().starts_with("Edgar")).expect("the face-only printing");
+        assert!(
+            edgar.get("flavor_name").is_none_or(Value::is_null),
+            "no top-level key on a face-only printing — Scryfall emits none there either"
+        );
+        assert_eq!(edgar["card_faces"][0]["flavor_name"], json!("Dracula the Voyager"));
+        assert!(store.query_widens(&is_filter("flavorname"), &opts).expect("widens?"));
+
+        // The complement, over the same widened space: the English Giant and the plain card.
+        let negated = json!({ "node_type": "NotNode", "kwargs": { "operand": is_filter("flavorname") } });
+        let out = store.query_value(&negated, &opts).expect("-flavorname");
+        assert_eq!(out.total, 2);
+        assert!(out.rows.iter().all(|r| r.get("flavor_name").is_none_or(Value::is_null)));
+    }
+
     /// `is:unique` is a SET count over the canonical rows AND the annex.
     ///
     /// Three cards, each built to break a different wrong rule. A: two printings, one set — unique,
