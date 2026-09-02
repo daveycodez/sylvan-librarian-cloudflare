@@ -72,6 +72,7 @@ import {
 import { readLiveManifest, recordLiveManifest } from "./store-cache";
 import { isPartitionedManifest, manifestServableBy } from "./store-kv";
 import type {
+	CollectionScope,
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
@@ -570,19 +571,21 @@ export class SearchEngine extends DurableObject<Env> {
 	async scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
+		scope: CollectionScope | null,
 		reportedShards?: number,
 	): Promise<ScryfallMaybeCardsReply & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
-			cards: await engine.scryfallCollectionNames(identifiers, baseUrl),
+			cards: await engine.scryfallCollectionNames(identifiers, baseUrl, scope),
 		}));
 	}
 
 	async scryfallCollectionNameRanks(
 		identifiers: NameIdentifier[],
+		scope: CollectionScope | null,
 		reportedShards?: number,
 	): Promise<{ ranks: (number[] | null)[] } & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
-			ranks: await engine.scryfallCollectionNameRanks(identifiers),
+			ranks: await engine.scryfallCollectionNameRanks(identifiers, scope),
 		}));
 	}
 

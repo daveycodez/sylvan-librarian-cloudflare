@@ -67,6 +67,7 @@ import {
 	readManifest,
 } from "./store-kv";
 import type {
+	CollectionScope,
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
@@ -461,19 +462,32 @@ class WasmEngine implements Engine {
 	async scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
+		scope?: CollectionScope | null,
 	): Promise<(Record<string, unknown> | null)[]> {
-		return identifiers.map(({ folded, setCode }) => {
-			const row = JSON.parse(
-				this.w.collection_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
-			) as EngineRow | null;
-			return row === null ? null : toScryfallCard(row, baseUrl);
-		});
+		// ONE wasm call for the batch: the engine binds the scope once and reuses it for every
+		// identifier (see `collection_cards_by_names`), and the boundary is crossed once.
+		const rows = JSON.parse(
+			this.w.collection_cards_by_names(
+				JSON.stringify(identifiers.map(({ folded, setCode }) => [folded, setCode])),
+				JSON.stringify(CARD_OBJECT_FIELDS),
+				scope?.prefer ?? "default",
+				scope?.filterTreeJson ?? "",
+			),
+		) as (EngineRow | null)[];
+		return rows.map((row) => (row === null ? null : toScryfallCard(row, baseUrl)));
 	}
 
-	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
-		return identifiers.map(
-			({ folded, setCode }) => JSON.parse(this.w.collection_name_rank(folded, setCode)) as number[] | null,
-		);
+	async scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		scope?: CollectionScope | null,
+	): Promise<(number[] | null)[]> {
+		return JSON.parse(
+			this.w.collection_name_ranks(
+				JSON.stringify(identifiers.map(({ folded, setCode }) => [folded, setCode])),
+				scope?.prefer ?? "default",
+				scope?.filterTreeJson ?? "",
+			),
+		) as (number[] | null)[];
 	}
 
 	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

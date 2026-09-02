@@ -73,14 +73,23 @@ export function catalog(): string;
  *
  * `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
  * the collating happens in the engine. `set_code` is "" for no set restriction.
+ *
+ * `prefer` and `scope_json` are the batch's `?q=` — its folded prefer (this API's spelling,
+ * "default" for none) and its filter tree as canonical JSON ("" for none); see the engine's
+ * `CollectionScope`.
+ * One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]` — so the scope
+ * is bound once rather than once per identifier (a regex in the scope compiled 75 times was
+ * the difference between 25ms and 165ms on a full batch). Answers a JSON array, a card object or
+ * `null` per identifier, in order.
  */
-export function collection_card_by_name(folded: string, set_code: string, fields_json: string): string;
+export function collection_cards_by_names(identifiers_json: string, fields_json: string, prefer: string, scope_json: string): string;
 
 /**
- * How well this partition's best collection-identifier candidate matches, as `[tier, score]`, or
- * `null` — the twin of `exact_name_rank`, and there for the same partitioned router.
+ * How well this partition's best collection-identifier candidate matches, as `[tier, score]` or
+ * `null` per identifier — the batched twin of `exact_name_rank`, and there for the same
+ * partitioned router. Under a scope the score is the scope's prefer score.
  */
-export function collection_name_rank(folded: string, set_code: string): string;
+export function collection_name_ranks(identifiers_json: string, prefer: string, scope_json: string): string;
 
 /**
  * The best printing of a card whose FOLDED name matches exactly, or `null`.

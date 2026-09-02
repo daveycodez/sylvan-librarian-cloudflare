@@ -21,8 +21,8 @@ export const card_by_external_id: (a: number, b: number, c: bigint, d: number, e
 export const fuzzy_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const exact_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const exact_name_rank: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-export const collection_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-export const collection_name_rank: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const collection_cards_by_names: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+export const collection_name_ranks: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const card_by_illustration_id: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const cards_containing_all_words: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const autocomplete: (a: number, b: number, c: number) => [number, number, number, number];

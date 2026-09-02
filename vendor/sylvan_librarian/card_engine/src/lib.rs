@@ -107,7 +107,7 @@ mod clock;
 mod core_api;
 mod partition;
 pub use core_api::{
-    BufferStore, EngineError, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
+    BufferStore, CollectionScope, EngineError, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
     SpillingStoreBuilder, StoreBuilder, StoreStats, build_partition_from_standalone, store_format_version,
 };
 pub use partition::{fnv1a64_oracle_id, partition_of_oracle_id};

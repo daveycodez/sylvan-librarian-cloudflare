@@ -870,8 +870,8 @@ export function cardList(cards: unknown[], opts: CardListOptions = {}): Record<s
  * correct and quietly emitted `has_more: false`. Both build the same object through `listObject`,
  * so the key ORDER still has exactly one definition.
  */
-export function collectionList(cards: unknown[], notFound: unknown[]): Record<string, unknown> {
-	return listObject(cards, { notFound });
+export function collectionList(cards: unknown[], notFound: unknown[], warnings?: string[]): Record<string, unknown> {
+	return listObject(cards, { notFound, warnings });
 }
 
 /**

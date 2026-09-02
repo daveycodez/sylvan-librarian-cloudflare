@@ -225,9 +225,15 @@ export const LISTINGS = {
 	},
 
 	"cards/collection": {
-		doc: "Resolve up to 75 card identifiers in one request.",
+		doc: `Resolve up to 75 card identifiers in one request.
+
+        q (this API's extension): a search query applied to every {name} and {name, set}
+        identifier. Its filter terms restrict the printings a name may resolve to and its
+        prefer: directive picks among them (q=-is:datestamped prefer:atypical). Identifiers
+        that already name one printing are unaffected.
+        `,
 		args: [],
-		kwargs: { pretty: { type: "str", default: "false" } },
+		kwargs: { pretty: { type: "str", default: "false" }, q: { type: "str | None", default: null } },
 	},
 
 	// The reference half of the Scryfall surface (upstream #922): sets, catalogs and symbols,

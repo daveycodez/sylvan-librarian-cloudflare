@@ -9,6 +9,7 @@ import {
 	reportEngineRate,
 } from "./shard-controller";
 import type {
+	CollectionScope,
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
@@ -120,10 +121,12 @@ interface SearchEngineStub {
 	scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
+		scope: CollectionScope | null,
 		reportedShards?: number,
 	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
 	scryfallCollectionNameRanks(
 		identifiers: NameIdentifier[],
+		scope: CollectionScope | null,
 		reportedShards?: number,
 	): Promise<{ ranks: (number[] | null)[] } & Telemetry>;
 	scryfallCardByIllustrationId(
@@ -557,16 +560,20 @@ export class RemoteEngine implements Engine {
 	async scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
+		scope?: CollectionScope | null,
 	): Promise<(Record<string, unknown> | null)[]> {
 		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallCollectionNames(identifiers, baseUrl, currentShardWidth(this.region)),
+			this.stub.scryfallCollectionNames(identifiers, baseUrl, scope ?? null, currentShardWidth(this.region)),
 		);
 		return cards;
 	}
 
-	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
+	async scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		scope?: CollectionScope | null,
+	): Promise<(number[] | null)[]> {
 		const { ranks } = await this.searchRpc(() =>
-			this.stub.scryfallCollectionNameRanks(identifiers, currentShardWidth(this.region)),
+			this.stub.scryfallCollectionNameRanks(identifiers, scope ?? null, currentShardWidth(this.region)),
 		);
 		return ranks;
 	}

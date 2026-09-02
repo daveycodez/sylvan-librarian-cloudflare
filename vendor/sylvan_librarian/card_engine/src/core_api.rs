@@ -2003,7 +2003,7 @@ impl BufferStore {
     ) -> Result<Option<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some((_, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Exact) else {
+        let Some((_, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Exact, None) else {
             return Ok(None);
         };
         Ok(Some(card_to_json(
@@ -2043,7 +2043,7 @@ impl BufferStore {
     /// neither candidate is a whole-name match, so the answer turns on prefer_score, which only
     /// the owning partition can compute.
     pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32)> {
-        self.name_best(folded, set_code, NameScope::Exact).map(|(tier, score, _, _)| (tier, score))
+        self.name_best(folded, set_code, NameScope::Exact, None).map(|(tier, score, _, _)| (tier, score as f32))
     }
 
     /// The best printing a COLLECTION IDENTIFIER's `name` resolves to -- `POST /cards/collection`'s
@@ -2069,31 +2069,72 @@ impl BufferStore {
     /// a flavor name. That difference is the whole of it -- the ranking, the set filter and the
     /// printing chosen are `exact=`'s, and every needle both surfaces accept answers the same card
     /// on both (`Lightning Bolt` msc/806, `Brainstorm` tle/155, `Titanoth Rex` iko/174, ...).
+    ///
+    /// `scope` is the batch's `?q=` — see `CollectionScope`. With one, the printing answered is
+    /// the best of those passing its filter under its prefer; a name none of whose printings pass
+    /// is `None`, exactly as a name that does not exist.
     pub fn collection_card_by_name(
         &self,
         folded: &str,
         set_code: Option<&str>,
         fields: Option<Vec<String>>,
+        scope: Option<&CollectionScope>,
     ) -> Result<Option<Value>, EngineError> {
+        Ok(self.collection_cards_by_names(&[(folded, set_code)], fields, scope)?.pop().flatten())
+    }
+
+    /// `collection_card_by_name` over a whole batch — the shape `POST /cards/collection` calls,
+    /// because the SCOPE IS BOUND ONCE HERE and reused for every identifier. Measured on a
+    /// 75-identifier batch before this existed: binding per identifier cost ~45ms with a tag
+    /// scope and ~140ms with a regex in the scope (75 regex compiles), against 25ms unscoped.
+    pub fn collection_cards_by_names(
+        &self,
+        identifiers: &[(&str, Option<&str>)],
+        fields: Option<Vec<String>>,
+        scope: Option<&CollectionScope>,
+    ) -> Result<Vec<Option<Value>>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some((_, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Collection) else {
-            return Ok(None);
-        };
-        Ok(Some(card_to_json(
-            &data.cards[cid],
-            printing_at(data, vpid),
-            &data.strings,
-            &data.coll_vocab,
-            &resolved_fields,
-        )))
+        let bound = scope.map(|s| self.bind_scope(s)).transpose()?;
+        Ok(identifiers
+            .iter()
+            .map(|&(folded, set_code)| {
+                self.name_best(folded, set_code, NameScope::Collection, bound.as_ref()).map(|(_, _, cid, vpid)| {
+                    card_to_json(&data.cards[cid], printing_at(data, vpid), &data.strings, &data.coll_vocab, &resolved_fields)
+                })
+            })
+            .collect())
     }
 
     /// `collection_card_by_name`'s rank, for the partitioned router -- the twin of
     /// `exact_name_rank`, and public for the same reason: more than one partition can answer, and
     /// the first non-null is not the best one.
-    pub fn collection_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32)> {
-        self.name_best(folded, set_code, NameScope::Collection).map(|(tier, score, _, _)| (tier, score))
+    ///
+    /// The score is the SCOPE's prefer score when there is one, so two partitions holding two
+    /// cards of one name are ranked by the same key the winner's printing was chosen by.
+    pub fn collection_name_rank(
+        &self,
+        folded: &str,
+        set_code: Option<&str>,
+        scope: Option<&CollectionScope>,
+    ) -> Result<Option<(u8, f64)>, EngineError> {
+        Ok(self.collection_name_ranks(&[(folded, set_code)], scope)?.pop().flatten())
+    }
+
+    /// `collection_name_rank` over a batch, the scope bound once — see `collection_cards_by_names`.
+    pub fn collection_name_ranks(
+        &self,
+        identifiers: &[(&str, Option<&str>)],
+        scope: Option<&CollectionScope>,
+    ) -> Result<Vec<Option<(u8, f64)>>, EngineError> {
+        let bound = scope.map(|s| self.bind_scope(s)).transpose()?;
+        Ok(identifiers
+            .iter()
+            .map(|&(folded, set_code)| {
+                self.name_best(folded, set_code, NameScope::Collection, bound.as_ref())
+                    .map(|(tier, score, _, _)| (tier, score))
+            })
+            .collect())
     }
 
     /// The shared scan behind all four name entry points: `(tier, score, cid, vpid)`.
@@ -2106,7 +2147,13 @@ impl BufferStore {
     /// one of them (`!"limduls vault"` already compared collated; the two name surfaces did not).
     /// The FLAVOR pass at the bottom stays FOLDED: its index is keyed on folded names, and a
     /// collated probe of it would miss the spelling that works today.
-    fn name_best(&self, folded: &str, set_code: Option<&str>, scope: NameScope) -> Option<(u8, f32, usize, u32)> {
+    fn name_best(
+        &self,
+        folded: &str,
+        set_code: Option<&str>,
+        scope: NameScope,
+        restrict: Option<&BoundScope>,
+    ) -> Option<(u8, f64, usize, u32)> {
         let needle = crate::collate_name(folded);
         let data = self.data();
         // Ranked on (whole-name match, prefer_score), in that order.
@@ -2118,7 +2165,7 @@ impl BufferStore {
         // resolves `exact=Delver of Secrets` -- but it is a FALLBACK, not a peer.
         // TIER, not a bool, because the flavor-name fallback below is a third rank and the
         // partition merge has to order all three against each other with one comparison.
-        let mut best: Option<(u8, f32, usize, u32)> = None;
+        let mut best: Option<(u8, f64, usize, u32)> = None;
         for cid in name_scan_candidates(data, &needle) {
             let cid = cid as usize;
             let card = &data.cards[cid];
@@ -2130,7 +2177,7 @@ impl BufferStore {
             ) else {
                 continue;
             };
-            let Some((pid, score)) = self.best_printing_of(cid, set_code) else {
+            let Some((pid, score)) = self.best_printing_of_scoped(cid, set_code, restrict) else {
                 continue;
             };
             if best.is_none_or(|(bt, bs, _, _)| (tier, score) > (bt, bs)) {
@@ -2174,7 +2221,7 @@ impl BufferStore {
             && let Some(rec) = record_of_exact_name(&data.indexes.flavor_names, &data.strings, folded)
             && let Some((vpid, score)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
         {
-            return Some((TIER_FLAVOR_NAME, score, card_of_vpid(data, vpid) as usize, vpid));
+            return Some((TIER_FLAVOR_NAME, f64::from(score), card_of_vpid(data, vpid) as usize, vpid));
         }
         best
     }
@@ -2437,6 +2484,57 @@ impl BufferStore {
             &data.coll_vocab,
             &resolved_fields,
         )))
+    }
+
+    /// `CollectionScope` bound against THIS store: the filter compiled by the same binder
+    /// `/cards/search` uses, the prefer's vocabulary ids resolved. Built once per lookup rather
+    /// than once per candidate card — a regex in the scope is compiled here, not in the scan.
+    fn bind_scope(&self, scope: &CollectionScope) -> Result<BoundScope, EngineError> {
+        let data = self.data();
+        let filter = match &scope.filter_tree {
+            Some(tree) if !Self::is_true_node(tree) => {
+                let (_, _, _, unsplit) =
+                    super::bind_and_split_filter_value(tree, "printing", data, super::SortCol::Name)?;
+                Some(unsplit)
+            }
+            _ => None,
+        };
+        let prefer = super::QueryParams::from_strs("printing", &scope.prefer, "name", "asc", 1, 0)
+            .bind_prefer(&data.coll_vocab)
+            .prefer;
+        Ok(BoundScope { prefer, filter })
+    }
+
+    /// `best_printing_of` under a collection scope: the best printing that passes the set filter
+    /// AND the scope's filter, "best" being the scope's prefer over the printings that pass — the
+    /// same `prefer_score` `unique=cards` picks a representative with, so `?q=prefer:atypical`
+    /// on a collection answers the printing `prefer:atypical` answers on a search. No scope is
+    /// exactly `best_printing_of`.
+    fn best_printing_of_scoped(&self, cid: usize, set_code: Option<&str>, scope: Option<&BoundScope>) -> Option<(usize, f64)> {
+        let Some(scope) = scope else {
+            return self.best_printing_of(cid, set_code).map(|(pid, score)| (pid, f64::from(score)));
+        };
+        let data = self.data();
+        let card = &data.cards[cid];
+        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+        let passes = |pid: usize| {
+            let p = &data.printings[pid];
+            set_code.is_none_or(|s| p.card_set_code.as_str().eq_ignore_ascii_case(s))
+                && scope
+                    .filter
+                    .as_ref()
+                    .is_none_or(|f| crate::FilterExpr::residual_matches(card, p, &data.strings, &[f], false))
+        };
+        let mut best: Option<(usize, f64)> = None;
+        for pid in (start..end).filter(|&pid| passes(pid)) {
+            let score = super::prefer_score(card, &data.printings[pid], scope.prefer, &data.strings);
+            // Strict >, so the first printing in store order (the default pick) wins a tie — the
+            // rule every representative choice in the engine uses.
+            if best.is_none_or(|(_, s)| score > s) {
+                best = Some((pid, score));
+            }
+        }
+        best
     }
 
     /// A card's best printing and its score, optionally restricted to one set.
@@ -3236,6 +3334,33 @@ const TIER_FLAVOR_NAME: u8 = 0;
 pub(crate) enum NameScope {
     Exact,
     Collection,
+}
+
+/// The `?q=` of a `POST /cards/collection`, applied to every `{name}` identifier in the batch.
+///
+/// Two halves, both optional. A FILTER every candidate printing must pass (`-is:datestamped`,
+/// `-is:promo`, `e:sld` — the full query syntax, compiled by the same binder `/cards/search`
+/// uses), and a PREFER that picks among the printings that pass (`prefer:atypical`, folded out
+/// of the query by the route exactly as search folds it). Without a scope the lookup is what it
+/// always was: the name record's first printing in default order, the default pick. Identifiers
+/// that already name ONE printing (id, oracle id, set+number, …) never consult it.
+///
+/// Why it exists: `prefer:atypical` alone answers Clive, Ifrit's Dominant with the date-stamped
+/// prerelease promo, on api.scryfall.com and here alike, because the date stamp is an atypical
+/// treatment and that printing ranks first among the atypical ones. A client that wants the
+/// borderless printing says so — `-is:datestamped prefer:atypical` — and gets fin/318.
+#[derive(Debug, Clone, Default)]
+pub struct CollectionScope {
+    /// A `prefer=` value under this API's spellings; "default" is no preference.
+    pub prefer: String,
+    /// The filter tree every candidate printing must satisfy; `None` (or a TrueNode) is no filter.
+    pub filter_tree: Option<Value>,
+}
+
+/// `CollectionScope` bound against one store — see `bind_scope`.
+struct BoundScope {
+    prefer: super::Prefer,
+    filter: Option<crate::FilterExpr>,
 }
 
 /// The tier at which `needle` — already COLLATED — is one of this card's name keys, or None for a
@@ -4429,6 +4554,65 @@ mod tests {
         assert!(out.rows.iter().all(|r| r.get("flavor_name").is_none_or(Value::is_null)));
     }
 
+    /// A collection SCOPE narrows a `{name}` identifier to the printings passing its filter and
+    /// picks among them by its prefer — the `?q=` of `POST /cards/collection`.
+    ///
+    /// Clive, Ifrit's Dominant in miniature: the plain fin/133 first in default order, the
+    /// date-stamped prerelease promo second, the borderless fin/318 third. No scope answers
+    /// fin/133; `prefer:atypical` answers the promo (a date stamp is an atypical treatment, and
+    /// it ranks first among the atypical ones, on api.scryfall.com too); `-is:datestamped
+    /// prefer:atypical` answers the borderless one; and a filter no printing passes is None,
+    /// exactly as a name that does not exist.
+    #[test]
+    fn a_collection_scope_filters_the_printings_and_prefers_among_them() {
+        let mut plain = annex_row("Clive, Ifrit's Dominant", "oracle-c", "row-c-133", "en", 300.0);
+        plain["card_set_code"] = json!("fin");
+        plain["collector_number"] = json!("133");
+        plain["card_border"] = json!("black");
+        let mut promo = annex_row("Clive, Ifrit's Dominant", "oracle-c", "row-c-133s", "en", 200.0);
+        promo["card_set_code"] = json!("pfin");
+        promo["collector_number"] = json!("133s");
+        promo["card_border"] = json!("black");
+        // The tag is what `-is:datestamped` reads; the promo_types member is what the atypical
+        // class reads (see `PreferClassIds`) — the importer writes both from the one bulk key.
+        promo["card_is_tags"] = json!({ "datestamped": true, "promo": true });
+        promo["card_compat_blob"] = json!({ "lang": "en", "promo_types": ["prerelease", "datestamped"] });
+        let mut borderless = annex_row("Clive, Ifrit's Dominant", "oracle-c", "row-c-318", "en", 100.0);
+        borderless["card_set_code"] = json!("fin");
+        borderless["collector_number"] = json!("318");
+        borderless["card_border"] = json!("borderless");
+        let store = build_store(&[plain, promo, borderless]).1;
+
+        let fields = Some(vec!["collector_number".to_owned()]);
+        let pick = |scope: Option<&CollectionScope>| -> Option<String> {
+            store
+                .collection_card_by_name("clive, ifrit's dominant", None, fields.clone(), scope)
+                .expect("lookup")
+                .map(|c| c["collector_number"].as_str().unwrap().to_owned())
+        };
+        let not_datestamped = json!({ "node_type": "NotNode", "kwargs": { "operand": is_filter("datestamped") } });
+
+        assert_eq!(pick(None).as_deref(), Some("133"), "no scope: the default pick");
+        let atypical = CollectionScope { prefer: "atypical".to_owned(), filter_tree: None };
+        assert_eq!(pick(Some(&atypical)).as_deref(), Some("133s"), "the date stamp is atypical and ranks first");
+        let scoped = CollectionScope { prefer: "atypical".to_owned(), filter_tree: Some(not_datestamped.clone()) };
+        assert_eq!(pick(Some(&scoped)).as_deref(), Some("318"), "filtered to the borderless printing");
+        let default_scoped = CollectionScope { prefer: "default".to_owned(), filter_tree: Some(not_datestamped) };
+        assert_eq!(pick(Some(&default_scoped)).as_deref(), Some("133"), "a filter alone keeps the default order");
+        let none_pass = CollectionScope {
+            prefer: "atypical".to_owned(),
+            filter_tree: Some(json!({ "node_type": "AndNode", "kwargs": { "operands": [is_filter("datestamped"), is_filter("nonexistenttag")] } })),
+        };
+        assert_eq!(pick(Some(&none_pass)), None, "a filter no printing passes is not_found");
+
+        // The rank the partitioned router merges on is the scope's own score: under
+        // `prefer:atypical` the promo outranks the plain printing, so a partition holding only
+        // the plain one loses to a partition holding the promo.
+        let (_, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
+        let (_, scoped_rank) = store.collection_name_rank("clive, ifrit's dominant", None, Some(&atypical)).expect("rank").expect("hit");
+        assert!(scoped_rank > unscoped, "the atypical class bonus is in the merged rank");
+    }
+
     /// `is:unique` is a SET count over the canonical rows AND the annex.
     ///
     /// Three cards, each built to break a different wrong rule. A: two printings, one set — unique,
@@ -4706,7 +4890,7 @@ mod tests {
         let five = annex_row("Who // What // When // Where // Why", "oracle-five", "row-five", "en", 150.0);
         let store = build_store(&[two, five]).1;
         let exact = |n: &str| store.exact_card_by_name(n, None, None).expect("exact").is_some();
-        let coll = |n: &str| store.collection_card_by_name(n, None, None).expect("collection").is_some();
+        let coll = |n: &str| store.collection_card_by_name(n, None, None, None).expect("collection").is_some();
 
         // A FACE names the card on both surfaces, front and back alike.
         for needle in ["delver of secrets", "insectile aberration"] {
@@ -4745,7 +4929,7 @@ mod tests {
         assert!(hit("curse of the fire penguin creature"), "the BACK face, which it did");
         assert!(hit("curseofthefirepenguincreature"), "and the collated spelling of it");
         assert!(
-            store.collection_card_by_name("curse of the fire penguin creature", None, None).expect("coll").is_some(),
+            store.collection_card_by_name("curse of the fire penguin creature", None, None, None).expect("coll").is_some(),
             "a collection identifier reads the same repaired key"
         );
         // The cut spelling is nobody's name. This is the assertion that fails on the old build:
@@ -4765,11 +4949,11 @@ mod tests {
         let store = build_store(&[vault, dfc]).1;
         for needle in ["limduls vault", "lim-duls vault", "limdulsvault"] {
             assert!(store.exact_card_by_name(needle, None, None).expect("exact").is_some(), "exact= {needle}");
-            assert!(store.collection_card_by_name(needle, None, None).expect("coll").is_some(), "collection {needle}");
+            assert!(store.collection_card_by_name(needle, None, None, None).expect("coll").is_some(), "collection {needle}");
         }
         // A FACE collates the same way, and the join it sits beside does not leak into it.
-        assert!(store.collection_card_by_name("delverofsecrets", None, None).expect("coll").is_some());
-        assert!(store.collection_card_by_name("secretsinsectile", None, None).expect("coll").is_none());
+        assert!(store.collection_card_by_name("delverofsecrets", None, None, None).expect("coll").is_some());
+        assert!(store.collection_card_by_name("secretsinsectile", None, None, None).expect("coll").is_none());
     }
 
     /// A FLAVOR name is `exact=`'s fallback and no part of a collection identifier.
@@ -4785,9 +4969,9 @@ mod tests {
         let store = build_store(&[zilortha]).1;
         let needle = "godzilla, king of the monsters";
         assert!(store.exact_card_by_name(needle, None, None).expect("exact").is_some(), "exact= reads it");
-        assert!(store.collection_card_by_name(needle, None, None).expect("coll").is_none(), "a collection id does not");
+        assert!(store.collection_card_by_name(needle, None, None, None).expect("coll").is_none(), "a collection id does not");
         // The oracle name still answers both.
-        assert!(store.collection_card_by_name("zilortha, strength incarnate", None, None).expect("coll").is_some());
+        assert!(store.collection_card_by_name("zilortha, strength incarnate", None, None, None).expect("coll").is_some());
     }
 
     /// `exact=` is scoped to the ORACLE name and never reads printed names — the negative

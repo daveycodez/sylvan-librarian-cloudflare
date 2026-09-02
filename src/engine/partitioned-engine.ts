@@ -50,6 +50,7 @@ import type { RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
 import { MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
 import {
+	type CollectionScope,
 	type Engine,
 	type EngineSearchOptions,
 	type EngineSearchResult,
@@ -693,9 +694,10 @@ export class PartitionedEngine implements Engine {
 	async scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
+		scope?: CollectionScope | null,
 	): Promise<(Record<string, unknown> | null)[]> {
 		if (identifiers.length === 0) return [];
-		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers));
+		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers, scope));
 		const winner = new Array<number>(identifiers.length).fill(-1);
 		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
 		for (const [p, ranks] of perPartition.entries()) {
@@ -720,7 +722,7 @@ export class PartitionedEngine implements Engine {
 		await Promise.all(
 			[...claimed].map(async ([p, positions]) => {
 				const asked = positions.map((i) => identifiers[i] as NameIdentifier);
-				const cards = await this.at(p).scryfallCollectionNames(asked, baseUrl);
+				const cards = await this.at(p).scryfallCollectionNames(asked, baseUrl, scope);
 				for (const [k, position] of positions.entries()) out[position] = cards[k] ?? null;
 			}),
 		);
@@ -728,8 +730,11 @@ export class PartitionedEngine implements Engine {
 	}
 
 	/** The best rank any partition holds per identifier — for an Engine asked directly. */
-	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
-		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers));
+	async scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		scope?: CollectionScope | null,
+	): Promise<(number[] | null)[]> {
+		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers, scope));
 		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
 		for (const ranks of perPartition) {
 			for (let i = 0; i < identifiers.length; i++) {

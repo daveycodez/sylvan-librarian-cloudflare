@@ -7,6 +7,7 @@
 import { encodeUtf8 } from "../../src/engine/bytes";
 import { serializeCards } from "../../src/engine/columnar";
 import type {
+	CollectionScope,
 	Engine,
 	EngineSearchOptions,
 	EngineSerializedResult,
@@ -324,6 +325,9 @@ export class FakeEngine implements Engine {
 	/** Every batch the routes handed over — the fake's proof that 75 identifiers are one call. */
 	collectionNameBatches: NameIdentifier[][] = [];
 
+	/** The scope each batch came with (`?q=`), null when the request sent none. */
+	collectionScopes: (CollectionScope | null)[] = [];
+
 	/**
 	 * A collection identifier's `name` keys: the two FACE names when the name splits in exactly
 	 * two, the whole name otherwise, each COLLATED — the engine's rule in miniature, so a route
@@ -340,15 +344,20 @@ export class FakeEngine implements Engine {
 	async scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
+		scope?: CollectionScope | null,
 	): Promise<(Record<string, unknown> | null)[]> {
 		this.collectionNameBatches.push(identifiers);
+		this.collectionScopes.push(scope ?? null);
 		return identifiers.map(({ folded }) => {
 			const at = this.collectionAt(folded);
 			return at < 0 ? null : this.fixtureCard(at, baseUrl);
 		});
 	}
 
-	async scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]> {
+	async scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		_scope?: CollectionScope | null,
+	): Promise<(number[] | null)[]> {
 		return identifiers.map(({ folded }) => (this.collectionAt(folded) < 0 ? null : [2, 0]));
 	}
 

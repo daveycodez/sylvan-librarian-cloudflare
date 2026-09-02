@@ -24,7 +24,7 @@
 
 import { encodeUtf8 } from "../../engine/bytes";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
-import type { Engine, NameIdentifier } from "../../engine/types";
+import type { CollectionScope, Engine, NameIdentifier } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -1027,10 +1027,16 @@ export async function cardsCollectionHandler(
 	const malformed = collectionIdentifierError(identifiers);
 	if (malformed) return scryfallJson(malformed, pretty, COLLECTION_REFUSED_CACHE);
 
+	// THE BATCH'S `?q=` — this port's extension, see `collectionScope`. Parsed after the body is
+	// validated so a malformed identifier still answers Scryfall's own 400 first.
+	const scoped = await collectionScope(params.q, pretty);
+	if (scoped.refused) return scoped.refused;
+	const { scope, warnings } = scoped;
+
 	const engine = await ctx.getEngine();
 	const baseUrl = apiBaseUrl(ctx);
 	try {
-		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl);
+		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl, scope);
 		const found: Record<string, unknown>[] = [];
 		const notFound: unknown[] = [];
 		for (let at = 0; at < identifiers.length; at++) {
@@ -1044,10 +1050,84 @@ export async function cardsCollectionHandler(
 			if (card) found.push(card);
 			else notFound.push(identifiers[at]);
 		}
-		return scryfallJson(collectionList(found, notFound), pretty, COLLECTION_CACHE);
+		return scryfallJson(collectionList(found, notFound, warnings), pretty, COLLECTION_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
+}
+
+/**
+ * The batch's `?q=` on `POST /cards/collection`, this port's extension to Scryfall's endpoint:
+ * a search query applied to every `{name}` and `{name, set}` identifier, whose FILTER terms
+ * restrict the printings a name may resolve to and whose `prefer:` directive picks among them.
+ * `?q=-is:datestamped prefer:atypical` answers Clive, Ifrit's Dominant with the borderless
+ * fin/318 where `prefer:atypical` alone answers the date-stamped prerelease promo — on
+ * api.scryfall.com's search and here alike, because the date stamp is an atypical treatment and
+ * that printing ranks first among the atypical ones. Identifiers that already name one printing
+ * (id, oracle id, illustration id, external id, set+number) never consult it, and a name none of
+ * whose printings pass is `not_found`, exactly as a name that does not exist.
+ *
+ * ONE PARSER, ONE FOLD. The query goes through the same term policy, parser and directive fold
+ * `/cards/search` uses, so every spelling that works there works here, including the hyphenated
+ * `prefer:usd-low` and the `ub`/`notub` short forms. The directives that shape a PAGE — `unique:`,
+ * `sort:`/`order:`, `direction:`/`dir:` — mean nothing on a lookup that answers one printing per
+ * identifier in the order they were sent; they are folded and then warned about rather than
+ * rejected, the way search treats an unknown directive value. Scryfall's `include_extras`
+ * defaults are NOT applied: a collection resolves tokens and extras by id today, and a scope is
+ * the caller's own filter, not the search page's.
+ *
+ * In the URL rather than the body: the body is Scryfall's `{identifiers}` schema, validated
+ * against Scryfall's own messages, and a client built on a Scryfall SDK can append a query
+ * parameter where it could not add a body key. `q` is where the search surface already puts it.
+ */
+async function collectionScope(
+	q: string | undefined,
+	pretty: boolean,
+): Promise<{ scope: CollectionScope | null; warnings: string[]; refused: Response | null }> {
+	if (!q?.trim()) return { scope: null, warnings: [], refused: null };
+	const refuse = (details: string, warnings: string[] | null) => ({
+		scope: null,
+		warnings: [],
+		refused: scryfallJson(badRequestError(details, warnings), pretty, COLLECTION_REFUSED_CACHE),
+	});
+	const policy = scryfallTermPolicy(q);
+	if (policy.unclosedParens) return refuse(UNCLOSED_PARENS_DETAILS, null);
+	if (policy.allIgnored) return refuse(ALL_IGNORED_DETAILS, policy.warnings);
+	const warnings: string[] = [...policy.warnings];
+
+	const parser = await loadParser();
+	let tree: unknown;
+	let directives: readonly DirectiveFound[] = [];
+	try {
+		const parsed = parser.parseWithDirectives(policy.query);
+		tree = parsed.tree;
+		directives = parsed.directives;
+		warnings.push(...parsed.warnings);
+	} catch (err) {
+		const budgetMessage = parser.queryBudgetMessage(err);
+		if (budgetMessage !== null) return refuse(budgetMessage, warnings);
+		if (parser.isParseError(err)) return refuse(`Failed to parse query: "${q}"`, warnings);
+		throw err;
+	}
+	if (usesValueAsPredicate(tree)) return refuse(arithmeticNotComparedMessage(q), warnings);
+
+	const folded = applyDirectives(directives, { unique: "card", prefer: "default", orderby: "name", direction: "auto" });
+	warnings.push(...folded.warnings);
+	for (const { name, value } of directives) {
+		if (name !== "prefer") {
+			warnings.push(
+				`${name}:${value} has no effect on /cards/collection, which answers one printing per identifier in the order they were sent.`,
+			);
+		}
+	}
+	// A query that was ONLY directives leaves a TrueNode behind, which is no filter at all.
+	const isTrue =
+		typeof tree === "object" && tree !== null && (tree as { node_type?: unknown }).node_type === "TrueNode";
+	return {
+		scope: { prefer: folded.prefer, filterTreeJson: isTrue ? null : canonicalStringify(tree as FilterValue) },
+		warnings,
+		refused: null,
+	};
 }
 
 /**
@@ -1068,6 +1148,7 @@ async function resolveIdentifiers(
 	engine: Engine,
 	identifiers: unknown[],
 	baseUrl: string,
+	scope: CollectionScope | null,
 ): Promise<(Record<string, unknown> | null)[]> {
 	const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
 	const byScryfallId: { at: number; id: string }[] = [];
@@ -1138,6 +1219,7 @@ async function resolveIdentifiers(
 				.scryfallCollectionNames(
 					byName.map((e) => e.identifier),
 					baseUrl,
+					scope,
 				)
 				.then((cards) => {
 					for (const [i, entry] of byName.entries()) out[entry.at] = cards[i] ?? null;

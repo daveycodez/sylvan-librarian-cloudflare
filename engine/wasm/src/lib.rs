@@ -421,26 +421,75 @@ pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> 
 ///
 /// `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
 /// the collating happens in the engine. `set_code` is "" for no set restriction.
+///
+/// `prefer` and `scope_json` are the batch's `?q=` — its folded prefer (this API's spelling,
+/// "default" for none) and its filter tree as canonical JSON ("" for none); see the engine's
+/// `CollectionScope`.
+/// One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]` — so the scope
+/// is bound once rather than once per identifier (a regex in the scope compiled 75 times was
+/// the difference between 25ms and 165ms on a full batch). Answers a JSON array, a card object or
+/// `null` per identifier, in order.
 #[wasm_bindgen]
-pub fn collection_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Result<String, JsError> {
+pub fn collection_cards_by_names(
+    identifiers_json: &str,
+    fields_json: &str,
+    prefer: &str,
+    scope_json: &str,
+) -> Result<String, JsError> {
     let fields = parse_fields(fields_json)?;
-    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    let idents = parse_identifiers(identifiers_json)?;
+    let scope = parse_scope(prefer, scope_json)?;
     with_store(|store| {
-        let found = store.collection_card_by_name(folded, set, fields).map_err(js_err)?;
-        Ok(found.unwrap_or(serde_json::Value::Null).to_string())
+        let borrowed: Vec<(&str, Option<&str>)> =
+            idents.iter().map(|(f, s)| (f.as_str(), s.as_deref())).collect();
+        let found = store.collection_cards_by_names(&borrowed, fields, scope.as_ref()).map_err(js_err)?;
+        let out: Vec<serde_json::Value> = found.into_iter().map(|c| c.unwrap_or(serde_json::Value::Null)).collect();
+        Ok(serde_json::Value::Array(out).to_string())
     })
 }
 
-/// How well this partition's best collection-identifier candidate matches, as `[tier, score]`, or
-/// `null` — the twin of `exact_name_rank`, and there for the same partitioned router.
+/// `[[folded, set_code], …]` off the wire; an empty set code is no set restriction.
+fn parse_identifiers(identifiers_json: &str) -> Result<Vec<(String, Option<String>)>, JsError> {
+    let raw: Vec<(String, String)> = serde_json::from_str(identifiers_json)
+        .map_err(|e| JsError::new(&format!("collection identifiers are not [[folded, set], …]: {e}")))?;
+    Ok(raw
+        .into_iter()
+        .map(|(folded, set)| (folded, if set.is_empty() { None } else { Some(set) }))
+        .collect())
+}
+
+/// The wire form of a collection scope, or `None` when the batch sent no `?q=` at all.
+fn parse_scope(prefer: &str, scope_json: &str) -> Result<Option<card_engine::CollectionScope>, JsError> {
+    if scope_json.is_empty() && (prefer.is_empty() || prefer == "default") {
+        return Ok(None);
+    }
+    let filter_tree = if scope_json.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_str(scope_json).map_err(|e| JsError::new(&format!("collection scope is not JSON: {e}")))?)
+    };
+    Ok(Some(card_engine::CollectionScope { prefer: prefer.to_owned(), filter_tree }))
+}
+
+/// How well this partition's best collection-identifier candidate matches, as `[tier, score]` or
+/// `null` per identifier — the batched twin of `exact_name_rank`, and there for the same
+/// partitioned router. Under a scope the score is the scope's prefer score.
 #[wasm_bindgen]
-pub fn collection_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> {
-    let set = if set_code.is_empty() { None } else { Some(set_code) };
+pub fn collection_name_ranks(identifiers_json: &str, prefer: &str, scope_json: &str) -> Result<String, JsError> {
+    let idents = parse_identifiers(identifiers_json)?;
+    let scope = parse_scope(prefer, scope_json)?;
     with_store(|store| {
-        Ok(match store.collection_name_rank(folded, set) {
-            Some((tier, score)) => format!("[{tier},{score}]"),
-            None => "null".to_string(),
-        })
+        let borrowed: Vec<(&str, Option<&str>)> =
+            idents.iter().map(|(f, s)| (f.as_str(), s.as_deref())).collect();
+        let ranks = store.collection_name_ranks(&borrowed, scope.as_ref()).map_err(js_err)?;
+        let out: Vec<serde_json::Value> = ranks
+            .into_iter()
+            .map(|r| match r {
+                Some((tier, score)) => serde_json::json!([tier, score]),
+                None => serde_json::Value::Null,
+            })
+            .collect();
+        Ok(serde_json::Value::Array(out).to_string())
     })
 }
 

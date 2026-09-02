@@ -247,22 +247,67 @@ export function catalog() {
  *
  * `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
  * the collating happens in the engine. `set_code` is "" for no set restriction.
- * @param {string} folded
- * @param {string} set_code
+ *
+ * `prefer` and `scope_json` are the batch's `?q=` — its folded prefer (this API's spelling,
+ * "default" for none) and its filter tree as canonical JSON ("" for none); see the engine's
+ * `CollectionScope`.
+ * One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]` — so the scope
+ * is bound once rather than once per identifier (a regex in the scope compiled 75 times was
+ * the difference between 25ms and 165ms on a full batch). Answers a JSON array, a card object or
+ * `null` per identifier, in order.
+ * @param {string} identifiers_json
  * @param {string} fields_json
+ * @param {string} prefer
+ * @param {string} scope_json
  * @returns {string}
  */
-export function collection_card_by_name(folded, set_code, fields_json) {
+export function collection_cards_by_names(identifiers_json, fields_json, prefer, scope_json) {
+    let deferred6_0;
+    let deferred6_1;
+    try {
+        const ptr0 = passStringToWasm0(identifiers_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(prefer, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(scope_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.collection_cards_by_names(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        var ptr5 = ret[0];
+        var len5 = ret[1];
+        if (ret[3]) {
+            ptr5 = 0; len5 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred6_0 = ptr5;
+        deferred6_1 = len5;
+        return getStringFromWasm0(ptr5, len5);
+    } finally {
+        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+    }
+}
+
+/**
+ * How well this partition's best collection-identifier candidate matches, as `[tier, score]` or
+ * `null` per identifier — the batched twin of `exact_name_rank`, and there for the same
+ * partitioned router. Under a scope the score is the scope's prefer score.
+ * @param {string} identifiers_json
+ * @param {string} prefer
+ * @param {string} scope_json
+ * @returns {string}
+ */
+export function collection_name_ranks(identifiers_json, prefer, scope_json) {
     let deferred5_0;
     let deferred5_1;
     try {
-        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(identifiers_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(prefer, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr2 = passStringToWasm0(scope_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.collection_card_by_name(ptr0, len0, ptr1, len1, ptr2, len2);
+        const ret = wasm.collection_name_ranks(ptr0, len0, ptr1, len1, ptr2, len2);
         var ptr4 = ret[0];
         var len4 = ret[1];
         if (ret[3]) {
@@ -274,36 +319,6 @@ export function collection_card_by_name(folded, set_code, fields_json) {
         return getStringFromWasm0(ptr4, len4);
     } finally {
         wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
- * How well this partition's best collection-identifier candidate matches, as `[tier, score]`, or
- * `null` — the twin of `exact_name_rank`, and there for the same partitioned router.
- * @param {string} folded
- * @param {string} set_code
- * @returns {string}
- */
-export function collection_name_rank(folded, set_code) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.collection_name_rank(ptr0, len0, ptr1, len1);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
-        if (ret[3]) {
-            ptr3 = 0; len3 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 

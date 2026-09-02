@@ -4,10 +4,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { encodeRulingsBucket, type RulingRow, rulingsBucketKey, rulingsBucketOf } from "../../src/engine/rulings-kv";
+import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
+import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
-import { FakeEngine, FakeKV, FIXTURE_CARDS, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, FakeKV, FIXTURE_CARDS, fakeParse, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
 
@@ -1012,6 +1014,107 @@ describe("POST /cards/collection", () => {
 			"POST",
 		);
 		expect(engine.collectionNameBatches[0]).toEqual([{ folded: "llanowar elves", setCode: "m19" }]);
+	});
+
+	// ── `?q=`: the batch's scope, this port's extension ──────────────────────────────────────
+
+	test("`?q=` reaches the `{name}` batch as a scope, once, and nothing else about the batch changes", async () => {
+		// The filter half: `-is:datestamped` is parsed by the same parser search uses and travels as
+		// canonical JSON, once per batch.
+		const engine = new FakeEngine();
+		const body = await json(
+			await testDispatch(
+				postCtx({ identifiers: [{ name: "Llanowar Elves" }, { name: "Elvish Mystic" }] }, engine),
+				"/cards/collection?q=-is%3Adatestamped",
+				"POST",
+			),
+		);
+		expect((body.data as unknown[]).length).toBe(2);
+		expect(engine.collectionNameBatches.length).toBe(1);
+		expect(engine.collectionScopes).toEqual([
+			{
+				prefer: "default",
+				filterTreeJson: canonicalStringify(parseScryfallQueryWithDirectives("-is:datestamped").tree as never),
+			},
+		]);
+		expect(body.warnings).toBeUndefined();
+	});
+
+	test("without `?q=` the batch carries no scope", async () => {
+		const engine = new FakeEngine();
+		await testDispatch(postCtx({ identifiers: [{ name: "Llanowar Elves" }] }, engine), "/cards/collection", "POST");
+		expect(engine.collectionScopes).toEqual([null]);
+	});
+
+	test("a `prefer:` directive folds out of the scope; a page-shaping directive is warned about", async () => {
+		// `prefer:atypical` is what the scope exists for and becomes the batch's prefer. `unique:`,
+		// `sort:` and `dir:` shape a search PAGE and mean nothing to a lookup that answers one
+		// printing per identifier, so they fold (the shared fold does that) and then warn rather
+		// than reject — the way search treats a directive value it does not know. A query that was
+		// only directives leaves a TrueNode, which is no filter at all.
+		setParserForTests({
+			parseScryfallQuery: fakeParse,
+			parseWithDirectives: () => ({
+				tree: { node_type: "TrueNode" },
+				directives: [
+					{ name: "prefer", value: "atypical", nested: false },
+					{ name: "unique", value: "prints", nested: false },
+				],
+				warnings: [],
+				loweredRegexTerms: [],
+				expandedDerivedTerms: [],
+			}),
+			isParseError: () => false,
+			queryBudgetMessage: () => null,
+		});
+		try {
+			const engine = new FakeEngine();
+			const body = await json(
+				await testDispatch(
+					postCtx({ identifiers: [{ name: "Llanowar Elves" }] }, engine),
+					"/cards/collection?q=prefer%3Aatypical+unique%3Aprints",
+					"POST",
+				),
+			);
+			expect(engine.collectionScopes).toEqual([{ prefer: "atypical", filterTreeJson: null }]);
+			expect(body.warnings).toEqual([
+				"unique:prints has no effect on /cards/collection, which answers one printing per identifier in the order they were sent.",
+			]);
+			expect((body.data as unknown[]).length).toBe(1);
+		} finally {
+			setParserForTests(null);
+		}
+	});
+
+	test("a `?q=` that does not parse is a 400 that says so, before any identifier is resolved", async () => {
+		// The same refusal search gives, with Scryfall's own sentence for it.
+		const engine = new FakeEngine();
+		const res = await testDispatch(
+			postCtx({ identifiers: [{ name: "Llanowar Elves" }] }, engine),
+			"/cards/collection?q=%28t%3Agoblin",
+			"POST",
+		);
+		expect(res.status).toBe(400);
+		const body = await json(res);
+		expect(body.code).toBe("bad_request");
+		expect(body.details).toBe("Your search contains unclosed parentheses.");
+		expect(engine.collectionNameBatches.length).toBe(0);
+	});
+
+	test("the scope is not consulted for identifiers that already name one printing", async () => {
+		// An `{id}` names a printing outright; there is nothing to prefer among. The batch still
+		// answers, and no name call — hence no scope — is made.
+		const known = "aaaaaaaa-0000-4000-8000-000000000001";
+		const engine = new FakeEngine();
+		const body = await json(
+			await testDispatch(
+				postCtx({ identifiers: [{ id: known }] }, engine),
+				"/cards/collection?q=prefer%3Aatypical",
+				"POST",
+			),
+		);
+		expect((body.data as unknown[]).length).toBe(1);
+		expect(engine.collectionScopes).toEqual([]);
 	});
 
 	test("two identifiers naming one card answer TWICE — `data` is one entry per identifier", async () => {

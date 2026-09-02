@@ -1,3 +1,4 @@
+import type { PreferOrder } from "../routes/enums";
 // Seam between the HTTP routes (src/routes/) and the wasm engine (src/engine/).
 // Routes depend only on this interface; tests may inject a fake.
 
@@ -252,12 +253,20 @@ export interface Engine {
 	 * `collection_card_by_name`), and a collection POST carries up to 75 identifiers, which
 	 * looped would be 75 round trips per partition.
 	 */
-	scryfallCollectionNames(identifiers: NameIdentifier[], baseUrl: string): Promise<(Record<string, unknown> | null)[]>;
+	scryfallCollectionNames(
+		identifiers: NameIdentifier[],
+		baseUrl: string,
+		scope?: CollectionScope | null,
+	): Promise<(Record<string, unknown> | null)[]>;
 	/**
 	 * `[tier, score]` per identifier for this engine's best candidate, or null — the batched twin
-	 * of `scryfallExactNameRank`, and there for the same partitioned router.
+	 * of `scryfallExactNameRank`, and there for the same partitioned router. Under a scope the
+	 * score is the scope's prefer score, so partitions are compared by the key the pick was made by.
 	 */
-	scryfallCollectionNameRanks(identifiers: NameIdentifier[]): Promise<(number[] | null)[]>;
+	scryfallCollectionNameRanks(
+		identifiers: NameIdentifier[],
+		scope?: CollectionScope | null,
+	): Promise<(number[] | null)[]>;
 	/** `illustration_id`, one of the collection endpoint's identifiers; not a searchable field. */
 	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/**
@@ -288,6 +297,18 @@ export interface Engine {
 export interface NameIdentifier {
 	folded: string;
 	setCode: string;
+}
+
+/**
+ * The `?q=` of a `POST /cards/collection`, once per batch: the prefer folded out of it (this
+ * API's spelling; "default" is no preference) and the rest of it as a canonical filter tree, or
+ * null when nothing but directives was written. Applied to every `{name}` identifier — the
+ * printing answered is the best of those passing the filter under the prefer. See the engine's
+ * `CollectionScope`.
+ */
+export interface CollectionScope {
+	prefer: PreferOrder;
+	filterTreeJson: string | null;
 }
 
 /**
