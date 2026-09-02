@@ -309,6 +309,10 @@ export interface PartitionClient {
 	 * pins the generation: a partition that has swapped must error loudly, not
 	 * answer from different rows. */
 	fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<Uint8Array>;
+	/** Converge this partition on the manifest KV holds NOW — prefetch and swap if it differs
+	 * from what it serves. The gather's remedy for a straggler that no publish told; optional
+	 * only so an older sibling build without it still answers a gather. */
+	refresh?(): Promise<void>;
 }
 
 /** How long to let stragglers finish their commit before phase 1 is re-asked.
@@ -362,10 +366,26 @@ export async function runTwoPhase(
 			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget);
 		}
 		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
+	}
+	// STILL MIXED AFTER THE PAUSE: this is no longer a commit window, it is a partition that no
+	// publish ever told. The deploy's native import writes a new store to KV and NOTIFIES NOBODY —
+	// a cold object reconciles against KV when it loads, a WARM one keeps serving what it loaded
+	// until something tells it otherwise, and under steady traffic a partition never goes cold.
+	// Measured 2026-09-02 after two deploys in one evening: 6 of 10 partitions on one account and
+	// 1 of 10 on the other answered from the previous build for over half an hour, and every
+	// search on both was a 500 because this threw. Tell the stragglers to converge on KV's
+	// manifest, once, and ask again; a fleet that will not converge even then is the bug the
+	// throw below has always been for.
+	if (pin.stragglers.length > 0) {
+		await Promise.all(pin.stragglers.map((p) => (clients[p] as PartitionClient).refresh?.()));
+		for (const p of pin.stragglers) {
+			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget);
+		}
+		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
 		if (pin.stragglers.length > 0) {
 			throw new Error(
 				`gather: partitions ${pin.stragglers.join(",")} still answer from another generation ` +
-					`after re-issue (pinned built_at ${pin.pinnedBuiltAt})`,
+					`after re-issue and refresh (pinned built_at ${pin.pinnedBuiltAt})`,
 			);
 		}
 	}

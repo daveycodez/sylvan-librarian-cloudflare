@@ -411,11 +411,48 @@ describe("the two-phase run", () => {
 		expect(log.filter((l) => l.startsWith("keys:"))).toEqual(["keys:0", "keys:1", "keys:0"]);
 	});
 
+	test("a straggler no publish told is REFRESHED from KV, then asked again", async () => {
+		// The 2026-09-02 outage in miniature: partition 0 loaded the previous build and nothing
+		// ever told it a deploy had published a new one, so the 250ms pause changes nothing — it
+		// keeps answering from the old build until it is told to converge. `refresh` is that
+		// telling; only after it does the partition answer from the pinned build.
+		const log: string[] = [];
+		let refreshed = false;
+		const straggler: PartitionClient = {
+			async searchKeys(opts) {
+				const inner = fakePartition(0, [2], log, `card-store-v1-${refreshed ? "200" : "100"}-p0.store`);
+				return inner.searchKeys(opts, 0);
+			},
+			async fetchRows(vpids, fields, key) {
+				return fakePartition(0, [2], log, "card-store-v1-200-p0.store").fetchRows(vpids, fields, key);
+			},
+			async refresh() {
+				log.push("refresh:0");
+				refreshed = true;
+			},
+		};
+		const fresh = fakePartition(1, [1], log, "card-store-v1-200-p1.store");
+		const { total, rows } = await runTwoPhase([straggler, fresh], { ...OPTS, offset: 0, limit: 10 }, async () => {});
+		expect(total).toBe(2);
+		expect(rows).toEqual([{ name: "p1v0" }, { name: "p0v0" }]);
+		// Everyone once, the straggler again after the pause, THEN the refresh, then the straggler
+		// once more — and the fresh partition is never refreshed or re-asked.
+		expect(log.filter((l) => l.startsWith("keys:") || l.startsWith("refresh:"))).toEqual([
+			"keys:0",
+			"keys:1",
+			"keys:0",
+			"refresh:0",
+			"keys:0",
+		]);
+	});
+
 	test("a straggler that never converges fails loudly, naming the partitions", async () => {
 		const log: string[] = [];
 		const stuck = fakePartition(0, [2], log, "card-store-v1-100-p0.store");
 		const fresh = fakePartition(1, [1], log, "card-store-v1-200-p1.store");
-		expect(runTwoPhase([stuck, fresh], OPTS, async () => {})).rejects.toThrow(/partitions 0 still answer/);
+		expect(runTwoPhase([stuck, fresh], OPTS, async () => {})).rejects.toThrow(
+			/partitions 0 still answer from another generation after re-issue and refresh/,
+		);
 	});
 
 	test("streams with different sort-key versions are refused, never merged", async () => {

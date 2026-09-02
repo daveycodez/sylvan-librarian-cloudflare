@@ -702,17 +702,29 @@ export class SearchEngine extends DurableObject<Env> {
 					searchKeys: (opts: EngineSearchOptions) => this.searchKeys(opts, 0),
 					fetchRows: async (vpids: number[], fields: string[], storeKey: string) =>
 						(await this.fetchRows(vpids, fields, storeKey)).rowsBytes,
+					// The gather's straggler remedy, on this object: the same KV-manifest refresh a
+					// publish notify performs, minus the manifest in hand.
+					refresh: async () => {
+						await this.notifyPublish();
+					},
 				};
 			}
 			const stub = siblingStub(this.env, this.label, p) as unknown as {
 				searchKeys(opts: EngineSearchOptions, inlineRows: number): Promise<SearchKeysReply>;
 				fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<{ rowsBytes: Uint8Array }>;
+				notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }>;
 			} | null;
 			if (!stub) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
 			return {
 				searchKeys: (opts: EngineSearchOptions, inlineRows: number) => stub.searchKeys(opts, inlineRows),
 				fetchRows: async (vpids: number[], fields: string[], storeKey: string) =>
 					(await stub.fetchRows(vpids, fields, storeKey)).rowsBytes,
+				refresh: async () => {
+					const { swapped } = await stub.notifyPublish();
+					console.warn(
+						`[${this.label}] gather refreshed straggler partition ${p}: ${swapped ? "swapped" : "already current"}`,
+					);
+				},
 			};
 		});
 	}
