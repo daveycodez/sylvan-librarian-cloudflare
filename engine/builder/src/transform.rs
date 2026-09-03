@@ -123,6 +123,27 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("universesbeyond", "promo_types", "universesbeyond"),
 ];
 
+/// Scryfall's `game:` vocabulary, as `(games member, card_is_tags key)`. Mirrors
+/// db_info.GAME_IS_TAGS.
+///
+/// A table of its own rather than five ARRAY_IS_TAGS rows, and PREFIXED keys, because `game:`
+/// and `is:` share the `card_is_tags` column: the bare tag `paper` would make `game:promo` answer
+/// `is:promo`'s promos instead of Scryfall's ``Unknown game `promo` ``. The parser sends every
+/// `game:` value through the same prefix (rewrite.ts `prefixGameValues`), so an unknown one names
+/// a tag no row carries. See db-info.ts GAME_IS_TAGS for the measurements behind the vocabulary.
+///
+/// Three of the five are DENSE — 32,729 / 30,707 / 16,070 cards for paper / mtgo / arena on
+/// api.scryfall.com 2026-09-03 — which the table above says is the CHEAP shape here: past the
+/// storage crossover a value is a bitmap plane rather than a posting list, and the three densest
+/// tags already stored (booster, hires, nonfoil) cost 1.89 MiB between them.
+const GAME_IS_TAGS: &[(&str, &str)] = &[
+    ("paper", "game_paper"),
+    ("arena", "game_arena"),
+    ("mtgo", "game_mtgo"),
+    ("astral", "game_astral"),
+    ("sega", "game_sega"),
+];
+
 /// `is:` values that read a NESTED single field rather than a top-level boolean or an array, as
 /// `(card_is_tags key, outer blob key, inner key, value)`. Mirrors db_info.BOOLEAN_IS_TAGS'
 /// single-field-lookup entries; upstream expresses the same question as a SQL expression
@@ -1160,6 +1181,12 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
                 .iter()
                 .filter(|(_, blob_key, member)| array_contains(card, blob_key, member))
                 .map(|(tag, _, _)| (*tag).to_owned()),
+        )
+        .chain(
+            GAME_IS_TAGS
+                .iter()
+                .filter(|(member, _)| array_contains(card, "games", member))
+                .map(|(_, tag)| (*tag).to_owned()),
         )
         .chain(
             FIELD_IS_TAGS
@@ -3499,9 +3526,17 @@ mod tests {
         // nor oversized nor a game changer. Its promo_types (beginnerbox, startercollection) are
         // not in ARRAY_IS_TAGS, so nothing comes back from that half — which is the case worth
         // pinning, since a mapping typo there produces exactly this: silence.
+        //
+        // The three `game_*` are GAME_IS_TAGS reading `games: ["paper", "arena", "mtgo"]`, and the
+        // PREFIX is the half worth pinning here: an unprefixed table would have written `paper`,
+        // `arena` and `mtgo` into the same namespace `booster` and `reprint` live in, where
+        // `game:promo` would then have answered `is:promo`.
         assert_eq!(
             row["card_is_tags"],
-            json!({"booster": true, "foil": true, "hires": true, "nonfoil": true, "reprint": true})
+            json!({
+                "booster": true, "foil": true, "hires": true, "nonfoil": true, "reprint": true,
+                "game_paper": true, "game_arena": true, "game_mtgo": true
+            })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
     }
@@ -3621,21 +3656,40 @@ mod tests {
             rows[0]["card_is_tags"].clone()
         };
 
+        // `game_paper` rides along on every row here because `minimal_card` carries
+        // `games: ["paper"]` — GAME_IS_TAGS writes into the same column. Spelled out rather than
+        // filtered away: the `gamechanger` key sits one letter from `game_changer`, and this is the
+        // test that would catch a `game_` prefix colliding with a boolean tag's name.
         let mut card = minimal_card("Both");
         card["reserved"] = json!(true);
         card["game_changer"] = json!(true);
-        assert_eq!(tags_of(&card), json!({"reserved": true, "gamechanger": true}));
+        assert_eq!(
+            tags_of(&card),
+            json!({"reserved": true, "gamechanger": true, "game_paper": true})
+        );
 
         let mut only_reserved = minimal_card("OnlyReserved");
         only_reserved["reserved"] = json!(true);
         only_reserved["game_changer"] = json!(false);
-        assert_eq!(tags_of(&only_reserved), json!({"reserved": true}));
+        assert_eq!(tags_of(&only_reserved), json!({"reserved": true, "game_paper": true}));
 
         // Truthy-but-not-true must not leak in: upstream's SQL compares the blob
         // value to 'true'::jsonb, not for presence.
         let mut stringly = minimal_card("Stringly");
         stringly["reserved"] = json!("true");
-        assert_eq!(tags_of(&stringly), json!({}));
+        assert_eq!(tags_of(&stringly), json!({"game_paper": true}));
+
+        // And the games half reads the ARRAY the same way, member by member: a game the card does
+        // not list writes nothing, and an unknown member writes nothing either.
+        let mut three_games = minimal_card("ThreeGames");
+        three_games["games"] = json!(["paper", "mtgo", "arena", "nonsense"]);
+        assert_eq!(
+            tags_of(&three_games),
+            json!({"game_paper": true, "game_mtgo": true, "game_arena": true})
+        );
+        let mut no_games = minimal_card("NoGames");
+        no_games["games"] = json!([]);
+        assert_eq!(tags_of(&no_games), json!({}));
     }
 
     #[test]

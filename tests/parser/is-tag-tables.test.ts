@@ -20,7 +20,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, FIELD_IS_TAGS } from "../../src/parser/db-info";
+import {
+	ARRAY_IS_TAGS,
+	BOOLEAN_IS_TAGS,
+	COMPUTED_IS_TAGS,
+	FIELD_IS_TAGS,
+	GAME_IS_TAGS,
+} from "../../src/parser/db-info";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const TRANSFORM_RS = readFileSync(join(REPO_ROOT, "engine/builder/src/transform.rs"), "utf8");
@@ -110,11 +116,23 @@ describe("the is: tag tables agree across TypeScript and Rust", () => {
 		expect(sorted(rustTable("FIELD_IS_TAGS"))).toEqual(sorted(ts));
 	});
 
+	/**
+	 * `game:` reaches `card_is_tags` through the same one door, and through it harder: the tag key
+	 * is PREFIXED (`paper` -> `game_paper`), so a disagreement here is not merely a tag the builder
+	 * never writes — it is the parser rewriting `game:paper` onto a key that does not exist while
+	 * `is:paper` sits next to it meaning something else entirely.
+	 */
+	test("GAME_IS_TAGS: same games, each naming the same prefixed tag", () => {
+		const ts = [...GAME_IS_TAGS].map(([member, tag]) => [member, tag]);
+		expect(sorted(rustTable("GAME_IS_TAGS"))).toEqual(sorted(ts));
+	});
+
 	test("the tables are non-trivial, so a broken extractor cannot pass by matching nothing", () => {
 		expect(rustTable("BOOLEAN_IS_TAGS").length).toBeGreaterThan(10);
 		expect(rustTable("ARRAY_IS_TAGS").length).toBeGreaterThan(20);
 		expect(rustTable("FIELD_IS_TAGS").length).toBe(1);
-		for (const table of ["BOOLEAN_IS_TAGS", "ARRAY_IS_TAGS", "FIELD_IS_TAGS"]) {
+		expect(rustTable("GAME_IS_TAGS").length).toBe(5);
+		for (const table of ["BOOLEAN_IS_TAGS", "ARRAY_IS_TAGS", "FIELD_IS_TAGS", "GAME_IS_TAGS"]) {
 			for (const row of rustTable(table)) {
 				expect(row.length, `${table} row ${JSON.stringify(row)} should be string literals`).toBeGreaterThan(1);
 			}

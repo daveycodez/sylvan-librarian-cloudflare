@@ -7,7 +7,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { balancePartialQuery, canonicalStringify, ParseError, parseScryfallQuery } from "../../src/parser";
+import {
+	balancePartialQuery,
+	canonicalStringify,
+	ParseError,
+	parseScryfallQuery,
+	parseScryfallQueryWithDirectives,
+} from "../../src/parser";
 import {
 	ENGINE_IS_VALUES,
 	regexPlainLiteral,
@@ -755,5 +761,103 @@ describe("the ~ self-reference alias survives the plain-literal lowering", () =>
 		// lowering is deliberately coarser: any tilde at all makes the pattern non-plain, so the
 		// class reaches the engine as a class instead of being flattened to a literal.
 		expect(regexPlainLiteral("[~]")).toBeNull();
+	});
+});
+
+// ── the two Scryfall operators this port could not read at all ───────────────
+
+/**
+ * A SET CODE where a date goes. Every count below was read off api.scryfall.com on 2026-09-03, one
+ * request per row, against the explicit date `/sets/<code>` reports for that set — see
+ * `parser.parseDateValue` for the table and `scripts/generate-set-dates.ts` for where the dates
+ * come from.
+ */
+describe("date: takes a set code, and resolves it to that set's release date", () => {
+	const tree = (query: string): string => canonicalStringify(parseScryfallQuery(query));
+
+	test("a code is the set's released_at, on every operator", () => {
+		// date>=hob is 1,200 there and so is date>=2026-08-14; date:hob is 311 and so is the date.
+		for (const op of [":", "=", ">", ">=", "<", "<="]) {
+			expect(tree(`date${op}hob`)).toBe(tree(`date${op}2026-08-14`));
+		}
+	});
+
+	test("it is a full date, not a window like the bare year", () => {
+		// `date:hob` is the 311 released that DAY; `date:2021` is the whole of 2021's 3,834, and the
+		// engine reads the two precisions differently (see the builder's date_range_bounds).
+		expect(tree("date:hob")).toBe(tree("date:2026-08-14"));
+		expect(tree("date:hob")).not.toBe(tree("date:2026"));
+	});
+
+	test("a leading-digit code is one WORD token, not a number and a word", () => {
+		expect(tree("date>=40k")).toBe(tree("date>=2022-10-07"));
+		expect(tree("date>=2x2")).toBe(tree("date>=2022-07-08"));
+		expect(tree("date>=3ed")).toBe(tree("date>=1994-04-11"));
+		expect(tree("date>=10e")).toBe(tree("date>=2007-07-13"));
+	});
+
+	test("case-insensitive, and quoted resolves too", () => {
+		expect(tree("date>=HOB")).toBe(tree("date>=2026-08-14"));
+		expect(tree('date>="hob"')).toBe(tree("date>=2026-08-14"));
+	});
+
+	test("an unknown code is a parse failure, not a silently different date", () => {
+		expect(() => parseScryfallQuery("date>=zzzz")).toThrow(ParseError);
+		// Dominaria's mtgo/arena code. `e:dar` is 265 on api.scryfall.com and `date>=dar` is
+		// `Invalid date or unknown set code` there — only the primary code anchors a date.
+		expect(() => parseScryfallQuery("date>=dar")).toThrow(ParseError);
+	});
+
+	test("year: does NOT take one — `year>=hob` is honored-and-empty on Scryfall, not a date", () => {
+		expect(() => parseScryfallQuery("year>=hob")).toThrow(ParseError);
+	});
+});
+
+/**
+ * `game:` reaches the `game_*` tags the importer stores (db-info.ts GAME_IS_TAGS), through a total
+ * value mapping — which is the point of the prefix, and what the last test here pins.
+ */
+describe("game: is the games array, prefixed so it cannot collide with is:", () => {
+	const tree = (query: string): string => canonicalStringify(parseScryfallQuery(query));
+
+	test("a game value becomes its prefixed tag", () => {
+		expect(tree("game:paper")).toBe(tree("is:game_paper"));
+		expect(tree("game:arena")).toBe(tree("is:game_arena"));
+		expect(tree("game:mtgo")).toBe(tree("is:game_mtgo"));
+	});
+
+	test("astral and sega are in the vocabulary — 404 on Scryfall, not `Unknown game`", () => {
+		expect(tree("game:astral")).toBe(tree("is:game_astral"));
+		expect(tree("game:sega")).toBe(tree("is:game_sega"));
+	});
+
+	test("case-folded, like every other value", () => {
+		expect(tree("game:MTGO")).toBe(tree("is:game_mtgo"));
+	});
+
+	test("negation wraps the rewritten leaf, nothing more", () => {
+		expect(tree("-game:paper")).toBe(tree("-is:game_paper"));
+	});
+
+	/**
+	 * THE REASON THE TAGS ARE PREFIXED. `game:` and `is:` share `card_is_tags`, so an unprefixed
+	 * mapping would answer `is:promo`'s 6,126 promo printings for `game:promo`, where
+	 * api.scryfall.com ignores the term with ``Unknown game `promo` ``. Here it becomes a tag no
+	 * row carries — a no-match — and the parser says so in a warning.
+	 */
+	test("a regex value folds into the tag name too, so it cannot match one either", () => {
+		// `^prom` would match the `promo` tag if the leaf stayed a regex over card_is_tags. It does
+		// not: the pattern becomes part of the tag NAME, and no row carries `game_^prom`.
+		expect(tree("game:/^prom/")).toBe(tree('is:"game_^prom"'));
+		expect(tree("game:/^prom/")).not.toBe(tree("is:/^prom/"));
+	});
+
+	test("a value outside the vocabulary cannot borrow an is: tag", () => {
+		expect(tree("game:promo")).not.toBe(tree("is:promo"));
+		expect(tree("game:promo")).toBe(tree("is:game_promo"));
+		expect(parseScryfallQueryWithDirectives("game:promo").warnings).toEqual([
+			"Unsupported term \u201cgame:promo\u201d: this server has no data for that predicate, so it matched no cards.",
+		]);
+		expect(parseScryfallQueryWithDirectives("game:paper").warnings).toEqual([]);
 	});
 });

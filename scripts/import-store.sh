@@ -241,6 +241,17 @@ echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes
 echo "==> Regenerating the parser's tag alias map..."
 bun scripts/generate-tag-aliases.ts store-build
 
+# 4b. ...and the set release dates behind `date>=<set code>`, for the same reason and at the same
+#     moment. Scryfall resolves a set code written where a date goes to that set's released_at, and
+#     the parser is synchronous — so the table is a committed module rather than a KV read on the
+#     parse path of every search. Sourced from api.scryfall.com/sets, which is the same endpoint
+#     the reference import mirrors, so a set released since the last run is an unknown code until
+#     this runs again. Not fatal if the fetch fails: a stale table still answers every set that
+#     existed when it was written, and failing the whole import over it would trade a working
+#     publish for a handful of week-old set codes.
+echo "==> Regenerating the parser's set release dates..."
+bun scripts/generate-set-dates.ts || echo "    (set-dates refresh failed; keeping the committed table)"
+
 echo "==> Publishing the store to KV..."
 bun scripts/seed-remote-kv.ts store-build
 

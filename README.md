@@ -622,7 +622,7 @@ The complete list of intentional differences:
   here and honored there, with the Scryfall spelling of the same predicate
   (`t:`, `otag:`, `atag:`) working on both; a negated numeric equality
   (`-cmc:3`, `-tou:1`, `-usd:0`) is ignored, because Scryfall cannot express one;
-  and a keyword Scryfall knows and this port does not (`game:`, `in:`, `cube:`,
+  and a keyword Scryfall knows and this port does not (`in:`, `cube:`,
   `new:`, `not:`, `stamp:`, `cheapest:`, `include:`, `direct:`) is deliberately
   NOT ignored, since ignoring it would answer a wider result than Scryfall
   silently. `SCRYFALL_ONLY_KEYWORDS` in

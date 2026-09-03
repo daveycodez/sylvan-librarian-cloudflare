@@ -193,6 +193,17 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["not"],
 		parserClass: ParserClass.TEXT,
 	},
+	// A third FieldInfo on the same column, for the same reason `not` is a second one: `game:paper`
+	// asks a card_is_tags question, but the VALUE is Scryfall's game vocabulary rather than the tag
+	// vocabulary, so the leaf has to be distinguishable by originalAttribute. rewrite.ts's
+	// `prefixGameValues` turns it into the `game_<value>` tag GAME_IS_TAGS names — which is what
+	// keeps `game:promo` from quietly answering `is:promo`.
+	{
+		dbColumnName: "card_is_tags",
+		fieldType: FieldType.JSONB_OBJECT,
+		searchAliases: ["game"],
+		parserClass: ParserClass.TEXT,
+	},
 	{
 		dbColumnName: "card_rarity_int",
 		fieldType: FieldType.NUMERIC,
@@ -356,6 +367,52 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["stamped", ["promo_types", "stamped"]],
 	["universesbeyond", ["promo_types", "universesbeyond"]],
 ] as [string, readonly [string, string]][]);
+
+/**
+ * Scryfall's `game:` vocabulary, as `game value -> card_is_tags key`.
+ *
+ * The tag keys are PREFIXED, and that is the whole point of the table: `games` is a bulk ARRAY
+ * exactly like `promo_types`, so `game:paper` would ride ARRAY_IS_TAGS as the bare tag `paper` —
+ * and then `game:promo` would answer `is:promo`'s 6,126 promos instead of Scryfall's
+ * ``Unknown game `promo` ``. Prefixing makes the mapping TOTAL: rewrite.ts sends every `game:`
+ * value through it, a value outside this table becomes a `game_<value>` tag no row carries, and
+ * the two vocabularies can never collide.
+ *
+ * ─── THE VOCABULARY ──────────────────────────────────────────────────────────────────────────
+ *
+ * Measured against api.scryfall.com 2026-09-03. `paper`, `arena` and `mtgo` answer (32,729 /
+ * 16,070 / 30,707 over the default corpus); `astral` and `sega` are ACCEPTED and answer nothing
+ * there — `game:astral` is a 404 with no `warnings` key, and 12 cards with `include_extras=true`,
+ * so they are valid values naming two old digital-only sets rather than typos. Anything else is
+ * ignored-and-warned: `game:nonsense` comes back ``Unknown game `nonsense` `` and `game:PROMO`
+ * names `promo` lower-cased, exactly as `lang:` does.
+ *
+ * ─── WHY THE `is:` TAGS AND NOT A NEW COLUMN ─────────────────────────────────────────────────
+ *
+ * `games` is per PRINTING (`card_is_tags` hangs off `Printing`, which is where the question
+ * belongs — `game:paper is:digital` is 0 on api.scryfall.com and so is `-is:digital -game:paper`,
+ * so the two are the same per-printing predicate), and three of the five values are DENSE. A new
+ * column would be an ARCHIVE_FORMAT_VERSION change and its deploy blackout; a tag is a
+ * STORE_CONTENT_GENERATION change, and the builder's own measurement is that density is cheap
+ * here — past the storage crossover a value is a bitmap plane rather than a posting list, so the
+ * three dense games cost about what the three densest existing tags did (1.89 MiB for
+ * booster/hires/nonfoil). See engine/builder/src/transform.rs.
+ *
+ * Spelled once here and once in the builder's `GAME_IS_TAGS`; the two must agree or `game:paper`
+ * silently answers nothing.
+ */
+export const GAME_IS_TAGS: ReadonlyMap<string, string> = new Map([
+	["paper", "game_paper"],
+	["arena", "game_arena"],
+	["mtgo", "game_mtgo"],
+	["astral", "game_astral"],
+	["sega", "game_sega"],
+]);
+
+/** The `card_is_tags` key a `game:` value names, valid or not — see GAME_IS_TAGS. */
+export function gameTagKey(value: string): string {
+	return GAME_IS_TAGS.get(value) ?? `game_${value}`;
+}
 
 /**
  * The `is:` values that read a NESTED single field rather than a top-level boolean or an array, as

@@ -8,7 +8,15 @@
  */
 
 import { CardAttributeNode, CardBinaryOperatorNode } from "./card-query-nodes";
-import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, FIELD_IS_TAGS, ParserClass } from "./db-info";
+import {
+	ARRAY_IS_TAGS,
+	BOOLEAN_IS_TAGS,
+	COMPUTED_IS_TAGS,
+	FIELD_IS_TAGS,
+	GAME_IS_TAGS,
+	gameTagKey,
+	ParserClass,
+} from "./db-info";
 import {
 	AndNode,
 	BinaryOperatorNode,
@@ -374,6 +382,11 @@ export const SUPPORTED_IS_VALUES: ReadonlySet<string> = new Set([
 	...BOOLEAN_IS_TAGS.keys(),
 	...ARRAY_IS_TAGS.keys(),
 	...FIELD_IS_TAGS.keys(),
+	// The `game_*` keys `prefixGameValues` writes. Here so `game:paper` — which IS one of these by
+	// the time anything downstream reads it — is not reported as a predicate with no data behind
+	// it. They are also spellable directly as `is:game_paper`, which Scryfall has no equivalent of;
+	// the compat surface drops that spelling in NOT_SCRYFALL_IS_VALUES, as it drops `subtype:`.
+	...GAME_IS_TAGS.values(),
 	...COMPUTED_IS_TAGS,
 	...ENGINE_IS_VALUES,
 	...[...DERIVED_EXPANSIONS.keys()].filter((k) => k.startsWith("is\u0000")).map((k) => k.slice("is\u0000".length)),
@@ -701,9 +714,17 @@ function collectUnsupportedIs(node: QueryNode, found: string[]): void {
 	const sep = key.indexOf("\u0000");
 	const alias = key.slice(0, sep);
 	const value = key.slice(sep + 1);
-	// `not:` is `-is:` (negateNotPrefix runs after this), so its vocabulary is `is:`'s.
+	// `not:` is `-is:` (negateNotPrefix runs after this), so its vocabulary is `is:`'s. `game:`
+	// carries its own closed vocabulary, and reaches here BEFORE prefixGameValues rewrites it —
+	// which is why this reads the value the caller wrote rather than the `game_` tag it becomes.
 	const supported =
-		alias === "is" || alias === "not" ? SUPPORTED_IS_VALUES : alias === "has" ? SUPPORTED_HAS_VALUES : null;
+		alias === "is" || alias === "not"
+			? SUPPORTED_IS_VALUES
+			: alias === "has"
+				? SUPPORTED_HAS_VALUES
+				: alias === "game"
+					? GAME_IS_TAGS
+					: null;
 	if (supported === null || supported.has(value)) return;
 	found.push(
 		`Unsupported term \u201c${alias}:${value}\u201d: this server has no data for that predicate, so it matched no cards.`,
@@ -782,7 +803,70 @@ export function negateNotPrefix(query: Query): Query {
 	return flattenNestedOperations(new Query(root));
 }
 
+/** Replace `game:value` leaves with the `is:game_value` tag leaf; return `[node, changed]`. */
+function swapGameLeaves(node: QueryNode): [QueryNode, boolean] {
+	const cls = (node as object).constructor;
+	if (cls === AndNode || cls === OrNode) {
+		let changed = false;
+		const operands: QueryNode[] = [];
+		for (const op of (node as AndNode | OrNode).operands) {
+			const [newOp, opChanged] = swapGameLeaves(op);
+			operands.push(newOp);
+			changed ||= opChanged;
+		}
+		return changed ? [cls === AndNode ? new AndNode(operands) : new OrNode(operands), true] : [node, false];
+	}
+	if (cls === NotNode) {
+		const [newOp, changed] = swapGameLeaves((node as NotNode).operand);
+		return changed ? [new NotNode(newOp), true] : [node, false];
+	}
+	if (
+		node instanceof BinaryOperatorNode &&
+		node.lhs instanceof CardAttributeNode &&
+		node.lhs.originalAttribute === "game"
+	) {
+		const value = (node.rhs as Partial<ValueNode>).value;
+		if (typeof value !== "string") return [node, false];
+		// A REGEX VALUE FOLDS TOO, and deliberately: a `RegexValueNode` carries its pattern as a
+		// plain string, so `game:/^prom/` becomes the tag `game_^prom` — one no row carries — rather
+		// than surviving as a regex over `card_is_tags`, where `^prom` would have matched the
+		// `promo` tag. That is the same collision the prefix exists to prevent, arriving through the
+		// one value shape that is not a literal. `/cards/search` never gets this far: the compat
+		// surface drops it with Scryfall's own `Unknown regular expression keyword “game”.`
+		const isLhs = new CardAttributeNode("is", node.lhs.matchedParserClass);
+		return [new CardBinaryOperatorNode(isLhs, node.operator, new StringValueNode(gameTagKey(pyLower(value)))), true];
+	}
+	return [node, false];
+}
+
+/**
+ * Rewrite `game:paper` into the `is:game_paper` tag leaf the importer stores.
+ *
+ * ─── WHY A PASS AND NOT A DERIVED_EXPANSIONS ROW ─────────────────────────────────────────────
+ *
+ * Because the mapping has to be TOTAL. An expansion table covers the values it lists and leaves
+ * every other one alone — and `game:` shares its column with `is:`, so an unlisted `game:promo`
+ * would fall through as the tag `promo` and answer 6,126 promo printings where api.scryfall.com
+ * answers ``Unknown game `promo` `` and ignores the term. Every `game:` value goes through
+ * `gameTagKey` here, so a value outside the vocabulary becomes a `game_promo` tag no row carries:
+ * a no-match, which is the honest end of "this server has no data for that", and
+ * `collectUnsupportedIs` has already said so in a warning.
+ *
+ * Runs FIRST, before `negateNotPrefix`, so every later pass — and every leaf-spelling rule
+ * downstream — sees an ordinary `is:` leaf. `-game:paper` is 1 on `e:khm t:god` there against
+ * `game:paper`'s 12, so the negation is nothing special: it wraps the rewritten leaf exactly as
+ * it wrapped the original.
+ */
+export function prefixGameValues(query: Query): Query {
+	const [root, changed] = swapGameLeaves(query.root);
+	if (!changed) {
+		return query;
+	}
+	return flattenNestedOperations(new Query(root));
+}
+
 const REWRITE_PASSES: ReadonlyArray<(q: Query) => Query> = [
+	prefixGameValues,
 	negateNotPrefix,
 	expandDerivedPredicates,
 	lowerLiteralRegexes,

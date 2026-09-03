@@ -34,6 +34,7 @@ import {
 } from "./nodes";
 import { PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
 import { MAX_GROUP_DEPTH, QueryBudgetExceeded } from "./query-budget";
+import { setReleaseDate } from "./set-dates.gen";
 import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
 
 /** Python `repr()` of a plain string, for the one message that interpolates `{invalid!r}`. */
@@ -913,9 +914,52 @@ export class Parser {
 		return new StringValueNode(text);
 	}
 
-	/** Parse a date value: YYYY, YYYY-MM or YYYY-MM-DD (hyphens must have no surrounding spaces). */
+	/**
+	 * Parse a date value: YYYY, YYYY-MM, YYYY-MM-DD (hyphens must have no surrounding spaces), or a
+	 * SET CODE, which names that set's release date.
+	 *
+	 * ─── THE SET-CODE ANCHOR ─────────────────────────────────────────────────────────────────
+	 *
+	 * `date>=hob` is `date>=2026-08-14`, The Hobbit's `released_at`. Measured against
+	 * api.scryfall.com 2026-09-03, one request per row, each code against the explicit date
+	 * `/sets/<code>` reports:
+	 *
+	 *   date>=hob  1,200 = date>=2026-08-14      date>=3ed  33,581 = date>=1994-04-11
+	 *   date:hob     311 = date:2026-08-14       date>=10e  28,976 = date>=2007-07-13
+	 *   date<hob  33,203 = date<2026-08-14       date>=40k  16,724 = date>=2022-10-07
+	 *   date<=hob 33,409                         date>=2x2  17,295 = date>=2022-07-08
+	 *   date>hob     901                         date>="hob" 1,200 — quoted too
+	 *
+	 * A FULL DATE, not a window: `date:hob` is the 311 released on that single day, where the bare
+	 * year `date:2021` is the whole of 2021. So this returns the same yyyy-mm-dd string the
+	 * three-token path does and the engine's `date_range_bounds` treats it identically.
+	 *
+	 * The four codes with a leading digit are why the lexer's `2rr` rule matters here: `40k`,
+	 * `2x2`, `3ed` and `10e` arrive as ONE `WORD` token, not a NUMBER followed by a word.
+	 *
+	 * `year:` does NOT take one — `year>=hob` is 404 there, the honored-and-matches-nothing answer
+	 * — which is why `parseYearValue` below still demands a NUMBER.
+	 *
+	 * ONLY THE PRIMARY `code` RESOLVES. `date>=dar` (Dominaria's mtgo/arena code) and `date>=ms4`
+	 * (Mythic Edition's) are both `Invalid date or unknown set code` on api.scryfall.com, where
+	 * `e:dar` is 265 — so `set-dates.gen.ts` carries `code` alone and `e:`'s wider alias set is a
+	 * different question.
+	 */
 	parseDateValue(): QueryNode {
 		const tok = this.peek();
+		// A set code, in the two shapes Scryfall takes it in. `parseYearValue` deliberately has no
+		// such branch; see above.
+		if (tok.type === TT.WORD || tok.type === TT.QUOTED) {
+			const code = String(tok.value);
+			const released = setReleaseDate(code);
+			if (released === null) {
+				// Scryfall's own sentence for this, which `/cards/search` reproduces verbatim as an
+				// ignored-term warning (see the compat surface's `dateReason`).
+				throw new InternalParseError(`Invalid date or unknown set code ${pyStr(code)} at position ${tok.pos}`);
+			}
+			this.consume();
+			return new StringValueNode(released);
+		}
 		if (tok.type !== TT.NUMBER) {
 			throw new InternalParseError(`Expected date, got ${pyStr(tok.value)} at position ${tok.pos}`);
 		}

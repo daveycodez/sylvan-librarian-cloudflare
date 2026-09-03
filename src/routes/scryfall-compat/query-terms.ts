@@ -49,8 +49,10 @@ import {
 	COLOR_ALIAS_TO_CODES,
 	COLOR_COUNT_NAMES,
 	COLUMN_SCOPED_COUNT_NAMES,
+	GAME_IS_TAGS,
 	ParserClass,
 } from "../../parser/db-info";
+import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { DIRECTIVE_TABLES } from "../enums";
 
 /**
@@ -92,7 +94,10 @@ const NOT_SCRYFALL_KEYWORDS: ReadonlySet<string> = new Set([
  * Scryfall applied is worse than saying the query could not be read.
  */
 const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
-	"game",
+	// `game` LEFT THIS TABLE when the importer started storing the `games` array as `game_*` tags
+	// (db-info.ts GAME_IS_TAGS). It is a keyword this port honors now, so listing it here would
+	// claim the opposite; what remains of it on this surface is the value validator below, which
+	// reproduces Scryfall's ``Unknown game `nonsense` `` rather than letting the term through.
 	"in",
 	"cube",
 	"new",
@@ -842,11 +847,76 @@ function regexKeywordReason(keyword: string, rawValue: string): string | null {
 	return `Unknown regular expression keyword \u201c${keyword}\u201d.`;
 }
 
+/**
+ * The date shapes Scryfall's value parser takes before it falls back to the set-code table.
+ *
+ * ZERO-PADDING-STRICT, which is Scryfall's own rule and not this port's parser's: measured
+ * 2026-09-03 against the anchor `e:khm` = 323, `date:2021-2` comes back
+ * `Invalid date or unknown set code “2021-2”` while `date:2021-02` is honored. The three
+ * accepted shapes are `YYYY`, `YYYY-MM` and `YYYY-MM-DD`; everything else is tried as a SET CODE.
+ */
+const DATE_SHAPE_RE = /^\d{4}(?:-\d{2}(?:-\d{2})?)?$/;
+
+/**
+ * `Invalid date or unknown set code “X”`, or null when the value is one Scryfall can read.
+ *
+ * ─── WHAT SCRYFALL DOES WITH A DATE VALUE ────────────────────────────────────────────────────
+ *
+ * It tries the three date shapes above, then the set-code table, then gives up and IGNORES the
+ * term. Measured 2026-09-03, anchor `e:khm` = 323, one request per row:
+ *
+ *   date>=hob      honored, 2026-08-14   `hob` is The Hobbit; see parser.parseDateValue
+ *   date>=HOB      honored               the table is case-insensitive
+ *   date>="hob"    honored               quoted resolves too
+ *   date>=zzzz     323 + `… unknown set code “zzzz”`
+ *   -date>=zzzz    323 + the same, echoing `-date>=zzzz`
+ *   date>=ZZZZ     323 + the sentence naming `zzzz` — lower-cased, like every other value sentence
+ *   date:2021-2    323 + the sentence naming `2021-2`
+ *   date:99        323, date:1 323, date:20210205 323, date:2021- 323
+ *
+ * ─── THE ONE SHAPE THIS DELIBERATELY LETS THROUGH ────────────────────────────────────────────
+ *
+ * `date:2021-13` is a THIRD answer there — `Invalid date “2021-13”`, without the set-code half of
+ * the sentence, because the shape parsed and only the month was out of range. This port answers
+ * `400 Failed to parse query` for it, which is the pre-existing gap `parser.parseDateValue`
+ * records, and the shape test above keeps it exactly that: a value that LOOKS like a date is not
+ * this function's business, so nothing here changes for it. `date:2021-02-30` is a fourth answer
+ * again (404, honored and matching nothing) and is left alone for the same reason.
+ *
+ * A regex literal is skipped so `date:/199/` keeps its own sentence — `Unknown regular expression
+ * keyword “date”.` from `regexKeywordReason`, which runs later and would never be reached.
+ */
+function dateValueReason(keyword: string, rawValue: string): string | null {
+	if (!DATE_KEYWORDS.has(keyword) || isRegexLiteral(rawValue)) return null;
+	const value = unquote(rawValue).toLowerCase();
+	if (DATE_SHAPE_RE.test(value) || isKnownSetCode(value)) return null;
+	return `Invalid date or unknown set code “${value}”`;
+}
+
 /** Keyword groups, by the alias spellings this parser and Scryfall share. */
 const FORMAT_KEYWORDS: ReadonlySet<string> = new Set(["f", "format", "legal", "banned", "restricted"]);
 const LANGUAGE_KEYWORDS: ReadonlySet<string> = new Set(["lang", "language"]);
 const RARITY_KEYWORDS: ReadonlySet<string> = new Set(["r", "rarity"]);
 const ORACLE_ID_KEYWORDS: ReadonlySet<string> = new Set(["oracleid", "oracle_id"]);
+const GAME_KEYWORDS: ReadonlySet<string> = new Set(["game"]);
+
+/** The three spellings that read the `card_is_tags` vocabulary. `not:` is `-is:`. */
+const IS_KEYWORDS: ReadonlySet<string> = new Set(["is", "has", "not"]);
+
+/**
+ * `is:` VALUES this port answers and Scryfall does not know — the value-level twin of
+ * NOT_SCRYFALL_KEYWORDS, and today exactly the `game_*` tags the importer stores for `game:`.
+ *
+ * `game:paper` is Scryfall's spelling and is honored on both sides; `is:game_paper` is the tag
+ * underneath it, which is this port's own and reaches the same rows. Left alone it would answer
+ * where api.scryfall.com ignores the term, so it is dropped here exactly as `subtype:` is — and
+ * `game:paper` is untouched, because this scan runs on the RAW query text and the rewrite that
+ * turns one into the other happens later, inside the parser.
+ *
+ * All three spellings take the same sentence, measured 2026-09-03: `is:nonsense`, `has:nonsense`
+ * and `not:nonsense` each come back `Checking if cards are “nonsense” is not supported`.
+ */
+const NOT_SCRYFALL_IS_VALUES: ReadonlySet<string> = new Set(GAME_IS_TAGS.values());
 
 /**
  * Every keyword this file may NOT call unknown: the parser's own aliases, the in-query directives,
@@ -870,6 +940,7 @@ const KNOWN_KEYWORDS: ReadonlySet<string> = new Set([
 	...RARITY_KEYWORDS,
 	...ORACLE_ID_KEYWORDS,
 	...COLOR_KEYWORDS,
+	...GAME_KEYWORDS,
 ]);
 
 /**
@@ -1237,6 +1308,17 @@ function classifyLeaf(term: string): LeafVerdict {
 
 	const equality = op === ":" || op === "=";
 
+	// BEFORE the negation rule below, and it is the one value validator that has to be: `-date>=zzzz`
+	// is dropped-and-warned exactly as its unnegated twin is, and it echoes the MINUS with it
+	// (measured 2026-09-03, anchor `e:khm` = 323: `-date>=zzzz e:khm` is 323 carrying
+	// `Invalid expression “-date>=zzzz” was ignored. Invalid date or unknown set code “zzzz”`).
+	// The `-` strip below would otherwise hand the validator a term whose warning names the wrong
+	// expression. See dateValueReason.
+	{
+		const dateReason = dateValueReason(keyword, rawValue);
+		if (dateReason !== null) return { keep: false, reason: dateReason };
+	}
+
 	// BEFORE the unknown-keyword rule and before every value validator, because Scryfall applies it
 	// there: `-nonsense>=1`, `-subtype>=1`, `-lang>zz`, `-f>notaformat` and `-oracleid>abc` are all
 	// the anchor's 151 with an ABSENT `warnings` key, where each unnegated twin is ignored-and-warned.
@@ -1344,6 +1426,19 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (DEVOTION_KEYWORDS.has(keyword)) {
 		const reason = devotionReason(value);
 		if (reason !== null) return { keep: false, reason };
+	}
+	// `game:` checks its value under `:`/`=` and is HONORED-and-empty under a comparison, which the
+	// COMPARABLE_KEYWORDS rule above already answers (`game>=paper e:khm t:god` is 404 there where
+	// `game=paper e:khm t:god` is 12). Measured 2026-09-03: `game:nonsense` comes back
+	// ``Unknown game `nonsense` `` — backticks, like `lang:`, not the curly quotes `f:`/`r:` use —
+	// and `game:PROMO` names `promo`, echoing the expression lower-cased too. `astral` and `sega`
+	// are in the vocabulary and simply match nothing in the default corpus; see GAME_IS_TAGS.
+	if (GAME_KEYWORDS.has(keyword) && !GAME_IS_TAGS.has(loweredValue)) {
+		return { keep: false, reason: `Unknown game \`${loweredValue}\`` };
+	}
+	// The `game_*` tags under this port's own spelling — see NOT_SCRYFALL_IS_VALUES.
+	if (IS_KEYWORDS.has(keyword) && NOT_SCRYFALL_IS_VALUES.has(loweredValue)) {
+		return { keep: false, reason: `Checking if cards are \u201c${loweredValue}\u201d is not supported` };
 	}
 	if (ORACLE_ID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
 		return { keep: false, reason: "You must provide a valid v4 UUID." };

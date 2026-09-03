@@ -1466,8 +1466,36 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      minute or two between the two steps of `scripts/deploy.sh`. Bumping BOTH is what keeps that
  *      window to those two steps: `store-age.ts` rebuilds on this constant and not on the format,
  *      so a format bump alone would leave the old store in place and every reader refusing it.
+ *
+ *  46 — `game:` GETS ITS DATA. The `games` array each bulk card carries is stored as the
+ *      `game_paper` / `game_arena` / `game_mtgo` / `game_astral` / `game_sega` members of
+ *      `card_is_tags` (transform.rs `GAME_IS_TAGS`), and the parser rewrites `game:paper` onto
+ *      them (rewrite.ts `prefixGameValues`).
+ *
+ *      The keyword parsed nowhere before this: `game:paper` was `400 Failed to parse query` here
+ *      against 32,729 cards on api.scryfall.com, and it was ledgered as an operator this port did
+ *      not implement (scripts/parity-sweep.ts, `adj-game-paper`). `games` WAS already imported —
+ *      generation 10 packs it into the `card_compat_blob` residue as a 3-bit membership set — but
+ *      that archive is the one only `/cards/*` reads, so no search could see it.
+ *
+ *      THE TAGS ARE PREFIXED, and that is the load-bearing detail: `game:` shares `card_is_tags`
+ *      with `is:`, so a bare `paper` tag would make `game:promo` answer `is:promo`'s promos where
+ *      Scryfall answers ``Unknown game `promo` `` and ignores the term. Prefixing makes the value
+ *      mapping total, so an unknown game names a tag no row carries.
+ *
+ *      GENERATION-ONLY. No struct changes shape and no index moves — five values join a vocabulary
+ *      `card_is_tags` already holds — so a generation-45 store still LOADS, which is exactly why
+ *      this bump has to exist: nothing in the header can see that the tag vocabulary grew, and
+ *      without it store-age.ts would keep serving a store where every `game:` query is a no-match.
+ *      Same call as generations 6, 8, 9, 24, 31, 40, 41 and 44, and the same cheap deploy: the old
+ *      store stays readable for the minutes the rebuild takes.
+ *
+ *      Density is not a reason to hesitate here; the builder's own four-archive measurement is
+ *      that a dense tag is a bitmap plane and the three densest in the vocabulary cost 1.89 MiB
+ *      between them. paper/mtgo/arena are 32,729 / 30,707 / 16,070 cards on api.scryfall.com
+ *      (2026-09-03); astral and sega are a dozen printings and cost a posting list each.
  */
-export const STORE_CONTENT_GENERATION = 45;
+export const STORE_CONTENT_GENERATION = 46;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

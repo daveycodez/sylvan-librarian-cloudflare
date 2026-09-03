@@ -1149,6 +1149,11 @@ describe("the regex surface, alias by alias", () => {
 		restricted: ["restricted:/modern/", "Unknown regular expression keyword \u201crestricted\u201d."],
 		date: ["date:/199/", "Unknown regular expression keyword \u201cdate\u201d."],
 		year: ["year:/199/", "Unknown regular expression keyword \u201cyear\u201d."],
+		// `game:` takes the regex sentence and NOT its own `Unknown game` one, which is why
+		// dateValueReason's sibling check is ordered after regexKeywordReason rather than before it:
+		// measured 2026-09-03, `game:/^pap/ t:goblin` is 563 there carrying
+		// `Unknown regular expression keyword “game”.`
+		game: ["game:/^pap/", "Unknown regular expression keyword \u201cgame\u201d."],
 	};
 
 	/**
@@ -1232,5 +1237,103 @@ describe("the regex surface, alias by alias", () => {
 		const classified = new Set([...Object.keys(KEPT), ...Object.keys(DROPPED)]);
 		const missing = [...new Set(DB_COLUMNS.flatMap((c) => c.searchAliases))].filter((a) => !classified.has(a));
 		expect(missing).toEqual([]);
+	});
+});
+
+/**
+ * The two operators this port could not read at all, now that it can — every row measured against
+ * api.scryfall.com on 2026-09-03 with the anchor `e:khm` = 323, so a KEPT term is one Scryfall
+ * honored and a DROPPED one is a term it ignored with exactly this sentence.
+ */
+describe("game:, and a set code where a date goes", () => {
+	const policy = (query: string) => scryfallTermPolicy(query);
+	const dropped = (query: string, term: string, reason: string) => {
+		const result = policy(`${query} e:khm`);
+		expect(result.query).toBe("e:khm");
+		expect(result.warnings).toEqual([`Invalid expression \u201c${term}\u201d was ignored. ${reason}`]);
+	};
+
+	test("game: is honored now — it left SCRYFALL_ONLY_KEYWORDS when the importer got the data", () => {
+		for (const value of ["paper", "arena", "mtgo", "astral", "sega"]) {
+			const result = policy(`game:${value} e:khm`);
+			expect(result.query).toBe(`game:${value} e:khm`);
+			expect(result.warnings).toEqual([]);
+		}
+		// And it parses, which is the half that was `400 Failed to parse query` before.
+		expect(() => parseScryfallQuery("game:paper")).not.toThrow();
+	});
+
+	test("an unknown game is ignored and named, in backticks and lower-cased", () => {
+		// `game:nonsense` comes back ``Unknown game `nonsense` `` — backticks, like `lang:`, not the
+		// curly quotes `f:` and `r:` use. `game:PROMO` names `promo` and echoes the expression
+		// lower-cased too, which is the same downcase every other value sentence takes.
+		dropped("game:nonsense", "game:nonsense", "Unknown game `nonsense`");
+		dropped("game:PROMO", "game:promo", "Unknown game `promo`");
+	});
+
+	test("a comparison on game: is honored and matches nothing, as it is for every text column", () => {
+		// `game>=paper e:khm t:god` is 404 there where `game=paper e:khm t:god` is 12.
+		expect(policy("game>=paper e:khm t:god").query).toBe("cmc<0 e:khm t:god");
+		expect(policy("game=paper e:khm").query).toBe("game=paper e:khm");
+	});
+
+	test("the tag underneath game: is this port's own spelling, so it is dropped here", () => {
+		// `is:game_paper` reaches the same rows as `game:paper` and Scryfall has no equivalent —
+		// same class as `subtype:`. All three spellings take one sentence there: `is:nonsense`,
+		// `has:nonsense` and `not:nonsense` each answer `Checking if cards are “nonsense” is not
+		// supported`.
+		for (const alias of ["is", "has", "not"]) {
+			dropped(
+				`${alias}:game_paper`,
+				`${alias}:game_paper`,
+				"Checking if cards are \u201cgame_paper\u201d is not supported",
+			);
+		}
+		// ...and the spelling Scryfall DOES know is untouched, because this scan reads the raw query
+		// text and the rewrite that turns one into the other happens later, inside the parser.
+		expect(policy("game:paper e:khm").query).toBe("game:paper e:khm");
+	});
+
+	test("a set code is a date value, and survives the scan", () => {
+		for (const term of ["date>=hob", "date:hob", "date<hob", 'date>="hob"', "date>=HOB", "date>=40k"]) {
+			const result = policy(`${term} e:khm`);
+			expect(result.query).toBe(`${term} e:khm`);
+			expect(result.warnings).toEqual([]);
+		}
+	});
+
+	test("a value that is neither a date nor a set code is ignored and named", () => {
+		dropped("date>=zzzz", "date>=zzzz", "Invalid date or unknown set code \u201czzzz\u201d");
+		// The sentence names the value lower-cased, and the echo is lower-cased with it.
+		dropped("date>=ZZZZ", "date>=zzzz", "Invalid date or unknown set code \u201czzzz\u201d");
+		// NOT zero-padded, so Scryfall never reads it as a date and falls through to the set table.
+		dropped("date:2021-2", "date:2021-2", "Invalid date or unknown set code \u201c2021-2\u201d");
+		dropped("date:99", "date:99", "Invalid date or unknown set code \u201c99\u201d");
+		dropped("date:20210205", "date:20210205", "Invalid date or unknown set code \u201c20210205\u201d");
+		dropped("date:2021-", "date:2021-", "Invalid date or unknown set code \u201c2021-\u201d");
+	});
+
+	/**
+	 * THE ONE DATE RULE THAT HAS TO RUN BEFORE THE NEGATION STRIP. `-date>=zzzz` is dropped exactly
+	 * as its unnegated twin is, and the warning echoes the MINUS with it — where every other
+	 * negated comparison this file knows is either honored or replaced without a word.
+	 */
+	test("a negated date value is dropped too, echoing the minus", () => {
+		dropped("-date>=zzzz", "-date>=zzzz", "Invalid date or unknown set code \u201czzzz\u201d");
+		// The strip itself still happens for a value Scryfall can read.
+		expect(policy("-date>=hob e:khm").query).toBe("date>=hob e:khm");
+	});
+
+	/**
+	 * `date:2021-13` is a THIRD sentence there — `Invalid date “2021-13”`, without the set-code half
+	 * — because the SHAPE parsed and only the month was out of range, and `date:2021-02-30` is a
+	 * fourth answer again (404, honored and matching nothing). Both are pre-existing divergences
+	 * this port answers with `400 Failed to parse query`, and the shape test is what keeps them
+	 * exactly that rather than folding them into the sentence above.
+	 */
+	test("a date-SHAPED value is not this rule's business", () => {
+		expect(policy("date:2021-13 e:khm").query).toBe("date:2021-13 e:khm");
+		expect(policy("date:2021-02-30 e:khm").query).toBe("date:2021-02-30 e:khm");
+		expect(policy("date:2021-13 e:khm").warnings).toEqual([]);
 	});
 });
