@@ -17154,6 +17154,60 @@ fn every_atypical_marker_counts_and_the_look_alikes_do_not() {
     assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
 }
 
+/// `is:atypical` IS the class `prefer:atypical` ranks by — `FilterExpr::Atypical` calls the same
+/// `printing_is_atypical` over the same bound ids — and `is:default` is its `Not`. Pinned over
+/// the same four-printing fixture under `unique=printing`, where every printing is its own row,
+/// so the filter's answer is the SET the prefer only ever showed the best member of.
+#[test]
+fn is_atypical_is_the_same_class_the_prefer_ranks_by() {
+    fn ids_with(data: &CardData, mut filter: FilterExpr, bind: bool) -> Vec<u128> {
+        let bytes = rkyv::to_bytes::<Error>(data).expect("serialize");
+        let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        // `run_query` does NOT bind: the production entry point does, in
+        // `bind_and_split_filter_value`, before `run_query` ever sees the tree. So the bind is
+        // made here, with the same arguments that call passes, and made OPTIONAL so the unbound
+        // answer can be pinned too — see the first assertion below.
+        if bind {
+            filter.bind(&a.coll_vocab, &a.coll_vocab_sorted, &a.artist_vocab, &a.artist_vocab_collated, &a.artist_entities, &a.mana_vocab, &a.indexes.flavor, &a.strings);
+        }
+        let (_, page) = run_query(&QueryCtx::from(a), &mut filter, None, "printing", "default", "name", "asc", 100, 0);
+        let mut out: Vec<u128> = page.iter().map(|r| u128::from(r.1.scryfall_id)).collect();
+        out.sort_unstable();
+        out
+    }
+    let ids = |data: &CardData, filter: FilterExpr| ids_with(data, filter, true);
+    let atypical = || FilterExpr::Atypical(super::PreferClassIds::UNBOUND);
+    let default = || FilterExpr::Not(Box::new(atypical()));
+
+    let mut data = class_prefer_store();
+    // THE HAZARD THE VARIANT'S DOC NAMES, pinned: unbound, every vocab test is false and only the
+    // border/flag half of the class answers — id 3 alone, a silently wrong class rather than an
+    // error. An entry point that skipped `bind` would ship exactly this.
+    assert_eq!(ids_with(&data, atypical(), false), vec![3]);
+    // ids 2 (showcase), 3 (borderless), 4 (foil-only surge foil) are the class; 1 is the default.
+    assert_eq!(ids(&data, atypical()), vec![2, 3, 4]);
+    assert_eq!(ids(&data, default()), vec![1]);
+
+    // The same marker walk `every_atypical_marker_counts_and_the_look_alikes_do_not` does, read as
+    // sets: strip id 3's border and it leaves the class...
+    data.printings[2].card_border_id = data.printings[0].card_border_id;
+    assert_eq!(ids(&data, atypical()), vec![2, 4]);
+    assert_eq!(ids(&data, default()), vec![1, 3]);
+    // ...give id 4 a nonfoil finish and its surge-foil word stops counting...
+    data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    assert_eq!(ids(&data, atypical()), vec![2]);
+    // ...and the look-alike: a plain legendary frame with a nonfoil surge-foil word is NOT atypical.
+    let legendary = data.printings[1].compat.frame_effects[0];
+    let (ub, surgefoil) = (data.printings[1].card_is_tags[0], data.printings[1].compat.promo_types[1]);
+    data.printings[1].compat.frame_effects = vec![legendary];
+    data.printings[1].compat.promo_types = vec![ub, surgefoil];
+    assert_eq!(ids(&data, atypical()), Vec::<u128>::new());
+    assert_eq!(ids(&data, default()), vec![1, 2, 3, 4]);
+    // Full art alone brings a printing back in.
+    data.printings[2].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(ids(&data, atypical()), vec![3]);
+}
+
 /// `prefer:borderless` is "the best-looking printing that is still this card": Najeela's shape.
 /// Four printings in default order — the plain original, a borderless CROSSOVER (a flavor
 /// name: Spider-Gwen), an etched inverted same-named variant, and a same-named borderless one

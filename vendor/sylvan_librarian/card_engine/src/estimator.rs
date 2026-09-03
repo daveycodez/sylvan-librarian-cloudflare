@@ -119,6 +119,9 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         // ...and so are the printed name (Printing.printed_name_folded_id) and the flavor name
         // (Printing.flavor_name_id, or a PrintingFace's).
         FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
+        // ...and so is the frame class (`is:atypical` / `is:default`): flags, border and promo
+        // types are all the printing's.
+        FilterExpr::Atypical(_) => true,
         FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(has_printing_varying_leaf),
         FilterExpr::Not(inner) => has_printing_varying_leaf(inner),
         // A REVERSIBLE PRINTING PRINTS ITS OWN JOINED NAME ("Temple Garden // Temple Garden"
@@ -502,6 +505,8 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         | FilterExpr::FlavorNamePresent
         | FilterExpr::SingleSet
         | FilterExpr::VanillaFace
+        // No index answers the frame class; it is a per-printing field read like the two above.
+        | FilterExpr::Atypical(_)
         | FilterExpr::FlavorNameIn { .. } => unknown(n),
 
         // Printing-space CSR width sums → project (varying).

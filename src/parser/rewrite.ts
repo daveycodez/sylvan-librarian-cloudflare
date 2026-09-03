@@ -122,6 +122,15 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000colorshifted", "frame:colorshifted"],
 	["is\u0000extendedart", "frame:extendedart"], // 3,629 = 3,629
 	["is\u0000showcase", "frame:showcase"], // 2,213 = 2,213
+	// `tombstone` is a frame EFFECT, not a promo type — the only one of the 78 `is:` values this
+	// port answered 0 for that is not in `promo_types`. It reaches `card_frame_data` exactly as the
+	// three above do, so it costs a rewrite rather than a stored tag. 113 on api.scryfall.com,
+	// 2026-09-03.
+	["is\u0000tombstone", "frame:tombstone"],
+	// `is:borderless` is the BORDER column, not a frame effect and not a promo type — `is:borderless`
+	// and `border:borderless` are both 3,611 on api.scryfall.com (2026-09-03) and both set
+	// differences are empty. So it costs a rewrite onto a column this parser already has.
+	["is\u0000borderless", "border:borderless"],
 	// ── Land cycles: one alphabetized segment ────────────────────────────────
 	// creatureland/manland keep the oracle-text heuristic: 48/49 vs Scryfall,
 	// 0 false positives (the one miss is Alchemy-only and absent here).
@@ -287,6 +296,23 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// The stored tag follows Scryfall's own syntax page (`is:judge_gift`); Scryfall accepts the
 	// short spelling too, so it aliases on rather than storing the same rows twice.
 	["is\u0000judge", "is:judge_gift"],
+	// THE CONCATENATED SPELLINGS OF SIX TAGS ALREADY STORED — the `promo_types` member itself,
+	// which Scryfall accepts alongside its own underscored syntax-page spelling. Measured
+	// 2026-09-03: `is:setpromo` 1,381, `is:promopack` 2,599, `is:mediainsert` 586,
+	// `is:planeswalkerdeck` 180, `is:judgegift` 164, `is:arenaleague` 40, `is:intropack` 40 — every
+	// one of them a 200 there and a warned no-match here, because this parser knew only the
+	// underscored key. Aliases and not rows: the tag under both spellings is the same tag, and the
+	// store already carries it.
+	["is\u0000arenaleague", "is:arena_league"],
+	["is\u0000intropack", "is:intro_pack"],
+	["is\u0000judgegift", "is:judge_gift"],
+	["is\u0000mediainsert", "is:media_insert"],
+	["is\u0000planeswalkerdeck", "is:planeswalker_deck"],
+	["is\u0000setpromo", "is:set_promo"],
+	// `rainbow` is Scryfall's short spelling of the `rainbowfoil` promo type, not a member of its
+	// own: `is:rainbow` and `is:rainbowfoil` are both 183 and both set differences are empty
+	// (2026-09-03). It never appears in `promo_types`, so it can only ever be an alias.
+	["is\u0000rainbow", "is:rainbowfoil"],
 ]);
 
 /**
@@ -364,8 +390,25 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  * with no `lang:` written — so, like `localizedname`, its presence WIDENS the query to the annex.
  * Before it was listed here it parsed, reached the engine as a tag no row carries, and answered a
  * 404 for `clive is:flavorname` where Scryfall answers the three alternate-name Clives.
+ *
+ * `atypical` and `default` are the FRAME CLASS — Scryfall's "atypical frame" and its complement,
+ * "the default Magic frame". Not a stored tag and not a rewrite: the class is a rule over a
+ * printing's border, frame effects, full-art/textless flags, promo treatments and finishes, and
+ * the engine already evaluates exactly that rule for `prefer:atypical` (`printing_is_atypical`).
+ * `FilterExpr::Atypical` calls the same function over the same ids, so the filter and the prefer
+ * cannot disagree about which printings are the class. Measured 2026-09-03: `is:default` 33,267
+ * and `is:atypical` 10,423, `is:atypical is:default` 0 and `is:default -is:atypical` 33,267 —
+ * exact complements per printing, so `default` is `Not(Atypical)` in the engine. Both were the
+ * largest `is:` values this port answered nothing for.
  */
-export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set(["localizedname", "unique", "vanilla", "flavorname"]);
+export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set([
+	"localizedname",
+	"unique",
+	"vanilla",
+	"flavorname",
+	"atypical",
+	"default",
+]);
 
 for (const [value, dsl] of HAS_EXPANSIONS) {
 	(DERIVED_EXPANSIONS as Map<string, string>).set(makeKey("has", value), dsl);

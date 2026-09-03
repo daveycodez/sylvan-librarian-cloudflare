@@ -61,6 +61,21 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	"oversized",
 	"reserved",
 	"rebalanced",
+	// The 2026-09-03 sweep that took ARRAY_IS_TAGS from 24 rows to 106 (db-info.ts) was probed the
+	// same way — `<term> or cmc=3` with include_extras=false, the verdict read out of the next_page
+	// echo, controls `is:glossy` (fires) and `is:convention`/`is:ffx`/`is:setpromo` (quiet) agreeing
+	// with what was already known. THREE of the 93 new values fire; the other 90 echo false. And
+	// the file's warning held exactly: 65 of those 90 have a bare count EQUAL to their
+	// include_extras count (their populations hold no extras), and a count-based pass had listed
+	// every one of them as a trigger before the echo was read.
+	//
+	// `surgefoil` and `thick` are the two whose populations DO hold extras (token-set and
+	// memorabilia printings), so before this they were the two values the local store answered
+	// short on: `is:surgefoil` 1,521 against 1,584, `is:thick` 72 against 88, and both exact with
+	// the flag forced. `draculaseries` holds none and fires anyway — the `is:glossy` shape again.
+	"surgefoil",
+	"thick",
+	"draculaseries",
 ]);
 
 /**

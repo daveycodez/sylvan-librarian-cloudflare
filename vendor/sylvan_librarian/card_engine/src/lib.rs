@@ -9245,7 +9245,7 @@ fn narrow_rec(
 /// is `promo_types` membership (see db-info ARRAY_IS_TAGS): 99 and 94 of 100 red instants agree,
 /// the misses again order differences inside the class.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-struct PreferClassIds {
+pub(crate) struct PreferClassIds {
     /// `CompatFields.frame_effects` members: inverted, showcase, extendedart, etched, shatteredglass.
     frame_effects: [u16; 5],
     /// `CompatFields.promo_types` members: boosterfun, datestamped, stamped, embossed.
@@ -9262,7 +9262,7 @@ struct PreferClassIds {
 }
 
 impl PreferClassIds {
-    const UNBOUND: PreferClassIds = PreferClassIds {
+    pub(crate) const UNBOUND: PreferClassIds = PreferClassIds {
         frame_effects: [VOCAB_NONE; 5],
         promo_types: [VOCAB_NONE; 4],
         surgefoil: VOCAB_NONE,
@@ -9271,7 +9271,7 @@ impl PreferClassIds {
         lang_en: VOCAB_NONE,
     };
 
-    fn bind(coll_vocab: &AStrings) -> Self {
+    pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
         let id = |word: &str| -> u16 {
             coll_vocab.iter().position(|s| s.as_str() == word).map_or(VOCAB_NONE, |i| i as u16)
         };
@@ -9289,7 +9289,7 @@ impl PreferClassIds {
 /// Is this printing an ATYPICAL frame in Scryfall's sense? See `PreferClassIds` for the measured
 /// rule; `strings` is for the border, which is an interned string rather than a vocab id. Two
 /// halves: the FRAME variants (`printing_is_frame_variant`) and the promo TREATMENTS.
-fn printing_is_atypical(p: &APrinting, ids: &PreferClassIds, strings: &AStrings) -> bool {
+pub(crate) fn printing_is_atypical(p: &APrinting, ids: &PreferClassIds, strings: &AStrings) -> bool {
     let has = |list: &Archived<Vec<u16>>, want: u16| want != VOCAB_NONE && list.iter().any(|v| u16::from(*v) == want);
     if printing_is_frame_variant(p, ids, strings) {
         return true;

@@ -1494,8 +1494,40 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      that a dense tag is a bitmap plane and the three densest in the vocabulary cost 1.89 MiB
  *      between them. paper/mtgo/arena are 32,729 / 30,707 / 16,070 cards on api.scryfall.com
  *      (2026-09-03); astral and sega are a dozen printings and cost a posting list each.
+ *
+ *  47 — THE `is:` VOCABULARY STOPS BEING HAND-KEPT FROM A DOCS PAGE. `card_is_tags` goes from 25
+ *      ARRAY_IS_TAGS rows to 106, and gains the two meld roles.
+ *
+ *      The table had been built from Scryfall's SYNTAX PAGE, which documents about half of what
+ *      its search accepts, so 81 `promo_types` members were silent zeros here against real counts
+ *      there: `is:surgefoil` 1,584, `is:setpromo` 1,381, `is:serialized` 292, `is:galaxyfoil` 283,
+ *      `is:beginnerbox` 124, `is:textured` 92, `is:stepandcompleat` 68, the whole Final Fantasy
+ *      family (`is:ffx` 120, `is:ffvii` 132, `is:ffxiv` 130, fourteen more).
+ *
+ *      ENUMERATED, NOT SAMPLED, and the difference is the reason this entry exists rather than a
+ *      smaller one: a first pass sampled 5,600 printings, found 88 `promo_types` members and
+ *      MISSED five real ones — `beginnerbox` sits on the builder's own llanowar_elves fixture,
+ *      whose test asserted the absence as if it were correct. Paging all 73,480 printings that can
+ *      carry the field (`-is:booster` and `is:boosterfun`, extras and variations included) gives
+ *      115 members, and the vocabulary stopped growing.
+ *
+ *      `meldpart`/`meldresult` join COMPUTED_IS_TAGS, read from the printing's own entry in
+ *      `all_parts` — 14 and 7 cards, both 0 here before, because `all_parts` lives in the compat
+ *      residue that only `/cards/*` reads. Same shape as the `games` gap.
+ *
+ *      NOT ROWS, and so not this constant's business: seven spelling aliases Scryfall also accepts
+ *      (`is:setpromo` for `set_promo`, `is:rainbow` for `rainbowfoil`, five more) and three values
+ *      that are other COLUMNS under an `is:` spelling (`is:tombstone` = `frame:tombstone`,
+ *      `is:borderless` = `border:borderless`, both exact in each direction). Those are rewrites in
+ *      the parser and need no rebuild.
+ *
+ *      GENERATION-ONLY. 83 values join a vocabulary `card_is_tags` already holds; nothing changes
+ *      shape, so a generation-46 store still LOADS — which is why the bump is load-bearing rather
+ *      than ceremonial. Nothing in the header can see that the tag vocabulary grew, so without it
+ *      store-age.ts keeps serving a store where every one of these is a no-match with nothing to
+ *      say why.
  */
-export const STORE_CONTENT_GENERATION = 46;
+export const STORE_CONTENT_GENERATION = 47;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

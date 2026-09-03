@@ -91,36 +91,125 @@ const BOOLEAN_IS_TAGS: &[(&str, &str)] = &[
 /// arrays of the results intersected. That is what turns `is:judge_gift` into `judgegift`, and
 /// what separates `is:stamped` from the broader `promopack` its results also all carry.
 ///
+/// 24 rows became 92 on 2026-09-03. The table had been kept from Scryfall's syntax PAGE, which
+/// documents about half of what its search accepts, so 67 members — `serialized`, `surgefoil`,
+/// `galaxyfoil`, `textured`, `stepandcompleat`, the whole Final Fantasy family — were silent zeros
+/// here. See db-info.ts ARRAY_IS_TAGS for how the vocabulary was enumerated instead.
+///
 /// The KEY is the word a player types, which is Scryfall's own syntax-page spelling
 /// (`is:judge_gift`, `is:set_promo`); the concatenated form is the promo_types MEMBER. The parser
 /// carries `is:judge` as an alias onto `judge_gift` rather than storing those rows twice.
 const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("arena_league", "promo_types", "arenaleague"),
+    ("beginnerbox", "promo_types", "beginnerbox"),
     ("boosterfun", "promo_types", "boosterfun"),
+    ("boxtopper", "promo_types", "boxtopper"),
+    ("brawldeck", "promo_types", "brawldeck"),
+    ("bringafriend", "promo_types", "bringafriend"),
+    ("bundle", "promo_types", "bundle"),
     ("buyabox", "promo_types", "buyabox"),
+    ("chocobotrackfoil", "promo_types", "chocobotrackfoil"),
+    ("commanderparty", "promo_types", "commanderparty"),
+    ("commanderpromo", "promo_types", "commanderpromo"),
+    ("concept", "promo_types", "concept"),
+    ("confettifoil", "promo_types", "confettifoil"),
     ("convention", "promo_types", "convention"),
+    ("cosmicfoil", "promo_types", "cosmicfoil"),
     ("datestamped", "promo_types", "datestamped"),
+    ("dazzlefoil", "promo_types", "dazzlefoil"),
+    ("dossier", "promo_types", "dossier"),
+    ("doubleexposure", "promo_types", "doubleexposure"),
+    ("doublerainbow", "promo_types", "doublerainbow"),
+    ("draculaseries", "promo_types", "draculaseries"),
+    ("draftweekend", "promo_types", "draftweekend"),
+    ("dragonscalefoil", "promo_types", "dragonscalefoil"),
+    ("duels", "promo_types", "duels"),
+    ("embossed", "promo_types", "embossed"),
     ("etched", "finishes", "etched"),
+    ("event", "promo_types", "event"),
+    ("facetfoil", "promo_types", "facetfoil"),
+    ("ffi", "promo_types", "ffi"),
+    ("ffii", "promo_types", "ffii"),
+    ("ffiii", "promo_types", "ffiii"),
+    ("ffiv", "promo_types", "ffiv"),
+    ("ffix", "promo_types", "ffix"),
+    ("ffv", "promo_types", "ffv"),
+    ("ffvi", "promo_types", "ffvi"),
+    ("ffvii", "promo_types", "ffvii"),
+    ("ffviii", "promo_types", "ffviii"),
+    // Final Fantasy X. `is:ffx` is 120 cards / 170 printings on api.scryfall.com (2026-09-03) and
+    // every one of the 170 carries `promo_types: ffx`; see db_info.ARRAY_IS_TAGS.
+    ("ffx", "promo_types", "ffx"),
+    ("ffxi", "promo_types", "ffxi"),
+    ("ffxii", "promo_types", "ffxii"),
+    ("ffxiii", "promo_types", "ffxiii"),
+    ("ffxiv", "promo_types", "ffxiv"),
+    ("ffxv", "promo_types", "ffxv"),
+    ("ffxvi", "promo_types", "ffxvi"),
+    ("firstplacefoil", "promo_types", "firstplacefoil"),
     ("fnm", "promo_types", "fnm"),
+    ("fracturefoil", "promo_types", "fracturefoil"),
+    ("galaxyfoil", "promo_types", "galaxyfoil"),
     ("gameday", "promo_types", "gameday"),
     ("giftbox", "promo_types", "giftbox"),
+    ("gilded", "promo_types", "gilded"),
+    ("gleaminggold", "promo_types", "gleaminggold"),
     ("glossy", "promo_types", "glossy"),
+    ("godzillaseries", "promo_types", "godzillaseries"),
+    ("halofoil", "promo_types", "halofoil"),
+    ("headliner", "promo_types", "headliner"),
+    ("imagine", "promo_types", "imagine"),
     ("instore", "promo_types", "instore"),
     ("intro_pack", "promo_types", "intropack"),
+    ("invisibleink", "promo_types", "invisibleink"),
+    ("japanshowcase", "promo_types", "japanshowcase"),
+    ("jpwalker", "promo_types", "jpwalker"),
     ("judge_gift", "promo_types", "judgegift"),
     ("league", "promo_types", "league"),
+    ("magnified", "promo_types", "magnified"),
+    ("manafoil", "promo_types", "manafoil"),
     ("media_insert", "promo_types", "mediainsert"),
+    ("neonink", "promo_types", "neonink"),
+    ("oilslick", "promo_types", "oilslick"),
+    ("openhouse", "promo_types", "openhouse"),
     // "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
     // against the corpus), so checking for "Partner" alone already covers both.
     ("partner", "keywords", "Partner"),
     ("planeswalker_deck", "promo_types", "planeswalkerdeck"),
     ("player_rewards", "promo_types", "playerrewards"),
+    ("playpromo", "promo_types", "playpromo"),
+    ("portrait", "promo_types", "portrait"),
+    ("poster", "promo_types", "poster"),
     ("prerelease", "promo_types", "prerelease"),
+    ("promopack", "promo_types", "promopack"),
+    ("rainbowfoil", "promo_types", "rainbowfoil"),
+    ("raisedfoil", "promo_types", "raisedfoil"),
+    ("ravnicacity", "promo_types", "ravnicacity"),
     ("rebalanced", "promo_types", "rebalanced"),
     ("release", "promo_types", "release"),
+    ("resale", "promo_types", "resale"),
+    ("ripplefoil", "promo_types", "ripplefoil"),
+    ("scroll", "promo_types", "scroll"),
+    ("serialized", "promo_types", "serialized"),
     ("set_promo", "promo_types", "setpromo"),
+    ("silverfoil", "promo_types", "silverfoil"),
+    ("silverscroll", "promo_types", "silverscroll"),
+    ("sldbonus", "promo_types", "sldbonus"),
+    ("sourcematerial", "promo_types", "sourcematerial"),
     ("stamped", "promo_types", "stamped"),
+    ("standardshowdown", "promo_types", "standardshowdown"),
+    ("startercollection", "promo_types", "startercollection"),
+    ("starterdeck", "promo_types", "starterdeck"),
+    ("stepandcompleat", "promo_types", "stepandcompleat"),
+    ("storechampionship", "promo_types", "storechampionship"),
+    ("surgefoil", "promo_types", "surgefoil"),
+    ("textured", "promo_types", "textured"),
+    ("thick", "promo_types", "thick"),
+    ("tourney", "promo_types", "tourney"),
     ("universesbeyond", "promo_types", "universesbeyond"),
+    ("upsidedown", "promo_types", "upsidedown"),
+    ("vault", "promo_types", "vault"),
+    ("wizardsplaynetwork", "promo_types", "wizardsplaynetwork"),
 ];
 
 /// Scryfall's `game:` vocabulary, as `(games member, card_is_tags key)`. Mirrors
@@ -807,6 +896,37 @@ pub const EXTRA_IS_TAG: &str = "extra";
 /// of `m:` terms can express it, because `m:` itself is any-face on Scryfall too.
 pub const HYBRID_IS_TAG: &str = "hybrid";
 
+/// `is:meldpart` / `is:meldresult`. Mirrors db_info.MELD_IS_TAGS.
+///
+/// COMPUTED, because no Scryfall field says "this printing is a meld part": the answer is the
+/// `component` of THIS card's own entry in its `all_parts` array, which also carries the two other
+/// cards of the meld and their roles. 14 parts and 7 results on api.scryfall.com (2026-09-03) —
+/// two parts per result, which is the arithmetic that says the role is per CARD and not per set.
+///
+/// `all_parts` lives in the compat residue, the archive only `/cards/*` reads, so a search cannot
+/// derive this at query time however cheap it looks — the same reason `games` needed tags.
+pub const MELD_PART_IS_TAG: &str = "meldpart";
+pub const MELD_RESULT_IS_TAG: &str = "meldresult";
+
+/// The meld role this printing plays, from its own entry in `all_parts`, or None.
+///
+/// Matched on the card's OWN id rather than on layout: every meld card carries all three entries,
+/// so `layout == "meld"` says only that the card is part of a meld and not which side of it.
+fn meld_is_tag(card: &Map<String, Value>) -> Option<&'static str> {
+    let id = card.get("id").and_then(Value::as_str)?;
+    for part in card.get("all_parts").and_then(Value::as_array)? {
+        if part.get("id").and_then(Value::as_str) != Some(id) {
+            continue;
+        }
+        return match part.get("component").and_then(Value::as_str) {
+            Some("meld_part") => Some(MELD_PART_IS_TAG),
+            Some("meld_result") => Some(MELD_RESULT_IS_TAG),
+            _ => None,
+        };
+    }
+    None
+}
+
 /// The layouts that are two pieces of cardboard, for [`hybrid_cost_of`]. A split, adventure or
 /// flip card is ONE face with two halves printed on it, so its whole cost counts; a transform,
 /// modal-DFC, reversible or `prepare` card has a genuine back, and only the front counts.
@@ -1188,6 +1308,7 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
                 .filter(|(member, _)| array_contains(card, "games", member))
                 .map(|(_, tag)| (*tag).to_owned()),
         )
+        .chain(meld_is_tag(card).map(str::to_owned))
         .chain(
             FIELD_IS_TAGS
                 .iter()
@@ -3523,9 +3644,13 @@ mod tests {
         assert_eq!(row["mana_cost_jsonb"], json!({"G": [1]}));
         // The blob-backed is: tags, derived from the bulk card's own booleans and arrays: this
         // fixture is a boostered, high-res, foil-and-nonfoil reprint, and it is neither reserved
-        // nor oversized nor a game changer. Its promo_types (beginnerbox, startercollection) are
-        // not in ARRAY_IS_TAGS, so nothing comes back from that half — which is the case worth
-        // pinning, since a mapping typo there produces exactly this: silence.
+        // nor oversized nor a game changer.
+        //
+        // `startercollection` IS one of its promo_types, and this assertion used to read the other
+        // way — the comment here said the fixture's promo_types were "not in ARRAY_IS_TAGS, so
+        // nothing comes back from that half". That was true of a 24-row table and it was the bug:
+        // `is:startercollection` is 261 cards on api.scryfall.com and was 0 here. The other member
+        // this fixture carries, `beginnerbox`, is 124 there and is now a row too.
         //
         // The three `game_*` are GAME_IS_TAGS reading `games: ["paper", "arena", "mtgo"]`, and the
         // PREFIX is the half worth pinning here: an unprefixed table would have written `paper`,
@@ -3535,7 +3660,8 @@ mod tests {
             row["card_is_tags"],
             json!({
                 "booster": true, "foil": true, "hires": true, "nonfoil": true, "reprint": true,
-                "game_paper": true, "game_arena": true, "game_mtgo": true
+                "game_paper": true, "game_arena": true, "game_mtgo": true,
+                "startercollection": true, "beginnerbox": true
             })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
@@ -3678,6 +3804,37 @@ mod tests {
         let mut stringly = minimal_card("Stringly");
         stringly["reserved"] = json!("true");
         assert_eq!(tags_of(&stringly), json!({"game_paper": true}));
+
+        // The meld role comes from the card's OWN entry in `all_parts`, which is why it is matched
+        // on id: a meld card carries all three entries, so the array alone says only that the card
+        // is part of a meld.
+        let mut result = minimal_card("MeldResult");
+        result["id"] = json!("00000000-0000-4000-8000-00000000aaaa");
+        result["all_parts"] = json!([
+            {"id": "00000000-0000-4000-8000-00000000aaaa", "component": "meld_result"},
+            {"id": "00000000-0000-4000-8000-00000000bbbb", "component": "meld_part"},
+        ]);
+        assert_eq!(tags_of(&result), json!({"game_paper": true, "meldresult": true}));
+
+        let mut part = minimal_card("MeldPart");
+        part["id"] = json!("00000000-0000-4000-8000-00000000bbbb");
+        part["all_parts"] = result["all_parts"].clone();
+        assert_eq!(tags_of(&part), json!({"game_paper": true, "meldpart": true}));
+
+        // A card listed in someone else's all_parts under a role that is not a meld one — a token,
+        // a combo piece — is neither, and neither is a card absent from the array it carries.
+        let mut token = minimal_card("TokenMaker");
+        token["id"] = json!("00000000-0000-4000-8000-00000000cccc");
+        token["all_parts"] = json!([
+            {"id": "00000000-0000-4000-8000-00000000cccc", "component": "combo_piece"},
+            {"id": "00000000-0000-4000-8000-00000000dddd", "component": "token"},
+        ]);
+        assert_eq!(tags_of(&token), json!({"game_paper": true}));
+
+        let mut absent = minimal_card("NotListed");
+        absent["id"] = json!("00000000-0000-4000-8000-00000000eeee");
+        absent["all_parts"] = result["all_parts"].clone();
+        assert_eq!(tags_of(&absent), json!({"game_paper": true}));
 
         // And the games half reads the ARRAY the same way, member by member: a game the card does
         // not list writes nothing, and an unknown member writes nothing either.

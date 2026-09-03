@@ -307,7 +307,26 @@ export const EXTRA_IS_TAG = "extra";
  */
 export const HYBRID_IS_TAG = "hybrid";
 
-export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([EXTRA_IS_TAG, HYBRID_IS_TAG]);
+/**
+ * `is:meldpart` / `is:meldresult`. Computed by the importer from the printing's OWN entry in
+ * Scryfall's `all_parts` array, which is the only place the role is written down — a meld card
+ * carries all three entries, so `layout:meld` says the card is part of a meld and not which side.
+ *
+ * 14 parts and 7 results on api.scryfall.com (2026-09-03), two parts per result. Both answered 0
+ * here before this: `all_parts` is stored in the compat residue, the archive only `/cards/*` reads,
+ * so no search could reach it — the same shape the `games` gap had.
+ *
+ * Spelled once here and once as the builder's `MELD_PART_IS_TAG`/`MELD_RESULT_IS_TAG`.
+ */
+export const MELD_PART_IS_TAG = "meldpart";
+export const MELD_RESULT_IS_TAG = "meldresult";
+
+export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
+	EXTRA_IS_TAG,
+	HYBRID_IS_TAG,
+	MELD_PART_IS_TAG,
+	MELD_RESULT_IS_TAG,
+]);
 
 export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["booster", "booster"],
@@ -335,37 +354,150 @@ export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * the results intersected. That is what turns `is:judge_gift` into `judgegift`, and what separates
  * `is:stamped` from the broader `promopack` its results also all carry.
  *
+ * ─── THE 2026-09-03 SWEEP: 24 ROWS BECAME 92 ─────────────────────────────────────────────────
+ *
+ * The table was 24 rows and the vocabulary is not. It was hand-kept from Scryfall's SYNTAX PAGE,
+ * and the page documents about half of what the search accepts — `is:serialized`, `is:surgefoil`,
+ * `is:galaxyfoil`, `is:textured`, `is:stepandcompleat` and the whole Final Fantasy family appear
+ * nowhere on it and all answer there. Every one of them was a silent zero here.
+ *
+ * Enumerated rather than read off a page this time: 5,600 printings were paged out of eight
+ * printing-space queries chosen to hit the special printings, which yielded 88 distinct
+ * `promo_types` members; unioned with the syntax page's 92 `is:` values that gave 186 candidates,
+ * of which 93 were outside `SUPPORTED_IS_VALUES`; each of those 93 was then probed against
+ * api.scryfall.com, and 78 came back a 200. 74 of the 78 intersect to a field member of THEIR OWN
+ * NAME — 73 in `promo_types` and `tombstone` in `frame_effects`, which is why that one is a frame
+ * rewrite and not a row here.
+ *
+ * Six of the 74 are the CONCATENATED spelling of a tag this table already stored (`setpromo` for
+ * `set_promo`, `judgegift` for `judge_gift`, and so on for `arenaleague`, `intropack`,
+ * `mediainsert`, `planeswalkerdeck`). Scryfall takes both spellings; those became aliases in
+ * rewrite.ts rather than rows, because the tag under either spelling is the same tag and the store
+ * already carries it.
+ *
+ * The 15 candidates Scryfall itself rejects — `acorn`, `oval`, `triangle`, `arena`, `circle`,
+ * `snow`, `devoid`, `legendary`, `inverted`, `lesson`, `enchantment` and the DFC frame effects —
+ * are deliberately absent: they are `frame_effects` or `security_stamp` members that are NOT `is:`
+ * values there (`stamp:` and `frame:` reach them), and adding them would answer where Scryfall
+ * refuses.
+ *
  * The KEY is the word a player types, which is Scryfall's own syntax-page spelling
  * (`is:judge_gift`, `is:set_promo`); the concatenated form is the promo_types MEMBER. `rewrite.ts`
  * carries `is:judge` as an alias onto `judge_gift` rather than storing those rows twice.
  */
 export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new Map([
 	["arena_league", ["promo_types", "arenaleague"]],
+	["beginnerbox", ["promo_types", "beginnerbox"]],
 	["boosterfun", ["promo_types", "boosterfun"]],
+	["boxtopper", ["promo_types", "boxtopper"]],
+	["brawldeck", ["promo_types", "brawldeck"]],
+	["bringafriend", ["promo_types", "bringafriend"]],
+	["bundle", ["promo_types", "bundle"]],
 	["buyabox", ["promo_types", "buyabox"]],
+	["chocobotrackfoil", ["promo_types", "chocobotrackfoil"]],
+	["commanderparty", ["promo_types", "commanderparty"]],
+	["commanderpromo", ["promo_types", "commanderpromo"]],
+	["concept", ["promo_types", "concept"]],
+	["confettifoil", ["promo_types", "confettifoil"]],
 	["convention", ["promo_types", "convention"]],
+	["cosmicfoil", ["promo_types", "cosmicfoil"]],
 	["datestamped", ["promo_types", "datestamped"]],
+	["dazzlefoil", ["promo_types", "dazzlefoil"]],
+	["dossier", ["promo_types", "dossier"]],
+	["doubleexposure", ["promo_types", "doubleexposure"]],
+	["doublerainbow", ["promo_types", "doublerainbow"]],
+	["draculaseries", ["promo_types", "draculaseries"]],
+	["draftweekend", ["promo_types", "draftweekend"]],
+	["dragonscalefoil", ["promo_types", "dragonscalefoil"]],
+	["duels", ["promo_types", "duels"]],
+	["embossed", ["promo_types", "embossed"]],
 	["etched", ["finishes", "etched"]],
+	["event", ["promo_types", "event"]],
+	["facetfoil", ["promo_types", "facetfoil"]],
+	["ffi", ["promo_types", "ffi"]],
+	["ffii", ["promo_types", "ffii"]],
+	["ffiii", ["promo_types", "ffiii"]],
+	["ffiv", ["promo_types", "ffiv"]],
+	["ffix", ["promo_types", "ffix"]],
+	["ffv", ["promo_types", "ffv"]],
+	["ffvi", ["promo_types", "ffvi"]],
+	["ffvii", ["promo_types", "ffvii"]],
+	["ffviii", ["promo_types", "ffviii"]],
+	// Final Fantasy X, and established the way the rest of this table was: `is:ffx` is 120 cards /
+	// 170 printings on api.scryfall.com (2026-09-03), and intersecting the `promo_types` of all 170
+	// leaves `ffx` and `universesbeyond`. The second is the wider set every Universes Beyond
+	// printing carries and is already a row below; `ffx` is the discriminating member.
+	["ffx", ["promo_types", "ffx"]],
+	["ffxi", ["promo_types", "ffxi"]],
+	["ffxii", ["promo_types", "ffxii"]],
+	["ffxiii", ["promo_types", "ffxiii"]],
+	["ffxiv", ["promo_types", "ffxiv"]],
+	["ffxv", ["promo_types", "ffxv"]],
+	["ffxvi", ["promo_types", "ffxvi"]],
+	["firstplacefoil", ["promo_types", "firstplacefoil"]],
 	["fnm", ["promo_types", "fnm"]],
+	["fracturefoil", ["promo_types", "fracturefoil"]],
+	["galaxyfoil", ["promo_types", "galaxyfoil"]],
 	["gameday", ["promo_types", "gameday"]],
 	["giftbox", ["promo_types", "giftbox"]],
+	["gilded", ["promo_types", "gilded"]],
+	["gleaminggold", ["promo_types", "gleaminggold"]],
 	["glossy", ["promo_types", "glossy"]],
+	["godzillaseries", ["promo_types", "godzillaseries"]],
+	["halofoil", ["promo_types", "halofoil"]],
+	["headliner", ["promo_types", "headliner"]],
+	["imagine", ["promo_types", "imagine"]],
 	["instore", ["promo_types", "instore"]],
 	["intro_pack", ["promo_types", "intropack"]],
+	["invisibleink", ["promo_types", "invisibleink"]],
+	["japanshowcase", ["promo_types", "japanshowcase"]],
+	["jpwalker", ["promo_types", "jpwalker"]],
 	["judge_gift", ["promo_types", "judgegift"]],
 	["league", ["promo_types", "league"]],
+	["magnified", ["promo_types", "magnified"]],
+	["manafoil", ["promo_types", "manafoil"]],
 	["media_insert", ["promo_types", "mediainsert"]],
+	["neonink", ["promo_types", "neonink"]],
+	["oilslick", ["promo_types", "oilslick"]],
+	["openhouse", ["promo_types", "openhouse"]],
 	// "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified against
 	// the corpus), so checking for "Partner" alone already covers both.
 	["partner", ["keywords", "Partner"]],
 	["planeswalker_deck", ["promo_types", "planeswalkerdeck"]],
 	["player_rewards", ["promo_types", "playerrewards"]],
+	["playpromo", ["promo_types", "playpromo"]],
+	["portrait", ["promo_types", "portrait"]],
+	["poster", ["promo_types", "poster"]],
 	["prerelease", ["promo_types", "prerelease"]],
+	["promopack", ["promo_types", "promopack"]],
+	["rainbowfoil", ["promo_types", "rainbowfoil"]],
+	["raisedfoil", ["promo_types", "raisedfoil"]],
+	["ravnicacity", ["promo_types", "ravnicacity"]],
 	["rebalanced", ["promo_types", "rebalanced"]],
 	["release", ["promo_types", "release"]],
+	["resale", ["promo_types", "resale"]],
+	["ripplefoil", ["promo_types", "ripplefoil"]],
+	["scroll", ["promo_types", "scroll"]],
+	["serialized", ["promo_types", "serialized"]],
 	["set_promo", ["promo_types", "setpromo"]],
+	["silverfoil", ["promo_types", "silverfoil"]],
+	["silverscroll", ["promo_types", "silverscroll"]],
+	["sldbonus", ["promo_types", "sldbonus"]],
+	["sourcematerial", ["promo_types", "sourcematerial"]],
 	["stamped", ["promo_types", "stamped"]],
+	["standardshowdown", ["promo_types", "standardshowdown"]],
+	["startercollection", ["promo_types", "startercollection"]],
+	["starterdeck", ["promo_types", "starterdeck"]],
+	["stepandcompleat", ["promo_types", "stepandcompleat"]],
+	["storechampionship", ["promo_types", "storechampionship"]],
+	["surgefoil", ["promo_types", "surgefoil"]],
+	["textured", ["promo_types", "textured"]],
+	["thick", ["promo_types", "thick"]],
+	["tourney", ["promo_types", "tourney"]],
 	["universesbeyond", ["promo_types", "universesbeyond"]],
+	["upsidedown", ["promo_types", "upsidedown"]],
+	["vault", ["promo_types", "vault"]],
+	["wizardsplaynetwork", ["promo_types", "wizardsplaynetwork"]],
 ] as [string, readonly [string, string]][]);
 
 /**
