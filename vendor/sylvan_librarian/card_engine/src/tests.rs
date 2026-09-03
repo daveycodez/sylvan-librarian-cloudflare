@@ -17195,6 +17195,43 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
     let etched_fx = data.printings[2].compat.frame_effects.clone();
     data.printings[2].compat.frame_effects = vec![];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "in-universe plain over a Universes Beyond borderless");
+    // A TEXTLESS variant is the one nobody can read, and it ranks below the plain printing: give
+    // the etched id 3 the flag and the plain id 1 wins; give id 3 full art WITH text instead and
+    // it is a readable variant again. (Moonshaker Cavalry's sch/17 against its woe/325.)
+    data.printings[2].compat.frame_effects = etched_fx.clone();
+    data.printings[2].compat.flags = COMPAT_FULL_ART | COMPAT_TEXTLESS;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "textless ranks below plain");
+    data.printings[2].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "full art with text is a readable variant");
+    data.printings[2].compat.flags = 0;
+    data.printings[2].compat.frame_effects = vec![];
+    // ...and an in-universe textless printing still outranks a Universes Beyond borderless one.
+    data.printings[0].compat.flags = COMPAT_TEXTLESS;
+    data.printings[2].card_is_tags = vec![ub];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "in-universe textless over UB anything");
+    data.printings[0].compat.flags = 0;
+    data.printings[2].card_is_tags = vec![];
+    // ENGLISH FIRST: make the borderless id 4 Japanese and the etched English id 3 wins; make
+    // every printing Japanese (a `lang:ja` pool) and the tiers decide again, id 4.
+    let en = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("en".to_owned());
+    let ja = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("ja".to_owned());
+    data.printings[2].compat.frame_effects = etched_fx.clone();
+    data.printings[3].card_is_tags = vec![]; // in-universe again for this block
+    for p in &mut data.printings {
+        p.compat.lang_id = en;
+    }
+    data.printings[3].compat.lang_id = ja;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "an English variant over a Japanese borderless");
+    for p in &mut data.printings {
+        p.compat.lang_id = ja;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "all Japanese: the tiers decide");
+    for p in &mut data.printings {
+        p.compat.lang_id = VOCAB_NONE;
+    }
+    data.printings[2].compat.frame_effects = vec![];
     // ...and among Universes Beyond printings only, the frame tiers still decide: tag them all
     // and the borderless id 4 wins again.
     for p in &mut data.printings {

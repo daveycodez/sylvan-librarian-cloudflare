@@ -43,6 +43,12 @@ export const UNIQUE_ON = {
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which
  * is Tidus. A Universes Beyond printing under the card's own name stays a candidate, below every
  * in-universe one: Force of Negation answers the Hildebrandt 2x2/346 over the Avatar tle/13.
+ * Two more rules, both about being able to READ the answer: a textless printing ranks below the
+ * plain ones (Moonshaker Cavalry answers its extended-art woe/325, not the Store Championship
+ * full-art sch/17), and every English printing ranks above every non-English one, so a
+ * Japanese-only promo answers only under `lang:ja` (Aven Interrupter answers otj/309, not
+ * pwcs/2024-08). Scryfall's own `prefer:atypical` answers the Japanese promo there, so that
+ * prefer keeps it.
  */
 export const PREFER_ORDER = {
 	name: "PreferOrder",

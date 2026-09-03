@@ -9256,6 +9256,9 @@ struct PreferClassIds {
     future_frame: u16,
     /// `Printing.card_is_tags` member `universesbeyond`.
     universesbeyond: u16,
+    /// `CompatFields.lang_id` for English — `prefer:borderless` ranks every English printing
+    /// above every non-English one, so a Japanese-only promo answers only under `lang:ja`.
+    lang_en: u16,
 }
 
 impl PreferClassIds {
@@ -9265,6 +9268,7 @@ impl PreferClassIds {
         surgefoil: VOCAB_NONE,
         future_frame: VOCAB_NONE,
         universesbeyond: VOCAB_NONE,
+        lang_en: VOCAB_NONE,
     };
 
     fn bind(coll_vocab: &AStrings) -> Self {
@@ -9277,6 +9281,7 @@ impl PreferClassIds {
             surgefoil: id("surgefoil"),
             future_frame: id("Future"),
             universesbeyond: id("universesbeyond"),
+            lang_en: id("en"),
         }
     }
 }
@@ -9327,8 +9332,18 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
 /// printings that carry NO flavor name, in-universe printings rank above Universes Beyond ones
-/// outright, and inside each of those halves three tiers — borderless, then any other frame
-/// variant, then the plain printings — default order inside each. A flavor-named printing is
+/// outright, and inside each of those halves four tiers — borderless, then any other frame
+/// variant, then the plain printings, then the TEXTLESS ones — default order inside each. A
+/// textless printing prints no rules text, so it is the one variant that cannot be read;
+/// Moonshaker Cavalry's Store Championship full-art sch/17 outranked its extended-art woe/325
+/// on default order and answered a card nobody could read. `textless` is the signal and
+/// `full_art` is not: 1,797 of the corpus's 2,063 full-art printings carry their text (the
+/// Secret Lair posters, the Booster Fun full-arts), and 266 of its 267 textless ones are
+/// full-art. ENGLISH FIRST, above all of that: a printing in another language ranks below every
+/// English one whatever its frame, so Aven Interrupter answers its extended-art otj/309 and
+/// the Japanese-only borderless pwcs/2024-08 only under `lang:ja` (there the pool is Japanese
+/// and the tiers decide as usual). Scryfall's own `prefer:atypical` answers the Japanese
+/// promo, which is why that prefer keeps it. A flavor-named printing is
 /// never a candidate, because it is drawn and sold as someone else (Najeela's four borderless
 /// printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon; Thrasios's fca/58 is Tidus).
 /// A Universes Beyond printing under the card's OWN name is a candidate, ranked below every
@@ -9463,22 +9478,34 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
         Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
-        // Six steps: in-universe {borderless, variant, plain} above Universes Beyond {the same
-        // three}, and a flavor-named printing below all of them — with at least one same-named
-        // printing on every card, it can never be the answer.
+        // Eight steps: in-universe {borderless, variant, plain, textless} above Universes Beyond
+        // {the same four}, and a flavor-named printing below all of them — with at least one
+        // same-named printing on every card, it can never be the answer. Textless is checked
+        // FIRST: it is a frame variant to the atypical class, and the one variant nobody can read.
         Prefer::Borderless(ids) => {
+            // Below every same-named printing in EVERY language — a `lang:ja` pool must still put
+            // its own crossovers last — hence further down than the language offset reaches.
             if printing_has_flavor_name(p) {
-                return default_score();
+                return default_score() - 32.0 * CLASS_BONUS;
             }
-            let frame_tier = if printing_is_borderless(p, strings) {
+            let frame_tier = if compat_flag(&p.compat, COMPAT_TEXTLESS) {
+                0.0
+            } else if printing_is_borderless(p, strings) {
                 3.0
             } else if printing_is_frame_variant(p, &ids, strings) {
                 2.0
             } else {
                 1.0
             };
-            let universe_tier = if printing_is_universes_beyond(p, &ids) { 0.0 } else { 3.0 };
-            (universe_tier + frame_tier) * CLASS_BONUS + default_score()
+            let universe_tier = if printing_is_universes_beyond(p, &ids) { 0.0 } else { 4.0 };
+            // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
+            // language is. Sixteen steps down puts every non-English printing below every
+            // English one — flavor-named ones included — while the tiers still order the
+            // non-English rows among themselves for a `lang:` query.
+            let lang = u16::from(p.compat.lang_id);
+            let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
+            let language_offset = if foreign { -16.0 } else { 0.0 };
+            (universe_tier + frame_tier + language_offset) * CLASS_BONUS + default_score()
         }
     }
 }
