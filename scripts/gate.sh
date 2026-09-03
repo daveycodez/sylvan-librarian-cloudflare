@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # THE gate: everything that has to be green, in one command.
 #
-# This repo has no CI. There is no .github/, no git hooks, and bunfig.toml says so outright — "with
-# no CI here, bare `bun test` is what a person or agent actually types". The only automation is
-# Cloudflare Workers Builds, which hard-fails a deploy that cannot BUILD an index and checks
-# nothing else. So the gate is a thing a person types, and the least it can do is be one thing
-# rather than five that are easy to run four of.
+# THIS GATE IS STRICTLY WIDER THAN CI, and that is the whole reason it exists as a separate thing
+# a person types. .github/workflows/ci.yml runs the cheap half on every PR and main push —
+# typecheck, biome, `bun test tests`, clippy, `cargo test`, both wasm targets — plus a production
+# /search smoke test after main deploys. What it CANNOT run is everything below that needs a built
+# store or stable hardware: the performance ratios, the wasm-vs-native answer differential, and the
+# per-partition wasm fit. So CI is the floor and this is the bar; a green PR is not a green gate.
+#
+# (This comment used to open "This repo has no CI. There is no .github/, no git hooks" — true when
+# it was written, false since the 2026-08-23 outage put ci.yml there.)
 #
 # The four commands the README used to list (bun test, check, typecheck, clippy) are all here, plus
 # the two that were never in it:
@@ -18,7 +22,8 @@
 #     of the fixes were SLOWER than the code they replaced on the first attempt. Nothing would have
 #     caught either, and nothing would catch a regression back.
 #
-# WHY RATIOS AND NOT MILLISECONDS. There is no CI hardware to stabilise a wall-clock threshold, and
+# WHY RATIOS AND NOT MILLISECONDS. No hardware here is stable enough for a wall-clock threshold —
+# a GitHub runner least of all, which is why these stay out of ci.yml — and
 # measured run-to-run noise on this machine reached 6% while relative ordering never moved. A ratio
 # against a reference measured on the SAME store in the SAME run cancels the machine out.
 #

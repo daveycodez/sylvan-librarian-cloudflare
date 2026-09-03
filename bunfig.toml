@@ -8,7 +8,9 @@
 # not this repo's to pass.
 #
 # package.json's "test" script already passes `tests`, so `bun run test` was green
-# while bare `bun test` was red -- and with no CI here, bare `bun test` is what a
-# person or agent actually types. Setting the root makes both agree.
+# while bare `bun test` was red -- and bare `bun test` is what a person or agent
+# actually types. Setting the root makes both agree. (CI spells it `bun test tests`
+# and so was never affected; this is for the two dozen times a day it is typed by
+# hand.)
 [test]
 root = "tests"
