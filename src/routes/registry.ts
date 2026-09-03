@@ -13,8 +13,14 @@ export interface RouteContext {
 	/** Resolves the loaded engine, or throws EngineUnavailableError (503 parity). */
 	getEngine(): Promise<Engine>;
 	request: Request;
-	/** Upstream: X-Proxy-Host header, else Host. */
+	/**
+	 * The public host absolute URLs address: an ALLOWLISTED `X-Proxy-Host`, else
+	 * this request's own Host. See resolveProxyOrigin (src/routes/proxy-origin.ts)
+	 * for why the header is not simply trusted the way upstream trusts it.
+	 */
 	requestHost: string;
+	/** The scheme those URLs use, from the same allowlisted proxy or the request. */
+	requestScheme: string;
 	waitUntil(p: Promise<unknown>): void;
 }
 

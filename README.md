@@ -684,6 +684,16 @@ The complete list of intentional differences:
   far above any human. **Off by default** — see .env.example, including the
   `TRUSTED_API_KEYS` bypass (comma-separated, one key per caller). Cache hits
   never count.
+- **The proxy headers that rename this origin are not trusted by default.**
+  Upstream reads `X-Proxy-Host` unconditionally, which is correct for a private
+  VPS behind its own proxy and wrong here for the same reason the rate limit
+  exists: this is a public Worker, and it has an edge cache upstream does not.
+  Those headers build every absolute URL in a card object and a search's
+  `next_page`, and no cache key contains them, so an unvalidated header let one
+  request decide where a 16-hour cache entry pointed for everyone. `X-Proxy-Host`
+  and `x-forwarded-proto` are now honoured only from a host named in
+  `TRUSTED_PROXY_HOSTS` (unset by default, which ignores both). See
+  [src/routes/proxy-origin.ts](src/routes/proxy-origin.ts).
 - **Static files are served by the CDN, not the Worker.** `/static/*`,
   `/favicon.ico` and `/robots.txt` come from `public/` and never invoke the
   Worker, which is what took cold start down to the platform
@@ -831,10 +841,12 @@ bun run seed:local      # the native build + local seed, on its own
 bun run deploy          # publish the index, then deploy the Worker
 bun run gate            # EVERYTHING that has to be green, in one command:
                         # clippy, cargo test, typecheck, biome, bun test, and
-                        # performance ratios. There is no CI here, so the gate is
-                        # a thing you type — and one command is harder to run four
-                        # fifths of than five are. GATE_SKIP_PERF=1 skips the
-                        # ~40s store build while iterating.
+                        # performance ratios. CI (.github/workflows/ci.yml) runs
+                        # the cheap half on every PR; the perf ratios need a built
+                        # store and stable hardware, so they only ever run here.
+                        # One command is harder to run four fifths of than five
+                        # are. GATE_SKIP_PERF=1 skips the ~40s store build while
+                        # iterating.
                         #
                         # The perf step builds a deterministic corpus (fixed seed,
                         # committed fixtures, no network) and asserts each by-name

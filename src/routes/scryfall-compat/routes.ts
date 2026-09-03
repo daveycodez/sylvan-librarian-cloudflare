@@ -429,18 +429,19 @@ function renderCard(
 
 /** The absolute URL of a route on this host, for `next_page`. */
 function selfBaseUrl(ctx: RouteContext, path: string): string {
-	const url = new URL(ctx.request.url);
-	// The request's own scheme as corrected by the proxy that terminated TLS: a `next_page` a
-	// client cannot follow is worse than no pagination at all.
-	const scheme = ctx.request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-	return `${scheme}://${ctx.requestHost || url.host}${path}`;
+	// Host and scheme both come from the context, which resolved them ONCE through
+	// src/routes/proxy-origin.ts. They used to be read off `X-Proxy-Host` and
+	// `x-forwarded-proto` right here, unvalidated — see that module for why an
+	// edge-cached deployment cannot do that: this string is `next_page`, and it
+	// was attacker-settable inside a body cached for sixteen hours.
+	return `${ctx.requestScheme}://${ctx.requestHost || new URL(ctx.request.url).host}${path}`;
 }
 
 /** The base URL every derived `*_uri` in a card object addresses. */
 function apiBaseUrl(ctx: RouteContext): string {
-	const url = new URL(ctx.request.url);
-	const scheme = ctx.request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-	return `${scheme}://${ctx.requestHost || url.host}`;
+	// Same resolved origin as selfBaseUrl: every `*_uri` on every card object in a
+	// cacheable body hangs off this. See src/routes/proxy-origin.ts.
+	return `${ctx.requestScheme}://${ctx.requestHost || new URL(ctx.request.url).host}`;
 }
 
 /**
