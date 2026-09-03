@@ -14,9 +14,10 @@ import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
 import { checkSearchParamLengths, QueryBudgetExceeded } from "./parser";
-import { routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
+import { resolveAction, routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
 import { adminUnauthorized, isAdminPath } from "./routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "./routes/http";
+import { resolveProxyOrigin } from "./routes/proxy-origin";
 import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
 import { scryfallHttpError } from "./routes/scryfall-compat/respond";
 import { NOT_FOUND_DETAILS } from "./routes/scryfall-compat/routes";
@@ -129,18 +130,6 @@ async function resolveEngine(
 // plumbing and are stripped from client query params before binding.
 const DISALLOWED_QUERY_ARGS = new Set(["falcon_response", "request_host"]);
 
-function resolveAction(path: string): { key: string; positionalArgs: string[] } | null {
-	// Exact match first: flat routes like "static/favicon.ico" and "index.html"
-	// register their full slash/dot-containing path as the route key.
-	if (path in routes) return { key: path, positionalArgs: [] };
-	const [actionWord = "", ...actionArgs] = path.split("/");
-	const entry = routes[actionWord];
-	// A matched route that can't absorb this many trailing segments means the
-	// path identifies nothing — 404, not a 400 (upstream parity).
-	if (!entry || actionArgs.length > entry.positionalCapacity) return null;
-	return { key: actionWord, positionalArgs: actionArgs };
-}
-
 async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/^\/+|\/+$/g, "") || "_root";
@@ -232,7 +221,10 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		);
 	}
 
-	const requestHost = request.headers.get("X-Proxy-Host") ?? url.host;
+	// NOT `request.headers.get("X-Proxy-Host") ?? url.host`, which is upstream's line: unlike
+	// upstream this deployment is public and edge-cached, so an unauthenticated header decided the
+	// absolute URLs inside cacheable bodies. See src/routes/proxy-origin.ts.
+	const { host: requestHost, scheme: requestScheme } = resolveProxyOrigin(request, env, url);
 
 	// Observability: which engine answered (empty when the route never asked).
 	// Cached responses replay the header from generation time; pair it with
@@ -262,6 +254,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 				getEngine: () => resolveEngine(request, env, ctx, engineSource),
 				request,
 				requestHost,
+				requestScheme,
 				waitUntil: (p) => ctx.waitUntil(p),
 			},
 			resolved.positionalArgs,

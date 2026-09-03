@@ -20,7 +20,7 @@ import type {
 import { EngineUnavailableError } from "../../src/engine/types";
 import { checkSearchParamLengths, QueryBudgetExceeded } from "../../src/parser";
 import { collateName } from "../../src/parser/pystr";
-import { routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
+import { resolveAction, routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
 import { adminUnauthorized, isAdminPath } from "../../src/routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "../../src/routes/http";
 import { setParserForTests } from "../../src/routes/parser-bridge";
@@ -476,6 +476,7 @@ export class FakeKV {
 export interface CtxOptions {
 	engine?: Engine | null;
 	requestHost?: string;
+	requestScheme?: string;
 	/** Override the request, for the one route that reads a body (POST /cards/collection). */
 	request?: Request;
 	/** STORE_KV, for the rulings routes. Absent means the binding is never touched. */
@@ -487,6 +488,7 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 	const {
 		engine = new FakeEngine(),
 		requestHost = "sylvan-librarian.com",
+		requestScheme = "https",
 		request = new Request("https://sylvan-librarian.com/"),
 		kv,
 	} = options;
@@ -500,6 +502,7 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 		},
 		request,
 		requestHost,
+		requestScheme,
 		waitUntil: () => {},
 	};
 }
@@ -517,16 +520,11 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 	// Mirrors dispatch: the /_admin mount is answered before routing (src/routes/admin.ts).
 	if (isAdminPath(path)) return adminUnauthorized();
 
-	let resolved: { key: string; positionalArgs: string[] } | null = null;
-	if (path in routes) {
-		resolved = { key: path, positionalArgs: [] };
-	} else {
-		const [actionWord = "", ...actionArgs] = path.split("/");
-		const routeEntry = routes[actionWord];
-		if (routeEntry && actionArgs.length <= routeEntry.positionalCapacity) {
-			resolved = { key: actionWord, positionalArgs: actionArgs };
-		}
-	}
+	// The REAL resolver, not a copy of it: this used to be a hand-mirrored branch here, and it had
+	// drifted from dispatch's (`<=` here against `> ... return null` there, which differ whenever
+	// positionalCapacity is undefined) — so prototype-inherited paths came back 404 through the
+	// harness while production threw on them. See resolveAction in src/routes/index.ts.
+	const resolved = resolveAction(path);
 	// Mirrors dispatch: an unknown path is Scryfall's error object, not upstream's routes listing.
 	if (!resolved) {
 		return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));

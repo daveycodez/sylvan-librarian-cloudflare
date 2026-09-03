@@ -145,3 +145,38 @@ export const SCRYFALL_SURFACE_ROUTES: ReadonlySet<string> = new Set([
 export function buildRoutesListing(): Record<string, RouteEntry["listing"]> {
 	return Object.fromEntries(Object.entries(routes).map(([path, routeEntry]) => [path, routeEntry.listing]));
 }
+
+/**
+ * Resolve a normalized path to a route key and its trailing positional segments,
+ * or null when nothing matches — upstream _resolve_action.
+ *
+ * `Object.hasOwn` rather than `in`, in BOTH lookups, because `routes` is a plain
+ * object literal and `in` walks Object.prototype. `/constructor`, `/toString`,
+ * `/valueOf`, `/hasOwnProperty` and `/__proto__` all resolved to inherited
+ * members: truthy, so the `!entry` guard passed, and with no `positionalCapacity`
+ * on them the capacity check passed too (`1 > undefined` is false, since every
+ * comparison against undefined is). Dispatch then read `.methods` off a Function
+ * and threw a TypeError ABOVE handle()'s try block — workerd's generic 500 rather
+ * than the 404 object this surface promises, with console.error never reached.
+ *
+ * This lives beside the table rather than in the Worker entrypoint so the route
+ * test harness can call the REAL resolver: it deliberately does not import
+ * src/index.ts (that pulls in the engine store and import coordinator), so it
+ * carried a hand-copied mirror of this logic, and the mirror had already drifted
+ * — it spelled the capacity check as `<=` where dispatch spells it `> ... return
+ * null`, which are not the same function when `positionalCapacity` is undefined.
+ * The harness answered 404 for the paths production threw on, so the bug above
+ * was invisible to every test that went through it. One implementation, no mirror.
+ */
+export function resolveAction(path: string): { key: string; positionalArgs: string[] } | null {
+	// Exact match first: flat routes like "static/favicon.ico" and "index.html"
+	// register their full slash/dot-containing path as the route key.
+	if (Object.hasOwn(routes, path)) return { key: path, positionalArgs: [] };
+	const [actionWord = "", ...actionArgs] = path.split("/");
+	if (!Object.hasOwn(routes, actionWord)) return null;
+	const entry = routes[actionWord];
+	// A matched route that can't absorb this many trailing segments means the
+	// path identifies nothing — 404, not a 400 (upstream parity).
+	if (!entry || actionArgs.length > entry.positionalCapacity) return null;
+	return { key: actionWord, positionalArgs: actionArgs };
+}

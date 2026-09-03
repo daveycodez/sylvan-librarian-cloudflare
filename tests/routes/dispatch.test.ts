@@ -3,7 +3,7 @@
 // capacities, get_pid, the get_common_keywords 501 stub, and the /_admin mount.
 
 import { describe, expect, test } from "bun:test";
-import { buildRoutesListing } from "../../src/routes";
+import { buildRoutesListing, resolveAction } from "../../src/routes";
 import { json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
@@ -181,6 +181,38 @@ describe("positional capacity", () => {
 	test("trailing segments beyond a route's capacity are 404, not 400", async () => {
 		expect((await testDispatch(ctx, "/get_pid/extra")).status).toBe(404);
 		expect((await testDispatch(ctx, "/robots.txt/x")).status).toBe(404);
+	});
+});
+
+describe("paths that name an Object.prototype member", () => {
+	// `routes` is a plain object literal, so a membership test spelled `path in routes` walks the
+	// prototype chain: `/constructor` matched Object itself, truthy enough to pass the `!entry`
+	// guard, and the capacity check passed too because every comparison against an undefined
+	// `positionalCapacity` is false. Dispatch then read `.methods` off a Function and threw — above
+	// handle()'s try block, so it left as workerd's generic 500 with console.error never reached.
+	// Unauthenticated, cache-key-shaped, and reachable by typing a word.
+	const INHERITED = ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf"];
+
+	test("resolve to nothing rather than to an inherited member", () => {
+		for (const name of INHERITED) {
+			expect(resolveAction(name)).toBeNull();
+			expect(resolveAction(`${name}/trailing`)).toBeNull();
+		}
+	});
+
+	test("answer 404 with Scryfall's error object, not a 500", async () => {
+		for (const name of INHERITED) {
+			for (const path of [`/${name}`, `/${name}/trailing`]) {
+				const res = await testDispatch(ctx, path);
+				expect(res.status).toBe(404);
+				expect((await json(res)).code).toBe("not_found");
+			}
+		}
+	});
+
+	test("a real route is still resolved by its own name", () => {
+		expect(resolveAction("cards/search")).toEqual({ key: "cards/search", positionalArgs: [] });
+		expect(resolveAction("cards/xln/121")).toEqual({ key: "cards", positionalArgs: ["xln", "121"] });
 	});
 });
 
