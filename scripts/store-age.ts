@@ -49,6 +49,7 @@
 
 import { chunkKey, MANIFEST_KEY, routingFilterKey, STORE_CONTENT_GENERATION } from "../src/engine/store-kv";
 import { kvName } from "./project-config";
+import { readArchiveFormatVersion } from "./wasm-provenance";
 import { wranglerArgv } from "./wrangler-cmd";
 
 /** Backstop only — see the header. A week covers "nothing upstream changed but
@@ -205,6 +206,40 @@ if (publishedGeneration !== STORE_CONTENT_GENERATION) {
 			`generation ${STORE_CONTENT_GENERATION} — its contents no longer match what the code queries.`,
 	);
 	console.error("           Treating it as no store at all, so the build rebuilds it.");
+	process.exit(1);
+}
+// THE FORMAT AND THE GENERATION HAVE TO MOVE TOGETHER, and only the generation
+// forces a rebuild — so a format bump on its own is the one way to pass every
+// gate and still deploy a dark site.
+//
+// The mechanism is spelled out at STORE_CONTENT_GENERATION's declaration
+// (src/engine/store-kv.ts): a format bump makes the RUNNING reader reject the
+// published store, so the fix is to publish a new one, and the only thing that
+// makes this script ask for a new one is the generation. Bump ARCHIVE_FORMAT_VERSION
+// alone and this script says "store is current", the deploy reuses it, and every
+// reader refuses the store it was told to serve. `/cards/*` is dark until someone
+// notices and bumps the other constant.
+//
+// Nothing caught that. tests/engine/wasm-blob-freshness.test.ts closes the
+// adjacent hole — blobs stale against the current format — so a commit that
+// bumps the format and runs `bun run build` is fully green: fresh blobs,
+// matching provenance, clippy and 4000-odd tests passing. This is the check
+// that reads the two constants against each other, and it lives HERE rather
+// than in a test because the published manifest is the thing being judged: what
+// matters is not that two numbers in the tree agree, but that the store this
+// deploy is about to REUSE was built by an engine that speaks this format.
+const publishedFormat = manifest.format_version ?? 0;
+const buildsFormat = readArchiveFormatVersion();
+if (publishedFormat !== buildsFormat) {
+	console.error(
+		`store-age: the published store is archive format ${publishedFormat}, but this deploy's engine reads ` +
+			`format ${buildsFormat} — the running Worker would reject every read from it.`,
+	);
+	console.error(
+		"           Treating it as no store at all, so the build rebuilds it. If this fired on a deploy you " +
+			"expected to reuse the store, the likely cause is an ARCHIVE_FORMAT_VERSION bump without the " +
+			"STORE_CONTENT_GENERATION bump that goes with it (see src/engine/store-kv.ts).",
+	);
 	process.exit(1);
 }
 if (!manifest.store_bytes || !manifest.chunk_count) {
