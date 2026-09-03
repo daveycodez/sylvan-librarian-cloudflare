@@ -398,6 +398,21 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
  * three dense games cost about what the three densest existing tags did (1.89 MiB for
  * booster/hires/nonfoil). See engine/builder/src/transform.rs.
  *
+ * ─── FIVE HERE, THREE ON THE CARD OBJECT — A DIVERGENCE, WRITTEN DOWN ONCE ───────────────────
+ *
+ * The `/cards/*` emission path is a THREE-member vocabulary: `card_engine`'s `GAME_NAMES` is
+ * `paper`/`mtgo`/`arena`, and `games_pack` drops `astral` and `sega` on the way into the compat
+ * blob's packed byte — deliberately, because that byte spends three bits on membership and three
+ * on Scryfall's ORDER, and the order of up to five values does not fit where the order of three
+ * does. So a printing whose only game is `astral` matches `game:astral` here and emits `games: []`
+ * on its card object, where Scryfall emits `["astral"]`.
+ *
+ * Kept as five rather than cut to three, because the two tables answer different questions and
+ * only one of them is lossy: MEMBERSHIP has no width limit, and dropping `astral`/`sega` from
+ * search to match the emission would answer nothing for a value api.scryfall.com honors. Widening
+ * the emission instead is an archive change — the order field has to grow, or the packed byte has
+ * to become two — with its own measurement to do, and it is not folded in here.
+ *
  * Spelled once here and once in the builder's `GAME_IS_TAGS`; the two must agree or `game:paper`
  * silently answers nothing.
  */
