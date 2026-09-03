@@ -1526,8 +1526,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      than ceremonial. Nothing in the header can see that the tag vocabulary grew, so without it
  *      store-age.ts keeps serving a store where every one of these is a no-match with nothing to
  *      say why.
+ *
+ *  48 — `in:` GETS ITS COLUMN. `OracleCard.card_in_tags` is the per-card union of everything the
+ *      card has ever been printed in — set codes, set types, games, languages, rarities, frame
+ *      years, `foil`/`nonfoil`, `booster` — decided at build over canonical AND annex rows by the
+ *      engine's `assign_in_tags`, beside `single_set`, and indexed in card space like
+ *      `card_subtypes`. `in:paper` was `400 Failed to parse query` here against 32,729 on
+ *      api.scryfall.com, and it is not `game:paper` under another name: `in:khm` is 5,318
+ *      printings under `unique=prints` where `e:khm` is 425, and `in:ja` (30,545) is answered
+ *      almost entirely from the annex.
+ *
+ *      A FORMAT BUMP AS WELL: the card row widens by an `ArchivedVec` and `CardIndexes` gains a
+ *      field, so ARCHIVE_FORMAT_VERSION moves to 2026090301 with it — the same pairing as 45, for
+ *      the same reason: store-age.ts rebuilds on this constant, so a format bump alone would leave
+ *      the old store in place and every reader refusing it. The rules each namespace counts under
+ *      are measured and written on `assign_in_tags`.
  */
-export const STORE_CONTENT_GENERATION = 47;
+export const STORE_CONTENT_GENERATION = 48;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

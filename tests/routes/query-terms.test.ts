@@ -1071,6 +1071,11 @@ describe("the regex surface, alias by alias", () => {
 		atag: "atag:/dragon/",
 		arttag: "arttag:/dragon/",
 		is: "is:/promo/",
+		// Same column class as `is:`, same call: `in:/pap/ t:goblin` is dropped there (563, the
+		// anchor, with `Unknown regular expression keyword “in”.` — 2026-09-04) and a plain literal
+		// lowers to `in:pap` here, which answers where Scryfall refuses; the real regex is dropped
+		// with Scryfall's sentence below.
+		in: "in:/paper/",
 		has: "has:/promo/",
 		not: "not:/promo/",
 		settype: "settype:/expansion/",
@@ -1170,6 +1175,7 @@ describe("the regex surface, alias by alias", () => {
 		["is:/^prom/", "Unknown regular expression keyword \u201cis\u201d."],
 		["has:/^prom/", "Unknown regular expression keyword \u201chas\u201d."],
 		["not:/^prom/", "Unknown regular expression keyword \u201cnot\u201d."],
+		["in:/^pap/", "Unknown regular expression keyword \u201cin\u201d."],
 		["frame:/^199/", "Unknown regular expression keyword \u201cframe\u201d."],
 		["lang:/^ja/", "Unknown regular expression keyword \u201clang\u201d."],
 		["oracleid:/^0000/", "Unknown regular expression keyword \u201coracleid\u201d."],

@@ -537,6 +537,14 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			if (attr === "card_is_tags") {
 				return getIsTagsComparisonKeys(val);
 			}
+			// `in:` is a collection column like the six above it, and the engine reads a collection
+			// value through `rhs.as_array()` — a bare StringValueNode there is an EMPTY value, a
+			// leaf matching nothing, answered confidently. Lower-cased because every word
+			// `assign_in_tags` interns is, and `in:KHM` / `in:Rare` / `in:JA` are all honored on
+			// api.scryfall.com (323 / 10,883 / 30,545, 2026-09-04).
+			if (attr === "card_in_tags") {
+				return [pyLower(val)];
+			}
 			if (attr === "card_legalities") {
 				return getLegalityComparisonKeys(val, lhs.originalAttribute);
 			}

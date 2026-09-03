@@ -98,7 +98,10 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	// (db-info.ts GAME_IS_TAGS). It is a keyword this port honors now, so listing it here would
 	// claim the opposite; what remains of it on this surface is the value validator below, which
 	// reproduces Scryfall's ``Unknown game `nonsense` `` rather than letting the term through.
-	"in",
+	// `in` left it the same way, a day later, when the importer started storing the per-card
+	// `card_in_tags` union (db-info.ts). Scryfall gives `in:` NO value validator — `in:nonsense`
+	// and `in:zz` are 404s with no warnings key, honored and matching nothing — so nothing
+	// replaces it on this surface: an unknown value names a tag no card carries.
 	"cube",
 	"new",
 	"not",

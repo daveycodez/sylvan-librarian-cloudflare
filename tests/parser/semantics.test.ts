@@ -861,3 +861,29 @@ describe("game: is the games array, prefixed so it cannot collide with is:", () 
 		expect(parseScryfallQueryWithDirectives("game:paper").warnings).toEqual([]);
 	});
 });
+
+/**
+ * `in:` parses onto its own CARD-level column. The rules live in the engine (`assign_in_tags`),
+ * measured there; what the parser owes is the leaf shape, and that a comparison is a comparison.
+ */
+describe("in: is a card_in_tags leaf", () => {
+	const wire = (query: string): string => JSON.stringify(parseScryfallQueryWithDirectives(query).tree);
+
+	test("every namespace is one column, one value", () => {
+		for (const v of ["paper", "khm", "core", "ja", "rare", "2015", "foil", "booster"]) {
+			const tree = wire(`in:${v}`);
+			expect(tree).toContain('"attribute_name":"card_in_tags"');
+			expect(tree).toContain(`"rhs":["${v}"]`);
+		}
+		// Lower-cased on the way out, like the engine's vocabulary.
+		expect(wire("in:KHM")).toContain('"rhs":["khm"]');
+	});
+
+	test("no warning: Scryfall has no value validator for it, so neither does this", () => {
+		expect(parseScryfallQueryWithDirectives("in:nonsense").warnings).toEqual([]);
+	});
+
+	test("negation is the card-level complement Scryfall's docs describe (`-in:core`)", () => {
+		expect(wire("-in:core")).toMatch(/^\{"node_type":"NotNode"/);
+	});
+});

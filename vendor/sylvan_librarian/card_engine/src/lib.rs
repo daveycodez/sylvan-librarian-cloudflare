@@ -865,6 +865,13 @@ struct OracleCard {
     // is neither alphabetical nor the folded list's ("Flying" before "Flash" on Brazen Borrower).
     card_keywords_printed: Vec<u16>,
     card_oracle_tags: Vec<u16>,
+    /// `in:` — everything this CARD "has ever been printed in", as coll_vocab ids, sorted and
+    /// deduped: set codes, set types, games, languages, rarities, frame years, `foil`/`nonfoil`,
+    /// `booster`. Decided at build by `assign_in_tags` over the card's canonical printings AND its
+    /// annex rows, for the same reason `single_set` is: `tri()` holds one card and one printing
+    /// and can never ask "does SOME printing of this card". Card-space, read through
+    /// `CollField::InTags` exactly as `card_subtypes` is.
+    card_in_tags: Vec<u16>,
     // 2 bits per format, positions from the FORMAT_SHIFTS registry. The word
     // shared by this card's printings; exact unless legality_divergent.
     card_legalities: u64,
@@ -4548,6 +4555,129 @@ fn assign_single_set_flags(
     }
 }
 
+/// The set types whose RARITY Scryfall does not count toward `in:<rarity>`.
+///
+/// Measured 2026-09-04 with `r:rare st:<type> -in:rare` over every set type, `include_extras=true`
+/// so an extras-only card is visible: `box` 466, `promo` 550, `masterpiece` 47, `memorabilia` 18,
+/// `from_the_vault` 2, and ZERO for the other eighteen — `commander` 0 and `is:booster` 0 pin that
+/// the rule is the set type and not the booster flag. It is the set types where rarity is
+/// decorative: every Secret Lair card is "rare", every masterpiece "mythic". Kutzil, Malamet
+/// Exemplar is the shape — rare in `sld/2782`, uncommon in every Ixalan printing, and not
+/// `in:rare` on api.scryfall.com.
+const IN_TAGS_RARITY_EXCLUDED_SET_TYPES: &[&str] = &["box", "masterpiece", "promo", "memorabilia", "from_the_vault"];
+
+/// Decide `OracleCard.card_in_tags` — the whole of `in:` — for every card.
+///
+/// Scryfall's syntax page: "cards that have ever been printed in" a set code (`in:lea`), a set type
+/// (`in:core`, `-in:core`), a game (`in:paper`), a language (`in:ja`) or a rarity (`in:rare`) — and,
+/// measured rather than read, three more namespaces its search accepts: a frame year (`in:2015`
+/// 24,916, `in:1997` 6,803, `in:future` 232), `foil`/`nonfoil` (28,730 / 32,828; `in:etched` is
+/// 0 there and so is not one), and `booster` (28,307 = `is:booster` exactly). All measured against
+/// api.scryfall.com on 2026-09-03/04.
+///
+/// A CARD-level union, which is what makes it different from the printing-level predicate under
+/// each spelling: `in:khm` is 5,318 printings under `unique=prints` where `e:khm` is 425, because
+/// the card's every printing comes back once one of them qualifies; and it sees printings the
+/// default corpus hides — `in:arena` is 16,090 against `game:arena`'s 16,070, both 16,232 with
+/// `include_extras=true`. So the walk runs over every stored row of the card, extras included, and
+/// over the ANNEX, which is where the languages live: `in:ja` is 30,545 cards, almost none of them
+/// with a Japanese canonical row.
+///
+/// Per namespace, which printings count (the residual after each rule is 0-2 cards on the live
+/// data, every one of them in `fra`, a set released the day before the measurement whose
+/// aggregate Scryfall had not yet rebuilt):
+///   - set code, set type, game, language, frame, booster: EVERY printing.
+///   - rarity: every printing NOT in IN_TAGS_RARITY_EXCLUDED_SET_TYPES.
+///   - foil / nonfoil: every printing that is NOT digital-only — `is:foil is:digital -in:foil` is
+///     1,197 there (Tempest Remastered and the Treasure Chest sets are MTGO-only, Alchemy is
+///     Arena-only) and `is:foil -is:digital -in:foil` is the 2 `fra` stragglers.
+///
+/// The words are interned into `coll_vocab` here — set codes and rarity names live nowhere else —
+/// so this has to run before the sorted permutation of the vocab is cut.
+///
+/// MEASURED against a store built from the 2026-09-04 bulk, local / api.scryfall.com: `in:paper`
+/// 32,729 = 32,729, `in:khm` 323 = 323 and 5,318 = 5,318 under `unique=prints`, `in:ja` 30,545 =
+/// 30,545, `in:core` 3,578 = 3,578, `in:memorabilia` 935 = 935, `in:commander` 6,031 = 6,031,
+/// `in:1997` 6,803 = 6,803, `in:future` 232 = 232, `in:special` 244 = 244 — exact. Within 1%:
+/// `in:rare` 10,895 / 10,883, `in:foil` 28,933 / 28,730, `in:nonfoil` 32,642 / 32,828,
+/// `in:booster` 28,326 / 28,307. The residual runs the way a stale aggregate on the far side
+/// would (`e:fra -in:fra` is 2 THERE — its own newest set is not yet in its own `in:`), and is
+/// recorded rather than chased.
+fn assign_in_tags(
+    cards: &mut [OracleCard],
+    printings: &[Printing],
+    offsets: &[u32],
+    foreign: &[Printing],
+    foreign_offsets: &[u32],
+    coll_vocab: &mut Vec<String>,
+) {
+    let mut by_word: HashMap<String, u16> = coll_vocab.iter().enumerate().map(|(i, s)| (s.clone(), i as u16)).collect();
+    let mut intern = |word: &str, coll_vocab: &mut Vec<String>| -> u16 {
+        if let Some(&id) = by_word.get(word) {
+            return id;
+        }
+        assert!(coll_vocab.len() < usize::from(u16::MAX), "coll_vocab is capped at u16::MAX entries");
+        let id = coll_vocab.len() as u16;
+        coll_vocab.push(word.to_owned());
+        by_word.insert(word.to_owned(), id);
+        id
+    };
+    let vocab_str = |coll_vocab: &Vec<String>, vid: u16| -> Option<String> {
+        if vid == VOCAB_NONE { None } else { coll_vocab.get(usize::from(vid)).cloned() }
+    };
+    for (cid, card) in cards.iter_mut().enumerate() {
+        let mut tags: Vec<u16> = Vec::new();
+        let rows = printings[offsets[cid] as usize..offsets[cid + 1] as usize]
+            .iter()
+            .chain(foreign[foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize].iter());
+        for p in rows {
+            // Set code, set type, language: as stored. The set type and language are already vocab
+            // words (CompatFields interns them); the set code is not, and is interned here.
+            tags.push(intern(p.card_set_code.as_str(), coll_vocab));
+            let set_type = vocab_str(coll_vocab, p.compat.set_type_id);
+            if p.compat.set_type_id != VOCAB_NONE {
+                tags.push(p.compat.set_type_id);
+            }
+            if p.compat.lang_id != VOCAB_NONE {
+                tags.push(p.compat.lang_id);
+            }
+            for game in games_to_names(p.compat.games) {
+                tags.push(intern(game, coll_vocab));
+            }
+            // Rarity: not from the set types where it is decorative.
+            let rarity_counts = set_type.as_deref().is_none_or(|t| !IN_TAGS_RARITY_EXCLUDED_SET_TYPES.contains(&t));
+            if rarity_counts && let Some(name) = p.card_rarity_int.and_then(rarity_int_to_text) {
+                tags.push(intern(name, coll_vocab));
+            }
+            // Frame: the year words `card_frame_data` carries beside the title-cased frame effects.
+            // `Future` is stored title-cased (the builder title-cases the frame) and is `in:future`.
+            for &fid in &p.card_frame_data {
+                match vocab_str(coll_vocab, fid).as_deref() {
+                    Some("1993" | "1997" | "2003" | "2015") => tags.push(fid),
+                    Some("Future") => tags.push(intern("future", coll_vocab)),
+                    _ => {}
+                }
+            }
+            // Finishes: paper-available printings only.
+            if p.compat.flags & COMPAT_DIGITAL == 0 {
+                if p.compat.finishes & FINISH_FOIL != 0 {
+                    tags.push(intern("foil", coll_vocab));
+                }
+                if p.compat.finishes & FINISH_NONFOIL != 0 {
+                    tags.push(intern("nonfoil", coll_vocab));
+                }
+            }
+            if p.compat.flags & COMPAT_BOOSTER != 0 {
+                tags.push(intern("booster", coll_vocab));
+            }
+        }
+        // Sorted and deduped: the set-like collections are id-sorted so `tri()` binary-searches.
+        tags.sort_unstable();
+        tags.dedup();
+        card.card_in_tags = tags;
+    }
+}
+
 /// Order each card's ANNEX rows by language, which is the order Scryfall serves them in.
 ///
 /// Measured 2026-08-16: `e:khm cn:1 include_multilingual=true` answers en, de, es, fr, it, ja, ko,
@@ -6023,6 +6153,7 @@ struct ValueTotals {
     /// mis-routing was this gap's first symptom, closed there for the router's OWN cost features;
     /// this closes it for `compose_printing_estimate`'s answer too).
     subtypes: HashMap<String, SpaceTotals>,
+    in_tags: HashMap<String, SpaceTotals>,
     keywords: HashMap<String, SpaceTotals>,
     oracle_tags: HashMap<String, SpaceTotals>,
     /// `art:`/`is:` — printing-space, the mirror gap: `bits`/`len_of` already give these an exact
@@ -6367,6 +6498,9 @@ fn build_all_value_totals(
         }),
         subtypes: totals!(|card: &OracleCard, _p: &Printing| {
             card.card_subtypes.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        in_tags: totals!(|card: &OracleCard, _p: &Printing| {
+            card.card_in_tags.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
         }),
         keywords: totals!(|card: &OracleCard, _p: &Printing| {
             card.card_keywords.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
@@ -7159,6 +7293,7 @@ struct CardIndexes {
     // densest oracle tags (47%, 30%, 25% of cards) behind MAX_NARROW_FRACTION, a guard card-space
     // narrowing deliberately does not have.
     subtypes:       HybridTagIndex,  // card space
+    in_tags:        HybridTagIndex,  // card space — `in:`, see assign_in_tags
     keywords:       HybridTagIndex,  // card space
     oracle_tags:    HybridTagIndex,  // card space
     // Scalar, not a collection (every printing answers `layout:` with one value of its own) --
@@ -7995,6 +8130,7 @@ fn probe_collection_k(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> O
     // never a `get` — same answer either way, which is what lets the caller stay unaware of storage.
     let idx = match field {
         CollField::Subtypes => &indexes.subtypes,
+        CollField::InTags => &indexes.in_tags,
         CollField::Keywords => &indexes.keywords,
         CollField::OracleTags => &indexes.oracle_tags,
         CollField::ArtTags => &indexes.art_tags,
@@ -8771,6 +8907,7 @@ fn narrow_rec(
             // dense values were dropped at build (#628).
             let (idx, card_space) = match field {
                 CollField::Subtypes   => (&indexes.subtypes,    true),
+                CollField::InTags     => (&indexes.in_tags,     true),
                 CollField::Keywords   => (&indexes.keywords,    true),
                 CollField::OracleTags => (&indexes.oracle_tags, true),
                 CollField::ArtTags    => (&indexes.art_tags,    false),
@@ -11384,6 +11521,7 @@ struct CollComposeSource<'i> {
 fn collection_compose_index(indexes: &Archived<CardIndexes>, field: CollField) -> Option<CollComposeSource<'_>> {
     Some(match field {
         CollField::Subtypes   => CollComposeSource { idx: &indexes.subtypes,    card_space: true },
+        CollField::InTags     => CollComposeSource { idx: &indexes.in_tags,     card_space: true },
         CollField::Keywords   => CollComposeSource { idx: &indexes.keywords,    card_space: true },
         CollField::OracleTags => CollComposeSource { idx: &indexes.oracle_tags, card_space: true },
         CollField::ArtTags    => CollComposeSource { idx: &indexes.art_tags,    card_space: false },
@@ -12839,6 +12977,9 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
         FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value, .. } => {
             return Some(vt.subtypes.get(value.as_str()).map_or(0, |t| t.get(mode)));
         }
+        FilterExpr::CollectionCmp { field: CollField::InTags, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.in_tags.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
         FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value, .. } => {
             return Some(vt.keywords.get(value.as_str()).map_or(0, |t| t.get(mode)));
         }
@@ -13749,7 +13890,7 @@ fn plane_leaves_nothing_to_verify(
 fn compose_leaf_nothing_to_verify(filter: &FilterExpr) -> bool {
     matches!(
         filter,
-        FilterExpr::CollectionCmp { field: CollField::Subtypes | CollField::Keywords | CollField::OracleTags, op: CmpOp::Ge, .. }
+        FilterExpr::CollectionCmp { field: CollField::Subtypes | CollField::InTags | CollField::Keywords | CollField::OracleTags, op: CmpOp::Ge, .. }
     )
 }
 
@@ -18484,7 +18625,17 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                A LAYOUT change and therefore a real bump: every field after `card_name_lower`
 //                moves, and this constant is what stops `access_unchecked` reading a 2026082801
 //                store through the new offsets.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026083101;
+//   2026090301 — `OracleCard` GAINS `card_in_tags`, the per-card `in:` union (see assign_in_tags),
+//                and `CardIndexes` gains its card-space `in_tags` index. `in:paper` was `400 Failed
+//                to parse query` here against 32,729 on api.scryfall.com, and no query-time walk
+//                can answer it: `tri()` sees one card and one printing, never the card's other
+//                rows and never the annex. The card row does NOT widen — the 8-byte `ArchivedVec`
+//                lands in padding the row already had, and `the_archived_row_sizes_stay_pinned`
+//                still reads 288 — but every field after `card_oracle_tags` inside the row moves,
+//                and `CardIndexes` gains a field after `subtypes`, so this is a real bump: it is
+//                what stops `access_unchecked` reading a 2026083101 store through the new
+//                offsets. Paired with STORE_CONTENT_GENERATION 48.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090301;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -18888,7 +19039,7 @@ fn build_card_data_sorted(
     // want one, cutting both the live peak and heap fragmentation.
     let Interner { map: interner_map, mut strings } = interner;
     drop(interner_map);
-    let VocabInterner { map: vocab_map, strings: coll_vocab } = vocab;
+    let VocabInterner { map: vocab_map, strings: mut coll_vocab } = vocab;
     drop(vocab_map);
     let VocabInterner { map: artists_map, strings: artist_vocab } = artists;
     // Parallel to `artist_vocab` BY VID, filled from each row's fold as the commit loop walks them.
@@ -19058,6 +19209,7 @@ fn build_card_data_sorted(
                 card_keywords: std::mem::take(&mut row.card_keywords),
                 card_keywords_printed: std::mem::take(&mut row.card_keywords_printed),
                 card_oracle_tags: std::mem::take(&mut row.card_oracle_tags),
+                card_in_tags: Vec::new(), // decided after grouping by assign_in_tags
                 card_legalities: row.card_legalities,
                 mana_cost: row.mana_cost.clone(),
                 creature_power_text_id: row.creature_power_text_id,
@@ -19263,6 +19415,10 @@ fn build_card_data_sorted(
     // passes because it is one, and stored on the card because `tri()` sees one card and one
     // printing -- never the card's other rows, and never the annex.
     assign_single_set_flags(&mut cards, &printings, &offsets, &foreign, &foreign_offsets);
+    // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
+    // question the annex exists to answer. Interns the words it needs, so it runs before
+    // `coll_vocab_sorted` below is cut.
+    assign_in_tags(&mut cards, &printings, &offsets, &foreign, &foreign_offsets, &mut coll_vocab);
     assign_artist_ranks(&mut printings, &mut foreign, &artist_vocab_collated);
     assign_collector_ranks(&mut printings, &mut foreign, &strings);
     build_ckpt!("group+name_ranks");
@@ -19339,6 +19495,7 @@ fn build_card_data_sorted(
     let type_lines = build_type_line_index(&cards, &strings);
     build_ckpt!("type_lines");
     let subtypes_idx = build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes);
+    let in_tags_idx = build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_in_tags);
     let keywords_idx = build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_keywords);
     let oracle_tags_idx = build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags);
     let layout_idx = build_layout_hybrid_index(&cards, &printings, &printing_to_card, &strings);
@@ -19382,6 +19539,7 @@ fn build_card_data_sorted(
         }),
         rarity:         build_rarity_index(&printings, &offsets),
         subtypes:       subtypes_idx,
+        in_tags:        in_tags_idx,
         keywords:       keywords_idx,
         oracle_tags:    oracle_tags_idx,
         layout:         layout_idx,

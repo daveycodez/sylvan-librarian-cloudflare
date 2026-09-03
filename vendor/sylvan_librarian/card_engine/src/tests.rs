@@ -217,6 +217,7 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         color_indicator: 0,
         card_types,
         single_set: false,
+        card_in_tags: Vec::new(),
         legality_divergent: false,
         oracle_id,
         card_name_id: NONE_STR,
@@ -2240,6 +2241,7 @@ fn fuzz_describe(spec: &FuzzSpec) -> String {
             let f = match field {
                 CollField::Subtypes => "subtypes", CollField::Keywords => "keywords", CollField::OracleTags => "oracle_tags",
                 CollField::ArtTags => "art_tags", CollField::IsTags => "is_tags", CollField::FrameData => "frame_data",
+                CollField::InTags => "in_tags",
             };
             format!("{f}{}{value}", fuzz_op_str(*op))
         }
@@ -7082,6 +7084,7 @@ fn bench_checked_vs_unchecked_access() {
         toughness:      build_numeric_index(&cards, |c| c.creature_toughness),
         rarity:         build_rarity_index(&printings, &offsets),
         subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
+        in_tags:        build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_in_tags),
         keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
         oracle_tags:    build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
         layout:         build_layout_hybrid_index(&cards, &printings, &build_printing_to_card(&offsets), &strings),
@@ -17885,6 +17888,82 @@ fn the_archived_row_sizes_stay_pinned() {
     // SECOND representation of a value `Printing::card_watermark_id` already holds as a string id,
     // which the filter, the face emitter and the spill codec would each have to keep in step.
     assert_eq!(std::mem::size_of::<Archived<PrintingFace>>(), 48);
+}
+
+#[test]
+fn in_tags_are_the_union_over_canonical_and_annex_rows_under_each_namespaces_rule() {
+    // One card, three canonical printings and one annex row, each carrying one thing the others
+    // do not, so every rule in `assign_in_tags` has a printing that exercises it alone:
+    //   id 1  khm / expansion / en / rare / paper+arena / nonfoil only / booster / 2015 frame
+    //   id 2  sld / box       / en / MYTHIC (decorative: must NOT count) / paper / nonfoil only
+    //   id 3  tpr / masters   / en / rare / mtgo / foil only, DIGITAL (finish must NOT count)
+    //   annex pjsc / promo    / ja
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let id = |v: &mut VocabInterner, w: &str| v.intern(w.to_owned()).expect("vocab");
+    let (expansion, boxt, masters, promo) = (id(&mut vocab, "expansion"), id(&mut vocab, "box"), id(&mut vocab, "masters"), id(&mut vocab, "promo"));
+    let (en, ja, frame_2015) = (id(&mut vocab, "en"), id(&mut vocab, "ja"), id(&mut vocab, "2015"));
+    let mut data = store_of(vec![card], &[3], vocab);
+    let set = |p: &mut Printing, code: &str, st: u16, lang: u16| {
+        p.card_set_code = InlineStr::<8>::from_str(code);
+        p.compat.set_type_id = st;
+        p.compat.lang_id = lang;
+    };
+    set(&mut data.printings[0], "khm", expansion, en);
+    data.printings[0].card_rarity_int = Some(2);
+    data.printings[0].compat.games = super::games_pack(["paper", "arena"]);
+    data.printings[0].compat.finishes = FINISH_NONFOIL;
+    data.printings[0].compat.flags = super::COMPAT_BOOSTER;
+    data.printings[0].card_frame_data = vec![frame_2015];
+    set(&mut data.printings[1], "sld", boxt, en);
+    data.printings[1].card_rarity_int = Some(4);
+    data.printings[1].compat.games = super::games_pack(["paper"]);
+    data.printings[1].compat.finishes = FINISH_NONFOIL;
+    data.printings[1].compat.flags = 0;
+    set(&mut data.printings[2], "tpr", masters, en);
+    data.printings[2].card_rarity_int = Some(2);
+    data.printings[2].compat.games = super::games_pack(["mtgo"]);
+    data.printings[2].compat.finishes = FINISH_FOIL;
+    data.printings[2].compat.flags = super::COMPAT_DIGITAL;
+    let mut annex = stub_printing(9, 9, None);
+    set(&mut annex, "pjsc", promo, ja);
+    annex.compat.finishes = FINISH_NONFOIL;
+    data.foreign = vec![annex];
+    data.foreign_offsets = vec![0, 1];
+
+    super::assign_in_tags(&mut data.cards, &data.printings, &data.offsets, &data.foreign, &data.foreign_offsets, &mut data.coll_vocab);
+    let mut words: Vec<&str> = data.cards[0].card_in_tags.iter().map(|&v| data.coll_vocab[v as usize].as_str()).collect();
+    words.sort_unstable();
+    let mut expected = vec![
+        "khm", "sld", "tpr", "pjsc", "expansion", "box", "masters", "promo", "en", "ja", "rare", "paper", "arena", "mtgo", "nonfoil", "booster", "2015",
+    ];
+    expected.sort_unstable();
+    assert_eq!(words, expected);
+    // The two rules that SUBTRACT, stated on their own: sld's mythic is decorative, and tpr's foil
+    // is digital-only. Neither word is in the union.
+    assert!(!words.contains(&"mythic") && !words.contains(&"foil"));
+    // Sorted and deduped, which is what the binary-search arm in `tri()` relies on.
+    let ids = &data.cards[0].card_in_tags;
+    assert!(ids.windows(2).all(|w| w[0] < w[1]));
+
+    // And the whole card answers, every printing of it, under `unique=printing` — the card-level
+    // lift that separates `in:ja` from `lang:ja` (which would match no canonical row here at all).
+    data.coll_vocab_sorted = sorted_vocab_ids(&data.coll_vocab);
+    data.indexes.in_tags = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_in_tags);
+    let ids_for = |data: &CardData, word: &str| -> Vec<u128> {
+        let bytes = rkyv::to_bytes::<Error>(data).expect("serialize");
+        let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let mut filter = FilterExpr::CollectionCmp { field: CollField::InTags, op: CmpOp::Ge, value: word.to_owned(), value_id: None };
+        filter.bind(&a.coll_vocab, &a.coll_vocab_sorted, &a.artist_vocab, &a.artist_vocab_collated, &a.artist_entities, &a.mana_vocab, &a.indexes.flavor, &a.strings);
+        let (_, page) = run_query(&QueryCtx::from(a), &mut filter, None, "printing", "default", "name", "asc", 100, 0);
+        let mut out: Vec<u128> = page.iter().map(|r| u128::from(r.1.scryfall_id)).collect();
+        out.sort_unstable();
+        out
+    };
+    assert_eq!(ids_for(&data, "ja"), vec![1, 2, 3]);
+    assert_eq!(ids_for(&data, "sld"), vec![1, 2, 3]);
+    assert_eq!(ids_for(&data, "mythic"), Vec::<u128>::new());
+    assert_eq!(ids_for(&data, "foil"), Vec::<u128>::new());
 }
 
 #[test]

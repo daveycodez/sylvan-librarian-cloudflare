@@ -204,6 +204,25 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["game"],
 		parserClass: ParserClass.TEXT,
 	},
+	// `in:` — "cards that have ever been printed in" (Scryfall's syntax page): a set code, a set
+	// type, a game, a language, a rarity, a frame year, or `booster`. A CARD-level fact, decided
+	// at build over every printing of the card, canonical AND annex, and stored on the OracleCard
+	// as its own collection column — because `tri()` sees one card and one printing and can never
+	// answer "does SOME printing of this card" from there. Card-space, like `card_subtypes`; the
+	// engine's `assign_in_tags` writes it and `CollField::InTags` reads it — and its doc comment
+	// carries the measured rule per namespace (rarity skips the set types where it is decorative;
+	// finishes skip digital-only printings; everything else is every printing).
+	//
+	// No value validator, because Scryfall has none: `in:nonsense` and `in:zz` are 404s there
+	// with no warnings key, honored and matching nothing, and an unknown word here names a tag no
+	// card carries. Compared under `:`/`=` only — `in>=rare` is a 404 there, which the compat
+	// surface's comparison rule already answers.
+	{
+		dbColumnName: "card_in_tags",
+		fieldType: FieldType.JSONB_OBJECT,
+		searchAliases: ["in"],
+		parserClass: ParserClass.TEXT,
+	},
 	{
 		dbColumnName: "card_rarity_int",
 		fieldType: FieldType.NUMERIC,

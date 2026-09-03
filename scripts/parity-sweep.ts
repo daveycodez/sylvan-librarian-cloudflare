@@ -1059,24 +1059,24 @@ const RECOVERED_OPERATORS: [string, string][] = [
 	["game-mtgo", "game:mtgo e:khm t:god"],
 	["date-set-code", "date>=khm t:god"],
 	["date-set-code-le", "date<=neo t:god"],
+	// `in:` — the per-card union `assign_in_tags` stores (card_engine lib.rs). One probe per
+	// namespace, and one under `unique=prints`, which is where it separates from `e:`/`game:`.
+	["in-paper", "in:paper t:goblin"],
+	["in-arena", "in:arena e:khm t:god"],
+	["in-set", "in:khm t:god"],
+	["in-set-prints", "in:khm t:god unique:prints"],
+	["in-set-type", "in:core t:goblin"],
+	["in-set-type-negated", "-in:core t:goblin"],
+	["in-lang", "in:ja t:god e:khm"],
+	["in-rarity", "in:rare t:goblin"],
+	["in-frame", "in:1997 t:goblin"],
+	["in-foil", "in:foil t:god e:khm"],
 ];
 for (const [name, q] of RECOVERED_OPERATORS) add(`op-${name}`, "operators", search(q), [`operator:${name}`]);
 
 // ── operators this port is not expected to implement, probed on purpose ──
 const ADJACENT_OPERATORS: [string, string][] = [
 	["oracleid", "oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a"],
-	// `in:` STAYS HERE, and it is not the same question `game:` was. `in:X` asks whether the CARD
-	// has SOME printing in X and then answers with all of them — `in:khm` is 5,318 printings under
-	// `unique=prints` where `e:khm` is 425 — over a vocabulary of games, LANGUAGES and SET CODES
-	// (`in:ja` 30,545, `in:khm` 323), and it sees printings the default corpus hides (`in:arena`
-	// is 16,090 against `game:arena`'s 16,070). That is a card-space existential over the printing
-	// CSR, which this engine has no operator for: `FilterExpr` is evaluated one (card, printing)
-	// pair at a time. Aliasing it onto `game:`/`e:`/`lang:` would answer a different query without
-	// a word, which is worse than declining. Measured 2026-09-03.
-	["in-arena", "in:arena e:khm t:god"],
-	["in-paper", "in:paper t:goblin"],
-	["in-lang", "in:ja t:god e:khm"],
-	["in-set", "in:khm t:god"],
 	["st-core", "st:core t:god"],
 	["cube-vintage", "cube:vintage t:god"],
 	["new-art", "new:art e:khm"],
