@@ -9,7 +9,9 @@
 //                                      (hash(query) % N); the gather object
 //                                      fans phases 1 and 2 to its siblings
 //   total_cards                        free — rides phase 1 of the gather
-//   catalog (types+keywords)           N, summed (each object caches its own)
+//   catalog (types+keywords)           N, summed — ONCE per store generation per
+//                                      isolate (CATALOG_CACHE); every later call
+//                                      is 0, like setsWithExtras
 //   random                             1, partition weighted by card_count
 //   oracle_id-keyed                    1, partitionOfOracleId; a miss re-reads
 //                                      the manifest (cacheTtl 60) and retries
@@ -324,6 +326,17 @@ export function mergeAutocomplete(lists: string[][], prefix: string, limit: numb
  */
 const EXTRAS_SETS_CACHE = new Map<string, Promise<string[]>>();
 
+/**
+ * `store_key` → the corpus-global type and keyword counts, summed across the partitions.
+ *
+ * The same shape and the same rationale as EXTRAS_SETS_CACHE: a few KB of constants that change
+ * exactly when the archives do, asked for by a route (`/get_catalog`) that fanned out N RPCs on
+ * every call — once an hour per colo behind its edge cache, but N grows with the corpus and the
+ * answer never does. One entry covers both tables because one RPC (`typeAndKeywordCounts`)
+ * returns both, and RemoteEngine already dedupes that per instance.
+ */
+const CATALOG_CACHE = new Map<string, Promise<{ types: Record<string, number>; keywords: Record<string, number> }>>();
+
 export class PartitionedEngine implements Engine {
 	/** Lazily created per-partition clients, so a single-card route builds one. */
 	private readonly engines = new Map<number, RemoteEngine>();
@@ -421,11 +434,33 @@ export class PartitionedEngine implements Engine {
 	// ── catalogs and counts: sum the partitions ─────────────────────────────────
 
 	async cardTypeCounts(): Promise<Record<string, number>> {
-		return sumCounts(await this.all((e) => e.cardTypeCounts()));
+		return (await this.catalogCounts()).types;
 	}
 
 	async cardKeywordCounts(): Promise<Record<string, number>> {
-		return sumCounts(await this.all((e) => e.cardKeywordCounts()));
+		return (await this.catalogCounts()).keywords;
+	}
+
+	/**
+	 * Both count tables in ONE fan-out per store generation per isolate — see CATALOG_CACHE. The
+	 * in-flight promise is what is cached, so concurrent first requests share the fan-out, and a
+	 * failed one is forgotten rather than remembered as an empty catalog.
+	 */
+	private catalogCounts(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+		const key = this.manifest.store_key;
+		const cached = CATALOG_CACHE.get(key);
+		if (cached) return cached;
+		const pending = this.all(async (e) => ({ types: await e.cardTypeCounts(), keywords: await e.cardKeywordCounts() }))
+			.then((parts) => ({
+				types: sumCounts(parts.map((p) => p.types)),
+				keywords: sumCounts(parts.map((p) => p.keywords)),
+			}))
+			.catch((err) => {
+				CATALOG_CACHE.delete(key);
+				throw err;
+			});
+		CATALOG_CACHE.set(key, pending);
+		return pending;
 	}
 
 	/**

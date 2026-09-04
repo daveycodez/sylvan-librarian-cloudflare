@@ -27,9 +27,15 @@ import type { StoreManifest } from "../../src/engine/types";
 
 const N = 4;
 
+/** Every manifest is its own store generation: the engine's per-generation caches (extras sets,
+ * catalog counts) are module-scoped, so a shared key would let one test's fan-out answer for
+ * the next. The partition keys and built_at stay fixed — nothing here parses the top-level key. */
+let generation = 0;
+
 function manifestOf(n: number): StoreManifest {
+	generation += 1;
 	return {
-		store_key: `card-store-v1-100.store`,
+		store_key: `card-store-v1-100-g${generation}.store`,
 		built_at: "100",
 		card_count: 40,
 		printing_count: 100,
@@ -465,11 +471,61 @@ describe("batches and catalogs", () => {
 		expect(calls.length).toBe(0);
 	});
 
-	test("catalog: N summed", async () => {
+	test("catalog: N summed, ONCE per store generation — types and keywords share the fan-out", async () => {
 		const { engine, of } = build({ 0: { types: { creature: 5 } } });
 		const types = await engine.cardTypeCounts();
 		expect(types).toEqual({ creature: 8 }); // 5 + 1 + 1 + 1
 		expect(of("cardTypeCounts").length).toBe(N);
+		// The keywords ride the same fan-out, and a second ask of either costs nothing.
+		expect(await engine.cardKeywordCounts()).toEqual({ flying: 8 });
+		expect(await engine.cardTypeCounts()).toEqual({ creature: 8 });
+		expect(of("cardTypeCounts").length).toBe(N);
+		expect(of("cardKeywordCounts").length).toBe(N);
+	});
+
+	test("catalog: the cache is per store generation, shared across the per-request engines", async () => {
+		// Two engines on the SAME manifest (one request after another): one fan-out between them.
+		const manifest = manifestOf(N);
+		const calls: string[] = [];
+		const first = new PartitionedEngine(
+			(p) => fakeRemote(p, calls),
+			manifest,
+			async () => manifest,
+			null,
+		);
+		const second = new PartitionedEngine(
+			(p) => fakeRemote(p, calls),
+			manifest,
+			async () => manifest,
+			null,
+		);
+		await first.cardTypeCounts();
+		await second.cardKeywordCounts();
+		expect(calls.filter((c) => c.startsWith("cardTypeCounts:")).length).toBe(N);
+		// A new generation (a nightly publish) is a new key, so it fans out again.
+		const { engine, of } = build();
+		await engine.cardTypeCounts();
+		expect(of("cardTypeCounts").length).toBe(N);
+	});
+
+	test("catalog: a failed fan-out is not remembered", async () => {
+		const manifest = manifestOf(N);
+		let fail = true;
+		const calls: string[] = [];
+		const remote = (p: number) => {
+			const inner = fakeRemote(p, calls);
+			return {
+				...inner,
+				cardTypeCounts: async () => {
+					if (fail) throw new Error("partition down");
+					return inner.cardTypeCounts();
+				},
+			} as unknown as RemoteEngine;
+		};
+		const engine = new PartitionedEngine(remote, manifest, async () => manifest, null);
+		expect(engine.cardTypeCounts()).rejects.toThrow(/partition down/);
+		fail = false;
+		expect(await engine.cardTypeCounts()).toEqual({ creature: 4 });
 	});
 
 	test("cardCount: N summed", async () => {

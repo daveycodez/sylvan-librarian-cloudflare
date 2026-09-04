@@ -341,14 +341,17 @@ fn gather_reference(
 }
 
 /// The inline-row budget src/engine/gather.ts computes for a real request — kept here as a
-/// deliberate twin (`INLINE_SLACK` / `inlineRowBudget`) so the G2 gate exercises the SHAPE
-/// production runs, not just the keys-only protocol. Nothing depends on the two staying equal:
-/// the budget is a hint, and a mismatch costs a phase-2 call, never an answer.
+/// deliberate twin (`inlineSlack` / `inlineRowBudget`: the mean share plus four standard
+/// deviations of Binomial(limit, 1/N)) so the G2 gate exercises the SHAPE production runs, not
+/// just the keys-only protocol. Nothing depends on the two staying equal: the budget is a hint,
+/// and a mismatch costs a phase-2 call, never an answer.
 fn inline_row_budget(offset: usize, limit: usize, partition_count: usize) -> usize {
-    if offset > 0 || partition_count == 0 {
+    if offset > 0 || partition_count == 0 || limit == 0 {
         return 0;
     }
-    limit.min(limit.div_ceil(partition_count) + 16)
+    let p = 1.0 / partition_count as f64;
+    let slack = (4.0 * (limit as f64 * p * (1.0 - p)).sqrt()).ceil() as usize;
+    limit.min(limit.div_ceil(partition_count) + slack)
 }
 
 /// Both protocols, held against each other: keys-only (phase 2 for everything) and the inline
