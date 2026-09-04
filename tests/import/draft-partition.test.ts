@@ -13,9 +13,11 @@
 import { describe, expect, test } from "bun:test";
 import { fnv1a64OracleId, partitionOfOracleId } from "../../src/engine/partition";
 import {
+	bucketDrafts,
 	draftsForPartition,
 	lengthPrefixed,
 	packPartHashes,
+	splitBatch,
 	splitDraftEmit,
 	unpackPartHashes,
 } from "../../src/import-spill";
@@ -121,5 +123,32 @@ describe("draftsForPartition", () => {
 	test("refuses a non-positive or fractional partition count", () => {
 		expect(() => [...draftsForPartition([], 0, 0)]).toThrow(/positive integer/);
 		expect(() => [...draftsForPartition([], 0, 2.5)]).toThrow(/positive integer/);
+	});
+
+	test("bucketDrafts splits one batch into exactly what draftsForPartition yields for every k", () => {
+		// The bucket phase runs this once per batch where the loop used to run
+		// draftsForPartition N times over every batch: same modulus, same order,
+		// one pass — so the two must agree draft for draft.
+		for (const n of [2, 8]) {
+			for (const batch of makeBatches(ids, 5)) {
+				const buckets = bucketDrafts(batch, n);
+				expect(buckets.length).toBe(n);
+				for (let k = 0; k < n; k++) {
+					expect((buckets[k] as Uint8Array[]).map((d) => dec.decode(d))).toEqual(
+						[...draftsForPartition([batch], k, n)].map((d) => dec.decode(d)),
+					);
+				}
+				// Every draft lands in exactly one bucket, and the bucket is a view, not a copy.
+				expect(buckets.reduce((s: number, b: Uint8Array[]) => s + b.length, 0)).toBe(splitBatch(batch.bytes).length);
+				const first = buckets.flat()[0];
+				expect(first?.buffer).toBe(batch.bytes.buffer);
+			}
+		}
+	});
+
+	test("bucketDrafts refuses a desynced hash vector and a bad partition count", () => {
+		const batch = { bytes: lengthPrefixed([enc.encode("{}"), enc.encode("{}")]), partHashes: packPartHashes([1n]) };
+		expect(() => bucketDrafts(batch, 2)).toThrow(/2 drafts but 1 hashes/);
+		expect(() => bucketDrafts(batch, 0)).toThrow(/positive integer/);
 	});
 });

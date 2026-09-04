@@ -156,6 +156,37 @@ export function* draftsForPartition(
 	}
 }
 
+/**
+ * One draft batch split into its N partitions at once — `out[k]` is exactly what
+ * `draftsForPartition([batch], k, N)` would yield, in the same order, for every k.
+ *
+ * The bucket phase runs this once over the whole staging, where the partition
+ * loop used to run `draftsForPartition` N times over it: the same modulus, one
+ * pass instead of N, and the (N-1)/N of every batch that a partition's own pass
+ * decoded and discarded is instead handed to the partition it belongs to.
+ * Views into the batch's bytes, like draftsForPartition; the caller writes them
+ * out (length-prefixed, byte-capped) before the batch goes away.
+ */
+export function bucketDrafts(
+	batch: { bytes: Uint8Array; partHashes: Uint8Array },
+	partitionCount: number,
+): Uint8Array[][] {
+	if (!Number.isInteger(partitionCount) || partitionCount <= 0) {
+		throw new Error(`partitionCount must be a positive integer, got ${partitionCount}`);
+	}
+	const drafts = splitBatch(batch.bytes);
+	const hashes = unpackPartHashes(batch.partHashes);
+	if (hashes.length !== drafts.length) {
+		throw new Error(`draft batch holds ${drafts.length} drafts but ${hashes.length} hashes`);
+	}
+	const n = BigInt(partitionCount);
+	const out: Uint8Array[][] = Array.from({ length: partitionCount }, () => []);
+	for (let i = 0; i < drafts.length; i++) {
+		(out[Number((hashes[i] as bigint) % n)] as Uint8Array[]).push(drafts[i] as Uint8Array);
+	}
+	return out;
+}
+
 /** Where every spilled row sits, by add-order index. */
 export interface SpillIndex {
 	/** `base` of the spill_batches group holding this row. */

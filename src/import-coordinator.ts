@@ -34,16 +34,18 @@
 //             illustration counts, whose (illustration_id, card_name) group is
 //             the one key the partition hash does not co-locate), sealed into
 //             the same TagData snapshot before the loop opens
+//   bucket    EVERY draft moved into its partition's own draft_parts rows
+//             (bucketDrafts re-mods each stored hash by N), ONCE, consuming
+//             draft_batches as it goes — so the loop below reads 1/N of the
+//             corpus per partition where it used to read all of it N times
 //   [for p in 0..N):                  the PARTITIONED build+publish loop.
-//     agg(p)      partition p's drafts (draftsForPartition re-mods each stored
-//                 hash by N), pass 1: dedupe winners and pin slots — both keyed
-//                 inside one card, so partition-local — through a FRESH group
-//                 wasm + restored tags per partition, so no partition's heap
-//                 high-water carries into the next
+//     agg(p)      partition p's draft_parts, pass 1: dedupe winners and pin
+//                 slots — both keyed inside one card, so partition-local —
+//                 through a FRESH group wasm + restored tags per partition, so
+//                 no partition's heap high-water carries into the next
 //     finalize(p) same drafts, pass 2: ENGINE_COLUMNS rows → spill blobs.
-//                 draft_batches is dropped after the LAST partition's finalize
-//                 (earlier partitions' finalizes must leave it — later
-//                 partitions still read it)
+//                 partition p's draft_parts are dropped when its PUBLISH
+//                 completes (a rewind during reorder/build still needs them)
 //     reorder(p)  partition p's spill rewritten in build order
 //     build(p)    spilled rows → partition p's own rkyv archive
 //                 (card-store-v<fmt>-<built_at>-p<k>.store) → chunk staging;
@@ -132,6 +134,8 @@ import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types"
 import {
 	AGG_FETCH_BATCHES,
 	AGG_SLICE_BATCHES,
+	BUCKET_FETCH_BATCHES,
+	BUCKET_SLICE_BATCHES,
 	FINALIZE_FETCH_BATCHES,
 	FINALIZE_SLICE_BATCHES,
 	MAX_DAY_ROWS_READ,
@@ -169,9 +173,10 @@ import {
 	skipBytes,
 } from "./import-recode";
 import {
+	BLOB_GROUP_BYTES,
 	blobBytes,
 	blobGroups,
-	draftsForPartition,
+	bucketDrafts,
 	exactBuffer,
 	lengthPrefixed,
 	orderedRowCursor,
@@ -357,6 +362,7 @@ type Phase =
 	| "tags"
 	| "scores"
 	| "routing"
+	| "bucket"
 	| "agg"
 	| "finalize"
 	| "reorder"
@@ -506,9 +512,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- fnv1a64(oracle_id) partition hash of the batch's i-th length-prefixed
 			-- draft (see the draft-partition-hash block in import-spill.ts for why it
 			-- is a parallel vector and a full hash rather than a per-draft INTEGER or
-			-- a partition index). The build loop re-mods it by the partition_count it
-			-- chooses (draftsForPartition).
+			-- a partition index). stepBucket re-mods it by the partition_count the
+			-- build chose (bucketDrafts) and moves each draft into draft_parts.
 			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL, part_hashes BLOB);
+			-- The same drafts, re-bucketed by partition once N is known (stepBucket):
+			-- partition k's drafts in emission order, in byte-capped length-prefixed
+			-- groups. The composite key is what makes a partition's agg and finalize
+			-- read ITS rows and no others — an index seek, charged for the rows it
+			-- returns — where they used to walk all of draft_batches and filter in
+			-- process, N times over, which is the term that grew as N x corpus.
+			-- Dropped per partition at its publish (the last point a rewind needs it).
+			CREATE TABLE IF NOT EXISTS draft_parts (partition INTEGER NOT NULL, seq INTEGER NOT NULL, count INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (partition, seq)) WITHOUT ROWID;
 			-- Spilled card rows, length-prefixed in byte-capped groups keyed by
 			-- the index of their first row. Batched because DO row writes are
 			-- the scarcest resource on the free plan (100k/day): one row per
@@ -825,6 +839,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepScores();
 			case "routing":
 				return this.stepRouting();
+			case "bucket":
+				return this.stepBucket();
 			case "agg":
 				return this.stepAgg();
 			case "finalize":
@@ -1707,7 +1723,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.writeTagSnapshot(tagBlobs);
 			this.metaSet("tags_nonce", wasm.nonce);
 			this.metaSet("scores_batch_done", "0");
-			this.metaSet("agg_batch_done", "0");
 			// built_at is fixed ONCE, here at the end of tags, never in stepBuild
 			// (plan B3): with N builds in one run, a built_at stamped per build
 			// would fork the store key family on any mid-loop restart, stranding
@@ -1899,8 +1914,126 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Dropped either way: the keys have done their job, and ~60MB of staging against a
 			// shared 5GB pool is not worth keeping for a retry of an optional artifact.
 			this.sqlRun("DELETE FROM routing_keys");
-			this.metaSet("phase", "agg");
+			this.metaSet("bucket_batch_done", "0");
+			this.metaSet("phase", "bucket");
 		});
+	}
+
+	// ── phase: bucket (the drafts, re-grouped by partition, ONCE) ──────────────
+
+	/**
+	 * Walk the draft staging once and write every draft into its partition's own
+	 * `draft_parts` rows, so the loop that follows reads 1/N of the corpus per
+	 * partition instead of all of it.
+	 *
+	 * Before this phase existed, agg and finalize each read the WHOLE of
+	 * draft_batches for every partition and kept the 1/N that hashed to it —
+	 * 2 x N x 1,180 rows read and 2 x N x 19 alarms at today's shape, and N
+	 * itself grows with the corpus, so the nightly's cost was quadratic in corpus
+	 * size. Every alarm bills a row written (import-budget.ts), which made the
+	 * write meter the one that would have stopped nightlies completing at about
+	 * 1.6x today's corpus. This pass costs one read per staged batch plus one
+	 * write per group written and one per batch deleted, once, and turns the
+	 * N x stagedBatches term into stagedBatches. projectRunCost carries the model.
+	 *
+	 * IT RUNS HERE, after scores and routing, because those are the last phases
+	 * that read draft_batches whole — scores builds the corpus-wide tables from
+	 * every draft — and it runs before agg because N is pinned at the end of tags
+	 * and every partition's share is a function of it.
+	 *
+	 * Memory: a slice holds the drafts it has not yet flushed as VIEWS into their
+	 * batch buffers, so what stays resident is every batch with an unflushed
+	 * draft — bounded by the accumulators (N x BLOB_GROUP_BYTES) plus the fetch
+	 * group, ~60MB at N=32 and ~27MB at N=10, against the 128MB isolate.
+	 *
+	 * Idempotent per slice: a group's key is a pure function of the slice's
+	 * source cursor and the group's ordinal within it (`done x 128 + ordinal`,
+	 * monotonic across slices, and no partition writes 128 groups from 64
+	 * batches), so a retried slice overwrites its own rows rather than appending
+	 * duplicates; the consumed source rows are deleted in the same transaction
+	 * that advances the cursor. Partial tails — one group per partition per
+	 * slice, under the cap — are accepted rather than carried over: carrying
+	 * them would cost 2N writes a slice to save ~N rows of reads later.
+	 */
+	private async stepBucket(): Promise<void> {
+		const pp = this.requirePp();
+		const n = pp.partitions.length;
+		const done = Number(this.metaGet("bucket_batch_done") ?? 0);
+		const acc: Uint8Array[][] = Array.from({ length: n }, () => []);
+		const accBytes = new Array<number>(n).fill(0);
+		const ordinal = new Array<number>(n).fill(0);
+		let groups = 0;
+		const flush = (partition: number) => {
+			const group = acc[partition] as Uint8Array[];
+			if (group.length === 0) return;
+			this.sqlRun(
+				"INSERT OR REPLACE INTO draft_parts (partition, seq, count, bytes) VALUES (?, ?, ?, ?)",
+				partition,
+				done * 128 + (ordinal[partition] as number),
+				group.length,
+				exactBuffer(lengthPrefixed(group)),
+			);
+			ordinal[partition] = (ordinal[partition] as number) + 1;
+			acc[partition] = [];
+			accBytes[partition] = 0;
+			groups += 1;
+		};
+		let fed = 0;
+		while (fed < BUCKET_SLICE_BATCHES) {
+			const want = Math.min(BUCKET_FETCH_BATCHES, BUCKET_SLICE_BATCHES - fed);
+			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
+				"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
+				done + fed,
+				want,
+			);
+			for (const row of rows) {
+				if (!row.part_hashes) {
+					throw new FatalImportError(
+						"draft batch carries no partition hashes — staged by a pre-partition build; " +
+							"the next scheduled import restarts cleanly",
+					);
+				}
+				const byPartition = bucketDrafts(
+					{ bytes: new Uint8Array(row.bytes), partHashes: new Uint8Array(row.part_hashes) },
+					n,
+				);
+				for (let p = 0; p < n; p++) {
+					for (const draft of byPartition[p] as Uint8Array[]) {
+						// Same cap rule as blobGroups: a group's length-prefixed encoding stays under it.
+						if ((acc[p] as Uint8Array[]).length > 0 && (accBytes[p] as number) + 4 + draft.length > BLOB_GROUP_BYTES) {
+							flush(p);
+						}
+						(acc[p] as Uint8Array[]).push(draft);
+						accBytes[p] = (accBytes[p] as number) + 4 + draft.length;
+					}
+				}
+			}
+			fed += rows.length;
+			if (rows.length < want) break;
+		}
+		const exhausted = fed < BUCKET_SLICE_BATCHES;
+		this.ctx.storage.transactionSync(() => {
+			for (let p = 0; p < n; p++) flush(p);
+			// The consumed source rows go in the SAME transaction as the cursor, so the pool never
+			// holds the drafts twice for longer than one slice and a retry re-reads exactly what
+			// it re-writes.
+			this.sqlRun("DELETE FROM draft_batches WHERE seq >= ? AND seq < ?", done, done + fed);
+			this.metaSet("bucket_batch_done", String(done + fed));
+			if (exhausted) {
+				this.metaSet("phase", "agg");
+			}
+		});
+		if (exhausted) {
+			const parts = this.sqlAll<{ partition: number; groups: number; drafts: number }>(
+				"SELECT partition, COUNT(*) AS groups, SUM(count) AS drafts FROM draft_parts GROUP BY partition ORDER BY partition",
+			);
+			console.log(
+				`Drafts bucketed into ${n} partition(s): ` +
+					parts.map((r) => `p${r.partition} ${r.groups} groups/${r.drafts} drafts`).join(", "),
+			);
+		} else {
+			console.log(`Bucket slice: batches ${done}-${done + fed}, ${groups} groups written`);
+		}
 	}
 
 	/**
@@ -2018,12 +2151,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// symptom of the wrong cause. The cost is one lost nightly in a rare
 		// double failure (eviction during the last partition's reorder/build);
 		// the previous store keeps serving and the next import restarts cleanly.
-		const draftRows = Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM draft_batches")[0]?.n ?? 0);
+		const draftRows = Number(
+			this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM draft_parts WHERE partition = ?", pp.partition)[0]?.n ?? 0,
+		);
 		if (draftRows === 0) {
 			throw new FatalImportError(
-				"wasm state was lost after the draft staging was already dropped (last partition, " +
-					"post-finalize) — this run cannot rebuild the partition; the next scheduled import " +
-					"restarts cleanly",
+				`wasm state was lost and partition ${pp.partition}'s drafts are already gone — this run ` +
+					"cannot rebuild the partition; the next scheduled import restarts cleanly",
 			);
 		}
 		console.warn(
@@ -2039,14 +2173,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// This rebuild IS the partition's fresh start, so stepAgg must not
 			// stack a second fresh instance on top of it.
 			this.metaSet("agg_partition_started", String(pp.partition));
-			this.metaSet("agg_batch_done", "0");
+			this.metaSet("agg_seq_done", "-1");
 			this.metaSet("agg_sealed", "0");
 			// Any partially-spilled finalize output is invalid with a fresh heap.
 			// Only the current partition's rows exist in these tables (see the
 			// method comment), so the whole-table delete IS the partition-scoped
 			// one.
 			this.sqlRun("DELETE FROM spill_batches");
-			this.metaSet("finalize_batch_done", "0");
+			this.metaSet("finalize_seq_done", "-1");
 			// And so is anything reorder derived FROM that output. Leaving these
 			// behind would resume the rewritten spill part-written against rows
 			// that no longer exist, appending to stale blobs — a store that
@@ -2062,31 +2196,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── phase: agg (per partition) ───────────────────────────────────────────────
 
-	/**
-	 * The current partition's drafts out of one draft_batches row — the stored
-	 * per-draft hashes re-modded by the run's pinned N, in emission order (the
-	 * order the dedupe's first-seen/last-wins semantics depend on).
-	 */
-	private partitionDrafts(row: { bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }, pp: PpPublish): Uint8Array[] {
-		if (!row.part_hashes) {
-			// Same detection and same answer as takePendingDrafts: only a deploy
-			// that lands mid-run across the partition-hash framing change can
-			// stage a batch with no hash vector, and that run's drafts are from
-			// the old transform anyway.
-			throw new FatalImportError(
-				"draft batch carries no partition hashes — staged by a pre-partition build; " +
-					"the next scheduled import restarts cleanly",
-			);
-		}
-		return [
-			...draftsForPartition(
-				[{ bytes: new Uint8Array(row.bytes), partHashes: new Uint8Array(row.part_hashes) }],
-				pp.partition,
-				pp.partitions.length,
-			),
-		];
-	}
-
 	private async stepAgg(): Promise<void> {
 		const pp = this.requirePp();
 		// A FRESH heap per partition (plan B3): linear memory never shrinks, so a
@@ -2096,6 +2205,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// index so an eviction mid-partition takes the rewind path below instead
 		// of silently restarting the partition without counting it.
 		if (this.metaGet("agg_partition_started") !== String(pp.partition)) {
+			// The drafts this partition will read were bucketed by stepBucket. None at all means
+			// the staging predates that phase — a deploy landed mid-run on an instance whose drafts
+			// are still only in draft_batches — and the same answer as every other mid-run schema
+			// gap applies: restart the run rather than build a partition from nothing.
+			const bucketed = Number(
+				this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM draft_parts WHERE partition = ?", pp.partition)[0]?.n ??
+					0,
+			);
+			if (bucketed === 0) {
+				throw new FatalImportError(
+					`partition ${pp.partition} has no bucketed drafts — staged by a pre-bucket build; ` +
+						"the next scheduled import restarts cleanly",
+				);
+			}
 			const fresh = newGroupWasm();
 			fresh.reset();
 			this.restoreTags(fresh);
@@ -2107,9 +2230,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// against this partition's data — the forgotten-reset bug class —
 				// so they are all reset HERE, in the one transition that
 				// invalidates them.
-				this.metaSet("agg_batch_done", "0");
+				this.metaSet("agg_seq_done", "-1");
 				this.metaSet("agg_sealed", "0");
-				this.metaSet("finalize_batch_done", "0");
+				this.metaSet("finalize_seq_done", "-1");
 				this.metaSet("spill_base", "0");
 				this.metaSet("reorder_done", "0");
 				this.metaSet("staged_rows", "0");
@@ -2117,7 +2240,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
-		const done = Number(this.metaGet("agg_batch_done") ?? 0);
+		// The cursor is the last draft_parts seq consumed, not a count: the seqs
+		// are sparse (stepBucket keys them by source slice and ordinal), and a
+		// `seq > ?` seek on the composite key reads this partition's next groups
+		// and nothing else.
+		let last = Number(this.metaGet("agg_seq_done") ?? -1);
 		// Fetched in AGG_FETCH_BATCHES-sized groups rather than one query for
 		// the whole slice — the split stepScores documents: the slice is a CPU
 		// budget, the group is the resident-bytes budget, and materializing a
@@ -2125,17 +2252,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 		let fed = 0;
 		while (fed < AGG_SLICE_BATCHES) {
 			const want = Math.min(AGG_FETCH_BATCHES, AGG_SLICE_BATCHES - fed);
-			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
-				"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
-				done + fed,
+			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
+				"SELECT seq, bytes FROM draft_parts WHERE partition = ? AND seq > ? ORDER BY seq LIMIT ?",
+				pp.partition,
+				last,
 				want,
 			);
 			for (const row of rows) {
-				// Batches are walked whole and filtered, not pre-split by partition:
-				// the batch is the durable unit the cursor counts, and the filter
-				// preserves emission order within and across batches.
-				const drafts = this.partitionDrafts(row, pp);
-				if (drafts.length > 0) wasm.aggDrafts(lengthPrefixed(drafts));
+				// Every draft in the group is this partition's, in emission order —
+				// stepBucket preserved it within and across batches — so the group
+				// is fed whole, no filter.
+				wasm.aggDrafts(new Uint8Array(row.bytes));
+				last = row.seq;
 			}
 			fed += rows.length;
 			// Short group means the staging ran out, which is the seal condition
@@ -2148,14 +2276,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 			wasm.finalizeBegin();
 			this.ctx.storage.transactionSync(() => {
 				this.metaSet("agg_sealed", "1");
-				this.metaSet("finalize_batch_done", "0");
+				this.metaSet("finalize_seq_done", "-1");
 				this.metaSet("spill_base", "0");
 				pp.step = "finalize";
 				this.savePp(pp);
 				this.metaSet("phase", "finalize");
 			});
 		} else {
-			this.metaSet("agg_batch_done", String(done + fed));
+			this.metaSet("agg_seq_done", String(last));
 		}
 	}
 
@@ -2165,7 +2293,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const pp = this.requirePp();
 		if (!this.ensureWasmContinuity()) return;
 		const wasm = groupWasm();
-		const done = Number(this.metaGet("finalize_batch_done") ?? 0);
+		let last = Number(this.metaGet("finalize_seq_done") ?? -1);
 		const spillBuf: Uint8Array[] = [];
 		// Only the spill handler: the wasm also emits per-row JSON (EMIT_ROW,
 		// upstream's D1 cards-table feed), which nothing on this platform reads —
@@ -2181,16 +2309,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 		let fed = 0;
 		while (fed < FINALIZE_SLICE_BATCHES) {
 			const want = Math.min(FINALIZE_FETCH_BATCHES, FINALIZE_SLICE_BATCHES - fed);
-			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
-				"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
-				done + fed,
+			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
+				"SELECT seq, bytes FROM draft_parts WHERE partition = ? AND seq > ? ORDER BY seq LIMIT ?",
+				pp.partition,
+				last,
 				want,
 			);
 			for (const row of rows) {
-				// Same partition filter, same batches, same order as stepAgg — the
-				// finalize pass's contract with the aggregation it follows.
-				const drafts = this.partitionDrafts(row, pp);
-				if (drafts.length > 0) staged = wasm.finalizeDrafts(lengthPrefixed(drafts));
+				// Same rows, same order as stepAgg — the finalize pass's contract
+				// with the aggregation it follows.
+				staged = wasm.finalizeDrafts(new Uint8Array(row.bytes));
+				last = row.seq;
 			}
 			fed += rows.length;
 			if (rows.length < want) break;
@@ -2213,18 +2342,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 				base += group.length;
 			}
 			this.metaSet("spill_base", String(base));
-			this.metaSet("finalize_batch_done", String(done + fed));
+			this.metaSet("finalize_seq_done", String(last));
 			if (finished) {
 				this.metaSet("staged_rows", String(staged));
-				// Progressive staging purge, LAST-partition-only (plan B3, and the
-				// careful half of it): every earlier partition's finalize still has
-				// readers behind it — partitions k+1..N-1 re-read draft_batches for
-				// their own agg+finalize — so the drafts drop exactly once, when the
-				// final partition has consumed them. ~1/Nth of the corpus (this
-				// partition's spill) replaces the whole draft staging from here.
-				if (pp.partition === pp.partitions.length - 1) {
-					this.sqlRun("DELETE FROM draft_batches");
-				}
+				// This partition's drafts are NOT dropped here, though finalize is
+				// their last reader on the happy path: a wasm rewind during reorder
+				// or build restarts the partition at agg and needs them again. They
+				// go at the partition's publish (stepPublish's completion), the
+				// first point nothing can send the loop back — and since stepBucket
+				// consumed draft_batches, the staging shrinks by 1/N per partition
+				// rather than dropping all at once on the last one.
 				pp.step = "reorder";
 				this.savePp(pp);
 				this.metaSet("phase", "reorder");
@@ -2506,6 +2633,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.sqlRun("DELETE FROM spill_batches");
 			this.sqlRun("DELETE FROM ordered_rows");
 			this.sqlRun("DELETE FROM chunk_staging");
+			// And the partition's own drafts: published means no rewind can ask for them again.
+			this.sqlRun("DELETE FROM draft_parts WHERE partition = ?", pp.partition);
 			if (!isLast) {
 				const advanced = advanceToNextPartition(pp);
 				if (!advanced) throw new Error(`publish: could not advance past partition ${pp.partition}`);
@@ -3186,6 +3315,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			"stage_members",
 			"recode_checkpoint",
 			"draft_batches",
+			"draft_parts",
 			"spill_batches",
 			"ordered_rows",
 			"tagdata_blobs",

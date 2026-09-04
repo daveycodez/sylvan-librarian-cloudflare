@@ -89,6 +89,21 @@ export const MAX_DAY_ROWS_READ = 1_500_000;
 export const MAX_DAY_ROWS_WRITTEN = 60_000;
 
 /**
+ * Draft batches re-bucketed by partition per slice (stepBucket), and the
+ * fetch-group size that bounds what is resident at once — the same split as
+ * the agg and finalize slices below, for the same reasons.
+ *
+ * The bucket pass is what makes the loop's cost LINEAR in corpus size: before
+ * it, agg and finalize each walked all of draft_batches for every partition
+ * (the `2 x N x stagedBatches` term projectRunCost used to carry) and kept the
+ * 1/N that hashed to it. Its own cost is one read per staged batch, one write
+ * per group it produces and one per source batch it deletes — once — so the
+ * slice size only decides how many alarms that once costs.
+ */
+export const BUCKET_SLICE_BATCHES = 64;
+export const BUCKET_FETCH_BATCHES = 8;
+
+/**
  * Draft batches aggregated per slice.
  *
  * RAISED 8 → 64 on 2026-08-28, with the resident bytes bounded separately by
@@ -196,12 +211,20 @@ export interface SliceSizes {
 	aggBatches: number;
 	finalizeBatches: number;
 	reorderRows: number;
+	/**
+	 * Source batches per bucket slice — or `null` for the pipeline BEFORE the
+	 * bucket phase, where every partition rescanned the whole draft staging.
+	 * Kept as a model so the budget test can state what that pipeline cost as an
+	 * assertion, the same way `SLICES_BEFORE` keeps the pre-2026-08-28 slices.
+	 */
+	bucketBatches: number | null;
 }
 
 export const CURRENT_SLICES: SliceSizes = {
 	aggBatches: AGG_SLICE_BATCHES,
 	finalizeBatches: FINALIZE_SLICE_BATCHES,
 	reorderRows: REORDER_SLICE_ROWS,
+	bucketBatches: BUCKET_SLICE_BATCHES,
 };
 
 export interface RunCost {
@@ -236,22 +259,42 @@ export interface RunCost {
  * knows exactly — rather than on the total it can only bound from below.
  */
 export function projectRunCost(shape: RunShape, slices: SliceSizes = CURRENT_SLICES): RunCost {
-	const aggAlarms = Math.ceil(shape.stagedBatches / slices.aggBatches);
-	const finalizeAlarms = Math.ceil(shape.stagedBatches / slices.finalizeBatches);
+	// The bucket pass, or its absence. With it, each partition's agg and finalize
+	// read that partition's OWN groups: about stagedBatches / N full ones plus
+	// one partial tail per bucket slice (stepBucket flushes what it holds at the
+	// end of every slice rather than carrying it over). Without it — the
+	// pipeline before 2026-09-04 — every partition walked all of draft_batches
+	// twice and filtered in process, so its "groups" were the whole staging.
+	const bucketAlarms = slices.bucketBatches === null ? 0 : Math.ceil(shape.stagedBatches / slices.bucketBatches);
+	const groupsPerPartition =
+		slices.bucketBatches === null
+			? shape.stagedBatches
+			: Math.ceil(shape.stagedBatches / shape.partitions) + bucketAlarms;
+	const aggAlarms = Math.ceil(groupsPerPartition / slices.aggBatches);
+	const finalizeAlarms = Math.ceil(groupsPerPartition / slices.finalizeBatches);
 	const reorderAlarms = Math.ceil(shape.rowsPerPartition / slices.reorderRows);
 	// One build alarm and one publish alarm per partition is the floor; a
 	// multi-chunk partition adds publish alarms, which the caller folds into
 	// prefixAlarms rather than this model guessing at KV chunk counts.
 	const perPartitionAlarms = aggAlarms + finalizeAlarms + reorderAlarms + 2;
-	const alarms = shape.prefixAlarms + perPartitionAlarms * shape.partitions;
+	const alarms = shape.prefixAlarms + bucketAlarms + perPartitionAlarms * shape.partitions;
 
-	// Work reads, on top of the per-alarm toll. Each partition walks the whole
-	// draft staging TWICE (agg, then finalize), reorder makes two full passes
-	// over the spill groups per slice, and build walks the ordered groups once
-	// and precharges the same count.
+	// Work reads, on top of the per-alarm toll. The bucket pass reads the staging
+	// once; each partition then reads its own groups TWICE (agg, then finalize),
+	// reorder makes two full passes over the spill groups per slice, and build
+	// walks the ordered groups once and precharges the same count.
+	const bucketReads = slices.bucketBatches === null ? 0 : shape.stagedBatches;
 	const workReads =
+		bucketReads +
 		shape.partitions *
-		(2 * shape.stagedBatches + 2 * shape.spillGroupsPerPartition * reorderAlarms + 2 * shape.spillGroupsPerPartition);
+			(2 * groupsPerPartition + 2 * shape.spillGroupsPerPartition * reorderAlarms + 2 * shape.spillGroupsPerPartition);
+
+	// Writes whose count the shape fixes: one draft_batches row per staged batch
+	// (transform); the bucket pass's one row per group it produces and one
+	// delete (billed as a write) per source batch it consumes; then each
+	// partition's spill groups written once by finalize, once by reorder, and
+	// once as chunk staging by build.
+	const bucketWrites = slices.bucketBatches === null ? 0 : shape.partitions * groupsPerPartition + shape.stagedBatches;
 
 	const fixedRowsRead = alarms * FIXED_ROWS_READ_PER_ALARM;
 	const fixedRowsWritten = alarms * FIXED_ROWS_WRITTEN_PER_ALARM;
@@ -260,9 +303,43 @@ export function projectRunCost(shape: RunShape, slices: SliceSizes = CURRENT_SLI
 		fixedRowsRead,
 		fixedRowsWritten,
 		rowsRead: fixedRowsRead + workReads,
-		// Staging inserts whose count the shape fixes: one draft_batches row per
-		// staged batch, plus each partition's spill groups written once by
-		// finalize, once by reorder, and once as chunk staging by build.
-		rowsWritten: fixedRowsWritten + shape.stagedBatches + shape.partitions * 3 * shape.spillGroupsPerPartition,
+		rowsWritten:
+			fixedRowsWritten + shape.stagedBatches + bucketWrites + shape.partitions * 3 * shape.spillGroupsPerPartition,
 	};
 }
+
+/**
+ * What the Durable Objects storage pool holds at the worst moment of a
+ * nightly: every busy region's cached copy of every partition's compressed
+ * archive, plus the coordinator's staging at its peak.
+ *
+ * The serving cache (store-cache.ts) is bounded by `regions x partition_count x
+ * one partition compressed` — that is, regions x the whole compressed store —
+ * and the coordinator's staging peaks while the drafts are bucketed (just
+ * after transform, before the loop starts consuming them). Both scale with the
+ * corpus and they collide on the same night: the publish prefetches the NEW
+ * archives into the cache while the OLD ones are still held. Pure, so the
+ * budget test can project it forward the way projectRunCost projects the
+ * meters — the pool is the 5GB free-plan limit, and the thing that trips it
+ * should be a red test, not a failed nightly.
+ */
+export function projectPoolBytes(shape: {
+	/** Regions holding a cached copy — every region with traffic, at most REGION_HINTS.length. */
+	warmRegions: number;
+	/** `partitions[k].store_gzip_bytes` from the live manifest, one per partition. */
+	partitionGzipBytes: readonly number[];
+	/**
+	 * Store generations a warm region holds at once. 2 during a publish: the
+	 * prepare step prefetches the NEW archives into local storage while the OLD
+	 * ones still serve, and the commit swaps and only then drops the old rows.
+	 */
+	generationsHeld: number;
+	/** The coordinator's staging at its peak (drafts + tag snapshot + one partition's spill). */
+	stagingPeakBytes: number;
+}): number {
+	const cached = shape.partitionGzipBytes.reduce((s, b) => s + b, 0);
+	return shape.warmRegions * shape.generationsHeld * cached + shape.stagingPeakBytes;
+}
+
+/** The Workers Free plan's Durable Objects storage pool, in bytes. */
+export const DO_STORAGE_POOL_BYTES = 5 * 1024 * 1024 * 1024;
