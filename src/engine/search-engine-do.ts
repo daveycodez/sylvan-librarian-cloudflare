@@ -53,11 +53,25 @@ import {
 	JSON_CONTENT_TYPE,
 	scryfallCsvResponse,
 	spliceMarkers,
+	stringifyScryfall,
 } from "../routes/scryfall-compat/respond";
 import { concatBytes, encodeUtf8 } from "./bytes";
 import { serializeCards } from "./columnar";
 import { parseEngineName, siblingStub } from "./engine-namespace";
-import { type PartitionClient, runTwoPhase, type SearchKeysReply } from "./gather";
+import {
+	decodeRowPacket,
+	type FetchRowsReply,
+	type GatheredPage,
+	type GatherShaping,
+	joinJsonArray,
+	type PartitionClient,
+	parseSlots,
+	ROWS_GATHER,
+	ROWS_SHAPING,
+	type RowShaping,
+	runTwoPhase,
+	type SearchKeysReply,
+} from "./gather";
 import { probePlacement } from "./placement";
 import {
 	currentManifest,
@@ -273,7 +287,10 @@ export class SearchEngine extends DurableObject<Env> {
 		const body = (await request.json()) as {
 			// "cards" answers from this object's own store; "cards2" is the partitioned
 			// twin — the two-phase gather across this object's sibling partitions (plan
-			// B5), same envelope, same headers. A "rows" variant existed for /search's
+			// B5), same envelope, same headers, and since the "cards" row shape the same
+			// engine-written bytes: each partition frames its rows as card objects and
+			// this object joins them (gatherScryfallSearchLocal), so the payload is
+			// handled once here whichever call arrives. A "rows" variant existed for /search's
 			// streaming transport; that route is buffered again (see respond.ts), so the
 			// branch is gone rather than left to rot. Anything else is rejected LOUDLY
 			// below — answering a stale `call` with card objects would be silently wrong
@@ -647,15 +664,25 @@ export class SearchEngine extends DurableObject<Env> {
 	 * (see gather.ts's inlineRowBudget). Defaulted to 0 so an object still running
 	 * the previous build during a rolling deploy — or any caller that predates the
 	 * argument — gets exactly the old keys-only behaviour.
+	 *
+	 * `shaping` names what those rows ARE — row JSON, or card objects the engine
+	 * writes itself — and the reply echoes it, which is how a gather tells this
+	 * build's answer from a sibling still on the one before (no `shape` at all).
+	 * Defaulted to rows for the same rolling-deploy reason as `inlineRows`.
 	 */
-	async searchKeys(opts: EngineSearchOptions, inlineRows = 0): Promise<SearchKeysReply> {
+	async searchKeys(
+		opts: EngineSearchOptions,
+		inlineRows = 0,
+		shaping: RowShaping = ROWS_SHAPING,
+	): Promise<SearchKeysReply> {
 		await this.engine();
 		const ops = gatherOps(this.label);
 		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
 		return {
-			packed: ops.queryKeys(opts, inlineRows),
+			packed: ops.queryKeys(opts, inlineRows, shaping),
 			storeKey: ops.storeKey,
 			sortKeyVersion: ops.sortKeyVersion(),
+			shape: shaping.shape,
 		};
 	}
 
@@ -677,15 +704,23 @@ export class SearchEngine extends DurableObject<Env> {
 	 * order. `storeKey` pins the generation — vpids are meaningless against any
 	 * other archive, so a swapped object errors loudly rather than answering
 	 * from different rows (the gather re-runs against the newer generation).
+	 *
+	 * With `shaping`, the reply is the framed row packet in that shape and says
+	 * so. WITHOUT it — a coordinator still on the previous build — the reply is
+	 * the JSON array of row objects that build parses, and carries no `shape`
+	 * key at all: "present" must mean "framed", exactly.
 	 */
-	async fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<{ rowsBytes: Uint8Array }> {
+	async fetchRows(vpids: number[], fields: string[], storeKey: string, shaping?: RowShaping): Promise<FetchRowsReply> {
 		await this.engine();
 		const ops = gatherOps(this.label);
 		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
 		if (ops.storeKey !== storeKey) {
 			throw new Error(`generation mismatch: rows asked from ${storeKey} but ${this.label} serves ${ops.storeKey}`);
 		}
-		return { rowsBytes: ops.fetchRows(vpids, fields) };
+		if (shaping === undefined) {
+			return { rowsBytes: joinJsonArray(decodeRowPacket(ops.fetchRows(vpids, fields, ROWS_SHAPING))) };
+		}
+		return { rowsBytes: ops.fetchRows(vpids, fields, shaping), shape: shaping.shape };
 	}
 
 	/** One client per partition: this object's own store served locally, every
@@ -699,9 +734,10 @@ export class SearchEngine extends DurableObject<Env> {
 				// move bytes it already holds. Asking for none keeps that work off the local path
 				// and leaves those page slots to the (free, local) fetchRows call.
 				return {
-					searchKeys: (opts: EngineSearchOptions) => this.searchKeys(opts, 0),
-					fetchRows: async (vpids: number[], fields: string[], storeKey: string) =>
-						(await this.fetchRows(vpids, fields, storeKey)).rowsBytes,
+					searchKeys: (opts: EngineSearchOptions, _inlineRows: number, shaping: RowShaping) =>
+						this.searchKeys(opts, 0, shaping),
+					fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
+						this.fetchRows(vpids, fields, storeKey, shaping),
 					// The gather's straggler remedy, on this object: the same KV-manifest refresh a
 					// publish notify performs, minus the manifest in hand.
 					refresh: async () => {
@@ -710,15 +746,16 @@ export class SearchEngine extends DurableObject<Env> {
 				};
 			}
 			const stub = siblingStub(this.env, this.label, p) as unknown as {
-				searchKeys(opts: EngineSearchOptions, inlineRows: number): Promise<SearchKeysReply>;
-				fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<{ rowsBytes: Uint8Array }>;
+				searchKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Promise<SearchKeysReply>;
+				fetchRows(vpids: number[], fields: string[], storeKey: string, shaping: RowShaping): Promise<FetchRowsReply>;
 				notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }>;
 			} | null;
 			if (!stub) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
 			return {
-				searchKeys: (opts: EngineSearchOptions, inlineRows: number) => stub.searchKeys(opts, inlineRows),
-				fetchRows: async (vpids: number[], fields: string[], storeKey: string) =>
-					(await stub.fetchRows(vpids, fields, storeKey)).rowsBytes,
+				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
+					stub.searchKeys(opts, inlineRows, shaping),
+				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
+					stub.fetchRows(vpids, fields, storeKey, shaping),
 				refresh: async () => {
 					const { swapped } = await stub.notifyPublish();
 					console.warn(
@@ -739,7 +776,7 @@ export class SearchEngine extends DurableObject<Env> {
 	 * partition and report it as the whole corpus, which is the failure mode with
 	 * no symptom.
 	 */
-	private async gatherRun(opts: EngineSearchOptions): Promise<{ total: number; rows: Record<string, unknown>[] }> {
+	private async gatherRun(opts: EngineSearchOptions, shaping: GatherShaping): Promise<GatheredPage> {
 		await this.engine();
 		const manifest = currentManifest(this.label);
 		if (!manifest || !isPartitionedManifest(manifest)) {
@@ -751,21 +788,35 @@ export class SearchEngine extends DurableObject<Env> {
 				),
 			);
 		}
-		return runTwoPhase(this.partitionClients(manifest.partition_count as number), opts);
+		return runTwoPhase(this.partitionClients(manifest.partition_count as number), opts, shaping);
 	}
 
-	/** The gather twin of engine.scryfallSearch: card objects, pre-encoded. */
+	/**
+	 * The gather twin of engine.scryfallSearch: card objects, pre-encoded — BY THE ENGINE.
+	 *
+	 * Every partition writes its rows as card objects (`write_scryfall_card`, the writer
+	 * `scryfall_search` runs over a whole page), so this object joins frames and never parses,
+	 * builds or re-serialises a card. Before the `"cards"` shape existed this method did all four
+	 * over ~635KB — decode, `toScryfallCard` ×175, `JSON.stringify`, encode — which was the exact
+	 * cost the single-store path had measured its way out of (see Store.scryfallSearch), and it
+	 * also wrote `cmc` as an integer where Scryfall and the engine write a decimal. The TS builder
+	 * survives here for one job: a sibling still on the previous build answers in row JSON, and
+	 * the rows the page keeps from it are rebuilt with the reference implementation — through
+	 * `stringifyScryfall`, so the decimal fields agree with the engine's bytes either way.
+	 */
 	private async gatherScryfallSearchLocal(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
 		const wide = { ...opts, fields: [...CARD_OBJECT_FIELDS] };
-		const gathered = await this.gatherRun(wide);
-		const cards = gathered.rows.map((row) => toScryfallCard(row as EngineRow, baseUrl));
-		const cardsBytes = encodeUtf8(JSON.stringify(cards));
+		const page = await this.gatherRun(wide, {
+			shape: "cards",
+			baseUrl,
+			reshape: (row) => encodeUtf8(stringifyScryfall(toScryfallCard(row as EngineRow, baseUrl))),
+		});
 		// The gather never holds a QueryOutput, so the widening flag comes from this object's OWN
 		// store: the decision is a pure function of the options and the bound filter and is the
 		// same in every partition. `/cards/search` echoes `include_multilingual` in `next_page`
 		// from it — see withResolvedMultilingual.
 		const widened = (await this.engine()).queryWidens?.(opts) ?? false;
-		return { totalCards: gathered.total, cardsBytes, rowCount: cards.length, widened };
+		return { totalCards: page.total, cardsBytes: joinJsonArray(page.slots), rowCount: page.slots.length, widened };
 	}
 
 	/** /search's object shape, gathered. Instrumented exactly like its local twin. */
@@ -774,23 +825,28 @@ export class SearchEngine extends DurableObject<Env> {
 		reportedShards?: number,
 	): Promise<EngineSearchResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, async () => {
-			const gathered = await this.gatherRun(opts);
-			return { totalCards: gathered.total, cards: gathered.rows };
+			const page = await this.gatherRun(opts, ROWS_GATHER);
+			return { totalCards: page.total, cards: parseSlots(page.slots) };
 		});
 	}
 
-	/** The API row shapes, gathered. */
+	/**
+	 * The API row shapes, gathered. The `"rows"` shape is the frames joined — the same
+	 * parse→stringify round trip commit 70c254e removed from the single-store path, removed
+	 * here too; only `"columnar"` needs the rows as values to invert them.
+	 */
 	async gatherSearchAsJson(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, async () => {
-			const gathered = await this.gatherRun(opts);
+			const page = await this.gatherRun(opts, ROWS_GATHER);
 			return {
-				totalCards: gathered.total,
-				cardsBytes: encodeUtf8(serializeCards(gathered.rows, shape)),
-				rowCount: gathered.rows.length,
+				totalCards: page.total,
+				cardsBytes:
+					shape === "rows" ? joinJsonArray(page.slots) : encodeUtf8(serializeCards(parseSlots(page.slots), shape)),
+				rowCount: page.slots.length,
 			};
 		});
 	}

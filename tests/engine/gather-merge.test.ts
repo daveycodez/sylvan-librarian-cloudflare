@@ -7,16 +7,22 @@
 // bytewise-merging per-partition sorted streams reproduces the global bytewise
 // sort exactly. No key is ever interpreted; memcmp is the only comparison.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
 	compareKeys,
 	decodeKeyPacket,
+	decodeRowPacket,
 	encodeKeyPacket,
+	encodeRowPacket,
 	inlineRowBudget,
+	inlineSlack,
+	joinJsonArray,
 	type KeyEntry,
 	mergeKeyStreams,
 	type PartitionClient,
+	parseSlots,
 	pinGeneration,
+	ROWS_GATHER,
 	runTwoPhase,
 	selectPage,
 } from "../../src/engine/gather";
@@ -176,6 +182,43 @@ describe("the phase-1 key packet codec", () => {
 	});
 });
 
+describe("the phase-2 row packet codec and the page joiner", () => {
+	const enc = (s: string) => new TextEncoder().encode(s);
+	const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+
+	test("round-trips framed rows as views, in order", () => {
+		const rows = [enc('{"a":1}'), enc(""), enc('{"b":"two"}')];
+		const packed = encodeRowPacket(rows);
+		const back = decodeRowPacket(packed);
+		expect(back.map(dec)).toEqual(rows.map(dec));
+		// Views into the packet, not copies: the page's one copy happens in joinJsonArray.
+		expect(back[0]?.buffer).toBe(packed.buffer);
+	});
+
+	test("an empty packet decodes to no rows", () => {
+		expect(decodeRowPacket(encodeRowPacket([]))).toEqual([]);
+	});
+
+	test("truncation and trailing bytes fail loudly", () => {
+		const packed = encodeRowPacket([enc('{"a":1}'), enc('{"b":2}')]);
+		expect(() => decodeRowPacket(packed.subarray(0, packed.length - 1))).toThrow(/truncated/);
+		expect(() => decodeRowPacket(packed.subarray(0, 6))).toThrow(/truncated/);
+		expect(() => decodeRowPacket(new Uint8Array([...packed, 0]))).toThrow(/trailing/);
+		expect(() => decodeRowPacket(new Uint8Array(2))).toThrow(/too short/);
+	});
+
+	test("joinJsonArray is `[` slot `,` slot `]` and nothing else", () => {
+		expect(dec(joinJsonArray([]))).toBe("[]");
+		expect(dec(joinJsonArray([enc('{"a":1}')]))).toBe('[{"a":1}]');
+		expect(dec(joinJsonArray([enc('{"a":1}'), enc("2"), enc('"x"')]))).toBe('[{"a":1},2,"x"]');
+		// The result is its own buffer: safe to hand over RPC after the views are gone.
+		const slot = enc('{"a":1}');
+		const joined = joinJsonArray([slot]);
+		expect(joined.buffer).not.toBe(slot.buffer);
+		expect(joined.byteLength).toBe(slot.byteLength + 2);
+	});
+});
+
 describe("the page cut and phase-2 shopping list", () => {
 	test("applies offset/limit to the MERGED order and groups vpids by owner in that order", () => {
 		const merged = [
@@ -206,20 +249,35 @@ describe("the page cut and phase-2 shopping list", () => {
 });
 
 describe("the inline-row budget", () => {
-	test("page 1 gets limit/N plus slack; a deep page gets none", () => {
-		// The production shape: N=9, Scryfall's 175-row page.
-		expect(inlineRowBudget(0, 175, 9)).toBe(36);
+	test("page 1 gets limit/N plus four sigma of slack; a deep page gets none", () => {
+		// The shape the slack was first derived at: N=9, Scryfall's 175-row page —
+		// mean 19.4, sd 4.16, so ceil(175/9) + ceil(4 x 4.16) = 20 + 17.
+		expect(inlineSlack(175, 9)).toBe(17);
+		expect(inlineRowBudget(0, 175, 9)).toBe(37);
 		// One row past page 1 and the prefix can no longer cover the page, so the
 		// gather stops paying for rows it cannot use.
 		expect(inlineRowBudget(1, 175, 9)).toBe(0);
 		expect(inlineRowBudget(175, 175, 9)).toBe(0);
 	});
 
+	test("the slack shrinks as N grows — the flat 16 it replaced did not", () => {
+		// sd falls as sqrt(1/N): four sigma is 17 at N=9, 16 at N=10, 12 at N=20, 10 at N=32.
+		// At N=32 the old constant would have shipped 32 x 22 rows for a 175-row page; four
+		// sigma ships 32 x 16, with the same overflow guarantee.
+		expect(inlineSlack(175, 10)).toBe(16);
+		expect(inlineSlack(175, 20)).toBe(12);
+		expect(inlineSlack(175, 32)).toBe(10);
+		expect(inlineRowBudget(0, 175, 32)).toBe(16);
+		// One partition owns the whole page: no variance, no slack, the page itself.
+		expect(inlineSlack(175, 1)).toBe(0);
+		expect(inlineRowBudget(0, 175, 1)).toBe(175);
+	});
+
 	test("small pages are covered outright rather than by the mean", () => {
-		// The flat slack is what makes this safe: at limit 20 the mean contribution
-		// is 2.2 and the budget is 19, so a partition would have to own almost the
-		// whole page before phase 2 came back.
-		expect(inlineRowBudget(0, 20, 9)).toBe(19);
+		// The slack is what makes this safe: at limit 20 the mean contribution is
+		// 2.2 and the budget is 9, four standard deviations out, so a partition
+		// would have to own most of the page before phase 2 came back.
+		expect(inlineRowBudget(0, 20, 9)).toBe(9);
 		expect(inlineRowBudget(0, 3, 9)).toBe(3);
 		expect(inlineRowBudget(0, 1, 9)).toBe(1);
 	});
@@ -285,6 +343,14 @@ describe("the two-phase run", () => {
 		fields: ["name"],
 	};
 
+	/** The run in the row shape, with the page parsed back to values for the assertions. */
+	async function run(clients: PartitionClient[], opts: EngineSearchOptions, sleep?: (ms: number) => Promise<void>) {
+		const page = await runTwoPhase(clients, opts, ROWS_GATHER, sleep);
+		return { total: page.total, rows: parseSlots(page.slots) };
+	}
+
+	const rowBytes = (row: unknown) => new TextEncoder().encode(JSON.stringify(row));
+
 	/** A partition whose keys are single bytes and whose rows name themselves. */
 	function fakePartition(
 		partition: number,
@@ -294,6 +360,36 @@ describe("the two-phase run", () => {
 	): PartitionClient & { storeKey: string } {
 		return {
 			storeKey,
+			async searchKeys(_opts, _inlineRows, shaping) {
+				log.push(`keys:${partition}`);
+				return {
+					packed: encodeKeyPacket({
+						total: keys.length,
+						entries: keys.map((k, i) => ({ key: new Uint8Array([k]), vpid: i })),
+					}),
+					storeKey,
+					sortKeyVersion: 1,
+					shape: shaping.shape,
+				};
+			},
+			async fetchRows(vpids: number[], _fields: string[], pinnedKey: string, shaping) {
+				log.push(`rows:${partition}:${vpids.join(".")}`);
+				if (pinnedKey !== storeKey) throw new Error("generation mismatch");
+				return {
+					rowsBytes: encodeRowPacket(vpids.map((v) => rowBytes({ name: `p${partition}v${v}` }))),
+					shape: shaping.shape,
+				};
+			},
+		};
+	}
+
+	/**
+	 * A partition on the build BEFORE row shaping: no `shape` in either reply, phase 2 as one
+	 * JSON array of row objects, and the inline budget ignored. The rolling-deploy neighbour.
+	 */
+	function legacyPartition(partition: number, keys: number[], log: string[]): PartitionClient {
+		const storeKey = `card-store-v1-100-p${partition}.store`;
+		return {
 			async searchKeys() {
 				log.push(`keys:${partition}`);
 				return {
@@ -308,7 +404,7 @@ describe("the two-phase run", () => {
 			async fetchRows(vpids: number[], _fields: string[], pinnedKey: string) {
 				log.push(`rows:${partition}:${vpids.join(".")}`);
 				if (pinnedKey !== storeKey) throw new Error("generation mismatch");
-				return new TextEncoder().encode(JSON.stringify(vpids.map((v) => ({ name: `p${partition}v${v}` }))));
+				return { rowsBytes: rowBytes(vpids.map((v) => ({ name: `p${partition}v${v}` }))) };
 			},
 		};
 	}
@@ -323,7 +419,7 @@ describe("the two-phase run", () => {
 		const storeKey = `card-store-v1-100-p${partition}.store`;
 		return {
 			storeKey,
-			async searchKeys(opts) {
+			async searchKeys(opts, _inlineRows, shaping) {
 				log.push(`keys:${partition}:off=${opts.offset}:lim=${opts.limit}`);
 				const window = keys
 					.map((k, i) => ({ key: new Uint8Array([k]), vpid: i }))
@@ -332,12 +428,16 @@ describe("the two-phase run", () => {
 					packed: encodeKeyPacket({ total: keys.length, entries: window }),
 					storeKey,
 					sortKeyVersion: 1,
+					shape: shaping.shape,
 				};
 			},
-			async fetchRows(vpids: number[], _fields: string[], pinnedKey: string) {
+			async fetchRows(vpids: number[], _fields: string[], pinnedKey: string, shaping) {
 				log.push(`rows:${partition}:${vpids.join(".")}`);
 				if (pinnedKey !== storeKey) throw new Error("generation mismatch");
-				return new TextEncoder().encode(JSON.stringify(vpids.map((v) => ({ name: `p${partition}v${v}` }))));
+				return {
+					rowsBytes: encodeRowPacket(vpids.map((v) => rowBytes({ name: `p${partition}v${v}` }))),
+					shape: shaping.shape,
+				};
 			},
 		};
 	}
@@ -346,7 +446,7 @@ describe("the two-phase run", () => {
 		const log: string[] = [];
 		// Global order interleaves the two partitions: p0 1,3,5,7 / p1 2,4,6,8.
 		const clients = [pagingPartition(0, [1, 3, 5, 7], log), pagingPartition(1, [2, 4, 6, 8], log)];
-		const { total, rows } = await runTwoPhase(clients, { ...OPTS, offset: 4, limit: 2 });
+		const { total, rows } = await run(clients, { ...OPTS, offset: 4, limit: 2 });
 		expect(total).toBe(8);
 		// Merged: p0v0(1) p1v0(2) p0v1(3) p1v1(4) | p0v2(5) p1v2(6) | ...
 		expect(rows).toEqual([{ name: "p0v2" }, { name: "p1v2" }]);
@@ -361,7 +461,7 @@ describe("the two-phase run", () => {
 		// partition's own count, which is exactly what 404'd page 2 of a short
 		// multi-partition result before phase 1 was asked from zero.
 		const clients = [pagingPartition(0, [1, 4], log), pagingPartition(1, [2, 5], log), pagingPartition(2, [3, 6], log)];
-		const { total, rows } = await runTwoPhase(clients, { ...OPTS, offset: 4, limit: 2 });
+		const { total, rows } = await run(clients, { ...OPTS, offset: 4, limit: 2 });
 		expect(total).toBe(6);
 		expect(rows).toEqual([{ name: "p1v1" }, { name: "p2v1" }]);
 	});
@@ -370,7 +470,7 @@ describe("the two-phase run", () => {
 		const log: string[] = [];
 		// Global key order: p1's 1, p0's 2, p1's 3, p0's 4, p1's 5.
 		const clients = [fakePartition(0, [2, 4], log), fakePartition(1, [1, 3, 5], log)];
-		const { total, rows } = await runTwoPhase(clients, OPTS);
+		const { total, rows } = await run(clients, OPTS);
 		expect(total).toBe(5);
 		// offset 1, limit 3 of the merged order → p0v0(key 2), p1v1(key 3), p0v1(key 4).
 		expect(rows).toEqual([{ name: "p0v0" }, { name: "p1v1" }, { name: "p0v1" }]);
@@ -380,7 +480,7 @@ describe("the two-phase run", () => {
 
 	test("a page past every key fetches nothing", async () => {
 		const log: string[] = [];
-		const { total, rows } = await runTwoPhase([fakePartition(0, [1], log), fakePartition(1, [], log)], {
+		const { total, rows } = await run([fakePartition(0, [1], log), fakePartition(1, [], log)], {
 			...OPTS,
 			offset: 10,
 		});
@@ -394,17 +494,17 @@ describe("the two-phase run", () => {
 		// Partition 0 answers from an OLD build the first time, then converges.
 		let firstAsk = true;
 		const straggler: PartitionClient = {
-			async searchKeys(opts) {
+			async searchKeys(opts, _inlineRows, shaping) {
 				const inner = fakePartition(0, [2], log, `card-store-v1-${firstAsk ? "100" : "200"}-p0.store`);
 				firstAsk = false;
-				return inner.searchKeys(opts, 0);
+				return inner.searchKeys(opts, 0, shaping);
 			},
-			async fetchRows(vpids, fields, key) {
-				return fakePartition(0, [2], log, "card-store-v1-200-p0.store").fetchRows(vpids, fields, key);
+			async fetchRows(vpids, fields, key, shaping) {
+				return fakePartition(0, [2], log, "card-store-v1-200-p0.store").fetchRows(vpids, fields, key, shaping);
 			},
 		};
 		const fresh = fakePartition(1, [1], log, "card-store-v1-200-p1.store");
-		const { total, rows } = await runTwoPhase([straggler, fresh], { ...OPTS, offset: 0, limit: 10 }, async () => {});
+		const { total, rows } = await run([straggler, fresh], { ...OPTS, offset: 0, limit: 10 }, async () => {});
 		expect(total).toBe(2);
 		expect(rows).toEqual([{ name: "p1v0" }, { name: "p0v0" }]);
 		// Phase 1 ran everywhere once, then ONLY on the straggler again.
@@ -419,12 +519,12 @@ describe("the two-phase run", () => {
 		const log: string[] = [];
 		let refreshed = false;
 		const straggler: PartitionClient = {
-			async searchKeys(opts) {
+			async searchKeys(opts, _inlineRows, shaping) {
 				const inner = fakePartition(0, [2], log, `card-store-v1-${refreshed ? "200" : "100"}-p0.store`);
-				return inner.searchKeys(opts, 0);
+				return inner.searchKeys(opts, 0, shaping);
 			},
-			async fetchRows(vpids, fields, key) {
-				return fakePartition(0, [2], log, "card-store-v1-200-p0.store").fetchRows(vpids, fields, key);
+			async fetchRows(vpids, fields, key, shaping) {
+				return fakePartition(0, [2], log, "card-store-v1-200-p0.store").fetchRows(vpids, fields, key, shaping);
 			},
 			async refresh() {
 				log.push("refresh:0");
@@ -432,7 +532,7 @@ describe("the two-phase run", () => {
 			},
 		};
 		const fresh = fakePartition(1, [1], log, "card-store-v1-200-p1.store");
-		const { total, rows } = await runTwoPhase([straggler, fresh], { ...OPTS, offset: 0, limit: 10 }, async () => {});
+		const { total, rows } = await run([straggler, fresh], { ...OPTS, offset: 0, limit: 10 }, async () => {});
 		expect(total).toBe(2);
 		expect(rows).toEqual([{ name: "p1v0" }, { name: "p0v0" }]);
 		// Everyone once, the straggler again after the pause, THEN the refresh, then the straggler
@@ -450,7 +550,7 @@ describe("the two-phase run", () => {
 		const log: string[] = [];
 		const stuck = fakePartition(0, [2], log, "card-store-v1-100-p0.store");
 		const fresh = fakePartition(1, [1], log, "card-store-v1-200-p1.store");
-		expect(runTwoPhase([stuck, fresh], OPTS, async () => {})).rejects.toThrow(
+		expect(run([stuck, fresh], OPTS, async () => {})).rejects.toThrow(
 			/partitions 0 still answer from another generation after re-issue and refresh/,
 		);
 	});
@@ -459,13 +559,13 @@ describe("the two-phase run", () => {
 		const log: string[] = [];
 		const other = fakePartition(1, [1], log);
 		const v2: PartitionClient = {
-			async searchKeys(opts) {
-				const reply = await other.searchKeys(opts, 0);
+			async searchKeys(opts, _inlineRows, shaping) {
+				const reply = await other.searchKeys(opts, 0, shaping);
 				return { ...reply, storeKey: "card-store-v1-100-p1.store", sortKeyVersion: 2 };
 			},
 			fetchRows: other.fetchRows.bind(other),
 		};
-		expect(runTwoPhase([fakePartition(0, [2], log), v2], OPTS)).rejects.toThrow(/sort-key version 2/);
+		expect(run([fakePartition(0, [2], log), v2], OPTS)).rejects.toThrow(/sort-key version 2/);
 	});
 
 	/**
@@ -479,7 +579,7 @@ describe("the two-phase run", () => {
 		const storeKey = `card-store-v1-100-p${partition}.store`;
 		const rowOf = (vpid: number) => ({ name: `p${partition}v${vpid}` });
 		return {
-			async searchKeys(opts, inlineRows) {
+			async searchKeys(opts, inlineRows, shaping) {
 				log.push(`keys:${partition}:inline=${inlineRows}`);
 				const window = keys
 					.map((k, i) => ({ key: new Uint8Array([k]), vpid: i }))
@@ -489,16 +589,17 @@ describe("the two-phase run", () => {
 					packed: encodeKeyPacket({
 						total: keys.length,
 						entries: window,
-						inlineRows: carried.map((e) => new TextEncoder().encode(JSON.stringify(rowOf(e.vpid)))),
+						inlineRows: carried.map((e) => rowBytes(rowOf(e.vpid))),
 					}),
 					storeKey,
 					sortKeyVersion: 1,
+					shape: shaping.shape,
 				};
 			},
-			async fetchRows(vpids, _fields, pinnedKey) {
+			async fetchRows(vpids, _fields, pinnedKey, shaping) {
 				log.push(`rows:${partition}:${vpids.join(".")}`);
 				if (pinnedKey !== storeKey) throw new Error("generation mismatch");
-				return new TextEncoder().encode(JSON.stringify(vpids.map(rowOf)));
+				return { rowsBytes: encodeRowPacket(vpids.map((v) => rowBytes(rowOf(v)))), shape: shaping.shape };
 			},
 		};
 	}
@@ -506,13 +607,13 @@ describe("the two-phase run", () => {
 	test("page 1 covered by the inline prefixes costs NO phase-2 call at all", async () => {
 		const log: string[] = [];
 		// 3 partitions, 4 keys each; page 1 of 6 draws 2 from each, and the budget
-		// (ceil(6/3) + 16 = 18, clamped to 6) covers every one of them.
+		// (ceil(6/3) + 5 = 7, clamped to 6) covers every one of them.
 		const clients = [
 			inliningPartition(0, [1, 4, 7, 10], log),
 			inliningPartition(1, [2, 5, 8, 11], log),
 			inliningPartition(2, [3, 6, 9, 12], log),
 		];
-		const { total, rows } = await runTwoPhase(clients, { ...OPTS, offset: 0, limit: 6 });
+		const { total, rows } = await run(clients, { ...OPTS, offset: 0, limit: 6 });
 		expect(total).toBe(12);
 		expect(rows).toEqual([
 			{ name: "p0v0" },
@@ -528,15 +629,18 @@ describe("the two-phase run", () => {
 
 	test("a partition whose share overflows its prefix falls back for the TAIL only", async () => {
 		const log: string[] = [];
-		// Budget is min(limit, ceil(limit/N) + 16); with limit 4 and N 2 that is 4, so
+		// Budget is min(limit, ceil(limit/N) + slack); with limit 4 and N 2 that is 4, so
 		// force an overflow by handing the gather a client that carries only 1 row —
 		// the same situation a skewed page produces against a real engine.
 		const stingy = (partition: number, keys: number[]): PartitionClient => {
 			const inner = inliningPartition(partition, keys, log);
-			return { searchKeys: (opts) => inner.searchKeys(opts, 1), fetchRows: inner.fetchRows.bind(inner) };
+			return {
+				searchKeys: (opts, _inlineRows, shaping) => inner.searchKeys(opts, 1, shaping),
+				fetchRows: inner.fetchRows.bind(inner),
+			};
 		};
 		const clients = [stingy(0, [1, 2, 3]), stingy(1, [4, 5, 6])];
-		const { total, rows } = await runTwoPhase(clients, { ...OPTS, offset: 0, limit: 4 });
+		const { total, rows } = await run(clients, { ...OPTS, offset: 0, limit: 4 });
 		expect(total).toBe(6);
 		// Merged: p0v0(1) p0v1(2) p0v2(3) | p1v0(4)...  page = first four.
 		expect(rows).toEqual([{ name: "p0v0" }, { name: "p0v1" }, { name: "p0v2" }, { name: "p1v0" }]);
@@ -547,7 +651,7 @@ describe("the two-phase run", () => {
 	test("a deep page asks for no inline rows and pays phase 2 exactly as before", async () => {
 		const log: string[] = [];
 		const clients = [inliningPartition(0, [1, 3, 5, 7], log), inliningPartition(1, [2, 4, 6, 8], log)];
-		const { rows } = await runTwoPhase(clients, { ...OPTS, offset: 4, limit: 2 });
+		const { rows } = await run(clients, { ...OPTS, offset: 4, limit: 2 });
 		expect(rows).toEqual([{ name: "p0v2" }, { name: "p1v2" }]);
 		expect(log.filter((l) => l.startsWith("keys:"))).toEqual(["keys:0:inline=0", "keys:1:inline=0"]);
 		expect(log.filter((l) => l.startsWith("rows:")).sort()).toEqual(["rows:0:2", "rows:1:2"]);
@@ -559,9 +663,90 @@ describe("the two-phase run", () => {
 		const log: string[] = [];
 		const oldBuild = fakePartition(0, [1, 3], log);
 		const newBuild = inliningPartition(1, [2, 4], log);
-		const { rows } = await runTwoPhase([oldBuild, newBuild], { ...OPTS, offset: 0, limit: 4 });
+		const { rows } = await run([oldBuild, newBuild], { ...OPTS, offset: 0, limit: 4 });
 		expect(rows).toEqual([{ name: "p0v0" }, { name: "p1v0" }, { name: "p0v1" }, { name: "p1v1" }]);
 		expect(log.filter((l) => l.startsWith("rows:"))).toEqual(["rows:0:0.1"]);
+	});
+
+	test("a sibling on the build BEFORE row shaping is reshaped for exactly the page rows it owns", async () => {
+		// The other rolling-deploy case: partition 0 answers with no `shape` at all and phase 2
+		// as a JSON array. In the CARD shape its rows are rebuilt here — through `reshape`, once
+		// per page row it owns, never for its neighbour's — and the run warns once about it.
+		// The neighbour's frames pass through VERBATIM (the fake frames row JSON whatever shape
+		// it echoes; a real partition would frame cards), which is the point: the gather never
+		// looks inside a frame from a partition that named the shape it asked for.
+		const log: string[] = [];
+		const reshaped: string[] = [];
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const clients = [legacyPartition(0, [1, 3, 5], log), inliningPartition(1, [2, 4], log)];
+			const page = await runTwoPhase(
+				clients,
+				{ ...OPTS, offset: 0, limit: 4 },
+				{
+					shape: "cards",
+					baseUrl: "https://x",
+					reshape: (row) => {
+						reshaped.push(String(row.name));
+						return new TextEncoder().encode(`{"object":"card","name":${JSON.stringify(row.name)}}`);
+					},
+				},
+			);
+			expect(new TextDecoder().decode(joinJsonArray(page.slots))).toBe(
+				'[{"object":"card","name":"p0v0"},{"name":"p1v0"},{"object":"card","name":"p0v1"},{"name":"p1v1"}]',
+			);
+			expect(reshaped).toEqual(["p0v0", "p0v1"]);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(String(warn.mock.calls[0]?.[0])).toMatch(/partition\(s\) 0 answered from a build without row shaping/);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a legacy sibling in the ROW shape costs no warning and no reshape", async () => {
+		const log: string[] = [];
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { rows } = await run([legacyPartition(0, [1, 3], log), inliningPartition(1, [2, 4], log)], {
+				...OPTS,
+				offset: 0,
+				limit: 4,
+			});
+			expect(rows).toEqual([{ name: "p0v0" }, { name: "p1v0" }, { name: "p0v1" }, { name: "p1v1" }]);
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a reply naming a DIFFERENT shape than the one asked for is refused, never spliced", async () => {
+		const log: string[] = [];
+		const wrong: PartitionClient = {
+			async searchKeys(opts, inlineRows) {
+				return fakePartition(0, [1], log).searchKeys(opts, inlineRows, { shape: "rows", baseUrl: "" });
+			},
+			fetchRows: fakePartition(0, [1], log).fetchRows,
+		};
+		const cards = { shape: "cards" as const, baseUrl: "https://x", reshape: () => new Uint8Array() };
+		expect(runTwoPhase([wrong], { ...OPTS, offset: 0 }, cards)).rejects.toThrow(
+			/partition 0 carried rows rows where cards was asked/,
+		);
+		const wrongPhase2: PartitionClient = {
+			searchKeys: (opts, _inlineRows, shaping) => fakePartition(0, [1], log).searchKeys(opts, 0, shaping),
+			fetchRows: (vpids, fields, key) =>
+				fakePartition(0, [1], log).fetchRows(vpids, fields, key, { shape: "rows", baseUrl: "" }),
+		};
+		expect(runTwoPhase([wrongPhase2], { ...OPTS, offset: 0 }, cards)).rejects.toThrow(
+			/partition 0 fetched rows rows where cards was asked/,
+		);
+	});
+
+	test("the ROW shape's page is byte-identical to JSON.stringify of the parsed rows — the /search pass-through", async () => {
+		const clients = [inliningPartition(0, [1, 3, 5], []), inliningPartition(1, [2, 4], [])];
+		const page = await runTwoPhase(clients, { ...OPTS, offset: 0, limit: 5 }, ROWS_GATHER);
+		const joined = new TextDecoder().decode(joinJsonArray(page.slots));
+		expect(joined).toBe(JSON.stringify(parseSlots(page.slots)));
+		expect(joined).toBe('[{"name":"p0v0"},{"name":"p1v0"},{"name":"p0v1"},{"name":"p1v1"},{"name":"p0v2"}]');
 	});
 
 	test("inline and keys-only produce IDENTICAL pages across offsets — the whole claim", async () => {
@@ -575,11 +760,11 @@ describe("the two-phase run", () => {
 		for (const offset of [0, 1, 5, 17, 60, 99, 500]) {
 			for (const limit of [1, 3, 12, 40]) {
 				const opts = { ...OPTS, offset, limit };
-				const keysOnly = await runTwoPhase(
+				const keysOnly = await run(
 					keysFor.map((k, p) => pagingPartition(p, k, [])),
 					opts,
 				);
-				const inlined = await runTwoPhase(
+				const inlined = await run(
 					keysFor.map((k, p) => inliningPartition(p, k, [])),
 					opts,
 				);
@@ -592,11 +777,11 @@ describe("the two-phase run", () => {
 	test("a partition returning the wrong row count is a loud error, not a short page", async () => {
 		const log: string[] = [];
 		const short: PartitionClient = {
-			searchKeys: (opts) => fakePartition(0, [1, 2], log).searchKeys(opts, 0),
-			async fetchRows() {
-				return new TextEncoder().encode("[]");
+			searchKeys: (opts, _inlineRows, shaping) => fakePartition(0, [1, 2], log).searchKeys(opts, 0, shaping),
+			async fetchRows(_vpids, _fields, _key, shaping) {
+				return { rowsBytes: encodeRowPacket([]), shape: shaping.shape };
 			},
 		};
-		expect(runTwoPhase([short], { ...OPTS, offset: 0 })).rejects.toThrow(/0 rows for 2 vpids/);
+		expect(run([short], { ...OPTS, offset: 0 })).rejects.toThrow(/0 rows for 2 vpids/);
 	});
 });

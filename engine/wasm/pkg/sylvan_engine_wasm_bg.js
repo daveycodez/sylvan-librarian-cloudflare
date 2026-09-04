@@ -398,25 +398,34 @@ export function exact_name_rank(folded, set_code) {
 }
 
 /**
- * Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
- * CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
- * from this same store moments ago, so a miss means the caller mixed partitions or generations.
+ * Phase 2: the rows for `vpids` (a Uint32Array from this partition's own phase 1), in CALLER
+ * order, as a ROW PACKET — `n: u32 LE`, then `n` framed rows exactly as [`query_keys`] frames
+ * its inline section, in the same `shape`. Individually framed rather than one JSON array so the
+ * coordinator splices them into the page by memcpy, never through a parser. An unknown vpid is
+ * a loud error — the ids came from this same store moments ago, so a miss means the caller
+ * mixed partitions or generations.
  * @param {Uint32Array} vpids
  * @param {string} fields_json
+ * @param {string} shape
+ * @param {string} base_url
  * @returns {Uint8Array}
  */
-export function fetch_rows(vpids, fields_json) {
+export function fetch_rows(vpids, fields_json, shape, base_url) {
     const ptr0 = passArray32ToWasm0(vpids, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.fetch_rows(ptr0, len0, ptr1, len1);
+    const ptr2 = passStringToWasm0(shape, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.fetch_rows(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }
-    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    var v5 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-    return v3;
+    return v5;
 }
 
 /**
@@ -586,7 +595,7 @@ export function query(filter_tree_json, opts_json) {
  * version: u32 (= KEY_PACKET_VERSION)
  * total: u32, n: u32, inline: u32
  * n      of: keylen: u16, key: keylen bytes, vpid: u32
- * inline of: rowlen: u32, row JSON bytes
+ * inline of: rowlen: u32, row bytes in `shape`
  * ```
  *
  * `total` is the partition's exact match count; the keys are its top `offset + limit` in page
@@ -597,24 +606,36 @@ export function query(filter_tree_json, opts_json) {
  * THE INLINE SECTION IS A PREFIX, and each row is framed separately rather than shipped as one
  * JSON array on purpose: most of them lose the cross-partition merge, and a gather that had to
  * parse the whole array to reach the few survivors would pay for the losers twice — once on the
- * wire and once in the parser. Framed, it parses exactly the rows the page kept.
+ * wire and once in the parser. Framed, it splices exactly the rows the page kept.
+ *
+ * `shape` is `"rows"` or `"cards"` (see [`RowShape`]); `base_url` matters only for cards. The
+ * packet itself does not record the shape — the RPC reply that carries it does, which is what
+ * lets a gather tell a sibling still on the previous build (row JSON, no shape) from one that
+ * answered in the shape it asked for. The `"cards"` shape builds from whatever `fields` the opts
+ * name; the caller widens them to the card-object set, as the single-store path does.
  * @param {string} filter_tree_json
  * @param {string} opts_json
  * @param {number} inline_rows
+ * @param {string} shape
+ * @param {string} base_url
  * @returns {Uint8Array}
  */
-export function query_keys(filter_tree_json, opts_json, inline_rows) {
+export function query_keys(filter_tree_json, opts_json, inline_rows, shape, base_url) {
     const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.query_keys(ptr0, len0, ptr1, len1, inline_rows);
+    const ptr2 = passStringToWasm0(shape, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.query_keys(ptr0, len0, ptr1, len1, inline_rows, ptr2, len2, ptr3, len3);
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }
-    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    var v5 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-    return v3;
+    return v5;
 }
 
 /**

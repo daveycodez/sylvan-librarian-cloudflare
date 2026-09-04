@@ -150,8 +150,8 @@ export interface EngineHandle {
 	store_loaded(): boolean;
 	query(filterTreeJson: string, optsJson: string): string;
 	query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
-	query_keys(filterTreeJson: string, optsJson: string, inlineRows: number): Uint8Array;
-	fetch_rows(vpids: Uint32Array, fieldsJson: string): Uint8Array;
+	query_keys(filterTreeJson: string, optsJson: string, inlineRows: number, shape: string, baseUrl: string): Uint8Array;
+	fetch_rows(vpids: Uint32Array, fieldsJson: string, shape: string, baseUrl: string): Uint8Array;
 	sort_key_version(): number;
 	scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
 	query_widens(filterTreeJson: string, optsJson: string): boolean;

@@ -541,6 +541,53 @@ pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
 /// the inline-row section that folds phase 2 into phase 1.
 pub const KEY_PACKET_VERSION: u32 = 2;
 
+/// The shape every framed row takes on the wire, named by the caller of [`query_keys`] and
+/// [`fetch_rows`]: the engine row's own JSON, or the Scryfall card object built from it.
+///
+/// The card shape goes through `card_engine::card_object::write_scryfall_card` — the SAME writer
+/// [`scryfall_search`] runs over a whole page — so a page the gather splices from framed rows
+/// (`[` + rows joined by `,` + `]`) is byte-identical to the one that export would have written.
+/// That is what lets the coordinating object assemble `/cards/search` without parsing or
+/// re-serialising a card: every pass over the payload that the single-store path had already
+/// removed (see src/engine/store.ts's `scryfallSearch`) stays removed on the partitioned path.
+#[derive(Clone, Copy)]
+enum RowShape {
+    Rows,
+    Cards,
+}
+
+/// A plain `String` error rather than a `JsError`, so the rejection is testable natively:
+/// `JsError::new` is a wasm-bindgen import and panics off-target.
+fn parse_shape(shape: &str) -> Result<RowShape, String> {
+    match shape {
+        "rows" => Ok(RowShape::Rows),
+        "cards" => Ok(RowShape::Cards),
+        other => Err(format!("unknown row shape {other:?}: expected \"rows\" or \"cards\"")),
+    }
+}
+
+/// One framed row: `len: u32 LE`, then `len` bytes in `shape`. The length is patched in after the
+/// write so the card writer streams straight into the packet with no intermediate buffer.
+fn write_framed_row(
+    buf: &mut Vec<u8>,
+    row: &serde_json::Value,
+    shape: RowShape,
+    base_url: &str,
+) -> Result<(), JsError> {
+    let len_at = buf.len();
+    buf.extend_from_slice(&[0u8; 4]);
+    match shape {
+        RowShape::Rows => serde_json::to_writer(&mut *buf, row).map_err(|e| JsError::new(&e.to_string()))?,
+        RowShape::Cards => match row {
+            serde_json::Value::Object(map) => card_engine::card_object::write_scryfall_card(buf, map, base_url),
+            _ => return Err(JsError::new("a card-shaped row must be a JSON object")),
+        },
+    }
+    let len = u32::try_from(buf.len() - len_at - 4).map_err(|_| JsError::new("framed row exceeds u32 length"))?;
+    buf[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
+    Ok(())
+}
+
 /// Phase 1: the same query [`query`] runs, answered as keys — and, for the first `inline_rows`
 /// of them, the rows too — packed little-endian:
 ///
@@ -548,7 +595,7 @@ pub const KEY_PACKET_VERSION: u32 = 2;
 /// version: u32 (= KEY_PACKET_VERSION)
 /// total: u32, n: u32, inline: u32
 /// n      of: keylen: u16, key: keylen bytes, vpid: u32
-/// inline of: rowlen: u32, row JSON bytes
+/// inline of: rowlen: u32, row bytes in `shape`
 /// ```
 ///
 /// `total` is the partition's exact match count; the keys are its top `offset + limit` in page
@@ -559,9 +606,22 @@ pub const KEY_PACKET_VERSION: u32 = 2;
 /// THE INLINE SECTION IS A PREFIX, and each row is framed separately rather than shipped as one
 /// JSON array on purpose: most of them lose the cross-partition merge, and a gather that had to
 /// parse the whole array to reach the few survivors would pay for the losers twice — once on the
-/// wire and once in the parser. Framed, it parses exactly the rows the page kept.
+/// wire and once in the parser. Framed, it splices exactly the rows the page kept.
+///
+/// `shape` is `"rows"` or `"cards"` (see [`RowShape`]); `base_url` matters only for cards. The
+/// packet itself does not record the shape — the RPC reply that carries it does, which is what
+/// lets a gather tell a sibling still on the previous build (row JSON, no shape) from one that
+/// answered in the shape it asked for. The `"cards"` shape builds from whatever `fields` the opts
+/// name; the caller widens them to the card-object set, as the single-store path does.
 #[wasm_bindgen]
-pub fn query_keys(filter_tree_json: &str, opts_json: &str, inline_rows: u32) -> Result<Vec<u8>, JsError> {
+pub fn query_keys(
+    filter_tree_json: &str,
+    opts_json: &str,
+    inline_rows: u32,
+    shape: &str,
+    base_url: &str,
+) -> Result<Vec<u8>, JsError> {
+    let shape = parse_shape(shape).map_err(|m| JsError::new(&m))?;
     let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
     let tree: serde_json::Value =
         serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
@@ -580,25 +640,30 @@ pub fn query_keys(filter_tree_json: &str, opts_json: &str, inline_rows: u32) -> 
             buf.extend_from_slice(&vpid.to_le_bytes());
         }
         for row in &out.rows {
-            let encoded = serde_json::to_vec(row).map_err(|e| JsError::new(&e.to_string()))?;
-            let len = u32::try_from(encoded.len())
-                .map_err(|_| JsError::new("inline row exceeds u32 length"))?;
-            buf.extend_from_slice(&len.to_le_bytes());
-            buf.extend_from_slice(&encoded);
+            write_framed_row(&mut buf, row, shape, base_url)?;
         }
         Ok(buf)
     })
 }
 
-/// Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
-/// CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
-/// from this same store moments ago, so a miss means the caller mixed partitions or generations.
+/// Phase 2: the rows for `vpids` (a Uint32Array from this partition's own phase 1), in CALLER
+/// order, as a ROW PACKET — `n: u32 LE`, then `n` framed rows exactly as [`query_keys`] frames
+/// its inline section, in the same `shape`. Individually framed rather than one JSON array so the
+/// coordinator splices them into the page by memcpy, never through a parser. An unknown vpid is
+/// a loud error — the ids came from this same store moments ago, so a miss means the caller
+/// mixed partitions or generations.
 #[wasm_bindgen]
-pub fn fetch_rows(vpids: &[u32], fields_json: &str) -> Result<Vec<u8>, JsError> {
+pub fn fetch_rows(vpids: &[u32], fields_json: &str, shape: &str, base_url: &str) -> Result<Vec<u8>, JsError> {
+    let shape = parse_shape(shape).map_err(|m| JsError::new(&m))?;
     let fields = parse_fields(fields_json)?;
     with_store(|store| {
         let rows = store.fetch_rows(vpids, fields).map_err(js_err)?;
-        serde_json::to_vec(&serde_json::Value::Array(rows)).map_err(|e| JsError::new(&e.to_string()))
+        let mut buf = Vec::with_capacity(4 + rows.len() * 2048);
+        buf.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        for row in &rows {
+            write_framed_row(&mut buf, row, shape, base_url)?;
+        }
+        Ok(buf)
     })
 }
 
@@ -766,13 +831,9 @@ mod tests {
         assert_eq!(size(), 0);
     }
 
-    /// The wire contract between THIS crate's `query_keys` packer and src/engine/gather.ts's
-    /// `decodeKeyPacket`, pinned as committed bytes: a deterministic two-row store's real packet
-    /// must equal tests/engine/gather-wire-fixture.json byte for byte, and the bun twin
-    /// (tests/engine/gather-wire.test.ts) decodes the SAME file with the TS codec. Regenerate
-    /// deliberately with SYLVAN_WRITE_WIRE_FIXTURE=1 when the layout version moves.
-    #[test]
-    fn query_keys_packet_matches_the_committed_wire_fixture() {
+    /// The deterministic two-row store the wire tests below share: loaded into the thread-local
+    /// slot, so every test that calls this must `unload_store()` before it returns.
+    fn load_wire_store() {
         let mk = |name: &str, oracle: &str, scry: &str, edhrec: u32| {
             serde_json::json!({
                 "card_name": name,
@@ -798,29 +859,96 @@ mod tests {
         let mut bytes = Vec::new();
         builder.finish_to_writer(&mut bytes).expect("finish");
         init_store(&bytes).expect("load");
+    }
+
+    fn u32_at(bytes: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().expect("u32"))
+    }
+
+    /// A test-side decoder for the phase-1 packet: the key entries' vpids in page order, and the
+    /// framed inline rows. Mirrors gather.ts's `decodeKeyPacket` closely enough to read what the
+    /// packer wrote — the committed fixture is what pins the two for real.
+    fn split_key_packet(packed: &[u8]) -> (Vec<u32>, Vec<Vec<u8>>) {
+        assert_eq!(u32_at(packed, 0), KEY_PACKET_VERSION);
+        let n = u32_at(packed, 8) as usize;
+        let inline = u32_at(packed, 12) as usize;
+        let mut at = 16;
+        let mut vpids = Vec::with_capacity(n);
+        for _ in 0..n {
+            let keylen = u16::from_le_bytes(packed[at..at + 2].try_into().expect("u16")) as usize;
+            at += 2 + keylen;
+            vpids.push(u32_at(packed, at));
+            at += 4;
+        }
+        let rows = split_frames(&packed[at..], inline);
+        (vpids, rows)
+    }
+
+    /// `count` framed rows (`len: u32 LE, bytes`) read back to back from `bytes`, which must end
+    /// exactly where the last frame does.
+    fn split_frames(bytes: &[u8], count: usize) -> Vec<Vec<u8>> {
+        let mut at = 0;
+        let mut rows = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = u32_at(bytes, at) as usize;
+            rows.push(bytes[at + 4..at + 4 + len].to_vec());
+            at += 4 + len;
+        }
+        assert_eq!(at, bytes.len(), "trailing bytes after the last frame");
+        rows
+    }
+
+    /// The row packet phase 2 returns: `n`, then `n` frames.
+    fn split_row_packet(packed: &[u8]) -> Vec<Vec<u8>> {
+        split_frames(&packed[4..], u32_at(packed, 0) as usize)
+    }
+
+    /// The wire contract between THIS crate's `query_keys` packer and src/engine/gather.ts's
+    /// `decodeKeyPacket`, pinned as committed bytes: a deterministic two-row store's real packet
+    /// must equal tests/engine/gather-wire-fixture.json byte for byte, and the bun twin
+    /// (tests/engine/gather-wire.test.ts) decodes the SAME file with the TS codec. The same file
+    /// pins `fetch_rows`'s row packet (`rows_packed_hex`) against `decodeRowPacket`. Regenerate
+    /// deliberately with SYLVAN_WRITE_WIRE_FIXTURE=1 when either layout moves.
+    #[test]
+    fn query_keys_packet_matches_the_committed_wire_fixture() {
+        load_wire_store();
 
         // ONE inline row of the two, so the fixture pins BOTH sections and the boundary between
         // them — a keys-only packet would leave the inline framing unpinned, which is precisely
         // the half a decoder mistake would land in.
-        let packed = query_keys(r#"{"node_type": "TrueNode"}"#, r#"{"orderby": "name", "limit": 10, "fields": ["name"]}"#, 1)
-            .expect("query_keys");
+        let packed = query_keys(
+            r#"{"node_type": "TrueNode"}"#,
+            r#"{"orderby": "name", "limit": 10, "fields": ["name"]}"#,
+            1,
+            "rows",
+            "",
+        )
+        .expect("query_keys");
+        // And phase 2 for BOTH entries, so the row packet's count header and the frame after a
+        // frame are pinned too.
+        let (vpids, _) = split_key_packet(&packed);
+        let rows_packed = fetch_rows(&vpids, r#"["name"]"#, "rows", "").expect("fetch_rows");
         unload_store();
 
         // Base16, dependency-free both sides.
         let hex: String = packed.iter().map(|b| format!("{b:02x}")).collect();
+        let rows_hex: String = rows_packed.iter().map(|b| format!("{b:02x}")).collect();
         let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/engine/gather-wire-fixture.json");
         let fixture = serde_json::json!({
             "note": "REAL query_keys bytes off a deterministic 2-row store (orderby=name, \
-                     fields=[name], inline_rows=1). Pins the LE packet layout — version header, \
-                     key entries AND the framed inline-row section — between the Rust packer \
-                     (engine/wasm) and src/engine/gather.ts's decodeKeyPacket. Regenerate with \
-                     SYLVAN_WRITE_WIRE_FIXTURE=1 cargo test -p sylvan-engine-wasm.",
+                     fields=[name], inline_rows=1, shape=rows). Pins the LE packet layout — version \
+                     header, key entries AND the framed inline-row section — between the Rust packer \
+                     (engine/wasm) and src/engine/gather.ts's decodeKeyPacket. rows_packed_hex is \
+                     fetch_rows for both entries (shape=rows), pinning the row packet against \
+                     decodeRowPacket. Regenerate with SYLVAN_WRITE_WIRE_FIXTURE=1 cargo test -p \
+                     sylvan-engine-wasm.",
             "packet_version": KEY_PACKET_VERSION,
             "sort_key_version": card_engine::SORT_KEY_VERSION,
             "total": 2,
             "entries": 2,
             "inline_rows": 1,
             "packed_hex": hex,
+            "rows_packed_hex": rows_hex,
         });
         if std::env::var("SYLVAN_WRITE_WIRE_FIXTURE").is_ok() {
             // Tab-indented, matching the repo's biome formatting, so a regenerated fixture is
@@ -846,7 +974,63 @@ mod tests {
             "the packed query_keys bytes moved — if deliberate (layout/version change), \
              regenerate the fixture AND update gather.ts's codec + its bun test together"
         );
+        assert_eq!(
+            committed["rows_packed_hex"].as_str().expect("rows hex"),
+            rows_hex,
+            "the fetch_rows row packet moved — if deliberate, regenerate the fixture AND update \
+             gather.ts's decodeRowPacket + its bun test together"
+        );
         assert_eq!(committed["sort_key_version"], serde_json::json!(card_engine::SORT_KEY_VERSION));
         assert_eq!(committed["packet_version"], serde_json::json!(KEY_PACKET_VERSION));
+    }
+
+    /// The claim the partitioned `/cards/search` rests on: a page spliced from card-shaped
+    /// frames — inline ones from phase 1, fetched ones from phase 2 — is BYTE-IDENTICAL to the
+    /// page `scryfall_search` writes whole, and inline frame i equals fetched frame i. The TS
+    /// gather never parses a card because this holds; card-object-parity pins the writer itself
+    /// against the TS reference, so this test only has to pin the framing around it.
+    #[test]
+    fn gather_frames_reassemble_to_the_single_store_page() {
+        load_wire_store();
+        let tree = r#"{"node_type": "TrueNode"}"#;
+        let opts = r#"{"orderby": "name", "limit": 10, "fields": ["name", "scryfall_id", "oracle_id", "set_code", "collector_number", "oracle_text", "type_line", "legalities", "colors", "color_identity"]}"#;
+        let base = "https://sylvan.example/api";
+
+        let whole = scryfall_search(tree, opts, base).expect("scryfall_search");
+        let newline = whole.iter().position(|&b| b == b'\n').expect("header line");
+        let page = &whole[newline + 1..];
+
+        let packed = query_keys(tree, opts, 2, "cards", base).expect("query_keys");
+        let (vpids, inline) = split_key_packet(&packed);
+        assert_eq!(inline.len(), 2, "both rows inline");
+        let fetched = split_row_packet(
+            &fetch_rows(&vpids, r#"["name", "scryfall_id", "oracle_id", "set_code", "collector_number", "oracle_text", "type_line", "legalities", "colors", "color_identity"]"#, "cards", base)
+                .expect("fetch_rows"),
+        );
+        unload_store();
+
+        assert_eq!(inline, fetched, "inline and fetched card frames diverged");
+        let mut spliced = Vec::new();
+        spliced.push(b'[');
+        for (i, frame) in inline.iter().enumerate() {
+            if i > 0 {
+                spliced.push(b',');
+            }
+            spliced.extend_from_slice(frame);
+        }
+        spliced.push(b']');
+        assert_eq!(
+            std::str::from_utf8(&spliced).expect("utf8"),
+            std::str::from_utf8(page).expect("utf8"),
+            "a page spliced from card frames must equal the whole-page writer's bytes"
+        );
+        // The frames are card objects, not rows: the writer's envelope and the base URL are the tell.
+        let first = std::str::from_utf8(&inline[0]).expect("utf8");
+        assert!(first.starts_with("{\"object\":\"card\""), "{first}");
+        assert!(first.contains(base), "{first}");
+
+        // The shape is validated before any work (natively, without building a JsError).
+        assert!(parse_shape("objects").is_err());
+        assert!(matches!(parse_shape("cards"), Ok(RowShape::Cards)));
     }
 }

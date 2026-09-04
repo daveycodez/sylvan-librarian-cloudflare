@@ -25,8 +25,14 @@ declare module "sylvan-engine-wasm" {
 		store_loaded(): boolean;
 		query(filterTreeJson: string, optsJson: string): string;
 		query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
-		query_keys(filterTreeJson: string, optsJson: string, inlineRows: number): Uint8Array;
-		fetch_rows(vpids: Uint32Array, fieldsJson: string): Uint8Array;
+		query_keys(
+			filterTreeJson: string,
+			optsJson: string,
+			inlineRows: number,
+			shape: string,
+			baseUrl: string,
+		): Uint8Array;
+		fetch_rows(vpids: Uint32Array, fieldsJson: string, shape: string, baseUrl: string): Uint8Array;
 		sort_key_version(): number;
 		fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
 		scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
@@ -122,16 +128,25 @@ declare module "sylvan-engine-wasm" {
 	export function query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
 	/**
 	 * Phase 1 of the two-phase gather (plan A4/B5): the page's top offset+limit
-	 * opaque sort keys, packed little-endian as `(total u32, n u32, then per
-	 * key: keylen u16, key bytes, vpid u32)`. Same executor as query().
+	 * opaque sort keys, packed little-endian as `(version u32, total u32, n u32,
+	 * inline u32, then per key: keylen u16, key bytes, vpid u32, then per inline
+	 * row: rowlen u32, row bytes)`. Same executor as query(). `shape` is "rows"
+	 * or "cards" — what the framed rows ARE; `baseUrl` matters only for cards.
 	 */
-	export function query_keys(filterTreeJson: string, optsJson: string, inlineRows: number): Uint8Array;
+	export function query_keys(
+		filterTreeJson: string,
+		optsJson: string,
+		inlineRows: number,
+		shape: string,
+		baseUrl: string,
+	): Uint8Array;
 	/**
-	 * Phase 2: the named virtual printings' rows as a UTF-8 JSON array, in
-	 * CALLER order. An unknown vpid is a loud error — against a swapped store it
-	 * means the caller's keys came from another generation.
+	 * Phase 2: the named virtual printings' rows as a ROW PACKET (`n u32, then
+	 * per row: rowlen u32, row bytes` in `shape`), in CALLER order. An unknown
+	 * vpid is a loud error — against a swapped store it means the caller's keys
+	 * came from another generation.
 	 */
-	export function fetch_rows(vpids: Uint32Array, fieldsJson: string): Uint8Array;
+	export function fetch_rows(vpids: Uint32Array, fieldsJson: string, shape: string, baseUrl: string): Uint8Array;
 	/** Leading version byte of every sort key this build emits. Streams from
 	 * builds disagreeing on this must never be merged. */
 	export function sort_key_version(): number;

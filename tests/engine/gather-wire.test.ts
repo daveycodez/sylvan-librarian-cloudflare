@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compareKeys, decodeKeyPacket, KEY_PACKET_VERSION } from "../../src/engine/gather";
+import { compareKeys, decodeKeyPacket, decodeRowPacket, KEY_PACKET_VERSION } from "../../src/engine/gather";
 
 const fixture = JSON.parse(readFileSync(`${import.meta.dir}/gather-wire-fixture.json`, "utf8")) as {
 	packet_version: number;
@@ -15,6 +15,7 @@ const fixture = JSON.parse(readFileSync(`${import.meta.dir}/gather-wire-fixture.
 	entries: number;
 	inline_rows: number;
 	packed_hex: string;
+	rows_packed_hex: string;
 };
 
 function hexBytes(hex: string): Uint8Array {
@@ -64,5 +65,21 @@ describe("query_keys wire fixture (Rust packer ↔ gather.ts codec)", () => {
 	test("a truncated packet is a loud error, never a short page", () => {
 		const bytes = hexBytes(fixture.packed_hex);
 		expect(() => decodeKeyPacket(bytes.subarray(0, bytes.length - 3))).toThrow();
+	});
+
+	test("the phase-2 row packet frames both entries, in the same framing as an inline row", () => {
+		// fetch_rows for both of the fixture's entries, shape=rows: the count header, then two
+		// frames. The first must be byte-identical to the inline row above — the property that
+		// lets one page mix inline and fetched rows.
+		const rows = decodeRowPacket(hexBytes(fixture.rows_packed_hex));
+		expect(rows.length).toBe(fixture.entries);
+		expect(rows.map((r) => JSON.parse(new TextDecoder().decode(r)))).toEqual([
+			{ name: "Wire Alpha" },
+			{ name: "Wire Beta" },
+		]);
+		const inline = decodeKeyPacket(hexBytes(fixture.packed_hex)).inlineRows[0];
+		expect(rows[0]).toEqual(inline);
+		const bytes = hexBytes(fixture.rows_packed_hex);
+		expect(() => decodeRowPacket(bytes.subarray(0, bytes.length - 1))).toThrow();
 	});
 });

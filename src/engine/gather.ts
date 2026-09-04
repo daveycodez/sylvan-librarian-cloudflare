@@ -43,9 +43,10 @@ export interface KeyPacket {
 	total: number;
 	entries: KeyEntry[];
 	/**
-	 * Rows for `entries[0 .. inlineRows.length)`, each still ENCODED. They stay as
-	 * bytes on purpose: most of them lose the cross-partition merge, and parsing
-	 * the losers would cost more than the round trip inlining them saves.
+	 * Rows for `entries[0 .. inlineRows.length)`, each still ENCODED, in whichever
+	 * shape the reply that carried the packet names (`SearchKeysReply.shape`). They
+	 * stay as bytes on purpose: most of them lose the cross-partition merge, and
+	 * the ones that win are spliced into the page as they are — never parsed.
 	 */
 	inlineRows: Uint8Array[];
 }
@@ -56,7 +57,7 @@ export interface KeyPacket {
  * ```text
  * version: u32, total: u32, n: u32, inline: u32
  * n      of: keylen: u16, key bytes, vpid: u32
- * inline of: rowlen: u32, row JSON bytes
+ * inline of: rowlen: u32, row bytes (row JSON or a card object — the reply says which)
  * ```
  *
  * The layout mirrors the `query_keys` export in engine/wasm (plan A4), and
@@ -123,6 +124,78 @@ export function encodeKeyPacket(packet: { total: number; entries: KeyEntry[]; in
 		out.set(row, at + 4);
 		at += 4 + row.byteLength;
 	}
+	return out;
+}
+
+/**
+ * Decode the phase-2 reply — the `fetch_rows` export's row packet, LITTLE-ENDIAN:
+ *
+ * ```text
+ * n: u32
+ * n of: rowlen: u32, row bytes (same framing and shape as a phase-1 inline row)
+ * ```
+ *
+ * Views into `packed`, not copies: the page joins them once (joinJsonArray) and
+ * that copy is the only pass the coordinator makes over a row. Pinned against
+ * the Rust packer by `rows_packed_hex` in tests/engine/gather-wire-fixture.json.
+ */
+export function decodeRowPacket(packed: Uint8Array): Uint8Array[] {
+	const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+	if (packed.byteLength < 4) throw new Error(`row packet too short: ${packed.byteLength} bytes`);
+	const n = view.getUint32(0, true);
+	const rows: Uint8Array[] = [];
+	let at = 4;
+	for (let i = 0; i < n; i++) {
+		if (at + 4 > packed.byteLength) throw new Error(`row packet truncated in row ${i} header`);
+		const rowlen = view.getUint32(at, true);
+		at += 4;
+		if (at + rowlen > packed.byteLength) throw new Error(`row packet truncated in row ${i} body`);
+		rows.push(packed.subarray(at, at + rowlen));
+		at += rowlen;
+	}
+	if (at !== packed.byteLength) throw new Error(`row packet has ${packed.byteLength - at} trailing bytes`);
+	return rows;
+}
+
+/** Encode a row packet in the same layout — the test fixtures' generator, and
+ * the reference for what the wasm export must emit. */
+export function encodeRowPacket(rows: readonly Uint8Array[]): Uint8Array {
+	const out = new Uint8Array(4 + rows.reduce((s, r) => s + 4 + r.byteLength, 0));
+	const view = new DataView(out.buffer);
+	view.setUint32(0, rows.length, true);
+	let at = 4;
+	for (const row of rows) {
+		view.setUint32(at, row.byteLength, true);
+		out.set(row, at + 4);
+		at += 4 + row.byteLength;
+	}
+	return out;
+}
+
+const OPEN_BRACKET = 0x5b;
+const COMMA = 0x2c;
+const CLOSE_BRACKET = 0x5d;
+
+/**
+ * `[` slot `,` slot … `]` — a JSON array assembled from already-serialized
+ * elements in ONE allocation and one memcpy per element. This is the whole of
+ * what the coordinator does to a page's rows: the Durable Object's CPU is a
+ * function of bytes handled (~15us/KB per pass), so a page that is joined once
+ * costs a quarter of one that is decoded, parsed, rebuilt and re-encoded.
+ */
+export function joinJsonArray(slots: readonly Uint8Array[]): Uint8Array {
+	let size = 2;
+	for (const slot of slots) size += slot.byteLength;
+	if (slots.length > 1) size += slots.length - 1;
+	const out = new Uint8Array(size);
+	out[0] = OPEN_BRACKET;
+	let at = 1;
+	for (let i = 0; i < slots.length; i++) {
+		if (i > 0) out[at++] = COMMA;
+		out.set(slots[i] as Uint8Array, at);
+		at += (slots[i] as Uint8Array).byteLength;
+	}
+	out[at] = CLOSE_BRACKET;
 	return out;
 }
 
@@ -233,23 +306,35 @@ export function selectPage(
  * phase 2 exactly as it always did — which is also where the wasted bytes would
  * be worst, since `offset + limit` keys are already in flight.
  *
- * THE SIZE is `limit/N` — the mean contribution — plus a flat slack. Modelling a
- * partition's share of a 175-row page as Binomial(175, 1/9) gives mean 19.4 and
- * sd 4.16, so `20 + 16 = 36` sits four standard deviations out and the chance
- * that ANY of the nine overflows is ~2e-4 per request. The flat term is what
- * makes small limits safe too: at limit 20 the budget is 19 against a mean of
- * 2.2. An overflow is not an error — it costs one phase-2 call for the rows past
- * the prefix, which is the protocol this replaced.
+ * THE SIZE is `limit/N` — the mean contribution — plus four standard deviations
+ * of slack. A partition's share of the page is Binomial(limit, 1/N): at N=9 and
+ * Scryfall's 175-row page that is mean 19.4, sd 4.16, so the budget is 20 + 17
+ * and the chance that ANY of the nine overflows is ~2e-4 per request. The slack
+ * is DERIVED rather than a constant because the sd shrinks as N grows (as
+ * sqrt(1/N)) while a flat term would not: the first version pinned 16 for N=9,
+ * which over-provisioned further with every partition added — the bytes shipped
+ * inline grow as N x slack, and the round trip they buy is worth the same at
+ * every N. Four sigma of the actual distribution keeps the overflow guarantee
+ * identical while the per-partition slack falls from 17 at N=9 to 10 at N=32.
+ * Small limits stay safe for the same reason: at limit 20 the budget is 9
+ * against a mean of 2.2. An overflow is not an error — it costs one phase-2
+ * call for the rows past the prefix, which is the protocol this replaced.
  *
- * The measured cost of the slack is bytes: 9 x 36 rows shipped where ~175 are
+ * The measured cost of the slack is bytes: 9 x 37 rows shipped where ~175 are
  * used. Twinned in engine/builder/examples/g2.rs's `inline_row_budget` so the G2
  * differential exercises the shape production runs.
  */
-export const INLINE_SLACK = 16;
+export const INLINE_SLACK_SIGMAS = 4;
+
+/** Four standard deviations of one partition's Binomial(limit, 1/N) share, rounded up. */
+export function inlineSlack(limit: number, partitionCount: number): number {
+	const p = 1 / partitionCount;
+	return Math.ceil(INLINE_SLACK_SIGMAS * Math.sqrt(limit * p * (1 - p)));
+}
 
 export function inlineRowBudget(offset: number, limit: number, partitionCount: number): number {
 	if (offset > 0 || partitionCount <= 0 || limit <= 0) return 0;
-	return Math.min(limit, Math.ceil(limit / partitionCount) + INLINE_SLACK);
+	return Math.min(limit, Math.ceil(limit / partitionCount) + inlineSlack(limit, partitionCount));
 }
 
 /** What a phase-1 reply says about its generation: the partition archive it answered from. */
@@ -287,6 +372,25 @@ export function pinGeneration(replies: GenerationReply[]): { pinnedBuiltAt: stri
 
 // ── The run itself ─────────────────────────────────────────────────────────────
 
+/**
+ * What each row's bytes ARE on the wire: the engine row's JSON, or the Scryfall
+ * card object the engine builds from it (`write_scryfall_card`, the same writer
+ * the single-store `scryfall_search` runs over a whole page).
+ *
+ * The shape is named per request and echoed per reply, never assumed: a page of
+ * card objects spliced from rows would be well-formed JSON with the wrong
+ * schema, which no parser downstream would catch.
+ */
+export type RowShape = "rows" | "cards";
+
+/** The shape a gather asks for; `baseUrl` only matters for `"cards"` (image and API URIs). */
+export interface RowShaping {
+	shape: RowShape;
+	baseUrl: string;
+}
+
+export const ROWS_SHAPING: RowShaping = { shape: "rows", baseUrl: "" };
+
 /** One partition's phase-1 answer, as the RPC carries it. */
 export interface SearchKeysReply {
 	/** encodeKeyPacket layout — the wasm export's bytes, forwarded opaquely. */
@@ -295,6 +399,23 @@ export interface SearchKeysReply {
 	storeKey: string;
 	/** Leading version byte of every key in `packed`. */
 	sortKeyVersion: number;
+	/**
+	 * The shape of the inline rows in `packed`. ABSENT on a build predating
+	 * shaping (a rolling deploy's other half): those rows are row JSON, and the
+	 * gather reshapes exactly the ones the page keeps. Present and DIFFERENT from
+	 * the ask is a bug in this build, and the gather refuses it.
+	 */
+	shape?: RowShape;
+}
+
+/** One partition's phase-2 answer. */
+export interface FetchRowsReply {
+	rowsBytes: Uint8Array;
+	/**
+	 * Present iff `rowsBytes` is the framed row packet (decodeRowPacket) in this
+	 * shape. Absent means the previous build's single JSON array of row objects.
+	 */
+	shape?: RowShape;
 }
 
 /**
@@ -303,12 +424,12 @@ export interface SearchKeysReply {
  */
 export interface PartitionClient {
 	/** `inlineRows` asks this partition to carry the rows for the first N entries
-	 * of its own answer, so the page needs no phase-2 call for them. */
-	searchKeys(opts: EngineSearchOptions, inlineRows: number): Promise<SearchKeysReply>;
-	/** Rows for these vpids in CALLER order, as a UTF-8 JSON array. `storeKey`
+	 * of its own answer, in `shaping.shape`, so the page needs no phase-2 call for them. */
+	searchKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Promise<SearchKeysReply>;
+	/** Rows for these vpids in CALLER order, framed in `shaping.shape`. `storeKey`
 	 * pins the generation: a partition that has swapped must error loudly, not
 	 * answer from different rows. */
-	fetchRows(vpids: number[], fields: string[], storeKey: string): Promise<Uint8Array>;
+	fetchRows(vpids: number[], fields: string[], storeKey: string, shaping: RowShaping): Promise<FetchRowsReply>;
 	/** Converge this partition on the manifest KV holds NOW — prefetch and swap if it differs
 	 * from what it serves. The gather's remedy for a straggler that no publish told; optional
 	 * only so an older sibling build without it still answers a gather. */
@@ -321,20 +442,58 @@ export interface PartitionClient {
 export const GATHER_REISSUE_BACKOFF_MS = 250;
 
 const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+
+/**
+ * The shape a gather runs in, plus the one thing the gather itself cannot do
+ * in bytes: re-encoding a row that arrived UNshaped from a partition still on
+ * the previous build. `reshape` runs only for those rows — on a fleet that has
+ * finished deploying it is never called, and tests/engine/gather-passes.test.ts
+ * holds the run to that.
+ */
+export interface GatherShaping extends RowShaping {
+	reshape: (row: Record<string, unknown>) => Uint8Array;
+}
+
+/** Row JSON in, row JSON out: the shaping /search's row and columnar transports run in. */
+export const ROWS_GATHER: GatherShaping = {
+	...ROWS_SHAPING,
+	reshape: (row) => encoder.encode(JSON.stringify(row)),
+};
+
+/** A gathered page: the exact unpaginated total, and the page's rows as bytes in merged order. */
+export interface GatheredPage {
+	total: number;
+	/**
+	 * One serialized row per page slot, each in the shape the run asked for. Views
+	 * into the replies' buffers — join them (joinJsonArray) or parse the few a
+	 * route needs as values; never hand a view over RPC.
+	 */
+	slots: Uint8Array[];
+}
+
+/** Parse the slots a route needs as VALUES — the objects path, and columnar. */
+export function parseSlots(slots: readonly Uint8Array[]): Record<string, unknown>[] {
+	return slots.map((slot) => JSON.parse(decoder.decode(slot)) as Record<string, unknown>);
+}
 
 /**
  * Both phases, start to finish: keys from every partition on ONE pinned
  * generation, merged bytewise, cut to the page, rows fetched from their owners
  * and reassembled in merged order.
  *
- * Returns the page's rows as PARSED objects (the caller re-encodes in whatever
- * shape its route needs) plus the exact unpaginated total.
+ * Returns the page's rows as BYTES in the requested shape. Nothing here parses
+ * a row: the card-object page is `joinJsonArray(slots)` and that is the whole
+ * cost the coordinator pays per row. The one exception is a partition still on
+ * a build that predates row shaping, whose rows arrive as row JSON and are
+ * reshaped here — and only the rows the page kept.
  */
 export async function runTwoPhase(
 	clients: PartitionClient[],
 	opts: EngineSearchOptions,
+	shaping: GatherShaping,
 	sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-): Promise<{ total: number; rows: Record<string, unknown>[] }> {
+): Promise<GatheredPage> {
 	// Phase 1 asks every partition for its best `offset + limit` keys FROM ZERO,
 	// never for its own page at `offset`. The distinction is the whole
 	// correctness argument of the merge: the global rows [offset, offset+limit)
@@ -354,7 +513,7 @@ export async function runTwoPhase(
 	// (or a build that ignores the argument) simply leaves rows for phase 2 to
 	// fetch, so nothing about the answer depends on it. See inlineRowBudget.
 	const budget = inlineRowBudget(opts.offset, opts.limit, clients.length);
-	const replies = await Promise.all(clients.map((c) => c.searchKeys(phase1, budget)));
+	const replies = await Promise.all(clients.map((c) => c.searchKeys(phase1, budget, shaping)));
 
 	// Pinned generation: every partition must have answered from ONE build.
 	// Swaps are monotonic, so on a mismatch the newest build wins and the
@@ -363,7 +522,7 @@ export async function runTwoPhase(
 	if (pin.stragglers.length > 0) {
 		await sleep(GATHER_REISSUE_BACKOFF_MS);
 		for (const p of pin.stragglers) {
-			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget);
+			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget, shaping);
 		}
 		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
 	}
@@ -379,7 +538,7 @@ export async function runTwoPhase(
 	if (pin.stragglers.length > 0) {
 		await Promise.all(pin.stragglers.map((p) => (clients[p] as PartitionClient).refresh?.()));
 		for (const p of pin.stragglers) {
-			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget);
+			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget, shaping);
 		}
 		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
 		if (pin.stragglers.length > 0) {
@@ -401,46 +560,84 @@ export async function runTwoPhase(
 		}
 	}
 
+	// Shape gate, beside the version gate and for the same reason: a reply that
+	// names a shape other than the one asked for is THIS build answering wrongly,
+	// and splicing its rows would produce well-formed JSON with the wrong schema.
+	// A reply that names NO shape is the previous build — row JSON — and is
+	// reshaped below, row by kept row, so a rolling deploy degrades to the old
+	// cost for a partition rather than to an error for the page.
+	const legacy = replies.map((r) => r.shape === undefined);
+	for (let p = 0; p < replies.length; p++) {
+		const shape = (replies[p] as SearchKeysReply).shape;
+		if (shape !== undefined && shape !== shaping.shape) {
+			throw new Error(`gather: partition ${p} carried ${shape} rows where ${shaping.shape} was asked`);
+		}
+	}
+	if (legacy.some(Boolean) && shaping.shape !== "rows") {
+		const which = legacy.flatMap((is, p) => (is ? [p] : []));
+		console.warn(
+			`gather: partition(s) ${which.join(",")} answered from a build without row shaping; ` +
+				`reshaping their page rows here (expected only during a rolling deploy)`,
+		);
+	}
+
 	const packets = replies.map((r) => decodeKeyPacket(r.packed));
 	const total = packets.reduce((s, p) => s + p.total, 0);
 	const merged = mergeKeyStreams(packets.map((p) => p.entries));
 	const carried = packets.map((p) => p.inlineRows.length);
 	const { page, byPartition } = selectPage(merged, opts.offset, opts.limit, carried);
-	if (page.length === 0) return { total, rows: [] };
+	if (page.length === 0) return { total, slots: [] };
+
+	// The previous build's rows, reshaped: parse, rebuild, encode. Only ever runs
+	// for a legacy partition, and only over the rows the page kept.
+	const reshapeLegacy = (bytes: Uint8Array): Uint8Array =>
+		shaping.shape === "rows" ? bytes : shaping.reshape(JSON.parse(decoder.decode(bytes)) as Record<string, unknown>);
 
 	// Phase 2, only to the partitions that STILL owe rows after the inline prefixes
 	// are accounted for, in parallel, pinned. On the common page this map is empty
 	// and the whole block is skipped.
 	const pinnedKeyOf = new Map<number, string>();
 	for (let p = 0; p < replies.length; p++) pinnedKeyOf.set(p, (replies[p] as SearchKeysReply).storeKey);
-	const fetched = new Map<number, Record<string, unknown>[]>();
+	const fetched = new Map<number, Uint8Array[]>();
 	await Promise.all(
 		[...byPartition.entries()].map(async ([partition, vpids]) => {
-			const bytes = await (clients[partition] as PartitionClient).fetchRows(
+			const reply = await (clients[partition] as PartitionClient).fetchRows(
 				vpids,
 				opts.fields,
 				pinnedKeyOf.get(partition) as string,
+				shaping,
 			);
-			const rows = JSON.parse(decoder.decode(bytes)) as Record<string, unknown>[];
-			if (rows.length !== vpids.length) {
-				throw new Error(`gather: partition ${partition} returned ${rows.length} rows for ${vpids.length} vpids`);
+			let frames: Uint8Array[];
+			if (reply.shape === undefined) {
+				// The previous build: one JSON array of row objects.
+				const rows = JSON.parse(decoder.decode(reply.rowsBytes)) as Record<string, unknown>[];
+				frames = rows.map((row) =>
+					shaping.shape === "rows" ? encoder.encode(JSON.stringify(row)) : shaping.reshape(row),
+				);
+			} else if (reply.shape !== shaping.shape) {
+				throw new Error(`gather: partition ${partition} fetched ${reply.shape} rows where ${shaping.shape} was asked`);
+			} else {
+				frames = decodeRowPacket(reply.rowsBytes);
 			}
-			fetched.set(partition, rows);
+			if (frames.length !== vpids.length) {
+				throw new Error(`gather: partition ${partition} returned ${frames.length} rows for ${vpids.length} vpids`);
+			}
+			fetched.set(partition, frames);
 		}),
 	);
 
 	// Reassemble. A page slot takes its row from the partition's inline prefix when
 	// its local index falls inside it, and otherwise from that partition's fetched
 	// queue — which came back in caller (= merged) order, so the splice is a queue
-	// walk and never a key comparison. Only the rows the page kept are parsed; the
-	// inline rows that lost the merge are never decoded at all.
+	// walk and never a key comparison. The slots are views: the inline rows that
+	// lost the merge are never touched, and the ones that won are never decoded.
 	const cursors = new Map<number, number>();
-	const rows = page.map((ref) => {
+	const slots = page.map((ref) => {
 		const inline = (packets[ref.partition] as KeyPacket).inlineRows[ref.index];
-		if (inline !== undefined) return JSON.parse(decoder.decode(inline)) as Record<string, unknown>;
+		if (inline !== undefined) return legacy[ref.partition] ? reshapeLegacy(inline) : inline;
 		const at = cursors.get(ref.partition) ?? 0;
 		cursors.set(ref.partition, at + 1);
-		return (fetched.get(ref.partition) as Record<string, unknown>[])[at] as Record<string, unknown>;
+		return (fetched.get(ref.partition) as Uint8Array[])[at] as Uint8Array;
 	});
-	return { total, rows };
+	return { total, slots };
 }

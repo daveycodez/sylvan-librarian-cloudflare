@@ -1,9 +1,10 @@
 {
 	"entries": 2,
 	"inline_rows": 1,
-	"note": "REAL query_keys bytes off a deterministic 2-row store (orderby=name, fields=[name], inline_rows=1). Pins the LE packet layout — version header, key entries AND the framed inline-row section — between the Rust packer (engine/wasm) and src/engine/gather.ts's decodeKeyPacket. Regenerate with SYLVAN_WRITE_WIRE_FIXTURE=1 cargo test -p sylvan-engine-wasm.",
+	"note": "REAL query_keys bytes off a deterministic 2-row store (orderby=name, fields=[name], inline_rows=1, shape=rows). Pins the LE packet layout — version header, key entries AND the framed inline-row section — between the Rust packer (engine/wasm) and src/engine/gather.ts's decodeKeyPacket. rows_packed_hex is fetch_rows for both entries (shape=rows), pinning the row packet against decodeRowPacket. Regenerate with SYLVAN_WRITE_WIRE_FIXTURE=1 cargo test -p sylvan-engine-wasm.",
 	"packed_hex": "020000000200000002000000010000004c00020177697265616c706861000177697265616c7068610077777777777747778777777777777771003d37ffff0000000000000000000000000000000088888888888848888888888888888881000000004a0002017769726562657461000177697265626574610077777777777747778777777777777772003d37ffff000000000000000000000000000000008888888888884888888888888888888201000000150000007b226e616d65223a225769726520416c706861227d",
 	"packet_version": 2,
+	"rows_packed_hex": "02000000150000007b226e616d65223a225769726520416c706861227d140000007b226e616d65223a22576972652042657461227d",
 	"sort_key_version": 2,
 	"total": 2
 }

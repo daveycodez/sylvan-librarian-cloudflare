@@ -98,7 +98,9 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
               │   routes cost 1 RPC and which cost N is a per-route table in
               │   src/engine/partitioned-engine.ts, pinned by
               │   tests/engine/partitioned-routes.test.ts. Search is a two-phase
-              │   gather (sort keys, then rows); id lookups collapse to 1 RPC via
+              │   gather (sort keys, then rows — framed by the engine in the
+              │   shape the route answers with, so the gather splices bytes and
+              │   never parses a card); id lookups collapse to 1 RPC via
               │   the routing filter; catalog/autocomplete/named fan out
               └─ autoscaling: fan-out to engine-<region>-1..N when the DO reports
                   sustained load AND the isolate sees sustained slowness, with

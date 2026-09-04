@@ -40,6 +40,7 @@ import {
 import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
 import { encodeUtf8, NEWLINE } from "./bytes";
 import { serializeCards } from "./columnar";
+import type { RowShaping } from "./gather";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
 import { probePlacement } from "./placement";
 import {
@@ -326,6 +327,14 @@ class WasmEngine implements Engine {
 	 * could have written itself. Measured, the Durable Object's CPU is very nearly a pure function
 	 * of payload bytes (~15us/KB), while building a card object is ~16us per CARD, so those passes
 	 * were the cost and the construction was not.
+	 *
+	 * THIS IS THE SINGLE-STORE TWIN. The deployment is partitioned, so `/cards/search` runs the
+	 * two-phase gather instead (search-engine-do.ts's `gatherScryfallSearchLocal`) — and for a
+	 * while that gather did exactly the four passes this comment says were removed, because it
+	 * asked the partitions for rows and rebuilt the cards in TypeScript. It now asks for the
+	 * `"cards"` row shape: `query_keys` and `fetch_rows` write each row through the same
+	 * `write_scryfall_card` this export runs over a page, and the coordinator splices the frames
+	 * by memcpy (gather.ts's joinJsonArray). One writer, two transports, the same bytes.
 	 *
 	 * `toScryfallCard` remains the reference implementation, and
 	 * tests/routes/card-object-parity.test.ts holds the engine to it byte for byte — the route
@@ -1063,9 +1072,11 @@ export interface GatherOps {
 	storeKey: string;
 	sortKeyVersion(): number;
 	/** `inlineRows` folds phase 2 into phase 1: the rows for the first N entries
-	 * ride back with the keys (see gather.ts's inlineRowBudget). */
-	queryKeys(opts: EngineSearchOptions, inlineRows: number): Uint8Array;
-	fetchRows(vpids: number[], fields: string[]): Uint8Array;
+	 * ride back with the keys (see gather.ts's inlineRowBudget), framed in
+	 * `shaping.shape` — row JSON, or card objects the engine writes itself. */
+	queryKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Uint8Array;
+	/** The row packet (gather.ts's decodeRowPacket) for these vpids, in `shaping.shape`. */
+	fetchRows(vpids: number[], fields: string[], shaping: RowShaping): Uint8Array;
 	/** This partition's scores-bearing fuzzy candidates (the cross-partition race's phase 1). */
 	fuzzyCandidates(name: string): FuzzyCandidateWire[];
 }
@@ -1108,8 +1119,10 @@ export function gatherOps(label?: string): GatherOps | null {
 	return {
 		storeKey,
 		sortKeyVersion: () => handle.sort_key_version(),
-		queryKeys: (opts, inlineRows) => handle.query_keys(opts.filterTreeJson, engine.optsJsonFor(opts), inlineRows),
-		fetchRows: (vpids, fields) => handle.fetch_rows(Uint32Array.from(vpids), JSON.stringify(fields)),
+		queryKeys: (opts, inlineRows, shaping) =>
+			handle.query_keys(opts.filterTreeJson, engine.optsJsonFor(opts), inlineRows, shaping.shape, shaping.baseUrl),
+		fetchRows: (vpids, fields, shaping) =>
+			handle.fetch_rows(Uint32Array.from(vpids), JSON.stringify(fields), shaping.shape, shaping.baseUrl),
 		fuzzyCandidates: (name) =>
 			decodeFuzzyCandidates(handle.fuzzy_candidates(name, FUZZY_SIMILARITY_FLOOR, FUZZY_CANDIDATE_CLASSES)),
 	};

@@ -116,11 +116,14 @@ export function exact_card_by_name(folded: string, set_code: string, fields_json
 export function exact_name_rank(folded: string, set_code: string): string;
 
 /**
- * Phase 2: the card rows for `vpids` (a Uint32Array from this partition's own phase 1), in
- * CALLER order, as a JSON array in UTF-8 bytes. An unknown vpid is a loud error — the ids came
- * from this same store moments ago, so a miss means the caller mixed partitions or generations.
+ * Phase 2: the rows for `vpids` (a Uint32Array from this partition's own phase 1), in CALLER
+ * order, as a ROW PACKET — `n: u32 LE`, then `n` framed rows exactly as [`query_keys`] frames
+ * its inline section, in the same `shape`. Individually framed rather than one JSON array so the
+ * coordinator splices them into the page by memcpy, never through a parser. An unknown vpid is
+ * a loud error — the ids came from this same store moments ago, so a miss means the caller
+ * mixed partitions or generations.
  */
-export function fetch_rows(vpids: Uint32Array, fields_json: string): Uint8Array;
+export function fetch_rows(vpids: Uint32Array, fields_json: string, shape: string, base_url: string): Uint8Array;
 
 /**
  * Validate the streamed archive and atomically swap it in as the active
@@ -188,7 +191,7 @@ export function query(filter_tree_json: string, opts_json: string): string;
  * version: u32 (= KEY_PACKET_VERSION)
  * total: u32, n: u32, inline: u32
  * n      of: keylen: u16, key: keylen bytes, vpid: u32
- * inline of: rowlen: u32, row JSON bytes
+ * inline of: rowlen: u32, row bytes in `shape`
  * ```
  *
  * `total` is the partition's exact match count; the keys are its top `offset + limit` in page
@@ -199,9 +202,15 @@ export function query(filter_tree_json: string, opts_json: string): string;
  * THE INLINE SECTION IS A PREFIX, and each row is framed separately rather than shipped as one
  * JSON array on purpose: most of them lose the cross-partition merge, and a gather that had to
  * parse the whole array to reach the few survivors would pay for the losers twice — once on the
- * wire and once in the parser. Framed, it parses exactly the rows the page kept.
+ * wire and once in the parser. Framed, it splices exactly the rows the page kept.
+ *
+ * `shape` is `"rows"` or `"cards"` (see [`RowShape`]); `base_url` matters only for cards. The
+ * packet itself does not record the shape — the RPC reply that carries it does, which is what
+ * lets a gather tell a sibling still on the previous build (row JSON, no shape) from one that
+ * answered in the shape it asked for. The `"cards"` shape builds from whatever `fields` the opts
+ * name; the caller widens them to the card-object set, as the single-store path does.
  */
-export function query_keys(filter_tree_json: string, opts_json: string, inline_rows: number): Uint8Array;
+export function query_keys(filter_tree_json: string, opts_json: string, inline_rows: number, shape: string, base_url: string): Uint8Array;
 
 /**
  * The same query as [`query`], answered as `<total> <row count>\n<rows JSON array>` IN BYTES.
