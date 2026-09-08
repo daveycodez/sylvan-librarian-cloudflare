@@ -2365,6 +2365,12 @@ impl FilterExpr {
             FilterExpr::Devotion { hybrid_colors, .. } => {
                 *hybrid_colors = mana_vocab.iter().map(|s| devotion_color_mask(s.as_str())).collect();
             }
+            // LOCAL PATCH (Cloudflare port): through `sorted_ids`, NOT a direct binary search of
+            // `vocab`. Upstream renumbers the collection vocab lexicographically at load since
+            // 2026090801 and dropped both the permutation and this argument; this tree keeps
+            // first-seen ids (the `in:` pass extends the vocab after the interner, and ~15 stored
+            // fields carry vocab ids — see `CardData::coll_vocab_sorted`), so any upstream hunk that
+            // `partition_point`s `vocab` itself compiles here and resolves the wrong id.
             FilterExpr::CollectionCmp { value, value_id, .. } => {
                 let i = sorted_ids.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value.as_str());
                 *value_id = sorted_ids

@@ -67,6 +67,10 @@ fn mode_only_params(mode: Mode) -> QueryParams {
 }
 
 /// String-sorted permutation of the vocab ids, as reload_commit builds it.
+///
+/// LOCAL PATCH (Cloudflare port): upstream 78a90126 replaced this with `coll_ids_in` over a vocab
+/// `renumber_coll_vocab` sorts at load; this tree keeps first-seen ids and `coll_vocab_sorted` (see
+/// the field's comment in lib.rs), so fixtures keep taking ids from the interner directly.
 fn sorted_vocab_ids(vocab: &[String]) -> Vec<u16> {
     let mut ids: Vec<u16> = (0..vocab.len() as u16).collect();
     ids.sort_unstable_by(|&a, &b| vocab[a as usize].cmp(&vocab[b as usize]));

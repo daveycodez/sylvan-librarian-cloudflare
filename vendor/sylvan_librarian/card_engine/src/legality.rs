@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock, RwLock};
 #[cfg(feature = "python")]
+use pyo3::intern;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyString};
 use rkyv::Archived;
 
 const LEGALITY_NOT_LEGAL: u64 = 0;
@@ -259,6 +261,79 @@ pub(crate) fn jsonb_obj_to_legality_bits(d: &Bound<PyDict>, key: &str) -> u64 {
 /// format the registry knows, alphabetically — the field-extraction counterpart of
 /// `jsonb_obj_to_legality_bits`. A format absent from the imported JSONB round-trips
 /// as "not_legal", exactly as the encoder treated it.
+/// The format names as interned `PyString` keys, parallel to a `SortedFormats` snapshot.
+#[cfg(feature = "python")]
+type FormatKeys = Arc<[Py<PyString>]>;
+
+/// The format names as interned `PyString` keys, positionally parallel to a
+/// `format_shifts_sorted()` snapshot of the same length.
+///
+/// Keyed on the snapshot's LENGTH rather than `FORMAT_COUNT` on purpose. The registry is
+/// append-only in its *shift* assignments, but `format_shifts_sorted()` is sorted
+/// ALPHABETICALLY, so a new format lands in the middle and moves every later entry's index.
+/// Positional correspondence therefore only holds against a snapshot of the same length --
+/// and because the registry is append-only, a given length pins a unique format set and so a
+/// unique sorted order. Matching lengths is exactly the condition under which `keys[i]`
+/// describes `entries[i]`.
+///
+/// LOCAL PATCH (Cloudflare port): keyed on the `FormatOrder` snapshot's IDENTITY (`Arc::ptr_eq`),
+/// not its length. Upstream's length key rests on an append-only registry; this tree's
+/// `FormatRegistry::sync` can drop and re-slot a RENAMED format (`brawl` -> `standardbrawl`) at the
+/// same count, and `order()` publishes a fresh `Arc` on every generation change, so the `Arc` is
+/// the snapshot the keys were built for and the length is not. A redundant concurrent rebuild
+/// yields a different `Arc` with the same pairs: a cache miss, never a wrong key.
+#[cfg(feature = "python")]
+fn format_keys(py: Python<'_>, entries: &FormatOrder) -> FormatKeys {
+    static KEYS: OnceLock<RwLock<(FormatOrder, FormatKeys)>> = OnceLock::new();
+    let cache = KEYS.get_or_init(|| RwLock::new((Arc::new(Vec::new()), Arc::from([] as [Py<PyString>; 0]))));
+
+    if let Ok(guard) = cache.read()
+        && Arc::ptr_eq(&guard.0, entries)
+    {
+        return guard.1.clone();
+    }
+    let Ok(mut guard) = cache.write() else { return Arc::from([]) };
+    if Arc::ptr_eq(&guard.0, entries) {
+        return guard.1.clone(); // rebuilt by another thread while we waited for the write lock
+    }
+    let built: FormatKeys =
+        entries.iter().map(|(format, _)| PyString::intern(py, format.as_str()).unbind()).collect();
+    *guard = (Arc::clone(entries), built.clone());
+    built
+}
+
+/// Cap on distinct legality words held as template dicts.
+///
+/// The real corpus has 591 distinct combinations across 97,812 printings, so this is ~7x headroom
+/// and exists only so a pathological corpus cannot grow the map without bound. Past the cap the
+/// builder still returns correct dicts, just uncached.
+#[cfg(feature = "python")]
+const MAX_CACHED_LEGALITY_WORDS: usize = 4096;
+
+/// Template dicts by legality word, valid for a `SortedFormats` snapshot of the recorded length.
+///
+/// LOCAL PATCH (Cloudflare port): valid for the `FormatOrder` snapshot they were built against,
+/// by identity — the same retarget as `format_keys`, for the same rename reason.
+#[cfg(feature = "python")]
+type LegalityTemplates = (FormatOrder, HashMap<u64, Py<PyDict>>);
+
+#[cfg(feature = "python")]
+fn legality_templates() -> &'static RwLock<LegalityTemplates> {
+    static DICTS: OnceLock<RwLock<LegalityTemplates>> = OnceLock::new();
+    DICTS.get_or_init(|| RwLock::new((Arc::new(Vec::new()), HashMap::new())))
+}
+
+/// Build one row's `{format: status}` dict.
+///
+/// The whole dict is memoized on the legality word, not just its pieces: the corpus has 591
+/// distinct combinations over 97,812 printings, and `{format: status}` is a pure function of the
+/// word and the format snapshot. Rebuilding it per row costs 23 dict inserts; copying a template
+/// costs one `PyDict_Copy`, measured at 64 ns against 429 ns to rebuild.
+///
+/// A COPY, not the template itself. Returning the shared dict would be a further ~20x, but two rows
+/// with the same legalities would then be the same object: a caller mutating one row's dict would
+/// silently change every other row carrying that word, and corrupt the template for the rest of the
+/// process. Each row keeping its own mutable dict is the behavior callers have today.
 // LOCAL PATCH (Cloudflare port): gated, because this workspace builds card_engine WITHOUT pyo3 for
 // wasm32 and `Python`/`PyDict` do not exist there. Upstream has no `python` feature and its
 // FIELD_TABLE — the only caller — is ungated, so this attribute belongs here and NOT upstream:
@@ -266,17 +341,48 @@ pub(crate) fn jsonb_obj_to_legality_bits(d: &Bound<PyDict>, key: &str) -> u64 {
 // FIELD_TABLE and jsonb_obj_to_legality_bits, whose live twin is legality_bits_to_json below.
 #[cfg(feature = "python")]
 pub(crate) fn legality_bits_to_pydict<'a>(py: Python<'a>, bits: u64) -> PyResult<pyo3::Bound<'a, PyDict>> {
-    let dict = PyDict::new(py);
-    for (format, shift) in FORMAT_REGISTRY.order().iter() {
-        let word = match (bits >> shift) & 0b11 {
-            LEGALITY_LEGAL => "legal",
-            LEGALITY_RESTRICTED => "restricted",
-            LEGALITY_BANNED => "banned",
-            _ => "not_legal",
-        };
-        dict.set_item(format.as_str(), word)?;
+    // LOCAL PATCH (Cloudflare port): `FORMAT_REGISTRY.order()`, the generation-invalidated snapshot
+    // this tree already caches, in place of upstream's length-keyed `format_shifts_sorted()`.
+    let entries = FORMAT_REGISTRY.order();
+
+    if let Ok(guard) = legality_templates().read()
+        && Arc::ptr_eq(&guard.0, &entries)
+        && let Some(template) = guard.1.get(&bits)
+    {
+        return template.bind(py).copy();
     }
-    Ok(dict)
+
+    let keys = format_keys(py, &entries);
+    debug_assert_eq!(keys.len(), entries.len(), "format_keys snapshot is not parallel to entries");
+    let dict = PyDict::new(py);
+    for ((_, shift), key) in entries.iter().zip(keys.iter()) {
+        let word = match (bits >> shift) & 0b11 {
+            LEGALITY_LEGAL => intern!(py, "legal"),
+            LEGALITY_RESTRICTED => intern!(py, "restricted"),
+            LEGALITY_BANNED => intern!(py, "banned"),
+            _ => intern!(py, "not_legal"),
+        };
+        dict.set_item(key.bind(py), word)?;
+    }
+
+    let mut cached = false;
+    if let Ok(mut guard) = legality_templates().write() {
+        // A snapshot of a different length means a format was registered since these templates were
+        // built, so every one of them is missing a key. Drop the lot rather than serve short dicts.
+        if !Arc::ptr_eq(&guard.0, &entries) {
+            guard.1.clear();
+            guard.0 = Arc::clone(&entries);
+        }
+        if guard.1.len() < MAX_CACHED_LEGALITY_WORDS {
+            guard.1.insert(bits, dict.clone().unbind());
+            cached = true;
+        }
+    }
+    // `dict` is now the TEMPLATE, not a row's dict -- `Bound::clone` increfs the same object rather
+    // than copying it. Handing it back would let the caller's first mutation rewrite the template
+    // and every later row built from it, which is the exact aliasing this function copies to avoid.
+    // Only the uncached path, whose dict no one else holds, may return it directly.
+    if cached { dict.copy() } else { Ok(dict) }
 }
 
 /// LOCAL PATCH (Cloudflare port): the JSON twin of `legality_bits_to_pydict`, for the wasm path.
