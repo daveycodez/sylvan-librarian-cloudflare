@@ -204,13 +204,19 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000modal", "otag:modal"],
 	// ── Set types (the `st:` operator, added alongside) ──────────────────────
 	// `is:masterpiece` and `is:alchemy` ARE their set types: both set differences against
-	// `st:masterpiece` / `st:alchemy` are empty on api.scryfall.com (2026-08-16). `is:funny` is
-	// close rather than equal — 151 cards Scryfall calls funny are not in a funny SET, and 190
-	// funny-set cards are not is:funny — but the funny sets are not imported at all, so the
-	// difference is unobservable here and the mapping is what makes the answer an honest zero
-	// instead of an unexplained one.
+	// `st:masterpiece` / `st:alchemy` are empty on api.scryfall.com (2026-08-16).
+	//
+	// `is:funny` IS NOT HERE ANY MORE. It sat beside these as `st:funny` with a note that its
+	// 151/190 residual was "unobservable in this corpus" because funny sets were not imported —
+	// true under `default_cards`, false since `all_cards`: unk is served, and the Mystery Booster 2
+	// playtest cards are in the store as extras. Measured 2026-09-08, `t:conspiracy -is:funny`
+	// answered 27 here against api.scryfall.com's 25, the two being mb2/503 and mb2/505 — playtest
+	// printings in a `masters` set, which no set-type rewrite can reach, and which Scryfall calls
+	// funny because its `is:funny` is a class of the PRINTING (never legal, and funny-set OR
+	// playtest OR silver-bordered OR acorn-stamped, and not a token set). That is five fields read
+	// together, so it is a stored tag now — `FUNNY_IS_TAG` in the builder, `COMPUTED_IS_TAGS` in
+	// db-info.ts — with the rule and its 11-card residual written at the builder.
 	["is\u0000alchemy", "st:alchemy"],
-	["is\u0000funny", "st:funny"], // 151/190 residual, unobservable in this corpus
 	["is\u0000masterpiece", "st:masterpiece"], // exact
 	// ── Eligibility, in the shape is:commander already uses ──────────────────
 	// Each validated separately against its own live list rather than rewritten to the format

@@ -319,6 +319,33 @@ export const ALIAS_TO_FIELD_INFOS: ReadonlyMap<string, readonly FieldInfo[]> = (
 export const EXTRA_IS_TAG = "extra";
 
 /**
+ * `is:funny`. Scryfall's is a PER-PRINTING class and not a set type, and this port rewrote it to
+ * `st:funny` on the premise that the difference was unobservable because funny sets were not
+ * imported. That premise died with the `all_cards` import: unk (a funny set) is served, and the
+ * Mystery Booster 2 playtest cards are in the store as extras. Measured 2026-09-08 (unique=cards):
+ * `t:conspiracy -is:funny` is 25 on api.scryfall.com and was 27 here — mb2/503 Marchesa's Surprise
+ * Party and mb2/505 Rule with an Even Hand, both `promo_types: [playtest]` in a `masters` set —
+ * and `set:mb2 is:funny` was 121 there against 0 here, `is:playtest is:funny` 795 against 0.
+ *
+ * THE RULE, reverse-engineered and measured (include:extras=true, unique=cards):
+ *
+ *     never legal in ANY format
+ *     AND (st:funny OR is:playtest OR border:silver OR stamp:acorn)
+ *     AND NOT st:token
+ *
+ * Never-legal is NECESSARY: `is:funny` intersected with legality in any of the 21 formats is 0,
+ * and all 190 of `st:funny -is:funny` are legal somewhere (Unfinity's eternal-legal half). The
+ * disjunction is what reaches the non-funny-set printings: `is:playtest -is:funny` is exactly 1,
+ * sld/SCTLR Counterspell, legal in historic/timeless. The `-st:token` clause keeps out 14
+ * silver-bordered tust/tugl tokens Scryfall calls not funny. Residual 11 of 1,461, named at the
+ * builder's `FUNNY_IS_TAG` — against 341 for the set-type rewrite it replaces.
+ *
+ * Computed by the importer, like `extra`, because it reads five fields of the printing at once.
+ * Spelled once here and once as the builder's `FUNNY_IS_TAG`.
+ */
+export const FUNNY_IS_TAG = "funny";
+
+/**
  * `is:hybrid`. Computed by the importer from the FRONT face's mana cost, which is the only place
  * that question can be answered: Scryfall's `m:` matches a symbol on any face, so the `m:` union
  * this replaced answered 605 where Scryfall answers 603 — the extras being the two `prepare`
@@ -342,6 +369,7 @@ export const MELD_RESULT_IS_TAG = "meldresult";
 
 export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
 	EXTRA_IS_TAG,
+	FUNNY_IS_TAG,
 	HYBRID_IS_TAG,
 	MELD_PART_IS_TAG,
 	MELD_RESULT_IS_TAG,

@@ -886,6 +886,47 @@ fn required_str(card: &Map<String, Value>, name: &str, field: &'static str) -> R
 /// parser's COMPUTED_IS_TAGS; the two must agree or `is:extra` warns instead of filtering.
 pub const EXTRA_IS_TAG: &str = "extra";
 
+/// `is:funny` — Scryfall's PER-PRINTING funny class, which is not `set_type == "funny"`. Spelled
+/// once here and once as db-info.ts's `FUNNY_IS_TAG`; tests/parser/is-tag-tables.test.ts pins the
+/// two.
+///
+/// The parser used to rewrite `is:funny` to `st:funny` on the premise that the 151/190 residual
+/// was unobservable because funny sets were not imported. Under `all_cards` it is observable:
+/// unk is served, and the Mystery Booster 2 playtest cards are stored as extras. Measured
+/// 2026-09-08 (unique=cards): `t:conspiracy -is:funny` is 25 on api.scryfall.com and was 27 here
+/// — mb2/503 Marchesa's Surprise Party and mb2/505 Rule with an Even Hand, `promo_types:
+/// [playtest]` in a `masters` set — `set:mb2 is:funny` 121 there against 0, `is:playtest`'s 796
+/// all funny there and none here.
+///
+/// THE RULE, reverse-engineered against api.scryfall.com (include:extras=true, unique=cards):
+///
+/// ```text
+/// never legal in ANY format
+/// AND (set_type == funny OR promo_types contains playtest OR border_color == silver
+///      OR security_stamp == acorn)
+/// AND set_type != token
+/// ```
+///
+/// Each clause measured. Never-legal is NECESSARY: `is:funny` intersected with legality in any
+/// of the 21 formats is 0 — and it is what separates the funny-set half: all 190 of
+/// `st:funny -is:funny` are legal somewhere (Unfinity's eternal-legal cards). The disjunction is
+/// what reaches printings outside funny sets, and each arm is nearly exact on its own:
+/// `is:playtest -is:funny` is 1 (sld/SCTLR Counterspell, legal in historic/timeless — the
+/// never-legal clause removes it). `-st:token` keeps out 14 silver-bordered tust/tugl tokens
+/// Scryfall calls not funny. The rule answers 1,458-ish against Scryfall's 1,461.
+///
+/// THE RESIDUAL, 11 of 1,461, named rather than chased:
+///
+///   RULE says funny, Scryfall says not (1): hho/21★ Treasure — a funny set, gold border, never
+///     legal, and Scryfall does not call it funny.
+///   Scryfall says funny, RULE does not (10): tund/4 Dragon and tclb/0 Baldur's Gate Wilderness
+///     (funny TOKENS — the `-st:token` clause trades these two for the 14 tust/tugl tokens);
+///     sld/869 Blacker Lotus; past/2 Call from the Grave and prm/26584 Gleemox (digital);
+///     o90p/10, olep/48, olep/49, olep/51 (oversized memorabilia); sld/335 Sticker sheet.
+///
+/// Against 341 for the `st:funny` rewrite this replaces.
+pub const FUNNY_IS_TAG: &str = "funny";
+
 /// `is:hybrid`, computed here because no Scryfall field carries it and no `m:` rewrite can.
 ///
 /// Scryfall's `m:` matches a symbol on ANY face — `m:{W/B}` finds Abigale, Poet Laureate, whose
@@ -1008,6 +1049,9 @@ const EXTRA_LAYOUTS: &[&str] =
 /// `set_type` of the Un-sets and the joke oddities — the one family where the extras verdict is a
 /// property of the SET and not of the printing.
 const FUNNY_SET_TYPE: &str = "funny";
+/// The token set type, the one `set_type` [`funny_class`] refuses: silver-bordered tust/tugl tokens
+/// are never legal and silver, and Scryfall calls none of the 14 funny.
+const TOKEN_SET_TYPE: &str = "token";
 
 /// The `funny` sets Scryfall hides behind `include_extras`. Every OTHER funny set is served
 /// ordinarily, and both halves are total: measured on api.scryfall.com 2026-08-16, all 22 funny
@@ -1042,6 +1086,35 @@ const FUNNY_EXTRA_SETS: &[&str] = &[
     "unk",
 ];
 
+/// "Legal in NO format" — no entry of `legalities` is `legal` or `restricted`. Shared by the extras
+/// class and the funny class, both of which hinge on it. Fallible on purpose: `legalities` is the
+/// one field whose absence still means the bulk row is malformed rather than merely unusual.
+fn never_legal(card: &Map<String, Value>) -> Result<bool, TransformError> {
+    let legalities = card
+        .get("legalities")
+        .and_then(Value::as_object)
+        .ok_or_else(|| TransformError::MissingField { card: s(card, "name").unwrap_or_default(), field: "legalities" })?;
+    Ok(!legalities.values().any(|v| matches!(v.as_str(), Some("legal") | Some("restricted"))))
+}
+
+/// Whether this printing is in Scryfall's `is:funny` class — see [`FUNNY_IS_TAG`] for the rule,
+/// its measurement and its 11-card residual. A property of the PRINTING, decided once per row like
+/// the extras class, and independent of it: mb2's playtest cards are both, Unfinity's eternal-legal
+/// cards are neither, and a never-legal Unstable card is funny and served.
+fn funny_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
+    if !never_legal(card)? {
+        return Ok(false);
+    }
+    let set_type = s(card, "set_type");
+    if set_type.as_deref() == Some(TOKEN_SET_TYPE) {
+        return Ok(false);
+    }
+    Ok(set_type.as_deref() == Some(FUNNY_SET_TYPE)
+        || array_contains(card, "promo_types", "playtest")
+        || s(card, "border_color").as_deref() == Some("silver")
+        || s(card, "security_stamp").as_deref() == Some("acorn"))
+}
+
 /// Whether Scryfall hides this printing from a default `/cards/search` — the `is:extra` class.
 ///
 /// NOTHING IS DROPPED ANY MORE. `preprocess_card` used to refuse seven classes of printing at
@@ -1052,8 +1125,7 @@ const FUNNY_EXTRA_SETS: &[&str] = &[
 /// ones carry `is:extra`; `cardsSearchHandler` ANDs `-is:extra` unless the caller (or a set term)
 /// asks otherwise.
 ///
-/// The `legalities` read stays, and stays fallible: it is the one field whose absence still means
-/// the bulk row is malformed rather than merely unusual.
+/// The `legalities` read stays, and stays fallible — see [`never_legal`].
 ///
 /// MEASURED COVERAGE (2026-08-16, the 114,068 English printings of the all_cards bulk against
 /// api.scryfall.com's own `is:extra`, 10,818 printings): this class reaches 10,732 — 45 short and
@@ -1076,11 +1148,7 @@ const FUNNY_EXTRA_SETS: &[&str] = &[
 /// and the three oversized oafr dungeons, all of which Scryfall serves bare. Dungeons are the
 /// exception, not those rules — see the Dungeon check in the body for the measurement.
 fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
-    let legalities = card
-        .get("legalities")
-        .and_then(Value::as_object)
-        .ok_or_else(|| TransformError::MissingField { card: s(card, "name").unwrap_or_default(), field: "legalities" })?;
-    let never_legal = !legalities.values().any(|v| matches!(v.as_str(), Some("legal") | Some("restricted")));
+    let never_legal = never_legal(card)?;
     // A FUNNY SET DECIDES FOR ITS PRINTINGS — see `FUNNY_EXTRA_SETS` for the measurement and for
     // why no printing field can stand in for the list.
     //
@@ -1494,6 +1562,16 @@ impl RowDraft {
         }
     }
 
+    /// Record a funny-class verdict as the `is:funny` tag — [`FUNNY_IS_TAG`], the same shape as
+    /// `set_extra` for the same reason: computed from five fields of the printing, so it can ride
+    /// neither BOOLEAN_IS_TAGS nor ARRAY_IS_TAGS, and `card_is_tags` is where the query plane
+    /// reads a per-printing class.
+    fn set_funny(&mut self, is_funny: bool) {
+        if is_funny && !self.card_is_tags.iter().any(|t| t == FUNNY_IS_TAG) {
+            self.card_is_tags.push(FUNNY_IS_TAG.to_owned());
+        }
+    }
+
     /// Set or clear `is:hybrid`. Called once per PRINTING from `transform_row`, after the faces
     /// are merged, because the answer depends on the card's layout and its faces rather than on
     /// the single merged cost.
@@ -1727,6 +1805,9 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
     // printing carries `is:extra`, and that is a property of the PRINTING — decided once here,
     // never per face.
     let verdict = extras_class(card)?;
+    // And whether it is FUNNY, in Scryfall's per-printing sense — the same kind of fact, decided
+    // the same way, and not the same fact: see `funny_class`.
+    let funny = funny_class(card)?;
 
     // Line 134: lift the full card name before face processing.
     let card_name = required_str(card, s(card, "name").unwrap_or_default().as_str(), "name")?;
@@ -1772,6 +1853,7 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         // face's. See [`joined_face_cost`] for the rule and the measurements behind it.
         row.mana_cost_text = Some(joined_face_cost(faces));
         row.set_extra(verdict);
+        row.set_funny(funny);
         // ...and the TYPE LINE, which the merge JOINS and Scryfall does not always. Every face's
         // line run together with `" // "` is exactly what api.scryfall.com's own row says for a
         // two-faced card — `Bind // Liberate` is "Instant // Instant" there, `Fire // Ice`
@@ -1835,6 +1917,7 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
     row.printed_name = s(card, "printed_name");
     row.flavor_name = s(card, "flavor_name");
     row.set_extra(verdict);
+    row.set_funny(funny);
     row.printed_type_line = s(card, "printed_type_line");
     row.printed_text = s(card, "printed_text");
     row.printed_name_folded = printed_name_folded(card, &row.card_faces);
@@ -3593,6 +3676,109 @@ mod tests {
         c["promo_types"] = json!(["playtest"]);
         c["legalities"] = json!({"vintage": "not_legal"});
         assert!(!tag(&c), "a playtest promo inside a served un-set is not an extra");
+    }
+
+    /// Scryfall's `is:funny`, clause by clause — see `FUNNY_IS_TAG` for the rule and the
+    /// measurements. Every shape below is a real printing named there.
+    #[test]
+    fn funny_class_is_a_printing_class_and_not_a_set_type() {
+        let tag = |c: &Value| {
+            transform(c).unwrap().expect("every row is imported now").card_is_tags.iter().any(|t| t == FUNNY_IS_TAG)
+        };
+        let never_legal = json!({"vintage": "not_legal", "legacy": "not_legal"});
+
+        // ─── funny ────────────────────────────────────────────────────────────────────────────
+        // A never-legal funny-set card: the bulk of the class (ust/und/unh/ugl/unk).
+        let mut c = minimal_card("Goblin Bowling Team");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("ugl");
+        c["border_color"] = json!("silver");
+        c["legalities"] = never_legal.clone();
+        assert!(tag(&c), "a never-legal funny-set card is funny");
+        // THE BUG: mb2/503 Marchesa's Surprise Party — a playtest printing in a MASTERS set, which
+        // no `st:funny` can reach, and which api.scryfall.com hides from `t:conspiracy -is:funny`.
+        let mut c = minimal_card("Marchesa's Surprise Party");
+        c["set_type"] = json!("masters");
+        c["set"] = json!("mb2");
+        c["promo_types"] = json!(["playtest"]);
+        c["type_line"] = json!("Conspiracy");
+        c["legalities"] = never_legal.clone();
+        assert!(tag(&c), "a never-legal playtest printing is funny whatever its set type");
+        // A silver border outside a funny set: the Arena League / judge-gift un-card promos.
+        let mut c = minimal_card("Arena League Mise");
+        c["set_type"] = json!("promo");
+        c["border_color"] = json!("silver");
+        c["legalities"] = never_legal.clone();
+        assert!(tag(&c), "a never-legal silver-bordered printing is funny");
+        // An acorn stamp: Unfinity's non-eternal half is black-bordered and the stamp is the tell.
+        let mut c = minimal_card("Attraction");
+        c["set_type"] = json!("expansion");
+        c["security_stamp"] = json!("acorn");
+        c["legalities"] = never_legal.clone();
+        assert!(tag(&c), "a never-legal acorn-stamped printing is funny");
+        // Funny and extra are INDEPENDENT tags on the same row: mb2's playtest cards carry both.
+        let mut c = minimal_card("Rule with an Even Hand");
+        c["set_type"] = json!("masters");
+        c["set"] = json!("mb2");
+        c["promo_types"] = json!(["playtest"]);
+        c["legalities"] = never_legal.clone();
+        let tags = transform(&c).unwrap().unwrap().card_is_tags;
+        assert!(tags.iter().any(|t| t == FUNNY_IS_TAG) && tags.iter().any(|t| t == EXTRA_IS_TAG));
+        // The recorded residual, asserted AS the rule and not as Scryfall's verdict: hho/21★
+        // Treasure is a never-legal funny-set printing and Scryfall does not call it funny. The
+        // rule does, and this pins that the residual is known rather than accidental.
+        let mut c = minimal_card("Treasure");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("hho");
+        c["border_color"] = json!("gold");
+        c["legalities"] = never_legal.clone();
+        assert!(tag(&c), "hho/21 Treasure: the one card the rule over-catches, by name");
+
+        // ─── not funny ────────────────────────────────────────────────────────────────────────
+        // NEVER-LEGAL IS NECESSARY. All 190 of `st:funny -is:funny` are legal somewhere —
+        // Unfinity's eternal-legal cards — and `minimal_card` is legal in vintage.
+        let mut c = minimal_card("Unfinity Eternal");
+        c["set_type"] = json!("funny");
+        c["set"] = json!("unf");
+        assert!(!tag(&c), "a funny-set card legal somewhere is not funny — the 190");
+        // sld/SCTLR Counterspell: a playtest printing legal in historic/timeless, the ONE card in
+        // `is:playtest -is:funny`.
+        let mut c = minimal_card("Counterspell");
+        c["set_type"] = json!("box");
+        c["promo_types"] = json!(["sldbonus", "playtest"]);
+        c["legalities"] = json!({"historic": "legal", "timeless": "legal", "vintage": "not_legal"});
+        assert!(!tag(&c), "a playtest printing legal somewhere is not funny — sld/SCTLR");
+        // A silver-bordered TOKEN: the 14 tust/tugl tokens the `-st:token` clause exists for.
+        let mut c = minimal_card("Squirrel");
+        c["set_type"] = json!("token");
+        c["set"] = json!("tust");
+        c["border_color"] = json!("silver");
+        c["type_line"] = json!("Token Creature \u{2014} Squirrel");
+        c["legalities"] = never_legal.clone();
+        assert!(!tag(&c), "a token-set printing is not funny, silver border or not");
+        // A never-legal card with no funny signal at all: a Conspiracy (cn2/6 Hold the Perimeter).
+        let mut c = minimal_card("Hold the Perimeter");
+        c["set_type"] = json!("draft_innovation");
+        c["type_line"] = json!("Conspiracy");
+        c["legalities"] = never_legal.clone();
+        assert!(!tag(&c), "never-legal alone is not the class");
+        // ...and an ordinary legal expansion card, so a predicate that called everything funny
+        // fails here rather than looking like it works.
+        let mut c = minimal_card("Ordinary");
+        c["set_type"] = json!("expansion");
+        assert!(!tag(&c));
+        // The single-faced and the faced paths both carry it: the tag is set on the merged row.
+        let mut c = minimal_card("Split Playtest");
+        c["set_type"] = json!("masters");
+        c["promo_types"] = json!(["playtest"]);
+        c["legalities"] = never_legal.clone();
+        c["layout"] = json!("split");
+        c["card_faces"] = json!([
+            {"name": "A", "type_line": "Instant", "mana_cost": "{R}", "oracle_text": "a"},
+            {"name": "B", "type_line": "Instant", "mana_cost": "{U}", "oracle_text": "b"}
+        ]);
+        c["name"] = json!("A // B");
+        assert!(tag(&c), "a faced printing carries the tag on its merged row");
     }
 
     #[test]

@@ -90,6 +90,77 @@ describe("/search applies the extras gate", () => {
 		expect(gatesClosed(await treeFor(engine, "t:dungeon")), "t:dungeon").toMatchObject({ extra: true });
 	});
 
+	test("a `-` on the leaf switches off exactly three trigger families, and no other", async () => {
+		// The polarity sweep of 2026-09-08 (`<term> or cmc=3` with include_extras=false, verdict from
+		// the next_page echo). THE BUG THIS PINS: `t:conspiracy -is:funny` answered 27 cards here
+		// against api.scryfall.com's 25, because the negated `is:funny` opened the gate and let
+		// mb2/503 and mb2/505 — playtest extras Scryfall calls funny — through.
+		const engine = new FakeEngine();
+		engine.setsWithExtrasList = ["lea"];
+		// Suppressed by the `-`: gate stays CLOSED. Both operand orders, and the bare shapes.
+		for (const q of [
+			"t:conspiracy -is:funny",
+			"-is:funny t:conspiracy",
+			"cmc=3 -is:funny",
+			"-t:token t:land",
+			"t:land -t:token",
+			"-t:plane t:land",
+			"-t:phenomenon cmc=3",
+			"-t:scheme cmc=3",
+			"-t:vanguard cmc=3",
+			"-t:emblem cmc=3",
+			"t:goblin -border:silver",
+		]) {
+			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: true });
+		}
+		// The same three families, positive: gate OPEN. `is:funny` is a stored tag now and still
+		// fires as one (it used to fire as a derived `st:funny` term — same verdict either way).
+		for (const q of ["is:funny cmc=3", "t:conspiracy is:funny", "t:token t:land", "t:goblin border:silver"]) {
+			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: false });
+		}
+		// Every OTHER family is polarity-blind — a `-` changes nothing, and the gate opens. Stored
+		// `is:` values, derived `is:`/`has:` terms, the unconditional attributes, the regex name,
+		// and the conditional set term (`-e:lea t:land` echoes true, the measurement that first
+		// said negation propagates).
+		// (`-is:extra` is asserted below on its own: the caller's term carries the string the
+		// closed-gate probe reads.)
+		for (const q of [
+			"-is:glossy cmc=3",
+			"-is:oversized cmc=3",
+			"-is:reserved cmc=3",
+			"-is:rebalanced cmc=3",
+			"-is:surgefoil cmc=3",
+			"-is:thick cmc=3",
+			"-is:draculaseries cmc=3",
+			"-has:glossy cmc=3",
+			"-has:watermark cmc=3",
+			"-is:artseries cmc=3",
+			"-is:dfc cmc=3",
+			"-is:mdfc cmc=3",
+			"-is:planar cmc=3",
+			"-is:token cmc=3",
+			"-is:watermark cmc=3",
+			"-name:/bolt/",
+			'-a:"Wesley Burt" cmc=3',
+			"-wm:set cmc=3",
+			"-layout:normal cmc=3",
+			"-e:lea t:land",
+		]) {
+			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: false });
+		}
+		// `-is:extra cmc=3` echoes true too, so the tree carries ONE `extra` — the caller's own
+		// negated term — and no second, gate-added negation of it.
+		const ownExtra = await treeFor(engine, "-is:extra cmc=3");
+		expect(ownExtra.split('"extra"').length - 1).toBe(1);
+		expect(ownExtra.split("NotNode").length - 1).toBe(2); // the caller's, plus the variations gate
+		// The prefix has to be on the LEAF and the flag is not inherited down a negated group: the
+		// measured datum is `-(is:funny)` echoing true (the parentheses alone undo the suppression
+		// there), and a two-term group is the one parenthesised shape this parser can still see as
+		// a group. (`-(is:funny)` itself folds to `-is:funny` before the tree exists — the recorded
+		// residual at `NEGATION_SUPPRESSED_IS_TAGS`.)
+		expect(gatesClosed(await treeFor(engine, "-(t:token or t:plane) t:land"))).toMatchObject({ extra: false });
+	});
+
 	test("a set term admits extras only when that set holds one", async () => {
 		const engine = new FakeEngine();
 		engine.setsWithExtrasList = ["lea"];

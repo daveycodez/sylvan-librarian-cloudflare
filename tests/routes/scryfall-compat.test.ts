@@ -368,7 +368,9 @@ describe("GET /cards/search", () => {
 		// because the rule is syntactic. A count cannot measure this; only the echo can.
 		const engine = new FakeEngine();
 		const treeOf = () => JSON.stringify(JSON.parse(engine.lastSearch?.filterTreeJson ?? "null"));
-		for (const value of ["oversized", "reserved", "rebalanced", "glossy"]) {
+		// `funny` joined the stored values on 2026-09-08 (it fired before too, as the derived
+		// `st:funny` term the rewrite used to make of it — same verdict, different door).
+		for (const value of ["oversized", "reserved", "rebalanced", "glossy", "funny"]) {
 			await testDispatch(makeCtx({ engine }), `/cards/search?q=is%3A${value}`);
 			expect(treeOf(), value).not.toContain('"extra"');
 		}
@@ -409,16 +411,7 @@ describe("GET /cards/search", () => {
 		// Derived AND a measured trigger. `has:glossy` is the interesting one: it expands to an
 		// `is:glossy` leaf, which the walk must decline to read as the caller's own — and then fires
 		// anyway, on the term.
-		for (const q of [
-			"is:token",
-			"is:mdfc",
-			"is:dfc",
-			"is:planar",
-			"is:funny",
-			"is:watermark",
-			"has:watermark",
-			"has:glossy",
-		]) {
+		for (const q of ["is:token", "is:mdfc", "is:dfc", "is:planar", "is:watermark", "has:watermark", "has:glossy"]) {
 			await testDispatch(makeCtx({ engine }), `/cards/search?q=${encodeURIComponent(q)}`);
 			expect(treeOf(), q).not.toContain('"extra"');
 		}

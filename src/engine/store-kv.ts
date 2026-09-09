@@ -1541,8 +1541,25 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      the same reason: store-age.ts rebuilds on this constant, so a format bump alone would leave
  *      the old store in place and every reader refusing it. The rules each namespace counts under
  *      are measured and written on `assign_in_tags`.
+ *
+ *  49 — `is:funny` BECOMES A STORED TAG (`FUNNY_IS_TAG`), and stops being `st:funny`. Scryfall's
+ *      `is:funny` is a class of the PRINTING, not of its set: never legal in any format, and
+ *      (funny-set OR playtest OR silver-bordered OR acorn-stamped), and not a token set — measured
+ *      2026-09-08 against api.scryfall.com's own 1,461 with an 11-card residual, against 341 for
+ *      the set-type rewrite. The rewrite had been kept on the premise that the difference was
+ *      "unobservable in this corpus" because funny sets were not imported; under `all_cards` unk
+ *      is served and the Mystery Booster 2 playtest cards are stored as extras, so
+ *      `t:conspiracy -is:funny` answered 27 here against 25 there (mb2/503, mb2/505 — playtest
+ *      printings in a `masters` set, which no `st:` term can reach), and `set:mb2 is:funny` was
+ *      121 there against 0. The rule reads five fields of the printing at once, which is why it is
+ *      the builder's and not the parser's — the same reason `extra` is.
+ *
+ *      GENERATION-ONLY. One value joins a vocabulary `card_is_tags` already holds; nothing changes
+ *      shape, so a generation-48 store still LOADS and would keep answering `is:funny` from no
+ *      row at all. Same call as 46 and 47: this constant is the only thing that makes
+ *      store-age.ts rebuild.
  */
-export const STORE_CONTENT_GENERATION = 48;
+export const STORE_CONTENT_GENERATION = 49;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

@@ -18,7 +18,7 @@
 
 import type { Engine } from "../engine/types";
 import type { ExpandedDerivedTerm, LoweredRegexTerm } from "../parser";
-import { EXTRA_IS_TAG } from "../parser/db-info";
+import { EXTRA_IS_TAG, FUNNY_IS_TAG } from "../parser/db-info";
 
 /** What a query's parse tree says about Scryfall's `include_extras` auto-enable. */
 interface ExtrasTriggers {
@@ -76,7 +76,42 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	"surgefoil",
 	"thick",
 	"draculaseries",
+	// A STORED tag since 2026-09-08 — it was `is:funny -> st:funny` in the rewrite and fired from
+	// `EXTRAS_DERIVED_TRIGGERS` as a derived term; now the builder writes it per printing
+	// (`FUNNY_IS_TAG`) and it reaches this walk as a leaf like the others. Same verdict either way:
+	// `is:funny cmc=3` echoes true (re-measured 2026-09-08). It is also the ONE value in this set
+	// whose polarity matters — see `NEGATION_SUPPRESSED_IS_TAGS`.
+	FUNNY_IS_TAG,
 ]);
+
+/**
+ * THE THREE FAMILIES A `-` SWITCHES OFF. Every other trigger in this file is polarity-blind, and
+ * that was measured as the rule for all of them until it was measured per family (2026-09-08,
+ * `<term> or cmc=3` sent with include_extras=false, the verdict read out of the next_page echo):
+ *
+ *   NEGATION SUPPRESSES (echo false):
+ *     -is:funny   -t:token -t:plane -t:phenomenon -t:scheme -t:vanguard -t:emblem   -border:silver
+ *   NEGATION DOES NOT SUPPRESS (echo true), every other family:
+ *     -is:extra -is:glossy -is:oversized -is:reserved -is:rebalanced -is:surgefoil -is:thick
+ *     -is:draculaseries  -has:glossy -has:watermark -is:artseries -is:augmentation -is:dfc
+ *     -is:host -is:mdfc -is:planar -is:reversible -is:token -is:watermark  -name:/bolt/
+ *     -a:"Wesley Burt" -wm:set -layout:normal -e:lea
+ *
+ * Re-measured in the exact shapes that matter: `t:conspiracy -is:funny`, `-is:funny t:conspiracy`,
+ * `cmc=3 -is:funny`, `-t:token t:land`, `t:land -t:token` and `t:goblin -border:silver` all echo
+ * false; `is:funny cmc=3` echoes true. So the suppression is on the `-` PREFIX WRITTEN DIRECTLY ON
+ * THE LEAF and on nothing else: `-(is:funny)` and `not is:funny` both echo TRUE there. This parser
+ * folds the parentheses away before the tree exists (`parseGroup` returns the inner node), so
+ * `-(is:funny)` reads here exactly like `-is:funny` and is suppressed where Scryfall fires — the
+ * same class of unreachable spelling as `t:token or t:/token/`, recorded rather than papered
+ * over. `not is:funny` is not a negation in this parser at all (`not` is a name word), so it fires
+ * here for the same reason it fires there. `not:funny` — Scryfall's own alias for `-is:funny` —
+ * was not probed; `negate_not_prefix` makes it a `-` on the leaf and it follows that reading.
+ *
+ * `-t:token t:land` used to be a recorded residual on the type triggers ("this walk does not
+ * track `Not`"); it is fixed by this table, and the residual moved to the `-(…)` spelling above.
+ */
+const NEGATION_SUPPRESSED_IS_TAGS: ReadonlySet<string> = new Set([FUNNY_IS_TAG]);
 
 /**
  * The DERIVED `is:`/`has:` terms that force extras on — the ones `expandDerivedPredicates` replaces
@@ -110,7 +145,9 @@ const EXTRAS_DERIVED_TRIGGERS: ReadonlySet<string> = new Set([
 	"is:artseries",
 	"is:augmentation",
 	"is:dfc",
-	"is:funny",
+	// `is:funny` WAS the twelfth row here, while the rewrite expanded it to `st:funny`. It is a
+	// stored tag now and fires from `UNCONDITIONAL_EXTRAS_IS_TAGS` as a leaf; the twelve became
+	// eleven without any verdict changing.
 	"is:host",
 	"is:mdfc",
 	"is:planar",
@@ -142,9 +179,11 @@ const EXTRAS_DERIVED_TRIGGERS: ReadonlySet<string> = new Set([
  * exactly as it does for `t:token` — `t:/plane/ or cmc=3` echoes false — so the `lowered` check
  * below covers the new values through the same `family()` unification. NEGATION DOES NOT
  * PROPAGATE, unlike `-e:lea t:land` and `-f:premodern t:land`: `-t:plane t:land` echoes false and
- * so does `-t:token t:land` (measured 2026-08-27). This walk does not track `Not` and fires on
- * all six under negation — that was already true of `t:token` before the other five joined it, a
- * recorded residual and not a new one.
+ * so does `-t:token t:land` (measured 2026-08-27, all six re-measured 2026-09-08). The walk
+ * tracks a `-` written directly on the leaf for exactly these six, `is:funny` and `border:silver`
+ * — the three families the 2026-09-08 sweep found polarity-sensitive, tabulated at
+ * `NEGATION_SUPPRESSED_IS_TAGS` — and stays polarity-blind for everything else. (`-t:token t:land`
+ * was recorded here as a residual of a walk that did not track `Not`; it is not one any more.)
  */
 const EXTRAS_TYPE_TRIGGERS: ReadonlySet<string> = new Set([
 	"token",
@@ -193,9 +232,12 @@ function mentionsIsTag(node: unknown, tag: string): boolean {
  * result contradicts the obvious hypothesis. It is NOT a property of the result set: `t:creature`,
  * `o:draw` and `ft:death` each match 1,742 / 358 / 26 extras and every one of them echoes
  * `include_extras=false`. It is a SYNTACTIC property of the terms, propagated through `or`, `and`
- * and negation alike — `e:war or e:lea` is true, `(e:lea t:creature) or t:land` is true even
- * though LEA's only extra is an enchantment that cannot be in that result, `-e:lea t:land` is true
- * and `-e:war t:land` is false. And it is a FORCE, not a default: `include_extras=false` sent
+ * and (for all but three families) negation alike — `e:war or e:lea` is true,
+ * `(e:lea t:creature) or t:land` is true even though LEA's only extra is an enchantment that
+ * cannot be in that result, `-e:lea t:land` is true and `-e:war t:land` is false. The three
+ * families a `-` on the leaf DOES switch off are `is:funny`, the six `t:` values and
+ * `border:silver` — measured per family on 2026-09-08 and tabulated at
+ * `NEGATION_SUPPRESSED_IS_TAGS`. And it is a FORCE, not a default: `include_extras=false` sent
  * explicitly is overridden, in the echo and in the rows.
  *
  * Unconditional triggers: `a:`, `wm:`, `layout:`, `name:/…/`, six `t:` values (`token` and five
@@ -255,7 +297,7 @@ function mentionsIsTag(node: unknown, tag: string): boolean {
  * before the wire tree exists — upstream's rewrite again, byte-compared by the same fixtures — and
  * `layout:` is an unconditional trigger while `is:split` is not: 327 there against the 347
  * `layout:split` answers. So the walk declines to fire on any leaf an expansion produced, and
- * `EXTRAS_DERIVED_TRIGGERS` fires instead for the twelve derived TERMS Scryfall does fire on. The
+ * `EXTRAS_DERIVED_TRIGGERS` fires instead for the eleven derived TERMS Scryfall does fire on. The
  * two halves are independent — `has:glossy` produces an `is:glossy` leaf that would have fired and
  * must not fire AS a leaf, and fires as a term; `is:split` produces a `layout:` leaf that must not
  * fire either way.
@@ -304,13 +346,29 @@ function termValues(rhs: unknown): string[] {
 	return typeof value === "string" ? [value.toLowerCase()] : [];
 }
 
-function walkExtrasTriggers(node: unknown, out: ExtrasTriggers, lowered: LoweredCheck, derived: LoweredCheck): void {
+/**
+ * @param negatedLeaf whether THIS node is the operand of a `NotNode` — a `-` written directly on
+ *   the term. Only a leaf can be one; the flag is never inherited, because Scryfall's suppression
+ *   is on the prefix and not on the scope (`-(is:funny)` echoes true; see
+ *   `NEGATION_SUPPRESSED_IS_TAGS` for what this parser can and cannot see of that).
+ */
+function walkExtrasTriggers(
+	node: unknown,
+	out: ExtrasTriggers,
+	lowered: LoweredCheck,
+	derived: LoweredCheck,
+	negatedLeaf = false,
+): void {
 	if (!node || typeof node !== "object") return;
 	if (Array.isArray(node)) {
 		for (const item of node) walkExtrasTriggers(item, out, lowered, derived);
 		return;
 	}
 	const n = node as { node_type?: string; kwargs?: Record<string, unknown> };
+	if (n.node_type === "NotNode") {
+		walkExtrasTriggers(n.kwargs?.operand, out, lowered, derived, true);
+		return;
+	}
 	if (n.node_type === "CardBinaryOperatorNode") {
 		const lhs = n.kwargs?.lhs as { node_type?: string; kwargs?: Record<string, unknown> } | undefined;
 		const attr =
@@ -341,8 +399,13 @@ function walkExtrasTriggers(node: unknown, out: ExtrasTriggers, lowered: Lowered
 			if (values.includes("premodern")) out.forced = true;
 		}
 		if (attr === "card_types" || attr === "card_subtypes" || attr === "card_is_tags") {
+			// The six `t:` values are suppressed by a `-` on the leaf, and so is `is:funny`; the
+			// other value-specific `is:` triggers are not (`-is:extra`, `-is:glossy`, `-is:oversized`
+			// … all echo true). See `NEGATION_SUPPRESSED_IS_TAGS`.
 			const wanted = (v: string) =>
-				attr === "card_is_tags" ? UNCONDITIONAL_EXTRAS_IS_TAGS.has(v) : EXTRAS_TYPE_TRIGGERS.has(v);
+				attr === "card_is_tags"
+					? UNCONDITIONAL_EXTRAS_IS_TAGS.has(v) && !(negatedLeaf && NEGATION_SUPPRESSED_IS_TAGS.has(v))
+					: EXTRAS_TYPE_TRIGGERS.has(v) && !negatedLeaf;
 			if (values.some((v) => wanted(v) && !lowered(attr, v) && !derived(attr, v))) {
 				out.forced = true;
 			}
@@ -354,7 +417,8 @@ function walkExtrasTriggers(node: unknown, out: ExtrasTriggers, lowered: Lowered
 		// `border:silver` is 665 bare and 665 with the flag, echoing `include_extras=true` unsent,
 		// with 108 of those 665 inside `is:extra`. `border:black`, `border:white` and
 		// `border:borderless` echo false, as does `frame:` at every value. Measured 2026-08-16.
-		if (attr === "card_border") {
+		// The third polarity-sensitive family: `t:goblin -border:silver` echoes false (2026-09-08).
+		if (attr === "card_border" && !negatedLeaf) {
 			for (const value of values) {
 				if (value === "silver" && !lowered(attr, value) && !derived(attr, value)) out.forced = true;
 			}

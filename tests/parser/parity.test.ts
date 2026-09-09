@@ -96,6 +96,30 @@ function applyTagAliases(tree: string): string {
 	return out + tree.slice(cursor);
 }
 
+/**
+ * ONE MORE DIVERGENCE, PORT-ONLY, and reconciled the same way. The vendored Python still rewrites
+ * `is:funny` to `st:funny` — the mapping this port carried upstream with the `st:` operator — and
+ * this port stopped doing so on 2026-09-08, because Scryfall's `is:funny` is a class of the
+ * PRINTING (never legal, and funny-set OR playtest OR silver-bordered OR acorn-stamped, not a
+ * token set) that no set-type term can reach: `t:conspiracy -is:funny` answered 27 here against
+ * 25 there, the two being mb2 playtest cards in a `masters` set. It is a stored tag now
+ * (`FUNNY_IS_TAG`), so the port emits `card_is_tags: ["funny"]` where the exporter, which runs the
+ * vendored parser, writes the set-type tree.
+ *
+ * The expected tree is REPLACED by the port's own, spelled out in full, so the assertion stays a
+ * byte comparison against an explicit expectation rather than a skip. Two guards keep the entry
+ * honest: the query must still be in the corpus (else the entry is stale), and the exporter's tree
+ * must still DIFFER from it (the day the vendored Python stores the tag too, this entry is dead
+ * and must go — the fixture takes over).
+ */
+const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
+	[
+		"is:funny",
+		'{"kwargs":{"lhs":{"kwargs":{"attribute_name":"card_is_tags","original_attribute":"is"},' +
+			'"node_type":"CardAttributeNode"},"op":":","rhs":["funny"]},"node_type":"CardBinaryOperatorNode"}',
+	],
+]);
+
 interface FixtureCase {
 	query: string;
 	tree?: string;
@@ -147,6 +171,20 @@ test("the reconciler preserves number literals verbatim", () => {
 	expect(out).toContain('"e":1e-05');
 });
 
+test("every port-only tree names a fixture that exists and still disagrees with it", () => {
+	const byQuery = new Map<string, FixtureCase>();
+	for (const file of fixtureFiles) {
+		for (const c of JSON.parse(readFileSync(join(FIXTURES_DIR, file), "utf-8")) as FixtureCase[]) {
+			byQuery.set(c.query, c);
+		}
+	}
+	for (const [query, tree] of PORT_ONLY_TREES) {
+		const fixture = byQuery.get(query);
+		expect(fixture?.tree, `${query} should still be an exported fixture with a tree`).toBeDefined();
+		expect(fixture?.tree, `${query}: the vendored parser agrees now — drop the port-only entry`).not.toBe(tree);
+	}
+});
+
 test("fixture corpus is present and substantial", () => {
 	expect(fixtureFiles.length).toBeGreaterThan(0);
 	const total = fixtureFiles
@@ -162,7 +200,7 @@ for (const file of fixtureFiles) {
 			test(`parses ${JSON.stringify(fixture.query)} identically`, () => {
 				if (fixture.tree !== undefined) {
 					const tree = parseScryfallQuery(fixture.query);
-					expect(canonicalStringify(tree)).toBe(applyTagAliases(fixture.tree));
+					expect(canonicalStringify(tree)).toBe(PORT_ONLY_TREES.get(fixture.query) ?? applyTagAliases(fixture.tree));
 				} else if (fixture.error !== undefined) {
 					let thrown: unknown;
 					try {

@@ -20,6 +20,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as dbInfo from "../../src/parser/db-info";
 import {
 	ARRAY_IS_TAGS,
 	BOOLEAN_IS_TAGS,
@@ -125,6 +126,27 @@ describe("the is: tag tables agree across TypeScript and Rust", () => {
 	test("GAME_IS_TAGS: same games, each naming the same prefixed tag", () => {
 		const ts = [...GAME_IS_TAGS].map(([member, tag]) => [member, tag]);
 		expect(sorted(rustTable("GAME_IS_TAGS"))).toEqual(sorted(ts));
+	});
+
+	/**
+	 * The COMPUTED tags come through the same door, one constant at a time rather than as a
+	 * table: `pub const EXTRA_IS_TAG: &str = "extra";` in the builder, `EXTRA_IS_TAG = "extra"` in
+	 * db-info.ts, and a comment on each saying the two must agree. A comment is not a test. The
+	 * builder's `*_IS_TAG` constants are read out of the source and compared, as a SET, with
+	 * `COMPUTED_IS_TAGS` — so a tag computed on one side and not the other fails here, in either
+	 * direction, and so does a spelling that drifts (`"funny"` against `"is_funny"`).
+	 */
+	test("COMPUTED_IS_TAGS: every builder *_IS_TAG constant, with the same spelling, and nothing else", () => {
+		const src = stripLineComments(TRANSFORM_RS);
+		const rust = new Map(
+			[...src.matchAll(/pub const ([A-Z_]+_IS_TAG): &str = "([^"]+)";/g)].map((m) => [m[1] as string, m[2] as string]),
+		);
+		expect(rust.size).toBeGreaterThanOrEqual(5);
+		expect([...rust.values()].sort()).toEqual([...COMPUTED_IS_TAGS].sort());
+		// And by NAME, so the constant that carries a tag is the same constant on both sides.
+		for (const [name, value] of rust) {
+			expect((dbInfo as Record<string, unknown>)[name], `db-info.ts should export ${name}`).toBe(value);
+		}
 	});
 
 	test("the tables are non-trivial, so a broken extractor cannot pass by matching nothing", () => {
