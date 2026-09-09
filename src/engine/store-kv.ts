@@ -1558,8 +1558,15 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      shape, so a generation-48 store still LOADS and would keep answering `is:funny` from no
  *      row at all. Same call as 46 and 47: this constant is the only thing that makes
  *      store-age.ts rebuild.
+ *
+ *   50 (2026-09-08): `playtest` joins ARRAY_IS_TAGS (`promo_types` member). The 2026-09-03
+ *      enumeration that took the table to 106 rows had no row for it, so `is:playtest` matched
+ *      nothing here against api.scryfall.com's 796; and once the extras gate learned the term is a
+ *      trigger (both polarities echo true), `-is:playtest t:conspiracy` answered 29 here against
+ *      25 there — the gate opened and the absent tag excluded nothing. GENERATION-ONLY again: one
+ *      more word in a vocabulary the store already holds.
  */
-export const STORE_CONTENT_GENERATION = 49;
+export const STORE_CONTENT_GENERATION = 50;
 
 /** Chunk key for a store. Keyed by store_key, so publishes never collide. */
 export function chunkKey(storeKey: string, seq: number): string {

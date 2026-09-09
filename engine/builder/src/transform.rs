@@ -178,6 +178,10 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("planeswalker_deck", "promo_types", "planeswalkerdeck"),
     ("player_rewards", "promo_types", "playerrewards"),
     ("playpromo", "promo_types", "playpromo"),
+    // MISSING FROM THE 2026-09-03 ENUMERATION, found when `is:funny` became a printing class:
+    // api.scryfall.com answers `is:playtest` 796 (every one of them an extra, which is why the
+    // gate lists it as a trigger) and this table had no row, so the word matched nothing here.
+    ("playtest", "promo_types", "playtest"),
     ("portrait", "promo_types", "portrait"),
     ("poster", "promo_types", "poster"),
     ("prerelease", "promo_types", "prerelease"),

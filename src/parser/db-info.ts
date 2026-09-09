@@ -513,6 +513,8 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["planeswalker_deck", ["promo_types", "planeswalkerdeck"]],
 	["player_rewards", ["promo_types", "playerrewards"]],
 	["playpromo", ["promo_types", "playpromo"]],
+	// Missing from the 2026-09-03 enumeration; `is:playtest` is 796 on api.scryfall.com (2026-09-08).
+	["playtest", ["promo_types", "playtest"]],
 	["portrait", ["promo_types", "portrait"]],
 	["poster", ["promo_types", "poster"]],
 	["prerelease", ["promo_types", "prerelease"]],
