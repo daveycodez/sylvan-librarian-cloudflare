@@ -76,6 +76,13 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	"surgefoil",
 	"thick",
 	"draculaseries",
+	// MISSED BY THAT SWEEP, found when `is:funny` became a printing class (2026-09-08): every
+	// playtest printing is an extra, so the local store answered `is:playtest` 0 against
+	// api.scryfall.com's 796 — the `is:surgefoil` shape, with the whole population on the wrong
+	// side of the gate. The echo says it fires: `is:playtest or cmc=3` true, `or t:goblin` true,
+	// `-is:playtest or cmc=3` true (polarity-blind, unlike `is:funny`), bare 796 = with the flag
+	// 796; controls the same day `is:convention` false and `is:glossy` true.
+	"playtest",
 	// A STORED tag since 2026-09-08 — it was `is:funny -> st:funny` in the rewrite and fired from
 	// `EXTRAS_DERIVED_TRIGGERS` as a derived term; now the builder writes it per printing
 	// (`FUNNY_IS_TAG`) and it reaches this walk as a leaf like the others. Same verdict either way:

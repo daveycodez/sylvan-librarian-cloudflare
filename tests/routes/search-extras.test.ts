@@ -115,7 +115,15 @@ describe("/search applies the extras gate", () => {
 		}
 		// The same three families, positive: gate OPEN. `is:funny` is a stored tag now and still
 		// fires as one (it used to fire as a derived `st:funny` term — same verdict either way).
-		for (const q of ["is:funny cmc=3", "t:conspiracy is:funny", "t:token t:land", "t:goblin border:silver"]) {
+		for (const q of [
+			"is:funny cmc=3",
+			"t:conspiracy is:funny",
+			"t:token t:land",
+			"t:goblin border:silver",
+			// `is:playtest` fires too (every playtest printing is an extra; 796 bare = 796 flagged).
+			"is:playtest cmc=3",
+			"set:mb2 is:playtest",
+		]) {
 			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: false });
 		}
 		// Every OTHER family is polarity-blind — a `-` changes nothing, and the gate opens. Stored
@@ -132,6 +140,7 @@ describe("/search applies the extras gate", () => {
 			"-is:surgefoil cmc=3",
 			"-is:thick cmc=3",
 			"-is:draculaseries cmc=3",
+			"-is:playtest cmc=3",
 			"-has:glossy cmc=3",
 			"-has:watermark cmc=3",
 			"-is:artseries cmc=3",
