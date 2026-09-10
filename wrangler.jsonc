@@ -3,7 +3,26 @@
 	"name": "sylvan-librarian",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-08-01",
-	"compatibility_flags": ["nodejs_compat"],
+	// No compatibility flags, and that is a MEASURED choice (2026-09-09, three
+	// unpromoted `wrangler versions upload` per arm, interleaved, reading the
+	// "Worker Startup Time" Cloudflare prints; see README, startup):
+	//
+	//   none                                  4 / 4 / 5 ms   <- the hello-world floor
+	//   nodejs_compat  (what shipped before)  9 / 12 / 12 ms
+	//   new_module_registry                  30 / 32 / 38 ms
+	//   both                                 46 / 49 / 59 ms
+	//
+	// `nodejs_compat` bought nothing — the bundle has no `node:` import, no
+	// `process`, no `Buffer` — and cost ~8ms of every cold isolate against the
+	// free plan's 10ms-per-request CPU. TRAP: for compatibility dates >= 2026-08-04
+	// Node compat is ON BY DEFAULT, so bumping the date turns it back on unless
+	// BOTH `no_nodejs_compat` and `no_nodejs_compat_v2` are added here.
+	//
+	// `new_module_registry` (workerd's URL-based registry, opt-in) is a 3x startup
+	// regression on this Worker: its lazy per-module compilation appears to bypass
+	// the deploy-time compile that makes script size free here. Re-measure before
+	// ever enabling it; do not assume a later workerd fixed it.
+	"compatibility_flags": [],
 	"observability": { "enabled": true },
 
 	// Static assets, served straight from Cloudflare's CDN out of public/ —

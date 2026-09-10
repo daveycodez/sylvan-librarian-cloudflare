@@ -276,6 +276,22 @@ upload: 10ms for this Worker against **5ms for a hello-world with the same
 bindings**, so half of it is the platform and the rest is module
 initialization.
 
+**That remainder was `nodejs_compat`, not module initialization.** Measured
+2026-09-09 with three unpromoted uploads per arm, interleaved: with the flag,
+startup reported 9/12/12ms; with no compatibility flags at all, 4/4/5ms — the
+hello-world floor. The bundle has no `node:` import, no `process` and no
+`Buffer`, so the flag bought nothing and installed Node's globals into every
+isolate; it is gone from [wrangler.jsonc](wrangler.jsonc). Two traps around it.
+For compatibility dates of 2026-08-04 or later Node compat is on **by default**,
+so a date bump turns it back on unless `no_nodejs_compat` and
+`no_nodejs_compat_v2` are both set. And workerd's opt-in `new_module_registry`
+flag (announced the same day) is a regression here — 30/32/38ms alone and
+46/49/59ms with `nodejs_compat` — its lazy per-module compilation appears to
+bypass the deploy-time compile the paragraph above relies on. Do not enable it
+without re-measuring. Module-scope evaluation of the bundle itself is ~2.4ms in
+a local V8, spread over ~1,100 small statements with none above 0.16ms, so there
+is no structural fix left in the script: the remaining 4–5ms is the platform.
+
 What reaches it is what the isolate must *load*, and only that. Measured, each
 as its own uploaded version: minifying (212KB→118KB of JS), dropping the import
 pipeline (56KB of JS plus its 1.1MB wasm) and dropping the 1.4MB engine wasm
