@@ -9740,8 +9740,8 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// retro tiers are this prefer's own and stay out of the atypical class. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
-/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), then inside one
-/// set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
+/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), a real scan above
+/// a placeholder or low-resolution image, then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
 /// eoe/350); the rule permutes a set's printings among themselves only, in the variant tiers
@@ -9924,6 +9924,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // black and answers. A quarter step, under the text-box key, and neither crosses a
             // tier or the same-set step above.
             let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
+            // ...and a real scan above a placeholder or low-resolution image (Scryfall's
+            // `highres_image`): a brand-new printing Scryfall has not scanned yet does not answer
+            // while a scanned one of the same tier exists. A sixteenth, under the same-set step
+            // (an eighth), so a stepped-down borderless never climbs back over its set's showcase
+            // on image quality alone.
+            let scan = if compat_flag(&p.compat, COMPAT_HIGHRES_IMAGE) { 0.0625 } else { 0.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -9950,7 +9956,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             } else {
                 default_score()
             };
-            (frame_tier + text_box + border + language_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + border + scan + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

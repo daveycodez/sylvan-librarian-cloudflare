@@ -22,7 +22,7 @@ use super::{
     CompatFields, ExternalIdIndex, RelatedCard, build_external_id_index, find_printing_by_external_id,
     EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER,
     FuzzyOutcome, autocomplete_names, fuzzy_name_match, fuzzy_similarity, iso8601_utc_to_epoch_secs,
-    VOCAB_NONE, COMPAT_DIGITAL, COMPAT_FULL_ART, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
+    VOCAB_NONE, COMPAT_DIGITAL, COMPAT_FULL_ART, COMPAT_HIGHRES_IMAGE, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
     TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
     TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
 };
@@ -17652,6 +17652,29 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     data.printings[0].collector_number_int = Some(28);
     data.printings[0].artwork_group_id = 2;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "inside the set the later sheet leads");
+}
+
+/// A real scan ranks above a placeholder or low-resolution image inside a tier, and never across
+/// one: a scanned plain printing beats an unscanned plain one, and an unscanned borderless still
+/// beats them both.
+#[test]
+fn prefer_borderless_ranks_a_real_scan_above_a_placeholder_inside_a_tier() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain, none scanned: the default pick");
+    data.printings[1].compat.flags = COMPAT_HIGHRES_IMAGE;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a scanned plain over an unscanned one");
+    data.printings[2].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "an unscanned borderless still beats a scanned plain");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
