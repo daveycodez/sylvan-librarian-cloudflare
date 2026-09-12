@@ -1184,7 +1184,14 @@ async function resolveIdentifiers(
 			const n = asInt(String(id.multiverse_id));
 			if (n !== undefined) put(engine.scryfallCardByExternalId("multiverse", n, baseUrl));
 		} else if (id.set !== undefined && id.collector_number !== undefined) {
-			byTree.push({ at, tree: setAndCollectorNumber(String(id.set), String(id.collector_number)) });
+			// English first, then any printing at the address — the same pair `/cards/:code/:number`
+			// resolves with, in the same order, so a foreign-only printing is found and an English
+			// one is never displaced by a foreign row sharing its number. Still ONE tree batch.
+			const [set, number] = [String(id.set), String(id.collector_number)];
+			byTree.push(
+				{ at, tree: setAndCollectorNumber(set, number, "en") },
+				{ at, tree: setAndCollectorNumber(set, number, null) },
+			);
 		} else if (id.name !== undefined) {
 			// FOLDED AND TRIMMED, the way `/cards/named?exact=` hands its needle over; the engine
 			// collates from there. Scryfall trims too — `{"name":"  Lightning Bolt  "}` resolves.
@@ -1235,9 +1242,11 @@ async function resolveIdentifiers(
 					baseUrl,
 				)
 				.then((cards) => {
+					// An identifier may own two trees, English then lang-less: the first hit at its
+					// slot stands, so the fallback fills only what English left empty.
 					for (let i = 0; i < byTree.length; i++) {
 						const entry = byTree[i];
-						if (entry) out[entry.at] = cards[i] ?? null;
+						if (entry) out[entry.at] = out[entry.at] ?? cards[i] ?? null;
 					}
 				}),
 		);
@@ -1361,13 +1370,16 @@ async function resolvePathCard(
 		return engine.scryfallCardById(identifier, baseUrl);
 	}
 	// The language is part of the query, like upstream's SQL filter: `card_lang` is a filter
-	// column, and the segment defaults to English exactly as Scryfall defaults it. A language no
-	// printing carries resolves nothing, which is the same 404 as any other miss.
-	const [first] = await engine.scryfallFirstOfEach(
-		[setAndCollectorNumber(identifier, number, suffix || "en")],
-		baseUrl,
-	);
-	return first ?? null;
+	// column. A NAMED language no printing carries resolves nothing, which is the same 404 as any
+	// other miss. An ABSENT segment is English first and then whatever printing carries the
+	// address — Scryfall's own fallback (`/cards/hoc/95` answers the Dwarvish Arcane Signet, the
+	// only hoc/95 there is; see `setAndCollectorNumber`). Both trees go in ONE engine call, so
+	// the fallback costs no extra round trip; the lang-less tree only wins when English missed.
+	const trees = suffix
+		? [setAndCollectorNumber(identifier, number, suffix)]
+		: [setAndCollectorNumber(identifier, number, "en"), setAndCollectorNumber(identifier, number, null)];
+	const cards = await engine.scryfallFirstOfEach(trees, baseUrl);
+	return cards.find((card) => card !== null) ?? null;
 }
 
 /** `[]` as bytes: the `data` of a card that has no rulings, which is a 200 rather than a miss. */

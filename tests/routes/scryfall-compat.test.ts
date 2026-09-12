@@ -924,6 +924,27 @@ describe("POST /cards/collection", () => {
 		expect(body.not_found).toEqual([]);
 	});
 
+	test("{set, collector_number} falls through to a foreign-only printing, as Scryfall does", async () => {
+		// The other half of the English default: `{set: hoc, collector_number: 95}` is found on
+		// api.scryfall.com (the Dwarvish row, measured 2026-09-11), so the pt-only fixture resolves
+		// here too — in the same batch as an English address, each answering its own row.
+		const body = await json(
+			await testDispatch(
+				postCtx({
+					identifiers: [
+						{ set: "grn", collector_number: "212" },
+						{ set: "m15", collector_number: "18" },
+					],
+				}),
+				"/cards/collection",
+				"POST",
+			),
+		);
+		const data = body.data as Record<string, unknown>[];
+		expect(data.map((c) => c.lang)).toEqual(["pt", "en"]);
+		expect(body.not_found).toEqual([]);
+	});
+
 	test("a `{name}` identifier is an EXACT name lookup, not a containment one", async () => {
 		// THE BUG THIS REPLACED. The identifier used to become the filter tree `name="…"`, which is
 		// the CONTAINMENT operator, ordered by edhrec and cut to one row: on the real corpus
@@ -1367,13 +1388,19 @@ describe("GET /cards and /cards/...", () => {
 		expect(res.status).toBe(404);
 	});
 
-	test("a foreign-only printing misses in English and resolves by its own language", async () => {
-		// The pt-only fixture: the default-English lookup must MISS rather than substitute the
-		// foreign row, and the /:lang form must find it.
-		expect((await testDispatch(ctx, "/cards/grn/212")).status).toBe(404);
+	test("a foreign-only printing resolves without a language segment, and by its own language", async () => {
+		// The pt-only fixture. Scryfall answers an address no English printing carries with the
+		// printing that does (`/cards/hoc/95` is the Dwarvish Arcane Signet, measured 2026-09-11),
+		// so the segment-less lookup falls through to it rather than 404ing — while the English
+		// default above still wins wherever an English row exists, and a NAMED wrong language
+		// still misses.
+		const fallback = await json(await testDispatch(ctx, "/cards/grn/212"));
+		expect(fallback.object).toBe("card");
+		expect(fallback.lang).toBe("pt");
 		const body = await json(await testDispatch(ctx, "/cards/grn/212/pt"));
 		expect(body.object).toBe("card");
 		expect(body.lang).toBe("pt");
+		expect((await testDispatch(ctx, "/cards/grn/212/en")).status).toBe(404);
 	});
 
 	test("a miss carries the body Scryfall words for that SHAPE, not one generic string", async () => {

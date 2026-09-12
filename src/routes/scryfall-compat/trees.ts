@@ -66,15 +66,17 @@ export const TRUE_TREE = wire({ node_type: "TrueNode", kwargs: {} });
  * resolve whichever row the engine happened to prefer. That implicit English is also what the
  * collection route's `{set, collector_number}` identifiers depend on: they come through here with
  * the default and must keep doing so.
+ *
+ * `lang: null` is the one deliberate lang-less tree — the FALLBACK a caller asks for only after
+ * the English tree missed. An address no English printing carries still answers on Scryfall
+ * (`/cards/hoc/95` is the Dwarvish Arcane Signet, `/cards/pmei/2010-1` the Japanese-only Darksteel
+ * Juggernaut, and the collection endpoint finds `{set: hoc, collector_number: 95}` — measured
+ * 2026-09-11), and both resolvers here pair the English tree with this one to say the same.
  */
-export function setAndCollectorNumber(setCode: string, collectorNumber: string, lang = "en"): string {
-	return wire(
-		and(
-			textEquals("card_set_code", "set", setCode),
-			textEquals("collector_number", "cn", collectorNumber),
-			textEquals("card_lang", "lang", lang),
-		),
-	);
+export function setAndCollectorNumber(setCode: string, collectorNumber: string, lang: string | null = "en"): string {
+	const clauses = [textEquals("card_set_code", "set", setCode), textEquals("collector_number", "cn", collectorNumber)];
+	if (lang !== null) clauses.push(textEquals("card_lang", "lang", lang));
+	return wire(and(...clauses));
 }
 
 // A collection identifier's `name` HAS NO TREE HERE, deliberately. It was `name="…"`, which is
