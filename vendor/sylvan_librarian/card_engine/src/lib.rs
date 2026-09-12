@@ -9631,53 +9631,58 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
     }
 }
 
-/// THE ART RULE, a tiebreak inside one set and one tier. Two same-set printings in the same tier
-/// differ in one of two ways. They share an illustration, and the higher-numbered one is a
-/// FINISH TWIN — Stomping Ground's galaxy-foil eoe/378 of its eoe/283 — that yields to the lower
-/// (same illustration, same border, same full-art status: Blood Pet's black 7ed/121★ is no twin
-/// of the white 7ed/121).
-/// Or they carry different illustrations, and the higher-numbered one is the later, more premium
-/// sheet — Singularity Rupture's buy-a-box eoe/398 over its extended-art eoe/350 — and wins. A
-/// sixteenth of a class step either way, under every other key inside the tier; across sets the
-/// default order still decides. Only LOWER-numbered siblings are consulted, so the lowest
-/// printing of a set is the reference the others are read against.
-fn same_set_art_key(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &PreferClassIds, strings: &AStrings) -> f64 {
+/// THE ART RULE, a tiebreak inside one set and one tier — and ONLY inside it. A card's same-set,
+/// same-tier, same-language printings form a group; every member scores the group's best default
+/// score, so across sets the default order still decides exactly as if the group were one
+/// printing, and inside the group a term under one point (default scores of distinct printings
+/// are ≥ ~1,950 apart, a rank step less the old score) orders the members: printings that carry
+/// their own illustration first, the higher number ahead — the later, more premium sheet
+/// (Singularity Rupture's buy-a-box eoe/398 over its extended-art eoe/350) — and FINISH TWINS
+/// last, a twin being a higher-numbered printing that looks the same as a lower one (same
+/// illustration, same border, same full-art status: Stomping Ground's galaxy-foil eoe/378 of its
+/// eoe/283, but NOT Blood Pet's black 7ed/121★ against the white 7ed/121). An absolute bonus was
+/// tried first and lifted Relic Seeker's date-stamped pori/29s over every other set's printing,
+/// because its art differs from the buy-a-box pori/29's. `None` when the printing has no same-set
+/// same-tier sibling, and the caller uses the printing's own default score.
+fn same_set_group_base(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &PreferClassIds, strings: &AStrings) -> Option<f64> {
     let number = |q: &APrinting| {
         (
-            q.collector_number_int.as_ref().map_or(u16::MAX, |v| u16::from(*v)),
+            // A number that does not parse sorts LOWEST — never mistaken for the latest sheet.
+            q.collector_number_int.as_ref().map_or(0, |v| u16::from(*v)),
             str_at(strings, u32::from(q.collector_number_id)).unwrap_or(""),
         )
     };
+    let default_of = |q: &APrinting| q.prefer_score.as_ref().map(|v| f32::from(*v)).unwrap_or(0.0) as f64;
+    let in_group = |q: &APrinting| {
+        q.card_set_code.as_str() == p.card_set_code.as_str()
+            && u16::from(q.compat.lang_id) == u16::from(p.compat.lang_id)
+            && borderless_frame_tier(q, siblings, ids, strings) == tier
+    };
     let mine = number(p);
-    let (mut twin, mut later) = (false, false);
+    let mut group_max = default_of(p);
+    let mut any = false;
+    let mut twin = false;
     for s in siblings {
-        if std::ptr::eq(s, p)
-            || s.card_set_code.as_str() != p.card_set_code.as_str()
-            || u16::from(s.compat.lang_id) != u16::from(p.compat.lang_id)
-            || number(s) >= mine
-            || borderless_frame_tier(s, siblings, ids, strings) != tier
-        {
+        if std::ptr::eq(s, p) || !in_group(s) {
             continue;
         }
-        // A twin LOOKS the same: same illustration, same border, same full-art status. Blood Pet's
-        // black-bordered foil 7ed/121★ shares its art with the white 7ed/121 and is not its twin —
-        // the border is the difference the ladder is for — so it takes no penalty and answers.
+        any = true;
+        group_max = group_max.max(default_of(s));
         let same_look = u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id)
             && u32::from(s.card_border_id) == u32::from(p.card_border_id)
             && compat_flag(&s.compat, COMPAT_FULL_ART) == compat_flag(&p.compat, COMPAT_FULL_ART);
-        if same_look {
+        if same_look && number(s) < mine {
             twin = true;
-        } else if u16::from(s.artwork_group_id) != u16::from(p.artwork_group_id) {
-            later = true;
         }
     }
-    if twin {
-        -0.0625
-    } else if later {
-        0.0625
-    } else {
-        0.0
+    if !any {
+        return None;
     }
+    // Under one point in total: a half for not being a twin, then the number (capped) so the
+    // higher sheet leads. The number's string suffix breaks no ties here — a suffix twin of the
+    // same look is a twin already, and of a different look the keys above decide.
+    let number_term = f64::from(mine.0.min(4095)) / 8192.0;
+    Some(group_max + if twin { number_term } else { 0.5 + number_term })
 }
 
 /// THE SAME-SET RULE's trigger: does another printing of the card, in the same set and language,
@@ -9736,10 +9741,13 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
 /// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), then inside one
-/// set the ART rule — a higher-numbered printing sharing a lower one's illustration is a finish
-/// twin and yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
+/// set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
+/// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
-/// eoe/350) — and the default order decides after that. ONE exception to the top tier, the same-set rule: a set that prints
+/// eoe/350); the rule permutes a set's printings among themselves only, in the variant tiers
+/// only, the set group ranking against other sets by its best member's default order — and the
+/// default order decides after that, which for a card with no variant at all (Relic Seeker) is
+/// Scryfall's canonical printing. ONE exception to the top tier, the same-set rule: a set that prints
 /// both a showcase and a borderless treatment of a card wants its showcase answered (Clarion
 /// Conqueror answers tdm/400 over tdm/377), so a borderless printing whose own set also holds a
 /// non-borderless, non-crossover showcase steps down to just under the variant tier — a
@@ -9916,9 +9924,6 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // black and answers. A quarter step, under the text-box key, and neither crosses a
             // tier or the same-set step above.
             let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
-            // ...and inside one set, the art rule: a finish twin yields, a later sheet of its own
-            // art wins (see `same_set_art_key`).
-            let art = same_set_art_key(p, siblings, frame_tier, &ids, strings);
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -9933,7 +9938,19 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // order the digital rows among THEMSELVES, so a card that exists only digitally (an
             // Alchemy card) still answers its borderless or extended-art printing.
             let digital_offset = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
-            (frame_tier + text_box + border + art + language_offset + digital_offset) * CLASS_BONUS + default_score()
+            // The base under the keys: the printing's own default score — which in the plain tier
+            // means Scryfall's canonical printing answers a card with no variant at all (Relic
+            // Seeker) — or, in the VARIANT tiers (borderless, extended art, other variant, the
+            // stepped-down borderless) when the set printed the card more than once in that
+            // tier, the set group's best, with the art rule ordering the group (see
+            // `same_set_group_base`). Plain, retro, colorshifted and textless keep the default
+            // order: a prerelease stamp or a buy-a-box promo is not a later sheet of anything.
+            let base = if frame_tier > 3.0 {
+                same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score)
+            } else {
+                default_score()
+            };
+            (frame_tier + text_box + border + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

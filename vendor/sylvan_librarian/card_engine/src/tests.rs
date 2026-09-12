@@ -17632,6 +17632,26 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     // Another tier: silent too — a plain later sheet does not touch an extended art.
     data.printings[2].compat.frame_effects = vec![legendary];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "across tiers the rule is silent");
+    // THE PLAIN TIER IS THE DEFAULT ORDER. Relic Seeker's shape: ids 2 and 3 plain in one set with
+    // different arts, id 1 plain in another set and first by default — the canonical printing
+    // answers, the art rule does not run outside the variant tiers.
+    data.printings[1].compat.frame_effects = vec![legendary];
+    data.printings[0].card_set_code = InlineStr::from_str("cmr");
+    data.printings[1].collector_number_int = Some(29);
+    data.printings[2].collector_number_int = Some(30);
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "no variant at all: the canonical printing");
+    // WITHIN THE SET ONLY, in a variant tier: make ids 1-3 extended arts, id 1 in another set and
+    // first by default, id 3 the later sheet of its set — id 3 must not climb past id 1...
+    for i in 0..3 {
+        data.printings[i].compat.frame_effects = vec![legendary, extendedart];
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a later sheet never outranks another set's better default");
+    // ...and once id 1 joins the set as its lowest number and the same art as id 2, the set's
+    // group ranks by id 1's default and the later sheet id 3 leads it.
+    data.printings[0].card_set_code = InlineStr::from_str("eoe");
+    data.printings[0].collector_number_int = Some(28);
+    data.printings[0].artwork_group_id = 2;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "inside the set the later sheet leads");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
