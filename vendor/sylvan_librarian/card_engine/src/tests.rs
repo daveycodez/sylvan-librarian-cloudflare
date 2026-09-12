@@ -17493,6 +17493,25 @@ fn prefer_borderless_answers_a_sets_own_showcase_over_its_borderless() {
     // No showcase at all, no step: the borderless is back on top.
     data.printings[1].compat.frame_effects = data.printings[0].compat.frame_effects.clone();
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "no same-set showcase: the borderless");
+    // THE SHOWCASE MUST HAVE ITS OWN ART. Bilbo's shape: the scroll showcase ltr/647 reframes the
+    // plain ltr/196's illustration, and the alternate-art borderless ltr/403 answers. Give id 2
+    // its showcase back but the plain id 1's art: no step; its own art again: the step returns.
+    let showcase = data.coll_vocab.iter().position(|s| s.as_str() == "showcase").expect("showcase") as u16;
+    let legendary = data.printings[0].compat.frame_effects[0];
+    data.printings[1].compat.frame_effects = vec![legendary, showcase];
+    data.printings[1].artwork_group_id = data.printings[0].artwork_group_id;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a showcase reframing the plain art does not count");
+    data.printings[1].artwork_group_id = 9;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a showcase with its own art counts");
+    // A PROMO TWIN FOLLOWS. id 4 in a promo set with the stepped-down id 3's illustration and
+    // border (pltr/403s of ltr/403) steps down with it and the showcase still answers; with an
+    // illustration of its own it is a borderless from another set, and stays on top.
+    data.printings[3].card_set_code = InlineStr::from_str("ptdm");
+    data.printings[3].card_border_id = borderless;
+    data.printings[3].artwork_group_id = data.printings[2].artwork_group_id;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a promo twin of a stepped-down borderless steps down with it");
+    data.printings[3].artwork_group_id = 8;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a different-art borderless from another set stays on top");
 }
 
 /// EXTENDED ART is its own tier, directly under borderless and above every other variant — full

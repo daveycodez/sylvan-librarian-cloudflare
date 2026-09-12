@@ -9609,7 +9609,7 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
         // apply, so a full-art same-set showcase does not overtake a text-boxed borderless
         // (Leonardo, Cutting Edge keeps tmt/211 over tmt/281). 320 cards carry both shapes
         // (2026-09-11); a plain showcase-above-borderless tier would have moved them all.
-        if has_same_set_showcase(p, siblings, &ids, strings) { 3.875 } else { 6.0 }
+        if borderless_steps_down(p, siblings, &ids, strings) { 3.875 } else { 6.0 }
     } else if printing_is_extended_art(p, &ids) {
         // Extended art is its OWN tier under borderless, above every other variant — full
         // art, showcase, inverted, etched — whatever their dates.
@@ -9692,6 +9692,19 @@ fn same_set_group_base(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &P
 /// borderless row in the foreign annex is never stepped down — its same-language showcase would
 /// be in the annex too, and English is the pool the rule is for.
 fn has_same_set_showcase(p: &APrinting, siblings: &[APrinting], ids: &PreferClassIds, strings: &AStrings) -> bool {
+    let is_showcase = |q: &APrinting| q.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.showcase);
+    // THE SHOWCASE MUST HAVE ITS OWN ART. A showcase that reframes the set's regular illustration
+    // — the Lord of the Rings scroll ltr/647 is Bilbo's plain ltr/196 in a scroll — is not the
+    // set's showcase treatment of the card, and it does not push the set's alternate-art
+    // borderless (ltr/403) down. Tarkir's tdm/400 and Core 2021's m21/286 carry their own art.
+    let own_art = |s: &APrinting| {
+        !siblings.iter().any(|t| {
+            !std::ptr::eq(t, s)
+                && t.card_set_code.as_str() == s.card_set_code.as_str()
+                && u16::from(t.artwork_group_id) == u16::from(s.artwork_group_id)
+                && !is_showcase(t)
+        })
+    };
     ids.showcase != VOCAB_NONE
         && siblings.iter().any(|s| {
             !std::ptr::eq(s, p)
@@ -9699,7 +9712,25 @@ fn has_same_set_showcase(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
                 && u16::from(s.compat.lang_id) == u16::from(p.compat.lang_id)
                 && !printing_is_borderless(s, strings)
                 && !printing_has_flavor_name(s)
-                && s.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.showcase)
+                && is_showcase(s)
+                && own_art(s)
+        })
+}
+
+/// Does this borderless printing step down under the same-set rule? Its own set's showcase
+/// (`has_same_set_showcase`), or — a PROMO TWIN follows the printing it copies — a borderless of
+/// the same look in another set that steps down: the prerelease pltr/403s carries ltr/403's
+/// illustration and border under a promo set code, and must not keep the top tier its original
+/// lost. One level only; the twin's own set is not consulted for twins of its own.
+fn borderless_steps_down(p: &APrinting, siblings: &[APrinting], ids: &PreferClassIds, strings: &AStrings) -> bool {
+    has_same_set_showcase(p, siblings, ids, strings)
+        || siblings.iter().any(|s| {
+            !std::ptr::eq(s, p)
+                && s.card_set_code.as_str() != p.card_set_code.as_str()
+                && u16::from(s.compat.lang_id) == u16::from(p.compat.lang_id)
+                && u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id)
+                && u32::from(s.card_border_id) == u32::from(p.card_border_id)
+                && has_same_set_showcase(s, siblings, ids, strings)
         })
 }
 
@@ -9750,9 +9781,11 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// Scryfall's canonical printing. ONE exception to the top tier, the same-set rule: a set that prints
 /// both a showcase and a borderless treatment of a card wants its showcase answered (Clarion
 /// Conqueror answers tdm/400 over tdm/377), so a borderless printing whose own set also holds a
-/// non-borderless, non-crossover showcase steps down to just under the variant tier — a
-/// borderless from another set stays on top, and a text-boxed borderless still beats a full-art
-/// same-set showcase. A textless printing prints no rules text, so it is the one variant that cannot be read;
+/// non-borderless, non-crossover showcase WITH ITS OWN ART steps down to just under the variant
+/// tier — a showcase that reframes the set's regular illustration does not count (Bilbo's scroll
+/// ltr/647 is ltr/196's art, so the alternate-art borderless ltr/403 answers), a promo twin of a
+/// stepped-down borderless steps down with it, a borderless from another set stays on top, and a
+/// text-boxed borderless still beats a full-art same-set showcase. A textless printing prints no rules text, so it is the one variant that cannot be read;
 /// Moonshaker Cavalry's Store Championship full-art sch/17 outranked its extended-art woe/325
 /// on default order and answered a card nobody could read. `textless` is the TIER signal and
 /// `full_art` only a key inside one: 1,797 of the corpus's 2,063 full-art printings carry their
