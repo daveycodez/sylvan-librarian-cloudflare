@@ -9504,6 +9504,9 @@ pub(crate) struct PreferClassIds {
     /// `CompatFields.frame_effects` member `showcase`, on its own — the same id `frame_effects`
     /// holds, named so `prefer:borderless`'s same-set rule does not read it by array position.
     showcase: u16,
+    /// `CompatFields.frame_effects` member `extendedart`, on its own: `prefer:borderless`'s
+    /// second tier, directly under borderless and above every other variant, full art included.
+    extendedart: u16,
 }
 
 impl PreferClassIds {
@@ -9517,6 +9520,7 @@ impl PreferClassIds {
         colorshifted: VOCAB_NONE,
         retro_frame: VOCAB_NONE,
         showcase: VOCAB_NONE,
+        extendedart: VOCAB_NONE,
     };
 
     pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
@@ -9533,6 +9537,7 @@ impl PreferClassIds {
             colorshifted: id("colorshifted"),
             retro_frame: id("1997"),
             showcase: id("showcase"),
+            extendedart: id("extendedart"),
         }
     }
 }
@@ -9575,6 +9580,13 @@ fn printing_is_borderless(p: &APrinting, strings: &AStrings) -> bool {
 /// under its black showcase siblings in the variant tier, exactly as intended.
 fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.card_border_id)) == Some("white")
+}
+
+/// The extended-art frame — `prefer:borderless`'s own tier under borderless. Sheltered Thicket
+/// has no borderless printing; its Fallout extended art pip/508 answers over the newer Secret
+/// Lair sld/2522, whose `inverted` retro frame is an ordinary variant.
+fn printing_is_extended_art(p: &APrinting, ids: &PreferClassIds) -> bool {
+    ids.extendedart != VOCAB_NONE && p.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.extendedart)
 }
 
 /// THE SAME-SET RULE's trigger: does another printing of the card, in the same set and language,
@@ -9620,8 +9632,10 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
-/// printings that carry NO flavor name, six tiers — borderless, then any other frame
-/// variant, then the `colorshifted` Planar Chaos frame (Essence Warden answers plc/145, the one
+/// printings that carry NO flavor name, seven tiers — borderless, then EXTENDED ART (its own
+/// tier, above full art and every other variant: Sheltered Thicket answers the Fallout pip/508
+/// over the newer Secret Lair sld/2522, whose inverted retro frame is an ordinary variant), then
+/// any other frame variant, then the `colorshifted` Planar Chaos frame (Essence Warden answers plc/145, the one
 /// printing of hers that looks different), then the RETRO 1997 frame (Kiki-Jiki, Mirror Breaker
 /// answers the Secret Lair sld/1659 over the Time Spiral Remastered tsr/346, the newer of two
 /// retro printings), then the plain printings, then the TEXTLESS ones. The colorshifted and
@@ -9779,8 +9793,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
         Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
-        // Six tiers — borderless, variant, colorshifted, retro frame, plain, textless — a text box
-        // above full art and black above white inside each, and a flavor-named printing below all of them: with at least one same-named
+        // Seven tiers — borderless, extended art, variant, colorshifted, retro frame, plain, textless — a
+        // text box above full art and black above white inside each, and a flavor-named printing below all of them: with at least one same-named
         // printing on every card, it can never be the answer. A Universes Beyond printing under
         // the card's OWN name is not demoted: Soul Warden answers its newest borderless, the
         // Secret Lair sld/2435, crossover tag and all. Textless is checked FIRST: it is a frame
@@ -9803,7 +9817,11 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
                 // apply, so a full-art same-set showcase does not overtake a text-boxed borderless
                 // (Leonardo, Cutting Edge keeps tmt/211 over tmt/281). 320 cards carry both shapes
                 // (2026-09-11); a plain showcase-above-borderless tier would have moved them all.
-                if has_same_set_showcase(p, siblings, &ids, strings) { 3.875 } else { 5.0 }
+                if has_same_set_showcase(p, siblings, &ids, strings) { 3.875 } else { 6.0 }
+            } else if printing_is_extended_art(p, &ids) {
+                // Extended art is its OWN tier under borderless, above every other variant — full
+                // art, showcase, inverted, etched — whatever their dates.
+                5.0
             } else if printing_is_frame_variant(p, &ids, strings) {
                 4.0
             } else if printing_is_colorshifted(p, &ids) {

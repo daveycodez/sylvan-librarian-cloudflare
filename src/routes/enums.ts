@@ -35,7 +35,8 @@ export const UNIQUE_ON = {
  *
  * `borderless` is THIS API'S OWN, not Scryfall's (there it is an unknown value, ignored with a
  * warning): "the best-looking printing that is still this card". Over the printings carrying NO
- * flavor name, five tiers — borderless, then any other frame variant, then the colorshifted
+ * flavor name, six tiers — borderless, then extended art (above full art and every other
+ * variant: Sheltered Thicket answers pip/508), then any other frame variant, then the colorshifted
  * Planar Chaos frame (Essence Warden answers plc/145), then the retro 1997 frame (Kiki-Jiki,
  * Mirror Breaker answers the Secret Lair sld/1659), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
  * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), a black

@@ -17495,6 +17495,52 @@ fn prefer_borderless_answers_a_sets_own_showcase_over_its_borderless() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "no same-set showcase: the borderless");
 }
 
+/// EXTENDED ART is its own tier, directly under borderless and above every other variant — full
+/// art, showcase and inverted included, whatever their dates. Sheltered Thicket's shape: no
+/// borderless printing, four extended arts, and a newer inverted retro Secret Lair that is an
+/// ordinary variant and loses. Borderless still beats it.
+#[test]
+fn prefer_borderless_ranks_extended_art_directly_under_borderless() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let showcase = data.coll_vocab.iter().position(|s| s.as_str() == "showcase").expect("showcase") as u16;
+    let extendedart = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("extendedart".to_owned());
+    let inverted = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("inverted".to_owned());
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 2 showcase (text box), id 3 inverted, id 4 extended art — the default's LAST pick.
+    data.printings[1].compat.frame_effects = vec![legendary, showcase];
+    data.printings[2].compat.frame_effects = vec![legendary, inverted];
+    data.printings[3].compat.frame_effects = vec![legendary, extendedart];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "extended art over showcase and inverted");
+    // ...and over full art: give the showcase id 2 full art, still id 4; make the extended art
+    // itself full art and it STILL wins — the tier, not the text-box key, decides across tiers.
+    data.printings[1].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "extended art over a full-art showcase");
+    data.printings[3].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a full-art extended art still outranks other variants");
+    data.printings[3].compat.flags = 0;
+    data.printings[1].compat.flags = 0;
+    // Two extended arts: the default order decides — id 1 over id 4.
+    data.printings[0].compat.frame_effects = vec![legendary, extendedart];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "two extended arts: default order");
+    data.printings[0].compat.frame_effects = vec![legendary];
+    // Borderless still beats extended art.
+    data.printings[2].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "borderless over extended art");
+    // Not the atypical class' concern: `prefer:atypical` still ranks the class by default order.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 2);
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.
