@@ -9567,13 +9567,15 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
 /// printings that carry NO flavor name, in-universe printings rank above Universes Beyond ones
 /// outright, and inside each of those halves four tiers — borderless, then any other frame
-/// variant, then the plain printings, then the TEXTLESS ones — default order inside each. A
-/// textless printing prints no rules text, so it is the one variant that cannot be read;
+/// variant, then the plain printings, then the TEXTLESS ones. Inside a tier a printing with a
+/// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
+/// sld/1731 over the full-art mar/91, both borderless), and the default order decides after
+/// that. A textless printing prints no rules text, so it is the one variant that cannot be read;
 /// Moonshaker Cavalry's Store Championship full-art sch/17 outranked its extended-art woe/325
-/// on default order and answered a card nobody could read. `textless` is the signal and
-/// `full_art` is not: 1,797 of the corpus's 2,063 full-art printings carry their text (the
-/// Secret Lair posters, the Booster Fun full-arts), and 266 of its 267 textless ones are
-/// full-art. ENGLISH FIRST, above all of that: a printing in another language ranks below every
+/// on default order and answered a card nobody could read. `textless` is the TIER signal and
+/// `full_art` only a key inside one: 1,797 of the corpus's 2,063 full-art printings carry their
+/// text (the Secret Lair posters, the Booster Fun full-arts), and 266 of its 267 textless ones
+/// are full-art. ENGLISH FIRST, above all of that: a printing in another language ranks below every
 /// English one whatever its frame, so Aven Interrupter answers its extended-art otj/309 and
 /// the Japanese-only borderless pwcs/2024-08 only under `lang:ja` (there the pool is Japanese
 /// and the tiers decide as usual). Scryfall's own `prefer:atypical` answers the Japanese
@@ -9731,6 +9733,11 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             } else {
                 1.0
             };
+            // INSIDE a tier, a printing with a text box outranks a full-art one: Iron Man, Titan
+            // of Innovation has two borderless printings, the full-art mar/91 and the Secret Lair
+            // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
+            // a tier and never crosses one — a full-art borderless still beats every other variant.
+            let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
             let universe_tier = if printing_is_universes_beyond(p, &ids) { 0.0 } else { 4.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
@@ -9739,7 +9746,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let lang = u16::from(p.compat.lang_id);
             let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
             let language_offset = if foreign { -16.0 } else { 0.0 };
-            (universe_tier + frame_tier + language_offset) * CLASS_BONUS + default_score()
+            (universe_tier + frame_tier + text_box + language_offset) * CLASS_BONUS + default_score()
         }
     }
 }

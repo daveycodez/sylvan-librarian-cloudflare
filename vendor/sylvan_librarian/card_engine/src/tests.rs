@@ -17315,6 +17315,34 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3);
 }
 
+/// INSIDE a tier a printing with a TEXT BOX outranks a full-art one — Iron Man, Titan of
+/// Innovation's shape: two same-named borderless printings, the full-art mar/91 ranked first by
+/// default and the Secret Lair sld/1731 with its text box, and the readable one answers. A half
+/// step inside the tier and never across one: a full-art borderless still beats every other
+/// variant and every plain printing.
+#[test]
+fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
+    let mut data = class_prefer_store();
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    // id 3: borderless, full art — mar/91, ranked above id 4 by default.
+    data.printings[2].compat.flags = COMPAT_FULL_ART;
+    // id 4: borderless with a text box — sld/1731; in-universe, the default order's last pick.
+    data.printings[3].card_border_id = borderless;
+    data.printings[3].compat.promo_types = vec![];
+    data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    data.printings[3].card_is_tags = vec![];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "the borderless printing with a text box");
+    data.printings[3].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "both full art: default order decides");
+    // Never across a tier: make id 4 a plain black-bordered printing and the full-art borderless
+    // id 3 beats it; make it a text-boxed showcase (the variant tier) and id 3 still does.
+    data.printings[3].compat.flags = 0;
+    data.printings[3].card_border_id = black;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a full-art borderless over a plain printing");
+    data.printings[3].compat.frame_effects = data.printings[1].compat.frame_effects.clone();
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a full-art borderless over a text-boxed variant");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.
