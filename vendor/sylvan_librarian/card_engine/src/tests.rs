@@ -17318,6 +17318,10 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
 #[test]
 fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     let mut data = class_prefer_store();
+    // The stubs share one (empty) set code, and id 2 is a showcase (id 4 becomes one below): give
+    // each a set of its own so the same-set rule (its own test below) stays out of this one.
+    data.printings[1].card_set_code = InlineStr::from_str("oth");
+    data.printings[3].card_set_code = InlineStr::from_str("oth2");
     let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
     // id 3: borderless, full art — mar/91, ranked above id 4 by default.
     data.printings[2].compat.flags = COMPAT_FULL_ART;

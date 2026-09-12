@@ -9580,7 +9580,9 @@ fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
 /// THE SAME-SET RULE's trigger: does another printing of the card, in the same set and language,
 /// carry the showcase frame without being borderless or flavor-named? Tarkir Dragonstorm printed
 /// Clarion Conqueror as a showcase (tdm/400) and as a borderless (tdm/377), and the set's showcase
-/// is the one to answer. See `prefer_score`.
+/// is the one to answer. See `prefer_score`. `siblings` are the card's CANONICAL rows, so a
+/// borderless row in the foreign annex is never stepped down — its same-language showcase would
+/// be in the annex too, and English is the pool the rule is for.
 fn has_same_set_showcase(p: &APrinting, siblings: &[APrinting], ids: &PreferClassIds, strings: &AStrings) -> bool {
     ids.showcase != VOCAB_NONE
         && siblings.iter().any(|s| {
