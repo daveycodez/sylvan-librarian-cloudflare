@@ -17337,6 +17337,46 @@ fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a full-art borderless over a text-boxed variant");
 }
 
+/// `colorshifted` — the Planar Chaos timeshifted frame — is a tier of its own, the LAST one above
+/// plain: below borderless and below every other frame variant. Essence Warden's shape: seven
+/// printings, none borderless, and plc/145 the one that looks different. The tier belongs to
+/// `prefer:borderless` alone — `prefer:atypical` keeps Scryfall's measured class, which does
+/// not count the frame.
+#[test]
+fn prefer_borderless_ranks_colorshifted_last_among_the_variants() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let colorshifted = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("colorshifted".to_owned());
+    let etched = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("etched".to_owned());
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    // Everything plain, black and default-frame to start: id 2 loses its showcase, id 3 its
+    // border, and no printing carries a promo treatment.
+    data.printings[1].compat.frame_effects = vec![legendary];
+    data.printings[2].card_border_id = black;
+    for p in &mut data.printings {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain: the default pick");
+    // id 3 colorshifted: above every plain printing, however low it ranks by default.
+    data.printings[2].compat.frame_effects = vec![legendary, colorshifted];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "colorshifted over plain");
+    // ...and below any other variant: etch the lower-ranked id 4 and it wins; make id 4
+    // borderless instead and it still does.
+    data.printings[3].compat.frame_effects = vec![legendary, etched];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "an etched variant over colorshifted");
+    data.printings[3].compat.frame_effects = vec![legendary];
+    data.printings[3].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "borderless over colorshifted");
+    data.printings[3].card_border_id = black;
+    // Not the atypical class: with no other variant in the store, `prefer:atypical` has no member
+    // to prefer and falls back to the default pick, not the colorshifted id 3.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 1, "colorshifted is not atypical");
+    assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

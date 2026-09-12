@@ -35,8 +35,8 @@ export const UNIQUE_ON = {
  *
  * `borderless` is THIS API'S OWN, not Scryfall's (there it is an unknown value, ignored with a
  * warning): "the best-looking printing that is still this card". Over the printings carrying NO
- * flavor name, three tiers — borderless, then any other frame variant, then the plain printings.
- * Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
+ * flavor name, four tiers — borderless, then any other frame variant, then the colorshifted
+ * Planar Chaos frame (Essence Warden answers plc/145), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
  * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), and
  * the default order decides after that. A flavor-named printing is never a candidate,
  * because it is drawn and sold as someone else: Najeela, the Blade-Blossom's four borderless
