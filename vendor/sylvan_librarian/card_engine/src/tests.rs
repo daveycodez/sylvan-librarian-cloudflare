@@ -17377,6 +17377,43 @@ fn prefer_borderless_ranks_colorshifted_last_among_the_variants() {
     assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
 }
 
+/// The retro 1997 frame is the BOTTOM variant tier: above plain, below colorshifted and every
+/// other variant. Kiki-Jiki, Mirror Breaker's shape: ten black-bordered printings, two of them
+/// retro, and the newer Secret Lair sld/1659 answers over the Time Spiral Remastered tsr/346 on
+/// default order inside the tier. `prefer:borderless` alone, as with colorshifted.
+#[test]
+fn prefer_borderless_ranks_the_retro_frame_at_the_bottom_of_the_variants() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let frame_2015 = data.printings[0].card_frame_data[0];
+    let colorshifted = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("colorshifted".to_owned());
+    let retro = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("1997".to_owned());
+    let black = data.printings[0].card_border_id;
+    data.printings[1].compat.frame_effects = vec![legendary];
+    data.printings[2].card_border_id = black;
+    for p in &mut data.printings {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain: the default pick");
+    // id 4 retro: above every plain printing, however low it ranks by default.
+    data.printings[3].card_frame_data = vec![retro];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "retro over plain");
+    // Two retro printings: the default order decides — id 3, the higher-ranked (the newer, for
+    // two unpinned bare-numbered printings, which is Kiki-Jiki's sld/1659 over tsr/346).
+    data.printings[2].card_frame_data = vec![retro];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "two retro: default order inside the tier");
+    // ...and below colorshifted: give the lower-ranked id 4 the Planar Chaos frame and it wins.
+    data.printings[3].compat.frame_effects = vec![legendary, colorshifted];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "colorshifted over retro");
+    data.printings[3].compat.frame_effects = vec![legendary];
+    data.printings[3].card_frame_data = vec![frame_2015];
+    // Not the atypical class.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 1, "retro is not atypical");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

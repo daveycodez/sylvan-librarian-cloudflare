@@ -9497,6 +9497,10 @@ pub(crate) struct PreferClassIds {
     /// `prefer:borderless`'s OWN tier, the last one above plain, and NOT part of the atypical
     /// class: Scryfall's measured class does not count it, and `is:atypical` must keep agreeing.
     colorshifted: u16,
+    /// `Printing.card_frame_data` member "1997" — the retro frame (Secret Lair and Time Spiral
+    /// Remastered reprints, the retro Booster Fun sheets). `prefer:borderless`'s bottom variant
+    /// tier, below colorshifted; not in the atypical class for the same reason.
+    retro_frame: u16,
 }
 
 impl PreferClassIds {
@@ -9508,6 +9512,7 @@ impl PreferClassIds {
         universesbeyond: VOCAB_NONE,
         lang_en: VOCAB_NONE,
         colorshifted: VOCAB_NONE,
+        retro_frame: VOCAB_NONE,
     };
 
     pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
@@ -9522,6 +9527,7 @@ impl PreferClassIds {
             universesbeyond: id("universesbeyond"),
             lang_en: id("en"),
             colorshifted: id("colorshifted"),
+            retro_frame: id("1997"),
         }
     }
 }
@@ -9564,6 +9570,12 @@ fn printing_is_colorshifted(p: &APrinting, ids: &PreferClassIds) -> bool {
     ids.colorshifted != VOCAB_NONE && p.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.colorshifted)
 }
 
+/// The retro (1997) frame, read from the stored frame value the way the Future frame is. A tier
+/// of `prefer:borderless` alone — see `PreferClassIds::retro_frame`.
+fn printing_is_retro_frame(p: &APrinting, ids: &PreferClassIds) -> bool {
+    ids.retro_frame != VOCAB_NONE && p.card_frame_data.iter().any(|v| u16::from(*v) == ids.retro_frame)
+}
+
 /// Does this printing carry a flavor name — is it SOLD as someone else (Godzilla, Tidus,
 /// Spider-Gwen)? Either place Scryfall puts the key counts, exactly as `is:flavorname` reads it.
 pub(crate) fn printing_has_flavor_name(p: &APrinting) -> bool {
@@ -9577,10 +9589,12 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
-/// printings that carry NO flavor name, five tiers — borderless, then any other frame
+/// printings that carry NO flavor name, six tiers — borderless, then any other frame
 /// variant, then the `colorshifted` Planar Chaos frame (Essence Warden answers plc/145, the one
-/// printing of hers that looks different; the frame is this prefer's own tier and stays out of
-/// the atypical class), then the plain printings, then the TEXTLESS ones. Inside a tier a printing with a
+/// printing of hers that looks different), then the RETRO 1997 frame (Kiki-Jiki, Mirror Breaker
+/// answers the Secret Lair sld/1659 over the Time Spiral Remastered tsr/346, the newer of two
+/// retro printings), then the plain printings, then the TEXTLESS ones. The colorshifted and
+/// retro tiers are this prefer's own and stay out of the atypical class. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), and the default order decides after
 /// that. A textless printing prints no rules text, so it is the one variant that cannot be read;
@@ -9728,8 +9742,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
         Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
-        // Five tiers — borderless, variant, colorshifted, plain, textless — a text box above full
-        // art inside each, and a flavor-named printing below all of them: with at least one same-named
+        // Six tiers — borderless, variant, colorshifted, retro frame, plain, textless — a text box
+        // above full art inside each, and a flavor-named printing below all of them: with at least one same-named
         // printing on every card, it can never be the answer. A Universes Beyond printing under
         // the card's OWN name is not demoted: Soul Warden answers its newest borderless, the
         // Secret Lair sld/2435, crossover tag and all. Textless is checked FIRST: it is a frame
@@ -9743,13 +9757,18 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let frame_tier = if compat_flag(&p.compat, COMPAT_TEXTLESS) {
                 0.0
             } else if printing_is_borderless(p, strings) {
-                4.0
+                5.0
             } else if printing_is_frame_variant(p, &ids, strings) {
-                3.0
+                4.0
             } else if printing_is_colorshifted(p, &ids) {
-                // The LAST check above plain: a timeshifted frame looks different, but every
-                // other variant and every borderless printing outranks it (Essence Warden's
-                // plc/145 answers because nothing else of hers looks different at all).
+                // A timeshifted frame looks different, but every other variant and every
+                // borderless printing outranks it (Essence Warden's plc/145 answers because
+                // nothing else of hers looks different at all).
+                3.0
+            } else if printing_is_retro_frame(p, &ids) {
+                // The LAST check above plain: the retro frame. Kiki-Jiki, Mirror Breaker answers
+                // the Secret Lair sld/1659 over the Time Spiral Remastered tsr/346, both retro,
+                // on the default order's recency key inside the tier.
                 2.0
             } else {
                 1.0
