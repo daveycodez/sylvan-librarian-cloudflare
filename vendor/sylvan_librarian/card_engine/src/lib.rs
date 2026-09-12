@@ -9565,8 +9565,7 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
-/// printings that carry NO flavor name, in-universe printings rank above Universes Beyond ones
-/// outright, and inside each of those halves four tiers — borderless, then any other frame
+/// printings that carry NO flavor name, four tiers — borderless, then any other frame
 /// variant, then the plain printings, then the TEXTLESS ones. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), and the default order decides after
@@ -9582,10 +9581,11 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// promo, which is why that prefer keeps it. A flavor-named printing is
 /// never a candidate, because it is drawn and sold as someone else (Najeela's four borderless
 /// printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon; Thrasios's fca/58 is Tidus).
-/// A Universes Beyond printing under the card's OWN name is a candidate, ranked below every
-/// in-universe one: Force of Negation answers the Hildebrandt borderless 2x2/346 over the
-/// Avatar tle/13, and a card whose only variants are Universes Beyond answers its plain
-/// printing. Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
+/// A Universes Beyond printing under the card's OWN name is a candidate like any other — the
+/// crossover TAG demotes nothing, only a flavor name excludes — so Soul Warden answers its newest
+/// borderless, the Secret Lair sld/2435, over the in-universe spg/65 and sld/1708 (three
+/// borderless printings with text boxes, and the default order's recency key decides).
+/// Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
 /// original printing never carries a flavor name, so a candidate always exists. `EurLow`,
 /// `EurHigh`, `TixLow` and `TixHigh` are the eur/tix twins of the usd pair; `prefer_for_sort`
 /// also reaches for the `*Low` ones to express "cheapest printing" under a price ordering.
@@ -9714,10 +9714,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
         Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
-        // Eight steps: in-universe {borderless, variant, plain, textless} above Universes Beyond
-        // {the same four}, and a flavor-named printing below all of them — with at least one
-        // same-named printing on every card, it can never be the answer. Textless is checked
-        // FIRST: it is a frame variant to the atypical class, and the one variant nobody can read.
+        // Four tiers — borderless, variant, plain, textless — a text box above full art inside
+        // each, and a flavor-named printing below all of them: with at least one same-named
+        // printing on every card, it can never be the answer. A Universes Beyond printing under
+        // the card's OWN name is not demoted: Soul Warden answers its newest borderless, the
+        // Secret Lair sld/2435, crossover tag and all. Textless is checked FIRST: it is a frame
+        // variant to the atypical class, and the one variant nobody can read.
         Prefer::Borderless(ids) => {
             // Below every same-named printing in EVERY language — a `lang:ja` pool must still put
             // its own crossovers last — hence further down than the language offset reaches.
@@ -9738,7 +9740,6 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
             // a tier and never crosses one — a full-art borderless still beats every other variant.
             let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
-            let universe_tier = if printing_is_universes_beyond(p, &ids) { 0.0 } else { 4.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -9746,7 +9747,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let lang = u16::from(p.compat.lang_id);
             let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
             let language_offset = if foreign { -16.0 } else { 0.0 };
-            (universe_tier + frame_tier + text_box + language_offset) * CLASS_BONUS + default_score()
+            (frame_tier + text_box + language_offset) * CLASS_BONUS + default_score()
         }
     }
 }

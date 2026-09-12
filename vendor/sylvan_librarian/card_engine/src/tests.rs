@@ -17247,31 +17247,26 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
     data.printings[3].card_is_tags = vec![];
 
     assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "same-named borderless, however low it ranks");
-    // Universes Beyond under the card's own name is a candidate, but every in-universe printing
-    // outranks it: tag id 4 and the etched in-universe id 3 wins; strip id 3's variant and the
-    // PLAIN in-universe id 1 still wins over the UB borderless.
+    // A Universes Beyond printing under the card's own name is a candidate like any other: tag
+    // id 4 and it still wins — Soul Warden's sld/2435 is the newest borderless, and the crossover
+    // TAG demotes nothing (a flavor NAME is the exclusion, below).
     let ub = data.printings[1].card_is_tags[0];
     data.printings[3].card_is_tags = vec![ub];
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "in-universe variant over a Universes Beyond borderless");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a Universes Beyond borderless is not demoted");
+    data.printings[3].card_is_tags = vec![];
+    // Take the borderless id 4 out of the top tier (plain black, the default's last pick) so the
+    // blocks below can watch ids 1 and 3 against each other.
+    data.printings[3].card_border_id = black;
     let etched_fx = data.printings[2].compat.frame_effects.clone();
-    data.printings[2].compat.frame_effects = vec![];
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "in-universe plain over a Universes Beyond borderless");
     // A TEXTLESS variant is the one nobody can read, and it ranks below the plain printing: give
     // the etched id 3 the flag and the plain id 1 wins; give id 3 full art WITH text instead and
     // it is a readable variant again. (Moonshaker Cavalry's sch/17 against its woe/325.)
-    data.printings[2].compat.frame_effects = etched_fx.clone();
     data.printings[2].compat.flags = COMPAT_FULL_ART | COMPAT_TEXTLESS;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "textless ranks below plain");
     data.printings[2].compat.flags = COMPAT_FULL_ART;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "full art with text is a readable variant");
     data.printings[2].compat.flags = 0;
     data.printings[2].compat.frame_effects = vec![];
-    // ...and an in-universe textless printing still outranks a Universes Beyond borderless one.
-    data.printings[0].compat.flags = COMPAT_TEXTLESS;
-    data.printings[2].card_is_tags = vec![ub];
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "in-universe textless over UB anything");
-    data.printings[0].compat.flags = 0;
-    data.printings[2].card_is_tags = vec![];
     // ENGLISH FIRST: make the borderless id 4 Japanese and the etched English id 3 wins; make
     // every printing Japanese (a `lang:ja` pool) and the tiers decide again, id 4.
     let en = data.coll_vocab.len() as u16;
@@ -17279,7 +17274,7 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
     let ja = data.coll_vocab.len() as u16;
     data.coll_vocab.push("ja".to_owned());
     data.printings[2].compat.frame_effects = etched_fx.clone();
-    data.printings[3].card_is_tags = vec![]; // in-universe again for this block
+    data.printings[3].card_border_id = borderless; // back in the top tier for this block
     for p in &mut data.printings {
         p.compat.lang_id = en;
     }
@@ -17293,12 +17288,12 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
         p.compat.lang_id = VOCAB_NONE;
     }
     data.printings[2].compat.frame_effects = vec![];
-    // ...and among Universes Beyond printings only, the frame tiers still decide: tag them all
-    // and the borderless id 4 wins again.
+    // ...and the Universes Beyond tag is inert whoever carries it: tag every printing and the
+    // borderless id 4 wins exactly as before.
     for p in &mut data.printings {
         p.card_is_tags = vec![ub];
     }
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "all Universes Beyond: borderless first");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "the tag changes nothing: borderless first");
     for p in &mut data.printings {
         p.card_is_tags = vec![];
     }
@@ -17326,11 +17321,10 @@ fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
     // id 3: borderless, full art — mar/91, ranked above id 4 by default.
     data.printings[2].compat.flags = COMPAT_FULL_ART;
-    // id 4: borderless with a text box — sld/1731; in-universe, the default order's last pick.
+    // id 4: borderless with a text box — sld/1731; the default order's last pick.
     data.printings[3].card_border_id = borderless;
     data.printings[3].compat.promo_types = vec![];
     data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
-    data.printings[3].card_is_tags = vec![];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "the borderless printing with a text box");
     data.printings[3].compat.flags = COMPAT_FULL_ART;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "both full art: default order decides");

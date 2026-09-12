@@ -39,10 +39,10 @@ class PreferOrder(enum.StrEnum):
     UNIVERSESBEYOND = enum.auto()
     NOTUNIVERSESBEYOND = enum.auto()
     # This API's own, not Scryfall's: the best-looking printing that is still this card -- over
-    # the printings with no flavor name, in-universe above Universes Beyond, and within each
-    # borderless, then any other frame variant, then plain, then textless, a text box above full
-    # art inside a tier; English above every other language; a flavor-named (crossover) printing
-    # is never a candidate. See the engine's `Prefer`.
+    # the printings with no flavor name, borderless, then any other frame variant, then plain,
+    # then textless, a text box above full art inside a tier; English above every other language;
+    # a flavor-named (crossover) printing is never a candidate, and the Universes Beyond tag
+    # alone demotes nothing. See the engine's `Prefer`.
     BORDERLESS = enum.auto()
 
 

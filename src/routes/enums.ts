@@ -35,16 +35,15 @@ export const UNIQUE_ON = {
  *
  * `borderless` is THIS API'S OWN, not Scryfall's (there it is an unknown value, ignored with a
  * warning): "the best-looking printing that is still this card". Over the printings carrying NO
- * flavor name, in-universe printings rank above Universes Beyond ones outright, and inside each
- * half three tiers — borderless, then any other frame variant, then the plain printings. Inside
- * a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of Innovation
- * answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), and the default
- * order decides after that. A flavor-named printing is never a candidate,
+ * flavor name, three tiers — borderless, then any other frame variant, then the plain printings.
+ * Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
+ * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), and
+ * the default order decides after that. A flavor-named printing is never a candidate,
  * because it is drawn and sold as someone else: Najeela, the Blade-Blossom's four borderless
  * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which
- * is Tidus. A Universes Beyond printing under the card's own name stays a candidate, below every
- * in-universe one: Force of Negation answers the Hildebrandt 2x2/346 over the Avatar tle/13.
+ * is Tidus. A Universes Beyond printing under the card's own name is a candidate like any other,
+ * the tag demoting nothing: Soul Warden answers its newest borderless, the Secret Lair sld/2435.
  * Two more rules, both about being able to READ the answer: a textless printing ranks below the
  * plain ones (Moonshaker Cavalry answers its extended-art woe/325, not the Store Championship
  * full-art sch/17), and every English printing ranks above every non-English one, so a
