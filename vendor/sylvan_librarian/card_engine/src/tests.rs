@@ -17582,6 +17582,51 @@ fn prefer_borderless_never_answers_a_digital_printing_and_reads_the_1993_frame()
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a digital retro loses to a paper plain");
 }
 
+/// THE ART RULE inside one set and one tier: a higher-numbered printing sharing a lower one's
+/// illustration is a finish twin and yields (Stomping Ground eoe/283 over its galaxy-foil
+/// eoe/378); one carrying its own illustration is the later sheet and wins (Singularity Rupture's
+/// buy-a-box eoe/398 over its extended-art eoe/350). Across sets, and across tiers, the rule is
+/// silent and the default order decides.
+#[test]
+fn prefer_borderless_breaks_same_set_ties_by_art() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let extendedart = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("extendedart".to_owned());
+    let black = data.printings[0].card_border_id;
+    for p in &mut data.printings {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str("eoe");
+    }
+    // ids 2 and 3 are the set's two extended arts; id 2 ranks above id 3 by default. Give id 2
+    // the HIGHER number and the same illustration as id 3: a finish twin, so id 3 answers.
+    data.printings[1].compat.frame_effects = vec![legendary, extendedart];
+    data.printings[2].compat.frame_effects = vec![legendary, extendedart];
+    data.printings[1].collector_number_int = Some(378);
+    data.printings[2].collector_number_int = Some(283);
+    data.printings[1].artwork_group_id = 1;
+    data.printings[2].artwork_group_id = 1;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a finish twin yields to the lower number");
+    // Its own illustration instead: the later sheet, and it wins — as the default already says.
+    data.printings[1].artwork_group_id = 2;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a later sheet of its own art wins");
+    // Swap the numbers: id 3 is now the later sheet and beats the default order.
+    data.printings[1].collector_number_int = Some(350);
+    data.printings[2].collector_number_int = Some(398);
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "the later sheet beats the default order");
+    // Another set: the rule is silent and the default order decides.
+    data.printings[2].card_set_code = InlineStr::from_str("sld");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "across sets the default order decides");
+    data.printings[2].card_set_code = InlineStr::from_str("eoe");
+    // Another tier: silent too — a plain later sheet does not touch an extended art.
+    data.printings[2].compat.frame_effects = vec![legendary];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "across tiers the rule is silent");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

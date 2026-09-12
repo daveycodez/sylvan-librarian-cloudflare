@@ -9593,6 +9593,85 @@ fn printing_is_extended_art(p: &APrinting, ids: &PreferClassIds) -> bool {
     ids.extendedart != VOCAB_NONE && p.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.extendedart)
 }
 
+/// `prefer:borderless`'s frame tier for one printing, 0 (textless) to 6 (borderless) — a
+/// function so the art rule can ask it of a sibling too.
+fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClassIds, strings: &AStrings) -> f64 {
+    let ids = *ids;
+    if compat_flag(&p.compat, COMPAT_TEXTLESS) {
+        0.0
+    } else if printing_is_borderless(p, strings) {
+        // THE SAME-SET RULE. A set that prints both a showcase and a borderless treatment
+        // of the card wants its showcase answered (Clarion Conqueror: tdm/400 over
+        // tdm/377), so a borderless printing whose own set also holds a non-borderless,
+        // non-crossover showcase steps down to just UNDER the variant tier: below every
+        // variant, its set's showcase included; still above colorshifted, retro and plain;
+        // and a borderless from ANOTHER set stays on top. The keys inside the tier still
+        // apply, so a full-art same-set showcase does not overtake a text-boxed borderless
+        // (Leonardo, Cutting Edge keeps tmt/211 over tmt/281). 320 cards carry both shapes
+        // (2026-09-11); a plain showcase-above-borderless tier would have moved them all.
+        if has_same_set_showcase(p, siblings, &ids, strings) { 3.875 } else { 6.0 }
+    } else if printing_is_extended_art(p, &ids) {
+        // Extended art is its OWN tier under borderless, above every other variant — full
+        // art, showcase, inverted, etched — whatever their dates.
+        5.0
+    } else if printing_is_frame_variant(p, &ids, strings) {
+        4.0
+    } else if printing_is_colorshifted(p, &ids) {
+        // A timeshifted frame looks different, but every other variant and every
+        // borderless printing outranks it (Essence Warden's plc/145 answers because
+        // nothing else of hers looks different at all).
+        3.0
+    } else if printing_is_retro_frame(p, &ids) {
+        // The LAST check above plain: the retro frame. Kiki-Jiki, Mirror Breaker answers
+        // the Secret Lair sld/1659 over the Time Spiral Remastered tsr/346, both retro,
+        // on the default order's recency key inside the tier.
+        2.0
+    } else {
+        1.0
+    }
+}
+
+/// THE ART RULE, a tiebreak inside one set and one tier. Two same-set printings in the same tier
+/// differ in one of two ways. They share an illustration, and the higher-numbered one is a
+/// FINISH TWIN — Stomping Ground's galaxy-foil eoe/378 of its eoe/283 — that yields to the lower.
+/// Or they carry different illustrations, and the higher-numbered one is the later, more premium
+/// sheet — Singularity Rupture's buy-a-box eoe/398 over its extended-art eoe/350 — and wins. A
+/// sixteenth of a class step either way, under every other key inside the tier; across sets the
+/// default order still decides. Only LOWER-numbered siblings are consulted, so the lowest
+/// printing of a set is the reference the others are read against.
+fn same_set_art_key(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &PreferClassIds, strings: &AStrings) -> f64 {
+    let number = |q: &APrinting| {
+        (
+            q.collector_number_int.as_ref().map_or(u16::MAX, |v| u16::from(*v)),
+            str_at(strings, u32::from(q.collector_number_id)).unwrap_or(""),
+        )
+    };
+    let mine = number(p);
+    let (mut twin, mut later) = (false, false);
+    for s in siblings {
+        if std::ptr::eq(s, p)
+            || s.card_set_code.as_str() != p.card_set_code.as_str()
+            || u16::from(s.compat.lang_id) != u16::from(p.compat.lang_id)
+            || number(s) >= mine
+            || borderless_frame_tier(s, siblings, ids, strings) != tier
+        {
+            continue;
+        }
+        if u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id) {
+            twin = true;
+        } else {
+            later = true;
+        }
+    }
+    if twin {
+        -0.0625
+    } else if later {
+        0.0625
+    } else {
+        0.0
+    }
+}
+
 /// THE SAME-SET RULE's trigger: does another printing of the card, in the same set and language,
 /// carry the showcase frame without being borderless or flavor-named? Tarkir Dragonstorm printed
 /// Clarion Conqueror as a showcase (tdm/400) and as a borderless (tdm/377), and the set's showcase
@@ -9648,8 +9727,11 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// retro tiers are this prefer's own and stay out of the atypical class. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
-/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), and the default
-/// order decides after that. ONE exception to the top tier, the same-set rule: a set that prints
+/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), then inside one
+/// set the ART rule — a higher-numbered printing sharing a lower one's illustration is a finish
+/// twin and yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
+/// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
+/// eoe/350) — and the default order decides after that. ONE exception to the top tier, the same-set rule: a set that prints
 /// both a showcase and a borderless treatment of a card wants its showcase answered (Clarion
 /// Conqueror answers tdm/400 over tdm/377), so a borderless printing whose own set also holds a
 /// non-borderless, non-crossover showcase steps down to just under the variant tier — a
@@ -9815,38 +9897,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             if printing_has_flavor_name(p) {
                 return default_score() - 32.0 * CLASS_BONUS;
             }
-            let frame_tier = if compat_flag(&p.compat, COMPAT_TEXTLESS) {
-                0.0
-            } else if printing_is_borderless(p, strings) {
-                // THE SAME-SET RULE. A set that prints both a showcase and a borderless treatment
-                // of the card wants its showcase answered (Clarion Conqueror: tdm/400 over
-                // tdm/377), so a borderless printing whose own set also holds a non-borderless,
-                // non-crossover showcase steps down to just UNDER the variant tier: below every
-                // variant, its set's showcase included; still above colorshifted, retro and plain;
-                // and a borderless from ANOTHER set stays on top. The keys inside the tier still
-                // apply, so a full-art same-set showcase does not overtake a text-boxed borderless
-                // (Leonardo, Cutting Edge keeps tmt/211 over tmt/281). 320 cards carry both shapes
-                // (2026-09-11); a plain showcase-above-borderless tier would have moved them all.
-                if has_same_set_showcase(p, siblings, &ids, strings) { 3.875 } else { 6.0 }
-            } else if printing_is_extended_art(p, &ids) {
-                // Extended art is its OWN tier under borderless, above every other variant — full
-                // art, showcase, inverted, etched — whatever their dates.
-                5.0
-            } else if printing_is_frame_variant(p, &ids, strings) {
-                4.0
-            } else if printing_is_colorshifted(p, &ids) {
-                // A timeshifted frame looks different, but every other variant and every
-                // borderless printing outranks it (Essence Warden's plc/145 answers because
-                // nothing else of hers looks different at all).
-                3.0
-            } else if printing_is_retro_frame(p, &ids) {
-                // The LAST check above plain: the retro frame. Kiki-Jiki, Mirror Breaker answers
-                // the Secret Lair sld/1659 over the Time Spiral Remastered tsr/346, both retro,
-                // on the default order's recency key inside the tier.
-                2.0
-            } else {
-                1.0
-            };
+            let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);
             // INSIDE a tier, a printing with a text box outranks a full-art one: Iron Man, Titan
             // of Innovation has two borderless printings, the full-art mar/91 and the Secret Lair
             // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
@@ -9857,6 +9908,9 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // black and answers. A quarter step, under the text-box key, and neither crosses a
             // tier or the same-set step above.
             let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
+            // ...and inside one set, the art rule: a finish twin yields, a later sheet of its own
+            // art wins (see `same_set_art_key`).
+            let art = same_set_art_key(p, siblings, frame_tier, &ids, strings);
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -9871,7 +9925,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // order the digital rows among THEMSELVES, so a card that exists only digitally (an
             // Alchemy card) still answers its borderless or extended-art printing.
             let digital_offset = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
-            (frame_tier + text_box + border + language_offset + digital_offset) * CLASS_BONUS + default_score()
+            (frame_tier + text_box + border + art + language_offset + digital_offset) * CLASS_BONUS + default_score()
         }
     }
 }

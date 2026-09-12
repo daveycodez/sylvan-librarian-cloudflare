@@ -41,7 +41,10 @@ export const UNIQUE_ON = {
  * Mirror Breaker answers the Secret Lair sld/1659), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
  * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), a black
  * border above a white one (Blood Pet answers its black-bordered foil 7ed/121★ over the pinned
- * white 7ed/121), and the default order decides after that. One exception to the top tier: a set
+ * white 7ed/121), then inside one set a higher-numbered printing with its own illustration
+ * wins and one sharing a lower printing's illustration is a finish twin and yields (Singularity
+ * Rupture answers the buy-a-box eoe/398; Stomping Ground eoe/283 over its galaxy-foil eoe/378),
+ * and the default order decides after that. One exception to the top tier: a set
  * that prints both a showcase and a borderless of a card answers its showcase (Clarion Conqueror
  * answers tdm/400 over tdm/377); the same-set borderless steps down to just under the variants,
  * a borderless from another set stays on top. A digital-only printing never answers while a
