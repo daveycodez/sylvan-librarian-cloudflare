@@ -9497,10 +9497,12 @@ pub(crate) struct PreferClassIds {
     /// `prefer:borderless`'s OWN tier, the last one above plain, and NOT part of the atypical
     /// class: Scryfall's measured class does not count it, and `is:atypical` must keep agreeing.
     colorshifted: u16,
-    /// `Printing.card_frame_data` member "1997" — the retro frame (Secret Lair and Time Spiral
-    /// Remastered reprints, the retro Booster Fun sheets). `prefer:borderless`'s bottom variant
-    /// tier, below colorshifted; not in the atypical class for the same reason.
+    /// `Printing.card_frame_data` members "1997" and "1993" — the retro frame (Secret Lair and
+    /// Time Spiral Remastered reprints, the retro Booster Fun sheets) and the original Alpha-to-
+    /// Revised frame it descends from. `prefer:borderless`'s bottom variant tier, below
+    /// colorshifted; not in the atypical class for the same reason.
     retro_frame: u16,
+    frame_1993: u16,
     /// `CompatFields.frame_effects` member `showcase`, on its own — the same id `frame_effects`
     /// holds, named so `prefer:borderless`'s same-set rule does not read it by array position.
     showcase: u16,
@@ -9519,6 +9521,7 @@ impl PreferClassIds {
         lang_en: VOCAB_NONE,
         colorshifted: VOCAB_NONE,
         retro_frame: VOCAB_NONE,
+        frame_1993: VOCAB_NONE,
         showcase: VOCAB_NONE,
         extendedart: VOCAB_NONE,
     };
@@ -9536,6 +9539,7 @@ impl PreferClassIds {
             lang_en: id("en"),
             colorshifted: id("colorshifted"),
             retro_frame: id("1997"),
+            frame_1993: id("1993"),
             showcase: id("showcase"),
             extendedart: id("extendedart"),
         }
@@ -9613,10 +9617,12 @@ fn printing_is_colorshifted(p: &APrinting, ids: &PreferClassIds) -> bool {
     ids.colorshifted != VOCAB_NONE && p.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.colorshifted)
 }
 
-/// The retro (1997) frame, read from the stored frame value the way the Future frame is. A tier
-/// of `prefer:borderless` alone — see `PreferClassIds::retro_frame`.
+/// The retro frame — Scryfall's 1997 and the original 1993 it descends from — read from the
+/// stored frame value the way the Future frame is. A tier of `prefer:borderless` alone — see
+/// `PreferClassIds::retro_frame`.
 fn printing_is_retro_frame(p: &APrinting, ids: &PreferClassIds) -> bool {
-    ids.retro_frame != VOCAB_NONE && p.card_frame_data.iter().any(|v| u16::from(*v) == ids.retro_frame)
+    let is = |want: u16| want != VOCAB_NONE && p.card_frame_data.iter().any(|v| u16::from(*v) == want);
+    is(ids.retro_frame) || is(ids.frame_1993)
 }
 
 /// Does this printing carry a flavor name — is it SOLD as someone else (Godzilla, Tidus,
@@ -9665,7 +9671,11 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// borderless, the Secret Lair sld/2435, over the in-universe spg/65 and sld/1708 (three
 /// borderless printings with text boxes, and the default order's recency key decides).
 /// Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
-/// original printing never carries a flavor name, so a candidate always exists. `EurLow`,
+/// original printing never carries a flavor name, so a candidate always exists. A DIGITAL-ONLY
+/// printing never answers while a paper one exists; a card that exists only digitally (an
+/// Alchemy card) still ranks its own printings by the tiers. The retro tier reads the 1993
+/// frame as well as 1997, so Tropical Island answers a black-bordered Alpha or Beta, not the
+/// Magic Online promo. `EurLow`,
 /// `EurHigh`, `TixLow` and `TixHigh` are the eur/tix twins of the usd pair; `prefer_for_sort`
 /// also reaches for the `*Low` ones to express "cheapest printing" under a price ordering.
 ///
@@ -9854,7 +9864,14 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let lang = u16::from(p.compat.lang_id);
             let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
             let language_offset = if foreign { -16.0 } else { 0.0 };
-            (frame_tier + text_box + border + language_offset) * CLASS_BONUS + default_score()
+            // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing
+            // exists — below every tier, every language and every crossover. Tropical Island's
+            // three retro-frame printings were all Magic Online (prm/43620, me3, me4) and it
+            // answered one; its paper retro printings are Alpha through Revised. The tiers still
+            // order the digital rows among THEMSELVES, so a card that exists only digitally (an
+            // Alchemy card) still answers its borderless or extended-art printing.
+            let digital_offset = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
+            (frame_tier + text_box + border + language_offset + digital_offset) * CLASS_BONUS + default_score()
         }
     }
 }

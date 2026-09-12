@@ -22,7 +22,7 @@ use super::{
     CompatFields, ExternalIdIndex, RelatedCard, build_external_id_index, find_printing_by_external_id,
     EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER,
     FuzzyOutcome, autocomplete_names, fuzzy_name_match, fuzzy_similarity, iso8601_utc_to_epoch_secs,
-    VOCAB_NONE, COMPAT_FULL_ART, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
+    VOCAB_NONE, COMPAT_DIGITAL, COMPAT_FULL_ART, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_TEXTLESS, GAME_PAPER, GAME_ARENA, FINISH_FOIL, FINISH_NONFOIL,
     TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
     TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
 };
@@ -17539,6 +17539,47 @@ fn prefer_borderless_ranks_extended_art_directly_under_borderless() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "borderless over extended art");
     // Not the atypical class' concern: `prefer:atypical` still ranks the class by default order.
     assert_eq!(representative(&data, "atypical", "name", "asc"), 2);
+}
+
+/// A DIGITAL-ONLY printing never answers `prefer:borderless` while a paper printing exists — not
+/// a borderless one, not one in any tier — while a card that exists only digitally (an Alchemy
+/// card) still ranks its own printings by the tiers. The retro tier reads the 1993 frame as well
+/// as 1997: Tropical Island's shape, three Magic Online retro printings and paper Alpha through
+/// Revised.
+#[test]
+fn prefer_borderless_never_answers_a_digital_printing_and_reads_the_1993_frame() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let frame_1993 = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("1993".to_owned());
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 3 borderless and digital: the plain paper id 1 answers.
+    data.printings[2].card_border_id = borderless;
+    data.printings[2].compat.flags = COMPAT_DIGITAL;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a paper plain over a digital borderless");
+    // Every printing digital: the tiers decide among them — the borderless id 3.
+    for p in &mut data.printings {
+        p.compat.flags = COMPAT_DIGITAL;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "all digital: the tiers still decide, the borderless");
+    for p in &mut data.printings {
+        p.compat.flags = 0;
+    }
+    data.printings[2].card_border_id = black;
+    // The 1993 frame is retro: id 4 in it answers over the plain printings...
+    data.printings[3].card_frame_data = vec![frame_1993];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "the 1993 frame is the retro tier");
+    // ...unless it is digital, when the paper plain answers again.
+    data.printings[3].compat.flags = COMPAT_DIGITAL;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a digital retro loses to a paper plain");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the

@@ -42,7 +42,8 @@ class PreferOrder(enum.StrEnum):
     # the printings with no flavor name, borderless, then extended art, then any other frame
     # variant, then the colorshifted frame, then the retro frame, then plain, then textless, a text box above full
     # art and a black border above a white one inside a tier; a set that prints both a showcase
-    # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); English above every other language;
+    # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); a digital-only
+    # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language;
     # a flavor-named (crossover) printing is never a candidate, and the Universes Beyond tag
     # alone demotes nothing. See the engine's `Prefer`.
     BORDERLESS = enum.auto()
