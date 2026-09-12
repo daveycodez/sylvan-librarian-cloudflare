@@ -17611,6 +17611,13 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     data.printings[1].artwork_group_id = 1;
     data.printings[2].artwork_group_id = 1;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a finish twin yields to the lower number");
+    // A twin LOOKS the same: turn the lower-numbered id 3 white (Blood Pet's 7ed/121 against its
+    // black foil 7ed/121★) and id 2 is no twin — it answers, on default order and its border.
+    data.strings.push("white".to_owned());
+    let white = (data.strings.len() - 1) as u32;
+    data.printings[2].card_border_id = white;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a different border is not a finish twin");
+    data.printings[2].card_border_id = black;
     // Its own illustration instead: the later sheet, and it wins — as the default already says.
     data.printings[1].artwork_group_id = 2;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a later sheet of its own art wins");

@@ -9633,7 +9633,9 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
 
 /// THE ART RULE, a tiebreak inside one set and one tier. Two same-set printings in the same tier
 /// differ in one of two ways. They share an illustration, and the higher-numbered one is a
-/// FINISH TWIN — Stomping Ground's galaxy-foil eoe/378 of its eoe/283 — that yields to the lower.
+/// FINISH TWIN — Stomping Ground's galaxy-foil eoe/378 of its eoe/283 — that yields to the lower
+/// (same illustration, same border, same full-art status: Blood Pet's black 7ed/121★ is no twin
+/// of the white 7ed/121).
 /// Or they carry different illustrations, and the higher-numbered one is the later, more premium
 /// sheet — Singularity Rupture's buy-a-box eoe/398 over its extended-art eoe/350 — and wins. A
 /// sixteenth of a class step either way, under every other key inside the tier; across sets the
@@ -9657,9 +9659,15 @@ fn same_set_art_key(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &Pref
         {
             continue;
         }
-        if u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id) {
+        // A twin LOOKS the same: same illustration, same border, same full-art status. Blood Pet's
+        // black-bordered foil 7ed/121★ shares its art with the white 7ed/121 and is not its twin —
+        // the border is the difference the ladder is for — so it takes no penalty and answers.
+        let same_look = u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id)
+            && u32::from(s.card_border_id) == u32::from(p.card_border_id)
+            && compat_flag(&s.compat, COMPAT_FULL_ART) == compat_flag(&p.compat, COMPAT_FULL_ART);
+        if same_look {
             twin = true;
-        } else {
+        } else if u16::from(s.artwork_group_id) != u16::from(p.artwork_group_id) {
             later = true;
         }
     }
