@@ -2538,7 +2538,7 @@ impl BufferStore {
         };
         let mut best: Option<(usize, f64)> = None;
         for pid in (start..end).filter(|&pid| passes(pid)) {
-            let score = super::prefer_score(card, &data.printings[pid], scope.prefer, &data.strings);
+            let score = super::prefer_score(card, &data.printings[pid], scope.prefer, &data.strings, &data.printings[start..end]);
             // Strict >, so the first printing in store order (the default pick) wins a tie — the
             // rule every representative choice in the engine uses.
             if best.is_none_or(|(_, s)| score > s) {

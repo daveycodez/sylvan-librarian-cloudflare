@@ -17452,6 +17452,45 @@ fn prefer_borderless_ranks_a_black_border_above_a_white_one_inside_a_tier() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "white plain over textless");
 }
 
+/// THE SAME-SET RULE: a set that prints both a showcase and a borderless treatment of a card
+/// answers its showcase — Clarion Conqueror's Tarkir Dragonstorm tdm/400 over tdm/377. The
+/// same-set borderless steps down to just under the variant tier: a borderless from ANOTHER set
+/// stays on top, a full-art same-set showcase still loses to the text-boxed borderless (the
+/// keys inside the tier apply as ever), and a crossover showcase does not trigger the step.
+#[test]
+fn prefer_borderless_answers_a_sets_own_showcase_over_its_borderless() {
+    let mut data = class_prefer_store();
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    data.strings.push("Spider-Gwen, Web-Warrior".to_owned());
+    let spider_gwen = (data.strings.len() - 1) as u32;
+    for p in &mut data.printings {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.card_set_code = InlineStr::from_str("tdm");
+    }
+    // class_prefer_store's id 2 is the showcase and id 3 the borderless; ids 1 and 4 are plain.
+    assert_eq!(data.printings[2].card_border_id, borderless);
+    assert_eq!(data.printings[1].card_border_id, black);
+    // Different sets: the borderless is the top tier, whatever the default order says.
+    data.printings[2].card_set_code = InlineStr::from_str("sld");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a borderless from another set stays on top");
+    // The same set: the set's showcase answers.
+    data.printings[2].card_set_code = InlineStr::from_str("tdm");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "the set's showcase over the set's borderless");
+    // ...unless the showcase is full art: the text-box key still favours the borderless.
+    data.printings[1].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a text-boxed borderless over a full-art same-set showcase");
+    data.printings[1].compat.flags = 0;
+    // A crossover showcase is no showcase of THIS card: no step, the borderless answers.
+    data.printings[1].flavor_name_id = spider_gwen;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a flavor-named showcase does not trigger the step");
+    data.printings[1].flavor_name_id = NONE_STR;
+    // No showcase at all, no step: the borderless is back on top.
+    data.printings[1].compat.frame_effects = data.printings[0].compat.frame_effects.clone();
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "no same-set showcase: the borderless");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

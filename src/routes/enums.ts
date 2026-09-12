@@ -40,7 +40,10 @@ export const UNIQUE_ON = {
  * Mirror Breaker answers the Secret Lair sld/1659), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
  * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), a black
  * border above a white one (Blood Pet answers its black-bordered foil 7ed/121★ over the pinned
- * white 7ed/121), and the default order decides after that. A flavor-named printing is never a candidate,
+ * white 7ed/121), and the default order decides after that. One exception to the top tier: a set
+ * that prints both a showcase and a borderless of a card answers its showcase (Clarion Conqueror
+ * answers tdm/400 over tdm/377); the same-set borderless steps down to just under the variants,
+ * a borderless from another set stays on top. A flavor-named printing is never a candidate,
  * because it is drawn and sold as someone else: Najeela, the Blade-Blossom's four borderless
  * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which

@@ -9501,6 +9501,9 @@ pub(crate) struct PreferClassIds {
     /// Remastered reprints, the retro Booster Fun sheets). `prefer:borderless`'s bottom variant
     /// tier, below colorshifted; not in the atypical class for the same reason.
     retro_frame: u16,
+    /// `CompatFields.frame_effects` member `showcase`, on its own — the same id `frame_effects`
+    /// holds, named so `prefer:borderless`'s same-set rule does not read it by array position.
+    showcase: u16,
 }
 
 impl PreferClassIds {
@@ -9513,6 +9516,7 @@ impl PreferClassIds {
         lang_en: VOCAB_NONE,
         colorshifted: VOCAB_NONE,
         retro_frame: VOCAB_NONE,
+        showcase: VOCAB_NONE,
     };
 
     pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
@@ -9528,6 +9532,7 @@ impl PreferClassIds {
             lang_en: id("en"),
             colorshifted: id("colorshifted"),
             retro_frame: id("1997"),
+            showcase: id("showcase"),
         }
     }
 }
@@ -9565,10 +9570,27 @@ fn printing_is_borderless(p: &APrinting, strings: &AStrings) -> bool {
 }
 
 /// The white border of the 1990s-2000s core sets and starter products — a key INSIDE a
-/// `prefer:borderless` tier, never a tier: every white-bordered printing is a plain-frame one, so
-/// the demotion only ever separates it from a black-bordered printing of the same frame.
+/// `prefer:borderless` tier, never a tier. Nearly every white-bordered printing is plain-frame;
+/// the exception is a showcase (Tarkir Dragonstorm's halo-foil tdm/410), which the key ranks
+/// under its black showcase siblings in the variant tier, exactly as intended.
 fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.card_border_id)) == Some("white")
+}
+
+/// THE SAME-SET RULE's trigger: does another printing of the card, in the same set and language,
+/// carry the showcase frame without being borderless or flavor-named? Tarkir Dragonstorm printed
+/// Clarion Conqueror as a showcase (tdm/400) and as a borderless (tdm/377), and the set's showcase
+/// is the one to answer. See `prefer_score`.
+fn has_same_set_showcase(p: &APrinting, siblings: &[APrinting], ids: &PreferClassIds, strings: &AStrings) -> bool {
+    ids.showcase != VOCAB_NONE
+        && siblings.iter().any(|s| {
+            !std::ptr::eq(s, p)
+                && s.card_set_code.as_str() == p.card_set_code.as_str()
+                && u16::from(s.compat.lang_id) == u16::from(p.compat.lang_id)
+                && !printing_is_borderless(s, strings)
+                && !printing_has_flavor_name(s)
+                && s.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.showcase)
+        })
 }
 
 /// The Planar Chaos timeshifted frame. A tier of `prefer:borderless` alone — see
@@ -9605,7 +9627,12 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
 /// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), and the default
-/// order decides after that. A textless printing prints no rules text, so it is the one variant that cannot be read;
+/// order decides after that. ONE exception to the top tier, the same-set rule: a set that prints
+/// both a showcase and a borderless treatment of a card wants its showcase answered (Clarion
+/// Conqueror answers tdm/400 over tdm/377), so a borderless printing whose own set also holds a
+/// non-borderless, non-crossover showcase steps down to just under the variant tier — a
+/// borderless from another set stays on top, and a text-boxed borderless still beats a full-art
+/// same-set showcase. A textless printing prints no rules text, so it is the one variant that cannot be read;
 /// Moonshaker Cavalry's Store Championship full-art sch/17 outranked its extended-art woe/325
 /// on default order and answered a card nobody could read. `textless` is the TIER signal and
 /// `full_art` only a key inside one: 1,797 of the corpus's 2,063 full-art printings carry their
@@ -9720,7 +9747,7 @@ fn mode_from_unique(unique: &str) -> Mode {
 /// Prefer score for one printing of a card; higher wins, and selection uses a
 /// strict > so the first-in-store-order printing wins ties (matching the tie
 /// behavior of the dedup paths this replaced).
-fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &AStrings) -> f64 {
+fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &AStrings, siblings: &[APrinting]) -> f64 {
     // A class prefer is "the class first, then the default order": every member outscores every
     // non-member, and inside each half the store's own prefer_score decides — which is what makes
     // `prefer:atypical` answer the store's BEST atypical printing rather than its first one.
@@ -9765,7 +9792,16 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let frame_tier = if compat_flag(&p.compat, COMPAT_TEXTLESS) {
                 0.0
             } else if printing_is_borderless(p, strings) {
-                5.0
+                // THE SAME-SET RULE. A set that prints both a showcase and a borderless treatment
+                // of the card wants its showcase answered (Clarion Conqueror: tdm/400 over
+                // tdm/377), so a borderless printing whose own set also holds a non-borderless,
+                // non-crossover showcase steps down to just UNDER the variant tier: below every
+                // variant, its set's showcase included; still above colorshifted, retro and plain;
+                // and a borderless from ANOTHER set stays on top. The keys inside the tier still
+                // apply, so a full-art same-set showcase does not overtake a text-boxed borderless
+                // (Leonardo, Cutting Edge keeps tmt/211 over tmt/281). 320 cards carry both shapes
+                // (2026-09-11); a plain showcase-above-borderless tier would have moved them all.
+                if has_same_set_showcase(p, siblings, &ids, strings) { 3.875 } else { 5.0 }
             } else if printing_is_frame_variant(p, &ids, strings) {
                 4.0
             } else if printing_is_colorshifted(p, &ids) {
@@ -9788,9 +9824,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
             // ...and a black border above a WHITE one, the thing nobody asking for "borderless"
             // wants to see: Blood Pet's 7ed/121 is white and pinned, its foil twin 7ed/121★ is
-            // black and answers. A quarter step, under the text-box key — the two never meet,
-            // since every white-bordered printing is plain-frame, so the order between them is
-            // moot; what matters is that neither crosses a tier.
+            // black and answers. A quarter step, under the text-box key, and neither crosses a
+            // tier or the same-set step above.
             let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
@@ -10747,7 +10782,7 @@ fn push_card_matches(
                         if !satisfies(pid) {
                             continue;
                         }
-                        let score = prefer_score(card, &printings[pid], prefer, strings);
+                        let score = prefer_score(card, &printings[pid], prefer, strings, &printings[start..end]);
                         if chosen.is_none_or(|(_, s)| score > s) {
                             chosen = Some((pid as u32, score));
                         }
@@ -10770,7 +10805,7 @@ fn push_card_matches(
                     if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
                         continue;
                     }
-                    let score = prefer_score(card, p, prefer, strings);
+                    let score = prefer_score(card, p, prefer, strings, &printings[start..end]);
                     if chosen.is_none_or(|(_, s)| score > s) {
                         chosen = Some((pid as u32, score));
                     }
@@ -10830,7 +10865,7 @@ fn push_card_matches(
                     if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) { continue; }
                     let gid = u16::from(p.artwork_group_id) as usize;
                     debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-                    let score = prefer_score(card, p, prefer, strings);
+                    let score = prefer_score(card, p, prefer, strings, &printings[start..end]);
                     match &group_best[gid] {
                         None => {
                             group_best[gid] = Some((pid as u32, score));
@@ -12849,7 +12884,7 @@ fn group_representative(
         if first_match_wins {
             return q;
         }
-        let score = prefer_score(card, &printings[q], prefer, strings);
+        let score = prefer_score(card, &printings[q], prefer, strings, &printings[start..end]);
         match best {
             // `score <= b` keeps the incumbent, so equal scores leave the LOWEST pid in place -- the
             // same tie resolution `walk_grouped_page`'s strict `score > *best` produces.
@@ -14370,7 +14405,7 @@ fn walk_grouped_page<'a>(
                         _ => 0, // Card: everything collapses into one group
                     };
                     debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-                    let score = prefer_score(card, &printings[pid], prefer, strings);
+                    let score = prefer_score(card, &printings[pid], prefer, strings, &printings[start..end]);
                     match &group_best[gid] {
                         None => {
                             group_best[gid] = Some((pid as u32, score));
@@ -14515,7 +14550,7 @@ fn walk_card_page_via_popcount_skip<'a>(
                 if !is_set(pid) {
                     continue;
                 }
-                let score = prefer_score(card, &printings[pid], prefer, strings);
+                let score = prefer_score(card, &printings[pid], prefer, strings, &printings[start..end]);
                 if best.is_none_or(|(_, s)| score > s) {
                     best = Some((pid as u32, score));
                 }
@@ -14745,7 +14780,7 @@ fn walk_artwork_page_via_popcount_skip<'a>(
             }
             let gid = u16::from(printings[pid].artwork_group_id) as usize;
             debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-            let score = prefer_score(card, &printings[pid], prefer, strings);
+            let score = prefer_score(card, &printings[pid], prefer, strings, &printings[start..end]);
             match &group_best[gid] {
                 None => {
                     group_best[gid] = Some((pid as u32, score));
@@ -14877,7 +14912,7 @@ fn gather_composed_page<'a>(
                         _ => 0, // Card: everything collapses into one group
                     };
                     debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
-                    let score = prefer_score(card, &printings[pid], prefer, strings);
+                    let score = prefer_score(card, &printings[pid], prefer, strings, &printings[start..end]);
                     match &group_best[gid] {
                         None => {
                             group_best[gid] = Some((pid as u32, score));
@@ -16597,6 +16632,12 @@ pub(crate) fn vpid_of_ref(data: &Archived<CardData>, p: &APrinting) -> u32 {
 /// then the annex range, each already in prefer-desc store order. That order is load-bearing
 /// twice over — ties in every "best row" selection resolve to the earlier row, and
 /// `select_page`'s vpid tiebreak keeps canonical rows ahead of annex rows of the same card.
+/// A card's CANONICAL printings — the siblings `prefer_score`'s same-set rule looks across.
+fn canonical_printings(data: &Archived<CardData>, cid: usize) -> &[APrinting] {
+    let (cs, ce) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+    &data.printings[cs..ce]
+}
+
 fn widened_rows(data: &Archived<CardData>, cid: usize) -> impl Iterator<Item = (u32, &APrinting)> {
     let n = data.printings.len() as u32;
     let (cs, ce) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
@@ -16647,7 +16688,7 @@ fn annex_representative(
     let canonical: Vec<(&APrinting, f64)> = widened_rows(data, cid)
         .filter(|&(vpid, _)| vpid < n)
         .filter(|(_, p)| FilterExpr::residual_matches(card, p, &data.strings, &loose, false))
-        .map(|(_, p)| (p, prefer_score(card, p, params.prefer, &data.strings)))
+        .map(|(_, p)| (p, prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid))))
         .collect();
     let slot_score = |a: &APrinting| -> Option<f64> {
         canonical
@@ -16664,7 +16705,7 @@ fn annex_representative(
         if vpid < n || !FilterExpr::residual_matches(card, p, &data.strings, &full, false) {
             continue;
         }
-        let key = (slot_score(p), prefer_score(card, p, params.prefer, &data.strings));
+        let key = (slot_score(p), prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid)));
         // Strict >, so the earliest row wins a tie — the same rule phase 1 uses, and what keeps
         // this a REORDERING of equally-ranked rows rather than a new preference.
         if best.is_none_or(|(_, sc, own)| (key.0, key.1) > (sc, own)) {
@@ -16748,7 +16789,7 @@ fn run_query_widened<'a>(
                     if !matches(card, p) {
                         continue;
                     }
-                    let score = prefer_score(card, p, params.prefer, &data.strings);
+                    let score = prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid as usize));
                     if best.is_none_or(|(_, s)| score > s) {
                         best = Some((vpid, score));
                     }
@@ -16782,7 +16823,7 @@ fn run_query_widened<'a>(
                         continue;
                     }
                     let gid = u16::from(p.artwork_group_id) as usize;
-                    let score = prefer_score(card, p, params.prefer, &data.strings);
+                    let score = prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid as usize));
                     match group_best[gid] {
                         None => {
                             group_best[gid] = Some((vpid, score));
@@ -17572,7 +17613,7 @@ fn run_query_streamed_popcount<'a>(
                         if !satisfies(pid) {
                             continue;
                         }
-                        let score = prefer_score(card, &printings[pid], prefer, strings);
+                        let score = prefer_score(card, &printings[pid], prefer, strings, &printings[start..end]);
                         if best.is_none_or(|(_, s)| score > s) {
                             best = Some((pid as u32, score));
                         }
