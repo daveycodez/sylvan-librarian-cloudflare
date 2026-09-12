@@ -17414,6 +17414,44 @@ fn prefer_borderless_ranks_the_retro_frame_at_the_bottom_of_the_variants() {
     assert_eq!(representative(&data, "atypical", "name", "asc"), 1, "retro is not atypical");
 }
 
+/// A WHITE border ranks below a black one inside a tier — Blood Pet's shape: five retro-frame
+/// printings, the pinned 7ed/121 white and its foil twin 7ed/121★ black, and the black one
+/// answers. Inside a tier only: a white plain printing still outranks a textless one, and the
+/// key never lifts a white printing over a black one of a better tier.
+#[test]
+fn prefer_borderless_ranks_a_black_border_above_a_white_one_inside_a_tier() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    data.strings.push("white".to_owned());
+    let white = (data.strings.len() - 1) as u32;
+    let retro = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("1997".to_owned());
+    let black = data.printings[0].card_border_id;
+    data.printings[1].compat.frame_effects = vec![legendary];
+    data.printings[2].card_border_id = black;
+    for p in &mut data.printings {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain and black: the default pick");
+    // The default pick turns white: the next black printing answers.
+    data.printings[0].card_border_id = white;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "black over white in the plain tier");
+    // Retro tier, Blood Pet's own shape: ids 1 and 2 retro, id 1 white — id 2 answers.
+    data.printings[0].card_frame_data = vec![retro];
+    data.printings[1].card_frame_data = vec![retro];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "black over white in the retro tier");
+    // Never across a tier: make id 2 plain-frame and the white retro id 1 is back on top.
+    data.printings[1].card_frame_data = data.printings[2].card_frame_data.clone();
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a white retro over a black plain");
+    // ...and a white plain printing still outranks a textless one.
+    data.printings[0].card_frame_data = data.printings[2].card_frame_data.clone();
+    data.printings[1].compat.flags = COMPAT_TEXTLESS;
+    data.printings[2].compat.flags = COMPAT_TEXTLESS;
+    data.printings[3].compat.flags = COMPAT_TEXTLESS;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "white plain over textless");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

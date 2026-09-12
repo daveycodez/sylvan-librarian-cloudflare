@@ -38,8 +38,9 @@ export const UNIQUE_ON = {
  * flavor name, five tiers — borderless, then any other frame variant, then the colorshifted
  * Planar Chaos frame (Essence Warden answers plc/145), then the retro 1997 frame (Kiki-Jiki,
  * Mirror Breaker answers the Secret Lair sld/1659), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
- * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), and
- * the default order decides after that. A flavor-named printing is never a candidate,
+ * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), a black
+ * border above a white one (Blood Pet answers its black-bordered foil 7ed/121★ over the pinned
+ * white 7ed/121), and the default order decides after that. A flavor-named printing is never a candidate,
  * because it is drawn and sold as someone else: Najeela, the Blade-Blossom's four borderless
  * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which

@@ -9564,6 +9564,13 @@ fn printing_is_borderless(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.card_border_id)) == Some("borderless")
 }
 
+/// The white border of the 1990s-2000s core sets and starter products — a key INSIDE a
+/// `prefer:borderless` tier, never a tier: every white-bordered printing is a plain-frame one, so
+/// the demotion only ever separates it from a black-bordered printing of the same frame.
+fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
+    str_at(strings, u32::from(p.card_border_id)) == Some("white")
+}
+
 /// The Planar Chaos timeshifted frame. A tier of `prefer:borderless` alone — see
 /// `PreferClassIds::colorshifted` for why it is not in the atypical class.
 fn printing_is_colorshifted(p: &APrinting, ids: &PreferClassIds) -> bool {
@@ -9596,8 +9603,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// retro printings), then the plain printings, then the TEXTLESS ones. The colorshifted and
 /// retro tiers are this prefer's own and stay out of the atypical class. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
-/// sld/1731 over the full-art mar/91, both borderless), and the default order decides after
-/// that. A textless printing prints no rules text, so it is the one variant that cannot be read;
+/// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
+/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), and the default
+/// order decides after that. A textless printing prints no rules text, so it is the one variant that cannot be read;
 /// Moonshaker Cavalry's Store Championship full-art sch/17 outranked its extended-art woe/325
 /// on default order and answered a card nobody could read. `textless` is the TIER signal and
 /// `full_art` only a key inside one: 1,797 of the corpus's 2,063 full-art printings carry their
@@ -9743,7 +9751,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
         Prefer::NotUniversesBeyond(ids) => class_score(!printing_is_universes_beyond(p, &ids)),
         // Six tiers — borderless, variant, colorshifted, retro frame, plain, textless — a text box
-        // above full art inside each, and a flavor-named printing below all of them: with at least one same-named
+        // above full art and black above white inside each, and a flavor-named printing below all of them: with at least one same-named
         // printing on every card, it can never be the answer. A Universes Beyond printing under
         // the card's OWN name is not demoted: Soul Warden answers its newest borderless, the
         // Secret Lair sld/2435, crossover tag and all. Textless is checked FIRST: it is a frame
@@ -9778,6 +9786,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
             // a tier and never crosses one — a full-art borderless still beats every other variant.
             let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
+            // ...and a black border above a WHITE one, the thing nobody asking for "borderless"
+            // wants to see: Blood Pet's 7ed/121 is white and pinned, its foil twin 7ed/121★ is
+            // black and answers. A quarter step, under the text-box key — the two never meet,
+            // since every white-bordered printing is plain-frame, so the order between them is
+            // moot; what matters is that neither crosses a tier.
+            let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -9785,7 +9799,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             let lang = u16::from(p.compat.lang_id);
             let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
             let language_offset = if foreign { -16.0 } else { 0.0 };
-            (frame_tier + text_box + language_offset) * CLASS_BONUS + default_score()
+            (frame_tier + text_box + border + language_offset) * CLASS_BONUS + default_score()
         }
     }
 }
