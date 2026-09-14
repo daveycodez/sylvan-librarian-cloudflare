@@ -9965,11 +9965,15 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // black and answers. A quarter step, under the text-box key, and neither crosses a
             // tier or the same-set step above.
             let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
-            // ...and any other set above a SECRET LAIR: Terror of the Peaks answers the Spotlight
-            // Series pspl/1 over the Secret Lair sld/2650, both borderless with a text box. Three
-            // sixteenths — under the text-box and border keys, over the same-set step and the scan
-            // key — so a Secret Lair with a text box still beats another set's full-art borderless.
-            let set_key = if printing_is_secret_lair(p, strings) { 0.0 } else { 0.1875 };
+            // ...and among the BORDERLESS printings, any other set above a Secret Lair: Terror of
+            // the Peaks answers the Spotlight Series pspl/1 over the Secret Lair sld/2650, both
+            // borderless with a text box. The borderless tier only — a Secret Lair retro or
+            // extended art ranks with its tier-mates on the default order, so Kiki-Jiki keeps the
+            // Secret Lair sld/1659 over tsr/346. Three sixteenths, under the text-box and border
+            // keys and over the scan key, so a Secret Lair borderless with a text box still beats
+            // another set's full-art borderless. The TOP borderless tier only: a borderless the
+            // same-set rule stepped down takes no key, or it would climb back over its set's showcase.
+            let set_key = if frame_tier > 5.0 && !printing_is_secret_lair(p, strings) { 0.1875 } else { 0.0 };
             // ...and a real scan above a placeholder or low-resolution image (Scryfall's
             // `highres_image`): a brand-new printing Scryfall has not scanned yet does not answer
             // while a scanned one of the same tier exists. A sixteenth, under the same-set step
