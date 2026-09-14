@@ -17334,18 +17334,20 @@ fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     // Both full art: neither is borderless any more — both are ordinary variants — and the
     // text-boxed showcase id 2 answers over them.
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "both full art: ordinary variants now, the text-boxed showcase answers");
-    // Strip id 2's showcase: among the two full-art borderless the default order decides — id 3.
+    // Strip id 2's showcase: FULL ART EARNS NOTHING, so the two full-art borderless rank among the
+    // plain printings and, by the text-box key, under them — the plain id 1 answers (Innkeeper's
+    // Talent's shape: the plain blb/180 over the Secret Lair poster slp/45).
     let showcase_fx = data.printings[1].compat.frame_effects.clone();
     data.printings[1].compat.frame_effects = data.printings[0].compat.frame_effects.clone();
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "both full art, no other variant: default order decides");
-    // Never across a tier: make id 4 a plain black-bordered printing and the full-art borderless
-    // id 3 beats it — an ordinary variant beats plain. Give id 4 the showcase frame, a text-boxed
-    // variant of the same tier, and the text box wins (Darksteel Plate's shape).
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "full art earns nothing: a text-boxed plain printing over full art");
+    // Make id 4 a plain black-bordered printing: still id 1, the plain printings deciding by
+    // default order. Give id 4 the showcase frame, a text-boxed variant, and it wins outright
+    // (Darksteel Plate's shape).
     data.printings[3].compat.flags = 0;
     data.printings[3].card_border_id = black;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a full-art borderless over a plain printing");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "plain printings decide by default order");
     data.printings[3].compat.frame_effects = showcase_fx;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a text-boxed variant over a full-art borderless, an ordinary variant now");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a text-boxed variant over a full-art borderless");
 }
 
 /// `colorshifted` — the Planar Chaos timeshifted frame — is a tier of its own, the LAST one above

@@ -9594,6 +9594,14 @@ fn printing_is_secret_lair(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.set_name_id)).is_some_and(|name| name.contains("Secret Lair"))
 }
 
+/// The variant tier of `prefer:borderless`: a variant frame EFFECT (inverted, showcase,
+/// extendedart, etched, shatteredglass) or the Future frame — `printing_is_frame_variant` less
+/// full art, textless and the border, which this ladder handles on its own terms.
+fn printing_has_variant_frame(p: &APrinting, ids: &PreferClassIds) -> bool {
+    let has = |list: &Archived<Vec<u16>>, want: u16| want != VOCAB_NONE && list.iter().any(|v| u16::from(*v) == want);
+    ids.frame_effects.iter().any(|&fx| has(&p.compat.frame_effects, fx)) || has(&p.card_frame_data, ids.future_frame)
+}
+
 /// The extended-art frame — `prefer:borderless`'s own tier under borderless. Sheltered Thicket
 /// has no borderless printing; its Fallout extended art pip/508 answers over the newer Secret
 /// Lair sld/2522, whose `inverted` retro frame is an ordinary variant.
@@ -9611,9 +9619,9 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
         // A FULL-ART borderless is NOT borderless here. Its text, when it has any, is printed over
         // the art and is often not legible — the Secret Lair posters, the Booster Fun full-arts —
         // and Scryfall records nothing finer than `full_art` and `textless`, so there is no way to
-        // tell a readable one from the rest. It falls through to the variant tiers, where the
-        // text-box key keeps it under the text-boxed variants: Darksteel Plate answers the etched
-        // 2x2/559 over the Secret Lair poster sld/1572, its only borderless printing.
+        // tell a readable one from the rest. It falls through — to a real treatment's tier if it
+        // carries one, else to the plain printings, where the text-box key ranks it last: Darksteel
+        // Plate answers the etched 2x2/559 over the Secret Lair poster sld/1572, its only borderless.
         // THE SAME-SET RULE. A set that prints both a showcase and a borderless treatment
         // of the card wants its showcase answered (Clarion Conqueror: tdm/400 over
         // tdm/377), so a borderless printing whose own set also holds a non-borderless,
@@ -9628,7 +9636,12 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
         // Extended art is its OWN tier under borderless, above every other variant — full
         // art, showcase, inverted, etched — whatever their dates.
         5.0
-    } else if printing_is_frame_variant(p, &ids, strings) {
+    } else if printing_has_variant_frame(p, &ids) {
+        // A frame effect or the Future frame. FULL ART EARNS NOTHING here — it is a variant to the
+        // atypical class, which is Scryfall's, but not to this prefer: its text, when it has any,
+        // is printed over the art. A full-art printing with no other treatment lands among the
+        // plain printings, where the text-box key already ranks it last, so Innkeeper's Talent
+        // answers the plain blb/180 over the Secret Lair poster slp/45.
         4.0
     } else if printing_is_colorshifted(p, &ids) {
         // A timeshifted frame looks different, but every other variant and every
@@ -9776,12 +9789,15 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
 /// printings that carry NO flavor name, seven tiers — borderless (a FULL-ART borderless is NOT borderless here: its text, when it has
-/// any, is printed over the art and Scryfall cannot say how legibly, so it ranks as an ordinary
-/// variant — Darksteel Plate answers the etched 2x2/559 over the Secret Lair poster sld/1572, its
+/// any, is printed over the art and Scryfall cannot say how legibly, so it ranks among the plain
+/// printings — Darksteel Plate answers the etched 2x2/559 over the Secret Lair poster sld/1572, its
 /// only borderless printing), then EXTENDED ART (its own
 /// tier, above full art and every other variant: Sheltered Thicket answers the Fallout pip/508
 /// over the newer Secret Lair sld/2522, whose inverted retro frame is an ordinary variant), then
-/// any other frame variant, then the `colorshifted` Planar Chaos frame (Essence Warden answers plc/145, the one
+/// any other frame variant — a variant frame EFFECT or the Future frame; full art earns nothing
+/// anywhere in this ladder, so a full-art printing with no other treatment ranks among the plain
+/// ones and, by the text-box key, last among them (Innkeeper's Talent answers the plain blb/180
+/// over the Secret Lair poster slp/45) — then the `colorshifted` Planar Chaos frame (Essence Warden answers plc/145, the one
 /// printing of hers that looks different), then the RETRO 1997 frame (Kiki-Jiki, Mirror Breaker
 /// answers the Secret Lair sld/1659 over the Time Spiral Remastered tsr/346, the newer of two
 /// retro printings), then the plain printings, then the TEXTLESS ones. The colorshifted and
@@ -9972,7 +9988,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // of Innovation has two borderless printings, the full-art mar/91 and the Secret Lair
             // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
             // a tier and never crosses one. A full-art borderless is not in the borderless tier at
-            // all (see `borderless_frame_tier`); it ranks as an ordinary variant, under this key.
+            // all (see `borderless_frame_tier`); with no other treatment it ranks among the plain
+            // printings, last by this key.
             let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
             // ...and a black border above a WHITE one, the thing nobody asking for "borderless"
             // wants to see: Blood Pet's 7ed/121 is white and pinned, its foil twin 7ed/121★ is
