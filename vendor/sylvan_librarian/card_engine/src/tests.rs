@@ -17696,6 +17696,42 @@ fn prefer_borderless_ranks_a_real_scan_above_a_placeholder_inside_a_tier() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "an unscanned borderless still beats a scanned plain");
 }
 
+/// Any other set ranks above a SECRET LAIR inside a tier — Terror of the Peaks' shape, the
+/// Spotlight Series pspl/1 over the Secret Lair sld/2650 — under the text-box key (a Secret Lair
+/// with a text box still beats another set's full-art borderless) and never across a tier (a
+/// Secret Lair borderless still beats another set's extended art).
+#[test]
+fn prefer_borderless_ranks_any_other_set_above_a_secret_lair_inside_a_tier() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let extendedart = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("extendedart".to_owned());
+    data.strings.push("Secret Lair Drop".to_owned());
+    let secret_lair = (data.strings.len() - 1) as u32;
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "sld", "ccc", "ddd"][i]);
+    }
+    // id 2 is the Secret Lair; ids 2 and 3 are the borderless printings, id 2 first by default.
+    data.printings[1].set_name_id = secret_lair;
+    data.printings[1].card_border_id = borderless;
+    data.printings[2].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "another set's borderless over the Secret Lair's");
+    // Under the text-box key: make id 3 full art and the Secret Lair answers.
+    data.printings[2].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair with a text box over a full-art borderless");
+    data.printings[2].compat.flags = 0;
+    // Never across a tier: make id 3 an extended art and the Secret Lair borderless answers.
+    data.printings[2].card_border_id = black;
+    data.printings[2].compat.frame_effects = vec![legendary, extendedart];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair borderless over another set's extended art");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.
