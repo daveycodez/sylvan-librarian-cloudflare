@@ -9587,8 +9587,9 @@ fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
 }
 
 /// A Secret Lair printing — Drop, Ultimate Edition, Countdown, Promo, Showcase Planes — read from
-/// the set NAME so a new Secret Lair set code needs no list. A key inside a `prefer:borderless`
-/// tier: every other set's printing of the same tier ranks above it.
+/// the set NAME so a new Secret Lair set code needs no list. A key inside the BORDERLESS tier of `prefer:borderless`:
+/// every other set's borderless printing ranks above it; in the frame tiers a Secret Lair ranks
+/// with its tier-mates.
 fn printing_is_secret_lair(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.set_name_id)).is_some_and(|name| name.contains("Secret Lair"))
 }
@@ -9778,8 +9779,10 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// retro tiers are this prefer's own and stay out of the atypical class. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
-/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), any other set
-/// above a Secret Lair (Terror of the Peaks answers the Spotlight Series pspl/1 over sld/2650), a
+/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), among the
+/// borderless any other set above a Secret Lair (Terror of the Peaks answers the Spotlight Series
+/// pspl/1 over sld/2650; Kiki-Jiki keeps its Secret Lair retro sld/1659, the frame tiers being
+/// exempt), a
 /// real scan above a placeholder or low-resolution image, then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over

@@ -17696,12 +17696,13 @@ fn prefer_borderless_ranks_a_real_scan_above_a_placeholder_inside_a_tier() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "an unscanned borderless still beats a scanned plain");
 }
 
-/// Any other set ranks above a SECRET LAIR inside a tier — Terror of the Peaks' shape, the
-/// Spotlight Series pspl/1 over the Secret Lair sld/2650 — under the text-box key (a Secret Lair
-/// with a text box still beats another set's full-art borderless) and never across a tier (a
-/// Secret Lair borderless still beats another set's extended art).
+/// Among the BORDERLESS printings any other set ranks above a SECRET LAIR — Terror of the Peaks'
+/// shape, the Spotlight Series pspl/1 over the Secret Lair sld/2650 — under the text-box key (a
+/// Secret Lair with a text box still beats another set's full-art borderless), never across a
+/// tier (a Secret Lair borderless still beats another set's extended art), and in the frame
+/// tiers not at all (Kiki-Jiki keeps its Secret Lair retro sld/1659 over tsr/346).
 #[test]
-fn prefer_borderless_ranks_any_other_set_above_a_secret_lair_inside_a_tier() {
+fn prefer_borderless_ranks_any_other_set_above_a_secret_lair_among_the_borderless() {
     let mut data = class_prefer_store();
     let legendary = data.printings[0].compat.frame_effects[0];
     let extendedart = data.coll_vocab.len() as u16;
@@ -17730,6 +17731,15 @@ fn prefer_borderless_ranks_any_other_set_above_a_secret_lair_inside_a_tier() {
     data.printings[2].card_border_id = black;
     data.printings[2].compat.frame_effects = vec![legendary, extendedart];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair borderless over another set's extended art");
+    // The frame tiers are exempt: two retro printings, the Secret Lair first by default, and it
+    // stays first (Kiki-Jiki's sld/1659 over tsr/346).
+    let retro = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("1997".to_owned());
+    data.printings[1].card_border_id = black;
+    data.printings[1].card_frame_data = vec![retro];
+    data.printings[2].compat.frame_effects = vec![legendary];
+    data.printings[2].card_frame_data = vec![retro];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair retro ranks with its tier-mates");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
