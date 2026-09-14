@@ -9782,7 +9782,8 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), among the
 /// borderless any other set above a Secret Lair (Terror of the Peaks answers the Spotlight Series
 /// pspl/1 over sld/2650; Kiki-Jiki keeps its Secret Lair retro sld/1659, the frame tiers being
-/// exempt), a
+/// exempt), among the borderless a plain frame above a showcase frame (Gandalf the White answers
+/// ltr/442 over the showcase-framed ltr/797), a
 /// real scan above a placeholder or low-resolution image, then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
@@ -9977,6 +9978,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // another set's full-art borderless. The TOP borderless tier only: a borderless the
             // same-set rule stepped down takes no key, or it would climb back over its set's showcase.
             let set_key = if frame_tier > 5.0 && !printing_is_secret_lair(p, strings) { 0.1875 } else { 0.0 };
+            // ...and among the borderless, a PLAIN frame above a showcase frame: Gandalf the White
+            // answers the inverted ltr/442 over the showcase-framed surge-foil ltr/797, though 797
+            // is the scanned one. Three thirty-seconds — under the Secret Lair key, over the scan
+            // key. The top borderless tier only, as with the Secret Lair key.
+            let is_showcase_frame = ids.showcase != VOCAB_NONE && p.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.showcase);
+            let plain_frame = if frame_tier > 5.0 && !is_showcase_frame { 0.09375 } else { 0.0 };
             // ...and a real scan above a placeholder or low-resolution image (Scryfall's
             // `highres_image`): a brand-new printing Scryfall has not scanned yet does not answer
             // while a scanned one of the same tier exists. A sixteenth, under the same-set step
@@ -10009,7 +10016,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             } else {
                 default_score()
             };
-            (frame_tier + text_box + border + set_key + scan + language_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + border + set_key + plain_frame + scan + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

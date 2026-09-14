@@ -17742,6 +17742,41 @@ fn prefer_borderless_ranks_any_other_set_above_a_secret_lair_among_the_borderles
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair retro ranks with its tier-mates");
 }
 
+/// Among the BORDERLESS printings a plain frame ranks above a showcase frame — Gandalf the White's
+/// shape, the inverted ltr/442 over the scanned showcase-framed ltr/797 — over the scan key, under
+/// the Secret Lair key and the text-box key.
+#[test]
+fn prefer_borderless_ranks_a_plain_frame_above_a_showcase_frame_among_the_borderless() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let showcase = data.coll_vocab.iter().position(|s| s.as_str() == "showcase").expect("showcase") as u16;
+    data.strings.push("Secret Lair Drop".to_owned());
+    let secret_lair = (data.strings.len() - 1) as u32;
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 2: showcase-framed borderless, scanned, first by default. id 3: plain-frame borderless,
+    // unscanned. The plain frame answers.
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].compat.frame_effects = vec![legendary, showcase];
+    data.printings[1].compat.flags = COMPAT_HIGHRES_IMAGE;
+    data.printings[2].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a plain-frame borderless over a scanned showcase-framed one");
+    // Under the Secret Lair key: make the plain frame a Secret Lair and the showcase answers.
+    data.printings[2].set_name_id = secret_lair;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair plain frame under another set's showcase frame");
+    data.printings[2].set_name_id = NONE_STR;
+    // Under the text-box key: make the plain frame full art and the showcase answers.
+    data.printings[2].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a full-art plain frame under a text-boxed showcase frame");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

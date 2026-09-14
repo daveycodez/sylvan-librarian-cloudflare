@@ -41,7 +41,7 @@ class PreferOrder(enum.StrEnum):
     # This API's own, not Scryfall's: the best-looking printing that is still this card -- over
     # the printings with no flavor name, borderless, then extended art, then any other frame
     # variant, then the colorshifted frame, then the retro frame, then plain, then textless, a text box above full
-    # art and a black border above a white one inside a tier, among the borderless any other set above a Secret Lair, a
+    # art and a black border above a white one inside a tier, among the borderless any other set above a Secret Lair and a plain frame above a showcase frame, a
     # highres scan above a placeholder, and inside one set a later sheet of
     # its own art above a lower number while a same-art finish twin yields; a set that prints both a showcase
     # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); a digital-only
