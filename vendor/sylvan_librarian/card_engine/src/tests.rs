@@ -17313,8 +17313,8 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
 /// INSIDE a tier a printing with a TEXT BOX outranks a full-art one — Iron Man, Titan of
 /// Innovation's shape: two same-named borderless printings, the full-art mar/91 ranked first by
 /// default and the Secret Lair sld/1731 with its text box, and the readable one answers. A half
-/// step inside the tier and never across one: a full-art borderless still beats every other
-/// variant and every plain printing.
+/// step inside the tier and never across one. A full-art borderless is not borderless at all: it
+/// ranks as an ordinary variant, above every plain printing and under a text-boxed variant.
 #[test]
 fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     let mut data = class_prefer_store();
@@ -17331,14 +17331,21 @@ fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     data.printings[3].compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "the borderless printing with a text box");
     data.printings[3].compat.flags = COMPAT_FULL_ART;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "both full art: default order decides");
+    // Both full art: neither is borderless any more — both are ordinary variants — and the
+    // text-boxed showcase id 2 answers over them.
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "both full art: ordinary variants now, the text-boxed showcase answers");
+    // Strip id 2's showcase: among the two full-art borderless the default order decides — id 3.
+    let showcase_fx = data.printings[1].compat.frame_effects.clone();
+    data.printings[1].compat.frame_effects = data.printings[0].compat.frame_effects.clone();
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "both full art, no other variant: default order decides");
     // Never across a tier: make id 4 a plain black-bordered printing and the full-art borderless
-    // id 3 beats it; make it a text-boxed showcase (the variant tier) and id 3 still does.
+    // id 3 beats it — an ordinary variant beats plain. Give id 4 the showcase frame, a text-boxed
+    // variant of the same tier, and the text box wins (Darksteel Plate's shape).
     data.printings[3].compat.flags = 0;
     data.printings[3].card_border_id = black;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a full-art borderless over a plain printing");
-    data.printings[3].compat.frame_effects = data.printings[1].compat.frame_effects.clone();
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a full-art borderless over a text-boxed variant");
+    data.printings[3].compat.frame_effects = showcase_fx;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a text-boxed variant over a full-art borderless, an ordinary variant now");
 }
 
 /// `colorshifted` — the Planar Chaos timeshifted frame — is a tier of its own, the LAST one above
@@ -17725,7 +17732,7 @@ fn prefer_borderless_ranks_any_other_set_above_a_secret_lair_among_the_borderles
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "another set's borderless over the Secret Lair's");
     // Under the text-box key: make id 3 full art and the Secret Lair answers.
     data.printings[2].compat.flags = COMPAT_FULL_ART;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair with a text box over a full-art borderless");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a Secret Lair borderless over a full-art one, an ordinary variant now");
     data.printings[2].compat.flags = 0;
     // Never across a tier: make id 3 an extended art and the Secret Lair borderless answers.
     data.printings[2].card_border_id = black;

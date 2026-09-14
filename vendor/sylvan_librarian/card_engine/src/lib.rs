@@ -9607,7 +9607,13 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
     let ids = *ids;
     if compat_flag(&p.compat, COMPAT_TEXTLESS) {
         0.0
-    } else if printing_is_borderless(p, strings) {
+    } else if printing_is_borderless(p, strings) && !compat_flag(&p.compat, COMPAT_FULL_ART) {
+        // A FULL-ART borderless is NOT borderless here. Its text, when it has any, is printed over
+        // the art and is often not legible — the Secret Lair posters, the Booster Fun full-arts —
+        // and Scryfall records nothing finer than `full_art` and `textless`, so there is no way to
+        // tell a readable one from the rest. It falls through to the variant tiers, where the
+        // text-box key keeps it under the text-boxed variants: Darksteel Plate answers the etched
+        // 2x2/559 over the Secret Lair poster sld/1572, its only borderless printing.
         // THE SAME-SET RULE. A set that prints both a showcase and a borderless treatment
         // of the card wants its showcase answered (Clarion Conqueror: tdm/400 over
         // tdm/377), so a borderless printing whose own set also holds a non-borderless,
@@ -9769,7 +9775,10 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
-/// printings that carry NO flavor name, seven tiers — borderless, then EXTENDED ART (its own
+/// printings that carry NO flavor name, seven tiers — borderless (a FULL-ART borderless is NOT borderless here: its text, when it has
+/// any, is printed over the art and Scryfall cannot say how legibly, so it ranks as an ordinary
+/// variant — Darksteel Plate answers the etched 2x2/559 over the Secret Lair poster sld/1572, its
+/// only borderless printing), then EXTENDED ART (its own
 /// tier, above full art and every other variant: Sheltered Thicket answers the Fallout pip/508
 /// over the newer Secret Lair sld/2522, whose inverted retro frame is an ordinary variant), then
 /// any other frame variant, then the `colorshifted` Planar Chaos frame (Essence Warden answers plc/145, the one
@@ -9962,7 +9971,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // INSIDE a tier, a printing with a text box outranks a full-art one: Iron Man, Titan
             // of Innovation has two borderless printings, the full-art mar/91 and the Secret Lair
             // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
-            // a tier and never crosses one — a full-art borderless still beats every other variant.
+            // a tier and never crosses one. A full-art borderless is not in the borderless tier at
+            // all (see `borderless_frame_tier`); it ranks as an ordinary variant, under this key.
             let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
             // ...and a black border above a WHITE one, the thing nobody asking for "borderless"
             // wants to see: Blood Pet's 7ed/121 is white and pinned, its foil twin 7ed/121★ is
@@ -9975,7 +9985,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // extended art ranks with its tier-mates on the default order, so Kiki-Jiki keeps the
             // Secret Lair sld/1659 over tsr/346. Three sixteenths, under the text-box and border
             // keys and over the scan key, so a Secret Lair borderless with a text box still beats
-            // another set's full-art borderless. The TOP borderless tier only: a borderless the
+            // another set's full-art printing, an ordinary variant now. The TOP borderless tier only: a borderless the
             // same-set rule stepped down takes no key, or it would climb back over its set's showcase.
             let set_key = if frame_tier > 5.0 && !printing_is_secret_lair(p, strings) { 0.1875 } else { 0.0 };
             // ...and among the borderless, a PLAIN frame above a showcase frame: Gandalf the White
