@@ -26,6 +26,7 @@ import {
 	MANIFEST_KEY,
 	manifestServableBy,
 	manifestShapeProblem,
+	missingManifestChunks,
 	PARTITION_HASH_ALGO,
 	partitionStoreKey,
 	readManifest,
@@ -1018,5 +1019,70 @@ describe("chunkForKv", () => {
 
 	test("a tiny archive is one chunk", () => {
 		expect(chunkForKv(compressible(1_000), fakeGzip).chunks.length).toBe(1);
+	});
+});
+
+describe("retention and the in-flight coordinator build", () => {
+	// 2026-09-15: the DeckGen coordinator built generation 1789224220 on Sept 12 and spent three
+	// days uploading it one partition per alarm, reset by every deploy in between. Its built_at was
+	// older than both deploy-built generations that landed meanwhile, so the deploy sweeps retired
+	// it as the third-newest build — p0-p7 on the 22:14 deploy, p8 on the 03:33 deploy — and the
+	// coordinator then uploaded p9 and wrote a manifest naming nine chunks that were gone.
+	const fmt = 2026090301;
+	const inFlight = "1789224220";
+	const family = (builtAt: string, partitions: number[]) =>
+		partitions.map((k) => `store:card-store-v${fmt}-${builtAt}-p${k}.store:0`);
+	const keys = [
+		...family(inFlight, [0, 1, 2, 3, 4, 5, 6, 7]), // partial: p8, p9 still to come
+		...family("1789417939", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+		...family("1789424305", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+	];
+
+	test("without the marker the age-ordered sweep retires the partial family (the outage)", () => {
+		expect(staleStoreKeys(keys, 2, ["1789424305"]).sort()).toEqual(family(inFlight, [0, 1, 2, 3, 4, 5, 6, 7]).sort());
+	});
+
+	test("the marker's built_at protects it, however old and however partial", () => {
+		expect(staleStoreKeys(keys, 2, ["1789424305", inFlight])).toEqual([]);
+	});
+
+	test("a released marker (run published or failed) lets age decide again", () => {
+		expect(staleStoreKeys(keys, 2, ["1789424305"]).length).toBe(8);
+	});
+});
+
+describe("missingManifestChunks", () => {
+	const manifest = {
+		store_key: "card-store-v11-1000.store",
+		built_at: "1000",
+		format_version: 11,
+		partition_count: 2,
+		partition_hash: "fnv1a64/oracle_id/v1",
+		partitions: [
+			{ store_key: "card-store-v11-1000-p0.store", chunk_count: 2, store_bytes: 1, card_count: 1, printing_count: 1 },
+			{ store_key: "card-store-v11-1000-p1.store", chunk_count: 1, store_bytes: 1, card_count: 1, printing_count: 1 },
+		],
+	} as unknown as Parameters<typeof missingManifestChunks>[0];
+
+	test("every named chunk present: nothing missing", () => {
+		const present = [
+			"store:card-store-v11-1000-p0.store:0",
+			"store:card-store-v11-1000-p0.store:1",
+			"store:card-store-v11-1000-p1.store:0",
+			"store:card-routing-v11-1000.store:0", // extra keys are ignored
+		];
+		expect(missingManifestChunks(manifest, present)).toEqual([]);
+	});
+
+	test("names exactly the chunks a sweep took, so the writer refuses instead of publishing holes", () => {
+		const present = new Set(["store:card-store-v11-1000-p0.store:1"]);
+		expect(missingManifestChunks(manifest, present)).toEqual([
+			"store:card-store-v11-1000-p0.store:0",
+			"store:card-store-v11-1000-p1.store:0",
+		]);
+	});
+
+	test("a family with nothing in KV is missing everything", () => {
+		expect(missingManifestChunks(manifest, [])).toHaveLength(3);
 	});
 });

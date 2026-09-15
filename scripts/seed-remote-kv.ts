@@ -42,7 +42,7 @@ import {
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
-import { liveManifestBuiltAts, pruneOldStores } from "./kv-prune";
+import { liveManifestBuiltAts, pruneOldStores, publishingBuiltAts } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
@@ -213,7 +213,14 @@ try {
 	// explicitly, and so is the family the live manifest references. Retention used to be driven by
 	// a history list the importer wiped every run, so nothing was ever deleted — see
 	// scripts/kv-prune.ts.
-	const protect = [String(manifest.built_at ?? ""), ...(await liveManifestBuiltAts(true))];
+	// Never retired: the build just published, the one the manifest named a moment ago (a reader
+	// mid-stream finishes on it), and the one the in-Worker coordinator is still uploading — the
+	// family this very sweep deleted eight partitions of on 2026-09-14 (see scripts/prune-kv.ts).
+	const protect = [
+		String(manifest.built_at ?? ""),
+		...(await liveManifestBuiltAts(true)),
+		...(await publishingBuiltAts(true)),
+	];
 	const prunedChunks = await pruneOldStores(KEEP_STORES_IN_KV, protect, true);
 	if (prunedChunks > 0) console.log(`Retention: dropped ${prunedChunks} chunk(s) from superseded store builds.`);
 } finally {

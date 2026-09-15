@@ -120,7 +120,11 @@ import {
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
+	missingManifestChunks,
 	PARTITION_HASH_ALGO,
+	PUBLISHING_KEY,
+	PUBLISHING_TTL_SECONDS,
+	partitionFamilyPrefix,
 	partitionStoreKey,
 	REGION_LIVE_PREFIX,
 	STORE_CONTENT_GENERATION,
@@ -686,14 +690,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 					`${read.toLocaleString()} rows read, ${written.toLocaleString()} written. ` +
 					"A single import costs a fraction of this, so exceeding it means work is being repeated.",
 			);
-			run.state = "failed";
-			run.finishedAt = new Date().toISOString();
-			run.detail =
+			await this.failRun(
+				run,
 				`${phase}: ${scope} storage budget exhausted (${read.toLocaleString()} rows read, ` +
-				`${written.toLocaleString()} written) — stopped before spending the daily allowance`;
-			this.metaSet("phase", "idle");
-			await this.ctx.storage.put("run", run);
-			await this.ctx.storage.deleteAlarm();
+					`${written.toLocaleString()} written) — stopped before spending the daily allowance`,
+			);
 			return;
 		}
 
@@ -705,12 +706,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					"stopping. This is the signature of a slice the runtime keeps killing " +
 					"(CPU or memory), not of an error being retried.",
 			);
-			run.state = "failed";
-			run.finishedAt = new Date().toISOString();
-			run.detail = `${phase}: ${attempts} attempts with no progress — slice is being killed, not failing`;
-			this.metaSet("phase", "idle");
-			await this.ctx.storage.put("run", run);
-			await this.ctx.storage.deleteAlarm();
+			await this.failRun(run, `${phase}: ${attempts} attempts with no progress — slice is being killed, not failing`);
 			return;
 		}
 
@@ -733,12 +729,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		} catch (err) {
 			if (err instanceof FatalImportError) {
 				console.error(`Import stopped in phase ${phase}: ${err.message}`);
-				run.state = "failed";
-				run.finishedAt = new Date().toISOString();
-				run.detail = `${phase}: ${err.message}`;
-				this.metaSet("phase", "idle");
-				await this.ctx.storage.put("run", run);
-				await this.ctx.storage.deleteAlarm();
+				await this.failRun(run, `${phase}: ${err.message}`);
 				return;
 			}
 			if (isQuotaError(err)) {
@@ -746,12 +737,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// clear it, so retrying is pure churn. Fail the run with the real
 				// reason; the next scheduled import restarts on fresh quota.
 				console.error(`Import stopped by a platform daily limit in phase ${phase}:`, err);
-				run.state = "failed";
-				run.finishedAt = new Date().toISOString();
-				run.detail = `${phase}: daily write limit reached — the next scheduled import retries on fresh quota`;
-				this.metaSet("phase", "idle");
-				await this.ctx.storage.put("run", run);
-				await this.ctx.storage.deleteAlarm();
+				await this.failRun(
+					run,
+					`${phase}: daily write limit reached — the next scheduled import retries on fresh quota`,
+				);
 				return;
 			}
 			const retries = Number(this.metaGet("retries") ?? 0) + 1;
@@ -771,18 +760,76 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return;
 			}
 			console.error(`Import failed in phase ${phase}:`, err);
-			run.state = "failed";
-			run.finishedAt = new Date().toISOString();
-			run.detail = `${phase}: ${err}`;
-			this.metaSet("phase", "idle");
-			await this.ctx.storage.put("run", run);
-			await this.ctx.storage.deleteAlarm();
+			await this.failRun(run, `${phase}: ${err}`);
 		} finally {
 			// On EVERY exit from this alarm, including the early returns above and
 			// a thrown slice: what was spent has to be banked before the instance
 			// goes away, or the budget only ever measures the last alarm.
-			this.flushMeters();
+			try {
+				this.flushMeters();
+			} catch (err) {
+				// The one way this throws in practice is the instance already being
+				// torn down under us — "Durable Object reset because its code was
+				// updated", i.e. a deploy landed mid-slice. The catch above has
+				// already scheduled the retry; all that is lost is this slice's
+				// meter delta. Letting it escape turned every deploy-reset into a
+				// second, misleading "could not manage its own state (storage
+				// unavailable?)" error with no phase on it — forty of those in the
+				// week of the 2026-09-15 outage, one per reset.
+				console.warn(`Import phase ${phase}: slice interrupted before its meters were banked: ${err}`);
+			}
 		}
+	}
+
+	/**
+	 * Terminal failure: record it, park the phase, drop the alarm, and release
+	 * the in-flight marker so retention can reclaim the chunks this run leaves
+	 * behind. Best-effort on the KV side — a failed run's marker also expires on
+	 * its own (PUBLISHING_TTL_SECONDS), so a KV hiccup here costs a week of one
+	 * generation's storage, not the run record.
+	 */
+	private async failRun(run: RunRecord, detail: string): Promise<void> {
+		run.state = "failed";
+		run.finishedAt = new Date().toISOString();
+		run.detail = detail;
+		this.metaSet("phase", "idle");
+		await this.ctx.storage.put("run", run);
+		await this.ctx.storage.deleteAlarm();
+		await this.releasePublishing();
+	}
+
+	/**
+	 * Tell every retention sweep that this run's family is in flight (see
+	 * PUBLISHING_KEY). Called at each partition's first chunk: idempotent, and
+	 * each call refreshes the TTL so a run that crawls across deploys for days
+	 * keeps its protection for as long as it keeps making progress.
+	 */
+	private async markPublishing(): Promise<void> {
+		const builtAt = this.metaGet("built_at") ?? "";
+		if (!builtAt) throw new Error("publish: no built_at to mark as in flight");
+		await this.env.STORE_KV.put(PUBLISHING_KEY, builtAt, { expirationTtl: PUBLISHING_TTL_SECONDS });
+	}
+
+	/** The family is either published (a manifest names it) or abandoned; either way age decides now. */
+	private async releasePublishing(): Promise<void> {
+		try {
+			await this.env.STORE_KV.delete(PUBLISHING_KEY);
+		} catch (err) {
+			console.warn(`Could not clear ${PUBLISHING_KEY}; it expires on its own: ${err}`);
+		}
+	}
+
+	/** Every key KV currently holds under this run's partition family — the truth the manifest is checked against. */
+	private async listFamilyKeys(formatVersion: number, builtAt: string): Promise<Set<string>> {
+		const names = new Set<string>();
+		const prefix = partitionFamilyPrefix(formatVersion, builtAt);
+		let cursor: string | undefined;
+		do {
+			const page = await this.env.STORE_KV.list({ prefix, cursor });
+			for (const k of page.keys) names.add(k.name);
+			cursor = page.list_complete ? undefined : page.cursor;
+		} while (cursor);
+		return names;
 	}
 
 	/** Today's UTC date, the scope the platform's own meters reset on. */
@@ -2563,6 +2610,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (rec.chunks_published === 0) {
 			const warning = chunkHeadroomWarning(rec.store_bytes, rec.cut);
 			if (warning) console.warn(warning);
+			// Before the first byte of this partition lands: from here until the
+			// manifest write, the family is in flight and no sweep may age it out.
+			await this.markPublishing();
 		}
 
 		// One chunk per slice. A put that lands but whose marker rolls back (the
@@ -2684,9 +2734,29 @@ export class ImportCoordinator extends DurableObject<Env> {
 			partition_hash: PARTITION_HASH_ALGO,
 			partitions,
 		};
-		// writeManifest refuses a malformed manifest — the commit point is the one
-		// write where a shape bug becomes a served outage rather than a build error.
+		// The manifest is the commit point: the one write where a bug becomes a
+		// served outage rather than a failed run. writeManifest refuses a malformed
+		// SHAPE; this refuses a manifest whose CHUNKS are gone. Both halves are
+		// load-bearing. On 2026-09-15 every partition this run had uploaded was
+		// retired by the deploy sweeps that landed during its days-long upload,
+		// and the write below went ahead and named them — fifteen hours of 503.
+		// The family cannot be re-uploaded (each partition's staging rows are
+		// dropped the moment it publishes), so the honest outcome is a failed run
+		// and a fresh start on the next cron, with the previous manifest untouched.
+		const present = await this.listFamilyKeys(formatVersion, builtAt);
+		const missing = missingManifestChunks(manifest, present);
+		if (missing.length > 0) {
+			const shown = missing.slice(0, 3).join(", ") + (missing.length > 3 ? `, … +${missing.length - 3}` : "");
+			throw new FatalImportError(
+				`publish: refusing to write the manifest for ${manifest.store_key}: ${missing.length} chunk(s) it ` +
+					`names are no longer in KV (${shown}). Retention retired them while this run was still ` +
+					`uploading; the live manifest keeps serving and the next run starts over.`,
+			);
+		}
 		await writeManifest(this.env, manifest);
+		// Published: a manifest names the family now, and the manifest read inside
+		// every sweep protects it from here. The in-flight marker has done its job.
+		await this.releasePublishing();
 
 		// Retention: keep the newest KEEP_STORES_IN_KV builds, decided from the keys that are actually in
 		// KV. The predecessor stays addressable so a reader mid-stream finishes and a bad build can

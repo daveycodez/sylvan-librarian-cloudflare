@@ -78,6 +78,12 @@ bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publis
 #     part of publishing: the sweep used to live inside the store publisher, so the common deploy —
 #     which skips the import because a recent store is already live — skipped the cleanup too, and
 #     KV reached 15 builds (~510MB of a 1GB namespace) against a policy of 2.
+#
+#     The sweep protects the build the manifest names AND the build the in-Worker coordinator is
+#     still uploading (store:publishing). It did not always: on 2026-09-14/15 two deploys retired
+#     the coordinator's half-uploaded generation as "superseded" — its built_at is stamped when the
+#     build starts, days before the deploy-built generations that land while it crawls across
+#     deploy resets — and the coordinator then published a manifest over the deleted chunks.
 echo "==> Retiring superseded store builds..."
 bun scripts/prune-kv.ts --remote || echo "!!! Store retention failed — superseded builds stay in KV until the next import."
 

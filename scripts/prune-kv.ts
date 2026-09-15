@@ -13,22 +13,29 @@
 // counterpart, and it runs unconditionally beside them.
 
 import { KEEP_STORES_IN_KV } from "../src/engine/store-kv";
-import { liveManifestBuiltAts, pruneOldStores } from "./kv-prune";
+import { liveManifestBuiltAts, pruneOldStores, publishingBuiltAts } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 
 const remote = process.argv.includes("--remote");
 if (remote) requireDeployEnvironment();
 
-// The build the LIVE MANIFEST points at is never swept, whatever its timestamp
-// says. Read rather than assumed — a rollback republishes an OLDER manifest,
-// and a sweep that decided "newest wins" would delete the store being served
-// (see liveManifestBuiltAts).
-const protect = await liveManifestBuiltAts(remote);
-if (protect.length === 0) {
+// Two builds are never swept, whatever their timestamps say. The one the LIVE
+// MANIFEST points at — read rather than assumed, because a rollback republishes
+// an OLDER manifest, and a sweep that decided "newest wins" would delete the
+// store being served. And the one the in-Worker coordinator is STILL UPLOADING
+// — which has no manifest yet, and a built_at from when its build started,
+// days before the deploy-built generations that land while it crawls. Both
+// deploys on 2026-09-14/15 swept exactly that family out from under the
+// coordinator, and its manifest write then named the chunks they had deleted
+// (see publishingBuiltAts and PUBLISHING_KEY).
+const live = await liveManifestBuiltAts(remote);
+if (live.length === 0) {
 	// No readable manifest: sweeping now could delete the only store there is.
 	console.log("Retention: no readable manifest — leaving every store build in place.");
 } else {
-	const removed = await pruneOldStores(KEEP_STORES_IN_KV, protect, remote);
+	const inFlight = await publishingBuiltAts(remote);
+	if (inFlight.length > 0) console.log(`Retention: build ${inFlight[0]} is still being uploaded — protected.`);
+	const removed = await pruneOldStores(KEEP_STORES_IN_KV, [...live, ...inFlight], remote);
 	console.log(
 		removed > 0
 			? `Retention: dropped ${removed} chunk(s) from superseded store builds.`

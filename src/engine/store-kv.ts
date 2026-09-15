@@ -241,6 +241,29 @@ export async function announceSelf(env: Env, label?: string): Promise<void> {
 export const MANIFEST_KEY = "store:manifest";
 
 /**
+ * The built_at of the generation the in-Worker coordinator is STILL UPLOADING, or absent.
+ *
+ * A store family exists in KV before any manifest names it: the coordinator publishes one
+ * partition per alarm, and a run interrupted by deploys (every push resets the object mid-slice)
+ * can spend days between its first chunk and its manifest write. During that window the family
+ * carries a built_at stamped when the build STARTED — older than every deploy-built generation
+ * that lands meanwhile — so an age-ordered sweep sees it as the third-newest build and retires
+ * it. That is the 2026-09-15 outage: the 22:14 deploy's sweep dropped p0-p7 of the coordinator's
+ * generation, the 03:33 deploy's sweep dropped p8, the coordinator uploaded p9 and wrote a
+ * manifest naming nine partitions that no longer existed, and sylvan.mtgseeker.com served 503
+ * for fifteen hours.
+ *
+ * The coordinator writes its built_at here when it starts uploading (refreshed at every
+ * partition's first chunk) and deletes it once the manifest is written or the run fails. Every
+ * sweep — the deploy's (scripts/prune-kv.ts, seed-remote-kv.ts) and the coordinator's own —
+ * protects the family it names, however old. The TTL is a backstop for a run that dies without
+ * reaching either delete: a stale marker over-protects one generation for a week and then
+ * expires, which is the cheap direction to be wrong in.
+ */
+export const PUBLISHING_KEY = "store:publishing";
+export const PUBLISHING_TTL_SECONDS = 7 * 24 * 3600;
+
+/**
  * Whether an object serving `partition` can serve `manifest` at all — the guard
  * on every PUSHED manifest (the publish fan-out, which does not go through
  * readManifest and so has no other shape check in front of it).
@@ -1599,6 +1622,35 @@ export function storeKeyStem(formatVersion: number, builtAt: string): string {
 }
 
 /**
+ * The KV list prefix that covers every partition chunk of one generation — and nothing else:
+ * the trailing `-` excludes the suffix-less stem and the routing filter (`card-routing-`).
+ */
+export function partitionFamilyPrefix(formatVersion: number, builtAt: string): string {
+	return `store:card-store-v${formatVersion}-${builtAt}-`;
+}
+
+/**
+ * The chunk keys a partitioned manifest names that are NOT among `present` — the check the
+ * coordinator runs right before writeManifest, against a fresh list of the family's keys.
+ *
+ * A manifest is the commit point: once written, every reader loads through it, and a chunk it
+ * names that is not there is a 503 on every request rather than a failed run. Retention can
+ * retire a chunk between its upload and the manifest write (see PUBLISHING_KEY for how it did),
+ * so the writer cannot assume what it uploaded is still there. Pure so a test can pin it.
+ */
+export function missingManifestChunks(manifest: StoreManifest, present: Iterable<string>): string[] {
+	const have = present instanceof Set ? present : new Set(present);
+	const missing: string[] = [];
+	for (const part of manifest.partitions ?? []) {
+		for (let seq = 0; seq < part.chunk_count; seq++) {
+			const key = chunkKey(part.store_key, seq);
+			if (!have.has(key)) missing.push(key);
+		}
+	}
+	return missing;
+}
+
+/**
  * The build's id→partition routing filter (src/engine/routing-filter.ts).
  *
  * SHAPED LIKE A CHUNK KEY ON PURPOSE. It is not a chunk — it is one ~740 KB
@@ -1856,9 +1908,12 @@ export const KEEP_STORES_IN_KV = 2;
  * (tests/engine/store-kv.test.ts pins this.)
  *
  * `protect` names built_ats that are NEVER retired, however old: the build just
- * published, and the build the live manifest points at. The second half stops an
- * age-only sweep from deleting the store readers are actively serving when a
- * publish did not advance built_at.
+ * published, the build the live manifest points at, and the build the coordinator
+ * is still uploading (PUBLISHING_KEY). The second stops an age-only sweep from
+ * deleting the store readers are actively serving when a publish did not advance
+ * built_at. The third stops it from deleting a family whose built_at predates the
+ * deploy-built generations only because its upload has been crawling across
+ * deploys — the family that has no manifest yet and is about to get one.
  */
 export function staleStoreKeys(names: string[], keep: number, protect?: string | readonly string[]): string[] {
 	const parsed = names.flatMap((name) => {

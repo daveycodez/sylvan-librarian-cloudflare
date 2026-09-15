@@ -9,7 +9,7 @@
 // that will not delete costs a few KB of a 1GB namespace and gets another chance next publish.
 
 import { staleKeys } from "../src/engine/kv-versions";
-import { MANIFEST_KEY, staleStoreKeys } from "../src/engine/store-kv";
+import { MANIFEST_KEY, PUBLISHING_KEY, staleStoreKeys } from "../src/engine/store-kv";
 import { kvTargetArgs } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -25,12 +25,8 @@ import { wranglerArgv } from "./wrangler-cmd";
  * is nothing being served through it to protect).
  */
 export async function liveManifestBuiltAts(remote: boolean): Promise<string[]> {
-	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", MANIFEST_KEY, ...(await kvTargetArgs(remote))], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const out = await new Response(proc.stdout).text();
-	if ((await proc.exited) !== 0) return [];
+	const out = await kvGetText(MANIFEST_KEY, remote);
+	if (out === null) return [];
 	try {
 		const at = String((JSON.parse(out.slice(out.indexOf("{"))) as { built_at?: unknown }).built_at ?? "");
 		return at ? [at] : [];
@@ -38,6 +34,30 @@ export async function liveManifestBuiltAts(remote: boolean): Promise<string[]> {
 		// Unparseable manifest: nothing to protect through it.
 		return [];
 	}
+}
+
+/**
+ * The built_at the in-Worker coordinator is still uploading, if any (PUBLISHING_KEY in
+ * src/engine/store-kv.ts). Its family has no manifest yet and a built_at older than every
+ * deploy-built generation, which is exactly the shape an age-ordered sweep retires — and did, on
+ * 2026-09-15, one partition short of the coordinator's manifest write. Absent (a KV miss, or the
+ * marker's week-long TTL elapsed) means no run is in flight, and age decides alone.
+ */
+export async function publishingBuiltAts(remote: boolean): Promise<string[]> {
+	const out = await kvGetText(PUBLISHING_KEY, remote);
+	if (out === null) return [];
+	const at = out.trim().match(/\d+/)?.[0] ?? "";
+	return at ? [at] : [];
+}
+
+/** `wrangler kv key get` as text, or null when the key is absent or the read fails. */
+async function kvGetText(key: string, remote: boolean): Promise<string | null> {
+	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", key, ...(await kvTargetArgs(remote))], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const out = await new Response(proc.stdout).text();
+	return (await proc.exited) === 0 ? out : null;
 }
 
 /** Delete every key under `prefix` that the current layout does not own. */
