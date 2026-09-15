@@ -39,7 +39,7 @@ class PreferOrder(enum.StrEnum):
     UNIVERSESBEYOND = enum.auto()
     NOTUNIVERSESBEYOND = enum.auto()
     # This API's own, not Scryfall's: the best-looking printing that is still this card -- over
-    # the printings with no flavor name, borderless (full art earns nothing; a full-art printing ranks with the plain ones), then extended art,
+    # the printings with no flavor name, borderless (full art earns nothing, a poster promo type counting as full art; a full-art printing ranks with the plain ones), then extended art,
     # then any other frame effect, then the colorshifted frame, then the retro frame, then plain, then textless, a text box above full
     # art and a black border above a white one inside a tier, among the borderless any other set above a Secret Lair and a plain frame above a showcase frame, a
     # highres scan above a placeholder, and inside one set a later sheet of

@@ -17786,6 +17786,38 @@ fn prefer_borderless_ranks_a_plain_frame_above_a_showcase_frame_among_the_border
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a full-art plain frame under a text-boxed showcase frame");
 }
 
+/// A `poster` promo type is FULL ART to this ladder whatever Scryfall's flag says — Nature's Lore's
+/// shape, the unflagged poster sld/2278 against the inverted sld/867: the poster is not
+/// borderless, and among the plain printings the text-box key ranks it last.
+#[test]
+fn prefer_borderless_reads_a_poster_promo_type_as_full_art() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let poster = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("poster".to_owned());
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 2: a borderless poster, `full_art` unset, first by default. id 3: a text-boxed borderless.
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].compat.promo_types = vec![poster];
+    data.printings[2].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a text-boxed borderless over an unflagged poster");
+    // Alone among the borderless, the poster is not borderless at all: the plain id 1 answers.
+    data.printings[2].card_border_id = black;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a poster is full art: it ranks with the plain printings, and last");
+    // The flag and the promo type read the same: unset the promo type and set the flag, same answer.
+    data.printings[1].compat.promo_types = vec![];
+    data.printings[1].compat.flags = COMPAT_FULL_ART;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "the flag says the same thing");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

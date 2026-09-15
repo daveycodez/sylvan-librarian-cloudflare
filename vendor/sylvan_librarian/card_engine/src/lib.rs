@@ -9509,6 +9509,10 @@ pub(crate) struct PreferClassIds {
     /// `CompatFields.frame_effects` member `extendedart`, on its own: `prefer:borderless`'s
     /// second tier, directly under borderless and above every other variant, full art included.
     extendedart: u16,
+    /// `CompatFields.promo_types` member `poster` — the Secret Lair poster-style cards. Full art
+    /// to `prefer:borderless` whatever Scryfall's `full_art` flag says: the flag is set on the
+    /// 2021 poster sld/189 and not on the 2026 poster sld/2278, and both are the same thing.
+    poster: u16,
 }
 
 impl PreferClassIds {
@@ -9524,6 +9528,7 @@ impl PreferClassIds {
         frame_1993: VOCAB_NONE,
         showcase: VOCAB_NONE,
         extendedart: VOCAB_NONE,
+        poster: VOCAB_NONE,
     };
 
     pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
@@ -9542,6 +9547,7 @@ impl PreferClassIds {
             frame_1993: id("1993"),
             showcase: id("showcase"),
             extendedart: id("extendedart"),
+            poster: id("poster"),
         }
     }
 }
@@ -9594,6 +9600,15 @@ fn printing_is_secret_lair(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.set_name_id)).is_some_and(|name| name.contains("Secret Lair"))
 }
 
+/// Full art as `prefer:borderless` reads it: Scryfall's `full_art` flag, or the `poster` promo
+/// type — the Secret Lair poster-style cards, which Scryfall flags full art inconsistently
+/// (Nature's Lore's sld/189 yes, sld/2278 no). Every full-art judgment in this ladder — the
+/// borderless exclusion, the text-box key, the finish-twin look — reads this, not the flag.
+fn printing_is_full_art_or_poster(p: &APrinting, ids: &PreferClassIds) -> bool {
+    compat_flag(&p.compat, COMPAT_FULL_ART)
+        || (ids.poster != VOCAB_NONE && p.compat.promo_types.iter().any(|v| u16::from(*v) == ids.poster))
+}
+
 /// The variant tier of `prefer:borderless`: a variant frame EFFECT (inverted, showcase,
 /// extendedart, etched, shatteredglass) or the Future frame — `printing_is_frame_variant` less
 /// full art, textless and the border, which this ladder handles on its own terms.
@@ -9615,7 +9630,7 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
     let ids = *ids;
     if compat_flag(&p.compat, COMPAT_TEXTLESS) {
         0.0
-    } else if printing_is_borderless(p, strings) && !compat_flag(&p.compat, COMPAT_FULL_ART) {
+    } else if printing_is_borderless(p, strings) && !printing_is_full_art_or_poster(p, &ids) {
         // A FULL-ART borderless is NOT borderless here. Its text, when it has any, is printed over
         // the art and is often not legible — the Secret Lair posters, the Booster Fun full-arts —
         // and Scryfall records nothing finer than `full_art` and `textless`, so there is no way to
@@ -9697,7 +9712,7 @@ fn same_set_group_base(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &P
         group_max = group_max.max(default_of(s));
         let same_look = u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id)
             && u32::from(s.card_border_id) == u32::from(p.card_border_id)
-            && compat_flag(&s.compat, COMPAT_FULL_ART) == compat_flag(&p.compat, COMPAT_FULL_ART);
+            && printing_is_full_art_or_poster(s, ids) == printing_is_full_art_or_poster(p, ids);
         if same_look && number(s) < mine {
             twin = true;
         }
@@ -9789,7 +9804,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// Every `prefer=` Scryfall's syntax page lists, plus `Default` for "no preference" and
 /// `Borderless`, THIS API'S OWN: "the best-looking printing that is still this card". Over the
 /// printings that carry NO flavor name, seven tiers — borderless (a FULL-ART borderless is NOT borderless here: its text, when it has
-/// any, is printed over the art and Scryfall cannot say how legibly, so it ranks among the plain
+/// any, is printed over the art and Scryfall cannot say how legibly — and a `poster` promo type
+/// counts as full art whatever the flag says, so Nature's Lore answers the inverted sld/867 over
+/// the unflagged poster sld/2278 — so it ranks among the plain
 /// printings — Darksteel Plate answers the etched 2x2/559 over the Secret Lair poster sld/1572, its
 /// only borderless printing), then EXTENDED ART (its own
 /// tier, above full art and every other variant: Sheltered Thicket answers the Fallout pip/508
@@ -9990,7 +10007,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // a tier and never crosses one. A full-art borderless is not in the borderless tier at
             // all (see `borderless_frame_tier`); with no other treatment it ranks among the plain
             // printings, last by this key.
-            let text_box = if compat_flag(&p.compat, COMPAT_FULL_ART) { 0.0 } else { 0.5 };
+            let text_box = if printing_is_full_art_or_poster(p, &ids) { 0.0 } else { 0.5 };
             // ...and a black border above a WHITE one, the thing nobody asking for "borderless"
             // wants to see: Blood Pet's 7ed/121 is white and pinned, its foil twin 7ed/121★ is
             // black and answers. A quarter step, under the text-box key, and neither crosses a
