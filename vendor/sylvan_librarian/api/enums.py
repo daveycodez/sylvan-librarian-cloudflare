@@ -42,7 +42,7 @@ class PreferOrder(enum.StrEnum):
     # the printings with no flavor name, borderless (full art earns nothing, a poster promo type or an Amonkhet Invocation counting as full art; a full-art printing ranks with the plain ones), then extended art,
     # then any other frame effect, then the colorshifted frame, then the retro frame, then plain, then textless, a text box above full
     # art and a black border above a white one inside a tier, among the borderless any other set above a Secret Lair and a plain frame above a showcase frame, a
-    # highres scan above a placeholder, and inside one set the newest sheet of its own art first (the
+    # highres scan above a placeholder, a nonfoil printing above a foil-only one, and inside one set the newest sheet of its own art first (the
     # higher number only on one release date) while a same-art finish twin yields; a set that prints both a showcase
     # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); a digital-only
     # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language;

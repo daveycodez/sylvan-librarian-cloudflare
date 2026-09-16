@@ -17837,6 +17837,36 @@ fn prefer_borderless_reads_a_poster_promo_type_as_full_art() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "the same printing in any other set is borderless again");
 }
 
+/// A printing sold in NONFOIL ranks above a foil-only one inside a tier — Nick Fury's shape, the
+/// comic-cover msh/389 (foil only) against the regular borderless run — under the scan key and
+/// above the art rule, never across a tier.
+#[test]
+fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // ids 2 and 3 borderless; id 2 first by default, and foil-only: id 3 answers.
+    data.printings[1].card_border_id = borderless;
+    data.printings[2].card_border_id = borderless;
+    data.printings[1].compat.finishes = FINISH_FOIL;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a nonfoil borderless over a foil-only one");
+    // Under the scan key: scan the foil-only id 2 alone and it answers.
+    data.printings[1].compat.flags = COMPAT_HIGHRES_IMAGE;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "the scan key outranks the finish key");
+    data.printings[1].compat.flags = 0;
+    // Never across a tier: the foil-only borderless still beats a nonfoil plain printing.
+    data.printings[2].card_border_id = black;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a foil-only borderless over a nonfoil plain");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

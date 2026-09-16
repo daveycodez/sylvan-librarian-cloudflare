@@ -9901,7 +9901,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// pspl/1 over sld/2650; Kiki-Jiki keeps its Secret Lair retro sld/1659, the frame tiers being
 /// exempt), among the borderless a plain frame above a showcase frame (Gandalf the White answers
 /// ltr/442 over the showcase-framed ltr/797), a
-/// real scan above a placeholder or low-resolution image, then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
+/// real scan above a placeholder or low-resolution image, a printing sold in nonfoil above a
+/// foil-only one (the special sheets come foil-only: Nick Fury answers msh/357 over the
+/// comic-cover msh/389), then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
 /// eoe/350, newest first and the number only on one release date); the rule permutes a set's printings among themselves only, in the variant tiers
@@ -10109,6 +10111,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // (an eighth), so a stepped-down borderless never climbs back over its set's showcase
             // on image quality alone.
             let scan = if compat_flag(&p.compat, COMPAT_HIGHRES_IMAGE) { 0.0625 } else { 0.0 };
+            // ...and a printing sold in NONFOIL above a foil-only one. The regular run of a treatment
+            // comes in both finishes; the special sheets come foil-only — Marvel Super Heroes'
+            // comic-cover borderless msh/389-400, the galaxy-foil eoe/378, the surge-foil pip/1036,
+            // the rainbow-foil sld/9992 — and nothing else in the data names them. A thirty-second,
+            // the last key before the art rule: Nick Fury answers msh/357 over the comic-cover 389.
+            let finish = if p.compat.finishes & FINISH_NONFOIL != 0 { 0.03125 } else { 0.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -10135,7 +10143,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             } else {
                 default_score()
             };
-            (frame_tier + text_box + border + set_key + plain_frame + scan + language_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + border + set_key + plain_frame + scan + finish + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }
