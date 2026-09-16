@@ -1341,8 +1341,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 					// EXACTLY the committed offset replaces it.
 					this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
 					if (window.exhausted) {
-						this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
-						this.metaSet("phase", phaseAfterStaged(kind));
+						// The original blobs (~390MB gzip) go in bounded slices on the
+						// next alarms, never in this commit: DeckGen sat wedged behind
+						// exactly this delete on 2026-09-16.
+						this.beginPurge("blobs", { table: "stage_blobs", kinds: [kind], next: phaseAfterStaged(kind) as Phase });
 					} else if (source.produced === window.rawEnd && wasm.inflateTotalOut() === window.rawEnd) {
 						this.sqlRun(
 							"INSERT INTO recode_checkpoint (kind, version, raw_done, state) VALUES (?, ?, ?, ?)",
@@ -1396,8 +1398,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					this.metaSet("recode_raw_done", String(window.rawEnd));
 					if (window.exhausted) {
 						this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
-						this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", kind);
-						this.metaSet("phase", phaseAfterStaged(kind));
+						this.beginPurge("blobs", { table: "stage_blobs", kinds: [kind], next: phaseAfterStaged(kind) as Phase });
 					}
 				});
 			},
@@ -1663,11 +1664,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				}
 				// Progressive staging purge (plan B1): this phase is default_cards'
 				// ONLY consumer — the transform reads all_cards — and everything the
-				// set feeds is in the snapshot just written. Same transaction as the
-				// phase's end, so the run either still owns the dump or no longer
-				// needs it, never neither.
-				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", "default_cards");
-				this.metaSet("phase", "transform");
+				// set feeds is in the snapshot just written. Armed in the same
+				// transaction as the phase's end, so the run either still owns the
+				// dump or has committed to dropping it, never neither; the deletes
+				// themselves run in bounded slices on the next alarms.
+				this.beginPurge("blobs", { table: "stage_blobs", kinds: ["default_cards"], next: "transform" });
 			}
 		});
 		console.log(
@@ -1790,12 +1791,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 				this.metaSet("drafts_total", this.metaGet("tf_drafts") ?? "0");
 				// Progressive staging purge: the transform's corpus exists to feed
 				// it, and no later phase reads it — everything downstream works
-				// from draft_batches. Dropped in the SAME transaction that ends the
-				// phase, so the run either still owns its input or no longer needs
-				// it, never neither. The rows are the RECODED members; all_cards'
-				// original blobs went at the end of the recode phase.
-				this.sqlRun("DELETE FROM stage_members WHERE kind = ?", corpus);
-				this.metaSet("phase", "tags");
+				// from draft_batches. Armed in the SAME transaction that ends the
+				// phase, so the run either still owns its input or has committed to
+				// dropping it, never neither; the ~400MB of RECODED members go in
+				// bounded slices on the next alarms (all_cards' original blobs went
+				// the same way at the end of the recode phase).
+				this.beginPurge("blobs", { table: "stage_members", kinds: [corpus], next: "tags" });
 			}
 		});
 	}
@@ -1934,12 +1935,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// (restoreTags reads tagdata_blobs, never these) — so their staged
 			// bytes are dead the moment this transaction commits. (default_cards'
 			// blobs went earlier still, at the end of the canonical phase — its
-			// only consumer.)
-			for (const consumed of ["oracle_tags", "art_tags", "oracle_cards"] as const) {
-				this.sqlRun("DELETE FROM stage_blobs WHERE kind = ?", consumed);
-			}
-			// The GLOBAL phase between the tags and the loop: the cubecobra table (see stepScores).
-			this.metaSet("phase", "scores");
+			// only consumer.) Dropped in bounded slices on the next alarms, then
+			// the GLOBAL phase between the tags and the loop: the cubecobra table
+			// (see stepScores).
+			this.beginPurge("blobs", {
+				table: "stage_blobs",
+				kinds: ["oracle_tags", "art_tags", "oracle_cards"],
+				next: "scores",
+			});
 		});
 	}
 
@@ -3544,11 +3547,32 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * Arm the purge_staging phase for `scope` — inside the caller's transaction,
 	 * beside the progress it follows, so a lost commit loses both together.
 	 */
-	private beginPurge(scope: PurgeScope): void {
+	private beginPurge(
+		scope: PurgeScope,
+		blobs?: { table: "stage_blobs" | "stage_members"; kinds: readonly DumpKind[]; next: Phase },
+	): void {
 		this.metaSet("purge_scope", scope);
 		this.metaSet("purge_slices", "0");
 		this.metaSet("purge_started_ms", String(Date.now()));
+		if (blobs) {
+			// ONE table: the recode boundary drops all_cards' raw blobs while its
+			// recoded members are what the transform reads next; the transform
+			// boundary drops the members. Naming both would drop the corpus.
+			this.metaSet("purge_table", blobs.table);
+			this.metaSet("purge_kinds", JSON.stringify(blobs.kinds));
+			this.metaSet("purge_next", blobs.next);
+		}
 		this.metaSet("phase", "purge_staging");
+	}
+
+	/** The dump kinds a `blobs` purge is confined to (purge_kinds), or null when the scope is not `blobs`. */
+	private purgeKinds(scope: PurgeScope): string[] | null {
+		if (scope !== "blobs") return null;
+		const kinds = JSON.parse(this.metaGet("purge_kinds") ?? "[]") as unknown;
+		if (!Array.isArray(kinds) || kinds.length === 0 || !kinds.every((k) => typeof k === "string")) {
+			throw new FatalImportError(`purge_staging: blobs scope without kinds (${this.metaGet("purge_kinds")})`);
+		}
+		return kinds as string[];
 	}
 
 	/**
@@ -3564,16 +3588,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private purgeSlice(
 		t: PurgeTable,
 		partition: number | undefined,
+		kinds: readonly string[] | null,
 		budgetBytes: number,
 	): { rows: number; bytes: number; scope: string } | null {
 		let where = "";
 		let scopeArgs: unknown[] = [];
 		let label = "";
 		if (t.scope) {
+			// A `kind` scope confined to named kinds (the blobs purge) discovers the
+			// lowest of THOSE; unconfined (the reset) takes whatever is there.
+			const confined = t.scope === "kind" && kinds ? ` WHERE kind IN (${kinds.map(() => "?").join(", ")})` : "";
 			const value =
 				t.scope === "partition" && partition !== undefined
 					? partition
-					: (this.sqlAll<{ v: number | string | null }>(`SELECT MIN(${t.scope}) AS v FROM ${t.table}`)[0]?.v ?? null);
+					: (this.sqlAll<{ v: number | string | null }>(
+							`SELECT MIN(${t.scope}) AS v FROM ${t.table}${confined}`,
+							...(confined ? (kinds ?? []) : []),
+						)[0]?.v ?? null);
 			if (value === null || value === undefined) return null;
 			where = ` WHERE ${t.scope} = ?`;
 			scopeArgs = [value];
@@ -3610,13 +3641,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (!scope || !(scope in PURGE_TABLES)) {
 			throw new FatalImportError(`purge_staging: no purge scope recorded (${JSON.stringify(scope)})`);
 		}
-		const pp = scope === "reset" ? null : this.requirePp();
+		const pp = scope === "partition" || scope === "rewind" ? this.requirePp() : null;
+		const kinds = this.purgeKinds(scope);
+		const purgeTable = scope === "blobs" ? this.metaGet("purge_table") : null;
+		if (scope === "blobs" && !purgeTable) throw new FatalImportError("purge_staging: blobs scope without a table");
+		const tables = purgeTable ? PURGE_TABLES[scope].filter((t) => t.table === purgeTable) : PURGE_TABLES[scope];
+		if (tables.length === 0) throw new FatalImportError(`purge_staging: no purge table named ${purgeTable}`);
 		const t0 = Date.now();
 		let freedBytes = 0;
 		const freedParts: string[] = [];
-		for (const t of PURGE_TABLES[scope]) {
+		for (const t of tables) {
 			while (freedBytes < PURGE_SLICE_BYTES) {
-				const freed = this.purgeSlice(t, pp?.partition, PURGE_SLICE_BYTES - freedBytes);
+				const freed = this.purgeSlice(t, pp?.partition, kinds, PURGE_SLICE_BYTES - freedBytes);
 				if (!freed) break; // this table (or its scoped part) is empty: next table
 				freedBytes += freed.bytes;
 				freedParts.push(`${t.table}${freed.scope} ${freed.rows} row(s) ${(freed.bytes / 1048576).toFixed(1)}MB`);
@@ -3643,6 +3679,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (scope === "reset") {
 				this.metaSet("phase", "listing");
 				next = "listing the dumps";
+			} else if (scope === "blobs") {
+				const after = this.metaGet("purge_next");
+				if (!after) throw new FatalImportError("purge_staging: blobs scope without a next phase");
+				this.metaSet("phase", after);
+				this.metaSet("purge_table", "");
+				this.metaSet("purge_kinds", "");
+				this.metaSet("purge_next", "");
+				next = `${purgeTable} ${(kinds ?? []).join("+")} dropped; on to ${after}`;
 			} else if (scope === "rewind") {
 				// The rewind already reset the partition's cursors and pp.step.
 				this.metaSet("phase", "agg");

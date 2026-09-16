@@ -12,7 +12,7 @@
  *
  * The one commit size production has proven safe is the bucket phase's: 64
  * draft batches of ~1.9MB deleted alongside its inserts, ~120MB, every slice
- * of every run. PURGE_SLICE_BYTES sits 5x under that. Every purge — the
+ * of every run. PURGE_SLICE_BYTES is under a third of that. Every purge — the
  * partition's, the wasm rewind's, and the run-start reset's — goes through the
  * same slice, one bounded transaction per alarm, so no commit anywhere in the
  * import frees more pages than the bucket phase already does.
@@ -22,7 +22,19 @@
  * tests/import/purge-slice.test.ts against bun:sqlite with real-sized blobs.
  */
 
-export type PurgeScope = "reset" | "partition" | "rewind";
+/**
+ * `blobs` is the progressive purge at a phase boundary: ONE table and the dump
+ * kinds a phase was the last consumer of (stage_blobs' raw all_cards after
+ * recode, ~390MB — while its recoded stage_members are what transform reads
+ * next; stage_blobs' default_cards after canonical; stage_members' all_cards
+ * after transform, ~400MB; stage_blobs' tag and label dumps after tags), named
+ * in the `purge_table` and `purge_kinds` meta rows, with `purge_next` naming
+ * the phase that follows.
+ * Each of those used to be one `DELETE ... WHERE kind = ?` in the phase's
+ * closing transaction — the same commit shape that wedged the partition loop,
+ * and on 2026-09-16 the DeckGen coordinator sat wedged behind the recode one.
+ */
+export type PurgeScope = "reset" | "partition" | "rewind" | "blobs";
 
 export interface PurgeTable {
 	/** A staging table with a `bytes BLOB` column (every one of them has it). */
@@ -59,6 +71,10 @@ export const PURGE_TABLES: Record<PurgeScope, readonly PurgeTable[]> = {
 	rewind: [
 		{ table: "ordered_rows", key: "base" },
 		{ table: "spill_batches", key: "base" },
+	],
+	blobs: [
+		{ table: "stage_blobs", key: "seq", scope: "kind" },
+		{ table: "stage_members", key: "seq", scope: "kind" },
 	],
 	reset: [
 		{ table: "chunk_staging", key: "seq" },

@@ -73,15 +73,20 @@ function purgeSliceSql(
 	t: PurgeTable,
 	partition?: number,
 	budgetBytes = PURGE_SLICE_BYTES,
+	kinds: readonly string[] | null = null,
 ): { rows: number; bytes: number } | null {
 	let where = "";
 	let scopeArgs: (number | string)[] = [];
 	if (t.scope) {
+		const confined = t.scope === "kind" && kinds ? ` WHERE kind IN (${kinds.map(() => "?").join(", ")})` : "";
 		const value =
 			t.scope === "partition" && partition !== undefined
 				? partition
-				: ((db.query(`SELECT MIN(${t.scope}) AS v FROM ${t.table}`).get() as { v: number | string | null } | null)?.v ??
-					null);
+				: ((
+						db
+							.query(`SELECT MIN(${t.scope}) AS v FROM ${t.table}${confined}`)
+							.get(...(confined ? [...(kinds ?? [])] : [])) as { v: number | string | null } | null
+					)?.v ?? null);
 		if (value === null || value === undefined) return null;
 		where = ` WHERE ${t.scope} = ?`;
 		scopeArgs = [value];
@@ -176,6 +181,27 @@ describe("purgeSlice, against SQLite", () => {
 		expect(count(db, "stage_blobs", "WHERE kind = 'rulings'")).toBe(3);
 		expect(purgeSliceSql(db, t)).toEqual({ rows: 3, bytes: 3 * ROW });
 		expect(purgeSliceSql(db, t)).toBeNull();
+	});
+
+	test("a blobs purge confined to named kinds leaves the other kinds' dumps alone", () => {
+		// The recode boundary drops all_cards' raw blobs while default_cards and
+		// the tag dumps are still to be read by the phases after it.
+		const db = stagingDb();
+		const insert = db.prepare("INSERT INTO stage_blobs (kind, seq, bytes) VALUES (?, ?, ?)");
+		for (const kind of ["all_cards", "default_cards", "oracle_tags"]) {
+			for (let seq = 0; seq < 2; seq++) insert.run(kind, seq, Buffer.alloc(ROW));
+		}
+		const t = PURGE_TABLES.blobs.find((x) => x.table === "stage_blobs") as PurgeTable;
+		expect(purgeSliceSql(db, t, undefined, PURGE_SLICE_BYTES, ["all_cards"])).toEqual({ rows: 2, bytes: 2 * ROW });
+		expect(purgeSliceSql(db, t, undefined, PURGE_SLICE_BYTES, ["all_cards"])).toBeNull();
+		expect(count(db, "stage_blobs", "WHERE kind = 'all_cards'")).toBe(0);
+		expect(count(db, "stage_blobs", "WHERE kind = 'default_cards'")).toBe(2);
+		expect(count(db, "stage_blobs", "WHERE kind = 'oracle_tags'")).toBe(2);
+		// The tags boundary names three kinds and walks them lowest-first.
+		const tags = ["oracle_tags", "art_tags", "oracle_cards"];
+		expect(purgeSliceSql(db, t, undefined, PURGE_SLICE_BYTES, tags)).toEqual({ rows: 2, bytes: 2 * ROW });
+		expect(count(db, "stage_blobs", "WHERE kind = 'default_cards'")).toBe(2);
+		expect(purgeSliceSql(db, t, undefined, PURGE_SLICE_BYTES, tags)).toBeNull();
 	});
 
 	test("a slice whose commit was lost re-plans identically: the cut is a function of the head", () => {

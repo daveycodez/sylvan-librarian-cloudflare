@@ -133,11 +133,17 @@ describe("the coordinator never deletes staging in one commit", () => {
 		expect(src).toContain("stepManifest()");
 	});
 
-	test("no whole-table or whole-partition staging delete remains", () => {
+	test("no whole-table, whole-partition or whole-kind staging delete remains", () => {
 		expect(src).not.toContain("resetStaging");
 		expect(src).not.toContain('"DELETE FROM spill_batches"');
 		expect(src).not.toContain('"DELETE FROM ordered_rows"');
 		expect(src).not.toContain('"DELETE FROM draft_parts WHERE partition = ?"');
+		// The phase-boundary drops of a whole dump kind (recode, canonical,
+		// transform, tags) go through the blobs purge. The one `kind = ?` delete
+		// left is the rotated-dump restart in stepFetch, a warn path that drops
+		// what a restarted download has fetched so far.
+		expect(src.match(/"DELETE FROM stage_blobs WHERE kind = \?"/g)?.length ?? 0).toBe(1);
+		expect(src).not.toContain('"DELETE FROM stage_members WHERE kind = ?"');
 		// The one remaining unsliced clear is the build retry's chunk_staging
 		// (≤ ~70MB, under the commit size the bucket phase proves), and it is timed.
 		expect(src.match(/DELETE FROM chunk_staging"/g)?.length ?? 0).toBe(1);
@@ -148,6 +154,8 @@ describe("the coordinator never deletes staging in one commit", () => {
 		expect(src).toContain('beginPurge("partition")');
 		expect(src).toContain('beginPurge("rewind")');
 		expect(src).toContain('beginPurge("reset")');
+		// recode (resumable and fallback), canonical, transform, tags.
+		expect(src.match(/beginPurge\("blobs"/g)?.length ?? 0).toBe(5);
 	});
 
 	test("the alarm watches itself: one abort, and a timer that is always cleared", () => {
