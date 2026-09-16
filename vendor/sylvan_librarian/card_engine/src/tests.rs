@@ -17629,6 +17629,9 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
         p.compat.frame_effects = vec![legendary];
         p.card_border_id = black;
         p.card_set_code = InlineStr::from_str("eoe");
+        // One release date for the set, so the number is what the group order reads until the
+        // dated block below.
+        p.released_at_int = Some(20250801);
     }
     // ids 2 and 3 are the set's two extended arts; id 2 ranks above id 3 by default. Give id 2
     // the HIGHER number and the same illustration as id 3: a finish twin, so id 3 answers.
@@ -17653,6 +17656,15 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     data.printings[1].collector_number_int = Some(350);
     data.printings[2].collector_number_int = Some(398);
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "the later sheet beats the default order");
+    // NEWEST FIRST: date the lower-numbered id 2 a year later and it wins; date them the same
+    // and the number decides again (Torment of Hailfire's sld/2287 of 2025 over sld/9992 of 2024).
+    data.printings[1].released_at_int = Some(20251117);
+    data.printings[2].released_at_int = Some(20240513);
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "the newer printing over the higher number");
+    data.printings[2].released_at_int = Some(20251117);
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "same release date: the higher number");
+    data.printings[1].released_at_int = Some(20250801);
+    data.printings[2].released_at_int = Some(20250801);
     // Another set: the rule is silent and the default order decides.
     data.printings[2].card_set_code = InlineStr::from_str("sld");
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "across sets the default order decides");

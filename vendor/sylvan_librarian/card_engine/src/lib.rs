@@ -9678,8 +9678,9 @@ fn borderless_frame_tier(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
 /// score, so across sets the default order still decides exactly as if the group were one
 /// printing, and inside the group a term under one point (default scores of distinct printings
 /// are ≥ ~1,950 apart, a rank step less the old score) orders the members: printings that carry
-/// their own illustration first, the higher number ahead — the later, more premium sheet
-/// (Singularity Rupture's buy-a-box eoe/398 over its extended-art eoe/350) — and FINISH TWINS
+/// their own illustration first, the NEWEST ahead and on one release date the higher number — the
+/// later, more premium sheet (Singularity Rupture's buy-a-box eoe/398 over its extended-art
+/// eoe/350; Torment of Hailfire's sld/2287 of 2025 over the higher-numbered sld/9992 of 2024) — and FINISH TWINS
 /// last, a twin being a higher-numbered printing that looks the same as a lower one (same
 /// illustration, same border, same full-art status: Stomping Ground's galaxy-foil eoe/378 of its
 /// eoe/283, but NOT Blood Pet's black 7ed/121★ against the white 7ed/121). An absolute bonus was
@@ -9700,31 +9701,40 @@ fn same_set_group_base(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &P
             && u16::from(q.compat.lang_id) == u16::from(p.compat.lang_id)
             && borderless_frame_tier(q, siblings, ids, strings) == tier
     };
-    let mine = number(p);
+    let date = |q: &APrinting| q.released_at_int.as_ref().map_or(0u32, |v| u32::from(*v));
+    let mine = (date(p), number(p));
     let mut group_max = default_of(p);
-    let mut any = false;
+    let mut members = 1usize;
+    let mut beaten = 0usize;
     let mut twin = false;
     for s in siblings {
         if std::ptr::eq(s, p) || !in_group(s) {
             continue;
         }
-        any = true;
+        members += 1;
         group_max = group_max.max(default_of(s));
+        // NEWEST FIRST, the higher number only on the same release date. A set's numbers say
+        // nothing about order across years — Secret Lair's sld/9992 (2024) sits above sld/2287
+        // (2025) — so the date leads, and the number is the same-day sheet order it always was.
+        if mine > (date(s), number(s)) {
+            beaten += 1;
+        }
         let same_look = u16::from(s.artwork_group_id) == u16::from(p.artwork_group_id)
             && u32::from(s.card_border_id) == u32::from(p.card_border_id)
             && printing_is_full_art_or_poster(s, ids) == printing_is_full_art_or_poster(p, ids);
-        if same_look && number(s) < mine {
+        if same_look && number(s) < mine.1 {
             twin = true;
         }
     }
-    if !any {
+    if members == 1 {
         return None;
     }
-    // Under one point in total: a half for not being a twin, then the number (capped) so the
-    // higher sheet leads. The number's string suffix breaks no ties here — a suffix twin of the
-    // same look is a twin already, and of a different look the keys above decide.
-    let number_term = f64::from(mine.0.min(4095)) / 8192.0;
-    Some(group_max + if twin { number_term } else { 0.5 + number_term })
+    // Under one point in total: a half for not being a twin, then the share of the group this
+    // printing outranks on (date, number), so the newest leads and a twin never reaches a
+    // non-twin. The number's string suffix breaks no ties — a suffix twin of the same look is a
+    // twin already, and of a different look the keys above decide.
+    let order_term = 0.4 * (beaten as f64) / (members as f64);
+    Some(group_max + if twin { order_term } else { 0.5 + order_term })
 }
 
 /// THE SAME-SET RULE's trigger: does another printing of the card, in the same set and language,
@@ -9829,7 +9839,7 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// real scan above a placeholder or low-resolution image, then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
-/// eoe/350); the rule permutes a set's printings among themselves only, in the variant tiers
+/// eoe/350, newest first and the number only on one release date); the rule permutes a set's printings among themselves only, in the variant tiers
 /// only, the set group ranking against other sets by its best member's default order — and the
 /// default order decides after that, which for a card with no variant at all (Relic Seeker) is
 /// Scryfall's canonical printing. ONE exception to the top tier, the same-set rule: a set that prints
