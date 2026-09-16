@@ -115,8 +115,14 @@ export function partitionCountFor(stagedDraftBytes: number, targetBytes = TARGET
 
 // ─── the pp_publish value ────────────────────────────────────────────────────
 
-/** Where the loop stands for its CURRENT partition (mirrors the phase meta, same transaction). */
-export type PartitionStep = "agg" | "finalize" | "reorder" | "build" | "publish";
+/**
+ * Where the loop stands for its CURRENT partition (mirrors the phase meta, same transaction).
+ *
+ * `purge` follows `publish`: every chunk is in KV and the partition's staging
+ * is being retired in bounded slices (src/import-purge.ts) before the loop
+ * advances — or, on the last partition, before the manifest is written.
+ */
+export type PartitionStep = "agg" | "finalize" | "reorder" | "build" | "publish" | "purge";
 
 /**
  * One partition's build outputs and publish progress.
@@ -278,9 +284,10 @@ export function completePartitionPublish(state: PpPublish): void {
  * Move the loop to the next partition's agg, or report there is none.
  *
  * False means the state's current partition was the LAST one — the caller
- * writes the manifest and leaves the loop. The state is deliberately not
+ * moves on to the manifest and leaves the loop. The state is deliberately not
  * mutated in that case, so the completed records stay addressed by a valid
- * partition index for the manifest assembly.
+ * partition index for the manifest assembly. Called from the partition's
+ * purge completion, once its staging is gone — never from publish itself.
  */
 export function advanceToNextPartition(state: PpPublish): boolean {
 	if (state.partition + 1 >= state.partitions.length) return false;

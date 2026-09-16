@@ -117,3 +117,42 @@ describe("the coordinator runs one pipeline", () => {
 		expect(src).toContain("MANIFEST_KEY");
 	});
 });
+
+// Staging is retired in bounded slices, never in one commit (src/import-purge.ts).
+// On 2026-09-15 the partition's ~300MB completion delete wedged the object for
+// hours behind its own flush, every partition, every day: the whole Durable
+// Object duration bill on the free account. These pin the shape of the fix
+// against the source, the way the block above pins the absence of run modes.
+describe("the coordinator never deletes staging in one commit", () => {
+	const src = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
+
+	test("the purge is its own sliced phase, and the manifest write follows it", () => {
+		expect(src).toContain('case "purge_staging":');
+		expect(src).toContain('case "manifest":');
+		expect(src).toContain("stepPurgeStaging()");
+		expect(src).toContain("stepManifest()");
+	});
+
+	test("no whole-table or whole-partition staging delete remains", () => {
+		expect(src).not.toContain("resetStaging");
+		expect(src).not.toContain('"DELETE FROM spill_batches"');
+		expect(src).not.toContain('"DELETE FROM ordered_rows"');
+		expect(src).not.toContain('"DELETE FROM draft_parts WHERE partition = ?"');
+		// The one remaining unsliced clear is the build retry's chunk_staging
+		// (≤ ~70MB, under the commit size the bucket phase proves), and it is timed.
+		expect(src.match(/DELETE FROM chunk_staging"/g)?.length ?? 0).toBe(1);
+	});
+
+	test("every purge goes through the one bounded slice", () => {
+		expect(src).toContain("PURGE_SLICE_BYTES");
+		expect(src).toContain('beginPurge("partition")');
+		expect(src).toContain('beginPurge("rewind")');
+		expect(src).toContain('beginPurge("reset")');
+	});
+
+	test("the alarm watches itself: one abort, and a timer that is always cleared", () => {
+		expect(src.match(/this\.ctx\.abort\(/g)?.length ?? 0).toBe(1);
+		expect(src).toContain("clearTimeout(timer)");
+		expect(src).toContain("ALARM_WATCHDOG_MS");
+	});
+});

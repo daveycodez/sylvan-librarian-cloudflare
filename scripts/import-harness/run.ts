@@ -178,6 +178,11 @@ async function main(): Promise<number> {
 		exports: {
 			default: { purgeCache: async () => ({ success: true, errors: [] as { code: number; message: string }[] }) },
 		},
+		// The coordinator's watchdog resets the object through ctx.abort when an
+		// alarm overruns; here that is a red run, not a TypeError.
+		abort(reason?: string): void {
+			throw new Error(`ctx.abort: ${reason ?? "no reason"}`);
+		},
 	};
 
 	const { ImportCoordinator } = await import("../../src/import-coordinator");

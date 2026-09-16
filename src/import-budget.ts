@@ -104,6 +104,28 @@ export const BUCKET_SLICE_BATCHES = 64;
 export const BUCKET_FETCH_BATCHES = 8;
 
 /**
+ * Staged bytes one purge slice may delete (src/import-purge.ts).
+ *
+ * Sized from the one commit production has proven, not from a guess: the
+ * bucket slice above deletes 64 x ~1.9MB ≈ 120MB in one transaction on every
+ * slice of every run and gets through. The partition's ~300MB completion
+ * delete did NOT — the next alarm's first storage read hung behind its flush
+ * for hours (2026-09-15, the free account's whole DO duration bill). 32MB is
+ * ~4x under the proven commit; ~20 rows is well under a second of CPU; and
+ * because every deleted row is billed as a row written whether it goes in one
+ * transaction or ten, slicing costs only the per-alarm toll: ~10 alarms per
+ * partition, ~100 per run at N=10, which keeps the 3x growth projection in
+ * tests/import/run-budget.test.ts inside the day's write cap with margin
+ * (24MB did not). The bound is per ALARM, not just per delete: one alarm may
+ * walk several tables, but frees no more than this in total, because it is
+ * the alarm's flush the next alarm waits on. If the per-slice timing log shows
+ * the flush is nowhere near the wall, 48MB is the next step; not before.
+ */
+export const PURGE_SLICE_BYTES = 32 * 1024 * 1024;
+/** Rows one slice may plan over, so the planning read stays a few rows even when they are tiny. */
+export const PURGE_SLICE_MAX_ROWS = 64;
+
+/**
  * Draft batches aggregated per slice.
  *
  * RAISED 8 → 64 on 2026-08-28, with the resident bytes bounded separately by
@@ -201,6 +223,12 @@ export interface RunShape {
 	/** Alarms everything before the partition loop takes (listing through
 	 * routing) plus everything after it (manifest through purge). */
 	prefixAlarms: number;
+	/**
+	 * Bytes one partition's publish leaves in staging to be purged: its
+	 * draft_parts, spill groups, ordered groups and chunk staging. Decides the
+	 * purge slices per partition (PURGE_SLICE_BYTES).
+	 */
+	stagingBytesPerPartition: number;
 }
 
 /** Slice sizes to project against — the module's own by default. Overridable
@@ -218,6 +246,13 @@ export interface SliceSizes {
 	 * assertion, the same way `SLICES_BEFORE` keeps the pre-2026-08-28 slices.
 	 */
 	bucketBatches: number | null;
+	/**
+	 * Bytes per staging-purge slice — or `null` for the pipeline BEFORE
+	 * 2026-09-16, when a partition's completion deleted its whole staging in
+	 * one transaction (zero extra alarms, and the commit that wedged the
+	 * object). Kept as a model for the same reason as `bucketBatches: null`.
+	 */
+	purgeBytes: number | null;
 }
 
 export const CURRENT_SLICES: SliceSizes = {
@@ -225,6 +260,7 @@ export const CURRENT_SLICES: SliceSizes = {
 	finalizeBatches: FINALIZE_SLICE_BATCHES,
 	reorderRows: REORDER_SLICE_ROWS,
 	bucketBatches: BUCKET_SLICE_BATCHES,
+	purgeBytes: PURGE_SLICE_BYTES,
 };
 
 export interface RunCost {
@@ -275,8 +311,11 @@ export function projectRunCost(shape: RunShape, slices: SliceSizes = CURRENT_SLI
 	const reorderAlarms = Math.ceil(shape.rowsPerPartition / slices.reorderRows);
 	// One build alarm and one publish alarm per partition is the floor; a
 	// multi-chunk partition adds publish alarms, which the caller folds into
-	// prefixAlarms rather than this model guessing at KV chunk counts.
-	const perPartitionAlarms = aggAlarms + finalizeAlarms + reorderAlarms + 2;
+	// prefixAlarms rather than this model guessing at KV chunk counts. The
+	// purge of the partition's staging is its own sliced step after publish; the
+	// alarm that empties the last table moves the loop on itself.
+	const purgeAlarms = slices.purgeBytes === null ? 0 : Math.ceil(shape.stagingBytesPerPartition / slices.purgeBytes);
+	const perPartitionAlarms = aggAlarms + finalizeAlarms + reorderAlarms + 2 + purgeAlarms;
 	const alarms = shape.prefixAlarms + bucketAlarms + perPartitionAlarms * shape.partitions;
 
 	// Work reads, on top of the per-alarm toll. The bucket pass reads the staging

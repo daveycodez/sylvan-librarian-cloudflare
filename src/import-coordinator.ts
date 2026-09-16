@@ -146,6 +146,8 @@ import {
 	MAX_DAY_ROWS_WRITTEN,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
+	PURGE_SLICE_BYTES,
+	PURGE_SLICE_MAX_ROWS,
 	REORDER_SLICE_ROWS,
 } from "./import-budget";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
@@ -165,6 +167,7 @@ import {
 	serializePpPublish,
 	TARGET_PARTITION_BYTES,
 } from "./import-publish";
+import { PURGE_TABLES, type PurgeScope, type PurgeTable, planPurgeSlice } from "./import-purge";
 import {
 	InflateRecodeSource,
 	MEMBER_RAW_BYTES,
@@ -227,6 +230,26 @@ const MAX_PHASE_ATTEMPTS = 12;
  * zero — and the cost of each one is most of an import.
  */
 const MAX_WASM_REWINDS = 3;
+
+/**
+ * How long one alarm may run before the object resets ITSELF.
+ *
+ * A Durable Object is billed for every second it is active, and it stays active
+ * while any I/O is pending — so an alarm stuck on a storage read that never
+ * resolves (2026-09-15: hours behind one 300MB delete's flush, every day, the
+ * free account's whole duration bill) costs the day, not the slice. The
+ * platform kills an alarm at 15 minutes of wall time and retries it, which
+ * changes nothing when the retry stalls on the same I/O. `ctx.abort()` does
+ * what a deploy did by accident: tear the instance down so the pending alarm
+ * re-fires on a fresh one, which re-reads its cursor and redoes one slice.
+ *
+ * Five minutes is far above any legitimate slice — recode budgets itself at 23s
+ * (RECODE_ALARM_BUDGET_SECONDS), a 48MB fetch or a chunk gzip+put is seconds —
+ * and far below the 15-minute wall. `notify` gets the long leash: it waits on
+ * every region's prefetch of ~146MB of compressed archives.
+ */
+const ALARM_WATCHDOG_MS = 5 * 60_000;
+const ALARM_WATCHDOG_MS_BY_PHASE: Partial<Record<Phase, number>> = { notify: 10 * 60_000 };
 
 /**
  * Passes the `purge` phase makes. ONE, now that convergence is an event.
@@ -372,6 +395,11 @@ type Phase =
 	| "reorder"
 	| "build"
 	| "publish"
+	// The partition's staging retired in bounded slices (src/import-purge.ts);
+	// also the run-start reset and the wasm rewind's clean-up, by `purge_scope`.
+	| "purge_staging"
+	// Every partition published and purged: the manifest write, the commit point.
+	| "manifest"
 	| "notify"
 	| "rulings"
 	| "reference"
@@ -555,7 +583,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS routing_keys (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			-- What the last import left in each published rulings bucket. CROSS-RUN state, unlike
 			-- every table above it: it is what lets a night publish only the buckets whose bytes
-			-- actually moved, so it is neither in resetStaging nor covered by metaClear.
+			-- actually moved, so it is neither in the run-start purge nor covered by metaClear.
 			CREATE TABLE IF NOT EXISTS rulings_buckets (
 				bucket INTEGER PRIMARY KEY, hash TEXT NOT NULL, rulings INTEGER NOT NULL
 			);
@@ -577,6 +605,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		if (draftCols.length === 0) {
 			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN part_hashes BLOB");
+		}
+		// On record once per instance: how the platform's SQLite frees pages. The
+		// staging purges are sliced on the assumption that a commit's cost is the
+		// pages it frees (see PURGE_SLICE_BYTES); this is the datum behind it.
+		try {
+			const mode = this.sqlAll<{ auto_vacuum: number }>("PRAGMA auto_vacuum")[0]?.auto_vacuum;
+			if (mode !== undefined) console.log(`Import storage: auto_vacuum=${mode}`);
+		} catch {
+			// A platform that refuses the pragma says so by this line's absence.
 		}
 		this.schemaReady = true;
 	}
@@ -624,9 +661,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// defeat the point.
 		const record: RunRecord = { state: "running", reason, startedAt: new Date().toISOString() };
 		this.ctx.storage.transactionSync(() => {
-			this.resetStaging();
+			// The staging a previous run left behind is retired by the first alarms
+			// in bounded slices (purge_staging, scope "reset") — never here, in one
+			// transaction: after a run that died mid-transform that is ~1.5GB, and
+			// one commit that size is what wedged the object for days. The two
+			// tables of a handful of tiny rows go inline.
+			this.sqlRun("DELETE FROM stage_files");
+			this.sqlRun("DELETE FROM recode_checkpoint");
 			this.metaClear();
-			this.metaSet("phase", "listing");
+			this.beginPurge("reset");
 		});
 		await this.ctx.storage.put("run", record);
 		await this.ctx.storage.put("phase_attempts", 0);
@@ -652,10 +695,42 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	private async runAlarm(): Promise<void> {
 		this.ensureSchema();
+		// The phase is read FIRST and synchronously — sql.exec answers from the
+		// in-memory database, which is the one storage op that cannot stall — so
+		// the watchdog can name the phase it fired in even when nothing else in
+		// this alarm ever resolved.
+		const phase = (this.metaGet("phase") ?? "idle") as Phase;
+		if (phase === "idle") return; // stale alarm from a finished run
+		const started = Date.now();
+		const limit = ALARM_WATCHDOG_MS_BY_PHASE[phase] ?? ALARM_WATCHDOG_MS;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const watchdog = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				const reason = `import watchdog: phase ${phase} has run ${Date.now() - started}ms, over the ${limit}ms limit`;
+				console.error(`${reason} — resetting the object (ctx.abort) so the pending alarm re-fires on a fresh instance`);
+				try {
+					this.ctx.abort(reason);
+				} catch (err) {
+					// Outside the platform (the harness) abort throws instead of
+					// resetting; either way this alarm ends here.
+					reject(err);
+					return;
+				}
+				reject(new Error(reason));
+			}, limit);
+		});
+		try {
+			await Promise.race([this.runAlarmBody(phase), watchdog]);
+		} finally {
+			// Cleared on every exit: a live timer is pending I/O, and pending I/O is
+			// exactly what keeps an object active and billed.
+			clearTimeout(timer);
+		}
+	}
+
+	private async runAlarmBody(phase: Phase): Promise<void> {
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
-		const phase = (this.metaGet("phase") ?? "idle") as Phase;
-		if (phase === "idle") return;
 
 		// Count the attempt BEFORE running it, durably.
 		//
@@ -898,6 +973,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepBuild();
 			case "publish":
 				return this.stepPublish();
+			case "purge_staging":
+				return this.stepPurgeStaging();
+			case "manifest":
+				return this.stepManifest();
 			case "notify":
 				return this.stepNotify();
 			case "rulings":
@@ -2222,21 +2301,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("agg_partition_started", String(pp.partition));
 			this.metaSet("agg_seq_done", "-1");
 			this.metaSet("agg_sealed", "0");
-			// Any partially-spilled finalize output is invalid with a fresh heap.
-			// Only the current partition's rows exist in these tables (see the
-			// method comment), so the whole-table delete IS the partition-scoped
-			// one.
-			this.sqlRun("DELETE FROM spill_batches");
+			// Any partially-spilled finalize output is invalid with a fresh heap,
+			// and so is anything reorder derived FROM that output: resuming the
+			// rewritten spill part-written against rows that no longer exist would
+			// append to stale blobs — a store that builds without error and is
+			// wrong. Only the current partition's rows exist in those tables (see
+			// the method comment), so the "rewind" purge scope's whole-table sweep
+			// IS the partition-scoped one — and it runs in bounded slices on the
+			// next alarms, never as one commit here (import-purge.ts).
 			this.metaSet("finalize_seq_done", "-1");
-			// And so is anything reorder derived FROM that output. Leaving these
-			// behind would resume the rewritten spill part-written against rows
-			// that no longer exist, appending to stale blobs — a store that
-			// builds without error and is wrong.
-			this.sqlRun("DELETE FROM ordered_rows");
 			this.metaSet("reorder_done", "0");
 			pp.step = "agg";
 			this.savePp(pp);
-			this.metaSet("phase", "agg");
+			this.beginPurge("rewind");
 		});
 		return false;
 	}
@@ -2520,7 +2597,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// killed build cannot spend the allowance invisibly.
 		this.prechargeReads(Number(this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM ordered_rows")[0]?.n ?? 0));
 
-		this.sqlRun("DELETE FROM chunk_staging");
+		// Empty on the happy path (the previous partition's purge took it); only a
+		// build retry finds rows here, at most ~70MB — under the commit size the
+		// bucket phase proves safe, and timed so a slow one is on record.
+		{
+			const cleared = Date.now();
+			const cursor = this.ctx.storage.sql.exec("DELETE FROM chunk_staging");
+			this.rowsRead += cursor.rowsRead;
+			this.rowsWritten += cursor.rowsWritten;
+			if (cursor.rowsWritten > 0) {
+				console.log(`Build: cleared ${cursor.rowsWritten} stale chunk_staging row(s) in ${Date.now() - cleared}ms`);
+			}
+		}
 		let chunkSeq = -1;
 		// Stage on the STAGING grid — rows just under the DO's 2MB per-value
 		// cap, which is as large as they can be. Publishing to KV shares a grid
@@ -2672,38 +2760,38 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return; // next alarm continues
 		}
 
-		// Every one of this partition's chunks is in KV. Stamp its record, purge
-		// its staging (progressive purge, plan B1/B3: the 5GB pool must never
-		// hold two partitions' spill+ordered+chunk staging at once — these tables
-		// hold ONLY partition p's rows by this same invariant), and either hand
-		// the loop to the next partition or commit the whole build.
-		const isLast = pp.partition === pp.partitions.length - 1;
+		// Every one of this partition's chunks is in KV. Stamp its record and hand
+		// the loop to purge_staging, which retires the partition's staging in
+		// bounded slices (progressive purge, plan B1/B3: the 5GB pool must never
+		// hold two partitions' spill+ordered+chunk staging at once — and the
+		// partition's own drafts go too: published means no rewind can ask for
+		// them again) and then either advances the loop or moves to the manifest.
+		//
+		// Until 2026-09-16 the four deletes lived HERE, in this transaction, ~300MB
+		// in one commit — and the next alarm's first storage read hung behind its
+		// flush for hours, until a deploy reset the object. See import-purge.ts.
 		this.ctx.storage.transactionSync(() => {
 			completePartitionPublish(pp);
-			this.sqlRun("DELETE FROM spill_batches");
-			this.sqlRun("DELETE FROM ordered_rows");
-			this.sqlRun("DELETE FROM chunk_staging");
-			// And the partition's own drafts: published means no rewind can ask for them again.
-			this.sqlRun("DELETE FROM draft_parts WHERE partition = ?", pp.partition);
-			if (!isLast) {
-				const advanced = advanceToNextPartition(pp);
-				if (!advanced) throw new Error(`publish: could not advance past partition ${pp.partition}`);
-				this.metaSet("phase", "agg");
-			}
+			pp.step = "purge";
 			this.savePp(pp);
+			this.beginPurge("partition");
 		});
-		if (!isLast) {
-			console.log(
-				`Partition ${pp.partition - 1} published (${rec.chunk_count} chunk(s)); ` +
-					`continuing with partition ${pp.partition}/${pp.partitions.length}`,
-			);
-			return; // next alarm starts the next partition's agg
-		}
+		console.log(
+			`Partition ${pp.partition} published (${rec.chunk_count} chunk(s)) of ${pp.partitions.length}; ` +
+				"purging its staging",
+		);
+	}
 
-		// Every chunk of every partition is in KV — write the manifest LAST (the
-		// commit point). Totals at top level, one record per partition;
-		// partition_count and partition_hash are what routers derive the fan-out
-		// and the modulus from (never a constant — plan Decision 3b).
+	// ── phase: manifest (every partition published and purged) ────────────────
+
+	/**
+	 * Write the manifest LAST — the commit point. Totals at top level, one
+	 * record per partition; partition_count and partition_hash are what routers
+	 * derive the fan-out and the modulus from (never a constant — plan Decision
+	 * 3b). Idempotent: a retry re-puts identical bytes.
+	 */
+	private async stepManifest(): Promise<void> {
+		const pp = this.requirePp();
 		const builtAt = this.metaGet("built_at") ?? "";
 		const formatVersion = Number(this.metaGet("format_version") ?? 0);
 		const sourceUpdatedAt = this.metaGet("source_updated_at") ?? undefined;
@@ -3378,22 +3466,129 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── staging helpers ────────────────────────────────────────────────────────
 
-	private resetStaging(): void {
-		for (const table of [
-			"stage_files",
-			"stage_blobs",
-			"stage_members",
-			"recode_checkpoint",
-			"draft_batches",
-			"draft_parts",
-			"spill_batches",
-			"ordered_rows",
-			"tagdata_blobs",
-			"chunk_staging",
-			"routing_keys",
-		]) {
-			this.sqlRun(`DELETE FROM ${table}`);
+	/**
+	 * Arm the purge_staging phase for `scope` — inside the caller's transaction,
+	 * beside the progress it follows, so a lost commit loses both together.
+	 */
+	private beginPurge(scope: PurgeScope): void {
+		this.metaSet("purge_scope", scope);
+		this.metaSet("purge_slices", "0");
+		this.metaSet("purge_started_ms", String(Date.now()));
+		this.metaSet("phase", "purge_staging");
+	}
+
+	/**
+	 * Delete at most PURGE_SLICE_BYTES from one staging table, in key order from
+	 * its head, in one transaction of its own. Returns what it freed, or null
+	 * when the table (or its scoped part) is already empty.
+	 *
+	 * Idempotent under a lost commit: the next attempt plans from the same head
+	 * and cuts at the same key. `LENGTH(bytes)` reads the cell header, not the
+	 * overflow pages, so the planning read is cheap (the pattern stepRecode's
+	 * member scan already relies on).
+	 */
+	private purgeSlice(
+		t: PurgeTable,
+		partition: number | undefined,
+		budgetBytes: number,
+	): { rows: number; bytes: number; scope: string } | null {
+		let where = "";
+		let scopeArgs: unknown[] = [];
+		let label = "";
+		if (t.scope) {
+			const value =
+				t.scope === "partition" && partition !== undefined
+					? partition
+					: (this.sqlAll<{ v: number | string | null }>(`SELECT MIN(${t.scope}) AS v FROM ${t.table}`)[0]?.v ?? null);
+			if (value === null || value === undefined) return null;
+			where = ` WHERE ${t.scope} = ?`;
+			scopeArgs = [value];
+			label = ` ${t.scope} ${value}`;
 		}
+		const head = this.sqlAll<{ key: number; bytes: number }>(
+			`SELECT ${t.key} AS key, LENGTH(bytes) AS bytes FROM ${t.table}${where} ORDER BY ${t.key} LIMIT ?`,
+			...scopeArgs,
+			PURGE_SLICE_MAX_ROWS,
+		);
+		const plan = planPurgeSlice(head, budgetBytes);
+		if (!plan) return null;
+		this.ctx.storage.transactionSync(() => {
+			this.sqlRun(`DELETE FROM ${t.table}${where ? `${where} AND` : " WHERE"} ${t.key} <= ?`, ...scopeArgs, plan.upTo);
+		});
+		return { rows: plan.rows, bytes: plan.bytes, scope: label };
+	}
+
+	// ── phase: purge_staging (bounded deletes, one slice per alarm) ────────────
+
+	/**
+	 * Retire the staging the current scope names, at most PURGE_SLICE_BYTES per
+	 * alarm, then move the run on. Stateless across alarms on purpose: each one
+	 * walks the scope's tables in order, deleting from each until the alarm's
+	 * budget is spent or the table is empty, so a retry or a reset costs nothing
+	 * but the planning reads, and no cursor can drift from what is actually in
+	 * the tables. Every delete is its own bounded transaction; the alarm's total
+	 * is bounded too, because it is the alarm's flush the next one waits on.
+	 * When the walk runs out of tables before it runs out of budget, everything
+	 * is gone and the same alarm moves the run on.
+	 */
+	private async stepPurgeStaging(): Promise<void> {
+		const scope = this.metaGet("purge_scope") as PurgeScope | null;
+		if (!scope || !(scope in PURGE_TABLES)) {
+			throw new FatalImportError(`purge_staging: no purge scope recorded (${JSON.stringify(scope)})`);
+		}
+		const pp = scope === "reset" ? null : this.requirePp();
+		const t0 = Date.now();
+		let freedBytes = 0;
+		const freedParts: string[] = [];
+		for (const t of PURGE_TABLES[scope]) {
+			while (freedBytes < PURGE_SLICE_BYTES) {
+				const freed = this.purgeSlice(t, pp?.partition, PURGE_SLICE_BYTES - freedBytes);
+				if (!freed) break; // this table (or its scoped part) is empty: next table
+				freedBytes += freed.bytes;
+				freedParts.push(`${t.table}${freed.scope} ${freed.rows} row(s) ${(freed.bytes / 1048576).toFixed(1)}MB`);
+			}
+			if (freedBytes >= PURGE_SLICE_BYTES) break;
+		}
+		if (freedBytes > 0) {
+			const n = Number(this.metaGet("purge_slices") ?? 0) + 1;
+			this.metaSet("purge_slices", String(n));
+			console.log(
+				`Staging purge slice ${n} (${scope}${pp ? `, partition ${pp.partition}` : ""}): ${freedParts.join(", ")} — ` +
+					`${(freedBytes / 1048576).toFixed(1)}MB in ${Date.now() - t0}ms`,
+			);
+			if (freedBytes >= PURGE_SLICE_BYTES) return; // next alarm continues
+			// Under budget with no table left: the walk emptied the scope. Fall
+			// through and move on in this same alarm.
+		}
+		// Every table in scope is empty: leave the phase, in one transaction
+		// with the progress that follows it.
+		const slices = Number(this.metaGet("purge_slices") ?? 0);
+		const ms = Date.now() - Number(this.metaGet("purge_started_ms") ?? t0);
+		let next = "";
+		this.ctx.storage.transactionSync(() => {
+			if (scope === "reset") {
+				this.metaSet("phase", "listing");
+				next = "listing the dumps";
+			} else if (scope === "rewind") {
+				// The rewind already reset the partition's cursors and pp.step.
+				this.metaSet("phase", "agg");
+				next = `re-aggregating partition ${pp?.partition}`;
+			} else if (pp) {
+				const isLast = pp.partition === pp.partitions.length - 1;
+				if (isLast) {
+					this.metaSet("phase", "manifest");
+					next = "writing the manifest";
+				} else {
+					const advanced = advanceToNextPartition(pp);
+					if (!advanced) throw new Error(`purge_staging: could not advance past partition ${pp.partition}`);
+					this.savePp(pp);
+					this.metaSet("phase", "agg");
+					next = `continuing with partition ${pp.partition}/${pp.partitions.length}`;
+				}
+			}
+			this.metaSet("purge_scope", "");
+		});
+		console.log(`Staging purged (${scope}) in ${slices} slice(s), ${ms}ms; ${next}`);
 	}
 
 	/**

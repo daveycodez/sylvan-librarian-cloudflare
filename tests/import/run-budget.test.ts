@@ -65,6 +65,10 @@ const CORPUS_2026_08_28: RunShape = {
 	spillGroupsPerPartition: 295,
 	partitions: 10,
 	prefixAlarms: 160,
+	// One partition's staging at publish: its ~118 draft_parts groups (1.5MB
+	// each, ~177MB), ~32 spill + ~32 ordered groups (~96MB) and ~23 chunk
+	// staging rows (~43MB) — ~316MB, what the purge slices per partition.
+	stagingBytesPerPartition: 316_000_000,
 };
 
 /**
@@ -94,10 +98,14 @@ const SLICES_BEFORE: SliceSizes = {
 	finalizeBatches: 4,
 	reorderRows: REORDER_SLICE_ROWS,
 	bucketBatches: null,
+	purgeBytes: null,
 };
 
 /** The 2026-08-28 slice sizes WITHOUT the bucket phase: the pipeline between that fix and 2026-09-04. */
-const SLICES_UNBUCKETED: SliceSizes = { ...CURRENT_SLICES, bucketBatches: null };
+const SLICES_UNBUCKETED: SliceSizes = { ...CURRENT_SLICES, bucketBatches: null, purgeBytes: null };
+
+/** The 2026-09-04 pipeline: bucketed, but each partition's staging still deleted in one commit — the one that wedged. */
+const SLICES_UNSLICED_PURGE: SliceSizes = { ...CURRENT_SLICES, purgeBytes: null };
 
 /**
  * The staged-draft bytes behind CORPUS_2026_08_28's N=10: partitionCountFor
@@ -122,6 +130,7 @@ function corpusAt(multiple: number): RunShape {
 		spillGroupsPerPartition: Math.ceil(CORPUS_2026_09_04.spillGroupsPerPartition * perPartition),
 		partitions,
 		prefixAlarms: 57 + Math.ceil(103 * multiple),
+		stagingBytesPerPartition: Math.ceil(CORPUS_2026_09_04.stagingBytesPerPartition * perPartition),
 	};
 }
 
@@ -180,11 +189,27 @@ describe("the run's storage budget", () => {
 		// so the loop's slice sizes were the lever. The bucket phase is what
 		// flipped it: the loop's alarms fell from ~450 to ~150 against a prefix
 		// of 160, so the next lever, if one is ever needed, is the prefix's own
-		// corpus-walking phases (transform 55, scores 48), not the loop.
+		// corpus-walking phases (transform 55, scores 48), not the loop. The
+		// sliced staging purge (2026-09-16) put ~100 alarms back into the loop —
+		// linear in N, priced on its own above — so the comparison here is the
+		// bucket phase's alone, with the one-commit purge on both sides.
 		const unbucketed = projectRunCost(CORPUS_2026_08_28, SLICES_UNBUCKETED);
-		const now = projectRunCost(CORPUS_2026_08_28);
+		const now = projectRunCost(CORPUS_2026_08_28, SLICES_UNSLICED_PURGE);
 		expect(unbucketed.alarms - CORPUS_2026_08_28.prefixAlarms).toBeGreaterThan(CORPUS_2026_08_28.prefixAlarms);
 		expect(now.alarms - CORPUS_2026_08_28.prefixAlarms).toBeLessThan(CORPUS_2026_08_28.prefixAlarms);
+	});
+
+	test("slicing the staging purge adds alarms, not writes, and about a third of them", () => {
+		// Every deleted row is billed as a row written whether it goes in one
+		// commit or ten; what slicing adds is the per-alarm toll of the slices —
+		// 10 per partition at 316MB / 32MB, 100 on 309 — and that is the price of
+		// an object that returns from its alarm instead of hanging until a deploy.
+		const oneCommit = projectRunCost(CORPUS_2026_09_04, SLICES_UNSLICED_PURGE);
+		const sliced = projectRunCost(CORPUS_2026_09_04);
+		expect(sliced.alarms - oneCommit.alarms).toBe(CORPUS_2026_09_04.partitions * 10);
+		expect(sliced.alarms - oneCommit.alarms).toBeLessThan(oneCommit.alarms * 0.4);
+		expect(sliced.rowsWritten - sliced.fixedRowsWritten).toBe(oneCommit.rowsWritten - oneCommit.fixedRowsWritten);
+		expect(sliced.fixedRowsWritten).toBeLessThan(MAX_RUN_ROWS_WRITTEN * TOLL_SHARE_OF_WRITE_BUDGET);
 	});
 
 	test("the unbucketed model still reproduces the 2026-08-28 projection it was calibrated on", () => {
@@ -198,8 +223,10 @@ describe("the run's storage budget", () => {
 	});
 
 	test("the bucket phase removes the N x staging term: reads fall, alarms fall, writes do not rise", () => {
+		// Both sides with the one-commit purge: this is the bucket phase's delta,
+		// and the sliced purge's alarms are asserted on their own above.
 		const before = projectRunCost(CORPUS_2026_08_28, SLICES_UNBUCKETED);
-		const now = projectRunCost(CORPUS_2026_08_28);
+		const now = projectRunCost(CORPUS_2026_08_28, SLICES_UNSLICED_PURGE);
 		// agg + finalize used to read 2 x N x 1,180 rows; now 1,180 once plus ~2 x 1,180 in
 		// total. What remains of the read cost is the reorder phase's two passes per slice
 		// over the spill groups — unchanged here, and the next term to look at.
@@ -223,18 +250,22 @@ describe("the run's storage budget", () => {
 		// difference between ~12 years and ~18 on the self-cap — and when the
 		// self-cap does bind, the honest next lever is raising it toward the
 		// platform's 100k (serving writes are hundreds a day), then the three
-		// writes of every spill group (finalize, reorder, build).
+		// writes of every spill group (finalize, reorder, build). The sliced
+		// staging purge (2026-09-16) adds N x ~10 alarms of toll to the same
+		// linear term; at 32MB a slice the 3x projection still fits (at 24MB it
+		// did not, by a hair — which is why the slice is 32MB).
 		for (const multiple of [1, 1.5, 2, 2.5, 3]) {
 			const cost = projectRunCost(corpusAt(multiple));
 			expect(cost.rowsWritten * HARNESS_WRITE_MULTIPLE).toBeLessThan(MAX_DAY_ROWS_WRITTEN);
 			expect(cost.rowsRead * 2).toBeLessThan(MAX_RUN_ROWS_READ);
 		}
 		// And the regression twin: the unbucketed pipeline could not have done 2.5x,
-		// and its alarm count at 3x is what "quadratic" means in practice.
+		// and its alarm count at 3x is what "quadratic" means in practice (the
+		// bucket phase's delta, so both sides carry the one-commit purge).
 		const unbucketed = projectRunCost(corpusAt(2.5), SLICES_UNBUCKETED);
 		expect(unbucketed.rowsWritten * HARNESS_WRITE_MULTIPLE).toBeGreaterThan(MAX_DAY_ROWS_WRITTEN);
 		expect(projectRunCost(corpusAt(3), SLICES_UNBUCKETED).alarms).toBeGreaterThan(
-			4 * projectRunCost(corpusAt(3)).alarms,
+			4 * projectRunCost(corpusAt(3), SLICES_UNSLICED_PURGE).alarms,
 		);
 	});
 

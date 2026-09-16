@@ -160,6 +160,19 @@ describe("the pp_publish value", () => {
 		// follows the `false` reads a valid current record.
 		expect(state.partition).toBe(1);
 	});
+
+	test("a publish completes into `purge`, and the purge's completion is what advances the loop to agg", () => {
+		// The partition's staging is retired in bounded slices between publish and
+		// the next agg (src/import-purge.ts); the step survives persistence like
+		// every other, and advancing from it lands on the next partition's agg.
+		const state = initialPpPublish(3);
+		state.step = "purge";
+		const back = roundTrip(state);
+		expect(back.step).toBe("purge");
+		expect(advanceToNextPartition(back)).toBe(true);
+		expect(back.partition).toBe(1);
+		expect(back.step).toBe("agg");
+	});
 });
 
 // ─── the publish loop, driven the way the alarms drive it ────────────────────
