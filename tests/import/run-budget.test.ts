@@ -31,6 +31,7 @@ import {
 	FINALIZE_SLICE_BATCHES,
 	FIXED_ROWS_WRITTEN_PER_ALARM,
 	MAX_DAY_ROWS_WRITTEN,
+	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
 	projectPoolBytes,
@@ -38,6 +39,7 @@ import {
 	REORDER_SLICE_ROWS,
 	type RunShape,
 	type SliceSizes,
+	TOLL_2026_08_28,
 } from "../../src/import-budget";
 import { partitionCountFor } from "../../src/import-publish";
 
@@ -217,9 +219,25 @@ describe("the run's storage budget", () => {
 		// projectRunCost's own comment cites. They belong to the pipeline WITHOUT
 		// the bucket phase; keeping them reproducible is what makes the bucketed
 		// projection below a measured delta rather than a fresh guess.
-		const cost = projectRunCost(CORPUS_2026_08_28, SLICES_UNBUCKETED);
+		// With that run's per-alarm toll: the merged `run_meters` row (2026-09-16)
+		// costs two reads and a write per alarm LESS, modelled in CURRENT_TOLL.
+		const cost = projectRunCost(CORPUS_2026_08_28, SLICES_UNBUCKETED, TOLL_2026_08_28);
 		expect(cost.alarms).toBe(610);
 		expect(cost.rowsRead).toBe(71_200);
+	});
+
+	test("a healthy run's active time fits MAX_RUN_ACTIVE_MS three times over", () => {
+		// The wall-time model, per phase: sub-second alarms for the loop, seconds
+		// for the ones that stream — 14 fetch slices of 48MB, 18 recode slices at
+		// the 23s budget, 55 transform slices, a build and a publish per
+		// partition. The run's duration bill IS this sum (the object is active
+		// only while an alarm runs, and never idles between them with work
+		// pending), so this is what the ledger should report on a healthy night.
+		const cost = projectRunCost(CORPUS_2026_09_04);
+		const streaming = 14 * 20_000 + 18 * 23_000 + 55 * 4_000 + CORPUS_2026_09_04.partitions * (10_000 + 5_000);
+		const projectedMs = cost.alarms * 1_500 + streaming;
+		expect(projectedMs).toBeLessThan(60 * 60_000);
+		expect(projectedMs * 3).toBeLessThan(MAX_RUN_ACTIVE_MS);
 	});
 
 	test("the bucket phase removes the N x staging term: reads fall, alarms fall, writes do not rise", () => {

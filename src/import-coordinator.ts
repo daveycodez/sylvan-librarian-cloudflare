@@ -138,16 +138,22 @@ import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types"
 import {
 	AGG_FETCH_BATCHES,
 	AGG_SLICE_BATCHES,
+	advanceMeters,
 	BUCKET_FETCH_BATCHES,
 	BUCKET_SLICE_BATCHES,
+	DO_FREE_GB_SECONDS_PER_DAY,
+	EMPTY_RUN_METERS,
 	FINALIZE_FETCH_BATCHES,
 	FINALIZE_SLICE_BATCHES,
 	MAX_DAY_ROWS_READ,
 	MAX_DAY_ROWS_WRITTEN,
+	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
 	PURGE_SLICE_BYTES,
 	PURGE_SLICE_MAX_ROWS,
+	parseMeters,
+	projectedGbSeconds,
 	REORDER_SLICE_ROWS,
 } from "./import-budget";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
@@ -450,6 +456,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// resets on eviction would bound nothing.
 	private rowsRead = 0;
 	private rowsWritten = 0;
+	/** When the running alarm started, or last banked its time (flushMeters advances it). */
+	private alarmStartedAt = 0;
+	/** Whether the running alarm has been counted into the ledger yet (flushMeters runs more than once per alarm). */
+	private alarmCounted = false;
 
 	/** Execute and materialise, adding what it cost to this run's totals. */
 	private sqlAll<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: unknown[]): T[] {
@@ -482,7 +492,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 *
 	 * Every write must come through here. The counters used to live only in
 	 * sqlAll/sqlIter, while every INSERT and DELETE called `sql.exec` directly —
-	 * so `do_rows_written` read ZERO after an import that wrote hundreds of
+	 * so the run's rows-written meter read ZERO after an import that wrote hundreds of
 	 * rows, and the daily write-budget guard below could never fire. That guard
 	 * is the one thing standing between a looping import and a spent free-tier
 	 * allowance, and it was measuring nothing.
@@ -702,6 +712,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const phase = (this.metaGet("phase") ?? "idle") as Phase;
 		if (phase === "idle") return; // stale alarm from a finished run
 		const started = Date.now();
+		this.alarmStartedAt = started;
+		this.alarmCounted = false;
 		const limit = ALARM_WATCHDOG_MS_BY_PHASE[phase] ?? ALARM_WATCHDOG_MS;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const watchdog = new Promise<never>((_, reject) => {
@@ -750,8 +762,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// the run and survive eviction (flushed below), so this bounds the whole
 		// import rather than one instance's share of it.
 		const day = ImportCoordinator.dayKey();
-		const spentRead = Number(this.metaGet("do_rows_read") ?? 0);
-		const spentWritten = Number(this.metaGet("do_rows_written") ?? 0);
+		const meters = parseMeters(this.metaGet("run_meters")) ?? EMPTY_RUN_METERS;
+		const spentRead = meters.rows_read;
+		const spentWritten = meters.rows_written;
 		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0);
 		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0);
 		const overRun = spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN;
@@ -769,6 +782,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 				run,
 				`${phase}: ${scope} storage budget exhausted (${read.toLocaleString()} rows read, ` +
 					`${written.toLocaleString()} written) — stopped before spending the daily allowance`,
+			);
+			return;
+		}
+		// The other meter: wall time. A Durable Object is billed for every second
+		// it is active, and the free plan's day is 13,000 GB-s — which one wedged
+		// coordinator spent by itself on 2026-09-15. A run this long has been
+		// stalling, not working (see MAX_RUN_ACTIVE_MS).
+		if (meters.active_ms > MAX_RUN_ACTIVE_MS) {
+			const activeS = Math.round(meters.active_ms / 1000);
+			const gbS = Math.round(projectedGbSeconds(meters.active_ms));
+			console.error(
+				`Import stopped on this run's active-time budget in phase ${phase}: ${meters.alarms} alarms, ` +
+					`${activeS}s active (≈${gbS} GB-s of the free plan's ${DO_FREE_GB_SECONDS_PER_DAY}/day). ` +
+					"A healthy import is under an hour, so the object has been stalling, not working.",
+			);
+			await this.failRun(
+				run,
+				`${phase}: active-time budget exhausted (${activeS}s ≈ ${gbS} GB-s over ${meters.alarms} alarms) — ` +
+					"the object was live far longer than a healthy import",
 			);
 			return;
 		}
@@ -871,6 +903,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		await this.ctx.storage.put("run", run);
 		await this.ctx.storage.deleteAlarm();
 		await this.releasePublishing();
+		this.logRunSummary("failed");
 	}
 
 	/**
@@ -914,20 +947,54 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/** Bank this instance's metered rows into the run's and the day's totals. */
 	private flushMeters(): void {
-		if (this.rowsRead === 0 && this.rowsWritten === 0) return;
+		// The ledger banks even when no rows moved: an alarm that only waited is
+		// exactly the one whose time has to be on record. Outside an alarm
+		// (startImport's own flush) there is no alarm to bank.
+		const now = Date.now();
+		const elapsed = this.alarmStartedAt > 0 ? now - this.alarmStartedAt : 0;
+		if (this.rowsRead === 0 && this.rowsWritten === 0 && this.alarmStartedAt === 0) return;
 		const day = ImportCoordinator.dayKey();
-		const read = Number(this.metaGet("do_rows_read") ?? 0) + this.rowsRead;
-		const written = Number(this.metaGet("do_rows_written") ?? 0) + this.rowsWritten;
 		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0) + this.rowsRead;
 		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0) + this.rowsWritten;
+		const meters = advanceMeters(parseMeters(this.metaGet("run_meters")), {
+			rowsRead: this.rowsRead,
+			rowsWritten: this.rowsWritten,
+			elapsedMs: elapsed,
+			newAlarm: !this.alarmCounted,
+		});
 		this.rowsRead = 0;
 		this.rowsWritten = 0;
+		// A second flush in the same alarm (prechargeReads) banks only what
+		// elapsed since the first, and counts no second alarm.
+		if (this.alarmStartedAt > 0) this.alarmStartedAt = now;
+		this.alarmCounted = true;
 		this.ctx.storage.transactionSync(() => {
-			this.metaSet("do_rows_read", String(read));
-			this.metaSet("do_rows_written", String(written));
+			this.metaSet("run_meters", JSON.stringify(meters));
 			this.metaSet(`${day}:read`, String(dayRead));
 			this.metaSet(`${day}:written`, String(dayWritten));
 		});
+	}
+
+	/**
+	 * One line per run, at its end, with the numbers the free plan meters —
+	 * alarms, active seconds as the GB-s they bill, rows read and written — so
+	 * "is the importer within budget" is a log search, not a dashboard visit.
+	 * Banks this alarm's time first so the summary includes it.
+	 */
+	private logRunSummary(state: "done" | "failed"): void {
+		try {
+			this.flushMeters();
+			const m = parseMeters(this.metaGet("run_meters")) ?? EMPTY_RUN_METERS;
+			const activeS = Math.round(m.active_ms / 1000);
+			const gbS = Math.round(projectedGbSeconds(m.active_ms));
+			console.log(
+				`Import run ${state}: ${m.alarms} alarms, ${activeS}s active ` +
+					`(≈${gbS} GB-s of the free plan's ${DO_FREE_GB_SECONDS_PER_DAY}/day), ` +
+					`${m.rows_read.toLocaleString()} rows read, ${m.rows_written.toLocaleString()} written`,
+			);
+		} catch (err) {
+			console.warn(`Import run ${state}: summary unavailable: ${err}`);
+		}
 	}
 
 	/**
@@ -2867,6 +2934,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				`${manifest.partition_count} partition(s), ${manifest.chunk_count} chunks)`,
 		);
 		this.ctx.storage.transactionSync(() => {
+			// What the run record's `detail` will say once the run is done.
+			this.metaSet(
+				"run_summary",
+				`published ${manifest.store_key} (${manifest.card_count} cards, ${manifest.partition_count} partitions)`,
+			);
 			// `notify` comes FIRST, before rulings and reference: it is what puts the
 			// readers on the new store, and everything after it is additional KV data
 			// rather than a reason to keep serving the old archive.
@@ -3461,7 +3533,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			...(await this.getRun()),
 			state: "done",
 			finishedAt: new Date().toISOString(),
+			detail: this.metaGet("run_summary") ?? undefined,
 		} satisfies RunRecord);
+		this.logRunSummary("done");
 	}
 
 	// ── staging helpers ────────────────────────────────────────────────────────

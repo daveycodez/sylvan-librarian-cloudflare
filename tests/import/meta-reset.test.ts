@@ -51,8 +51,11 @@ function seed(): Database {
 			"pp_publish",
 			'{"partition":3,"step":"publish","partitions":[{"store_bytes":1,"card_count":1,"printing_count":1,"chunk_count":1,"chunks_published":1,"cursor_seq":0,"cursor_off":0,"cut":46000000,"gzip_bytes":1}]}',
 		],
-		["do_rows_read", "98000"],
-		["do_rows_written", "1200"],
+		// The run's meters — rows, alarms, active time — and the done-record
+		// detail: run-scoped, a new run's bill starts from zero. Only the
+		// day-scoped totals below outlive the reset.
+		["run_meters", '{"rows_read":98000,"rows_written":1200,"alarms":412,"active_ms":2811000}'],
+		["run_summary", "published card-store-v2026090301-1789424305.store (38765 cards, 10 partitions)"],
 		[`${TODAY}:read`, "1200000"],
 		[`${TODAY}:written`, "9000"],
 		["day:2026-08-08:read", "4500000"],

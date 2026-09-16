@@ -19,7 +19,7 @@
 // Everything here is MEASURED, not estimated. The measurements come from two
 // places, both cited per constant:
 //   - the 2026-08-28 production run (Workers observability: per-alarm CPU,
-//     outcomes, and the run's own do_rows_read/do_rows_written meters), and
+//     outcomes, and the run's own row meters — now the `run_meters` row), and
 //   - scripts/import-harness, which drives this exact pipeline end to end on a
 //     scaled synthetic corpus and prints rows read/written per phase.
 
@@ -206,9 +206,106 @@ export const REORDER_SLICE_ROWS = 12_500;
  *
  * This is why the alarm count IS the budget: a run's floor cost is
  * alarms x these, before a single draft is read.
+ *
+ * Since 2026-09-16 the run's meters are ONE meta row (`run_meters`, JSON:
+ * rows read, rows written, alarms, active milliseconds) instead of the two
+ * rows `do_rows_read`/`do_rows_written`. That is where each alarm banks its
+ * wall time — the meter behind the free plan's DURATION cap, which the row
+ * meters never saw — and it costs LESS than the two rows did: one read at the
+ * top for both budget checks (was two), one read and one write in
+ * flushMeters (was two and two). The 2026-08-28 toll is kept as its own
+ * constant because the calibration test reproduces that run's projection
+ * from it; projectRunCost takes the toll as an input.
  */
-export const FIXED_ROWS_READ_PER_ALARM = 20;
-export const FIXED_ROWS_WRITTEN_PER_ALARM = 8;
+export interface AlarmToll {
+	read: number;
+	written: number;
+}
+export const TOLL_2026_08_28: AlarmToll = { read: 20, written: 8 };
+/** Reads and writes the merged `run_meters` row saves per alarm against the 2026-08-28 toll. */
+export const MERGED_METERS_ROWS_READ_SAVED = 2;
+export const MERGED_METERS_ROWS_WRITTEN_SAVED = 1;
+export const FIXED_ROWS_READ_PER_ALARM = TOLL_2026_08_28.read - MERGED_METERS_ROWS_READ_SAVED;
+export const FIXED_ROWS_WRITTEN_PER_ALARM = TOLL_2026_08_28.written - MERGED_METERS_ROWS_WRITTEN_SAVED;
+export const CURRENT_TOLL: AlarmToll = { read: FIXED_ROWS_READ_PER_ALARM, written: FIXED_ROWS_WRITTEN_PER_ALARM };
+
+// ─── Durable Object duration: the free plan's other meter ────────────────────
+
+/**
+ * GB-seconds of Durable Object duration the Workers Free plan allows per day,
+ * and what that is in wall seconds for a 128MB object. An object is billed for
+ * every second it is ACTIVE — a request, an alarm, or any pending I/O — so a
+ * coordinator that hangs inside an alarm spends the whole day's allowance by
+ * itself: 93,072 s active, 11,913 GB-s, on 2026-09-15. Past the cap every
+ * Durable Object request on the account errors until 00:00 UTC, which is
+ * search going dark on the free host.
+ */
+export const DO_FREE_GB_SECONDS_PER_DAY = 13_000;
+export const DO_OBJECT_GB = 0.128;
+export const DO_FREE_ACTIVE_SECONDS_PER_DAY = DO_FREE_GB_SECONDS_PER_DAY / DO_OBJECT_GB;
+
+/**
+ * Wall time one run may be active before it is called off.
+ *
+ * A healthy run is ~400 alarms, most of them sub-second, plus the slices that
+ * do real I/O — 14 fetch slices of 48MB, 18 recode slices budgeted at 23s,
+ * 55 transform slices, a build and a publish per partition — which the
+ * healthy-run model in tests/import/run-budget.test.ts puts under an hour.
+ * Three hours is ~3x that and ~10% of the day's allowance: a run that is still
+ * going has been stalling, not working, and the honest outcome is a failed run
+ * with the number in its detail rather than a second one of these bills.
+ * Under-counts by construction — a slice that never returns never banks its
+ * time — which is what the alarm watchdog is for.
+ */
+export const MAX_RUN_ACTIVE_MS = 3 * 60 * 60_000;
+
+/** The duration a run's active time would bill, in the unit the cap is stated in. */
+export function projectedGbSeconds(activeMs: number): number {
+	return (activeMs / 1000) * DO_OBJECT_GB;
+}
+
+/** The run's meters: one meta row (`run_meters`), JSON. Run-scoped — metaClear drops it. */
+export interface RunMeters {
+	/** Durable Object rows read and written by this run, what MAX_RUN_ROWS_* are checked against. */
+	rows_read: number;
+	rows_written: number;
+	/** Alarms that have banked into this run. */
+	alarms: number;
+	/** Wall milliseconds this run's alarms have been active, summed. */
+	active_ms: number;
+}
+
+export const EMPTY_RUN_METERS: RunMeters = { rows_read: 0, rows_written: 0, alarms: 0, active_ms: 0 };
+
+/** Bank one flush; `newAlarm` counts the alarm once per alarm, not per flush. */
+export function advanceMeters(
+	prev: RunMeters | null,
+	delta: { rowsRead: number; rowsWritten: number; elapsedMs: number; newAlarm: boolean },
+): RunMeters {
+	return {
+		rows_read: (prev?.rows_read ?? 0) + delta.rowsRead,
+		rows_written: (prev?.rows_written ?? 0) + delta.rowsWritten,
+		alarms: (prev?.alarms ?? 0) + (delta.newAlarm ? 1 : 0),
+		active_ms: (prev?.active_ms ?? 0) + Math.max(0, delta.elapsedMs),
+	};
+}
+
+/** Read the meters row back; anything unparseable is an empty row, never a crash. */
+export function parseMeters(value: string | null | undefined): RunMeters | null {
+	if (!value) return null;
+	try {
+		const parsed = JSON.parse(value) as Partial<RunMeters>;
+		const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+		return {
+			rows_read: n(parsed.rows_read),
+			rows_written: n(parsed.rows_written),
+			alarms: n(parsed.alarms),
+			active_ms: n(parsed.active_ms),
+		};
+	} catch {
+		return null;
+	}
+}
 
 /** The shape of a corpus, as the cost model needs to see it. */
 export interface RunShape {
@@ -294,7 +391,11 @@ export interface RunCost {
  * is why the budget test asserts on `fixedRowsWritten` — a term this model
  * knows exactly — rather than on the total it can only bound from below.
  */
-export function projectRunCost(shape: RunShape, slices: SliceSizes = CURRENT_SLICES): RunCost {
+export function projectRunCost(
+	shape: RunShape,
+	slices: SliceSizes = CURRENT_SLICES,
+	toll: AlarmToll = CURRENT_TOLL,
+): RunCost {
 	// The bucket pass, or its absence. With it, each partition's agg and finalize
 	// read that partition's OWN groups: about stagedBatches / N full ones plus
 	// one partial tail per bucket slice (stepBucket flushes what it holds at the
@@ -335,8 +436,8 @@ export function projectRunCost(shape: RunShape, slices: SliceSizes = CURRENT_SLI
 	// once as chunk staging by build.
 	const bucketWrites = slices.bucketBatches === null ? 0 : shape.partitions * groupsPerPartition + shape.stagedBatches;
 
-	const fixedRowsRead = alarms * FIXED_ROWS_READ_PER_ALARM;
-	const fixedRowsWritten = alarms * FIXED_ROWS_WRITTEN_PER_ALARM;
+	const fixedRowsRead = alarms * toll.read;
+	const fixedRowsWritten = alarms * toll.written;
 	return {
 		alarms,
 		fixedRowsRead,

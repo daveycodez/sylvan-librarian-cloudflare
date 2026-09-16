@@ -246,17 +246,18 @@ async function main(): Promise<number> {
 
 	const state = runState();
 	const total = storage.totals();
-	// The coordinator keeps its OWN meters — `do_rows_read`/`do_rows_written`,
-	// summed from every cursor's reported cost plus prechargeReads' synthetic
-	// charges — and MAX_RUN_ROWS_READ is checked against those, not against
-	// what storage actually did. They are different quantities and the run dies
-	// on the first, so the harness reports both and any gap between them.
-	const meter = (key: string): number => {
-		const row = (storage.db.query("SELECT value FROM meta WHERE key = ?").all(key) as { value?: string }[])[0];
-		return Number(row?.value ?? 0);
-	};
-	const coordinatorRead = meter("do_rows_read");
-	const coordinatorWritten = meter("do_rows_written");
+	// The coordinator keeps its OWN meters — the `run_meters` row: rows read and
+	// written summed from every cursor's reported cost plus prechargeReads'
+	// synthetic charges, alarms, and active time — and MAX_RUN_ROWS_READ is
+	// checked against those, not against what storage actually did. They are
+	// different quantities and the run dies on the first, so the harness reports
+	// both and any gap between them.
+	const metersRow = (
+		storage.db.query("SELECT value FROM meta WHERE key = ?").all("run_meters") as { value?: string }[]
+	)[0];
+	const meters = JSON.parse(metersRow?.value ?? "{}") as { rows_read?: number; rows_written?: number };
+	const coordinatorRead = Number(meters.rows_read ?? 0);
+	const coordinatorWritten = Number(meters.rows_written ?? 0);
 	const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 
 	console.log(`\nchain visited ${order.length} phase transitions in ${fmt(alarms)} alarms, ${elapsed}s wall`);
