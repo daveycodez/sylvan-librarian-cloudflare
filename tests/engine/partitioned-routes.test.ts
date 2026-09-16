@@ -147,7 +147,7 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("scryfallExactNameRank");
 			// A partition that can answer ranks; `exactRank` overrides the tier/score so a test
 			// can make a LATER partition win.
-			return val<number[] | null>("exactRank", "exact" in answers ? [2, 0] : null);
+			return val<number[] | null>("exactRank", "exact" in answers ? [1, 2, 0] : null);
 		},
 		scryfallAutocomplete: async () => {
 			count("scryfallAutocomplete");
@@ -535,8 +535,9 @@ describe("batches and catalogs", () => {
 });
 
 describe("name-route combination rules", () => {
-	const cand = (score: number, oracleId: string, foldedName: string, vpid = 0) => ({
+	const cand = (score: number, oracleId: string, foldedName: string, vpid = 0, served = true) => ({
 		score,
+		served,
 		oracleId,
 		vpid,
 		foldedName,
@@ -580,6 +581,21 @@ describe("name-route combination rules", () => {
 		expect(raceFuzzyCandidates([[], []], 0.05).status).toBe("miss");
 	});
 
+	test("fuzzy: on a score tie the SERVED card leads the extras-only card of the same name", () => {
+		// `fuzzy=earth rumbel`: the tla sorcery and the jtla memorabilia front card share the
+		// name, so they share the score. The front card sorts first on oracle id AND sits in the
+		// lower partition — the served flag is the only thing that makes the sorcery's
+		// partition the winner, which is what api.scryfall.com answers (2026-09-15).
+		expect(
+			raceFuzzyCandidates([[cand(0.9, "o-1", "earth rumble", 0, false)], [cand(0.9, "o-2", "earth rumble")]], 0.05),
+		).toEqual({ status: "hit", winner: 1 });
+		// Still one answer, not two: the served/extras split never reads as ambiguity.
+		expect(
+			raceFuzzyCandidates([[cand(0.9, "o-1", "earth rumble", 0, false)], [cand(0.9, "o-2", "earth rumble")]], 0.95)
+				.status,
+		).toBe("hit");
+	});
+
 	test("exact: rank every partition, materialize only the winner", async () => {
 		const { engine, of } = build({ 3: { exact: { name: "Opt" } } });
 		expect(await engine.scryfallExactName("opt", "", "https://x")).toEqual({ name: "Opt" });
@@ -598,8 +614,8 @@ describe("name-route combination rules", () => {
 		// `Harmonized Trio // Brainstorm`, while single-archive production answered both
 		// correctly because there the ranking was global by construction.
 		const { engine, of } = build({
-			1: { exact: { name: "Emeritus of Ideation // Ancestral Recall" }, exactRank: [1, 9.9] },
-			3: { exact: { name: "Ancestral Recall" }, exactRank: [2, 0.1] },
+			1: { exact: { name: "Emeritus of Ideation // Ancestral Recall" }, exactRank: [1, 1, 9.9] },
+			3: { exact: { name: "Ancestral Recall" }, exactRank: [1, 2, 0.1] },
 		});
 		expect(await engine.scryfallExactName("ancestralrecall", "", "https://x")).toEqual({
 			name: "Ancestral Recall",
@@ -614,18 +630,35 @@ describe("name-route combination rules", () => {
 		// answer turns on prefer_score alone. Scryfall answers `Fire // Ice`; the port answered
 		// `Start // Fire` purely because it hashed to a lower partition.
 		const { engine } = build({
-			0: { exact: { name: "Start // Fire" }, exactRank: [1, 0.2] },
-			3: { exact: { name: "Fire // Ice" }, exactRank: [1, 0.7] },
+			0: { exact: { name: "Start // Fire" }, exactRank: [1, 1, 0.2] },
+			3: { exact: { name: "Fire // Ice" }, exactRank: [1, 1, 0.7] },
 		});
 		expect(await engine.scryfallExactName("fire", "", "https://x")).toEqual({ name: "Fire // Ice" });
 	});
 
 	test("exact: an exact tie keeps the lowest partition index", async () => {
 		const { engine } = build({
-			1: { exact: { name: "Lower" }, exactRank: [1, 0.5] },
-			3: { exact: { name: "Higher" }, exactRank: [1, 0.5] },
+			1: { exact: { name: "Lower" }, exactRank: [1, 1, 0.5] },
+			3: { exact: { name: "Higher" }, exactRank: [1, 1, 0.5] },
 		});
 		expect(await engine.scryfallExactName("tie", "", "https://x")).toEqual({ name: "Lower" });
+	});
+
+	test("exact: a SERVED card the needle names beats an extras-only card it names exactly, whatever the tiers", async () => {
+		// `exact=Earth Rumble` on the ten-partition store: the jtla memorabilia front card is a
+		// whole-name match with the higher prefer_score in the lower partition, and it is what
+		// production answered on every name route (2026-09-15). The rank's leading element is
+		// the served flag, so the served card wins even from a face-match tier.
+		const { engine, of } = build({
+			0: { exact: { name: "Earth Rumble (jtla front card)" }, exactRank: [0, 2, 9.9] },
+			3: { exact: { name: "Earth Rumble" }, exactRank: [1, 1, 0.1] },
+		});
+		expect(await engine.scryfallExactName("earthrumble", "", "https://x")).toEqual({ name: "Earth Rumble" });
+		expect(of("scryfallExactName")).toEqual(["scryfallExactName:3"]);
+		// With NO served card anywhere the extras-only card still answers: a fallback, not an
+		// exclusion (`exact=Cabbages` is jtla/39 on api.scryfall.com).
+		const alone = build({ 2: { exact: { name: "Cabbages" }, exactRank: [0, 2, 9.9] } });
+		expect(await alone.engine.scryfallExactName("cabbages", "", "https://x")).toEqual({ name: "Cabbages" });
 	});
 
 	test("autocomplete: merged prefix-first, deduped, capped", () => {

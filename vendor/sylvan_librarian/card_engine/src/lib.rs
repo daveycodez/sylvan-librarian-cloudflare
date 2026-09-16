@@ -5520,25 +5520,34 @@ pub(crate) enum FuzzyOutcome {
 
 /// The running best and runner-up of the fuzzy scan, under the competition rule above: a
 /// candidate threatens the leader only when BOTH its name and its oracle card differ.
+///
+/// LOCAL PATCH (Cloudflare port): THE LEADER IS RANKED ON (score, served), and `served` is the
+/// tiebreak — never a competitor. Upstream ranks on the score alone and materializes
+/// `preferred_vpid`, which on a shared name answers whichever card comes first.
+/// Two cards sharing one name score identically, and when one of them is an extras-only card
+/// (a memorabilia front card, a token, an art-series card) the card a default search would show
+/// must be the one that wins the tie: `fuzzy=earth rumbel` is the tla sorcery, not the jtla
+/// memorabilia card of the same name. See `preferred_served_vpid`. The runner-up rule reads
+/// scores alone, so an extra never makes a served card ambiguous with itself or vice versa.
 struct FuzzyRace<'a> {
-    best: Option<(f32, u32, u32, &'a str)>, // (score, cid, vpid, name)
+    best: Option<(f32, bool, u32, u32, &'a str)>, // (score, served, cid, vpid, name)
     runner_up: Option<f32>,
 }
 
 impl<'a> FuzzyRace<'a> {
-    fn offer(&mut self, score: f32, cid: u32, vpid: u32, name: &'a str) {
+    fn offer(&mut self, score: f32, served: bool, cid: u32, vpid: u32, name: &'a str) {
         match self.best {
-            Some((best_score, best_cid, _, best_name)) if score <= best_score => {
+            Some((best_score, best_served, best_cid, _, best_name)) if (score, served) <= (best_score, best_served) => {
                 if name != best_name && cid != best_cid && self.runner_up.is_none_or(|r| score > r) {
                     self.runner_up = Some(score);
                 }
             }
             _ => {
-                if let Some((prev_score, prev_cid, _, prev_name)) = self.best
+                if let Some((prev_score, _, prev_cid, _, prev_name)) = self.best
                     && prev_name != name && prev_cid != cid && self.runner_up.is_none_or(|r| prev_score > r) {
                         self.runner_up = Some(prev_score);
                     }
-                self.best = Some((score, cid, vpid, name));
+                self.best = Some((score, served, cid, vpid, name));
             }
         }
     }
@@ -5546,8 +5555,8 @@ impl<'a> FuzzyRace<'a> {
     fn outcome(self, lead: f32) -> FuzzyOutcome {
         match (self.best, self.runner_up) {
             (None, _) => FuzzyOutcome::Miss,
-            (Some((score, _, _, _)), Some(second)) if score - second < lead => FuzzyOutcome::Ambiguous,
-            (Some((_, cid, vpid, _)), _) => FuzzyOutcome::Hit { cid, vpid },
+            (Some((score, _, _, _, _)), Some(second)) if score - second < lead => FuzzyOutcome::Ambiguous,
+            (Some((_, _, cid, vpid, _)), _) => FuzzyOutcome::Hit { cid, vpid },
         }
     }
 }
@@ -5569,6 +5578,40 @@ impl<'a> FuzzyRace<'a> {
 pub(crate) fn preferred_vpid(data: &Archived<CardData>, cid: usize) -> Option<u32> {
     let start = u32::from(data.offsets[cid]);
     (start < u32::from(data.offsets[cid + 1])).then_some(start)
+}
+
+/// The vocab id of the `extra` `is:` tag in this store, or None when the store never interned
+/// it — a fixture, or a corpus with no extras — in which case every printing is served.
+///
+/// LOCAL PATCH (Cloudflare port), with the two helpers below it: the name lookups' served-first
+/// printing rule. Upstream resolves `exact=` in SQL and has no engine equivalent.
+pub(crate) fn extra_vid_of(data: &Archived<CardData>) -> Option<u16> {
+    data.coll_vocab.iter().position(|s| s.as_str() == EXTRA_IS_TAG).map(|p| p as u16)
+}
+
+/// Whether a DEFAULT search would show this printing: it is not tagged `is:extra`. The
+/// printing-level reading of the `-is:extra` conjunct `/cards/search` ANDs into every query.
+pub(crate) fn printing_is_served(p: &APrinting, extra_vid: Option<u16>) -> bool {
+    extra_vid.is_none_or(|vid| !p.card_is_tags.iter().any(|t| u16::from(*t) == vid))
+}
+
+/// The card's best SERVED canonical printing — the first in prefer-desc order that
+/// `printing_is_served` — falling back to `preferred_vpid` when every printing is an extra.
+/// The flag says which of the two it was.
+///
+/// THE NAME LOOKUPS' PRINTING RULE, and the reason it is not `preferred_vpid`: Scryfall's name
+/// surfaces (`/cards/named`, a collection `{name}`) answer from the same pool a default search
+/// shows, and only fall back to the extras class when nothing else carries the name. Measured
+/// on api.scryfall.com 2026-09-15: `exact=Earth Rumble` is the tla sorcery and never the jtla
+/// memorabilia front card of the same name, while `exact=Cabbages` — a name ONLY jtla carries —
+/// still answers jtla/39, and `exact=Counterspell&set=wc98` answers the gold-bordered wc98
+/// printing. So extras rank below served printings; they are never excluded outright.
+pub(crate) fn preferred_served_vpid(data: &Archived<CardData>, cid: usize, extra_vid: Option<u16>) -> Option<(u32, bool)> {
+    let (start, end) = (u32::from(data.offsets[cid]), u32::from(data.offsets[cid + 1]));
+    match (start..end).find(|&v| printing_is_served(&data.printings[v as usize], extra_vid)) {
+        Some(v) => Some((v, true)),
+        None => preferred_vpid(data, cid).map(|v| (v, false)),
+    }
 }
 
 /// The owning card of a virtual printing id, via the direct arrays of whichever space it is in.
@@ -5671,6 +5714,7 @@ pub(crate) fn fuzzy_name_match(
     let mut name_tg: Vec<[u8; 3]> = Vec::with_capacity(64);
     let mut dp: Vec<u32> = Vec::with_capacity(64);
     let mut race = FuzzyRace { best: None, runner_up: None };
+    let extra_vid = extra_vid_of(data);
     for (cid, card) in data.cards.iter().enumerate() {
         let name = folded_name(card, &data.strings);
         fold_separators_into(name, &mut name_bytes);
@@ -5678,9 +5722,11 @@ pub(crate) fn fuzzy_name_match(
         if let Some(score) =
             fuzzy_score_cleared(&name_tg, &needle_tg, &name_bytes, &needle_bytes, floor, &mut dp)
         {
-            // An English-name hit materializes what it always has: the card's preferred printing.
-            if let Some(vpid) = preferred_vpid(data, cid) {
-                race.offer(score, cid as u32, vpid, name);
+            // An English-name hit materializes the card's preferred SERVED printing — see
+            // preferred_served_vpid for the rule and its measurements (LOCAL PATCH, Cloudflare
+            // port; upstream materializes preferred_vpid).
+            if let Some((vpid, served)) = preferred_served_vpid(data, cid, extra_vid) {
+                race.offer(score, served, cid as u32, vpid, name);
             }
         }
     }
@@ -5691,6 +5737,10 @@ pub(crate) fn fuzzy_name_match(
 /// Cloudflare port — the cross-partition fuzzy race's wire unit; see fuzzy_candidates).
 pub(crate) struct FuzzyCandidateInner {
     pub score: f32,
+    /// Whether `vpid` is a printing a default search shows — the race's tiebreak on a score tie,
+    /// so the partition holding the served card wins over the one holding the extras-only card
+    /// of the same name. See `FuzzyRace`.
+    pub served: bool,
     pub oracle_id: u128,
     pub vpid: u32,
     pub name: String,
@@ -5719,31 +5769,37 @@ pub(crate) fn fuzzy_candidates(
     let mut name_bytes: Vec<u8> = Vec::with_capacity(64);
     let mut name_tg: Vec<[u8; 3]> = Vec::with_capacity(64);
     let mut dp: Vec<u32> = Vec::with_capacity(64);
-    // (score, cid, vpid, name) for every clearing candidate — the same pass fuzzy_name_match
-    // races over, collected instead of raced.
-    let mut found: Vec<(f32, u32, u32, &str)> = Vec::new();
+    // (score, served, cid, vpid, name) for every clearing candidate — the same pass
+    // fuzzy_name_match races over, collected instead of raced.
+    let extra_vid = extra_vid_of(data);
+    let mut found: Vec<(f32, bool, u32, u32, &str)> = Vec::new();
     for (cid, card) in data.cards.iter().enumerate() {
         let name = folded_name(card, &data.strings);
         fold_separators_into(name, &mut name_bytes);
         name_trigrams_into(&name_bytes, &mut name_tg);
         if let Some(score) = fuzzy_score_cleared(&name_tg, &needle_tg, &name_bytes, &needle_bytes, floor, &mut dp)
-            && let Some(vpid) = preferred_vpid(data, cid)
+            && let Some((vpid, served)) = preferred_served_vpid(data, cid, extra_vid)
         {
-            found.push((score, cid as u32, vpid, name));
+            found.push((score, served, cid as u32, vpid, name));
         }
     }
     // Best per (card, name) class: group, keep the top score (canonical vpid on a tie — it
-    // sorts first), then rank classes score-descending with deterministic tiebreaks.
+    // sorts first), then rank classes score-descending, SERVED before extras-only on a score
+    // tie (FuzzyRace's own tiebreak, so the merged race picks the same leader a single store
+    // does), then deterministic tiebreaks.
     found.sort_unstable_by(|a, b| {
-        a.1.cmp(&b.1).then_with(|| a.3.cmp(b.3)).then_with(|| b.0.total_cmp(&a.0)).then_with(|| a.2.cmp(&b.2))
+        a.2.cmp(&b.2).then_with(|| a.4.cmp(b.4)).then_with(|| b.0.total_cmp(&a.0)).then_with(|| a.3.cmp(&b.3))
     });
-    found.dedup_by(|a, b| a.1 == b.1 && a.3 == b.3);
-    found.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+    found.dedup_by(|a, b| a.2 == b.2 && a.4 == b.4);
+    found.sort_unstable_by(|a, b| {
+        b.0.total_cmp(&a.0).then_with(|| b.1.cmp(&a.1)).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.cmp(&b.3))
+    });
     found.truncate(k);
     found
         .into_iter()
-        .map(|(score, cid, vpid, name)| FuzzyCandidateInner {
+        .map(|(score, served, cid, vpid, name)| FuzzyCandidateInner {
             score,
+            served,
             oracle_id: u128::from(data.cards[cid as usize].oracle_id),
             vpid,
             name: name.to_owned(),

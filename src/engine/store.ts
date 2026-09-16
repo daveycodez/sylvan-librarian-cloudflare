@@ -1082,7 +1082,8 @@ export interface GatherOps {
 }
 
 /** Decode `fuzzy_candidates`' packed reply: `n: u32, then n of (score: f32, oracle_id: 16B,
- * vpid: u32, namelen: u16, name)`, all LITTLE-ENDIAN except the oracle's raw uuid bytes. */
+ * vpid: u32, served: u8, namelen: u16, name)`, all LITTLE-ENDIAN except the oracle's raw uuid
+ * bytes. */
 function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] {
 	const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
 	const n = view.getUint32(0, true);
@@ -1099,11 +1100,13 @@ function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] {
 				: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 		const vpid = view.getUint32(at, true);
 		at += 4;
+		const served = packed[at] === 1;
+		at += 1;
 		const len = view.getUint16(at, true);
 		at += 2;
 		const foldedName = new TextDecoder().decode(packed.subarray(at, at + len));
 		at += len;
-		out.push({ score, oracleId, vpid, foldedName });
+		out.push({ score, served, oracleId, vpid, foldedName });
 	}
 	return out;
 }

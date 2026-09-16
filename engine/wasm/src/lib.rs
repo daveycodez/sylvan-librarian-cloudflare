@@ -390,10 +390,15 @@ pub fn exact_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Re
     })
 }
 
-/// How well this partition's best `exact=` candidate matches, as `[tier, score]`, or `null`.
+/// How well this partition's best `exact=` candidate matches, as `[served, tier, score]`, or
+/// `null`.
 ///
-/// Tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
-/// name); ties break on prefer_score. Compare these, do not interpret them.
+/// Served is 1 when the printing answered is one a default search shows and 0 when the name
+/// exists only in the extras class (a memorabilia front card, a token, an art-series card);
+/// tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
+/// name); ties break on prefer_score. Compared lexicographically, in that order — served leads,
+/// so `exact=Earth Rumble` answers the tla sorcery over the jtla front card of the same name
+/// whatever partition each hashed to. Compare these, do not interpret them.
 ///
 /// EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
 /// corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
@@ -406,7 +411,7 @@ pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> 
     let set = if set_code.is_empty() { None } else { Some(set_code) };
     with_store(|store| {
         Ok(match store.exact_name_rank(folded, set) {
-            Some((tier, score)) => format!("[{tier},{score}]"),
+            Some((served, tier, score)) => format!("[{served},{tier},{score}]"),
             None => "null".to_string(),
         })
     })
@@ -471,9 +476,10 @@ fn parse_scope(prefer: &str, scope_json: &str) -> Result<Option<card_engine::Col
     Ok(Some(card_engine::CollectionScope { prefer: prefer.to_owned(), filter_tree }))
 }
 
-/// How well this partition's best collection-identifier candidate matches, as `[tier, score]` or
-/// `null` per identifier — the batched twin of `exact_name_rank`, and there for the same
-/// partitioned router. Under a scope the score is the scope's prefer score.
+/// How well this partition's best collection-identifier candidate matches, as
+/// `[served, tier, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
+/// there for the same partitioned router. Under a scope the score is the scope's prefer score
+/// and served is always 1 (the scope's pool holds no extras).
 #[wasm_bindgen]
 pub fn collection_name_ranks(identifiers_json: &str, prefer: &str, scope_json: &str) -> Result<String, JsError> {
     let idents = parse_identifiers(identifiers_json)?;
@@ -485,7 +491,7 @@ pub fn collection_name_ranks(identifiers_json: &str, prefer: &str, scope_json: &
         let out: Vec<serde_json::Value> = ranks
             .into_iter()
             .map(|r| match r {
-                Some((tier, score)) => serde_json::json!([tier, score]),
+                Some((served, tier, score)) => serde_json::json!([served, tier, score]),
                 None => serde_json::Value::Null,
             })
             .collect();
@@ -684,6 +690,8 @@ pub fn sort_key_version() -> u8 {
 ///   oracle_id: 16 bytes (the uuid's big-endian byte order — render as the canonical
 ///              hyphenated string; all zeros = unset)
 ///   vpid: u32 LE (partition-local; meaningful only against THIS loaded store)
+///   served: u8 (1 = a printing a default search shows, 0 = the card is extras-only; the
+///           race's tiebreak on a score tie, so the served card of a shared name leads)
 ///   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
 /// ```
 ///
@@ -714,6 +722,8 @@ pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsErr
             }
             buf.extend_from_slice(&oracle);
             buf.extend_from_slice(&c.vpid.to_le_bytes());
+            // The race's score-tie tiebreak: 1 when the vpid is a printing a default search shows.
+            buf.push(u8::from(c.served));
             let len = u16::try_from(c.folded_name.len()).map_err(|_| JsError::new("name exceeds u16 length"))?;
             buf.extend_from_slice(&len.to_le_bytes());
             buf.extend_from_slice(c.folded_name.as_bytes());

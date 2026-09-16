@@ -85,9 +85,10 @@ export function catalog(): string;
 export function collection_cards_by_names(identifiers_json: string, fields_json: string, prefer: string, scope_json: string): string;
 
 /**
- * How well this partition's best collection-identifier candidate matches, as `[tier, score]` or
- * `null` per identifier — the batched twin of `exact_name_rank`, and there for the same
- * partitioned router. Under a scope the score is the scope's prefer score.
+ * How well this partition's best collection-identifier candidate matches, as
+ * `[served, tier, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
+ * there for the same partitioned router. Under a scope the score is the scope's prefer score
+ * and served is always 1 (the scope's pool holds no extras).
  */
 export function collection_name_ranks(identifiers_json: string, prefer: string, scope_json: string): string;
 
@@ -101,10 +102,15 @@ export function collection_name_ranks(identifiers_json: string, prefer: string, 
 export function exact_card_by_name(folded: string, set_code: string, fields_json: string): string;
 
 /**
- * How well this partition's best `exact=` candidate matches, as `[tier, score]`, or `null`.
+ * How well this partition's best `exact=` candidate matches, as `[served, tier, score]`, or
+ * `null`.
  *
- * Tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
- * name); ties break on prefer_score. Compare these, do not interpret them.
+ * Served is 1 when the printing answered is one a default search shows and 0 when the name
+ * exists only in the extras class (a memorabilia front card, a token, an art-series card);
+ * tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
+ * name); ties break on prefer_score. Compared lexicographically, in that order — served leads,
+ * so `exact=Earth Rumble` answers the tla sorcery over the jtla front card of the same name
+ * whatever partition each hashed to. Compare these, do not interpret them.
  *
  * EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
  * corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
@@ -142,6 +148,8 @@ export function finish_store_load(): void;
  *   oracle_id: 16 bytes (the uuid's big-endian byte order — render as the canonical
  *              hyphenated string; all zeros = unset)
  *   vpid: u32 LE (partition-local; meaningful only against THIS loaded store)
+ *   served: u8 (1 = a printing a default search shows, 0 = the card is extras-only; the
+ *           race's tiebreak on a score tie, so the served card of a shared name leads)
  *   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
  * ```
  *

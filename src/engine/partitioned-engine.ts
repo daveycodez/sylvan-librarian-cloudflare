@@ -129,9 +129,15 @@ function equalsUnseparated(value: unknown, whole: string): boolean {
  */
 function beatsExactRank(a: number[], b: number[] | null): boolean {
 	if (b === null) return true;
-	const [aTier = 0, aScore = 0] = a;
-	const [bTier = 0, bScore = 0] = b;
-	return aTier > bTier || (aTier === bTier && aScore > bScore);
+	// Lexicographic over the engine's `[served, tier, score]` — compared element by element in
+	// the order the engine emits them, never interpreted. Served leads: a partition holding a
+	// served card the needle names beats one holding an extras-only card it names exactly
+	// (`exact=Earth Rumble`: the tla sorcery over the jtla front card), whatever the tiers.
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const [x, y] = [a[i] ?? 0, b[i] ?? 0];
+		if (x !== y) return x > y;
+	}
+	return false;
 }
 
 // ── The routing filter (src/engine/routing-filter.ts) ─────────────────────────
@@ -234,9 +240,16 @@ export function raceFuzzyCandidates(
 	lead: number,
 ): { status: "hit" | "ambiguous" | "miss"; winner?: number } {
 	const all = perPartition.flatMap((list, partition) => list.map((c) => ({ ...c, partition })));
-	// Score-descending with deterministic tiebreaks, mirroring the Rust reference race.
+	// Score-descending, a SERVED candidate before an extras-only one on a score tie (the
+	// engine's FuzzyRace tiebreak — two cards sharing a name score identically, and the one a
+	// default search shows must lead), then deterministic tiebreaks, mirroring the Rust
+	// reference race.
 	all.sort(
-		(a, b) => b.score - a.score || (a.oracleId < b.oracleId ? -1 : a.oracleId > b.oracleId ? 1 : 0) || a.vpid - b.vpid,
+		(a, b) =>
+			b.score - a.score ||
+			Number(b.served) - Number(a.served) ||
+			(a.oracleId < b.oracleId ? -1 : a.oracleId > b.oracleId ? 1 : 0) ||
+			a.vpid - b.vpid,
 	);
 	const best = all[0];
 	if (best === undefined) return { status: "miss" };

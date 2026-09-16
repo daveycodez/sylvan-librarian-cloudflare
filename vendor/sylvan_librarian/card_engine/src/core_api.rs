@@ -1976,6 +1976,7 @@ impl BufferStore {
             .into_iter()
             .map(|c| FuzzyCandidate {
                 score: c.score,
+                served: c.served,
                 oracle_id: uuid_from_u128(c.oracle_id).map(|u| u.to_string()).unwrap_or_default(),
                 vpid: c.vpid,
                 folded_name: c.name,
@@ -2003,7 +2004,7 @@ impl BufferStore {
     ) -> Result<Option<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some((_, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Exact, None) else {
+        let Some((_, _, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Exact, None) else {
             return Ok(None);
         };
         Ok(Some(card_to_json(
@@ -2017,8 +2018,17 @@ impl BufferStore {
 
     /// The RANK `exact_card_by_name` answers with, without materializing the card.
     ///
-    /// `(tier, prefer_score)`, higher wins, ties broken by score: tier 2 = the needle IS this
-    /// card's whole name, 1 = it matches a FACE of this card, 0 = it matches a FLAVOR name.
+    /// `(served, tier, prefer_score)`, higher wins, compared in that order: served 1 = the
+    /// printing answered is one a default search shows, 0 = the name exists only in the extras
+    /// class (see `preferred_served_vpid`); tier 2 = the needle IS this card's whole name, 1 = it
+    /// matches a FACE of this card, 0 = it matches a FLAVOR name; then prefer_score.
+    ///
+    /// SERVED LEADS THE TIER. Measured on api.scryfall.com 2026-09-15: `exact=Earth Rumble` is
+    /// the tla sorcery, never the jtla memorabilia front card of the same name — two oracle
+    /// cards on the same whole-name tier, which a `(tier, prefer_score)` rank left to the score
+    /// and, on a tie, to store order, and answered the front card (production, every name
+    /// route, 2026-09-15). A served card the needle names, on any tier, outranks an
+    /// extras-only card the needle names exactly.
     ///
     /// WHY THIS IS PUBLIC. With a partitioned store the scan runs once per partition, and MORE
     /// THAN ONE PARTITION CAN ANSWER: a needle is often one card's whole name and another card's
@@ -2042,8 +2052,9 @@ impl BufferStore {
     /// The last two are the reason a bare "is it the whole name?" flag is not enough to merge on:
     /// neither candidate is a whole-name match, so the answer turns on prefer_score, which only
     /// the owning partition can compute.
-    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, f32)> {
-        self.name_best(folded, set_code, NameScope::Exact, None).map(|(tier, score, _, _)| (tier, score as f32))
+    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, u8, f32)> {
+        self.name_best(folded, set_code, NameScope::Exact, None)
+            .map(|(served, tier, score, _, _)| (served, tier, score as f32))
     }
 
     /// The best printing a COLLECTION IDENTIFIER's `name` resolves to -- `POST /cards/collection`'s
@@ -2099,7 +2110,7 @@ impl BufferStore {
         Ok(identifiers
             .iter()
             .map(|&(folded, set_code)| {
-                self.name_best(folded, set_code, NameScope::Collection, bound.as_ref()).map(|(_, _, cid, vpid)| {
+                self.name_best(folded, set_code, NameScope::Collection, bound.as_ref()).map(|(_, _, _, cid, vpid)| {
                     card_to_json(&data.cards[cid], printing_at(data, vpid), &data.strings, &data.coll_vocab, &resolved_fields)
                 })
             })
@@ -2117,7 +2128,7 @@ impl BufferStore {
         folded: &str,
         set_code: Option<&str>,
         scope: Option<&CollectionScope>,
-    ) -> Result<Option<(u8, f64)>, EngineError> {
+    ) -> Result<Option<NameRank>, EngineError> {
         Ok(self.collection_name_ranks(&[(folded, set_code)], scope)?.pop().flatten())
     }
 
@@ -2126,18 +2137,19 @@ impl BufferStore {
         &self,
         identifiers: &[(&str, Option<&str>)],
         scope: Option<&CollectionScope>,
-    ) -> Result<Vec<Option<(u8, f64)>>, EngineError> {
+    ) -> Result<Vec<Option<NameRank>>, EngineError> {
         let bound = scope.map(|s| self.bind_scope(s)).transpose()?;
         Ok(identifiers
             .iter()
             .map(|&(folded, set_code)| {
                 self.name_best(folded, set_code, NameScope::Collection, bound.as_ref())
-                    .map(|(tier, score, _, _)| (tier, score))
+                    .map(|(served, tier, score, _, _)| (served, tier, score))
             })
             .collect())
     }
 
-    /// The shared scan behind all four name entry points: `(tier, score, cid, vpid)`.
+    /// The shared scan behind all four name entry points: `(served, tier, score, cid, vpid)`,
+    /// the first three being the rank `exact_name_rank` documents.
     ///
     /// `folded` is COLLATED here and compared against collated names, because that is what
     /// Scryfall compares — on `exact=` and on a collection `{"name"}` identifier alike. Measured
@@ -2153,10 +2165,10 @@ impl BufferStore {
         set_code: Option<&str>,
         scope: NameScope,
         restrict: Option<&BoundScope>,
-    ) -> Option<(u8, f64, usize, u32)> {
+    ) -> Option<(u8, u8, f64, usize, u32)> {
         let needle = crate::collate_name(folded);
         let data = self.data();
-        // Ranked on (whole-name match, prefer_score), in that order.
+        // Ranked on (served, whole-name match, prefer_score), in that order.
         //
         // DELIBERATE DIVERGENCE from upstream, which orders on prefer_score alone. On this corpus
         // that returns `Emeritus of Conflict // Lightning Bolt` for `exact=Lightning Bolt`,
@@ -2165,7 +2177,15 @@ impl BufferStore {
         // resolves `exact=Delver of Secrets` -- but it is a FALLBACK, not a peer.
         // TIER, not a bool, because the flavor-name fallback below is a third rank and the
         // partition merge has to order all three against each other with one comparison.
-        let mut best: Option<(u8, f64, usize, u32)> = None;
+        //
+        // SERVED FIRST, ahead of the tier: the printing a candidate answers with is its best
+        // printing a default search would show, falling back to an extra only when the card has
+        // none (`preferred_served_vpid`), and a card answering with an extra ranks below every
+        // card answering with a served printing. `exact=Earth Rumble` names two oracle cards on
+        // the whole-name tier — the tla sorcery and a jtla memorabilia front card — and the
+        // score alone picked the front card; api.scryfall.com answers the sorcery on every name
+        // surface, and the front card only for a name nothing else carries (`exact=Cabbages`).
+        let mut best: Option<(u8, u8, f64, usize, u32)> = None;
         for cid in name_scan_candidates(data, &needle) {
             let cid = cid as usize;
             let card = &data.cards[cid];
@@ -2177,11 +2197,12 @@ impl BufferStore {
             ) else {
                 continue;
             };
-            let Some((pid, score)) = self.best_printing_of_scoped(cid, set_code, restrict) else {
+            let Some((pid, score, served)) = self.best_printing_of_scoped(cid, set_code, restrict) else {
                 continue;
             };
-            if best.is_none_or(|(bt, bs, _, _)| (tier, score) > (bt, bs)) {
-                best = Some((tier, score, cid, pid as u32));
+            let served = u8::from(served);
+            if best.is_none_or(|(bv, bt, bs, _, _)| (served, tier, score) > (bv, bt, bs)) {
+                best = Some((served, tier, score, cid, pid as u32));
             }
         }
         // EXACT NEVER READS PRINTED NAMES — verified against api.scryfall.com on 2026-08-16,
@@ -2219,37 +2240,46 @@ impl BufferStore {
         if scope == NameScope::Exact
             && best.is_none()
             && let Some(rec) = record_of_exact_name(&data.indexes.flavor_names, &data.strings, folded)
-            && let Some((vpid, score)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
+            && let Some((vpid, score, served)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
         {
-            return Some((TIER_FLAVOR_NAME, f64::from(score), card_of_vpid(data, vpid) as usize, vpid));
+            return Some((u8::from(served), TIER_FLAVOR_NAME, f64::from(score), card_of_vpid(data, vpid) as usize, vpid));
         }
         best
     }
 
-    /// A record's best printing passing the set filter, with its prefer score — the annex twin
-    /// of `best_printing_of`. The record's vpids are stored best-prefer-first, so the first one
-    /// through the filter is the answer. `idx` is `printed_names` or `flavor_names`: containment
-    /// reads both, `exact=` reads only the second (see `exact_card_by_name`).
+    /// A record's best printing passing the set filter, with its prefer score and whether a
+    /// default search shows it — the annex twin of `best_printing_of`, under the same rule: the
+    /// record's vpids are stored best-prefer-first, so the first SERVED one through the filter is
+    /// the answer, and the first one of any kind when none is served. `idx` is `printed_names`
+    /// or `flavor_names`: containment reads both, `exact=` reads only the second (see
+    /// `exact_card_by_name`).
     fn best_vpid_of_record_in(
         &self,
         idx: &Archived<crate::PrintedNameIndex>,
         rec: usize,
         set_code: Option<&str>,
-    ) -> Option<(u32, f32)> {
+    ) -> Option<(u32, f32, bool)> {
         let data = self.data();
         let pn = idx;
+        let extra_vid = crate::extra_vid_of(data);
         let (from, to) = (u32::from(pn.offsets[rec]) as usize, u32::from(pn.offsets[rec + 1]) as usize);
-        pn.vpids[from..to]
-            .iter()
-            .map(|v| u32::from(*v))
-            .find(|&v| {
-                set_code.is_none_or(|s| printing_at(data, v).card_set_code.as_str().eq_ignore_ascii_case(s))
-            })
-            .map(|v| (v, printing_at(data, v).prefer_score.as_ref().map_or(f32::MIN, |x| f32::from(*x))))
+        let mut passing = pn.vpids[from..to].iter().map(|v| u32::from(*v)).filter(|&v| {
+            set_code.is_none_or(|s| printing_at(data, v).card_set_code.as_str().eq_ignore_ascii_case(s))
+        });
+        let first = passing.next()?;
+        let (vpid, served) = if crate::printing_is_served(printing_at(data, first), extra_vid) {
+            (first, true)
+        } else {
+            match passing.find(|&v| crate::printing_is_served(printing_at(data, v), extra_vid)) {
+                Some(v) => (v, true),
+                None => (first, false),
+            }
+        };
+        Some((vpid, printing_at(data, vpid).prefer_score.as_ref().map_or(f32::MIN, |x| f32::from(*x)), served))
     }
 
     /// `best_vpid_of_record_in` over the printed-name index — the shape most callers want.
-    fn best_vpid_of_record(&self, rec: usize, set_code: Option<&str>) -> Option<(u32, f32)> {
+    fn best_vpid_of_record(&self, rec: usize, set_code: Option<&str>) -> Option<(u32, f32, bool)> {
         self.best_vpid_of_record_in(&self.data().indexes.printed_names, rec, set_code)
     }
 
@@ -2331,12 +2361,13 @@ impl BufferStore {
             if !needles.iter().all(|w| contains_unseparated(name, w)) {
                 continue;
             }
-            let Some((vpid, score)) = self.best_printing_of(cid, set_code) else { continue };
-            let answer = Answer { name, score, cid, vpid, matched: 0 };
+            let Some((vpid, score, served)) = self.best_printing_of(cid, set_code) else { continue };
+            let answer = Answer { name, score, served, cid, vpid, matched: 0 };
             if equals_unseparated(name, &whole) {
                 // An oracle name that IS the query. Nothing outranks it, and a second card
-                // spelling the same name is the same answer either way.
-                if exact.as_ref().is_none_or(|best| score > best.score) {
+                // spelling the same name is the same answer either way — the served one, when
+                // the two differ in that (the name scan's rule; see `name_best`).
+                if exact.as_ref().is_none_or(|best| (served, score) > (best.served, best.score)) {
                     exact = Some(answer);
                 }
                 continue;
@@ -2384,19 +2415,22 @@ impl BufferStore {
             for rec in records {
                 let rec = rec as usize;
                 let Some(printed) = str_at(&data.strings, u32::from(pn.name_ids[rec])) else { continue };
-                let Some((vpid, score)) = self.best_vpid_of_record_in(pn, rec, set_code) else { continue };
+                let Some((vpid, score, served)) = self.best_vpid_of_record_in(pn, rec, set_code) else { continue };
                 let cid = card_of_vpid(data, vpid) as usize;
                 let name = crate::folded_name(&data.cards[cid], &data.strings);
                 // The printing's whole pool: this printed name OR the oracle name it prints.
                 if !needles.iter().all(|w| contains_unseparated(printed, w) || contains_unseparated(name, w)) {
                     continue;
                 }
-                let answer = Answer { name, score, cid, vpid: vpid as usize, matched: printed.len() };
+                let answer = Answer { name, score, served, cid, vpid: vpid as usize, matched: printed.len() };
                 if equals_unseparated(printed, &whole) {
                     // A printed name that IS the query — `fuzzy=egoaderiva` and `fuzzy=ego à
                     // deriva` alike. It outranks containment, but never an ORACLE name that is
                     // also the query: `exact=` is oracle-scoped and this stage keeps that order.
-                    if exact.as_ref().is_none_or(|best| best.matched > 0 && score > best.score) {
+                    if exact
+                        .as_ref()
+                        .is_none_or(|best| best.matched > 0 && (served, score) > (best.served, best.score))
+                    {
                         exact = Some(answer);
                     }
                     continue;
@@ -2409,7 +2443,7 @@ impl BufferStore {
             Some(answer) => vec![answer],
             None => answers,
         };
-        by_name.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
+        by_name.sort_unstable_by(|a, b| b.served.cmp(&a.served).then_with(|| b.score.total_cmp(&a.score)));
         Ok(by_name
             .into_iter()
             .take(limit)
@@ -2426,12 +2460,13 @@ impl BufferStore {
     }
 
     /// Record one containment answer, keeping ONE per (card, oracle name) class: the shortest
-    /// completing printed name, then the better prefer score. See `cards_containing_all_words`.
+    /// completing printed name, then a served printing over an extra, then the better prefer
+    /// score. See `cards_containing_all_words`.
     fn offer_answer<'a>(answers: &mut Vec<Answer<'a>>, candidate: Answer<'a>, limit: usize) {
         match answers.iter().position(|a| a.name == candidate.name || a.cid == candidate.cid) {
             Some(at) => {
                 let slot = &answers[at];
-                if (candidate.matched, -candidate.score) < (slot.matched, -slot.score) {
+                if (candidate.matched, !candidate.served, -candidate.score) < (slot.matched, !slot.served, -slot.score) {
                     answers[at] = candidate;
                 }
             }
@@ -2520,9 +2555,17 @@ impl BufferStore {
     /// `prefer:atypical` the same, since borderless is atypical. Any card whose only "borderless"
     /// object is its art-series card had the same hole. A scope that names no extras term cannot
     /// mean "prefer the art-series card", so the exclusion is unconditional here.
-    fn best_printing_of_scoped(&self, cid: usize, set_code: Option<&str>, scope: Option<&BoundScope>) -> Option<(usize, f64)> {
+    ///
+    /// Answers `(pid, score, served)`; under a scope `served` is always true, because the pool
+    /// never held an extra to fall back to.
+    fn best_printing_of_scoped(
+        &self,
+        cid: usize,
+        set_code: Option<&str>,
+        scope: Option<&BoundScope>,
+    ) -> Option<(usize, f64, bool)> {
         let Some(scope) = scope else {
-            return self.best_printing_of(cid, set_code).map(|(pid, score)| (pid, f64::from(score)));
+            return self.best_printing_of(cid, set_code).map(|(pid, score, served)| (pid, f64::from(score), served));
         };
         let data = self.data();
         let card = &data.cards[cid];
@@ -2545,21 +2588,34 @@ impl BufferStore {
                 best = Some((pid, score));
             }
         }
-        best
+        best.map(|(pid, score)| (pid, score, true))
     }
 
-    /// A card's best printing and its score, optionally restricted to one set.
+    /// A card's best printing, its score and whether a default search shows it, optionally
+    /// restricted to one set.
     ///
     /// Printings are stored in descending default-prefer order, so the first one that passes the
-    /// set filter IS the best -- the same representative every other by-name path shows.
-    fn best_printing_of(&self, cid: usize, set_code: Option<&str>) -> Option<(usize, f32)> {
+    /// set filter and is SERVED is the best -- `preferred_served_vpid`'s rule with the set
+    /// filter applied, and the same representative every other by-name path shows. A card whose
+    /// passing printings are all extras answers its first one, flagged: `exact=Counterspell&
+    /// set=wc98` is the gold-bordered wc98 printing on api.scryfall.com (2026-09-15), so a set
+    /// filter that admits only memorabilia still answers.
+    fn best_printing_of(&self, cid: usize, set_code: Option<&str>) -> Option<(usize, f32, bool)> {
         let data = self.data();
+        let extra_vid = crate::extra_vid_of(data);
         let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
-        (start..end)
-            .find(|&pid| {
-                set_code.is_none_or(|s| data.printings[pid].card_set_code.as_str().eq_ignore_ascii_case(s))
-            })
-            .map(|pid| (pid, data.printings[pid].prefer_score.as_ref().map_or(f32::MIN, |v| f32::from(*v))))
+        let mut passing = (start..end)
+            .filter(|&pid| set_code.is_none_or(|s| data.printings[pid].card_set_code.as_str().eq_ignore_ascii_case(s)));
+        let first = passing.next()?;
+        let (pid, served) = if crate::printing_is_served(&data.printings[first], extra_vid) {
+            (first, true)
+        } else {
+            match passing.find(|&pid| crate::printing_is_served(&data.printings[pid], extra_vid)) {
+                Some(pid) => (pid, true),
+                None => (first, false),
+            }
+        };
+        Some((pid, data.printings[pid].prefer_score.as_ref().map_or(f32::MIN, |v| f32::from(*v)), served))
     }
 
     /// Whether any CANONICAL printing of this card is one a default search would show.
@@ -2822,6 +2878,9 @@ pub struct QueryOutput {
 #[derive(Debug, Clone)]
 pub struct FuzzyCandidate {
     pub score: f32,
+    /// Whether `vpid` is a printing a default search shows; the race's tiebreak on a score tie
+    /// (see `FuzzyRace`), crossing the wire so the partitioned merge breaks the tie the same way.
+    pub served: bool,
     pub oracle_id: String,
     pub vpid: u32,
     pub folded_name: String,
@@ -3228,6 +3287,9 @@ fn strip_separators(word: &str) -> String {
 struct Answer<'a> {
     name: &'a str,
     score: f32,
+    /// Whether `vpid` is a printing a default search shows — ranked ahead of `score`, behind
+    /// `matched`. See `best_printing_of`.
+    served: bool,
     cid: usize,
     vpid: usize,
     matched: usize,
@@ -3333,10 +3395,15 @@ fn contains_unseparated(hay: &str, needle: &str) -> bool {
 
 /// Descending precedence for the name scan. These values cross the wasm boundary and are compared
 /// — never interpreted — by the partition merge, so their ORDER is the contract and their
-/// magnitudes are not.
+/// magnitudes are not. They are the SECOND element of the rank: a served/extras-only flag (1/0)
+/// leads them, see `exact_name_rank`.
 const TIER_WHOLE_NAME: u8 = 2;
 const TIER_FACE_NAME: u8 = 1;
 const TIER_FLAVOR_NAME: u8 = 0;
+
+/// A name lookup's rank, `(served, tier, score)`, compared lexicographically — see
+/// `exact_name_rank` for each element. The wire form the partitioned router merges on.
+pub type NameRank = (u8, u8, f64);
 
 /// Which name keys a lookup may match. `/cards/named?exact=` reads a strict SUPERSET of what a
 /// `POST /cards/collection` `{"name"}` identifier does — see `collection_card_by_name` for the
@@ -4632,8 +4699,9 @@ mod tests {
         // The rank the partitioned router merges on is the scope's own score: under
         // `prefer:atypical` the promo outranks the plain printing, so a partition holding only
         // the plain one loses to a partition holding the promo.
-        let (_, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
-        let (_, scoped_rank) = store.collection_name_rank("clive, ifrit's dominant", None, Some(&atypical)).expect("rank").expect("hit");
+        let (_, _, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
+        let (_, _, scoped_rank) =
+            store.collection_name_rank("clive, ifrit's dominant", None, Some(&atypical)).expect("rank").expect("hit");
         assert!(scoped_rank > unscoped, "the atypical class bonus is in the merged rank");
     }
 
@@ -4996,6 +5064,110 @@ mod tests {
         assert!(store.collection_card_by_name(needle, None, None, None).expect("coll").is_none(), "a collection id does not");
         // The oracle name still answers both.
         assert!(store.collection_card_by_name("zilortha, strength incarnate", None, None, None).expect("coll").is_some());
+    }
+
+    /// A name two oracle cards carry, one of them extras-only, answers the SERVED card on every
+    /// name surface — and the extras-only card still answers a name nothing else carries.
+    ///
+    /// Measured on api.scryfall.com 2026-09-15: `exact=Earth Rumble`, `fuzzy=earth rumbel` and
+    /// `{"name":"Earth Rumble"}` all answer the tla sorcery, never the jtla memorabilia front
+    /// card (layout front_card, oracle text "(Theme color: {G})", no legalities) of the same
+    /// name; `exact=Cabbages`, `fuzzy=cabbage` and `{"name":"Cabbages"}` — a name only jtla
+    /// carries — answer jtla/39. Production answered the front card on all three Earth Rumble
+    /// routes: both cards sat on the whole-name tier, the rank fell through to prefer_score and
+    /// store order, and `/cards/search`'s `-is:extra` default never reached the name lookups.
+    #[test]
+    fn a_served_card_outranks_an_extras_only_card_of_the_same_name_which_still_answers_alone() {
+        let mut sorcery = annex_row("Earth Rumble", "oracle-tla", "row-tla-174", "en", 100.0);
+        sorcery["card_set_code"] = json!("tla");
+        sorcery["collector_number"] = json!("174");
+        sorcery["type_line"] = json!("Sorcery");
+        // The front card OUTSCORES the sorcery and is staged FIRST, so neither the score nor
+        // the card order can answer the sorcery by accident.
+        let mut front = annex_row("Earth Rumble", "oracle-jtla", "row-jtla-41", "en", 900.0);
+        front["card_set_code"] = json!("jtla");
+        front["collector_number"] = json!("41");
+        front["type_line"] = json!("Card");
+        front["card_layout"] = json!("front_card");
+        front["card_is_tags"] = json!({ "extra": true });
+        // A name ONLY the memorabilia set carries.
+        let mut cabbages = annex_row("Cabbages", "oracle-cab", "row-jtla-39", "en", 900.0);
+        cabbages["card_set_code"] = json!("jtla");
+        cabbages["collector_number"] = json!("39");
+        cabbages["card_is_tags"] = json!({ "extra": true });
+        let store = build_store(&[front, sorcery, cabbages]).1;
+
+        let fields = Some(vec!["collector_number".to_owned()]);
+        let cn = |c: Option<Value>| c.map(|c| c["collector_number"].as_str().unwrap().to_owned());
+        let exact = |n: &str, set: Option<&str>| cn(store.exact_card_by_name(n, set, fields.clone()).expect("exact"));
+        let coll = |n: &str| cn(store.collection_card_by_name(n, None, fields.clone(), None).expect("coll"));
+        let fuzzy = |n: &str| {
+            let (status, card) = store.fuzzy_card_by_name(n, 0.4, 0.05, fields.clone()).expect("fuzzy");
+            (status, cn(card))
+        };
+        let contained = |words: &[&str]| -> Vec<String> {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            store
+                .cards_containing_all_words(&words, None, 2, fields.clone())
+                .expect("containment")
+                .into_iter()
+                .map(|c| cn(Some(c)).unwrap())
+                .collect()
+        };
+
+        assert_eq!(exact("earth rumble", None).as_deref(), Some("174"), "exact= answers the sorcery");
+        assert_eq!(coll("earth rumble").as_deref(), Some("174"), "a collection identifier answers the sorcery");
+        assert_eq!(fuzzy("earth rumbel"), ("hit", Some("174".to_owned())), "the typo stage answers the sorcery");
+        assert_eq!(contained(&["earth", "rumble"]), vec!["174"], "the containment stage answers the sorcery");
+        // The rank the partitioned router merges on LEADS with the served flag: the sorcery's
+        // (1, whole name, 100) beats the front card's (0, whole name, 900) where a (tier, score)
+        // rank lost — and the cross-partition fuzzy race breaks its score tie the same way.
+        assert_eq!(store.exact_name_rank("earth rumble", None), Some((1, 2, 100.0)));
+        let cands = store.fuzzy_candidates("earth rumbel", 0.4, 8);
+        assert_eq!(cands.len(), 2, "two (card, name) classes, one per oracle card");
+        assert!(cands[0].served && !cands[1].served, "the served class leads on the tie");
+        assert_eq!(cands[0].score, cands[1].score, "and it IS a tie — same name, same score");
+
+        // An extras-only name still answers, ranked as such — a fallback, not an exclusion.
+        assert_eq!(exact("cabbages", None).as_deref(), Some("39"));
+        assert_eq!(coll("cabbages").as_deref(), Some("39"));
+        assert_eq!(fuzzy("cabbage"), ("hit", Some("39".to_owned())));
+        assert_eq!(store.exact_name_rank("cabbages", None), Some((0, 2, 900.0)));
+        // And the set filter reaches the front card when it names its set.
+        assert_eq!(exact("earth rumble", Some("jtla")).as_deref(), Some("41"));
+    }
+
+    /// Inside ONE card the served printing leads whatever the extras printing scores, and a set
+    /// filter that admits only the memorabilia printing still answers it — api.scryfall.com's
+    /// `exact=Counterspell` (a black-bordered printing) and `exact=Counterspell&set=wc98` (the
+    /// gold-bordered wc98/rb57), both 2026-09-15.
+    #[test]
+    fn a_served_printing_leads_a_higher_scored_extra_of_the_same_card() {
+        // The gold-bordered World Championship printing is stored FIRST (higher prefer_score),
+        // which is exactly the order `best_printing_of` used to read as "best".
+        let mut gold = annex_row("Counterspell", "oracle-cs", "row-wc98", "en", 500.0);
+        gold["card_set_code"] = json!("wc98");
+        gold["collector_number"] = json!("rb57");
+        gold["card_border"] = json!("gold");
+        gold["card_is_tags"] = json!({ "extra": true });
+        let mut plain = annex_row("Counterspell", "oracle-cs", "row-tmp", "en", 100.0);
+        plain["card_set_code"] = json!("tmp");
+        plain["collector_number"] = json!("57");
+        let store = build_store(&[gold, plain]).1;
+
+        let fields = Some(vec!["collector_number".to_owned()]);
+        let cn = |c: Option<Value>| c.map(|c| c["collector_number"].as_str().unwrap().to_owned());
+        assert_eq!(cn(store.exact_card_by_name("counterspell", None, fields.clone()).unwrap()).as_deref(), Some("57"));
+        assert_eq!(
+            cn(store.collection_card_by_name("counterspell", None, fields.clone(), None).unwrap()).as_deref(),
+            Some("57")
+        );
+        let (status, card) = store.fuzzy_card_by_name("counterspel", 0.4, 0.05, fields.clone()).unwrap();
+        assert_eq!((status, cn(card).as_deref()), ("hit", Some("57")), "the typo stage materializes the served printing");
+        assert_eq!(store.exact_name_rank("counterspell", None), Some((1, 2, 100.0)));
+        // The memorabilia printing is still addressable by its set, and ranked as an extra.
+        assert_eq!(cn(store.exact_card_by_name("counterspell", Some("wc98"), fields).unwrap()).as_deref(), Some("rb57"));
+        assert_eq!(store.exact_name_rank("counterspell", Some("wc98")), Some((0, 2, 500.0)));
     }
 
     /// `exact=` is scoped to the ORACLE name and never reads printed names — the negative
@@ -6335,7 +6507,11 @@ mod tests {
             all.extend(p.fuzzy_candidates(needle, floor, 8));
         }
         all.sort_by(|a, b| {
-            b.score.total_cmp(&a.score).then_with(|| a.oracle_id.cmp(&b.oracle_id)).then_with(|| a.vpid.cmp(&b.vpid))
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| b.served.cmp(&a.served))
+                .then_with(|| a.oracle_id.cmp(&b.oracle_id))
+                .then_with(|| a.vpid.cmp(&b.vpid))
         });
         let Some(best) = all.first().cloned() else { return ("miss", None) };
         let runner = all

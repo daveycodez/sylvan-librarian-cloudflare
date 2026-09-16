@@ -333,6 +333,11 @@ export const FUZZY_SIMILARITY_LEAD = 0.002;
  * keys on; `vpid` is partition-local and unused by the race. */
 export interface FuzzyCandidateWire {
 	score: number;
+	/** Whether `vpid` is a printing a default search shows. The race's tiebreak on a score
+	 * tie: two cards sharing one name score identically, and the served one (the tla sorcery)
+	 * must lead the extras-only one (the jtla memorabilia front card) whatever partition each
+	 * hashed to. See the engine's `FuzzyRace`. */
+	served: boolean;
 	oracleId: string;
 	vpid: number;
 	foldedName: string;
