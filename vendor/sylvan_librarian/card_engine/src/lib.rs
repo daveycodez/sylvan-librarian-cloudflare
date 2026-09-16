@@ -9602,12 +9602,20 @@ fn printing_is_secret_lair(p: &APrinting, strings: &AStrings) -> bool {
 
 /// Full art as `prefer:borderless` reads it: Scryfall's `full_art` flag, or the `poster` promo
 /// type — the Secret Lair poster-style cards, which Scryfall flags full art inconsistently
-/// (Nature's Lore's sld/189 yes, sld/2278 no). Every full-art judgment in this ladder — the
+/// (Nature's Lore's sld/189 yes, sld/2278 no) — or a set in `ILLEGIBLE_FRAME_SETS`. Every full-art judgment in this ladder — the
 /// borderless exclusion, the text-box key, the finish-twin look — reads this, not the flag.
 fn printing_is_full_art_or_poster(p: &APrinting, ids: &PreferClassIds) -> bool {
     compat_flag(&p.compat, COMPAT_FULL_ART)
         || (ids.poster != VOCAB_NONE && p.compat.promo_types.iter().any(|v| u16::from(*v) == ids.poster))
+        || ILLEGIBLE_FRAME_SETS.contains(&p.card_set_code.as_str())
 }
+
+/// Sets whose frame is hard to read on every card, taken as full art by name: nothing else in
+/// the data marks them. Amonkhet Invocations (`mp2`) print their text in a stylised hieroglyphic
+/// frame; in every stored field they match a Kaladesh Invention or a Zendikar Expedition, whose
+/// frames read fine — same set type, frame, stamp and finishes — so the set code is the signal.
+/// Cryptic Command answers its canonical ima/48 rather than mp2/11, its one remaining borderless.
+const ILLEGIBLE_FRAME_SETS: [&str; 1] = ["mp2"];
 
 /// The variant tier of `prefer:borderless`: a variant frame EFFECT (inverted, showcase,
 /// extendedart, etched, shatteredglass) or the Future frame — `printing_is_frame_variant` less
@@ -9816,7 +9824,8 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// printings that carry NO flavor name, seven tiers — borderless (a FULL-ART borderless is NOT borderless here: its text, when it has
 /// any, is printed over the art and Scryfall cannot say how legibly — and a `poster` promo type
 /// counts as full art whatever the flag says, so Nature's Lore answers the inverted sld/867 over
-/// the unflagged poster sld/2278 — so it ranks among the plain
+/// the unflagged poster sld/2278, and so does an Amonkhet Invocation, whose hieroglyphic frame
+/// nothing else in the data marks, so Cryptic Command answers its canonical ima/48 — so it ranks among the plain
 /// printings — Darksteel Plate answers the etched 2x2/559 over the Secret Lair poster sld/1572, its
 /// only borderless printing), then EXTENDED ART (its own
 /// tier, above full art and every other variant: Sheltered Thicket answers the Fallout pip/508

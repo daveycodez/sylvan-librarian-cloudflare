@@ -36,7 +36,7 @@ export const UNIQUE_ON = {
  * `borderless` is THIS API'S OWN, not Scryfall's (there it is an unknown value, ignored with a
  * warning): "the best-looking printing that is still this card". Over the printings carrying NO
  * flavor name, six tiers — borderless (a full-art borderless is not borderless here, a Secret Lair
- * poster counting as full art whatever Scryfall's flag says; full art earns nothing, so Darksteel
+ * poster or an Amonkhet Invocation counting as full art whatever Scryfall's flag says; full art earns nothing, so Darksteel
  * Plate answers the etched 2x2/559 and Nature's Lore the inverted sld/867), then extended art (above full art and every other
  * variant: Sheltered Thicket answers pip/508), then any other frame variant (a frame effect or the
  * Future frame; Innkeeper's Talent answers the plain blb/180 over its Secret Lair poster), then the colorshifted

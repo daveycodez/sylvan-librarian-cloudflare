@@ -17828,6 +17828,13 @@ fn prefer_borderless_reads_a_poster_promo_type_as_full_art() {
     data.printings[1].compat.promo_types = vec![];
     data.printings[1].compat.flags = COMPAT_FULL_ART;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "the flag says the same thing");
+    // ...and so does an Amonkhet Invocation, by set code alone: clear the flag, move the
+    // borderless id 2 to `mp2`, and the plain id 1 still answers (Cryptic Command's shape).
+    data.printings[1].compat.flags = 0;
+    data.printings[1].card_set_code = InlineStr::from_str("mp2");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "an Amonkhet Invocation reads as full art");
+    data.printings[1].card_set_code = InlineStr::from_str("bbb");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "the same printing in any other set is borderless again");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
