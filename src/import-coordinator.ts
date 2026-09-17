@@ -135,6 +135,7 @@ import {
 	writeRoutingFilter,
 } from "./engine/store-kv";
 import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types";
+import { packBlob, unpackBlob } from "./import-blob-codec";
 import {
 	AGG_FETCH_BATCHES,
 	AGG_SLICE_BATCHES,
@@ -649,6 +650,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		if (draftCols.length === 0) {
 			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN part_hashes BLOB");
+		}
+		// Staged drafts are compressed (import-blob-codec.ts), so length(bytes) no longer measures
+		// the corpus — and the partition count is sized from it. raw_len carries the uncompressed
+		// size; NULL on rows staged before compression, which were raw, so length(bytes) IS theirs.
+		const rawLenCols = this.sqlAll<{ name: string }>(
+			"SELECT name FROM pragma_table_info('draft_batches') WHERE name = 'raw_len'",
+		);
+		if (rawLenCols.length === 0) {
+			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN raw_len INTEGER");
 		}
 		// On record once per instance: how the platform's SQLite frees pages. The
 		// staging purges are sliced on the assumption that a commit's cost is the
@@ -1836,12 +1846,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const groups = blobGroups(allDrafts);
 			let at = 0;
 			for (const group of exhausted ? groups : groups.slice(0, -1)) {
+				const raw = lengthPrefixed(group);
 				this.sqlRun(
-					"INSERT INTO draft_batches (seq, count, bytes, part_hashes) VALUES (?, ?, ?, ?)",
+					"INSERT INTO draft_batches (seq, count, bytes, part_hashes, raw_len) VALUES (?, ?, ?, ?, ?)",
 					++seq,
 					group.length,
-					exactBuffer(lengthPrefixed(group)),
+					exactBuffer(packBlob(raw)),
 					exactBuffer(packPartHashes(allHashes.slice(at, at + group.length))),
+					raw.length,
 				);
 				at += group.length;
 			}
@@ -1884,7 +1896,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		)[0];
 		if (!stored) return { drafts: [], hashes: [] };
 		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
-		const drafts = splitBatch(new Uint8Array(stored.bytes as ArrayBuffer)).map((b) => b.slice());
+		const drafts = splitBatch(unpackBlob(new Uint8Array(stored.bytes as ArrayBuffer))).map((b) => b.slice());
 		const hashes = stored.part_hashes ? unpackPartHashes(new Uint8Array(stored.part_hashes as ArrayBuffer)) : [];
 		if (hashes.length !== drafts.length) {
 			// Only a deploy that lands MID-RUN, across the partition-hash framing
@@ -1902,11 +1914,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private storePendingDrafts(drafts: Uint8Array[], hashes: bigint[]): void {
 		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
 		if (drafts.length > 0) {
+			const raw = lengthPrefixed(drafts);
 			this.sqlRun(
-				"INSERT INTO draft_batches (seq, count, bytes, part_hashes) VALUES (-1, ?, ?, ?)",
+				"INSERT INTO draft_batches (seq, count, bytes, part_hashes, raw_len) VALUES (-1, ?, ?, ?, ?)",
 				drafts.length,
-				exactBuffer(lengthPrefixed(drafts)),
+				exactBuffer(packBlob(raw)),
 				exactBuffer(packPartHashes(hashes)),
+				raw.length,
 			);
 		}
 	}
@@ -1960,15 +1974,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		// Size the partition loop HERE, while everything it needs is already
 		// durable: the drafts are fully staged (transform completed before this
-		// phase), so SUM(length(bytes)) is the whole corpus, and the projection
+		// phase), so the sum of their RAW sizes (raw_len; the rows themselves are
+		// compressed) is the whole corpus, and the projection
 		// (bytes × DRAFT_TO_STORE_RATIO / TARGET_PARTITION_BYTES, clamped) is a
 		// pure function of it. N and built_at are persisted in the SAME
 		// transaction that opens the loop, so a mid-loop restart can fork
 		// neither: the store keys, the chunk keys, and every draft's partition
 		// assignment all derive from these two values (plan B3 / Decision 3b).
 		const stagedDraftBytes = Number(
-			this.sqlAll<{ n: number }>("SELECT COALESCE(SUM(length(bytes)), 0) AS n FROM draft_batches WHERE seq >= 0")[0]
-				?.n ?? 0,
+			this.sqlAll<{ n: number }>(
+				"SELECT COALESCE(SUM(COALESCE(raw_len, length(bytes))), 0) AS n FROM draft_batches WHERE seq >= 0",
+			)[0]?.n ?? 0,
 		);
 		// The target is overridable for ONE caller — the local end-to-end
 		// harness (scripts/import-harness), whose corpus is small enough that
@@ -2085,7 +2101,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// The routing emit that this call produces is tagged with the batch's OWN seq, so a
 				// retried slice replaces its rows rather than appending a second copy of them.
 				routingSeq = row.seq;
-				names = wasm.scoresAddDrafts(new Uint8Array(row.bytes), partitionCount);
+				names = wasm.scoresAddDrafts(unpackBlob(new Uint8Array(row.bytes)), partitionCount);
 			}
 			fed += rows.length;
 			if (rows.length < SCORES_FETCH_BATCHES) break;
@@ -2104,7 +2120,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// overwrites its own rows instead of doubling them. Duplicate keys would
 			// not corrupt the filter (it dedupes), but they would inflate the build.
 			for (const blob of routingBlobs) {
-				this.sqlRun("INSERT OR REPLACE INTO routing_keys (seq, bytes) VALUES (?, ?)", blob.seq, blob.bytes);
+				this.sqlRun(
+					"INSERT OR REPLACE INTO routing_keys (seq, bytes) VALUES (?, ?)",
+					blob.seq,
+					exactBuffer(packBlob(blob.bytes)),
+				);
 			}
 			this.metaSet("scores_batch_done", String(done + fed));
 			if (exhausted) this.metaSet("phase", "routing");
@@ -2149,7 +2169,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const decoder = new TextDecoder();
 			let lines = 0;
 			for (const row of this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM routing_keys ORDER BY seq")) {
-				const text = decoder.decode(new Uint8Array(row.bytes));
+				const text = decoder.decode(unpackBlob(new Uint8Array(row.bytes)));
 				let at = 0;
 				while (at < text.length) {
 					let end = text.indexOf("\n", at);
@@ -2242,7 +2262,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				partition,
 				done * 128 + (ordinal[partition] as number),
 				group.length,
-				exactBuffer(lengthPrefixed(group)),
+				exactBuffer(packBlob(lengthPrefixed(group))),
 			);
 			ordinal[partition] = (ordinal[partition] as number) + 1;
 			acc[partition] = [];
@@ -2268,7 +2288,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// Deleted at the end of this slice: churn, like the groups it becomes.
 				sourceBytes += row.bytes.byteLength + row.part_hashes.byteLength;
 				const byPartition = bucketDrafts(
-					{ bytes: new Uint8Array(row.bytes), partHashes: new Uint8Array(row.part_hashes) },
+					{ bytes: unpackBlob(new Uint8Array(row.bytes)), partHashes: new Uint8Array(row.part_hashes) },
 					n,
 				);
 				for (let p = 0; p < n; p++) {
@@ -2536,7 +2556,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// Every draft in the group is this partition's, in emission order —
 				// stepBucket preserved it within and across batches — so the group
 				// is fed whole, no filter.
-				wasm.aggDrafts(new Uint8Array(row.bytes));
+				wasm.aggDrafts(unpackBlob(new Uint8Array(row.bytes)));
 				last = row.seq;
 			}
 			fed += rows.length;
@@ -2592,7 +2612,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			for (const row of rows) {
 				// Same rows, same order as stepAgg — the finalize pass's contract
 				// with the aggregation it follows.
-				staged = wasm.finalizeDrafts(new Uint8Array(row.bytes));
+				staged = wasm.finalizeDrafts(unpackBlob(new Uint8Array(row.bytes)));
 				last = row.seq;
 			}
 			fed += rows.length;
@@ -2611,7 +2631,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					"INSERT OR REPLACE INTO spill_batches (base, count, bytes) VALUES (?, ?, ?)",
 					base,
 					group.length,
-					exactBuffer(lengthPrefixed(group)),
+					exactBuffer(packBlob(lengthPrefixed(group))),
 				);
 				base += group.length;
 			}
@@ -2674,7 +2694,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		const index = spillIndex(
 			(function* (rows) {
-				for (const row of rows) yield { base: Number(row.base), bytes: blobBytes(row.bytes) };
+				for (const row of rows) yield { base: Number(row.base), bytes: unpackBlob(blobBytes(row.bytes)) };
 			})(this.sqlIter("SELECT base, bytes FROM spill_batches ORDER BY base")),
 		);
 		const from = Number(this.metaGet("reorder_done") ?? 0);
@@ -2685,7 +2705,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const blob = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM spill_batches WHERE base = ?", base)[0];
 			if (!blob) return null;
 			groupsRead += 1;
-			return blobBytes(blob.bytes);
+			return unpackBlob(blobBytes(blob.bytes));
 		});
 
 		this.ctx.storage.transactionSync(() => {
@@ -2697,7 +2717,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					"INSERT OR REPLACE INTO ordered_rows (base, count, bytes) VALUES (?, ?, ?)",
 					base,
 					group.length,
-					exactBuffer(lengthPrefixed(group)),
+					exactBuffer(packBlob(lengthPrefixed(group))),
 				);
 				base += group.length;
 			}
@@ -2738,7 +2758,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				"SELECT base, bytes FROM ordered_rows WHERE base <= ? ORDER BY base DESC LIMIT 1",
 				position,
 			)[0];
-			return next ? { base: Number(next.base), bytes: blobBytes(next.bytes) } : null;
+			return next ? { base: Number(next.base), bytes: unpackBlob(blobBytes(next.bytes)) } : null;
 		});
 		console.log(
 			`Build (partition ${pp.partition}/${pp.partitions.length}): streaming ${staged} rows from ordered_rows`,
@@ -2768,7 +2788,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// 100k/day budget. At 1.9MB a 70MB store stages in ~37 rows.
 		const grid = new GridChunker();
 		const stage = (b: Uint8Array) => {
-			this.sqlRun("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(b));
+			this.sqlRun("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(packBlob(b)));
 		};
 		const built = { card_count: 0, printing_count: 0, store_bytes: 0 };
 		wasm.setHandlers({
@@ -2832,7 +2852,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	/** Staging-backed reader for assembleChunk (see src/engine/store-kv.ts). */
 	private stagedRows(fromSeq: number, limit: number): StagedRow[] {
 		return this.sqlAll("SELECT seq, bytes FROM chunk_staging WHERE seq >= ? ORDER BY seq LIMIT ?", fromSeq, limit).map(
-			(row) => ({ seq: Number(row.seq), bytes: new Uint8Array(row.bytes as ArrayBuffer) }),
+			(row) => ({ seq: Number(row.seq), bytes: unpackBlob(new Uint8Array(row.bytes as ArrayBuffer)) }),
 		);
 	}
 
