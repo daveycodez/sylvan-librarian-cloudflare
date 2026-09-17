@@ -417,9 +417,8 @@ export interface RunShape {
 	stagingBytesPerPartition: number;
 	/**
 	 * Bytes the phases BEFORE the loop drop at their boundaries, purged in the
-	 * same slices: the raw all_cards blobs after recode (~390MB), default_cards
-	 * after canonical, the recoded members after transform (~400MB), the tag and
-	 * label dumps after tags.
+	 * same slices: since 2026-09-17 only the tag and label dumps after tags —
+	 * all_cards and default_cards are streamed from Scryfall, never staged.
 	 */
 	prefixStagingBytes: number;
 }
@@ -512,10 +511,10 @@ export function projectRunCost(
 	// purge of the partition's staging is its own sliced step after publish; the
 	// alarm that empties the last table moves the loop on itself.
 	const purgeAlarms = slices.purgeBytes === null ? 0 : Math.ceil(shape.stagingBytesPerPartition / slices.purgeBytes);
-	// The four phase-boundary purges before the loop, at the same slice; each
-	// costs at least one alarm even when its kinds are already gone.
+	// The phase-boundary purge before the loop (the tag dumps), at the same
+	// slice; it costs at least one alarm even when its kinds are already gone.
 	const prefixPurgeAlarms =
-		slices.purgeBytes === null ? 0 : Math.max(4, Math.ceil(shape.prefixStagingBytes / slices.purgeBytes));
+		slices.purgeBytes === null ? 0 : Math.max(1, Math.ceil(shape.prefixStagingBytes / slices.purgeBytes));
 	const perPartitionAlarms = aggAlarms + finalizeAlarms + reorderAlarms + 2 + purgeAlarms;
 	const alarms = shape.prefixAlarms + prefixPurgeAlarms + bucketAlarms + perPartitionAlarms * shape.partitions;
 

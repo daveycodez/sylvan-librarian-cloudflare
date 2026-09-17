@@ -429,6 +429,7 @@ export class InflateRecodeSource {
 	produced: number;
 	private pending: Uint8Array | undefined;
 	private rowsDone = false;
+	private lastGrid: number;
 
 	constructor(
 		private readonly inflate: ResumableInflate,
@@ -436,12 +437,25 @@ export class InflateRecodeSource {
 		private readonly rows: AsyncIterator<Uint8Array>,
 		rawStart: number,
 		private readonly memberRaw = MEMBER_RAW_BYTES,
+		/**
+		 * Called when the decoder sits EXACTLY on a grid line it has not reported
+		 * yet — after the consumer has taken the chunk ending there and before any
+		 * further input is fed — the one moment a saved decoder state describes
+		 * precisely that raw offset. The streamed-dump phases take their
+		 * checkpoints here.
+		 */
+		private readonly onGrid?: (produced: number) => void,
 	) {
 		this.produced = rawStart;
+		this.lastGrid = rawStart;
 	}
 
 	async *stream(): AsyncGenerator<Uint8Array> {
 		for (;;) {
+			if (this.onGrid && this.produced !== this.lastGrid && this.produced % this.memberRaw === 0) {
+				this.lastGrid = this.produced;
+				this.onGrid(this.produced);
+			}
 			if ((!this.pending || this.pending.length === 0) && !this.rowsDone) {
 				const next = await this.rows.next();
 				if (next.done) this.rowsDone = true;

@@ -74,10 +74,10 @@ const CORPUS_2026_08_28: RunShape = {
 	// each, ~177MB), ~32 spill + ~32 ordered groups (~96MB) and ~23 chunk
 	// staging rows (~43MB) — ~316MB, what the purge slices per partition.
 	stagingBytesPerPartition: 316_000_000,
-	// The phase-boundary drops before the loop: all_cards' raw blobs (392MB
-	// gzip, the fetch log's byte count), its recoded members (~400MB),
-	// default_cards' blobs (~60MB) and the tag + label dumps (~50MB).
-	prefixStagingBytes: 900_000_000,
+	// The phase-boundary drops before the loop. Since 2026-09-17 only the tag,
+	// label and rulings dumps are staged at all — all_cards (392MB gzip, plus
+	// ~400MB of it recoded) and default_cards (~78MB) are streamed — so ~60MB.
+	prefixStagingBytes: 60_000_000,
 };
 
 /**
@@ -223,9 +223,9 @@ describe("the run's storage budget", () => {
 		// an object that returns from its alarm instead of hanging until a deploy.
 		const oneCommit = projectRunCost(CORPUS_2026_09_04, SLICES_UNSLICED_PURGE);
 		const sliced = projectRunCost(CORPUS_2026_09_04);
-		// 10 per partition, plus the four phase-boundary purges before the loop
-		// (~900MB at 32MB: 27 alarms).
-		expect(sliced.alarms - oneCommit.alarms).toBe(CORPUS_2026_09_04.partitions * 10 + 27);
+		// 10 per partition, plus the one phase-boundary purge before the loop
+		// (the tag dumps, ~60MB at 32MB: 2 alarms).
+		expect(sliced.alarms - oneCommit.alarms).toBe(CORPUS_2026_09_04.partitions * 10 + 2);
 		expect(sliced.alarms - oneCommit.alarms).toBeLessThan(oneCommit.alarms * 0.45);
 		expect(sliced.rowsWritten - sliced.fixedRowsWritten).toBe(oneCommit.rowsWritten - oneCommit.fixedRowsWritten);
 		expect(sliced.fixedRowsWritten).toBeLessThan(MAX_RUN_ROWS_WRITTEN * TOLL_SHARE_OF_WRITE_BUDGET);

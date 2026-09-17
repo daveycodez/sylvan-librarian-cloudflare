@@ -162,7 +162,7 @@ import {
 	REORDER_SLICE_ROWS,
 } from "./import-budget";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
-import { DUMP_KINDS, type DumpKind, phaseAfterFetch, phaseAfterStaged, TRANSFORM_KIND } from "./import-phases";
+import { DUMP_KINDS, type DumpKind, firstFetchPhase, phaseAfterFetch, TRANSFORM_KIND } from "./import-phases";
 import {
 	advanceToNextPartition,
 	completePartitionPublish,
@@ -179,17 +179,7 @@ import {
 	TARGET_PARTITION_BYTES,
 } from "./import-publish";
 import { PURGE_TABLES, type PurgeScope, type PurgeTable, planPurgeSlice } from "./import-purge";
-import {
-	InflateRecodeSource,
-	MEMBER_RAW_BYTES,
-	memberBytes,
-	RECODE_ALARM_BUDGET_SECONDS,
-	RECODE_CHECKPOINT_VERSION,
-	RECODE_RESUMED_WINDOW_SECONDS_PER_GIB,
-	type ResumableInflate,
-	recodeAlarm,
-	skipBytes,
-} from "./import-recode";
+import { InflateRecodeSource, MEMBER_RAW_BYTES, type ResumableInflate, skipBytes } from "./import-recode";
 import {
 	BLOB_GROUP_BYTES,
 	blobBytes,
@@ -255,7 +245,7 @@ const MAX_WASM_REWINDS = 3;
  * re-fires on a fresh one, which re-reads its cursor and redoes one slice.
  *
  * Five minutes is far above any legitimate slice — recode budgets itself at 23s
- * (RECODE_ALARM_BUDGET_SECONDS), a 48MB fetch or a chunk gzip+put is seconds —
+ * a streamed transform slice inflates ~60MB, a small dump's fetch or a chunk gzip+put is seconds —
  * and far below the 15-minute wall. `notify` gets the long leash: it waits on
  * every region's prefetch of ~146MB of compressed archives.
  */
@@ -386,6 +376,31 @@ const SCRYFALL_API_URL = "https://api.scryfall.com";
  * alarms.
  */
 const SCRYFALL_REQUEST_DELAY_MS = 100;
+
+/**
+ * Version stamp on a streamed dump's recode_checkpoint row. 1 was the retired
+ * recode phase's (a position in staged blobs feeding member recoding); a row
+ * of that version is never trusted by the streams.
+ */
+const STREAM_CHECKPOINT_VERSION = 2;
+/** Raw bytes between stream checkpoints: the most a resume re-inflates before its first line. */
+const STREAM_CHECKPOINT_GRID_RAW = MEMBER_RAW_BYTES;
+
+/** A decoder snapshot on the checkpoint grid. */
+interface StreamCheckpoint {
+	raw: number;
+	state: Uint8Array;
+}
+
+/** An open streamed dump (openDumpStream). */
+interface DumpStream {
+	/** Raw bytes from the requested offset onward. */
+	bytes: AsyncIterable<Uint8Array>;
+	/** The newest decoder snapshot at or before raw offset `raw`, if the stream reached one. */
+	checkpointAtOrBefore(raw: number): StreamCheckpoint | null;
+	/** Stop the download. */
+	close(): Promise<void>;
+}
 // WHICH dumps a run fetches, and where the chain goes after each, live in
 // src/import-phases.ts (DUMP_KINDS / phaseAfterFetch) — one list, with the
 // per-dump ordering rationale beside it.
@@ -394,7 +409,6 @@ type Phase =
 	| "idle"
 	| "listing"
 	| `fetch:${DumpKind}`
-	| "recode:all_cards"
 	| "canonical"
 	| "transform"
 	| "tags"
@@ -563,12 +577,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				kind TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL,
 				PRIMARY KEY (kind, seq)
 			);
-			-- A staged dump re-compressed into INDEPENDENT gzip members of
-			-- MEMBER_RAW_BYTES raw bytes each (see stepRecode), one member per
-			-- row, carrying the raw span it covers. Unlike stage_blobs — arbitrary
-			-- 1.9MB cuts of one long gzip stream, decodable only from the top —
-			-- these let stagedBytes() start decompressing AT any raw offset, which
-			-- is what makes ~55 transform resumes into all_cards' ~2GB affordable.
+			-- RETIRED 2026-09-17: all_cards re-compressed into independent gzip
+			-- members by the recode phase, so transform could resume at any raw
+			-- offset. all_cards is streamed from Scryfall now (openDumpStream) and
+			-- nothing writes here; the table stays so the run-start purge drains
+			-- what a pre-streaming run left behind.
 			CREATE TABLE IF NOT EXISTS stage_members (
 				kind TEXT NOT NULL, seq INTEGER NOT NULL,
 				raw_start INTEGER NOT NULL, raw_len INTEGER NOT NULL, bytes BLOB NOT NULL,
@@ -1141,7 +1154,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 					return this.stepFetch(phase.slice("fetch:".length) as DumpKind);
 				}
 				if (phase.startsWith("recode:")) {
-					return this.stepRecode(phase.slice("recode:".length) as DumpKind);
+					// Retired 2026-09-17: all_cards is streamed from Scryfall by the transform
+					// (STREAMED_KINDS), never staged, so there is nothing to recode. Only a run
+					// that was mid-recode when the deploy landed can be here.
+					throw new FatalImportError(
+						"the recode phase is retired (all_cards is streamed, not staged); the next scheduled import restarts cleanly",
+					);
 				}
 				throw new Error(`unknown phase ${phase}`);
 			}
@@ -1190,7 +1208,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					record.jsonl_download_uri,
 				);
 			}
-			this.metaSet("phase", `fetch:${kinds[0]}`);
+			this.metaSet("phase", firstFetchPhase());
 		});
 		console.log(`Import run listed ${kinds.length} dumps to fetch`);
 	}
@@ -1288,236 +1306,164 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private advanceFetch(kind: DumpKind): void {
-		// The chain lives in src/import-phases.ts: all_cards takes the recode
-		// detour, and the last dump hands the chain to the canonical id pass, which
-		// must complete before transform starts (every transformed row's
-		// is_canonical is membership in the set it builds; see stepCanonical).
-		const next = phaseAfterFetch(kind);
-		if (next.startsWith("recode:")) {
-			this.ctx.storage.transactionSync(() => {
-				// A checkpoint is a position in ONE compressed stream; a fresh
-				// fetch is a different stream, so any leftover row is poison.
-				this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
-				this.metaSet("recode_raw_done", "0");
-				this.metaSet("phase", next);
-			});
-			return;
-		}
-		this.metaSet("phase", next);
+		// The chain lives in src/import-phases.ts: the small dumps are fetched in
+		// order, and the last hands the chain to the canonical id pass, which must
+		// complete before transform starts (every transformed row's is_canonical is
+		// membership in the set it builds; see stepCanonical). all_cards and
+		// default_cards are not in the chain at all — they are streamed.
+		this.metaSet("phase", phaseAfterFetch(kind));
 	}
 
-	// ── phase: recode (all_cards → independent gzip members) ──────────────────
+	// ── streamed dumps (all_cards, default_cards: never staged) ────────────────
 
 	/**
-	 * Re-compress as many recode windows as one alarm's work budget affords
-	 * into independent MEMBER_RAW_BYTES-raw gzip members (stage_members rows),
-	 * routed down one of two paths:
+	 * Open a streamed dump (STREAMED_KINDS) at raw offset `rawOffset`, straight
+	 * from Scryfall.
 	 *
-	 * RESUMABLE (the normal path): the wasm gzip inflater (engine/inflate via
-	 * engine/wasm-import) whose serialized state persists per window in
-	 * recode_checkpoint, so an alarm continues decompressing EXACTLY where the
-	 * last one stopped — no prefix work at all, at any dump size, forever.
-	 * Taken when the staged stream is gzip and either the phase is at byte 0
-	 * (a fresh decoder) or a trustworthy checkpoint exists (version match,
-	 * raw_done match, and the wasm accepts the blob's own layout stamp).
+	 * The decoder is the wasm gzip inflater with its serialized state — the one
+	 * the recode phase checkpointed — restored from the dump's row in
+	 * recode_checkpoint (version STREAM_CHECKPOINT_VERSION) and positioned at the
+	 * EXACT compressed offset it had consumed, so one ranged request picks the
+	 * gzip stream up there. A checkpoint is a position in the ORIGINAL file, which
+	 * is what it always was: the staged blobs it used to be read from were that
+	 * file's bytes, cut into rows.
 	 *
-	 * FALLBACK (the 2026-08-28 budget path, kept verbatim): re-stream the
-	 * original stage_blobs gzip from seq 0 through DecompressionStream,
-	 * discard to `recode_raw_done`, then cut windows — prefix charged up
-	 * front, sound to ~2.9GiB raw. Taken when no trustworthy checkpoint
-	 * exists mid-phase (a deploy changed the state layout, a refused blob),
-	 * when the staged dump is not gzip at all, or after ANY resumable-path
-	 * error (`recode_engine_fallback`, cleared by metaClear at the next run):
-	 * the error path deletes the checkpoint, marks the flag, and lets the
-	 * alarm end with zero progress rather than running both paths against one
-	 * 30s CPU allowance.
+	 * Checkpoints sit on a STREAM_CHECKPOINT_GRID_RAW grid: the decoder reports
+	 * each grid line it reaches (InflateRecodeSource's onGrid, the one moment its
+	 * state describes exactly that offset), the stream keeps those snapshots in
+	 * memory, and the consumer persists the newest one at or before its line
+	 * cursor in the same transaction as the cursor (persistStreamCheckpoint). A
+	 * resume therefore re-inflates at most one grid step before its first line.
 	 *
-	 * Each window commits in its OWN transactionSync as it completes — never
-	 * hold two windows' members (~60–70MB compressed each) in memory at once.
-	 * Resumable mid-phase and mid-alarm: a window's raw_done checkpoint (and
-	 * on the resumable path the decoder state) commits in the same transaction
-	 * as its members, and a killed or retried alarm cannot duplicate members —
-	 * member seq is derived from raw_start, and each window's write deletes
-	 * seq >= its own start before inserting, so a re-run replaces exactly what
-	 * a dead alarm may have half-committed (nothing, given the transaction,
-	 * but the delete also covers a checkpoint rolled back under members that
-	 * landed).
-	 *
-	 * The final window deletes the original all_cards stage_blobs INSIDE its
-	 * own transaction — first of the progressive staging purges, and
-	 * load-bearing for the 5GB pool: dump-as-blobs (~392MB) plus
-	 * dump-as-members (~392MB) must not both persist for the rest of the run.
+	 * Upstream integrity: the download URI names one immutable file, and the
+	 * ETag seen on its first read is sent as If-Range on every later one. A 200
+	 * where a range was asked for, a 404 or a 410 mean the file this run started
+	 * on is gone — no staged copy exists to fall back on, so the run fails and
+	 * the next scheduled import starts over on the current file.
 	 */
-	private async stepRecode(kind: DumpKind): Promise<void> {
-		const rawDone = Number(this.metaGet("recode_raw_done") ?? 0);
-		// The budget's rates are measured numbers, and the resumable path's
-		// wasm-inflate rate is the soft one (a dev-machine ratio scaled to
-		// production — see RECODE_RESUMED_WINDOW_SECONDS_PER_GIB). If a rate
-		// is badly underestimated, an alarm overruns 30s and the runtime KILLS
-		// it — uncaught, so `retries` never moves, but phase_attempts (counted
-		// durably BEFORE each attempt) does. Halving the budget per kill turns
-		// "die identically forever" into "converge to windows that fit": the
-		// exact spiral the old recode died of nightly, closed structurally.
-		const attempts = (await this.ctx.storage.get<number>("phase_attempts")) ?? 1;
-		const budgetSeconds = Math.max(RECODE_ALARM_BUDGET_SECONDS / 2 ** Math.max(0, attempts - 1), 1);
-		if (this.metaGet("recode_engine_fallback") !== "1" && this.stagedIsGzip(kind)) {
-			const wasm = transientWasm();
-			const compOffset = this.restoreRecodeCheckpoint(kind, rawDone, wasm);
-			if (compOffset !== null) {
-				try {
-					await this.stepRecodeResumable(kind, rawDone, wasm, compOffset, budgetSeconds);
-					return;
-				} catch (err) {
-					// Fail toward the proven path. Windows committed before the
-					// error stand (idempotent grid); the checkpoint goes so no
-					// later alarm trusts a decoder this error may have poisoned,
-					// and the flag stops re-trying a path that just burned CPU —
-					// two paths against one 30s allowance is how retries die.
-					console.error(`Recode resumable path failed; phase continues on the from-byte-0 fallback: ${err}`);
-					this.ctx.storage.transactionSync(() => {
-						this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
-						this.metaSet("recode_engine_fallback", "1");
-					});
-					return;
-				}
-			}
-		}
-		await this.stepRecodeFallback(kind, rawDone, budgetSeconds);
-	}
-
-	/** The resumable-path alarm: `wasm` holds a decoder positioned at exactly
-	 * `rawDone` raw / `compOffset` compressed bytes. */
-	private async stepRecodeResumable(
-		kind: DumpKind,
-		rawDone: number,
-		wasm: ImportWasm,
-		compOffset: number,
-		budgetSeconds: number,
-	): Promise<void> {
-		const source = new InflateRecodeSource(
-			ImportCoordinator.resumableInflate(wasm),
-			this.stagedCompressedBytes(kind, compOffset),
-			rawDone,
-		);
-		const { windows, rawEnd, exhausted } = await recodeAlarm(
-			source.stream(),
-			rawDone,
-			(window) => {
-				this.ctx.storage.transactionSync(() => {
-					this.sqlRun(
-						"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
-						kind,
-						Math.floor(window.rawStart / MEMBER_RAW_BYTES),
-					);
-					for (const m of window.members) {
-						this.sqlRun(
-							"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
-							kind,
-							m.seq,
-							m.rawStart,
-							m.rawLen,
-							exactBuffer(m.bytes),
-						);
-					}
-					this.metaSet("recode_raw_done", String(window.rawEnd));
-					// The old checkpoint describes an offset this transaction
-					// obsoletes either way; only a state that provably sits at
-					// EXACTLY the committed offset replaces it.
-					this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
-					if (window.exhausted) {
-						// The original blobs (~390MB gzip) go in bounded slices on the
-						// next alarms, never in this commit: DeckGen sat wedged behind
-						// exactly this delete on 2026-09-16.
-						this.beginPurge("blobs", { table: "stage_blobs", kinds: [kind], next: phaseAfterStaged(kind) as Phase });
-					} else if (source.produced === window.rawEnd && wasm.inflateTotalOut() === window.rawEnd) {
-						this.sqlRun(
-							"INSERT INTO recode_checkpoint (kind, version, raw_done, state) VALUES (?, ?, ?, ?)",
-							kind,
-							RECODE_CHECKPOINT_VERSION,
-							window.rawEnd,
-							exactBuffer(wasm.inflateSave()),
-						);
-					} else {
-						// A decoder ahead of (or behind) the commit would make a
-						// LYING checkpoint — no checkpoint beats a wrong one; the
-						// next alarm pays the fallback prefix instead.
-						console.error(
-							`Recode checkpoint skipped: decoder at ${source.produced}/${wasm.inflateTotalOut()} raw ` +
-								`bytes, window committed at ${window.rawEnd}`,
-						);
-					}
-				});
-			},
-			{ resumed: true, gzipSecondsPerGib: RECODE_RESUMED_WINDOW_SECONDS_PER_GIB, budgetSeconds },
-		);
-		console.log(
-			`Recode alarm (resumable): ${kind} raw bytes ${rawDone}-${rawEnd} in ${windows} window(s)` +
-				`${exhausted ? " (done; original stage blobs dropped)" : ""}`,
-		);
-	}
-
-	/** The pre-checkpoint alarm shape, byte-identical output to the resumable
-	 * path (same raw stream, same member grid, same gzipBytes). */
-	private async stepRecodeFallback(kind: DumpKind, rawDone: number, budgetSeconds: number): Promise<void> {
-		const { windows, rawEnd, exhausted } = await recodeAlarm(
-			this.stagedBlobBytes(kind),
-			rawDone,
-			(window) => {
-				this.ctx.storage.transactionSync(() => {
-					this.sqlRun(
-						"DELETE FROM stage_members WHERE kind = ? AND seq >= ?",
-						kind,
-						Math.floor(window.rawStart / MEMBER_RAW_BYTES),
-					);
-					for (const m of window.members) {
-						this.sqlRun(
-							"INSERT INTO stage_members (kind, seq, raw_start, raw_len, bytes) VALUES (?, ?, ?, ?, ?)",
-							kind,
-							m.seq,
-							m.rawStart,
-							m.rawLen,
-							exactBuffer(m.bytes),
-						);
-					}
-					this.metaSet("recode_raw_done", String(window.rawEnd));
-					if (window.exhausted) {
-						this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
-						this.beginPurge("blobs", { table: "stage_blobs", kinds: [kind], next: phaseAfterStaged(kind) as Phase });
-					}
-				});
-			},
-			{ budgetSeconds },
-		);
-		console.log(
-			`Recode alarm: ${kind} raw bytes ${rawDone}-${rawEnd} in ${windows} window(s)` +
-				`${exhausted ? " (done; original stage blobs dropped)" : ""}`,
-		);
-	}
-
-	/**
-	 * Rebuild the wasm decoder for a resumable recode alarm. Returns the
-	 * compressed-byte offset to feed from — 0 for the fresh decoder that
-	 * bootstraps the phase — or null when nothing trustworthy exists and the
-	 * caller must take the fallback path: no row, a version stamp from other
-	 * code (the row's OR the state blob's own, checked inside the wasm), a
-	 * raw_done that does not match the live meta (a rolled-back transaction's
-	 * orphan — impossible while both write in one transaction, checked
-	 * anyway), or a decoder that restores to a different offset than the row
-	 * claims. A checkpoint is never "repaired": wrong is fallback.
-	 */
-	private restoreRecodeCheckpoint(kind: DumpKind, rawDone: number, wasm: ImportWasm): number | null {
-		if (rawDone === 0) {
-			wasm.inflateBegin();
-			return 0;
-		}
-		const row = this.sqlAll<{ version: number; raw_done: number; state: ArrayBuffer }>(
-			"SELECT version, raw_done, state FROM recode_checkpoint WHERE kind = ?",
+	private async openDumpStream(kind: DumpKind, rawOffset: number): Promise<DumpStream> {
+		const file = this.sqlAll<{ uri: string; etag: string | null }>(
+			"SELECT uri, etag FROM stage_files WHERE kind = ?",
 			kind,
 		)[0];
-		if (!row || Number(row.version) !== RECODE_CHECKPOINT_VERSION || Number(row.raw_done) !== rawDone) return null;
-		const compOffset = wasm.inflateRestore(new Uint8Array(row.state));
-		if (compOffset === null || wasm.inflateTotalOut() !== rawDone) return null;
-		return compOffset;
+		if (!file) throw new FatalImportError(`stage_files row missing for streamed dump ${kind}`);
+		const wasm = transientWasm();
+		let startRaw = 0;
+		let compOffset = 0;
+		const row =
+			rawOffset > 0
+				? this.sqlAll<{ version: number; raw_done: number; state: ArrayBuffer }>(
+						"SELECT version, raw_done, state FROM recode_checkpoint WHERE kind = ?",
+						kind,
+					)[0]
+				: undefined;
+		if (row && Number(row.version) === STREAM_CHECKPOINT_VERSION && Number(row.raw_done) <= rawOffset) {
+			const restored = wasm.inflateRestore(new Uint8Array(row.state));
+			if (restored === null || wasm.inflateTotalOut() !== Number(row.raw_done)) {
+				throw new FatalImportError(
+					`${kind}: the stream checkpoint at raw ${row.raw_done} did not restore; the next scheduled import restarts cleanly`,
+				);
+			}
+			startRaw = Number(row.raw_done);
+			compOffset = restored;
+		} else {
+			// No checkpoint yet: only legitimate before the stream's first grid line.
+			if (rawOffset >= STREAM_CHECKPOINT_GRID_RAW) {
+				throw new FatalImportError(
+					`${kind}: no stream checkpoint at or before raw offset ${rawOffset}; the next scheduled import restarts cleanly`,
+				);
+			}
+			wasm.inflateBegin();
+		}
+
+		const headers: Record<string, string> = {
+			"User-Agent": userAgent(),
+			// Ranges must address the file's own gzip bytes, not a transfer encoding.
+			"Accept-Encoding": "identity",
+			Range: `bytes=${compOffset}-`,
+		};
+		if (compOffset > 0 && file.etag) headers["If-Range"] = file.etag;
+		const res = await fetch(file.uri, { headers });
+		if (res.status === 404 || res.status === 410 || (compOffset > 0 && res.status === 200)) {
+			await res.body?.cancel();
+			throw new FatalImportError(
+				`${kind} changed or vanished upstream mid-phase (HTTP ${res.status} at compressed offset ${compOffset}); ` +
+					"the next scheduled import restarts on the current file",
+			);
+		}
+		if (res.status !== 206 && res.status !== 200) {
+			await res.body?.cancel();
+			throw new Error(`GET ${kind} at compressed offset ${compOffset} answered ${res.status}`);
+		}
+		const reader = res.body?.getReader();
+		if (!reader) throw new Error(`GET ${kind}: no body`);
+		if (compOffset === 0) {
+			const etag = res.headers.get("etag");
+			if (etag) this.sqlRun("UPDATE stage_files SET etag = ? WHERE kind = ?", etag, kind);
+		}
+
+		let checkedMagic = compOffset > 0;
+		const rows: AsyncIterator<Uint8Array> = {
+			next: async () => {
+				const { done, value } = await reader.read();
+				if (done) return { done: true, value: undefined };
+				if (!checkedMagic && value.length >= 2) {
+					checkedMagic = true;
+					if (value[0] !== 0x1f || value[1] !== 0x8b) {
+						throw new FatalImportError(`${kind} is not a gzip file at ${file.uri}; the dump format changed`);
+					}
+				}
+				return { done: false, value };
+			},
+		};
+		const snapshots: StreamCheckpoint[] = [];
+		const source = new InflateRecodeSource(
+			ImportCoordinator.resumableInflate(wasm),
+			rows,
+			startRaw,
+			STREAM_CHECKPOINT_GRID_RAW,
+			(produced) => {
+				if (wasm.inflateTotalOut() !== produced) return; // a lying checkpoint is worse than none
+				snapshots.push({ raw: produced, state: wasm.inflateSave() });
+				if (snapshots.length > 32) snapshots.shift();
+			},
+		);
+		return {
+			bytes: skipBytes(source.stream(), rawOffset - startRaw),
+			checkpointAtOrBefore: (raw) => {
+				for (let i = snapshots.length - 1; i >= 0; i--) {
+					const snap = snapshots[i] as StreamCheckpoint;
+					if (snap.raw <= raw) return snap;
+				}
+				return null;
+			},
+			close: async () => {
+				await reader.cancel().catch(() => {});
+			},
+		};
+	}
+
+	/**
+	 * Persist the stream's position alongside the consumer's line cursor — call
+	 * inside the SAME transaction that writes the cursor. The newest snapshot at
+	 * or before the cursor replaces the row; none newer keeps the existing row,
+	 * which is still at or before the (only ever advancing) cursor. A finished
+	 * stream drops its row.
+	 */
+	private persistStreamCheckpoint(kind: DumpKind, stream: DumpStream, cursor: number, exhausted: boolean): void {
+		if (exhausted) {
+			this.sqlRun("DELETE FROM recode_checkpoint WHERE kind = ?", kind);
+			return;
+		}
+		const snap = stream.checkpointAtOrBefore(cursor);
+		if (!snap) return;
+		this.sqlRun(
+			"INSERT OR REPLACE INTO recode_checkpoint (kind, version, raw_done, state) VALUES (?, ?, ?, ?)",
+			kind,
+			STREAM_CHECKPOINT_VERSION,
+			snap.raw,
+			exactBuffer(snap.state),
+		);
 	}
 
 	/** The wasm module's resumable-inflate surface, shaped for InflateRecodeSource. */
@@ -1542,50 +1488,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		};
 	}
 
-	/** True when a staged dump's bytes carry the gzip magic — the resumable
-	 * path only speaks gzip; anything else keeps the sniffing blob path. */
-	private stagedIsGzip(kind: DumpKind): boolean {
-		const head = this.sqlAll<{ head: ArrayBuffer }>(
-			"SELECT substr(bytes, 1, 2) AS head FROM stage_blobs WHERE kind = ? AND seq = 0",
-			kind,
-		)[0];
-		if (!head) return false;
-		const bytes = new Uint8Array(head.head as ArrayBuffer);
-		return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
-	}
-
-	/**
-	 * A staged dump's COMPRESSED bytes from `fromByte` onward — the resumable
-	 * inflater's input. Row lengths are read first (no blob transfer) so the
-	 * skipped prefix is never hauled through memory; only the rows actually
-	 * fed are fetched whole.
-	 */
-	private async *stagedCompressedBytes(kind: DumpKind, fromByte: number): AsyncGenerator<Uint8Array> {
-		const sizes = this.sqlAll<{ seq: number; len: number }>(
-			"SELECT seq, LENGTH(bytes) AS len FROM stage_blobs WHERE kind = ? ORDER BY seq",
-			kind,
-		);
-		let skip = fromByte;
-		for (const { seq, len } of sizes) {
-			if (skip >= Number(len)) {
-				skip -= Number(len);
-				continue;
-			}
-			const row = this.sqlAll<{ bytes: ArrayBuffer }>(
-				"SELECT bytes FROM stage_blobs WHERE kind = ? AND seq = ?",
-				kind,
-				seq,
-			)[0];
-			if (!row) throw new Error(`recode: stage blob ${kind}#${seq} vanished mid-stream`);
-			const bytes = new Uint8Array(row.bytes as ArrayBuffer);
-			yield skip > 0 ? bytes.subarray(skip) : bytes;
-			skip = 0;
-		}
-	}
-
 	/** Stream a staged dump's RAW stage_blobs rows, decompressed. Detects gzip
-	 * by magic. The pre-recode view: one long stream, decodable only from the
-	 * top — stepRecode's input, and the fallback for kinds never recoded. */
+	 * by magic. One long stream, decodable only from the top — fine for the
+	 * small fetched dumps, which are all that is staged. */
 	private async *stagedBlobBytes(kind: DumpKind): AsyncGenerator<Uint8Array> {
 		let seq = 0;
 		const raw = new ReadableStream<Uint8Array>({
@@ -1619,39 +1524,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
-	 * Stream a staged dump's decompressed bytes from `fromRawOffset` onward.
-	 *
-	 * Recoded kinds (rows in stage_members) seek: binary-search the members on
-	 * raw_start — the (kind, seq) primary key walks them in raw order, so the
-	 * DESC LIMIT 1 below IS that search — start decompressing at the containing
-	 * member, and skip the offset's remainder inside it. Cost of a resume: one
-	 * ~8MB member, however deep the offset.
-	 *
-	 * Non-recoded kinds keep the original behavior — the whole-stream blob view
-	 * with its gzip-magic sniffing — and honor the offset by linear discard,
-	 * which is the cost profile those dumps are small enough to tolerate.
+	 * Stream a staged dump's decompressed bytes from `fromRawOffset` onward — the
+	 * small fetched dumps (tags, labels, rulings), honouring the offset by linear
+	 * discard, the cost profile they are small enough to tolerate. The large ones
+	 * are never staged; see openDumpStream.
 	 */
 	private async *stagedBytes(kind: DumpKind, fromRawOffset = 0): AsyncGenerator<Uint8Array> {
-		const start = this.sqlAll<{ seq: number; raw_start: number }>(
-			"SELECT seq, raw_start FROM stage_members WHERE kind = ? AND raw_start <= ? ORDER BY seq DESC LIMIT 1",
-			kind,
-			fromRawOffset,
-		)[0];
-		if (start) {
-			yield* memberBytes(
-				(seq) => {
-					const row = this.sqlAll<{ bytes: ArrayBuffer }>(
-						"SELECT bytes FROM stage_members WHERE kind = ? AND seq = ?",
-						kind,
-						seq,
-					)[0];
-					return row ? new Uint8Array(row.bytes as ArrayBuffer) : null;
-				},
-				Number(start.seq),
-				fromRawOffset - Number(start.raw_start),
-			);
-			return;
-		}
 		yield* skipBytes(this.stagedBlobBytes(kind), fromRawOffset);
 	}
 
@@ -1714,14 +1592,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 			lineBufs = [];
 			lineBytes = 0;
 		};
-		const result = await scanJsonlSlice(this.stagedBytes("default_cards", rawDone), (line) => {
+		const stream = await this.openDumpStream("default_cards", rawDone);
+		const result = await scanJsonlSlice(stream.bytes, (line) => {
 			if (line.length === 0 || isBlankLine(line)) return false;
 			lineBufs.push(line.slice());
 			lineBytes += line.length;
 			fed += 1;
 			if (lineBufs.length >= LINES_PER_CALL) feed();
 			return fed >= CANONICAL_SLICE_LINES;
-		});
+		}).finally(() => stream.close());
 		feed();
 
 		const tagBlobs: Uint8Array[] = [];
@@ -1732,6 +1611,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			this.writeTagSnapshot(tagBlobs);
 			this.metaSet("canonical_raw_done", String(rawDone + result.consumed));
+			this.persistStreamCheckpoint("default_cards", stream, rawDone + result.consumed, result.exhausted);
 			const lines = Number(this.metaGet("canonical_lines") ?? 0) + fed;
 			const ids = Number(this.metaGet("canonical_ids") ?? 0) + Number(added);
 			this.metaSet("canonical_lines", String(lines));
@@ -1746,26 +1626,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 						`canonical ids ${ids} from ${lines} default_cards lines, below ${PARSE_COVERAGE_THRESHOLD}; format changed?`,
 					);
 				}
-				// Progressive staging purge (plan B1): this phase is default_cards'
-				// ONLY consumer — the transform reads all_cards — and everything the
-				// set feeds is in the snapshot just written. Armed in the same
-				// transaction as the phase's end, so the run either still owns the
-				// dump or has committed to dropping it, never neither; the deletes
-				// themselves run in bounded slices on the next alarms.
-				this.beginPurge("blobs", { table: "stage_blobs", kinds: ["default_cards"], next: "transform" });
+				// default_cards was streamed, never staged: nothing to drop.
+				this.metaSet("phase", "transform");
 			}
 		});
-		console.log(
-			`Canonical slice: ${fed} lines, ${added} new ids` +
-				`${result.exhausted ? " (done; default_cards staged blobs dropped)" : ""}`,
-		);
+		console.log(`Canonical slice: ${fed} lines, ${added} new ids` + `${result.exhausted ? " (done)" : ""}`);
 	}
 
 	// ── phase: transform ───────────────────────────────────────────────────────
 
 	private async stepTransform(): Promise<void> {
-		// The corpus is all_cards — every printing in every language, recoded into
-		// seekable gzip members by the phase before last.
+		// The corpus is all_cards — every printing in every language — streamed
+		// straight from Scryfall from the checkpointed decoder (openDumpStream).
 		const corpus = TRANSFORM_KIND;
 		// Disposable instance per slice: transform keeps no cross-slice state of
 		// its own, and reusing a heap across phases would carry its high-water
@@ -1785,8 +1657,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 		const linesDone = Number(this.metaGet("lines_done") ?? 0);
 		// The raw-offset cursor pairs with lines_done: it names the byte at which
-		// line `lines_done` starts, so a resume seeks stagedBytes O(1) into the
-		// recoded members instead of newline-scanning a ~2GB prefix.
+		// line `lines_done` starts; the stream resumes from the newest decoder
+		// checkpoint at or before it, re-inflating at most one grid step.
 		const rawOffset = Number(this.metaGet("transform_raw_offset") ?? 0);
 		const draftBuf: Uint8Array[] = [];
 		const hashBuf: bigint[] = [];
@@ -1815,14 +1687,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 			lineBufs = [];
 			lineBytes = 0;
 		};
-		const result = await scanJsonlSlice(this.stagedBytes(corpus, rawOffset), (line) => {
+		const stream = await this.openDumpStream(corpus, rawOffset);
+		const result = await scanJsonlSlice(stream.bytes, (line) => {
 			if (line.length === 0 || isBlankLine(line)) return false;
 			lineBufs.push(line.slice());
 			lineBytes += line.length;
 			if (lineBufs.length >= LINES_PER_CALL) feed();
 			processed += 1;
 			return processed >= TRANSFORM_SLICE_LINES;
-		});
+		}).finally(() => stream.close());
 		feed();
 		wasm.setHandlers({});
 		const exhausted = result.exhausted;
@@ -1861,6 +1734,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.storePendingDrafts(tail, allHashes.slice(at, at + tail.length));
 			this.metaSet("lines_done", String(seen));
 			this.metaSet("transform_raw_offset", String(rawOffset + result.consumed));
+			this.persistStreamCheckpoint(corpus, stream, rawOffset + result.consumed, exhausted);
 			for (const [k, v] of Object.entries(stats)) {
 				this.metaSet(`tf_${k}`, String(Number(this.metaGet(`tf_${k}`) ?? 0) + v));
 			}
@@ -1875,14 +1749,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 					);
 				}
 				this.metaSet("drafts_total", this.metaGet("tf_drafts") ?? "0");
-				// Progressive staging purge: the transform's corpus exists to feed
-				// it, and no later phase reads it — everything downstream works
-				// from draft_batches. Armed in the SAME transaction that ends the
-				// phase, so the run either still owns its input or has committed to
-				// dropping it, never neither; the ~400MB of RECODED members go in
-				// bounded slices on the next alarms (all_cards' original blobs went
-				// the same way at the end of the recode phase).
-				this.beginPurge("blobs", { table: "stage_members", kinds: [corpus], next: "tags" });
+				// all_cards was streamed, never staged: nothing to drop.
+				this.metaSet("phase", "tags");
 			}
 		});
 	}
@@ -3683,8 +3551,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 *
 	 * Idempotent under a lost commit: the next attempt plans from the same head
 	 * and cuts at the same key. `LENGTH(bytes)` reads the cell header, not the
-	 * overflow pages, so the planning read is cheap (the pattern stepRecode's
-	 * member scan already relies on).
+	 * overflow pages, so the planning read is cheap.
 	 */
 	private purgeSlice(
 		t: PurgeTable,

@@ -3,31 +3,38 @@
 // This suite used to pin a fork: two dump lists and two chains selected by an
 // env var, with the expensive failure being a run that switched halfway and
 // published a chimera. The fork is deleted, so what is left to pin is that the
-// single chain still reaches every phase in the right order — the recode detour
-// sits directly after the all_cards fetch, every fetched dump is handed on, and
-// the chain terminates at `canonical` rather than escaping into a phase name
-// nothing routes.
+// single chain still reaches every phase in the right order — every fetched dump
+// is handed on, the streamed dumps (all_cards, default_cards) are never fetched
+// at all, and the chain terminates at `canonical` rather than escaping into a
+// phase name nothing routes.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DUMP_KINDS, type DumpKind, phaseAfterFetch, phaseAfterStaged, TRANSFORM_KIND } from "../../src/import-phases";
+import {
+	DUMP_KINDS,
+	type DumpKind,
+	FETCHED_KINDS,
+	firstFetchPhase,
+	phaseAfterFetch,
+	phaseAfterStaged,
+	STREAMED_KINDS,
+	TRANSFORM_KIND,
+} from "../../src/import-phases";
 import { MIN_PARTITION_COUNT, partitionCountFor } from "../../src/import-publish";
 
 /** Walk the chain from the first fetch to the canonical phase, exactly as
- * advanceFetch/stepRecode drive it: fetch → (recode →) fetch → … → canonical. */
+ * listing and advanceFetch drive it: fetch → fetch → … → canonical. */
 function walkChain(): string[] {
 	const phases: string[] = [];
-	let phase: string = `fetch:${DUMP_KINDS[0]}`;
+	let phase: string = firstFetchPhase();
 	// A chain that failed to terminate would otherwise hang the suite rather than
-	// fail it; the bound is generous against the six dumps plus one recode.
+	// fail it; the bound is generous against the six dumps.
 	for (let step = 0; phase !== "canonical"; step++) {
 		if (step > DUMP_KINDS.length * 2) throw new Error(`chain did not reach canonical, stuck at ${phase}`);
 		phases.push(phase);
 		if (phase.startsWith("fetch:")) {
 			phase = phaseAfterFetch(phase.slice("fetch:".length) as DumpKind);
-		} else if (phase.startsWith("recode:")) {
-			phase = phaseAfterStaged(phase.slice("recode:".length) as DumpKind);
 		} else {
 			throw new Error(`chain escaped into ${phase}`);
 		}
@@ -37,34 +44,26 @@ function walkChain(): string[] {
 }
 
 describe("the phase chain", () => {
-	test("walks every dump in order, recode straight after the all_cards fetch", () => {
+	test("fetches only the small dumps, in order, straight into canonical — no recode detour", () => {
 		expect(walkChain()).toEqual([
-			"fetch:all_cards",
-			"recode:all_cards",
-			"fetch:default_cards",
 			"fetch:oracle_tags",
 			"fetch:art_tags",
 			"fetch:oracle_cards",
 			"fetch:rulings",
 			"canonical",
 		]);
+		for (const kind of DUMP_KINDS) expect(phaseAfterFetch(kind).startsWith("recode:")).toBe(false);
 	});
 
-	test("all_cards is fetched FIRST and is the transform corpus", () => {
-		// Largest download, earliest failure — and the dump every draft comes from,
-		// so a list that led with anything else would spend the cheap dumps first
-		// and discover a rotated all_cards last.
-		expect(DUMP_KINDS[0]).toBe("all_cards");
+	test("the two big dumps are streamed, never fetched: the transform corpus and the canonical set's source", () => {
+		// ~392MB of all_cards (plus ~400MB of it recoded) and ~78MB of default_cards
+		// used to be written into Durable Object storage and deleted again; the
+		// phases that read them now stream them from Scryfall (openDumpStream).
+		expect([...STREAMED_KINDS].sort()).toEqual(["all_cards", "default_cards"]);
+		expect(STREAMED_KINDS).toContain(TRANSFORM_KIND);
 		expect(TRANSFORM_KIND).toBe("all_cards");
-		expect(DUMP_KINDS).toContain(TRANSFORM_KIND);
-	});
-
-	test("only all_cards takes the recode detour", () => {
-		// Recoding is ~8 slices of re-streaming; it exists for the ~392MB dump whose
-		// resumes would otherwise be quadratic, not for the small ones.
-		for (const kind of DUMP_KINDS) {
-			expect(phaseAfterFetch(kind).startsWith("recode:")).toBe(kind === "all_cards");
-		}
+		for (const kind of STREAMED_KINDS) expect(FETCHED_KINDS).not.toContain(kind);
+		expect([...FETCHED_KINDS, ...STREAMED_KINDS].sort()).toEqual([...DUMP_KINDS].sort());
 	});
 
 	test("the canonical phase is reached before transform, always", () => {
@@ -74,7 +73,7 @@ describe("the phase chain", () => {
 		// into its foreign annex. An empty set would annex EVERY row and build a
 		// store whose default searches return nothing.
 		expect(walkChain().at(-1)).toBe("canonical");
-		expect(phaseAfterStaged(DUMP_KINDS[DUMP_KINDS.length - 1] as DumpKind)).toBe("canonical");
+		expect(phaseAfterStaged(FETCHED_KINDS[FETCHED_KINDS.length - 1] as DumpKind)).toBe("canonical");
 	});
 });
 
@@ -126,6 +125,13 @@ describe("the coordinator runs one pipeline", () => {
 describe("the coordinator never deletes staging in one commit", () => {
 	const src = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
 
+	test("the big dumps are streamed, never staged: no recode phase, no member staging", () => {
+		expect(src).toContain("openDumpStream(corpus, rawOffset)");
+		expect(src).toContain('openDumpStream("default_cards", rawDone)');
+		expect(src).not.toContain("INSERT INTO stage_members");
+		expect(src).not.toContain("stepRecode");
+	});
+
 	test("the purge is its own sliced phase, and the manifest write follows it", () => {
 		expect(src).toContain('case "purge_staging":');
 		expect(src).toContain('case "manifest":');
@@ -154,8 +160,8 @@ describe("the coordinator never deletes staging in one commit", () => {
 		expect(src).toContain('beginPurge("partition")');
 		expect(src).toContain('beginPurge("rewind")');
 		expect(src).toContain('beginPurge("reset")');
-		// recode (resumable and fallback), canonical, transform, tags.
-		expect(src.match(/beginPurge\("blobs"/g)?.length ?? 0).toBe(5);
+		// Only the tags boundary stages dumps any more; all_cards and default_cards are streamed.
+		expect(src.match(/beginPurge\("blobs"/g)?.length ?? 0).toBe(1);
 	});
 
 	test("the alarm watches itself: one abort, and a timer that is always cleared", () => {

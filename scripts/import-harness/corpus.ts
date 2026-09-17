@@ -9,13 +9,13 @@
 // The other five dumps are derived from it, because memprobe emits only the
 // bulk file and a tag map in its own shape:
 //
-//   all_cards      the bulk file, GZIPPED. Gzip on purpose: it is the only kind
-//                  the coordinator recodes, and the resumable wasm inflater
-//                  (engine/inflate, the checkpoint path) only runs when the
-//                  staged bytes carry the gzip magic. A plain fixture would
-//                  quietly take the from-byte-0 fallback and leave the newest,
-//                  least-proven code in the pipeline untested.
-//   default_cards  `{"id": …}` for every ENGLISH line — the canonical rule the
+//   all_cards      the bulk file, GZIPPED — as Scryfall serves every dump
+//                  (`*.jsonl.gz`). The streamed kinds require it: the phases
+//                  that read all_cards and default_cards stream them straight
+//                  from the server through the checkpointed wasm inflater
+//                  (engine/inflate) and refuse a file without the gzip magic.
+//   default_cards  GZIPPED for the same reason, and streamed the same way:
+//                  `{"id": …}` for every ENGLISH line — the canonical rule the
 //                  generator itself documents (memprobe cmd_rows: lang == "en"
 //                  is canonical, coinciding by construction with production's
 //                  id-membership rule). canonical_add_lines reads nothing else.
@@ -198,10 +198,9 @@ export async function buildCorpus(printings: number, cacheRoot: string): Promise
 
 	const encoder = new TextEncoder();
 	const dumps: Record<string, Uint8Array> = {
-		// GZIPPED: see the header note — this is the only kind that reaches the
-		// recode phase and the resumable inflater.
+		// GZIPPED, both streamed kinds: see the header note.
 		all_cards: Bun.gzipSync(encoder.encode(derived.all_cards) as Uint8Array<ArrayBuffer>),
-		default_cards: encoder.encode(derived.default_cards),
+		default_cards: Bun.gzipSync(encoder.encode(derived.default_cards) as Uint8Array<ArrayBuffer>),
 		oracle_tags: encoder.encode(derived.oracle_tags),
 		art_tags: encoder.encode(derived.art_tags),
 		oracle_cards: encoder.encode(derived.oracle_cards),
