@@ -138,6 +138,7 @@ import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types"
 import {
 	AGG_FETCH_BATCHES,
 	AGG_SLICE_BATCHES,
+	adjustPace,
 	advanceMeters,
 	BUCKET_FETCH_BATCHES,
 	BUCKET_SLICE_BATCHES,
@@ -145,13 +146,16 @@ import {
 	EMPTY_RUN_METERS,
 	FINALIZE_FETCH_BATCHES,
 	FINALIZE_SLICE_BATCHES,
+	LATE_ALARM_MS,
 	MAX_DAY_ROWS_READ,
 	MAX_DAY_ROWS_WRITTEN,
 	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
+	PACE_START_BPS,
 	PURGE_SLICE_BYTES,
 	PURGE_SLICE_MAX_ROWS,
+	paceDelayMs,
 	parseMeters,
 	projectedGbSeconds,
 	REORDER_SLICE_ROWS,
@@ -456,6 +460,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// resets on eviction would bound nothing.
 	private rowsRead = 0;
 	private rowsWritten = 0;
+	/** Blob bytes this alarm wrote to or deleted from storage, for pacing the next one. */
+	private churnThisAlarm = 0;
+	/** Churn not yet banked into run_meters (flushMeters can run more than once per alarm). */
+	private churnUnbanked = 0;
+	/** The pace and due time flushMeters persists for the alarm that arrives next. */
+	private paceBps = 0;
+	private nextDueMs = 0;
+	private lateThisAlarm = false;
 	/** When the running alarm started, or last banked its time (flushMeters advances it). */
 	private alarmStartedAt = 0;
 	/** Whether the running alarm has been counted into the ledger yet (flushMeters runs more than once per alarm). */
@@ -504,6 +516,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const cursor = this.ctx.storage.sql.exec(query, ...bindings);
 		this.rowsRead += cursor.rowsRead;
 		this.rowsWritten += cursor.rowsWritten;
+		// Blob bytes written are the pacing input (see PACE_START_BPS); deletes
+		// report their bytes where they know them (noteChurn).
+		let blobBytes = 0;
+		for (const b of bindings) {
+			if (b instanceof ArrayBuffer) blobBytes += b.byteLength;
+			else if (ArrayBuffer.isView(b)) blobBytes += b.byteLength;
+		}
+		if (blobBytes > 0) this.noteChurn(blobBytes);
+	}
+
+	/** Count bytes written to or deleted from storage toward this alarm's pacing and the run's meter. */
+	private noteChurn(bytes: number): void {
+		if (bytes <= 0) return;
+		this.churnThisAlarm += bytes;
+		this.churnUnbanked += bytes;
+	}
+
+	/** The blob bytes a delete is about to free, for tables where no caller already knows them. */
+	private blobBytesIn(where: string, ...bindings: unknown[]): number {
+		return Number(
+			this.sqlAll<{ n: number }>(`SELECT COALESCE(SUM(LENGTH(bytes)), 0) AS n FROM ${where}`, ...bindings)[0]?.n ?? 0,
+		);
 	}
 
 	/**
@@ -714,6 +748,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const started = Date.now();
 		this.alarmStartedAt = started;
 		this.alarmCounted = false;
+		this.churnThisAlarm = 0;
+		this.nextDueMs = 0;
+		this.lateThisAlarm = false;
 		const limit = ALARM_WATCHDOG_MS_BY_PHASE[phase] ?? ALARM_WATCHDOG_MS;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const watchdog = new Promise<never>((_, reject) => {
@@ -763,6 +800,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// import rather than one instance's share of it.
 		const day = ImportCoordinator.dayKey();
 		const meters = parseMeters(this.metaGet("run_meters")) ?? EMPTY_RUN_METERS;
+		// How late did this alarm arrive? A late alarm means storage fell behind
+		// the churn the chain was pacing to; the pace halves (adjustPace).
+		const lagMs = meters.due_ms > 0 ? Math.max(0, this.alarmStartedAt - meters.due_ms) : 0;
+		this.lateThisAlarm = lagMs > LATE_ALARM_MS;
+		this.paceBps = meters.pace_bps || PACE_START_BPS;
+		if (this.lateThisAlarm) {
+			const halved = adjustPace(this.paceBps, lagMs, 0);
+			console.warn(
+				`Import alarm for phase ${phase} arrived ${Math.round(lagMs / 1000)}s late — storage fell behind; ` +
+					`pace ${(this.paceBps / 1048576).toFixed(2)} → ${(halved / 1048576).toFixed(2)} MB/s`,
+			);
+			this.paceBps = halved;
+		}
 		const spentRead = meters.rows_read;
 		const spentWritten = meters.rows_written;
 		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0);
@@ -832,7 +882,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// instead of a slice, carrying a timestamp it could not run before,
 			// because it had to outlast readers noticing the publish on their own.
 			// `notify` tells them instead, so there is nothing left to wait out.
-			if (next !== "idle") await this.ctx.storage.setAlarm(Date.now());
+			//
+			// Except the storage itself (PACE_START_BPS): an alarm that churned
+			// tens of MB schedules the next one no sooner than the pace allows,
+			// so bursts never pile up faster than storage confirms them.
+			if (next !== "idle") {
+				if (!this.lateThisAlarm) this.paceBps = adjustPace(this.paceBps, 0, this.churnThisAlarm);
+				const now = Date.now();
+				const delay = paceDelayMs(this.churnThisAlarm, now - this.alarmStartedAt, this.paceBps);
+				this.nextDueMs = now + delay;
+				if (delay >= 5_000) {
+					console.log(
+						`Import pacing: ${phase} churned ${(this.churnThisAlarm / 1048576).toFixed(1)}MB; ` +
+							`next alarm in ${Math.round(delay / 1000)}s at ${(this.paceBps / 1048576).toFixed(2)} MB/s`,
+					);
+				}
+				await this.ctx.storage.setAlarm(this.nextDueMs);
+			}
 		} catch (err) {
 			if (err instanceof FatalImportError) {
 				console.error(`Import stopped in phase ${phase}: ${err.message}`);
@@ -863,7 +929,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				if (phase === "agg" || phase === "finalize" || phase === "reorder" || phase === "build") {
 					this.metaSet("tags_nonce", "dirty");
 				}
-				await this.ctx.storage.setAlarm(Date.now() + backoffMs);
+				this.nextDueMs = Date.now() + backoffMs;
+				await this.ctx.storage.setAlarm(this.nextDueMs);
 				return;
 			}
 			console.error(`Import failed in phase ${phase}:`, err);
@@ -961,9 +1028,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 			rowsWritten: this.rowsWritten,
 			elapsedMs: elapsed,
 			newAlarm: !this.alarmCounted,
+			churnBytes: this.churnUnbanked,
 		});
+		// Pacing state rides the same row, so it costs no extra write. The due
+		// time is only known once the next alarm is scheduled (the final flush).
+		if (this.paceBps > 0) meters.pace_bps = this.paceBps;
+		if (this.nextDueMs > 0) meters.due_ms = this.nextDueMs;
+		if (this.lateThisAlarm && !this.alarmCounted) meters.late_alarms += 1;
 		this.rowsRead = 0;
 		this.rowsWritten = 0;
+		this.churnUnbanked = 0;
 		// A second flush in the same alarm (prechargeReads) banks only what
 		// elapsed since the first, and counts no second alarm.
 		if (this.alarmStartedAt > 0) this.alarmStartedAt = now;
@@ -2109,6 +2183,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			// Dropped either way: the keys have done their job, and ~60MB of staging against a
 			// shared 5GB pool is not worth keeping for a retry of an optional artifact.
+			this.noteChurn(this.blobBytesIn("routing_keys"));
 			this.sqlRun("DELETE FROM routing_keys");
 			this.metaSet("bucket_batch_done", "0");
 			this.metaSet("phase", "bucket");
@@ -2175,6 +2250,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			groups += 1;
 		};
 		let fed = 0;
+		let sourceBytes = 0;
 		while (fed < BUCKET_SLICE_BATCHES) {
 			const want = Math.min(BUCKET_FETCH_BATCHES, BUCKET_SLICE_BATCHES - fed);
 			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
@@ -2189,6 +2265,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 							"the next scheduled import restarts cleanly",
 					);
 				}
+				// Deleted at the end of this slice: churn, like the groups it becomes.
+				sourceBytes += row.bytes.byteLength + row.part_hashes.byteLength;
 				const byPartition = bucketDrafts(
 					{ bytes: new Uint8Array(row.bytes), partHashes: new Uint8Array(row.part_hashes) },
 					n,
@@ -2214,6 +2292,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// holds the drafts twice for longer than one slice and a retry re-reads exactly what
 			// it re-writes.
 			this.sqlRun("DELETE FROM draft_batches WHERE seq >= ? AND seq < ?", done, done + fed);
+			this.noteChurn(sourceBytes);
 			this.metaSet("bucket_batch_done", String(done + fed));
 			if (exhausted) {
 				this.metaSet("phase", "agg");
@@ -2280,6 +2359,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/** Replace the TagData snapshot (caller supplies the surrounding transaction). */
 	private writeTagSnapshot(blobs: Uint8Array[]): void {
+		this.noteChurn(this.blobBytesIn("tagdata_blobs"));
 		this.sqlRun("DELETE FROM tagdata_blobs");
 		let seq = -1;
 		for (const blob of blobs) {
@@ -2676,6 +2756,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.rowsRead += cursor.rowsRead;
 			this.rowsWritten += cursor.rowsWritten;
 			if (cursor.rowsWritten > 0) {
+				this.noteChurn(cursor.rowsWritten * STAGE_BLOB_BYTES);
 				console.log(`Build: cleared ${cursor.rowsWritten} stale chunk_staging row(s) in ${Date.now() - cleared}ms`);
 			}
 		}
@@ -3617,6 +3698,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		const plan = planPurgeSlice(head, budgetBytes);
 		if (!plan) return null;
+		this.noteChurn(plan.bytes);
 		this.ctx.storage.transactionSync(() => {
 			this.sqlRun(`DELETE FROM ${t.table}${where ? `${where} AND` : " WHERE"} ${t.key} <= ?`, ...scopeArgs, plan.upTo);
 		});

@@ -40,11 +40,11 @@ describe("planPurgeSlice", () => {
 });
 
 describe("the slice budget", () => {
-	test("sits well under the one commit size production has proven: the bucket phase's", () => {
-		// stepBucket deletes 64 x ~1.9MB draft batches (~120MB) in one transaction
-		// on every slice of every run and gets through; the ~300MB completion
-		// delete did not. 32MB is under a third of the proven commit.
-		expect(PURGE_SLICE_BYTES * 3).toBeLessThan(BUCKET_SLICE_BATCHES * ROW);
+	test("churns no more in one alarm than a bucket slice does, the other big burst the pacing spreads", () => {
+		// A bucket slice writes its batches' worth of partition groups and deletes
+		// the source batches: ~2 x 16 x 1.9MB. A purge slice only deletes, and at
+		// most PURGE_SLICE_BYTES. Both are paced to storage afterwards (PACE_START_BPS).
+		expect(PURGE_SLICE_BYTES).toBeLessThanOrEqual(2 * BUCKET_SLICE_BATCHES * ROW);
 	});
 
 	test("a full planning read still covers a slice of the smallest staged rows", () => {

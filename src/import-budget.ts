@@ -100,7 +100,13 @@ export const MAX_DAY_ROWS_WRITTEN = 60_000;
  * per group it produces and one per source batch it deletes — once — so the
  * slice size only decides how many alarms that once costs.
  */
-export const BUCKET_SLICE_BATCHES = 64;
+/**
+ * LOWERED 64 → 16 on 2026-09-16: a 64-batch slice writes ~96MB of partition
+ * groups AND deletes ~96MB of source batches in one alarm, a ~190MB burst —
+ * the size of burst that left Durable Object storage hours behind (see
+ * PACE_START_BPS). At 16 the burst is ~48MB and the pacing spreads the rest.
+ */
+export const BUCKET_SLICE_BATCHES = 16;
 export const BUCKET_FETCH_BATCHES = 8;
 
 /**
@@ -273,20 +279,40 @@ export interface RunMeters {
 	alarms: number;
 	/** Wall milliseconds this run's alarms have been active, summed. */
 	active_ms: number;
+	/** Blob bytes this run has written to and deleted from Durable Object storage (the pacing input). */
+	churn_bytes: number;
+	/** When the next alarm was asked for (epoch ms), so the alarm that arrives can measure how late it is. 0 = unknown. */
+	due_ms: number;
+	/** The storage churn rate the run is currently paced to, bytes per second. 0 = not yet set (PACE_START_BPS). */
+	pace_bps: number;
+	/** Alarms that arrived more than LATE_ALARM_MS after they were due. */
+	late_alarms: number;
 }
 
-export const EMPTY_RUN_METERS: RunMeters = { rows_read: 0, rows_written: 0, alarms: 0, active_ms: 0 };
+export const EMPTY_RUN_METERS: RunMeters = {
+	rows_read: 0,
+	rows_written: 0,
+	alarms: 0,
+	active_ms: 0,
+	churn_bytes: 0,
+	due_ms: 0,
+	pace_bps: 0,
+	late_alarms: 0,
+};
 
 /** Bank one flush; `newAlarm` counts the alarm once per alarm, not per flush. */
 export function advanceMeters(
 	prev: RunMeters | null,
-	delta: { rowsRead: number; rowsWritten: number; elapsedMs: number; newAlarm: boolean },
+	delta: { rowsRead: number; rowsWritten: number; elapsedMs: number; newAlarm: boolean; churnBytes?: number },
 ): RunMeters {
 	return {
+		...EMPTY_RUN_METERS,
+		...(prev ?? {}),
 		rows_read: (prev?.rows_read ?? 0) + delta.rowsRead,
 		rows_written: (prev?.rows_written ?? 0) + delta.rowsWritten,
 		alarms: (prev?.alarms ?? 0) + (delta.newAlarm ? 1 : 0),
 		active_ms: (prev?.active_ms ?? 0) + Math.max(0, delta.elapsedMs),
+		churn_bytes: (prev?.churn_bytes ?? 0) + Math.max(0, delta.churnBytes ?? 0),
 	};
 }
 
@@ -301,10 +327,73 @@ export function parseMeters(value: string | null | undefined): RunMeters | null 
 			rows_written: n(parsed.rows_written),
 			alarms: n(parsed.alarms),
 			active_ms: n(parsed.active_ms),
+			churn_bytes: n(parsed.churn_bytes),
+			due_ms: n(parsed.due_ms),
+			pace_bps: n(parsed.pace_bps),
+			late_alarms: n(parsed.late_alarms),
 		};
 	} catch {
 		return null;
 	}
+}
+
+// ─── storage churn pacing ────────────────────────────────────────────────────
+
+/**
+ * How fast the import may push bytes through Durable Object storage — writes
+ * and deletes alike — and how it backs off when storage falls behind.
+ *
+ * MEASURED 2026-09-16, both accounts, Workers Observability events: the import's
+ * alarms spent 1,844 s (daveycodez) and 1,314 s (DeckGen) actually running all
+ * day, while the coordinator was billed as active for ~60,000 s. Every lost hour
+ * sat BETWEEN alarms: an alarm returned "ok" having churned tens of MB in a
+ * burst — 392MB of fetched dump in ~90 s (≈4 MB/s), recode members at ≈7 MB/s,
+ * five 32MB purge slices one second apart (≈32 MB/s) — and the NEXT alarm,
+ * scheduled for "now", was delivered 31 min, 74 min, 2 h 7 min, 5 h 19 min,
+ * 5 h 45 min later, often followed by a reset reported as "Durable Object reset
+ * because its code was updated" with no deploy anywhere near it. The same
+ * nine-slice purge ran in 7 s on another partition: it is a storage backlog
+ * threshold, not a fixed cost, and a commit-size bound (PURGE_SLICE_BYTES)
+ * alone did not stay under it, because the bursts were back-to-back.
+ *
+ * So the chain paces itself: after an alarm that churned B bytes, the next one
+ * is scheduled no sooner than B / pace after this one started. The pace starts
+ * well under every rate that stalled and adapts — halved whenever an alarm
+ * arrives more than LATE_ALARM_MS late (storage fell behind anyway), raised a
+ * step after every on-time alarm that did real churn — between the floor and
+ * the ceiling. An idle object between alarms is not running anything; the
+ * billed hours were the object waiting on storage, which is what pacing
+ * prevents.
+ */
+export const PACE_START_BPS = 1024 * 1024;
+export const PACE_MIN_BPS = 256 * 1024;
+export const PACE_MAX_BPS = 2 * 1024 * 1024;
+/** Additive increase per on-time alarm that churned at least PACE_STEP_MIN_CHURN. */
+export const PACE_STEP_BPS = 32 * 1024;
+export const PACE_STEP_MIN_CHURN = 4 * 1024 * 1024;
+/** An alarm this late means storage fell behind: halve the pace. */
+export const LATE_ALARM_MS = 2 * 60_000;
+/** No single pause longer than this, whatever one alarm churned. */
+export const PACE_MAX_DELAY_MS = 10 * 60_000;
+
+/** How long after `now` the next alarm should be scheduled, given this alarm's churn and how long it already ran. */
+export function paceDelayMs(churnBytes: number, elapsedMs: number, paceBps: number): number {
+	if (churnBytes <= 0) return 0;
+	const bps = Math.max(PACE_MIN_BPS, paceBps || PACE_START_BPS);
+	const wanted = (churnBytes / bps) * 1000 - Math.max(0, elapsedMs);
+	return Math.round(Math.min(PACE_MAX_DELAY_MS, Math.max(0, wanted)));
+}
+
+/**
+ * The pace for the NEXT stretch, from how late the alarm that just arrived was
+ * and how much the alarm just run churned. Multiplicative decrease on a late
+ * alarm, additive increase on an on-time one that did real work, clamped.
+ */
+export function adjustPace(paceBps: number, lagMs: number, churnBytes: number): number {
+	const current = paceBps || PACE_START_BPS;
+	if (lagMs > LATE_ALARM_MS) return Math.max(PACE_MIN_BPS, Math.floor(current / 2));
+	if (churnBytes >= PACE_STEP_MIN_CHURN) return Math.min(PACE_MAX_BPS, current + PACE_STEP_BPS);
+	return Math.min(PACE_MAX_BPS, Math.max(PACE_MIN_BPS, current));
 }
 
 /** The shape of a corpus, as the cost model needs to see it. */
