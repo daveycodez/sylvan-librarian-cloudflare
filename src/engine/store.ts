@@ -737,11 +737,19 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	//
 	// A pushed manifest is not blindly trusted. Its one failure mode is a publish this object was
 	// never told about — a deploy publishes without notifying, and a notify can exhaust its
-	// retries — so KV is read CONCURRENTLY and checked before the engine is committed. That
-	// overlaps the round trip with the load instead of serving anything stale: the cost of being
-	// wrong is one discarded load, not one wrong answer.
+	// retries — so KV is read and checked BEFORE anything is loaded.
+	//
+	// It used to be read concurrently and checked after the load, on the theory that the cost of
+	// a stale record was one discarded load. It is not: wasm linear memory never shrinks, so an
+	// object that loaded a stale 41MB partition and then the live 44MB one sat at 86MB for the
+	// rest of its life, and two partition objects share an isolate (wasm-shim.ts). On 2026-09-18
+	// a deploy-path publish left every object's record one build behind; wnam's p7 and p9,
+	// colocated, double-loaded on every wake, took the isolate past 128MB together, were reset,
+	// woke, and did it again — about once every 80 seconds for half an hour, with every request
+	// from the region fanned out into them and waiting. The record was never corrected because
+	// only the failed-load path wrote the truth back. One KV round trip (~125ms, colo-cached
+	// for 60s) in front of a 400-900ms load is the price of never loading twice.
 	let manifest = known;
-	let confirm: Promise<StoreManifest | null> | null = null;
 	if (!manifest && ctx?.storage) {
 		const pushed = readLiveManifest(ctx.storage) as StoreManifest | null;
 		if (pushed?.store_bytes) {
@@ -751,9 +759,26 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 			// object's own name cannot serve is IGNORED, loudly, and the load
 			// falls through to KV. Trusting it would wedge every wake on
 			// archiveOfManifest's refusal without KV ever being consulted.
-			if (tryArchiveOfManifest(pushed, ctx.partition)) {
-				manifest = pushed;
-				confirm = readManifest(env).catch(() => null);
+			const pushedSource = tryArchiveOfManifest(pushed, ctx.partition);
+			if (pushedSource) {
+				// PER-PARTITION: the comparison is between THIS PARTITION's chunk-family keys under
+				// each manifest, not the manifests' top-level keys — a v2 store_key is a stem
+				// holding no chunks, so comparing stems would miss a republished partition.
+				const truth = await readManifest(env).catch(() => null);
+				const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx.partition) : null;
+				if (truth && truthSource && truthSource.storeKey !== pushedSource.storeKey) {
+					console.warn(
+						`${tag(ctx)}the recorded manifest names ${pushedSource.storeKey} but KV says ` +
+							`${truthSource.storeKey}; loading KV's and correcting the record`,
+					);
+					// Overwrite the stale record so the NEXT wake starts from the store that is live,
+					// instead of paying this round trip's discovery again.
+					recordLiveManifest(ctx.storage, truth);
+					manifest = truth;
+				} else {
+					// KV agreed, or could not be read: the record is the best answer there is.
+					manifest = pushed;
+				}
 			} else {
 				console.error(
 					`${tag(ctx)}ignoring a pushed manifest this object cannot serve ` +
@@ -835,55 +860,18 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	try {
 		counts = await feedStore(w, body, source.storeBytes, sink);
 	} catch (err) {
-		// A PUSHED manifest can name a store that no longer loads — its archive header no longer
+		// A recorded manifest can name a store that no longer loads — its archive header no longer
 		// matches this build, or its chunks were pruned by a deploy that published without
-		// notifying. The confirm read below was started for exactly this doubt, but it used to be
-		// consulted only AFTER a successful load, so a failing pushed manifest wedged the object:
-		// every wake re-read the same stale record, failed the same way, and nothing ever asked KV
-		// what is actually live. Production, 2026-08-13: a generation bump pruned the old chunks
-		// and every engine object answered 5xx until this fallback existed.
-		//
-		// PER-PARTITION: the comparison is between THIS PARTITION's chunk-family
-		// keys under each manifest, not the manifests' top-level keys — a v2
-		// store_key is a stem holding no chunks, so comparing stems would both
-		// miss real changes (same stem, republished partition) and be blind to
-		// what this object actually failed to read.
+		// notifying (production, 2026-08-13: a generation bump pruned the old chunks and every
+		// engine object answered 5xx). The KV check above already replaced a stale record with
+		// what is live before this load began, so reaching here means KV agreed with the record,
+		// or KV could not be read; either way there is nothing better to load, and the next wake
+		// asks again. A tee'd cache copy of the failed load is discarded, never committed.
 		if (compressedMode && cached) fetch.invalidate();
-		if (confirm) {
-			const truth = await confirm;
-			const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx?.partition) : null;
-			if (truthSource && truthSource.storeKey !== source.storeKey) {
-				console.warn(
-					`${tag(ctx)}the pushed manifest named ${source.storeKey}, which failed to load (${err}); ` +
-						`KV says ${truthSource.storeKey} — reloading from that`,
-				);
-				fetch.invalidate();
-				w.unload_store();
-				// Overwrite the stale record so the NEXT wake starts from the store that exists,
-				// instead of paying this failed load again.
-				if (ctx?.storage) recordLiveManifest(ctx.storage, truth);
-				return loadStore(env, ctx, truth ?? undefined);
-			}
-		}
 		throw err;
 	}
 	const { pieces, blocks } = counts;
 
-	// The confirmation, awaited only now: it has had the whole load to arrive, so in the common case
-	// this costs nothing. A mismatch means the pushed manifest was stale, and the load just done is
-	// discarded rather than served.
-	if (confirm) {
-		const truth = await confirm;
-		const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx?.partition) : null;
-		if (truthSource && truthSource.storeKey !== source.storeKey) {
-			console.warn(
-				`${tag(ctx)}the pushed manifest named ${source.storeKey} but KV says ${truthSource.storeKey}; reloading`,
-			);
-			fetch.invalidate();
-			w.unload_store();
-			return loadStore(env, ctx, truth ?? undefined);
-		}
-	}
 	fetch.commit();
 
 	// The announcement started before the load must have LANDED before this object starts answering

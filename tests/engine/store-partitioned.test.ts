@@ -408,9 +408,13 @@ describe("wedged-object recovery, per partition", () => {
 
 		const { env } = fakeEnv(entries);
 		const engine = await store.getEngine(env, ctxFor("engine-wedged-p0", 0, storage));
-		// The confirm read compared THIS PARTITION's chunk-family keys, noticed the
-		// mismatch, and reloaded from the build KV actually holds.
+		// The KV check compared THIS PARTITION's chunk-family keys BEFORE loading, noticed the
+		// mismatch, and loaded the build KV actually holds — once, never the stale one first.
 		expect(instanceFor("engine-wedged-p0").loaded).toEqual(raw[0] as Uint8Array);
 		expect(await engine.cardCount()).toBe(7);
+		// And corrected the record, so the next wake starts from the live build instead of
+		// rediscovering the mismatch. On 2026-09-18 this correction was missing and every wake of
+		// a colocated pair double-loaded until the isolate ran out of memory.
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe(manifest.built_at);
 	});
 });
