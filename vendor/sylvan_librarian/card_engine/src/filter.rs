@@ -1851,25 +1851,13 @@ pub(crate) fn regex_tier(pattern: &str) -> u32 {
 
 /// True when *pattern* needs fancy-regex's backtracking VM (lookarounds, etc.).
 ///
-/// THIS WALKS BYTES, SO IT MUST NEVER SLICE THE `&str`. Every token it looks for begins with an
-/// ASCII byte, so the whole scan is expressible on `bytes` — and it has to be: a `pattern[i..]`
-/// reached with `i` inside a multi-byte character panics, which in the wasm engine is not a
-/// declined query but an aborted isolate. That is exactly what shipped: a `(?P=` probe sitting on
-/// the catch-all arm ran `pattern[i..]` at EVERY byte position, so any pattern combining a
-/// metacharacter with a non-ASCII literal (`o:/.—/`, `o:/[a-z]—/`, `o:/\w—/`, `o:/[a-z]é/`) took
-/// down /cards/search with a 500. Measured against production 2026-08-28, before the fix:
-/// `sylvan-engine-wasm panic: byte index 2 is not a char boundary; it is inside '—' (bytes 1..4)
-/// of `.—``. A pattern of a bare non-ASCII literal never reached here — `lowerLiteralRegexes`
-/// turns `o:/x—/` into a plain substring leaf — which is why only the mixed shapes crashed.
-///
-/// `(?P=` is checked where the other group prefixes are, not on a catch-all arm. On the catch-all
-/// it could not fire at all: a `(?P=name)` is reached with `bytes[i] == b'('` and `bytes[i+1] ==
-/// b'?'`, so the `b'('` arm always matched first and the probe was dead code for the one input it
-/// was written for.
+/// `i` walks BYTES, and slicing `pattern` at an `i` that is not a char boundary panics. The one
+/// slice below is inside the `b'('` arm for that reason: `bytes[i]` is ASCII there, and an ASCII
+/// byte is always a boundary. Any new slice keyed off `i` needs the same guarantee.
 pub(crate) fn pattern_requires_backtrack(pattern: &str) -> bool {
-    /// Group prefixes fancy-regex must take: lookaround, atomic group, conditional, and a named
-    /// backreference.
-    const BACKTRACK_GROUPS: &[&[u8]] = &[b"(?=", b"(?!", b"(?<=", b"(?<!", b"(?>", b"(?(", b"(?P="];
+    // Group openers fancy-regex can only run on its own backtracking VM: the four lookarounds,
+    // atomic group, conditional, named backreference.
+    const BACKTRACK_GROUPS: &[&str] = &["(?=", "(?!", "(?<=", "(?<!", "(?>", "(?(", "(?P="];
     let bytes = pattern.as_bytes();
     let mut in_class = false;
     let mut i = 0;
@@ -1878,7 +1866,7 @@ pub(crate) fn pattern_requires_backtrack(pattern: &str) -> bool {
             b'[' => in_class = true,
             b']' if in_class => in_class = false,
             b'(' if !in_class && i + 1 < bytes.len() && bytes[i + 1] == b'?' => {
-                let rest = &bytes[i..];
+                let rest = &pattern[i..];
                 if BACKTRACK_GROUPS.iter().any(|tok| rest.starts_with(tok)) {
                     return true;
                 }

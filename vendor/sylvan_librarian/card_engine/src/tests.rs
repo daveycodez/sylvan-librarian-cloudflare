@@ -13174,6 +13174,21 @@ fn regex_tier_classifies_pattern_shapes() {
     assert_eq!(regex_tier("(?<=draw )a card"), REGEX_BACKTRACK_NS100);
 }
 
+/// `pattern_requires_backtrack` walks bytes; it used to slice `&pattern[i..]` at every byte in a
+/// catch-all arm, which panics at the first byte inside a multibyte char. The arm was also dead for
+/// its purpose -- `(` is consumed by the `b'('` arm first -- so the named-backreference test lives
+/// there now, where the slice is at an ASCII byte and therefore a char boundary.
+#[test]
+fn pattern_requires_backtrack_never_slices_inside_a_char() {
+    use crate::filter::pattern_requires_backtrack;
+    for pat in ["dûl", "—", "[dûl]+", "dû(?P<n>l)", "é\\.û", "[—(?P=x)]"] {
+        assert!(!pattern_requires_backtrack(pat), "{pat:?} has no backtracking construct");
+    }
+    for pat in ["(?P=x)", "dû(?P=x)", "(?=a)b", "û(?!b)", "(?<=û)a", "(?>a)", "(?(1)a|b)", "(a)\\1", "\\k<n>"] {
+        assert!(pattern_requires_backtrack(pat), "{pat:?} needs the backtracking VM");
+    }
+}
+
 /// A pattern that exhausts its backtrack budget must REPORT, not quietly answer "no match".
 ///
 /// Compiled through the real `compile_search_regex` rather than a hand-built `fancy_regex`: the
@@ -19004,5 +19019,106 @@ fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
             super::compose_perm_three_phase_order(&ctx, &params, set_printings_of(&pbits), mode, SortCol::EdhrecRank, false, total, true, KNOB).is_none(),
             "{label}: the promoted walk is Mode::Card-only, so this must never divert regardless of enabled"
         );
+    }
+}
+
+/// `limit=0` is the count-only page: zero rows, and the same total every other page size reports.
+/// Every walk-style executor terminated on `page.len() == limit` after a push, so a zero limit never
+/// hit the condition and the walk ran to exhaustion, returning the entire result set. Checked through
+/// the router and through every forced plan, at offset 0 and at a deep offset, in all three modes —
+/// and then below the router, driving the fast paths and executors directly, so the guard at the
+/// entry point is not the only thing standing between a zero limit and a full walk.
+#[test]
+fn limit_zero_yields_no_rows_and_the_full_total() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(9_000);
+    let data = fuzz_store_n(&mut rng, 1_500);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let full_limit = archived.printings.len().max(1);
+
+    // Hand-built to reach each executor family (see `force_plan_differential_agreement` for why each
+    // shape lands where it does), then random trees for breadth.
+    let mut cases: Vec<(FuzzSpec, &str, &str)> = vec![
+        (FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]), "edhrec", "asc"), // PlanePopcountOrder
+        (FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }), "cmc", "asc"), // PrintingRangeScan walk / CardRangePopcount
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "usd", "desc"), // aligned_page
+        (FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 4.0 }), "cmc", "asc"), // StreamedSelect with a sort bound
+        (FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }), "edhrec", "asc"), // PrintingCompose perm walk
+        (FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }), "usd", "asc"), // PrintingCompose orderby walk
+    ];
+    for _ in 0..20 {
+        cases.push((fuzz_gen(&mut rng, 2), "edhrec", "asc"));
+    }
+    let all_plans = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PrintingCompose,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::CardRangePopcount,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+
+    for (spec, orderby, direction) in &cases {
+        let sort_col = orderby_to_col(orderby);
+        let descending = *direction == "desc";
+        let sort_bound = sort_col_bound(&fuzz_bound_filter(spec, archived), sort_col);
+        for mode in ["card", "printing", "artwork"] {
+            let split = || {
+                split_planes(fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, mode == "card")
+            };
+            let params_of = |limit: usize, offset: usize| {
+                QueryParams::from_strs(mode, "default", orderby, direction, limit, offset).with_sort_bound(sort_bound)
+            };
+            let what = |plan: &str, offset: usize| format!("{plan} (mode={mode}, orderby={orderby}, dir={direction}, offset={offset}, filter={})", fuzz_describe(spec));
+
+            let (pe, mut res) = split();
+            let (ref_total, _) = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params_of(full_limit, 0), &mut res, None, pe.as_ref())
+                .expect("GatheredScan is always applicable");
+
+            for offset in [0usize, 1, 2, 3, 7, 50, 999] {
+                let (pe, mut res) = split();
+                let (total, page) = run_query_routed(&ctx, &params_of(0, offset), &mut res, None, pe.as_ref());
+                assert_eq!(total, ref_total, "routed total: {}", what("router", offset));
+                assert!(page.is_empty(), "routed returned {} rows for limit=0: {}", page.len(), what("router", offset));
+                for &plan in &all_plans {
+                    let (pe, mut res) = split();
+                    let Some((total, page)) = run_query_with_plan(plan, &ctx, &params_of(0, offset), &mut res, None, pe.as_ref()) else { continue };
+                    assert_eq!(total, ref_total, "forced total: {}", what(&format!("{plan:?}"), offset));
+                    assert!(page.is_empty(), "{plan:?} returned {} rows for limit=0: {}", page.len(), what(&format!("{plan:?}"), offset));
+                }
+            }
+
+            // Below the router: the executors and fast paths themselves.
+            let params = params_of(0, 0);
+            let (pe, res) = split();
+            if printing_range_scan_applicable(params.mode, pe.as_ref(), &archived.cards)
+                && let Some((total, page)) = printing_range_fastpath(&ctx, &params, &res)
+            {
+                assert_eq!(total, ref_total, "{}", what("printing_range_fastpath", 0));
+                assert!(page.is_empty(), "printing_range_fastpath returned {} rows: {}", page.len(), what("", 0));
+            }
+            if super::printing_compose_applicable(&res, None, &archived.cards, pe.as_ref(), &archived.indexes)
+                && let Some((total, page)) = printing_compose_fastpath(&ctx, &params, &res, false)
+            {
+                assert_eq!(total, ref_total, "{}", what("printing_compose_fastpath", 0));
+                assert!(page.is_empty(), "printing_compose_fastpath returned {} rows: {}", page.len(), what("", 0));
+            }
+            if let Some(pe) = pe.as_ref()
+                && plane_popcount_order_applicable(&res, params.mode, &archived.cards, Some(pe), sort_col, descending, &archived.indexes)
+            {
+                let (total, page) = super::exec_plane_popcount_order(&ctx, &params, pe);
+                assert_eq!(total, ref_total, "{}", what("exec_plane_popcount_order", 0));
+                assert!(page.is_empty(), "exec_plane_popcount_order returned {} rows: {}", page.len(), what("", 0));
+            }
+            let (pe, mut res) = split();
+            if streamed_select_applicable(&archived.cards, sort_col, descending, &archived.indexes) {
+                let prep = prepare_candidates(&ctx, &params, &mut res, pe.as_ref());
+                let (total, page) = super::exec_streamed_select(&ctx, &params, &res, &prep, pe.as_ref());
+                assert_eq!(total, ref_total, "{}", what("exec_streamed_select", 0));
+                assert!(page.is_empty(), "exec_streamed_select returned {} rows: {}", page.len(), what("", 0));
+            }
+        }
     }
 }

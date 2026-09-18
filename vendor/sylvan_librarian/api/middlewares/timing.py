@@ -61,7 +61,7 @@ class TimingMiddleware:
             os.getpid(),
             resp.status,
             req.relative_uri,
-            req.get_header("User-Agent", "-"),
+            req.user_agent or "-",
         )
         spans = req.context.get("_timing_spans", [])
         spans.append(("total", duration_ms))

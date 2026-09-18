@@ -1763,75 +1763,24 @@ fn opt_uuid(d: &Bound<PyDict>, key: &str) -> u128 {
 /// meaningful for real UUID input — non-UUID strings went through the FNV-1a fallback in
 /// `parse_uuid_or_hash` and can't be recovered from their hash, which matters only for
 /// hand-built test ids, never real card data.
-/// Handles for building a `uuid.UUID` without running its Python constructor.
+/// The canonical lowercase-hyphenated text for a nonzero id, `None` for the absent sentinel.
 ///
-/// pyo3's `uuid` conversion calls `UUID(int=...)`, whose `__init__` parses and validates every
-/// alternative spelling (hex/bytes/bytes_le/fields/int), checks the variant and version, and only
-/// then assigns the two slots. Measured at 243 ns against 91 ns for assigning the slots directly.
+/// Text rather than a `uuid.UUID`. Building the object cost 76 ns/row against 22 for the string,
+/// and orjson then spent a further ~29 ns/row per field turning it back into exactly this text on
+/// the way out -- the object was constructed only to be dismantled. This supersedes the
+/// `UuidFastPath` slot-assignment trick added in #1076, which is deleted with it: bypassing
+/// `UUID.__init__` was the best available answer while the type had to stay, and it no longer does.
 ///
-/// This is not reaching past a supported boundary: `UUID.__init__` itself ends with exactly these
-/// two `object.__setattr__` calls, and `UUID.__setstate__` — the unpickling path — builds a UUID
-/// the same way, without `__init__`. Any reimplementation has to keep unpickling working.
-///
-/// Still guarded. `install()` proves the fast path reproduces the constructor's object on a probe
-/// value before it is used at all; if anything about `uuid` changes shape, `None` is cached and
-/// every call falls back to the constructor.
-#[cfg(feature = "python")]
-struct UuidFastPath {
-    uuid_type: Py<PyAny>,
-    object_new: Py<PyAny>,
-    object_setattr: Py<PyAny>,
-    safe_unknown: Py<PyAny>,
-}
-
-#[cfg(feature = "python")]
-impl UuidFastPath {
-    fn build<'py>(&self, py: Python<'py>, v: u128) -> PyResult<Bound<'py, PyAny>> {
-        let obj = self.object_new.bind(py).call1((self.uuid_type.bind(py),))?;
-        self.object_setattr.bind(py).call1((&obj, intern!(py, "int"), v))?;
-        self.object_setattr.bind(py).call1((&obj, intern!(py, "is_safe"), self.safe_unknown.bind(py)))?;
-        Ok(obj)
-    }
-
-    /// Resolve the handles and verify they reproduce `UUID(int=..)` exactly. Any failure disables
-    /// the fast path rather than propagating: emitting a row must not depend on `uuid`'s internals.
-    fn install(py: Python<'_>) -> Option<Self> {
-        let uuid_mod = py.import("uuid").ok()?;
-        let builtins = py.import("builtins").ok()?;
-        let object_ty = builtins.getattr("object").ok()?;
-        let fast = Self {
-            uuid_type: uuid_mod.getattr("UUID").ok()?.unbind(),
-            object_new: object_ty.getattr("__new__").ok()?.unbind(),
-            object_setattr: object_ty.getattr("__setattr__").ok()?.unbind(),
-            safe_unknown: uuid_mod.getattr("SafeUUID").ok()?.getattr("unknown").ok()?.unbind(),
-        };
-        // Two different bit patterns, so a path that ignored its argument could not pass.
-        for probe in [0x1234_5678_90ab_cdef_1234_5678_90ab_cdefu128, u128::MAX] {
-            let built = fast.build(py, probe).ok()?;
-            let reference = uuid::Uuid::from_u128(probe).into_pyobject(py).ok()?;
-            if !built.eq(&reference).ok()? {
-                return None;
-            }
-            if built.str().ok()?.to_str().ok()? != reference.str().ok()?.to_str().ok()? {
-                return None;
-            }
-        }
-        Some(fast)
-    }
-}
-
-/// A `uuid.UUID` for a nonzero id, `None` for the absent sentinel — the shape
-/// `uuid_from_u128` + pyo3's conversion produced before the fast path existed.
+/// `_search_sql` casts both columns with `::text` (see `RESULT_FIELD_OUTPUT_CAST`) so the two paths
+/// still agree, and Postgres renders a uuid in the same canonical form this does. JSON output is
+/// unchanged either way -- orjson writes a `uuid.UUID` as precisely this string.
 #[cfg(feature = "python")]
 fn uuid_to_pyobject<'py>(py: Python<'py>, v: u128) -> PyResult<Bound<'py, PyAny>> {
-    static FAST: OnceLock<Option<UuidFastPath>> = OnceLock::new();
     let Some(id) = uuid_from_u128(v) else {
         return Ok(py.None().into_bound(py));
     };
-    match FAST.get_or_init(|| UuidFastPath::install(py)) {
-        Some(fast) => fast.build(py, v),
-        None => Ok(id.into_pyobject(py)?.into_any()),
-    }
+    let mut buf = uuid::Uuid::encode_buffer();
+    Ok(id.hyphenated().encode_lower(&mut buf).into_pyobject(py)?.into_any())
 }
 
 fn uuid_from_u128(v: u128) -> Option<uuid::Uuid> {
@@ -11475,6 +11424,28 @@ fn build_card_range_bits(
     (card_bits, range_pbits)
 }
 
+/// Push a row onto a bounded page and report whether the page is complete.
+///
+/// Complete means no room left, asked twice because there are two ways to have none: a zero-limit
+/// page has none before any row is offered, and an N-page has none once its Nth row lands. Neither
+/// test is redundant. Drop the first and a zero limit never completes, so the walk runs to
+/// exhaustion. Hoist the second above the push and a filled page scans on to the next qualifying
+/// candidate, inflating `printings_examined`.
+#[inline]
+fn push_bounded<'a>(
+    page: &mut Vec<(&'a AOracleCard, &'a APrinting)>,
+    limit: usize,
+    row: Option<(&'a AOracleCard, &'a APrinting)>,
+) -> bool {
+    let len = page.len();
+    if len >= limit {
+        return true;
+    }
+    let Some(row) = row else { return false };
+    page.push(row);
+    len + 1 >= limit
+}
+
 /// Page for a `unique=printing` bare-range query ordered by a *card-level* key: walk that key's
 /// precomputed card permutation, emit each card's matching printings, stop once the page is full.
 /// A card-level sort key is shared by all of a card's printings, so card order is printing order;
@@ -11515,8 +11486,7 @@ fn walk_printing_page<'a>(
         }
         scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
-            page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((&cards[m.1 as usize], &printings[m.2 as usize]))) {
                 return page;
             }
         }
@@ -11570,8 +11540,7 @@ fn aligned_page<'a>(
         for t in run.start + skip..run.end {
             let pid = idx.pid_at(t);
             let cid = u32::from(printing_to_card[pid]) as usize;
-            page.push((&cards[cid], &printings[pid]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((&cards[cid], &printings[pid]))) {
                 return page;
             }
         }
@@ -12940,11 +12909,11 @@ fn compose_printing_estimate(
 /// # Why ascending needs the index to be total
 ///
 /// A null-valued printing is ABSENT from the value index by construction, so the walk can only ever
-/// enumerate non-null rows. It handles the leftovers by declining — `seen < want && seen < total` —
+/// enumerate non-null rows. It handles the leftovers by declining — `!complete && seen < total` —
 /// and that is a SUFFIX test: it detects "there are rows I could not place, and they sort after
 /// everything I did". In the direction where this column's absent side sorts FIRST (see
 /// `absent_sorts_highest`), the rows it cannot place sort BEFORE everything it emits, so the test
-/// never fires: the walk fills the page from real values, exits via its `seen == want` break, and
+/// never fires: the walk fills the page from real values, exits via its `complete` break, and
 /// returns a confidently wrong page 0. Not a fallback — a silently wrong answer.
 ///
 /// So that direction is only offered when the index covers every printing, i.e. the column has no
@@ -13263,9 +13232,9 @@ fn walk_value_orderby_page<'a>(
          page, not a decline — route through orderby_walk_available",
     );
     let printing_to_card = &indexes.printing_to_card;
-    let want = page_offset + limit;
     let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
     let mut seen = 0usize; // group rows passed: skipped for the offset, then emitted
+    let mut complete = false;
     // The walk's real work: one `pbits` test per printing considered -- index entries and
     // representative-resolution probes alike. Not `seen`: the entries that miss are the cost
     // `printings_walked` has to predict, and on a clumped filter almost every entry misses.
@@ -13287,16 +13256,18 @@ fn walk_value_orderby_page<'a>(
                     continue;
                 }
             }
-            if seen >= page_offset {
-                page.push((&cards[cid], &printings[pid]));
-            }
+            // Offered on every pass, with no row while the offset is still being skipped, so a
+            // zero limit completes here rather than after walking `page_offset` rows to reach it.
+            let row = if seen >= page_offset { Some((&cards[cid], &printings[pid])) } else { None };
+            complete = push_bounded(&mut page, limit, row);
             seen += 1;
-            if seen == want {
+            if complete {
                 break 'walk;
             }
         }
     }
-    if seen < want && seen < total {
+    // Declining = this index could not finish the page, so the caller must fall back and materialize.
+    if !complete && seen < total {
         return None;
     }
     let pushed = page.len() as u64;
@@ -14740,8 +14711,7 @@ fn walk_grouped_page<'a>(
         }
         scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
-            page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((&cards[m.1 as usize], &printings[m.2 as usize]))) {
                 return (page, work);
             }
         }
@@ -14865,8 +14835,7 @@ fn walk_card_page_via_popcount_skip<'a>(
                 }
             }
             let (bp, _) = best.expect("card_bits set this card because some printing of it matched");
-            page.push((card, &printings[bp as usize]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((card, &printings[bp as usize]))) {
                 break 'walk;
             }
         }
@@ -14966,8 +14935,7 @@ fn walk_printing_page_via_popcount_skip<'a>(
                 skip -= 1;
                 continue;
             }
-            page.push((card, &printings[pid]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((card, &printings[pid]))) {
                 break 'walk;
             }
         }
@@ -15112,8 +15080,7 @@ fn walk_artwork_page_via_popcount_skip<'a>(
         }
         scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
-            page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((&cards[m.1 as usize], &printings[m.2 as usize]))) {
                 return (page, work);
             }
         }
@@ -17929,10 +17896,7 @@ fn run_query_streamed_popcount<'a>(
                     }
                     best.map(|(pid, _)| pid)
                 };
-                if let Some(pid) = chosen {
-                    page.push((card, &printings[pid as usize]));
-                }
-                if page.len() == limit {
+                if push_bounded(&mut page, limit, chosen.map(|pid| (card, &printings[pid as usize]))) {
                     break 'walk;
                 }
             }
@@ -18194,8 +18158,7 @@ fn run_query_streamed<'a>(
         );
         scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
-            page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
-            if page.len() == limit {
+            if push_bounded(&mut page, limit, Some((&cards[m.1 as usize], &printings[m.2 as usize]))) {
                 break 'walk;
             }
         }
@@ -19378,13 +19341,20 @@ impl EmitStrCache {
         Ok(built.into_any())
     }
 
-    /// One collection field as a list of cached `PyString`s, in stored order.
+    /// One collection field as a tuple of cached `PyString`s, in stored order.
     ///
     /// No sort. The vocab is renumbered lexicographically at load, so a set-like collection's
     /// id-sorted vector is already in alphabetical order -- the order this used to produce by
     /// re-sorting every row's strings at emit. `card_subtypes` keeps its printed order for the same
     /// reason it always did, and reaches this function the same way.
-    fn coll_list<'py>(&self, py: Python<'py>, vocab: &AStrings, ids: &Archived<Vec<u16>>) -> PyResult<Bound<'py, PyList>> {
+    ///
+    /// A tuple rather than a list, for the empty case. Three of these fields are mostly empty --
+    /// `card_is_tags` 91.0% of printings, `card_keywords` 56.4%, `card_subtypes` 38.4% -- and
+    /// CPython caches the empty tuple as a singleton while every empty list is a fresh 56-byte
+    /// allocation. So the dominant row costs an incref instead, with no cache and no special case
+    /// to write. It also keeps those rows out of GC tracking: an empty list is tracked and forces
+    /// the row dict to be tracked with it, the empty tuple is not.
+    fn coll_list<'py>(&self, py: Python<'py>, vocab: &AStrings, ids: &Archived<Vec<u16>>) -> PyResult<Bound<'py, PyTuple>> {
         let cells = self.coll_cells.get_or_init(|| (0..vocab.len()).map(|_| OnceLock::new()).collect());
         let mut items: Vec<Bound<'py, PyString>> = Vec::with_capacity(ids.len());
         for id in ids.iter() {
@@ -19401,7 +19371,7 @@ impl EmitStrCache {
                 }
             }
         }
-        PyList::new(py, items)
+        PyTuple::new(py, items)
     }
 }
 
