@@ -185,7 +185,16 @@ if [[ -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then  # fail-closed:
 fi
 
 if [[ "${FORCE_IMPORT:-}" != "1" && -n "$STORE_AGE" ]]; then
-    echo "==> A store built $STORE_AGE is already live — skipping the import."
+    # The live build's tag alias map, for a build that predates the map shipping with the store
+#     (src/engine/tag-aliases.ts). A no-op once every live build carries one — the import below
+#     publishes it beside a fresh store, the nightly beside its own — and it lives HERE, on the
+#     skip path, because this is the one deploy that publishes nothing else: Workers Builds runs
+#     this script from postinstall and deploys with a bare `wrangler deploy`, never deploy.sh.
+#     Not fatal, but loud: the symptom (alias tag spellings match nothing) is silent everywhere else.
+echo "==> Ensuring the live store's tag alias map is published..."
+bun scripts/publish-tag-aliases.ts --remote \
+    || echo "!!! Tag alias map not published — alias tag spellings match nothing until the next import."
+echo "==> A store built $STORE_AGE is already live — skipping the import."
     echo "    (FORCE_IMPORT=1 rebuilds it anyway.)"
     exit 0
 fi

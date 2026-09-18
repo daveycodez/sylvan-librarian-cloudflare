@@ -7,8 +7,9 @@
 // deploy's seeder from the builder's sidecar, the nightly coordinator from the wasm import. This
 // script covers the one build neither can reach — the store that is live RIGHT NOW, built before
 // the map shipped with the store — so a deploy that skips the import (a routine code push) does
-// not leave the Worker resolving no aliases until the next nightly. It runs from deploy.sh and is
-// a no-op once the live build carries its map.
+// not leave the Worker resolving no aliases until the next nightly. It runs from import-store.sh's
+// skip path (the one deploy that publishes nothing else) and is a no-op once the live build
+// carries its map.
 //
 // THE MAP IS CUT FROM TODAY'S TAG DUMPS, not from the dumps the live store was built from, which
 // the coordinator no longer has. Tags move slowly (one slug flip and 18 new aliases in five weeks
