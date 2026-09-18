@@ -134,6 +134,7 @@ import {
 	writeManifest,
 	writeRoutingFilter,
 } from "./engine/store-kv";
+import { tagAliasesKey, writeTagAliases } from "./engine/tag-aliases";
 import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types";
 import { packBlob, unpackBlob } from "./import-blob-codec";
 import {
@@ -1836,9 +1837,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 		console.log(`Representative labels: ${labelCount}`);
 
 		const tagBlobs: Uint8Array[] = [];
-		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
+		// The alias -> slug maps, cut from the same TagData: stashed in meta now (the key that names
+		// them needs built_at, stamped below) and published beside the manifest by stepManifest.
+		// See src/engine/tag-aliases.ts for why this ships with the store rather than the code.
+		let tagAliasesJson = "";
+		wasm.setHandlers({
+			onTagData: (b) => tagBlobs.push(b),
+			onTagAliases: (b) => {
+				tagAliasesJson = new TextDecoder().decode(b);
+			},
+		});
 		wasm.tagsExport();
+		wasm.tagAliasesExport();
 		wasm.setHandlers({});
+		if (!tagAliasesJson) throw new Error("tags: the wasm import emitted no alias map");
 
 		// Size the partition loop HERE, while everything it needs is already
 		// durable: the drafts are fully staged (transform completed before this
@@ -1873,6 +1885,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// set was consumed when transform completed, and from here every restart
 			// path restores THIS TagData (tags + labels).
 			this.writeTagSnapshot(tagBlobs);
+			this.metaSet("tag_aliases", tagAliasesJson);
 			this.metaSet("tags_nonce", wasm.nonce);
 			this.metaSet("scores_batch_done", "0");
 			// built_at is fixed ONCE, here at the end of tags, never in stepBuild
@@ -2870,6 +2883,21 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// The family cannot be re-uploaded (each partition's staging rows are
 		// dropped the moment it publishes), so the honest outcome is a failed run
 		// and a fresh start on the next cron, with the previous manifest untouched.
+		// The alias map goes BEFORE the manifest, like the chunks and the routing filter: the
+		// manifest is the commit point, and a reader that finds the manifest must find the map its
+		// build resolves through. Idempotent, like the manifest put. Absent only for a run whose
+		// tags phase predates the export (a deploy landed mid-run); that build serves alias
+		// spellings as plain slugs until the next run, and the Worker says so in its log.
+		const tagAliasesJson = this.metaGet("tag_aliases");
+		if (tagAliasesJson) {
+			await writeTagAliases(this.env, formatVersion, builtAt, tagAliasesJson);
+			console.log(`Tag aliases published: ${tagAliasesKey(formatVersion, builtAt)} (${tagAliasesJson.length} bytes)`);
+		} else {
+			console.warn(
+				`Tag aliases NOT published for build ${builtAt}: this run's tags phase stashed none. ` +
+					"Alias tag spellings match nothing on this build; the next run publishes them.",
+			);
+		}
 		const present = await this.listFamilyKeys(formatVersion, builtAt);
 		const missing = missingManifestChunks(manifest, present);
 		if (missing.length > 0) {

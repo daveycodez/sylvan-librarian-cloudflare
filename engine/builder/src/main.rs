@@ -219,13 +219,13 @@ fn run_import(out_dir: &std::path::Path, partitions: Option<PartitionsArg>) -> R
     // The alias → slug maps this build resolved, for the query side to fold search terms through.
     // This port does not stamp alias keys into the store (see TagData::oracle_aliases), so this
     // file is the OTHER half of that decision: without it every alias spelling stops resolving.
-    // scripts/generate-tag-aliases.ts turns it into the committed parser module.
+    // The seeders publish it to KV beside the store (tagAliasesKey), the same key the nightly
+    // coordinator writes from the wasm import's `tag_aliases_export`, and the Worker resolves
+    // search terms through it at query time. It ships WITH the store rather than as committed
+    // code because the store is rebuilt nightly and this map has to describe the same dumps.
     let aliases_path = out_dir.join("tag-aliases.json");
-    let aliases = serde_json::json!({
-        "oracle": tag_data.oracle_aliases,
-        "art": tag_data.art_aliases,
-    });
-    std::fs::write(&aliases_path, aliases.to_string()).map_err(|e| format!("write tag-aliases: {e}"))?;
+    std::fs::write(&aliases_path, tag_data.aliases_json().to_string())
+        .map_err(|e| format!("write tag-aliases: {e}"))?;
     eprintln!(
         "wrote {} ({} oracle + {} art aliases)",
         aliases_path.display(),

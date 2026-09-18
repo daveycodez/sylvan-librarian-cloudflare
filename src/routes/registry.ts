@@ -7,11 +7,18 @@
 // src/index.ts reproduces upstream _handle/_resolve_action semantics.
 
 import type { Engine, Env } from "../engine/types";
+import type { TagAliasTables } from "../parser";
 
 export interface RouteContext {
 	env: Env;
 	/** Resolves the loaded engine, or throws EngineUnavailableError (503 parity). */
 	getEngine(): Promise<Engine>;
+	/**
+	 * The alias -> slug tables of the store build this request queries, for the parse
+	 * (src/engine/tag-aliases.ts). Never rejects on a KV fault: the parse then resolves no aliases
+	 * for this one request, which is a plain-slug query rather than an error.
+	 */
+	tagAliases(): Promise<TagAliasTables>;
 	request: Request;
 	/**
 	 * The public host absolute URLs address: an ALLOWLISTED `X-Proxy-Host`, else

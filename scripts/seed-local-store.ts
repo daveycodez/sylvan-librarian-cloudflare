@@ -25,8 +25,10 @@ import {
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
+import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
+import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
 import { wranglerArgv } from "./wrangler-cmd";
 
 /** Write one key into miniflare's local KV for the STORE_KV binding. */
@@ -143,6 +145,10 @@ if (routing) {
 } else {
 	console.warn(`No ${ROUTING_KEYS_FILE} in ${dir}: bare-id routes will fan out across every partition.`);
 }
+// The tag alias map, before the manifest and required (see seed-remote-kv.ts): dev resolves
+// `otag:reanimate-copy` through the same KV value production does, or not at all.
+await localKvPut(tagAliasesKey(manifest.format_version, String(manifest.built_at)), tagAliasesFileFromBuildDir(dir));
+console.log(`Tag aliases seeded from ${TAG_ALIASES_FILE}.`);
 // The manifest LAST, at the one key, exactly as seed-remote-kv.ts publishes it:
 // dev reads through the identical loader, so seeding anywhere else would test a
 // path production does not have.

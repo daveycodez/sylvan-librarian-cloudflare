@@ -233,22 +233,14 @@ echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes
 "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
 ./target/fast-native/sylvan-store-builder --out store-build --partitions auto
 
-# 4. Regenerate the parser's alias map from the SAME build.
+# 4. The parser's tag alias map is no longer generated here. It ships WITH the store: the builder
+#    wrote it to store-build/tag-aliases.json beside the archives, and seed-remote-kv.ts publishes
+#    it to KV under the build's own key (src/engine/tag-aliases.ts) — the same thing the nightly
+#    coordinator does for its builds. A committed module could only ever describe the dumps of
+#    the last MANUAL import, and the nightly rebuilt the store from newer dumps every day.
 #
-#    This port resolves tag aliases at query time instead of stamping them into the store (see
-#    TagData::oracle_aliases), which makes these two artifacts halves of one thing: the store holds
-#    only canonical slugs, and this map is what still lets `art:flames` reach `fire`. Regenerating
-#    here — between the build and the publish, from that build's own tag-aliases.json — is what
-#    keeps them describing the same dumps. Deploy order does the rest: import-then-deploy means
-#    wrangler bundles this file after it is written.
-#
-#    Nothing regenerates it when the import is skipped, which is correct — a skipped import means
-#    the live store did not change either.
-echo "==> Regenerating the parser's tag alias map..."
-bun scripts/generate-tag-aliases.ts store-build
-
-# 4b. ...and the set release dates behind `date>=<set code>`, for the same reason and at the same
-#     moment. Scryfall resolves a set code written where a date goes to that set's released_at, and
+# 4b. The set release dates behind `date>=<set code>`, regenerated between the build and the
+#     publish. Scryfall resolves a set code written where a date goes to that set's released_at, and
 #     the parser is synchronous — so the table is a committed module rather than a KV read on the
 #     parse path of every search. Sourced from api.scryfall.com/sets, which is the same endpoint
 #     the reference import mirrors, so a set released since the last run is an unknown code until

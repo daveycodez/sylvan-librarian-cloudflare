@@ -35,7 +35,6 @@ import {
 	type ValueNode,
 } from "./nodes";
 import { collateName, foldAccents, PyNumber, pyLower, pyStrip, pyStrTitle } from "./pystr";
-import { artTagAliases, oracleTagAliases } from "./tag-aliases.gen";
 import { titlecase } from "./titlecase";
 
 export { foldAccents };
@@ -165,14 +164,52 @@ export function slugifyTag(val: string): string {
 }
 
 /**
- * Resolve a slugified tag through a dump's alias map, or return it unchanged.
+ * The alias -> slug maps of the store being queried, one per tag dump (the two are separate
+ * namespaces: nothing guarantees an art alias means anything in oracle space).
  *
- * PORT-LOCAL, and the half that makes the store smaller. Upstream #914 resolves aliases at import
- * by stamping each one as an extra key beside the slug and every ancestor, so query time stays an
- * exact match. Here that costs 6,252,880 bytes of archive — 1,024,204 duplicate entries, each
- * costing 2 bytes forward plus a 4-byte inverted TagIndex posting — which crossed the 25MB KV
- * chunk grid from 3 values to 4 and put a fourth serialized read on every cold store load. So the
- * mapping is carried once (~68KB, tag-aliases.gen.ts) and folded in here instead.
+ * PORT-LOCAL, and the half of upstream #914 that makes the store smaller. Upstream resolves
+ * aliases at import by stamping each one as an extra key beside the slug and every ancestor, so
+ * query time stays an exact match. Here that costs 6,252,880 bytes of archive — 1,024,204
+ * duplicate entries, each costing 2 bytes forward plus a 4-byte inverted TagIndex posting — which
+ * crossed the 25MB KV chunk grid from 3 values to 4 and put a fourth serialized read on every cold
+ * store load. So the map is carried once beside the store (~70KB in KV, src/engine/tag-aliases.ts)
+ * and folded into the search term here instead.
+ *
+ * The tables are NOT a module constant. They belong to a store build — Scryfall renames tags, and
+ * the map has to name the slugs the store actually carries — so the route reads them for the
+ * build it is about to query and hands them to the parse (`withTagAliases`). A parse without
+ * tables resolves nothing, which is exactly a plain-slug query.
+ */
+export interface TagAliasTables {
+	readonly oracle: ReadonlyMap<string, string>;
+	readonly art: ReadonlyMap<string, string>;
+}
+
+/** No aliases: every tag spelling is taken as the slug it is typed as. */
+export const EMPTY_TAG_ALIASES: TagAliasTables = { oracle: new Map(), art: new Map() };
+
+/** The tables the current parse resolves through. A parse is synchronous end to end, so the
+ * scope set by `withTagAliases` cannot interleave with another request's. */
+let activeTagAliases: TagAliasTables = EMPTY_TAG_ALIASES;
+
+/**
+ * Run `fn` — a whole synchronous parse, `toJson()` included, since the comparison keys are
+ * computed there — with `tables` as the alias maps its tag terms resolve through. `undefined`
+ * keeps whatever is active (the empty tables unless a caller up the stack set some).
+ */
+export function withTagAliases<T>(tables: TagAliasTables | undefined, fn: () => T): T {
+	if (tables === undefined) return fn();
+	const previous = activeTagAliases;
+	activeTagAliases = tables;
+	try {
+		return fn();
+	} finally {
+		activeTagAliases = previous;
+	}
+}
+
+/**
+ * Resolve a slugified tag through a dump's alias map, or return it unchanged.
  *
  * The substitution is exact, not approximate: the builder attaches alias `a` to slug `s` under
  * precisely the condition it attaches `s` itself, so `art:flames` and `art:fire` were always the
@@ -184,13 +221,13 @@ function resolveTagAlias(slug: string, aliases: ReadonlyMap<string, string>): st
 }
 
 /** get_oracle_tags_comparison_object(...).keys() */
-export function getOracleTagsComparisonKeys(val: string): string[] {
-	return [resolveTagAlias(slugifyTag(val), oracleTagAliases())];
+export function getOracleTagsComparisonKeys(val: string, tables: TagAliasTables = activeTagAliases): string[] {
+	return [resolveTagAlias(slugifyTag(val), tables.oracle)];
 }
 
 /** get_art_tags_comparison_object(...).keys() */
-export function getArtTagsComparisonKeys(val: string): string[] {
-	return [resolveTagAlias(slugifyTag(val), artTagAliases())];
+export function getArtTagsComparisonKeys(val: string, tables: TagAliasTables = activeTagAliases): string[] {
+	return [resolveTagAlias(slugifyTag(val), tables.art)];
 }
 
 /** get_is_tags_comparison_object(...).keys() */

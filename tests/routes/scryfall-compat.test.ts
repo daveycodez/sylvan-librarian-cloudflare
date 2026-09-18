@@ -123,6 +123,20 @@ describe("GET /cards/search", () => {
 		expect(engine.lastSearch?.filterTreeJson).not.toContain("legalities");
 	});
 
+	test("the store build's alias map reaches the parse", async () => {
+		// The route resolves `otag:` spellings through the tables the context hands it — the live
+		// build's map in production (src/engine/tag-aliases.ts). Without them the spelling is the
+		// slug; with them it is the slug the store carries.
+		const tagAliases = { oracle: new Map([["reanimate-copy", "copy-from-graveyard"]]), art: new Map() };
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine, tagAliases }), "/cards/search?q=otag%3Areanimate-copy");
+		expect(engine.lastSearch?.filterTreeJson).toContain('"copy-from-graveyard"');
+		expect(engine.lastSearch?.filterTreeJson).not.toContain('"reanimate-copy"');
+		const plain = new FakeEngine();
+		await testDispatch(makeCtx({ engine: plain }), "/cards/search?q=otag%3Areanimate-copy");
+		expect(plain.lastSearch?.filterTreeJson).toContain('"reanimate-copy"');
+	});
+
 	test("typographic quotes reach the parser as the quotes they stand for", async () => {
 		// Users paste curly quotes constantly; this port answered `400 Failed to parse query` to
 		// every one of them while Scryfall folds four characters and searches.

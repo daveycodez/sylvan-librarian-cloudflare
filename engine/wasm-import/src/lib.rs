@@ -145,6 +145,9 @@ const EMIT_TAGDATA: u32 = 7;
 /// One scores batch's routing-filter input: `<partition>\t<key>\n` lines, the SAME text shape
 /// the native builder writes to `routing-keys.tsv`, so one parser reads both publishers' output.
 const EMIT_ROUTING: u32 = 8;
+/// The alias → slug maps (`TagData::aliases_json`), for the coordinator to publish beside the
+/// store under `tagAliasesKey` — the same JSON the native builder writes to `tag-aliases.json`.
+const EMIT_TAG_ALIASES: u32 = 10;
 
 // `wasm_import_module = "env"` is load-bearing, not decoration: the host
 // instantiates with `imports.env.emit` / `imports.env.pull_row`
@@ -471,6 +474,23 @@ pub extern "C" fn tags_export() -> i64 {
             log(&format!("tags_export: {e}"));
             -1
         }
+    })
+}
+
+/// Emit the alias → slug maps of the loaded TagData as one EMIT_TAG_ALIASES payload.
+///
+/// Called at the end of the tags phase, once both dumps are folded, so the coordinator can stash
+/// the map and publish it with the manifest. The map is tiny (~67KB of JSON) next to the TagData
+/// snapshot it is cut from, and it is the ONLY thing the query side needs from the tag dumps: the
+/// store carries canonical slugs and the Worker resolves alias spellings through this map (see
+/// TagData::oracle_aliases for why the keys are not stamped into the store). Returns the payload
+/// length, or -1 when serialization fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn tag_aliases_export() -> i64 {
+    with_state(|s| {
+        let bytes = s.tags.aliases_json().to_string().into_bytes();
+        emit_bytes(EMIT_TAG_ALIASES, &bytes);
+        bytes.len() as i64
     })
 }
 

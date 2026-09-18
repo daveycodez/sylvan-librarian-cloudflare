@@ -41,11 +41,13 @@ import {
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
+import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
 import { liveManifestBuiltAts, pruneOldStores, publishingBuiltAts } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
+import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
 import { wranglerArgv } from "./wrangler-cmd";
 
 const dir = process.argv.slice(2).find((a) => !a.startsWith("--"));
@@ -200,6 +202,21 @@ if (routing) {
 } else {
 	console.warn(`No ${ROUTING_KEYS_FILE} in ${dir}: bare-id routes will fan out across every partition.`);
 }
+
+// The tag alias map, before the manifest for the same reason as the routing filter — and REQUIRED
+// where the filter is optional: a build without it answers every alias tag spelling with nothing
+// (see src/engine/tag-aliases.ts). The builder writes it beside every store, so absent means a
+// build dir this script should not publish.
+const aliasesPath = tagAliasesFileFromBuildDir(dir);
+await kv([
+	"key",
+	"put",
+	tagAliasesKey(manifest.format_version, String(manifest.built_at)),
+	"--path",
+	aliasesPath,
+	"--remote",
+]);
+console.log(`  tag aliases uploaded from ${TAG_ALIASES_FILE}`);
 
 // The commit point.
 const manifestPath = join(tmpdir(), "sylvan-store-manifest.json");

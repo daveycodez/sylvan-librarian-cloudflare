@@ -10,6 +10,7 @@ import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
 import { markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
 import { readManifest } from "./engine/store-kv";
+import { liveTagAliases } from "./engine/tag-aliases";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
@@ -252,6 +253,9 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			{
 				env,
 				getEngine: () => resolveEngine(request, env, ctx, engineSource),
+				// The same manifest the engine is pinned to (isolate-cached for 60s), so the parse
+				// resolves aliases against the build that will answer it.
+				tagAliases: () => livePartitionedManifest(env).then((manifest) => liveTagAliases(env, manifest)),
 				request,
 				requestHost,
 				requestScheme,

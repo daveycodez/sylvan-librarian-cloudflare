@@ -1917,11 +1917,12 @@ export const KEEP_STORES_IN_KV = 2;
  */
 export function staleStoreKeys(names: string[], keep: number, protect?: string | readonly string[]): string[] {
 	const parsed = names.flatMap((name) => {
-		// `routing` joins `store` and `compat` here so a build's routing filter
-		// (routingFilterKey) retires with the archives it describes. It is not a
-		// chunk family, but it IS part of the generation, and a `store:card-` key
-		// this pattern misses would be listed forever and deleted never.
-		const at = /^store:card-(?:store|compat|routing)-v\d+-(\d+)(?:-p\d+)?\.store:\d+$/.exec(name);
+		// `routing` and `aliases` join `store` and `compat` here so a build's routing
+		// filter (routingFilterKey) and tag alias map (tagAliasesKey) retire with the
+		// archives they describe. Neither is a chunk family, but both ARE part of the
+		// generation, and a `store:card-` key this pattern misses would be listed
+		// forever and deleted never.
+		const at = /^store:card-(?:store|compat|routing|aliases)-v\d+-(\d+)(?:-p\d+)?\.store:\d+$/.exec(name);
 		return at ? [{ name, builtAt: at[1] as string }] : [];
 	});
 	const builds = [...new Set(parsed.map((k) => k.builtAt))].sort((a, b) => Number(b) - Number(a));

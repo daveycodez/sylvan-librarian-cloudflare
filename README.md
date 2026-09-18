@@ -317,10 +317,11 @@ all three: Cloudflare compiles and snapshots the script at **deploy**, so a
 starting isolate does not re-parse it.
 
 What still costs is *structure evaluated at module load*, not bytes parsed. The
-tag alias table (`src/parser/tag-aliases.gen.ts`) was 0.75ms an isolate as 2,152
-`Map` literals and is 0.16ms as a string parsed on first use — same bytes, same
-data. So the rule that survives is about module scope, not script size: keep out
-of it anything a request does not build.
+tag alias table, when it was still a committed module, was 0.75ms an isolate as
+2,152 `Map` literals and 0.16ms as a string parsed on first use — same bytes,
+same data. (It has since left the bundle entirely and ships with the store; see
+"Tag aliases" below.) So the rule that survives is about module scope, not
+script size: keep out of it anything a request does not build.
 
 Request work itself is that 1–2ms, and the engine encodes results inside the
 Durable Object so the isolate never parses, clones and re-encodes the same
@@ -817,13 +818,19 @@ The complete list of intentional differences:
   fourth serialized read on every cold load. (Those store figures describe a
   much older, English-only, unpartitioned store; the 6,252,880-byte cost of the
   alias keys themselves is the part that still stands.) So the store keeps only
-  canonical slugs and the parser folds the search term through a generated map
-  (`src/parser/tag-aliases.gen.ts`, 2,152 entries, 68,243 bytes on disk as of
-  2026-08-16). Results are
-  identical, because the alias key was never more than a duplicate: the builder
-  attached alias `a` under exactly the condition it attached slug `s`. Upstream
-  keeps its design — 10MB of JSONB does not bite on Postgres, and its parser has
-  no seam to resolve through; the corrected cost is recorded in that PR.
+  canonical slugs and the parser folds the search term through the build's own
+  alias map — one ~70KB KV value per store build, `store:card-aliases-v<fmt>-
+  <built_at>.store:0`, published beside the archives by whichever publisher
+  built them and read once per isolate (`src/engine/tag-aliases.ts`). Results
+  are identical, because the alias key was never more than a duplicate: the
+  builder attached alias `a` under exactly the condition it attached slug `s`.
+  The map ships *with the store* rather than as committed code because the
+  store is rebuilt nightly from fresh dumps and Scryfall renames tags: a
+  committed map froze on 2026-08-11 while the slugs moved, and when
+  `copy-from-graveyard` and `reanimate-copy` swapped roles both spellings
+  returned zero for five weeks. Upstream keeps its design — 10MB of JSONB does
+  not bite on Postgres, and its parser has no seam to resolve through; the
+  corrected cost is recorded in that PR.
 - HTML minification is off (upstream's own default).
 - Engine timing fields read `0` on wasm (Workers freeze clocks during CPU work).
 

@@ -288,6 +288,8 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 	const timer = new Timer();
 	const query = opts.query || "";
 	const parser = await loadParser();
+	// The build's alias -> slug map, so `otag:reanimate-copy` reaches the slug the store carries.
+	const tagAliases = await ctx.tagAliases();
 	let filterTree: unknown;
 	let directives: readonly DirectiveFound[] = [];
 	// Out of band from the tree, for the extras gate: the rewrite erases both the `field:/regex/`
@@ -295,7 +297,7 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 	// what was WRITTEN. See extras-gate.ts.
 	let spellings: ExtrasGateSpellings = { loweredRegexTerms: [], expandedDerivedTerms: [] };
 	try {
-		const parsed = timer.time("parse", () => parser.parseWithDirectives(query));
+		const parsed = timer.time("parse", () => parser.parseWithDirectives(query, tagAliases));
 		filterTree = parsed.tree;
 		directives = parsed.directives;
 		spellings = {

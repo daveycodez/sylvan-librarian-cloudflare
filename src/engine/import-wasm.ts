@@ -20,6 +20,8 @@ export interface ImportEmitHandlers {
 	onSpill?(bytes: Uint8Array): void;
 	onChunk?(bytes: Uint8Array): void;
 	onTagData?(bytes: Uint8Array): void;
+	/** The alias -> slug maps as JSON (`TagData::aliases_json`), one emit per tagAliasesExport. */
+	onTagAliases?(bytes: Uint8Array): void;
 	/** One scores batch's routing-filter input: `<partition>\t<key>\n` lines,
 	 * the same text the native builder writes to `routing-keys.tsv`. */
 	onRoutingKeys?(bytes: Uint8Array): void;
@@ -30,7 +32,18 @@ export interface ImportEmitHandlers {
 	pullRow?(index: number): Uint8Array | null;
 }
 
-const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7, ROUTING: 8, INFLATE: 9 } as const;
+const EMIT = {
+	LOG: 1,
+	DRAFT: 2,
+	STATS: 3,
+	SPILL: 4,
+	CHUNK: 5,
+	ROW: 6,
+	TAGDATA: 7,
+	ROUTING: 8,
+	INFLATE: 9,
+	TAG_ALIASES: 10,
+} as const;
 
 interface ImportExports {
 	memory: WebAssembly.Memory;
@@ -43,6 +56,7 @@ interface ImportExports {
 	tags_add_lines(ptr: number, len: number): bigint;
 	tags_finish(kind: number): bigint;
 	tags_export(): bigint;
+	tag_aliases_export(): bigint;
 	tags_restore(ptr: number, len: number): bigint;
 	scores_add_drafts(ptr: number, len: number, partitionCount: number): bigint;
 	scores_finish(): bigint;
@@ -117,6 +131,9 @@ export class ImportWasm {
 						return;
 					case EMIT.ROUTING:
 						h.onRoutingKeys?.(view(ptr, len).slice());
+						return;
+					case EMIT.TAG_ALIASES:
+						h.onTagAliases?.(view(ptr, len).slice());
 						return;
 					case EMIT.INFLATE:
 						h.onInflate?.(view(ptr, len).slice());
@@ -256,6 +273,11 @@ export class ImportWasm {
 
 	tagsExport(): void {
 		if (this.ex.tags_export() < 0n) throw new Error("wasm-import tags_export failed");
+	}
+
+	/** Emit the loaded TagData's alias -> slug maps (onTagAliases), for publishing beside the store. */
+	tagAliasesExport(): void {
+		if (this.ex.tag_aliases_export() < 0n) throw new Error("wasm-import tag_aliases_export failed");
 	}
 
 	tagsRestore(bytes: Uint8Array): bigint {

@@ -24,6 +24,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseTagAliasTables } from "../../src/engine/tag-aliases";
 import {
 	canonicalStringify,
 	InvalidRegexPatternError,
@@ -31,12 +32,18 @@ import {
 	parseScryfallQuery,
 	QueryBudgetExceeded,
 } from "../../src/parser";
-import { artTagAliases, oracleTagAliases } from "../../src/parser/tag-aliases.gen";
+
+/**
+ * A builder sidecar (src/engine/tag-aliases.ts), handed to the parse the way the route hands it
+ * the live build's. Python resolves nothing (upstream stamps aliases into the store instead), so
+ * the same map is applied to its trees below.
+ */
+const TAG_ALIASES = parseTagAliasTables(readFileSync(join(__dirname, "../fixtures/tag-aliases.json"), "utf8"));
 
 /** The two attributes this port resolves aliases for, and the dump each draws on. */
 const TAG_ALIAS_MAPS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
-	["card_oracle_tags", oracleTagAliases()],
-	["card_art_tags", artTagAliases()],
+	["card_oracle_tags", TAG_ALIASES.oracle],
+	["card_art_tags", TAG_ALIASES.art],
 ]);
 
 /** A complete JSON string token, backslash escapes included. */
@@ -199,12 +206,12 @@ for (const file of fixtureFiles) {
 		for (const fixture of cases) {
 			test(`parses ${JSON.stringify(fixture.query)} identically`, () => {
 				if (fixture.tree !== undefined) {
-					const tree = parseScryfallQuery(fixture.query);
+					const tree = parseScryfallQuery(fixture.query, TAG_ALIASES);
 					expect(canonicalStringify(tree)).toBe(PORT_ONLY_TREES.get(fixture.query) ?? applyTagAliases(fixture.tree));
 				} else if (fixture.error !== undefined) {
 					let thrown: unknown;
 					try {
-						parseScryfallQuery(fixture.query);
+						parseScryfallQuery(fixture.query, TAG_ALIASES);
 					} catch (exc) {
 						thrown = exc;
 					}

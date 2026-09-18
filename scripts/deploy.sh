@@ -40,6 +40,14 @@ trap restore_config EXIT
 
 "$REPO_ROOT/scripts/import-store.sh"
 
+# The live build's tag alias map, if the import above was skipped and the build predates the map
+# shipping with the store (src/engine/tag-aliases.ts). A no-op once every live build carries one:
+# the import publishes it beside a fresh store, and the nightly beside its own. Not fatal — the
+# code deploys either way — but loud, because the symptom (alias tag spellings match nothing) is
+# silent everywhere else.
+echo "==> Ensuring the live store's tag alias map is published..."
+bun "$REPO_ROOT/scripts/publish-tag-aliases.ts" --remote \
+    || echo "!!! Tag alias map not published — alias tag spellings match nothing until the next import."
 echo "==> Deploying Worker..."
 bunx wrangler deploy
 

@@ -18,7 +18,7 @@ import type {
 	SearchPageEnvelope,
 } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
-import { checkSearchParamLengths, QueryBudgetExceeded } from "../../src/parser";
+import { checkSearchParamLengths, EMPTY_TAG_ALIASES, QueryBudgetExceeded, type TagAliasTables } from "../../src/parser";
 import { collateName } from "../../src/parser/pystr";
 import { resolveAction, routes, SCRYFALL_SURFACE_ROUTES } from "../../src/routes";
 import { adminUnauthorized, isAdminPath } from "../../src/routes/admin";
@@ -481,6 +481,8 @@ export interface CtxOptions {
 	request?: Request;
 	/** STORE_KV, for the rulings routes. Absent means the binding is never touched. */
 	kv?: FakeKV;
+	/** The store build's alias -> slug tables the parse resolves through; none by default. */
+	tagAliases?: TagAliasTables;
 }
 
 /** RouteContext built by hand; engine: null simulates an unloaded store. */
@@ -491,6 +493,7 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 		requestScheme = "https",
 		request = new Request("https://sylvan-librarian.com/"),
 		kv,
+		tagAliases = EMPTY_TAG_ALIASES,
 	} = options;
 	return {
 		env: (kv ? { STORE_KV: kv } : {}) as unknown as Env,
@@ -500,6 +503,7 @@ export function makeCtx(options: CtxOptions = {}): RouteContext {
 			}
 			return engine;
 		},
+		tagAliases: async () => tagAliases,
 		request,
 		requestHost,
 		requestScheme,

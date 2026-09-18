@@ -11,17 +11,27 @@ import {
 	parseScryfallQuery,
 	parseScryfallQueryWithDirectives,
 	QueryBudgetExceeded,
+	type TagAliasTables,
 } from "../parser";
 
 export interface WireParser {
-	/** Parse a Scryfall query string into the engine-wire filter tree JSON. */
-	parseScryfallQuery(query: string): unknown;
+	/**
+	 * Parse a Scryfall query string into the engine-wire filter tree JSON.
+	 *
+	 * `tagAliases` is the alias -> slug map of the store build the tree will be sent to
+	 * (RouteContext.tagAliases); `otag:`/`atag:` terms resolve through it. Omitted, every tag
+	 * spelling is taken as the slug it is typed as.
+	 */
+	parseScryfallQuery(query: string, tagAliases?: TagAliasTables): unknown;
 	/**
 	 * Same, plus the in-query directives the string carried (upstream #893) and the warnings the
 	 * rewrite passes raised — today, `is:` values this server has no data for, which the search
 	 * route surfaces so a no-match says WHY rather than looking like an empty corpus.
 	 */
-	parseWithDirectives(query: string): {
+	parseWithDirectives(
+		query: string,
+		tagAliases?: TagAliasTables,
+	): {
 		tree: unknown;
 		directives: readonly DirectiveFound[];
 		warnings: readonly string[];
@@ -56,8 +66,9 @@ export interface WireParser {
 }
 
 const realParser: WireParser = {
-	parseScryfallQuery: (query: string) => parseScryfallQuery(query),
-	parseWithDirectives: (query: string) => parseScryfallQueryWithDirectives(query),
+	parseScryfallQuery: (query: string, tagAliases?: TagAliasTables) => parseScryfallQuery(query, tagAliases),
+	parseWithDirectives: (query: string, tagAliases?: TagAliasTables) =>
+		parseScryfallQueryWithDirectives(query, tagAliases),
 	isParseError: (err: unknown) => err instanceof ParseError,
 	queryBudgetMessage: (err: unknown) => {
 		if (err instanceof QueryBudgetExceeded) return err.userMessage;

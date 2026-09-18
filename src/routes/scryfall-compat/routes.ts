@@ -26,7 +26,7 @@ import { encodeUtf8 } from "../../engine/bytes";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
 import type { CollectionScope, Engine, NameIdentifier } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
-import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm } from "../../parser";
+import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm, TagAliasTables } from "../../parser";
 import { canonicalStringify } from "../../parser";
 import { foldAccents } from "../../parser/pystr";
 import type { CardOrdering, SortDirection, UniqueOn } from "../enums";
@@ -535,7 +535,7 @@ export async function cardsSearchHandler(
 	// `is:split` into `layout:split`, and only one of those two forces the extras gate.
 	let expandedDerivedTerms: readonly ExpandedDerivedTerm[] = [];
 	try {
-		const parsed = parser.parseWithDirectives(policy.query);
+		const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases());
 		filterTree = parsed.tree;
 		directives = parsed.directives;
 		loweredRegexTerms = parsed.loweredRegexTerms;
@@ -876,7 +876,7 @@ export async function cardsRandomHandler(
 		let loweredRegexTerms: readonly LoweredRegexTerm[] = [];
 		let expandedDerivedTerms: readonly ExpandedDerivedTerm[] = [];
 		try {
-			const parsed = parser.parseWithDirectives(policy.query);
+			const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases());
 			tree = parsed.tree;
 			// Out of band from the tree for the same two reasons `/cards/search` carries them out of
 			// band: `name:/bolt/` is lowered to a literal and `is:split` is expanded to `layout:split`
@@ -1030,7 +1030,7 @@ export async function cardsCollectionHandler(
 
 	// THE BATCH'S `?q=` — this port's extension, see `collectionScope`. Parsed after the body is
 	// validated so a malformed identifier still answers Scryfall's own 400 first.
-	const scoped = await collectionScope(params.q, pretty);
+	const scoped = await collectionScope(params.q, pretty, await ctx.tagAliases());
 	if (scoped.refused) return scoped.refused;
 	const { scope, warnings } = scoped;
 
@@ -1084,6 +1084,7 @@ export async function cardsCollectionHandler(
 async function collectionScope(
 	q: string | undefined,
 	pretty: boolean,
+	tagAliases: TagAliasTables,
 ): Promise<{ scope: CollectionScope | null; warnings: string[]; refused: Response | null }> {
 	if (!q?.trim()) return { scope: null, warnings: [], refused: null };
 	const refuse = (details: string, warnings: string[] | null) => ({
@@ -1100,7 +1101,7 @@ async function collectionScope(
 	let tree: unknown;
 	let directives: readonly DirectiveFound[] = [];
 	try {
-		const parsed = parser.parseWithDirectives(policy.query);
+		const parsed = parser.parseWithDirectives(policy.query, tagAliases);
 		tree = parsed.tree;
 		directives = parsed.directives;
 		warnings.push(...parsed.warnings);

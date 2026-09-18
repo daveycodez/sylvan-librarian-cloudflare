@@ -157,6 +157,23 @@ impl TagData {
         idxs.iter().filter_map(|&i| self.slugs.get(i as usize).map(String::as_str)).collect()
     }
 
+    /// The alias → slug maps as the ONE JSON shape every publisher ships next to its store:
+    /// `{"oracle": {alias: slug, ...}, "art": {alias: slug, ...}}`.
+    ///
+    /// The native builder writes it to `tag-aliases.json` in the build dir and the wasm import
+    /// emits it for the coordinator (`tag_aliases_export`); both land in KV under
+    /// `tagAliasesKey` (src/engine/tag-aliases.ts), where the Worker reads it at query time.
+    /// Built here rather than at each call site so the two publishers cannot describe the same
+    /// dumps with two shapes. Keys sort, so the same dumps give the same bytes.
+    pub fn aliases_json(&self) -> Value {
+        fn sorted(map: &HashMap<String, String>) -> Value {
+            let mut entries: Vec<(&String, &String)> = map.iter().collect();
+            entries.sort();
+            Value::Object(entries.into_iter().map(|(a, s)| (a.clone(), Value::String(s.clone()))).collect())
+        }
+        serde_json::json!({ "oracle": sorted(&self.oracle_aliases), "art": sorted(&self.art_aliases) })
+    }
+
     /// Build from plain id → slug-list maps (tests, memprobe's tags.json).
     pub fn from_slug_maps(oracle: HashMap<String, Vec<String>>, art: HashMap<String, Vec<String>>) -> TagData {
         let mut data = TagData::default();
@@ -790,6 +807,33 @@ mod tests {
         let data = build(&tags, TagKind::Oracle);
         assert_eq!(slugs(&data, TagKind::Oracle, "o-1"), vec!["fire"], "alias must not be stamped");
         assert_eq!(data.oracle_aliases.get("flames").map(String::as_str), Some("fire"));
+    }
+
+    #[test]
+    fn aliases_json_is_the_shipped_shape_with_sorted_keys() {
+        // The shape the Worker parses (parseTagAliasTables in src/engine/tag-aliases.ts): two
+        // objects, alias -> slug, one per dump. Sorted so a rebuild from the same dumps is
+        // byte-identical, which is what makes the KV value comparable across publishers.
+        let oracle = vec![
+            tag_with_aliases("u1", "fire", &[], &["flames"], json!([{"oracle_id": "o-1"}])),
+            tag_with_aliases("u2", "copy-from-graveyard", &[], &["reanimate copy"], json!([{"oracle_id": "o-2"}])),
+        ];
+        let mut data = build(&oracle, TagKind::Oracle);
+        let art = vec![tag_with_aliases("a1", "loose-lips", &[], &["Open Mouth"], json!([{"illustration_id": "i-1"}]))];
+        let mut acc = TagAccumulator::default();
+        for t in &art {
+            acc.add_line(t.to_string().as_bytes());
+        }
+        acc.finish_into(TagKind::Art, &mut data);
+        let v = data.aliases_json();
+        assert_eq!(
+            v,
+            json!({
+                "oracle": {"flames": "fire", "reanimate-copy": "copy-from-graveyard"},
+                "art": {"open-mouth": "loose-lips"},
+            })
+        );
+        assert_eq!(v.to_string(), r#"{"art":{"open-mouth":"loose-lips"},"oracle":{"flames":"fire","reanimate-copy":"copy-from-graveyard"}}"#);
     }
 
     #[test]
