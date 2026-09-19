@@ -7286,6 +7286,20 @@ fn artist_predicates_bind_to_vocab_ids_and_narrow() {
         Some(Candidates::Printings(v)) => assert!(v.is_empty()),
         _ => panic!("empty artist match must narrow to the empty set"),
     }
+
+    // A `~` NEEDLE MATCHES NO ARTIST, and must not match EVERY artist. `collate_name` keeps only
+    // alphanumerics, so `a:~` folded to "" and the substring scan found that in all 38,906
+    // artists; api.scryfall.com answers 0 (2026-09-18). Checked on BOTH arms, because Scryfall
+    // draws no quoted/bare line for artists and `bind` deliberately routes them through one
+    // `artist_contains_ids` — a fix on only one of them would leave the other widening.
+    for field in [super::TextSearchField::ArtistLower, super::TextSearchField::ArtistCollated] {
+        let mut t = FilterExpr::TextContains { field, word: "~".to_string() };
+        t.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.artist_vocab_collated, &archived.artist_entities, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
+        match narrow_candidates(&t, &archived.indexes, &archived.offsets, &archived.cards) {
+            Some(Candidates::Printings(v)) => assert!(v.is_empty(), "a:~ must match no artist, not every artist"),
+            _ => panic!("a tilde artist needle must narrow to the empty set"),
+        }
+    }
 }
 
 /// Every artist form is ONE comparison: a collated contains, `a:` and `a=` alike.

@@ -2254,6 +2254,22 @@ fn artist_contains_ids(
     artist_entities: &Archived<crate::ArtistEntityIndex>,
     needle: &str,
 ) -> Vec<u16> {
+    // A NEEDLE CARRYING `~` MATCHES NO ARTIST, and this early return is what stops it matching
+    // EVERY artist. `collate_name` keeps only alphanumerics, so `a:~` collated to the empty string
+    // and the substring scan below found it in all 38,906 artists. api.scryfall.com answers 0
+    // (2026-09-18) — the literal reading, and no artist name carries a tilde.
+    //
+    // The parser already stops a `~` value building a collated NODE, but that is not enough here:
+    // Scryfall draws no quoted/bare line for artists, so `bind` deliberately routes EVERY artist
+    // form — `ArtistLower` and `ArtistCollated` alike — through this one function, and the fold
+    // happens again on the way in. Both arms are covered by returning here.
+    //
+    // Collating to empty stays correct for every other character: `_` and `.` are stripped on
+    // Scryfall too, so `a:_` matches all 38,906 there and this port agrees. The tilde is the one it
+    // does not strip, which is data and not a rule.
+    if needle.contains('~') {
+        return Vec::new();
+    }
     let collated = crate::collate_name(needle);
     // memmem::Finder built once, reused across the vocab scan — its SIMD prefilter beats
     // rebuilding str::contains's searcher per entry (~1.3x, bench_substring_finders). #734.
