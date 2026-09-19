@@ -13064,6 +13064,69 @@ fn self_reference_composes_binds_per_face_and_refuses_to_narrow() {
     assert!(!expanded("mana_cost_jsonb", "mana"), "mana:/~/ is 404");
 }
 
+/// A QUOTED PHRASE EXPANDS `~` TOO, which the substring entry point used to miss entirely.
+///
+/// `fo:"~ dies"` answered 0 here against 822 on api.scryfall.com while `fo:/~ dies/` answered 822
+/// on both — the regex entry point had the alias and this one did not, so a quoted `~` was matched
+/// as the literal tilde and no oracle text holds one. The two forms are the same search there,
+/// measured 2026-09-18 in a single pass so corpus growth cannot explain the pair: `o:"~"` and
+/// `o:/~/` are both 19,407 with an empty difference set in BOTH directions, `fo:"~"` and `fo:/~/`
+/// both 22,222.
+///
+/// Asserted through `build_filter`, which is what actually chooses the entry point.
+#[test]
+fn a_quoted_phrase_expands_the_self_reference_on_the_oracle_columns_only() {
+    let node = |attr: &str, orig: &str, value: &str| {
+        serde_json::json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": attr, "original_attribute": orig}},
+                "op": ":",
+                "rhs": {"node_type": "StringValueNode", "kwargs": {"value": value}},
+            },
+        })
+    };
+    // Self-referential regex, plain substring, or neither — the three shapes this branch can build.
+    let shape = |attr: &str, orig: &str, value: &str| -> &'static str {
+        match super::build_filter(&node(attr, orig, value)) {
+            Ok(FilterExpr::TextRegex { regex, .. }) if regex.has_self_reference() => "self-regex",
+            Ok(FilterExpr::TextRegex { .. }) => "plain-regex",
+            Ok(FilterExpr::TextContains { .. }) => "contains",
+            Ok(_) => panic!("{attr}:{value:?} built neither a text regex nor a contains"),
+            Err(e) => panic!("{attr}:{value:?} failed to build: {e}"),
+        }
+    };
+
+    // The reported bug, both oracle spellings.
+    assert_eq!(shape("oracle_text", "fo", "~ dies"), "self-regex", r#"fo:"~ dies" is 822"#);
+    assert_eq!(shape("oracle_text", "o", "~ dies"), "self-regex", r#"o:"~ dies" is 713"#);
+    assert_eq!(shape("oracle_text", "o", "~"), "self-regex", r#"o:"~" is 19,407, same as o:/~/"#);
+
+    // FLAVOR KEEPS THE LITERAL TILDE, the same line the regex entry point draws: `ft:"~"` is 2 on
+    // api.scryfall.com, and those two are Blighted Agent and Urabrask the Hidden, whose
+    // Phyrexian-script flavor text carries a real tilde.
+    assert_eq!(shape("flavor_text", "ft", "~"), "contains", r#"ft:"~" is 2 REAL tildes"#);
+    // `name:/~/` is 404, so a quoted one cannot be the alias either.
+    assert_eq!(shape("card_name", "name", "~"), "contains", r#"name:"~" stays literal"#);
+
+    // NOTHING WITHOUT A TILDE PAYS FOR THIS — the ordinary phrase keeps the substring fast path
+    // rather than being lowered onto an unnarrowable regex scan.
+    assert_eq!(shape("oracle_text", "o", "draw a card"), "contains", "no tilde, no regex");
+
+    // And a phrase that carries BOTH a tilde and a metacharacter stays an exact phrase: the `.`
+    // is escaped, so it cannot widen into a wildcard on the way through the regex machinery.
+    let dotted = super::build_filter(&node("oracle_text", "o", "~ deals 1 damage."))
+        .expect("builds");
+    match dotted {
+        FilterExpr::TextRegex { regex, .. } => {
+            assert!(regex.has_self_reference());
+            assert!(regex.is_match("\u{10400} deals 1 damage."), "the literal phrase matches");
+            assert!(!regex.is_match("\u{10400} deals 1 damageX"), "the `.` must not be a wildcard");
+        }
+        _ => panic!("a tilde phrase must build a text regex"),
+    }
+}
+
 /// One face carrying just the two ids `~` reads: its own name, and whether it contributed text.
 fn oracle_face_named(card_name_id: u32, oracle_text_id: u32) -> OracleFace {
     OracleFace {
