@@ -567,6 +567,27 @@ describe("`~` is an ordinary value character, not a lex error", () => {
 		);
 	});
 
+	// A TILDE MUST NOT BE COLLATED AWAY. `collateName` keeps only alphanumerics, so a bare
+	// `name:~` folded to "" — an empty needle, which matches EVERYTHING. This port answered 33,865
+	// (the whole corpus) where api.scryfall.com answers 0, and a filter that silently WIDENS is the
+	// one shape a client cannot recover from. It appeared the moment `~` became lexable, so it is
+	// pinned here rather than left to the next person to rediscover.
+	test.each(["name:~", "a:~"])("%s is compared literally, never collated to an empty needle", (q) => {
+		const ast = canonicalStringify(parseScryfallQuery(q));
+		expect(ast).toContain('"node_type":"StringValueNode"');
+		expect(ast).not.toContain("CollatedNameValueNode");
+		expect(ast).toContain('"value":"~"');
+	});
+
+	// ...and collating to empty stays CORRECT for everything else, which is why the fix is the
+	// tilde and not the empty needle: `_` and `.` ARE stripped on Scryfall, so `name:_` and
+	// `name:__` match all 33,865 there and this port already agreed.
+	test("an underscore still collates to the empty needle that matches everything", () => {
+		const ast = canonicalStringify(parseScryfallQuery("name:_"));
+		expect(ast).toContain('"node_type":"CollatedNameValueNode"');
+		expect(ast).toContain('"value":""');
+	});
+
 	// The guard that must not regress: '/' opens a regex only in value position, so the division
 	// here still parses (upstream #908).
 	test("the regex-vs-division guard is untouched", () => {

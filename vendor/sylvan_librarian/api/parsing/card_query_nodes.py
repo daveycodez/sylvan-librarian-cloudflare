@@ -870,7 +870,17 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             # `a:gawel` answers 10 exactly as `a:gaweł` does, `a:rebecca-guay` answers
             # `a:"rebecca guay"`'s 166, and `a:gu*ay` answers `a:guay`'s 197. An artist could only be
             # found under their own diacritics and punctuation before this.
-            if attr in ("card_name", "card_artist") and self.operator in (":", "=") and not self.rhs.literal:
+            # A `~` IS NEVER COLLATED AWAY, because collation deletes it and an empty needle matches
+            # EVERYTHING. `collate_name` keeps only alphanumerics, so a bare `name:~` folds to "" and
+            # answers the whole corpus where api.scryfall.com answers 0 (2026-09-18). A filter that
+            # silently WIDENS is the one shape a client cannot recover from.
+            #
+            # Collating to empty is otherwise CORRECT and stays: `_` and `.` are stripped there too,
+            # so `name:_`, `name:__` and `a:_` match everything on Scryfall (33,865 / 33,865 /
+            # 38,906). The tilde is the character it does NOT strip, which is data and not a rule --
+            # `name:~`, `a:~` and `t:~` are each 0 there, the literal reading, and no card name
+            # contains a tilde (`name:/~/` is 404).
+            if attr in ("card_name", "card_artist") and self.operator in (":", "=") and not self.rhs.literal and "~" not in value:
                 return {"node_type": "CollatedNameValueNode", "kwargs": {"value": collate_name(fold_accents(value))}}
             return {"node_type": "StringValueNode", "kwargs": {"value": value}}
 

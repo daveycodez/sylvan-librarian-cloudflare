@@ -621,10 +621,26 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			// answers `a:rebecca`'s 405 — so `bind` routes every artist form through one collated
 			// contains (`artist_contains_ids`). The branch below is kept because `card_name` still
 			// needs it, and because the collated node saves the engine the fold on the common path.
+			// A `~` IS NEVER COLLATED AWAY, because collation deletes it and an empty needle matches
+			// EVERYTHING. `collateName` keeps only alphanumerics, so a bare `name:~` folded to "" and
+			// this port answered 33,865 — the whole corpus — where api.scryfall.com answers 0
+			// (2026-09-18). A filter that silently WIDENS is the one shape a client cannot recover from,
+			// and it appeared the moment `~` became lexable.
+			//
+			// Collating to empty is otherwise CORRECT and stays: `_` and `.` are stripped there too, so
+			// `name:_`, `name:__` and `a:_` match everything on Scryfall (33,865 / 33,865 / 38,906) and
+			// this port already agreed on all three. The tilde is the character it does NOT strip, which
+			// is data and not a rule — `name:~`, `a:~` and `t:~` are each 0 there, the literal reading,
+			// and no card name contains a tilde (`name:/~/` is 404).
+			//
+			// So a bare value carrying one skips the collated node and is compared literally, which is
+			// exactly that reading. `~` on the two ORACLE columns is untouched by this — it never built a
+			// collated node — and stays the self-reference alias the engine expands.
 			if (
 				(attr === "card_name" || attr === "card_artist") &&
 				(this.operator === ":" || this.operator === "=") &&
-				!this.rhs.literal
+				!this.rhs.literal &&
+				!value.includes("~")
 			) {
 				return { node_type: "CollatedNameValueNode", kwargs: { value: collateName(foldAccents(value)) } };
 			}
