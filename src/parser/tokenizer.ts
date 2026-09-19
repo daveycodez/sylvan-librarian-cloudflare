@@ -33,8 +33,18 @@ export interface Token {
 	readonly spaceBefore: boolean;
 }
 
-const WORD_START = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_");
-const WORD_CONT = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.");
+// `~` IS AN ORDINARY VALUE CHARACTER, and leaving it out of both sets made every BARE spelling a
+// LEX ERROR instead of a search: `o:~` fell through to "Unexpected character" below, while
+// api.scryfall.com answers 19,407 for it (2026-09-18). Measured there the same day, EVERY shape
+// parses and only the alias matches — `o:~x` 0, `o:a~b` 0, `name:~` 0, `t:~` 0 and a bare `~` 0,
+// not one of them a query error — so it is word-START and word-CONTINUATION both, and not a token
+// of its own. `o:a~b` is what settles the continuation half: it is a valid empty search there, so
+// the tilde joins the word rather than splitting it.
+//
+// The QUOTED spellings never had this problem, which is why the bug outlived the engine-side fix:
+// `o:"~"` lexes as a QUOTED token and reaches the engine intact, so only the unquoted form threw.
+const WORD_START = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_~");
+const WORD_CONT = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.~");
 const DIGIT = new Set("0123456789");
 const SPACE = new Set(" \t\r\n");
 // A comma standing on its own is a natural-language separator, skipped like whitespace

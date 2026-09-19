@@ -535,6 +535,45 @@ describe("non-ASCII literals mixed with metacharacters", () => {
 	}
 });
 
+// ── the `~` self-reference alias lexes bare ──────────────────────────────────
+
+describe("`~` is an ordinary value character, not a lex error", () => {
+	// Every one of these threw `Failed to lex query` before this: `~` was in neither WORD_START nor
+	// WORD_CONT, so it fell past every branch of the tokenizer to "Unexpected character". On
+	// api.scryfall.com (2026-09-18) all of them PARSE, and only the alias matches — `o:~` is 19,407
+	// while `o:~x`, `o:a~b`, `name:~`, `t:~` and a bare `~` are each 0 WITHOUT a query error.
+	test.each(["o:~", "o:~x", "o:a~b", "name:~", "t:~", "~"])("%s lexes", (q) => {
+		expect(() => parseScryfallQuery(q)).not.toThrow();
+	});
+
+	// The bare and quoted spellings are the SAME SEARCH on the oracle column — both 19,407 there —
+	// which is what makes this a lexer fix rather than a semantic one.
+	test('o:~ parses identically to o:"~"', () => {
+		expect(canonicalStringify(parseScryfallQuery("o:~"))).toBe(canonicalStringify(parseScryfallQuery('o:"~"')));
+	});
+
+	// The continuation half: a tilde JOINS the word rather than splitting it, so this stays one
+	// leaf. Scryfall answers 0 for `o:a~b` — valid and empty, not two terms.
+	test("a tilde inside a word keeps the word whole", () => {
+		expect(canonicalStringify(parseScryfallQuery("o:a~b"))).toContain('"value":"a~b"');
+	});
+
+	// UNQUOTED IS NOT THE QUOTED PHRASE, and the engine fix does not change that: `fo:~ dies` is two
+	// terms (the alias AND a bare name), which is why Scryfall answers 3 for it against 822 for
+	// `fo:"~ dies"`. If these ever collapse to one leaf, the phrase search has silently widened.
+	test('a space still separates terms — `fo:~ dies` is not `fo:"~ dies"`', () => {
+		expect(canonicalStringify(parseScryfallQuery("fo:~ dies"))).not.toBe(
+			canonicalStringify(parseScryfallQuery('fo:"~ dies"')),
+		);
+	});
+
+	// The guard that must not regress: '/' opens a regex only in value position, so the division
+	// here still parses (upstream #908).
+	test("the regex-vs-division guard is untouched", () => {
+		expect(() => parseScryfallQuery("power/2>1 name:/a/")).not.toThrow();
+	});
+});
+
 // ── failure semantics ────────────────────────────────────────────────────────
 
 describe("failure semantics", () => {

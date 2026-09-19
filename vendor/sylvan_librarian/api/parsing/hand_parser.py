@@ -141,8 +141,15 @@ class Token:
 
 
 _ARITH_OPS: frozenset[TT] = frozenset({TT.PLUS, TT.MINUS, TT.STAR, TT.SLASH})
-_WORD_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")
-_WORD_CONT = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.")
+# `~` IS AN ORDINARY VALUE CHARACTER, and leaving it out of both sets makes every BARE spelling a
+# LEX ERROR instead of a search: `o:~` falls through to "Unexpected character" below, while
+# api.scryfall.com answers 19,407 for it (2026-09-18). Measured there the same day, EVERY shape
+# parses and only the alias matches -- `o:~x` 0, `o:a~b` 0, `name:~` 0, `t:~` 0 and a bare `~` 0,
+# not one of them a query error -- so it is word-START and word-CONTINUATION both, and not a token
+# of its own. `o:a~b` is what settles the continuation half: it is a valid empty search there, so
+# the tilde joins the word rather than splitting it.
+_WORD_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_~")
+_WORD_CONT = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.~")
 _DIGIT = frozenset("0123456789")
 _SPACE = frozenset(" \t\r\n")
 # A comma standing on its own is a natural-language separator, skipped like whitespace
