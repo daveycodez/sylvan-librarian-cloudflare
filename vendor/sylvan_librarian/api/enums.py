@@ -46,7 +46,8 @@ class PreferOrder(enum.StrEnum):
     # higher number only on one release date) while a same-art finish twin yields; a set that prints both a showcase
     # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); a digital-only
     # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language;
-    # a flavor-named (crossover) printing is never a candidate, and the Universes Beyond tag
+    # a flavor-named (crossover) printing, or an English one printed under another name, is
+    # never a candidate, and the Universes Beyond tag
     # alone demotes nothing. See the engine's `Prefer`.
     BORDERLESS = enum.auto()
 

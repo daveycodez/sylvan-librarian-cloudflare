@@ -58,7 +58,9 @@ export const UNIQUE_ON = {
  * steps down to just under the variants, a borderless from another set stays on top. A digital-only printing never answers while a
  * paper one exists; a card that exists only digitally still ranks its own by the tiers. The
  * retro tier reads the 1993 frame as well as 1997. A flavor-named printing is never a candidate,
- * because it is drawn and sold as someone else: Najeela, the Blade-Blossom's four borderless
+ * because it is drawn and sold as someone else, and neither is an English printing whose printed
+ * name is not the card's (Wernog, Rider's Chaplain answers slx/8, not the Secret Lair sld/347
+ * printed "Will the Wise"): Najeela, the Blade-Blossom's four borderless
  * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which
  * is Tidus. A Universes Beyond printing under the card's own name is a candidate like any other,

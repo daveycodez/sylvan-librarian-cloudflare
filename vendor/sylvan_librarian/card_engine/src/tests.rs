@@ -17167,6 +17167,19 @@ fn an_explicit_prefer_still_beats_the_price_orderby() {
 /// frame, black border, nonfoil), id 2 a showcase frame from a Universes Beyond set, id 3 a
 /// borderless printing, id 4 a foil-only surge-foil variant. Every marker the measured class
 /// reads has a printing here that carries ONLY it, so a wrong arm shows up as the wrong id.
+/// The folded name `prefer:borderless`'s rename test compares a printed name against — the same
+/// string `folded_name` resolves for the card, fixture stubs storing it inline.
+fn folded_name_for_test(data: &CardData, cid: usize) -> String {
+    let card = &data.cards[cid];
+    if card.card_name_folded_id != NONE_STR {
+        return data.strings[card.card_name_folded_id as usize].clone();
+    }
+    if card.card_name_lower_id != NONE_STR {
+        return data.strings[card.card_name_lower_id as usize].clone();
+    }
+    card.card_name_lower.as_str().to_owned()
+}
+
 fn class_prefer_store() -> CardData {
     let mut vocab = VocabInterner::new();
     let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
@@ -17957,6 +17970,54 @@ fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
     // Never across a tier: the foil-only borderless still beats a nonfoil plain printing.
     data.printings[2].card_border_id = black;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a foil-only borderless over a nonfoil plain");
+}
+
+/// An ENGLISH printing whose PRINTED NAME is not the card's is no candidate — Wernog, Rider's
+/// Chaplain's shape, whose Secret Lair sld/347 is printed "Will the Wise" and carries no flavor
+/// name. A foreign printing is exempt: its printed name differs by translation, and a `lang:ja`
+/// pool must keep every printing it has.
+#[test]
+fn prefer_borderless_ignores_an_english_printing_printed_under_another_name() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let borderless = data.printings[2].card_border_id;
+    let black = data.printings[0].card_border_id;
+    let en = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("en".to_owned());
+    let ja = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("ja".to_owned());
+    // The card's folded name, and a printed name that is NOT it.
+    let card_name = folded_name_for_test(&data, 0);
+    data.strings.push(card_name);
+    let same_name = (data.strings.len() - 1) as u32;
+    data.strings.push("will the wise".to_owned());
+    let other_name = (data.strings.len() - 1) as u32;
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.compat.lang_id = en;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 2 is the borderless one and first by default: it answers while its printed name is the
+    // card's own, and stops being a candidate the moment that name is someone else's.
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].printed_name_folded_id = same_name;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a printed name that IS the card's changes nothing");
+    data.printings[1].printed_name_folded_id = other_name;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "an English printing printed under another name is no candidate");
+    // No printed name at all: a candidate again.
+    data.printings[1].printed_name_folded_id = NONE_STR;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "no printed name: a candidate");
+    // FOREIGN IS EXEMPT: in a Japanese pool every printed name differs by translation, and the
+    // borderless one still answers.
+    data.printings[1].printed_name_folded_id = other_name;
+    for p in &mut data.printings {
+        p.compat.lang_id = ja;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a foreign printed name is a translation, not a rename");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the

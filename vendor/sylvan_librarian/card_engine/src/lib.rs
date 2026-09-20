@@ -9819,6 +9819,19 @@ pub(crate) fn printing_has_flavor_name(p: &APrinting) -> bool {
     u32::from(p.flavor_name_id) != NONE_STR || p.faces.iter().any(|f| u32::from(f.flavor_name_id) != NONE_STR)
 }
 
+/// Is this printing PRINTED UNDER ANOTHER NAME — does its printed name differ from the card's own?
+/// Scryfall's other rename key, beside `flavor_name`: Wernog, Rider's Chaplain's Secret Lair
+/// sld/347 is printed as "Will the Wise", with no flavor name anywhere on the record. Compared on
+/// the FOLDED names, which are lowercased, accent-folded and joined " // " across faces on both
+/// sides, so case, diacritics and a two-faced card all compare like with like.
+///
+/// The caller must ask this of ENGLISH printings only: a foreign printing's printed name differs
+/// from the English one by translation, not by rename, and the language offset already ranks it.
+fn printing_is_renamed(card: &AOracleCard, p: &APrinting, strings: &AStrings) -> bool {
+    let id = u32::from(p.printed_name_folded_id);
+    id != NONE_STR && str_at(strings, id).is_some_and(|printed| printed != folded_name(card, strings))
+}
+
 /// Is this printing a Universes Beyond one — does it carry the `universesbeyond` `is:` tag?
 fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
     ids.universesbeyond != VOCAB_NONE && p.card_is_tags.iter().any(|v| u16::from(*v) == ids.universesbeyond)
@@ -9876,7 +9889,10 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// and the tiers decide as usual). Scryfall's own `prefer:atypical` answers the Japanese
 /// promo, which is why that prefer keeps it. A flavor-named printing is
 /// never a candidate, because it is drawn and sold as someone else (Najeela's four borderless
-/// printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon; Thrasios's fca/58 is Tidus).
+/// printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon; Thrasios's fca/58 is Tidus), and
+/// neither is an ENGLISH printing whose PRINTED NAME is not the card's — Scryfall's other rename
+/// key, the one Wernog, Rider's Chaplain's Secret Lair sld/347 carries as "Will the Wise" with no
+/// flavor name at all. Foreign printings are exempt: theirs differ by translation.
 /// A Universes Beyond printing under the card's OWN name is a candidate like any other — the
 /// crossover TAG demotes nothing, only a flavor name excludes — so Soul Warden answers its newest
 /// borderless, the Secret Lair sld/2435, over the in-universe spg/65 and sld/1708 (three
@@ -10021,9 +10037,16 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         // Secret Lair sld/2435, crossover tag and all. Textless is checked FIRST: it is a frame
         // variant to the atypical class, and the one variant nobody can read.
         Prefer::Borderless(ids) => {
+            let lang = u16::from(p.compat.lang_id);
+            let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
             // Below every same-named printing in EVERY language — a `lang:ja` pool must still put
-            // its own crossovers last — hence further down than the language offset reaches.
-            if printing_has_flavor_name(p) {
+            // its own crossovers last — hence further down than the language offset reaches. Two
+            // keys say "sold as something else": a flavor name, and — on an ENGLISH printing — a
+            // printed name that is not the card's (Wernog, Rider's Chaplain's Secret Lair sld/347
+            // is printed "Will the Wise", and carries no flavor name at all, so it answered until
+            // this read `printed_name`). A foreign printing's printed name differs by translation,
+            // so the test is English-only and a `lang:ja` pool keeps every one of its printings.
+            if printing_has_flavor_name(p) || (!foreign && printing_is_renamed(card, p, strings)) {
                 return default_score() - 32.0 * CLASS_BONUS;
             }
             let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);
@@ -10070,8 +10093,6 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
             // non-English rows among themselves for a `lang:` query.
-            let lang = u16::from(p.compat.lang_id);
-            let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
             let language_offset = if foreign { -16.0 } else { 0.0 };
             // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing
             // exists — below every tier, every language and every crossover. Tropical Island's
