@@ -18020,6 +18020,41 @@ fn prefer_borderless_ignores_an_english_printing_printed_under_another_name() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a foreign printed name is a translation, not a rename");
 }
 
+/// Among the BORDERLESS printings a Secret Lair drop's featured card ranks above its BONUS-slot
+/// card — Wayfarer's Bauble's shape, the bonus sld/7113 of the 2026-08-17 drop against the earlier
+/// sld/2656 it beat on recency. A card whose only borderless printing is a bonus card keeps it,
+/// and the key never crosses a tier.
+#[test]
+fn prefer_borderless_ranks_a_featured_card_above_a_secret_lair_bonus_card() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let sldbonus = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("sldbonus".to_owned());
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "sld", "sld", "ddd"][i]);
+    }
+    // ids 2 and 3 are the two borderless Secret Lairs; id 2 is first by default and the bonus card.
+    data.printings[1].card_border_id = borderless;
+    data.printings[2].card_border_id = borderless;
+    data.printings[1].compat.promo_types = vec![sldbonus];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a featured borderless over a bonus-slot one");
+    // The only borderless printing being a bonus card, it still answers: the key orders the tier,
+    // it does not empty it.
+    data.printings[2].card_border_id = black;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a lone bonus borderless still answers");
+    // Never across a tier: the bonus borderless beats another set's extended art.
+    let extendedart = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("extendedart".to_owned());
+    data.printings[2].compat.frame_effects = vec![legendary, extendedart];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a bonus borderless over an extended art");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

@@ -9514,6 +9514,11 @@ pub(crate) struct PreferClassIds {
     /// `CompatFields.frame_effects` member `extendedart`, on its own: `prefer:borderless`'s
     /// second tier, directly under borderless and above every other variant, full art included.
     extendedart: u16,
+    /// `CompatFields.promo_types` member `sldbonus` — the card in a Secret Lair drop's BONUS slot,
+    /// not one of the cards the drop is sold for. Among the borderless, ranked under a printing
+    /// that is not one: Wayfarer's Bauble and Rogue's Passage both answered their bonus card from
+    /// the 2026-08-17 drop over an earlier Secret Lair of their own.
+    sldbonus: u16,
     /// `CompatFields.promo_types` member `poster` — the Secret Lair poster-style cards. Full art
     /// to `prefer:borderless` whatever Scryfall's `full_art` flag says: the flag is set on the
     /// 2021 poster sld/189 and not on the 2026 poster sld/2278, and both are the same thing.
@@ -9534,6 +9539,7 @@ impl PreferClassIds {
         showcase: VOCAB_NONE,
         extendedart: VOCAB_NONE,
         poster: VOCAB_NONE,
+        sldbonus: VOCAB_NONE,
     };
 
     pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
@@ -9553,6 +9559,7 @@ impl PreferClassIds {
             showcase: id("showcase"),
             extendedart: id("extendedart"),
             poster: id("poster"),
+            sldbonus: id("sldbonus"),
         }
     }
 }
@@ -9595,6 +9602,15 @@ fn printing_is_borderless(p: &APrinting, strings: &AStrings) -> bool {
 /// under its black showcase siblings in the variant tier, exactly as intended.
 fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.card_border_id)) == Some("white")
+}
+
+/// A Secret Lair drop's BONUS-slot card — the extra printing bundled with a drop rather than one
+/// of the cards it is sold for. `prefer:borderless` ranks it under a borderless printing that is
+/// not one; nothing else in the data separates them, and both cards whose scans read poorly
+/// enough to notice (Rogue's Passage sld/7112, Wayfarer's Bauble sld/7113) are bonus cards from
+/// one drop, each winning on recency over an earlier Secret Lair of its own.
+fn printing_is_secret_lair_bonus(p: &APrinting, ids: &PreferClassIds) -> bool {
+    ids.sldbonus != VOCAB_NONE && p.compat.promo_types.iter().any(|v| u16::from(*v) == ids.sldbonus)
 }
 
 /// A Secret Lair printing — Drop, Ultimate Edition, Countdown, Promo, Showcase Planes — read from
@@ -9865,7 +9881,8 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// ltr/442 over the showcase-framed ltr/797), a
 /// real scan above a placeholder or low-resolution image, a printing sold in nonfoil above a
 /// foil-only one (the special sheets come foil-only: Nick Fury answers msh/357 over the
-/// comic-cover msh/389), then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
+/// comic-cover msh/389), among the borderless a drop's featured card above its bonus-slot card
+/// (Wayfarer's Bauble answers sld/2656 over the bonus sld/7113), then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
 /// eoe/350, newest first and the number only on one release date); the rule permutes a set's printings among themselves only, in the variant tiers
@@ -10083,6 +10100,11 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // (an eighth), so a stepped-down borderless never climbs back over its set's showcase
             // on image quality alone.
             let scan = if compat_flag(&p.compat, COMPAT_HIGHRES_IMAGE) { 0.0625 } else { 0.0 };
+            // ...and among the borderless, a drop's FEATURED card above its BONUS-slot card: a
+            // sixty-fourth, the last key before the art rule, the top borderless tier only as with
+            // the Secret Lair and plain-frame keys. A card whose ONLY borderless printing is a
+            // bonus card keeps it — this orders the tier, it does not empty it.
+            let featured = if frame_tier > 5.0 && !printing_is_secret_lair_bonus(p, &ids) { 0.015625 } else { 0.0 };
             // ...and a printing sold in NONFOIL above a foil-only one. The regular run of a treatment
             // comes in both finishes; the special sheets come foil-only — Marvel Super Heroes'
             // comic-cover borderless msh/389-400, the galaxy-foil eoe/378, the surge-foil pip/1036,
@@ -10113,7 +10135,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             } else {
                 default_score()
             };
-            (frame_tier + text_box + border + set_key + plain_frame + scan + finish + language_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + border + set_key + plain_frame + scan + finish + featured + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

@@ -48,7 +48,8 @@ export const UNIQUE_ON = {
  * answers the Spotlight Series pspl/1 over sld/2650; the frame tiers are exempt), among the
  * borderless a plain frame above a showcase frame (Gandalf the White answers ltr/442), a real scan above a placeholder or low-resolution image, a
  * nonfoil printing above a foil-only one (Nick Fury answers msh/357 over the comic-cover msh/389),
- * then inside one set the newest printing with its own illustration wins, the higher number only on
+ * a Secret Lair drop's featured card above its bonus-slot card (Wayfarer's Bauble answers
+ * sld/2656 over the bonus sld/7113), then inside one set the newest printing with its own illustration wins, the higher number only on
  * one release date, and one sharing a lower printing's illustration is a finish twin and yields (Singularity
  * Rupture answers the buy-a-box eoe/398; Stomping Ground eoe/283 over its galaxy-foil eoe/378),
  * and the default order decides after that. One exception to the top tier: a set
