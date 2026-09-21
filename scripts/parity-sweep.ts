@@ -78,6 +78,7 @@ import {
 	SORT_DIRECTION,
 	type SortDirection,
 } from "../src/routes/enums";
+import { MIRRORED_CACHE_CONTROL } from "../src/routes/scryfall-compat/reference-routes";
 import { stringifyScryfall } from "../src/routes/scryfall-compat/respond";
 import {
 	checkVolatileShape,
@@ -3311,6 +3312,21 @@ async function runPeripheralCase(c: PeripheralCase): Promise<void> {
 		// Location is not a comparable value at all.
 		if (header === "location" && c.path.startsWith("/cards/random")) continue;
 		if (header === "location" && (theirsValue ?? "").split("?")[0] === (oursValue ?? "").split("?")[0]) continue;
+		// The reference data routes' hour is a deliberate deviation (see MIRRORED_CACHE_CONTROL), and
+		// ledgered per HEADER rather than per case: a case-level ledger would also absorb a status or
+		// body divergence on the same route. Only the exact pair is excused, so Scryfall changing its
+		// own tier still surfaces as NEW.
+		if (header === "cache-control" && theirsValue === "public" && oursValue === MIRRORED_CACHE_CONTROL) {
+			record({
+				classification: "LEDGERED",
+				label: c.group,
+				kind: `header:${header}`,
+				detail: `scryfall ${theirsValue}, ours ${oursValue} — LEDGERED: reference data holds for an hour here; Scryfall leaves it to heuristics`,
+				caseName: c.name,
+				path: `${method} ${c.path}`,
+			});
+			continue;
+		}
 		report(`header:${header}`, `scryfall ${theirsValue ?? "(absent)"}, ours ${oursValue ?? "(absent)"}`);
 	}
 	if (method === "HEAD") return;

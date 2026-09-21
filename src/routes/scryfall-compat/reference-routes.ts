@@ -41,15 +41,24 @@ import { asBool, scryfallCatalogJson, scryfallJson, scryfallListJson } from "./r
 //   /sets, /sets/:code, /sets/tcgplayer/:id, /catalog/*, /symbology   public
 //   /symbology/parse-mana                                            max-age=0, private, must-revalidate
 //
-// Both are mildly surprising and both are mirrored rather than chosen. A bare `public` with no
-// max-age leaves freshness to the cache's heuristics; `parse-mana` is the one deterministic route
-// here and would be safe to cache hard, yet upstream marks it private. Matching is the point: a
-// client that swapped its base URL would otherwise hold a response for sixteen hours where Scryfall
-// revalidates, and would not find out until it served something stale.
+// `parse-mana` is mirrored: it is the one deterministic route here and would be safe to cache hard,
+// yet upstream marks it private, and matching is the point.
+//
+// The data routes are NOT mirrored, and this is a DELIBERATE DEVIATION. A bare `public` with no
+// max-age leaves freshness to the cache's heuristics, which in practice means a client revalidates
+// or downloads again on every read, and the lists these routes serve are what a client wants to
+// keep. They change once a day, at the nightly import (11:17 UTC), so an hour holds them across
+// every reload in between and bounds how long a client keeps yesterday's list once a new set lands.
+// A client that swapped its base URL holds these for an hour where Scryfall leaves it to
+// heuristics, which is the opposite direction from the card routes' sixteen hours.
+//
+// The not-found answer for a set shares the tier, so a code that the next import adds is still a
+// 404 for up to an hour to a client that asked before it existed. That is the same hour.
 //
 // `private` does not stop the Worker's own edge cache from being useless here, but it does stop
 // shared caches in front of it — which is Scryfall's behaviour, so it is ours.
-const MIRRORED_CACHE: Record<string, string> = { "Cache-Control": "public" };
+export const MIRRORED_CACHE_CONTROL = "public, max-age=3600";
+const MIRRORED_CACHE: Record<string, string> = { "Cache-Control": MIRRORED_CACHE_CONTROL };
 const PARSE_MANA_CACHE: Record<string, string> = { "Cache-Control": "max-age=0, private, must-revalidate" };
 
 /**

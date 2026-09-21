@@ -216,21 +216,22 @@ describe("nothing published yet", () => {
 });
 
 describe("cache headers", () => {
-	// Measured against api.scryfall.com on 2026-08-11. These are NOT the card routes' 16 hours: a
-	// client that swapped its base URL would otherwise hold a response far longer than Scryfall
-	// intends, and would not find out until it served something stale.
+	// Scryfall's data tier (measured 2026-08-11) is a bare `public`; ours adds an hour, a deliberate
+	// deviation — see MIRRORED_CACHE_CONTROL. `parse-mana` is still Scryfall's own tier.
 	test.each([
-		["/sets", "public"],
-		["/sets/mh3", "public"],
-		["/sets/tcgplayer/23361", "public"],
-		["/catalog/creature-types", "public"],
-		["/symbology", "public"],
+		["/sets", "public, max-age=3600"],
+		["/sets/mh3", "public, max-age=3600"],
+		["/sets/tcgplayer/23361", "public, max-age=3600"],
+		["/catalog/creature-types", "public, max-age=3600"],
+		["/symbology", "public, max-age=3600"],
 		["/symbology/parse-mana?cost=W", "max-age=0, private, must-revalidate"],
-	])("%s carries Scryfall's own tier", async (path, expected) => {
+	])("%s carries its tier", async (path, expected) => {
 		expect((await testDispatch(referenceCtx().ctx, path)).headers.get("Cache-Control")).toBe(expected);
 	});
 
 	test("a 404 carries the tier too, as Scryfall's does", async () => {
-		expect((await testDispatch(referenceCtx().ctx, "/sets/zzz")).headers.get("Cache-Control")).toBe("public");
+		expect((await testDispatch(referenceCtx().ctx, "/sets/zzz")).headers.get("Cache-Control")).toBe(
+			"public, max-age=3600",
+		);
 	});
 });
