@@ -21,6 +21,10 @@ declare module "sylvan-engine-wasm" {
 		begin_store_load(totalLen: number): void;
 		store_load_chunk(chunk: Uint8Array): void;
 		finish_store_load(): void;
+		/** A load whose bytes arrive as concatenated gzip members, inflated inside wasm. */
+		begin_store_load_gzip(totalLen: number): void;
+		store_load_gzip_chunk(chunk: Uint8Array): void;
+		finish_store_load_gzip(): void;
 		unload_store(): void;
 		store_loaded(): boolean;
 		query(filterTreeJson: string, optsJson: string): string;

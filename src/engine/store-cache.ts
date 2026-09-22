@@ -132,6 +132,10 @@ CREATE TABLE IF NOT EXISTS archive_cache_meta (
 CREATE TABLE IF NOT EXISTS live_manifest (
 	id INTEGER PRIMARY KEY,
 	json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS announced (
+	id INTEGER PRIMARY KEY,
+	store_key TEXT NOT NULL
 );`;
 
 /** `sql.exec` with the binding types this module actually uses, and rows as plain records. */
@@ -430,6 +434,8 @@ export function cachedCompressedStream(
 	archiveKey: string,
 	chunkCount: number,
 	expectedGzipBytes: number,
+	/** False yields the stored gzip members untouched, for a consumer that inflates them itself. */
+	inflate = true,
 ): ReadableStream<Uint8Array> | null {
 	if (!isCompressedCached(storage, archiveKey, chunkCount, expectedGzipBytes)) return null;
 	let chunk = 0;
@@ -467,7 +473,7 @@ export function cachedCompressedStream(
 					controller.error(new Error(`compressed cache for ${archiveKey} chunk ${chunk} is unreadable`));
 					return;
 				}
-				current = rows.pipeThrough(new DecompressionStream("gzip")).getReader();
+				current = (inflate ? rows.pipeThrough(new DecompressionStream("gzip")) : rows).getReader();
 			}
 		},
 	});
@@ -500,4 +506,27 @@ export function readLiveManifest(storage: ArchiveCacheStorage): unknown | null {
 		// Never a reason to fail a load: no local manifest simply means reading KV.
 		return null;
 	}
+}
+
+/**
+ * The store this object last announced itself for (see announceSelf), or null.
+ *
+ * Lives in the same storage `releaseCache` wipes, and the coordinator deletes an announcement only
+ * together with that release — so the flag and the KV key disappear together, and a released object
+ * announces again on its next load.
+ */
+export function announcedFor(storage: ArchiveCacheStorage): string | null {
+	try {
+		ensureCacheSchema(storage);
+		const row = exec(storage, "SELECT store_key FROM announced WHERE id = 0")[0];
+		return row ? String(row.store_key) : null;
+	} catch {
+		// Unreadable is "not announced": the cost is one redundant KV write, never a missed one.
+		return null;
+	}
+}
+
+export function recordAnnounced(storage: ArchiveCacheStorage, storeKey: string): void {
+	ensureCacheSchema(storage);
+	exec(storage, "INSERT OR REPLACE INTO announced (id, store_key) VALUES (0, ?)", storeKey);
 }

@@ -28,7 +28,8 @@
 // and note it is a read-through cache over a source of truth that is still KV,
 // not a second copy of record. It holds a partitioned archive COMPRESSED, chunk
 // for chunk (decompressed copies of every partition in every region do not fit
-// the 5GB DO pool), so a cached wake skips the fetch and still pays the gunzip.
+// the 5GB DO pool), so a cached wake skips the fetch and still pays the inflate —
+// which runs inside the engine (feedStore), not through DecompressionStream.
 
 import * as wasm from "sylvan-engine-wasm";
 import {
@@ -45,6 +46,7 @@ import { type FeedCounts, feedBlocks } from "./load-blocks";
 import { probePlacement } from "./placement";
 import {
 	type ArchiveCacheStorage,
+	announcedFor,
 	type CacheWriter,
 	cachedArchiveStream,
 	cachedCompressedStream,
@@ -57,6 +59,7 @@ import {
 	pruneCache,
 	putCompressedChunk,
 	readLiveManifest,
+	recordAnnounced,
 	recordLiveManifest,
 } from "./store-cache";
 import {
@@ -538,13 +541,62 @@ class WasmEngine implements Engine {
 
 export { readManifest } from "./store-kv";
 
-/** Stream the store bytes into wasm memory, in blocks (see load-blocks.ts for why). */
+/**
+ * announceSelf, at most once per object per STORE rather than once per wake.
+ *
+ * The key's value never changes ("1"), yet every cold load rewrote it — and an idle object is
+ * hibernated after ~10s, so a load is not rare: measured 2026-09-22, DeckGen's partitions reloaded
+ * ~500 times an hour, which is ~12,000 KV writes a day against the free plan's 1,000. The flag
+ * sits in this object's own storage, and is keyed by the store it announced for, so the write is
+ * repeated once per publish: if the key was ever deleted by hand without releasing the object,
+ * the next generation puts it back. A write that failed is not recorded, so the next load retries.
+ */
+async function announceSelfOnce(env: Env, ctx: LoadContext | undefined, storeKey: string): Promise<void> {
+	const storage = ctx?.storage;
+	if (!ctx?.label) return;
+	if (storage && announcedFor(storage) === storeKey) return;
+	const landed = await announceSelf(env, ctx.label);
+	if (!landed || !storage) return;
+	try {
+		recordAnnounced(storage, storeKey);
+	} catch (err) {
+		// Unrecorded means the next load writes the key again: redundant, never missing.
+		console.warn(`${tag(ctx)}could not record the announcement locally: ${err}`);
+	}
+}
+
+/**
+ * The ceiling on one COMPRESSED crossing into the engine's inflater.
+ *
+ * wasm-bindgen copies each crossing through a scratch allocation inside linear memory, and linear
+ * memory never shrinks, so the largest crossing is paid for the rest of the instance's life. A
+ * KV chunk arrives as ONE ~14MB value; crossed whole it would leave every partition object ~14MB
+ * heavier against the 128MB isolate it may share with a sibling. At 1MB the scratch is noise and a
+ * 14MB partition is ~15 crossings, which is nothing next to the ~10,000 4KB pieces the
+ * DecompressionStream path crossed.
+ */
+const GZIP_FEED_BYTES = 1024 * 1024;
+
+/**
+ * Stream the store bytes into wasm memory, in blocks (see load-blocks.ts for why).
+ *
+ * `gzipped` bytes are the stored gzip members, inflated INSIDE the engine straight into the store
+ * buffer (see begin_store_load_gzip in engine/wasm/src/lib.rs for the measurement that moved the
+ * gunzip there: 306-752ms of DO CPU per partition through DecompressionStream in workerd).
+ */
 async function feedStore(
 	w: wasm.EngineHandle,
 	body: ReadableStream<Uint8Array>,
 	totalLen: number,
 	sink: CacheWriter | null,
+	gzipped = false,
 ): Promise<FeedCounts> {
+	if (gzipped) {
+		w.begin_store_load_gzip(totalLen);
+		const counts = await feedBlocks(body, (block) => w.store_load_gzip_chunk(block), GZIP_FEED_BYTES);
+		w.finish_store_load_gzip();
+		return counts;
+	}
 	w.begin_store_load(totalLen);
 	const counts = await feedBlocks(body, (block) => {
 		w.store_load_chunk(block);
@@ -618,9 +670,10 @@ function archiveBytes(
  * takes (plan reconciliation 2 — see the store-cache.ts header for why N
  * decompressed partition copies do not fit the 5GB DO pool).
  *
- * On a hit the body is the local compressed copy DECOMPRESSING as it streams;
- * on a miss it is the KV stream with each stored chunk tee'd into the cache
- * before decompression — each chunk commits meta-last as a unit, and the copy
+ * Either way the body is the archive STILL COMPRESSED — the stored gzip members,
+ * which the engine inflates itself (feedStore). On a hit it is the local copy;
+ * on a miss it is the KV stream with each stored chunk tee'd into the cache as
+ * it passes — each chunk commits meta-last as a unit, and the copy
  * only becomes readable as a whole when every chunk is present and their bytes
  * sum to the manifest's store_gzip_bytes (isCompressedCached). `commit` prunes
  * once wasm has accepted the archive; `invalidate` is the readable-and-wrong
@@ -648,7 +701,7 @@ function compressedArchiveBytes(
 	if (storage) {
 		try {
 			ensureCacheSchema(storage);
-			const local = cachedCompressedStream(storage, source.storeKey, chunkCount, gzipBytes);
+			const local = cachedCompressedStream(storage, source.storeKey, chunkCount, gzipBytes, false);
 			if (local) return { body: local, cached: true, commit: () => {}, invalidate: dropAll };
 		} catch (err) {
 			console.warn(
@@ -669,7 +722,7 @@ function compressedArchiveBytes(
 		}
 	};
 	return {
-		body: kvSourceStream(env, source, storage ? tee : undefined),
+		body: kvSourceStream(env, source, storage ? tee : undefined, false),
 		cached: false,
 		commit: () => {
 			if (!storage || teeBroken) return;
@@ -817,7 +870,7 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// Started here rather than after the load, so the write has the whole archive fetch to complete
 	// in. Awaited below, before the engine is committed — see announceSelf for why a dropped
 	// announcement is a correctness problem and not a missing log line.
-	const announced = announceSelf(env, ctx?.label);
+	const announced = announceSelfOnce(env, ctx, source.storeKey);
 
 	const started = Date.now();
 	// Local first (no network); KV otherwise, teeing into the cache as it streams
@@ -847,18 +900,19 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		state.current = null;
 		w.unload_store();
 	}
-	// GZIPPED in KV (see StoreManifest.store_gzip_bytes), decompressed per chunk
-	// as it streams. The meter argument against this was sound but answered the
-	// wrong question: KV reads are charged per read rather than per byte, yet the
-	// cold path is bound by neither. Measured on production over 3 days (n=121
-	// cold loads): wall p50 915ms against DO CPU p50 164ms, so ~750ms was pure
-	// I/O wait for ~84MB. Compression buys that back and costs CPU for it —
-	// ~190ms of DecompressionStream per load in workerd — which is why this is a
-	// trade, not a free win, and why `store_gzip_bytes` is a flag the reader can
-	// still see absent.
+	// GZIPPED in KV (see StoreManifest.store_gzip_bytes), inflated inside the
+	// engine as it streams. The meter argument against compression was sound but
+	// answered the wrong question: KV reads are charged per read rather than per
+	// byte, yet the cold path is bound by neither. Measured on production over 3
+	// days (n=121 cold loads): wall p50 915ms against DO CPU p50 164ms, so ~750ms
+	// was pure I/O wait for ~84MB. Compression buys that back and costs CPU for it.
+	// The budgeted ~190ms of DecompressionStream turned out to be 306-752ms per
+	// ~41MB partition once measured in isolation (2026-09-22), most of every wake;
+	// the engine's own inflater (zlib-rs, in wasm) does the same partition in
+	// ~105ms under V8. `store_gzip_bytes` stays a flag the reader can see absent.
 	let counts: FeedCounts;
 	try {
-		counts = await feedStore(w, body, source.storeBytes, sink);
+		counts = await feedStore(w, body, source.storeBytes, sink, compressedMode);
 	} catch (err) {
 		// A recorded manifest can name a store that no longer loads — its archive header no longer
 		// matches this build, or its chunks were pruned by a deploy that published without

@@ -16,6 +16,7 @@
 //     re-exports unchanged.
 
 import { describe, expect, mock, test } from "bun:test";
+import { gunzipSync } from "node:zlib";
 import type { ArchiveCacheStorage } from "../../src/engine/store-cache";
 import { chunkKey, gzipBytes, PARTITION_HASH_ALGO } from "../../src/engine/store-kv";
 import type { Env, StoreManifest } from "../../src/engine/types";
@@ -60,6 +61,21 @@ function handleFor(label: string) {
 			}
 			inst.loaded = out;
 		},
+		// The engine's own inflater: the stored gzip members arrive as-is, in any pieces, and come
+		// out as the archive. node:zlib accepts concatenated members, as the real decoder does.
+		begin_store_load_gzip(total: number) {
+			inst.staged = [];
+			inst.expected = total;
+		},
+		store_load_gzip_chunk(chunk: Uint8Array) {
+			inst.staged.push(chunk.slice());
+		},
+		finish_store_load_gzip() {
+			const gz = Buffer.concat(inst.staged);
+			const out = new Uint8Array(gunzipSync(gz));
+			if (out.length !== inst.expected) throw new Error(`fake wasm: inflated ${out.length} of ${inst.expected} bytes`);
+			inst.loaded = out;
+		},
 		unload_store() {
 			inst.loaded = null;
 		},
@@ -96,8 +112,10 @@ const store = (await import(storeSpec)) as typeof import("../../src/engine/store
 
 // ── Fake KV and DO storage ────────────────────────────────────────────────────
 
-function fakeEnv(entries: Map<string, Uint8Array | string>) {
+function fakeEnv(entries: Map<string, Uint8Array | string>, putFailures = 0) {
 	const reads: string[] = [];
+	const puts: string[] = [];
+	let putsSeen = 0;
 	const env = {
 		STORE_KV: {
 			async get(key: string, opts?: { type?: string }) {
@@ -112,11 +130,15 @@ function fakeEnv(entries: Map<string, Uint8Array | string>) {
 				}
 				return typeof value === "string" ? value : new TextDecoder().decode(value);
 			},
-			async put() {},
+			async put(key: string) {
+				putsSeen += 1;
+				if (putsSeen <= putFailures) throw new Error(`KV unavailable (put ${putsSeen})`);
+				puts.push(key);
+			},
 			async delete() {},
 		},
 	} as unknown as Env;
-	return { env, reads, chunkReads: () => reads.filter((k) => k.startsWith("store:card-")) };
+	return { env, reads, puts, chunkReads: () => reads.filter((k) => k.startsWith("store:card-")) };
 }
 
 /** A minimal SQLite fake speaking exactly the statements store-cache issues. */
@@ -124,6 +146,7 @@ function fakeStorage(): ArchiveCacheStorage {
 	const rows = new Map<string, Map<number, Uint8Array>>();
 	const meta = new Map<string, { total: number; count: number }>();
 	let live: string | null = null;
+	let announced: string | null = null;
 	return {
 		sql: {
 			exec(query: string, ...b: unknown[]) {
@@ -171,6 +194,13 @@ function fakeStorage(): ArchiveCacheStorage {
 				}
 				if (q.startsWith("SELECT json FROM live_manifest")) {
 					return out(live === null ? [] : [{ json: live }]);
+				}
+				if (q.startsWith("INSERT OR REPLACE INTO announced")) {
+					announced = b[0] as string;
+					return out([]);
+				}
+				if (q.startsWith("SELECT store_key FROM announced")) {
+					return out(announced === null ? [] : [{ store_key: announced }]);
 				}
 				throw new Error(`fake storage cannot answer: ${q.slice(0, 60)}`);
 			},
@@ -416,5 +446,55 @@ describe("wedged-object recovery, per partition", () => {
 		// rediscovering the mismatch. On 2026-09-18 this correction was missing and every wake of
 		// a colocated pair double-loaded until the isolate ran out of memory.
 		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe(manifest.built_at);
+	});
+});
+
+describe("the announcement is written once per store, not once per wake", () => {
+	// An idle object is hibernated after ~10s, so a wake is routine: DeckGen's partitions reloaded
+	// ~500 times an hour on 2026-09-22, and every one rewrote the same `engine:live:<name>` = "1",
+	// ~12,000 KV writes a day against the free plan's 1,000. A fresh import of store.ts is a fresh
+	// isolate: nothing loaded, the object's storage intact — exactly what a wake looks like.
+	let wakes = 0;
+	const wake = async () =>
+		(await import(`../../src/engine/store.ts?announce-wake-${++wakes}`)) as typeof import("../../src/engine/store");
+
+	test("the first load announces; a wake onto the same store writes nothing", async () => {
+		const { entries } = await publishV2("300");
+		const { env, puts } = fakeEnv(entries);
+		const storage = fakeStorage();
+		await (await wake()).getEngine(env, ctxFor("engine-announce-p0", 0, storage));
+		expect(puts).toEqual(["engine:live:engine-announce-p0"]);
+		await (await wake()).getEngine(env, ctxFor("engine-announce-p0", 0, storage));
+		await (await wake()).getEngine(env, ctxFor("engine-announce-p0", 0, storage));
+		expect(puts).toEqual(["engine:live:engine-announce-p0"]);
+	});
+
+	test("a new generation announces once more, so a key deleted by hand comes back", async () => {
+		const first = await publishV2("301");
+		const storage = fakeStorage();
+		const a = fakeEnv(first.entries);
+		await (await wake()).getEngine(a.env, ctxFor("engine-announce2-p0", 0, storage));
+		const second = await publishV2("302");
+		const b = fakeEnv(second.entries);
+		await (await wake()).getEngine(b.env, ctxFor("engine-announce2-p0", 0, storage));
+		expect(a.puts).toEqual(["engine:live:engine-announce2-p0"]);
+		expect(b.puts).toEqual(["engine:live:engine-announce2-p0"]);
+	});
+
+	test("an announcement that failed is not recorded, so the next wake retries it", async () => {
+		const { entries } = await publishV2("303");
+		// Both attempts of the first load fail; the second load's write lands.
+		const { env, puts } = fakeEnv(entries, 2);
+		const storage = fakeStorage();
+		const original = console.error;
+		console.error = (() => {}) as unknown as typeof console.error;
+		try {
+			await (await wake()).getEngine(env, ctxFor("engine-announce3-p0", 0, storage));
+		} finally {
+			console.error = original;
+		}
+		expect(puts).toEqual([]);
+		await (await wake()).getEngine(env, ctxFor("engine-announce3-p0", 0, storage));
+		expect(puts).toEqual(["engine:live:engine-announce3-p0"]);
 	});
 });

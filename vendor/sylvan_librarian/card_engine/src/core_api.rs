@@ -1451,6 +1451,19 @@ impl BufferStore {
         Ok(store)
     }
 
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, wasm memory): give the archive buffer back, so a
+    /// Durable Object can load its NEXT store into the same allocation.
+    ///
+    /// Wasm linear memory never shrinks, and a freed store-sized buffer is not reusable by the next
+    /// store-sized request: the buffer is 16-aligned, the aligned request asks the allocator for a
+    /// little more than the freed block holds, and memory grows instead. Measured on a 40.8MB
+    /// partition: unload + reload took linear memory 40.4MB -> 79.4MB, on the raw and gzip paths
+    /// alike — every publish hot swap left a warm object at ~80MB, and two such objects sharing an
+    /// isolate exceed its 128MB. The wasm crate keeps this buffer as a spare and refills it.
+    pub fn into_bytes(self) -> AlignedVec {
+        self.bytes
+    }
+
     /// Copy `bytes` into a fresh aligned buffer and validate. Convenience for
     /// callers that already hold the archive contiguously (tests, the native
     /// builder's round-trip check).

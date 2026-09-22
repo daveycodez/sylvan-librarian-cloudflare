@@ -80,7 +80,7 @@ describe("announceSelf", () => {
 		const original = console.error;
 		console.error = (() => {}) as unknown as typeof console.error;
 		try {
-			expect(announceSelf(env, "engine-wnam")).resolves.toBeUndefined();
+			expect(announceSelf(env, "engine-wnam")).resolves.toBe(false);
 		} finally {
 			console.error = original;
 		}

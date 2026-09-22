@@ -21,6 +21,25 @@ export function autocomplete(prefix: string, limit: number): string;
 export function begin_store_load(total_len: number): void;
 
 /**
+ * Start a load whose bytes arrive GZIPPED — one or more concatenated gzip members, which is how
+ * a partition's stored chunks sit in KV and in the Durable Object's cache.
+ *
+ * The JS side used to decompress with `DecompressionStream` and cross the result in: in workerd
+ * that is ~10,000 4KB pieces per partition, each resolved through the streams machinery, and it
+ * measured 306-752ms of Durable Object CPU for a 14.3MB -> 40.8MB partition (a benchmark Worker,
+ * one stage per invocation, 2026-09-22) — most of every cold wake, against 6-18ms to read the
+ * same bytes out of KV and 29-85ms to copy them into wasm. Inflating here takes the compressed
+ * bytes in whatever pieces the source delivers and writes the output directly into the
+ * preallocated store buffer: no JS-side decompressed bytes at all, and one crossing per
+ * compressed piece. Memory is unchanged — the buffer is the same one `begin_store_load` makes,
+ * and the inflater's own state is its 32KB window.
+ *
+ * Same atomic contract as the uncompressed path: the active store is untouched until
+ * `finish_store_load_gzip` succeeds.
+ */
+export function begin_store_load_gzip(total_len: number): void;
+
+/**
  * One card by a marketplace or client id, or `null`. `namespace` is Scryfall's own path segment.
  */
 export function card_by_external_id(namespace: string, external_id: bigint, fields_json: string): string;
@@ -137,6 +156,13 @@ export function fetch_rows(vpids: Uint32Array, fields_json: string, shape: strin
  * active store (if any) keeps serving.
  */
 export function finish_store_load(): void;
+
+/**
+ * Finish a gzipped load: the last member must be complete (its CRC and length trailer verified by
+ * the decoder), the output exactly the declared length, and the header this build's. Then the
+ * store swaps in atomically, exactly as `finish_store_load` does.
+ */
+export function finish_store_load_gzip(): void;
 
 /**
  * The scores-bearing fuzzy surface for the cross-partition FLOOR/LEAD race: this partition's
@@ -301,6 +327,12 @@ export function sort_key_version(): number;
  */
 export function store_load_chunk(chunk: Uint8Array): void;
 
+/**
+ * Inflate one piece of the compressed stream into the store buffer. Pieces may split gzip members
+ * (and their headers) anywhere.
+ */
+export function store_load_gzip_chunk(chunk: Uint8Array): void;
+
 export function store_loaded(): boolean;
 
 /**
@@ -310,8 +342,9 @@ export function store_loaded(): boolean;
 export function store_version(): number;
 
 /**
- * Drop the active store, returning its memory to the wasm allocator (linear
- * memory never shrinks, but the pages are reused by the next load). Call
- * before a swap when there isn't headroom for two stores at once.
+ * Drop the active store, keeping its buffer as the spare the next load refills
+ * (see `store_buffer`: a freed store buffer is NOT reused by the allocator, so
+ * dropping it outright would grow linear memory by a whole store on the next
+ * load). Call before a swap when there isn't headroom for two stores at once.
  */
 export function unload_store(): void;

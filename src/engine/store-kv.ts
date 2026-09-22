@@ -209,12 +209,12 @@ export const REGION_LIVE_PREFIX = "engine:live:";
  * state this design cannot see — and it deliberately does not throw, since refusing to serve would
  * turn a stale-answer risk into an outage.
  */
-export async function announceSelf(env: Env, label?: string): Promise<void> {
-	if (!label) return;
+export async function announceSelf(env: Env, label?: string): Promise<boolean> {
+	if (!label) return false;
 	for (let attempt = 1; attempt <= 2; attempt++) {
 		try {
 			await env.STORE_KV.put(`${REGION_LIVE_PREFIX}${label}`, "1");
-			return;
+			return true;
 		} catch (err) {
 			if (attempt === 2) {
 				console.error(
@@ -225,6 +225,7 @@ export async function announceSelf(env: Env, label?: string): Promise<void> {
 			}
 		}
 	}
+	return false;
 }
 
 /**
@@ -2176,8 +2177,17 @@ export function kvSourceStream(
 	env: Env,
 	source: ArchiveSource,
 	onStoredChunk?: (seq: number, bytes: Uint8Array) => void,
+	inflate = true,
 ): ReadableStream<Uint8Array> {
-	return kvArchiveStream(env, source.storeKey, source.storeBytes, source.chunkCount, source.gzipBytes, onStoredChunk);
+	return kvArchiveStream(
+		env,
+		source.storeKey,
+		source.storeBytes,
+		source.chunkCount,
+		source.gzipBytes,
+		onStoredChunk,
+		inflate,
+	);
 }
 
 /**
@@ -2222,6 +2232,12 @@ function kvArchiveStream(
 	chunkCount?: number,
 	gzipBytes?: number,
 	onStoredChunk?: (seq: number, bytes: Uint8Array) => void,
+	/**
+	 * False hands a compressed archive over AS STORED — concatenated gzip members — for a consumer
+	 * that inflates it itself (the engine's `store_load_gzip_chunk`, see store.ts feedStore). The
+	 * byte-count check still runs; the decompressed length is then the inflater's to enforce.
+	 */
+	inflate = true,
 ): ReadableStream<Uint8Array> {
 	const compressed = gzipBytes !== undefined;
 	// Bytes KV holds, which is what the integrity check can actually count.
@@ -2278,7 +2294,7 @@ function kvArchiveStream(
 				// decompression, while the whole stored value is in hand.
 				onStoredChunk?.(seq, bytes);
 				seq += 1;
-				if (!compressed) {
+				if (!compressed || !inflate) {
 					controller.enqueue(bytes);
 					return;
 				}

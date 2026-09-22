@@ -10,6 +10,9 @@ crate-type = ["cdylib", "rlib"]
 card_engine = { path = "../../vendor/sylvan_librarian/card_engine" }
 wasm-bindgen = "0.2"
 serde_json = "1"
+# The cold-load inflater (begin_store_load_gzip). The pure-Rust miniz_oxide backend, which is
+# flate2's default and already in the lockfile via the builder: no C toolchain for wasm32.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 # card_engine's `rand` pulls in `getrandom`, which refuses to compile for
 # wasm32-unknown-unknown unless a backend is chosen. The `wasm_js` feature +

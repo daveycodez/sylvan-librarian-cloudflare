@@ -23,7 +23,9 @@
 //! buffer grows; without it the swap transiently needs both stores in linear
 //! memory.
 
+use flate2::write::MultiGzDecoder;
 use std::cell::RefCell;
+use std::io::Write;
 use wasm_bindgen::prelude::*;
 
 use card_engine::{AlignedVec, BufferStore, EngineError, QueryOptions};
@@ -34,6 +36,67 @@ thread_local! {
     static STORE: RefCell<Option<BufferStore>> = const { RefCell::new(None) };
     /// An in-progress chunked load: (buffer, expected total length).
     static LOADING: RefCell<Option<(AlignedVec, usize)>> = const { RefCell::new(None) };
+    /// An in-progress GZIPPED load: the inflater, writing straight into the store buffer.
+    static GZ_LOADING: RefCell<Option<MultiGzDecoder<StoreSink>>> = const { RefCell::new(None) };
+    /// The buffer of the last store this instance let go of, kept for the next load to refill.
+    /// See `store_buffer`.
+    static SPARE: RefCell<Option<AlignedVec>> = const { RefCell::new(None) };
+}
+
+/// The buffer a load of `total` bytes fills: the spare, when it is big enough, else a new one.
+///
+/// A freed store-sized buffer cannot be reused by the allocator for the next store-sized request
+/// (see `BufferStore::into_bytes` for the measurement: unload + reload doubled linear memory to
+/// ~80MB), and linear memory never shrinks. Refilling the SAME allocation keeps an object at one
+/// store's worth for its whole life, across every publish swap. A fresh buffer is sized with ~3%
+/// of headroom so the next generation of the same partition — which drifts by a fraction of that
+/// night to night — still fits it; a bigger jump (a content-generation change) simply allocates
+/// once more.
+fn store_buffer(total: usize) -> AlignedVec {
+    if let Some(mut spare) = SPARE.with(|s| s.borrow_mut().take())
+        && spare.capacity() >= total
+    {
+        spare.clear();
+        return spare;
+    }
+    AlignedVec::with_capacity(total + total / 32)
+}
+
+/// Install `store` as the active one, keeping the outgoing store's buffer as the spare.
+fn install(store: BufferStore) {
+    if let Some(old) = STORE.with(|s| s.borrow_mut().replace(store)) {
+        SPARE.with(|s| *s.borrow_mut() = Some(old.into_bytes()));
+    }
+}
+
+/// The preallocated store buffer as an inflate SINK: decompressed bytes land in their final,
+/// aligned place, and a stream that inflates past the declared length is refused mid-write
+/// rather than growing the buffer.
+struct StoreSink {
+    buf: AlignedVec,
+    total: usize,
+}
+
+impl Write for StoreSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > self.total {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "store_load_gzip_chunk: inflates past the declared total ({} + {} > {})",
+                    self.buf.len(),
+                    data.len(),
+                    self.total
+                ),
+            ));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Panics must be loud, not silent isolate deaths: route the panic message to
@@ -78,7 +141,8 @@ pub fn begin_store_load(total_len: u32) -> Result<(), JsError> {
     if total == 0 {
         return Err(JsError::new("begin_store_load: total_len must be non-zero"));
     }
-    let buf = AlignedVec::with_capacity(total);
+    GZ_LOADING.with(|g| *g.borrow_mut() = None);
+    let buf = store_buffer(total);
     LOADING.with(|l| *l.borrow_mut() = Some((buf, total)));
     Ok(())
 }
@@ -123,16 +187,86 @@ pub fn finish_store_load() -> Result<(), JsError> {
         )));
     }
     let store = BufferStore::from_aligned(buf).map_err(js_err)?;
-    STORE.with(|s| *s.borrow_mut() = Some(store));
+    install(store);
     Ok(())
 }
 
-/// Drop the active store, returning its memory to the wasm allocator (linear
-/// memory never shrinks, but the pages are reused by the next load). Call
-/// before a swap when there isn't headroom for two stores at once.
+/// Start a load whose bytes arrive GZIPPED — one or more concatenated gzip members, which is how
+/// a partition's stored chunks sit in KV and in the Durable Object's cache.
+///
+/// The JS side used to decompress with `DecompressionStream` and cross the result in: in workerd
+/// that is ~10,000 4KB pieces per partition, each resolved through the streams machinery, and it
+/// measured 306-752ms of Durable Object CPU for a 14.3MB -> 40.8MB partition (a benchmark Worker,
+/// one stage per invocation, 2026-09-22) — most of every cold wake, against 6-18ms to read the
+/// same bytes out of KV and 29-85ms to copy them into wasm. Inflating here takes the compressed
+/// bytes in whatever pieces the source delivers and writes the output directly into the
+/// preallocated store buffer: no JS-side decompressed bytes at all, and one crossing per
+/// compressed piece. Memory is unchanged — the buffer is the same one `begin_store_load` makes,
+/// and the inflater's own state is its 32KB window.
+///
+/// Same atomic contract as the uncompressed path: the active store is untouched until
+/// `finish_store_load_gzip` succeeds.
+#[wasm_bindgen]
+pub fn begin_store_load_gzip(total_len: u32) -> Result<(), JsError> {
+    let total = total_len as usize;
+    if total == 0 {
+        return Err(JsError::new("begin_store_load_gzip: total_len must be non-zero"));
+    }
+    LOADING.with(|l| *l.borrow_mut() = None);
+    let sink = StoreSink { buf: store_buffer(total), total };
+    GZ_LOADING.with(|g| *g.borrow_mut() = Some(MultiGzDecoder::new(sink)));
+    Ok(())
+}
+
+/// Inflate one piece of the compressed stream into the store buffer. Pieces may split gzip members
+/// (and their headers) anywhere.
+#[wasm_bindgen]
+pub fn store_load_gzip_chunk(chunk: &[u8]) -> Result<(), JsError> {
+    GZ_LOADING.with(|g| {
+        let mut slot = g.borrow_mut();
+        let Some(decoder) = slot.as_mut() else {
+            return Err(JsError::new("store_load_gzip_chunk called without begin_store_load_gzip"));
+        };
+        if let Err(e) = decoder.write_all(chunk) {
+            *slot = None; // abort the load; the active store is untouched
+            return Err(JsError::new(&format!("store_load_gzip_chunk: {e}")));
+        }
+        Ok(())
+    })
+}
+
+/// Finish a gzipped load: the last member must be complete (its CRC and length trailer verified by
+/// the decoder), the output exactly the declared length, and the header this build's. Then the
+/// store swaps in atomically, exactly as `finish_store_load` does.
+#[wasm_bindgen]
+pub fn finish_store_load_gzip() -> Result<(), JsError> {
+    let decoder = GZ_LOADING
+        .with(|g| g.borrow_mut().take())
+        .ok_or_else(|| JsError::new("finish_store_load_gzip called without begin_store_load_gzip"))?;
+    let sink = decoder
+        .finish()
+        .map_err(|e| JsError::new(&format!("finish_store_load_gzip: truncated or corrupt gzip stream: {e}")))?;
+    if sink.buf.len() != sink.total {
+        return Err(JsError::new(&format!(
+            "finish_store_load_gzip: incomplete load ({} of declared {} bytes)",
+            sink.buf.len(),
+            sink.total
+        )));
+    }
+    let store = BufferStore::from_aligned(sink.buf).map_err(js_err)?;
+    install(store);
+    Ok(())
+}
+
+/// Drop the active store, keeping its buffer as the spare the next load refills
+/// (see `store_buffer`: a freed store buffer is NOT reused by the allocator, so
+/// dropping it outright would grow linear memory by a whole store on the next
+/// load). Call before a swap when there isn't headroom for two stores at once.
 #[wasm_bindgen]
 pub fn unload_store() {
-    STORE.with(|s| *s.borrow_mut() = None);
+    if let Some(old) = STORE.with(|s| s.borrow_mut().take()) {
+        SPARE.with(|s| *s.borrow_mut() = Some(old.into_bytes()));
+    }
 }
 
 #[wasm_bindgen]
@@ -735,6 +869,90 @@ pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsErr
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    /// The next load refills the LAST store's allocation instead of asking for a new one — which
+    /// the allocator cannot serve from the freed block, so linear memory would grow by a whole
+    /// store on every publish swap. A request the spare cannot hold gets a fresh buffer.
+    #[test]
+    fn a_load_refills_the_spare_buffer() {
+        let mut first = store_buffer(1_000);
+        let ptr = first.as_ptr();
+        assert!(first.capacity() >= 1_000 + 1_000 / 32, "fresh buffers carry headroom");
+        first.extend_from_slice(&[7u8; 1_000]);
+        SPARE.with(|s| *s.borrow_mut() = Some(first));
+
+        // The next generation, a little larger, still fits the headroom.
+        let second = store_buffer(1_020);
+        assert_eq!(second.as_ptr(), ptr, "the spare was not reused");
+        assert!(second.is_empty(), "a reused buffer must start empty");
+        let cap = second.capacity();
+        SPARE.with(|s| *s.borrow_mut() = Some(second));
+
+        let bigger = store_buffer(cap + 1);
+        assert!(bigger.capacity() > cap);
+        assert!(SPARE.with(|s| s.borrow().is_none()), "an outgrown spare is let go, not kept beside");
+    }
+
+    /// The gzipped load path the Durable Object runs on every wake: a store published as
+    /// CONCATENATED gzip members (one per stored KV chunk), handed over in pieces that split
+    /// members and their headers at arbitrary points, must load into the same store the raw
+    /// bytes do. Happy-path only, like the chunked test below (no JsError off-wasm).
+    #[test]
+    fn gzipped_members_load_like_the_raw_bytes() {
+        use flate2::{Compression, write::GzEncoder};
+
+        let row = serde_json::json!({
+            "card_name": "Gzip Test",
+            "card_name_folded": "gzip test",
+            "oracle_id": "44444444-4444-4444-4444-444444444444",
+            "scryfall_id": "dddddddd-0000-0000-0000-000000000001",
+            "card_set_code": "tst",
+            "set_name": "Test Set",
+            "collector_number": "1",
+            "oracle_text": "Inflate the thing.",
+            "type_line": "Instant",
+            "card_types": ["Instant"],
+            "card_subtypes": [],
+            "card_keywords": {},
+            "card_colors": {"R": true},
+            "card_color_identity": {"R": true},
+            "cmc": 1,
+            "card_legalities": {"commander": "legal"},
+        });
+        let mut builder = card_engine::StoreBuilder::new();
+        builder.add_card(&row).expect("add_card");
+        let mut raw = Vec::new();
+        builder.finish_to_writer(&mut raw).expect("finish");
+
+        // Two members, cut mid-archive, exactly as a two-chunk partition sits in KV.
+        let cut = raw.len() / 3;
+        let mut stored = Vec::new();
+        for part in [&raw[..cut], &raw[cut..]] {
+            let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+            enc.write_all(part).expect("gzip");
+            stored.extend_from_slice(&enc.finish().expect("gzip finish"));
+        }
+
+        begin_store_load(raw.len() as u32).expect("begin");
+        store_load_chunk(&raw).expect("chunk");
+        finish_store_load().expect("finish_store_load");
+        let tree = r#"{"node_type": "TrueNode"}"#;
+        let from_raw = query(tree, "{}").expect("query raw");
+        unload_store();
+
+        begin_store_load_gzip(raw.len() as u32).expect("begin gzip");
+        for piece in stored.chunks(5) {
+            store_load_gzip_chunk(piece).expect("gzip chunk");
+        }
+        finish_store_load_gzip().expect("finish_store_load_gzip");
+        assert!(store_loaded());
+        let from_gzip = query(tree, "{}").expect("query gzip");
+        unload_store();
+
+        assert_eq!(from_gzip, from_raw);
+        let v: serde_json::Value = serde_json::from_str(&from_gzip).expect("valid JSON out");
+        assert_eq!(v["rows"][0]["name"], "Gzip Test");
+    }
 
     /// The chunked load path, driven natively: StoreBuilder bytes streamed in
     /// 7-byte chunks through begin/chunk/finish, then queried. Happy-path only
