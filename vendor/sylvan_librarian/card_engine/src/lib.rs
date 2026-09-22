@@ -9848,6 +9848,14 @@ fn printing_is_renamed(card: &AOracleCard, p: &APrinting, strings: &AStrings) ->
     id != NONE_STR && str_at(strings, id).is_some_and(|printed| printed != folded_name(card, strings))
 }
 
+/// Is this printing a REVERSIBLE card — Scryfall's `reversible_card` layout, the same card printed
+/// on both sides with a different illustration on each? Lorwyn Eclipsed's ecl/349 is Blood Crypt
+/// // Blood Crypt. `prefer:borderless` never answers one: it is not the card as it is played, and
+/// its image is two faces of one name.
+fn printing_is_reversible(p: &APrinting, strings: &AStrings) -> bool {
+    str_at(strings, u32::from(p.card_layout_id)) == Some("reversible_card")
+}
+
 /// Is this printing a Universes Beyond one — does it carry the `universesbeyond` `is:` tag?
 fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
     ids.universesbeyond != VOCAB_NONE && p.card_is_tags.iter().any(|v| u16::from(*v) == ids.universesbeyond)
@@ -9909,7 +9917,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon; Thrasios's fca/58 is Tidus), and
 /// neither is an ENGLISH printing whose PRINTED NAME is not the card's — Scryfall's other rename
 /// key, the one Wernog, Rider's Chaplain's Secret Lair sld/347 carries as "Will the Wise" with no
-/// flavor name at all. Foreign printings are exempt: theirs differ by translation.
+/// flavor name at all. Foreign printings are exempt: theirs differ by translation. A REVERSIBLE
+/// card is never a candidate either, in any language — the same card on both sides with two arts,
+/// not the card as it is played (Blood Crypt answers rvr/292, not Lorwyn Eclipsed's ecl/349).
 /// A Universes Beyond printing under the card's OWN name is a candidate like any other — the
 /// crossover TAG demotes nothing, only a flavor name excludes — so Soul Warden answers its newest
 /// borderless, the Secret Lair sld/2435, over the in-universe spg/65 and sld/1708 (three
@@ -10063,7 +10073,13 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // is printed "Will the Wise", and carries no flavor name at all, so it answered until
             // this read `printed_name`). A foreign printing's printed name differs by translation,
             // so the test is English-only and a `lang:ja` pool keeps every one of its printings.
-            if printing_has_flavor_name(p) || (!foreign && printing_is_renamed(card, p, strings)) {
+            // A REVERSIBLE card is excluded the same way, in every language: Blood Crypt's ecl/349
+            // prints the land twice with two arts, and it answered as the newest borderless until
+            // this read the layout.
+            if printing_has_flavor_name(p)
+                || printing_is_reversible(p, strings)
+                || (!foreign && printing_is_renamed(card, p, strings))
+            {
                 return default_score() - 32.0 * CLASS_BONUS;
             }
             let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);

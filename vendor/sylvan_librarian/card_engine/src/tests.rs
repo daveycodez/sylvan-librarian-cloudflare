@@ -18055,6 +18055,40 @@ fn prefer_borderless_ranks_a_featured_card_above_a_secret_lair_bonus_card() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a bonus borderless over an extended art");
 }
 
+/// A REVERSIBLE card is never a candidate — Blood Crypt's shape, Lorwyn Eclipsed's ecl/349 printing
+/// the land on both sides with two arts, the newest borderless of its card. Excluded outright,
+/// not merely ranked down: even as the only borderless printing it does not answer.
+#[test]
+fn prefer_borderless_never_answers_a_reversible_card() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    data.strings.push("reversible_card".to_owned());
+    let reversible = (data.strings.len() - 1) as u32;
+    data.strings.push("normal".to_owned());
+    let normal = (data.strings.len() - 1) as u32;
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_layout_id = normal;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // ids 2 and 3 borderless, id 2 first by default and reversible: id 3 answers.
+    data.printings[1].card_border_id = borderless;
+    data.printings[2].card_border_id = borderless;
+    data.printings[1].card_layout_id = reversible;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a single-faced borderless over a reversible one");
+    // The ONLY borderless being reversible, it still does not answer: the plain id 1 does.
+    data.printings[2].card_border_id = black;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a lone reversible borderless is excluded, not kept");
+    // The same printing laid out normally is a candidate again.
+    data.printings[1].card_layout_id = normal;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "not reversible: a candidate");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.
