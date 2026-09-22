@@ -2,13 +2,11 @@
 // failure paths, cache headers, site naming; plus the card page and the legacy
 // index redirects.
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { buildImageUrl, createCardHtml, scryfallImageUrl } from "../../src/routes/noscript";
-import { FakeEngine, installFakeParser, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, json, makeCtx, testDispatch, useFakeParser } from "./harness";
 
-beforeEach(() => {
-	installFakeParser();
-});
+useFakeParser();
 
 describe("_root without a query", () => {
 	test("serves the index page with placeholders intact, revalidated by the browser", async () => {

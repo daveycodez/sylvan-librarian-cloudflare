@@ -2,14 +2,12 @@
 // validation, envelope shape, columnar inversion, parse errors, and the
 // engine-error deviation (loud 500 instead of upstream's SQL fallback).
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { MAX_QUERY_UTF8_BYTES, QUERY_TOO_LONG_MESSAGE } from "../../src/parser";
 import { paginationCeiling } from "../../src/routes/search";
-import { FakeEngine, FakeParseError, installFakeParser, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, FakeParseError, installFakeParser, json, makeCtx, testDispatch, useFakeParser } from "./harness";
 
-beforeEach(() => {
-	installFakeParser();
-});
+useFakeParser();
 
 describe("search param coercion", () => {
 	test("bad enum value mirrors upstream ParamCoercionError message", async () => {

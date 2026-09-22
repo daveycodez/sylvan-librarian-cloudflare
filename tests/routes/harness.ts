@@ -4,6 +4,7 @@
 // imported here: it pulls in the engine store and import coordinator, which
 // are wasm/DO-backed). No network, no wasm.
 
+import { afterEach, beforeEach } from "bun:test";
 import { encodeUtf8 } from "../../src/engine/bytes";
 import { serializeCards } from "../../src/engine/columnar";
 import type {
@@ -433,6 +434,34 @@ export function fakeParse(query: string): unknown {
 	};
 }
 
+/**
+ * Install the fake parser for every test in the calling file, and clear it after each one.
+ *
+ * The parser bridge's override is ONE module-level global for the whole `bun test` process, and
+ * a file that installs a fake in its own `beforeEach` and never clears it leaves the fake active
+ * for every file that runs after it. Which files those are is not fixed: bun runs files in
+ * directory-discovery order, and that order differs between APFS here and ext4 on the CI runner,
+ * where it also differs from one fresh checkout to the next. The 2026-09-22 run of an unrelated
+ * vendor-only commit lost 19 real-parser tests in scryfall-compat.test.ts because search.test.ts
+ * happened to run first that time; the rerun ordered them the other way and was green.
+ *
+ * So the install and the clear are one call, registered as a pair: a file cannot take the fake
+ * without also giving it back. tests/routes/parser-override-scope.test.ts pins that no file does.
+ */
+export function useFakeParser(parse: (query: string) => unknown = fakeParse): void {
+	beforeEach(() => {
+		installFakeParser(parse);
+	});
+	afterEach(() => {
+		setParserForTests(null);
+	});
+}
+
+/**
+ * Install a fake parser for the CURRENT test only. Reach for `useFakeParser` at file level; this
+ * is for a test that needs a differently shaped tree than its file's default, inside a file that
+ * already clears the override after each test.
+ */
 export function installFakeParser(parse: (query: string) => unknown = fakeParse): void {
 	setParserForTests({
 		parseScryfallQuery: parse,
