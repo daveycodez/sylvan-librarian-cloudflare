@@ -98,6 +98,13 @@ const EQUIVALENCES: Array<[string, string]> = [
 	["is:token", "layout:token or layout:double_faced_token or t:token"],
 	["is:colorshifted", "frame:colorshifted"],
 	["is:manland", "t:land o:become o:creature o:/still a.* land/"],
+	// "Pairs as a commander", not "has the Partner keyword" — which is what the stored tag it shadows
+	// answers (134 cards against Scryfall's 228). See the entry in rewrite.ts.
+	[
+		"is:partner",
+		't:legendary (keyword:partner or keyword:"choose a background" or keyword:"doctor\'s companion" or ' +
+			't:background or (t:"time lord" t:doctor))',
+	],
 	["-frame:old", "-(frame:1993 or frame:1997)"],
 	["t:goblin frame:modern", "t:goblin frame:2003"],
 	["t:goblin is:party", "t:goblin t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],

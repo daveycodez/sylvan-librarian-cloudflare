@@ -190,6 +190,23 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 		"is\u0000commander",
 		'((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") -banned:commander',
 	],
+	// `is:partner` is "pairs as a commander", not "has the Partner keyword". Scryfall counts every
+	// pairing mechanic on a LEGENDARY card: Partner and its `Partner with` / `Partner—<group>` /
+	// Friends forever variants (all of which carry the plain `Partner` keyword), `Choose a
+	// background` and the Backgrounds it pairs with, and `Doctor's companion` and the Time Lord
+	// Doctors it pairs with. The non-legendary Battlebond `Partner with` pairs (Blaring Captain,
+	// Chakram Slinger, …) are OUT: `is:partner -t:legendary` is 0 there. Measured against
+	// api.scryfall.com on 2026-09-22: 228 cards / 823 printings, and this expression's set
+	// differences against it are empty both ways at both grains.
+	//
+	// The STORED `partner` tag (ARRAY_IS_TAGS, `keywords` ∋ Partner) is what this used to answer —
+	// 134 cards, 94 missing and 10 extra — and it is upstream's definition too. This expansion
+	// shadows it; the tag stays in the archive until the next content-generation bump retires it.
+	[
+		"is\u0000partner",
+		't:legendary (keyword:partner or keyword:"choose a background" or keyword:"doctor\'s companion" or ' +
+			't:background or (t:"time lord" t:doctor))',
+	],
 	["is\u0000companion", "kw:companion"], // 10, name-verified
 	["is\u0000class", "t:class"], // 34, equals Scryfall's paper count exactly
 	// is:adventure is LAYOUT semantics by Scryfall's own definition -- it equals
