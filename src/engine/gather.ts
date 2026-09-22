@@ -406,6 +406,15 @@ export interface SearchKeysReply {
 	 * the ask is a bug in this build, and the gather refuses it.
 	 */
 	shape?: RowShape;
+	/**
+	 * How long THIS partition spent acquiring its store before answering, in ms — nonzero only
+	 * when the call woke it. Absent from a build predating the field, which reads as 0.
+	 *
+	 * Carried so the gather can report a wake anywhere in the fan-out, not only its own: a
+	 * sibling that woke inflates the whole page's wall time, and a coordinator that reported
+	 * `acquireMs: 0` over it handed the autoscaler a multi-second "warm" latency sample.
+	 */
+	acquireMs?: number;
 }
 
 /** One partition's phase-2 answer. */
@@ -470,6 +479,8 @@ export interface GatheredPage {
 	 * route needs as values; never hand a view over RPC.
 	 */
 	slots: Uint8Array[];
+	/** The longest store acquisition any partition reported in phase 1 (see SearchKeysReply.acquireMs). */
+	acquireMs: number;
 }
 
 /** Parse the slots a route needs as VALUES — the objects path, and columnar. */
@@ -549,6 +560,8 @@ export async function runTwoPhase(
 		}
 	}
 
+	const acquireMs = replies.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), 0);
+
 	// Version gate BEFORE any merge: memcmp across key encodings is meaningless.
 	const version = (replies[0] as SearchKeysReply).sortKeyVersion;
 	for (let p = 1; p < replies.length; p++) {
@@ -586,7 +599,7 @@ export async function runTwoPhase(
 	const merged = mergeKeyStreams(packets.map((p) => p.entries));
 	const carried = packets.map((p) => p.inlineRows.length);
 	const { page, byPartition } = selectPage(merged, opts.offset, opts.limit, carried);
-	if (page.length === 0) return { total, slots: [] };
+	if (page.length === 0) return { total, slots: [], acquireMs };
 
 	// The previous build's rows, reshaped: parse, rebuild, encode. Only ever runs
 	// for a legacy partition, and only over the rows the page kept.
@@ -639,5 +652,5 @@ export async function runTwoPhase(
 		cursors.set(ref.partition, at + 1);
 		return (fetched.get(ref.partition) as Uint8Array[])[at] as Uint8Array;
 	});
-	return { total, slots };
+	return { total, slots, acquireMs };
 }

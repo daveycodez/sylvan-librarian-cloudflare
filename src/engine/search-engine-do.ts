@@ -84,7 +84,7 @@ import {
 	tryGetLoadedEngine,
 } from "./store";
 import { readLiveManifest, recordLiveManifest } from "./store-cache";
-import { isPartitionedManifest, manifestServableBy } from "./store-kv";
+import { isPartitionedManifest, manifestServableBy, readManifest } from "./store-kv";
 import type {
 	CollectionScope,
 	Engine,
@@ -316,11 +316,12 @@ export class SearchEngine extends DurableObject<Env> {
 		}
 		let result: EngineSerializedResult & SearchTelemetry;
 		try {
-			result = await this.instrumented(body.shards, (engine) =>
+			result =
 				body.call === "cards2"
-					? this.gatherScryfallSearchLocal(body.opts, body.baseUrl ?? "")
-					: engine.scryfallSearch(body.opts, body.baseUrl ?? ""),
-			);
+					? await this.instrumentedGather(body.shards, () =>
+							this.gatherScryfallSearchLocal(body.opts, body.baseUrl ?? ""),
+						)
+					: await this.instrumented(body.shards, (engine) => engine.scryfallSearch(body.opts, body.baseUrl ?? ""));
 		} catch (err) {
 			// The RPC path has `rethrowForRpc` to keep error IDENTITY across the boundary; a fetch
 			// carries a status line instead, so the class is named explicitly and rebuilt client-side.
@@ -404,6 +405,40 @@ export class SearchEngine extends DurableObject<Env> {
 			} catch (err) {
 				rethrowForRpc(err);
 			}
+		} finally {
+			this.inFlightSearches -= 1;
+		}
+	}
+
+	/**
+	 * `instrumented` for a GATHER: the same riders, but this object's own store is NOT acquired
+	 * before the run starts.
+	 *
+	 * Acquiring first is what `instrumented` does, and on a gather it serialized the cold path: the
+	 * coordinator loaded its own partition, and only then did the fan-out wake its siblings, so a
+	 * request that found the region cold paid two loads back to back. Measured 2026-09-22 on the free
+	 * account: the coordinator's load finished at +1.6s, and the nine siblings' loads only began
+	 * after it, finishing between +4.5s and +7.1s. The coordinator's own partition is one of the gather's clients, and
+	 * that client acquires the store itself (searchKeys), so here the load runs CONCURRENTLY with
+	 * the siblings' and a cold region costs one load of wall time instead of two.
+	 *
+	 * `acquireMs` is the longest acquisition ANY partition reported, own included, so a wake
+	 * anywhere in the fan-out keeps the sample out of the autoscaler's latency signal (see
+	 * RemoteEngine.feedAutoscaler). Before, a sibling's wake was reported as a warm call.
+	 */
+	private async instrumentedGather<T extends { acquireMs: number }>(
+		reportedShards: number | undefined,
+		run: () => Promise<T>,
+	): Promise<T & SearchTelemetry> {
+		const now = Date.now();
+		const load = this.inFlightSearches;
+		const rate = this.searchRate(now);
+		const shards = this.rendezvous(reportedShards ?? 1, now);
+		this.inFlightSearches += 1;
+		try {
+			return { ...(await run()), load, rate, shards };
+		} catch (err) {
+			rethrowForRpc(err);
 		} finally {
 			this.inFlightSearches -= 1;
 		}
@@ -675,7 +710,11 @@ export class SearchEngine extends DurableObject<Env> {
 		inlineRows = 0,
 		shaping: RowShaping = ROWS_SHAPING,
 	): Promise<SearchKeysReply> {
+		// Date.now() advances only across I/O in Workers, which is what a load spends; a warm
+		// object reports 0.
+		const acquireStart = Date.now();
 		await this.engine();
+		const acquireMs = Date.now() - acquireStart;
 		const ops = gatherOps(this.label);
 		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
 		return {
@@ -683,6 +722,7 @@ export class SearchEngine extends DurableObject<Env> {
 			storeKey: ops.storeKey,
 			sortKeyVersion: ops.sortKeyVersion(),
 			shape: shaping.shape,
+			acquireMs,
 		};
 	}
 
@@ -767,28 +807,66 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/**
-	 * Both phases.
+	 * Both phases, started BEFORE this object has its own store (see instrumentedGather).
 	 *
-	 * `await this.engine()` has just loaded (or confirmed) this object's store, so
-	 * the manifest is present and — since every published manifest is partitioned
-	 * — carries partition_count. Both checks below are therefore assertions: a
-	 * gather that could not find its width would otherwise answer from one
-	 * partition and report it as the whole corpus, which is the failure mode with
-	 * no symptom.
+	 * The fan-out needs only the partition COUNT, and that is known without loading anything: from
+	 * the loaded store when there is one, else the manifest the publisher pushed into this object's
+	 * storage, else KV's (colo-cached). Once the gather has run, this object's own partition has
+	 * loaded as one of its clients, and the count is checked against the manifest it ACTUALLY
+	 * loaded — a pushed record can be a build behind, and a repartition between the two would
+	 * otherwise answer from the wrong set of partitions. On a disagreement the gather re-runs at the
+	 * loaded width; pinGeneration already refuses mixed builds within one run.
+	 *
+	 * A gather that cannot find its width at all is refused loudly: answering from one partition
+	 * and reporting it as the whole corpus is the failure mode with no symptom.
 	 */
 	private async gatherRun(opts: EngineSearchOptions, shaping: GatherShaping): Promise<GatheredPage> {
+		const width = await this.gatherWidth();
+		let page = await runTwoPhase(this.partitionClients(width), opts, shaping);
+		// Free when the fan-out included this partition, which it always does at a correct width.
 		await this.engine();
-		const manifest = currentManifest(this.label);
-		if (!manifest || !isPartitionedManifest(manifest)) {
+		const loaded = currentManifest(this.label);
+		if (!loaded || !isPartitionedManifest(loaded)) {
 			rethrowForRpc(
 				new EngineUnavailableError(
 					`${this.label} cannot gather: its loaded store reports ` +
-						`${manifest ? `manifest ${manifest.store_key} with no partition_count` : "no manifest at all"}. ` +
+						`${loaded ? `manifest ${loaded.store_key} with no partition_count` : "no manifest at all"}. ` +
 						`Answering from one partition would silently return a fraction of the corpus.`,
 				),
 			);
 		}
-		return runTwoPhase(this.partitionClients(manifest.partition_count as number), opts, shaping);
+		const loadedWidth = loaded.partition_count as number;
+		if (loadedWidth !== width) {
+			console.warn(
+				`[${this.label}] gathered across ${width} partitions but loaded a ${loadedWidth}-wide store; re-running`,
+			);
+			const again = await runTwoPhase(this.partitionClients(loadedWidth), opts, shaping);
+			page = { ...again, acquireMs: Math.max(page.acquireMs, again.acquireMs) };
+		}
+		return page;
+	}
+
+	/**
+	 * The partition count to fan out across, without loading this object's store. See gatherRun
+	 * for the order and for why a wrong answer here is caught rather than trusted.
+	 */
+	private async gatherWidth(): Promise<number> {
+		const loaded = currentManifest(this.label);
+		if (loaded && isPartitionedManifest(loaded)) return loaded.partition_count as number;
+		const own = parseEngineName(this.label)?.partition;
+		try {
+			const pushed = readLiveManifest(this.ctx.storage) as StoreManifest | null;
+			if (pushed && manifestServableBy(own, pushed)) return pushed.partition_count as number;
+		} catch {
+			// No record, no schema, or no storage: KV answers instead.
+		}
+		const truth = await readManifest(this.env).catch(() => null);
+		if (truth && manifestServableBy(own, truth)) return truth.partition_count as number;
+		// Nothing names a width. Load, and let gatherRun's check refuse with the precise reason.
+		await this.engine();
+		const after = currentManifest(this.label);
+		if (after && isPartitionedManifest(after)) return after.partition_count as number;
+		rethrowForRpc(new EngineUnavailableError(`${this.label} cannot gather: no manifest names a partition count`));
 	}
 
 	/**
@@ -804,7 +882,10 @@ export class SearchEngine extends DurableObject<Env> {
 	 * the rows the page keeps from it are rebuilt with the reference implementation — through
 	 * `stringifyScryfall`, so the decimal fields agree with the engine's bytes either way.
 	 */
-	private async gatherScryfallSearchLocal(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
+	private async gatherScryfallSearchLocal(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+	): Promise<EngineSerializedResult & { acquireMs: number }> {
 		const wide = { ...opts, fields: [...CARD_OBJECT_FIELDS] };
 		const page = await this.gatherRun(wide, {
 			shape: "cards",
@@ -816,7 +897,13 @@ export class SearchEngine extends DurableObject<Env> {
 		// same in every partition. `/cards/search` echoes `include_multilingual` in `next_page`
 		// from it — see withResolvedMultilingual.
 		const widened = (await this.engine()).queryWidens?.(opts) ?? false;
-		return { totalCards: page.total, cardsBytes: joinJsonArray(page.slots), rowCount: page.slots.length, widened };
+		return {
+			totalCards: page.total,
+			cardsBytes: joinJsonArray(page.slots),
+			rowCount: page.slots.length,
+			widened,
+			acquireMs: page.acquireMs,
+		};
 	}
 
 	/** /search's object shape, gathered. Instrumented exactly like its local twin. */
@@ -824,9 +911,9 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		reportedShards?: number,
 	): Promise<EngineSearchResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, async () => {
+		return this.instrumentedGather(reportedShards, async () => {
 			const page = await this.gatherRun(opts, ROWS_GATHER);
-			return { totalCards: page.total, cards: parseSlots(page.slots) };
+			return { totalCards: page.total, cards: parseSlots(page.slots), acquireMs: page.acquireMs };
 		});
 	}
 
@@ -840,13 +927,14 @@ export class SearchEngine extends DurableObject<Env> {
 		shape: ResultShape,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, async () => {
+		return this.instrumentedGather(reportedShards, async () => {
 			const page = await this.gatherRun(opts, ROWS_GATHER);
 			return {
 				totalCards: page.total,
 				cardsBytes:
 					shape === "rows" ? joinJsonArray(page.slots) : encodeUtf8(serializeCards(parseSlots(page.slots), shape)),
 				rowCount: page.slots.length,
+				acquireMs: page.acquireMs,
 			};
 		});
 	}
@@ -857,7 +945,7 @@ export class SearchEngine extends DurableObject<Env> {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, () => this.gatherScryfallSearchLocal(opts, baseUrl));
+		return this.instrumentedGather(reportedShards, () => this.gatherScryfallSearchLocal(opts, baseUrl));
 	}
 
 	/**

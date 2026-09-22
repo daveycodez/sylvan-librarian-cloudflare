@@ -39,9 +39,34 @@ const publishCalls: string[] = [];
 /** Whether tryGetLoadedEngine reports this object warm (per-label irrelevant here). */
 let objectIsWarm = true;
 
+/**
+ * The gather suite's own store, switched on per test. Null keeps every other suite on the plain
+ * single-store behaviour: no manifest, no gather ops, an engine that is always already warm.
+ */
+let gatherStore: {
+	/** Resolves when this object's own partition finishes loading. */
+	ownLoad: Promise<void>;
+	loaded: boolean;
+	/** How long the own load reports, in fake-clock ms. */
+	ownLoadMs: number;
+	events: string[];
+	manifest: unknown;
+	ops: unknown;
+} | null = null;
+
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
-	getEngine: async () => fakeEngine,
+	getEngine: async () => {
+		const g = gatherStore;
+		if (g && !g.loaded) {
+			g.events.push("own:load-start");
+			await g.ownLoad;
+			clock += g.ownLoadMs;
+			g.loaded = true;
+			g.events.push("own:loaded");
+		}
+		return fakeEngine;
+	},
 	tryGetLoadedEngine: () => (objectIsWarm ? fakeEngine : null),
 	// Imported by search-engine-do for notifyPublish and the two-step publish.
 	refreshNow: async () => {
@@ -58,8 +83,8 @@ mock.module("../../src/engine/store", () => ({
 	},
 	// Imported for the two-phase gather; a null manifest keeps every gather
 	// entry point on the local single-store path, which these tests exercise.
-	currentManifest: () => null,
-	gatherOps: () => null,
+	currentManifest: () => (gatherStore?.loaded ? gatherStore.manifest : null),
+	gatherOps: () => (gatherStore?.loaded ? gatherStore.ops : null),
 }));
 
 // The placement probe fetches a trace URL; tests must never touch the network.
@@ -72,6 +97,7 @@ mock.module("../../src/engine/placement", () => ({
 }));
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
+const { encodeKeyPacket, encodeRowPacket } = await import("../../src/engine/gather");
 
 type Do = {
 	searchCardsAsObjects: (opts: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
@@ -301,5 +327,129 @@ describe("decay, so adoption is not a ratchet", () => {
 			clock += 30_000;
 			expect(await report(engine, 4)).toBe(4);
 		}
+	});
+});
+
+describe("a cold gather wakes every partition at once", () => {
+	// The coordinator used to acquire its OWN store before fanning out, so a cold region paid two
+	// loads back to back: measured 2026-09-22, the coordinator loaded by +1.6s and the siblings'
+	// loads only began after it. The fan-out needs the partition COUNT, which the pushed manifest
+	// already names, so the siblings must be asked before the coordinator's load completes.
+
+	const WIDE = {
+		store_key: "card-store-v1-7.store",
+		store_bytes: 20,
+		built_at: "7",
+		card_count: 2,
+		partition_count: 2,
+		partitions: [
+			{ store_key: "card-store-v1-7-p0.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
+			{ store_key: "card-store-v1-7-p1.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
+		],
+	};
+	const row = (p: number) => new TextEncoder().encode(`{"name":"p${p}"}`);
+	const packet = (p: number, inline: number) =>
+		encodeKeyPacket({
+			total: 1,
+			entries: [{ key: new Uint8Array([p + 1]), vpid: 0 }],
+			inlineRows: inline > 0 ? [row(p)] : [],
+		});
+
+	type GatherDo = {
+		gatherSearchAsJson(
+			opts: unknown,
+			shape: string,
+			reported?: number,
+		): Promise<{ totalCards: number; cardsBytes: Uint8Array; acquireMs: number }>;
+	};
+
+	function coldGather(siblingAcquireMs: number) {
+		let finishOwnLoad = () => {};
+		const events: string[] = [];
+		gatherStore = {
+			ownLoad: new Promise<void>((resolve) => {
+				finishOwnLoad = resolve;
+			}),
+			loaded: false,
+			ownLoadMs: 900,
+			events,
+			manifest: WIDE,
+			ops: {
+				storeKey: "card-store-v1-7-p0.store",
+				sortKeyVersion: () => 1,
+				queryKeys: () => packet(0, 0),
+				fetchRows: () => encodeRowPacket([row(0)]),
+			},
+		};
+		const sibling = {
+			async searchKeys(_opts: unknown, inline: number) {
+				events.push("p1:searchKeys");
+				// The sibling is asked while the coordinator is still loading; let that load finish
+				// only now, so the order is observable.
+				finishOwnLoad();
+				return {
+					packed: packet(1, inline),
+					storeKey: "card-store-v1-7-p1.store",
+					sortKeyVersion: 1,
+					shape: "rows",
+					acquireMs: siblingAcquireMs,
+				};
+			},
+			async fetchRows() {
+				return { rowsBytes: encodeRowPacket([row(1)]), shape: "rows" };
+			},
+		};
+		const live = JSON.stringify(WIDE);
+		const storage = {
+			sql: {
+				exec(query: string) {
+					if (query.trim().startsWith("SELECT json FROM live_manifest")) return { toArray: () => [{ json: live }] };
+					return { toArray: () => [] };
+				},
+			},
+		};
+		const env = {
+			SEARCH_ENGINE: {
+				idFromName: (name: string) => name,
+				get: (name: string) => {
+					if (name !== "engine-wnam-p1") throw new Error(`unexpected sibling ${name}`);
+					return sibling;
+				},
+			},
+		};
+		const engine = new SearchEngine(
+			{ waitUntil: () => {}, storage, id: { name: "engine-wnam-p0" } } as never,
+			env as never,
+		) as unknown as GatherDo;
+		return { engine, events };
+	}
+
+	const OPTS = { filterTreeJson: "{}", unique: "printing", orderby: "name", limit: 2, offset: 0, fields: ["name"] };
+
+	afterEach(() => {
+		gatherStore = null;
+	});
+
+	test("siblings are asked before the coordinator's own store has loaded", async () => {
+		const { engine, events } = coldGather(0);
+		const page = await engine.gatherSearchAsJson(OPTS, "rows");
+		expect(events.indexOf("p1:searchKeys")).toBeGreaterThanOrEqual(0);
+		expect(events.indexOf("p1:searchKeys")).toBeLessThan(events.indexOf("own:loaded"));
+		expect(page.totalCards).toBe(2);
+		expect(new TextDecoder().decode(page.cardsBytes)).toBe('[{"name":"p0"},{"name":"p1"}]');
+	});
+
+	test("the page reports the longest wake anywhere in the fan-out, not only its own", async () => {
+		// A sibling that woke inflates the page's wall time. Reporting 0 over it handed the
+		// autoscaler a multi-second "warm" latency sample.
+		const { engine } = coldGather(2_400);
+		const page = await engine.gatherSearchAsJson(OPTS, "rows");
+		expect(page.acquireMs).toBe(2_400);
+	});
+
+	test("the coordinator's own wake counts when it is the longest", async () => {
+		const { engine } = coldGather(0);
+		const page = await engine.gatherSearchAsJson(OPTS, "rows");
+		expect(page.acquireMs).toBe(900);
 	});
 });
