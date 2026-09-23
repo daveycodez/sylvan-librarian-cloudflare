@@ -789,6 +789,18 @@ describe("GET /cards/autocomplete", () => {
 	});
 });
 
+describe("GET /cards/search pinned to an oracle id", () => {
+	test("the all-printings lookup answers as before through the single-store fake", async () => {
+		const engine = new FakeEngine();
+		const res = await testDispatch(
+			makeCtx({ engine }),
+			"/cards/search?q=oracleid%3Aaa686c34-cf28-4d4a-bcef-5a34cccdbf87&unique=prints&order=released",
+		);
+		expect(res.status).toBe(200);
+		expect(engine.lastSearch?.filterTreeJson).toContain("aa686c34-cf28-4d4a-bcef-5a34cccdbf87");
+	});
+});
+
 describe("GET /cards/random", () => {
 	test("carries Scryfall's no-cache — a cached random card is one card forever", async () => {
 		// Its own engine, whose count agrees with its rows: the route draws at a random offset in

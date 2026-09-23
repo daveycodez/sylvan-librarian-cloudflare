@@ -383,6 +383,23 @@ export interface ScryfallFuzzyResult {
 export const ENGINE_UNAVAILABLE_MARKER = "__ENGINE_UNAVAILABLE__";
 
 /**
+ * Thrown by a partition object asked to answer a query PINNED to it (see pinned-oracle.ts) when
+ * the partition count the caller pinned against is not the one its loaded store was cut at. The
+ * caller's manifest is at most a minute stale; the object's is the truth. Answered from the wrong
+ * modulus the page would be an honest-looking empty one, and `/cards/search` is edge-cached for 16
+ * hours — so the caller falls back to the gather, which re-runs at the loaded width.
+ */
+export class StaleModulusError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "StaleModulusError";
+	}
+}
+
+/** Same role as ENGINE_UNAVAILABLE_MARKER, for StaleModulusError across the RPC boundary. */
+export const STALE_MODULUS_MARKER = "__STALE_MODULUS__";
+
+/**
  * The one path the SearchEngine DO answers over `fetch` — the payload transport.
  *
  * The host is arbitrary and never resolved: a Durable Object stub's `fetch` is a direct pipe, so

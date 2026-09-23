@@ -27,6 +27,8 @@ import {
 	ENGINE_UNAVAILABLE_MARKER,
 	EngineQueryError,
 	EngineUnavailableError,
+	STALE_MODULUS_MARKER,
+	StaleModulusError,
 } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
@@ -41,11 +43,16 @@ interface SearchEngineStub {
 	 * instead of being serialized as an RPC value, which is the DO-CPU term that dominates the
 	 * large payloads — see the DO's `fetch` handler. */
 	fetch(request: Request): Promise<Response>;
-	searchCardsAsObjects(opts: EngineSearchOptions, reportedShards?: number): Promise<EngineSearchResult & Telemetry>;
+	searchCardsAsObjects(
+		opts: EngineSearchOptions,
+		reportedShards?: number,
+		pinnedPartitionCount?: number,
+	): Promise<EngineSearchResult & Telemetry>;
 	searchCardsAsJson(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
+		pinnedPartitionCount?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
 	// The two-phase gather twins (plan B5): served by a partition object, which
 	// coordinates its siblings. Same shapes, same riders.
@@ -79,6 +86,7 @@ interface SearchEngineStub {
 		opts: EngineSearchOptions,
 		baseUrl: string,
 		reportedShards?: number,
+		pinnedPartitionCount?: number,
 	): Promise<EngineSerializedResult & Telemetry>;
 	scryfallCardById(
 		scryfallId: string,
@@ -167,6 +175,8 @@ async function unwrap<T>(call: Promise<T>): Promise<T> {
 		// The RPC path carries the message verbatim, so the same classification the fetch transport
 		// makes from its status line is made here from the text.
 		if (message.includes(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
+		const stale = message.indexOf(STALE_MODULUS_MARKER);
+		if (stale >= 0) throw new StaleModulusError(message.slice(stale + STALE_MODULUS_MARKER.length + 1));
 		throw err;
 	}
 }
@@ -416,6 +426,8 @@ export class RemoteEngine implements Engine {
 		/** "cards2" routes the same request through the two-phase gather (plan
 		 * B5) — set only by PartitionedEngine, whose stub is a partition object. */
 		call: "cards" | "cards2" = "cards",
+		/** The partition count a pinned "cards" call was routed against (pinned-oracle.ts). */
+		pinnedPartitionCount?: number,
 	): Promise<Response> {
 		const rpcStart = Date.now();
 		const res = await this.stub.fetch(
@@ -428,6 +440,7 @@ export class RemoteEngine implements Engine {
 					envelope,
 					cache,
 					shards: currentShardWidth(this.region),
+					...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
 				}),
 			}),
 		);
@@ -438,6 +451,7 @@ export class RemoteEngine implements Engine {
 			const kind = res.headers.get("x-engine-error");
 			const message = await res.text();
 			if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
+			if (kind === "StaleModulusError") throw new StaleModulusError(message);
 			if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
 			throw new Error(message);
 		}
@@ -459,12 +473,20 @@ export class RemoteEngine implements Engine {
 		return out;
 	}
 
-	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return this.searchRpc(() => this.stub.searchCardsAsObjects(opts, currentShardWidth(this.region)));
+	searchCardsAsObjects(opts: EngineSearchOptions, pinnedPartitionCount?: number): Promise<EngineSearchResult> {
+		return this.searchRpc(() =>
+			this.stub.searchCardsAsObjects(opts, currentShardWidth(this.region), pinnedPartitionCount),
+		);
 	}
 
-	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region)));
+	searchCardsAsJson(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+		pinnedPartitionCount?: number,
+	): Promise<EngineSerializedResult> {
+		return this.searchRpc(() =>
+			this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region), pinnedPartitionCount),
+		);
 	}
 
 	// ── Gather twins (partitioned serving; called by PartitionedEngine only) ────
@@ -532,8 +554,14 @@ export class RemoteEngine implements Engine {
 	// `currentShardWidth(this.region)`: the shard rendezvous is what scale-out depends on, and a
 	// second serving surface has to join it rather than route around it.
 
-	async scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.scryfallSearch(opts, baseUrl, currentShardWidth(this.region)));
+	async scryfallSearch(
+		opts: EngineSearchOptions,
+		baseUrl: string,
+		pinnedPartitionCount?: number,
+	): Promise<EngineSerializedResult> {
+		return this.searchRpc(() =>
+			this.stub.scryfallSearch(opts, baseUrl, currentShardWidth(this.region), pinnedPartitionCount),
+		);
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

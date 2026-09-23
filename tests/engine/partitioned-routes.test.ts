@@ -25,7 +25,7 @@ import {
 	RoutingFilter,
 	scryfallIdKey,
 } from "../../src/engine/routing-filter";
-import type { StoreManifest } from "../../src/engine/types";
+import { StaleModulusError, type StoreManifest } from "../../src/engine/types";
 
 const N = 4;
 
@@ -74,7 +74,22 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("gatherScryfallSearch");
 			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
-		scryfallSearchPage: async () => {
+		searchCardsAsObjects: async (_opts: unknown, pinned?: number) => {
+			count(`searchCardsAsObjects[${pinned ?? "-"}]`);
+			if (answers.staleModulus) throw new StaleModulusError("cut at another count");
+			return { totalCards: 1, cards: [] };
+		},
+		searchCardsAsJson: async (_opts: unknown, _shape: unknown, pinned?: number) => {
+			count(`searchCardsAsJson[${pinned ?? "-"}]`);
+			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
+		},
+		scryfallSearch: async (_opts: unknown, _base: unknown, pinned?: number) => {
+			count(`scryfallSearch[${pinned ?? "-"}]`);
+			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
+		},
+		scryfallSearchPage: async (_o: unknown, _b: unknown, _e: unknown, _c: unknown, call = "cards", pinned?: number) => {
+			count(`scryfallSearchPage[${call}${pinned === undefined ? "" : `,${pinned}`}]`);
+			if (answers.staleModulus) throw new StaleModulusError("cut at another count");
 			count("scryfallSearchPage");
 			return new Response("{}");
 		},
@@ -218,7 +233,66 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 		await engine.scryfallSearchPage(OPTS, "https://x", { pretty: false, pageOffset: 0, noMatchDetails: "" }, {});
 		expect(of("gatherScryfallSearch").length).toBe(1);
 		expect(of("scryfallSearchPage").length).toBe(1);
-		expect(calls.length).toBe(2);
+		// Two RPCs; the third entry is the fake recording the page call's kind.
+		expect(calls.filter((c) => !c.startsWith("scryfallSearchPage[")).length).toBe(2);
+	});
+
+	describe("a query pinned to one oracle id", () => {
+		const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdbf87";
+		const pinnedOpts = {
+			...OPTS,
+			filterTreeJson: JSON.stringify({
+				node_type: "CardBinaryOperatorNode",
+				kwargs: {
+					lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "oracle_id" } },
+					op: ":",
+					rhs: { node_type: "StringValueNode", kwargs: { value: oracleId } },
+				},
+			}),
+		};
+		const owner = partitionOfOracleId(oracleId, N);
+
+		test("goes to the owning partition's own store, once, carrying this isolate's N", async () => {
+			const { engine, calls, of } = build();
+			await engine.scryfallSearchPage(
+				pinnedOpts,
+				"https://x",
+				{ pretty: false, pageOffset: 0, noMatchDetails: "" },
+				{},
+			);
+			await engine.scryfallSearch(pinnedOpts, "https://x");
+			await engine.searchCardsAsObjects(pinnedOpts);
+			await engine.searchCardsAsJson(pinnedOpts, "rows");
+			expect(calls).toContain(`scryfallSearchPage[cards,${N}]:${owner}`);
+			expect(calls).toContain(`scryfallSearch[${N}]:${owner}`);
+			expect(calls).toContain(`searchCardsAsObjects[${N}]:${owner}`);
+			expect(calls).toContain(`searchCardsAsJson[${N}]:${owner}`);
+			for (const gather of ["gatherScryfallSearch", "gatherSearchAsObjects", "gatherSearchAsJson"]) {
+				expect(of(gather)).toEqual([]);
+			}
+			expect(calls.filter((c) => c.includes("[cards2"))).toEqual([]);
+		});
+
+		test("an unpinned query still gathers", async () => {
+			const { engine, calls } = build();
+			await engine.scryfallSearchPage(OPTS, "https://x", { pretty: false, pageOffset: 0, noMatchDetails: "" }, {});
+			expect(calls.some((c) => c.startsWith("scryfallSearchPage[cards2]"))).toBe(true);
+			expect(calls.some((c) => c.startsWith("scryfallSearchPage[cards,"))).toBe(false);
+		});
+
+		test("a partition cut at another count refuses, and the gather answers instead", async () => {
+			const { engine, calls, of } = build({ [owner]: { staleModulus: true } });
+			await engine.searchCardsAsObjects(pinnedOpts);
+			expect(calls).toContain(`searchCardsAsObjects[${N}]:${owner}`);
+			expect(of("gatherSearchAsObjects").length).toBe(1);
+			await engine.scryfallSearchPage(
+				pinnedOpts,
+				"https://x",
+				{ pretty: false, pageOffset: 0, noMatchDetails: "" },
+				{},
+			);
+			expect(calls.some((c) => c.startsWith("scryfallSearchPage[cards2]"))).toBe(true);
+		});
 	});
 
 	test("the same query always picks the same gather partition", async () => {

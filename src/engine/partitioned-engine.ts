@@ -49,6 +49,7 @@
 import { collateName, foldAccents } from "../parser/pystr";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
+import { pinnedOracleId } from "./pinned-oracle";
 import type { RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
 import { isPartitionedManifest, MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
@@ -67,6 +68,7 @@ import {
 	type ResultShape,
 	type ScryfallFuzzyResult,
 	type SearchPageEnvelope,
+	StaleModulusError,
 	type StoreManifest,
 } from "./types";
 
@@ -511,18 +513,60 @@ export class PartitionedEngine implements Engine {
 		return null;
 	}
 
-	// ── search / listing: one RPC to the gather ─────────────────────────────────
+	// ── search / listing: one RPC to the gather, or ONE to the owning partition ──
+	//
+	// A query pinned to an oracle id (pinned-oracle.ts) is answered by that id's partition from
+	// its own store: exact, and 1 Durable Object request instead of 1 + (N-1). That was 57% of
+	// /cards/search on DeckGen (2026-09-21), ~220k of the day's 938k requests on the meter the free
+	// plan binds first. The pin carries this isolate's partition count; an object cut at another
+	// count refuses (StaleModulusError) and the gather, which re-runs at the loaded width, answers
+	// instead — so a stale manifest can never turn into an empty page cached for 16 hours.
+
+	/** The partition a query is pinned to, or null when it must fan out. */
+	private pinnedPartition(opts: EngineSearchOptions): number | null {
+		const oracleId = pinnedOracleId(opts.filterTreeJson);
+		return oracleId === null ? null : partitionOfOracleId(oracleId, this.n);
+	}
+
+	private async pinnedOrGathered<T>(
+		opts: EngineSearchOptions,
+		pinned: (owner: RemoteEngine, partitionCount: number) => Promise<T>,
+		gathered: (coordinator: RemoteEngine) => Promise<T>,
+	): Promise<T> {
+		const p = this.pinnedPartition(opts);
+		if (p !== null) {
+			try {
+				return await pinned(this.at(p), this.n);
+			} catch (err) {
+				if (!(err instanceof StaleModulusError)) throw err;
+				console.warn(`pinned search refused by partition ${p} (${err.message}); gathering instead`);
+			}
+		}
+		return gathered(this.gatherAt(opts.filterTreeJson));
+	}
 
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return this.gatherAt(opts.filterTreeJson).gatherSearchAsObjects(opts);
+		return this.pinnedOrGathered(
+			opts,
+			(owner, n) => owner.searchCardsAsObjects(opts, n),
+			(c) => c.gatherSearchAsObjects(opts),
+		);
 	}
 
 	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.gatherAt(opts.filterTreeJson).gatherSearchAsJson(opts, shape);
+		return this.pinnedOrGathered(
+			opts,
+			(owner, n) => owner.searchCardsAsJson(opts, shape, n),
+			(c) => c.gatherSearchAsJson(opts, shape),
+		);
 	}
 
 	scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
-		return this.gatherAt(opts.filterTreeJson).gatherScryfallSearch(opts, baseUrl);
+		return this.pinnedOrGathered(
+			opts,
+			(owner, n) => owner.scryfallSearch(opts, baseUrl, n),
+			(c) => c.gatherScryfallSearch(opts, baseUrl),
+		);
 	}
 
 	scryfallSearchPage(
@@ -531,7 +575,11 @@ export class PartitionedEngine implements Engine {
 		envelope: SearchPageEnvelope,
 		cache: Record<string, string>,
 	): Promise<Response> {
-		return this.gatherAt(opts.filterTreeJson).scryfallSearchPage(opts, baseUrl, envelope, cache, "cards2");
+		return this.pinnedOrGathered(
+			opts,
+			(owner, n) => owner.scryfallSearchPage(opts, baseUrl, envelope, cache, "cards", n),
+			(c) => c.scryfallSearchPage(opts, baseUrl, envelope, cache, "cards2"),
+		);
 	}
 
 	// ── catalogs and counts: the colo's copy, else sum the partitions ────────────

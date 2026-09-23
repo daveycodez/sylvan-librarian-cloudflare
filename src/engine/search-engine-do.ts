@@ -102,7 +102,13 @@ import type {
 	SearchPageEnvelope,
 	StoreManifest,
 } from "./types";
-import { ENGINE_STREAM_PATH, ENGINE_UNAVAILABLE_MARKER, EngineUnavailableError } from "./types";
+import {
+	ENGINE_STREAM_PATH,
+	ENGINE_UNAVAILABLE_MARKER,
+	EngineUnavailableError,
+	STALE_MODULUS_MARKER,
+	StaleModulusError,
+} from "./types";
 
 /**
  * `/cards/*` replies, wrapped so `instrumented` has an object to spread telemetry over. A bare
@@ -152,6 +158,9 @@ const RATE_BUCKETS = 10;
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
 		throw new Error(`${ENGINE_UNAVAILABLE_MARKER}:${err.message}`);
+	}
+	if (err instanceof StaleModulusError) {
+		throw new Error(`${STALE_MODULUS_MARKER}:${err.message}`);
 	}
 	throw err;
 }
@@ -251,8 +260,28 @@ export class SearchEngine extends DurableObject<Env> {
 	async searchCardsAsObjects(
 		opts: EngineSearchOptions,
 		reportedShards?: number,
+		pinnedPartitionCount?: number,
 	): Promise<EngineSearchResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, (engine) => engine.searchCardsAsObjects(opts));
+		return this.instrumented(reportedShards, (engine) => {
+			this.assertPinnedModulus(pinnedPartitionCount);
+			return engine.searchCardsAsObjects(opts);
+		}).catch(rethrowForRpc);
+	}
+
+	/**
+	 * A query pinned to this partition (pinned-oracle.ts) is exact only if this object's store was
+	 * cut at the partition count the caller pinned against. Runs AFTER the engine is acquired, so
+	 * the loaded manifest is the one compared. Undefined means an unpinned call: nothing to check.
+	 */
+	private assertPinnedModulus(pinnedPartitionCount: number | undefined): void {
+		if (pinnedPartitionCount === undefined) return;
+		const loaded = currentManifest(this.label);
+		const loadedCount = loaded?.partition_count;
+		if (loadedCount !== undefined && loadedCount !== pinnedPartitionCount) {
+			throw new StaleModulusError(
+				`${this.label} serves a ${loadedCount}-partition store; the caller pinned against ${pinnedPartitionCount}`,
+			);
+		}
 	}
 
 	/**
@@ -264,8 +293,12 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
+		pinnedPartitionCount?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, (engine) => engine.searchCardsAsJson(opts, shape));
+		return this.instrumented(reportedShards, (engine) => {
+			this.assertPinnedModulus(pinnedPartitionCount);
+			return engine.searchCardsAsJson(opts, shape);
+		}).catch(rethrowForRpc);
 	}
 
 	/**
@@ -320,6 +353,8 @@ export class SearchEngine extends DurableObject<Env> {
 			 */
 			envelope?: SearchPageEnvelope;
 			cache?: Record<string, string>;
+			/** Set on a "cards" call the caller pinned to this partition (pinned-oracle.ts). */
+			pinnedPartitionCount?: number;
 		};
 		if (body.call !== "cards" && body.call !== "cards2") {
 			return new Response(`unsupported engine call: ${String(body.call)}`, { status: 400 });
@@ -331,7 +366,10 @@ export class SearchEngine extends DurableObject<Env> {
 					? await this.instrumentedGather(body.shards, () =>
 							this.gatherScryfallSearchLocal(body.opts, body.baseUrl ?? ""),
 						)
-					: await this.instrumented(body.shards, (engine) => engine.scryfallSearch(body.opts, body.baseUrl ?? ""));
+					: await this.instrumented(body.shards, (engine) => {
+							this.assertPinnedModulus(body.pinnedPartitionCount);
+							return engine.scryfallSearch(body.opts, body.baseUrl ?? "");
+						});
 		} catch (err) {
 			// The RPC path has `rethrowForRpc` to keep error IDENTITY across the boundary; a fetch
 			// carries a status line instead, so the class is named explicitly and rebuilt client-side.
@@ -546,8 +584,12 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		baseUrl: string,
 		reportedShards?: number,
+		pinnedPartitionCount?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, (engine) => engine.scryfallSearch(opts, baseUrl));
+		return this.instrumented(reportedShards, (engine) => {
+			this.assertPinnedModulus(pinnedPartitionCount);
+			return engine.scryfallSearch(opts, baseUrl);
+		}).catch(rethrowForRpc);
 	}
 
 	async scryfallCardById(
