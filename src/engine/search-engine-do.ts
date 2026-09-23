@@ -73,6 +73,7 @@ import {
 	type SearchKeysReply,
 } from "./gather";
 import { probePlacement } from "./placement";
+import { isTransientEngineFailure, withDeadline } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
 import {
 	currentManifest,
@@ -154,6 +155,24 @@ const WIDTH_TTL_MS = 60_000;
 /** One-second buckets behind the arrival-rate meter; also its window in
  * seconds, since each bucket holds exactly one. */
 const RATE_BUCKETS = 10;
+
+/**
+ * The most a gather waits on one sibling: above the loader's 20s deadline, so a sibling whose load
+ * stalled answers with its retryable abandoned-load error first, and below the Worker's 35s, so a
+ * gather that cannot finish fails in time for the Worker to try another coordinator.
+ */
+const SIBLING_CALL_DEADLINE_MS = 25_000;
+
+/** One sibling RPC with a deadline and ONE retry of a reset or an abandoned load. */
+async function siblingCall<T>(what: string, call: () => Promise<T>): Promise<T> {
+	try {
+		return await withDeadline(call(), SIBLING_CALL_DEADLINE_MS, what);
+	} catch (err) {
+		if (!isTransientEngineFailure(err)) throw err;
+		console.warn(`${what} failed transiently (${err}); asking once more`);
+		return withDeadline(call(), SIBLING_CALL_DEADLINE_MS, what);
+	}
+}
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
@@ -862,9 +881,9 @@ export class SearchEngine extends DurableObject<Env> {
 			if (!stub) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
 			return {
 				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
-					stub.searchKeys(opts, inlineRows, shaping),
+					siblingCall(`partition-${p} searchKeys`, () => stub.searchKeys(opts, inlineRows, shaping)),
 				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
-					stub.fetchRows(vpids, fields, storeKey, shaping),
+					siblingCall(`partition-${p} fetchRows`, () => stub.fetchRows(vpids, fields, storeKey, shaping)),
 				refresh: async () => {
 					const { swapped } = await stub.notifyPublish();
 					console.warn(

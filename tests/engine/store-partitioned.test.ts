@@ -640,3 +640,45 @@ describe("the announcement is written once per store, not once per wake", () => 
 		expect(puts).toEqual(["engine:live:engine-announce3-p0"]);
 	});
 });
+
+// ── A load that never finishes (2026-09-23 incident) ────────────────────────────
+//
+// One stalled read inside a load used to leave the label's single-flighted load pending forever,
+// and every request to that object waited on it until a deploy replaced the isolate. The load now
+// has a deadline; the abandoned load is fenced so a read that resumes later cannot write into the
+// next load or become the store.
+describe("a store load that stalls", () => {
+	test("is abandoned at its deadline, the next request loads cleanly, and the stale load stays fenced", async () => {
+		const { entries } = await publishV2("300");
+		const { env } = fakeEnv(entries);
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let stallNext = true;
+		const kv = env.STORE_KV as unknown as { get: (key: string, opts?: { type?: string }) => Promise<unknown> };
+		const realGet = kv.get.bind(kv);
+		kv.get = async (key: string, opts?: { type?: string }) => {
+			if (stallNext && key.startsWith("store:card-store-v1-300-p0.store:")) {
+				stallNext = false;
+				await gate;
+			}
+			return realGet(key, opts);
+		};
+		store.setLoadDeadlineForTests(50);
+		try {
+			const label = "engine-stall-p0";
+			await expect(store.getEngine(env, ctxFor(label, 0))).rejects.toBeInstanceOf(store.StoreLoadStalledError);
+			// No backoff after a stall: the very next request starts a fresh load, and it succeeds.
+			const engine = await store.getEngine(env, ctxFor(label, 0));
+			expect(await engine.cardCount()).toBe(7);
+			// The abandoned load's read now resumes. Fenced: it must not replace the loaded store.
+			release();
+			await Bun.sleep(30);
+			expect(store.tryGetLoadedEngine(label)).toBe(engine);
+			expect(await engine.cardCount()).toBe(7);
+		} finally {
+			store.setLoadDeadlineForTests(20_000);
+		}
+	});
+});

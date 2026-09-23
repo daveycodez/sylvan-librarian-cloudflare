@@ -136,6 +136,84 @@ interface LabelState {
  * should not have to wait on it, and the window only needs to outlast a burst.
  */
 const LOAD_BACKOFF_MS = 5_000;
+
+/**
+ * How long one store load may take before it is abandoned.
+ *
+ * NOTHING ELSE BOUNDS A LOAD. It awaits KV reads, the local cache and an announcement put, and a
+ * single one of those that never settles leaves the label's in-flight load pending forever — and
+ * every request to that object waits on it, because loads are single-flighted. The object cannot
+ * clear it by resetting itself: partition objects share one isolate (wasm-shim.ts), and this state
+ * is module-level, so only a new isolate — a deploy — ever did. That is the shape of the
+ * 2026-09-23 06:45–07:33 incident on DeckGen: requests routed to one object hung for 30s+ for half
+ * an hour while every other object served, and the next deploy cleared it.
+ *
+ * A healthy load is 0.2–2s from the local cache and a few seconds from KV cold, so 20s only ever
+ * catches a stall. The abandoned load is FENCED (LoadFence): if its stalled read ever resumes, it
+ * throws at its next step instead of writing into the wasm instance the next load is using, and it
+ * can never become the object's store.
+ */
+let loadDeadlineMs = 20_000;
+
+/** For tests: shorten the load deadline. */
+export function setLoadDeadlineForTests(ms: number): void {
+	loadDeadlineMs = ms;
+}
+
+/** Thrown to the caller of a load that outlived LOAD_DEADLINE and was abandoned. Safe to retry. */
+export class StoreLoadStalledError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "StoreLoadStalledError";
+	}
+}
+
+/** Shared by one load and its deadline: once `abandoned`, the load may not touch anything again. */
+interface LoadFence {
+	abandoned: boolean;
+	label: string;
+}
+
+function checkFence(fence: LoadFence | undefined): void {
+	if (fence?.abandoned) {
+		throw new StoreLoadStalledError(`[${fence.label}] store load abandoned after its deadline; not resuming it`);
+	}
+}
+
+/**
+ * Start `run` as the label's one in-flight load, bounded by the load deadline. Both starters —
+ * a request (getEngine) and a publish swap (swapToStore) — go through here, so neither can wedge
+ * the object behind a read that never returns.
+ */
+function startLoad(
+	state: LabelState,
+	label: string | undefined,
+	run: (fence: LoadFence) => Promise<Engine>,
+): Promise<Engine> {
+	const fence: LoadFence = { abandoned: false, label: label || "default" };
+	const inner = run(fence);
+	// A load abandoned by its deadline may still reject later; nobody awaits it by then.
+	inner.catch(() => {});
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			fence.abandoned = true;
+			console.error(
+				`[${fence.label}] store load did not finish within ${loadDeadlineMs}ms; abandoning it so the next ` +
+					`request starts a fresh one`,
+			);
+			reject(
+				new StoreLoadStalledError(`[${fence.label}] store load stalled for ${loadDeadlineMs}ms and was abandoned`),
+			);
+		}, loadDeadlineMs);
+	});
+	const loading: Promise<Engine> = Promise.race([inner, deadline]).finally(() => {
+		clearTimeout(timer);
+		if (state.loading === loading) state.loading = null;
+	});
+	state.loading = loading;
+	return loading;
+}
 const states = new Map<string, LabelState>();
 
 /**
@@ -647,18 +725,32 @@ async function feedStore(
 	totalLen: number,
 	sink: CacheWriter | null,
 	gzipped = false,
+	fence?: LoadFence,
 ): Promise<FeedCounts> {
+	// Every call into the instance is fenced: an abandoned load whose read resumes must not feed
+	// the buffer a newer load is filling.
+	checkFence(fence);
 	if (gzipped) {
 		w.begin_store_load_gzip(totalLen);
-		const counts = await feedBlocks(body, (block) => w.store_load_gzip_chunk(block), GZIP_FEED_BYTES);
+		const counts = await feedBlocks(
+			body,
+			(block) => {
+				checkFence(fence);
+				w.store_load_gzip_chunk(block);
+			},
+			GZIP_FEED_BYTES,
+		);
+		checkFence(fence);
 		w.finish_store_load_gzip();
 		return counts;
 	}
 	w.begin_store_load(totalLen);
 	const counts = await feedBlocks(body, (block) => {
+		checkFence(fence);
 		w.store_load_chunk(block);
 		sink?.write(block);
 	});
+	checkFence(fence);
 	w.finish_store_load();
 	return counts;
 }
@@ -831,7 +923,7 @@ function commitSink(
 	}
 }
 
-async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Promise<Engine> {
+async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fence?: LoadFence): Promise<Engine> {
 	const state = stateFor(ctx?.label);
 	// The one place wasm is first touched, so the one place that has to bring it
 	// up — one INSTANCE per label, because colocated partition objects share this
@@ -995,8 +1087,10 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// ~105ms under V8. `store_gzip_bytes` stays a flag the reader can see absent.
 	let counts: FeedCounts;
 	try {
-		counts = await feedStore(w, body, source.storeBytes, sink, compressedMode);
+		counts = await feedStore(w, body, source.storeBytes, sink, compressedMode, fence);
 	} catch (err) {
+		// An abandoned load stops here: no cache invalidation it does not own, no fallback load.
+		if (err instanceof StoreLoadStalledError) throw err;
 		// A recorded manifest can name a store that no longer loads — its archive header no longer
 		// matches this build, or its chunks were pruned by a deploy that published without
 		// notifying (production, 2026-08-13: a generation bump pruned the old chunks and every
@@ -1015,12 +1109,13 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 					`falling back to KV's ${fallback.store_key} and correcting the record`,
 			);
 			recordLiveManifest(ctx.storage, fallback);
-			return loadStore(env, ctx, fallback);
+			return loadStore(env, ctx, fallback, fence);
 		}
 		throw err;
 	}
 	const { pieces, blocks } = counts;
 
+	checkFence(fence);
 	fetch.commit();
 
 	// The announcement started before the load must have LANDED before this object starts answering
@@ -1036,6 +1131,8 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		probePlacement(ctx);
 	}
 
+	// Last gate before this load becomes the object's store: an abandoned load never does.
+	checkFence(fence);
 	const engine = new WasmEngine(w);
 	state.current = { storeKey: source.storeKey, engine, manifest, handle: w, generation: w.instanceGeneration() };
 	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
@@ -1192,11 +1289,7 @@ export async function swapToStore(env: Env, ctx: LoadContext, manifest: StoreMan
 	}
 	// Converged by the loader that was in flight — which is what was asked for.
 	if (liveCurrent(state, ctx.label)?.storeKey === source.storeKey) return true;
-	const loading = loadStore(env, ctx, manifest).finally(() => {
-		if (state.loading === loading) state.loading = null;
-	});
-	state.loading = loading;
-	await loading;
+	await startLoad(state, ctx.label, (fence) => loadStore(env, ctx, manifest, fence));
 	return true;
 }
 
@@ -1217,21 +1310,20 @@ export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 				);
 			}
 		}
-		const loading = loadStore(env, ctx)
-			.then((engine) => {
+		const loading = startLoad(state, ctx.label, (fence) => loadStore(env, ctx, undefined, fence));
+		loading.then(
+			() => {
 				state.lastLoadFailure = null;
-				return engine;
-			})
-			.catch((err: unknown) => {
+			},
+			(err: unknown) => {
+				// A stalled load is not a failed store: the next request should start a fresh load at
+				// once rather than wait out the backoff meant for a store that cannot load.
+				if (err instanceof StoreLoadStalledError) return;
 				state.lastLoadFailure = { at: Date.now(), message: err instanceof Error ? err.message : String(err) };
-				throw err;
-			})
-			.finally(() => {
-				if (state.loading === loading) state.loading = null;
-			});
-		state.loading = loading;
+			},
+		);
 	}
-	return state.loading;
+	return state.loading as Promise<Engine>;
 }
 
 /** Non-blocking: the label's engine if this isolate is already warm, else null. */

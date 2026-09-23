@@ -50,7 +50,7 @@ import { collateName, foldAccents } from "../parser/pystr";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedOracleId } from "./pinned-oracle";
-import type { RemoteEngine } from "./remote-engine";
+import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
 import { isPartitionedManifest, MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
 import {
@@ -442,6 +442,14 @@ function parseCatalogTables(bytes: Uint8Array): CatalogTables | null {
 	}
 }
 
+/**
+ * An engine object that did not answer in time, or kept failing with the platform's reset errors
+ * after RemoteEngine's own retry. Worth trying ANOTHER object for; a query or store error is not.
+ */
+function isStuckEngine(err: unknown): boolean {
+	return err instanceof EngineCallTimeoutError || isTransientEngineFailure(err);
+}
+
 export class PartitionedEngine implements Engine {
 	/** Lazily created per-partition clients, so a single-card route builds one. */
 	private readonly engines = new Map<number, RemoteEngine>();
@@ -471,10 +479,6 @@ export class PartitionedEngine implements Engine {
 			this.engines.set(partition, e);
 		}
 		return e;
-	}
-
-	private gatherAt(query: string): RemoteEngine {
-		return this.at(gatherPartitionOf(query, this.n));
 	}
 
 	private all<T>(run: (e: RemoteEngine, p: number) => Promise<T>): Promise<T[]> {
@@ -538,11 +542,23 @@ export class PartitionedEngine implements Engine {
 			try {
 				return await pinned(this.at(p), this.n);
 			} catch (err) {
-				if (!(err instanceof StaleModulusError)) throw err;
-				console.warn(`pinned search refused by partition ${p} (${err.message}); gathering instead`);
+				// A stale layout, or an owner that is not answering: the gather reaches the same rows.
+				if (!(err instanceof StaleModulusError) && !isStuckEngine(err)) throw err;
+				console.warn(`pinned search not answered by partition ${p} (${err}); gathering instead`);
 			}
 		}
-		return gathered(this.gatherAt(opts.filterTreeJson));
+		const coordinator = gatherPartitionOf(opts.filterTreeJson, this.n);
+		try {
+			return await gathered(this.at(coordinator));
+		} catch (err) {
+			// The coordinator is chosen from the query text, so every repeat of a query goes to the SAME
+			// object: one object that has stopped answering would take that query down until the next
+			// deploy. Any partition can coordinate a gather, so the next one takes over — once.
+			if (this.n < 2 || !isStuckEngine(err)) throw err;
+			const next = (coordinator + 1) % this.n;
+			console.warn(`gather coordinator partition ${coordinator} not answering (${err}); failing over to ${next}`);
+			return gathered(this.at(next));
+		}
 	}
 
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
