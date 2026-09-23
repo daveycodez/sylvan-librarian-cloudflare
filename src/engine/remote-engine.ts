@@ -182,6 +182,34 @@ async function unwrap<T>(call: Promise<T>): Promise<T> {
 }
 
 /**
+ * The platform's own "try again" failures, by message. The runtime flags some of them
+ * `retryable: true`, but not all: measured at the 2026-09-23 06:45 deploy, "Durable Object storage
+ * is no longer accessible", "this Durable Object instance is no longer active. Reconnect or retry
+ * the request" and "Internal error while starting up Durable Object storage caused object to be
+ * reset" all reached users — the streaming /cards/search transport had no retry at all, and the
+ * RPC one retried only on the flag. Every one of them means the object was being reset, which a
+ * deploy does to every object.
+ */
+const TRANSIENT_PLATFORM_FAILURE =
+	/storage is no longer accessible|instance is no longer active|network connection lost|reset because its code was updated|caused object to be reset/i;
+
+/** Whether a failed engine call is safe and worth repeating: the runtime says so, or it is a reset. */
+export function isTransientEngineFailure(err: unknown): boolean {
+	if (err instanceof EngineUnavailableError || err instanceof EngineQueryError || err instanceof StaleModulusError) {
+		return false;
+	}
+	const flags = err as { retryable?: boolean; overloaded?: boolean };
+	if (flags?.overloaded === true) return false;
+	if (flags?.retryable === true) return true;
+	const message = err instanceof Error ? err.message : String(err);
+	return TRANSIENT_PLATFORM_FAILURE.test(message);
+}
+
+/** Attempts per engine call, and the linear backoff between them. */
+const ENGINE_CALL_ATTEMPTS = 3;
+const retryPause = (attempt: number) => new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+
+/**
  * Run one engine RPC, retrying failures the runtime flags as transient.
  *
  * Every deploy RESETS every DO, and an RPC landing during the reset is
@@ -197,12 +225,10 @@ async function withRetry<T>(call: () => Promise<T>): Promise<T> {
 		try {
 			return await unwrap(call());
 		} catch (err) {
-			if (err instanceof EngineUnavailableError) throw err;
-			const flags = err as { retryable?: boolean; overloaded?: boolean };
-			if (attempt >= 2 || flags.retryable !== true || flags.overloaded === true) throw err;
+			if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err)) throw err;
 			console.warn(`retryable engine RPC failure (attempt ${attempt + 1}): ${err}`);
 			// The reset completes in well under a second; brief linear backoff.
-			await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+			await retryPause(attempt);
 		}
 	}
 }
@@ -441,31 +467,39 @@ export class RemoteEngine implements Engine {
 		/** The partition count a pinned "cards" call was routed against (pinned-oracle.ts). */
 		pinnedPartitionCount?: number,
 	): Promise<Response> {
-		const rpcStart = Date.now();
-		const res = await this.stub.fetch(
-			new Request(`https://engine${ENGINE_STREAM_PATH}`, {
-				method: "POST",
-				body: JSON.stringify({
-					call,
-					opts,
-					baseUrl,
-					envelope,
-					cache,
-					shards: currentShardWidth(this.region),
-					...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
-				}),
-			}),
-		);
-		if (res.status === 503) {
-			// The transport reports EVERY failure as a 503 with the class name in a header, so the
-			// class has to be rebuilt here or the raw 503 becomes the client's answer — which is
-			// exactly how a malformed regex in a user's query produced a 5xx with a non-JSON body.
-			const kind = res.headers.get("x-engine-error");
-			const message = await res.text();
-			if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
-			if (kind === "StaleModulusError") throw new StaleModulusError(message);
-			if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
-			throw new Error(message);
+		const body = JSON.stringify({
+			call,
+			opts,
+			baseUrl,
+			envelope,
+			cache,
+			shards: currentShardWidth(this.region),
+			...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
+		});
+		let rpcStart = Date.now();
+		let res: Response;
+		// The same retry the RPC transport has (withRetry): a deploy resets every object, and a
+		// request landing mid-reset fails either as a thrown fetch or as the object's own 503. The
+		// call is a pure read, so repeating it is always safe.
+		for (let attempt = 0; ; attempt++) {
+			rpcStart = Date.now();
+			try {
+				res = await this.stub.fetch(new Request(`https://engine${ENGINE_STREAM_PATH}`, { method: "POST", body }));
+				if (res.status !== 503) break;
+				// The transport reports EVERY failure as a 503 with the class name in a header, so the
+				// class has to be rebuilt here or the raw 503 becomes the client's answer — which is
+				// exactly how a malformed regex in a user's query produced a 5xx with a non-JSON body.
+				const kind = res.headers.get("x-engine-error");
+				const message = await res.text();
+				if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
+				if (kind === "StaleModulusError") throw new StaleModulusError(message);
+				if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
+				throw new Error(message);
+			} catch (err) {
+				if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err)) throw err;
+				console.warn(`retryable engine page failure (attempt ${attempt + 1}): ${err}`);
+				await retryPause(attempt);
+			}
 		}
 		const num = (name: string): number | undefined => {
 			const raw = res.headers.get(name);
