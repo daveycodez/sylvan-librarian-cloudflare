@@ -23,18 +23,17 @@
 	// the deploy-time compile that makes script size free here. Re-measure before
 	// ever enabling it; do not assume a later workerd fixed it.
 	"compatibility_flags": [],
-	// Every invocation is logged (`head_sampling_rate` 1, the default), on purpose: the one thing
-	// sampling would thin is the nightly coordinator's alarm chain, which is exactly the trace a
-	// hang investigation needs. Measured on DeckGen for 2026-09-21: 1.25M events, of which 1.09M
-	// are INVOCATION logs (938k Durable Object RPCs, 156k fetches) and 160k are console lines.
-	// That is ~37M/month against the paid plan's 20M included (~$10/month at $0.60/M); on the free
-	// plan everything past 200k/day is dropped, not billed. The lever, if that bill matters, is
-	// `"logs": { "invocation_logs": false }` — it removes the 1.09M/day and keeps every console
-	// line, at the cost of the per-request rows in the dashboard's Logs view (GraphQL keeps
-	// requests, errors and CPU). Left enabled: that trade is a product decision, not a code one.
-	// The per-request console line this used to have (`warm engine rpc: n=1`, ~100k/day) is gone —
-	// remote-engine.ts reports a window only when it holds two samples or a far floor.
-	"observability": { "enabled": true },
+	// Console lines are logged in full (`head_sampling_rate` 1, the default), on purpose: the one
+	// thing sampling would thin is the nightly coordinator's alarm chain, which is exactly the trace
+	// a hang investigation needs. INVOCATION logs are off. Measured on DeckGen for 2026-09-21:
+	// 1.25M events, of which 1.09M were the automatic one-record-per-call invocation logs (938k
+	// Durable Object RPCs, 156k fetches) — ~37M/month against the paid plan's 20M included, and on
+	// the free plan past the 200k/day cap by ~05:00 UTC, i.e. before the 11:17 nightly, with the rest
+	// of the day dropped. Nothing here reads them: request counts, errors and CPU come from the
+	// GraphQL analytics, and every investigation in this repo has read console lines. What is lost
+	// is the per-request row in the dashboard's Logs view. Uncaught failures still reach the logs as
+	// console.error lines from the Worker's handler and the coordinator's alarm body.
+	"observability": { "enabled": true, "logs": { "invocation_logs": false } },
 
 	// Static assets, served straight from Cloudflare's CDN out of public/ —
 	// app.js, app.min.js, card.js, styles.css, the icons, robots.txt and the
