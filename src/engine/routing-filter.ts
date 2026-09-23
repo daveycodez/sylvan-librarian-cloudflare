@@ -37,8 +37,17 @@
 // generation would hint at partitions computed under another modulus, which is
 // exactly the silent-wrong-answer class the manifest checks exist to prevent.
 
-/** Header magic: "SRF" + format version. Bump the trailing digit with the layout. */
-export const ROUTING_FILTER_MAGIC = 0x53524631; // "SRF1"
+/**
+ * Header magic: "SRF" + format version. Bump the trailing digit with the layout.
+ *
+ * SRF2 (2026-09-23): one BYTE per cell where SRF1 packed two 4-bit cells per byte. Fifteen
+ * partitions was the 4-bit ceiling, and a store cut into language families (StoreManifest
+ * .families) passes it on today's corpus. A reader meeting the other layout refuses it as bad
+ * magic and fans out, which is the correct answer to any filter it cannot trust.
+ */
+export const ROUTING_FILTER_MAGIC = 0x53524632; // "SRF2"
+/** The previous layout, still READ: the live filter at deploy time is last night's until the next publish. */
+export const ROUTING_FILTER_MAGIC_V1 = 0x53524631; // "SRF1"
 
 /** Header bytes before the cell array. */
 const HEADER_BYTES = 40;
@@ -58,8 +67,8 @@ const MAX_SEEDS = 10;
 /** Spare cells added on top of the ratio — see `blockLength`. */
 const CELL_FLOOR = 32;
 
-/** The value written for "no partition" — only reachable for absent keys. */
-const VALUE_MASK = 0xf;
+/** The widest cell value: one byte per cell, so up to 255 partitions. */
+const VALUE_MASK = 0xff;
 
 /**
  * The key namespaces. A route's identifier space is part of its key, so a
@@ -315,7 +324,7 @@ export function buildRoutingFilterFromHashes(
 ): Uint8Array {
 	if (identity.partitionCount > VALUE_MASK) {
 		throw new Error(
-			`routing filter: partition_count ${identity.partitionCount} does not fit ${VALUE_MASK} distinct 4-bit values`,
+			`routing filter: partition_count ${identity.partitionCount} does not fit ${VALUE_MASK} distinct 8-bit values`,
 		);
 	}
 	const { lo, hi, values } = sealed;
@@ -390,7 +399,7 @@ function packFilter(
 ): Uint8Array {
 	const hashBytes = encoder.encode(identity.partitionHash);
 	const builtAtBytes = encoder.encode(identity.builtAt);
-	const packedCells = (nibbles.length + 1) >> 1;
+	const packedCells = nibbles.length;
 	const out = new Uint8Array(HEADER_BYTES + hashBytes.length + builtAtBytes.length + packedCells);
 	const view = new DataView(out.buffer);
 	view.setUint32(0, ROUTING_FILTER_MAGIC, false);
@@ -403,10 +412,7 @@ function packFilter(
 	// 28..40 reserved (zero) so a later field can land without moving the payload.
 	out.set(hashBytes, HEADER_BYTES);
 	out.set(builtAtBytes, HEADER_BYTES + hashBytes.length);
-	const at = HEADER_BYTES + hashBytes.length + builtAtBytes.length;
-	for (let i = 0; i < nibbles.length; i += 2) {
-		out[at + (i >> 1)] = ((nibbles[i] as number) & 0xf) | (((nibbles[i + 1] ?? 0) & 0xf) << 4);
-	}
+	out.set(nibbles, HEADER_BYTES + hashBytes.length + builtAtBytes.length);
 	return out;
 }
 
@@ -421,6 +427,8 @@ export class RoutingFilter {
 		private readonly blockLength: number,
 		readonly keyCount: number,
 		readonly identity: RoutingFilterIdentity,
+		/** SRF1: two 4-bit cells per byte. SRF2: one byte per cell. */
+		private readonly nibbles: boolean,
 	) {}
 
 	/**
@@ -433,7 +441,9 @@ export class RoutingFilter {
 	static parse(bytes: Uint8Array, expect: RoutingFilterIdentity): { filter: RoutingFilter } | { reason: string } {
 		if (bytes.byteLength < HEADER_BYTES) return { reason: `only ${bytes.byteLength} bytes` };
 		const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-		if (view.getUint32(0, false) !== ROUTING_FILTER_MAGIC) return { reason: "bad magic" };
+		const magic = view.getUint32(0, false);
+		if (magic !== ROUTING_FILTER_MAGIC && magic !== ROUTING_FILTER_MAGIC_V1) return { reason: "bad magic" };
+		const nibbles = magic === ROUTING_FILTER_MAGIC_V1;
 		const seed = view.getUint32(4, true) | 0;
 		const blockLength = view.getUint32(8, true);
 		const keyCount = view.getUint32(12, true);
@@ -441,7 +451,7 @@ export class RoutingFilter {
 		const hashLen = view.getUint32(20, true);
 		const builtAtLen = view.getUint32(24, true);
 		const cellsAt = HEADER_BYTES + hashLen + builtAtLen;
-		const packedCells = (blockLength * 3 + 1) >> 1;
+		const packedCells = nibbles ? (blockLength * 3 + 1) >> 1 : blockLength * 3;
 		if (bytes.byteLength !== cellsAt + packedCells) {
 			return { reason: `length ${bytes.byteLength} != header ${cellsAt} + cells ${packedCells}` };
 		}
@@ -456,11 +466,19 @@ export class RoutingFilter {
 		}
 		if (builtAt !== expect.builtAt) return { reason: `built_at ${builtAt} != manifest ${expect.builtAt}` };
 		return {
-			filter: new RoutingFilter(bytes, cellsAt, seed, blockLength, keyCount, {
-				builtAt,
-				partitionCount,
-				partitionHash,
-			}),
+			filter: new RoutingFilter(
+				bytes,
+				cellsAt,
+				seed,
+				blockLength,
+				keyCount,
+				{
+					builtAt,
+					partitionCount,
+					partitionHash,
+				},
+				nibbles,
+			),
 		};
 	}
 
@@ -470,6 +488,7 @@ export class RoutingFilter {
 	}
 
 	private cellAt(slot: number): number {
+		if (!this.nibbles) return this.cells[this.cellsAt + slot] as number;
 		const byte = this.cells[this.cellsAt + (slot >> 1)] as number;
 		return (slot & 1) === 0 ? byte & 0xf : (byte >> 4) & 0xf;
 	}
@@ -478,7 +497,7 @@ export class RoutingFilter {
 	 * The partition to ask FIRST, or null when the answer is not a usable hint.
 	 *
 	 * A key that was built in always yields its own partition. A key that was not
-	 * yields an arbitrary nibble, and roughly (16 − N)/16 of those land outside the
+	 * yields an arbitrary byte, and roughly (256 − N)/256 of those land outside the
 	 * partition range and are recognised as garbage here — the rest cost one
 	 * fruitless RPC before the caller falls back, which is the price of never
 	 * being wrong.

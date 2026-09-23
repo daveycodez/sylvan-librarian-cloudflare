@@ -3,6 +3,8 @@
 // wire shape (`node_type`/`kwargs`), and a hand-written fixture could drift from it silently.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { pinnedOracleId } from "../../src/engine/pinned-oracle";
 import { canonicalStringify, EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
 import type { FilterValue } from "../../src/parser/nodes";
@@ -37,6 +39,17 @@ describe("a query pins one partition when", () => {
 
 	test("the operator is = rather than :", async () => {
 		expect(pinnedOracleId(await wire(`oracleid=${ID}`))).toBe(ID);
+	});
+});
+
+describe("the owning object's pin check (source pin: the DO cannot load outside workerd)", () => {
+	test("accepts the layout pin and the previous build's bare count, on both transports", () => {
+		const src = readFileSync(join(import.meta.dir, "../../src/engine/search-engine-do.ts"), "utf8");
+		const check = src.slice(src.indexOf("private assertPinned("), src.indexOf("async searchCardsAsJson("));
+		expect(check).toContain('typeof pinned === "number"');
+		expect(check).toContain("layoutKeyOf(loaded)");
+		expect(check).toContain("pinned.layout");
+		expect(src).toContain("this.assertPinned(body.pinned ?? body.pinnedPartitionCount)");
 	});
 });
 

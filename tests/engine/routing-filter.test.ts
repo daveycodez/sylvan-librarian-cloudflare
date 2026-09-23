@@ -20,6 +20,7 @@ import {
 	buildRoutingFilterFromHashes,
 	externalIdKey,
 	illustrationIdKey,
+	ROUTING_FILTER_MAGIC_V1,
 	type RoutingEntry,
 	RoutingFilter,
 	RoutingKeyAccumulator,
@@ -106,8 +107,41 @@ describe("build and lookup", () => {
 		expect(() => buildRoutingFilter([{ key: "i:x", partition: -1 }], IDENTITY)).toThrow(/out of range/);
 	});
 
-	test("more partitions than the 4-bit cell can hold is refused outright", () => {
-		expect(() => buildRoutingFilter([], { ...IDENTITY, partitionCount: 16 })).toThrow(/4-bit/);
+	test("more partitions than the 8-bit cell can hold is refused outright", () => {
+		expect(() => buildRoutingFilter([], { ...IDENTITY, partitionCount: 256 })).toThrow(/8-bit/);
+	});
+
+	test("last night's SRF1 filter is still read, so a deploy does not fan out until the next publish", () => {
+		// The previous layout packed two 4-bit cells per byte under magic "SRF1". Built here by hand
+		// from an SRF2 filter's cells, since this build only writes SRF2.
+		const entries = [
+			{ key: scryfallIdKey("a"), partition: 3 },
+			{ key: scryfallIdKey("b"), partition: 7 },
+			{ key: illustrationIdKey("c"), partition: 1 },
+		];
+		const v2 = buildRoutingFilter(entries, IDENTITY);
+		const view = new DataView(v2.buffer, v2.byteOffset, v2.byteLength);
+		const blockLength = view.getUint32(8, true);
+		const cellsAt = 40 + view.getUint32(20, true) + view.getUint32(24, true);
+		const cells = v2.subarray(cellsAt);
+		const packed = new Uint8Array(cellsAt + ((blockLength * 3 + 1) >> 1));
+		packed.set(v2.subarray(0, cellsAt));
+		new DataView(packed.buffer).setUint32(0, ROUTING_FILTER_MAGIC_V1, false);
+		for (let i = 0; i < cells.length; i += 2) {
+			packed[cellsAt + (i >> 1)] = ((cells[i] as number) & 0xf) | (((cells[i + 1] ?? 0) & 0xf) << 4);
+		}
+		const filter = parse(packed);
+		for (const e of entries) expect(filter.lookup(e.key)).toBe(e.partition);
+	});
+
+	test("a filter over more than fifteen partitions — a store cut by language — round-trips", () => {
+		// SRF1 packed two 4-bit cells per byte and refused partition_count 16; a family layout
+		// passes that on today's corpus. SRF2 is one byte per cell.
+		const identity = { ...IDENTITY, partitionCount: 40 };
+		const entries = Array.from({ length: 200 }, (_, i) => ({ key: scryfallIdKey(`id-${i}`), partition: i % 40 }));
+		const parsed = RoutingFilter.parse(buildRoutingFilter(entries, identity), identity);
+		if ("reason" in parsed) throw new Error(parsed.reason);
+		for (const e of entries) expect(parsed.filter.lookup(e.key)).toBe(e.partition);
 	});
 
 	test("an empty key set builds and answers nothing usefully", () => {
@@ -172,7 +206,7 @@ describe("corpus scale — the meter this exists for", () => {
 	const PRINTINGS = 517_746;
 	const N = 9;
 
-	test("1.2M keys build to well under a megabyte, exactly, at one RPC per hit", () => {
+	test("1.2M keys build to under two megabytes, exactly, at one RPC per hit", () => {
 		const rand = rng(20260816);
 		const acc = new RoutingKeyAccumulator(1 << 21);
 		const present: string[] = [];
@@ -193,11 +227,11 @@ describe("corpus scale — the meter this exists for", () => {
 		const keys = sealed.lo.length;
 		expect(keys).toBeGreaterThan(1_100_000);
 		const bytes = buildRoutingFilterFromHashes(sealed, IDENTITY);
-		// 1.23 cells per key at 4 bits each. Comfortably inside KV's 25MiB value cap
-		// and inside the isolate; the assertion is that the shape has not silently
-		// changed, e.g. by someone widening the cell.
-		expect(bytes.byteLength / keys).toBeLessThan(0.8);
-		expect(bytes.byteLength).toBeLessThan(1_048_576);
+		// 1.23 cells per key at one BYTE each (SRF2). Comfortably inside KV's 25MiB value cap
+		// and inside the isolate; the assertion is that the shape has not silently changed
+		// again, e.g. by someone widening the cell past a byte.
+		expect(bytes.byteLength / keys).toBeLessThan(1.3);
+		expect(bytes.byteLength).toBeLessThan(2 * 1_048_576);
 
 		const filter = parse(buildRoutingFilterFromHashes(sealed, IDENTITY));
 		// EXACT on the construction set — this is the property, not a rate.

@@ -1625,6 +1625,16 @@ export function chunkKey(storeKey: string, seq: number): string {
  */
 export const PARTITION_HASH_ALGO = "fnv1a64/oracle_id/v1";
 
+/**
+ * The same hash, applied WITHIN a language family: `family.start + fnv1a64(oracle_id) %
+ * family.count` (see StoreManifest.families and partition.ts). A manifest naming it must carry
+ * `families`; one naming PARTITION_HASH_ALGO must not.
+ */
+export const PARTITION_HASH_ALGO_FAMILIES = "fnv1a64/oracle_id/v2-families";
+
+/** Every partition hash a reader in this build implements. */
+export const PARTITION_HASH_ALGOS: readonly string[] = [PARTITION_HASH_ALGO, PARTITION_HASH_ALGO_FAMILIES];
+
 /** Chunk-family key for one partition's archive: `card-store-v<fmt>-<built_at>-p<k>.store`. */
 export function partitionStoreKey(formatVersion: number, builtAt: string, partition: number): string {
 	return `card-store-v${formatVersion}-${builtAt}-p${partition}.store`;
@@ -1787,15 +1797,30 @@ export interface ArchiveSource {
 	cardCount: number;
 }
 
+/**
+ * Why a READER must refuse this partitioned manifest's layout, or null: an unknown hash, or a
+ * family list that does not match the hash (partition.ts would otherwise fall back to one run
+ * over every partition and route every oracle id to the wrong owner without a word).
+ */
+export function manifestLayoutProblem(manifest: StoreManifest): string | null {
+	if (!PARTITION_HASH_ALGOS.includes(manifest.partition_hash ?? "")) {
+		return (
+			`names partition hash ${JSON.stringify(manifest.partition_hash)}, which this build does not implement ` +
+			`(it speaks ${PARTITION_HASH_ALGOS.join(", ")})`
+		);
+	}
+	return familiesShapeProblem(manifest, manifest.partition_count as number);
+}
+
 export function archiveOfManifest(manifest: StoreManifest, partition?: number): ArchiveSource {
 	if (!isPartitionedManifest(manifest)) {
 		throw new EngineUnavailableError(unpartitionedManifestMessage(manifest.store_key));
 	}
-	if (manifest.partition_hash !== PARTITION_HASH_ALGO) {
+	const layoutProblem = manifestLayoutProblem(manifest);
+	if (layoutProblem !== null) {
 		throw new EngineUnavailableError(
-			`Manifest ${manifest.store_key} names partition hash ${JSON.stringify(manifest.partition_hash)}, which ` +
-				`this build does not implement (it speaks ${PARTITION_HASH_ALGO}). Refusing to load: routing by the ` +
-				`wrong hash makes cards silently vanish from oracle-keyed routes.`,
+			`Manifest ${manifest.store_key} ${layoutProblem}. Refusing to load: routing by the wrong layout makes ` +
+				`cards silently vanish from oracle-keyed routes.`,
 		);
 	}
 	if (partition === undefined) {
@@ -1850,9 +1875,11 @@ export function manifestShapeProblem(manifest: StoreManifest): string | null {
 	}
 	const n = manifest.partition_count as number;
 	if (!Number.isInteger(n) || n < 1) return `partition_count ${n} is not a positive integer`;
-	if (manifest.partition_hash !== PARTITION_HASH_ALGO) {
-		return `partition_hash ${JSON.stringify(manifest.partition_hash)} is not ${PARTITION_HASH_ALGO}`;
+	if (!PARTITION_HASH_ALGOS.includes(manifest.partition_hash ?? "")) {
+		return `partition_hash ${JSON.stringify(manifest.partition_hash)} is not one of ${PARTITION_HASH_ALGOS.join(", ")}`;
 	}
+	const familyProblem = familiesShapeProblem(manifest, n);
+	if (familyProblem !== null) return familyProblem;
 	const parts = manifest.partitions;
 	if (!Array.isArray(parts) || parts.length !== n) {
 		return `partitions[] holds ${parts?.length ?? "no"} records against partition_count ${n}`;
@@ -1871,6 +1898,39 @@ export function manifestShapeProblem(manifest: StoreManifest): string | null {
 	}
 	if (manifest.chunk_count !== sum((p) => p.chunk_count)) {
 		return `chunk_count ${manifest.chunk_count} is not the sum of its partitions (${sum((p) => p.chunk_count)})`;
+	}
+	return null;
+}
+
+/**
+ * Why a manifest's families are malformed, or null. The v1 hash forbids them; the families hash
+ * requires them, contiguous from 0 and covering every partition, the `en` default family first,
+ * every language once, every count ≥ 1 — the reader's arithmetic (partition.ts) assumes all of it.
+ */
+export function familiesShapeProblem(manifest: StoreManifest, partitionCount: number): string | null {
+	const families = manifest.families;
+	if (manifest.partition_hash === PARTITION_HASH_ALGO) {
+		return families === undefined || families.length === 0
+			? null
+			: `partition_hash ${PARTITION_HASH_ALGO} is a single-family layout, but the manifest carries families[]`;
+	}
+	if (!Array.isArray(families) || families.length === 0) {
+		return `partition_hash ${manifest.partition_hash} needs families[], and the manifest carries none`;
+	}
+	if (families[0]?.lang !== "en")
+		return `families[0] is ${JSON.stringify(families[0]?.lang)}, not the en default family`;
+	const seen = new Set<string>();
+	let expectStart = 0;
+	for (const [i, f] of families.entries()) {
+		if (!f || typeof f.lang !== "string" || f.lang === "") return `families[${i}] has no lang`;
+		if (seen.has(f.lang)) return `families[] names ${f.lang} twice`;
+		seen.add(f.lang);
+		if (!Number.isInteger(f.count) || f.count < 1) return `families[${i}] (${f.lang}) has count ${f.count}`;
+		if (f.start !== expectStart) return `families[${i}] (${f.lang}) starts at ${f.start}, expected ${expectStart}`;
+		expectStart += f.count;
+	}
+	if (expectStart !== partitionCount) {
+		return `families[] cover ${expectStart} partitions against partition_count ${partitionCount}`;
 	}
 	return null;
 }
@@ -2151,6 +2211,12 @@ export async function readManifest(env: Env): Promise<StoreManifest | null> {
 	}
 	if (manifest && !isPartitionedManifest(manifest)) {
 		throw new EngineUnavailableError(unpartitionedManifestMessage(manifest.store_key));
+	}
+	if (manifest) {
+		const layoutProblem = manifestLayoutProblem(manifest);
+		if (layoutProblem !== null) {
+			throw new EngineUnavailableError(`The manifest at ${MANIFEST_KEY} (${manifest.store_key}) ${layoutProblem}`);
+		}
 	}
 	return manifest;
 }

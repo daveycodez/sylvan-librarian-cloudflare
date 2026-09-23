@@ -443,7 +443,7 @@ export interface FetchRowsReply {
 
 /**
  * What the gather needs from each partition — its own engine locally, siblings
- * over Durable Object RPC. Index in the array IS the partition number.
+ * over Durable Object RPC. The array position is the client's index within the fan-out (the caller maps positions to global partitions; with language families a run starts above 0).
  */
 export interface PartitionClient {
 	/** `inlineRows` asks this partition to carry the rows for the first N entries

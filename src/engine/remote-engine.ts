@@ -27,6 +27,7 @@ import {
 	ENGINE_UNAVAILABLE_MARKER,
 	EngineQueryError,
 	EngineUnavailableError,
+	type PinnedSearch,
 	STALE_MODULUS_MARKER,
 	StaleModulusError,
 } from "./types";
@@ -46,13 +47,13 @@ interface SearchEngineStub {
 	searchCardsAsObjects(
 		opts: EngineSearchOptions,
 		reportedShards?: number,
-		pinnedPartitionCount?: number,
+		pinned?: PinnedSearch,
 	): Promise<EngineSearchResult & Telemetry>;
 	searchCardsAsJson(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
-		pinnedPartitionCount?: number,
+		pinned?: PinnedSearch,
 	): Promise<EngineSerializedResult & Telemetry>;
 	// The two-phase gather twins (plan B5): served by a partition object, which
 	// coordinates its siblings. Same shapes, same riders.
@@ -86,7 +87,7 @@ interface SearchEngineStub {
 		opts: EngineSearchOptions,
 		baseUrl: string,
 		reportedShards?: number,
-		pinnedPartitionCount?: number,
+		pinned?: PinnedSearch,
 	): Promise<EngineSerializedResult & Telemetry>;
 	scryfallCardById(
 		scryfallId: string,
@@ -426,8 +427,8 @@ export class RemoteEngine implements Engine {
 		/** "cards2" routes the same request through the two-phase gather (plan
 		 * B5) — set only by PartitionedEngine, whose stub is a partition object. */
 		call: "cards" | "cards2" = "cards",
-		/** The partition count a pinned "cards" call was routed against (pinned-oracle.ts). */
-		pinnedPartitionCount?: number,
+		/** The layout a pinned "cards" call was routed against (pinned-oracle.ts, PinnedSearch). */
+		pinned?: PinnedSearch,
 	): Promise<Response> {
 		const rpcStart = Date.now();
 		const res = await this.stub.fetch(
@@ -440,7 +441,7 @@ export class RemoteEngine implements Engine {
 					envelope,
 					cache,
 					shards: currentShardWidth(this.region),
-					...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
+					...(pinned === undefined ? {} : { pinned }),
 				}),
 			}),
 		);
@@ -473,20 +474,16 @@ export class RemoteEngine implements Engine {
 		return out;
 	}
 
-	searchCardsAsObjects(opts: EngineSearchOptions, pinnedPartitionCount?: number): Promise<EngineSearchResult> {
-		return this.searchRpc(() =>
-			this.stub.searchCardsAsObjects(opts, currentShardWidth(this.region), pinnedPartitionCount),
-		);
+	searchCardsAsObjects(opts: EngineSearchOptions, pinned?: PinnedSearch): Promise<EngineSearchResult> {
+		return this.searchRpc(() => this.stub.searchCardsAsObjects(opts, currentShardWidth(this.region), pinned));
 	}
 
 	searchCardsAsJson(
 		opts: EngineSearchOptions,
 		shape: ResultShape,
-		pinnedPartitionCount?: number,
+		pinned?: PinnedSearch,
 	): Promise<EngineSerializedResult> {
-		return this.searchRpc(() =>
-			this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region), pinnedPartitionCount),
-		);
+		return this.searchRpc(() => this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region), pinned));
 	}
 
 	// ── Gather twins (partitioned serving; called by PartitionedEngine only) ────
@@ -557,11 +554,9 @@ export class RemoteEngine implements Engine {
 	async scryfallSearch(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-		pinnedPartitionCount?: number,
+		pinned?: PinnedSearch,
 	): Promise<EngineSerializedResult> {
-		return this.searchRpc(() =>
-			this.stub.scryfallSearch(opts, baseUrl, currentShardWidth(this.region), pinnedPartitionCount),
-		);
+		return this.searchRpc(() => this.stub.scryfallSearch(opts, baseUrl, currentShardWidth(this.region), pinned));
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {

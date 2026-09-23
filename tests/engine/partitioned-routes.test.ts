@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { edgeCacheUrl } from "../../src/engine/edge-cache";
-import { partitionOfOracleId } from "../../src/engine/partition";
+import { partitionOfOracleId, partitionOfOracleIdIn } from "../../src/engine/partition";
 import {
 	mergeAutocomplete,
 	PartitionedEngine,
@@ -25,7 +25,8 @@ import {
 	RoutingFilter,
 	scryfallIdKey,
 } from "../../src/engine/routing-filter";
-import { StaleModulusError, type StoreManifest } from "../../src/engine/types";
+import { PARTITION_HASH_ALGO_FAMILIES } from "../../src/engine/store-kv";
+import { type PinnedSearch, StaleModulusError, type StoreManifest } from "../../src/engine/types";
 
 const N = 4;
 
@@ -57,6 +58,9 @@ function manifestOf(n: number): StoreManifest {
 	};
 }
 
+/** What the fake logs for a pin: the layout's built_at, or `-` for an unpinned call. */
+const pinTag = (pinned: PinnedSearch | undefined): string => pinned?.layout ?? "-";
+
 /** One fake partition client: counts calls, answers what the test tells it to. */
 function fakeRemote(partition: number, calls: string[], answers: Record<string, unknown> = {}) {
 	const count = (name: string) => calls.push(`${name}:${partition}`);
@@ -74,21 +78,28 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("gatherScryfallSearch");
 			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
-		searchCardsAsObjects: async (_opts: unknown, pinned?: number) => {
-			count(`searchCardsAsObjects[${pinned ?? "-"}]`);
+		searchCardsAsObjects: async (_opts: unknown, pinned?: PinnedSearch) => {
+			count(`searchCardsAsObjects[${pinTag(pinned)}]`);
 			if (answers.staleModulus) throw new StaleModulusError("cut at another count");
 			return { totalCards: 1, cards: [] };
 		},
-		searchCardsAsJson: async (_opts: unknown, _shape: unknown, pinned?: number) => {
-			count(`searchCardsAsJson[${pinned ?? "-"}]`);
+		searchCardsAsJson: async (_opts: unknown, _shape: unknown, pinned?: PinnedSearch) => {
+			count(`searchCardsAsJson[${pinTag(pinned)}]`);
 			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
-		scryfallSearch: async (_opts: unknown, _base: unknown, pinned?: number) => {
-			count(`scryfallSearch[${pinned ?? "-"}]`);
+		scryfallSearch: async (_opts: unknown, _base: unknown, pinned?: PinnedSearch) => {
+			count(`scryfallSearch[${pinTag(pinned)}]`);
 			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
-		scryfallSearchPage: async (_o: unknown, _b: unknown, _e: unknown, _c: unknown, call = "cards", pinned?: number) => {
-			count(`scryfallSearchPage[${call}${pinned === undefined ? "" : `,${pinned}`}]`);
+		scryfallSearchPage: async (
+			_o: unknown,
+			_b: unknown,
+			_e: unknown,
+			_c: unknown,
+			call = "cards",
+			pinned?: PinnedSearch,
+		) => {
+			count(`scryfallSearchPage[${call}${pinned === undefined ? "" : `,${pinTag(pinned)}`}]`);
 			if (answers.staleModulus) throw new StaleModulusError("cut at another count");
 			count("scryfallSearchPage");
 			return new Response("{}");
@@ -252,7 +263,7 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 		};
 		const owner = partitionOfOracleId(oracleId, N);
 
-		test("goes to the owning partition's own store, once, carrying this isolate's N", async () => {
+		test("goes to the owning partition's own store, once, pinned to this isolate's build", async () => {
 			const { engine, calls, of } = build();
 			await engine.scryfallSearchPage(
 				pinnedOpts,
@@ -263,10 +274,12 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 			await engine.scryfallSearch(pinnedOpts, "https://x");
 			await engine.searchCardsAsObjects(pinnedOpts);
 			await engine.searchCardsAsJson(pinnedOpts, "rows");
-			expect(calls).toContain(`scryfallSearchPage[cards,${N}]:${owner}`);
-			expect(calls).toContain(`scryfallSearch[${N}]:${owner}`);
-			expect(calls).toContain(`searchCardsAsObjects[${N}]:${owner}`);
-			expect(calls).toContain(`searchCardsAsJson[${N}]:${owner}`);
+			// The pin names the LAYOUT (count and families), not the build: a same-layout swap stays pinned.
+			const layout = `${N}|en:0:${N}`;
+			expect(calls).toContain(`scryfallSearchPage[cards,${layout}]:${owner}`);
+			expect(calls).toContain(`scryfallSearch[${layout}]:${owner}`);
+			expect(calls).toContain(`searchCardsAsObjects[${layout}]:${owner}`);
+			expect(calls).toContain(`searchCardsAsJson[${layout}]:${owner}`);
 			for (const gather of ["gatherScryfallSearch", "gatherSearchAsObjects", "gatherSearchAsJson"]) {
 				expect(of(gather)).toEqual([]);
 			}
@@ -280,10 +293,10 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 			expect(calls.some((c) => c.startsWith("scryfallSearchPage[cards,"))).toBe(false);
 		});
 
-		test("a partition cut at another count refuses, and the gather answers instead", async () => {
+		test("a partition serving another build refuses, and the gather answers instead", async () => {
 			const { engine, calls, of } = build({ [owner]: { staleModulus: true } });
 			await engine.searchCardsAsObjects(pinnedOpts);
-			expect(calls).toContain(`searchCardsAsObjects[${N}]:${owner}`);
+			expect(calls).toContain(`searchCardsAsObjects[${N}|en:0:${N}]:${owner}`);
 			expect(of("gatherSearchAsObjects").length).toBe(1);
 			await engine.scryfallSearchPage(
 				pinnedOpts,
@@ -969,5 +982,94 @@ describe("name-route combination rules", () => {
 				{ b: 3, c: 4 },
 			]),
 		).toEqual({ a: 1, b: 5, c: 4 });
+	});
+});
+
+// ── Language families: a search touches its own family, per-card work the default family ──
+//
+// The manifest below is cut into three families over four partitions: `en` at 0..1 (the default
+// lane, every card's canonical representative), `de` at 2 and `ja` at 3. Nothing in this file
+// sends a language yet (that is the query→family step); what these pin is Phase 0's contract:
+// per-card work and the gather stay inside the default family, the by-id routes still hint a
+// GLOBAL partition and fall back across every family, and the oracle owner is computed WITHIN
+// the default family's run.
+describe("language families", () => {
+	const FAMILIES = [
+		{ lang: "en", start: 0, count: 2 },
+		{ lang: "de", start: 2, count: 1 },
+		{ lang: "ja", start: 3, count: 1 },
+	];
+	function familyManifest(): StoreManifest {
+		return { ...manifestOf(4), partition_hash: PARTITION_HASH_ALGO_FAMILIES, families: FAMILIES };
+	}
+	function buildFamilies(
+		perPartition: Record<number, Record<string, unknown>> = {},
+		routing: RoutingFilter | null = null,
+	) {
+		const calls: string[] = [];
+		const manifest = familyManifest();
+		const engine = new PartitionedEngine(
+			(p) => fakeRemote(p, calls, perPartition[p] ?? {}),
+			manifest,
+			async () => manifest,
+			routing,
+		);
+		const of = (name: string) => calls.filter((c) => c.startsWith(`${name}:`));
+		const partitionsAsked = (name: string) => of(name).map((c) => Number(c.slice(c.lastIndexOf(":") + 1)));
+		return { engine, calls, of, partitionsAsked, manifest };
+	}
+	const onlyDefault = (asked: number[]) => asked.every((p) => p === 0 || p === 1);
+
+	test("the gather coordinator is one of the default family's partitions", async () => {
+		const { engine, partitionsAsked } = buildFamilies();
+		await engine.searchCardsAsObjects(OPTS);
+		const asked = partitionsAsked("gatherSearchAsObjects");
+		expect(asked.length).toBe(1);
+		expect(onlyDefault(asked)).toBe(true);
+	});
+
+	test("a pinned oracle id is owned within the default family's run", async () => {
+		const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdbf87";
+		const owner = partitionOfOracleIdIn(FAMILIES[0] as { lang: string; start: number; count: number }, oracleId);
+		expect(owner).toBeLessThan(2);
+		const { engine, calls } = buildFamilies();
+		await engine.scryfallCardByOracleId(oracleId, "https://x");
+		expect(calls).toEqual([`scryfallCardByOracleId:${owner}`]);
+	});
+
+	test("catalogs, counts, names, autocomplete and the random draw ask the default family only", async () => {
+		const { engine, partitionsAsked } = buildFamilies();
+		await engine.cardTypeCounts();
+		await engine.cardCount();
+		await engine.scryfallExactNameRank("bolt", "");
+		await engine.scryfallAutocomplete("bo", 20);
+		await engine.randomCardsAsObjects(1, []);
+		for (const name of [
+			"cardTypeCounts",
+			"cardCount",
+			"scryfallExactNameRank",
+			"scryfallAutocomplete",
+			"randomCardsAsObjects",
+		]) {
+			const asked = partitionsAsked(name);
+			expect(asked.length).toBeGreaterThan(0);
+			expect(onlyDefault(asked)).toBe(true);
+		}
+		expect(partitionsAsked("cardCount")).toEqual([0, 1]);
+	});
+
+	test("a by-id lookup without a hint falls back across EVERY family — a foreign printing lives in its own", async () => {
+		const { engine, partitionsAsked } = buildFamilies({ 3: { cardById: { name: "Japanese printing" } } });
+		const card = await engine.scryfallCardById("aaaaaaaa-0000-4000-8000-000000000001", "https://x");
+		expect(card).toEqual({ name: "Japanese printing" });
+		expect(partitionsAsked("scryfallCardById").sort()).toEqual([0, 1, 2, 3]);
+	});
+
+	test("a hinted by-id lookup goes straight to the family the filter names", async () => {
+		const id = "aaaaaaaa-0000-4000-8000-000000000002";
+		const routing = filterOf([{ key: scryfallIdKey(id), partition: 3 }]);
+		const { engine, partitionsAsked } = buildFamilies({ 3: { cardById: { name: "hit" } } }, routing);
+		expect(await engine.scryfallCardById(id, "https://x")).toEqual({ name: "hit" });
+		expect(partitionsAsked("scryfallCardById")).toEqual([3]);
 	});
 });
