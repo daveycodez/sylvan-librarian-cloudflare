@@ -9908,8 +9908,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// ltr/442 over the showcase-framed ltr/797), a
 /// real scan above a placeholder or low-resolution image, a printing sold in nonfoil above a
 /// foil-only one (the special sheets come foil-only: Nick Fury answers msh/357 over the
-/// comic-cover msh/389 — measured against its OWN set's run, so a set that never sold the card in
-/// nonfoil keeps its foil), among the borderless a drop's featured card above its bonus-slot card
+/// comic-cover msh/389 — measured against its OWN set's run and only where the printing names no
+/// treatment, so 7th Edition's ★ foil keeps its place while a `boxtopper` does not), among the
+/// borderless a drop's featured card above its bonus-slot card
 /// (Wayfarer's Bauble answers sld/2656 over the bonus sld/7113), then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
@@ -10143,11 +10144,15 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // comic-cover borderless msh/389-400, the galaxy-foil eoe/378, the surge-foil pip/1036,
             // the rainbow-foil sld/9992 — and nothing else in the data names them. A thirty-second,
             // the last key before the art rule: Nick Fury answers msh/357 over the comic-cover 389.
-            // ...relative to ITS OWN SET's run. A foil-only printing is a special sheet only where
-            // the set also sold the card in nonfoil; where it did not, the foil IS the set's
-            // printing — 7th Edition sold Blood Pet as the white-bordered 7ed/121 and the
-            // black-bordered foil 7ed/121★, and with the white one no candidate at all the foil is
-            // all 7ed has, so it answers rather than losing to Tempest's nonfoil tmp/109.
+            // ...relative to ITS OWN SET's run, and only for a printing carrying NO promo type. A
+            // foil-only printing with no treatment named on it is a special sheet only where its
+            // set also sold the card in nonfoil; where it did not, the foil IS the set's printing —
+            // 7th Edition sold Blood Pet as the white-bordered 7ed/121 and the black-bordered foil
+            // 7ed/121★, and with the white one no candidate the foil is all 7ed has, so it answers
+            // rather than losing to Tempest's nonfoil tmp/109. A printing that DOES name a
+            // treatment is a special sheet whatever its set sold: Ravnica: Clue Edition printed
+            // the shock lands only as foil `boxtopper` box toppers, and those stay under Ravnica
+            // Remastered's nonfoil borderless run.
             let nonfoil = p.compat.finishes & FINISH_NONFOIL != 0;
             let set_sold_nonfoil = || {
                 siblings.iter().any(|s| {
@@ -10157,7 +10162,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
                         && printing_is_borderless_candidate(card, s, &ids, strings)
                 })
             };
-            let finish = if nonfoil || !set_sold_nonfoil() { 0.03125 } else { 0.0 };
+            let finish = if nonfoil || (p.compat.promo_types.is_empty() && !set_sold_nonfoil()) { 0.03125 } else { 0.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the

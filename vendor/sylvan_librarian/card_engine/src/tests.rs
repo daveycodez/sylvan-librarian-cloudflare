@@ -17959,8 +17959,9 @@ fn prefer_borderless_reads_a_poster_promo_type_as_full_art() {
 /// A printing sold in NONFOIL ranks above a foil-only one inside a tier — Nick Fury's shape, the
 /// comic-cover msh/389 (foil only) against the regular borderless run — under the scan key and
 /// above the art rule, never across a tier. Measured against ITS OWN SET's run: where the set never
-/// sold the card in nonfoil, the foil IS the set's printing and takes no demotion (Blood Pet's
-/// 7ed/121★, whose white-bordered nonfoil twin is no candidate).
+/// sold the card in nonfoil, a foil that names NO treatment is the set's printing and takes no
+/// demotion (Blood Pet's 7ed/121★, whose white-bordered nonfoil twin is no candidate) — while one
+/// that names a treatment stays a special sheet (Ravnica: Clue Edition's `boxtopper` shock lands).
 #[test]
 fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
     let mut data = class_prefer_store();
@@ -17999,6 +18000,12 @@ fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
     let white = (data.strings.len() - 1) as u32;
     data.printings[0].card_border_id = white;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a white-bordered nonfoil is no run at all");
+    // ...but a foil that NAMES a treatment is a special sheet whatever its set sold: give id 2 the
+    // box-topper promo type and id 3 answers again (Ravnica: Clue Edition's shock lands).
+    let boxtopper = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("boxtopper".to_owned());
+    data.printings[1].compat.promo_types = vec![boxtopper];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a box topper is a special sheet whatever its set sold");
 }
 
 /// An ENGLISH printing whose PRINTED NAME is not the card's is no candidate — Wernog, Rider's
