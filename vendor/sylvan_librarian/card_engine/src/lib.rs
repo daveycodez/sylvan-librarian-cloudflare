@@ -9893,10 +9893,13 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// (Wayfarer's Bauble answers sld/2656 over the bonus sld/7113), then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
-/// eoe/350, newest first and the number only on one release date); the rule permutes a set's printings among themselves only, in the variant tiers
+/// eoe/350, newest first and the number only on one release date; Vraska, Soul of Stone answers
+/// the untagged fra/318 over fra/277, a preview set's alternate treatment being just a second art
+/// at a higher number until its tags land); the rule permutes a set's printings among themselves
 /// only, the set group ranking against other sets by its best member's default order — and the
-/// default order decides after that, which for a card with no variant at all (Relic Seeker) is
-/// Scryfall's canonical printing. ONE exception to the top tier, the same-set rule: a set that prints
+/// default order decides after that, which for a card whose set printed it once is
+/// Scryfall's canonical printing (Relic Seeker's pori promos are a group of their own, and a
+/// group never outranks another set's better default, so cmr/382's pin still answers).
 /// both a showcase and a borderless treatment of a card wants its showcase answered (Clarion
 /// Conqueror answers tdm/400 over tdm/377), so a borderless printing whose own set also holds a
 /// non-borderless, non-crossover showcase WITH ITS OWN ART steps down to just under the variant
@@ -10139,18 +10142,16 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // order the digital rows among THEMSELVES, so a card that exists only digitally (an
             // Alchemy card) still answers its borderless or extended-art printing.
             let digital_offset = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
-            // The base under the keys: the printing's own default score — which in the plain tier
-            // means Scryfall's canonical printing answers a card with no variant at all (Relic
-            // Seeker) — or, in the VARIANT tiers (borderless, extended art, other variant, the
-            // stepped-down borderless) when the set printed the card more than once in that
-            // tier, the set group's best, with the art rule ordering the group (see
-            // `same_set_group_base`). Plain, retro, colorshifted and textless keep the default
-            // order: a prerelease stamp or a buy-a-box promo is not a later sheet of anything.
-            let base = if frame_tier > 3.0 {
-                same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score)
-            } else {
-                default_score()
-            };
+            // The base under the keys: the set group's best default score with the art rule
+            // ordering the group (see `same_set_group_base`), or the printing's own when its set
+            // printed the card once in this tier. EVERY tier, the plain one included — a set that
+            // prints a card twice with different art has made the higher number the alternate
+            // treatment whether or not Scryfall has tagged it yet, which is how a preview set
+            // reads before its tags land (Vraska, Soul of Stone answers Reality Fracture's
+            // fra/318 over fra/277). This cannot lift a promo past a canonical printing the way
+            // ee8e14b's absolute bonus did: the group's base is its best member's default score,
+            // so Relic Seeker's pori pair still ranks by that pair's best and cmr/382's pin wins.
+            let base = same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score);
             (frame_tier + text_box + border + set_key + plain_frame + scan + finish + featured + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }

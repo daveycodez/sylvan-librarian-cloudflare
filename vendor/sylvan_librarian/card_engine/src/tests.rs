@@ -17777,14 +17777,22 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     // Another tier: silent too — a plain later sheet does not touch an extended art.
     data.printings[2].compat.frame_effects = vec![legendary];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "across tiers the rule is silent");
-    // THE PLAIN TIER IS THE DEFAULT ORDER. Relic Seeker's shape: ids 2 and 3 plain in one set with
-    // different arts, id 1 plain in another set and first by default — the canonical printing
-    // answers, the art rule does not run outside the variant tiers.
+    // THE PLAIN TIER TOO, and still never across sets — Relic Seeker's shape: ids 2 and 3 plain in
+    // one set with different arts, id 1 plain in ANOTHER set and first by default. The group ranks
+    // by its own best default score, so the canonical printing still answers...
     data.printings[1].compat.frame_effects = vec![legendary];
     data.printings[0].card_set_code = InlineStr::from_str("cmr");
     data.printings[1].collector_number_int = Some(29);
     data.printings[2].collector_number_int = Some(30);
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "no variant at all: the canonical printing");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a plain group never outranks another set's better default");
+    // ...while inside ONE set the higher-numbered art leads the plain tier, which is how an
+    // untagged preview-set alternate reads (Vraska, Soul of Stone's fra/318 over fra/277): join
+    // id 1 to the set as its lowest number, with an art of its own, and id 3 answers.
+    data.printings[0].card_set_code = InlineStr::from_str("eoe");
+    data.printings[0].collector_number_int = Some(28);
+    data.printings[0].artwork_group_id = 3;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "in the plain tier the higher-numbered art leads its set");
+    data.printings[0].card_set_code = InlineStr::from_str("cmr");
     // WITHIN THE SET ONLY, in a variant tier: make ids 1-3 extended arts, id 1 in another set and
     // first by default, id 3 the later sheet of its set — id 3 must not climb past id 1...
     for i in 0..3 {
