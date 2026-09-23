@@ -195,9 +195,17 @@ import {
 	splitBatch,
 	unpackPartHashes,
 } from "./import-spill";
+import {
+	COORDINATOR_POINTER_KEY,
+	type CoordinatorPointer,
+	type CoordinatorStatus,
+	LEGACY_COORDINATOR_NAME,
+	readPointer,
+} from "./import-watchdog";
 
 interface RunRecord {
-	state: "idle" | "starting" | "running" | "done" | "failed";
+	/** `superseded`: the watchdog designated a newer coordinator while this run was in flight (import-watchdog.ts). */
+	state: "idle" | "starting" | "running" | "done" | "failed" | "superseded";
 	reason?: string;
 	startedAt?: string;
 	finishedAt?: string;
@@ -744,24 +752,92 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── HTTP surface ───────────────────────────────────────────────────────────
 	//
-	// One route. /status existed to drive the "building the card index" page,
-	// which is gone: the deploy builds the index and fails if it cannot, so
-	// there is no in-progress state for a visitor to watch. Progress lives in
-	// the Worker logs, where an unattended nightly run belongs.
+	// Three routes, all internal (a Durable Object has no public URL): the triggers' `/start-import`,
+	// and the watchdog's `/status` and `/kick` (src/import-watchdog.ts). Progress itself lives in the
+	// Worker logs, where an unattended nightly run belongs.
 
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		if (new URL(request.url).pathname === "/start-import") {
-			return this.startImport(url.searchParams.get("reason") ?? "unspecified");
+		switch (url.pathname) {
+			case "/start-import": {
+				const epoch = Number(url.searchParams.get("epoch") ?? 0);
+				return this.startImport(url.searchParams.get("reason") ?? "unspecified", {
+					name: url.searchParams.get("name") ?? LEGACY_COORDINATOR_NAME,
+					epoch: Number.isFinite(epoch) && epoch > 0 ? epoch : 0,
+				});
+			}
+			case "/status":
+				return Response.json(await this.status());
+			case "/kick": {
+				const at = Number(url.searchParams.get("at") ?? Date.now());
+				return Response.json(await this.kick(Number.isFinite(at) ? at : Date.now()));
+			}
+			default:
+				return new Response("not found", { status: 404 });
 		}
-		return new Response("not found", { status: 404 });
+	}
+
+	/**
+	 * What the watchdog decides on. Everything here but the run record and the alarm is the
+	 * in-memory SQLite, so a healthy object answers in milliseconds; a wedged one does not answer,
+	 * which is the other half of what the watchdog needs to know.
+	 */
+	private async status(): Promise<CoordinatorStatus> {
+		this.ensureSchema();
+		const run = await this.getRun();
+		const meters = parseMeters(this.metaGet("run_meters"));
+		const started = run.startedAt ? Date.parse(run.startedAt) : 0;
+		const kicked = Number(this.metaGet("watchdog_kick_ms") ?? Number.NaN);
+		return {
+			state: run.state,
+			phase: this.metaGet("phase") ?? "idle",
+			lastActivityMs: Math.max(meters?.banked_ms ?? 0, meters?.due_ms ?? 0, Number.isFinite(started) ? started : 0),
+			kickedAtMs: Number.isFinite(kicked) ? kicked : null,
+			alarmAtMs: await this.ctx.storage.getAlarm(),
+			epoch: Number(this.metaGet("coordinator_epoch") ?? 0),
+		};
+	}
+
+	/**
+	 * Re-arm a stalled run's alarm, so the chain resumes from its persisted phase: the platform has
+	 * lost an alarm outright before (2026-09-17, the last `purge`), and a lost alarm otherwise
+	 * costs the run until the next nightly. Recorded, so the watchdog can tell a kick that did not
+	 * help from one it has not tried yet.
+	 */
+	private async kick(at: number): Promise<{ kicked: boolean; state: RunRecord["state"] }> {
+		this.ensureSchema();
+		const run = await this.getRun();
+		if (run.state !== "running" && run.state !== "starting") return { kicked: false, state: run.state };
+		this.metaSet("watchdog_kick_ms", String(at));
+		await this.armAlarm(Date.now());
+		console.warn(`Import watchdog kick: re-armed the alarm in phase ${this.metaGet("phase") ?? "idle"}`);
+		return { kicked: true, state: run.state };
+	}
+
+	/**
+	 * The coordinator the watchdog designated after this one, or null while this one is current.
+	 *
+	 * Compared by EPOCH, never by name: KV is eventually consistent, so a freshly designated
+	 * coordinator's first reads may still see the pointer that named its predecessor — an older
+	 * epoch, which must not make it retire itself. A pointer that cannot be read retires nothing
+	 * either; the next alarm reads it again.
+	 */
+	private async supersededBy(): Promise<CoordinatorPointer | null> {
+		try {
+			const pointer = await readPointer(this.env.STORE_KV);
+			const mine = Number(this.metaGet("coordinator_epoch") ?? 0);
+			return pointer.epoch > mine ? pointer : null;
+		} catch (err) {
+			console.warn(`Import fence: could not read ${COORDINATOR_POINTER_KEY} (${err}); carrying on`);
+			return null;
+		}
 	}
 
 	private async getRun(): Promise<RunRecord> {
 		return (await this.storeGet<RunRecord>("run")) ?? { state: "idle" };
 	}
 
-	private async startImport(reason: string): Promise<Response> {
+	private async startImport(reason: string, self: { name: string; epoch: number }): Promise<Response> {
 		this.ensureSchema();
 		const run = await this.getRun();
 		if (run.state === "starting" || run.state === "running") {
@@ -814,6 +890,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.sqlRun("DELETE FROM stage_files");
 			this.sqlRun("DELETE FROM recode_checkpoint");
 			this.metaClear();
+			// Who this run is, for the fence (supersededBy): the pointer's epoch when it was started.
+			this.metaSet("coordinator_name", self.name);
+			this.metaSet("coordinator_epoch", String(self.epoch));
 			this.beginPurge("reset");
 		});
 		await this.storePut("run", record);
@@ -878,9 +957,31 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 	}
 
-	private async runAlarmBody(phase: Phase, watchdogMs: number, alarmInfo?: AlarmInvocationInfo): Promise<void> {
+	private async runAlarmBody(phaseAtStart: Phase, watchdogMs: number, alarmInfo?: AlarmInvocationInfo): Promise<void> {
+		let phase = phaseAtStart;
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
+		// The fence (src/import-watchdog.ts), before anything this alarm would write. A coordinator
+		// the watchdog replaced while it was wedged can wake hours later in any phase — 2026-09-21's
+		// resumed after 4.5 hours — and must publish nothing: two runs writing one KV is how the
+		// site went dark before. It retires instead, its staging purged in bounded slices like a
+		// reset, and ends `superseded`.
+		if (!(phase === "purge_staging" && this.metaGet("purge_scope") === "retire")) {
+			const successor = await this.supersededBy();
+			if (successor) {
+				console.warn(
+					`Import run superseded in phase ${phase}: the watchdog designated ${successor.name} ` +
+						`(epoch ${successor.epoch}) after this coordinator ` +
+						`(${this.metaGet("coordinator_name") ?? LEGACY_COORDINATOR_NAME}, epoch ` +
+						`${this.metaGet("coordinator_epoch") ?? 0}); retiring its staging and publishing nothing`,
+				);
+				this.ctx.storage.transactionSync(() => {
+					this.metaSet("superseded_by", successor.name);
+					this.beginPurge("retire");
+				});
+				phase = "purge_staging";
+			}
+		}
 		// A retry is the ONLY trace a killed slice leaves: the handler never saw
 		// it end, so nothing else could have logged it. Say so, with the phase.
 		if (alarmInfo?.isRetry) {
@@ -1185,7 +1286,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * "is the importer within budget" is a log search, not a dashboard visit.
 	 * Banks this alarm's time first so the summary includes it.
 	 */
-	private logRunSummary(state: "done" | "failed"): void {
+	private logRunSummary(state: "done" | "failed" | "superseded"): void {
 		try {
 			this.flushMeters();
 			const m = parseMeters(this.metaGet("run_meters")) ?? EMPTY_RUN_METERS;
@@ -3852,6 +3953,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// The rewind already reset the partition's cursors and pp.step.
 				this.metaSet("phase", "agg");
 				next = `re-aggregating partition ${pp?.partition}`;
+			} else if (scope === "retire") {
+				this.metaSet("phase", "idle");
+				next = `retired: superseded by ${this.metaGet("superseded_by") ?? "a newer coordinator"}, published nothing`;
 			} else if (pp) {
 				const isLast = pp.partition === pp.partitions.length - 1;
 				if (isLast) {
@@ -3868,6 +3972,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("purge_scope", "");
 		});
 		console.log(`Staging purged (${scope}) in ${slices} slice(s), ${ms}ms; ${next}`);
+		if (scope === "retire") {
+			// Terminal, like failRun — but NOT failRun: the publishing marker it releases now belongs
+			// to the run that replaced this one.
+			const run = await this.getRun();
+			await this.storePut("run", {
+				...run,
+				state: "superseded",
+				finishedAt: new Date().toISOString(),
+				detail: `superseded by ${this.metaGet("superseded_by") ?? "a newer coordinator"}`,
+			} satisfies RunRecord);
+			await this.disarmAlarm();
+			this.logRunSummary("superseded");
+		}
 	}
 
 	/**

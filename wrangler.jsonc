@@ -159,8 +159,10 @@
 		{ "tag": "v3", "new_sqlite_classes": ["RateLimiter"] }
 	],
 
-	// Nightly store rebuild, after Scryfall's daily bulk-data refresh window.
-	"triggers": { "crons": ["17 11 * * *"] },
+	// The nightly rebuild, after Scryfall's daily bulk-data refresh window, and the import watchdog (src/import-watchdog.ts), which replaces a
+	// coordinator the platform has wedged mid-run. Keep both strings in step with NIGHTLY_CRON and
+	// WATCHDOG_CRON there — scheduled() routes on the exact string.
+	"triggers": { "crons": ["17 11 * * *", "*/10 * * * *"] },
 
 	// The wasm engine is imported by the module name the code uses; the built
 	// wasm-bindgen pkg is committed so Workers Builds needs no Rust toolchain.

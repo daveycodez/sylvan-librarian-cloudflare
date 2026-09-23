@@ -34,7 +34,7 @@
  * closing transaction — the same commit shape that wedged the partition loop,
  * and on 2026-09-16 the DeckGen coordinator sat wedged behind the recode one.
  */
-export type PurgeScope = "reset" | "partition" | "rewind" | "blobs";
+export type PurgeScope = "reset" | "partition" | "rewind" | "blobs" | "retire";
 
 export interface PurgeTable {
 	/** A staging table with a `bytes BLOB` column (every one of them has it). */
@@ -77,6 +77,19 @@ export const PURGE_TABLES: Record<PurgeScope, readonly PurgeTable[]> = {
 		{ table: "stage_members", key: "seq", scope: "kind" },
 	],
 	reset: [
+		{ table: "chunk_staging", key: "seq" },
+		{ table: "ordered_rows", key: "base" },
+		{ table: "spill_batches", key: "base" },
+		{ table: "routing_keys", key: "seq" },
+		{ table: "tagdata_blobs", key: "seq" },
+		{ table: "draft_parts", key: "seq", scope: "partition" },
+		{ table: "draft_batches", key: "seq" },
+		{ table: "stage_members", key: "seq", scope: "kind" },
+		{ table: "stage_blobs", key: "seq", scope: "kind" },
+	],
+	// A coordinator the watchdog replaced (src/import-watchdog.ts): everything, exactly like a
+	// reset, but the run then ends `superseded` instead of starting over.
+	retire: [
 		{ table: "chunk_staging", key: "seq" },
 		{ table: "ordered_rows", key: "base" },
 		{ table: "spill_batches", key: "base" },

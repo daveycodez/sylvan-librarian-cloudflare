@@ -86,7 +86,7 @@
 		{ "tag": "v2", "new_sqlite_classes": ["SearchEngine"] },
 		{ "tag": "v3", "new_sqlite_classes": ["RateLimiter"] }
 	],
-	"triggers": { "crons": ["17 11 * * *"] },
+	"triggers": { "crons": ["17 11 * * *", "*/10 * * * *"] },
 	"alias": {
 		"sylvan-engine-wasm": "./src/engine/wasm-shim.ts"
 	},

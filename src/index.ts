@@ -15,6 +15,7 @@ import { liveTagAliases } from "./engine/tag-aliases";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { ImportCoordinator } from "./import-coordinator";
+import { runImportWatchdog, startNightlyImport, WATCHDOG_CRON } from "./import-watchdog";
 import { checkSearchParamLengths, QueryBudgetExceeded } from "./parser";
 import { resolveAction, routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
 import { adminUnauthorized, isAdminPath } from "./routes/admin";
@@ -317,11 +318,16 @@ export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
 		return handle(request, this.env, this.ctx);
 	}
 
-	// Nightly store rebuild (wrangler.jsonc triggers.crons). The coordinator DO
-	// serializes runs; a run already in flight makes this a no-op.
-	override async scheduled(_controller: ScheduledController): Promise<void> {
-		const coordinator = this.env.IMPORT_COORDINATOR.get(this.env.IMPORT_COORDINATOR.idFromName("singleton"));
-		this.ctx.waitUntil(coordinator.fetch("https://coordinator/start-import?reason=cron"));
+	// Two crons (wrangler.jsonc triggers.crons). The watchdog's checks the nightly run and replaces
+	// a coordinator the platform has wedged (src/import-watchdog.ts); every other one is the nightly
+	// store rebuild, started on whichever coordinator the watchdog's pointer names. The coordinator
+	// serializes runs; a run already in flight makes the nightly a no-op.
+	override async scheduled(controller: ScheduledController): Promise<void> {
+		if (controller.cron === WATCHDOG_CRON) {
+			this.ctx.waitUntil(runImportWatchdog(this.env));
+			return;
+		}
+		this.ctx.waitUntil(startNightlyImport(this.env));
 		// Nothing to poll here any more. This used to also kick manifestPollAlarm to
 		// bound hot-swap lag, which was inert anyway (it ran in a Worker isolate,
 		// where no store is ever loaded) and is now unnecessary: the coordinator
