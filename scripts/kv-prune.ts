@@ -21,14 +21,18 @@ import { wranglerArgv } from "./wrangler-cmd";
  * A list rather than a single value because callers concatenate it with the
  * build they just published; both go to `protect`.
  *
- * Best effort: a pointer that is absent or unreadable protects nothing (there
- * is nothing being served through it to protect).
+ * `[]` when the key is ABSENT or unparseable (nothing is served through it, so
+ * nothing to protect). `null` when the read FAILED — an API error, a rate limit,
+ * an auth hiccup — which is not an answer at all, and a caller that treats it
+ * as "absent" sweeps on age alone: the 2026-09-15 shape, one transient error
+ * away. Every caller skips the sweep on null.
  */
-export async function liveManifestBuiltAts(remote: boolean): Promise<string[]> {
-	const out = await kvGetText(MANIFEST_KEY, remote);
-	if (out === null) return [];
+export async function liveManifestBuiltAts(remote: boolean): Promise<string[] | null> {
+	const read = await kvGetText(MANIFEST_KEY, remote);
+	if (read.failed) return null;
+	if (read.value === null) return [];
 	try {
-		const at = String((JSON.parse(out.slice(out.indexOf("{"))) as { built_at?: unknown }).built_at ?? "");
+		const at = String((JSON.parse(read.value.slice(read.value.indexOf("{"))) as { built_at?: unknown }).built_at ?? "");
 		return at ? [at] : [];
 	} catch {
 		// Unparseable manifest: nothing to protect through it.
@@ -43,21 +47,29 @@ export async function liveManifestBuiltAts(remote: boolean): Promise<string[]> {
  * 2026-09-15, one partition short of the coordinator's manifest write. Absent (a KV miss, or the
  * marker's week-long TTL elapsed) means no run is in flight, and age decides alone.
  */
-export async function publishingBuiltAts(remote: boolean): Promise<string[]> {
-	const out = await kvGetText(PUBLISHING_KEY, remote);
-	if (out === null) return [];
-	const at = out.trim().match(/\d+/)?.[0] ?? "";
+export async function publishingBuiltAts(remote: boolean): Promise<string[] | null> {
+	const read = await kvGetText(PUBLISHING_KEY, remote);
+	if (read.failed) return null;
+	if (read.value === null) return [];
+	const at = read.value.trim().match(/\d+/)?.[0] ?? "";
 	return at ? [at] : [];
 }
 
-/** `wrangler kv key get` as text, or null when the key is absent or the read fails. */
-async function kvGetText(key: string, remote: boolean): Promise<string | null> {
+/**
+ * `wrangler kv key get` as text. `value: null` when the key is ABSENT — wrangler's own wording
+ * for a miss, the same test scripts/store-age.ts applies — and `failed` when the read did not
+ * answer at all, which callers must not mistake for a miss (see liveManifestBuiltAts).
+ */
+async function kvGetText(key: string, remote: boolean): Promise<{ value: string | null; failed: string | null }> {
 	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", key, ...(await kvTargetArgs(remote))], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const out = await new Response(proc.stdout).text();
-	return (await proc.exited) === 0 ? out : null;
+	const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+	if ((await proc.exited) === 0) return { value: out, failed: null };
+	const detail = `${err}\n${out}`;
+	if (/not found|does not exist|no value/i.test(detail)) return { value: null, failed: null };
+	return { value: null, failed: detail.trim().split("\n").slice(-3).join(" ") || `wrangler kv key get ${key} failed` };
 }
 
 /** Delete every key under `prefix` that the current layout does not own. */

@@ -29,6 +29,11 @@ const reportEngineRate = mock((_region: string, _rate: number) => {});
 const reportEngineLatency = mock((_region: string, _ms: number) => {});
 const adoptShardWidth = mock((_region: string, _width: number) => {});
 const currentShardWidth = mock((_region: string) => 1);
+// The DO-side fold is imported by search-engine-do, which rendezvous.test.ts runs for real; since
+// `mock.module` is process-global, the mock has to carry the REAL rule or that suite's announcement
+// never moves. Query-string import so the real module is not the one being mocked.
+const realControllerSpec = "../../src/engine/shard-controller.ts?real-for-autoscaler";
+const realController = (await import(realControllerSpec)) as typeof import("../../src/engine/shard-controller");
 
 mock.module("../../src/engine/shard-controller", () => ({
 	reportEngineLoad,
@@ -36,6 +41,7 @@ mock.module("../../src/engine/shard-controller", () => ({
 	reportEngineLatency,
 	adoptShardWidth,
 	currentShardWidth,
+	foldWidthAnnouncement: realController.foldWidthAnnouncement,
 }));
 
 const { RemoteEngine } = await import("../../src/engine/remote-engine");
@@ -61,6 +67,44 @@ beforeEach(() => {
 	reportEngineLatency.mockClear();
 	adoptShardWidth.mockClear();
 	currentShardWidth.mockClear();
+});
+
+describe("the streaming transport's riders", () => {
+	test("feed the autoscaler and are stripped before the response leaves the isolate", async () => {
+		// Passed through verbatim they told every client (and the edge cache) the shard
+		// controller's load, rate and width.
+		const stub = {
+			fetch: async () =>
+				new Response("{}", {
+					status: 200,
+					headers: {
+						"content-type": "application/json",
+						"cache-control": "public, max-age=57600",
+						"x-total-cards": "7",
+						"x-row-count": "7",
+						"x-acquire-ms": "0",
+						"x-load": "3",
+						"x-rate": "44",
+						"x-shards": "2",
+					},
+				}),
+		} as unknown as Stub;
+		const res = await new RemoteEngine(stub, "wnam").scryfallSearchPage(
+			{ limit: 10 } as never,
+			"https://x",
+			{} as never,
+			{},
+		);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("cache-control")).toBe("public, max-age=57600");
+		for (const name of ["x-total-cards", "x-row-count", "x-acquire-ms", "x-load", "x-rate", "x-shards"]) {
+			expect(res.headers.get(name)).toBeNull();
+		}
+		expect(reportEngineLoad).toHaveBeenCalledWith("wnam", 3);
+		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 44);
+		expect(adoptShardWidth).toHaveBeenCalledWith("wnam", 2);
+		expect(await res.text()).toBe("{}");
+	});
 });
 
 describe("what a sample reports", () => {

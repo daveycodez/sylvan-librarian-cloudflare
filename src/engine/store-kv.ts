@@ -95,6 +95,7 @@
 // wake pays that decompression too, so the gap is the fetch — smaller than these
 // numbers, and not re-measured. See store-cache.ts.
 
+import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import type { Env, StoreManifest, StoreManifestPartition } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -1592,7 +1593,19 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  */
 export const STORE_CONTENT_GENERATION = 50;
 
-/** Chunk key for a store. Keyed by store_key, so publishes never collide. */
+/**
+ * Chunk key for a store. Keyed by store_key, so publishes never collide.
+ *
+ * THE IMMUTABILITY EVERY READER RELIES ON STARTS AT THE MANIFEST. Readers cache these keys for a
+ * week (`fetchStoredChunk`, `kvArchiveStream`) on the argument that a chunk key's bytes never
+ * change — but the coordinator's SAFE-cut restart (import-coordinator.ts, `restartAtSafeCut`)
+ * re-puts a partition's chunks under the SAME keys with different content when one compresses
+ * over KV's cap. That is safe only because nothing can learn a chunk key before the manifest
+ * names it: the manifest is written after the last partition, store-age.ts probes through the
+ * API and the publisher's own checks use `list`. So the invariant is: no `get` of a chunk key
+ * with the long cacheTtl until its manifest exists. A pre-manifest prefetch would turn a re-cut
+ * partition into a cached, readable, WRONG archive — the failure that once bricked /cards/*.
+ */
 export function chunkKey(storeKey: string, seq: number): string {
 	return `store:${storeKey}:${seq}`;
 }
@@ -1683,13 +1696,19 @@ export function routingFilterKeyFor(manifest: StoreManifest): string | null {
  * When a new generation publishes, the key changes with it.
  */
 const ROUTING_FILTER_CACHE_TTL = 604_800;
+const ROUTING_FILTER_EDGE_TTL_S = 86_400;
 
 /** Read a build's routing filter, or null when none was published for it. */
 export async function readRoutingFilter(env: Env, manifest: StoreManifest): Promise<Uint8Array | null> {
 	const key = routingFilterKeyFor(manifest);
 	if (!key) return null;
-	const buf = await env.STORE_KV.get(key, { type: "arrayBuffer", cacheTtl: ROUTING_FILTER_CACHE_TTL });
-	return buf === null ? null : new Uint8Array(buf);
+	// Through the colo's Cache API first (edge-cache.ts): every cold isolate needs this ~778KB
+	// value, and each KV get of it is a metered read. A day rather than KV's week — the key is
+	// immutable, so freshness is not the question, only how long an old build's copy lingers.
+	return readThroughEdgeCache(edgeCacheUrl(key), ROUTING_FILTER_EDGE_TTL_S, async () => {
+		const buf = await env.STORE_KV.get(key, { type: "arrayBuffer", cacheTtl: ROUTING_FILTER_CACHE_TTL });
+		return buf === null ? null : new Uint8Array(buf);
+	});
 }
 
 /**

@@ -132,8 +132,12 @@ if (LOCAL) {
 		process.exit(2);
 	}
 	if (!namespaceId) {
+		// Exit 3, the "nothing published yet" answer, not 1 ("a store exists but is unusable"):
+		// import-store.sh seeds a first index on 3 and refuses to overwrite on 1, and a namespace
+		// that does not exist has nothing to overwrite. Unreachable in practice because
+		// align-kv-binding.ts creates the namespace first; correct if that ordering ever changes.
 		console.error(`store-age: no KV namespace named "${kvName}" — nothing has ever been published.`);
-		process.exit(1);
+		process.exit(3);
 	}
 	kvTarget = ["--namespace-id", namespaceId, "--remote"];
 }
@@ -277,16 +281,33 @@ if (
 // simply the last to propagate), at which point this script would report a
 // healthy store, skip the import, and leave every request 503ing on a missing
 // chunk. So prove the bytes are really there before believing the manifest.
-// One extra read per archive, on its LAST chunk — a truncated upload loses the
-// tail first, so the last chunk catches a half-published store as well as an
-// emptied one. EVERY partition is probed, because retention retires families
-// all-or-nothing but an interrupted publish does not: partitions 0..k can be
-// complete while k+1 is missing, and one absent partition 503s every card it
-// owns.
+// Every partition's LAST chunk — a truncated upload loses the tail first, so
+// the last chunk catches a half-published store as well as an emptied one.
+// EVERY partition is probed, because retention retires families all-or-nothing
+// but an interrupted publish does not: partitions 0..k can be complete while
+// k+1 is missing, and one absent partition 503s every card it owns.
+//
+// ONE LISTING, NOT N DOWNLOADS. This used to `kv key get` each partition's
+// last chunk — a ~20MB value per partition, buffered whole, N metered reads,
+// ~200MB per deploy — to answer an existence question. A prefix listing of the
+// store keys (a few dozen at KEEP_STORES_IN_KV=2) answers it in one operation.
+// A listing can lag a key put within the last minute, so a chunk it lacks is
+// confirmed by the direct read before it counts as missing: the download
+// happens only in that rare case, never on the common path.
+const listing = Bun.spawnSync([...wranglerArgv(), "kv", "key", "list", "--prefix", "store:card-", ...kvTarget]);
+let listed = new Set<string>();
+if (listing.exitCode === 0) {
+	try {
+		const out = listing.stdout.toString();
+		listed = new Set((JSON.parse(out.slice(out.indexOf("["))) as { name: string }[]).map((k) => k.name));
+	} catch {
+		listed = new Set();
+	}
+}
+const keyExists = (key: string): boolean => listed.has(key) || Bun.spawnSync(kvGetArgv(key)).exitCode === 0;
 for (const target of manifest.partitions ?? []) {
 	const lastChunk = chunkKey(target.store_key ?? "", (target.chunk_count ?? 1) - 1);
-	const probe = Bun.spawnSync(kvGetArgv(lastChunk));
-	if (probe.exitCode !== 0) {
+	if (!keyExists(lastChunk)) {
 		console.error(
 			`store-age: the manifest names ${target.store_key} but ${lastChunk} is not in ${WHERE} — the store is`,
 		);
@@ -301,7 +322,7 @@ for (const target of manifest.partitions ?? []) {
 // (STORE_CONTENT_GENERATION 21); this line is how you see it landed.
 if (manifest.format_version && manifest.built_at) {
 	const key = routingFilterKey(manifest.format_version, String(manifest.built_at));
-	if (Bun.spawnSync(kvGetArgv(key)).exitCode !== 0) {
+	if (!keyExists(key)) {
 		console.warn(
 			`store-age: no routing filter at ${key} — every /cards/<id> lookup will fan out to all ` +
 				`${manifest.partition_count} partitions (9 billed DO requests instead of 1).`,

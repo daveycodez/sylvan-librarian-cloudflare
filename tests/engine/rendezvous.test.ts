@@ -38,6 +38,8 @@ const fakeEngine = {
 const publishCalls: string[] = [];
 /** Whether tryGetLoadedEngine reports this object warm (per-label irrelevant here). */
 let objectIsWarm = true;
+/** A cold load in flight for the object; settleInFlightLoad awaits it and the object comes up warm. */
+let inFlightLoad: Promise<void> | null = null;
 
 /**
  * The gather suite's own store, switched on per test. Null keeps every other suite on the plain
@@ -68,6 +70,13 @@ mock.module("../../src/engine/store", () => ({
 		return fakeEngine;
 	},
 	tryGetLoadedEngine: () => (objectIsWarm ? fakeEngine : null),
+	settleInFlightLoad: async () => {
+		if (inFlightLoad) {
+			await inFlightLoad;
+			inFlightLoad = null;
+			objectIsWarm = true;
+		}
+	},
 	// Imported by search-engine-do for notifyPublish and the two-step publish.
 	refreshNow: async () => {
 		publishCalls.push("refreshNow");
@@ -189,6 +198,28 @@ describe("the two-step publish delegates swap to COMMIT, never prepare", () => {
 		expect((await engine.preparePublish(MANIFEST)).prepared).toBe(true);
 		expect((await engine.commitPublish()).swapped).toBe(false);
 		expect(publishCalls).toEqual([]);
+		objectIsWarm = true;
+	});
+
+	test("a commit arriving MID-LOAD waits for the load, then swaps", async () => {
+		// A request's cold load is streaming when the publish lands. Judged by
+		// tryGetLoadedEngine alone the object looks cold, acks both steps, and
+		// then finishes its OLD load and serves it under a record naming the new
+		// store. Settling the in-flight load first makes it a warm object.
+		publishCalls.length = 0;
+		objectIsWarm = false;
+		let finishLoad: () => void = () => {};
+		inFlightLoad = new Promise<void>((resolve) => {
+			finishLoad = resolve;
+		});
+		const engine = makePublishDo();
+		const prepared = engine.preparePublish(MANIFEST);
+		finishLoad();
+		expect((await prepared).prepared).toBe(true);
+		expect(publishCalls).toEqual(["prefetchStore"]);
+		const r = await engine.commitPublish();
+		expect(r.swapped).toBe(true);
+		expect(publishCalls).toEqual(["prefetchStore", "swapToStore"]);
 		objectIsWarm = true;
 	});
 

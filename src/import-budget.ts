@@ -75,7 +75,7 @@ export const MAX_RUN_ROWS_WRITTEN = 40_000;
  *
  * A per-run budget alone bounds nothing durable: startImport clears the run's
  * counters, so every fresh run gets a fresh allowance, and a run that stalls
- * is restartable after STALE_RUN_MS. Enough restarts and the day is gone
+ * is restartable once it has been idle for STALE_IDLE_MS. Enough restarts and the day is gone
  * anyway, one "within budget" run at a time. These counters therefore survive
  * metaClear (see metaClear's key filter) and reset only when the date does,
  * exactly like the meter they stand in for.
@@ -254,8 +254,8 @@ export const DO_FREE_ACTIVE_SECONDS_PER_DAY = DO_FREE_GB_SECONDS_PER_DAY / DO_OB
  * Wall time one run may be active before it is called off.
  *
  * A healthy run is ~400 alarms, most of them sub-second, plus the slices that
- * do real I/O — 14 fetch slices of 48MB, 18 recode slices budgeted at 23s,
- * 55 transform slices, a build and a publish per partition — which the
+ * do real I/O — 14 fetch slices of 48MB, 55 transform slices, a build and a
+ * publish per partition — which the
  * healthy-run model in tests/import/run-budget.test.ts puts under an hour.
  * Three hours is ~3x that and ~10% of the day's allowance: a run that is still
  * going has been stalling, not working, and the honest outcome is a failed run
@@ -287,6 +287,12 @@ export interface RunMeters {
 	pace_bps: number;
 	/** Alarms that arrived more than LATE_ALARM_MS after they were due. */
 	late_alarms: number;
+	/**
+	 * When this row was last banked (epoch ms). Every alarm flushes on every exit, so this is the
+	 * last moment a slice was provably executing — what startImport reads to tell a run that is
+	 * slow (still banking) from one that is dead (nothing banked, nothing scheduled). 0 = never.
+	 */
+	banked_ms: number;
 }
 
 export const EMPTY_RUN_METERS: RunMeters = {
@@ -298,6 +304,7 @@ export const EMPTY_RUN_METERS: RunMeters = {
 	due_ms: 0,
 	pace_bps: 0,
 	late_alarms: 0,
+	banked_ms: 0,
 };
 
 /** Bank one flush; `newAlarm` counts the alarm once per alarm, not per flush. */
@@ -331,6 +338,7 @@ export function parseMeters(value: string | null | undefined): RunMeters | null 
 			due_ms: n(parsed.due_ms),
 			pace_bps: n(parsed.pace_bps),
 			late_alarms: n(parsed.late_alarms),
+			banked_ms: n(parsed.banked_ms),
 		};
 	} catch {
 		return null;
@@ -375,6 +383,25 @@ export const PACE_STEP_MIN_CHURN = 4 * 1024 * 1024;
 export const LATE_ALARM_MS = 2 * 60_000;
 /** No single pause longer than this, whatever one alarm churned. */
 export const PACE_MAX_DELAY_MS = 10 * 60_000;
+
+/**
+ * Margin the dead-man alarm adds to the phase's watchdog limit.
+ *
+ * The platform retries a failed or KILLED alarm at most six times and then
+ * consumes it. A slice the runtime keeps killing (CPU or memory) never reaches
+ * the handler's catch, so nothing reschedules; after the sixth retry the run
+ * record still says "running" and no alarm exists — the 2026-08-22→27 silent
+ * week. The coordinator therefore arms a dead-man alarm at the START of every
+ * retried attempt, far enough out that a live handler has already been ended
+ * by its watchdog before it could fire. A completed or thrown slice replaces it
+ * through the ordinary next-alarm put; only a killed slice leaves it standing,
+ * and it fires with a fresh platform retry budget, so `phase_attempts` keeps
+ * counting until MAX_PHASE_ATTEMPTS fails the run with the phase named.
+ */
+export const DEAD_MAN_MARGIN_MS = 60_000;
+export function deadManDelayMs(watchdogMs: number): number {
+	return watchdogMs + DEAD_MAN_MARGIN_MS;
+}
 
 /** How long after `now` the next alarm should be scheduled, given this alarm's churn and how long it already ran. */
 export function paceDelayMs(churnBytes: number, elapsedMs: number, paceBps: number): number {

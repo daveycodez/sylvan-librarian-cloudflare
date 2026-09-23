@@ -51,6 +51,13 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    # The SAME toolchain clippy.sh pins (upstream's), for every cargo step below.
+    # `cargo test` and the wasm link used to run on whatever `stable` the runner
+    # image shipped, so a Rust release could turn this job red or green with no
+    # change to the code. clippy.sh installs the toolchain first; rustup's
+    # proxies honour RUSTUP_TOOLCHAIN, including `rustup target add`.
+    env:
+      RUSTUP_TOOLCHAIN: "1.97.1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -78,31 +85,68 @@ jobs:
           scripts/with-rust.sh cargo check --release -p sylvan-engine-wasm --target wasm32-unknown-unknown
 
   # After a main push, Workers Builds deploys on its own schedule (a store
-  # rebuild can take ~7 minutes). This job polls production /search until it
-  # answers with cards, and FAILS after 25 minutes of it not doing so — the
-  # alarm the 2026-08-23 outage did not have.
+  # rebuild can take ~7 minutes). This job polls production until THE PUSHED
+  # COMMIT answers with cards, on both accounts, and FAILS after 25 minutes of
+  # it not doing so — the alarm the 2026-08-23 outage did not have.
+  #
+  # Version-gated, with a nonce. It used to poll a fixed URL and pass on three
+  # answers with cards, which the PREVIOUS version supplied for the whole build
+  # — the three "consecutive" answers were one edge-cached response (/search is
+  # cached 90s with a day of stale-while-revalidate). Now every request carries
+  # a fresh query-string nonce (unknown params are dropped by the router, so it
+  # only changes the cache key) and counts only when `x-sylvan-build` — the
+  # commit ci-postinstall.sh stamps into the bundle — equals the pushed SHA.
+  # Then verify-deploy.ts walks the asset chain, which until now ran only on
+  # laptop deploys.
   smoke:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Two pushes minutes apart: Workers Builds supersedes the first, whose smoke run would
+    # otherwise wait its whole budget for a commit that will never deploy and go red.
+    concurrency:
+      group: smoke-main
+      cancel-in-progress: true
     steps:
-      - name: production /search answers with cards
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0 # see the js job's pin comment
+      - name: the pushed commit answers /search with cards, on both accounts
+        env:
+          SHA: ${{ github.sha }}
         run: |
-          url='https://sylvan-librarian.deckgen.workers.dev/search?q=lightning+bolt'
+          origins='https://sylvan-librarian.deckgen.workers.dev https://sylvan-librarian.daveycodez.workers.dev'
           deadline=$((SECONDS + 1500))
-          ok=0
+          attempt=0
+          declare -A ok
+          for origin in $origins; do ok[$origin]=0; done
           while [[ $SECONDS -lt $deadline ]]; do
-            body=$(curl -s --max-time 20 "$url" || true)
-            count=$(printf '%s' "$body" | head -c 100000 | jq -r '.cards | length' 2>/dev/null || echo 0)
-            [[ "$count" =~ ^[0-9]+$ ]] || count=0
-            if [[ "$count" -gt 0 ]]; then
-              ok=$((ok + 1))
-              echo "search answered with $count cards ($ok/3)"
-              [[ $ok -ge 3 ]] && exit 0
-            else
-              ok=0
-              echo "search not answering yet: $(printf '%s' "$body" | head -c 120)"
-            fi
+            attempt=$((attempt + 1))
+            done_all=1
+            for origin in $origins; do
+              [[ "${ok[$origin]}" -ge 3 ]] && continue
+              done_all=0
+              url="$origin/search?q=lightning+bolt&_smoke=${SHA}-${attempt}"
+              headers=$(mktemp)
+              body=$(curl -s --max-time 20 -D "$headers" "$url" || true)
+              build=$(grep -i '^x-sylvan-build:' "$headers" | tr -d '\r' | awk '{print $2}' | tail -1 || true)
+              rm -f "$headers"
+              count=$(printf '%s' "$body" | head -c 100000 | jq -r '.cards | length' 2>/dev/null || echo 0)
+              [[ "$count" =~ ^[0-9]+$ ]] || count=0
+              if [[ "$build" == "$SHA" && "$count" -gt 0 ]]; then
+                ok[$origin]=$(( ${ok[$origin]} + 1 ))
+                echo "$origin: build $build answered with $count cards (${ok[$origin]}/3)"
+              else
+                ok[$origin]=0
+                echo "$origin: not yet — build '${build:-none}' (want $SHA), $count cards: $(printf '%s' "$body" | head -c 120)"
+              fi
+            done
+            [[ $done_all -eq 1 ]] && exit 0
             sleep 30
           done
-          echo "::error::production /search still failing 25 minutes after the push"
+          for origin in $origins; do
+            [[ "${ok[$origin]}" -ge 3 ]] || echo "::error::$origin is not serving commit $SHA with cards 25 minutes after the push"
+          done
           exit 1
+      - name: the served pages point at the committed assets
+        run: bun scripts/verify-deploy.ts

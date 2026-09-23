@@ -73,6 +73,46 @@ interface EngineInstance {
 const instances = new Map<string, EngineInstance>();
 /** Which label's instance the glue currently points at; null before first use. */
 let bound: string | null = null;
+/**
+ * How many times each label's instance has been DROPPED after a trap. A loaded store belongs to
+ * the instance it was loaded into; the loader records this at load and stops trusting its store
+ * the moment it moves (see store.ts liveCurrent).
+ */
+const generations = new Map<string, number>();
+
+/** The engine crate's prefix for "this instance is unusable" (engine/wasm/src/lib.rs POISONED_PREFIX). */
+const POISONED_PREFIX = "engine poisoned: ";
+
+/**
+ * Whether an error thrown out of wasm means the INSTANCE is broken rather than the call. A trap
+ * (`RuntimeError`: unreachable, OOB, a panic under panic=abort) never runs Rust's drops, so any
+ * borrow the trapped call held stays counted; a stack overflow surfaces as a `RangeError`; and a
+ * later call that meets such a leftover borrow reports the engine's poisoned prefix.
+ */
+function breaksInstance(err: unknown): boolean {
+	if (err instanceof WebAssembly.RuntimeError || err instanceof RangeError) return true;
+	return err instanceof Error && err.message.includes(POISONED_PREFIX);
+}
+
+/**
+ * Forget `label`'s instance so the next call instantiates a fresh one. Its linear memory becomes
+ * unreachable and collectable — the only way wasm memory is ever given back — and whatever store
+ * it held is gone with it, which the generation bump tells the loader.
+ */
+function dropInstance(label: string, err: unknown): void {
+	const dropped = instances.get(label);
+	if (!dropped) return;
+	instances.delete(label);
+	// Detach its buffer exactly as bindTo does for an outgoing instance: the glue caches a view
+	// of the BOUND memory and rebuilds it only when that view's byteLength is 0. Without this the
+	// next instance (this label's or a sibling's) would be bound while the glue still marshalled
+	// through the dead instance's memory — every argument written into the wrong buffer, every
+	// reload failing on garbage, and the dead memory pinned for the isolate's life.
+	dropped.memory?.grow(0);
+	if (bound === label) bound = null;
+	generations.set(label, (generations.get(label) ?? 0) + 1);
+	console.error(`[${label || "default"}] wasm engine instance dropped after: ${err}; the next call starts a fresh one`);
+}
 
 function instantiate(): EngineInstance {
 	const instance = new WebAssembly.Instance(wasmModule as unknown as WebAssembly.Module, {
@@ -175,6 +215,8 @@ export interface EngineHandle {
 	card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
 	linearMemoryBytes(): number;
+	/** Bumped each time this label's instance is dropped after a trap; see dropInstance. */
+	instanceGeneration(): number;
 }
 
 /** The glue's callable surface, for the generic wrapper below. */
@@ -190,7 +232,12 @@ export function engineFor(label: string): EngineHandle {
 		<A extends unknown[], R>(name: string) =>
 		(...args: A): R => {
 			bindTo(label);
-			return (bg as unknown as GlueFns)[name]?.(...(args as unknown as never[])) as R;
+			try {
+				return (bg as unknown as GlueFns)[name]?.(...(args as unknown as never[])) as R;
+			} catch (err) {
+				if (breaksInstance(err)) dropInstance(label, err);
+				throw err;
+			}
 		};
 	return {
 		begin_store_load: wrap("begin_store_load"),
@@ -228,6 +275,7 @@ export function engineFor(label: string): EngineHandle {
 		card_by_illustration_id: wrap("card_by_illustration_id"),
 		cards_containing_all_words: wrap("cards_containing_all_words"),
 		linearMemoryBytes: () => instances.get(label)?.memory?.buffer.byteLength ?? 0,
+		instanceGeneration: () => generations.get(label) ?? 0,
 	};
 }
 

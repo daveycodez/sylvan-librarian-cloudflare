@@ -57,6 +57,8 @@ declare module "sylvan-engine-wasm" {
 		card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 		cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
 		linearMemoryBytes(): number;
+		/** Bumped each time this label's instance is dropped after a trap. */
+		instanceGeneration(): number;
 	}
 	export function __init_panic_hook(): void;
 	/** Preallocate the aligned store buffer (one allocation, no growth). */

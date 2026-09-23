@@ -29,11 +29,18 @@ if (remote) requireDeployEnvironment();
 // coordinator, and its manifest write then named the chunks they had deleted
 // (see publishingBuiltAts and PUBLISHING_KEY).
 const live = await liveManifestBuiltAts(remote);
-if (live.length === 0) {
-	// No readable manifest: sweeping now could delete the only store there is.
+const inFlight = live === null ? null : await publishingBuiltAts(remote);
+if (live === null || inFlight === null) {
+	// A read that FAILED is not "absent": sweeping on age alone with the in-flight
+	// marker unread is exactly what retired the coordinator's family on 2026-09-15.
+	console.log(
+		`Retention: could not read the ${live === null ? "live manifest" : "in-flight marker"} — ` +
+			"leaving every store build in place; the next deploy or nightly retries.",
+	);
+} else if (live.length === 0) {
+	// No manifest: sweeping now could delete the only store there is.
 	console.log("Retention: no readable manifest — leaving every store build in place.");
 } else {
-	const inFlight = await publishingBuiltAts(remote);
 	if (inFlight.length > 0) console.log(`Retention: build ${inFlight[0]} is still being uploaded — protected.`);
 	const removed = await pruneOldStores(KEEP_STORES_IN_KV, [...live, ...inFlight], remote);
 	console.log(

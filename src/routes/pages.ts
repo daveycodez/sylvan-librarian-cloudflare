@@ -7,7 +7,7 @@ import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER, serializeEmbeddedJson } from "./html";
-import { pageCacheHeader, searchPageCacheHeader } from "./http";
+import { NO_STORE_HEADER, pageCacheHeader, searchPageCacheHeader } from "./http";
 import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
 import type { RouteContext } from "./registry";
@@ -86,9 +86,19 @@ export async function rootHandler(
 			// its SQL fallback, and this route's contract is "page without
 			// results", not an error page. EngineUnavailableError still
 			// propagates (upstream's 503 does the same).
-			if (err instanceof SearchBadRequest || err instanceof EngineQueryError) {
+			//
+			// CACHED DIFFERENTLY. A parse failure is a property of the query and
+			// deserves the page's ordinary hour at the edge (upstream's own 1h
+			// header is only ever reached for it). An engine fault is transient,
+			// and cached for an hour it pinned an empty page into every edge for
+			// that URL — no-JS users saw nothing, and app.js's fallback fired an
+			// extra /search request plus engine RPC on every view for the hour.
+			if (err instanceof SearchBadRequest) {
 				console.warn(`Failed to embed search results: ${err.message}`);
 				headers = pageCacheHeader();
+			} else if (err instanceof EngineQueryError) {
+				console.error(`Failed to embed search results (engine fault, not cached): ${err.message}`);
+				headers = NO_STORE_HEADER;
 			} else {
 				throw err;
 			}

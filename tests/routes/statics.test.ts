@@ -79,11 +79,18 @@ describe("CDN static assets", () => {
 
 	test("_headers names only files that exist", () => {
 		const headers = readFileSync(join(publicDir, "_headers"), "utf8");
-		const paths = headers.split("\n").filter((l) => l.startsWith("/"));
+		// Wildcard rules (`/static/*`) name a prefix, not a file.
+		const paths = headers.split("\n").filter((l) => l.startsWith("/") && !l.includes("*"));
 		expect(paths.length).toBeGreaterThan(0);
 		for (const p of paths) {
 			expect(statSync(join(publicDir, p.slice(1))).size).toBeGreaterThan(0);
 		}
+	});
+
+	test("every static asset is served nosniff", () => {
+		// The asset layer answers before the Worker, so securityHeaders never reaches these.
+		const headers = readFileSync(join(publicDir, "_headers"), "utf8");
+		expect(headers).toContain("/static/*\n  X-Content-Type-Options: nosniff\n");
 	});
 
 	test("content-addressed paths are immutable; the unhashed originals revalidate", () => {

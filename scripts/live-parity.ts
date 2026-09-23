@@ -65,6 +65,7 @@
 // holds a no-network invariant that this file exists to violate on purpose.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringifyScryfall } from "../src/routes/scryfall-compat/respond";
@@ -120,13 +121,8 @@ function isLocalOrigin(url: string): boolean {
  * operational one-request-per-second ceiling; 1.1s leaves scheduling margin around that boundary. */
 const MIN_SCRYFALL_GAP_MS = 1_100;
 
-/**
- * Per-day Scryfall response cache. Defaults into the session scratchpad this harness was built
- * under; point LIVE_PARITY_CACHE_DIR anywhere writable to relocate it.
- */
-const CACHE_ROOT =
-	process.env.LIVE_PARITY_CACHE_DIR ??
-	"/private/tmp/claude-501/-Users-david-Developer-sylvan-librarian-cloudflare/1f7f7129-b296-412e-9176-54db930fba01/scratchpad/live-parity-cache";
+/** Per-day Scryfall response cache, under the OS temp dir; point LIVE_PARITY_CACHE_DIR anywhere writable to relocate it. */
+const CACHE_ROOT = process.env.LIVE_PARITY_CACHE_DIR ?? join(tmpdir(), "sylvan-live-parity-cache");
 
 /** Volatile leaf keys stripped from BOTH sides anywhere they appear (plan C4). */
 const VOLATILE_KEYS = ["edhrec_rank", "penny_rank"];
@@ -304,11 +300,18 @@ async function fetchScryfall(method: string, path: string, body: string | undefi
 }
 
 async function fetchOurs(method: string, path: string, body: string | undefined): Promise<Fetched> {
-	const res = await fetch(`${origin}${path}`, {
+	// PAST THE EDGE CACHE, every time. The Workers Cache keys on the URL and honours no request
+	// directive — a `cache-control: no-cache` request header, which this used to send, changed
+	// nothing — and /cards/* is cached 16h, /search 90s plus a day of stale-while-revalidate. A
+	// nonce in the query string (unknown params are dropped by the router, so the answer is the
+	// same) makes every read an origin read: parity is measured against what the Worker answers
+	// NOW, not against what some colo cached before last night's import.
+	const nonce = `_lp=${Math.random().toString(36).slice(2)}`;
+	const busted = method === "GET" ? `${path}${path.includes("?") ? "&" : "?"}${nonce}` : path;
+	const res = await fetch(`${origin}${busted}`, {
 		method,
 		headers: {
 			accept: "application/json",
-			"cache-control": "no-cache",
 			// Ours only — api.scryfall.com never sees this header.
 			...(trustedKey ? { [TRUSTED_KEY_HEADER]: trustedKey } : {}),
 			...(body !== undefined ? { "content-type": "application/json" } : {}),

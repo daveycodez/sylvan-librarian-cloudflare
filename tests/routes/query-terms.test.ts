@@ -81,6 +81,64 @@ describe("queries with nothing to ignore pass through untouched", () => {
 	}
 });
 
+describe("an apostrophe inside a word is not a quote", () => {
+	// The lexer keeps `don't` as one word (tokenizer.ts scanWordEnd); the policy's scanners used to
+	// run to the next `'` on any apostrophe, refusing `(o:don't) e:khm` as unclosed parentheses and
+	// hiding a second term behind `o:don't`.
+	test("a single apostrophe in a word does not swallow the rest of the query", () => {
+		expect(scryfallTermPolicy("(o:don't) e:khm").unclosedParens).toBe(false);
+		expect(scryfallTermPolicy("(o:don't or o:can't) t:creature")).toEqual({
+			query: "(o:don't or o:can't) t:creature",
+			warnings: [],
+			allIgnored: false,
+			unclosedParens: false,
+		});
+		expect(scryfallTermPolicy("o:urza' e:khm").unclosedParens).toBe(false);
+	});
+
+	test("the term after an apostrophe-carrying word is still scanned on its own", () => {
+		const result = scryfallTermPolicy("o:don't f:notaformat");
+		expect(result.query).toBe("o:don't");
+		expect(result.warnings).toEqual([
+			"Invalid expression “f:notaformat” was ignored. Unknown game format “notaformat”",
+		]);
+	});
+
+	test("a quoted string still opens with an apostrophe at a token start", () => {
+		expect(scryfallTermPolicy("name:'power' t:x").query).toBe("name:'power' t:x");
+		expect(scryfallTermPolicy("'don t' o:x").query).toBe("'don t' o:x");
+		expect(scryfallTermPolicy("(name:'a (b' t:x").unclosedParens).toBe(true);
+	});
+});
+
+describe("regex dialect features JS lacks are validated, not refused", () => {
+	// Scryfall's Onigmo and the engine's Rust regex both accept these; V8 does not parse them, and
+	// the policy used JS RegExp as the oracle, so `o:/(?i)flying/` was ignored with a warning —
+	// and the wrong warning, since `(?` read as a quantifier with no operand.
+	test("inline flags, named groups, possessive and atomic groups, comments are kept", () => {
+		for (const q of [
+			"o:/(?i)flying/ e:khm",
+			"o:/(?i:fly)ing/ e:khm",
+			"o:/(?P<x>a)b/ e:khm",
+			"o:/a++b/ e:khm",
+			"o:/(?>a+)b/ e:khm",
+			"o:/(?#c)a+/ e:khm",
+			"o:/[+]+/ e:khm",
+		]) {
+			const result = scryfallTermPolicy(q);
+			expect(result.warnings).toEqual([]);
+			expect(result.query).toBe(q);
+		}
+	});
+
+	test("a genuinely malformed group extension is refused with an honest reason", () => {
+		const result = scryfallTermPolicy("o:/(?<x/ e:khm");
+		expect(result.query).toBe("e:khm");
+		expect(result.warnings[0]).toContain("Invalid regular expression");
+		expect(result.warnings[0]).not.toContain("quantifier operand invalid");
+	});
+});
+
 describe("keywords Scryfall does not know", () => {
 	test("an upstream-only spelling is dropped and named", () => {
 		const result = scryfallTermPolicy("subtype:eldrazi e:khm");

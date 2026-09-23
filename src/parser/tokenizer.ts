@@ -104,8 +104,9 @@ function isWordStart(c: string): boolean {
 	return WORD_START.has(c) || isAlphaCp(c.codePointAt(0) as number);
 }
 
-/** ASCII identifier continuation, or any Unicode letter (#649). */
-function isWordCont(c: string): boolean {
+/** ASCII identifier continuation, or any Unicode letter (#649). Exported for the balancer and the
+ * compat term policy, which must agree with the lexer on what an apostrophe inside a word is. */
+export function isWordCont(c: string): boolean {
 	return WORD_CONT.has(c) || isAlphaCp(c.codePointAt(0) as number);
 }
 
@@ -320,7 +321,11 @@ export function tokenize(source: string): Token[] {
 				j = scanWordEnd(src, n, j);
 				push(TT.WORD, slice(pos, j), start, sb);
 			} else if (text.includes(".")) {
-				push(TT.NUMBER, PyNumber.float(Number(text)), start, sb);
+				const value = Number(text);
+				// A literal past the double range would serialize as `inf`, which is not JSON,
+				// and the engine refuses it either way; refusing it here is the ordinary 400.
+				if (!Number.isFinite(value)) throw new LexError(`Number out of range at position ${start}`);
+				push(TT.NUMBER, PyNumber.float(value), start, sb);
 			} else {
 				push(TT.NUMBER, PyNumber.int(BigInt(text)), start, sb);
 			}

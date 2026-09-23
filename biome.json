@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.1.2/schema.json",
   "files": {
-    "includes": ["src/**", "scripts/**", "tests/**"]
+    "includes": ["src/**", "scripts/**", "tests/**", "engine/wasm-import/driver.ts", "engine/wasm-builder-probe/driver.ts"]
   },
   "formatter": {
     "enabled": true,

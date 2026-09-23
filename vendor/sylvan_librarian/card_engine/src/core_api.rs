@@ -1432,9 +1432,21 @@ impl BufferStore {
     /// archive from a different build (or a foreign file) is rejected rather
     /// than handed to access_unchecked, which would be UB.
     pub fn from_aligned(bytes: AlignedVec) -> Result<Self, EngineError> {
+        Self::try_from_aligned(bytes).map_err(|(e, _)| e)
+    }
+
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, wasm memory): `from_aligned` that hands the
+    /// buffer BACK on refusal. The wasm crate recycles a refused load's buffer as the spare the
+    /// next load refills (see `into_bytes` for why a dropped store-sized buffer is a permanent
+    /// loss of linear memory); a constructor that consumed it on error made every foreign-header
+    /// refusal cost a partition of memory.
+    pub fn try_from_aligned(bytes: AlignedVec) -> Result<Self, (EngineError, AlignedVec)> {
         if bytes.len() < ARCHIVE_HEADER_LEN || bytes[..ARCHIVE_HEADER_LEN] != archive_header() {
-            return Err(EngineError::runtime(
-                "archive header mismatch (stale or foreign archive; rebuild the store with this engine version)",
+            return Err((
+                EngineError::runtime(
+                    "archive header mismatch (stale or foreign archive; rebuild the store with this engine version)",
+                ),
+                bytes,
             ));
         }
         let store = BufferStore { bytes };
@@ -1656,7 +1668,7 @@ impl BufferStore {
     ) -> Result<QueryKeysOutput, EngineError> {
         let resolved_fields = resolve_fields_json(opts.fields.clone())?;
         let data = self.data();
-        let (params, total, page, _widened) = self.run_page(filter_tree, opts)?;
+        let (params, total, page, widened) = self.run_page(filter_tree, opts)?;
         let inline = inline_rows.min(page.len());
         let rows = page[..inline]
             .iter()
@@ -1669,7 +1681,7 @@ impl BufferStore {
                 (super::encode_sort_key(data, c, p, vpid, params.sort_col, params.descending), vpid)
             })
             .collect();
-        Ok(QueryKeysOutput { total, keys, rows })
+        Ok(QueryKeysOutput { total, keys, rows, widened })
     }
 
     /// LOCAL PATCH (Cloudflare port): phase 2 of the partitioned two-phase gather — the rows for
@@ -2911,6 +2923,11 @@ pub struct QueryKeysOutput {
     /// phase 2 folded into phase 1 (see [`BufferStore::query_keys`]). Empty when the caller asked
     /// for none. Always a PREFIX of `keys`, so an entry's row is at the same index as its key.
     pub rows: Vec<Value>,
+    /// LOCAL PATCH (Cloudflare port): whether this query ran the widened (multilingual) driver —
+    /// the same value [`QueryOutput::widened`] carries. Identical in every partition, so the
+    /// gather reads it off any phase-1 packet instead of binding the filter a second time
+    /// through [`BufferStore::query_widens`] to learn it.
+    pub widened: bool,
 }
 
 impl QueryOutput {

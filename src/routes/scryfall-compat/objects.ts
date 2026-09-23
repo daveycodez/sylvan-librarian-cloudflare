@@ -39,6 +39,14 @@ export const PAGE_SIZE = 175;
 
 /** Scryfall caps a collection POST at 75 identifiers and 422s past it. */
 export const MAX_COLLECTION_IDENTIFIERS = 75;
+/**
+ * The most bytes a collection body may carry before it is refused unread. 75 identifiers of the
+ * longest shape (`{"set": "…", "collector_number": "…"}` with full names) are under 10KB; a body
+ * past this cannot be a valid batch, and parsing it first spent the metered isolate on a request
+ * the count rule was going to refuse anyway. Unmeasured against Scryfall: the count sentence is
+ * the closest measured answer, so an oversized body gets it.
+ */
+export const MAX_COLLECTION_BODY_BYTES = 65_536;
 
 /** Scryfall caps an autocomplete catalog at 20 names. */
 export const MAX_AUTOCOMPLETE_VALUES = 20;
@@ -956,7 +964,11 @@ function faceOf(card: Record<string, unknown>, face: string): Record<string, unk
 export function imageUri(card: Record<string, unknown>, version: string, face: string): string | undefined {
 	const selected = faceOf(card, face);
 	const uris = (selected.image_uris ?? card.image_uris ?? {}) as Record<string, string>;
-	return uris[version] ?? uris[DEFAULT_IMAGE_VERSION];
+	// OWN properties only: the map is a plain object, and indexing it walks Object.prototype —
+	// `version=constructor` redirected to `function Object() { [native code] }`, cached 48h. The
+	// same trap resolveAction documents for route names.
+	const own = Object.hasOwn(uris, version) ? uris[version] : undefined;
+	return own ?? (Object.hasOwn(uris, DEFAULT_IMAGE_VERSION) ? uris[DEFAULT_IMAGE_VERSION] : undefined);
 }
 
 /** One card face in Scryfall's plain-text format. */

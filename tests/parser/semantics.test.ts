@@ -47,6 +47,16 @@ describe("balancePartialQuery", () => {
 		});
 	}
 
+	// The apostrophe rule is the LEXER's word class, not a look-alike (upstream balances with
+	// `_is_word_cont` itself): `²` is not a word character, `~` is.
+	test("an apostrophe before a non-word character opens a quote; before `~` it does not", () => {
+		expect(balancePartialQuery("urza'\u00b2")).toBe("urza'\u00b2'");
+		expect(parseScryfallQuery(balancePartialQuery("urza'\u00b2"))).toBeDefined();
+		expect(balancePartialQuery("urza'~")).toBe("urza'~");
+		expect(balancePartialQuery("urza's")).toBe("urza's");
+		expect(balancePartialQuery("urza'")).toBe("urza'");
+	});
+
 	// upstream test_balance_query.py: balanced partial queries still parse
 	for (const original of ['name:"hydr', '(name:"lightning']) {
 		test(`balanced ${JSON.stringify(original)} still parses`, () => {
@@ -952,5 +962,45 @@ describe("in: is a card_in_tags leaf", () => {
 
 	test("negation is the card-level complement Scryfall's docs describe (`-in:core`)", () => {
 		expect(wire("-in:core")).toMatch(/^\{"node_type":"NotNode"/);
+	});
+});
+
+// ── operand dedup mirrors upstream's node hash ────────────────────────────────
+//
+// `_operand_dedup_key` keys leaves on `hash(node)`, which reads RAW fields (nodes.py): a value
+// as typed and case-sensitive, `2 == 2.0`, the mapped attribute name, and never `literal`. This
+// port used to key on the wire JSON — titlecased, collated, int-vs-float text — and diverged in
+// both directions. No parity fixture pairs two spellings of one leaf, so these do.
+
+describe("operand dedup mirrors upstream's node hash", () => {
+	const operandsOf = (query: string): unknown[] => {
+		const tree = parseScryfallQuery(query) as { node_type: string; kwargs: { operands?: unknown[] } };
+		return tree.node_type === "AndNode" ? (tree.kwargs.operands as unknown[]) : [tree];
+	};
+	const leafValue = (leaf: unknown): unknown =>
+		(leaf as { kwargs: { rhs?: { kwargs: { value: unknown } }; value?: unknown } }).kwargs.rhs?.kwargs.value ??
+		(leaf as { kwargs: { value?: unknown } }).kwargs.value;
+
+	test("values are compared as typed: case matters, like Python's str", () => {
+		expect(operandsOf("t:goblin t:Goblin").length).toBe(2);
+		expect(operandsOf("c:w c:W").length).toBe(2);
+		expect(operandsOf("!fire !Fire").length).toBe(2);
+	});
+
+	test("an int and an equal float are one leaf, the first kept", () => {
+		const ops = operandsOf("cmc=2 cmc=2.0");
+		expect(ops.length).toBe(1);
+		expect(String(leafValue(ops[0]))).toBe("2");
+		expect(operandsOf("cmc=2 cmc=2.5").length).toBe(2);
+	});
+
+	test('quoting is not part of the key: name:fire and name:"fire" are one leaf, the bare one', () => {
+		const ops = operandsOf('name:fire name:"fire"');
+		expect(ops.length).toBe(1);
+		expect(operandsOf('name:"fire" name:fire').length).toBe(1);
+	});
+
+	test("aliases of one column still collapse (the mapped attribute name is the key)", () => {
+		expect(operandsOf("cmc<2 c=w cmc<2 color=w").length).toBe(2);
 	});
 });

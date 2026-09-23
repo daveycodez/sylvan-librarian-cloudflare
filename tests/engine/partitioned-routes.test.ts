@@ -7,12 +7,14 @@
 // contract, and this file is where it is enforced — a fake engine per partition
 // counts every call.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { edgeCacheUrl } from "../../src/engine/edge-cache";
 import { partitionOfOracleId } from "../../src/engine/partition";
 import {
 	mergeAutocomplete,
 	PartitionedEngine,
 	raceFuzzyCandidates,
+	resetCatalogMemoForTests,
 	sumCounts,
 } from "../../src/engine/partitioned-engine";
 import type { RemoteEngine } from "../../src/engine/remote-engine";
@@ -84,6 +86,10 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("cardKeywordCounts");
 			return { flying: 2 };
 		},
+		setsWithExtras: async () => {
+			count("setsWithExtras");
+			return val("setsWithExtras", ["lea"]);
+		},
 		cardCount: async () => {
 			count("cardCount");
 			return 10;
@@ -115,6 +121,12 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 		scryfallCardsByIds: async (ids: string[]) => {
 			count("scryfallCardsByIds");
 			return val<Record<string, unknown>[]>("byIds", []).filter((c) => ids.includes(String(c.id)));
+		},
+		scryfallCardsByIdentifiers: async (identifiers: { kind: string; id: string | number }[]) => {
+			count("scryfallCardsByIdentifiers");
+			// `byKey` maps an identifier's id to the card this partition holds for it.
+			const held = val<Record<string, Record<string, unknown>>>("byKey", {});
+			return identifiers.map((ident) => held[String(ident.id)] ?? null);
 		},
 		scryfallFirstOfEach: async (filters: string[]) => {
 			count("scryfallFirstOfEach");
@@ -251,25 +263,25 @@ describe("point routes", () => {
 	});
 });
 
+/** A routing filter placing the given ids, built at the fake manifest's identity. */
+function filterOf(entries: { key: string; partition: number }[]): RoutingFilter {
+	const bytes = buildRoutingFilter(entries, {
+		builtAt: "100",
+		partitionCount: N,
+		partitionHash: "fnv1a64/oracle_id/v1",
+	});
+	const parsed = RoutingFilter.parse(bytes, {
+		builtAt: "100",
+		partitionCount: N,
+		partitionHash: "fnv1a64/oracle_id/v1",
+	});
+	if ("reason" in parsed) throw new Error(parsed.reason);
+	return parsed.filter;
+}
+
 describe("the routing filter collapses the bare-id fan-out", () => {
 	const CARD = "0001c639-8bd0-426f-89cb-4ca61f3cc054";
 	const ART = "7eb65d52-deea-4693-9111-9f95a3b0c915";
-
-	/** A filter that places the three ids below, built at the fake manifest's identity. */
-	function filterOf(entries: { key: string; partition: number }[]): RoutingFilter {
-		const bytes = buildRoutingFilter(entries, {
-			builtAt: "100",
-			partitionCount: N,
-			partitionHash: "fnv1a64/oracle_id/v1",
-		});
-		const parsed = RoutingFilter.parse(bytes, {
-			builtAt: "100",
-			partitionCount: N,
-			partitionHash: "fnv1a64/oracle_id/v1",
-		});
-		if ("reason" in parsed) throw new Error(parsed.reason);
-		return parsed.filter;
-	}
 
 	test("a known scryfall_id costs ONE RPC, to the partition the filter names", async () => {
 		const routing = filterOf([{ key: scryfallIdKey(CARD), partition: 2 }]);
@@ -346,6 +358,73 @@ describe("the routing filter collapses the bare-id fan-out", () => {
 		expect(await engine.scryfallCardsByIds([stranger, known], "https://x")).toEqual([{ id: stranger }, { id: known }]);
 		// One hinted batch plus the partitions it did not cover — still at most N.
 		expect(of("scryfallCardsByIds").length).toBeLessThanOrEqual(N);
+	});
+});
+
+describe("the key-shaped collection identifiers are ONE batch per partition asked", () => {
+	// oracle_id, illustration_id, mtgo_id and multiverse_id used to be resolved one RPC per
+	// identifier — 75 x N Durable Object requests for a batch of misses.
+	const ext = (id: number) => ({ kind: "external" as const, namespace: "multiverse", id });
+
+	test("hinted identifiers go to their partitions, one RPC each, however many there are", async () => {
+		const ids = Array.from({ length: 75 }, (_, i) => 1000 + i);
+		const routing = filterOf(ids.map((id, i) => ({ key: externalIdKey("multiverse", id), partition: i % 2 })));
+		const held = (parity: number) =>
+			Object.fromEntries(ids.filter((_, i) => i % 2 === parity).map((id) => [String(id), { id }]));
+		const { engine, of } = build({ 0: { byKey: held(0) }, 1: { byKey: held(1) } }, undefined, routing);
+		const cards = await engine.scryfallCardsByIdentifiers(ids.map(ext), "https://x");
+		expect(cards.map((c) => c?.id)).toEqual(ids);
+		expect(of("scryfallCardsByIdentifiers").sort()).toEqual([
+			"scryfallCardsByIdentifiers:0",
+			"scryfallCardsByIdentifiers:1",
+		]);
+	});
+
+	test("unhinted identifiers cost the fan-out once, never per identifier", async () => {
+		const ids = Array.from({ length: 75 }, (_, i) => 5000 + i);
+		const { engine, of } = build({}, undefined, filterOf([]));
+		const cards = await engine.scryfallCardsByIdentifiers(ids.map(ext), "https://x");
+		expect(cards.every((c) => c === null)).toBe(true);
+		expect(of("scryfallCardsByIdentifiers").length).toBe(N);
+	});
+
+	test("without a routing filter, an unhinted id still reaches a partition round 1 asked for oracle ids", async () => {
+		// The first request of every cold isolate has no filter yet. Partition p is asked for an
+		// oracle id it owns; the multiverse id ALSO lives in p. The unhinted id must ride along to
+		// every partition — including p — or it is reported not_found while the card exists.
+		const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdb001";
+		const p = partitionOfOracleId(oracleId, N);
+		const { engine, of } = build(
+			{ [p]: { byKey: { [oracleId]: { id: oracleId }, "9999": { id: 9999 } } } },
+			undefined,
+			null,
+		);
+		const cards = await engine.scryfallCardsByIdentifiers(
+			[{ kind: "oracle_id" as const, id: oracleId }, ext(9999)],
+			"https://x",
+		);
+		expect(cards.map((c) => c?.id)).toEqual([oracleId, 9999]);
+		// One round: every partition asked once, none twice.
+		expect(of("scryfallCardsByIdentifiers").length).toBe(N);
+	});
+
+	test("oracle ids group by their arithmetic owner", async () => {
+		const oracle = (i: number) => `aa686c34-cf28-4d4a-bcef-5a34cccdb${String(i).padStart(3, "0")}`;
+		const ids = Array.from({ length: 20 }, (_, i) => oracle(i));
+		const owners = new Set(ids.map((id) => partitionOfOracleId(id, N)));
+		const perPartition: Record<number, Record<string, unknown>> = {};
+		for (const id of ids) {
+			const p = partitionOfOracleId(id, N);
+			perPartition[p] ??= { byKey: {} };
+			(perPartition[p].byKey as Record<string, unknown>)[id] = { id };
+		}
+		const { engine, of } = build(perPartition, undefined, filterOf([]));
+		const cards = await engine.scryfallCardsByIdentifiers(
+			ids.map((id) => ({ kind: "oracle_id" as const, id })),
+			"https://x",
+		);
+		expect(cards.map((c) => c?.id)).toEqual(ids);
+		expect(of("scryfallCardsByIdentifiers").length).toBe(owners.size);
 	});
 });
 
@@ -526,6 +605,78 @@ describe("batches and catalogs", () => {
 		expect(engine.cardTypeCounts()).rejects.toThrow(/partition down/);
 		fail = false;
 		expect(await engine.cardTypeCounts()).toEqual({ creature: 4 });
+	});
+
+	describe("catalog: the colo's copy", () => {
+		const g = globalThis as { caches?: unknown };
+		afterEach(() => {
+			delete g.caches;
+			resetCatalogMemoForTests();
+		});
+		/** A Map-backed stand-in for `caches.default`, as in edge-cache.test.ts. */
+		function installFakeCaches() {
+			const entries = new Map<string, string>();
+			const puts: string[] = [];
+			Object.assign(globalThis, {
+				caches: {
+					default: {
+						match: async (key: string) => {
+							const body = entries.get(key);
+							return body === undefined ? undefined : new Response(body);
+						},
+						put: async (key: string, res: Response) => {
+							puts.push(key);
+							entries.set(key, await res.text());
+						},
+					},
+				},
+			});
+			return { entries, puts };
+		}
+
+		test("the first isolate in a colo fans out and stores; the next cold one asks no partition", async () => {
+			const c = installFakeCaches();
+			const manifest = manifestOf(N);
+			const first: string[] = [];
+			const a = new PartitionedEngine(
+				(p) => fakeRemote(p, first, p === 0 ? { types: { creature: 5 } } : {}),
+				manifest,
+				async () => manifest,
+				null,
+			);
+			expect(await a.cardTypeCounts()).toEqual({ creature: 8 });
+			expect(await a.setsWithExtras()).toEqual(["lea"]);
+			expect(first.filter((x) => x.startsWith("cardTypeCounts:")).length).toBe(N);
+			expect(c.puts).toEqual([edgeCacheUrl(`catalog:${manifest.store_key}`)]);
+			// A second cold isolate: the memo is empty, the colo entry is not.
+			resetCatalogMemoForTests();
+			const second: string[] = [];
+			const b = new PartitionedEngine(
+				(p) => fakeRemote(p, second),
+				manifest,
+				async () => manifest,
+				null,
+			);
+			expect(await b.cardTypeCounts()).toEqual({ creature: 8 });
+			expect(await b.cardKeywordCounts()).toEqual({ flying: 8 });
+			expect(await b.setsWithExtras()).toEqual(["lea"]);
+			expect(second).toEqual([]);
+		});
+
+		test("a colo entry that is not the tables' shape falls through to the fan-out", async () => {
+			const c = installFakeCaches();
+			const manifest = manifestOf(N);
+			c.entries.set(edgeCacheUrl(`catalog:${manifest.store_key}`), '{"types":{}}');
+			const calls: string[] = [];
+			const engine = new PartitionedEngine(
+				(p) => fakeRemote(p, calls),
+				manifest,
+				async () => manifest,
+				null,
+			);
+			expect(await engine.cardTypeCounts()).toEqual({ creature: 4 });
+			expect(calls.filter((x) => x.startsWith("cardTypeCounts:")).length).toBe(N);
+		});
 	});
 
 	test("cardCount: N summed", async () => {

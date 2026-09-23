@@ -4,14 +4,17 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	canonicalStringify,
 	InvalidRegexPatternError,
 	MAX_QUERY_UTF8_BYTES,
+	ParseError,
 	parseScryfallQuery,
 	QUERY_REGEX_REJECTED_MESSAGE,
 	QUERY_TOO_LONG_MESSAGE,
 	QueryBudgetExceeded,
 } from "../../src/parser";
-import { MAX_GROUP_DEPTH } from "../../src/parser/query-budget";
+import { PyNumber } from "../../src/parser/pystr";
+import { MAX_ARITH_CHAIN, MAX_GROUP_DEPTH } from "../../src/parser/query-budget";
 import { MAX_REGEX_LEAVES_PER_QUERY } from "../../src/parser/regex-budget";
 
 /** Throw-and-capture, so a test can assert on the instance rather than only that it threw. */
@@ -69,6 +72,51 @@ describe("parenthesis nesting depth", () => {
 	});
 });
 
+describe("arithmetic chain length", () => {
+	// Left-nested `a+1+1+…` is one wire-tree level per operator (two object levels), which
+	// MAX_GROUP_DEPTH does not see: a 1,600-term chain under the byte budget took ~31ms to
+	// canonicalize and was refused by serde's recursion limit in the engine anyway.
+	const chain = (ops: number) => `cmc${"+1".repeat(ops)}>0`;
+	const valueChain = (ops: number) => `power>1${"+1".repeat(ops)}`;
+	const spacedChain = (ops: number) => `power ${"- 1 ".repeat(ops)}> cmc`;
+
+	test("a chain at the limit parses and one operator more is refused", () => {
+		expect(() => parseScryfallQuery(chain(MAX_ARITH_CHAIN))).not.toThrow();
+		expect(() => parseScryfallQuery(valueChain(MAX_ARITH_CHAIN))).not.toThrow();
+		expect(() => parseScryfallQuery(spacedChain(MAX_ARITH_CHAIN))).not.toThrow();
+		for (const q of [chain(MAX_ARITH_CHAIN + 1), valueChain(MAX_ARITH_CHAIN + 1), spacedChain(MAX_ARITH_CHAIN + 1)]) {
+			const err = thrownBy(q);
+			expect(err).toBeInstanceOf(QueryBudgetExceeded);
+			expect((err as QueryBudgetExceeded).kind).toBe("depth");
+		}
+	});
+
+	test("an overflowing float literal is a parse failure, never `inf` on the wire", () => {
+		const err = thrownBy(`cmc=1${"0".repeat(400)}.5`);
+		expect(err).toBeInstanceOf(ParseError);
+		expect(canonicalStringify(parseScryfallQuery(chain(20)))).not.toContain("inf");
+	});
+});
+
+describe("the canonical serializer", () => {
+	// The writer must produce exactly the bytes the per-level join did (Python's
+	// json.dumps with sort_keys and no spaces); this is the naive reference.
+	type V = string | PyNumber | V[] | { [k: string]: V };
+	const reference = (value: V): string => {
+		if (typeof value === "string") return JSON.stringify(value);
+		if (value instanceof PyNumber) return value.toString();
+		if (Array.isArray(value)) return `[${value.map(reference).join(",")}]`;
+		return `{${Object.keys(value)
+			.sort()
+			.map((k) => `${JSON.stringify(k)}:${reference((value as Record<string, V>)[k] as V)}`)
+			.join(",")}}`;
+	};
+	test("is byte-identical to the per-level join it replaced", () => {
+		const tree = parseScryfallQuery(`(cmc${"+1".repeat(20)}>2 or o:"a "b" c") -t:élan`);
+		expect(canonicalStringify(tree)).toBe(reference(tree as unknown as V));
+	});
+});
+
 describe("regex budgets", () => {
 	test("regex leaves are counted per query", () => {
 		// Distinct patterns: identical ones would dedupe, and the leaf count is checked BEFORE the
@@ -82,6 +130,17 @@ describe("regex budgets", () => {
 		expect(err).toBeInstanceOf(QueryBudgetExceeded);
 		expect((err as QueryBudgetExceeded).kind).toBe("regex_leaves");
 		expect((err as Error).message).toBe(QUERY_REGEX_REJECTED_MESSAGE);
+	});
+
+	// Dialect features JS lacks but upstream's sre and the engine share are respelled before the
+	// well-formedness check, not refused; genuinely malformed patterns still are.
+	test("inline flags, named groups, possessive and atomic groups, and comments are well-formed", () => {
+		for (const q of ["o:/(?i)flying/", "o:/(?P<x>a)b/", "o:/a++b/", "o:/(?>a+)b/", "o:/(?#c)a+/"]) {
+			expect(() => parseScryfallQuery(q)).not.toThrow();
+		}
+		for (const q of ["o:/(unclosed/", "o:/[unclosed/", "o:/a{3,1}/"]) {
+			expect(thrownBy(q)).toBeInstanceOf(InvalidRegexPatternError);
+		}
 	});
 
 	// A LITERAL regex is lowered to a plain substring before the budget runs, so it is not a regex

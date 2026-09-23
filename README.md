@@ -22,10 +22,16 @@ below.
 ## Deploy
 
 1. Cloudflare dashboard → Workers → Create → connect this git repository
-   (Workers Builds), or `bun run deploy` from a checkout.
+   (Workers Builds).
 2. There is no step 2.
 
-The **deploy builds the card index**, and a deploy that cannot build it fails
+`bun run deploy` from a checkout deploys the **code only**: production KV is
+written by a push to main (Workers Builds) and by the nightly cron, never from a
+development machine (see [scripts/kv-target.ts](scripts/kv-target.ts)). A
+laptop-deployed Worker gets its index from the next nightly cron (11:17 UTC),
+or at deploy time once the repository is connected to Workers Builds.
+
+The **Workers Builds deploy builds the card index**, and a deploy that cannot build it fails
 rather than shipping a Worker without one — so a green build means a working
 site. `bun install` runs `scripts/ci-postinstall.sh`, which creates the KV
 namespace if absent, runs the native Rust store builder over Scryfall's bulk
@@ -89,8 +95,9 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
               ├─ SearchEngine DO: wasm card_engine + ONE PARTITION's rkyv archive
               │   in memory — card objects included, exactly upstream's shape —
               │   streamed from KV as immutable chunks in 4MB blocks, and cached
-              │   DECOMPRESSED in the DO's own SQLite so later wakes skip both the
-              │   network and the gunzip. It hot-swaps when the KV manifest
+              │   COMPRESSED, chunk for chunk, in the DO's own SQLite so later wakes
+              │   skip the network and inflate inside wasm (~105ms). It hot-swaps
+              │   when the KV manifest
               │   advances. Results come back already JSON-encoded in the requested
               │   shape, so no card ever becomes an object in the isolate serving
               │   the request
@@ -111,7 +118,7 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
 cron (nightly refresh; the deploy does the first build)
         ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
               └─ alarm-chained pipeline, all inside the 128MB isolate:
-                   fetch → recode → canonical → transform → tags → scores
+                   fetch → canonical → transform → tags → scores
                      → [per partition: agg → finalize → reorder → build → publish]
                      → notify → rulings → reference → purge
                    (scores is corpus-GLOBAL — the cubecobra percent-rank and the
@@ -176,8 +183,8 @@ location hint load-bearing rather than decorative, and a hint applies only at
 CREATION — so `src/engine/engine-namespace.ts` confines object creation to edge
 isolates serving real requests, and `ENGINE-PLACEMENT.md` covers how to check
 where an object actually is and what to do if one is wrong. What remains of
-the cold path is cached decompressed in the DO's own SQLite, so a wake usually
-skips the network and the gunzip both. There is deliberately no Cache API layer in front of KV: writing the
+the cold path is cached compressed in the DO's own SQLite, so a wake usually
+skips the network and pays only the inflate, inside wasm. There is deliberately no Cache API layer in front of KV: writing the
 store through `caches.default` and reading it back measured 0.6–1.3s of billed
 CPU per load, and KV's own `cacheTtl` gives the same colo-level caching for
 free on immutable chunk keys. That argument rules out a Cache API layer, and it
@@ -214,8 +221,8 @@ in I/O what it cost in CPU.
 It stands anyway, for a reason unrelated to the original argument — the fix was
 to stop paying it so often rather than to stop paying it. Engine DOs are named
 per REGION now, so the ~45 cold loads a day that made this expensive collapse to
-a handful, and `store-cache.ts` holds the DECOMPRESSED archive locally so most
-remaining wakes skip it entirely. Reverting to uncompressed chunks would cost
+a handful, and `store-cache.ts` holds the COMPRESSED archive locally so most
+remaining wakes skip the network and pay only the in-wasm inflate. Reverting to uncompressed chunks would cost
 ~13MB of the 128MB isolate to save a cost that is now rare. See
 [src/engine/store-kv.ts](src/engine/store-kv.ts) for both halves measured.
 
@@ -229,7 +236,8 @@ can be rolled back by republishing the previous manifest.
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
 `/cards/*` carries Scryfall's own tiers (16h, `no-cache` for random, private for
 the collection POST); page HTML carries no card data; `no-store` routes are never
-cached, and neither are the dispatch-level errors (404/405/429/500/503), though
+cached, and neither are the dispatch-level errors (`no-cache` on 404/405/500/503,
+`no-store` on the per-address 429), though
 `/cards/*` caches its OWN 400s and 404s on the route's tier, which is Scryfall's
 behaviour too; the cache is per-deploy-version, so a deploy starts cold. An
 import is not a deploy, so the nightly rebuild purges the cache itself, rather

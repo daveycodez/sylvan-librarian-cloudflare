@@ -29,7 +29,7 @@
 //   - 256 KV writes if every bucket changed, against the free plan's 1,000/day. It does not:
 //     the publisher hashes each bucket and writes only the ones whose bytes moved (see
 //     `stepRulings`), so a normal night is a handful and a set release is tens.
-//   - 25.5MB of a 1GB namespace, next to ~77MB per kept store version.
+//   - 25.5MB of a 1GB namespace, next to ~165MB (compressed, all partitions) per kept store version.
 //
 // NOT COMPRESSED, unlike the store chunks. Those are streamed into wasm whole, so compression buys
 // both transfer and peak memory; a bucket is read to slice ~1KB out of it, and gzip would put a

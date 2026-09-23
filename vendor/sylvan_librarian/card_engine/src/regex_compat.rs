@@ -328,6 +328,11 @@ impl CompiledRegex {
         let cased = format!("{QUERY_REGEX_FLAGS}{translated}");
         match Regex::new(&cased) {
             Ok(re) => Ok(CompiledRegex { engine: RegexEngine::Fast(re), self_reference }),
+            // LOCAL PATCH (Cloudflare port): a pattern that blew the linear engine's SIZE limit is
+            // not a syntax the backtracker might accept — it is too big, and fancy_regex compiles
+            // its pieces with `regex` again, so the fallback would pay the (self-reference-
+            // expanded) compile twice to reach the same answer. Refuse it outright.
+            Err(linear_err @ regex::Error::CompiledTooBig(_)) => Err(format!("invalid regex '{pattern}': {linear_err}")),
             Err(linear_err) => match fancy_regex::RegexBuilder::new(&cased)
                 .backtrack_limit(BACKTRACK_LIMIT)
                 .build()

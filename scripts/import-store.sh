@@ -45,48 +45,6 @@ if [[ "${SKIP_IMPORT:-}" == "1" ]]; then
     exit 0
 fi
 
-# 1b. The KV data that is NOT in the store: rulings, and the /sets, /catalog/*
-#     and /symbology mirrors. Neither comes out of the bulk store build —
-#     rulings hang off oracle_id rather than a printing, and the reference data
-#     is fetched from api.scryfall.com rather than derived from the corpus — so
-#     without this step a deploy leaves those routes answering 503 until the
-#     first nightly cron.
-#
-#     BEFORE the store-age gate below, deliberately: the common deploy skips the
-#     store import entirely because a recent store is already live, and "the
-#     store is current" says nothing about whether these were ever published.
-#
-#     `--if-missing` makes each a single KV read when the data is already there,
-#     which is the same trade the store gate makes: the deploy guarantees the
-#     data EXISTS, the nightly import keeps it CURRENT. FORCE_IMPORT=1
-#     republishes them along with the store.
-#
-#     Never fatal. The store is the index; these back three routes that fail
-#     honestly (503) when absent, and losing a deploy because api.scryfall.com
-#     was briefly unhappy would be the worse trade — the same call the in-Worker
-#     pipeline makes for both of these phases.
-IF_MISSING="--if-missing"
-if [[ "${FORCE_IMPORT:-}" == "1" ]]; then
-    IF_MISSING=""
-fi
-echo "==> Publishing rulings to KV..."
-bun scripts/seed-rulings.ts --remote $IF_MISSING || echo "!!! Rulings publish failed — /cards/*/rulings answers 503 until the nightly import."
-echo "==> Publishing sets, catalogs and symbology to KV..."
-bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publish failed — /sets, /catalog/* and /symbology answer 503 until the nightly import."
-
-#     And retire superseded store builds, whether or not this deploy publishes one. Cleanup is not
-#     part of publishing: the sweep used to live inside the store publisher, so the common deploy —
-#     which skips the import because a recent store is already live — skipped the cleanup too, and
-#     KV reached 15 builds (~510MB of a 1GB namespace) against a policy of 2.
-#
-#     The sweep protects the build the manifest names AND the build the in-Worker coordinator is
-#     still uploading (store:publishing). It did not always: on 2026-09-14/15 two deploys retired
-#     the coordinator's half-uploaded generation as "superseded" — its built_at is stamped when the
-#     build starts, days before the deploy-built generations that land while it crawls across
-#     deploy resets — and the coordinator then published a manifest over the deleted chunks.
-echo "==> Retiring superseded store builds..."
-bun scripts/prune-kv.ts --remote || echo "!!! Store retention failed — superseded builds stay in KV until the next import."
-
 # 2. Decide whether to import at all.
 #
 #    Skip when a recent store is already live: without that, every routine code
@@ -184,6 +142,57 @@ if [[ -n "$BRANCH" && "$BRANCH" != "$PRODUCTION_BRANCH" ]]; then  # fail-closed:
     fi
 fi
 
+# 2b. The KV data that is NOT in the store: rulings, and the /sets, /catalog/*
+#     and /symbology mirrors. Neither comes out of the bulk store build —
+#     rulings hang off oracle_id rather than a printing, and the reference data
+#     is fetched from api.scryfall.com rather than derived from the corpus — so
+#     without this step a deploy leaves those routes answering 503 until the
+#     first nightly cron.
+#
+#     AFTER the branch guard and BEFORE the store-current skip, deliberately, and
+#     both halves matter. Before the skip: the common deploy skips the store
+#     import entirely because a recent store is already live, and "the store is
+#     current" says nothing about whether these were ever published. After the
+#     guard: this block used to run first, so a PREVIEW branch carrying a bumped
+#     RULINGS_FORMAT_VERSION / REFERENCE_FORMAT_VERSION (or content generation)
+#     published the new layout from unreviewed code and then pruned every key
+#     under the prefix production was still reading — the 2026-08-23 mechanism,
+#     on the two datasets the store guard did not cover. A preview now exits
+#     above before it can touch any shared KV layout. The retention sweep moves
+#     with it for the same reason: what a preview may not publish it may not
+#     retire either.
+#
+#     `--if-missing` makes each a single KV read when the data is already there,
+#     which is the same trade the store gate makes: the deploy guarantees the
+#     data EXISTS, the nightly import keeps it CURRENT. FORCE_IMPORT=1
+#     republishes them along with the store.
+#
+#     Never fatal. The store is the index; these back three routes that fail
+#     honestly (503) when absent, and losing a deploy because api.scryfall.com
+#     was briefly unhappy would be the worse trade — the same call the in-Worker
+#     pipeline makes for both of these phases.
+IF_MISSING="--if-missing"
+if [[ "${FORCE_IMPORT:-}" == "1" ]]; then
+    IF_MISSING=""
+fi
+echo "==> Publishing rulings to KV..."
+bun scripts/seed-rulings.ts --remote $IF_MISSING || echo "!!! Rulings publish failed — /cards/*/rulings answers 503 until the nightly import."
+echo "==> Publishing sets, catalogs and symbology to KV..."
+bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publish failed — /sets, /catalog/* and /symbology answer 503 until the nightly import."
+
+#     And retire superseded store builds, whether or not this deploy publishes one. Cleanup is not
+#     part of publishing: the sweep used to live inside the store publisher, so the common deploy —
+#     which skips the import because a recent store is already live — skipped the cleanup too, and
+#     KV reached 15 builds (~510MB of a 1GB namespace) against a policy of 2.
+#
+#     The sweep protects the build the manifest names AND the build the in-Worker coordinator is
+#     still uploading (store:publishing). It did not always: on 2026-09-14/15 two deploys retired
+#     the coordinator's half-uploaded generation as "superseded" — its built_at is stamped when the
+#     build starts, days before the deploy-built generations that land while it crawls across
+#     deploy resets — and the coordinator then published a manifest over the deleted chunks.
+echo "==> Retiring superseded store builds..."
+bun scripts/prune-kv.ts --remote || echo "!!! Store retention failed — superseded builds stay in KV until the next import."
+
 if [[ "${FORCE_IMPORT:-}" != "1" && -n "$STORE_AGE" ]]; then
     # The live build's tag alias map, for a build that predates the map shipping with the store
 #     (src/engine/tag-aliases.ts). A no-op once every live build carries one — the import below
@@ -248,16 +257,9 @@ echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes
 #    coordinator does for its builds. A committed module could only ever describe the dumps of
 #    the last MANUAL import, and the nightly rebuilt the store from newer dumps every day.
 #
-# 4b. The set release dates behind `date>=<set code>`, regenerated between the build and the
-#     publish. Scryfall resolves a set code written where a date goes to that set's released_at, and
-#     the parser is synchronous — so the table is a committed module rather than a KV read on the
-#     parse path of every search. Sourced from api.scryfall.com/sets, which is the same endpoint
-#     the reference import mirrors, so a set released since the last run is an unknown code until
-#     this runs again. Not fatal if the fetch fails: a stale table still answers every set that
-#     existed when it was written, and failing the whole import over it would trade a working
-#     publish for a handful of week-old set codes.
-echo "==> Regenerating the parser's set release dates..."
-bun scripts/generate-set-dates.ts || echo "    (set-dates refresh failed; keeping the committed table)"
+# 4b. NOT the parser's set release dates (src/parser/set-dates.gen.ts). That table is committed
+#     and refreshed by hand with `bun run set-dates`; regenerating it here made the deployed parser
+#     differ from the pushed commit — and only on the deploys that rebuilt the store.
 
 echo "==> Publishing the store to KV..."
 bun scripts/seed-remote-kv.ts store-build

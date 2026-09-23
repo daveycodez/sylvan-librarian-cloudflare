@@ -30,12 +30,17 @@ export interface KeyEntry {
  *
  * Version 1 was keys-only. Version 2 adds the inline-row section — the rows for
  * a prefix of the entries, carried in the SAME reply so the common page needs no
- * phase-2 round trip. The version leads the packet and a decoder refuses anything
- * else, for the same reason the merge refuses mixed `sort_key_version`s: a wire
- * mismatch between a rolling deploy's two builds has to be a loud failure, not a
- * misread offset.
+ * phase-2 round trip. Version 3 adds a `flags` word to the header (bit 0: the
+ * query ran the widened driver), so the coordinating object learns `widened`
+ * from the replies instead of binding the filter a second time on its own store
+ * (`query_widens`) to echo `include_multilingual` in `next_page`. The version
+ * leads the packet and a decoder refuses anything else, for the same reason the
+ * merge refuses mixed `sort_key_version`s: a wire mismatch between a rolling
+ * deploy's two builds has to be a loud failure, not a misread offset.
  */
-export const KEY_PACKET_VERSION = 2;
+export const KEY_PACKET_VERSION = 3;
+/** `flags` bit 0: the query ran the multilingual (widened) driver. */
+export const KEY_PACKET_FLAG_WIDENED = 1;
 
 /** A partition's phase-1 reply, decoded. */
 export interface KeyPacket {
@@ -49,13 +54,15 @@ export interface KeyPacket {
 	 * the ones that win are spliced into the page as they are — never parsed.
 	 */
 	inlineRows: Uint8Array[];
+	/** Whether the query ran the widened (multilingual) driver; identical in every partition. */
+	widened: boolean;
 }
 
 /**
  * Decode the packed phase-1 reply, all LITTLE-ENDIAN:
  *
  * ```text
- * version: u32, total: u32, n: u32, inline: u32
+ * version: u32, total: u32, n: u32, inline: u32, flags: u32
  * n      of: keylen: u16, key bytes, vpid: u32
  * inline of: rowlen: u32, row bytes (row JSON or a card object — the reply says which)
  * ```
@@ -66,7 +73,7 @@ export interface KeyPacket {
  */
 export function decodeKeyPacket(packed: Uint8Array): KeyPacket {
 	const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
-	if (packed.byteLength < 16) throw new Error(`key packet too short: ${packed.byteLength} bytes`);
+	if (packed.byteLength < 20) throw new Error(`key packet too short: ${packed.byteLength} bytes`);
 	const version = view.getUint32(0, true);
 	if (version !== KEY_PACKET_VERSION) {
 		throw new Error(`key packet version ${version}, expected ${KEY_PACKET_VERSION}; refusing to read it`);
@@ -74,8 +81,9 @@ export function decodeKeyPacket(packed: Uint8Array): KeyPacket {
 	const total = view.getUint32(4, true);
 	const n = view.getUint32(8, true);
 	const inlineCount = view.getUint32(12, true);
+	const widened = (view.getUint32(16, true) & KEY_PACKET_FLAG_WIDENED) !== 0;
 	const entries: KeyEntry[] = [];
-	let at = 16;
+	let at = 20;
 	for (let i = 0; i < n; i++) {
 		if (at + 2 > packed.byteLength) throw new Error(`key packet truncated in entry ${i} header`);
 		const keylen = view.getUint16(at, true);
@@ -95,15 +103,20 @@ export function decodeKeyPacket(packed: Uint8Array): KeyPacket {
 		at += rowlen;
 	}
 	if (at !== packed.byteLength) throw new Error(`key packet has ${packed.byteLength - at} trailing bytes`);
-	return { total, entries, inlineRows };
+	return { total, entries, inlineRows, widened };
 }
 
 /** Encode a packet in the same layout — the test fixtures' generator, and the
  * reference for what the wasm export must emit. */
-export function encodeKeyPacket(packet: { total: number; entries: KeyEntry[]; inlineRows?: Uint8Array[] }): Uint8Array {
+export function encodeKeyPacket(packet: {
+	total: number;
+	entries: KeyEntry[];
+	inlineRows?: Uint8Array[];
+	widened?: boolean;
+}): Uint8Array {
 	const inlineRows = packet.inlineRows ?? [];
 	const size =
-		16 +
+		20 +
 		packet.entries.reduce((s, e) => s + 2 + e.key.byteLength + 4, 0) +
 		inlineRows.reduce((s, r) => s + 4 + r.byteLength, 0);
 	const out = new Uint8Array(size);
@@ -112,7 +125,8 @@ export function encodeKeyPacket(packet: { total: number; entries: KeyEntry[]; in
 	view.setUint32(4, packet.total, true);
 	view.setUint32(8, packet.entries.length, true);
 	view.setUint32(12, inlineRows.length, true);
-	let at = 16;
+	view.setUint32(16, packet.widened ? KEY_PACKET_FLAG_WIDENED : 0, true);
+	let at = 20;
 	for (const e of packet.entries) {
 		view.setUint16(at, e.key.byteLength, true);
 		out.set(e.key, at + 2);
@@ -481,11 +495,76 @@ export interface GatheredPage {
 	slots: Uint8Array[];
 	/** The longest store acquisition any partition reported in phase 1 (see SearchKeysReply.acquireMs). */
 	acquireMs: number;
+	/** Whether the query ran the widened (multilingual) driver — off the phase-1 packets, which all agree. */
+	widened: boolean;
 }
 
 /** Parse the slots a route needs as VALUES — the objects path, and columnar. */
 export function parseSlots(slots: readonly Uint8Array[]): Record<string, unknown>[] {
 	return slots.map((slot) => JSON.parse(decoder.decode(slot)) as Record<string, unknown>);
+}
+
+/**
+ * The offset from which a page is probed for its total before phase 1 asks for
+ * `offset + limit` keys. Page 58 of Scryfall's 175-row pages; a legitimate page
+ * this deep pays one extra one-key round trip, and a page past the end of a
+ * broad query stops costing every partition its whole match set.
+ */
+export const DEEP_OFFSET_PROBE = 10_000;
+
+/**
+ * Phase 1, issued and PINNED: every partition's keys for `phase1`, all from one
+ * generation. Stragglers mid-commit are asked again after a short pause;
+ * stragglers no publish ever told are told to converge on KV's manifest and
+ * asked once more; a fleet still mixed after that is refused.
+ */
+async function askKeys(
+	clients: PartitionClient[],
+	phase1: EngineSearchOptions,
+	budget: number,
+	shaping: GatherShaping,
+	sleep: (ms: number) => Promise<void>,
+): Promise<SearchKeysReply[]> {
+	const replies = await Promise.all(clients.map((c) => c.searchKeys(phase1, budget, shaping)));
+	// Stragglers are re-asked together, as phase 1 asked them: several partitions mid-commit is
+	// the common case of a publish fan-out, and asking them in turn cost a full RPC per straggler.
+	const reissue = (partitions: number[]) =>
+		Promise.all(
+			partitions.map(async (p) => {
+				replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget, shaping);
+			}),
+		);
+
+	// Pinned generation: every partition must have answered from ONE build.
+	// Swaps are monotonic, so on a mismatch the newest build wins and the
+	// stragglers — mid-commit for a sub-second window — are asked again once.
+	let pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
+	if (pin.stragglers.length > 0) {
+		await sleep(GATHER_REISSUE_BACKOFF_MS);
+		await reissue(pin.stragglers);
+		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
+	}
+	// STILL MIXED AFTER THE PAUSE: this is no longer a commit window, it is a partition that no
+	// publish ever told. The deploy's native import writes a new store to KV and NOTIFIES NOBODY —
+	// a cold object reconciles against KV when it loads, a WARM one keeps serving what it loaded
+	// until something tells it otherwise, and under steady traffic a partition never goes cold.
+	// Measured 2026-09-02 after two deploys in one evening: 6 of 10 partitions on one account and
+	// 1 of 10 on the other answered from the previous build for over half an hour, and every
+	// search on both was a 500 because this threw. Tell the stragglers to converge on KV's
+	// manifest, once, and ask again; a fleet that will not converge even then is the bug the
+	// throw below has always been for.
+	if (pin.stragglers.length > 0) {
+		await Promise.all(pin.stragglers.map((p) => (clients[p] as PartitionClient).refresh?.()));
+		await reissue(pin.stragglers);
+		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
+		if (pin.stragglers.length > 0) {
+			throw new Error(
+				`gather: partitions ${pin.stragglers.join(",")} still answer from another generation ` +
+					`after re-issue and refresh (pinned built_at ${pin.pinnedBuiltAt})`,
+			);
+		}
+	}
+	return replies;
 }
 
 /**
@@ -516,7 +595,29 @@ export async function runTwoPhase(
 	// and every later page silently wrong, or a 404 when the merge came back
 	// empty. `selectPage` below applies the caller's offset ONCE, to the merged
 	// order, which is the only place it means anything.
-	const phase1: EngineSearchOptions = { ...opts, offset: 0, limit: opts.offset + opts.limit };
+	// DEEP PAGES ARE PROBED FOR THEIR TOTAL FIRST. Phase 1 below asks for
+	// `offset + limit` keys per partition, so a page past the end of a broad
+	// query — `page=99999999`, which Scryfall answers with a 422 and a count —
+	// used to make every partition sort and serialize every match it holds, and
+	// this gather decode all of them, to learn that the offset exceeded the
+	// total. One key per partition carries the exact unpaginated total (the
+	// packet's `total` is never paginated), so a page that starts at or past it
+	// is answered from that alone. `limit: 1` rather than 0 because upstream
+	// gives `limit=0` a meaning of its own. Legitimate deep pages pay one cheap
+	// extra round trip; pages under the threshold are untouched.
+	let acquireMs = 0;
+	if (opts.offset >= DEEP_OFFSET_PROBE) {
+		const probe = await askKeys(clients, { ...opts, offset: 0, limit: 1 }, 0, shaping, sleep);
+		acquireMs = probe.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), 0);
+		const probed = probe.map((r) => decodeKeyPacket(r.packed));
+		const total = probed.reduce((sum, p) => sum + p.total, 0);
+		if (opts.offset >= total) return { total, slots: [], acquireMs, widened: probed[0]?.widened ?? false };
+	}
+	// Clamped to u32 as a safety net: `QueryOptions` deserializes `limit` as a
+	// 32-bit usize on wasm32, and an offset that overflowed it was a 500 where
+	// Scryfall answers 422. With the probe in front this bound is reached only
+	// when the offset is under the real total, i.e. never for a real page.
+	const phase1: EngineSearchOptions = { ...opts, offset: 0, limit: Math.min(opts.offset + opts.limit, 0xffff_ffff) };
 	// Phase 2 folded into phase 1 for the page-1 case: every partition carries the
 	// rows for a prefix of its own keys, and a page covered by those prefixes costs
 	// no second round trip at all — 1 isolate RPC + (N-1) sibling RPCs instead of up
@@ -524,43 +625,9 @@ export async function runTwoPhase(
 	// (or a build that ignores the argument) simply leaves rows for phase 2 to
 	// fetch, so nothing about the answer depends on it. See inlineRowBudget.
 	const budget = inlineRowBudget(opts.offset, opts.limit, clients.length);
-	const replies = await Promise.all(clients.map((c) => c.searchKeys(phase1, budget, shaping)));
+	const replies = await askKeys(clients, phase1, budget, shaping, sleep);
 
-	// Pinned generation: every partition must have answered from ONE build.
-	// Swaps are monotonic, so on a mismatch the newest build wins and the
-	// stragglers — mid-commit for a sub-second window — are asked again once.
-	let pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
-	if (pin.stragglers.length > 0) {
-		await sleep(GATHER_REISSUE_BACKOFF_MS);
-		for (const p of pin.stragglers) {
-			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget, shaping);
-		}
-		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
-	}
-	// STILL MIXED AFTER THE PAUSE: this is no longer a commit window, it is a partition that no
-	// publish ever told. The deploy's native import writes a new store to KV and NOTIFIES NOBODY —
-	// a cold object reconciles against KV when it loads, a WARM one keeps serving what it loaded
-	// until something tells it otherwise, and under steady traffic a partition never goes cold.
-	// Measured 2026-09-02 after two deploys in one evening: 6 of 10 partitions on one account and
-	// 1 of 10 on the other answered from the previous build for over half an hour, and every
-	// search on both was a 500 because this threw. Tell the stragglers to converge on KV's
-	// manifest, once, and ask again; a fleet that will not converge even then is the bug the
-	// throw below has always been for.
-	if (pin.stragglers.length > 0) {
-		await Promise.all(pin.stragglers.map((p) => (clients[p] as PartitionClient).refresh?.()));
-		for (const p of pin.stragglers) {
-			replies[p] = await (clients[p] as PartitionClient).searchKeys(phase1, budget, shaping);
-		}
-		pin = pinGeneration(replies.map((r, partition) => ({ partition, storeKey: r.storeKey })));
-		if (pin.stragglers.length > 0) {
-			throw new Error(
-				`gather: partitions ${pin.stragglers.join(",")} still answer from another generation ` +
-					`after re-issue and refresh (pinned built_at ${pin.pinnedBuiltAt})`,
-			);
-		}
-	}
-
-	const acquireMs = replies.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), 0);
+	acquireMs = replies.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), acquireMs);
 
 	// Version gate BEFORE any merge: memcmp across key encodings is meaningless.
 	const version = (replies[0] as SearchKeysReply).sortKeyVersion;
@@ -596,10 +663,13 @@ export async function runTwoPhase(
 
 	const packets = replies.map((r) => decodeKeyPacket(r.packed));
 	const total = packets.reduce((s, p) => s + p.total, 0);
+	// The widening decision is a pure function of the options and the bound filter, so every
+	// partition answers the same; the first packet speaks for the fleet.
+	const widened = packets[0]?.widened ?? false;
 	const merged = mergeKeyStreams(packets.map((p) => p.entries));
 	const carried = packets.map((p) => p.inlineRows.length);
 	const { page, byPartition } = selectPage(merged, opts.offset, opts.limit, carried);
-	if (page.length === 0) return { total, slots: [], acquireMs };
+	if (page.length === 0) return { total, slots: [], acquireMs, widened };
 
 	// The previous build's rows, reshaped: parse, rebuild, encode. Only ever runs
 	// for a legacy partition, and only over the rows the page kept.
@@ -652,5 +722,5 @@ export async function runTwoPhase(
 		cursors.set(ref.partition, at + 1);
 		return (fetched.get(ref.partition) as Uint8Array[])[at] as Uint8Array;
 	});
-	return { total, slots, acquireMs };
+	return { total, slots, acquireMs, widened };
 }

@@ -28,13 +28,15 @@ interface FakeInstance {
 	staged: Uint8Array[];
 	expected: number;
 	loaded: Uint8Array | null;
+	/** The shim's drop counter: a test bumps it to simulate an instance lost to a trap. */
+	generation: number;
 }
 const instances = new Map<string, FakeInstance>();
 
 function instanceFor(label: string): FakeInstance {
 	let inst = instances.get(label);
 	if (!inst) {
-		inst = { staged: [], expected: 0, loaded: null };
+		inst = { staged: [], expected: 0, loaded: null, generation: 0 };
 		instances.set(label, inst);
 	}
 	return inst;
@@ -88,6 +90,7 @@ function handleFor(label: string) {
 		query_keys: () => new Uint8Array(8),
 		fetch_rows: () => new Uint8Array(2),
 		linearMemoryBytes: () => inst.loaded?.length ?? 0,
+		instanceGeneration: () => inst.generation,
 	};
 }
 
@@ -410,6 +413,58 @@ describe("prepare/commit at the loader level", () => {
 		expect(store.tryGetLoadedEngine("engine-commit-p1")).not.toBeNull();
 	});
 
+	test("two concurrent swaps to the same store load it ONCE", async () => {
+		// The gather's straggler remedy is called by every concurrent gather that
+		// meets the same straggler; each used to start its own load on the same
+		// wasm handle, sharing one streaming decoder and leaking a buffer.
+		const { entries, manifest, raw } = await publishV2("123");
+		const storage = fakeStorage();
+		const { env, chunkReads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-twice-p1", 1, storage);
+		const [a, b] = await Promise.all([store.swapToStore(env, ctx, manifest), store.swapToStore(env, ctx, manifest)]);
+		expect(a).toBe(true);
+		expect(b).toBe(true);
+		expect(chunkReads().length).toBe(1);
+		expect(instanceFor("engine-twice-p1").loaded).toEqual(raw[1] as Uint8Array);
+		expect(store.tryGetLoadedEngine("engine-twice-p1")).not.toBeNull();
+	});
+
+	test("a swap arriving during a cold load waits for it, then swaps", async () => {
+		// KV's manifest names build 124; a publish of 125 is pushed while a request's
+		// cold load of 124 is still streaming. The swap must not start a second load
+		// on top of the first; it waits, then moves the label to 125.
+		const old = await publishV2("124");
+		const fresh = await publishV2("125");
+		const entries = new Map(old.entries);
+		for (const [key, value] of fresh.entries) if (key.startsWith("store:card-")) entries.set(key, value);
+		const storage = fakeStorage();
+		const { env } = fakeEnv(entries);
+		const ctx = ctxFor("engine-midload-p1", 1, storage);
+		const cold = store.getEngine(env, ctx);
+		const swapped = await store.swapToStore(env, ctx, fresh.manifest);
+		await cold;
+		expect(swapped).toBe(true);
+		expect(instanceFor("engine-midload-p1").loaded).toEqual(fresh.raw[1] as Uint8Array);
+		expect(store.tryGetLoadedEngine("engine-midload-p1")).not.toBeNull();
+	});
+
+	test("concurrent refreshNow calls share one manifest read and one swap", async () => {
+		const { entries, manifest, raw } = await publishV2("126");
+		const storage = fakeStorage();
+		const { env, reads, chunkReads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-refresh-p1", 1, storage);
+		const results = await Promise.all([
+			store.refreshNow(env, ctx),
+			store.refreshNow(env, ctx),
+			store.refreshNow(env, ctx),
+		]);
+		expect(results).toEqual([true, true, true]);
+		expect(reads.filter((k) => k === "store:manifest").length).toBe(1);
+		expect(chunkReads().length).toBe(1);
+		expect(instanceFor("engine-refresh-p1").loaded).toEqual(raw[1] as Uint8Array);
+		expect(manifest.built_at).toBe("126");
+	});
+
 	test("a manifest shape this object cannot serve degrades to a no-op ack, never a throw", async () => {
 		const { entries, manifest } = await publishV2("122");
 		const storage = fakeStorage();
@@ -418,6 +473,54 @@ describe("prepare/commit at the loader level", () => {
 		// it: prepare and commit both report false and keep whatever was serving.
 		expect(await store.prefetchStore(env, ctxFor("engine-unnamed", undefined, storage), manifest)).toBe(false);
 		expect(await store.swapToStore(env, ctxFor("engine-unnamed", undefined, storage), manifest)).toBe(false);
+	});
+});
+
+describe("an engine instance lost to a trap", () => {
+	test("its store is no longer served, and the next request reloads it", async () => {
+		// The shim drops a trapped instance and bumps its generation; `current` used to keep
+		// pointing at the dead instance, so every query answered from an empty fresh one.
+		const { entries, raw } = await publishV2("128");
+		const storage = fakeStorage();
+		const { env, chunkReads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-trapped-p1", 1, storage);
+		await store.getEngine(env, ctx);
+		expect(store.tryGetLoadedEngine("engine-trapped-p1")).not.toBeNull();
+		const inst = instanceFor("engine-trapped-p1");
+		inst.generation += 1;
+		inst.loaded = null; // the fresh instance holds nothing
+		expect(store.tryGetLoadedEngine("engine-trapped-p1")).toBeNull();
+		const before = chunkReads().length;
+		await store.getEngine(env, ctx);
+		expect(instanceFor("engine-trapped-p1").loaded as Uint8Array | null).toEqual(raw[1] as Uint8Array);
+		// Reloaded from the local cache the first load filled, not KV.
+		expect(chunkReads().length).toBe(before);
+		expect(store.tryGetLoadedEngine("engine-trapped-p1")).not.toBeNull();
+	});
+});
+
+describe("load backoff", () => {
+	test("a failed cold load is not retried on the very next request", async () => {
+		// The manifest names a partition whose chunks are gone (a deploy that pruned
+		// without notifying). The first request fails loudly; the next one, seconds
+		// later, must fail just as loudly WITHOUT a second fetch-and-inflate: each
+		// attempt costs the chunk reads, the inflate and (until the wasm crate
+		// recycled it) a partition of linear memory, and a per-request retry is what
+		// turned a 503 outage into an isolate reset loop.
+		const { entries, manifest } = await publishV2("127");
+		const missing = new Map(entries);
+		for (const key of [...missing.keys()])
+			if (key.startsWith("store:card-") && key.includes("-p1.")) missing.delete(key);
+		const storage = fakeStorage();
+		const { env, chunkReads } = fakeEnv(missing);
+		const ctx = ctxFor("engine-backoff-p1", 1, storage);
+		await expect(store.getEngine(env, ctx)).rejects.toThrow();
+		const readsAfterFirst = chunkReads().length;
+		expect(readsAfterFirst).toBeGreaterThan(0);
+		await expect(store.getEngine(env, ctx)).rejects.toBeInstanceOf(EngineUnavailableError);
+		await expect(store.getEngine(env, ctx)).rejects.toThrow(/not retrying/);
+		expect(chunkReads().length).toBe(readsAfterFirst);
+		expect(manifest.built_at).toBe("127");
 	});
 });
 
@@ -446,6 +549,45 @@ describe("wedged-object recovery, per partition", () => {
 		// rediscovering the mismatch. On 2026-09-18 this correction was missing and every wake of
 		// a colocated pair double-loaded until the isolate ran out of memory.
 		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe(manifest.built_at);
+	});
+});
+
+describe("a pushed record NEWER than KV's colo-cached manifest", () => {
+	// Right after a publish, KV's manifest read answers the PREVIOUS generation for up to 60s
+	// (cacheTtl), while the coordinator has already pushed the new one and counted this object
+	// as converged. The record is the fresher fact; loading KV's served the old generation and
+	// rewrote the record with it.
+	test("is loaded on its own authority, and the record is kept", async () => {
+		const older = await publishV2("130");
+		const newer = await publishV2("131");
+		// KV: manifest 130 (the stale colo cache), chunks of BOTH families present.
+		const entries = new Map(older.entries);
+		for (const [key, value] of newer.entries) if (key.startsWith("store:card-")) entries.set(key, value);
+		const storage = fakeStorage();
+		const cache = await import("../../src/engine/store-cache");
+		cache.recordLiveManifest(storage, newer.manifest);
+
+		const { env, chunkReads } = fakeEnv(entries);
+		const engine = await store.getEngine(env, ctxFor("engine-newer-p0", 0, storage));
+		expect(instanceFor("engine-newer-p0").loaded).toEqual(newer.raw[0] as Uint8Array);
+		expect(await engine.cardCount()).toBe(7);
+		expect(chunkReads().every((k) => k.includes("-131-"))).toBe(true);
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("131");
+	});
+
+	test("falls back to KV's build when the record's chunks are gone, and corrects the record", async () => {
+		const older = await publishV2("132");
+		const newer = await publishV2("133");
+		// KV: manifest 132, and ONLY 132's chunks — 133 was retired before this object woke.
+		const storage = fakeStorage();
+		const cache = await import("../../src/engine/store-cache");
+		cache.recordLiveManifest(storage, newer.manifest);
+
+		const { env } = fakeEnv(older.entries);
+		const engine = await store.getEngine(env, ctxFor("engine-newer-gone-p0", 0, storage));
+		expect(instanceFor("engine-newer-gone-p0").loaded).toEqual(older.raw[0] as Uint8Array);
+		expect(await engine.cardCount()).toBe(7);
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("132");
 	});
 });
 

@@ -45,6 +45,9 @@ import { kvTargetArgs, requireDeployEnvironment } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
 
 const remote = process.argv.includes("--remote");
+// BEFORE any download: a laptop run used to fetch and parse the whole dump and only then learn it
+// was not allowed to publish it (scripts/kv-target.ts).
+if (remote) requireDeployEnvironment();
 /** Deploy-path mode: make sure the data is THERE, and leave keeping it current to the cron. */
 const ifMissing = process.argv.includes("--if-missing");
 
@@ -123,7 +126,6 @@ entries.push({ key: RULINGS_META_KEY, value: JSON.stringify(meta) });
 
 // ── write ────────────────────────────────────────────────────────────────────
 
-if (remote) requireDeployEnvironment();
 const bulkFile = join(tmpdir(), "sylvan-rulings-bulk.json");
 await writeFile(bulkFile, JSON.stringify(entries));
 try {

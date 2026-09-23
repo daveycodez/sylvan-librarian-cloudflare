@@ -25,7 +25,9 @@ if (!("timingSafeEqual" in crypto.subtle)) {
 		timingSafeEqual(a, b);
 }
 
-const { enforceRateLimit, isRateLimitedRoute, isTrustedRequest } = await import("../../src/routes/rate-limit");
+const { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, rateLimitKey } = await import(
+	"../../src/routes/rate-limit"
+);
 type Env = Parameters<typeof enforceRateLimit>[0];
 
 /** Env whose limiter DO always rules the address over its allowance. */
@@ -76,6 +78,38 @@ describe("enforcement", () => {
 		expect(await hit(env, "203.0.113.4")).toBe("limited");
 		expect(await hit(env, "203.0.113.5")).toBe("allowed");
 	});
+
+	test("an IPv6 client is limited as its /64, not per address", async () => {
+		// A client holds a whole /64; rotating within it used to mint a fresh bucket (and a fresh
+		// Durable Object) per request, so the limiter never fired.
+		const env = envRefusing();
+		await hit(env, "2001:db8:abcd:12::1");
+		expect(await hit(env, "2001:db8:abcd:12:ffff:ffff:ffff:ffff")).toBe("limited");
+		expect(await hit(env, "2001:db8:abcd:13::1")).toBe("allowed");
+	});
+});
+
+describe("the limiter key", () => {
+	test("IPv4 is keyed as written", () => {
+		expect(rateLimitKey("203.0.113.9")).toBe("203.0.113.9");
+		expect(rateLimitKey("unknown")).toBe("unknown");
+	});
+
+	test("IPv6 is keyed by its /64, case- and zero-normalized", () => {
+		expect(rateLimitKey("2001:db8:abcd:12::1")).toBe("2001:db8:abcd:12::");
+		expect(rateLimitKey("2001:0DB8:ABCD:0012:0:0:0:1")).toBe("2001:db8:abcd:12::");
+		expect(rateLimitKey("2001:db8:abcd:12:8000::")).toBe("2001:db8:abcd:12::");
+		expect(rateLimitKey("2001:db8:abcd:13::1")).not.toBe(rateLimitKey("2001:db8:abcd:12::1"));
+		expect(rateLimitKey("::1")).toBe("0:0:0:0::");
+		expect(rateLimitKey("fe80::")).toBe("fe80:0:0:0::");
+	});
+
+	test("an IPv4-mapped address keys as its IPv4; garbage keys as itself", () => {
+		expect(rateLimitKey("::ffff:203.0.113.9")).toBe("203.0.113.9");
+		expect(rateLimitKey("not:an:address")).toBe("not:an:address");
+		expect(rateLimitKey("1::2::3")).toBe("1::2::3");
+		expect(rateLimitKey("1:2:3:4:5:6:7:8:9")).toBe("1:2:3:4:5:6:7:8:9");
+	});
 });
 
 describe("verdict cache bound", () => {
@@ -111,6 +145,8 @@ describe("the 429", () => {
 		// rather than the number.
 		const retryAfter = Number(response?.headers.get("Retry-After"));
 		expect(retryAfter).toBeGreaterThanOrEqual(30);
+		// Per-address: must never be shared through a cache under the URL.
+		expect(response?.headers.get("Cache-Control")).toBe("no-store");
 		const body = (await response?.json()) as { title: string };
 		expect(body.title).toBe("Too Many Requests");
 	});
@@ -165,6 +201,8 @@ describe("limited routes", () => {
 		expect(isRateLimitedRoute("random_search", {})).toBe(true);
 		expect(isRateLimitedRoute("get_catalog", {})).toBe(false);
 		expect(isRateLimitedRoute("_root", {})).toBe(false);
+		// The reference mirrors read KV per uncached request; they are limited like Scryfall's.
+		for (const key of ["sets", "catalog", "symbology"]) expect(isRateLimitedRoute(key, {})).toBe(true);
 	});
 
 	test("includes the SSR root only when it embeds a query", () => {

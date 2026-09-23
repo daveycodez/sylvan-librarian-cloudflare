@@ -146,6 +146,23 @@ export function buildRoutesListing(): Record<string, RouteEntry["listing"]> {
 	return Object.fromEntries(Object.entries(routes).map(([path, routeEntry]) => [path, routeEntry.listing]));
 }
 
+/** Each segment percent-decoded, or null when any one of them is not a valid escape sequence. */
+function decodeSegments(segments: string[]): string[] | null {
+	const out: string[] = [];
+	for (const segment of segments) {
+		if (!segment.includes("%")) {
+			out.push(segment);
+			continue;
+		}
+		try {
+			out.push(decodeURIComponent(segment));
+		} catch {
+			return null;
+		}
+	}
+	return out;
+}
+
 /**
  * Resolve a normalized path to a route key and its trailing positional segments,
  * or null when nothing matches — upstream _resolve_action.
@@ -172,8 +189,26 @@ export function resolveAction(path: string): { key: string; positionalArgs: stri
 	// Exact match first: flat routes like "static/favicon.ico" and "index.html"
 	// register their full slash/dot-containing path as the route key.
 	if (Object.hasOwn(routes, path)) return { key: path, positionalArgs: [] };
-	const [actionWord = "", ...actionArgs] = path.split("/");
-	if (!Object.hasOwn(routes, actionWord)) return null;
+	// PERCENT-DECODED, per segment. WHATWG `URL` percent-encodes every non-ASCII
+	// code point in `pathname`, so `/cards/war/184★` arrives as `184%E2%98%85` —
+	// and the engine compares collector numbers verbatim, so without this every
+	// ★ / † / Φ printing was a 404 on `/cards/:set/:number`, its rulings and the
+	// HTML card page, while `/cards/collection` (whose body is decoded by JSON)
+	// found them. Upstream is Falcon, which hands routes decoded segments. Per
+	// segment, after the split, so an encoded `%2F` stays inside its segment
+	// instead of minting one. A segment that does not decode — a lone `%`, a
+	// truncated escape, bytes that are not UTF-8 — identifies nothing: null,
+	// which is the 404 every other unresolvable path gets.
+	const segments = decodeSegments(path.split("/"));
+	if (segments === null) return null;
+	// An EMPTY interior segment (`/cards//x`) identifies nothing either: it used to reach the route as
+	// an empty positional, which `/cards` and `/sets` read as "no identifier" and answered with their
+	// unfiltered 600KB+ listings under a second cache-key family. Scryfall 404s both.
+	if (segments.some((segment) => segment === "")) return null;
+	const [actionWord = "", ...actionArgs] = segments;
+	// A decoded `%2F` may sit inside a POSITIONAL, never inside the action word: `/cards%2Fsearch`
+	// would otherwise be a second URL (and a second cache key) for every multi-segment route key.
+	if (actionWord.includes("/") || !Object.hasOwn(routes, actionWord)) return null;
 	const entry = routes[actionWord];
 	// A matched route that can't absorb this many trailing segments means the
 	// path identifies nothing — 404, not a 400 (upstream parity).

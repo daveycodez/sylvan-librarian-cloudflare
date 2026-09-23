@@ -8,6 +8,7 @@ import { afterEach, beforeEach } from "bun:test";
 import { encodeUtf8 } from "../../src/engine/bytes";
 import { serializeCards } from "../../src/engine/columnar";
 import type {
+	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -369,6 +370,19 @@ export class FakeEngine implements Engine {
 		return this.fixtureCard(0, baseUrl);
 	}
 
+	async scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		const out: (Record<string, unknown> | null)[] = [];
+		for (const ident of identifiers) {
+			if (ident.kind === "oracle_id") out.push(await this.scryfallCardByOracleId(ident.id, baseUrl));
+			else if (ident.kind === "illustration_id") out.push(await this.scryfallCardByIllustrationId(ident.id, baseUrl));
+			else out.push(await this.scryfallCardByExternalId(ident.namespace, ident.id, baseUrl));
+		}
+		return out;
+	}
+
 	async scryfallNamesContaining(
 		words: string[],
 		_setCode: string,
@@ -487,12 +501,16 @@ export class FakeKV {
 	readonly values = new Map<string, Uint8Array>();
 	/** Reads that should fail, for the "KV is down" branch. */
 	failOn = new Set<string>();
+	/** Every key read, in order — the memo's assertion surface. */
+	readonly reads: string[] = [];
 
 	put(key: string, value: Uint8Array | string): void {
 		this.values.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value);
 	}
 
-	async get(key: string, type?: string): Promise<ArrayBuffer | unknown | null> {
+	async get(key: string, typeOrOptions?: string | { type?: string }): Promise<ArrayBuffer | unknown | null> {
+		const type = typeof typeOrOptions === "string" ? typeOrOptions : typeOrOptions?.type;
+		this.reads.push(key);
 		if (this.failOn.has(key)) throw new Error(`KV get ${key} failed`);
 		const value = this.values.get(key);
 		if (value === undefined) return null;
@@ -579,7 +597,7 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 			return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
 		}
 		const allow = [...routeEntry.methods].sort().join(", ");
-		return httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow });
+		return securityHeaders(httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow }));
 	}
 
 	const params: Record<string, string> = {};

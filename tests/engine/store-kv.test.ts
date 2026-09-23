@@ -661,7 +661,13 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 		// the other is on the dev namespace, so `kv key get` is spelled once.
 		expect(src.match(/"kv", "key", "get"/g)?.length ?? 0).toBe(1);
 		expect(src).toMatch(/kvGetArgv\(MANIFEST_KEY\)/);
-		expect(src).toMatch(/kvGetArgv\(lastChunk\)/);
+		// The chunk probe is a prefix LISTING against the same target, with the direct read as the
+		// fallback for a key the listing lags — both spelled through kvTarget / kvGetArgv.
+		expect(src).toMatch(/"kv", "key", "list", "--prefix", "store:card-", \.\.\.kvTarget/);
+		expect(src).toMatch(
+			/const keyExists = \(key: string\): boolean => listed\.has\(key\) \|\| Bun\.spawnSync\(kvGetArgv\(key\)\)/,
+		);
+		expect(src).toMatch(/keyExists\(lastChunk\)/);
 		// And the target itself is chosen exactly once, by the flag.
 		expect(src.match(/"--remote"/g)?.length ?? 0).toBe(1);
 	});

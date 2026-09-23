@@ -164,8 +164,8 @@ describe("the phase-1 key packet codec", () => {
 		// packet differently. Reading it at the wrong offsets would produce a
 		// plausible page in the wrong order rather than an error.
 		const good = encodeKeyPacket({ total: 1, entries: [{ key: new Uint8Array([1]), vpid: 0 }] });
-		new DataView(good.buffer, good.byteOffset).setUint32(0, 1, true);
-		expect(() => decodeKeyPacket(good)).toThrow(/version 1, expected 2/);
+		new DataView(good.buffer, good.byteOffset).setUint32(0, 2, true);
+		expect(() => decodeKeyPacket(good)).toThrow(/version 2, expected 3/);
 	});
 
 	test("more inline rows than entries is a loud error", () => {
@@ -383,6 +383,69 @@ describe("the two-phase run", () => {
 		};
 	}
 
+	/** A partition that records the `limit` of every phase-1 call it receives. */
+	function limitLoggingPartition(partition: number, total: number, limits: number[]): PartitionClient {
+		const storeKey = `card-store-v1-100-p${partition}.store`;
+		return {
+			async searchKeys(opts, _inlineRows, shaping) {
+				limits.push(opts.limit);
+				const n = Math.min(opts.limit, total);
+				return {
+					packed: encodeKeyPacket({
+						total,
+						entries: Array.from({ length: n }, (_, i) => ({ key: new Uint8Array([partition, i & 0xff]), vpid: i })),
+					}),
+					storeKey,
+					sortKeyVersion: 1,
+					shape: shaping.shape,
+				};
+			},
+			async fetchRows(vpids: number[], _fields: string[], _pinnedKey: string, shaping) {
+				return {
+					rowsBytes: encodeRowPacket(vpids.map((v) => rowBytes({ name: `p${partition}v${v}` }))),
+					shape: shaping.shape,
+				};
+			},
+		};
+	}
+
+	test("a page past the end is answered from a one-key totals probe, never a full phase 1", async () => {
+		// page=99999999 on a broad query: Scryfall answers 422 with the count. Asking
+		// every partition for offset+limit keys to learn that made each one emit
+		// its entire match set for nothing.
+		const limits: number[] = [];
+		const clients = [limitLoggingPartition(0, 30, limits), limitLoggingPartition(1, 20, limits)];
+		const page = await runTwoPhase(clients, { ...OPTS, offset: 20_000, limit: 175 }, ROWS_GATHER);
+		expect(page.total).toBe(50);
+		expect(page.slots).toEqual([]);
+		expect(limits).toEqual([1, 1]);
+	});
+
+	test("a legitimate deep page probes, then runs the full phase 1", async () => {
+		const limits: number[] = [];
+		const clients = [limitLoggingPartition(0, 15_000, limits), limitLoggingPartition(1, 15_000, limits)];
+		const page = await runTwoPhase(clients, { ...OPTS, offset: 20_000, limit: 175 }, ROWS_GATHER);
+		expect(page.total).toBe(30_000);
+		expect(page.slots.length).toBe(175);
+		expect(limits).toEqual([1, 1, 20_175, 20_175]);
+	});
+
+	test("a shallow page never probes", async () => {
+		const limits: number[] = [];
+		const clients = [limitLoggingPartition(0, 30, limits), limitLoggingPartition(1, 20, limits)];
+		await runTwoPhase(clients, { ...OPTS, offset: 175, limit: 175 }, ROWS_GATHER);
+		expect(limits).toEqual([350, 350]);
+	});
+
+	test("an offset past DEEP_OFFSET_PROBE and past the end costs one probe and answers empty, and past the end is still just past the end", async () => {
+		const limits: number[] = [];
+		const clients = [limitLoggingPartition(0, 30, limits)];
+		const page = await runTwoPhase(clients, { ...OPTS, offset: 1.75e22, limit: 175 }, ROWS_GATHER);
+		expect(page.total).toBe(30);
+		expect(page.slots).toEqual([]);
+		expect(limits).toEqual([1]);
+	});
+
 	/**
 	 * A partition on the build BEFORE row shaping: no `shape` in either reply, phase 2 as one
 	 * JSON array of row objects, and the inline budget ignored. The rolling-deploy neighbour.
@@ -509,6 +572,87 @@ describe("the two-phase run", () => {
 		expect(rows).toEqual([{ name: "p1v0" }, { name: "p0v0" }]);
 		// Phase 1 ran everywhere once, then ONLY on the straggler again.
 		expect(log.filter((l) => l.startsWith("keys:"))).toEqual(["keys:0", "keys:1", "keys:0"]);
+	});
+
+	test("the widening flag rides the phase-1 packets, so the page reports it without a second bind", async () => {
+		const log: string[] = [];
+		const widening = (partition: number, keys: number[]): PartitionClient => {
+			const inner = fakePartition(partition, keys, log);
+			return {
+				...inner,
+				async searchKeys(_opts, _inlineRows, shaping) {
+					return {
+						packed: encodeKeyPacket({
+							total: keys.length,
+							entries: keys.map((k, i) => ({ key: new Uint8Array([k]), vpid: i })),
+							widened: true,
+						}),
+						storeKey: inner.storeKey,
+						sortKeyVersion: 1,
+						shape: shaping.shape,
+					};
+				},
+			};
+		};
+		const page = await runTwoPhase(
+			[widening(0, [2]), widening(1, [1])],
+			{ ...OPTS, offset: 0, limit: 10 },
+			ROWS_GATHER,
+		);
+		expect(page.widened).toBe(true);
+		const plain = await runTwoPhase(
+			[fakePartition(0, [2], log), fakePartition(1, [1], log)],
+			{ ...OPTS, offset: 0, limit: 10 },
+			ROWS_GATHER,
+		);
+		expect(plain.widened).toBe(false);
+	});
+
+	test("stragglers are re-asked together, not one after another", async () => {
+		// Two partitions mid-commit. Each re-issue blocks until BOTH re-issues have started, so a
+		// sequential loop would deadlock here and the test would time out.
+		const log: string[] = [];
+		let reissued = 0;
+		let releaseBoth: () => void = () => {};
+		const bothStarted = new Promise<void>((resolve) => {
+			releaseBoth = resolve;
+		});
+		const stragglerAt = (partition: number, vpid: number): PartitionClient => {
+			let asks = 0;
+			return {
+				async searchKeys(opts, _inlineRows, shaping) {
+					asks += 1;
+					if (asks === 2) {
+						reissued += 1;
+						if (reissued === 2) releaseBoth();
+						await bothStarted;
+					}
+					const inner = fakePartition(
+						partition,
+						[vpid],
+						log,
+						`card-store-v1-${asks === 1 ? "100" : "200"}-p${partition}.store`,
+					);
+					return inner.searchKeys(opts, 0, shaping);
+				},
+				async fetchRows(vpids, fields, key, shaping) {
+					return fakePartition(partition, [vpid], log, `card-store-v1-200-p${partition}.store`).fetchRows(
+						vpids,
+						fields,
+						key,
+						shaping,
+					);
+				},
+			};
+		};
+		const fresh = fakePartition(2, [1], log, "card-store-v1-200-p2.store");
+		const { total } = await run(
+			[stragglerAt(0, 2), stragglerAt(1, 3), fresh],
+			{ ...OPTS, offset: 0, limit: 10 },
+			async () => {},
+		);
+		expect(total).toBe(3);
+		expect(log.filter((l) => l.startsWith("keys:"))).toEqual(["keys:0", "keys:1", "keys:2", "keys:0", "keys:1"]);
 	});
 
 	test("a straggler no publish told is REFRESHED from KV, then asked again", async () => {

@@ -743,6 +743,18 @@ describe("GET /cards/named", () => {
 		expect(res.status).toBe(302);
 		expect(res.headers.get("Location")).toContain("cards.scryfall.io");
 	});
+
+	test("a version named after an Object.prototype member falls back to large like any unknown version", async () => {
+		// `uris[version]` on a plain object found `constructor`, `__proto__` and friends, and
+		// answered a 302 to `function Object() { [native code] }` — cached 48 hours.
+		const plain = await testDispatch(ctx, "/cards/named?exact=Llanowar%20Elves&format=image");
+		const large = plain.headers.get("Location");
+		for (const version of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
+			const res = await testDispatch(ctx, `/cards/named?exact=Llanowar%20Elves&format=image&version=${version}`);
+			expect(res.status).toBe(302);
+			expect(res.headers.get("Location")).toBe(large);
+		}
+	});
 });
 
 describe("GET /cards/autocomplete", () => {
@@ -788,6 +800,30 @@ describe("GET /cards/random", () => {
 		expect(res.headers.get("Cache-Control")).toBe("no-cache");
 	});
 
+	test("a draw is ONE engine request: the weighted sampler, not a count and a page", async () => {
+		const engine = new FakeEngine();
+		engine.totalCards = engine.cards.length;
+		const res = await testDispatch(makeCtx({ engine }), "/cards/random?q=elf");
+		expect(res.status).toBe(200);
+		expect(engine.lastSampleArgs?.numCards).toBe(1);
+		expect(engine.lastSampleArgs?.filterTreeJson).toContain('"extra"');
+		// No gathered search ran: the sampler answered.
+		expect(engine.lastSearch).toBeNull();
+	});
+
+	test("a sampler that answers no row falls back to the count-then-offset draw, and its 404", async () => {
+		const engine = new FakeEngine();
+		engine.cards = [];
+		engine.totalCards = 0;
+		const res = await testDispatch(makeCtx({ engine }), "/cards/random?q=e%3Anotaset");
+		expect(res.status).toBe(404);
+		expect(engine.lastSampleArgs?.numCards).toBe(1);
+		expect(engine.lastSearch).not.toBeNull();
+		expect(((await res.json()) as { details: string }).details).toBe(
+			"0 cards matched this search, a random card could not be returned.",
+		);
+	});
+
 	test("stays on the default-English lane — no include_multilingual in its engine options", async () => {
 		// The route takes no include_multilingual parameter (Scryfall's doesn't either); a `lang:`
 		// term in q widens inside the engine, so the option is simply never set here.
@@ -805,15 +841,15 @@ describe("GET /cards/random", () => {
 	test("q draws from the gated corpus — the same conjunct /cards/search adds", async () => {
 		const engine = new FakeEngine();
 		await testDispatch(makeCtx({ engine }), "/cards/random?q=lightning+bolt");
-		// Both draws (count, then the offset read) see the gated tree, not just the first.
-		expect(engine.lastSearch?.filterTreeJson).toContain('"extra"');
-		expect(engine.lastSearch?.filterTreeJson).toContain('"variation"');
+		// The sampler draws from the gated tree (and so does the count-then-offset fallback).
+		expect(engine.lastSampleArgs?.filterTreeJson).toContain('"extra"');
+		expect(engine.lastSampleArgs?.filterTreeJson).toContain('"variation"');
 	});
 
 	test("include_extras=true is honored here, because api.scryfall.com honors it here", async () => {
 		const engine = new FakeEngine();
 		await testDispatch(makeCtx({ engine }), "/cards/random?q=lightning+bolt&include_extras=true");
-		const json = engine.lastSearch?.filterTreeJson ?? "";
+		const json = engine.lastSampleArgs?.filterTreeJson ?? "";
 		expect(json).not.toContain('"extra"');
 		expect(json).toContain('"variation"');
 	});
@@ -822,9 +858,9 @@ describe("GET /cards/random", () => {
 		const engine = new FakeEngine();
 		engine.setsWithExtrasList = ["lea"];
 		await testDispatch(makeCtx({ engine }), "/cards/random?q=e%3Alea");
-		expect(engine.lastSearch?.filterTreeJson).not.toContain('"extra"');
+		expect(engine.lastSampleArgs?.filterTreeJson).not.toContain('"extra"');
 		await testDispatch(makeCtx({ engine }), "/cards/random?q=e%3Akhm");
-		expect(engine.lastSearch?.filterTreeJson).toContain('"extra"');
+		expect(engine.lastSampleArgs?.filterTreeJson).toContain('"extra"');
 	});
 
 	test("the bare draw stays UNGATED — deliberately, and not measured", async () => {
@@ -835,7 +871,7 @@ describe("GET /cards/random", () => {
 		const engine = new FakeEngine();
 		engine.totalCards = engine.cards.length;
 		await testDispatch(makeCtx({ engine }), "/cards/random");
-		expect(engine.lastSearch?.filterTreeJson).not.toContain('"extra"');
+		expect(engine.lastSampleArgs?.filterTreeJson).not.toContain('"extra"');
 	});
 });
 
@@ -880,6 +916,47 @@ describe("cache headers", () => {
 		const res = await testDispatch(makeCtx({ engine }), "/cards/search?q=elf");
 		expect(res.status).toBe(500);
 		expect(res.headers.get("Cache-Control")).toBe("no-store");
+	});
+
+	test("an oversized collection body is refused before it is parsed", async () => {
+		// A multi-MB body used to be parsed in the metered isolate before the 75-identifier rule
+		// refused it. A valid batch is under 10KB; anything past the cap gets the count sentence.
+		const engine = new FakeEngine();
+		const huge = JSON.stringify({ identifiers: [{ name: "x".repeat(70_000) }] });
+		const declared = await testDispatch(
+			makeCtx({
+				engine,
+				request: new Request("https://sylvan-librarian.com/cards/collection", {
+					method: "POST",
+					headers: { "content-type": "application/json", "content-length": String(huge.length) },
+					body: huge,
+				}),
+			}),
+			"/cards/collection",
+			"POST",
+		);
+		expect(declared.status).toBe(400);
+		expect((await json(declared)).details).toContain("no more than 75");
+		// Chunked (no content-length): read up to the cap, then refused.
+		const chunked = await testDispatch(
+			makeCtx({
+				engine,
+				request: new Request("https://sylvan-librarian.com/cards/collection", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: new ReadableStream({
+						start(controller) {
+							controller.enqueue(new TextEncoder().encode(huge));
+							controller.close();
+						},
+					}),
+				}),
+			}),
+			"/cards/collection",
+			"POST",
+		);
+		expect(chunked.status).toBe(400);
+		expect(engine.lastSearch).toBeNull();
 	});
 
 	test("the collection POST is private and must-revalidate, and its REFUSALS are no-cache", async () => {
@@ -1377,6 +1454,23 @@ describe("GET /cards and /cards/...", () => {
 		expect(body.object).toBe("card");
 	});
 
+	test("an external id is Python's int(): trailing junk, decimals and hex are a miss", async () => {
+		// parseInt read `409574abc` as 409574 and `1.5` as 1; upstream's `_as_int` rejects both.
+		for (const path of ["/cards/multiverse/409574abc", "/cards/mtgo/1.5", "/cards/multiverse/0x10"]) {
+			const res = await testDispatch(ctx, path);
+			expect(res.status).toBe(404);
+			expect((await json(res)).code).toBe("not_found");
+		}
+		expect((await json(await testDispatch(ctx, "/cards/multiverse/%2012345%20"))).object).toBe("card");
+		const collection = await testDispatch(
+			postCtx({ identifiers: [{ multiverse_id: 1.5 }] }),
+			"/cards/collection",
+			"POST",
+		);
+		// The collection body was already strict about this; the two surfaces now agree.
+		expect(collection.status).toBe(400);
+	});
+
 	test("/cards/:code/:number defaults to the ENGLISH printing when a foreign row shares the address", async () => {
 		// The language rides IN THE QUERY (`card_lang == "en"` when the segment is absent), like
 		// upstream's SQL filter. The fixture ja row shares m15/18 with the en row and sits FIRST in
@@ -1463,6 +1557,45 @@ describe("GET /cards and /cards/...", () => {
 			expect(res.status).toBe(404);
 			expect((await json(res)).details).toBe(details);
 		}
+	});
+
+	test("path segments are percent-decoded, per segment, before they reach a route", async () => {
+		// `new URL("/cards/war/184★")` percent-encodes the star in `pathname`, and the engine compares
+		// collector numbers verbatim, so until resolveAction decoded segments every ★ / † / Φ
+		// printing was a 404 here and a card on Scryfall. Upstream is Falcon, which decodes.
+		class CaptureEngine extends FakeEngine {
+			trees: string[] = [];
+			override async scryfallFirstOfEach(trees: string[]): Promise<null[]> {
+				this.trees.push(...trees);
+				return trees.map(() => null);
+			}
+		}
+		const collectorNumbersOf = (engine: CaptureEngine): string[] =>
+			engine.trees.map((tree) => {
+				const node = JSON.parse(tree) as { kwargs: { operands: { kwargs: Record<string, unknown> }[] } };
+				const clause = node.kwargs.operands.find(
+					(c) => (c.kwargs.lhs as { kwargs: { attribute_name: string } }).kwargs.attribute_name === "collector_number",
+				);
+				if (!clause) throw new Error(`no collector_number clause in ${tree}`);
+				return (clause.kwargs.rhs as { kwargs: { value: string } }).kwargs.value;
+			});
+		for (const path of ["/cards/war/184★", "/cards/war/184%E2%98%85"]) {
+			const engine = new CaptureEngine();
+			const res = await testDispatch(makeCtx({ engine }), path);
+			expect(res.status).toBe(404);
+			expect(new Set(collectorNumbersOf(engine))).toEqual(new Set(["184★"]));
+		}
+		// An encoded slash stays inside its segment rather than minting a fourth one.
+		const slashed = new CaptureEngine();
+		await testDispatch(makeCtx({ engine: slashed }), "/cards/war/1%2F2");
+		expect(new Set(collectorNumbersOf(slashed))).toEqual(new Set(["1/2"]));
+		// A segment that is not a valid escape sequence identifies nothing: the 404 object, and the
+		// engine is never asked.
+		const broken = new CaptureEngine();
+		const res = await testDispatch(makeCtx({ engine: broken }), "/cards/war/184%E2");
+		expect(res.status).toBe(404);
+		expect((await json(res)).code).toBe("not_found");
+		expect(broken.trees).toEqual([]);
 	});
 
 	test("import_rulings is not a public route", async () => {

@@ -241,7 +241,14 @@ if [[ -f store-build/rows.jsonl ]]; then
     # capped build. One driver PROCESS per partition — the probe cannot hold two partitions' state
     # at once because nothing outlives a process — which is the emit-one-release-one discipline the
     # nightly's partition loop must keep (plan §5.5).
-    step "wasm build fit per partition (N=$FIT_PARTS, real corpus)"
+    # THE TRIPWIRE IS NOT THE LINK CAP. The link cap (124MiB) is where a build ABORTS; the isolate
+    # it runs in is 128MiB TOTAL, shared with the JS heap, the module and the publish phase's
+    # buffers (the whole raw partition plus its gzip output while the dropped wasm memory awaits
+    # GC). A partition at 120MB of linear memory passes the cap and dies in production, so the
+    # gate fails well before it. The cap itself stays at 124MiB: lowering it would abort today's
+    # 104-106MB partitions in the nightly rather than warn about them here.
+    WASM_FIT_TRIPWIRE_MB=112
+    step "wasm build fit per partition (N=$FIT_PARTS, real corpus, tripwire ${WASM_FIT_TRIPWIRE_MB}MB)"
     ./target/release/examples/memprobe partition --rows store-build/rows.jsonl \
         --parts "$FIT_PARTS" --out-prefix "$PERF_DIR/fit-rows-p" 2>/dev/null
     for ((k = 0; k < FIT_PARTS; k++)); do
@@ -249,6 +256,13 @@ if [[ -f store-build/rows.jsonl ]]; then
             target/wasm32-unknown-unknown/release/sylvan_wasm_builder_probe.wasm \
             "$PERF_DIR/fit-rows-p${k}.jsonl" "$PERF_DIR/store-wasm-p${k}.store" > "$FIT_OUT" 2>&1; then
             echo "  p${k}: $(grep -E 'linear_memory' "$FIT_OUT" | sed 's/<--.*//' | xargs)"
+            LINEAR_MB=$(awk '/^linear_memory/ { print $2 }' "$FIT_OUT")
+            if awk -v got="${LINEAR_MB:-0}" -v max="$WASM_FIT_TRIPWIRE_MB" 'BEGIN { exit !(got > max) }'; then
+                echo "  ERROR: partition ${k} peaked at ${LINEAR_MB}MB of wasm linear memory, over the"
+                echo "  ${WASM_FIT_TRIPWIRE_MB}MB tripwire. It built under the 124MiB link cap, but the nightly's"
+                echo "  isolate is 128MiB in total and the JS side needs the rest — it would OOM in production."
+                exit 1
+            fi
         else
             tail -5 "$FIT_OUT" | sed 's/^/  /'
             echo "  ERROR: partition ${k}'s capped wasm build ABORTED under the 124MiB cap."

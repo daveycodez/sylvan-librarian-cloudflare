@@ -152,15 +152,16 @@ export function fetch_rows(vpids: Uint32Array, fields_json: string, shape: strin
 
 /**
  * Validate the streamed archive and atomically swap it in as the active
- * store. On any error the in-progress buffer is dropped and the previously
- * active store (if any) keeps serving.
+ * store. On any error the in-progress buffer is RECYCLED as the spare (see
+ * `recycle`) and the previously active store (if any) keeps serving.
  */
 export function finish_store_load(): void;
 
 /**
  * Finish a gzipped load: the last member must be complete (its CRC and length trailer verified by
  * the decoder), the output exactly the declared length, and the header this build's. Then the
- * store swaps in atomically, exactly as `finish_store_load` does.
+ * store swaps in atomically, exactly as `finish_store_load` does. On any error the buffer is
+ * RECYCLED as the spare, never dropped.
  */
 export function finish_store_load_gzip(): void;
 
@@ -223,7 +224,7 @@ export function query(filter_tree_json: string, opts_json: string): string;
  *
  * ```text
  * version: u32 (= KEY_PACKET_VERSION)
- * total: u32, n: u32, inline: u32
+ * total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED)
  * n      of: keylen: u16, key: keylen bytes, vpid: u32
  * inline of: rowlen: u32, row bytes in `shape`
  * ```
@@ -333,6 +334,10 @@ export function store_load_chunk(chunk: Uint8Array): void;
  */
 export function store_load_gzip_chunk(chunk: Uint8Array): void;
 
+/**
+ * Whether a store is loaded. A poisoned slot reports false: the instance holds nothing usable,
+ * and the next load or query surfaces the poisoned error for the shim to act on.
+ */
 export function store_loaded(): boolean;
 
 /**

@@ -65,6 +65,22 @@ function referenceCtx(): { ctx: ReturnType<typeof makeCtx>; kv: FakeKV } {
 	return { ctx: makeCtx({ kv }), kv };
 }
 
+describe("the reference reads are memoized per isolate", () => {
+	test("a repeat within the window reads KV once, a miss included", async () => {
+		// One metered read per request for a 600KB value was the cost this removes; the edge
+		// cache does not help a request carrying a nonce.
+		const { ctx, kv } = referenceCtx();
+		await testDispatch(ctx, "/sets");
+		await testDispatch(ctx, "/sets?x=1");
+		await testDispatch(ctx, "/sets?x=2");
+		expect(kv.reads.filter((k) => k === setsListKey()).length).toBe(1);
+		// An unpublished catalog is memoized as absent: the 503 does not cost a read per request.
+		await testDispatch(ctx, "/catalog/land-types");
+		await testDispatch(ctx, "/catalog/land-types?x=1");
+		expect(kv.reads.filter((k) => k === catalogKey("land-types")).length).toBe(1);
+	});
+});
+
 describe("GET /sets", () => {
 	test("answers a List of Set objects in the order they were published", async () => {
 		const res = await testDispatch(referenceCtx().ctx, "/sets");

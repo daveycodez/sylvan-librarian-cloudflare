@@ -382,6 +382,14 @@ export function parseManaCost(raw: string): Record<string, unknown> {
 			`The string fragment(s) “${truncateFragments(bad)}” could not be understood as part of mana cost.`,
 		);
 	}
+	// A generic cost past the safe-integer range is inexact, and past 1e21 JavaScript renders it in
+	// exponent form: the cost became `{1e+21}` and the decimal writer emitted `"cmc":1e+21.0`, a 200
+	// whose body no JSON parser accepts. Scryfall's own answer for a 22-digit generic is unmeasured;
+	// a bounded 422 beats an unparseable success.
+	// (`total` may carry halves — `{HW}` is 0.5 — so it is bounded rather than required integral.)
+	if (!Number.isSafeInteger(generic) || !(Math.abs(total) <= Number.MAX_SAFE_INTEGER)) {
+		throw new ManaCostError("The mana cost is too large to represent.");
+	}
 
 	// An empty cost is null, but a cost that was written and happens to be free is `{0}`: Scryfall
 	// answers `cost=` with null and `cost=0` with "{0}", so the two cannot share a branch.

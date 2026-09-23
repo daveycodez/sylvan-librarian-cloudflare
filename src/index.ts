@@ -3,6 +3,7 @@
 // falcon's JSON error serializer shape for all HTTP errors.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { BUILD_COMMIT } from "./build-info.gen";
 import { engineName, placeEngineStub } from "./engine/engine-namespace";
 import { livePartitionedManifest, liveRoutingFilter, PartitionedEngine } from "./engine/partitioned-engine";
 import { regionHint } from "./engine/region";
@@ -90,7 +91,7 @@ async function resolveEngine(
 	// again, so an object created anywhere else is misplaced permanently and
 	// silently. See engine-namespace.ts, which is where the rule is enforced
 	// rather than described.
-	const manifest = await livePartitionedManifest(env);
+	const manifest = await livePartitionedManifest(env, (p) => ctx.waitUntil(p));
 	// Decision-time warm ping for a shard the controller just opened: start its
 	// wake NOW rather than at its first real request, and REPORT THE OUTCOME,
 	// because the shard takes no traffic until this resolves. A fresh shard is
@@ -151,9 +152,12 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	//
 	// Status, wording and tier are all measured: `404`, "The requested object or REST method was not
 	// found.", `no-cache`.
-	if (!resolved) return scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS);
+	// Through securityHeaders like every other exit (`finish` does not exist yet at this point in the
+	// function): a 404 without `Access-Control-Allow-Origin` is an opaque CORS failure to exactly the
+	// browser client this object exists for.
+	if (!resolved) return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
 	const entry = routes[resolved.key];
-	if (!entry) return scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS);
+	if (!entry) return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
 	/** Whether this path is on the Scryfall-compatible surface, which picks the error shape. */
 	const scryfallSurface = SCRYFALL_SURFACE_ROUTES.has(resolved.key);
 	// CORS PREFLIGHT, answered before the method check — which is what makes it work at all: no
@@ -184,11 +188,11 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		// behind that code and nothing to check it against. An error body nobody measured is the same
 		// defect as a CSV column set nobody measured. A client that branches on 404-versus-405 has to see
 		// what Scryfall shows it, and this deployment's job is to be substitutable.
-		if (scryfallSurface) return scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS);
+		if (scryfallSurface) return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
 		// Upstream's own surface keeps falcon's 405 + `Allow`: nothing there is mirroring Scryfall, and
 		// 405 remains the right answer for a route that genuinely declares its methods.
 		const allow = [...entry.methods].sort().join(", ");
-		return httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow });
+		return securityHeaders(httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow }));
 	}
 
 	const params: Record<string, string> = {};
@@ -236,6 +240,9 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		const out = securityHeaders(response);
 		if (engineSource.tag) out.headers.set("x-sylvan-engine", engineSource.tag);
 		if (rateLimitOutcome.tag) out.headers.set("x-sylvan-rl", rateLimitOutcome.tag);
+		// Which build answered. A cached response replays the build that produced it,
+		// which is the point: the smoke test asks with a nonce and waits for THIS commit.
+		out.headers.set("x-sylvan-build", BUILD_COMMIT);
 		return out;
 	};
 

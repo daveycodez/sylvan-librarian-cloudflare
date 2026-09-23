@@ -19905,6 +19905,22 @@ fn build_card_data_sorted(
                 "card {idx} ({name:?}) is missing oracle_id (required for card grouping)"
             )));
         }
+        // LOCAL PATCH (Cloudflare port): the streamed path takes the host's word for the order.
+        // The Vec path sorts; the wasm-import build hands over spilled rows in whatever order the
+        // coordinator's reorder phase left them, and a resumed or interrupted reorder that left
+        // the spill part-ordered would open a SECOND group for an oracle id already emitted —
+        // an archive with duplicate cards, a passing row count, and no error. Build order is
+        // card_row_build_order, oracle_id first and ascending, so a step backwards is refused.
+        if let Some(last) = cards.last()
+            && row.oracle_id < last.oracle_id
+        {
+            let idx = printings.len();
+            return Err(EngineError::value(format!(
+                "card row {idx} arrived out of build order (oracle_id {:032x} after {:032x}); \
+                 the spilled rows are not sorted, which would split a card into two groups",
+                row.oracle_id, last.oracle_id
+            )));
+        }
         let is_new = cards.last().is_none_or(|c| c.oracle_id != row.oracle_id);
         if is_new {
             drop_group_if_annex_only(

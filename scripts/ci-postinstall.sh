@@ -17,4 +17,19 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo "==> Workers Builds detected (WORKERS_CI=1): building the card index before deploy."
+
+# Stamp the commit into the bundle. Workers Builds injects WORKERS_CI_COMMIT_SHA; the Worker
+# sends it back as `x-sylvan-build`, and the post-push smoke test waits for the pushed commit to
+# answer rather than for "something" to answer (the previous version answers with cards for the
+# whole build). The workspace is ephemeral here, so rewriting a tracked file is safe; a laptop
+# deploy leaves the committed "unknown" in place.
+if [[ -n "${WORKERS_CI_COMMIT_SHA:-}" ]]; then
+    sed -i.bak "s/^export const BUILD_COMMIT = \"[^\"]*\";/export const BUILD_COMMIT = \"${WORKERS_CI_COMMIT_SHA}\";/" \
+        "$REPO_ROOT/src/build-info.gen.ts"
+    rm -f "$REPO_ROOT/src/build-info.gen.ts.bak"
+    echo "==> Build stamped as ${WORKERS_CI_COMMIT_SHA}."
+else
+    echo "==> WORKERS_CI_COMMIT_SHA is unset; x-sylvan-build will report 'unknown'."
+fi
+
 exec "$REPO_ROOT/scripts/import-store.sh"

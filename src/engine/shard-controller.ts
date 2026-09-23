@@ -40,11 +40,22 @@
 // per-colo naming: every isolate in a region now meets at the same object
 // instead of at one object per colo.
 //
-// Adoption RAISES ONLY, and the DO's announcement decays (WIDTH_TTL_MS) rather
-// than ratcheting. Those two together are what keep scale-in alive: if adoption
-// could lower the width it would fight each isolate's own idle clock, and if
-// the announcement never decayed, a contracting isolate would re-adopt the
-// stale higher value on its next RPC and never get smaller.
+// WHAT AN ISOLATE REPORTS IS ITS OWN WIDTH, NOT THE ONE IT ADOPTED. This used
+// to report the routing width (adopted included), and that closed a loop the
+// TTL could never break: an isolate that contracted W -> W-1 reported W-1, the
+// DO still announced W (every adopter was reporting W and refreshing it), and
+// the isolate adopted W straight back. Fresh isolates adopted W with no idle
+// clock of their own and reported W forever. So after any spike the region
+// stayed at its peak width until every isolate that had seen it was evicted —
+// replicas x partitions objects, each holding a cached partition. Reporting
+// only the width an isolate reached on its OWN evidence (ownWidth, lowered by
+// its own contractions) means the DO's announcement is refreshed only by
+// isolates that still hold the width themselves, and it decays (WIDTH_TTL_MS)
+// once they have all folded. Adopters then FOLLOW THE ANNOUNCEMENT DOWN
+// (adoptShardWidth lowers the adopted portion, never the isolate's own), which
+// is what lets scale-in finish. Adoption still never raises an isolate's own
+// width, so it cannot fight the idle clock that drives that isolate's own
+// contraction.
 //
 // VERIFIED against production, same ramp before and after, at 64 concurrent:
 //
@@ -418,6 +429,12 @@ const LATENCY_MIN_SAMPLES = 20;
 interface RegionState {
 	targetShards: number;
 	readyShards: number;
+	/**
+	 * The width THIS isolate decided from its own evidence: raised by expand(),
+	 * clamped down by its own contraction and by a failed warm-up, never touched
+	 * by adoption. What currentShardWidth reports — see the header.
+	 */
+	ownWidth: number;
 	/** Timestamps of recent samples at or above EXPAND_DEPTH. */
 	queuedAt: number[];
 	lastBusyAt: number;
@@ -446,6 +463,7 @@ function stateFor(region: string): RegionState {
 		state = {
 			targetShards: 1,
 			readyShards: 1,
+			ownWidth: 1,
 			queuedAt: [],
 			lastBusyAt: 0,
 			lastExpandAt: 0,
@@ -469,6 +487,10 @@ function canExpand(state: RegionState): boolean {
 /** Open one more shard, pending its warm-up. Shared by both expansion triggers. */
 function expand(state: RegionState, region: string, now: number, why: string): void {
 	state.targetShards += 1;
+	// Saturation was observed at the CURRENT routing width, adopted shards
+	// included, so the isolate now holds the whole of the new width on its own
+	// evidence.
+	state.ownWidth = state.targetShards;
 	state.lastExpandAt = now;
 	state.queuedAt = [];
 	state.pendingWarmShard = state.targetShards - 1;
@@ -611,24 +633,47 @@ export function unmarkPending(region: string): void {
 	const state = stateFor(region);
 	if (state.targetShards <= state.readyShards) return;
 	state.targetShards = state.readyShards;
+	state.ownWidth = Math.min(state.ownWidth, state.targetShards);
 	console.log(`[${region}] shard controller: warm-up failed; back to ${state.targetShards} shards`);
 }
 
 /**
- * The width this isolate is actually routing across, ridden out on every search
- * RPC for the rendezvous.
+ * The width this isolate holds ON ITS OWN EVIDENCE, ridden out on every search
+ * RPC for the rendezvous — never the width it merely adopted (see the header
+ * for the loop that reporting the adopted width closed).
  *
- * Announces READY width, not target: peers adopt this number and start drawing
+ * Bounded by READY width, not target: peers adopt this number and start drawing
  * across it immediately, so announcing a shard that is still warming would push
  * exactly the cold-routing this design exists to prevent onto every other
  * isolate in the region.
  */
 export function currentShardWidth(region: string): number {
-	return stateFor(region).readyShards;
+	const state = stateFor(region);
+	return Math.min(state.ownWidth, state.readyShards);
 }
 
 /**
- * Adopt a width some other isolate has already reached.
+ * Fold one caller's reported width into the region's announcement — the DO
+ * side of the rendezvous, pure so the loop can be tested end to end.
+ *
+ * Refreshed on any report at or above the announcement, otherwise left to
+ * age out after `ttlMs`: a stream of lower reports must not keep a stale
+ * higher value alive, and a width nobody still reports (on their own evidence
+ * — see currentShardWidth) must decay so the region can scale in.
+ */
+export function foldWidthAnnouncement(
+	announced: { shards: number; at: number },
+	reported: number,
+	now: number,
+	ttlMs: number,
+): { shards: number; at: number } {
+	const width = Number.isFinite(reported) && reported >= 1 ? Math.floor(reported) : 1;
+	if (width >= announced.shards || now - announced.at > ttlMs) return { shards: width, at: now };
+	return announced;
+}
+
+/**
+ * Adopt the width the region's DO announces.
  *
  * The rendezvous half of the fix for the convergence defect in the header:
  * the width is per-isolate and a new isolate starts at 1, so without this an
@@ -636,23 +681,42 @@ export function currentShardWidth(region: string): number {
  * production ramp measured the result — four shards open, traffic stuck at
  * ~73/17/10/5, never converging.
  *
- * Raises BOTH target and ready. Readiness is a property of the shard, not of the
- * isolate: the announcing peer only ever announces shards it verified warm, so
- * there is nothing left for this isolate to wait on.
+ * Raising sets BOTH target and ready. Readiness is a property of the shard, not
+ * of the isolate: the announcing peer only ever announces shards it verified
+ * warm, so there is nothing left for this isolate to wait on.
  *
- * Raise only. Lowering here would fight contraction, which is a decision each
- * isolate makes from its own idle clock; the DO's announcement decays instead
- * (WIDTH_TTL_MS), so a width nobody still reports ages out at the source. The
- * cap still applies: adopting must not be a way around SHARDS_MAX.
+ * LOWERING follows the announcement down too, but only over the ADOPTED
+ * portion: never below the width this isolate holds on its own evidence
+ * (which its own idle clock retires), and never while a warm-up of its own is
+ * pending (the pending shard resolves first; the next RPC can lower). This is
+ * what closes scale-in: once the announcement decays, adopters stop routing to
+ * shards nobody needs, and those objects idle out. The cap still applies:
+ * adopting must not be a way around SHARDS_MAX.
  */
 export function adoptShardWidth(region: string, width: number): void {
 	const state = stateFor(region);
-	if (!Number.isFinite(width) || width <= state.readyShards) return;
+	// The DO never announces below 1 (foldWidthAnnouncement floors it), so anything
+	// under 1 is nonsense rather than a narrower view: ignored, like NaN.
+	if (!Number.isFinite(width) || width < 1) return;
 	const capped = configuredMax === 0 ? Math.floor(width) : Math.min(Math.floor(width), configuredMax);
-	if (capped <= state.readyShards) return;
-	state.readyShards = capped;
-	if (state.targetShards < capped) state.targetShards = capped;
-	console.log(`[${region}] shard controller: adopted ${state.readyShards} shards announced by the region's DO`);
+	if (capped > state.readyShards) {
+		state.readyShards = capped;
+		if (state.targetShards < capped) state.targetShards = capped;
+		console.log(`[${region}] shard controller: adopted ${state.readyShards} shards announced by the region's DO`);
+		return;
+	}
+	if (capped >= state.readyShards) return;
+	if (state.targetShards !== state.readyShards) return; // a warm-up of our own is pending
+	const floor = Math.min(state.ownWidth, state.readyShards);
+	const lowered = Math.max(capped, floor);
+	if (lowered >= state.readyShards) return;
+	state.readyShards = lowered;
+	state.targetShards = lowered;
+	state.queuedAt = [];
+	console.log(
+		`[${region}] shard controller: the region's DO now announces ${capped}; following it down to ${lowered} shards` +
+			`${lowered > capped ? ` (own evidence holds ${lowered})` : ""}`,
+	);
 }
 
 /**
@@ -678,6 +742,9 @@ export function pickShard(region: string, maxShards?: number): number {
 		// Drop it from the draw first so nothing new is routed there; in-flight
 		// work finishes and the object then idles out on its own.
 		if (state.readyShards > state.targetShards) state.readyShards = state.targetShards;
+		// And stop vouching for it: what this isolate reports to the region's DO
+		// falls with its own contraction, which is what lets the announcement decay.
+		state.ownWidth = Math.min(state.ownWidth, state.targetShards);
 		state.lastContractAt = now;
 		console.log(
 			`[${region}] shard controller: contracted to ${state.targetShards} shards ` +

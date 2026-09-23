@@ -118,10 +118,11 @@ export function searchCacheHeader(): Record<string, string> {
  * `max-age=0, must-revalidate` is what Cloudflare's asset layer applies to HTML
  * by default, and it is the half of the pair that earns `immutable` on the assets
  * (see scripts/generate-assets.ts). `s-maxage` keeps the edge copy, so the Worker
- * still does not run per navigation: browsers revalidate against Cloudflare, get
- * a 304 from a cache the deploy already reset (Workers Caching partitions by
- * Worker version), and pick up a new bundle on the first navigation after a
- * deploy rather than up to an hour later.
+ * still does not run per navigation: browsers revalidate against Cloudflare —
+ * a full re-download of a few KB from the edge, since the HTML carries no
+ * validator for a 304 — from a cache the deploy already reset (Workers Caching
+ * partitions by Worker version), and pick up a new bundle on the first
+ * navigation after a deploy rather than up to an hour later.
  */
 export function pageCacheHeader(edgeSeconds = 3600): Record<string, string> {
 	return { "Cache-Control": `public, max-age=0, must-revalidate, s-maxage=${edgeSeconds}` };

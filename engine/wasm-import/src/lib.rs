@@ -1054,7 +1054,9 @@ pub extern "C" fn inflate_feed(ptr: *mut u8, len: usize, max_out: u64) -> i64 {
     // Min in u64 BEFORE the usize cast: wasm32's usize is 32 bits, and an
     // oversized cap must clamp, not truncate. The ceiling is a sanity bound
     // well past any member window.
-    let cap = max_out.min(64 << 20) as usize;
+    // ...and at least 1: the decoder's stored-block path answers a zero-byte budget with "need
+    // input" and nothing consumed, which a host that passed 0 would spin on forever.
+    let cap = max_out.clamp(1, 64 << 20) as usize;
     let mut out = Vec::with_capacity(cap.min(input.len().saturating_mul(6).max(4096)));
     match inf.feed(&input, cap, &mut out) {
         Ok((consumed, _stop)) => {

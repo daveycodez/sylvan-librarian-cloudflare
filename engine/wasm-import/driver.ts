@@ -22,7 +22,7 @@ const module_ = await WebAssembly.compile(await Bun.file(wasmPath).arrayBuffer()
 
 // ── host state (the DO-SQLite stand-ins) ────────────────────────────────────
 const draftBatches: Uint8Array[] = []; // length-prefixed batches, emission order
-let draftBatchBuf: Uint8Array[] = [];
+const draftBatchBuf: Uint8Array[] = [];
 const spilled: Uint8Array[] = [];
 const rowLines: string[] = [];
 const chunks: Uint8Array[] = [];
@@ -31,7 +31,12 @@ const statsLog: unknown[] = [];
 const decoder = new TextDecoder();
 
 let memory: WebAssembly.Memory | undefined;
-const view = (ptr: number, len: number) => new Uint8Array(memory!.buffer, ptr, len);
+/** The instance's memory, bound at instantiation before any export is called. */
+const mem = (): WebAssembly.Memory => {
+	if (!memory) throw new Error("wasm memory used before instantiation");
+	return memory;
+};
+const view = (ptr: number, len: number) => new Uint8Array(mem().buffer, ptr, len);
 
 const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7 } as const;
 
@@ -196,7 +201,9 @@ for await (const lines of fileLines(bulkPath)) {
 	}
 }
 if (draftBatchBuf.length > 0) draftBatches.push(lengthPrefixed(draftBatchBuf.splice(0)));
-console.error(`transform: ${drafts} drafts in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
+console.error(
+	`transform: ${drafts} drafts in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`,
+);
 
 // ── 2. tags (synthesized dump records from the gen's tag maps) ──────────────
 t = performance.now();
@@ -211,7 +218,10 @@ function feedTags(map: Record<string, string[]>, idField: string, kind: number) 
 	for (const [id, slugs] of Object.entries(map)) {
 		for (const slug of slugs) {
 			let ids = bySlug.get(slug);
-			if (!ids) bySlug.set(slug, (ids = []));
+			if (!ids) {
+				ids = [];
+				bySlug.set(slug, ids);
+			}
 			ids.push(id);
 		}
 	}
@@ -228,14 +238,17 @@ function feedTags(map: Record<string, string[]>, idField: string, kind: number) 
 		}
 		n++;
 	}
-	if (batch.length > 0) sendBytes(encoder.encode(batch.join("\n")), (p, l) => ex.tags_add_lines(p, l), "tags_add_lines");
+	if (batch.length > 0)
+		sendBytes(encoder.encode(batch.join("\n")), (p, l) => ex.tags_add_lines(p, l), "tags_add_lines");
 	const mapped = ex.tags_finish(kind);
 	if (mapped < 0n) throw new Error("tags_finish failed");
 	console.error(`tags kind=${kind}: ${n} slugs -> ${mapped} ids`);
 }
 feedTags(tagMaps.oracle, "oracle_id", 1);
 feedTags(tagMaps.art, "illustration_id", 2);
-console.error(`tags in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
+console.error(
+	`tags in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`,
+);
 
 // ── 3. scores (global, all partitions' drafts) ──────────────────────────────
 // The coordinator's own global phase, in one call here: the cubecobra table is a percent-rank over
@@ -256,7 +269,9 @@ for (const batch of draftBatches) {
 	sendBytes(batch, (p, l) => ex.agg_drafts(p, l), "agg_drafts");
 }
 const winners = ex.agg_finish();
-console.error(`agg: ${winners} winners in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
+console.error(
+	`agg: ${winners} winners in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`,
+);
 
 // ── 5. finalize ─────────────────────────────────────────────────────────────
 t = performance.now();
@@ -266,13 +281,17 @@ for (const batch of draftBatches) {
 }
 const staged = ex.finalize_end();
 if (staged < 0n) throw new Error("finalize_end failed");
-console.error(`finalize: ${staged} rows staged in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`);
+console.error(
+	`finalize: ${staged} rows staged in ${((performance.now() - t) / 1000).toFixed(1)}s, heap ${mb(ex.current_alloc())}/${mb(ex.peak_alloc())} MB`,
+);
 
 // ── 6. store build ──────────────────────────────────────────────────────────
 t = performance.now();
 const total = ex.build_store_stream();
 if (total < 0n) throw new Error("build_store_stream failed");
-console.error(`build: ${mb(total)} MB archive in ${((performance.now() - t) / 1000).toFixed(1)}s, heap peak ${mb(ex.peak_alloc())} MB, linear ${mb(memory.buffer.byteLength)} MB`);
+console.error(
+	`build: ${mb(total)} MB archive in ${((performance.now() - t) / 1000).toFixed(1)}s, heap peak ${mb(ex.peak_alloc())} MB, linear ${mb(memory.buffer.byteLength)} MB`,
+);
 
 // ── outputs ─────────────────────────────────────────────────────────────────
 await Bun.write(rowsOut, `${rowLines.join("\n")}\n`);

@@ -14,6 +14,7 @@ const fixture = JSON.parse(readFileSync(`${import.meta.dir}/gather-wire-fixture.
 	total: number;
 	entries: number;
 	inline_rows: number;
+	widened: boolean;
 	packed_hex: string;
 	rows_packed_hex: string;
 };
@@ -31,6 +32,8 @@ describe("query_keys wire fixture (Rust packer ↔ gather.ts codec)", () => {
 		const packet = decodeKeyPacket(hexBytes(fixture.packed_hex));
 		expect(packet.total).toBe(fixture.total);
 		expect(packet.entries.length).toBe(fixture.entries);
+		// The v3 flags word: a TrueNode query over an English-only store never widens.
+		expect(packet.widened).toBe(fixture.widened);
 		for (const entry of packet.entries) {
 			// Every key leads with the layout version and carries the fixed 57-byte tail after
 			// its variable primary segment (see encode_sort_key's layout doc).

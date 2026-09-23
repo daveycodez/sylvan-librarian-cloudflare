@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { staleStoreKeys } from "../../src/engine/store-kv";
 import {
+	ALIAS_MISS_RETRY_MS,
 	forgetLiveTagAliases,
 	liveTagAliases,
 	parseTagAliasTables,
@@ -133,6 +134,17 @@ describe("the isolate loader", () => {
 		expect(tables.oracle.size).toBe(0);
 		await liveTagAliases(env, manifestOf("1000"));
 		expect(reads).toBe(1);
+		// ...for ALIAS_MISS_RETRY_MS. A map published late (scripts/publish-tag-aliases.ts) must
+		// become visible without waiting for the isolate to die.
+		kv.put("store:card-aliases-v5-1000.store:0", VALUE);
+		const realNow = Date.now;
+		Date.now = () => realNow() + ALIAS_MISS_RETRY_MS + 1;
+		try {
+			expect((await liveTagAliases(env, manifestOf("1000"))).oracle.get("reanimate-copy")).toBe("copy-from-graveyard");
+			expect(reads).toBe(2);
+		} finally {
+			Date.now = realNow;
+		}
 	});
 
 	test("a KV fault costs this request its aliases and is retried by the next", async () => {

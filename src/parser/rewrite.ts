@@ -7,7 +7,7 @@
  *  3. lower_literal_regexes — plain-literal `field:/regex/` leaves become substrings
  */
 
-import { CardAttributeNode, CardBinaryOperatorNode } from "./card-query-nodes";
+import { CardAttributeNode, CardBinaryOperatorNode, ExactNameNode } from "./card-query-nodes";
 import {
 	ARRAY_IS_TAGS,
 	BOOLEAN_IS_TAGS,
@@ -26,7 +26,9 @@ import {
 	type FilterValue,
 	flattenNestedOperations,
 	type LoweredRegexTerm,
+	ManaValueNode,
 	NotNode,
+	NumericValueNode,
 	nodeToJson,
 	OrNode,
 	Query,
@@ -944,9 +946,17 @@ const REWRITE_PASSES: ReadonlyArray<(q: Query) => Query> = [
  *
  * A compound's key folds its children into a SET, so `AND(cmc<2, c=w)` and `AND(c=w, cmc<2)` are
  * one operand under a shared OR — which is the case a written-order key would miss and the whole
- * reason the key is not just the serialized subtree. Leaves fall through to their canonical JSON,
- * this port's stand-in for upstream's `hash(node)`: structural equality is what both express, and
- * these nodes have no identity beyond their fields.
+ * reason the key is not just the serialized subtree.
+ *
+ * LEAVES KEY ON THEIR RAW FIELDS, exactly as upstream's `hash(node)` does — NOT on their wire
+ * JSON, which this used to do. The wire form is rendered: titlecased type names, collated card
+ * names, `2` against `2.0`. Python's hashes read the fields as typed (nodes.py): a ValueNode is
+ * `(class, value)` with `2 == 2.0`, an AttributeNode `(class, attribute_name)` — the mapped
+ * column, never the alias the user wrote — a BinaryOperatorNode `(class, lhs, operator, rhs)`,
+ * ExactNameNode `("ExactNameNode", value)`, TrueNode a constant, and `literal` is in none of
+ * them. Keying on the rendering diverged both ways: `t:goblin t:Goblin` collapsed here and not
+ * upstream, `name:fire name:"fire"` collapsed upstream and not here. Every leaf class the parser
+ * emits is enumerated below; anything else falls back to its canonical JSON.
  */
 function operandDedupKey(node: QueryNode): string {
 	if (node instanceof AndNode || node instanceof OrNode) {
@@ -959,38 +969,34 @@ function operandDedupKey(node: QueryNode): string {
 	if (node instanceof NotNode) {
 		return `NotNode(${operandDedupKey(node.operand)})`;
 	}
-	return `leaf:${canonicalStringify(dedupScrub(nodeToJson(node)) as FilterValue)}`;
+	return `leaf:${leafHashKey(node)}`;
 }
 
-/**
- * Drop `original_attribute` from a wire tree, so the key reads a node's IDENTITY rather than its
- * spelling.
- *
- * Upstream keys leaves on `hash(node)`, and Python's `AttributeNode.__hash__` is
- * `(class name, attribute_name)` — the alias the user typed is not part of it. So `c=w` and
- * `color=w` are ONE operand there and must be here: they name the same column with the same
- * operand, and `cmc<2 c=w cmc<2 color=w` collapses to two leaves in upstream's fixtures. The wire
- * JSON is the only structural view of a node this port has, and this is the single field in it that
- * upstream's hash does not read — every other kwarg (`value`, `op`, `lhs`, `rhs`) is in both.
- *
- * Which alias SURVIVES is the first one written, because `deduplicateOperandList` keeps the first
- * occurrence; that matches upstream and is what the fixtures pin.
- */
-function dedupScrub(value: unknown): unknown {
-	if (Array.isArray(value)) {
-		return value.map(dedupScrub);
+/** The raw-field key of one non-compound node: upstream's `hash(node)`, spelled structurally. */
+function leafHashKey(node: QueryNode): string {
+	if (node instanceof BinaryOperatorNode) {
+		return `${node.nodeType}(${leafHashKey(node.lhs)},${JSON.stringify(node.operator)},${leafHashKey(node.rhs)})`;
 	}
-	// A PyNumber carries the int/float distinction in a class instance, not in own properties —
-	// rebuilding it as a plain object would erase it. Only plain objects are walked.
-	if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-		const out: Record<string, unknown> = {};
-		for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
-			if (key === "original_attribute") continue;
-			out[key] = dedupScrub(inner);
-		}
-		return out;
+	if (node instanceof CardAttributeNode) {
+		return `${node.nodeType}(${JSON.stringify(node.attributeName)})`;
 	}
-	return value;
+	if (node instanceof NumericValueNode) {
+		// Python: hash(2) == hash(2.0) and 2 == 2.0, so an integral float keys as its int.
+		const n = node.value;
+		const rendered =
+			n.isFloat && !Number.isInteger(n.toNumber()) ? String(n.toNumber()) : n.toBigIntTruncated().toString();
+		return `${node.nodeType}(${rendered})`;
+	}
+	if (
+		node instanceof StringValueNode ||
+		node instanceof ManaValueNode ||
+		node instanceof RegexValueNode ||
+		node instanceof ExactNameNode
+	) {
+		return `${node.nodeType}(${JSON.stringify(node.value)})`;
+	}
+	if (node instanceof TrueNode) return "TrueNode";
+	return `json:${canonicalStringify(nodeToJson(node) as FilterValue)}`;
 }
 
 /** Drop duplicate operands, keeping the first. Order-insensitive within one compound. */

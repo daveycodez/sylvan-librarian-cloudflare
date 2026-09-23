@@ -21,6 +21,17 @@
 
 export const MAX_QUERY_UTF8_BYTES = 3500;
 export const MAX_GROUP_DEPTH = 10;
+/**
+ * The longest left-nested ARITHMETIC chain one expression may build (operators, so `cmc+1+1` is
+ * 2). Port-only: upstream has no bound here either, and it is not covered by MAX_GROUP_DEPTH,
+ * which counts parentheses. A chain is left-nested `CardBinaryOperatorNode`s, so its wire form is
+ * two object levels per operator: `cmc` + `+1`x1600 (3,205 bytes, under the byte budget) produced
+ * a 200KB tree that took ~31ms to canonicalize — three times the isolate's whole CPU budget — and
+ * then failed serde_json's 128-deep recursion limit in the engine anyway. 32 operators is 64
+ * levels, plus two per parenthesis level and the root, comfortably under that limit, and no
+ * legitimate query approaches it.
+ */
+export const MAX_ARITH_CHAIN = 32;
 export const MAX_QUERY_LOG_PREVIEW_CHARS = 80;
 
 export const QUERY_TOO_LONG_MESSAGE = "Search query exceeds the maximum allowed length.";

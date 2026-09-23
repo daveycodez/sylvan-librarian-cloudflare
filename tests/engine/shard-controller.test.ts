@@ -321,11 +321,18 @@ describe("the fan-out rendezvous", () => {
 		expect(c.currentShardWidth(R)).toBe(2);
 	});
 
-	test("raises only — a narrower announcement cannot undo local state", async () => {
+	test("a narrower announcement cannot undo the isolate's OWN width", async () => {
+		// The adopted portion follows the announcement down (see the suite below);
+		// what an isolate reached on its own evidence is retired only by its own
+		// idle clock, so a peer's narrower view cannot cut it.
 		const c = await freshController();
+		c.reportEngineRate(R, 20);
+		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
+		admitPending(c);
 		c.adoptShardWidth(R, 4);
-		c.adoptShardWidth(R, 2);
 		expect(observedWidth(c)).toBe(4);
+		c.adoptShardWidth(R, 1);
+		expect(observedWidth(c)).toBe(2);
 	});
 
 	test("cannot be used to escape SHARDS_MAX", async () => {
@@ -354,6 +361,100 @@ describe("the fan-out rendezvous", () => {
 		advance(11 * 60_000);
 		c.pickShard(R);
 		expect(observedWidth(c)).toBe(2);
+	});
+});
+
+describe("what an isolate reports, and following the region down", () => {
+	test("an adopter reports its OWN width, not the adopted one", async () => {
+		// Reporting the adopted width closed a loop: every adopter refreshed the
+		// DO's announcement, so it never decayed and nobody could scale in.
+		const c = await freshController();
+		c.adoptShardWidth(R, 4);
+		expect(observedWidth(c)).toBe(4);
+		expect(c.currentShardWidth(R)).toBe(1);
+		// Own evidence raises what it reports — once the shard is warm.
+		c.reportEngineRate(R, 20);
+		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3);
+		expect(c.currentShardWidth(R)).toBe(4); // pending: reports the ready width it holds, not 5
+		admitPending(c);
+		expect(c.currentShardWidth(R)).toBe(5);
+	});
+
+	test("an adopter follows the announcement back down, never below its own width", async () => {
+		const c = await freshController();
+		c.adoptShardWidth(R, 4);
+		expect(observedWidth(c)).toBe(4);
+		c.adoptShardWidth(R, 2);
+		expect(observedWidth(c)).toBe(2);
+		c.adoptShardWidth(R, 1);
+		expect(observedWidth(c)).toBe(1);
+
+		// Own evidence is not cut by a lower announcement.
+		const own = await freshController();
+		own.reportEngineRate(R, 20);
+		for (let i = 0; i < 3; i++) own.reportEngineLoad(R, 3);
+		admitPending(own);
+		expect(observedWidth(own)).toBe(2);
+		own.adoptShardWidth(R, 1);
+		expect(observedWidth(own)).toBe(2);
+	});
+
+	test("no lowering while a warm-up of its own is pending", async () => {
+		const c = await freshController();
+		c.adoptShardWidth(R, 3);
+		c.reportEngineRate(R, 20);
+		for (let i = 0; i < 3; i++) c.reportEngineLoad(R, 3); // expanding to 4, shard 3 warming
+		c.adoptShardWidth(R, 1);
+		expect(observedWidth(c)).toBe(3);
+		admitPending(c);
+		expect(observedWidth(c)).toBe(4);
+	});
+
+	test("the closed loop converges: a region scales in once nobody holds the width on their own evidence", async () => {
+		// Two isolates and the DO's announcement, with the REAL fold on the DO
+		// side. Under the old rule (report the routing width, adoption raises
+		// only) this sat at 2 forever: B refreshed the announcement with the
+		// width it had adopted from A, and A re-adopted it after contracting.
+		const a = await freshController();
+		const b = await freshController();
+		// Longer than the idle window below, so the announcement is still live when A contracts:
+		// that is the leg this test exists for.
+		const ttl = 15 * 60_000;
+		let announced = { shards: 1, at: 0 };
+		const exchange = (c: Controller): void => {
+			announced = a.foldWidthAnnouncement(announced, c.currentShardWidth(R), clock, ttl);
+			c.adoptShardWidth(R, announced.shards);
+		};
+
+		a.reportEngineRate(R, 20);
+		for (let i = 0; i < 3; i++) a.reportEngineLoad(R, 3);
+		admitPending(a);
+		exchange(a);
+		exchange(b);
+		expect(observedWidth(a)).toBe(2);
+		expect(observedWidth(b)).toBe(2);
+		expect(b.currentShardWidth(R)).toBe(1);
+
+		// Quiet for the idle window: A contracts on its own clock and stops vouching.
+		advance(11 * 60_000);
+		a.pickShard(R);
+		expect(observedWidth(a)).toBe(1);
+		// The announcement is still 2 within its TTL, so A routes 2 again — but REPORTS its own 1.
+		// Under the old rule it would have reported the 2 it routed, and re-fed the announcement.
+		exchange(a);
+		expect(observedWidth(a)).toBe(2);
+		expect(a.currentShardWidth(R)).toBe(1);
+		expect(announced.shards).toBe(2);
+		for (let i = 0; i < 4; i++) {
+			advance(5 * 60_000);
+			exchange(b);
+			exchange(a);
+		}
+		// Nobody has reported 2 on their own evidence for longer than the TTL:
+		// the announcement decayed, and both isolates followed it down.
+		expect(announced.shards).toBe(1);
+		expect(observedWidth(a)).toBe(1);
+		expect(observedWidth(b)).toBe(1);
 	});
 });
 

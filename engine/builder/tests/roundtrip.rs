@@ -7,7 +7,7 @@
 //! pipeline the Cloudflare Worker runs, with no python, postgres, or mmap
 //! anywhere.
 
-use card_engine::{BufferStore, QueryOptions, StoreBuilder};
+use card_engine::{BufferStore, QueryOptions, SpillingStoreBuilder, StoreBuilder};
 use serde_json::{json, Value};
 
 /// A card-row JSON object carrying every key `card_from_json` (the
@@ -513,4 +513,29 @@ fn the_default_field_set_still_resolves() {
     builder.finish_to_writer(&mut bytes).expect("finish_to_writer");
     let store = BufferStore::from_bytes(&bytes).expect("buffer load");
     store.query(r#"{"node_type": "TrueNode"}"#, &QueryOptions::default()).expect("default fields");
+}
+
+/// The streamed build takes the host's word for the row order. Handed the spilled rows OUT of
+/// build order — a printing of card A, then card B, then A's second printing, which is what a
+/// part-resumed reorder in the nightly could leave behind — it must refuse rather than open a
+/// second group for A: that archive would carry a duplicate card, pass the row-count check, and
+/// answer queries wrong with no error anywhere.
+#[test]
+fn streamed_rows_out_of_build_order_are_refused() {
+    let mut builder = SpillingStoreBuilder::new();
+    let blobs: Vec<Vec<u8>> = fixture_rows().iter().map(|row| builder.add_card(row).expect("add_card")).collect();
+    assert_eq!(builder.staged_rows(), 3);
+    let order = builder.sorted_order();
+    // The two printings of Test Bolt sort adjacent; move the last-sorted row between them.
+    let mut shuffled: Vec<u32> = order.clone();
+    let moved = shuffled.remove(2);
+    shuffled.insert(1, moved);
+    // Only meaningful if the shuffle actually separated a card's printings.
+    assert_ne!(shuffled, order);
+
+    let mut out: Vec<u8> = Vec::new();
+    let err = builder
+        .finish_from_sorted(shuffled.iter().map(|&i| blobs[i as usize].clone()), &mut out)
+        .expect_err("out-of-order rows must not build");
+    assert!(err.to_string().contains("out of build order"), "{err}");
 }

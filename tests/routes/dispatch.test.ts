@@ -26,6 +26,29 @@ describe("404 routes listing", () => {
 		});
 	});
 
+	test("an empty interior segment is a 404, not an empty positional", async () => {
+		// `/cards//x` reached cardsHandler as ["", "x"] and served the unfiltered 663KB /cards page
+		// under a second cache key; Scryfall answers 404.
+		// (`/cards//` is not a case: trailing slashes are stripped before routing, so it IS /cards.)
+		for (const path of ["/cards//x", "/sets//x", "/cards//rulings"]) {
+			const res = await testDispatch(ctx, path);
+			expect(res.status).toBe(404);
+			expect((await json(res)).code).toBe("not_found");
+		}
+		expect((await testDispatch(ctx, "/sets")).status).not.toBe(404);
+	});
+
+	test("a percent-encoded slash inside the action word names no route", async () => {
+		// Segments are decoded AFTER the split, so `%2F` stays inside its segment — but a decoded
+		// first segment containing `/` would look up multi-segment route keys and mint a second
+		// URL (and cache key) for each of them.
+		// (`/%5Froot` is not a case: it decodes to `_root`, which `/_root` already reaches verbatim.)
+		for (const path of ["/cards%2Fsearch?q=bolt", "/cards%2Fsearch", "/cards%2Fnamed?exact=x"]) {
+			const res = await testDispatch(ctx, path);
+			expect(res.status).toBe(404);
+		}
+	});
+
 	test("the routes listing is still BUILT — it is the 404 body that stopped carrying it", async () => {
 		// `buildRoutesListing` is upstream's `_build_routes_listing` and its shape and ordering are
 		// still pinned by the test below; nothing about the registration order changed, only where
@@ -169,6 +192,23 @@ describe("method handling", () => {
 		expect(own.status).toBe(405);
 		expect(own.headers.get("Allow")).toBe("GET, HEAD");
 		expect((await json(own)).title).toBe("Method Not Allowed");
+	});
+
+	test("dispatch-level 404s and the 405 carry the security and CORS headers like every other answer", async () => {
+		// Production returned these bare — every other exit went through securityHeaders — so a
+		// browser Scryfall client that mistyped a path got an opaque CORS failure instead of the
+		// not_found object this surface exists to give it. The harness wrapped two of the three,
+		// which is how no test saw it.
+		for (const [path, method, status] of [
+			["/definitely_not_a_route", "GET", 404],
+			["/cards/search", "POST", 404],
+			["/search", "POST", 405],
+		] as const) {
+			const res = await testDispatch(ctx, path, method);
+			expect(res.status).toBe(status);
+			expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+			expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		}
 	});
 
 	test("HEAD is implied by GET on every route", async () => {

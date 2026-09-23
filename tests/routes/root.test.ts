@@ -103,6 +103,18 @@ describe("_root with a search query", () => {
 		expect(html).toContain("<!-- SERVER_SIDE_EMBEDDED_DATA -->");
 	});
 
+	test("an engine fault serves the page without results, NOT cached", async () => {
+		// A parse failure is the query's fault and may sit at the edge for the hour; an engine
+		// fault is transient, and cached it pinned an empty page into every edge for that URL.
+		const engine = new FakeEngine();
+		engine.searchError = new Error("wasm trap");
+		const res = await testDispatch(makeCtx({ engine }), "/?q=elf");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Cache-Control")).toBe("no-store");
+		const html = await res.text();
+		expect(html).toContain("<!-- SERVER_SIDE_RESULTS -->");
+	});
+
 	test("unloaded engine propagates as a 503 (upstream's setup-incomplete parity)", async () => {
 		const res = await testDispatch(makeCtx({ engine: null }), "/?q=elf");
 		expect(res.status).toBe(503);

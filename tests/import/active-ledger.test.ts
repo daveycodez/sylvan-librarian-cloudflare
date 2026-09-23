@@ -72,6 +72,16 @@ describe("the meters row", () => {
 		expect(m).toMatchObject({ pace_bps: 777_777, due_ms: 1_789_600_000_000, late_alarms: 2 });
 	});
 
+	test("the last-banked time rides the row and survives a parse", () => {
+		// startImport reads it to tell a slow run (still banking) from a dead one
+		// (nothing banked, nothing scheduled); the coordinator stamps it on every flush.
+		const prev = { ...EMPTY_RUN_METERS, banked_ms: 1_789_600_000_123 };
+		const m = advanceMeters(prev, { rowsRead: 1, rowsWritten: 1, elapsedMs: 1, newAlarm: true });
+		expect(m.banked_ms).toBe(1_789_600_000_123);
+		expect(parseMeters(JSON.stringify(m))?.banked_ms).toBe(1_789_600_000_123);
+		expect(parseMeters(JSON.stringify({ rows_read: 1 }))?.banked_ms).toBe(0);
+	});
+
 	test("a clock that went backwards banks nothing rather than a negative", () => {
 		const m = advanceMeters(EMPTY_RUN_METERS, { rowsRead: 0, rowsWritten: 0, elapsedMs: -20, newAlarm: true });
 		expect(m.active_ms).toBe(0);

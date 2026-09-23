@@ -71,6 +71,7 @@ import {
 	readManifest,
 } from "./store-kv";
 import type {
+	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -110,16 +111,57 @@ const FUZZY_SIMILARITY_FLOOR = 0.625;
  * The wasm side is per-label for the same reason: see wasm-shim.ts engineFor.
  */
 interface LabelState {
-	current: { storeKey: string; engine: WasmEngine; manifest: StoreManifest; handle: wasm.EngineHandle } | null;
+	current: {
+		storeKey: string;
+		engine: WasmEngine;
+		manifest: StoreManifest;
+		handle: wasm.EngineHandle;
+		/** The wasm instance generation the store was loaded into (see liveCurrent). */
+		generation: number;
+	} | null;
+	/** The ONE load in flight for this label, whoever started it (getEngine or swapToStore). */
 	loading: Promise<Engine> | null;
+	/** The one refreshNow in flight: concurrent callers are all reacting to the same publish. */
+	refreshing: Promise<boolean> | null;
+	/** The last request-path load that failed, while its backoff window is open. See getEngine. */
+	lastLoadFailure: { at: number; message: string } | null;
 }
+
+/**
+ * How long getEngine refuses to start another load after one failed. A load that fails costs
+ * a KV round trip per chunk, a full inflate and — before the wasm crate recycled the buffer
+ * of a failed load — a partition of linear memory, and getEngine used to start a fresh one on
+ * the very next request: a partition whose chunks had been swept answered 503 AND reset its
+ * isolate every few requests. Seconds, not minutes: the next publish or a stale-modulus retry
+ * should not have to wait on it, and the window only needs to outlast a burst.
+ */
+const LOAD_BACKOFF_MS = 5_000;
 const states = new Map<string, LabelState>();
+
+/**
+ * The label's loaded store — ONLY if the wasm instance it was loaded into is still the live one.
+ *
+ * A trap drops the label's instance (wasm-shim.ts dropInstance) and the store goes with it, but
+ * `current` would keep pointing at the dead instance's engine: the next publish would unload into
+ * a fresh, empty instance and every query would answer "no store loaded". Checking the generation
+ * turns that into an ordinary cold load on the next request.
+ */
+function liveCurrent(state: LabelState, label: string | undefined): LabelState["current"] {
+	const current = state.current;
+	if (current && current.handle.instanceGeneration() !== current.generation) {
+		console.error(
+			`[${label || "default"}] the engine instance holding ${current.storeKey} was lost to a trap; reloading`,
+		);
+		state.current = null;
+	}
+	return state.current;
+}
 
 function stateFor(label: string | undefined): LabelState {
 	const key = label ?? "";
 	let s = states.get(key);
 	if (!s) {
-		s = { current: null, loading: null };
+		s = { current: null, loading: null, refreshing: null, lastLoadFailure: null };
 		states.set(key, s);
 	}
 	return s;
@@ -509,6 +551,21 @@ class WasmEngine implements Engine {
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
 
+	async scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		// One RPC in, N wasm calls: the per-kind lookups are each a single index probe, and the
+		// cost this batch exists to remove is the RPC, not the probe.
+		const out: (Record<string, unknown> | null)[] = [];
+		for (const ident of identifiers) {
+			if (ident.kind === "oracle_id") out.push(await this.scryfallCardByOracleId(ident.id, baseUrl));
+			else if (ident.kind === "illustration_id") out.push(await this.scryfallCardByIllustrationId(ident.id, baseUrl));
+			else out.push(await this.scryfallCardByExternalId(ident.namespace, ident.id, baseUrl));
+		}
+		return out;
+	}
+
 	async scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -803,6 +860,10 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// only the failed-load path wrote the truth back. One KV round trip (~125ms, colo-cached
 	// for 60s) in front of a 400-900ms load is the price of never loading twice.
 	let manifest = known;
+	// KV's manifest, held only when the pushed record was NEWER than it and was
+	// loaded on that basis: if the record's chunks turn out to be gone, this is
+	// what the object falls back to. See the tiebreak below.
+	let fallback: StoreManifest | null = null;
 	if (!manifest && ctx?.storage) {
 		const pushed = readLiveManifest(ctx.storage) as StoreManifest | null;
 		if (pushed?.store_bytes) {
@@ -820,14 +881,35 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 				const truth = await readManifest(env).catch(() => null);
 				const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx.partition) : null;
 				if (truth && truthSource && truthSource.storeKey !== pushedSource.storeKey) {
-					console.warn(
-						`${tag(ctx)}the recorded manifest names ${pushedSource.storeKey} but KV says ` +
-							`${truthSource.storeKey}; loading KV's and correcting the record`,
-					);
-					// Overwrite the stale record so the NEXT wake starts from the store that is live,
-					// instead of paying this round trip's discovery again.
-					recordLiveManifest(ctx.storage, truth);
-					manifest = truth;
+					// THE TIEBREAK IS built_at. KV's manifest is colo-cached for 60s, and in
+					// any colo with traffic it is essentially always cached (isolates re-read
+					// it every minute), so for the first minute after a publish this read
+					// answers the PREVIOUS generation. A record newer than that is not stale —
+					// it is the publish the coordinator just pushed, which has already counted
+					// this object as converged and is about to purge the edge cache. Loading
+					// KV's here loaded the old generation, overwrote the record with it, and
+					// left the object refilling the 16h /cards/* tier with old answers (point
+					// lookups carry no generation check). So a newer record is loaded on its
+					// own authority, with KV's as the fallback should its chunks be gone; an
+					// OLDER record is the 2026-09-18 case (pruned chunks) and KV still wins.
+					// NaN compares false, so an unparseable built_at keeps KV-wins.
+					if (Number(pushed.built_at) > Number(truth.built_at)) {
+						console.log(
+							`${tag(ctx)}the recorded manifest names ${pushedSource.storeKey} (built ${pushed.built_at}), ` +
+								`newer than KV's colo-cached ${truthSource.storeKey} (built ${truth.built_at}); loading the record's`,
+						);
+						manifest = pushed;
+						fallback = truth;
+					} else {
+						console.warn(
+							`${tag(ctx)}the recorded manifest names ${pushedSource.storeKey} but KV says ` +
+								`${truthSource.storeKey}; loading KV's and correcting the record`,
+						);
+						// Overwrite the stale record so the NEXT wake starts from the store that is live,
+						// instead of paying this round trip's discovery again.
+						recordLiveManifest(ctx.storage, truth);
+						manifest = truth;
+					}
 				} else {
 					// KV agreed, or could not be read: the record is the best answer there is.
 					manifest = pushed;
@@ -865,7 +947,8 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	// corpus. See archiveOfManifest for the full case table.
 	const source = archiveOfManifest(manifest, ctx?.partition);
 
-	if (state.current && state.current.storeKey === source.storeKey) return state.current.engine;
+	const loaded = liveCurrent(state, ctx?.label);
+	if (loaded && loaded.storeKey === source.storeKey) return loaded.engine;
 
 	// Started here rather than after the load, so the write has the whole archive fetch to complete
 	// in. Awaited below, before the engine is committed — see announceSelf for why a dropped
@@ -894,7 +977,7 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 				};
 			})();
 	const { body, cached, sink } = fetch;
-	if (state.current) {
+	if (liveCurrent(state, ctx?.label)) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
 		state.current = null;
@@ -922,6 +1005,18 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 		// or KV could not be read; either way there is nothing better to load, and the next wake
 		// asks again. A tee'd cache copy of the failed load is discarded, never committed.
 		if (compressedMode && cached) fetch.invalidate();
+		if (fallback && ctx?.storage) {
+			// The newer record's chunks are gone after all (a publish that was rolled back, or
+			// retired before this object ever woke): KV's manifest was right. Correct the record
+			// and load that, through the `known` form so the record logic is not re-run. The
+			// failed attempt's buffer is recycled by the next begin (see the wasm crate).
+			console.warn(
+				`${tag(ctx)}the recorded manifest ${source.storeKey} did not load (${err}); ` +
+					`falling back to KV's ${fallback.store_key} and correcting the record`,
+			);
+			recordLiveManifest(ctx.storage, fallback);
+			return loadStore(env, ctx, fallback);
+		}
 		throw err;
 	}
 	const { pieces, blocks } = counts;
@@ -942,7 +1037,7 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
 	}
 
 	const engine = new WasmEngine(w);
-	state.current = { storeKey: source.storeKey, engine, manifest, handle: w };
+	state.current = { storeKey: source.storeKey, engine, manifest, handle: w, generation: w.instanceGeneration() };
 	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
 	// synchronous execution, so it cannot see the decompression or the copy into
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
@@ -977,15 +1072,31 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest): Pr
  * from "was already current".
  */
 export async function refreshNow(env: Env, ctx: LoadContext, known?: StoreManifest): Promise<boolean> {
-	// `known` is the manifest the PUBLISHER just wrote and is holding. Taking it
-	// skips a KV round trip that is pure waste on this path: measured at ~124ms,
-	// paid by every region, for a value the caller already has in hand. It is only
-	// ever supplied over RPC by our own coordinator, and loadStore re-validates the
-	// shape below regardless, so a bad one fails the load rather than being served.
-	const manifest = known ?? (await readManifest(env));
-	if (!manifest?.store_bytes) return false;
-	await prefetchStore(env, ctx, manifest);
-	return swapToStore(env, ctx, manifest);
+	// SINGLE-FLIGHTED PER LABEL. The argument-less form is the gather's straggler
+	// remedy, and every concurrent gather that meets the same straggler calls it
+	// independently — within one ~125ms manifest round trip, several of them.
+	// They are all reacting to the same publish, so the first one's answer is
+	// every one's answer; without this each awaited its own manifest read and its
+	// own prefetch (colliding on the cache's primary key) and then each started a
+	// swap on top of the others' — see swapToStore for what two interleaved loads
+	// do to one wasm handle.
+	const state = stateFor(ctx.label);
+	if (state.refreshing) return state.refreshing;
+	const refreshing = (async () => {
+		// `known` is the manifest the PUBLISHER just wrote and is holding. Taking it
+		// skips a KV round trip that is pure waste on this path: measured at ~124ms,
+		// paid by every region, for a value the caller already has in hand. It is only
+		// ever supplied over RPC by our own coordinator, and loadStore re-validates the
+		// shape below regardless, so a bad one fails the load rather than being served.
+		const manifest = known ?? (await readManifest(env));
+		if (!manifest?.store_bytes) return false;
+		await prefetchStore(env, ctx, manifest);
+		return swapToStore(env, ctx, manifest);
+	})().finally(() => {
+		if (state.refreshing === refreshing) state.refreshing = null;
+	});
+	state.refreshing = refreshing;
+	return refreshing;
 }
 
 /**
@@ -1015,7 +1126,7 @@ export async function prefetchStore(env: Env, ctx: LoadContext, manifest: StoreM
 		);
 		return false;
 	}
-	if (stateFor(ctx.label).current?.storeKey === source.storeKey) return false;
+	if (liveCurrent(stateFor(ctx.label), ctx.label)?.storeKey === source.storeKey) return false;
 	try {
 		ensureCacheSchema(ctx.storage);
 		if (source.gzipBytes !== undefined) {
@@ -1050,7 +1161,15 @@ export async function prefetchStore(env: Env, ctx: LoadContext, manifest: StoreM
  *
  * Single-flighted per label through the same `loading` slot getEngine uses, so
  * requests arriving during the swap wait on the load rather than observing the
- * unloaded window. A manifest shape this object cannot serve reports
+ * unloaded window — and, the other way round, a swap arriving while a load is
+ * already in flight (a cold load a request started, or another swap) WAITS for
+ * it instead of starting a second one on the same wasm handle. Two interleaved
+ * loads share the engine's one streaming decoder, so both streams fail their
+ * CRC or length check; the second one, finding the spare buffer taken, allocates
+ * a fresh partition-sized buffer that linear memory never gives back; and the
+ * first one's cleanup used to clear the slot the second owned, so a third
+ * request started a third load. Every cleanup here checks that the slot still
+ * holds its own promise. A manifest shape this object cannot serve reports
  * `false` (kept its current store) for the same publish-must-not-fail reason as
  * prefetchStore; a shape it CAN serve that fails to load still throws, because
  * that is a real fault the publish phase must see and retry.
@@ -1061,15 +1180,23 @@ export async function swapToStore(env: Env, ctx: LoadContext, manifest: StoreMan
 	if (!source) {
 		console.warn(
 			`${tag(ctx)}not swapping to ${manifest.store_key}: this object cannot serve that manifest shape; ` +
-				`it keeps serving ${state.current?.storeKey ?? "nothing"}`,
+				`it keeps serving ${liveCurrent(state, ctx.label)?.storeKey ?? "nothing"}`,
 		);
 		return false;
 	}
-	if (state.current?.storeKey === source.storeKey) return false;
-	state.loading = loadStore(env, ctx, manifest).finally(() => {
-		state.loading = null;
+	if (liveCurrent(state, ctx.label)?.storeKey === source.storeKey) return false;
+	// Whatever is in flight finishes first. Its failure is its caller's to report;
+	// what matters here is only where the label ended up.
+	while (state.loading) {
+		await state.loading.catch(() => {});
+	}
+	// Converged by the loader that was in flight — which is what was asked for.
+	if (liveCurrent(state, ctx.label)?.storeKey === source.storeKey) return true;
+	const loading = loadStore(env, ctx, manifest).finally(() => {
+		if (state.loading === loading) state.loading = null;
 	});
-	await state.loading;
+	state.loading = loading;
+	await loading;
 	return true;
 }
 
@@ -1077,26 +1204,62 @@ export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 	// No manifest re-check on the warm path: a publish reaches this isolate by
 	// being pushed to it, so the hot path does no KV read at all.
 	const state = stateFor(ctx.label);
-	if (state.current) {
-		return state.current.engine;
-	}
+	const loaded = liveCurrent(state, ctx.label);
+	if (loaded) return loaded.engine;
 	if (!state.loading) {
-		state.loading = loadStore(env, ctx).finally(() => {
-			state.loading = null;
-		});
+		const failed = state.lastLoadFailure;
+		if (failed) {
+			const since = Date.now() - failed.at;
+			if (since < LOAD_BACKOFF_MS) {
+				throw new EngineUnavailableError(
+					`store load failed ${since}ms ago (${failed.message}); not retrying for another ` +
+						`${LOAD_BACKOFF_MS - since}ms`,
+				);
+			}
+		}
+		const loading = loadStore(env, ctx)
+			.then((engine) => {
+				state.lastLoadFailure = null;
+				return engine;
+			})
+			.catch((err: unknown) => {
+				state.lastLoadFailure = { at: Date.now(), message: err instanceof Error ? err.message : String(err) };
+				throw err;
+			})
+			.finally(() => {
+				if (state.loading === loading) state.loading = null;
+			});
+		state.loading = loading;
 	}
 	return state.loading;
 }
 
 /** Non-blocking: the label's engine if this isolate is already warm, else null. */
 export function tryGetLoadedEngine(label?: string): Engine | null {
-	return stateFor(label).current?.engine ?? null;
+	return liveCurrent(stateFor(label), label)?.engine ?? null;
+}
+
+/**
+ * Wait until no load is in flight for the label. Cheap when none is.
+ *
+ * The publish RPCs gate on tryGetLoadedEngine, which is null both for a COLD
+ * object and for one whose first request's load is still streaming — and the
+ * two must not be treated alike: a cold object acks and loads the pushed store
+ * on its next request, while a mid-load object that is acked as cold finishes
+ * its OLD load and serves it under a record naming the new one. The load's
+ * failure is its own caller's to report; this only waits it out.
+ */
+export async function settleInFlightLoad(label?: string): Promise<void> {
+	const state = stateFor(label);
+	while (state.loading) {
+		await state.loading.catch(() => {});
+	}
 }
 
 /** The manifest the label's loaded store came from, or null when cold — how the
  * gather learns partition_count without a KV read on the request path. */
 export function currentManifest(label?: string): StoreManifest | null {
-	return stateFor(label).current?.manifest ?? null;
+	return liveCurrent(stateFor(label), label)?.manifest ?? null;
 }
 
 /**
@@ -1158,7 +1321,7 @@ function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] {
 const FUZZY_CANDIDATE_CLASSES = 8;
 
 export function gatherOps(label?: string): GatherOps | null {
-	const current = stateFor(label).current;
+	const current = liveCurrent(stateFor(label), label);
 	if (!current) return null;
 	const { handle, engine, storeKey } = current;
 	return {

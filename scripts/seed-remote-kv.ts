@@ -218,6 +218,15 @@ await kv([
 ]);
 console.log(`  tag aliases uploaded from ${TAG_ALIASES_FILE}`);
 
+// What retention must protect, read BEFORE the manifest is replaced: the build the manifest names
+// right now (a reader mid-stream finishes on it, and a colo whose KV cache still holds this
+// manifest keeps routing to it for up to a minute), and the family the in-Worker coordinator is
+// still uploading. This used to be read AFTER the put, which made the "previously live" entry a
+// second copy of the build just published, and left yesterday's live family protected by age
+// alone — which fails exactly when a nightly run is in flight, since its family is newer.
+const previouslyLive = await liveManifestBuiltAts(true);
+const inFlight = await publishingBuiltAts(true);
+
 // The commit point.
 const manifestPath = join(tmpdir(), "sylvan-store-manifest.json");
 await writeFile(manifestPath, JSON.stringify(manifest));
@@ -226,20 +235,22 @@ try {
 
 	// AFTER the manifest, which is the commit point: the newest build is live, so every build older
 	// than the retention policy is now unreachable. A partitioned build's N chunk families share one
-	// built_at and retire together (see staleStoreKeys). The build just published is protected
-	// explicitly, and so is the family the live manifest references. Retention used to be driven by
-	// a history list the importer wiped every run, so nothing was ever deleted — see
-	// scripts/kv-prune.ts.
-	// Never retired: the build just published, the one the manifest named a moment ago (a reader
-	// mid-stream finishes on it), and the one the in-Worker coordinator is still uploading — the
-	// family this very sweep deleted eight partitions of on 2026-09-14 (see scripts/prune-kv.ts).
-	const protect = [
-		String(manifest.built_at ?? ""),
-		...(await liveManifestBuiltAts(true)),
-		...(await publishingBuiltAts(true)),
-	];
-	const prunedChunks = await pruneOldStores(KEEP_STORES_IN_KV, protect, true);
-	if (prunedChunks > 0) console.log(`Retention: dropped ${prunedChunks} chunk(s) from superseded store builds.`);
+	// built_at and retire together (see staleStoreKeys). Retention used to be driven by a history
+	// list the importer wiped every run, so nothing was ever deleted — see scripts/kv-prune.ts.
+	// Never retired: the build just published, the one the manifest named a moment ago, and the one
+	// the in-Worker coordinator is still uploading — the family this very sweep deleted eight
+	// partitions of on 2026-09-14 (see scripts/prune-kv.ts). A protect read that FAILED (null) is
+	// not "nothing to protect": the sweep is skipped and the next deploy or nightly retries it.
+	if (previouslyLive === null || inFlight === null) {
+		console.warn(
+			`Retention: could not read the ${previouslyLive === null ? "previous manifest" : "in-flight marker"} — ` +
+				"leaving superseded builds in place this time.",
+		);
+	} else {
+		const protect = [String(manifest.built_at ?? ""), ...previouslyLive, ...inFlight];
+		const prunedChunks = await pruneOldStores(KEEP_STORES_IN_KV, protect, true);
+		if (prunedChunks > 0) console.log(`Retention: dropped ${prunedChunks} chunk(s) from superseded store builds.`);
+	}
 } finally {
 	await unlink(manifestPath).catch(() => {});
 }

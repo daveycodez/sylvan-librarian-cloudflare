@@ -293,23 +293,94 @@ function analyzePattern(pattern: string): PatternMetrics {
 }
 
 /**
+ * The pattern as JS `RegExp` can VALIDATE it. JS is not the dialect being validated — Scryfall's
+ * Onigmo and this engine's Rust `regex` (falling back to `fancy_regex`) both accept inline flags
+ * `(?i)`, `(?P<name>…)` groups, possessive `a++` and atomic `(?>…)` groups, and comments `(?#…)`,
+ * none of which V8 parses. Each is rewritten to its JS spelling, or dropped when it has none,
+ * for the check only; the engine still receives the original and has the final say (a pattern
+ * this accepts and the engine refuses is the engine's 400, see the caller). Escapes and character
+ * classes are stepped over so their contents are never rewritten.
+ */
+export function toJsValidationPattern(pattern: string): string {
+	let out = "";
+	let inClass = false;
+	for (let i = 0; i < pattern.length; i++) {
+		const c = pattern[i] as string;
+		if (c === "\\" && i + 1 < pattern.length) {
+			out += c + (pattern[i + 1] as string);
+			i++;
+			continue;
+		}
+		if (inClass) {
+			if (c === "]") inClass = false;
+			out += c;
+			continue;
+		}
+		if (c === "[") {
+			inClass = true;
+			out += c;
+			continue;
+		}
+		if (c === "(" && pattern[i + 1] === "?") {
+			const rest = pattern.slice(i + 2);
+			const flagsOnly = /^[a-zA-Z-]+\)/.exec(rest);
+			if (flagsOnly !== null) {
+				i += 1 + flagsOnly[0].length; // `(?flags)` — dropped
+				continue;
+			}
+			const flagsScoped = /^[a-zA-Z-]+:/.exec(rest);
+			if (flagsScoped !== null) {
+				out += "(?:"; // `(?flags:…)` → `(?:…)`
+				i += 1 + flagsScoped[0].length;
+				continue;
+			}
+			if (rest.startsWith("P<")) {
+				out += "(?<"; // `(?P<name>` → `(?<name>`
+				i += 3;
+				continue;
+			}
+			if (rest.startsWith(">")) {
+				out += "(?:"; // atomic group → plain group
+				i += 2;
+				continue;
+			}
+			if (rest.startsWith("#")) {
+				const close = pattern.indexOf(")", i);
+				if (close === -1) return pattern; // let RegExp report the unclosed comment
+				i = close;
+				continue;
+			}
+		}
+		// Possessive quantifier: `x++`, `x*+`, `x?+`, `x{n,m}+` — the trailing `+` is dropped.
+		if (c === "+" && out.length > 0 && /[*+?}]$/.test(out) && !/\\[*+?}]$/.test(out)) continue;
+		out += c;
+	}
+	return out;
+}
+
+/**
  * Reject a pattern no engine in this tree can compile, quoting the reason back.
  *
  * Separate from the budget above because the two answer differently: an over-budget pattern is
  * refused with a fixed message that discloses nothing, while a MALFORMED one is a user mistake and
- * saying what is wrong with it is the whole help. `RegExp` is the only regex parser available here,
- * and it is a strict enough reader to catch the malformed cases (unbalanced parens, a dangling
- * quantifier, an unterminated class) — the dialect differences that make it the WRONG acceptor for
- * a query regex are all cases where it accepts something the engine also accepts.
+ * saying what is wrong with it is the whole help. `RegExp` is the only regex parser available
+ * here, and after `toJsValidationPattern` has respelled the dialect features it lacks it is a
+ * SUPERSET acceptor for what upstream's `sre` and the engine (Rust `regex` under `(?im)`, then
+ * `fancy_regex`) both take — inline flags, `(?P<name>…)`, possessive and atomic groups, comments.
+ * It still catches the malformed cases (unbalanced parens, a dangling quantifier, an unterminated
+ * class). Two spellings it accepts that upstream's Python refuses, `(?<name>…)` and `\p{…}`, are
+ * ones the engine runs; the engine is the final acceptor, and refusing what it can run to mirror
+ * a Python parser limitation would be parity for its own sake.
  */
 export function checkPatternIsWellFormed(pattern: string): void {
+	const js = toJsValidationPattern(pattern);
 	try {
-		new RegExp(pattern, "iu");
+		new RegExp(js, "iu");
 	} catch {
 		// `u` mode rejects ARE spellings (`\y`, `\m`) that this port translates and the engine
 		// takes; re-read without it before calling the pattern malformed.
 		try {
-			new RegExp(pattern, "i");
+			new RegExp(js, "i");
 		} catch (err) {
 			throw new InvalidRegexPatternError(err instanceof Error ? stripPositionSuffix(err.message) : "invalid pattern");
 		}

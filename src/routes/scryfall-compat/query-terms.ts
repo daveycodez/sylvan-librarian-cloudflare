@@ -52,7 +52,9 @@ import {
 	GAME_IS_TAGS,
 	ParserClass,
 } from "../../parser/db-info";
+import { toJsValidationPattern } from "../../parser/regex-budget";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
+import { isWordCont } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
 
 /**
@@ -1136,8 +1138,24 @@ function regexReason(pattern: string): string {
 	if (repetition && Number(repetition[1]) > Number(repetition[2])) {
 		return "Invalid regular expression: invalid repetition count(s).";
 	}
-	if (/(^|[(|])[*+?]/.test(unescaped)) return "Invalid regular expression: quantifier operand invalid.";
+	// A quantifier with nothing before it: at the start, after `|`, or after a plain `(` — NOT
+	// after `(?`, which opens a group extension (`(?i)`, `(?<x>`) and once counted here.
+	if (/(?:^|\||\((?!\?))[*+?]/.test(unescaped)) return "Invalid regular expression: quantifier operand invalid.";
 	return "Invalid regular expression: invalid pattern.";
+}
+
+/**
+ * An apostrophe the LEXER keeps inside a word rather than opening a string: preceded by a word
+ * character and followed by one (or by the end of input) — `don't`, `urza's`, `urza'` mid-type.
+ * The lexer's own rule lives in tokenizer.ts (`scanWordEnd`), where it is consulted only while a
+ * word is already being scanned; this is that rule seen from a scanner that has no token state.
+ * Both scanners below used to run to the next `'` on ANY apostrophe, so `(o:don't) e:khm` read as
+ * a string that swallowed the `)` and was refused as unclosed parentheses, and `o:don't f:x` was
+ * one piece with the second term neither dropped nor warned.
+ */
+function apostropheInWord(src: readonly string[], pos: number): boolean {
+	if (pos === 0 || !isWordCont(src[pos - 1] as string)) return false;
+	return pos + 1 >= src.length || isWordCont(src[pos + 1] as string);
 }
 
 /**
@@ -1150,6 +1168,7 @@ function unbalancedParens(source: string): boolean {
 	let depth = 0;
 	for (let pos = 0; pos < n; pos++) {
 		const c = src[pos] as string;
+		if (c === "'" && apostropheInWord(src, pos)) continue;
 		if (c === '"' || c === "'" || c === "/") {
 			pos++;
 			while (pos < n) {
@@ -1208,6 +1227,10 @@ function scanPieces(source: string): Piece[] {
 		let groupEnd = -1;
 		while (pos < n) {
 			const c = src[pos] as string;
+			if (c === "'" && apostropheInWord(src, pos)) {
+				pos++;
+				continue;
+			}
 			if (c === '"' || c === "'" || c === "/") {
 				// A quoted string or a regex literal: run to its closing delimiter, honoring `\`.
 				pos++;
@@ -1457,7 +1480,7 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (rawValue.length >= 2 && rawValue.startsWith("/") && rawValue.endsWith("/")) {
 		const pattern = rawValue.slice(1, -1);
 		try {
-			new RegExp(pattern);
+			new RegExp(toJsValidationPattern(pattern));
 		} catch {
 			return { keep: false, reason: regexReason(pattern) };
 		}

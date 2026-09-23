@@ -38,9 +38,40 @@ thread_local! {
     static LOADING: RefCell<Option<(AlignedVec, usize)>> = const { RefCell::new(None) };
     /// An in-progress GZIPPED load: the inflater, writing straight into the store buffer.
     static GZ_LOADING: RefCell<Option<MultiGzDecoder<StoreSink>>> = const { RefCell::new(None) };
+    /// The buffer a GZIPPED load inflates into. Held HERE rather than inside the decoder so that
+    /// the decoder can be dropped in any state — mid-stream, corrupt, never finished — and the
+    /// buffer is still reachable to recycle. See `abandon_loads`.
+    static GZ_BUF: RefCell<Option<AlignedVec>> = const { RefCell::new(None) };
     /// The buffer of the last store this instance let go of, kept for the next load to refill.
     /// See `store_buffer`.
     static SPARE: RefCell<Option<AlignedVec>> = const { RefCell::new(None) };
+}
+
+/// Prefix of every error that means THIS INSTANCE can no longer be trusted. The wasm target is
+/// panic=abort: a trap never runs Rust's drops, so a `RefCell` borrow taken by the call that
+/// trapped (`with_store`'s shared borrow of the store, the gzip sink's borrow of its buffer) stays
+/// counted forever. Queries still work — shared borrows nest — but every `borrow_mut` after it
+/// panicked, which is another trap, so the next publish's unload trapped, every later load
+/// allocated a fresh store buffer and trapped again at install, and linear memory climbed a
+/// partition per attempt until the isolate died. Every slot access below is a CHECKED borrow that
+/// answers with this prefix instead; the JS shim (src/engine/wasm-shim.ts) drops the instance
+/// on seeing it, and the next call instantiates a fresh one.
+pub const POISONED_PREFIX: &str = "engine poisoned: ";
+
+fn poisoned(slot: &str) -> String {
+    format!("{POISONED_PREFIX}the {slot} slot is still borrowed by a call that trapped")
+}
+
+/// `f` over the slot mutably, or the poisoned error if a trapped call still holds a borrow of it.
+fn with_mut<S, T>(
+    key: &'static std::thread::LocalKey<RefCell<S>>,
+    name: &str,
+    f: impl FnOnce(&mut S) -> T,
+) -> Result<T, String> {
+    key.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut guard) => Ok(f(&mut guard)),
+        Err(_) => Err(poisoned(name)),
+    })
 }
 
 /// The buffer a load of `total` bytes fills: the spare, when it is big enough, else a new one.
@@ -52,46 +83,84 @@ thread_local! {
 /// of headroom so the next generation of the same partition — which drifts by a fraction of that
 /// night to night — still fits it; a bigger jump (a content-generation change) simply allocates
 /// once more.
-fn store_buffer(total: usize) -> AlignedVec {
-    if let Some(mut spare) = SPARE.with(|s| s.borrow_mut().take())
+fn store_buffer(total: usize) -> Result<AlignedVec, String> {
+    if let Some(mut spare) = with_mut(&SPARE, "spare", |s| s.take())?
         && spare.capacity() >= total
     {
         spare.clear();
-        return spare;
+        return Ok(spare);
     }
-    AlignedVec::with_capacity(total + total / 32)
+    Ok(AlignedVec::with_capacity(total + total / 32))
+}
+
+/// Keep `buf` as the spare, unless the spare already there is the bigger one. Every path that
+/// gives up on a store-sized buffer goes through here rather than dropping it: a dropped
+/// store-sized block is not reusable by the allocator (see `store_buffer`), so each failed load
+/// used to grow linear memory by a whole partition — a partition whose chunks had been swept
+/// turned a 503-per-request outage into an isolate reset loop after two or three requests.
+fn recycle(buf: AlignedVec) -> Result<(), String> {
+    with_mut(&SPARE, "spare", |slot| match slot.as_ref() {
+        Some(spare) if spare.capacity() >= buf.capacity() => {}
+        _ => *slot = Some(buf),
+    })
+}
+
+/// Give up on every in-progress load, recycling its buffer. Called before a new load begins —
+/// a load the JS side abandoned mid-stream (a KV chunk that errored, an isolate reset between
+/// pieces) never reached `finish`, and its buffer is exactly what the next load should refill —
+/// and on every error path inside a load.
+fn abandon_loads() -> Result<(), String> {
+    if let Some((buf, _)) = with_mut(&LOADING, "load", |l| l.take())? {
+        recycle(buf)?;
+    }
+    with_mut(&GZ_LOADING, "gzip decoder", |g| *g = None)?;
+    if let Some(buf) = with_mut(&GZ_BUF, "gzip buffer", |b| b.take())? {
+        recycle(buf)?;
+    }
+    Ok(())
 }
 
 /// Install `store` as the active one, keeping the outgoing store's buffer as the spare.
-fn install(store: BufferStore) {
-    if let Some(old) = STORE.with(|s| s.borrow_mut().replace(store)) {
-        SPARE.with(|s| *s.borrow_mut() = Some(old.into_bytes()));
+fn install(store: BufferStore) -> Result<(), String> {
+    if let Some(old) = with_mut(&STORE, "store", |s| s.replace(store))? {
+        with_mut(&SPARE, "spare", |s| *s = Some(old.into_bytes()))?;
     }
+    Ok(())
 }
 
-/// The preallocated store buffer as an inflate SINK: decompressed bytes land in their final,
-/// aligned place, and a stream that inflates past the declared length is refused mid-write
+/// The preallocated store buffer (`GZ_BUF`) as an inflate SINK: decompressed bytes land in their
+/// final, aligned place, and a stream that inflates past the declared length is refused mid-write
 /// rather than growing the buffer.
 struct StoreSink {
-    buf: AlignedVec,
     total: usize,
 }
 
 impl Write for StoreSink {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        if self.buf.len() + data.len() > self.total {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "store_load_gzip_chunk: inflates past the declared total ({} + {} > {})",
-                    self.buf.len(),
-                    data.len(),
-                    self.total
-                ),
-            ));
-        }
-        self.buf.extend_from_slice(data);
-        Ok(data.len())
+        GZ_BUF.with(|b| {
+            let Ok(mut slot) = b.try_borrow_mut() else {
+                return Err(std::io::Error::other(poisoned("gzip buffer")));
+            };
+            let Some(buf) = slot.as_mut() else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "store_load_gzip_chunk: no load buffer (load already abandoned)",
+                ));
+            };
+            if buf.len() + data.len() > self.total {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "store_load_gzip_chunk: inflates past the declared total ({} + {} > {})",
+                        buf.len(),
+                        data.len(),
+                        self.total
+                    ),
+                ));
+            }
+            buf.extend_from_slice(data);
+            Ok(data.len())
+        })
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -126,8 +195,8 @@ fn js_err(e: EngineError) -> JsError {
 #[wasm_bindgen]
 pub fn init_store(bytes: &[u8]) -> Result<(), JsError> {
     let store = BufferStore::from_bytes(bytes).map_err(js_err)?;
-    STORE.with(|s| *s.borrow_mut() = Some(store));
-    LOADING.with(|l| *l.borrow_mut() = None);
+    with_mut(&STORE, "store", |s| *s = Some(store)).map_err(|e| JsError::new(&e))?;
+    with_mut(&LOADING, "load", |l| *l = None).map_err(|e| JsError::new(&e))?;
     Ok(())
 }
 
@@ -141,9 +210,10 @@ pub fn begin_store_load(total_len: u32) -> Result<(), JsError> {
     if total == 0 {
         return Err(JsError::new("begin_store_load: total_len must be non-zero"));
     }
-    GZ_LOADING.with(|g| *g.borrow_mut() = None);
-    let buf = store_buffer(total);
-    LOADING.with(|l| *l.borrow_mut() = Some((buf, total)));
+    let js = |e: String| JsError::new(&e);
+    abandon_loads().map_err(js)?;
+    let buf = store_buffer(total).map_err(js)?;
+    with_mut(&LOADING, "load", |l| *l = Some((buf, total))).map_err(js)?;
     Ok(())
 }
 
@@ -151,44 +221,58 @@ pub fn begin_store_load(total_len: u32) -> Result<(), JsError> {
 /// memory; stream ~1MB chunks so the JS side never holds the whole store).
 #[wasm_bindgen]
 pub fn store_load_chunk(chunk: &[u8]) -> Result<(), JsError> {
-    LOADING.with(|l| {
-        let mut slot = l.borrow_mut();
+    store_load_chunk_inner(chunk).map_err(|e| JsError::new(&e))
+}
+
+fn store_load_chunk_inner(chunk: &[u8]) -> Result<(), String> {
+    let overflow = LOADING.with(|l| {
+        let Ok(mut slot) = l.try_borrow_mut() else {
+            return Err(poisoned("load"));
+        };
         let Some((buf, total)) = slot.as_mut() else {
-            return Err(JsError::new("store_load_chunk called without begin_store_load"));
+            return Err("store_load_chunk called without begin_store_load".to_string());
         };
         if buf.len() + chunk.len() > *total {
-            let msg = format!(
+            return Ok(Some(format!(
                 "store_load_chunk: overflow ({} + {} > declared total {})",
                 buf.len(),
                 chunk.len(),
                 total
-            );
-            *slot = None; // abort the load; the active store is untouched
-            return Err(JsError::new(&msg));
+            )));
         }
         buf.extend_from_slice(chunk);
-        Ok(())
-    })
+        Ok(None)
+    })?;
+    if let Some(msg) = overflow {
+        abandon_loads()?; // abort the load, keeping its buffer; the active store is untouched
+        return Err(msg);
+    }
+    Ok(())
 }
 
 /// Validate the streamed archive and atomically swap it in as the active
-/// store. On any error the in-progress buffer is dropped and the previously
-/// active store (if any) keeps serving.
+/// store. On any error the in-progress buffer is RECYCLED as the spare (see
+/// `recycle`) and the previously active store (if any) keeps serving.
 #[wasm_bindgen]
 pub fn finish_store_load() -> Result<(), JsError> {
-    let (buf, total) = LOADING
-        .with(|l| l.borrow_mut().take())
-        .ok_or_else(|| JsError::new("finish_store_load called without begin_store_load"))?;
+    finish_store_load_inner().map_err(|e| JsError::new(&e))
+}
+
+fn finish_store_load_inner() -> Result<(), String> {
+    let (buf, total) = with_mut(&LOADING, "load", |l| l.take())?
+        .ok_or_else(|| "finish_store_load called without begin_store_load".to_string())?;
     if buf.len() != total {
-        return Err(JsError::new(&format!(
-            "finish_store_load: incomplete load ({} of declared {} bytes)",
-            buf.len(),
-            total
-        )));
+        let msg = format!("finish_store_load: incomplete load ({} of declared {} bytes)", buf.len(), total);
+        recycle(buf)?;
+        return Err(msg);
     }
-    let store = BufferStore::from_aligned(buf).map_err(js_err)?;
-    install(store);
-    Ok(())
+    match BufferStore::try_from_aligned(buf) {
+        Ok(store) => install(store),
+        Err((e, buf)) => {
+            recycle(buf)?;
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Start a load whose bytes arrive GZIPPED — one or more concatenated gzip members, which is how
@@ -212,9 +296,11 @@ pub fn begin_store_load_gzip(total_len: u32) -> Result<(), JsError> {
     if total == 0 {
         return Err(JsError::new("begin_store_load_gzip: total_len must be non-zero"));
     }
-    LOADING.with(|l| *l.borrow_mut() = None);
-    let sink = StoreSink { buf: store_buffer(total), total };
-    GZ_LOADING.with(|g| *g.borrow_mut() = Some(MultiGzDecoder::new(sink)));
+    let js = |e: String| JsError::new(&e);
+    abandon_loads().map_err(js)?;
+    let buf = store_buffer(total).map_err(js)?;
+    with_mut(&GZ_BUF, "gzip buffer", |b| *b = Some(buf)).map_err(js)?;
+    with_mut(&GZ_LOADING, "gzip decoder", |g| *g = Some(MultiGzDecoder::new(StoreSink { total }))).map_err(js)?;
     Ok(())
 }
 
@@ -222,40 +308,58 @@ pub fn begin_store_load_gzip(total_len: u32) -> Result<(), JsError> {
 /// (and their headers) anywhere.
 #[wasm_bindgen]
 pub fn store_load_gzip_chunk(chunk: &[u8]) -> Result<(), JsError> {
-    GZ_LOADING.with(|g| {
-        let mut slot = g.borrow_mut();
-        let Some(decoder) = slot.as_mut() else {
-            return Err(JsError::new("store_load_gzip_chunk called without begin_store_load_gzip"));
+    store_load_gzip_chunk_inner(chunk).map_err(|e| JsError::new(&e))
+}
+
+fn store_load_gzip_chunk_inner(chunk: &[u8]) -> Result<(), String> {
+    let failed = GZ_LOADING.with(|g| {
+        let Ok(mut slot) = g.try_borrow_mut() else {
+            return Err(poisoned("gzip decoder"));
         };
-        if let Err(e) = decoder.write_all(chunk) {
-            *slot = None; // abort the load; the active store is untouched
-            return Err(JsError::new(&format!("store_load_gzip_chunk: {e}")));
-        }
-        Ok(())
-    })
+        let Some(decoder) = slot.as_mut() else {
+            return Err("store_load_gzip_chunk called without begin_store_load_gzip".to_string());
+        };
+        Ok(decoder.write_all(chunk).err().map(|e| format!("store_load_gzip_chunk: {e}")))
+    })?;
+    if let Some(msg) = failed {
+        abandon_loads()?; // abort the load, keeping its buffer; the active store is untouched
+        return Err(msg);
+    }
+    Ok(())
 }
 
 /// Finish a gzipped load: the last member must be complete (its CRC and length trailer verified by
 /// the decoder), the output exactly the declared length, and the header this build's. Then the
-/// store swaps in atomically, exactly as `finish_store_load` does.
+/// store swaps in atomically, exactly as `finish_store_load` does. On any error the buffer is
+/// RECYCLED as the spare, never dropped.
 #[wasm_bindgen]
 pub fn finish_store_load_gzip() -> Result<(), JsError> {
-    let decoder = GZ_LOADING
-        .with(|g| g.borrow_mut().take())
-        .ok_or_else(|| JsError::new("finish_store_load_gzip called without begin_store_load_gzip"))?;
-    let sink = decoder
-        .finish()
-        .map_err(|e| JsError::new(&format!("finish_store_load_gzip: truncated or corrupt gzip stream: {e}")))?;
-    if sink.buf.len() != sink.total {
-        return Err(JsError::new(&format!(
-            "finish_store_load_gzip: incomplete load ({} of declared {} bytes)",
-            sink.buf.len(),
-            sink.total
-        )));
+    finish_store_load_gzip_inner().map_err(|e| JsError::new(&e))
+}
+
+fn finish_store_load_gzip_inner() -> Result<(), String> {
+    let decoder = with_mut(&GZ_LOADING, "gzip decoder", |g| g.take())?
+        .ok_or_else(|| "finish_store_load_gzip called without begin_store_load_gzip".to_string())?;
+    let total = decoder.get_ref().total;
+    if let Err(e) = decoder.finish() {
+        abandon_loads()?;
+        return Err(format!("finish_store_load_gzip: truncated or corrupt gzip stream: {e}"));
     }
-    let store = BufferStore::from_aligned(sink.buf).map_err(js_err)?;
-    install(store);
-    Ok(())
+    let Some(buf) = with_mut(&GZ_BUF, "gzip buffer", |b| b.take())? else {
+        return Err("finish_store_load_gzip: no load buffer (load already abandoned)".to_string());
+    };
+    if buf.len() != total {
+        let msg = format!("finish_store_load_gzip: incomplete load ({} of declared {} bytes)", buf.len(), total);
+        recycle(buf)?;
+        return Err(msg);
+    }
+    match BufferStore::try_from_aligned(buf) {
+        Ok(store) => install(store),
+        Err((e, buf)) => {
+            recycle(buf)?;
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Drop the active store, keeping its buffer as the spare the next load refills
@@ -263,22 +367,31 @@ pub fn finish_store_load_gzip() -> Result<(), JsError> {
 /// dropping it outright would grow linear memory by a whole store on the next
 /// load). Call before a swap when there isn't headroom for two stores at once.
 #[wasm_bindgen]
-pub fn unload_store() {
-    if let Some(old) = STORE.with(|s| s.borrow_mut().take()) {
-        SPARE.with(|s| *s.borrow_mut() = Some(old.into_bytes()));
-    }
+pub fn unload_store() -> Result<(), JsError> {
+    unload_store_inner().map_err(|e| JsError::new(&e))
 }
 
+fn unload_store_inner() -> Result<(), String> {
+    if let Some(old) = with_mut(&STORE, "store", |s| s.take())? {
+        with_mut(&SPARE, "spare", |s| *s = Some(old.into_bytes()))?;
+    }
+    Ok(())
+}
+
+/// Whether a store is loaded. A poisoned slot reports false: the instance holds nothing usable,
+/// and the next load or query surfaces the poisoned error for the shim to act on.
 #[wasm_bindgen]
 pub fn store_loaded() -> bool {
-    STORE.with(|s| s.borrow().is_some())
+    STORE.with(|s| s.try_borrow().map(|g| g.is_some()).unwrap_or(false))
 }
 
 // ─── Queries / catalog / health ──────────────────────────────────────────────
 
 fn with_store<T>(f: impl FnOnce(&BufferStore) -> Result<T, JsError>) -> Result<T, JsError> {
     STORE.with(|s| {
-        let guard = s.borrow();
+        // `try_borrow`: only a trapped `install`/`unload` can leave a MUTABLE borrow behind,
+        // and reading through it would be reading a store mid-replacement.
+        let guard = s.try_borrow().map_err(|_| JsError::new(&poisoned("store")))?;
         let store = guard.as_ref().ok_or_else(|| JsError::new("no store loaded"))?;
         f(store)
     })
@@ -388,13 +501,13 @@ pub fn catalog() -> Result<String, JsError> {
 /// 0 when no store is loaded, mirroring the pyo3 surface's "empty engine".
 #[wasm_bindgen]
 pub fn size() -> u32 {
-    STORE.with(|s| s.borrow().as_ref().map(|st| st.size() as u32).unwrap_or(0))
+    STORE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.size() as u32)).unwrap_or(0))
 }
 
 /// Oracle-card count of the loaded store; 0 when no store is loaded.
 #[wasm_bindgen]
 pub fn card_count() -> u32 {
-    STORE.with(|s| s.borrow().as_ref().map(|st| st.card_count() as u32).unwrap_or(0))
+    STORE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.card_count() as u32)).unwrap_or(0))
 }
 
 /// The archive format version this build reads/writes. A store manifest's
@@ -678,8 +791,13 @@ pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
 /// It leads the packet so the two sides can never disagree silently: a gather reading a packet
 /// whose version it does not know REFUSES it, the same way it refuses a key stream whose
 /// `sort_key_version` disagrees. Version 1 was keys-only (`total, n, entries…`); version 2 adds
-/// the inline-row section that folds phase 2 into phase 1.
-pub const KEY_PACKET_VERSION: u32 = 2;
+/// the inline-row section that folds phase 2 into phase 1; version 3 adds a `flags` word to the
+/// header (bit 0: the query ran the widened driver), so the gather learns `widened` from the
+/// reply instead of binding the filter a second time on its own store.
+pub const KEY_PACKET_VERSION: u32 = 3;
+
+/// `flags` bit 0: the query ran the multilingual (widened) driver.
+pub const KEY_PACKET_FLAG_WIDENED: u32 = 1;
 
 /// The shape every framed row takes on the wire, named by the caller of [`query_keys`] and
 /// [`fetch_rows`]: the engine row's own JSON, or the Scryfall card object built from it.
@@ -733,7 +851,7 @@ fn write_framed_row(
 ///
 /// ```text
 /// version: u32 (= KEY_PACKET_VERSION)
-/// total: u32, n: u32, inline: u32
+/// total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED)
 /// n      of: keylen: u16, key: keylen bytes, vpid: u32
 /// inline of: rowlen: u32, row bytes in `shape`
 /// ```
@@ -767,11 +885,12 @@ pub fn query_keys(
         serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&e.to_string()))?;
     with_store(|store| {
         let out = store.query_keys(&tree, &opts, inline_rows as usize).map_err(js_err)?;
-        let mut buf = Vec::with_capacity(16 + out.keys.iter().map(|(k, _)| k.len() + 6).sum::<usize>());
+        let mut buf = Vec::with_capacity(20 + out.keys.iter().map(|(k, _)| k.len() + 6).sum::<usize>());
         buf.extend_from_slice(&KEY_PACKET_VERSION.to_le_bytes());
         buf.extend_from_slice(&u32::try_from(out.total).unwrap_or(u32::MAX).to_le_bytes());
         buf.extend_from_slice(&(out.keys.len() as u32).to_le_bytes());
         buf.extend_from_slice(&(out.rows.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(if out.widened { KEY_PACKET_FLAG_WIDENED } else { 0 }).to_le_bytes());
         for (key, vpid) in &out.keys {
             let len = u16::try_from(key.len())
                 .map_err(|_| JsError::new("sort key exceeds u16 length"))?;
@@ -875,22 +994,76 @@ mod tests {
     /// store on every publish swap. A request the spare cannot hold gets a fresh buffer.
     #[test]
     fn a_load_refills_the_spare_buffer() {
-        let mut first = store_buffer(1_000);
+        let mut first = store_buffer(1_000).unwrap();
         let ptr = first.as_ptr();
         assert!(first.capacity() >= 1_000 + 1_000 / 32, "fresh buffers carry headroom");
         first.extend_from_slice(&[7u8; 1_000]);
         SPARE.with(|s| *s.borrow_mut() = Some(first));
 
         // The next generation, a little larger, still fits the headroom.
-        let second = store_buffer(1_020);
+        let second = store_buffer(1_020).unwrap();
         assert_eq!(second.as_ptr(), ptr, "the spare was not reused");
         assert!(second.is_empty(), "a reused buffer must start empty");
         let cap = second.capacity();
         SPARE.with(|s| *s.borrow_mut() = Some(second));
 
-        let bigger = store_buffer(cap + 1);
+        let bigger = store_buffer(cap + 1).unwrap();
         assert!(bigger.capacity() > cap);
         assert!(SPARE.with(|s| s.borrow().is_none()), "an outgrown spare is let go, not kept beside");
+    }
+
+    /// A borrow left behind by a trapped call (simulated here by leaking a guard, which is exactly
+    /// what panic=abort does) makes every later slot access answer the POISONED error instead of
+    /// panicking — a second trap — so the JS shim can drop the instance and start a fresh one.
+    #[test]
+    fn a_leaked_borrow_is_reported_as_poisoned_not_trapped() {
+        // The guard's borrow is never released, like a trap mid-call. Test threads are per-test,
+        // so the poisoned thread-local dies with this test.
+        SPARE.with(|s| std::mem::forget(s.borrow_mut()));
+        let err = store_buffer(16).expect_err("a held spare slot must not be reused");
+        assert!(err.starts_with(POISONED_PREFIX), "{err}");
+        let err = recycle(AlignedVec::new()).expect_err("nor written");
+        assert!(err.starts_with(POISONED_PREFIX), "{err}");
+    }
+
+    /// A load that FAILS keeps its buffer as the spare: a corrupt gzip stream, a short raw load,
+    /// an archive with a foreign header, and a load the caller abandoned without `finish` all
+    /// leave the next load refilling the same allocation. Dropping it instead grew linear memory
+    /// by a whole partition per attempt, which is what turned "this partition's chunks are gone"
+    /// into an isolate reset loop.
+    #[test]
+    fn a_failed_load_recycles_its_buffer() {
+        // Corrupt gzip: begin, feed garbage, finish fails, spare holds a buffer of the declared size.
+        SPARE.with(|s| *s.borrow_mut() = None);
+        begin_store_load_gzip(4_000).expect("begin gzip");
+        let _ = store_load_gzip_chunk_inner(b"this is not a gzip stream at all");
+        assert!(finish_store_load_gzip_inner().is_err());
+        let spare_ptr = SPARE.with(|s| s.borrow().as_ref().map(|b| (b.as_ptr(), b.capacity())));
+        let (ptr, cap) = spare_ptr.expect("the failed gzip load's buffer was dropped, not recycled");
+        assert!(cap >= 4_000);
+        assert!(GZ_BUF.with(|b| b.borrow().is_none()));
+        assert!(GZ_LOADING.with(|g| g.borrow().is_none()));
+
+        // Short raw load: the same buffer is refilled, then recycled again on the length error.
+        begin_store_load(4_000).expect("begin raw");
+        store_load_chunk_inner(&[1u8; 10]).expect("chunk");
+        assert!(finish_store_load_inner().is_err());
+        assert_eq!(SPARE.with(|s| s.borrow().as_ref().map(|b| b.as_ptr())), Some(ptr));
+
+        // Foreign header: full length, wrong bytes — try_from_aligned hands the buffer back.
+        begin_store_load(4_000).expect("begin raw");
+        store_load_chunk_inner(&[0xAB; 4_000]).expect("chunk");
+        assert!(finish_store_load_inner().is_err());
+        assert_eq!(SPARE.with(|s| s.borrow().as_ref().map(|b| b.as_ptr())), Some(ptr));
+
+        // Abandoned mid-stream (the JS side never called finish): the next begin takes it over.
+        begin_store_load_gzip(4_000).expect("begin gzip");
+        assert!(SPARE.with(|s| s.borrow().is_none()), "the load is holding the buffer");
+        begin_store_load(4_000).expect("begin raw over an abandoned gzip load");
+        let held = LOADING.with(|l| l.borrow().as_ref().map(|(b, _)| b.as_ptr()));
+        assert_eq!(held, Some(ptr), "an abandoned load's buffer is what the next load refills");
+        abandon_loads().expect("abandon");
+        assert!(!store_loaded(), "no failed load ever became the active store");
     }
 
     /// The gzipped load path the Durable Object runs on every wake: a store published as
@@ -938,7 +1111,7 @@ mod tests {
         finish_store_load().expect("finish_store_load");
         let tree = r#"{"node_type": "TrueNode"}"#;
         let from_raw = query(tree, "{}").expect("query raw");
-        unload_store();
+        unload_store().expect("unload");
 
         begin_store_load_gzip(raw.len() as u32).expect("begin gzip");
         for piece in stored.chunks(5) {
@@ -947,7 +1120,7 @@ mod tests {
         finish_store_load_gzip().expect("finish_store_load_gzip");
         assert!(store_loaded());
         let from_gzip = query(tree, "{}").expect("query gzip");
-        unload_store();
+        unload_store().expect("unload");
 
         assert_eq!(from_gzip, from_raw);
         let v: serde_json::Value = serde_json::from_str(&from_gzip).expect("valid JSON out");
@@ -1054,7 +1227,7 @@ mod tests {
             serde_json::from_str(&autocomplete("chun", 20).expect("autocomplete")).expect("valid JSON");
         assert_eq!(v, serde_json::json!(["Chunk Test"]), "the PRINTED name, not the folded key");
 
-        unload_store();
+        unload_store().expect("unload");
         assert!(!store_loaded());
         assert_eq!(size(), 0);
     }
@@ -1100,7 +1273,9 @@ mod tests {
         assert_eq!(u32_at(packed, 0), KEY_PACKET_VERSION);
         let n = u32_at(packed, 8) as usize;
         let inline = u32_at(packed, 12) as usize;
-        let mut at = 16;
+        // flags at 16: a TrueNode query over an English-only store never widens.
+        assert_eq!(u32_at(packed, 16), 0);
+        let mut at = 20;
         let mut vpids = Vec::with_capacity(n);
         for _ in 0..n {
             let keylen = u16::from_le_bytes(packed[at..at + 2].try_into().expect("u16")) as usize;
@@ -1156,7 +1331,7 @@ mod tests {
         // frame are pinned too.
         let (vpids, _) = split_key_packet(&packed);
         let rows_packed = fetch_rows(&vpids, r#"["name"]"#, "rows", "").expect("fetch_rows");
-        unload_store();
+        unload_store().expect("unload");
 
         // Base16, dependency-free both sides.
         let hex: String = packed.iter().map(|b| format!("{b:02x}")).collect();
@@ -1165,7 +1340,7 @@ mod tests {
         let fixture = serde_json::json!({
             "note": "REAL query_keys bytes off a deterministic 2-row store (orderby=name, \
                      fields=[name], inline_rows=1, shape=rows). Pins the LE packet layout — version \
-                     header, key entries AND the framed inline-row section — between the Rust packer \
+                     header with its flags word, key entries AND the framed inline-row section — between the Rust packer \
                      (engine/wasm) and src/engine/gather.ts's decodeKeyPacket. rows_packed_hex is \
                      fetch_rows for both entries (shape=rows), pinning the row packet against \
                      decodeRowPacket. Regenerate with SYLVAN_WRITE_WIRE_FIXTURE=1 cargo test -p \
@@ -1175,6 +1350,7 @@ mod tests {
             "total": 2,
             "entries": 2,
             "inline_rows": 1,
+            "widened": false,
             "packed_hex": hex,
             "rows_packed_hex": rows_hex,
         });
@@ -1235,7 +1411,7 @@ mod tests {
             &fetch_rows(&vpids, r#"["name", "scryfall_id", "oracle_id", "set_code", "collector_number", "oracle_text", "type_line", "legalities", "colors", "color_identity"]"#, "cards", base)
                 .expect("fetch_rows"),
         );
-        unload_store();
+        unload_store().expect("unload");
 
         assert_eq!(inline, fetched, "inline and fetched card frames diverged");
         let mut spliced = Vec::new();

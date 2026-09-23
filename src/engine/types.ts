@@ -270,6 +270,17 @@ export interface Engine {
 	/** `illustration_id`, one of the collection endpoint's identifiers; not a searchable field. */
 	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/**
+	 * A `POST /cards/collection` batch of the KEY-shaped identifiers — `oracle_id`,
+	 * `illustration_id`, `mtgo_id`, `multiverse_id` — resolved to one card (or null) each, in order.
+	 *
+	 * NOT the single-card lookups looped: each of those is a billed Durable Object RPC, and a
+	 * batch of 75 identifiers the store lacks was 75 x N of them. One RPC per partition asked.
+	 */
+	scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]>;
+	/**
 	 * The containment stage of `/cards/named?fuzzy=`: one card per distinct name containing every
 	 * word. The caller asks for 2 — more than one distinct name is `ambiguous`, not a guess.
 	 */
@@ -294,6 +305,12 @@ export interface Engine {
  * same shape `/cards/named?exact=` hands over; the engine collates it. `setCode` is "" for an
  * identifier that names no set.
  */
+/** A collection identifier that is a KEY into the store rather than a query: see Engine.scryfallCardsByIdentifiers. */
+export type CollectionKeyIdentifier =
+	| { kind: "oracle_id"; id: string }
+	| { kind: "illustration_id"; id: string }
+	| { kind: "external"; namespace: string; id: number };
+
 export interface NameIdentifier {
 	folded: string;
 	setCode: string;

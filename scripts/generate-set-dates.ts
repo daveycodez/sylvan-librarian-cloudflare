@@ -15,11 +15,13 @@
 // mtgo/arena code and Mythic Edition's — are both `Invalid date or unknown set code`, where
 // `e:dar` is 265 there. So this table is `code -> released_at` and nothing else.
 //
-//   bun scripts/generate-set-dates.ts
+//   bun run set-dates
 //
-// Run by scripts/import-store.sh next to generate-tag-aliases.ts, for the same reason: the
-// committed module then describes the same Scryfall the live store was built from. A set released
-// after the last run is an unknown code until the next one, which is the honest answer — the
+// Run by hand and the diff committed; a sync-upstream is the natural moment. This used to run
+// inside import-store.sh between the build and the publish, and that made the DEPLOYED parser
+// differ from the pushed commit — only on the deploys that rebuilt the store, and never for the
+// nightly coordinator's rebuilds, which cannot touch committed code at all. A set released after
+// the last refresh is an unknown code until the next one, which is the honest answer — the
 // alternative is a KV read on the parse path of every search.
 
 import { writeFileSync } from "node:fs";
@@ -89,7 +91,8 @@ async function main(): Promise<void> {
 //
 // A TABLE rather than a lookup, because the parser is synchronous and sits on the hot path: the
 // alternative is a KV read of the \`/sets\` reference data on every search that writes one of
-// these. Regenerated with the store, exactly like tag-aliases.gen.ts.
+// these. Committed and refreshed by hand with \`bun run set-dates\`, never at deploy time, so the
+// deployed parser is always the pushed commit.
 
 // One string literal, scanned rather than structured, parsed on first use — see \`table()\` in the
 // generator. Dates are \`yyyymmdd\`; \`setReleaseDate\` re-inserts the hyphens.

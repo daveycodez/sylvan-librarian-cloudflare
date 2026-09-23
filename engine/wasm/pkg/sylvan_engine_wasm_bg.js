@@ -461,8 +461,8 @@ export function fetch_rows(vpids, fields_json, shape, base_url) {
 
 /**
  * Validate the streamed archive and atomically swap it in as the active
- * store. On any error the in-progress buffer is dropped and the previously
- * active store (if any) keeps serving.
+ * store. On any error the in-progress buffer is RECYCLED as the spare (see
+ * `recycle`) and the previously active store (if any) keeps serving.
  */
 export function finish_store_load() {
     const ret = wasm.finish_store_load();
@@ -474,7 +474,8 @@ export function finish_store_load() {
 /**
  * Finish a gzipped load: the last member must be complete (its CRC and length trailer verified by
  * the decoder), the output exactly the declared length, and the header this build's. Then the
- * store swaps in atomically, exactly as `finish_store_load` does.
+ * store swaps in atomically, exactly as `finish_store_load` does. On any error the buffer is
+ * RECYCLED as the spare, never dropped.
  */
 export function finish_store_load_gzip() {
     const ret = wasm.finish_store_load_gzip();
@@ -638,7 +639,7 @@ export function query(filter_tree_json, opts_json) {
  *
  * ```text
  * version: u32 (= KEY_PACKET_VERSION)
- * total: u32, n: u32, inline: u32
+ * total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED)
  * n      of: keylen: u16, key: keylen bytes, vpid: u32
  * inline of: rowlen: u32, row bytes in `shape`
  * ```
@@ -891,6 +892,8 @@ export function store_load_gzip_chunk(chunk) {
 }
 
 /**
+ * Whether a store is loaded. A poisoned slot reports false: the instance holds nothing usable,
+ * and the next load or query surfaces the poisoned error for the shim to act on.
  * @returns {boolean}
  */
 export function store_loaded() {
@@ -915,7 +918,10 @@ export function store_version() {
  * load). Call before a swap when there isn't headroom for two stores at once.
  */
 export function unload_store() {
-    wasm.unload_store();
+    const ret = wasm.unload_store();
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 export function __wbg_Error_92b29b0548f8b746(arg0, arg1) {
     const ret = Error(getStringFromWasm0(arg0, arg1));

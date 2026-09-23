@@ -17,9 +17,8 @@
 //
 //   listing   Scryfall /bulk-data → dump URIs
 //   fetch     ranged, resumable download of each compressed dump → SQLite
-//   recode    all_cards' one long gzip stream → independent 8MB-raw gzip
-//             members (stage_members), so every later resume into the ~2GB
-//             dump seeks to a member instead of re-decompressing the prefix
+//   (recode   RETIRED: all_cards and default_cards are STREAMED, never staged,
+//             and resume through openDumpStream's inflater checkpoints)
 //   canonical default_cards' ids → the canonical-printing set, snapshotted as
 //             TagData (tagdata_blobs) — built BEFORE transform because every
 //             all_cards row's is_canonical is membership in this set
@@ -63,8 +62,8 @@
 //             route reads them
 //   reference api.scryfall.com's /sets, /catalog/* and /symbology → KV, for the
 //             routes of the same names; same posture as rulings
-//   purge     drop the Worker's edge cache, twice, once the engine DOs have
-//             picked the new manifest up — deliberately NOT at the commit point
+//   purge     drop the Worker's edge cache, once, right after notify has
+//             every engine DO on the new manifest — deliberately NOT at the commit point
 //
 // Restart safety: every phase's inputs live in this DO's SQLite, and phase
 // progress commits transactionally with its outputs. Phases whose state lives
@@ -145,6 +144,7 @@ import {
 	BUCKET_FETCH_BATCHES,
 	BUCKET_SLICE_BATCHES,
 	DO_FREE_GB_SECONDS_PER_DAY,
+	deadManDelayMs,
 	EMPTY_RUN_METERS,
 	FINALIZE_FETCH_BATCHES,
 	FINALIZE_SLICE_BATCHES,
@@ -204,8 +204,18 @@ interface RunRecord {
 	detail?: string;
 }
 
-/** A run older than this is considered lost and may be restarted. */
-const STALE_RUN_MS = 90 * 60 * 1000;
+/**
+ * A run that has banked nothing and scheduled nothing for this long is dead and may be restarted.
+ *
+ * Measured from ACTIVITY, not from the run's start. The old rule — a run older than 90 minutes is
+ * lost — contradicted the pacing model (a healthy paced run is under 4h at the start pace and
+ * under 16h at the floor, tests/import/run-budget.test.ts), so it only ever fired at the 24h cron
+ * boundary, where it wiped a legitimately slow run; and it said nothing about whether a slice was
+ * executing at that moment, so metaClear could run under an alarm parked on a Scryfall read, whose
+ * transaction then committed its cursor into the NEW run. Thirty minutes of silence cannot be a
+ * live slice: the watchdog ends any slice at 5-10 minutes and every exit banks the meters row.
+ */
+const STALE_IDLE_MS = 30 * 60 * 1000;
 /** Transient-failure retries per run before the run is marked failed. */
 const MAX_RETRIES = 8;
 /**
@@ -215,6 +225,16 @@ const MAX_RETRIES = 8;
  * attempt, including the ones killed before they could fail. Its job is to
  * put a ceiling on a loop that reports no errors at all, so it only has to be
  * loose enough never to fire on genuine retry-and-recover.
+ *
+ * REACHABLE ONLY BECAUSE OF THE DEAD-MAN ALARM (runAlarmBody). The platform
+ * retries a killed alarm at most six times and then consumes it, so on its own
+ * a kill loop stops at seven attempts with no alarm left and the run record
+ * still saying "running" — under this ceiling, silent until the next cron,
+ * which restarted from scratch and died at the same slice: the 2026-08-22→27
+ * week. Every RETRIED attempt now arms a dead-man alarm before running the
+ * slice, so a kill never exhausts the platform's budget without something
+ * scheduled behind it, and the count keeps climbing to this ceiling, where
+ * failRun names the phase.
  *
  * DELIBERATELY UNCHANGED for the partitioned loop (plan B3). The loop
  * multiplies how many SLICES a run makes (~N times the agg/finalize/reorder/
@@ -245,8 +265,8 @@ const MAX_WASM_REWINDS = 3;
  * what a deploy did by accident: tear the instance down so the pending alarm
  * re-fires on a fresh one, which re-reads its cursor and redoes one slice.
  *
- * Five minutes is far above any legitimate slice — recode budgets itself at 23s
- * a streamed transform slice inflates ~60MB, a small dump's fetch or a chunk gzip+put is seconds —
+ * Five minutes is far above any legitimate slice — a streamed transform slice
+ * inflates ~60MB, a small dump's fetch or a chunk gzip+put is seconds —
  * and far below the 15-minute wall. `notify` gets the long leash: it waits on
  * every region's prefetch of ~146MB of compressed archives.
  */
@@ -302,10 +322,9 @@ const FETCH_SLICE_BYTES = 48 * 1024 * 1024;
 const TRANSFORM_SLICE_LINES = 10_000;
 /** default_cards lines fed to the canonical id pass per slice. ~117k canonical
  * printings at ~3.9KB/line ≈ 450MB raw → 5 slices of 24k lines / ~94MB raw
- * (plan B2 says ~4-6). default_cards is NOT recoded, so each slice re-streams
- * the dump and linear-discards to its checkpoint — the tolerable cost profile
- * stagedBytes documents for small kinds: worst slice gunzips a ~360MB prefix
- * (~1-2s) plus an id-only serde parse of its own window (~1s). */
+ * (plan B2 says ~4-6). default_cards is streamed through openDumpStream, whose
+ * inflater checkpoint lets a slice resume mid-dump without re-inflating the
+ * prefix; the slice's own cost is an id-only serde parse of its window (~1s). */
 const CANONICAL_SLICE_LINES = 24_000;
 /** Draft batches folded into the corpus-wide finalize tables per slice.
  *
@@ -346,6 +365,16 @@ const PARSE_COVERAGE_THRESHOLD = 0.8;
 const RULINGS_SLICE_BUCKETS = 64;
 /** KV puts issued at once within a rulings slice. */
 const RULINGS_PUT_CONCURRENCY = 8;
+/**
+ * Attempts at the notify phase before the run proceeds WITHOUT the objects that never acked.
+ *
+ * Every throw in notify is an ordinary retry (MAX_RETRIES, minutes of backoff) and then failRun —
+ * but by then the manifest is written and the store is live, so one persistently unreachable
+ * engine object used to cost the purge (16h of old /cards/* answers at the edge), the rulings and
+ * the reference mirrors, and mark the run failed. An object that never acked reads the manifest
+ * from KV on its next cold load anyway; after this many attempts the phase counts the acks it has.
+ */
+const NOTIFY_MAX_ATTEMPTS = 4;
 /**
  * Attempts at the rulings phase before the run gives up on it and moves ON.
  *
@@ -528,6 +557,33 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * A write cursor has no rows to drain, so its counters are final as soon as
 	 * exec returns.
 	 */
+	/**
+	 * The KV-style storage calls, BANKED like the SQL ones. `ctx.storage.put`, `get`, `setAlarm` and
+	 * `deleteAlarm` each cost a row on the same meter (a delete bills as a write), and the toll
+	 * model in import-budget.ts has counted them since 2026-08-28 — but the live counters the
+	 * self-cap is checked against did not, so the two drifted by ~3 writes and ~2 reads an alarm.
+	 * `getAlarm` is read only from startImport, outside any alarm's ledger, and stays uncounted.
+	 */
+	private async storeGet<T>(key: string): Promise<T | undefined> {
+		this.rowsRead += 1;
+		return this.ctx.storage.get<T>(key);
+	}
+
+	private async storePut(key: string, value: unknown): Promise<void> {
+		this.rowsWritten += 1;
+		await this.ctx.storage.put(key, value);
+	}
+
+	private async armAlarm(atMs: number): Promise<void> {
+		this.rowsWritten += 1;
+		await this.ctx.storage.setAlarm(atMs);
+	}
+
+	private async disarmAlarm(): Promise<void> {
+		this.rowsWritten += 1;
+		await this.ctx.storage.deleteAlarm();
+	}
+
 	private sqlRun(query: string, ...bindings: unknown[]): void {
 		const cursor = this.ctx.storage.sql.exec(query, ...bindings);
 		this.rowsRead += cursor.rowsRead;
@@ -702,24 +758,45 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async getRun(): Promise<RunRecord> {
-		return (await this.ctx.storage.get<RunRecord>("run")) ?? { state: "idle" };
+		return (await this.storeGet<RunRecord>("run")) ?? { state: "idle" };
 	}
 
 	private async startImport(reason: string): Promise<Response> {
 		this.ensureSchema();
 		const run = await this.getRun();
 		if (run.state === "starting" || run.state === "running") {
-			const age = run.startedAt ? Date.now() - Date.parse(run.startedAt) : 0;
-			if (age < STALE_RUN_MS) {
-				// A restart (deploy, dev reload) can drop the pending alarm while
-				// the run record says "running" — re-arm so the chain resumes from
-				// its persisted phase instead of stalling until the stale window.
-				if ((await this.ctx.storage.getAlarm()) === null) {
-					await this.ctx.storage.setAlarm(Date.now());
-				}
+			const now = Date.now();
+			const meters = parseMeters(this.metaGet("run_meters"));
+			const started = run.startedAt ? Date.parse(run.startedAt) : 0;
+			const lastActivity = Math.max(
+				meters?.banked_ms ?? 0,
+				meters?.due_ms ?? 0,
+				Number.isFinite(started) ? started : 0,
+			);
+			const idleMs = now - lastActivity;
+			const pending = await this.ctx.storage.getAlarm();
+			// An alarm that is armed but OVERDUE by the whole idle window was never delivered (this
+			// account has seen one arrive four hours late and one not at all); counting it as alive
+			// would answer 202 to every nightly cron from then on and the import would never run
+			// again. The restart below re-arms, which replaces the stuck alarm.
+			const overdue = pending !== null && pending < now - STALE_IDLE_MS;
+			if ((pending !== null && !overdue) || idleMs < STALE_IDLE_MS) {
+				// Alive: an alarm is scheduled, or a slice banked within the window.
+				// A restart (deploy, dev reload) can drop the pending alarm while the
+				// run record says "running" — re-arm so the chain resumes from its
+				// persisted phase instead of waiting out the idle window.
+				if (pending === null) await this.armAlarm(now);
 				return Response.json({ ok: true, alreadyRunning: true, run }, { status: 202 });
 			}
-			console.warn(`Import run stale after ${age}ms; restarting (reason=${reason})`);
+			// Name where it died. A run that reaches here without a "failed" record
+			// was not failed by its own bookkeeping — it stopped being scheduled,
+			// which is the signature of a killed slice — and the phase is the one
+			// fact the next reader needs.
+			console.warn(
+				`Import run dead: nothing banked or scheduled for ${Math.round(idleMs / 60_000)}min in phase ` +
+					`${this.metaGet("phase") ?? "idle"} (started ${run.startedAt ?? "?"}, ` +
+					`${run.detail ?? "no detail recorded"}); restarting (reason=${reason})`,
+			);
 		}
 
 		// Always a fresh run. Resume-where-it-failed used to matter when a visitor
@@ -739,17 +816,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaClear();
 			this.beginPurge("reset");
 		});
-		await this.ctx.storage.put("run", record);
-		await this.ctx.storage.put("phase_attempts", 0);
-		await this.ctx.storage.setAlarm(Date.now());
+		await this.storePut("run", record);
+		await this.storePut("phase_attempts", 0);
+		await this.armAlarm(Date.now());
 		return Response.json({ ok: true, run: record }, { status: 202 });
 	}
 
 	// ── alarm chain ────────────────────────────────────────────────────────────
 
-	override async alarm(): Promise<void> {
+	override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
 		try {
-			await this.runAlarm();
+			await this.runAlarm(alarmInfo);
 		} catch (err) {
 			// The alarm's own bookkeeping failed — reading the run record, the
 			// budget counters, the schema. The overwhelmingly likely cause is the
@@ -761,7 +838,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 	}
 
-	private async runAlarm(): Promise<void> {
+	private async runAlarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
 		this.ensureSchema();
 		// The phase is read FIRST and synchronously — sql.exec answers from the
 		// in-memory database, which is the one storage op that cannot stall — so
@@ -793,7 +870,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			}, limit);
 		});
 		try {
-			await Promise.race([this.runAlarmBody(phase), watchdog]);
+			await Promise.race([this.runAlarmBody(phase, limit, alarmInfo), watchdog]);
 		} finally {
 			// Cleared on every exit: a live timer is pending I/O, and pending I/O is
 			// exactly what keeps an object active and billed.
@@ -801,9 +878,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 	}
 
-	private async runAlarmBody(phase: Phase): Promise<void> {
+	private async runAlarmBody(phase: Phase, watchdogMs: number, alarmInfo?: AlarmInvocationInfo): Promise<void> {
 		const run = await this.getRun();
 		if (run.state !== "running") return; // stale alarm from a finished run
+		// A retry is the ONLY trace a killed slice leaves: the handler never saw
+		// it end, so nothing else could have logged it. Say so, with the phase.
+		if (alarmInfo?.isRetry) {
+			console.warn(
+				`Import alarm for phase ${phase} is platform retry ${alarmInfo.retryCount}: ` +
+					"the previous attempt threw before rescheduling or was killed by the runtime (CPU or memory)",
+			);
+		}
 
 		// Count the attempt BEFORE running it, durably.
 		//
@@ -879,8 +964,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return;
 		}
 
-		const attempts = ((await this.ctx.storage.get<number>("phase_attempts")) ?? 0) + 1;
-		await this.ctx.storage.put("phase_attempts", attempts);
+		const attempts = ((await this.storeGet<number>("phase_attempts")) ?? 0) + 1;
+		await this.storePut("phase_attempts", attempts);
+		// The dead-man alarm, on retried attempts only (see MAX_PHASE_ATTEMPTS):
+		// armed BEFORE the slice runs, past the watchdog so it cannot fire under
+		// a live handler, and replaced by the ordinary next-alarm put on every
+		// exit this handler survives. A killed slice leaves it standing, and it
+		// fires with a fresh platform retry budget. Healthy alarms pay nothing.
+		if (alarmInfo?.isRetry) {
+			await this.armAlarm(Date.now() + deadManDelayMs(watchdogMs));
+		}
 		if (attempts > MAX_PHASE_ATTEMPTS) {
 			console.error(
 				`Import phase ${phase} attempted ${attempts} times without completing a slice — ` +
@@ -899,7 +992,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Only when something was actually being retried: attempts is always
 			// >= 1 here, so an unconditional reset would write a row on every
 			// healthy slice to clear a counter nothing had raised.
-			if (attempts > 1) await this.ctx.storage.put("phase_attempts", 0);
+			if (attempts > 1) await this.storePut("phase_attempts", 0);
 			const next = (this.metaGet("phase") ?? "idle") as Phase;
 			// Every phase is now work with nothing to wait for, so the chain runs
 			// itself as fast as the runtime allows. `purge` used to be a DEADLINE
@@ -921,7 +1014,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 							`next alarm in ${Math.round(delay / 1000)}s at ${(this.paceBps / 1048576).toFixed(2)} MB/s`,
 					);
 				}
-				await this.ctx.storage.setAlarm(this.nextDueMs);
+				await this.armAlarm(this.nextDueMs);
 			}
 		} catch (err) {
 			if (err instanceof FatalImportError) {
@@ -954,7 +1047,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					this.metaSet("tags_nonce", "dirty");
 				}
 				this.nextDueMs = Date.now() + backoffMs;
-				await this.ctx.storage.setAlarm(this.nextDueMs);
+				await this.armAlarm(this.nextDueMs);
 				return;
 			}
 			console.error(`Import failed in phase ${phase}:`, err);
@@ -991,17 +1084,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 		run.finishedAt = new Date().toISOString();
 		run.detail = detail;
 		this.metaSet("phase", "idle");
-		await this.ctx.storage.put("run", run);
-		await this.ctx.storage.deleteAlarm();
+		await this.storePut("run", run);
+		await this.disarmAlarm();
 		await this.releasePublishing();
 		this.logRunSummary("failed");
 	}
 
 	/**
 	 * Tell every retention sweep that this run's family is in flight (see
-	 * PUBLISHING_KEY). Called at each partition's first chunk: idempotent, and
-	 * each call refreshes the TTL so a run that crawls across deploys for days
-	 * keeps its protection for as long as it keeps making progress.
+	 * PUBLISHING_KEY). First called in stepRouting, before the family's FIRST
+	 * key lands in KV (the routing filter is grouped with the family by
+	 * built_at and was once retired unprotected), then at each partition's
+	 * first chunk: idempotent, and each call refreshes the TTL so a run that
+	 * crawls across deploys for days keeps its protection for as long as it
+	 * keeps making progress.
 	 */
 	private async markPublishing(): Promise<void> {
 		const builtAt = this.metaGet("built_at") ?? "";
@@ -1020,8 +1116,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	/** Every key KV currently holds under this run's partition family — the truth the manifest is checked against. */
 	private async listFamilyKeys(formatVersion: number, builtAt: string): Promise<Set<string>> {
+		return this.listAllKeys(partitionFamilyPrefix(formatVersion, builtAt));
+	}
+
+	/**
+	 * Every key under `prefix`, ALL pages. A KV list is paged at 1,000 keys, and a caller that reads
+	 * `.keys` off the first page silently drops the rest — the live-engine set once did, and at
+	 * 9 regions x 32 partitions x replicas the objects past the first page would simply not have
+	 * been told about a publish.
+	 */
+	private async listAllKeys(prefix: string): Promise<Set<string>> {
 		const names = new Set<string>();
-		const prefix = partitionFamilyPrefix(formatVersion, builtAt);
 		let cursor: string | undefined;
 		do {
 			const page = await this.env.STORE_KV.list({ prefix, cursor });
@@ -1058,6 +1163,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// time is only known once the next alarm is scheduled (the final flush).
 		if (this.paceBps > 0) meters.pace_bps = this.paceBps;
 		if (this.nextDueMs > 0) meters.due_ms = this.nextDueMs;
+		meters.banked_ms = now;
 		if (this.lateThisAlarm && !this.alarmCounted) meters.late_alarms += 1;
 		this.rowsRead = 0;
 		this.rowsWritten = 0;
@@ -1569,9 +1675,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * overwrites tagdata_blobs with the tag snapshot; by then the set has been
 	 * consumed — transform is complete.)
 	 *
-	 * Resumes by raw byte offset, like transform — but default_cards is not
-	 * recoded, so the resume is stagedBytes' linear discard (see
-	 * CANONICAL_SLICE_LINES for the cost math).
+	 * Resumes by raw byte offset, like transform, through openDumpStream's
+	 * inflater checkpoint (see CANONICAL_SLICE_LINES for the cost math).
 	 */
 	private async stepCanonical(): Promise<void> {
 		const wasm = transientWasm();
@@ -2043,7 +2148,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const formatVersion = Number(this.metaGet("format_version") ?? 0);
 		try {
 			if (!builtAt || !formatVersion) throw new Error("built_at/format_version are not stamped yet");
-			// Streamed into hashes row by row. The staged text is ~60MB on today's corpus and the
+			// Read in one pass (sqlAll) and folded into hashes row by row. The staged text is ~60MB on today's corpus and the
 			// accumulator holds three typed arrays instead of 1.2M strings — the difference between
 			// ~15MB and well past this object's 128MB.
 			const acc = new RoutingKeyAccumulator(1 << 21);
@@ -2072,6 +2177,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 				partitionCount: pp.partitions.length,
 				partitionHash: PARTITION_HASH_ALGO,
 			});
+			// The family is in flight from its FIRST key in KV, and this is that key. The marker used
+			// to be set at partition 0's first chunk, hours from here, and the filter — grouped with
+			// the family by built_at — sat unprotected in between: two deploy-built generations in
+			// that window made it third-newest and retention retired it, so the generation shipped
+			// with every /cards/<id> fanning out N ways until the next night. A marker put that
+			// fails lands in the catch below, which is right: an unprotected filter IS the bug.
+			await this.markPublishing();
 			await writeRoutingFilter(this.env, formatVersion, builtAt, bytes);
 			console.log(
 				`Routing filter published: ${sealed.lo.length} ids from ${lines} rows, ` +
@@ -2244,21 +2356,33 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return partitionStoreKey(formatVersion, builtAt, partition);
 	}
 
-	/** The TagData snapshot, reassembled from its byte-capped rows; null when none. */
+	/** The TagData snapshot: each byte-capped row unpacked, then reassembled; null when none. */
 	private tagSnapshotBytes(): Uint8Array | null {
 		const rows = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM tagdata_blobs ORDER BY seq");
 		if (rows.length === 0) return null;
-		const total = rows.reduce((n, r) => n + (r.bytes as ArrayBuffer).byteLength, 0);
-		const merged = new Uint8Array(total);
+		// Rows are packed one by one (see writeTagSnapshot), so each is unpacked on its own; a row
+		// the previous build wrote is unpacked bytes, and unpackBlob passes those through.
+		const pieces = rows.map((r) => unpackBlob(new Uint8Array(r.bytes as ArrayBuffer)));
+		const merged = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0));
 		let at = 0;
-		for (const r of rows) {
-			merged.set(new Uint8Array(r.bytes as ArrayBuffer), at);
-			at += (r.bytes as ArrayBuffer).byteLength;
+		for (const piece of pieces) {
+			merged.set(piece, at);
+			at += piece.length;
 		}
 		return merged;
 	}
 
-	/** Replace the TagData snapshot (caller supplies the surrounding transaction). */
+	/**
+	 * Replace the TagData snapshot (caller supplies the surrounding transaction).
+	 *
+	 * Each row is one STAGE_BLOB_BYTES slice of the export, PACKED (packBlob, deflate level 1)
+	 * before it is inserted: the export is serde_json's TagData, which compresses several-fold,
+	 * and this table is rewritten three times a run (canonical, tags, scores). Every rewrite is
+	 * churn — the bytes deleted plus the bytes inserted — that the pacing turns into alarm sleeps
+	 * at ≤2MB/s, and the eviction restore reads all of it back. Slice by slice rather than the
+	 * whole export at once, so the only transient copy is one packed slice (the export itself is
+	 * ~20MB of JSON, and the scores-phase call runs beside the group wasm's corpus tables).
+	 */
 	private writeTagSnapshot(blobs: Uint8Array[]): void {
 		this.noteChurn(this.blobBytesIn("tagdata_blobs"));
 		this.sqlRun("DELETE FROM tagdata_blobs");
@@ -2268,7 +2392,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 				this.sqlRun(
 					"INSERT INTO tagdata_blobs (seq, bytes) VALUES (?, ?)",
 					++seq,
-					exactBuffer(blob.subarray(at, Math.min(at + STAGE_BLOB_BYTES, blob.length))),
+					exactBuffer(packBlob(blob.subarray(at, Math.min(at + STAGE_BLOB_BYTES, blob.length)))),
 				);
 			}
 		}
@@ -2320,14 +2444,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 			);
 		}
 		const pp = this.requirePp();
-		// The rewind rebuilds the partition from draft_batches — which the LAST
-		// partition's finalize drops (progressive purge, load-bearing for the 5GB
+		// The rewind rebuilds the partition from its draft_parts — which the
+		// partition's PUBLISH drops (progressive purge, load-bearing for the 5GB
 		// pool). Losing the heap after that point is unrecoverable within this
 		// run: without this check the rewind would "succeed", aggregate zero
 		// drafts, and die two phases later on "no staged rows" — an accurate
 		// symptom of the wrong cause. The cost is one lost nightly in a rare
-		// double failure (eviction during the last partition's reorder/build);
-		// the previous store keeps serving and the next import restarts cleanly.
+		// double failure (eviction during the partition's reorder/build after
+		// its drafts are gone); the previous store keeps serving and the next
+		// import restarts cleanly.
 		const draftRows = Number(
 			this.sqlAll<{ n: number }>("SELECT COUNT(*) AS n FROM draft_parts WHERE partition = ?", pp.partition)[0]?.n ?? 0,
 		);
@@ -2338,18 +2463,23 @@ export class ImportCoordinator extends DurableObject<Env> {
 			);
 		}
 		console.warn(
-			`Wasm state lost to eviction (${rewinds}/${MAX_WASM_REWINDS}); rebuilding tags + ` +
-				`partition ${pp.partition}'s aggregation from SQLite`,
+			`Wasm state lost to eviction (${rewinds}/${MAX_WASM_REWINDS}); partition ${pp.partition} ` +
+				"restarts at aggregation once its stale staging is purged",
 		);
-		const fresh = newGroupWasm();
-		fresh.reset();
-		this.restoreTags(fresh);
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("wasm_rewinds", String(rewinds));
-			this.metaSet("tags_nonce", fresh.nonce);
-			// This rebuild IS the partition's fresh start, so stepAgg must not
-			// stack a second fresh instance on top of it.
-			this.metaSet("agg_partition_started", String(pp.partition));
+			// NOTHING IS INSTANTIATED HERE. The rewind used to build a fresh group
+			// wasm and restore the ~20MB tag snapshot into it right away, then arm
+			// the purge below — whose slices are paced 13-32s apart, while an idle
+			// object hibernates after ~10s. So the fresh heap was routinely lost
+			// DURING the purge it had just armed, and when stepAgg resumed, the
+			// nonce mismatched again and a SECOND rewind was charged for the same
+			// eviction: two deploys mid-loop were fatal. Clearing the partition's
+			// start marker instead hands the rebuild to stepAgg's own fresh path,
+			// which runs AFTER the purge, in the alarm that will use the heap it
+			// builds. An eviction during the purge slices has nothing to lose.
+			this.metaSet("tags_nonce", "rewound");
+			this.metaSet("agg_partition_started", "");
 			this.metaSet("agg_seq_done", "-1");
 			this.metaSet("agg_sealed", "0");
 			// Any partially-spilled finalize output is invalid with a fresh heap,
@@ -2534,8 +2664,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		});
 		console.log(
 			`Finalize slice (partition ${pp.partition}): ${fed} batches, ${staged} rows staged` +
-				`${finished ? " (done)" : ""}` +
-				`${finished && pp.partition === pp.partitions.length - 1 ? " — draft staging dropped (last partition)" : ""}`,
+				`${finished ? " (done)" : ""}`,
 		);
 	}
 
@@ -2705,11 +2834,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 		});
 		// Release the wasm group NOW rather than after this partition's publish
 		// slices (plan B3: dropGroupWasm after each build(p), §5.5
-		// emit-one-release-one). Linear memory peaks well over 70MB and never
-		// shrinks, so holding it through publish would leave a ~20MB assembly
-		// buffer and ~15MB of staged rows sharing a 128MB isolate with it, once
-		// per partition. Publish needs nothing from wasm — the format version has
-		// been in meta since tags — and the next partition's agg builds a fresh
+		// emit-one-release-one). Linear memory peaks at 90-106MB per partition and
+		// never shrinks, and publish's assembleChunk holds the WHOLE raw partition
+		// (up to ~46MB, one chunk since TARGET_PARTITION_BYTES) plus its gzip output
+		// — up to ~60MB — which cannot share a 128MB isolate with it. Dropping it
+		// here only makes the memory COLLECTABLE; it is reclaimed at the next GC,
+		// which is why the gate's wasm fit step fails at 112MB, not at the 124MiB
+		// link cap. Publish needs nothing from wasm — the format version has been
+		// in meta since tags — and the next partition's agg builds a fresh
 		// instance anyway.
 		dropGroupWasm();
 	}
@@ -2750,8 +2882,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (rec.chunks_published === 0) {
 			const warning = chunkHeadroomWarning(rec.store_bytes, rec.cut);
 			if (warning) console.warn(warning);
-			// Before the first byte of this partition lands: from here until the
-			// manifest write, the family is in flight and no sweep may age it out.
+			// First set in stepRouting, before the family's first key; refreshed here
+			// per partition so a run that crawls across days keeps its week-long TTL
+			// ahead of it. From the routing filter until the manifest write, the
+			// family is in flight and no sweep may age it out.
 			await this.markPublishing();
 		}
 
@@ -2778,7 +2912,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				// partitions' chunk math is self-contained in their own records).
 				// Chunk keys are stable per store, so re-putting from zero is the same
 				// idempotent write the retry path already relies on, and the earlier
-				// chunks are simply overwritten by their re-cut replacements.
+				// chunks are simply overwritten by their re-cut replacements. THAT IS
+				// ONLY SAFE BEFORE THE MANIFEST: readers cache chunk keys for a week
+				// and nothing may fetch one until the manifest names it — see the
+				// invariant on chunkKey (store-kv.ts).
 				//
 				// Falling back rather than failing keeps the nightly alive: a store that
 				// compresses badly should cost an extra publish pass, not a dark site.
@@ -2899,7 +3036,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 			);
 		}
 		const present = await this.listFamilyKeys(formatVersion, builtAt);
-		const missing = missingManifestChunks(manifest, present);
+		// A `list` is eventually consistent and can lag a key this run put a minute ago; a `get` of
+		// that key is not. The refusal below guards against a SWEEP having deleted chunks, which a
+		// direct read sees as absent too — so anything the list did not show is asked for directly
+		// before it counts as gone. This used to be safe only because the last partition's purge
+		// slices happened to interpose minutes between the last chunk put and this check.
+		const unlisted = missingManifestChunks(manifest, present);
+		const missing: string[] = [];
+		for (const key of unlisted) {
+			const value = await this.env.STORE_KV.get(key, { type: "stream" });
+			if (value === null) missing.push(key);
+			else await value.cancel();
+		}
 		if (missing.length > 0) {
 			const shown = missing.slice(0, 3).join(", ") + (missing.length > 3 ? `, … +${missing.length - 3}` : "");
 			throw new FatalImportError(
@@ -3005,9 +3153,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// yet, from inside this Durable Object. `locationHint` fixes an object's region at creation,
 		// so that would place engine-apac relative to a hint the coordinator supplied rather than by
 		// a request from apac. Honoured, it is merely wasteful; not honoured, it is permanent.
-		const live = (await this.env.STORE_KV.list({ prefix: REGION_LIVE_PREFIX })).keys.map((k) =>
-			k.name.slice(REGION_LIVE_PREFIX.length),
-		);
+		const live = [...(await this.listAllKeys(REGION_LIVE_PREFIX))].map((name) => name.slice(REGION_LIVE_PREFIX.length));
 		if (live.length === 0) {
 			// Nothing has ever loaded a store, so there is nobody to tell. Not an error: it is the
 			// state of a fresh deployment, and the first real request will read the manifest from KV.
@@ -3031,30 +3177,48 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// Step 1: PREPARE everywhere, and require every ack before any commit.
 		// This is the barrier that shrinks the mixed-generation window: no object
 		// swaps until every object holds the new archives locally.
+		// BOUNDED all-or-retry. A failed barrier is thrown so the phase retries from prepare — the
+		// purge below must not run while a reader might still be serving the old store, or it
+		// empties the cache straight into a stale answer that then stands for up to 16 hours, and
+		// objects that already acked re-ack from their local copy for free. But only up to
+		// NOTIFY_MAX_ATTEMPTS: past that the store is live and the objects that never answered are
+		// not going to, so the phase proceeds with the acks it has, and the stragglers converge on
+		// KV's manifest at their next cold load.
+		const attempt = Number(this.metaGet("notify_attempts") ?? 0) + 1;
+		const barrier = (step: string, failures: string[]): void => {
+			if (failures.length === 0) return;
+			this.metaSet("notify_attempts", String(attempt));
+			if (attempt < NOTIFY_MAX_ATTEMPTS) {
+				throw new Error(
+					`notify: ${failures.length}/${live.length} object(s) failed to ${step}: ${failures.join("; ")}`,
+				);
+			}
+			console.error(
+				`notify: ${failures.length}/${live.length} object(s) still failed to ${step} on attempt ` +
+					`${attempt}/${NOTIFY_MAX_ATTEMPTS}; proceeding with the objects that acked — the rest read the ` +
+					`manifest from KV on their next cold load: ${failures.join("; ")}`,
+			);
+		};
+
 		const prepared = await Promise.allSettled(
 			live.map(async (name) => ({ name, ...(await stubFor(name).preparePublish(published)) })),
 		);
-		const prepareFailed = prepared.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : []));
-		if (prepareFailed.length > 0) {
-			// Thrown, so the phase retries from prepare: the purge below MUST NOT run while a reader
-			// might still be serving the old store, or it empties the cache straight into a stale
-			// answer that then stands for up to 16 hours. Objects that already prepared re-ack from
-			// their local copy for free.
-			throw new Error(
-				`notify: ${prepareFailed.length}/${live.length} object(s) failed to prepare: ${prepareFailed.join("; ")}`,
-			);
-		}
-
-		// Step 2: COMMIT everywhere. Same all-or-retry posture — a commit that
-		// reached some objects and not others is exactly the mixed window again,
-		// and re-running both steps is safe because both are idempotent.
-		const results = await Promise.allSettled(
-			live.map(async (name) => ({ name, ...(await stubFor(name).commitPublish()) })),
+		barrier(
+			"prepare",
+			prepared.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : [])),
 		);
-		const failed = results.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : []));
-		if (failed.length > 0) {
-			throw new Error(`notify: ${failed.length}/${live.length} object(s) failed to commit: ${failed.join("; ")}`);
-		}
+		const preparedNames = prepared.flatMap((r) => (r.status === "fulfilled" ? [r.value.name] : []));
+
+		// Step 2: COMMIT everywhere that prepared. Same bounded posture — a commit that reached some
+		// objects and not others is the mixed window again, and re-running both steps is safe
+		// because both are idempotent.
+		const results = await Promise.allSettled(
+			preparedNames.map(async (name) => ({ name, ...(await stubFor(name).commitPublish()) })),
+		);
+		barrier(
+			"commit",
+			results.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : [])),
+		);
 		const acked = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 
 		// Widths are reported by each region's shard 0, which is the rendezvous every isolate in that
@@ -3523,13 +3687,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// left saying "running" forever: the phase went idle, so the alarm chain
 		// stopped, but `startImport` kept reading state === "running" and taking
 		// its already-running branch — re-arming an alarm that returns in 1ms
-		// because the phase is idle. Every trigger for the next STALE_RUN_MS (90
-		// minutes) was therefore a silent no-op.
+		// because the phase is idle. Every trigger for the next idle window
+		// (STALE_IDLE_MS) was therefore a silent no-op.
 		//
 		// The daily cron never noticed, because 24h is well past that window. What
 		// it broke is any attempt to RUN the import twice in an hour and a half,
 		// which is exactly what testing this pipeline requires.
-		await this.ctx.storage.put("run", {
+		await this.storePut("run", {
 			...(await this.getRun()),
 			state: "done",
 			finishedAt: new Date().toISOString(),

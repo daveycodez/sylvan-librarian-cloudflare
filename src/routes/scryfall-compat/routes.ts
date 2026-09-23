@@ -23,8 +23,9 @@
 // this isolate meters against 10ms.
 
 import { encodeUtf8 } from "../../engine/bytes";
+import { readKvBytesMemo } from "../../engine/kv-memo";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
-import type { CollectionScope, Engine, NameIdentifier } from "../../engine/types";
+import type { CollectionKeyIdentifier, CollectionScope, Engine, NameIdentifier } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm, TagAliasTables } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -40,17 +41,21 @@ import { applyDirectives } from "../search";
 import {
 	badRequestError,
 	buildPageUrl,
+	CARD_OBJECT_FIELDS,
 	cardToText,
 	catalogObject,
 	collectionList,
 	DEFAULT_IMAGE_VERSION,
+	type EngineRow,
 	errorObject,
 	imageUri,
 	MAX_AUTOCOMPLETE_VALUES,
+	MAX_COLLECTION_BODY_BYTES,
 	MAX_COLLECTION_IDENTIFIERS,
 	notFoundError,
 	PAGE_SIZE,
 	type ScryfallError,
+	toScryfallCard,
 } from "./objects";
 import { scryfallTermPolicy } from "./query-terms";
 import { asBool, scryfallJson, scryfallListJson } from "./respond";
@@ -353,10 +358,36 @@ function isUuid(value: string): boolean {
 }
 
 /** Parse an integer parameter or path segment; undefined when absent or unparseable. */
+/**
+ * Upstream's `_as_int`, which is Python's `int()`: an optional sign and decimal digits, whitespace
+ * around them tolerated, nothing else. `Number.parseInt` accepted `409574abc` as 409574 and `1.5`
+ * as 1, so `/cards/multiverse/409574abc` answered a card where Scryfall (and upstream) answer 404,
+ * and the path surface disagreed with the collection body, which was already strict.
+ */
+/** The request body as text, or null once it exceeds `limit` bytes — without buffering the rest. */
+async function readBodyUpTo(request: Request, limit: number): Promise<string | null> {
+	if (request.body === null) return "";
+	const reader = request.body.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	let bytes = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		bytes += value.byteLength;
+		if (bytes > limit) {
+			await reader.cancel();
+			return null;
+		}
+		text += decoder.decode(value, { stream: true });
+	}
+	return text + decoder.decode();
+}
+
 function asInt(value: string | undefined): number | undefined {
-	if (value === undefined) return undefined;
+	if (value === undefined || !/^\s*[-+]?\d+\s*$/.test(value)) return undefined;
 	const n = Number.parseInt(value.trim(), 10);
-	return Number.isNaN(n) ? undefined : n;
+	return Number.isSafeInteger(n) ? n : undefined;
 }
 
 /**
@@ -931,6 +962,27 @@ export async function cardsRandomHandler(
 	}
 
 	try {
+		// ONE Durable Object request on the common path: the engine's sampler draws a card with its
+		// preferred printing from the filter's answer, inside one partition picked in proportion to
+		// its card_count (PartitionedEngine.randomCardsAsJson). Partitioning is fnv1a64(oracle_id)
+		// mod N, so a filter's matches spread across partitions in that same proportion unless the
+		// match set is tiny — and then the picked partition answers NO row, which is visible, and
+		// the count-then-offset draw below takes over. That draw is two gathered searches, 2N
+		// requests, and it was every draw's cost before this (~20 on the ten-partition store).
+		const sampled = await engine.randomCardsAsJson(1, [...CARD_OBJECT_FIELDS], "rows", filterTreeJson);
+		const sampledRows = JSON.parse(new TextDecoder().decode(sampled.cardsBytes)) as EngineRow[];
+		const sampledRow = sampledRows[0];
+		if (sampledRow) {
+			return renderCard(
+				toScryfallCard(sampledRow, baseUrl),
+				format,
+				params.face ?? "front",
+				params.version ?? DEFAULT_IMAGE_VERSION,
+				pretty,
+				RANDOM_CACHE,
+			);
+		}
+
 		// Two passes, like upstream: count, then take one card at a random offset. A sort over the
 		// whole match set to keep one row would be the alternative, and it is strictly worse.
 		const counted = await engine.scryfallSearch(
@@ -993,9 +1045,20 @@ export async function cardsCollectionHandler(
 	params: Record<string, string>,
 ): Promise<Response> {
 	const pretty = asBool(params.pretty);
+	// Bounded BEFORE it is parsed: see MAX_COLLECTION_BODY_BYTES. A declared length past the cap is
+	// refused without a read; an undeclared (chunked) body is read up to the cap and refused the
+	// moment it passes it, rather than buffered to the end.
+	const declared = Number(ctx.request.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > MAX_COLLECTION_BODY_BYTES) {
+		return scryfallJson(badRequestError(COLLECTION_COUNT_DETAILS), pretty, COLLECTION_REFUSED_CACHE);
+	}
 	let body: unknown;
 	try {
-		body = await ctx.request.json();
+		const text = await readBodyUpTo(ctx.request, MAX_COLLECTION_BODY_BYTES);
+		if (text === null) {
+			return scryfallJson(badRequestError(COLLECTION_COUNT_DETAILS), pretty, COLLECTION_REFUSED_CACHE);
+		}
+		body = JSON.parse(text);
 	} catch {
 		body = null;
 	}
@@ -1141,10 +1204,13 @@ async function collectionScope(
  * as one batch through the engine's own name rule (see `Engine.scryfallCollectionNames`).
  *
  * THE WHOLE ROUTE IS BOUNDED BY THE PARTITION COUNT, not by the identifier count: with N
- * partitions a batch mixing all four kinds is at most N (ids) + N (trees) + 2N (names, ranked then
- * materialized from the winners) RPCs however many identifiers it carries — which at today's N=10
- * leaves room under the free plan's 50-subrequest ceiling, and would not if any kind were resolved
- * per identifier.
+ * partitions a batch mixing every kind is at most N (scryfall ids) + N (the key-shaped kinds:
+ * oracle, illustration, mtgo, multiverse — one batch, see Engine.scryfallCardsByIdentifiers) +
+ * N (trees) + 2N (names, ranked then materialized from the winners) RPCs however many
+ * identifiers it carries. The meter that makes this matter is not the subrequest limit (1,000 to
+ * Cloudflare services on the free plan) but the DAILY Durable Object request allowance: every
+ * partition RPC is one of those, and the four key-shaped kinds used to be resolved one RPC per
+ * identifier — 75 x N for a batch of misses, close to 1% of a day's allowance in one POST.
  */
 async function resolveIdentifiers(
 	engine: Engine,
@@ -1154,36 +1220,29 @@ async function resolveIdentifiers(
 ): Promise<(Record<string, unknown> | null)[]> {
 	const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
 	const byScryfallId: { at: number; id: string }[] = [];
+	const byKey: { at: number; identifier: CollectionKeyIdentifier }[] = [];
 	const byTree: { at: number; tree: string }[] = [];
 	const byName: { at: number; identifier: NameIdentifier }[] = [];
-	// The remaining kinds each need their own engine entry point, so they are gathered per kind
-	// and awaited together rather than serialized.
+	// One batch per kind of entry point, awaited together rather than serialized.
 	const singles: Promise<void>[] = [];
 
 	for (let at = 0; at < identifiers.length; at++) {
 		const ident = identifiers[at];
 		if (typeof ident !== "object" || ident === null) continue;
 		const id = ident as Record<string, unknown>;
-		const put = (p: Promise<Record<string, unknown> | null>) => {
-			singles.push(
-				p.then((card) => {
-					out[at] = card;
-				}),
-			);
-		};
 
 		if (typeof id.id === "string" && isUuid(id.id)) {
 			byScryfallId.push({ at, id: id.id });
 		} else if (typeof id.oracle_id === "string" && isUuid(id.oracle_id)) {
-			put(engine.scryfallCardByOracleId(id.oracle_id, baseUrl));
+			byKey.push({ at, identifier: { kind: "oracle_id", id: id.oracle_id } });
 		} else if (typeof id.illustration_id === "string" && isUuid(id.illustration_id)) {
-			put(engine.scryfallCardByIllustrationId(id.illustration_id, baseUrl));
+			byKey.push({ at, identifier: { kind: "illustration_id", id: id.illustration_id } });
 		} else if (id.mtgo_id !== undefined) {
 			const n = asInt(String(id.mtgo_id));
-			if (n !== undefined) put(engine.scryfallCardByExternalId("mtgo", n, baseUrl));
+			if (n !== undefined) byKey.push({ at, identifier: { kind: "external", namespace: "mtgo", id: n } });
 		} else if (id.multiverse_id !== undefined) {
 			const n = asInt(String(id.multiverse_id));
-			if (n !== undefined) put(engine.scryfallCardByExternalId("multiverse", n, baseUrl));
+			if (n !== undefined) byKey.push({ at, identifier: { kind: "external", namespace: "multiverse", id: n } });
 		} else if (id.set !== undefined && id.collector_number !== undefined) {
 			// English first, then any printing at the address — the same pair `/cards/:code/:number`
 			// resolves with, in the same order, so a foreign-only printing is found and an English
@@ -1217,6 +1276,18 @@ async function resolveIdentifiers(
 					// The batch skips misses, so results are matched back BY ID rather than by position.
 					const byId = new Map(cards.map((c) => [String(c.id).toLowerCase(), c]));
 					for (const { at, id } of byScryfallId) out[at] = byId.get(id.toLowerCase()) ?? null;
+				}),
+		);
+	}
+	if (byKey.length > 0) {
+		singles.push(
+			engine
+				.scryfallCardsByIdentifiers(
+					byKey.map((e) => e.identifier),
+					baseUrl,
+				)
+				.then((cards) => {
+					for (const [i, entry] of byKey.entries()) out[entry.at] = cards[i] ?? null;
 				}),
 		);
 	}
@@ -1406,9 +1477,11 @@ async function rulingsForCard(ctx: RouteContext, card: Record<string, unknown>, 
 	// List rather than a miss — the card itself resolved, so the 404 would be about the wrong thing.
 	if (bucket === null) return scryfallListJson(EMPTY_DATA, { hasMore: false }, pretty, CARDS_CACHE);
 
-	let value: ArrayBuffer | null;
+	let value: Uint8Array | null;
 	try {
-		value = await ctx.env.STORE_KV.get(rulingsBucketKey(bucket), "arrayBuffer");
+		// Memoized per isolate and colo-cached (src/engine/kv-memo.ts): a bucket is rewritten
+		// nightly and the answer sits under a 16h tier, so the read need not be metered per request.
+		value = await readKvBytesMemo(ctx.env.STORE_KV, rulingsBucketKey(bucket));
 	} catch (err) {
 		console.error("Rulings: KV read failed", err);
 		return scryfallJson(errorObject("internal_error", 500, RULINGS_UNREADABLE_DETAILS), pretty, NO_STORE_HEADER);
@@ -1422,7 +1495,7 @@ async function rulingsForCard(ctx: RouteContext, card: Record<string, unknown>, 
 
 	let data: Uint8Array;
 	try {
-		data = rulingsSlice(new Uint8Array(value), oracleId) ?? EMPTY_DATA;
+		data = rulingsSlice(value, oracleId) ?? EMPTY_DATA;
 	} catch (err) {
 		if (!(err instanceof RulingsFormatError)) throw err;
 		console.error(`Rulings: ${rulingsBucketKey(bucket)} is not readable as a bucket`, err);

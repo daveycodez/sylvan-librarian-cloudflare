@@ -59,8 +59,8 @@
 //     DO pool. Compressed the whole store is ~165MB, so 9 regions of it is ~1.5GB — spread across
 //     `partition_count` objects a region, each holding its own partition's
 //     `partitions[k].store_gzip_bytes` — leaving the pool at ~3.2GB peak. The cost is a
-//     local gunzip when a cached partition is loaded — paid at the publish COMMIT (the publisher's
-//     window, not a user's request) and on genuinely cold wakes, which paid it on the KV path anyway.
+//     local inflate when a cached partition is loaded — paid on EVERY wake (an idle object
+//     hibernates after ~10s, so a wake is routine), inside wasm at ~105ms per partition.
 //
 // Sizing, against the Workers Free plan's Durable Objects limits (5GB stored, 5M row reads/day,
 // 100k row writes/day):
@@ -358,7 +358,8 @@ export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]
 // ── The COMPRESSED archive cache (partitioned stores) ──────────────────────────
 //
 // A partitioned archive is cached as its KV chunks, AS STORED: each gzip member under its own
-// cache key, so the reader can run one DecompressionStream per member — workerd rejects
+// cache key. (The DecompressionStream reader below is the uncompressed-archive twin; production
+// always passes `inflate=false` and inflates inside wasm.) One member per key because workerd rejects
 // concatenated members in a single stream ("Trailing bytes after end of compressed data"), which
 // is the same reason the KV loader decompresses per chunk. Reusing the row/meta machinery above
 // per chunk keeps every existing guarantee: meta written LAST per chunk, a length check per chunk,

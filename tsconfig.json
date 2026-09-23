@@ -14,6 +14,13 @@
     "allowJs": false,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["worker-configuration.d.ts", "src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
+  "include": [
+    "worker-configuration.d.ts",
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "engine/wasm-import/driver.ts",
+    "engine/wasm-builder-probe/driver.ts"
+  ],
   "exclude": ["node_modules", "vendor", "engine"]
 }

@@ -15,6 +15,7 @@
 // Magic ("there are no sets") rather than about this deployment.
 
 import { KeyedBlobError, keyedBlobLookup } from "../../engine/keyed-blob";
+import { readKvBytesMemo } from "../../engine/kv-memo";
 import {
 	CATALOG_NAMES,
 	catalogKey,
@@ -121,10 +122,15 @@ function unreadable(what: string, err: unknown, pretty: boolean): Response {
 	return scryfallJson(errorObject("internal_error", 500, UNREADABLE_DETAILS), pretty, NO_STORE_HEADER);
 }
 
-/** Read one reference value, or null when it has never been published. */
+/**
+ * Read one reference value, or null when it has never been published.
+ *
+ * Memoized per isolate and colo-cached (src/engine/kv-memo.ts): these values are rewritten
+ * nightly and served under a one-hour response tier, so an hour of staleness at the read is
+ * already the contract, and a per-request metered KV read for a 600KB value was not.
+ */
 async function readValue(ctx: RouteContext, key: string): Promise<Uint8Array | null> {
-	const value = await ctx.env.STORE_KV.get(key, "arrayBuffer");
-	return value === null ? null : new Uint8Array(value);
+	return readKvBytesMemo(ctx.env.STORE_KV, key);
 }
 
 // ─── GET /sets ───────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `bun run deploy`: publish the card index, then deploy the Worker.
+# `bun run deploy`: publish the card index (in Workers Builds), then deploy the Worker.
 #
 # Same two steps, same order, same script as a git-connected deploy — where
 # scripts/ci-postinstall.sh runs step 1 automatically from `bun install`. Index
@@ -11,13 +11,32 @@
 # minutes against a 128MB isolate and 30s-per-alarm in the runtime. The
 # in-Worker pipeline keeps the nightly refresh, where the work is incremental.
 #
-#   bun run deploy                 # import if needed, then deploy
-#   FORCE_IMPORT=1 bun run deploy  # always rebuild and republish the store
+#   bun run deploy                 # in Workers Builds: import if needed, then deploy
+#   FORCE_IMPORT=1 bun run deploy  # in Workers Builds: always rebuild and republish the store
 #   SKIP_IMPORT=1 bun run deploy   # deploy code only (store untouched)
+#
+# FROM A LAPTOP THIS IS ALWAYS CODE ONLY. Production KV has exactly two writers — a push to main
+# (Workers Builds runs import-store.sh) and the nightly cron — and every remote write refuses to
+# run anywhere else (scripts/kv-target.ts requireDeployEnvironment). This script used to advertise
+# the import here anyway, and a fresh fork's first laptop deploy spent seven minutes downloading
+# and building a store it was then refused permission to publish. Outside Workers Builds the
+# import is skipped up front; the index arrives with the next nightly cron (11:17 UTC), or at
+# deploy time once the repository is connected to Workers Builds.
 #
 # With several Cloudflare accounts, set CLOUDFLARE_ACCOUNT_ID — otherwise
 # wrangler cannot pick one non-interactively.
 set -euo pipefail
+
+if [[ "${WORKERS_CI:-}" != "1" ]]; then
+    if [[ "${FORCE_IMPORT:-}" == "1" ]]; then
+        echo "!!! FORCE_IMPORT=1 has no effect outside Workers Builds: production KV is written only by a" >&2
+        echo "    push to main or by the nightly cron (scripts/kv-target.ts). Push the change instead." >&2
+        exit 1
+    fi
+    echo "==> Not in Workers Builds: deploying code only. The card index is built by Workers Builds on a"
+    echo "    push, or refreshed by the nightly cron inside the Worker."
+    export SKIP_IMPORT=1
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"

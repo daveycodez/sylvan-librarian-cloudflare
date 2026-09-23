@@ -30,6 +30,7 @@
 // isolate's copy, and the value is colo-cached for a week.
 
 import { EMPTY_TAG_ALIASES, type TagAliasTables } from "../parser/card-query-nodes";
+import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { KV_VALUE_CAP_BYTES } from "./store-kv";
 import type { Env, StoreManifest } from "./types";
 
@@ -78,17 +79,31 @@ export function parseTagAliasTables(json: string): TagAliasTables {
 }
 
 /**
- * How long an isolate's colo may serve a cached alias map. A week, like the archive chunks and
- * for the same reason: the key names its build, so the value under it never changes.
+ * How long an isolate's colo may serve a cached alias read. FIVE MINUTES, not the week the archive
+ * chunks get: the key names its build, so a PUBLISHED value never changes — but KV caches a MISS
+ * for the same TTL, and the map is the one artifact that is legitimately published late
+ * (scripts/publish-tag-aliases.ts writes it for a live build the coordinator shipped without one).
+ * A week-long negative left every colo that had already asked resolving no aliases until the next
+ * build, and bought nothing on the positive side: the isolate keeps the parsed table for its life.
  */
-const TAG_ALIASES_CACHE_TTL = 604_800;
+const TAG_ALIASES_CACHE_TTL = 300;
+/** The colo's Cache API copy of a PUBLISHED map: immutable per build, so a day only bounds lingering. */
+const TAG_ALIASES_EDGE_TTL_S = 86_400;
+/** How long an isolate trusts "no map published for this build" before asking KV again. */
+export const ALIAS_MISS_RETRY_MS = 300_000;
 
 /** Read a build's alias map, or null when none was published for it. Throws on a KV fault. */
 export async function readTagAliases(env: Env, manifest: StoreManifest): Promise<TagAliasTables | null> {
 	const key = tagAliasesKeyFor(manifest);
 	if (!key) return null;
-	const json = await env.STORE_KV.get(key, { type: "text", cacheTtl: TAG_ALIASES_CACHE_TTL });
-	return json === null ? null : parseTagAliasTables(json);
+	// Through the colo's Cache API first (edge-cache.ts), like the routing filter: a metered KV read
+	// per cold isolate otherwise. A miss is never stored there, so the late-publish case above still
+	// resolves through KV's own short negative.
+	const bytes = await readThroughEdgeCache(edgeCacheUrl(key), TAG_ALIASES_EDGE_TTL_S, async () => {
+		const json = await env.STORE_KV.get(key, { type: "text", cacheTtl: TAG_ALIASES_CACHE_TTL });
+		return json === null ? null : new TextEncoder().encode(json);
+	});
+	return bytes === null ? null : parseTagAliasTables(new TextDecoder().decode(bytes));
 }
 
 /**
@@ -108,7 +123,7 @@ export async function writeTagAliases(env: Env, formatVersion: number, builtAt: 
 /** Cached per isolate and keyed by BUILD, because the map is immutable per build — a new
  * generation is a new key, not a new value under the old one. A build with no map is remembered
  * as EMPTY so the isolate stops asking KV for it once per request. */
-let aliasCache: { builtAt: string; tables: TagAliasTables } | null = null;
+let aliasCache: { builtAt: string; tables: TagAliasTables; missAt: number | null } | null = null;
 let aliasLoad: { builtAt: string; done: Promise<TagAliasTables> } | null = null;
 
 /**
@@ -121,7 +136,11 @@ export async function liveTagAliases(env: Env, manifest: StoreManifest): Promise
 	const builtAt = String(manifest.built_at ?? "");
 	if (!builtAt) return EMPTY_TAG_ALIASES;
 	const cached = aliasCache;
-	if (cached?.builtAt === builtAt) return cached.tables;
+	// A published table is the build's for the isolate's life; an unpublished one is re-asked after
+	// ALIAS_MISS_RETRY_MS, since a late publish is exactly what the miss can be hiding.
+	if (cached?.builtAt === builtAt && (cached.missAt === null || Date.now() - cached.missAt < ALIAS_MISS_RETRY_MS)) {
+		return cached.tables;
+	}
 	if (aliasLoad?.builtAt !== builtAt) {
 		const done = (async (): Promise<TagAliasTables> => {
 			try {
@@ -131,10 +150,10 @@ export async function liveTagAliases(env: Env, manifest: StoreManifest): Promise
 						`tag aliases for build ${builtAt} are not published (${tagAliasesKeyFor(manifest)}); ` +
 							"alias spellings (otag:reanimate-copy for copy-from-graveyard) match nothing until a publisher writes them",
 					);
-					aliasCache = { builtAt, tables: EMPTY_TAG_ALIASES };
+					aliasCache = { builtAt, tables: EMPTY_TAG_ALIASES, missAt: Date.now() };
 					return EMPTY_TAG_ALIASES;
 				}
-				aliasCache = { builtAt, tables };
+				aliasCache = { builtAt, tables, missAt: null };
 				console.log(`tag aliases loaded for build ${builtAt}: ${tables.oracle.size} oracle, ${tables.art.size} art`);
 				return tables;
 			} catch (err) {

@@ -33,7 +33,7 @@ import {
 	TrueNode,
 } from "./nodes";
 import { PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
-import { MAX_GROUP_DEPTH, QueryBudgetExceeded } from "./query-budget";
+import { MAX_ARITH_CHAIN, MAX_GROUP_DEPTH, QueryBudgetExceeded } from "./query-budget";
 import { setReleaseDate } from "./set-dates.gen";
 import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
 
@@ -515,10 +515,26 @@ export class Parser {
 			if (!ARITH_OPS.has(tok.type) || !tok.spaceBefore) break;
 			if (tok.type === TT.MINUS && !this.peek(1).spaceBefore) break;
 			if (!this.numTermStart(this.peek(1))) break;
+			this.checkArithChain(lhs);
 			const op = this.consume().value as string;
 			lhs = new CardBinaryOperatorNode(lhs, op, this.parseNumTerm());
 		}
 		return lhs;
+	}
+
+	/**
+	 * Refuse to grow an arithmetic chain past MAX_ARITH_CHAIN (query-budget.ts). Chains are
+	 * left-nested, so the length is the walk down `lhs`; bounded, so the walk is cheap. The same
+	 * QueryBudgetExceeded as the parenthesis bound, which `parseQuery` lets through as a 400.
+	 */
+	private checkArithChain(lhs: QueryNode): void {
+		let length = 0;
+		let node: QueryNode = lhs;
+		while (node instanceof BinaryOperatorNode) {
+			length++;
+			if (length >= MAX_ARITH_CHAIN) throw new QueryBudgetExceeded("depth");
+			node = node.lhs;
+		}
 	}
 
 	private numTermStart(tok: Token): boolean {
@@ -536,6 +552,7 @@ export class Parser {
 			const tok = this.peek();
 			if (!ARITH_OPS.has(tok.type) || tok.spaceBefore) break;
 			if (!this.numTermStart(this.peek(1))) break;
+			this.checkArithChain(lhs);
 			const op = this.consume().value as string;
 			lhs = new CardBinaryOperatorNode(lhs, op, this.parseNumTerm());
 		}
@@ -587,6 +604,7 @@ export class Parser {
 		while (ARITH_OPS.has(this.peek().type) && this.numTermStart(this.peek(1))) {
 			const tok = this.peek();
 			if (tok.type === TT.MINUS && tok.spaceBefore && !this.peek(1).spaceBefore) break;
+			this.checkArithChain(lhs);
 			const op = this.consume().value as string;
 			lhs = new CardBinaryOperatorNode(lhs, op, this.parseNumTerm());
 		}

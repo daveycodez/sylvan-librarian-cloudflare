@@ -588,6 +588,14 @@ describe("properties the goldens imply but do not state outright", () => {
 		expect(parseManaCost("1{1}").cost).toBe("{2}");
 	});
 
+	test("a generic cost past the safe-integer range is a 422, not a body no parser accepts", () => {
+		// `{1e+21}` as the cost and `"cmc":1e+21.0` on the wire were a 200 that JSON.parse rejected.
+		expect(() => parseManaCost(`{${"1".padEnd(22, "0")}}`)).toThrow(ManaCostError);
+		expect(() => parseManaCost("9007199254740993")).toThrow(ManaCostError);
+		expect(parseManaCost("{9007199254740991}").cmc).toBe(9007199254740991);
+		expect(parseManaCost("{20}{20}").cmc).toBe(40);
+	});
+
 	test("consecutive digits are one number", () => {
 		// `11R` is eleven generic and a red pip, not two ones.
 		expect(parseManaCost("11R").cmc).toBe(12);

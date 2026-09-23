@@ -27,7 +27,12 @@ let totalChunkBytes = 0;
 let chunkCount = 0;
 
 let memory: WebAssembly.Memory | undefined;
-const view = (ptr: number, len: number) => new Uint8Array(memory!.buffer, ptr, len);
+/** The instance's memory, which every export call below can assume was bound at instantiation. */
+const mem = (): WebAssembly.Memory => {
+	if (!memory) throw new Error("wasm memory used before instantiation");
+	return memory;
+};
+const view = (ptr: number, len: number) => new Uint8Array(mem().buffer, ptr, len);
 
 const decoder = new TextDecoder();
 // Spilled row blobs, indexed by add order — the JS stand-in for DO SQLite.
@@ -62,20 +67,24 @@ const env = {
 	},
 };
 
-const imports: Record<string, Record<string, unknown>> = { env };
+const imports: WebAssembly.Imports = { env: env as unknown as WebAssembly.ModuleImports };
 for (const imp of WebAssembly.Module.imports(module_)) {
-	imports[imp.module] ??= {};
-	if (imports[imp.module][imp.name] !== undefined) continue;
+	let table = imports[imp.module];
+	if (table === undefined) {
+		table = {};
+		imports[imp.module] = table;
+	}
+	if (table[imp.name] !== undefined) continue;
 	if (imp.kind === "function") {
-		imports[imp.module][imp.name] = (...args: unknown[]) => {
+		table[imp.name] = (...args: unknown[]) => {
 			throw new Error(`stubbed import called: ${imp.module}.${imp.name}(${args})`);
 		};
 	} else if (imp.kind === "memory") {
-		imports[imp.module][imp.name] = new WebAssembly.Memory({ initial: 32 });
+		table[imp.name] = new WebAssembly.Memory({ initial: 32 });
 	} else if (imp.kind === "table") {
-		imports[imp.module][imp.name] = new WebAssembly.Table({ element: "anyfunc", initial: 128 });
+		table[imp.name] = new WebAssembly.Table({ element: "anyfunc", initial: 128 });
 	} else if (imp.kind === "global") {
-		imports[imp.module][imp.name] = 0;
+		table[imp.name] = 0;
 	}
 }
 
@@ -112,14 +121,14 @@ const feed = () => {
 		staged = ex.builder_add_jsonl(ptr, bytes.length);
 	} catch (err) {
 		console.error(
-			`TRAP at feed #${feeds} (staged ${staged} rows): heap current ${mb(ex.current_alloc())} MB, peak ${mb(ex.peak_alloc())} MB, linear memory ${mb(memory!.buffer.byteLength)} MB`,
+			`TRAP at feed #${feeds} (staged ${staged} rows): heap current ${mb(ex.current_alloc())} MB, peak ${mb(ex.peak_alloc())} MB, linear memory ${mb(mem().buffer.byteLength)} MB`,
 		);
 		throw err;
 	}
 	feeds += 1;
 	if (feeds % 10 === 0) {
 		console.error(
-			`  feed #${feeds}: staged ${staged}, heap ${mb(ex.current_alloc())} MB, linear ${mb(memory!.buffer.byteLength)} MB`,
+			`  feed #${feeds}: staged ${staged}, heap ${mb(ex.current_alloc())} MB, linear ${mb(mem().buffer.byteLength)} MB`,
 		);
 	}
 	if (staged < 0n) throw new Error("builder_add_jsonl failed (see [wasm] log)");
@@ -141,8 +150,12 @@ if (pending.length > 0) batch.push(pending);
 feed();
 
 const stagedDone = performance.now();
-console.error(`staged ${staged} rows in ${((stagedDone - started) / 1000).toFixed(1)}s (spilled ${mb(spilledBytes)} MB in ${spilled.length} blobs)`);
-console.error(`  wasm heap: current ${mb(ex.current_alloc())} MB, peak ${mb(ex.peak_alloc())} MB, linear memory ${mb(memory.buffer.byteLength)} MB`);
+console.error(
+	`staged ${staged} rows in ${((stagedDone - started) / 1000).toFixed(1)}s (spilled ${mb(spilledBytes)} MB in ${spilled.length} blobs)`,
+);
+console.error(
+	`  wasm heap: current ${mb(ex.current_alloc())} MB, peak ${mb(ex.peak_alloc())} MB, linear memory ${mb(memory.buffer.byteLength)} MB`,
+);
 
 const total = ex.builder_finish();
 if (total < 0n) throw new Error("builder_finish failed (see [wasm] log)");

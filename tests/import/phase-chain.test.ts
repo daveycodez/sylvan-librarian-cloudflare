@@ -164,6 +164,35 @@ describe("the coordinator never deletes staging in one commit", () => {
 		expect(src.match(/beginPurge\("blobs"/g)?.length ?? 0).toBe(1);
 	});
 
+	test("the TagData snapshot is packed once on the way into SQLite and unpacked on the way out", () => {
+		// Serde's JSON compresses several-fold, the table is rewritten three times a run, and every
+		// rewrite is churn the pacing sleeps on. unpackBlob passes an unpacked (older) snapshot through.
+		const write = src.slice(src.indexOf("private writeTagSnapshot("), src.indexOf("private restoreTags("));
+		expect(write).toContain("packBlob(blob.subarray(");
+		const read = src.slice(src.indexOf("private tagSnapshotBytes("), src.indexOf("private writeTagSnapshot("));
+		expect(read).toContain("unpackBlob(new Uint8Array(r.bytes as ArrayBuffer))");
+	});
+
+	test("an armed alarm that is overdue by the idle window does not keep a run alive", () => {
+		// The platform has delivered an alarm four hours late and once not at all; a run whose
+		// alarm never comes must not answer 202 to every nightly cron thereafter.
+		expect(src).toContain("pending < now - STALE_IDLE_MS");
+		expect(src).toMatch(/if \(\(pending !== null && !overdue\) \|\| idleMs < STALE_IDLE_MS\)/);
+	});
+
+	test("the banked storage wrappers reach ctx.storage, never themselves", () => {
+		// They once recursed (storePut called storePut): every alarm would have overflowed the stack.
+		expect(src).toMatch(
+			/private async storePut\(key: string, value: unknown\): Promise<void> \{\s*this\.rowsWritten \+= 1;\s*await this\.ctx\.storage\.put\(key, value\);/,
+		);
+		expect(src).toMatch(
+			/private async armAlarm\(atMs: number\): Promise<void> \{\s*this\.rowsWritten \+= 1;\s*await this\.ctx\.storage\.setAlarm\(atMs\);/,
+		);
+		expect(src).toMatch(
+			/private async disarmAlarm\(\): Promise<void> \{\s*this\.rowsWritten \+= 1;\s*await this\.ctx\.storage\.deleteAlarm\(\);/,
+		);
+	});
+
 	test("the alarm watches itself: one abort, and a timer that is always cleared", () => {
 		expect(src.match(/this\.ctx\.abort\(/g)?.length ?? 0).toBe(1);
 		expect(src).toContain("clearTimeout(timer)");

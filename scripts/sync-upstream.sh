@@ -148,4 +148,4 @@ if ((${#port_hits[@]})); then
 fi
 echo
 echo "UPSTREAM.lock now pins $TARGET_SHA"
-echo "Next: cargo test && bun test (parser parity) && rebuild + republish the store."
+echo "Next: cargo test && bun test (parser parity) && bun run set-dates (commit the diff) && rebuild + republish the store."

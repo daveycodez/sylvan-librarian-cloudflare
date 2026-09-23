@@ -47,11 +47,13 @@
 // autocomplete_merge_key_matches_the_single_store).
 
 import { collateName, foldAccents } from "../parser/pystr";
+import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import type { RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
-import { MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
+import { isPartitionedManifest, MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
 import {
+	type CollectionKeyIdentifier,
 	type CollectionScope,
 	type Engine,
 	type EngineSearchOptions,
@@ -69,9 +71,24 @@ import {
 } from "./types";
 
 /**
- * The manifest routing pins each request to, cached PER ISOLATE for 60s — the
- * same freshness readManifest's own cacheTtl gives, without a metered KV read
- * per request (100k/day is the budget that would otherwise bind).
+ * The manifest routing pins each request to, read through three tiers:
+ *
+ *   1. this isolate's memo, 60s;
+ *   2. the data center's Cache API entry, 60s — `caches.default` is unmetered and shared by
+ *      every isolate in the colo, so a cold isolate (which at low traffic is nearly every
+ *      request) no longer spends a KV read on the one key every request needs;
+ *   3. KV (`readManifest`, its own cacheTtl 60), whose every `get` is a metered read against
+ *      the same 100k/day budget the request meter draws on.
+ *
+ * The Cache API's scope is the colo, exactly KV's cacheTtl scope, so tier 2 changes nothing
+ * about freshness: a publish still reaches a colo within a minute (two, worst case, when both
+ * tiers were filled just before it). The previous architecture served the 70MB ARCHIVE through
+ * `caches.default` and paid a second of CPU per load for the double stream (store.ts header);
+ * a 2KB manifest has none of that cost.
+ *
+ * The authoritative readers stay on KV: the stale-modulus retry in index.ts re-reads the key
+ * directly, as do the Durable Objects' truth checks before a swap. Those are rare, and they
+ * exist precisely to see past a cached answer.
  *
  * THROWS rather than returning null when there is nothing usable at the key.
  * There is no unpartitioned serving path to hand the request to instead, so
@@ -80,17 +97,60 @@ import {
  * engine-unavailable condition takes. readManifest already refuses a manifest
  * that predates the partitioned format, with its own specific wording.
  *
- * Only SUCCESSFUL reads are cached — a failure must not pin an isolate to a bad
- * answer for a minute.
+ * Only SUCCESSFUL reads are memoized or put — a failure must not pin an isolate (or a colo)
+ * to a bad answer for a minute. A cache entry that does not parse to a partitioned manifest is
+ * treated as a miss, never served.
  */
 let manifestCache: { at: number; manifest: StoreManifest } | null = null;
 const MANIFEST_CACHE_MS = 60_000;
+const MANIFEST_EDGE_URL = edgeCacheUrl(MANIFEST_KEY);
+const MANIFEST_EDGE_TTL_S = 60;
+const utf8 = new TextDecoder();
 
-export async function livePartitionedManifest(env: Env): Promise<StoreManifest> {
+/** Clears the isolate memo so a test can drive the cache and KV tiers deliberately. */
+export function resetManifestMemoForTests(): void {
+	manifestCache = null;
+}
+
+/** A partitioned manifest with partitions, or null: the only thing the edge tier may hand back. */
+function usableManifest(bytes: Uint8Array | null): StoreManifest | null {
+	if (bytes === null) return null;
+	try {
+		const parsed = JSON.parse(utf8.decode(bytes)) as StoreManifest;
+		return isPartitionedManifest(parsed) && parsed.partitions?.length ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+export async function livePartitionedManifest(env: Env, defer?: (p: Promise<unknown>) => void): Promise<StoreManifest> {
 	const now = Date.now();
 	const cached = manifestCache;
 	if (cached && now - cached.at <= MANIFEST_CACHE_MS) return cached.manifest;
-	const manifest = await readManifest(env);
+	let fromKv: StoreManifest | null | undefined;
+	const bytes = await readThroughEdgeCache(
+		MANIFEST_EDGE_URL,
+		MANIFEST_EDGE_TTL_S,
+		async () => {
+			fromKv = await readManifest(env);
+			// Only a servable manifest is stored: the throws below are for the KV answer.
+			return fromKv?.partitions?.length ? new TextEncoder().encode(JSON.stringify(fromKv)) : null;
+		},
+		defer,
+	);
+	const manifest = fromKv === undefined ? usableManifest(bytes) : fromKv;
+	if (fromKv === undefined && manifest === null) {
+		// The cache tier handed back something unusable; KV is the authority.
+		return livePartitionedManifestFromKv(env, now);
+	}
+	return commitManifest(manifest, now);
+}
+
+async function livePartitionedManifestFromKv(env: Env, now: number): Promise<StoreManifest> {
+	return commitManifest(await readManifest(env), now);
+}
+
+function commitManifest(manifest: StoreManifest | null, now: number): StoreManifest {
 	if (!manifest) {
 		// Deliberately the same posture as the loader's: building the index is the
 		// deploy's job (scripts/import-store.sh), and a request finding no store
@@ -330,25 +390,55 @@ export function mergeAutocomplete(lists: string[][], prefix: string, limit: numb
 	return all.slice(0, limit);
 }
 
-/**
- * `store_key` → the union of that generation's per-partition extras-set tables.
- *
- * Module scope, so it outlives the per-request PartitionedEngine. One entry per store generation;
- * the map is never pruned because an isolate sees at most a handful of generations in its life and
- * each value is a few hundred short strings.
- */
-const EXTRAS_SETS_CACHE = new Map<string, Promise<string[]>>();
+/** The corpus-global constants a store generation carries: both catalogs and the extras-set table. */
+export interface CatalogTables {
+	types: Record<string, number>;
+	keywords: Record<string, number>;
+	setsWithExtras: string[];
+}
 
 /**
- * `store_key` → the corpus-global type and keyword counts, summed across the partitions.
+ * `store_key` → that generation's CatalogTables, read through three tiers:
  *
- * The same shape and the same rationale as EXTRAS_SETS_CACHE: a few KB of constants that change
- * exactly when the archives do, asked for by a route (`/get_catalog`) that fanned out N RPCs on
- * every call — once an hour per colo behind its edge cache, but N grows with the corpus and the
- * answer never does. One entry covers both tables because one RPC (`typeAndKeywordCounts`)
- * returns both, and RemoteEngine already dedupes that per instance.
+ *   1. this isolate's memo (module scope, so it outlives the per-request PartitionedEngine; never
+ *      pruned, because an isolate sees a handful of generations in its life and each value is a
+ *      few KB);
+ *   2. the colo's Cache API entry (edge-cache.ts), keyed by the store key — immutable per
+ *      generation, so a day's TTL only bounds how long an old build's copy lingers;
+ *   3. the N-way fan-out: one `typeAndKeywordCounts` RPC per partition (RemoteEngine dedupes the
+ *      three asks per instance), summed and unioned.
+ *
+ * Tier 2 is what turned "N Durable Object requests per cold isolate" into "N per colo per
+ * generation". The extras-gate asks for `setsWithExtras` on every set-scoped `/cards/search`, the
+ * hottest route there is, and `/get_catalog` asks for the counts; DeckGen sees ~32k cold isolates
+ * a day, and every one of them used to pay the fan-out on its first such request. Publishing the
+ * tables with the store was the other design and it needs a producer the coordinator lacks (the
+ * engine computes them at load) plus a second implementation in the native seed path.
+ *
+ * The in-flight PROMISE is what is memoized, so concurrent first requests share one read, and a
+ * rejected one is forgotten rather than remembered as an empty catalog — which would silently
+ * turn the extras auto-enable off for the life of the isolate.
  */
-const CATALOG_CACHE = new Map<string, Promise<{ types: Record<string, number>; keywords: Record<string, number> }>>();
+const CATALOG_TABLES = new Map<string, Promise<CatalogTables>>();
+const CATALOG_EDGE_TTL_S = 86_400;
+const catalogText = { decoder: new TextDecoder(), encoder: new TextEncoder() };
+
+/** Clears the isolate memo so a test can drive the cache and fan-out tiers deliberately. */
+export function resetCatalogMemoForTests(): void {
+	CATALOG_TABLES.clear();
+}
+
+/** The cache tier's bytes as CatalogTables, or null for anything that is not that shape. */
+function parseCatalogTables(bytes: Uint8Array): CatalogTables | null {
+	try {
+		const parsed = JSON.parse(catalogText.decoder.decode(bytes)) as Partial<CatalogTables> | null;
+		if (!parsed || typeof parsed !== "object") return null;
+		if (!parsed.types || !parsed.keywords || !Array.isArray(parsed.setsWithExtras)) return null;
+		return { types: parsed.types, keywords: parsed.keywords, setsWithExtras: parsed.setsWithExtras };
+	} catch {
+		return null;
+	}
+}
 
 export class PartitionedEngine implements Engine {
 	/** Lazily created per-partition clients, so a single-card route builds one. */
@@ -444,60 +534,51 @@ export class PartitionedEngine implements Engine {
 		return this.gatherAt(opts.filterTreeJson).scryfallSearchPage(opts, baseUrl, envelope, cache, "cards2");
 	}
 
-	// ── catalogs and counts: sum the partitions ─────────────────────────────────
+	// ── catalogs and counts: the colo's copy, else sum the partitions ────────────
 
 	async cardTypeCounts(): Promise<Record<string, number>> {
-		return (await this.catalogCounts()).types;
+		return (await this.catalogTables()).types;
 	}
 
 	async cardKeywordCounts(): Promise<Record<string, number>> {
-		return (await this.catalogCounts()).keywords;
+		return (await this.catalogTables()).keywords;
 	}
 
-	/**
-	 * Both count tables in ONE fan-out per store generation per isolate — see CATALOG_CACHE. The
-	 * in-flight promise is what is cached, so concurrent first requests share the fan-out, and a
-	 * failed one is forgotten rather than remembered as an empty catalog.
-	 */
-	private catalogCounts(): Promise<{ types: Record<string, number>; keywords: Record<string, number> }> {
+	setsWithExtras(): Promise<string[]> {
+		return this.catalogTables().then((t) => t.setsWithExtras);
+	}
+
+	/** See CATALOG_TABLES for the tiers. */
+	private catalogTables(): Promise<CatalogTables> {
 		const key = this.manifest.store_key;
-		const cached = CATALOG_CACHE.get(key);
+		const cached = CATALOG_TABLES.get(key);
 		if (cached) return cached;
-		const pending = this.all(async (e) => ({ types: await e.cardTypeCounts(), keywords: await e.cardKeywordCounts() }))
-			.then((parts) => ({
+		const fanOut = async (): Promise<CatalogTables> => {
+			const parts = await this.all(async (e) => ({
+				types: await e.cardTypeCounts(),
+				keywords: await e.cardKeywordCounts(),
+				setsWithExtras: await e.setsWithExtras(),
+			}));
+			return {
 				types: sumCounts(parts.map((p) => p.types)),
 				keywords: sumCounts(parts.map((p) => p.keywords)),
-			}))
-			.catch((err) => {
-				CATALOG_CACHE.delete(key);
-				throw err;
+				setsWithExtras: [...new Set(parts.flatMap((p) => p.setsWithExtras))].sort(),
+			};
+		};
+		const pending = (async (): Promise<CatalogTables> => {
+			let fromFanOut: CatalogTables | null = null;
+			const bytes = await readThroughEdgeCache(edgeCacheUrl(`catalog:${key}`), CATALOG_EDGE_TTL_S, async () => {
+				fromFanOut = await fanOut();
+				return catalogText.encoder.encode(JSON.stringify(fromFanOut));
 			});
-		CATALOG_CACHE.set(key, pending);
-		return pending;
-	}
-
-	/**
-	 * The union of the partitions' extras-set tables, cached PER ISOLATE for the store generation.
-	 *
-	 * Not cached on `this`: a PartitionedEngine is constructed per request, so an instance field
-	 * would fan out on every set-scoped `/cards/search`. The key is the manifest's `store_key`,
-	 * which changes exactly when the archives do — so a nightly publish invalidates the table by
-	 * construction and a stale generation can never answer for a fresh one. The in-flight promise
-	 * is what is cached, not its value, so N concurrent first requests share one fan-out.
-	 */
-	setsWithExtras(): Promise<string[]> {
-		const key = this.manifest.store_key;
-		const cached = EXTRAS_SETS_CACHE.get(key);
-		if (cached) return cached;
-		const pending = this.all((e) => e.setsWithExtras())
-			.then((lists) => [...new Set(lists.flat())].sort())
-			.catch((err) => {
-				// A failed fan-out must not be remembered as "no set has extras" — that would
-				// silently turn the auto-enable off for the life of the isolate.
-				EXTRAS_SETS_CACHE.delete(key);
-				throw err;
-			});
-		EXTRAS_SETS_CACHE.set(key, pending);
+			if (fromFanOut) return fromFanOut;
+			// A colo entry that is not the shape (or is unreadable) is a miss: ask the partitions.
+			return (bytes && parseCatalogTables(bytes)) ?? (await fanOut());
+		})().catch((err) => {
+			CATALOG_TABLES.delete(key);
+			throw err;
+		});
+		CATALOG_TABLES.set(key, pending);
 		return pending;
 	}
 
@@ -652,6 +733,89 @@ export class PartitionedEngine implements Engine {
 			const card = byId.get(id);
 			return card ? [card] : [];
 		});
+	}
+
+	/**
+	 * The key-shaped collection identifiers, batched by the partition each one names —
+	 * `oracle_id` arithmetically, the rest through the routing filter — so a batch costs one RPC
+	 * per partition asked and never more than N, exactly like scryfallCardsByIds. A miss under a
+	 * hint is asked of the partitions the first round did NOT cover; an oracle miss additionally
+	 * gets the stale-modulus re-read once (Decision 3b), re-targeted only if N moved.
+	 */
+	async scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
+		if (identifiers.length === 0) return out;
+		const targetOf = (ident: CollectionKeyIdentifier, n: number): number | null => {
+			if (ident.kind === "oracle_id") return partitionOfOracleId(ident.id, n);
+			const key =
+				ident.kind === "illustration_id" ? illustrationIdKey(ident.id) : externalIdKey(ident.namespace, ident.id);
+			const hint = this.routing?.lookup(key) ?? null;
+			return hint === null || hint >= n ? null : hint;
+		};
+		const ask = async (partition: number, at: number[]): Promise<void> => {
+			const cards = await this.at(partition).scryfallCardsByIdentifiers(
+				at.map((i) => identifiers[i] as CollectionKeyIdentifier),
+				baseUrl,
+			);
+			for (const [j, i] of at.entries()) if (out[i] === null) out[i] = cards[j] ?? null;
+		};
+
+		// Round 1: every identifier with a target, grouped by it. An UNTARGETED one — no routing
+		// filter in this isolate yet (every cold isolate's first request), or an id the filter does
+		// not know — could live anywhere, so it rides along to every partition: still at most N
+		// RPCs, and the same fan-out the per-identifier routes did before batching.
+		const grouped = new Map<number, number[]>();
+		const untargeted: number[] = [];
+		for (let i = 0; i < identifiers.length; i++) {
+			const p = targetOf(identifiers[i] as CollectionKeyIdentifier, this.n);
+			if (p === null) untargeted.push(i);
+			else grouped.set(p, [...(grouped.get(p) ?? []), i]);
+		}
+		const round1 = new Map<number, number[]>(grouped);
+		if (untargeted.length > 0) {
+			for (let p = 0; p < this.n; p++) round1.set(p, [...(grouped.get(p) ?? []), ...untargeted]);
+		}
+		await Promise.all([...round1.entries()].map(([p, at]) => ask(p, at)));
+
+		// Oracle misses: the one case with an arithmetic target that a stale modulus can point
+		// wrong. Re-read the manifest once; if N moved, ask the fresh owners of what missed.
+		const oracleMissed = [...grouped.values()]
+			.flat()
+			.filter((i) => out[i] === null && (identifiers[i] as CollectionKeyIdentifier).kind === "oracle_id");
+		if (oracleMissed.length > 0) {
+			const freshN = (await this.reread())?.partition_count;
+			if (freshN !== undefined && freshN !== this.n) {
+				const regrouped = new Map<number, number[]>();
+				for (const i of oracleMissed) {
+					const ident = identifiers[i] as CollectionKeyIdentifier;
+					const p2 = targetOf(ident, freshN) as number;
+					if (p2 !== targetOf(ident, this.n)) regrouped.set(p2, [...(regrouped.get(p2) ?? []), i]);
+				}
+				await Promise.all([...regrouped.entries()].map(([p, at]) => ask(p, at)));
+			}
+		}
+
+		// Round 2: a HINTED identifier that missed is a filter from another build, and the card can
+		// only live where round 1 did not ask for it — every partition but its hint's. Untargeted
+		// ones were already asked everywhere. Rare by construction (a routing filter is published
+		// with its build), so its up-to-N extra RPCs are not on the common path.
+		const hintedMisses = [...grouped.entries()].flatMap(([hint, at]) =>
+			at
+				.filter((i) => out[i] === null && (identifiers[i] as CollectionKeyIdentifier).kind !== "oracle_id")
+				.map((i) => ({ i, hint })),
+		);
+		if (hintedMisses.length > 0) {
+			await Promise.all(
+				Array.from({ length: this.n }, (_, p) => p).map((p) => {
+					const at = hintedMisses.filter((m) => m.hint !== p).map((m) => m.i);
+					return at.length > 0 ? ask(p, at) : Promise.resolve();
+				}),
+			);
+		}
+		return out;
 	}
 
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {

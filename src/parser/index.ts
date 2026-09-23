@@ -20,7 +20,7 @@ import { checkQueryByteLength } from "./query-budget";
 import { validateRegexPatterns } from "./regex-budget";
 import { flattenAndDeduplicateCompounds, rewriteQuery } from "./rewrite";
 import { braceCloseIndex, findCloseIndex, opensRegex, QUOTE_CHARS } from "./spans";
-import { foldTypographicQuotes } from "./tokenizer";
+import { foldTypographicQuotes, isWordCont } from "./tokenizer";
 
 export { EMPTY_TAG_ALIASES, type TagAliasTables, withTagAliases } from "./card-query-nodes";
 export { ParseError } from "./errors";
@@ -158,8 +158,11 @@ export function balancePartialQuery(queryIn: string): string {
 	// in the tokenizer, and the two must agree exactly or the balancer emits something the lexer
 	// rejects. Without the "or nothing", "urza'" balanced to "urza''", which parses as `urza` AND an
 	// empty quoted string: the search widened to every card containing "urza" and the explanation
-	// rendered "the name contains Urza and " with nothing after the "and".
-	const wordChar = /[\p{L}\p{N}_.]/u;
+	// rendered "the name contains Urza and " with nothing after the "and". THE SAME PREDICATE, not
+	// a look-alike: this used to be its own `\p{L}\p{N}_.` class, which counted `²` as a word
+	// character (the lexer does not) and `~` as not one (the lexer does), so `urza'²` was left
+	// unbalanced and failed to lex while `urza'~` gained a quote it never needed.
+	const wordChar = { test: isWordCont };
 
 	let pos = 0;
 	while (pos < chars.length) {

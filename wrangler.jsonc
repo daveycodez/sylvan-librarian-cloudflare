@@ -23,6 +23,17 @@
 	// the deploy-time compile that makes script size free here. Re-measure before
 	// ever enabling it; do not assume a later workerd fixed it.
 	"compatibility_flags": [],
+	// Every invocation is logged (`head_sampling_rate` 1, the default), on purpose: the one thing
+	// sampling would thin is the nightly coordinator's alarm chain, which is exactly the trace a
+	// hang investigation needs. Measured on DeckGen for 2026-09-21: 1.25M events, of which 1.09M
+	// are INVOCATION logs (938k Durable Object RPCs, 156k fetches) and 160k are console lines.
+	// That is ~37M/month against the paid plan's 20M included (~$10/month at $0.60/M); on the free
+	// plan everything past 200k/day is dropped, not billed. The lever, if that bill matters, is
+	// `"logs": { "invocation_logs": false }` — it removes the 1.09M/day and keeps every console
+	// line, at the cost of the per-request rows in the dashboard's Logs view (GraphQL keeps
+	// requests, errors and CPU). Left enabled: that trade is a product decision, not a code one.
+	// The per-request console line this used to have (`warm engine rpc: n=1`, ~100k/day) is gone —
+	// remote-engine.ts reports a window only when it holds two samples or a far floor.
 	"observability": { "enabled": true },
 
 	// Static assets, served straight from Cloudflare's CDN out of public/ —
@@ -61,7 +72,8 @@
 	// (statics 30d/1h, pages+catalog 1h, /search 90s, /cards/* 16h). Hits skip
 	// the Worker — and therefore cold isolate starts — entirely. no-store
 	// responses (random_search, bootstrap page) are never cached, and neither
-	// are the dispatch-level errors, which carry no cache header at all, so the
+	// are the dispatch-level errors — `no-cache` on the 404/405/500/503
+	// (src/routes/http.ts) and `no-store` on the per-address 429 — so the
 	// honest-failure invariants hold. The exception is deliberate: /cards/*
 	// sends its own tier on its own 400s and 404s, because Scryfall does — a
 	// missing card is a stable fact.
@@ -69,7 +81,7 @@
 	// Per-version cache (default): each DEPLOY starts fresh, so statics can't go
 	// stale across releases. A nightly IMPORT is not a deploy and so does not
 	// reset anything, which is why it purges explicitly — see the coordinator's
-	// `purge` phase (which is mostly about WHEN, and runs twice) and
+	// `purge` phase (which runs once, right after notify) and
 	// SylvanLibrarian.purgeCache. /search would have survived without one (90s,
 	// and its stale-while-revalidate refreshes in the background), but /cards/*
 	// holds Scryfall's 16 hours with no revalidation at all, so a card object

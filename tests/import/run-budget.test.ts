@@ -27,7 +27,9 @@ import { REGION_HINTS } from "../../src/engine/region";
 import {
 	AGG_SLICE_BATCHES,
 	CURRENT_SLICES,
+	DEAD_MAN_MARGIN_MS,
 	DO_STORAGE_POOL_BYTES,
+	deadManDelayMs,
 	FINALIZE_SLICE_BATCHES,
 	FIXED_ROWS_WRITTEN_PER_ALARM,
 	MAX_DAY_ROWS_WRITTEN,
@@ -367,6 +369,23 @@ const PARTITION_GZIP_BYTES_2026_09_04 = [
  */
 const STAGING_PEAK_BYTES_2026_09_04 = 1_920_000_000;
 
+describe("the dead-man alarm", () => {
+	test("fires only after the watchdog would have ended a live handler", () => {
+		// The dead-man is armed at the start of a RETRIED attempt and is meant to
+		// outlive only a slice the runtime KILLED. If it could fire while a
+		// legitimate slice was still running under its watchdog, the pending
+		// alarm would be delivered the moment the handler returned and the chain
+		// would run the same slice twice. A positive margin is the invariant;
+		// the exact size only has to be small against the 24h cron cadence.
+		for (const watchdog of [5 * 60_000, 10 * 60_000]) {
+			expect(deadManDelayMs(watchdog)).toBe(watchdog + DEAD_MAN_MARGIN_MS);
+			expect(deadManDelayMs(watchdog)).toBeGreaterThan(watchdog);
+		}
+		expect(DEAD_MAN_MARGIN_MS).toBeGreaterThan(0);
+		expect(DEAD_MAN_MARGIN_MS).toBeLessThan(60 * 60_000);
+	});
+});
+
 describe("the Durable Objects storage pool", () => {
 	const today = (warmRegions: number, generationsHeld: number) =>
 		projectPoolBytes({
@@ -393,7 +412,7 @@ describe("the Durable Objects storage pool", () => {
 		// nearer than the write meter's wall now that the bucket phase exists,
 		// and the corpus grows ~7% a year — so this assertion is expected to go
 		// red within a year of 2026-09-04, and when it does the answer is to
-		// shrink the staging (the drafts are uncompressed JSON) or the
+		// shrink the staging (the drafts are packed blobs, import-blob-codec.ts) or the
 		// double-hold, not to raise the number.
 		expect(crossing(REGION_HINTS.length, 2)).toBeGreaterThan(1.05);
 		expect(crossing(REGION_HINTS.length, 1)).toBeGreaterThan(1.5);

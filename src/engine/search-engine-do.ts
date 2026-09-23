@@ -73,6 +73,7 @@ import {
 	type SearchKeysReply,
 } from "./gather";
 import { probePlacement } from "./placement";
+import { foldWidthAnnouncement } from "./shard-controller";
 import {
 	currentManifest,
 	gatherOps,
@@ -80,12 +81,14 @@ import {
 	type LoadContext,
 	prefetchStore,
 	refreshNow,
+	settleInFlightLoad,
 	swapToStore,
 	tryGetLoadedEngine,
 } from "./store";
 import { readLiveManifest, recordLiveManifest } from "./store-cache";
 import { isPartitionedManifest, manifestServableBy, readManifest } from "./store-kv";
 import type {
+	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -110,6 +113,9 @@ interface ScryfallCardReply {
 }
 interface ScryfallCardsReply {
 	cards: Record<string, unknown>[];
+}
+interface ScryfallMaybeCardsByKeyReply {
+	cards: (Record<string, unknown> | null)[];
 }
 interface ScryfallMaybeCardsReply {
 	cards: (Record<string, unknown> | null)[];
@@ -205,14 +211,18 @@ export class SearchEngine extends DurableObject<Env> {
 
 	/** Fold a caller's width in and hand back the current announcement. */
 	private rendezvous(reported: number, now: number): number {
-		const width = Number.isFinite(reported) && reported >= 1 ? Math.floor(reported) : 1;
-		// Refresh on any report at or above the announcement — otherwise a
-		// stream of lower reports would keep a stale higher value alive forever
-		// and defeat the TTL.
-		if (width >= this.announcedShards || now - this.announcedAt > WIDTH_TTL_MS) {
-			this.announcedShards = width;
-			this.announcedAt = now;
-		}
+		// The rule lives in shard-controller.ts (foldWidthAnnouncement) beside the
+		// isolate half, so the whole loop is testable with the real rule on both
+		// sides. Callers report the width they hold on their OWN evidence, so an
+		// announcement nobody still holds ages out and the region can scale in.
+		const folded = foldWidthAnnouncement(
+			{ shards: this.announcedShards, at: this.announcedAt },
+			reported,
+			now,
+			WIDTH_TTL_MS,
+		);
+		this.announcedShards = folded.shards;
+		this.announcedAt = folded.at;
 		return this.announcedShards;
 	}
 
@@ -560,6 +570,16 @@ export class SearchEngine extends DurableObject<Env> {
 		}));
 	}
 
+	async scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<ScryfallMaybeCardsByKeyReply & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => ({
+			cards: await engine.scryfallCardsByIdentifiers(identifiers, baseUrl),
+		}));
+	}
+
 	async scryfallCardByOracleId(
 		oracleId: string,
 		baseUrl: string,
@@ -892,16 +912,14 @@ export class SearchEngine extends DurableObject<Env> {
 			baseUrl,
 			reshape: (row) => encodeUtf8(stringifyScryfall(toScryfallCard(row as EngineRow, baseUrl))),
 		});
-		// The gather never holds a QueryOutput, so the widening flag comes from this object's OWN
-		// store: the decision is a pure function of the options and the bound filter and is the
-		// same in every partition. `/cards/search` echoes `include_multilingual` in `next_page`
-		// from it — see withResolvedMultilingual.
-		const widened = (await this.engine()).queryWidens?.(opts) ?? false;
+		// The widening flag rides every phase-1 packet (KEY_PACKET_VERSION 3), so this object no
+		// longer binds the filter a second time on its own store to learn it. `/cards/search`
+		// echoes `include_multilingual` in `next_page` from it — see withResolvedMultilingual.
 		return {
 			totalCards: page.total,
 			cardsBytes: joinJsonArray(page.slots),
 			rowCount: page.slots.length,
-			widened,
+			widened: page.widened,
 			acquireMs: page.acquireMs,
 		};
 	}
@@ -1011,6 +1029,9 @@ export class SearchEngine extends DurableObject<Env> {
 				console.warn(`[${this.label}] could not record the live manifest (it will read KV): ${err}`);
 			}
 		}
+		// A load a request started may still be streaming: wait it out, so the
+		// object is judged warm or cold by where it ENDED, not by where it was.
+		await settleInFlightLoad(this.label);
 		if (tryGetLoadedEngine(this.label) === null) return { swapped: false, shards: this.announcedShards };
 		// Deliberately BELOW the cold early-return. A publish is the one recurring, off-request moment
 		// to re-check where this object is, but a probe holds an object open for as long as its
@@ -1074,6 +1095,7 @@ export class SearchEngine extends DurableObject<Env> {
 				console.warn(`[${this.label}] could not record the live manifest (it will read KV): ${err}`);
 			}
 		}
+		await settleInFlightLoad(this.label); // see notifyPublish
 		if (tryGetLoadedEngine(this.label) === null) return { prepared: true, shards: this.announcedShards };
 		// Warm: hold the bytes locally under the OLD store. See prefetchStore for
 		// why every failure here degrades to a slower commit, never a failed one.
@@ -1093,6 +1115,7 @@ export class SearchEngine extends DurableObject<Env> {
 	 * prefetch did not land.
 	 */
 	async commitPublish(): Promise<{ swapped: boolean; shards: number }> {
+		await settleInFlightLoad(this.label); // see notifyPublish
 		if (tryGetLoadedEngine(this.label) === null) return { swapped: false, shards: this.announcedShards };
 		const manifest = readLiveManifest(this.ctx.storage) as StoreManifest | null;
 		if (!manifest?.store_bytes) return { swapped: false, shards: this.announcedShards };
@@ -1154,7 +1177,7 @@ export class SearchEngine extends DurableObject<Env> {
 		try {
 			// getEngine is single-flighted and returns immediately when this
 			// isolate already holds the store; otherwise it streams the store in
-			// from KV (~4 immutable, colo-cached reads).
+			// from KV (one immutable, colo-cached read per chunk — normally one per partition).
 			return await getEngine(this.env, this.loadContext());
 		} catch (err) {
 			rethrowForRpc(err);

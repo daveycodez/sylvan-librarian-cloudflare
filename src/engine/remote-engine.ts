@@ -9,6 +9,7 @@ import {
 	reportEngineRate,
 } from "./shard-controller";
 import type {
+	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -134,6 +135,11 @@ interface SearchEngineStub {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
+	scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
 	scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -233,7 +239,7 @@ const WARM_RPC_WINDOW_MS = 2_000;
  * described neither — and the whole use for this line now is comparing regions
  * against each other, which a pooled number cannot support.
  */
-interface WarmWindow {
+export interface WarmWindow {
 	start: number;
 	count: number;
 	min: number;
@@ -260,41 +266,73 @@ const warmWindows = new Map<string, WarmWindow>();
  */
 const WARM_RPC_FAR_MS = 250;
 
+/**
+ * What a closed window says. Pure, so the rule is testable without the module's windows.
+ *
+ * The summary line needs at least TWO samples: a one-sample window is a per-request line, and it
+ * says nothing the invocation log does not. Measured on DeckGen for 2026-09-21, ~100k of the
+ * Worker's 137k console lines were `warm engine rpc: n=1 …` — at that traffic the 2s window
+ * closed with a single sample on nearly every request. The far-floor WARNING is different: one
+ * far sample is still evidence of placement, so it is raised whatever the count.
+ */
+export function warmWindowLines(
+	w: Readonly<WarmWindow>,
+	region: string,
+	colo: string,
+	now: number,
+): { log: string | null; warn: string | null } {
+	const prefix = `[${region}@${colo}]`;
+	const log =
+		w.count >= 2
+			? `${prefix} warm engine rpc: n=${w.count} min=${w.min}ms avg=${(w.sum / w.count).toFixed(1)}ms ` +
+				`max=${w.max}ms over ${now - w.start}ms`
+			: null;
+	// Name the OBJECTS, not the replica-group label. `engine-<region>` is what
+	// replicaGroupOf returns and nothing loads a store into it; the things this
+	// window actually timed are `engine-<region>[-<n>]-p<k>`, and the window
+	// mixes every partition and shard this isolate addressed, so the floor says
+	// "at least one of them is far", never which.
+	const warn =
+		w.count > 0 && w.min >= WARM_RPC_FAR_MS
+			? `${prefix} warm engine rpc floor is ${w.min}ms — an engine-${region}[-<n>]-p<k> object may not be ` +
+				`in ${region}; check their placement lines (see ENGINE-PLACEMENT.md)`
+			: null;
+	return { log, warn };
+}
+
 function sampleWarmRpc(region: string, colo: string, rpcMs: number): void {
-	const w = warmWindows.get(region) ?? { start: 0, count: 0, min: Number.POSITIVE_INFINITY, max: 0, sum: 0 };
+	const now = Date.now();
+	const w = warmWindows.get(region) ?? { start: now, count: 0, min: Number.POSITIVE_INFINITY, max: 0, sum: 0 };
 	warmWindows.set(region, w);
 	w.count += 1;
 	w.sum += rpcMs;
 	if (rpcMs < w.min) w.min = rpcMs;
 	if (rpcMs > w.max) w.max = rpcMs;
-	const now = Date.now();
-	if (w.start !== 0 && now - w.start < WARM_RPC_WINDOW_MS) return;
+	// The first sample opens the window silently; the window is reported when it closes.
+	if (now - w.start < WARM_RPC_WINDOW_MS) return;
 	// `[wnam@SJC]` — the region this isolate routed to, and the colo it routed
 	// FROM. The colo is what makes the line checkable: the colos that appear here
 	// under a region are the colos that region's traffic actually arrives at, so
 	// they are what an object's self-reported colo has to sit among.
-	const prefix = `[${region}@${colo}]`;
-	console.log(
-		`${prefix} warm engine rpc: n=${w.count} min=${w.min}ms avg=${(w.sum / w.count).toFixed(1)}ms ` +
-			`max=${w.max}ms over ${w.start === 0 ? 0 : now - w.start}ms`,
-	);
-	if (w.min >= WARM_RPC_FAR_MS) {
-		// Name the OBJECTS, not the replica-group label. `engine-<region>` is what
-		// replicaGroupOf returns and nothing loads a store into it; the things this
-		// window actually timed are `engine-<region>[-<n>]-p<k>`, and the window
-		// mixes every partition and shard this isolate addressed, so the floor says
-		// "at least one of them is far", never which.
-		console.warn(
-			`${prefix} warm engine rpc floor is ${w.min}ms — an engine-${region}[-<n>]-p<k> object may not be ` +
-				`in ${region}; check their placement lines (see ENGINE-PLACEMENT.md)`,
-		);
-	}
+	const { log, warn } = warmWindowLines(w, region, colo, now);
+	if (log) console.log(log);
+	if (warn) console.warn(warn);
 	w.start = now;
 	w.count = 0;
 	w.min = Number.POSITIVE_INFINITY;
 	w.max = 0;
 	w.sum = 0;
 }
+
+/** The streaming transport's riders (search-engine-do.ts), stripped before a response leaves the isolate. */
+export const ENGINE_TELEMETRY_HEADERS = [
+	"x-total-cards",
+	"x-row-count",
+	"x-acquire-ms",
+	"x-load",
+	"x-rate",
+	"x-shards",
+] as const;
 
 export class RemoteEngine implements Engine {
 	/** get_catalog reads both catalogs; one RPC serves both calls. */
@@ -413,7 +451,12 @@ export class RemoteEngine implements Engine {
 			rate: num("x-rate"),
 			shards: num("x-shards"),
 		});
-		return res;
+		// The riders are for THIS isolate, not the client: passed through verbatim they published the
+		// shard controller's load, rate and width signals on every /cards/search — and cached them
+		// at the edge. Body, status and every other header pass through untouched.
+		const out = new Response(res.body, res);
+		for (const name of ENGINE_TELEMETRY_HEADERS) out.headers.delete(name);
+		return out;
 	}
 
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
@@ -512,6 +555,16 @@ export class RemoteEngine implements Engine {
 			this.stub.scryfallCardByOracleId(oracleId, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
+	}
+
+	async scryfallCardsByIdentifiers(
+		identifiers: CollectionKeyIdentifier[],
+		baseUrl: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		const { cards } = await this.searchRpc(() =>
+			this.stub.scryfallCardsByIdentifiers(identifiers, baseUrl, currentShardWidth(this.region)),
+		);
+		return cards;
 	}
 
 	async scryfallCardByExternalId(

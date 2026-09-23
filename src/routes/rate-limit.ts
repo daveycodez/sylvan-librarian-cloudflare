@@ -53,6 +53,34 @@ const DEFAULT_LIMIT_PER_10S = 25;
 const PERIOD_SECONDS = 10;
 
 /**
+ * The key an address is limited under: the address itself for IPv4, its /64 prefix for IPv6.
+ *
+ * An IPv6 client normally holds a whole /64 (2^64 addresses), so keying on the full address let
+ * a script rotate source addresses and get a fresh bucket — and a fresh Durable Object, one
+ * billable request and one wake each — per request: the limiter never fired and cost more than
+ * it saved. /64 is the unit residential and cloud providers delegate, so it is the unit one
+ * client controls. An IPv4-mapped address (`::ffff:1.2.3.4`) keys as its IPv4; anything that does
+ * not parse is keyed as written, so the limiter still works, just per string.
+ */
+export function rateLimitKey(ip: string): string {
+	if (!ip.includes(":")) return ip;
+	const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+	if (mapped) return mapped[1] as string;
+	const halves = ip.split("::");
+	if (halves.length > 2) return ip;
+	const head = (halves[0] ?? "") === "" ? [] : (halves[0] as string).split(":");
+	const tail = halves.length === 2 ? ((halves[1] ?? "") === "" ? [] : (halves[1] as string).split(":")) : [];
+	const missing = 8 - head.length - tail.length;
+	if (missing < 0 || (halves.length === 1 && missing !== 0)) return ip;
+	const groups = [...head, ...Array.from({ length: missing }, () => "0"), ...tail];
+	if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/i.test(g))) return ip;
+	return `${groups
+		.slice(0, 4)
+		.map((g) => Number.parseInt(g, 16).toString(16))
+		.join(":")}::`;
+}
+
+/**
  * Per-IP limiter: one continuously-refilling token bucket, in memory.
  * Eviction resets it (full allowance) — same trade as the docs example,
  * fine for burst damping.
@@ -88,6 +116,10 @@ export function isRateLimitedRoute(routeKey: string, params: Record<string, stri
 	// limiter; it bypasses the limiter entirely, which is why this list is enumerated rather than
 	// inferred from the route table.
 	if (routeKey === "cards" || routeKey.startsWith("cards/")) return true;
+	// The reference mirrors compute nothing, but they were the one surface that read KV per
+	// request with no brake at all — a nonce in the query string defeats the edge cache — and
+	// Scryfall rate-limits them like everything else.
+	if (routeKey === "sets" || routeKey === "catalog" || routeKey === "symbology") return true;
 	// The SSR root only computes when a query is embedded.
 	return routeKey === "_root" && Boolean(params.q || params.query);
 }
@@ -202,7 +234,7 @@ export function enforceRateLimit(
 	if (cfg.RATE_LIMIT_ENABLED !== "true") return { outcome: "off", response: null };
 	const limit = Math.max(1, Number.parseInt(cfg.RATE_LIMIT_PER_10S ?? "", 10) || DEFAULT_LIMIT_PER_10S);
 
-	const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+	const ip = rateLimitKey(request.headers.get("CF-Connecting-IP") ?? "unknown");
 	const now = Date.now();
 	const until = blockedUntil.get(ip);
 	if (until !== undefined && now < until) {
@@ -218,7 +250,15 @@ export function enforceRateLimit(
 					// Derived, not written twice: a Retry-After that undershoots
 					// BLOCK_MS tells a well-behaved client to come back while it
 					// is still blocked, which reads to it as the limiter lying.
-					headers: { "content-type": "application/json", "Retry-After": String(Math.ceil(BLOCK_MS / 1000)) },
+					// `no-store`: this is the one dispatch-level answer that is PER
+					// ADDRESS — cached under the URL it would hand one client's block
+					// to every other. Cloudflare does not cache a 429 by default;
+					// the header makes that a property of the response, not the cache.
+					headers: {
+						"content-type": "application/json",
+						"Cache-Control": "no-store",
+						"Retry-After": String(Math.ceil(BLOCK_MS / 1000)),
+					},
 				},
 			),
 		};
