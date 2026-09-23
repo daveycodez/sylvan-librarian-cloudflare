@@ -1,6 +1,6 @@
 // What a closed warm-RPC window reports (remote-engine.ts). The summary line was a per-request
 // line at DeckGen's traffic — ~100k `n=1` lines a day — so it now needs two samples; the far-floor
-// warning is placement evidence and fires on one.
+// warning needs three, since the floor of one or two calls is a query's cost, not distance.
 
 import { describe, expect, test } from "bun:test";
 import { type WarmWindow, warmWindowLines } from "../../src/engine/remote-engine";
@@ -19,10 +19,24 @@ describe("a closed warm window", () => {
 		expect(log).toBe("[enam@EWR] warm engine rpc: n=2 min=8ms avg=10.0ms max=12ms over 2000ms");
 	});
 
-	test("one far sample still raises the placement warning", () => {
-		const { log, warn } = warmWindowLines(window({ count: 1, min: 300, max: 300, sum: 300 }), "apac", "SIN", 3_000);
-		expect(log).toBeNull();
-		expect(warn).toContain("[apac@SIN] warm engine rpc floor is 300ms");
+	test("one or two slow calls are a heavy query, not distance — no placement warning", () => {
+		// The 2026-09-20..23 false alarms: [wnam@SEA] n=1 min=2048ms, with every wnam object at SEA.
+		for (const count of [1, 2]) {
+			const { warn } = warmWindowLines(
+				window({ count, min: 2048, max: 2048, sum: 2048 * count }),
+				"wnam",
+				"SEA",
+				3_000,
+			);
+			expect(warn).toBeNull();
+		}
+	});
+
+	test("three calls that all stay slow are distance, and warn", () => {
+		const { warn } = warmWindowLines(window({ count: 10, min: 256, max: 991, sum: 5161 }), "apac", "AMS", 3_000);
+		expect(warn).toContain("[apac@AMS] warm engine rpc floor is 256ms");
+		const fast = warmWindowLines(window({ count: 10, min: 60, max: 2529, sum: 3356 }), "wnam", "SEA", 3_000);
+		expect(fast.warn).toBeNull();
 	});
 
 	test("an empty window says nothing at all", () => {

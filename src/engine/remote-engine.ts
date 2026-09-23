@@ -277,13 +277,25 @@ const warmWindows = new Map<string, WarmWindow>();
 const WARM_RPC_FAR_MS = 250;
 
 /**
+ * Samples a window needs before its floor is read as distance.
+ *
+ * The floor is the fastest call, and the fastest of several calls is the round trip. With ONE
+ * call it is just that call — including its query work, and a heavy query (a broad regex over
+ * oracle text) legitimately takes 1–2 seconds warm. Measured on DeckGen 2026-09-20..23: ~2,200
+ * `wnam` warnings, every one from an n=1 window (827ms, 2048ms), while multi-call windows from the
+ * same colos floored at 10–75ms and every engine-wnam object placed at SEA. The real signals
+ * (apac@AMS n=10 min=256ms) survive the bar.
+ */
+const WARM_RPC_FAR_MIN_SAMPLES = 3;
+
+/**
  * What a closed window says. Pure, so the rule is testable without the module's windows.
  *
  * The summary line needs at least TWO samples: a one-sample window is a per-request line, and it
  * says nothing the invocation log does not. Measured on DeckGen for 2026-09-21, ~100k of the
  * Worker's 137k console lines were `warm engine rpc: n=1 …` — at that traffic the 2s window
- * closed with a single sample on nearly every request. The far-floor WARNING is different: one
- * far sample is still evidence of placement, so it is raised whatever the count.
+ * closed with a single sample on nearly every request. The far-floor WARNING needs
+ * WARM_RPC_FAR_MIN_SAMPLES calls, because a floor of fewer is a query's cost rather than distance.
  */
 export function warmWindowLines(
 	w: Readonly<WarmWindow>,
@@ -303,7 +315,7 @@ export function warmWindowLines(
 	// mixes every partition and shard this isolate addressed, so the floor says
 	// "at least one of them is far", never which.
 	const warn =
-		w.count > 0 && w.min >= WARM_RPC_FAR_MS
+		w.count >= WARM_RPC_FAR_MIN_SAMPLES && w.min >= WARM_RPC_FAR_MS
 			? `${prefix} warm engine rpc floor is ${w.min}ms — an engine-${region}[-<n>]-p<k> object may not be ` +
 				`in ${region}; check their placement lines (see ENGINE-PLACEMENT.md)`
 			: null;
