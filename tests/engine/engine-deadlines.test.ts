@@ -14,6 +14,7 @@ import {
 	isTransientEngineFailure,
 	RemoteEngine,
 	setEngineCallDeadlineForTests,
+	siblingCall,
 	withDeadline,
 } from "../../src/engine/remote-engine";
 import {
@@ -152,6 +153,113 @@ describe("RemoteEngine", () => {
 		setEngineCallDeadlineForTests(30);
 		const hung = { cardCount: () => never<number>() } as unknown as Stub;
 		await expect(new RemoteEngine(hung, "wnam").cardCount()).rejects.toBeInstanceOf(EngineCallTimeoutError);
+	});
+});
+
+// 2026-09-23 21:20:02: a /cards/collection 500 two minutes after a deploy. The retry DID fire
+// ("retryable engine RPC failure (attempt 1): Error: Connection closed: this Durable Object instance
+// is no longer active. Reconnect or retry the request.") and failed identically, because it went
+// through the same stub — whose connection the runtime had closed. A dead stub fails EVERY call.
+const DEAD = "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.";
+const deadStub = (counter: { calls: number }) =>
+	new Proxy(
+		{},
+		{
+			get: (_t, prop) =>
+				prop === "then"
+					? undefined
+					: async () => {
+							counter.calls++;
+							throw new Error(DEAD);
+						},
+		},
+	) as unknown as Stub;
+
+describe("a retry after a closed connection goes through a FRESH stub", () => {
+	test("the RPC transport reconnects, and the retry answers", async () => {
+		const dead = { calls: 0 };
+		let connects = 0;
+		const engine = new RemoteEngine(deadStub(dead), "wnam", "SJC", () => {
+			connects++;
+			return { cardCount: async () => 7 } as unknown as Stub;
+		});
+		expect(await engine.cardCount()).toBe(7);
+		expect(dead.calls).toBe(1);
+		expect(connects).toBe(1);
+	});
+
+	test("the /cards/* surface (searchRpc) reconnects — the collection route that failed", async () => {
+		const dead = { calls: 0 };
+		const engine = new RemoteEngine(deadStub(dead), "wnam", "SJC", () => {
+			return {
+				scryfallCardsByIdentifiers: async () => ({ cards: [{ id: "a" }] }),
+			} as unknown as Stub;
+		});
+		expect(await engine.scryfallCardsByIdentifiers([{ kind: "oracle_id", id: "x" }] as never, "https://x")).toEqual([
+			{ id: "a" },
+		]);
+		expect(dead.calls).toBe(1);
+	});
+
+	test("the page transport reconnects too", async () => {
+		const dead = { calls: 0 };
+		const engine = new RemoteEngine(
+			deadStub(dead),
+			"wnam",
+			"SJC",
+			() => ({ fetch: async () => ok() }) as unknown as Stub,
+		);
+		const res = await engine.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {});
+		expect(res.status).toBe(200);
+		expect(dead.calls).toBe(1);
+	});
+
+	test("the new stub is kept: the NEXT call does not touch the dead one again", async () => {
+		const dead = { calls: 0 };
+		const engine = new RemoteEngine(
+			deadStub(dead),
+			"wnam",
+			"SJC",
+			() => ({ cardCount: async () => 3 }) as unknown as Stub,
+		);
+		await engine.cardCount();
+		await engine.cardCount();
+		expect(dead.calls).toBe(1);
+	});
+
+	test("without a way to reconnect, the dead stub fails both attempts — the production bug", async () => {
+		const dead = { calls: 0 };
+		await expect(new RemoteEngine(deadStub(dead), "wnam").cardCount()).rejects.toThrow("no longer active");
+		expect(dead.calls).toBe(2);
+	});
+
+	test("a sibling call inside a gather reconnects for its retry", async () => {
+		const dead = { calls: 0 };
+		const stubs = [deadStub(dead), { searchKeys: async () => "keys" } as unknown as Stub];
+		let connects = 0;
+		const answer = await siblingCall(
+			"partition-3 searchKeys",
+			() => stubs[connects++] as unknown as { searchKeys(): Promise<string> },
+			(s) => s.searchKeys(),
+		);
+		expect(answer).toBe("keys");
+		expect(connects).toBe(2);
+		expect(dead.calls).toBe(1);
+	});
+
+	test("a sibling call does not retry a query error, and connects once", async () => {
+		let connects = 0;
+		await expect(
+			siblingCall(
+				"partition-3 searchKeys",
+				() => {
+					connects++;
+					return { searchKeys: async () => Promise.reject(new EngineQueryError("build_filter: bad")) };
+				},
+				(s) => s.searchKeys(),
+			),
+		).rejects.toBeInstanceOf(EngineQueryError);
+		expect(connects).toBe(1);
 	});
 });
 

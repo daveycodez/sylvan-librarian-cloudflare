@@ -107,7 +107,9 @@ async function resolveEngine(
 		ctx.waitUntil(
 			Promise.all(
 				Array.from({ length: count }, (_, p) =>
-					new RemoteEngine(placeEngineStub(env, region, warmTarget, p), region, colo).cardCount(),
+					new RemoteEngine(placeEngineStub(env, region, warmTarget, p), region, colo, () =>
+						placeEngineStub(env, region, warmTarget, p),
+					).cardCount(),
 				),
 			)
 				.then(() => markShardReady(region, warmTarget))
@@ -118,7 +120,10 @@ async function resolveEngine(
 		);
 	}
 	return new PartitionedEngine(
-		(partition) => new RemoteEngine(placeEngineStub(env, region, shard, partition), region, colo),
+		(partition) =>
+			new RemoteEngine(placeEngineStub(env, region, shard, partition), region, colo, () =>
+				placeEngineStub(env, region, shard, partition),
+			),
 		manifest,
 		// The stale-modulus retry (Decision 3b): re-read the one manifest key.
 		() => readManifest(env),

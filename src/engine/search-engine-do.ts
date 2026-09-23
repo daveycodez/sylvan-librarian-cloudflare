@@ -73,7 +73,7 @@ import {
 	type SearchKeysReply,
 } from "./gather";
 import { probePlacement } from "./placement";
-import { isTransientEngineFailure, withDeadline } from "./remote-engine";
+import { siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
 import {
 	currentManifest,
@@ -155,24 +155,6 @@ const WIDTH_TTL_MS = 60_000;
 /** One-second buckets behind the arrival-rate meter; also its window in
  * seconds, since each bucket holds exactly one. */
 const RATE_BUCKETS = 10;
-
-/**
- * The most a gather waits on one sibling: above the loader's 20s deadline, so a sibling whose load
- * stalled answers with its retryable abandoned-load error first, and below the Worker's 35s, so a
- * gather that cannot finish fails in time for the Worker to try another coordinator.
- */
-const SIBLING_CALL_DEADLINE_MS = 25_000;
-
-/** One sibling RPC with a deadline and ONE retry of a reset or an abandoned load. */
-async function siblingCall<T>(what: string, call: () => Promise<T>): Promise<T> {
-	try {
-		return await withDeadline(call(), SIBLING_CALL_DEADLINE_MS, what);
-	} catch (err) {
-		if (!isTransientEngineFailure(err)) throw err;
-		console.warn(`${what} failed transiently (${err}); asking once more`);
-		return withDeadline(call(), SIBLING_CALL_DEADLINE_MS, what);
-	}
-}
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
@@ -873,17 +855,22 @@ export class SearchEngine extends DurableObject<Env> {
 					},
 				};
 			}
-			const stub = siblingStub(this.env, this.label, p) as unknown as {
+			type SiblingStub = {
 				searchKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Promise<SearchKeysReply>;
 				fetchRows(vpids: number[], fields: string[], storeKey: string, shaping: RowShaping): Promise<FetchRowsReply>;
 				notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }>;
-			} | null;
-			if (!stub) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
+			};
+			const connect = (): SiblingStub => {
+				const s = siblingStub(this.env, this.label, p) as unknown as SiblingStub | null;
+				if (!s) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
+				return s;
+			};
+			const stub = connect();
 			return {
 				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
-					siblingCall(`partition-${p} searchKeys`, () => stub.searchKeys(opts, inlineRows, shaping)),
+					siblingCall(`partition-${p} searchKeys`, connect, (s) => s.searchKeys(opts, inlineRows, shaping)),
 				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
-					siblingCall(`partition-${p} fetchRows`, () => stub.fetchRows(vpids, fields, storeKey, shaping)),
+					siblingCall(`partition-${p} fetchRows`, connect, (s) => s.fetchRows(vpids, fields, storeKey, shaping)),
 				refresh: async () => {
 					const { swapped } = await stub.notifyPublish();
 					console.warn(

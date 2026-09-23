@@ -247,6 +247,26 @@ export function withDeadline<T>(promise: Promise<T>, ms: number, what: string): 
 	return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * The most a gather waits on one sibling: above the loader's 20s deadline, so a sibling whose load
+ * stalled answers with its retryable abandoned-load error first, and below the Worker's 35s, so a
+ * gather that cannot finish fails in time for the Worker to try another coordinator.
+ */
+export const SIBLING_CALL_DEADLINE_MS = 25_000;
+
+/** One sibling RPC with a deadline and ONE retry of a reset or an abandoned load. */
+export async function siblingCall<T, S>(what: string, connect: () => S, call: (stub: S) => Promise<T>): Promise<T> {
+	try {
+		return await withDeadline(call(connect()), SIBLING_CALL_DEADLINE_MS, what);
+	} catch (err) {
+		if (!isTransientEngineFailure(err)) throw err;
+		console.warn(`${what} failed transiently (${err}); asking once more on a fresh stub`);
+		// A FRESH stub: after "this Durable Object instance is no longer active. Reconnect or retry"
+		// the first stub's connection is dead, and a retry through it fails the same way.
+		return withDeadline(call(connect()), SIBLING_CALL_DEADLINE_MS, what);
+	}
+}
+
 /** One retry at most, after a jittered 100–300ms pause: enough for a reset to finish, too little to pile up. */
 const ENGINE_CALL_ATTEMPTS = 2;
 const retryPause = () => new Promise((resolve) => setTimeout(resolve, 100 + Math.floor(Math.random() * 200)));
@@ -262,13 +282,18 @@ const retryPause = () => new Promise((resolve) => setTimeout(resolve, 100 + Math
  * engine RPCs are pure reads, so retrying is always safe. Engine-unavailable
  * errors (real 503 semantics) are never retried.
  */
-async function withRetry<T>(call: () => Promise<T>): Promise<T> {
+async function withRetry<T>(call: () => Promise<T>, reconnect?: () => void): Promise<T> {
 	for (let attempt = 0; ; attempt++) {
 		try {
 			return await unwrap(withDeadline(call(), ENGINE_CALL_DEADLINE_MS, "engine RPC"));
 		} catch (err) {
 			if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err)) throw err;
 			console.warn(`retryable engine RPC failure (attempt ${attempt + 1}): ${err}`);
+			// A fresh stub before the second attempt: after "Connection closed: this Durable Object
+			// instance is no longer active. Reconnect or retry the request." the OLD stub's connection
+			// is dead, and a retry through it fails identically — 2026-09-23 21:20:02, a /cards/collection
+			// 500 two minutes after a deploy, retried once and failed the same way.
+			reconnect?.();
 			await retryPause();
 		}
 	}
@@ -432,7 +457,8 @@ export class RemoteEngine implements Engine {
 	}> | null = null;
 
 	constructor(
-		private readonly stub: SearchEngineStub,
+		/** The object's stub — replaced by `connect()` before a retry, when there is one. */
+		private stub: SearchEngineStub,
 		/** Which region's DO this stub addresses — the key the shard controller
 		 * keeps its state under, since one isolate can serve both sides of a
 		 * longitude split and therefore address two regions. */
@@ -440,7 +466,17 @@ export class RemoteEngine implements Engine {
 		/** The colo THIS isolate is in, for the warm-RPC line. Defaults for the
 		 * tests and tooling that construct engines outside a request. */
 		private readonly colo: string = "?",
+		/** A fresh stub to the SAME object. A retry after a transient failure goes through it, because
+		 * a stub whose connection the runtime closed ("this Durable Object instance is no longer
+		 * active. Reconnect or retry the request.") fails every later call the same way. Without it a
+		 * retry reuses `stub` — right for the tests' plain objects, wrong for a real dead connection. */
+		private readonly connect?: () => SearchEngineStub,
 	) {}
+
+	/** Swap in a fresh stub before a retry (see `connect`). */
+	private readonly reconnect = (): void => {
+		if (this.connect) this.stub = this.connect();
+	};
 
 	/**
 	 * One search RPC, with the DO's riders stripped and fed to the autoscaler.
@@ -452,7 +488,7 @@ export class RemoteEngine implements Engine {
 	 */
 	private async searchRpc<T extends object>(call: () => Promise<T & Telemetry>): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, rate, shards, ...result } = await withRetry(call);
+		const { acquireMs, load, rate, shards, ...result } = await withRetry(call, this.reconnect);
 		this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards });
 		return result as Omit<T, keyof Telemetry>;
 	}
@@ -545,6 +581,7 @@ export class RemoteEngine implements Engine {
 			} catch (err) {
 				if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err)) throw err;
 				console.warn(`retryable engine page failure (attempt ${attempt + 1}): ${err}`);
+				this.reconnect(); // a dead connection fails the retry identically (withRetry)
 				await retryPause();
 			}
 		}
@@ -601,7 +638,7 @@ export class RemoteEngine implements Engine {
 	}
 
 	private catalog() {
-		this.catalogOnce ??= withRetry(() => this.stub.typeAndKeywordCounts());
+		this.catalogOnce ??= withRetry(() => this.stub.typeAndKeywordCounts(), this.reconnect);
 		return this.catalogOnce;
 	}
 
@@ -622,7 +659,7 @@ export class RemoteEngine implements Engine {
 		fields: string[],
 		filterTreeJson?: string,
 	): Promise<Record<string, unknown>[]> {
-		return withRetry(() => this.stub.randomCardsAsObjects(numCards, fields, filterTreeJson));
+		return withRetry(() => this.stub.randomCardsAsObjects(numCards, fields, filterTreeJson), this.reconnect);
 	}
 
 	randomCardsAsJson(
@@ -631,11 +668,11 @@ export class RemoteEngine implements Engine {
 		shape: ResultShape,
 		filterTreeJson?: string,
 	): Promise<EngineSerializedResult> {
-		return withRetry(() => this.stub.randomCardsAsJson(numCards, fields, shape, filterTreeJson));
+		return withRetry(() => this.stub.randomCardsAsJson(numCards, fields, shape, filterTreeJson), this.reconnect);
 	}
 
 	cardCount(): Promise<number> {
-		return withRetry(() => this.stub.cardCount());
+		return withRetry(() => this.stub.cardCount(), this.reconnect);
 	}
 
 	// ── The Scryfall-compatible /cards/* surface ────────────────────────────────
@@ -706,7 +743,7 @@ export class RemoteEngine implements Engine {
 	/** This partition's scores-bearing fuzzy candidates — no telemetry riders (like the gather
 	 * phases, it is partition machinery, not a shard-controller-fed route). */
 	async fuzzyCandidates(name: string): Promise<FuzzyCandidateWire[]> {
-		const { candidates } = await withRetry(() => this.stub.fuzzyCandidates(name));
+		const { candidates } = await withRetry(() => this.stub.fuzzyCandidates(name), this.reconnect);
 		return candidates;
 	}
 
