@@ -9848,6 +9848,25 @@ fn printing_is_renamed(card: &AOracleCard, p: &APrinting, strings: &AStrings) ->
     id != NONE_STR && str_at(strings, id).is_some_and(|printed| printed != folded_name(card, strings))
 }
 
+/// Is this printing a candidate for `prefer:borderless` at all? Four ways to be sold as
+/// something other than this card as it is played: a flavor name, a reversible layout, a WHITE
+/// border (the 1990s-2000s core sets and starter products — never the printing to reach for, and a
+/// card printed only in white borders falls back to the default order, which is Scryfall's
+/// canonical printing), and — on an English printing — a printed name that is not the card's.
+fn printing_is_borderless_candidate(
+    card: &AOracleCard,
+    p: &APrinting,
+    ids: &PreferClassIds,
+    strings: &AStrings,
+) -> bool {
+    let lang = u16::from(p.compat.lang_id);
+    let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
+    !printing_has_flavor_name(p)
+        && !printing_is_reversible(p, strings)
+        && !printing_is_white_bordered(p, strings)
+        && !(!foreign && printing_is_renamed(card, p, strings))
+}
+
 /// Is this printing a REVERSIBLE card — Scryfall's `reversible_card` layout, the same card printed
 /// on both sides with a different illustration on each? Lorwyn Eclipsed's ecl/349 is Blood Crypt
 /// // Blood Crypt. `prefer:borderless` never answers one: it is not the card as it is played, and
@@ -9882,14 +9901,15 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// retro tiers are this prefer's own and stay out of the atypical class. Inside a tier a printing with a
 /// TEXT BOX ranks above a full-art one (Iron Man, Titan of Innovation answers the Secret Lair
 /// sld/1731 over the full-art mar/91, both borderless), a black border above a WHITE one (Blood
-/// Pet answers its black-bordered foil 7ed/121★ over the pinned white 7ed/121), among the
+/// Pet answers its black-bordered foil 7ed/121★, the white 7ed/121 being no candidate), among the
 /// borderless any other set above a Secret Lair (Terror of the Peaks answers the Spotlight Series
 /// pspl/1 over sld/2650; Kiki-Jiki keeps its Secret Lair retro sld/1659, the frame tiers being
 /// exempt), among the borderless a plain frame above a showcase frame (Gandalf the White answers
 /// ltr/442 over the showcase-framed ltr/797), a
 /// real scan above a placeholder or low-resolution image, a printing sold in nonfoil above a
 /// foil-only one (the special sheets come foil-only: Nick Fury answers msh/357 over the
-/// comic-cover msh/389), among the borderless a drop's featured card above its bonus-slot card
+/// comic-cover msh/389 — measured against its OWN set's run, so a set that never sold the card in
+/// nonfoil keeps its foil), among the borderless a drop's featured card above its bonus-slot card
 /// (Wayfarer's Bauble answers sld/2656 over the bonus sld/7113), then inside one set the ART rule — a higher-numbered printing sharing a lower one's look is a finish twin and
 /// yields (Stomping Ground eoe/283 over its galaxy-foil eoe/378), one carrying its own
 /// illustration is the later sheet and wins (Singularity Rupture's buy-a-box eoe/398 over
@@ -9922,7 +9942,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// key, the one Wernog, Rider's Chaplain's Secret Lair sld/347 carries as "Will the Wise" with no
 /// flavor name at all. Foreign printings are exempt: theirs differ by translation. A REVERSIBLE
 /// card is never a candidate either, in any language — the same card on both sides with two arts,
-/// not the card as it is played (Blood Crypt answers rvr/292, not Lorwyn Eclipsed's ecl/349).
+/// not the card as it is played (Blood Crypt answers rvr/292, not Lorwyn Eclipsed's ecl/349) — nor
+/// is a WHITE-BORDERED one, and a card printed only in white borders falls back to the default
+/// order, which is Scryfall's canonical printing.
 /// A Universes Beyond printing under the card's OWN name is a candidate like any other — the
 /// crossover TAG demotes nothing, only a flavor name excludes — so Soul Warden answers its newest
 /// borderless, the Secret Lair sld/2435, over the in-universe spg/65 and sld/1708 (three
@@ -10076,13 +10098,10 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // is printed "Will the Wise", and carries no flavor name at all, so it answered until
             // this read `printed_name`). A foreign printing's printed name differs by translation,
             // so the test is English-only and a `lang:ja` pool keeps every one of its printings.
-            // A REVERSIBLE card is excluded the same way, in every language: Blood Crypt's ecl/349
-            // prints the land twice with two arts, and it answered as the newest borderless until
-            // this read the layout.
-            if printing_has_flavor_name(p)
-                || printing_is_reversible(p, strings)
-                || (!foreign && printing_is_renamed(card, p, strings))
-            {
+            // A REVERSIBLE card and a WHITE-BORDERED one are excluded the same way, in every
+            // language: Blood Crypt's ecl/349 prints the land twice with two arts, and a white
+            // border is never the printing to reach for. See `printing_is_borderless_candidate`.
+            if !printing_is_borderless_candidate(card, p, &ids, strings) {
                 return default_score() - 32.0 * CLASS_BONUS;
             }
             let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);
@@ -10093,11 +10112,6 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // all (see `borderless_frame_tier`); with no other treatment it ranks among the plain
             // printings, last by this key.
             let text_box = if printing_is_full_art_or_poster(p, &ids) { 0.0 } else { 0.5 };
-            // ...and a black border above a WHITE one, the thing nobody asking for "borderless"
-            // wants to see: Blood Pet's 7ed/121 is white and pinned, its foil twin 7ed/121★ is
-            // black and answers. A quarter step, under the text-box key, and neither crosses a
-            // tier or the same-set step above.
-            let border = if printing_is_white_bordered(p, strings) { 0.0 } else { 0.25 };
             // ...and among the BORDERLESS printings, any other set above a Secret Lair: Terror of
             // the Peaks answers the Spotlight Series pspl/1 over the Secret Lair sld/2650, both
             // borderless with a text box. The borderless tier only — a Secret Lair retro or
@@ -10129,7 +10143,21 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // comic-cover borderless msh/389-400, the galaxy-foil eoe/378, the surge-foil pip/1036,
             // the rainbow-foil sld/9992 — and nothing else in the data names them. A thirty-second,
             // the last key before the art rule: Nick Fury answers msh/357 over the comic-cover 389.
-            let finish = if p.compat.finishes & FINISH_NONFOIL != 0 { 0.03125 } else { 0.0 };
+            // ...relative to ITS OWN SET's run. A foil-only printing is a special sheet only where
+            // the set also sold the card in nonfoil; where it did not, the foil IS the set's
+            // printing — 7th Edition sold Blood Pet as the white-bordered 7ed/121 and the
+            // black-bordered foil 7ed/121★, and with the white one no candidate at all the foil is
+            // all 7ed has, so it answers rather than losing to Tempest's nonfoil tmp/109.
+            let nonfoil = p.compat.finishes & FINISH_NONFOIL != 0;
+            let set_sold_nonfoil = || {
+                siblings.iter().any(|s| {
+                    s.card_set_code.as_str() == p.card_set_code.as_str()
+                        && u16::from(s.compat.lang_id) == u16::from(p.compat.lang_id)
+                        && s.compat.finishes & FINISH_NONFOIL != 0
+                        && printing_is_borderless_candidate(card, s, &ids, strings)
+                })
+            };
+            let finish = if nonfoil || !set_sold_nonfoil() { 0.03125 } else { 0.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
             // language is. Sixteen steps down puts every non-English printing below every
             // English one — flavor-named ones included — while the tiers still order the
@@ -10152,7 +10180,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // ee8e14b's absolute bonus did: the group's base is its best member's default score,
             // so Relic Seeker's pori pair still ranks by that pair's best and cmr/382's pin wins.
             let base = same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score);
-            (frame_tier + text_box + border + set_key + plain_frame + scan + finish + featured + language_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + set_key + plain_frame + scan + finish + featured + language_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

@@ -17532,12 +17532,11 @@ fn prefer_borderless_ranks_the_retro_frame_at_the_bottom_of_the_variants() {
     assert_eq!(representative(&data, "atypical", "name", "asc"), 1, "retro is not atypical");
 }
 
-/// A WHITE border ranks below a black one inside a tier — Blood Pet's shape: five retro-frame
-/// printings, the pinned 7ed/121 white and its foil twin 7ed/121★ black, and the black one
-/// answers. Inside a tier only: a white plain printing still outranks a textless one, and the
-/// key never lifts a white printing over a black one of a better tier.
+/// A WHITE-BORDERED printing is no candidate at all — Blood Pet's shape, the pinned 7ed/121 white
+/// against its black foil twin 7ed/121★. Excluded whatever its tier, and a card printed only in
+/// white borders falls back to the default order, which is Scryfall's canonical printing.
 #[test]
-fn prefer_borderless_ranks_a_black_border_above_a_white_one_inside_a_tier() {
+fn prefer_borderless_never_answers_a_white_bordered_printing() {
     let mut data = class_prefer_store();
     let legendary = data.printings[0].compat.frame_effects[0];
     data.strings.push("white".to_owned());
@@ -17559,15 +17558,22 @@ fn prefer_borderless_ranks_a_black_border_above_a_white_one_inside_a_tier() {
     data.printings[0].card_frame_data = vec![retro];
     data.printings[1].card_frame_data = vec![retro];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "black over white in the retro tier");
-    // Never across a tier: make id 2 plain-frame and the white retro id 1 is back on top.
+    // Whatever its tier: id 1 keeps the retro frame and id 2 goes back to plain, and the white
+    // retro is STILL no candidate — a key would have lifted it here, an exclusion does not.
     data.printings[1].card_frame_data = data.printings[2].card_frame_data.clone();
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a white retro over a black plain");
-    // ...and a white plain printing still outranks a textless one.
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a white retro is excluded, not merely ranked down");
+    // ...and it loses even to a TEXTLESS printing, the bottom tier.
     data.printings[0].card_frame_data = data.printings[2].card_frame_data.clone();
     data.printings[1].compat.flags = COMPAT_TEXTLESS;
     data.printings[2].compat.flags = COMPAT_TEXTLESS;
     data.printings[3].compat.flags = COMPAT_TEXTLESS;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "white plain over textless");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a textless candidate over a white-bordered one");
+    // EVERY printing white: all excluded, and the default order answers — the canonical printing.
+    for p in &mut data.printings {
+        p.compat.flags = 0;
+        p.card_border_id = white;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all white: the canonical printing");
 }
 
 /// THE SAME-SET RULE: a set that prints both a showcase and a borderless treatment of a card
@@ -17952,7 +17958,9 @@ fn prefer_borderless_reads_a_poster_promo_type_as_full_art() {
 
 /// A printing sold in NONFOIL ranks above a foil-only one inside a tier — Nick Fury's shape, the
 /// comic-cover msh/389 (foil only) against the regular borderless run — under the scan key and
-/// above the art rule, never across a tier.
+/// above the art rule, never across a tier. Measured against ITS OWN SET's run: where the set never
+/// sold the card in nonfoil, the foil IS the set's printing and takes no demotion (Blood Pet's
+/// 7ed/121★, whose white-bordered nonfoil twin is no candidate).
 #[test]
 fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
     let mut data = class_prefer_store();
@@ -17964,9 +17972,10 @@ fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
         p.card_is_tags = vec![];
         p.compat.frame_effects = vec![legendary];
         p.card_border_id = black;
-        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+        p.card_set_code = InlineStr::from_str(["bbb", "bbb", "ccc", "ddd"][i]);
     }
-    // ids 2 and 3 borderless; id 2 first by default, and foil-only: id 3 answers.
+    // ids 2 and 3 borderless; id 2 first by default, and foil-only while its own set (id 1) sold
+    // the card in nonfoil: id 3 answers.
     data.printings[1].card_border_id = borderless;
     data.printings[2].card_border_id = borderless;
     data.printings[1].compat.finishes = FINISH_FOIL;
@@ -17978,6 +17987,18 @@ fn prefer_borderless_ranks_a_nonfoil_printing_above_a_foil_only_one() {
     // Never across a tier: the foil-only borderless still beats a nonfoil plain printing.
     data.printings[2].card_border_id = black;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a foil-only borderless over a nonfoil plain");
+    data.printings[2].card_border_id = borderless;
+    // ITS OWN SET'S RUN: move the nonfoil id 1 out of id 2's set and the foil-only id 2 takes no
+    // demotion — it is all its set sold — so it answers again.
+    data.printings[0].card_set_code = InlineStr::from_str("aaa");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a set that sold only the foil keeps it");
+    // ...and the same when the set's nonfoil printing is there but is no candidate: white-border it
+    // and the foil is still all 7ed has (Blood Pet's shape).
+    data.printings[0].card_set_code = InlineStr::from_str("bbb");
+    data.strings.push("white".to_owned());
+    let white = (data.strings.len() - 1) as u32;
+    data.printings[0].card_border_id = white;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a white-bordered nonfoil is no run at all");
 }
 
 /// An ENGLISH printing whose PRINTED NAME is not the card's is no candidate — Wernog, Rider's

@@ -43,11 +43,12 @@ export const UNIQUE_ON = {
  * Planar Chaos frame (Essence Warden answers plc/145), then the retro 1997 frame (Kiki-Jiki,
  * Mirror Breaker answers the Secret Lair sld/1659), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
  * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), a black
- * border above a white one (Blood Pet answers its black-bordered foil 7ed/121★ over the pinned
- * white 7ed/121), among the borderless any other set above a Secret Lair (Terror of the Peaks
+ * border above a white one (Blood Pet answers its black-bordered foil 7ed/121★, the white
+ * 7ed/121 being no candidate at all), among the borderless any other set above a Secret Lair (Terror of the Peaks
  * answers the Spotlight Series pspl/1 over sld/2650; the frame tiers are exempt), among the
  * borderless a plain frame above a showcase frame (Gandalf the White answers ltr/442), a real scan above a placeholder or low-resolution image, a
- * nonfoil printing above a foil-only one (Nick Fury answers msh/357 over the comic-cover msh/389),
+ * nonfoil printing above a foil-only one where the set sold both (Nick Fury answers msh/357 over
+ * the comic-cover msh/389),
  * a Secret Lair drop's featured card above its bonus-slot card (Wayfarer's Bauble answers
  * sld/2656 over the bonus sld/7113), then inside one set the newest printing with its own illustration wins, the higher number only on
  * one release date, and one sharing a lower printing's illustration is a finish twin and yields (Singularity
@@ -62,7 +63,8 @@ export const UNIQUE_ON = {
  * because it is drawn and sold as someone else, and neither is an English printing whose printed
  * name is not the card's (Wernog, Rider's Chaplain answers slx/8, not the Secret Lair sld/347
  * printed "Will the Wise"), and neither is a reversible card (Blood Crypt answers rvr/292, not
- * the two-sided ecl/349): Najeela, the Blade-Blossom's four borderless
+ * the two-sided ecl/349), and neither is a white-bordered one (a card printed only in white
+ * borders falls back to the canonical printing): Najeela, the Blade-Blossom's four borderless
  * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which
  * is Tidus. A Universes Beyond printing under the card's own name is a candidate like any other,
