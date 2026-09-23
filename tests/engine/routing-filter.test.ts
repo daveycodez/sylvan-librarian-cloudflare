@@ -134,9 +134,9 @@ describe("build and lookup", () => {
 		for (const e of entries) expect(filter.lookup(e.key)).toBe(e.partition);
 	});
 
-	test("a filter over more than fifteen partitions — a store cut by language — round-trips", () => {
-		// SRF1 packed two 4-bit cells per byte and refused partition_count 16; a family layout
-		// passes that on today's corpus. SRF2 is one byte per cell.
+	test("a filter over more than fifteen partitions round-trips", () => {
+		// SRF1 packed two 4-bit cells per byte and refused partition_count 16, while the build allows
+		// up to 32 partitions — corpus growth would have hit it. SRF2 is one byte per cell.
 		const identity = { ...IDENTITY, partitionCount: 40 };
 		const entries = Array.from({ length: 200 }, (_, i) => ({ key: scryfallIdKey(`id-${i}`), partition: i % 40 }));
 		const parsed = RoutingFilter.parse(buildRoutingFilter(entries, identity), identity);

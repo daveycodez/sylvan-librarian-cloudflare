@@ -10,7 +10,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-	archiveOfManifest,
 	assembleChunk,
 	CHUNK_HEADROOM_WARN_BYTES,
 	chunkCountFor,
@@ -29,7 +28,6 @@ import {
 	manifestShapeProblem,
 	missingManifestChunks,
 	PARTITION_HASH_ALGO,
-	PARTITION_HASH_ALGO_FAMILIES,
 	partitionStoreKey,
 	readManifest,
 	type StagedRow,
@@ -627,53 +625,6 @@ describe("the manifest", () => {
 		test("totals that are not the sum of their parts are refused", () => {
 			expect(manifestShapeProblem(v2({ store_bytes: 1 }))).toContain("store_bytes");
 			expect(manifestShapeProblem(v2({ chunk_count: 99 }))).toContain("chunk_count");
-		});
-
-		describe("families (the language layout)", () => {
-			const families = [
-				{ lang: "en", start: 0, count: 1 },
-				{ lang: "de", start: 1, count: 1 },
-			];
-			const withFamilies = (over: Partial<StoreManifest> = {}) =>
-				v2({ partition_hash: PARTITION_HASH_ALGO_FAMILIES, families, ...over });
-
-			test("a contiguous, covering, en-first family list is publishable", () => {
-				expect(manifestShapeProblem(withFamilies())).toBeNull();
-			});
-
-			test("the families hash without families[] is refused, and the v1 hash with them", () => {
-				expect(manifestShapeProblem(v2({ partition_hash: PARTITION_HASH_ALGO_FAMILIES }))).toContain("families[]");
-				expect(manifestShapeProblem(v2({ families }))).toContain("single-family");
-			});
-
-			test("the default family must come first and be en", () => {
-				expect(manifestShapeProblem(withFamilies({ families: [...families].reverse() }))).toContain("default family");
-			});
-
-			test("a gap, an overlap, a short cover or a repeated language is refused", () => {
-				const gap = [
-					{ lang: "en", start: 0, count: 1 },
-					{ lang: "de", start: 2, count: 1 },
-				];
-				expect(manifestShapeProblem(withFamilies({ families: gap }))).toContain("starts at 2");
-				const short = [{ lang: "en", start: 0, count: 1 }];
-				expect(manifestShapeProblem(withFamilies({ families: short }))).toContain("cover 1");
-				const twice = [
-					{ lang: "en", start: 0, count: 1 },
-					{ lang: "en", start: 1, count: 1 },
-				];
-				expect(manifestShapeProblem(withFamilies({ families: twice }))).toContain("twice");
-				const empty = [
-					{ lang: "en", start: 0, count: 2 },
-					{ lang: "de", start: 2, count: 0 },
-				];
-				expect(manifestShapeProblem(withFamilies({ families: empty }))).toContain("count 0");
-			});
-
-			test("the loader accepts both hashes and still refuses an unknown one", () => {
-				expect(archiveOfManifest(withFamilies(), 1).storeKey).toBe(partition(1).store_key);
-				expect(() => archiveOfManifest(v2({ partition_hash: "md5/name/v9" }), 0)).toThrow(/does not implement/);
-			});
 		});
 
 		test("writeManifest throws instead of publishing the problem", async () => {

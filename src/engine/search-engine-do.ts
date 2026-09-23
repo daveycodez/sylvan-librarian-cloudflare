@@ -72,7 +72,6 @@ import {
 	runTwoPhase,
 	type SearchKeysReply,
 } from "./gather";
-import { familyOfPartition, layoutKeyOf } from "./partition";
 import { probePlacement } from "./placement";
 import { foldWidthAnnouncement } from "./shard-controller";
 import {
@@ -107,7 +106,6 @@ import {
 	ENGINE_STREAM_PATH,
 	ENGINE_UNAVAILABLE_MARKER,
 	EngineUnavailableError,
-	type PinnedSearch,
 	STALE_MODULUS_MARKER,
 	StaleModulusError,
 } from "./types";
@@ -156,12 +154,6 @@ const WIDTH_TTL_MS = 60_000;
 /** One-second buckets behind the arrival-rate meter; also its window in
  * seconds, since each bucket holds exactly one. */
 const RATE_BUCKETS = 10;
-
-/** A contiguous run of global partition indices — one family's (StoreManifest.families). */
-interface PartitionRange {
-	start: number;
-	count: number;
-}
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
@@ -268,38 +260,31 @@ export class SearchEngine extends DurableObject<Env> {
 	async searchCardsAsObjects(
 		opts: EngineSearchOptions,
 		reportedShards?: number,
-		pinned?: PinnedSearch | number,
+		pinnedPartitionCount?: number | { layout?: unknown },
 	): Promise<EngineSearchResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, (engine) => {
-			this.assertPinned(pinned);
+			this.assertPinnedModulus(pinnedPartitionCount);
 			return engine.searchCardsAsObjects(opts);
 		}).catch(rethrowForRpc);
 	}
 
 	/**
-	 * A query pinned to this partition (pinned-oracle.ts) is exact only if this object's store is
-	 * cut the way the caller routed against: the LAYOUT (partition count and families), which two
-	 * builds can share — and then the owner is the same partition in both, so a caller a minute
-	 * behind a nightly swap is still answered exactly. Runs AFTER the engine is acquired, so the
-	 * loaded manifest is the one compared. Undefined means an unpinned call. A bare number is the
-	 * previous build's pin (the partition count), honoured for the length of a rolling deploy.
+	 * A query pinned to this partition (pinned-oracle.ts) is exact only if this object's store was
+	 * cut at the partition count the caller pinned against. Runs AFTER the engine is acquired, so
+	 * the loaded manifest is the one compared. Undefined means an unpinned call: nothing to check.
 	 */
-	private assertPinned(pinned: PinnedSearch | number | undefined): void {
-		if (pinned === undefined) return;
+	private assertPinnedModulus(pin: number | { layout?: unknown } | undefined): void {
+		if (pin === undefined) return;
+		// A caller on the previous build pins with `{ layout: "<count>|..." }`; its leading count is
+		// the same fact. Accepted for the length of a rolling deploy rather than refused, which would
+		// only send those searches through the ten-way gather.
+		const pinnedPartitionCount = typeof pin === "number" ? pin : Number(String(pin.layout ?? "").split("|")[0]);
+		if (!Number.isInteger(pinnedPartitionCount)) return;
 		const loaded = currentManifest(this.label);
-		if (!loaded) return;
-		if (typeof pinned === "number") {
-			if (loaded.partition_count !== undefined && loaded.partition_count !== pinned) {
-				throw new StaleModulusError(
-					`${this.label} serves a ${loaded.partition_count}-partition store; the caller pinned against ${pinned}`,
-				);
-			}
-			return;
-		}
-		const loadedLayout = layoutKeyOf(loaded);
-		if (loadedLayout !== pinned.layout) {
+		const loadedCount = loaded?.partition_count;
+		if (loadedCount !== undefined && loadedCount !== pinnedPartitionCount) {
 			throw new StaleModulusError(
-				`${this.label} serves layout ${loadedLayout}; the caller pinned against ${pinned.layout}`,
+				`${this.label} serves a ${loadedCount}-partition store; the caller pinned against ${pinnedPartitionCount}`,
 			);
 		}
 	}
@@ -313,10 +298,10 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		shape: ResultShape,
 		reportedShards?: number,
-		pinned?: PinnedSearch | number,
+		pinnedPartitionCount?: number | { layout?: unknown },
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, (engine) => {
-			this.assertPinned(pinned);
+			this.assertPinnedModulus(pinnedPartitionCount);
 			return engine.searchCardsAsJson(opts, shape);
 		}).catch(rethrowForRpc);
 	}
@@ -374,9 +359,9 @@ export class SearchEngine extends DurableObject<Env> {
 			envelope?: SearchPageEnvelope;
 			cache?: Record<string, string>;
 			/** Set on a "cards" call the caller pinned to this partition (pinned-oracle.ts). */
-			pinned?: PinnedSearch;
-			/** The previous build's pin, honoured through a rolling deploy. */
 			pinnedPartitionCount?: number;
+			/** The previous build's pin (`{ layout }`), honoured through a rolling deploy. */
+			pinned?: { layout?: unknown };
 		};
 		if (body.call !== "cards" && body.call !== "cards2") {
 			return new Response(`unsupported engine call: ${String(body.call)}`, { status: 400 });
@@ -389,7 +374,7 @@ export class SearchEngine extends DurableObject<Env> {
 							this.gatherScryfallSearchLocal(body.opts, body.baseUrl ?? ""),
 						)
 					: await this.instrumented(body.shards, (engine) => {
-							this.assertPinned(body.pinned ?? body.pinnedPartitionCount);
+							this.assertPinnedModulus(body.pinnedPartitionCount ?? body.pinned);
 							return engine.scryfallSearch(body.opts, body.baseUrl ?? "");
 						});
 		} catch (err) {
@@ -606,10 +591,10 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		baseUrl: string,
 		reportedShards?: number,
-		pinned?: PinnedSearch | number,
+		pinnedPartitionCount?: number | { layout?: unknown },
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		return this.instrumented(reportedShards, (engine) => {
-			this.assertPinned(pinned);
+			this.assertPinnedModulus(pinnedPartitionCount);
 			return engine.scryfallSearch(opts, baseUrl);
 		}).catch(rethrowForRpc);
 	}
@@ -850,10 +835,9 @@ export class SearchEngine extends DurableObject<Env> {
 	/** One client per partition: this object's own store served locally, every
 	 * sibling over RPC. Names derive from THIS object's label (siblingStub), so
 	 * a gather can only ever fan out within its own region and replica. */
-	private partitionClients(range: PartitionRange): PartitionClient[] {
+	private partitionClients(count: number): PartitionClient[] {
 		const own = parseEngineName(this.label)?.partition;
-		return Array.from({ length: range.count }, (_, i) => {
-			const p = range.start + i;
+		return Array.from({ length: count }, (_, p) => {
 			if (p === own) {
 				// The gather's OWN partition answers in-process, so inlining its rows would only
 				// move bytes it already holds. Asking for none keeps that work off the local path
@@ -906,8 +890,8 @@ export class SearchEngine extends DurableObject<Env> {
 	 * and reporting it as the whole corpus is the failure mode with no symptom.
 	 */
 	private async gatherRun(opts: EngineSearchOptions, shaping: GatherShaping): Promise<GatheredPage> {
-		const range = await this.gatherRange();
-		let page = await runTwoPhase(this.partitionClients(range), opts, shaping);
+		const width = await this.gatherWidth();
+		let page = await runTwoPhase(this.partitionClients(width), opts, shaping);
 		// Free when the fan-out included this partition, which it always does at a correct width.
 		await this.engine();
 		const loaded = currentManifest(this.label);
@@ -920,56 +904,37 @@ export class SearchEngine extends DurableObject<Env> {
 				),
 			);
 		}
-		const loadedRange = this.ownFamilyRange(loaded);
-		if (loadedRange.start !== range.start || loadedRange.count !== range.count) {
+		const loadedWidth = loaded.partition_count as number;
+		if (loadedWidth !== width) {
 			console.warn(
-				`[${this.label}] gathered across partitions ${range.start}..${range.start + range.count - 1} but loaded ` +
-					`a store whose family is ${loadedRange.start}..${loadedRange.start + loadedRange.count - 1}; re-running`,
+				`[${this.label}] gathered across ${width} partitions but loaded a ${loadedWidth}-wide store; re-running`,
 			);
-			const again = await runTwoPhase(this.partitionClients(loadedRange), opts, shaping);
+			const again = await runTwoPhase(this.partitionClients(loadedWidth), opts, shaping);
 			page = { ...again, acquireMs: Math.max(page.acquireMs, again.acquireMs) };
 		}
 		return page;
 	}
 
 	/**
-	 * The run of partitions this object gathers across: its OWN family's (partition.ts). On a
-	 * single-family store that is every partition; with language families it is the family the
-	 * object's `-p<k>` falls in, so a search pinned to a language never crosses into another's.
-	 */
-	private ownFamilyRange(manifest: StoreManifest): PartitionRange {
-		const own = parseEngineName(this.label)?.partition;
-		const family = own === undefined ? null : familyOfPartition(manifest, own);
-		if (!family) {
-			rethrowForRpc(
-				new EngineUnavailableError(
-					`${this.label} cannot gather: partition ${own} is in none of manifest ${manifest.store_key}'s families`,
-				),
-			);
-		}
-		return { start: family.start, count: family.count };
-	}
-
-	/**
-	 * The partitions to fan out across, without loading this object's store. See gatherRun
+	 * The partition count to fan out across, without loading this object's store. See gatherRun
 	 * for the order and for why a wrong answer here is caught rather than trusted.
 	 */
-	private async gatherRange(): Promise<PartitionRange> {
+	private async gatherWidth(): Promise<number> {
 		const loaded = currentManifest(this.label);
-		if (loaded && isPartitionedManifest(loaded)) return this.ownFamilyRange(loaded);
+		if (loaded && isPartitionedManifest(loaded)) return loaded.partition_count as number;
 		const own = parseEngineName(this.label)?.partition;
 		try {
 			const pushed = readLiveManifest(this.ctx.storage) as StoreManifest | null;
-			if (pushed && manifestServableBy(own, pushed)) return this.ownFamilyRange(pushed);
+			if (pushed && manifestServableBy(own, pushed)) return pushed.partition_count as number;
 		} catch {
 			// No record, no schema, or no storage: KV answers instead.
 		}
 		const truth = await readManifest(this.env).catch(() => null);
-		if (truth && manifestServableBy(own, truth)) return this.ownFamilyRange(truth);
-		// Nothing names a layout. Load, and let gatherRun's check refuse with the precise reason.
+		if (truth && manifestServableBy(own, truth)) return truth.partition_count as number;
+		// Nothing names a width. Load, and let gatherRun's check refuse with the precise reason.
 		await this.engine();
 		const after = currentManifest(this.label);
-		if (after && isPartitionedManifest(after)) return this.ownFamilyRange(after);
+		if (after && isPartitionedManifest(after)) return after.partition_count as number;
 		rethrowForRpc(new EngineUnavailableError(`${this.label} cannot gather: no manifest names a partition count`));
 	}
 

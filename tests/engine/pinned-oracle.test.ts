@@ -43,13 +43,12 @@ describe("a query pins one partition when", () => {
 });
 
 describe("the owning object's pin check (source pin: the DO cannot load outside workerd)", () => {
-	test("accepts the layout pin and the previous build's bare count, on both transports", () => {
+	test("accepts the bare count and the previous build's layout pin, on both transports", () => {
 		const src = readFileSync(join(import.meta.dir, "../../src/engine/search-engine-do.ts"), "utf8");
-		const check = src.slice(src.indexOf("private assertPinned("), src.indexOf("async searchCardsAsJson("));
-		expect(check).toContain('typeof pinned === "number"');
-		expect(check).toContain("layoutKeyOf(loaded)");
-		expect(check).toContain("pinned.layout");
-		expect(src).toContain("this.assertPinned(body.pinned ?? body.pinnedPartitionCount)");
+		const check = src.slice(src.indexOf("private assertPinnedModulus("), src.indexOf("async searchCardsAsJson("));
+		expect(check).toContain('typeof pin === "number"');
+		expect(check).toContain('String(pin.layout ?? "").split("|")[0]');
+		expect(src).toContain("this.assertPinnedModulus(body.pinnedPartitionCount ?? body.pinned)");
 	});
 });
 

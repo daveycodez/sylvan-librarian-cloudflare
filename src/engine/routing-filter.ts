@@ -41,9 +41,10 @@
  * Header magic: "SRF" + format version. Bump the trailing digit with the layout.
  *
  * SRF2 (2026-09-23): one BYTE per cell where SRF1 packed two 4-bit cells per byte. Fifteen
- * partitions was the 4-bit ceiling, and a store cut into language families (StoreManifest
- * .families) passes it on today's corpus. A reader meeting the other layout refuses it as bad
- * magic and fans out, which is the correct answer to any filter it cannot trust.
+ * partitions was the 4-bit ceiling while the build allows up to MAX_PARTITION_COUNT (32), so
+ * corpus growth past fifteen partitions would have failed the filter build and sent every bare-id
+ * route back to the N-way fan-out without a word. A reader meeting an unknown magic refuses it
+ * and fans out, which is the correct answer to any filter it cannot trust.
  */
 export const ROUTING_FILTER_MAGIC = 0x53524632; // "SRF2"
 /** The previous layout, still READ: the live filter at deploy time is last night's until the next publish. */

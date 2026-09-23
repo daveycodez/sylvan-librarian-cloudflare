@@ -48,17 +48,11 @@
 
 import { collateName, foldAccents } from "../parser/pystr";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
-import { defaultFamilyOf, gatherPartitionIn, layoutKeyOf, partitionOfOracleIdIn, partitionsOf } from "./partition";
+import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedOracleId } from "./pinned-oracle";
 import type { RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
-import {
-	isPartitionedManifest,
-	MANIFEST_KEY,
-	manifestLayoutProblem,
-	readManifest,
-	readRoutingFilter,
-} from "./store-kv";
+import { isPartitionedManifest, MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
 import {
 	type CollectionKeyIdentifier,
 	type CollectionScope,
@@ -71,13 +65,11 @@ import {
 	FUZZY_SIMILARITY_LEAD,
 	type FuzzyCandidateWire,
 	type NameIdentifier,
-	type PinnedSearch,
 	type ResultShape,
 	type ScryfallFuzzyResult,
 	type SearchPageEnvelope,
 	StaleModulusError,
 	type StoreManifest,
-	type StoreManifestFamily,
 } from "./types";
 
 /**
@@ -127,8 +119,7 @@ function usableManifest(bytes: Uint8Array | null): StoreManifest | null {
 	if (bytes === null) return null;
 	try {
 		const parsed = JSON.parse(utf8.decode(bytes)) as StoreManifest;
-		if (!isPartitionedManifest(parsed) || !parsed.partitions?.length) return null;
-		return manifestLayoutProblem(parsed) === null ? parsed : null;
+		return isPartitionedManifest(parsed) && parsed.partitions?.length ? parsed : null;
 	} catch {
 		return null;
 	}
@@ -469,19 +460,8 @@ export class PartitionedEngine implements Engine {
 		private readonly routing: RoutingFilter | null = null,
 	) {}
 
-	/** Every partition of the store, across all families — the by-id fallbacks' fan-out. */
 	private get n(): number {
 		return this.manifest.partition_count as number;
-	}
-
-	/**
-	 * The default lane's family: every card's canonical representative lives here, so anything
-	 * that is "per card" — catalogs, counts, the random draw, name lookups, the oracle-id owner,
-	 * the gather for an unwidened search — is answered by these partitions alone. On a
-	 * single-family store this is the whole store.
-	 */
-	private get defaultFamily(): StoreManifestFamily {
-		return defaultFamilyOf(this.manifest);
 	}
 
 	private at(partition: number): RemoteEngine {
@@ -494,19 +474,11 @@ export class PartitionedEngine implements Engine {
 	}
 
 	private gatherAt(query: string): RemoteEngine {
-		return this.at(gatherPartitionIn(this.defaultFamily, query));
+		return this.at(gatherPartitionOf(query, this.n));
 	}
 
-	/** Every partition of every family. */
 	private all<T>(run: (e: RemoteEngine, p: number) => Promise<T>): Promise<T[]> {
 		return Promise.all(Array.from({ length: this.n }, (_, p) => run(this.at(p), p)));
-	}
-
-	/** The default family's partitions, in order; `p` is the GLOBAL index. */
-	private allDefault<T>(run: (e: RemoteEngine, p: number) => Promise<T>): Promise<{ partition: number; answer: T }[]> {
-		return Promise.all(
-			partitionsOf(this.defaultFamily).map(async (p) => ({ partition: p, answer: await run(this.at(p), p) })),
-		);
 	}
 
 	private async firstNonNull<T>(run: (e: RemoteEngine) => Promise<T | null>): Promise<T | null> {
@@ -553,18 +525,18 @@ export class PartitionedEngine implements Engine {
 	/** The partition a query is pinned to, or null when it must fan out. */
 	private pinnedPartition(opts: EngineSearchOptions): number | null {
 		const oracleId = pinnedOracleId(opts.filterTreeJson);
-		return oracleId === null ? null : partitionOfOracleIdIn(this.defaultFamily, oracleId);
+		return oracleId === null ? null : partitionOfOracleId(oracleId, this.n);
 	}
 
 	private async pinnedOrGathered<T>(
 		opts: EngineSearchOptions,
-		pinned: (owner: RemoteEngine, pin: PinnedSearch) => Promise<T>,
+		pinned: (owner: RemoteEngine, partitionCount: number) => Promise<T>,
 		gathered: (coordinator: RemoteEngine) => Promise<T>,
 	): Promise<T> {
 		const p = this.pinnedPartition(opts);
 		if (p !== null) {
 			try {
-				return await pinned(this.at(p), { layout: layoutKeyOf(this.manifest) });
+				return await pinned(this.at(p), this.n);
 			} catch (err) {
 				if (!(err instanceof StaleModulusError)) throw err;
 				console.warn(`pinned search refused by partition ${p} (${err.message}); gathering instead`);
@@ -630,13 +602,11 @@ export class PartitionedEngine implements Engine {
 		const cached = CATALOG_TABLES.get(key);
 		if (cached) return cached;
 		const fanOut = async (): Promise<CatalogTables> => {
-			const parts = (
-				await this.allDefault(async (e) => ({
-					types: await e.cardTypeCounts(),
-					keywords: await e.cardKeywordCounts(),
-					setsWithExtras: await e.setsWithExtras(),
-				}))
-			).map((r) => r.answer);
+			const parts = await this.all(async (e) => ({
+				types: await e.cardTypeCounts(),
+				keywords: await e.cardKeywordCounts(),
+				setsWithExtras: await e.setsWithExtras(),
+			}));
 			return {
 				types: sumCounts(parts.map((p) => p.types)),
 				keywords: sumCounts(parts.map((p) => p.keywords)),
@@ -661,7 +631,7 @@ export class PartitionedEngine implements Engine {
 	}
 
 	async cardCount(): Promise<number> {
-		return (await this.allDefault((e) => e.cardCount())).reduce((s, r) => s + r.answer, 0);
+		return (await this.all((e) => e.cardCount())).reduce((s, c) => s + c, 0);
 	}
 
 	// ── random: one partition, weighted by its share of the cards ───────────────
@@ -690,16 +660,14 @@ export class PartitionedEngine implements Engine {
 	// failure is visible in the count instead of silent in the distribution. No caller sends one
 	// today; `/cards/random` is the route for a user query, and it counts before it draws.
 	private weightedPartition(): number {
-		const family = this.defaultFamily;
-		const indices = partitionsOf(family);
 		const parts = this.manifest.partitions ?? [];
-		const total = indices.reduce((s, p) => s + (parts[p]?.card_count ?? 0), 0);
+		const total = parts.reduce((s, p) => s + p.card_count, 0);
 		let at = Math.random() * total;
-		for (const p of indices) {
+		for (let p = 0; p < parts.length; p++) {
 			at -= parts[p]?.card_count ?? 0;
 			if (at < 0) return p;
 		}
-		return indices[indices.length - 1] ?? family.start;
+		return parts.length - 1;
 	}
 
 	randomCardsAsObjects(
@@ -722,15 +690,16 @@ export class PartitionedEngine implements Engine {
 	// ── oracle-keyed: exactly one RPC, with the stale-modulus retry ─────────────
 
 	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const p = partitionOfOracleIdIn(this.defaultFamily, oracleId);
+		const p = partitionOfOracleId(oracleId, this.n);
 		const card = await this.at(p).scryfallCardByOracleId(oracleId, baseUrl);
 		if (card !== null) return card;
 		// A miss under a stale isolate manifest is a WRONG-PARTITION ask, not a
 		// missing card (Decision 3b): re-read the manifest and retry once, only
-		// when the layout actually moved the target.
+		// when the modulus actually moved the target.
 		const fresh = await this.reread();
-		if (fresh?.partition_count !== undefined) {
-			const p2 = partitionOfOracleIdIn(defaultFamilyOf(fresh), oracleId);
+		const freshN = fresh?.partition_count;
+		if (freshN !== undefined && freshN !== this.n) {
+			const p2 = partitionOfOracleId(oracleId, freshN);
 			if (p2 !== p) return this.at(p2).scryfallCardByOracleId(oracleId, baseUrl);
 		}
 		return null;
@@ -827,9 +796,8 @@ export class PartitionedEngine implements Engine {
 	): Promise<(Record<string, unknown> | null)[]> {
 		const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
 		if (identifiers.length === 0) return out;
-		const targetOf = (ident: CollectionKeyIdentifier, manifest: StoreManifest): number | null => {
-			if (ident.kind === "oracle_id") return partitionOfOracleIdIn(defaultFamilyOf(manifest), ident.id);
-			const n = manifest.partition_count as number;
+		const targetOf = (ident: CollectionKeyIdentifier, n: number): number | null => {
+			if (ident.kind === "oracle_id") return partitionOfOracleId(ident.id, n);
 			const key =
 				ident.kind === "illustration_id" ? illustrationIdKey(ident.id) : externalIdKey(ident.namespace, ident.id);
 			const hint = this.routing?.lookup(key) ?? null;
@@ -850,7 +818,7 @@ export class PartitionedEngine implements Engine {
 		const grouped = new Map<number, number[]>();
 		const untargeted: number[] = [];
 		for (let i = 0; i < identifiers.length; i++) {
-			const p = targetOf(identifiers[i] as CollectionKeyIdentifier, this.manifest);
+			const p = targetOf(identifiers[i] as CollectionKeyIdentifier, this.n);
 			if (p === null) untargeted.push(i);
 			else grouped.set(p, [...(grouped.get(p) ?? []), i]);
 		}
@@ -866,13 +834,13 @@ export class PartitionedEngine implements Engine {
 			.flat()
 			.filter((i) => out[i] === null && (identifiers[i] as CollectionKeyIdentifier).kind === "oracle_id");
 		if (oracleMissed.length > 0) {
-			const fresh = await this.reread();
-			if (fresh?.partition_count !== undefined) {
+			const freshN = (await this.reread())?.partition_count;
+			if (freshN !== undefined && freshN !== this.n) {
 				const regrouped = new Map<number, number[]>();
 				for (const i of oracleMissed) {
 					const ident = identifiers[i] as CollectionKeyIdentifier;
-					const p2 = targetOf(ident, fresh) as number;
-					if (p2 !== targetOf(ident, this.manifest)) regrouped.set(p2, [...(regrouped.get(p2) ?? []), i]);
+					const p2 = targetOf(ident, freshN) as number;
+					if (p2 !== targetOf(ident, this.n)) regrouped.set(p2, [...(regrouped.get(p2) ?? []), i]);
 				}
 				await Promise.all([...regrouped.entries()].map(([p, at]) => ask(p, at)));
 			}
@@ -912,18 +880,11 @@ export class PartitionedEngine implements Engine {
 	// ── the name routes: fan out and combine (see header for the fuzzy caveat) ──
 
 	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
-		// Every card has its canonical representative in the default family, and names are the
-		// English oracle names in every family, so the race runs over the default family alone.
-		const answers = await this.allDefault((e) => e.fuzzyCandidates(name));
-		const race = raceFuzzyCandidates(
-			answers.map((r) => r.answer),
-			FUZZY_SIMILARITY_LEAD,
-		);
+		const race = raceFuzzyCandidates(await this.all((e) => e.fuzzyCandidates(name)), FUZZY_SIMILARITY_LEAD);
 		if (race.status !== "hit" || race.winner === undefined) return { status: race.status, card: null };
 		// One more RPC to the winning partition materializes the card: its local race is a
 		// sub-race of the global one the winner just led by >= lead, so it resolves the same hit.
-		const winner = answers[race.winner]?.partition ?? race.winner;
-		return this.at(winner).scryfallFuzzyName(name, baseUrl);
+		return this.at(race.winner).scryfallFuzzyName(name, baseUrl);
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
@@ -953,15 +914,15 @@ export class PartitionedEngine implements Engine {
 		// candidate is a whole-name match, so the answer turns on prefer_score — which only the
 		// owning partition can compute. `Delver of Secrets // Delver of Secrets` is a real
 		// art_series card, correctly ingested; it simply must not outrank the card itself.
-		const ranks = await this.allDefault((e) => e.scryfallExactNameRank(folded, setCode));
+		const ranks = await this.all((e) => e.scryfallExactNameRank(folded, setCode));
 		let winner = -1;
 		let best: number[] | null = null;
-		for (const { partition, answer: rank } of ranks) {
+		for (const [p, rank] of ranks.entries()) {
 			// Strictly greater, so an exact tie keeps the LOWEST partition index — the same
 			// deterministic tiebreak firstNonNull gave, preserved for the ties it did decide.
 			if (rank !== null && beatsExactRank(rank, best)) {
 				best = rank;
-				winner = partition;
+				winner = p;
 			}
 		}
 		if (winner < 0) return null;
@@ -970,7 +931,7 @@ export class PartitionedEngine implements Engine {
 
 	/** The best rank any partition holds — the whole store's answer, for an Engine asked directly. */
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
-		const ranks = (await this.allDefault((e) => e.scryfallExactNameRank(folded, setCode))).map((r) => r.answer);
+		const ranks = await this.all((e) => e.scryfallExactNameRank(folded, setCode));
 		let best: number[] | null = null;
 		for (const rank of ranks) {
 			if (rank !== null && beatsExactRank(rank, best)) {
@@ -996,10 +957,10 @@ export class PartitionedEngine implements Engine {
 		scope?: CollectionScope | null,
 	): Promise<(Record<string, unknown> | null)[]> {
 		if (identifiers.length === 0) return [];
-		const perPartition = await this.allDefault((e) => e.scryfallCollectionNameRanks(identifiers, scope));
+		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers, scope));
 		const winner = new Array<number>(identifiers.length).fill(-1);
 		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
-		for (const { partition: p, answer: ranks } of perPartition) {
+		for (const [p, ranks] of perPartition.entries()) {
 			for (let i = 0; i < identifiers.length; i++) {
 				const rank = ranks[i] ?? null;
 				// Strictly greater, so an exact tie keeps the LOWEST partition index — the same
@@ -1033,9 +994,7 @@ export class PartitionedEngine implements Engine {
 		identifiers: NameIdentifier[],
 		scope?: CollectionScope | null,
 	): Promise<(number[] | null)[]> {
-		const perPartition = (await this.allDefault((e) => e.scryfallCollectionNameRanks(identifiers, scope))).map(
-			(r) => r.answer,
-		);
+		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers, scope));
 		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
 		for (const ranks of perPartition) {
 			for (let i = 0; i < identifiers.length; i++) {
@@ -1047,8 +1006,7 @@ export class PartitionedEngine implements Engine {
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
-		const answers = (await this.allDefault((e) => e.scryfallAutocomplete(prefix, limit))).map((r) => r.answer);
-		return mergeAutocomplete(answers, prefix, limit);
+		return mergeAutocomplete(await this.all((e) => e.scryfallAutocomplete(prefix, limit)), prefix, limit);
 	}
 
 	async scryfallNamesContaining(
@@ -1059,9 +1017,7 @@ export class PartitionedEngine implements Engine {
 	): Promise<Record<string, unknown>[]> {
 		// The caller asks for 2 and reads ≥2 DISTINCT NAMES as ambiguous; distinct
 		// names survive a cross-partition dedupe, so the semantics carry over.
-		const perPartition = (await this.allDefault((e) => e.scryfallNamesContaining(words, setCode, limit, baseUrl))).map(
-			(r) => r.answer,
-		);
+		const perPartition = await this.all((e) => e.scryfallNamesContaining(words, setCode, limit, baseUrl));
 		const byName = new Map<string, Record<string, unknown>>();
 		for (const cards of perPartition) {
 			for (const card of cards) {
