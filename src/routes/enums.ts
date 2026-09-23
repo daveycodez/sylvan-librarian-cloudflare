@@ -68,8 +68,10 @@ export const UNIQUE_ON = {
  * borders falls back to the canonical printing): Najeela, the Blade-Blossom's four borderless
  * printings are Spider-Gwen, Cloud Strife, Eivor and Archaeon, so she answers her etched cmr/514;
  * Thrasios, Triton Hero answers the Special Guests spg/16 over the Final Fantasy fca/58, which
- * is Tidus. A Universes Beyond printing under the card's own name is a candidate like any other,
- * the tag demoting nothing: Soul Warden answers its newest borderless, the Secret Lair sld/2435.
+ * is Tidus. A Universes Beyond printing under the card's own name is a candidate, ranked below
+ * every in-universe one whatever its tier (Farewell answers the extended-art neo/436 over the
+ * borderless pip/353); a card printed only in Universes Beyond sets takes the offset uniformly and
+ * its tiers decide as usual.
  * Two more rules, both about being able to READ the answer: a textless printing ranks below the
  * plain ones (Moonshaker Cavalry answers its extended-art woe/325, not the Store Championship
  * full-art sch/17), and every English printing ranks above every non-English one, so a

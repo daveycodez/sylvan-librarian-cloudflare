@@ -9946,10 +9946,11 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// not the card as it is played (Blood Crypt answers rvr/292, not Lorwyn Eclipsed's ecl/349) — nor
 /// is a WHITE-BORDERED one, and a card printed only in white borders falls back to the default
 /// order, which is Scryfall's canonical printing.
-/// A Universes Beyond printing under the card's OWN name is a candidate like any other — the
-/// crossover TAG demotes nothing, only a flavor name excludes — so Soul Warden answers its newest
-/// borderless, the Secret Lair sld/2435, over the in-universe spg/65 and sld/1708 (three
-/// borderless printings with text boxes, and the default order's recency key decides).
+/// A Universes Beyond printing under the card's OWN name is a candidate, and ranks BELOW every
+/// in-universe one whatever its tier — eight steps, clear of the tiers and keys — so Farewell
+/// answers Kamigawa's extended-art neo/436 over Fallout's borderless pip/353. Not an exclusion: a
+/// card printed only in Universes Beyond sets takes the offset uniformly and its tiers decide as
+/// usual, so Iron Man, Titan of Innovation and Nick Fury still answer a borderless printing.
 /// Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
 /// original printing never carries a flavor name, so a candidate always exists. A DIGITAL-ONLY
 /// printing never answers while a paper one exists; a card that exists only digitally (an
@@ -10168,6 +10169,13 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // English one — flavor-named ones included — while the tiers still order the
             // non-English rows among themselves for a `lang:` query.
             let language_offset = if foreign { -16.0 } else { 0.0 };
+            // A UNIVERSES BEYOND printing ranks below every in-universe one — eight steps, clear of
+            // the tiers and every key above, so any in-universe printing of the card answers before
+            // any crossover does (Farewell answers Kamigawa's extended-art neo/436 over Fallout's
+            // borderless pip/353). NOT an exclusion: a card printed only in Universes Beyond sets
+            // has a uniform offset and its tiers decide as usual, which is how Iron Man, Titan of
+            // Innovation and Nick Fury still answer a borderless printing of their own.
+            let universe_offset = if printing_is_universes_beyond(p, &ids) { -8.0 } else { 0.0 };
             // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing
             // exists — below every tier, every language and every crossover. Tropical Island's
             // three retro-frame printings were all Magic Online (prm/43620, me3, me4) and it
@@ -10185,7 +10193,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // ee8e14b's absolute bonus did: the group's base is its best member's default score,
             // so Relic Seeker's pori pair still ranks by that pair's best and cmr/382's pin wins.
             let base = same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score);
-            (frame_tier + text_box + set_key + plain_frame + scan + finish + featured + language_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + set_key + plain_frame + scan + finish + featured + language_offset + universe_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

@@ -48,8 +48,8 @@ class PreferOrder(enum.StrEnum):
     # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); a digital-only
     # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language;
     # a flavor-named (crossover) printing, or an English one printed under another name, a
-    # reversible card, or a white-bordered one, is never a candidate, and the Universes Beyond tag
-    # alone demotes nothing. See the engine's `Prefer`.
+    # reversible card, or a white-bordered one, is never a candidate, and a Universes Beyond
+    # printing ranks below every in-universe one whatever its tier. See the engine's `Prefer`.
     BORDERLESS = enum.auto()
 
 

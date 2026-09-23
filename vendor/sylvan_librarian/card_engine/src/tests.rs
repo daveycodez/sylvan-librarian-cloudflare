@@ -17352,13 +17352,16 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
     data.printings[3].card_is_tags = vec![];
 
     assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "same-named borderless, however low it ranks");
-    // A Universes Beyond printing under the card's own name is a candidate like any other: tag
-    // id 4 and it still wins — Soul Warden's sld/2435 is the newest borderless, and the crossover
-    // TAG demotes nothing (a flavor NAME is the exclusion, below).
+    // A Universes Beyond printing is a candidate, ranked BELOW every in-universe one whatever its
+    // tier: tag the borderless id 4 and the best IN-UNIVERSE printing answers instead — the etched
+    // id 3, a variant (Farewell's shape, whose crossover borderless loses to Kamigawa's extended
+    // art). Its own test below covers the rule; here it must not be mistaken for an exclusion.
     let ub = data.printings[1].card_is_tags[0];
     data.printings[3].card_is_tags = vec![ub];
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "a Universes Beyond borderless is not demoted");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a crossover borderless ranks under an in-universe variant");
     data.printings[3].card_is_tags = vec![];
+    // ...and the fixture's own crossover tags are cleared for the frame blocks that follow.
+    data.printings[1].card_is_tags = vec![];
     // Take the borderless id 4 out of the top tier (plain black, the default's last pick) so the
     // blocks below can watch ids 1 and 3 against each other.
     data.printings[3].card_border_id = black;
@@ -17423,6 +17426,11 @@ fn prefer_borderless_ignores_flavor_named_printings_and_ranks_frames() {
 #[test]
 fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
     let mut data = class_prefer_store();
+    // class_prefer_store tags ids 2 and 4 Universes Beyond, which now ranks under every in-universe
+    // printing; this test is about the text-box key, so clear the tags.
+    for p in &mut data.printings {
+        p.card_is_tags = vec![];
+    }
     // The stubs share one (empty) set code, and id 2 is a showcase (id 4 becomes one below): give
     // each a set of its own so the same-set rule (its own test below) stays out of this one.
     data.printings[1].card_set_code = InlineStr::from_str("oth");
@@ -17476,6 +17484,9 @@ fn prefer_borderless_ranks_colorshifted_last_among_the_variants() {
     for p in &mut data.printings {
         p.compat.promo_types = vec![];
         p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        // class_prefer_store tags ids 2 and 4 Universes Beyond; this test is about frames, and a
+        // crossover ranks below every in-universe printing whatever its tier.
+        p.card_is_tags = vec![];
     }
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain: the default pick");
     // id 3 colorshifted: above every plain printing, however low it ranks by default.
@@ -17514,6 +17525,9 @@ fn prefer_borderless_ranks_the_retro_frame_at_the_bottom_of_the_variants() {
     for p in &mut data.printings {
         p.compat.promo_types = vec![];
         p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        // class_prefer_store tags ids 2 and 4 Universes Beyond; this test is about frames, and a
+        // crossover ranks below every in-universe printing whatever its tier.
+        p.card_is_tags = vec![];
     }
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain: the default pick");
     // id 4 retro: above every plain printing, however low it ranks by default.
@@ -17549,6 +17563,9 @@ fn prefer_borderless_never_answers_a_white_bordered_printing() {
     for p in &mut data.printings {
         p.compat.promo_types = vec![];
         p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        // class_prefer_store tags ids 2 and 4 Universes Beyond; this test is about frames, and a
+        // crossover ranks below every in-universe printing whatever its tier.
+        p.card_is_tags = vec![];
     }
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain and black: the default pick");
     // The default pick turns white: the next black printing answers.
@@ -18123,6 +18140,47 @@ fn prefer_borderless_never_answers_a_reversible_card() {
     // The same printing laid out normally is a candidate again.
     data.printings[1].card_layout_id = normal;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "not reversible: a candidate");
+}
+
+/// A UNIVERSES BEYOND printing ranks below every in-universe one WHATEVER ITS TIER — Farewell's
+/// shape, Fallout's borderless pip/353 against Kamigawa's extended-art neo/436 — and is not
+/// excluded: where every printing is a crossover the offset is uniform and the tiers decide.
+#[test]
+fn prefer_borderless_ranks_universes_beyond_below_every_in_universe_printing() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let ub = data.coll_vocab.iter().position(|s| s.as_str() == "universesbeyond").expect("ub") as u16;
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 2 is a borderless crossover, id 3 a plain in-universe printing: the plain one answers,
+    // the offset clearing the whole tier span.
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].card_is_tags = vec![ub];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "an in-universe plain printing over a crossover borderless");
+    // Tag every printing and the tiers decide again — the borderless id 2 (Iron Man's shape).
+    for p in &mut data.printings {
+        p.card_is_tags = vec![ub];
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "all crossovers: the tiers decide");
+    // Above the language offset: an English crossover still beats a foreign in-universe printing.
+    let en = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("en".to_owned());
+    let ja = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("ja".to_owned());
+    for p in &mut data.printings {
+        p.card_is_tags = vec![];
+        p.compat.lang_id = ja;
+    }
+    data.printings[1].card_is_tags = vec![ub];
+    data.printings[1].compat.lang_id = en;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "an English crossover over a foreign in-universe printing");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
