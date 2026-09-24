@@ -25,7 +25,7 @@
 import { encodeUtf8 } from "../../engine/bytes";
 import { readKvBytesMemo } from "../../engine/kv-memo";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
-import type { CollectionKeyIdentifier, CollectionScope, Engine, NameIdentifier } from "../../engine/types";
+import type { CollectionBatch, CollectionBatchKey, CollectionScope, Engine } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm, TagAliasTables } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -44,7 +44,6 @@ import {
 	CARD_OBJECT_FIELDS,
 	cardToText,
 	catalogObject,
-	collectionList,
 	DEFAULT_IMAGE_VERSION,
 	type EngineRow,
 	errorObject,
@@ -58,7 +57,7 @@ import {
 	toScryfallCard,
 } from "./objects";
 import { scryfallTermPolicy } from "./query-terms";
-import { asBool, scryfallJson, scryfallListJson } from "./respond";
+import { asBool, scryfallCollectionJson, scryfallJson, scryfallListJson } from "./respond";
 import { setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
@@ -1102,7 +1101,7 @@ export async function cardsCollectionHandler(
 	try {
 		const kinds: IdentifierKindTally = { id: 0, key: 0, pair: 0, name: 0, nameSet: 0 };
 		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl, scope, kinds);
-		const found: Record<string, unknown>[] = [];
+		const found: Uint8Array[] = [];
 		const notFound: unknown[] = [];
 		for (let at = 0; at < identifiers.length; at++) {
 			const card = resolved[at];
@@ -1123,7 +1122,7 @@ export async function cardsCollectionHandler(
 		console.log(
 			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} found=${found.length}`,
 		);
-		return scryfallJson(collectionList(found, notFound, warnings), pretty, COLLECTION_CACHE);
+		return scryfallCollectionJson(found, notFound, warnings, pretty, COLLECTION_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
@@ -1204,23 +1203,6 @@ async function collectionScope(
 	};
 }
 
-/**
- * Resolve every collection identifier, batching by kind.
- *
- * Batched rather than looped because each lookup is a Durable Object RPC: 75 identifiers resolved
- * one at a time would be 75 round trips. Every kind that is a query becomes a filter tree here and
- * goes over in one call; the id-shaped kinds go over in one call each; the `{name}` kind goes over
- * as one batch through the engine's own name rule (see `Engine.scryfallCollectionNames`).
- *
- * THE WHOLE ROUTE IS BOUNDED BY THE PARTITION COUNT, not by the identifier count: with N
- * partitions a batch mixing every kind is at most N (scryfall ids) + N (the key-shaped kinds:
- * oracle, illustration, mtgo, multiverse — one batch, see Engine.scryfallCardsByIdentifiers) +
- * N (trees) + 2N (names, ranked then materialized from the winners) RPCs however many
- * identifiers it carries. The meter that makes this matter is not the subrequest limit (1,000 to
- * Cloudflare services on the free plan) but the DAILY Durable Object request allowance: every
- * partition RPC is one of those, and the four key-shaped kinds used to be resolved one RPC per
- * identifier — 75 x N for a batch of misses, close to 1% of a day's allowance in one POST.
- */
 /** How many identifiers of a batch took each entry point — the collection log line's breakdown. */
 interface IdentifierKindTally {
 	/** `{id}` — Scryfall ids. */
@@ -1235,129 +1217,82 @@ interface IdentifierKindTally {
 	nameSet: number;
 }
 
+/**
+ * Resolve every collection identifier in ONE engine call, each found card as Scryfall JSON bytes.
+ *
+ * The identifiers are sorted into the three ways the engine answers them — by key, by filter tree,
+ * by name — and sent as one batch (see `Engine.scryfallCollectionBatch`), which the partitioned
+ * engine resolves in a single round of at most N partition RPCs however many identifiers and kinds
+ * the batch carries. The meter that makes this matter is not the subrequest limit but the DAILY
+ * Durable Object request allowance: every partition RPC is one of those. The per-kind batches this
+ * replaced cost up to 2N for the names (ranked, then materialized from the winners) plus N for the
+ * `{set, collector_number}` trees plus the keys' own fan-out, and ~31k collection POSTs a day made
+ * that the largest line on the meter (2026-09-23).
+ */
 async function resolveIdentifiers(
 	engine: Engine,
 	identifiers: unknown[],
 	baseUrl: string,
 	scope: CollectionScope | null,
 	kinds: IdentifierKindTally,
-): Promise<(Record<string, unknown> | null)[]> {
-	const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
-	const byScryfallId: { at: number; id: string }[] = [];
-	const byKey: { at: number; identifier: CollectionKeyIdentifier }[] = [];
-	const byTree: { at: number; tree: string }[] = [];
-	const byName: { at: number; identifier: NameIdentifier }[] = [];
-	// One batch per kind of entry point, awaited together rather than serialized.
-	const singles: Promise<void>[] = [];
+): Promise<(Uint8Array | null)[]> {
+	const batch: CollectionBatch = { keys: [], trees: [], names: [] };
+	// Where each identifier's answer lands: a slot in one of the batch's three lists, or nowhere.
+	const slots: ({ list: "keys" | "trees" | "names"; at: number } | null)[] = [];
+	const key = (k: CollectionBatchKey) => slots.push({ list: "keys", at: batch.keys.push(k) - 1 });
 
-	for (let at = 0; at < identifiers.length; at++) {
-		const ident = identifiers[at];
-		if (typeof ident !== "object" || ident === null) continue;
+	for (const ident of identifiers) {
+		if (typeof ident !== "object" || ident === null) {
+			slots.push(null);
+			continue;
+		}
 		const id = ident as Record<string, unknown>;
 
 		if (typeof id.id === "string" && isUuid(id.id)) {
-			byScryfallId.push({ at, id: id.id });
+			key({ kind: "scryfall_id", id: id.id });
 			kinds.id++;
 		} else if (typeof id.oracle_id === "string" && isUuid(id.oracle_id)) {
-			byKey.push({ at, identifier: { kind: "oracle_id", id: id.oracle_id } });
+			key({ kind: "oracle_id", id: id.oracle_id });
 			kinds.key++;
 		} else if (typeof id.illustration_id === "string" && isUuid(id.illustration_id)) {
-			byKey.push({ at, identifier: { kind: "illustration_id", id: id.illustration_id } });
+			key({ kind: "illustration_id", id: id.illustration_id });
 			kinds.key++;
-		} else if (id.mtgo_id !== undefined) {
-			const n = asInt(String(id.mtgo_id));
-			if (n !== undefined) byKey.push({ at, identifier: { kind: "external", namespace: "mtgo", id: n } });
-			kinds.key++;
-		} else if (id.multiverse_id !== undefined) {
-			const n = asInt(String(id.multiverse_id));
-			if (n !== undefined) byKey.push({ at, identifier: { kind: "external", namespace: "multiverse", id: n } });
+		} else if (id.mtgo_id !== undefined || id.multiverse_id !== undefined) {
+			const namespace = id.mtgo_id !== undefined ? "mtgo" : "multiverse";
+			const n = asInt(String(id.mtgo_id ?? id.multiverse_id));
+			if (n !== undefined) key({ kind: "external", namespace, id: n });
+			else slots.push(null);
 			kinds.key++;
 		} else if (id.set !== undefined && id.collector_number !== undefined) {
 			// English first, then any printing at the address — the same pair `/cards/:code/:number`
 			// resolves with, in the same order, so a foreign-only printing is found and an English
-			// one is never displaced by a foreign row sharing its number. Still ONE tree batch.
+			// one is never displaced by a foreign row sharing its number. The slot is the English
+			// tree; the lang-less one sits right after it.
 			const [set, number] = [String(id.set), String(id.collector_number)];
-			byTree.push(
-				{ at, tree: setAndCollectorNumber(set, number, "en") },
-				{ at, tree: setAndCollectorNumber(set, number, null) },
-			);
+			slots.push({ list: "trees", at: batch.trees.length });
+			batch.trees.push(setAndCollectorNumber(set, number, "en"), setAndCollectorNumber(set, number, null));
 			kinds.pair++;
 		} else if (id.name !== undefined) {
 			// FOLDED AND TRIMMED, the way `/cards/named?exact=` hands its needle over; the engine
 			// collates from there. Scryfall trims too — `{"name":"  Lightning Bolt  "}` resolves.
-			byName.push({
-				at,
-				identifier: {
-					folded: foldAccents(String(id.name).trim().toLowerCase()),
-					setCode: id.set === undefined ? "" : String(id.set),
-				},
+			slots.push({ list: "names", at: batch.names.length });
+			batch.names.push({
+				folded: foldAccents(String(id.name).trim().toLowerCase()),
+				setCode: id.set === undefined ? "" : String(id.set),
 			});
 			if (id.set === undefined) kinds.name++;
 			else kinds.nameSet++;
+		} else {
+			slots.push(null);
 		}
 	}
 
-	if (byScryfallId.length > 0) {
-		singles.push(
-			engine
-				.scryfallCardsByIds(
-					byScryfallId.map((e) => e.id),
-					baseUrl,
-				)
-				.then((cards) => {
-					// The batch skips misses, so results are matched back BY ID rather than by position.
-					const byId = new Map(cards.map((c) => [String(c.id).toLowerCase(), c]));
-					for (const { at, id } of byScryfallId) out[at] = byId.get(id.toLowerCase()) ?? null;
-				}),
-		);
-	}
-	if (byKey.length > 0) {
-		singles.push(
-			engine
-				.scryfallCardsByIdentifiers(
-					byKey.map((e) => e.identifier),
-					baseUrl,
-				)
-				.then((cards) => {
-					for (const [i, entry] of byKey.entries()) out[entry.at] = cards[i] ?? null;
-				}),
-		);
-	}
-	if (byName.length > 0) {
-		// ONE call for every name identifier in the batch — the engine ranks them across the
-		// partitions together. See `Engine.scryfallCollectionNames`.
-		singles.push(
-			engine
-				.scryfallCollectionNames(
-					byName.map((e) => e.identifier),
-					baseUrl,
-					scope,
-				)
-				.then((cards) => {
-					for (const [i, entry] of byName.entries()) out[entry.at] = cards[i] ?? null;
-				}),
-		);
-	}
-	if (byTree.length > 0) {
-		singles.push(
-			engine
-				.scryfallFirstOfEach(
-					byTree.map((e) => e.tree),
-					baseUrl,
-				)
-				.then((cards) => {
-					// An identifier may own two trees, English then lang-less: the first hit at its
-					// slot stands, so the fallback fills only what English left empty.
-					for (let i = 0; i < byTree.length; i++) {
-						const entry = byTree[i];
-						if (entry) out[entry.at] = out[entry.at] ?? cards[i] ?? null;
-					}
-				}),
-		);
-	}
-
-	await Promise.all(singles);
-	return out;
+	const answer = await engine.scryfallCollectionBatch(batch, baseUrl, scope);
+	return slots.map((slot) => {
+		if (slot === null) return null;
+		if (slot.list === "trees") return answer.trees[slot.at] ?? answer.trees[slot.at + 1] ?? null;
+		return answer[slot.list][slot.at] ?? null;
+	});
 }
 
 // ─── GET /cards and /cards/... ───────────────────────────────────────────────

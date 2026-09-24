@@ -11,7 +11,7 @@
 import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
 import type { SearchPageEnvelope } from "../../engine/types";
 import { CSV_CONTENT_DISPOSITION, CSV_CONTENT_TYPE, CSV_HAS_MORE_HEADER, cardsToCsv } from "./csv";
-import { cardList, catalogObject, errorObject } from "./objects";
+import { cardList, catalogObject, collectionList, errorObject } from "./objects";
 
 /**
  * Spelled out rather than a shared constant: Scryfall sends the charset, and a client that compares
@@ -234,6 +234,44 @@ export function scryfallListJson(
 // Splicing around a stream is the third case, and it is the one that measured WORSE: /search on
 // the streaming transport went 5ms -> 11ms of isolate against a 10ms budget. Restoring this
 // function would be re-proposing that, so the argument belongs here rather than the code.
+
+const OPEN = encodeUtf8("[");
+const COMMA = encodeUtf8(",");
+const CLOSE = encodeUtf8("]");
+const utf8 = new TextDecoder();
+
+/**
+ * `POST /cards/collection`'s List, its `data` spliced from the cards the engine wrote.
+ *
+ * The cards arrive as Scryfall JSON bytes (Engine.scryfallCollectionBatch), so the compact body is
+ * the envelope's bytes around theirs, joined in the one copy that becomes the response. It used to
+ * be every card structured-cloned across the RPC as an object, then `JSON.stringify`d here with the
+ * decimal replacer and scanned once more by its regex: two passes over up to 441KB in the metered
+ * isolate, to arrive at bytes the engine can write directly.
+ *
+ * `pretty` parses them back: Scryfall indents the cards too, not just the envelope, and pretty is
+ * a debugging spelling nobody's client sends.
+ */
+export function scryfallCollectionJson(
+	found: readonly Uint8Array[],
+	notFound: unknown[],
+	warnings: string[] | undefined,
+	pretty: boolean,
+	cache: Record<string, string>,
+): Response {
+	if (pretty) {
+		const cards = found.map((bytes) => JSON.parse(utf8.decode(bytes)) as unknown);
+		return scryfallJson(collectionList(cards, notFound, warnings), true, cache);
+	}
+	const { head, tail } = spliceMarkers(collectionList([], notFound, warnings), false);
+	const parts: Uint8Array[] = [head, OPEN];
+	for (const [i, card] of found.entries()) {
+		if (i > 0) parts.push(COMMA);
+		parts.push(card);
+	}
+	parts.push(CLOSE, tail);
+	return jsonBytesResponse(parts, { "content-type": JSON_CONTENT_TYPE, ...cache });
+}
 
 /**
  * The same page of cards as `scryfallListJson`, rendered as Scryfall's CSV instead.

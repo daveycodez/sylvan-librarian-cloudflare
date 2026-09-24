@@ -76,6 +76,7 @@ import { probePlacement } from "./placement";
 import { siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
 import {
+	collectionPacketOf,
 	currentManifest,
 	gatherOps,
 	getEngine,
@@ -89,6 +90,7 @@ import {
 import { readLiveManifest, recordLiveManifest } from "./store-cache";
 import { isPartitionedManifest, manifestServableBy, readManifest } from "./store-kv";
 import type {
+	CollectionBatch,
 	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
@@ -740,6 +742,18 @@ export class SearchEngine extends DurableObject<Env> {
 	): Promise<ScryfallMaybeCardsReply & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			cards: await engine.scryfallFirstOfEach(filterTreeJsons, baseUrl),
+		}));
+	}
+
+	/** A whole collection batch against this partition — see Engine.scryfallCollectionBatch. */
+	async scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope: CollectionScope | null,
+		reportedShards?: number,
+	): Promise<{ packet: Uint8Array } & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => ({
+			packet: collectionPacketOf(engine, batch, baseUrl, scope),
 		}));
 	}
 

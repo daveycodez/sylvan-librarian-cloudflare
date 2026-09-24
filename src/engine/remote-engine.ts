@@ -1,6 +1,7 @@
 // Engine implementation backed by the region's SearchEngine DO — the only
 // serving path: isolates parse and RPC here, never loading the store.
 
+import { collectionBatchFromSeparateCalls, decodeCollectionPacket, isMissingRpcMethod } from "./collection-batch";
 import {
 	adoptShardWidth,
 	currentShardWidth,
@@ -9,6 +10,8 @@ import {
 	reportEngineRate,
 } from "./shard-controller";
 import type {
+	CollectionBatch,
+	CollectionBatchAnswer,
 	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
@@ -138,6 +141,12 @@ interface SearchEngineStub {
 		scope: CollectionScope | null,
 		reportedShards?: number,
 	): Promise<{ ranks: (number[] | null)[] } & Telemetry>;
+	scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope: CollectionScope | null,
+		reportedShards?: number,
+	): Promise<{ packet: Uint8Array } & Telemetry>;
 	scryfallCardByIllustrationId(
 		illustrationId: string,
 		baseUrl: string,
@@ -813,5 +822,26 @@ export class RemoteEngine implements Engine {
 			this.stub.scryfallFirstOfEach(filterTreeJsons, baseUrl, currentShardWidth(this.region)),
 		);
 		return cards;
+	}
+
+	/**
+	 * The one-round collection batch. An object still on the previous build has no such method
+	 * during a rolling deploy; it is answered through the per-kind methods it does have (see
+	 * collectionBatchFromSeparateCalls), not failed.
+	 */
+	async scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope?: CollectionScope | null,
+	): Promise<CollectionBatchAnswer> {
+		try {
+			const { packet } = await this.searchRpc(() =>
+				this.stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, currentShardWidth(this.region)),
+			);
+			return decodeCollectionPacket(packet, batch);
+		} catch (err) {
+			if (!isMissingRpcMethod(err, "scryfallCollectionBatch")) throw err;
+			return collectionBatchFromSeparateCalls(this, batch, baseUrl, scope ?? null);
+		}
 	}
 }

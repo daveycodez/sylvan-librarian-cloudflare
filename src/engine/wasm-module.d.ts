@@ -54,6 +54,7 @@ declare module "sylvan-engine-wasm" {
 		exact_name_rank(folded: string, setCode: string): string;
 		collection_cards_by_names(identifiersJson: string, fieldsJson: string, prefer: string, scopeJson: string): string;
 		collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
+		collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 		card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 		cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
 		linearMemoryBytes(): number;
@@ -102,6 +103,11 @@ declare module "sylvan-engine-wasm" {
 	): string;
 	/** `[tier, score]` for this store's best collection-identifier candidate, or `null`. */
 	export function collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
+	/**
+	 * A whole `POST /cards/collection` batch — keys, trees and names — in one call, as a packet of
+	 * finished card objects (see src/engine/collection-batch.ts for the layout).
+	 */
+	export function collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 	/** The best printing carrying this illustration id, or JSON `null`. */
 	export function card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	/** One card per distinct name containing every word, best printing each. JSON array. */

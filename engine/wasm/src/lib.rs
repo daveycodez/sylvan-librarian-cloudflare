@@ -756,6 +756,128 @@ pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Resu
     })
 }
 
+/// A whole `POST /cards/collection` batch against THIS store in one call (LOCAL PATCH, Cloudflare
+/// port) — every identifier kind at once, answered as finished card objects.
+///
+/// The partitioned router used to spend up to 2N + N + N calls on one batch: `{name}` ranked on
+/// every partition and then materialized from the winners, `{set, collector_number}` fanned out on
+/// its own, and the id kinds on theirs. This answers all of them in ONE round: each name comes
+/// back with its rank AND its local winner's card, so the router keeps the global winner's card
+/// without asking again. That is exact, not a guess: the winning partition's local pick is the
+/// same card its second-round materialize would have returned, because `collection_name_ranks`
+/// and `collection_cards_by_names` rank by the same `name_best`.
+///
+/// `request_json` is `{"keys": [...], "trees": [...], "tree_opts": {...}, "names": [[folded,
+/// set], ...], "prefer": "...", "scope": "..."}`:
+///
+/// - `keys`: `{"kind": "scryfall_id" | "oracle_id" | "illustration_id", "id": "<uuid>"}` or
+///   `{"kind": "external", "namespace": "mtgo" | "multiverse" | ..., "id": <n>}`. An oracle id
+///   answers its representative printing, as `/cards/collection` always has.
+/// - `trees`: filter trees as JSON strings, each answered by its first row under `tree_opts`.
+/// - `names`, `prefer`, `scope`: exactly `collection_cards_by_names`'s arguments.
+///
+/// The answer is little-endian bytes:
+///
+/// ```text
+/// header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+/// then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
+/// ```
+///
+/// Cards are written by `write_scryfall_card`, the builder `/cards/search` uses, so the router
+/// splices them into the response without parsing them.
+#[wasm_bindgen]
+pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -> Result<Vec<u8>, JsError> {
+    let req: serde_json::Value =
+        serde_json::from_str(request_json).map_err(|e| JsError::new(&format!("bad collection batch JSON: {e}")))?;
+    let fields = parse_fields(fields_json)?;
+    let list = |name: &str| req.get(name).and_then(serde_json::Value::as_array).map_or(&[][..], Vec::as_slice);
+    let (keys, trees) = (list("keys"), list("trees"));
+    let idents: Vec<(String, Option<String>)> = list("names")
+        .iter()
+        .map(|pair| {
+            let at = |i: usize| pair.get(i).and_then(serde_json::Value::as_str).unwrap_or_default();
+            (at(0).to_owned(), if at(1).is_empty() { None } else { Some(at(1).to_owned()) })
+        })
+        .collect();
+    let text = |name: &str| req.get(name).and_then(serde_json::Value::as_str).unwrap_or_default();
+    let scope = parse_scope(text("prefer"), text("scope"))?;
+    let tree_opts = match req.get("tree_opts") {
+        Some(opts) if !trees.is_empty() => Some(QueryOptions::from_json_str(&opts.to_string()).map_err(js_err)?),
+        _ => None,
+    };
+
+    with_store(|store| {
+        let names: Vec<(&str, Option<&str>)> = idents.iter().map(|(f, s)| (f.as_str(), s.as_deref())).collect();
+        let (ranks, name_cards) = if names.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                store.collection_name_ranks(&names, scope.as_ref()).map_err(js_err)?,
+                store.collection_cards_by_names(&names, fields.clone(), scope.as_ref()).map_err(js_err)?,
+            )
+        };
+        let header: Vec<serde_json::Value> = ranks
+            .iter()
+            .map(|r| match r {
+                Some((served, tier, score)) => serde_json::json!([served, tier, score]),
+                None => serde_json::Value::Null,
+            })
+            .collect();
+        let header = serde_json::to_vec(&header).map_err(|e| JsError::new(&e.to_string()))?;
+
+        let mut buf = Vec::with_capacity(4 + header.len() + (keys.len() + trees.len() + names.len()) * 2048);
+        buf.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&header);
+        for key in keys {
+            let found = collection_key_card(store, key, fields.clone())?;
+            write_optional_card(&mut buf, found.as_ref(), base_url)?;
+        }
+        for tree in trees {
+            let (Some(tree), Some(opts)) = (tree.as_str(), tree_opts.as_ref()) else {
+                return Err(JsError::new("collection trees must be JSON strings, with tree_opts"));
+            };
+            let first = store.query(tree, opts).map_err(js_err)?.rows.into_iter().next();
+            write_optional_card(&mut buf, first.as_ref(), base_url)?;
+        }
+        for card in &name_cards {
+            write_optional_card(&mut buf, card.as_ref(), base_url)?;
+        }
+        Ok(buf)
+    })
+}
+
+/// One `collection_batch` key, resolved the way its single-card route resolves it.
+fn collection_key_card(
+    store: &BufferStore,
+    key: &serde_json::Value,
+    fields: Option<Vec<String>>,
+) -> Result<Option<serde_json::Value>, JsError> {
+    let text = |name: &str| key.get(name).and_then(serde_json::Value::as_str).unwrap_or_default();
+    match text("kind") {
+        "scryfall_id" => store.card_by_scryfall_id(text("id"), fields).map_err(js_err),
+        // Printings are stored in descending default-prefer order, so the first is the
+        // representative printing every by-name path shows.
+        "oracle_id" => Ok(store.printings_of_oracle_id(text("id"), fields).map_err(js_err)?.into_iter().next()),
+        "illustration_id" => store.card_by_illustration_id(text("id"), fields).map_err(js_err),
+        "external" => {
+            let id = key.get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| JsError::new("external id must be a number"))?;
+            store.card_by_external_id(text("namespace"), id, fields).map_err(js_err)
+        }
+        other => Err(JsError::new(&format!("unknown collection key kind {other:?}"))),
+    }
+}
+
+/// A framed card, or a zero length for none — `collection_batch`'s slot encoding.
+fn write_optional_card(buf: &mut Vec<u8>, row: Option<&serde_json::Value>, base_url: &str) -> Result<(), JsError> {
+    match row {
+        Some(row) => write_framed_row(buf, row, RowShape::Cards, base_url),
+        None => {
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            Ok(())
+        }
+    }
+}
+
 /// One card per distinct name containing EVERY word, best printing each, up to `limit`.
 /// The containment stage of `/cards/named?fuzzy=`; the caller asks for 2 and reads the count.
 #[wasm_bindgen]

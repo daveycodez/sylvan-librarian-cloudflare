@@ -296,6 +296,43 @@ export interface Engine {
 	 * identifiers). One RPC for the whole batch so 75 identifiers are not 75 round trips.
 	 */
 	scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]>;
+	/**
+	 * A whole `POST /cards/collection` batch — every identifier kind — resolved in ONE round, each
+	 * found card as finished Scryfall JSON bytes.
+	 *
+	 * What the route calls. A partition answers every name with its rank AND its local winner's
+	 * card, so the partitioned router keeps the global winner's card without a second round, and
+	 * the keys and trees ride the same call instead of their own fan-outs: N calls for a batch the
+	 * separate methods above spent up to 2N + N + N on. The bytes are spliced into the response,
+	 * never parsed.
+	 */
+	scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope?: CollectionScope | null,
+	): Promise<CollectionBatchAnswer>;
+}
+
+/** A collection identifier that is a KEY into the store, Scryfall ids included — see Engine.scryfallCollectionBatch. */
+export type CollectionBatchKey = CollectionKeyIdentifier | { kind: "scryfall_id"; id: string };
+
+/** One `POST /cards/collection` batch, split by how each identifier is answered. */
+export interface CollectionBatch {
+	/** Looked up by key — Scryfall, oracle, illustration and external ids. */
+	keys: CollectionBatchKey[];
+	/** Filter trees answered by their first printing — `{set, collector_number}`. */
+	trees: string[];
+	/** `{name}` and `{name, set}`, under the batch's scope. */
+	names: NameIdentifier[];
+}
+
+/** Per slot of a CollectionBatch, the card as Scryfall JSON bytes, or null for none. */
+export interface CollectionBatchAnswer {
+	keys: (Uint8Array | null)[];
+	trees: (Uint8Array | null)[];
+	names: (Uint8Array | null)[];
+	/** `[served, tier, score]` per name, or null — what the partitioned router merges names by. */
+	nameRanks: (number[] | null)[];
 }
 
 /**

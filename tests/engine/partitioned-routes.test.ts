@@ -25,9 +25,14 @@ import {
 	RoutingFilter,
 	scryfallIdKey,
 } from "../../src/engine/routing-filter";
-import { StaleModulusError, type StoreManifest } from "../../src/engine/types";
+import { type CollectionBatch, StaleModulusError, type StoreManifest } from "../../src/engine/types";
 
 const N = 4;
+
+const utf8 = new TextDecoder();
+const cardBytes = (card: Record<string, unknown> | null): Uint8Array | null =>
+	card === null ? null : new TextEncoder().encode(JSON.stringify(card));
+const cardOf = (bytes: Uint8Array | null): unknown => (bytes === null ? null : JSON.parse(utf8.decode(bytes)));
 
 /** Every manifest is its own store generation: the engine's per-generation caches (extras sets,
  * catalog counts) are module-scoped, so a shared key would let one test's fan-out answer for
@@ -183,6 +188,25 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 		scryfallNamesContaining: async () => {
 			count("scryfallNamesContaining");
 			return val<Record<string, unknown>[]>("containing", []);
+		},
+		scryfallCollectionBatch: async (batch: CollectionBatch) => {
+			// The sub-batch's shape rides in the call record: which keys, and whether the trees
+			// and names came along.
+			const keys = batch.keys.map((k) => String(k.id)).join(",");
+			count(`scryfallCollectionBatch[${keys}|t${batch.trees.length}|n${batch.names.length}]`);
+			// `byKey` maps a key's id to this partition's card; `firstOfEach` answers every tree;
+			// `collectionRanks` ranks each name and `collectionCard` is its local winner.
+			const held = val<Record<string, Record<string, unknown>>>("byKey", {});
+			const ranks = val<(number[] | null)[]>("collectionRanks", []);
+			const tree = val<Record<string, unknown> | null>("firstOfEach", null);
+			const card = val<Record<string, unknown> | null>("collectionCard", null);
+			const nameRanks = batch.names.map((_, i) => ranks[i] ?? null);
+			return {
+				keys: batch.keys.map((k) => cardBytes(held[String(k.id)] ?? null)),
+				trees: batch.trees.map(() => cardBytes(tree)),
+				names: nameRanks.map((rank) => (rank === null ? null : cardBytes(card))),
+				nameRanks,
+			};
 		},
 	} as unknown as RemoteEngine;
 }
@@ -499,6 +523,135 @@ describe("the key-shaped collection identifiers are ONE batch per partition aske
 		);
 		expect(cards.map((c) => c?.id)).toEqual(ids);
 		expect(of("scryfallCardsByIdentifiers").length).toBe(owners.size);
+	});
+});
+
+describe("a collection batch is ONE round of at most N calls", () => {
+	// The route's only engine call for POST /cards/collection. Before it, a batch of names cost N
+	// rank calls plus up to N materialize calls, and its {set, collector_number} identifiers and
+	// ids each cost their own fan-out on top.
+	const names = (...folded: string[]) => folded.map((f) => ({ folded: f, setCode: "" }));
+	const sid = (id: string) => ({ kind: "scryfall_id" as const, id });
+	const answer = (a: { keys: (Uint8Array | null)[]; trees: (Uint8Array | null)[]; names: (Uint8Array | null)[] }) => ({
+		keys: a.keys.map(cardOf),
+		trees: a.trees.map(cardOf),
+		names: a.names.map(cardOf),
+	});
+
+	test("every kind at once: N calls, each partition asked once, every key riding along", async () => {
+		const routing = filterOf([
+			{ key: scryfallIdKey("a"), partition: 1 },
+			{ key: scryfallIdKey("b"), partition: 1 },
+		]);
+		const { engine, calls } = build(
+			{
+				1: { byKey: { a: { id: "a" }, b: { id: "b" } }, collectionRanks: [[1, 1, 0], null], collectionCard: { p: 1 } },
+				2: {
+					collectionRanks: [
+						[1, 2, 0],
+						[1, 2, 0],
+					],
+					collectionCard: { p: 2 },
+					firstOfEach: { tree: 2 },
+				},
+				3: { firstOfEach: { tree: 3 } },
+			},
+			undefined,
+			routing,
+		);
+		const got = await engine.scryfallCollectionBatch(
+			{ keys: [sid("a"), sid("b")], trees: ["en", "any"], names: names("x", "y") },
+			"https://x",
+		);
+		// Names and trees call every partition, so the ids ride along to all of them: no partition
+		// is called twice, and no hint has to be trusted.
+		expect(calls.sort()).toEqual([0, 1, 2, 3].map((p) => `scryfallCollectionBatch[a,b|t2|n2]:${p}`));
+		expect(answer(got)).toEqual({
+			keys: [{ id: "a" }, { id: "b" }],
+			// First in PARTITION order: 2 before 3.
+			trees: [{ tree: 2 }, { tree: 2 }],
+			// Partition 2's whole-name tier beats partition 1's face match, and its card comes with it.
+			names: [{ p: 2 }, { p: 2 }],
+		});
+		expect(got.nameRanks).toEqual([
+			[1, 2, 0],
+			[1, 2, 0],
+		]);
+	});
+
+	test("without a routing filter, an id rides to every partition, and the first by partition order wins", async () => {
+		// Every cold isolate's first request has no filter yet.
+		const { engine, calls } = build({ 1: { byKey: { u: { id: "u", p: 1 } } }, 3: { byKey: { u: { id: "u", p: 3 } } } });
+		const got = await engine.scryfallCollectionBatch({ keys: [sid("u")], trees: [], names: names("x") }, "https://x");
+		expect(answer(got).keys).toEqual([{ id: "u", p: 1 }]);
+		expect(calls.sort()).toEqual([0, 1, 2, 3].map((p) => `scryfallCollectionBatch[u|t0|n1]:${p}`));
+	});
+
+	test("a batch of hinted ids alone asks only the partitions they name", async () => {
+		const routing = filterOf([
+			{ key: scryfallIdKey("a"), partition: 0 },
+			{ key: scryfallIdKey("b"), partition: 3 },
+		]);
+		const { engine, calls } = build(
+			{ 0: { byKey: { a: { id: "a" } } }, 3: { byKey: { b: { id: "b" } } } },
+			undefined,
+			routing,
+		);
+		const got = await engine.scryfallCollectionBatch({ keys: [sid("a"), sid("b")], trees: [], names: [] }, "https://x");
+		expect(answer(got).keys).toEqual([{ id: "a" }, { id: "b" }]);
+		// Each partition called is asked for every key: one probe each, and no second round.
+		expect(calls.sort()).toEqual(["scryfallCollectionBatch[a,b|t0|n0]:0", "scryfallCollectionBatch[a,b|t0|n0]:3"]);
+	});
+
+	test("an id hinted wrong is found in ANOTHER hinted partition, in the same round", async () => {
+		// The filter says b lives in 3; it lives in 0, which a's hint calls anyway. The per-kind
+		// scryfallCardsByIds asked 0 only about a and then skipped every hinted partition in its
+		// second round, so it answered b not_found.
+		const routing = filterOf([
+			{ key: scryfallIdKey("a"), partition: 0 },
+			{ key: scryfallIdKey("b"), partition: 3 },
+		]);
+		const { engine, calls } = build({ 0: { byKey: { a: { id: "a" }, b: { id: "b" } } } }, undefined, routing);
+		const got = await engine.scryfallCollectionBatch({ keys: [sid("a"), sid("b")], trees: [], names: [] }, "https://x");
+		expect(answer(got).keys).toEqual([{ id: "a" }, { id: "b" }]);
+		expect(calls.length).toBe(2);
+	});
+
+	test("an oracle id goes to its arithmetic owner", async () => {
+		const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdb001";
+		const p = partitionOfOracleId(oracleId, N);
+		const { engine, calls } = build({ [p]: { byKey: { [oracleId]: { id: oracleId } } } }, undefined, filterOf([]));
+		const got = await engine.scryfallCollectionBatch(
+			{ keys: [{ kind: "oracle_id", id: oracleId }], trees: [], names: [] },
+			"https://x",
+		);
+		expect(answer(got).keys).toEqual([{ id: oracleId }]);
+		expect(calls).toEqual([`scryfallCollectionBatch[${oracleId}|t0|n0]:${p}`]);
+	});
+
+	test("a name tie keeps the LOWEST partition, and that partition's card", async () => {
+		const { engine } = build({
+			1: { collectionRanks: [[1, 2, 5]], collectionCard: { p: 1 } },
+			3: { collectionRanks: [[1, 2, 5]], collectionCard: { p: 3 } },
+		});
+		const got = await engine.scryfallCollectionBatch({ keys: [], trees: [], names: names("x") }, "https://x");
+		expect(answer(got).names).toEqual([{ p: 1 }]);
+	});
+
+	test("a hinted miss asks only the partitions round 1 did not call — N calls in all", async () => {
+		// The filter says 1; the card lives in 3 (a filter from another build).
+		const routing = filterOf([{ key: scryfallIdKey("a"), partition: 1 }]);
+		const { engine, calls } = build({ 3: { byKey: { a: { id: "a" } } } }, undefined, routing);
+		const got = await engine.scryfallCollectionBatch({ keys: [sid("a")], trees: [], names: [] }, "https://x");
+		expect(answer(got).keys).toEqual([{ id: "a" }]);
+		expect(calls.length).toBe(N);
+		expect(calls.filter((c) => c.endsWith(":1"))).toEqual(["scryfallCollectionBatch[a|t0|n0]:1"]);
+	});
+
+	test("nothing to resolve costs nothing", async () => {
+		const { engine, calls } = build();
+		await engine.scryfallCollectionBatch({ keys: [], trees: [], names: [] }, "https://x");
+		expect(calls).toEqual([]);
 	});
 });
 

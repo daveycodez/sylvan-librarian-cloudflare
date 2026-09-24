@@ -263,6 +263,57 @@ export function catalog() {
 }
 
 /**
+ * A whole `POST /cards/collection` batch against THIS store in one call (LOCAL PATCH, Cloudflare
+ * port) — every identifier kind at once, answered as finished card objects.
+ *
+ * The partitioned router used to spend up to 2N + N + N calls on one batch: `{name}` ranked on
+ * every partition and then materialized from the winners, `{set, collector_number}` fanned out on
+ * its own, and the id kinds on theirs. This answers all of them in ONE round: each name comes
+ * back with its rank AND its local winner's card, so the router keeps the global winner's card
+ * without asking again. That is exact, not a guess: the winning partition's local pick is the
+ * same card its second-round materialize would have returned, because `collection_name_ranks`
+ * and `collection_cards_by_names` rank by the same `name_best`.
+ *
+ * `request_json` is `{"keys": [...], "trees": [...], "tree_opts": {...}, "names": [[folded,
+ * set], ...], "prefer": "...", "scope": "..."}`:
+ *
+ * - `keys`: `{"kind": "scryfall_id" | "oracle_id" | "illustration_id", "id": "<uuid>"}` or
+ *   `{"kind": "external", "namespace": "mtgo" | "multiverse" | ..., "id": <n>}`. An oracle id
+ *   answers its representative printing, as `/cards/collection` always has.
+ * - `trees`: filter trees as JSON strings, each answered by its first row under `tree_opts`.
+ * - `names`, `prefer`, `scope`: exactly `collection_cards_by_names`'s arguments.
+ *
+ * The answer is little-endian bytes:
+ *
+ * ```text
+ * header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+ * then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
+ * ```
+ *
+ * Cards are written by `write_scryfall_card`, the builder `/cards/search` uses, so the router
+ * splices them into the response without parsing them.
+ * @param {string} request_json
+ * @param {string} fields_json
+ * @param {string} base_url
+ * @returns {Uint8Array}
+ */
+export function collection_batch(request_json, fields_json, base_url) {
+    const ptr0 = passStringToWasm0(request_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.collection_batch(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
+
+/**
  * The best printing a COLLECTION IDENTIFIER's `name` names, or `null` — `POST /cards/collection`.
  *
  * NOT `exact_card_by_name` with a different caller: a collection identifier reads a card's FACE

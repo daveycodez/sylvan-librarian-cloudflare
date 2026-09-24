@@ -58,6 +58,7 @@ let gatherStore: {
 
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
+	collectionPacketOf: () => new Uint8Array(),
 	getEngine: async () => {
 		const g = gatherStore;
 		if (g && !g.loaded) {

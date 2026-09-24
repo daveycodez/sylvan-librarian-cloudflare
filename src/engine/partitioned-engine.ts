@@ -21,16 +21,17 @@
 //                                      the old N-way first-non-null fan-out —
 //                                      and 1 + (N-1) when a hint comes back
 //                                      empty, so never worse than the fan-out
-//   collection (byIds)                 one batch RPC per DISTINCT hinted
-//                                      partition (1-2 for a short collection,
-//                                      N for a wide one), plus the partitions
-//                                      no hint covered; total never above N
-//   collection (firstOfEach)           N — a {set,collector_number} identifier
-//                                      is not an id the routing filter holds
-//   collection ({name})                N ranks, then one materialize RPC per
-//                                      partition that WON an identifier: 2N
-//                                      worst case for a batch of 75, and N+1
-//                                      for the batch that all lands in one
+//   collection (scryfallCollectionBatch)
+//                                      ONE round, at most N: every identifier
+//                                      kind in one call per partition. Names
+//                                      and {set,collector_number} trees go to
+//                                      all N (either could live anywhere);
+//                                      keys go only to the partition the
+//                                      modulus or routing filter names, so a
+//                                      batch of ids alone asks 1-2 partitions.
+//                                      A name's rank and its local winner's
+//                                      card come back together, so there is
+//                                      no materialize round
 //   named exact / fuzzy / containing   N, combined (see each method's rules)
 //   autocomplete                       N, merged prefix-first
 //
@@ -47,6 +48,7 @@
 // autocomplete_merge_key_matches_the_single_store).
 
 import { collateName, foldAccents } from "../parser/pystr";
+import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedOracleId } from "./pinned-oracle";
@@ -54,6 +56,9 @@ import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } f
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
 import { isPartitionedManifest, MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
 import {
+	type CollectionBatch,
+	type CollectionBatchAnswer,
+	type CollectionBatchKey,
 	type CollectionKeyIdentifier,
 	type CollectionScope,
 	type Engine,
@@ -1026,6 +1031,126 @@ export class PartitionedEngine implements Engine {
 			}
 		}
 		return best;
+	}
+
+	/**
+	 * A whole collection batch in ONE round of at most N calls — see Engine.scryfallCollectionBatch.
+	 * The per-kind methods above spent up to 2N on the names (rank, then materialize the winners),
+	 * N on the `{set, collector_number}` trees and up to N on the keys, each its own fan-out.
+	 *
+	 * Every partition is sent the names and trees whole, since either could live anywhere — and
+	 * then the keys too, since every partition is being called regardless. A batch of keys ALONE is
+	 * routed: a key the modulus or the routing filter places goes to that partition only, one
+	 * nothing places rides to all of them, and a partition with nothing to answer is not called.
+	 *
+	 * The merge keeps the rules the per-kind methods had:
+	 *   - keys and trees: the first card in PARTITION ORDER — a hint names the lowest owning
+	 *     partition, so a hinted hit is the card a full fan-out's first-non-null picks
+	 *   - names: the best rank, strictly greater so a tie keeps the lowest partition, and THAT
+	 *     partition's card, which is what its materialize round would have returned: the engine
+	 *     ranks and picks a name by the same `name_best`
+	 * then scryfallCardsByIdentifiers' two repair rounds, keys only: an oracle miss re-reads the
+	 * manifest and asks the new owner if N moved, and a routed key that missed asks every partition
+	 * but the one it was routed to. Both are rare by construction and never on the common path.
+	 */
+	async scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope?: CollectionScope | null,
+	): Promise<CollectionBatchAnswer> {
+		const out = emptyCollectionAnswer(batch);
+		const targetOf = (key: CollectionBatchKey, n: number): number | null => {
+			if (key.kind === "oracle_id") return partitionOfOracleId(key.id, n);
+			const routingKey =
+				key.kind === "scryfall_id"
+					? scryfallIdKey(key.id)
+					: key.kind === "illustration_id"
+						? illustrationIdKey(key.id)
+						: externalIdKey(key.namespace, key.id);
+			const hint = this.routing?.lookup(routingKey) ?? null;
+			return hint === null || hint >= n ? null : hint;
+		};
+		// Each reply is taken in partition order, whatever order the calls finish in.
+		const ask = (asks: { p: number; keyAt: number[]; whole: boolean }[]) =>
+			Promise.all(
+				asks.map(async ({ p, keyAt, whole }) => {
+					const sub: CollectionBatch = {
+						keys: keyAt.map((i) => batch.keys[i] as CollectionBatchKey),
+						trees: whole ? batch.trees : [],
+						names: whole ? batch.names : [],
+					};
+					return { keyAt, whole, answer: await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope) };
+				}),
+			);
+		const fillKeys = (replies: Awaited<ReturnType<typeof ask>>) => {
+			for (const { keyAt, answer } of replies) {
+				for (const [j, i] of keyAt.entries()) if (out.keys[i] === null) out.keys[i] = answer.keys[j] ?? null;
+			}
+		};
+
+		// WHICH partitions are called: all of them for a batch with names or trees (either could live
+		// anywhere), and otherwise the ones the keys' modulus or routing-filter hints name — all of
+		// them again if any key has no hint. EVERY called partition is sent EVERY key: a key is one
+		// index probe, so a partition being called anyway answers the rest for free, and a key that
+		// misses then needs only the partitions nobody called. That keeps a batch at N calls however
+		// it misses, where the per-kind methods either paid hint + (N-1) or skipped the partitions
+		// hinted for other ids and could report a card that exists as not found.
+		const whole = batch.trees.length > 0 || batch.names.length > 0;
+		const allKeys = batch.keys.map((_, i) => i);
+		let everywhere = whole;
+		const called = new Set<number>();
+		for (const key of everywhere ? [] : batch.keys) {
+			const target = targetOf(key, this.n);
+			if (target === null) {
+				everywhere = true;
+				break;
+			}
+			called.add(target);
+		}
+		const round1 = await ask(
+			Array.from({ length: this.n }, (_, p) => p)
+				.filter((p) => everywhere || called.has(p))
+				.map((p) => ({ p, keyAt: allKeys, whole })),
+		);
+		fillKeys(round1);
+		for (const { answer } of round1) {
+			for (let i = 0; i < batch.trees.length; i++) out.trees[i] ??= answer.trees[i] ?? null;
+			for (let i = 0; i < batch.names.length; i++) {
+				const rank = answer.nameRanks[i] ?? null;
+				if (rank !== null && beatsExactRank(rank, out.nameRanks[i] ?? null)) {
+					out.nameRanks[i] = rank;
+					out.names[i] = answer.names[i] ?? null;
+				}
+			}
+		}
+		const askedIn1 = (p: number) => everywhere || called.has(p);
+
+		// An oracle id that missed its owner is not in the store at this N; if N has moved, it may
+		// be in its NEW owner, which round 1 did not ask when that owner is past the old count.
+		const oracleMissed = batch.keys.flatMap((key, i) => (key.kind === "oracle_id" && out.keys[i] === null ? [i] : []));
+		if (oracleMissed.length > 0) {
+			const freshN = (await this.reread())?.partition_count;
+			if (freshN !== undefined && freshN !== this.n) {
+				const regrouped = new Map<number, number[]>();
+				for (const i of oracleMissed) {
+					const p2 = targetOf(batch.keys[i] as CollectionBatchKey, freshN) as number;
+					if (p2 >= this.n || !askedIn1(p2)) regrouped.set(p2, [...(regrouped.get(p2) ?? []), i]);
+				}
+				const asks = [...regrouped].sort(([a], [b]) => a - b).map(([p, keyAt]) => ({ p, keyAt, whole: false }));
+				fillKeys(await ask(asks));
+			}
+		}
+
+		// Any other key that missed was hinted somewhere it is not (a filter from another build, or
+		// a collision): it can only be in a partition round 1 did not call.
+		const missed = batch.keys.flatMap((key, i) => (key.kind !== "oracle_id" && out.keys[i] === null ? [i] : []));
+		if (missed.length > 0 && !everywhere) {
+			const asks = Array.from({ length: this.n }, (_, p) => p)
+				.filter((p) => !askedIn1(p))
+				.map((p) => ({ p, keyAt: missed, whole: false }));
+			fillKeys(await ask(asks));
+		}
+		return out;
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {

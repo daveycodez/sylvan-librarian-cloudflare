@@ -6,8 +6,11 @@
 
 import { afterEach, beforeEach } from "bun:test";
 import { encodeUtf8 } from "../../src/engine/bytes";
+import { collectionBatchFromSeparateCalls } from "../../src/engine/collection-batch";
 import { serializeCards } from "../../src/engine/columnar";
 import type {
+	CollectionBatch,
+	CollectionBatchAnswer,
 	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
@@ -414,6 +417,18 @@ export class FakeEngine implements Engine {
 			const row = this.addressableRows().find((r) => treeMatchesRow(tree, r));
 			return row === undefined ? null : toScryfallCard(row, baseUrl);
 		});
+	}
+
+	/**
+	 * The one-round batch, answered through the per-kind methods above — the same composition a
+	 * previous-build object gets — so the route tests' overrides and batch captures still apply.
+	 */
+	async scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope?: CollectionScope | null,
+	): Promise<CollectionBatchAnswer> {
+		return collectionBatchFromSeparateCalls(this, batch, baseUrl, scope ?? null);
 	}
 }
 

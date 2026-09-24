@@ -212,6 +212,7 @@ export interface EngineHandle {
 	exact_name_rank(folded: string, setCode: string): string;
 	collection_cards_by_names(identifiersJson: string, fieldsJson: string, prefer: string, scopeJson: string): string;
 	collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
+	collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 	card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
 	linearMemoryBytes(): number;
@@ -272,6 +273,7 @@ export function engineFor(label: string): EngineHandle {
 		exact_name_rank: wrap("exact_name_rank"),
 		collection_cards_by_names: wrap("collection_cards_by_names"),
 		collection_name_ranks: wrap("collection_name_ranks"),
+		collection_batch: wrap("collection_batch"),
 		card_by_illustration_id: wrap("card_by_illustration_id"),
 		cards_containing_all_words: wrap("cards_containing_all_words"),
 		linearMemoryBytes: () => instances.get(label)?.memory?.buffer.byteLength ?? 0,

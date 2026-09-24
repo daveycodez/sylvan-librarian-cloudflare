@@ -83,6 +83,39 @@ export function cards_containing_all_words(words_json: string, set_code: string,
 export function catalog(): string;
 
 /**
+ * A whole `POST /cards/collection` batch against THIS store in one call (LOCAL PATCH, Cloudflare
+ * port) — every identifier kind at once, answered as finished card objects.
+ *
+ * The partitioned router used to spend up to 2N + N + N calls on one batch: `{name}` ranked on
+ * every partition and then materialized from the winners, `{set, collector_number}` fanned out on
+ * its own, and the id kinds on theirs. This answers all of them in ONE round: each name comes
+ * back with its rank AND its local winner's card, so the router keeps the global winner's card
+ * without asking again. That is exact, not a guess: the winning partition's local pick is the
+ * same card its second-round materialize would have returned, because `collection_name_ranks`
+ * and `collection_cards_by_names` rank by the same `name_best`.
+ *
+ * `request_json` is `{"keys": [...], "trees": [...], "tree_opts": {...}, "names": [[folded,
+ * set], ...], "prefer": "...", "scope": "..."}`:
+ *
+ * - `keys`: `{"kind": "scryfall_id" | "oracle_id" | "illustration_id", "id": "<uuid>"}` or
+ *   `{"kind": "external", "namespace": "mtgo" | "multiverse" | ..., "id": <n>}`. An oracle id
+ *   answers its representative printing, as `/cards/collection` always has.
+ * - `trees`: filter trees as JSON strings, each answered by its first row under `tree_opts`.
+ * - `names`, `prefer`, `scope`: exactly `collection_cards_by_names`'s arguments.
+ *
+ * The answer is little-endian bytes:
+ *
+ * ```text
+ * header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+ * then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
+ * ```
+ *
+ * Cards are written by `write_scryfall_card`, the builder `/cards/search` uses, so the router
+ * splices them into the response without parsing them.
+ */
+export function collection_batch(request_json: string, fields_json: string, base_url: string): Uint8Array;
+
+/**
  * The best printing a COLLECTION IDENTIFIER's `name` names, or `null` — `POST /cards/collection`.
  *
  * NOT `exact_card_by_name` with a different caller: a collection identifier reads a card's FACE

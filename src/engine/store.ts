@@ -40,6 +40,7 @@ import {
 } from "../routes/scryfall-compat/objects";
 import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
 import { encodeUtf8, NEWLINE } from "./bytes";
+import { collectionBatchRequest, decodeCollectionPacket } from "./collection-batch";
 import { serializeCards } from "./columnar";
 import type { RowShaping } from "./gather";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
@@ -71,6 +72,8 @@ import {
 	readManifest,
 } from "./store-kv";
 import type {
+	CollectionBatch,
+	CollectionBatchAnswer,
 	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
@@ -672,6 +675,34 @@ class WasmEngine implements Engine {
 			return row === undefined ? null : toScryfallCard(row, baseUrl);
 		});
 	}
+
+	/** `collection_batch`'s packet as written — what the Durable Object hands over, one buffer. */
+	scryfallCollectionPacket(batch: CollectionBatch, baseUrl: string, scope?: CollectionScope | null): Uint8Array {
+		return this.w.collection_batch(collectionBatchRequest(batch, scope), JSON.stringify(CARD_OBJECT_FIELDS), baseUrl);
+	}
+
+	async scryfallCollectionBatch(
+		batch: CollectionBatch,
+		baseUrl: string,
+		scope?: CollectionScope | null,
+	): Promise<CollectionBatchAnswer> {
+		return decodeCollectionPacket(this.scryfallCollectionPacket(batch, baseUrl, scope), batch);
+	}
+}
+
+/**
+ * A loaded store's collection packet, for the SearchEngine RPC: the packet crosses as ONE buffer
+ * rather than as the decoded answer's per-card views, which the RPC would have to serialize as
+ * separate values. Only a local store has a packet; anything else is a wiring bug.
+ */
+export function collectionPacketOf(
+	engine: Engine,
+	batch: CollectionBatch,
+	baseUrl: string,
+	scope: CollectionScope | null,
+): Uint8Array {
+	if (!(engine instanceof WasmEngine)) throw new Error("collection packets come from a loaded store only");
+	return engine.scryfallCollectionPacket(batch, baseUrl, scope);
 }
 
 export { readManifest } from "./store-kv";
