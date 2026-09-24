@@ -224,6 +224,11 @@ interface RunRecord {
  * live slice: the watchdog ends any slice at 5-10 minutes and every exit banks the meters row.
  */
 const STALE_IDLE_MS = 30 * 60 * 1000;
+/**
+ * A cron start this soon after a finished run's START is a duplicate delivery (startImport). Half
+ * a day: far past any duplicate, and far short of the next nightly 24 hours on.
+ */
+const DUPLICATE_CRON_WINDOW_MS = 12 * 3_600_000;
 /** Transient-failure retries per run before the run is marked failed. */
 const MAX_RETRIES = 8;
 /**
@@ -840,6 +845,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private async startImport(reason: string, self: { name: string; epoch: number }): Promise<Response> {
 		this.ensureSchema();
 		const run = await this.getRun();
+		// A second cron start after today's run finished is a duplicate delivery, not a new day:
+		// 2026-09-24 on the free account, a start with no trace arrived ~4 minutes after the 11:17
+		// run published, and began a whole second import that wedged and cost three failovers.
+		if (reason === "cron" && run.state === "done" && run.startedAt) {
+			const sinceStart = Date.now() - Date.parse(run.startedAt);
+			if (Number.isFinite(sinceStart) && sinceStart < DUPLICATE_CRON_WINDOW_MS) {
+				console.warn(
+					`Import start ignored: a cron start ${Math.round(sinceStart / 60_000)}min after the run that began ` +
+						`${run.startedAt} and is done — a duplicate cron delivery, not a new day`,
+				);
+				return Response.json({ ok: true, skipped: "duplicate-cron", run }, { status: 200 });
+			}
+		}
+		console.log(`Import start requested: reason=${reason}, coordinator ${self.name} (epoch ${self.epoch})`);
 		if (run.state === "starting" || run.state === "running") {
 			const now = Date.now();
 			const meters = parseMeters(this.metaGet("run_meters"));

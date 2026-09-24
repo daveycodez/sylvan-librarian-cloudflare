@@ -16,6 +16,7 @@ import {
 	readPointer,
 	runImportWatchdog,
 	STALL_MS,
+	SUSPECT_CONFIRM_MS,
 	startNightlyImport,
 	type WatchdogEnv,
 } from "../../src/import-watchdog";
@@ -72,8 +73,16 @@ describe("decideWatchdog", () => {
 		expect(decideWatchdog(s, NOW).kind).toBe("kick");
 	});
 
-	test("an object that does not answer at all is a failover — the 2026-09-23 wedge", () => {
-		expect(decideWatchdog("unresponsive", NOW).kind).toBe("failover");
+	test("an object that does not answer is SUSPECT on the first miss, not replaced", () => {
+		expect(decideWatchdog("unresponsive", NOW).kind).toBe("suspect");
+	});
+
+	test("a second miss at the next tick is a failover — the 2026-09-23 wedge", () => {
+		expect(decideWatchdog("unresponsive", NOW, NOW - 10 * MIN).kind).toBe("failover");
+	});
+
+	test("a second miss only minutes after the first (a late or duplicate tick) does not confirm", () => {
+		expect(decideWatchdog("unresponsive", NOW, NOW - (SUSPECT_CONFIRM_MS - 1)).kind).toBe("none");
 	});
 
 	test("a status request that THROWS is not a wedge — asked again next tick", () => {
@@ -149,9 +158,42 @@ const answers =
 	async (path) =>
 		path === "/status" ? Response.json(status(s)) : Response.json({ ok: true });
 
+/** The legacy coordinator, already marked suspect by an earlier tick. */
+async function suspectLegacy(kv: MapKV, since = NOW - 10 * MIN): Promise<void> {
+	await kv.put(
+		COORDINATOR_POINTER_KEY,
+		JSON.stringify({ name: "singleton", epoch: 0, failovers: [], suspectSince: since }),
+	);
+	kv.puts.length = 0;
+}
+
 describe("runImportWatchdog", () => {
-	test("a wedged coordinator is replaced: the pointer is written BEFORE the new run starts", async () => {
+	test("the first missed check only marks the coordinator suspect — no new run", async () => {
 		const kv = new MapKV();
+		const log: string[] = [];
+		const ns = namespace({ singleton: hang }, log, kv);
+		const action = await runImportWatchdog(envOf(kv, ns), NOW, 20);
+		expect(action.kind).toBe("suspect");
+		const pointer = await readPointer(kv);
+		expect(pointer).toEqual({ name: "singleton", epoch: 0, failovers: [], suspectSince: NOW });
+		expect(log).toEqual(["singleton /status"]);
+	});
+
+	test("a suspect coordinator that answers again is cleared, and nothing is replaced", async () => {
+		const kv = new MapKV();
+		await suspectLegacy(kv);
+		const log: string[] = [];
+		const ns = namespace({ singleton: answers({}) }, log, kv);
+		expect((await runImportWatchdog(envOf(kv, ns), NOW, 20)).kind).toBe("none");
+		const pointer = await readPointer(kv);
+		expect(pointer.suspectSince).toBeUndefined();
+		expect(pointer.name).toBe("singleton");
+		expect(log).toEqual(["singleton /status [pointer=singleton]"]);
+	});
+
+	test("a wedged coordinator is replaced on its second miss: the pointer is written BEFORE the new run starts", async () => {
+		const kv = new MapKV();
+		await suspectLegacy(kv);
 		const log: string[] = [];
 		const ns = namespace({ singleton: hang, "*": answers({ state: "idle" }) }, log, kv);
 		const action = await runImportWatchdog(envOf(kv, ns), NOW, 20);
@@ -161,13 +203,15 @@ describe("runImportWatchdog", () => {
 		expect(pointer.epoch).toBe(NOW);
 		expect(pointer.previous).toBe("singleton");
 		expect(pointer.failovers).toEqual([NOW]);
-		expect(log[0]).toBe("singleton /status");
+		expect(pointer.suspectSince).toBeUndefined();
+		expect(log[0]).toBe("singleton /status [pointer=singleton]");
 		// The start carries the new epoch, and the pointer already names the new coordinator.
 		expect(log[1]).toBe(`${pointer.name} /start-import [pointer=${pointer.name}]`);
 	});
 
 	test("the start request names the coordinator and its epoch, so the fence can compare them", async () => {
 		const kv = new MapKV();
+		await suspectLegacy(kv);
 		const urls: URL[] = [];
 		const ns = namespace(
 			{
@@ -196,7 +240,7 @@ describe("runImportWatchdog", () => {
 		expect(kv.puts).toEqual([]);
 	});
 
-	test("a kick that never answers is the wedge itself: replaced in the same tick", async () => {
+	test("a kick that never answers counts as a miss: suspect first, replaced at the next tick", async () => {
 		const kv = new MapKV();
 		const ns = namespace(
 			{
@@ -209,7 +253,12 @@ describe("runImportWatchdog", () => {
 			[],
 			kv,
 		);
-		expect((await runImportWatchdog(envOf(kv, ns), NOW, 20)).kind).toBe("failover");
+		const first = await runImportWatchdog(envOf(kv, ns), NOW, 20);
+		expect(first.kind).toBe("suspect");
+		expect(first.why).toContain("the kick did not answer");
+		expect((await readPointer(kv)).suspectSince).toBe(NOW);
+		const second = await runImportWatchdog(envOf(kv, ns), NOW + 10 * MIN, 20);
+		expect(second.kind).toBe("failover");
 		expect((await readPointer(kv)).previous).toBe("singleton");
 	});
 
@@ -234,7 +283,10 @@ describe("runImportWatchdog", () => {
 	test(`${MAX_FAILOVERS_PER_DAY} failovers in 24 hours is the cap — the fourth wedge is reported, not restarted`, async () => {
 		const kv = new MapKV();
 		const failovers = Array.from({ length: MAX_FAILOVERS_PER_DAY }, (_, i) => NOW - (i + 1) * 3_600_000);
-		await kv.put(COORDINATOR_POINTER_KEY, JSON.stringify({ name: "import-c", epoch: NOW - 3_600_000, failovers }));
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({ name: "import-c", epoch: NOW - 3_600_000, failovers, suspectSince: NOW - 10 * MIN }),
+		);
 		kv.puts.length = 0;
 		const log: string[] = [];
 		const ns = namespace({ "import-c": hang }, log, kv);

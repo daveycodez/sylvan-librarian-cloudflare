@@ -19,8 +19,13 @@
  *   - no run in flight, or the run made progress in the last STALL_MS     → nothing
  *   - a stalled run whose object still answers                              → kick: re-arm the
  *     alarm, so the chain resumes from its persisted phase (a lost alarm costs nothing but the gap)
- *   - a kick that did not bring the run back within KICK_GRACE_MS, or an
- *     object that does not answer at all within STATUS_TIMEOUT_MS            → FAILOVER
+ *   - a kick that did not bring the run back within KICK_GRACE_MS          → FAILOVER
+ *   - an object that does not answer within STATUS_TIMEOUT_MS               → SUSPECT, marked in
+ *     the pointer; still not answering at the next tick                     → FAILOVER
+ *
+ * Two missed checks, not one: on 2026-09-24 the free account failed over three times in 40
+ * minutes on single missed checks, each replacement re-running a whole import, for wedges that
+ * cleared by themselves in ~20 minutes (the 12:00 replacement woke at 12:38 and retired).
  *
  * Failover designates a brand-new coordinator object — its own fresh SQLite, none of the wedged
  * one's staging — in the KV pointer, and starts a fresh run on it. That run redoes the import from
@@ -72,6 +77,12 @@ export const STATUS_TIMEOUT_MS = 45_000;
  * into a restart every 20 minutes all day.
  */
 export const MAX_FAILOVERS_PER_DAY = 3;
+/**
+ * How long a coordinator must have been suspect before a second missed check replaces it. Under
+ * the 10-minute tick, so the NEXT tick confirms; a second tick minutes after the first (a late or
+ * duplicate delivery) does not.
+ */
+export const SUSPECT_CONFIRM_MS = 5 * 60_000;
 /** How long after a failover an idle designated coordinator counts as a lost start, not a finished day. */
 export const LOST_START_WINDOW_MS = 6 * 3_600_000;
 
@@ -83,6 +94,8 @@ export interface CoordinatorPointer {
 	failovers: number[];
 	/** The coordinator this one replaced, for the log reader. */
 	previous?: string;
+	/** When the watchdog first found this coordinator not answering; cleared when it answers again. */
+	suspectSince?: number;
 }
 
 export const LEGACY_POINTER: CoordinatorPointer = { name: LEGACY_COORDINATOR_NAME, epoch: 0, failovers: [] };
@@ -102,6 +115,7 @@ export interface CoordinatorStatus {
 export type WatchdogAction =
 	| { kind: "none"; why: string }
 	| { kind: "kick"; why: string }
+	| { kind: "suspect"; why: string }
 	| { kind: "failover"; why: string };
 
 /** The two KV calls the watchdog and the fence make — narrower than KVNamespace, so fakes fit. */
@@ -119,6 +133,7 @@ export async function readPointer(kv: WatchdogKV): Promise<CoordinatorPointer> {
 		epoch: raw.epoch,
 		failovers: Array.isArray(raw.failovers) ? raw.failovers.filter((t) => typeof t === "number") : [],
 		...(typeof raw.previous === "string" ? { previous: raw.previous } : {}),
+		...(typeof raw.suspectSince === "number" ? { suspectSince: raw.suspectSince } : {}),
 	};
 }
 
@@ -126,9 +141,27 @@ export async function readPointer(kv: WatchdogKV): Promise<CoordinatorPointer> {
  * The decision, given what the coordinator said (or that it said nothing). Pure, so every branch
  * is pinned by a test rather than by a night in production.
  */
-export function decideWatchdog(status: CoordinatorStatus | "unresponsive" | "error", now: number): WatchdogAction {
+export function decideWatchdog(
+	status: CoordinatorStatus | "unresponsive" | "error",
+	now: number,
+	/** When an earlier tick first found this coordinator not answering (the pointer's suspectSince). */
+	suspectSince: number | null = null,
+): WatchdogAction {
 	if (status === "unresponsive") {
-		return { kind: "failover", why: `the coordinator did not answer a status request within ${STATUS_TIMEOUT_MS}ms` };
+		if (suspectSince === null) {
+			return {
+				kind: "suspect",
+				why: `the coordinator did not answer within ${STATUS_TIMEOUT_MS}ms; replaced only if it still does not answer next tick`,
+			};
+		}
+		const suspectFor = now - suspectSince;
+		if (suspectFor >= SUSPECT_CONFIRM_MS) {
+			return {
+				kind: "failover",
+				why: `the coordinator has not answered for ${Math.round(suspectFor / 60_000)}min, two checks in a row`,
+			};
+		}
+		return { kind: "none", why: `suspect for ${Math.round(suspectFor / 1000)}s; waiting for the next tick to confirm` };
 	}
 	if (status === "error") {
 		// A thrown request is a reset or a network blip, not a wedge (a wedged object never answers
@@ -170,7 +203,7 @@ export function nextPointer(current: CoordinatorPointer, now: number): Coordinat
 }
 
 export interface WatchdogEnv {
-	/** KV, read for the pointer on every tick and written only by a failover. */
+	/** KV, read for the pointer on every tick; written on a failover and when a suspect mark is set or cleared. */
 	STORE_KV: WatchdogKV;
 	IMPORT_COORDINATOR: DurableObjectNamespace<ImportCoordinator>;
 }
@@ -230,7 +263,38 @@ export async function runImportWatchdog(
 		status = "error";
 	}
 
-	let action = decideWatchdog(status, now);
+	let action = decideWatchdog(status, now, pointer.suspectSince ?? null);
+
+	if (action.kind === "kick") {
+		try {
+			const answer = await within(coordinator.fetch(`https://coordinator/kick?at=${now}`), timeoutMs);
+			if (answer === "timeout") {
+				// It answered status but not a kick: the kick's write is what never confirms, which is
+				// the wedge itself — so it counts as not answering, with the same two-check rule.
+				status = "unresponsive";
+				const unanswered = decideWatchdog(status, now, pointer.suspectSince ?? null);
+				action = { ...unanswered, why: `${action.why}, but the kick did not answer: ${unanswered.why}` };
+			} else {
+				console.warn(`Import watchdog: kicked ${pointer.name} — ${action.why}`);
+			}
+		} catch (err) {
+			console.warn(`Import watchdog: kick of ${pointer.name} failed (${err}); asking again next tick`);
+			return { kind: "none", why: `kick failed: ${err}` };
+		}
+	}
+
+	// The suspect mark: set on the first missed check, cleared the moment the coordinator answers.
+	if (typeof status === "object" && pointer.suspectSince !== undefined) {
+		const { suspectSince: _cleared, ...rest } = pointer;
+		await env.STORE_KV.put(COORDINATOR_POINTER_KEY, JSON.stringify(rest));
+		console.warn(`Import watchdog: ${pointer.name} answered again; no longer suspect`);
+	}
+	if (action.kind === "suspect") {
+		await env.STORE_KV.put(COORDINATOR_POINTER_KEY, JSON.stringify({ ...pointer, suspectSince: now }));
+		console.warn(`Import watchdog: ${pointer.name} is SUSPECT — ${action.why}`);
+		return action;
+	}
+
 	if (action.kind === "failover") {
 		const recent = pointer.failovers.filter((t) => t > now - 24 * 3_600_000);
 		if (recent.length >= MAX_FAILOVERS_PER_DAY) {
@@ -239,22 +303,6 @@ export async function runImportWatchdog(
 					`last 24h is the cap (MAX_FAILOVERS_PER_DAY) — something is wedging every coordinator; not restarting again`,
 			);
 			return { kind: "none", why: `failover cap reached: ${action.why}` };
-		}
-	}
-
-	if (action.kind === "kick") {
-		try {
-			const answer = await within(coordinator.fetch(`https://coordinator/kick?at=${now}`), timeoutMs);
-			if (answer === "timeout") {
-				// It answered status but not a kick: the kick's write is what never confirms, which is
-				// the wedge itself. Replace it now rather than a tick from now.
-				action = { kind: "failover", why: `${action.why}; the kick itself did not answer within ${timeoutMs}ms` };
-			} else {
-				console.warn(`Import watchdog: kicked ${pointer.name} — ${action.why}`);
-			}
-		} catch (err) {
-			console.warn(`Import watchdog: kick of ${pointer.name} failed (${err}); asking again next tick`);
-			return { kind: "none", why: `kick failed: ${err}` };
 		}
 	}
 

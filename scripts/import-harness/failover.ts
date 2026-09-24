@@ -169,8 +169,36 @@ function check(ok: boolean, what: string): void {
 	check((await a.storage.getAlarm()) !== null, "the kick re-armed the alarm");
 	await a.drive();
 	check(a.runState() === "done", `the same run finished (state ${a.runState()})`);
+	const published = snapshot(kv);
+
+	// 2026-09-24: a second cron start minutes after the run published began a whole second import.
+	const dup = await watchdog.startNightlyImport(env);
+	const dupBody = (await dup.json()) as { skipped?: string };
+	check(
+		dup.status === 200 && dupBody.skipped === "duplicate-cron" && a.runState() === "done",
+		"a duplicate cron start after the run finished is ignored",
+	);
+	check((await a.storage.getAlarm()) === null, "…and arms nothing");
+	const untouched = snapshot(kv);
+	check(
+		[...published].every(([k, v]) => untouched.get(k) === v) && untouched.size === published.size,
+		"…and KV is untouched",
+	);
 	check((await kv.get(watchdog.COORDINATOR_POINTER_KEY)) === null, "no failover: the pointer was never written");
 	check(instances.size === 1, "no second coordinator was ever created");
+
+	// The guard must not swallow the NEXT nightly: the same finished run, started 13 hours ago.
+	const run = JSON.parse(
+		(a.storage.db.query("SELECT value FROM __harness_kv WHERE key = 'run'").all() as { value: string }[])[0]?.value ??
+			"{}",
+	) as { startedAt?: string };
+	run.startedAt = new Date(Date.now() - 13 * 3_600_000).toISOString();
+	a.storage.db.run("UPDATE __harness_kv SET value = ? WHERE key = 'run'", [JSON.stringify(run)]);
+	const nextDay = await watchdog.startNightlyImport(env);
+	check(
+		nextDay.status === 202 && a.runState() === "running" && (await a.storage.getAlarm()) !== null,
+		"a cron start 13 hours after the last run began starts a new run",
+	);
 }
 
 // ── 2. wedge → failover → the wedged one wakes and retires ─────────────────
@@ -190,15 +218,21 @@ function check(ok: boolean, what: string): void {
 	old.wedged = true;
 	check(wedgedIn === "bucket", `wedged in phase ${wedgedIn} with ${oldStaging} staging rows and an alarm still armed`);
 
-	const tick = await watchdog.runImportWatchdog(env, Date.now(), 200);
-	check(tick.kind === "failover", `the watchdog fails over (${tick.why.slice(0, 70)}…)`);
+	const t0 = Date.now();
+	const first = await watchdog.runImportWatchdog(env, t0, 200);
+	check(
+		first.kind === "suspect" && instances.size === 1,
+		`the first missed check only marks it suspect (${first.why.slice(0, 60)}…)`,
+	);
+	const tick = await watchdog.runImportWatchdog(env, t0 + 10 * 60_000, 200);
+	check(tick.kind === "failover", `the second missed check, a tick later, fails over (${tick.why.slice(0, 60)}…)`);
 	const pointer = await watchdog.readPointer(kv);
 	check(pointer.previous === watchdog.LEGACY_COORDINATOR_NAME && pointer.epoch > 0, `pointer → ${pointer.name}`);
 	const fresh = instances.get(pointer.name);
 	check(fresh !== undefined && fresh.runState() === "running", "the replacement run started");
 	if (!fresh) throw new Error("no replacement instance");
 
-	// A second tick while the replacement runs must not fail over again.
+	// A tick while the replacement runs must not fail over again.
 	const calm = await watchdog.runImportWatchdog(env, Date.now(), 200);
 	check(calm.kind === "none", `the next tick leaves the healthy replacement alone (${calm.why.slice(0, 60)})`);
 
@@ -219,9 +253,13 @@ function check(ok: boolean, what: string): void {
 		`KV is exactly what the replacement published (${changed.length} key(s) differ${changed.length ? `: ${changed.slice(0, 3).join(", ")}` : ""})`,
 	);
 
-	// And the next nightly goes to the replacement, not the retired object.
+	// A cron start now goes to the replacement — and, its run having just finished, is a duplicate.
 	const nightly = await watchdog.startNightlyImport(env);
-	check(nightly.status === 202 && fresh.runState() === "running", "the next nightly starts on the replacement");
+	const body = (await nightly.json()) as { skipped?: string };
+	check(
+		body.skipped === "duplicate-cron" && fresh.runState() === "done" && (await fresh.storage.getAlarm()) === null,
+		"a cron start reaches the replacement, which ignores it as a duplicate of the run it just finished",
+	);
 	check(old.runState() === "superseded", "the retired coordinator is left alone");
 }
 
