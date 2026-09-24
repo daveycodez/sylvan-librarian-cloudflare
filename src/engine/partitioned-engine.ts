@@ -472,7 +472,14 @@ export class PartitionedEngine implements Engine {
 		return this.manifest.partition_count as number;
 	}
 
+	/**
+	 * Partition RPCs this request has issued so far — every `at()` is exactly one call, before
+	 * RemoteEngine's own transient retry. Read by the collection route's per-request log line.
+	 */
+	partitionCalls = 0;
+
 	private at(partition: number): RemoteEngine {
+		this.partitionCalls++;
 		let e = this.engines.get(partition);
 		if (!e) {
 			e = this.engineFor(partition);

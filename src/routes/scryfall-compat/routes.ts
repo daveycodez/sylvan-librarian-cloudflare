@@ -1100,7 +1100,8 @@ export async function cardsCollectionHandler(
 	const engine = await ctx.getEngine();
 	const baseUrl = apiBaseUrl(ctx);
 	try {
-		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl, scope);
+		const kinds: IdentifierKindTally = { id: 0, key: 0, pair: 0, name: 0, nameSet: 0 };
+		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl, scope, kinds);
 		const found: Record<string, unknown>[] = [];
 		const notFound: unknown[] = [];
 		for (let at = 0; at < identifiers.length; at++) {
@@ -1114,6 +1115,14 @@ export async function cardsCollectionHandler(
 			if (card) found.push(card);
 			else notFound.push(identifiers[at]);
 		}
+		// ONE LINE PER BATCH, the only per-request record of this route now that invocation logs
+		// are off: how big mtg-seeker's batches are, which identifier kinds they carry, and how many
+		// partition RPCs each one cost. `calls` is PartitionedEngine's count before RemoteEngine's
+		// transient retry. Grep "collection batch:".
+		const calls = (engine as { partitionCalls?: number }).partitionCalls ?? -1;
+		console.log(
+			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} found=${found.length}`,
+		);
 		return scryfallJson(collectionList(found, notFound, warnings), pretty, COLLECTION_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
@@ -1212,11 +1221,26 @@ async function collectionScope(
  * partition RPC is one of those, and the four key-shaped kinds used to be resolved one RPC per
  * identifier — 75 x N for a batch of misses, close to 1% of a day's allowance in one POST.
  */
+/** How many identifiers of a batch took each entry point — the collection log line's breakdown. */
+interface IdentifierKindTally {
+	/** `{id}` — Scryfall ids. */
+	id: number;
+	/** `{oracle_id}`, `{illustration_id}`, `{mtgo_id}`, `{multiverse_id}`. */
+	key: number;
+	/** `{set, collector_number}`. */
+	pair: number;
+	/** `{name}`. */
+	name: number;
+	/** `{name, set}`. */
+	nameSet: number;
+}
+
 async function resolveIdentifiers(
 	engine: Engine,
 	identifiers: unknown[],
 	baseUrl: string,
 	scope: CollectionScope | null,
+	kinds: IdentifierKindTally,
 ): Promise<(Record<string, unknown> | null)[]> {
 	const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
 	const byScryfallId: { at: number; id: string }[] = [];
@@ -1233,16 +1257,21 @@ async function resolveIdentifiers(
 
 		if (typeof id.id === "string" && isUuid(id.id)) {
 			byScryfallId.push({ at, id: id.id });
+			kinds.id++;
 		} else if (typeof id.oracle_id === "string" && isUuid(id.oracle_id)) {
 			byKey.push({ at, identifier: { kind: "oracle_id", id: id.oracle_id } });
+			kinds.key++;
 		} else if (typeof id.illustration_id === "string" && isUuid(id.illustration_id)) {
 			byKey.push({ at, identifier: { kind: "illustration_id", id: id.illustration_id } });
+			kinds.key++;
 		} else if (id.mtgo_id !== undefined) {
 			const n = asInt(String(id.mtgo_id));
 			if (n !== undefined) byKey.push({ at, identifier: { kind: "external", namespace: "mtgo", id: n } });
+			kinds.key++;
 		} else if (id.multiverse_id !== undefined) {
 			const n = asInt(String(id.multiverse_id));
 			if (n !== undefined) byKey.push({ at, identifier: { kind: "external", namespace: "multiverse", id: n } });
+			kinds.key++;
 		} else if (id.set !== undefined && id.collector_number !== undefined) {
 			// English first, then any printing at the address — the same pair `/cards/:code/:number`
 			// resolves with, in the same order, so a foreign-only printing is found and an English
@@ -1252,6 +1281,7 @@ async function resolveIdentifiers(
 				{ at, tree: setAndCollectorNumber(set, number, "en") },
 				{ at, tree: setAndCollectorNumber(set, number, null) },
 			);
+			kinds.pair++;
 		} else if (id.name !== undefined) {
 			// FOLDED AND TRIMMED, the way `/cards/named?exact=` hands its needle over; the engine
 			// collates from there. Scryfall trims too — `{"name":"  Lightning Bolt  "}` resolves.
@@ -1262,6 +1292,8 @@ async function resolveIdentifiers(
 					setCode: id.set === undefined ? "" : String(id.set),
 				},
 			});
+			if (id.set === undefined) kinds.name++;
+			else kinds.nameSet++;
 		}
 	}
 
