@@ -10,7 +10,7 @@ Status: **SHIPPED.** Written 2026-08-11 as a design for "when the memory ceiling
 |---|---|---|
 | partition count | the published manifest's `partition_count` | 10 |
 | partition hash | the manifest's `partition_hash` | `fnv1a64/oracle_id/v1` |
-| the sizing rule | `TARGET_PARTITION_BYTES` in `src/import-publish.ts` and its twin in `engine/builder/src/lib.rs` | 43 MB/partition, clamped to [2, 32] |
+| the sizing rule | `TARGET_PARTITION_BYTES` in `src/import-publish.ts` and its twin in `engine/builder/src/lib.rs` | 43 MB/partition, clamped to [2, 48] |
 | store generation / format | `STORE_CONTENT_GENERATION` (`src/engine/store-kv.ts`), `ARCHIVE_FORMAT_VERSION` (vendored `card_engine/src/lib.rs`) | 32 / 2026081616 |
 | corpus size | the manifest's `card_count` / `printing_count` | 38,626 cards, 116,712 canonical printings (+ an annex of foreign rows) |
 
@@ -218,7 +218,7 @@ The mitigation ladder, cheapest first: accept the window (it is minutes, nightly
 >
 > **What replaced it.** N is derived, published, and *pinned per request*:
 >
-> - The builder computes N from the corpus it just measured — `clamp(ceil(projected_store_bytes / TARGET_PARTITION_BYTES), 2, 32)` — and writes it to the manifest as `partition_count`, alongside `partition_hash`. `partitionCountFor` in `src/import-publish.ts` and `partition_count_for` in `engine/builder/src/lib.rs` are line-for-line twins, and their doc comments are explicitly kept in step.
+> - The builder computes N from the corpus it just measured — `clamp(ceil(projected_store_bytes / TARGET_PARTITION_BYTES), 2, 48)` — and writes it to the manifest as `partition_count`, alongside `partition_hash`. `partitionCountFor` in `src/import-publish.ts` and `partition_count_for` in `engine/builder/src/lib.rs` are line-for-line twins, and their doc comments are explicitly kept in step.
 > - N is computed **once**, at loop start, and persisted as `pp_publish.partitions.length`. A mid-loop restart reads the persisted state and *cannot* re-derive a different N — which matters because N is baked into every already-published chunk key and every draft's partition assignment. There is deliberately no second copy of the number to drift.
 > - The router never holds N. It reads `partition_count` and the modulus from **the manifest it is pinned to**, so a fan-out is internally consistent by construction. `src/engine/partitioned-engine.ts` carries a stale-modulus retry: a mismatch re-reads the one manifest key rather than answering from a mixed view.
 > - A manifest with no `partition_count` is **refused**, not fallen back on (`src/engine/store-kv.ts`) — an unpartitioned manifest is one this deployment cannot read, and saying so loudly is better than answering with 1/N of the corpus.

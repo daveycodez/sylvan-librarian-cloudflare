@@ -68,7 +68,19 @@ describe("partitionCountFor (Decision 3b)", () => {
 	});
 
 	test("clamps to the ceiling — a runaway projection must not amplify itself", () => {
-		expect(partitionCountFor(10_000_000_000)).toBe(MAX_PARTITION_COUNT);
+		expect(partitionCountFor(100_000_000_000)).toBe(MAX_PARTITION_COUNT);
+	});
+
+	test("the ceiling never binds before 4.5x today's corpus, and today's N does not move", () => {
+		// Past the ceiling N stops growing and every partition grows instead, and a partition's
+		// build is the nightly's wasm memory peak: at 4x the corpus, 32 partitions of ~50MB trapped
+		// under the 124MiB cap (see MAX_PARTITION_COUNT). The real corpus staged ~1.77GB of
+		// drafts at N=10; the 10-year plan is 2x and the stress case 3x.
+		const today = 1_770_000_000;
+		expect(partitionCountFor(today)).toBe(10);
+		expect(partitionCountFor(today * 2)).toBe(20);
+		expect(partitionCountFor(today * 3)).toBe(30);
+		expect(partitionCountFor(today * 4.5)).toBeLessThan(MAX_PARTITION_COUNT);
 	});
 
 	test("garbage input is an error, not a partition count", () => {

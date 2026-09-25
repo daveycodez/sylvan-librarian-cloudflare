@@ -51,12 +51,42 @@ export const TARGET_PARTITION_BYTES = 43_000_000;
 export const MIN_PARTITION_COUNT = 2;
 
 /**
- * The ceiling, a safety rail rather than a plan: 32 partitions is ~1.5GB of
- * store, an order of magnitude past the current corpus. Hitting it means the
- * projection input is garbage (and N should not amplify the garbage), or the
- * corpus grew past every budget in this deployment and needs a human anyway.
+ * The ceiling, a safety rail rather than a plan: 48 partitions of the 43MB target is ~2.06GB of
+ * projected store, 4.8x today's corpus (N=10 on ~427MB projected). Hitting it means the projection
+ * input is garbage (and N should not amplify the garbage), or the corpus grew past every budget in
+ * this deployment and needs a human anyway.
+ *
+ * WHY A CEILING HERE IS A MEMORY QUESTION. Past the ceiling N stops growing and every partition
+ * grows instead — and a partition's build is the nightly's memory peak. Measured with the import
+ * harness (2026-09-25; wasm linear memory at the build alarm, which the 124MiB --max-memory link
+ * cap bounds and ~10MB of JS sits beside) on the synthetic corpus cut at a 53MB harness target,
+ * which reproduces the real corpus's N and ~41MB partitions (its drafts are ~25% heavier per
+ * archive byte): N=10/20/30 build at 98.9 / 103.2 / 106.8MB at 1x / 2x / 3x. At 4x, 32 partitions
+ * of ~50MB built at 106-122MB and the 18th TRAPPED (`build_store_stream` unreachable), so the run
+ * failed; 40 partitions of ~41MB built at 101-103MB and published. The ceiling of 32 bound at
+ * ~3.2x the real corpus (1.77GB staged x 3.24 x 0.24 / 43MB = 32). At 48 partitions stay at the
+ * target through 4.8x.
+ *
+ * WHY NOT HIGHER. Everything below grows with N and none of it with the corpus bytes a partition
+ * holds, so the ceiling is the lowest one that keeps partitions at the target past the 3x stress
+ * case with margin:
+ *   - every /search and every unrouted /cards/* route asks all N partitions (one billed Durable
+ *     Object request each), and every live replica group holds N engine objects that wake apart;
+ *   - each publish is N KV chunk puts plus one `engine:live` announcement per object per store —
+ *     ~30 + (1 + G) x N writes for G live replica groups against the free plan's 1,000 a day
+ *     (free: G ~4, so ~280 a publish at 48; ~360 at 64, over the day's allowance at three
+ *     publishes);
+ *   - stepNotify prepares and commits every live object in ONE alarm: ~2 x G x N calls against the
+ *     free plan's 1,000 subrequests to Cloudflare services per invocation;
+ *   - the routing filter's name keys store `N + s` for a name served in partition s, one byte a
+ *     cell with 255 reserved, so N <= 127 (tests/engine/routing-filter.test.ts pins it at this
+ *     ceiling);
+ *   - the bucket phase holds one PackStream per partition, ~0.4MB each (6MB more at 48 than 32).
+ *
+ * The Rust builder's `MAX_PARTITIONS` (engine/builder/src/lib.rs) is the same number for the
+ * deploy path's `--partitions auto` — keep the two in step.
  */
-export const MAX_PARTITION_COUNT = 32;
+export const MAX_PARTITION_COUNT = 48;
 
 /**
  * PARTITIONED archive bytes produced per byte of staged draft JSON — the

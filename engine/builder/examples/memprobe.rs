@@ -1927,6 +1927,76 @@ fn cmd_compare_parts(rows_path: &Path, work_dir: &Path, n_a: u32, n_b: u32) {
     );
 }
 
+/// THE SAME DIFFERENTIAL OVER TWO BUILDS ALREADY ON DISK: `<dir>/p0.store`, `p1.store`, ... as the
+/// import harness writes them (`X45_STORES`), each directory one complete partitioned build of the
+/// SAME corpus, at whatever N its publisher chose. `compare-parts` cuts one rows.jsonl two ways
+/// natively; this takes the nightly's own wasm-built archives, which is what a change to how the
+/// nightly chooses N has to be judged on — the same tie-heavy envelope grid, plus the text-index
+/// tiers, through the same reference gather.
+fn cmd_compare_dirs(a_dir: &Path, b_dir: &Path) {
+    let load = |dir: &Path| -> Vec<card_engine::BufferStore> {
+        let mut parts = Vec::new();
+        loop {
+            let path = dir.join(format!("p{}.store", parts.len()));
+            let Ok(bytes) = std::fs::read(&path) else { break };
+            parts.push(card_engine::BufferStore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {}: {e}", path.display())));
+        }
+        assert!(!parts.is_empty(), "{} holds no p0.store", dir.display());
+        parts
+    };
+    let a = load(a_dir);
+    let b = load(b_dir);
+    let cards = |parts: &[card_engine::BufferStore]| parts.iter().map(|p| p.card_count()).sum::<usize>();
+    let printings = |parts: &[card_engine::BufferStore]| parts.iter().map(|p| p.size()).sum::<usize>();
+    assert_eq!(cards(&a), cards(&b), "card_count summed over partitions");
+    assert_eq!(printings(&a), printings(&b), "printing count summed over partitions");
+    println!("N={} vs N={}: {} cards, {} printings in both", a.len(), b.len(), cards(&a), printings(&a));
+
+    let true_node = serde_json::json!({ "node_type": "TrueNode" });
+    let mut compared = 0usize;
+    let cases = envelope_cases();
+    for (label, opts) in &cases {
+        let ga = gather(&a, &true_node, opts, false);
+        let gb = gather(&b, &true_node, opts, false);
+        if let Some(at) = envelope_diff(&ga, &gb) {
+            panic!(
+                "ENVELOPE DIVERGED between N={} and N={}: {label} — total {} vs {}, rows {} vs {}, first differing row {at:?}",
+                a.len(),
+                b.len(),
+                ga.total,
+                gb.total,
+                ga.rows.len(),
+                gb.rows.len()
+            );
+        }
+        compared += ga.rows.len();
+    }
+    println!("match: {} envelope cases, {compared} rows byte-for-byte", cases.len());
+
+    let text_query = |attr: &str, original: &str, needle: &str| -> Value {
+        serde_json::from_str(&format!(
+            r#"{{"kwargs":{{"lhs":{{"kwargs":{{"attribute_name":"{attr}","original_attribute":"{original}"}},"node_type":"CardAttributeNode"}},"op":":","rhs":{{"kwargs":{{"value":"{needle}"}},"node_type":"StringValueNode"}}}},"node_type":"CardBinaryOperatorNode"}}"#
+        ))
+        .expect("text query tree")
+    };
+    for (label, tree) in [
+        ("oracle word", text_query("oracle_text", "oracle", "draw")),
+        ("oracle substring", text_query("oracle_text", "oracle", "attlefield")),
+        ("oracle 3-char", text_query("oracle_text", "oracle", "lif")),
+        ("name 2-char", text_query("card_name", "name", "wa")),
+        ("name word", text_query("card_name", "name", "ward")),
+    ] {
+        for unique in ["card", "printing"] {
+            let opts = card_engine::QueryOptions { limit: 200_000, unique: unique.to_owned(), ..Default::default() };
+            let ga = gather(&a, &tree, &opts, false);
+            let gb = gather(&b, &tree, &opts, false);
+            assert!(envelope_diff(&ga, &gb).is_none(), "text query diverged: {label} unique={unique}");
+            println!("match: {label} unique={unique} ({} matches)", ga.total);
+        }
+    }
+    println!("THE TWO BUILDS ANSWER IDENTICALLY");
+}
+
 /// `None` when the two envelopes are byte-equal; otherwise the index of the first differing row
 /// (or `None` inside a `Some` when the difference is in the total, the flag, or the row count).
 fn envelope_diff(a: &Gathered, b: &Gathered) -> Option<Option<usize>> {
@@ -2131,6 +2201,7 @@ fn main() {
             let n_b: u32 = args.get("b").map(|s| s.parse().expect("number")).unwrap_or(10);
             cmd_compare_parts(&arg(&args, "rows"), &arg(&args, "work"), n_a, n_b);
         }
+        "compare-dirs" => cmd_compare_dirs(&arg(&args, "a"), &arg(&args, "b")),
         "tagbench" => {
             let iters: usize = args.get("iters").map(|s| s.parse().expect("number")).unwrap_or(25);
             cmd_tagbench(&arg(&args, "store"), iters);
@@ -2152,6 +2223,7 @@ fn main() {
             eprintln!(
                 "unknown command {other:?}; expected gen | corpus-shape | rows | partition | build | \
                  phases | spill | compare | compare-parts --rows R --work D [--a 2] [--b 10] | \
+                 compare-dirs --a DIR --b DIR | \
                  tagbench | textbench | namecheck | querybench | routebench"
             );
             std::process::exit(2);

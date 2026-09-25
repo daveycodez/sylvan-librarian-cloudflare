@@ -30,6 +30,7 @@ import {
 	scryfallIdKey,
 	setNumberKey,
 } from "../../src/engine/routing-filter";
+import { MAX_PARTITION_COUNT } from "../../src/import-publish";
 
 const IDENTITY = { builtAt: "1786869419", partitionCount: 9, partitionHash: "fnv1a64/oracle_id/v1" };
 
@@ -148,7 +149,7 @@ describe("build and lookup", () => {
 	});
 
 	test("a filter over more than fifteen partitions round-trips", () => {
-		// SRF1 packed two 4-bit cells per byte and refused partition_count 16, while the build allows
+		// SRF1 packed two 4-bit cells per byte and refused partition_count 16, while the build allowed
 		// up to 32 partitions — corpus growth would have hit it. SRF2 is one byte per cell.
 		const identity = { ...IDENTITY, partitionCount: 40 };
 		const entries = Array.from({ length: 200 }, (_, i) => ({ key: scryfallIdKey(`id-${i}`), partition: i % 40 }));
@@ -330,6 +331,29 @@ describe("name keys (backlog n6)", () => {
 		);
 		expect(filter.lookupName("nm:big")).toBeNull();
 		expect(filter.lookupName("nm:small")).toEqual({ served: 20 });
+	});
+
+	test("at the build's partition ceiling every partition can answer `sole` AND `served`", () => {
+		// A name served in partition s is stored as N + s, one byte a cell with 255 reserved — so the
+		// last partition's served value, 2N - 1, fits only while N <= 127. Built AT the ceiling
+		// partitionCountFor can choose, so raising MAX_PARTITION_COUNT past the encoding fails here
+		// rather than quietly turning the top partitions' served names into full fan-outs.
+		const n = MAX_PARTITION_COUNT;
+		expect(2 * n - 1).toBeLessThan(255);
+		const identity = { ...IDENTITY, partitionCount: n };
+		const entries: RoutingEntry[] = [];
+		for (let p = 0; p < n; p++) {
+			entries.push({ key: scryfallIdKey(`id-${p}`), partition: p });
+			entries.push({ key: `ns:sole${p}`, partition: p });
+			entries.push({ key: `ns:served${p}`, partition: p });
+			entries.push({ key: `nm:served${p}`, partition: (p + 1) % n });
+		}
+		const filter = named(entries, identity);
+		for (let p = 0; p < n; p++) {
+			expect(filter.lookup(scryfallIdKey(`id-${p}`))).toBe(p);
+			expect(filter.lookupName(`nm:sole${p}`)).toEqual({ sole: p });
+			expect(filter.lookupName(`nm:served${p}`)).toEqual({ served: p });
+		}
 	});
 
 	test("the features word gates every name answer: a filter built without it — or before it — says nothing", () => {

@@ -247,8 +247,11 @@ pub fn build_store(
 pub const PARTITION_HASH_ALGO: &str = "fnv1a64/oracle_id/v1";
 
 /// The auto-scale rule: enough partitions that each lands near this size. The clamp floor of 2
-/// keeps the partitioned code paths exercised even on a small corpus, and the ceiling of 32
-/// bounds fan-out width.
+/// keeps the partitioned code paths exercised even on a small corpus, and the ceiling of 48
+/// bounds fan-out width — high enough that partitions stay at this size through 4.8x today's
+/// corpus, because past the ceiling every partition grows instead and a partition's build is the
+/// nightly's wasm memory peak (src/import-publish.ts's `MAX_PARTITION_COUNT` has the measurements
+/// and every N-scaled cost that sets the number; keep the two in step).
 ///
 /// MUST STAY <= store-kv.ts's KV_CHUNK_BYTES, and that is the binding reason for the value —
 /// the same reason, in the same words, as its twin in src/import-publish.ts, which this number
@@ -262,7 +265,7 @@ const TARGET_PARTITION_BYTES: u64 = 43_000_000;
 #[cfg(not(target_arch = "wasm32"))]
 const MIN_PARTITIONS: u32 = 2;
 #[cfg(not(target_arch = "wasm32"))]
-const MAX_PARTITIONS: u32 = 32;
+const MAX_PARTITIONS: u32 = 48;
 
 /// Projected PARTITIONED store bytes per SPILLED DRAFT byte — how the deploy path's
 /// `--partitions auto` sizes N, and the exact twin of src/import-publish.ts's
