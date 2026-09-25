@@ -155,8 +155,8 @@
 		"bindings": [
 			{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" },
 			// The engine objects, one per region × replica × partition (engine-namespace.ts). The
-			// colo-era objects of this namespace (engine-LAX…, before 2026-08-12) are released once
-			// by the watchdog cron, gated by the RETIRED_ENGINE_SWEEP var below — see .env.example.
+			// colo-era objects of this namespace (engine-LAX…, before 2026-08-12) were released by the
+			// watchdog cron's one-time sweep on 2026-09-25 (RETIRED_ENGINE_SWEEP — see .env.example).
 			{ "name": "SEARCH_ENGINE", "class_name": "SearchEngine" },
 			// Per-IP token-bucket rate limiter (one tiny in-memory DO per IP);
 			// limits are runtime env vars — see RATE_LIMIT_* in .env.example.
@@ -179,12 +179,6 @@
 	// WATCHDOG_CRON there — scheduled() routes on the exact string.
 	"triggers": { "crons": ["17 11 * * *", "*/10 * * * *"] },
 
-	// Plain vars, deployed with the code. Everything else this Worker reads at runtime is a Secret
-	// (RATE_LIMIT_*, SHARDS_MAX, TRUSTED_API_KEYS — set per account, untouched by a deploy).
-	// RETIRED_ENGINE_SWEEP drives c1's one-time colo-era sweep on the watchdog cron: "dry-run" logs
-	// each object's size, "release" deletes the holders' storage, and the line goes once a release has
-	// run (src/engine/retired-engine-sweep.ts, .env.example).
-	"vars": { "RETIRED_ENGINE_SWEEP": "release" },
 
 	// The wasm engine is imported by the module name the code uses; the built
 	// wasm-bindgen pkg is committed so Workers Builds needs no Rust toolchain.
