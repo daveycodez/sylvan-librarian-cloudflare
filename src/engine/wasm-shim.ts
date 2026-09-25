@@ -211,8 +211,8 @@ export interface EngineHandle {
 	cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
 	printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
 	card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
-	fuzzy_card_by_name(name: string, floor: number, lead: number, fieldsJson: string): string;
-	fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
+	fuzzy_card_by_name(name: string, setCode: string, floor: number, lead: number, fieldsJson: string): string;
+	fuzzy_candidates(name: string, setCode: string, floor: number, k: number): Uint8Array;
 	autocomplete(prefix: string, limit: number): string;
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	exact_name_rank(folded: string, setCode: string): string;

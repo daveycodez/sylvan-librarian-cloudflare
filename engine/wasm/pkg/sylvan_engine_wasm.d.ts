@@ -250,16 +250,24 @@ export function finish_store_load_lz4(): void;
  * oracle_id (a card never competes with itself, two cards sharing a name are one answer);
  * `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
  * whose local race the global winner provably also wins — to materialize the card.
+ *
+ * `set_code` ("" for none) is `fuzzy_card_by_name`'s: the same set-scoped pool, so the global race
+ * and the winner's local one stay one race.
  */
-export function fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
+export function fuzzy_candidates(name: string, set_code: string, floor: number, k: number): Uint8Array;
 
 /**
  * Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
  *
  * `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
  * tell the client the card does not exist.
+ *
+ * `set_code` ("" for none) scopes the candidate POOL: only cards with a printing in the set race,
+ * and a hit is the card's best printing there — `fuzzy=lightning bolt&set=war` is Scryfall's 404
+ * and `fuzzy=lightning blow&set=m11` its M11 Lightning Bolt (see card_engine's
+ * `preferred_served_vpid_in`).
  */
-export function fuzzy_card_by_name(name: string, floor: number, lead: number, fields_json: string): string;
+export function fuzzy_card_by_name(name: string, set_code: string, floor: number, lead: number, fields_json: string): string;
 
 /**
  * One-shot load for callers that already hold the whole archive (tests,
@@ -288,9 +296,9 @@ export function js_spelled_numbers(values: Float64Array): string;
  * ```text
  * header_len: u32 LE, header: header_len bytes of JSON —
  *   {"exact": <exact_name_probe(folded, set_code, fields)>,
- *    "fuzzy": <fuzzy_card_by_name(folded, floor, lead, fields)> or null,
+ *    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, fields)> or null,
  *    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
- * then the fuzzy_candidates(folded, floor, k) packet unchanged, or nothing
+ * then the fuzzy_candidates(folded, set_code, floor, k) packet unchanged, or nothing
  * ```
  *
  * A stage whose answer the router can never read is SKIPPED, which is what keeps one call no
@@ -311,6 +319,10 @@ export function js_spelled_numbers(values: Float64Array): string;
  * `fuzzy` is this store's own local race, and the router uses it only when this partition wins
  * the global race: its local race is a sub-race the global winner also leads, which is the
  * materialize call the three-round router made to the winning partition.
+ *
+ * `set_code` scopes all three stages alike — the typo stage's candidate pool included, which is
+ * what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a global
+ * leader is still an answer in the set and containment is still unreachable.
  *
  * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
  */

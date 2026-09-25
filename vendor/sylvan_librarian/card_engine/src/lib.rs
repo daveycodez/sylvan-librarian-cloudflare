@@ -5360,7 +5360,9 @@ fn build_printed_name_index(
 /// Scryfall answers Blightning with that card in its own corpus, so the metric's separation is
 /// real and the threshold was simply too coarse for it. 0.002 sits inside the 0.0005–0.003
 /// plateau the refit found, and still leaves an EXACT tie (difference 0) ambiguous, which is the
-/// only thing the lead has to catch.
+/// only thing the lead has to catch. (Art-series cards have since left the typo pool altogether —
+/// see `typo_pool_vpid` — so that particular runner-up is gone; Blightning now leads the
+/// `Lightning` front card, 0.6763 to 0.6643, and the lead stays where the refit put it.)
 pub(crate) const FUZZY_SCORE_FLOOR: f32 = 0.625;
 pub(crate) const FUZZY_SCORE_LEAD: f32 = 0.002;
 
@@ -5563,6 +5565,53 @@ pub(crate) fn preferred_served_vpid(data: &Archived<CardData>, cid: usize, extra
     }
 }
 
+/// `preferred_served_vpid` restricted to the canonical printings of one set (compared ignoring
+/// ASCII case, as every `set=` in the name routes is), or None when the card has none there.
+/// With no set it IS `preferred_served_vpid`.
+///
+/// LOCAL PATCH (Cloudflare port): the typo stage of `/cards/named?fuzzy=` scopes its candidate
+/// POOL to the set, as the exact and containment stages always have. Measured on
+/// api.scryfall.com 2026-09-25: `fuzzy=lightning bolt&set=war` is a 404 (the typo stage used to
+/// answer the card from outside the set), `fuzzy=lightning blow&set=m11` answers M11's Lightning
+/// Bolt (so the race runs over the set's cards — the global winner, Lightning Blow, is not in
+/// M11), and `fuzzy=lightning&set=m11` answers it too although the unscoped race's winner is the
+/// `Lightning` front card.
+pub(crate) fn preferred_served_vpid_in(
+    data: &Archived<CardData>,
+    cid: usize,
+    extra_vid: Option<u16>,
+    set_code: Option<&str>,
+) -> Option<(u32, bool)> {
+    let Some(set) = set_code else { return preferred_served_vpid(data, cid, extra_vid) };
+    let (start, end) = (u32::from(data.offsets[cid]), u32::from(data.offsets[cid + 1]));
+    let mut in_set = (start..end).filter(|&v| data.printings[v as usize].card_set_code.as_str().eq_ignore_ascii_case(set));
+    let first = in_set.next()?;
+    if printing_is_served(&data.printings[first as usize], extra_vid) {
+        return Some((first, true));
+    }
+    match in_set.find(|&v| printing_is_served(&data.printings[v as usize], extra_vid)) {
+        Some(v) => Some((v, true)),
+        None => Some((first, false)),
+    }
+}
+
+/// The printing a typo-stage candidate materializes — `preferred_served_vpid_in` — or None when
+/// the card is not in the typo stage's pool at all: outside the set, or an ART-SERIES card.
+///
+/// LOCAL PATCH (Cloudflare port). Art-series cards never answer `/cards/named` on
+/// api.scryfall.com, measured 2026-09-25: `fuzzy=minion of the mighty kobold` spells the
+/// art-series "Minion of the Mighty // Kobold" exactly once separators fold (a 1.0 here) and
+/// answers the afr card Minion of the Mighty; `loathsome troll troll`, `lurking roper roper` and
+/// `persuasion ettin` answer the same way, and even `exact=Minion of the Mighty // Kobold` is a 404
+/// (core_api's `name_best` keeps them out of the exact stage too). The other extras classes stay in the pool — `liliana
+/// last hope emblem` answers the emblem, `counter` the `Counters` front card. Upstream imports no
+/// art series (#918), so it has nothing to exclude.
+fn typo_pool_vpid(data: &Archived<CardData>, cid: usize, extra_vid: Option<u16>, set_code: Option<&str>) -> Option<(u32, bool)> {
+    let (vpid, served) = preferred_served_vpid_in(data, cid, extra_vid, set_code)?;
+    let layout = str_at(&data.strings, u32::from(printing_at(data, vpid).card_layout_id));
+    (layout != Some("art_series")).then_some((vpid, served))
+}
+
 /// The owning card of a virtual printing id, via the direct arrays of whichever space it is in.
 ///
 /// LOCAL PATCH (Cloudflare port, #927): upstream dropped this with the printed-name pass of the
@@ -5655,6 +5704,20 @@ pub(crate) fn fuzzy_name_match(
     floor: f32,
     lead: f32,
 ) -> FuzzyOutcome {
+    fuzzy_name_match_in(data, needle, floor, lead, None)
+}
+
+/// `fuzzy_name_match` over the cards with a canonical printing in `set_code` only, each
+/// materializing its best printing THERE (LOCAL PATCH, Cloudflare port; see
+/// `preferred_served_vpid_in`). A card outside the set is not a candidate at all — neither a
+/// winner nor a competitor. With no set it is `fuzzy_name_match`.
+pub(crate) fn fuzzy_name_match_in(
+    data: &Archived<CardData>,
+    needle: &str,
+    floor: f32,
+    lead: f32,
+    set_code: Option<&str>,
+) -> FuzzyOutcome {
     // The needle's folded bytes and trigrams are LOOP-INVARIANT. Rebuilding them per card is what
     // made one `?fuzzy=` lookup cost 25,350 us on the real corpus before this scan was written.
     let Some((needle_bytes, needle_tg)) = fuzzy_needle(needle) else { return FuzzyOutcome::Miss };
@@ -5673,8 +5736,8 @@ pub(crate) fn fuzzy_name_match(
         {
             // An English-name hit materializes the card's preferred SERVED printing — see
             // preferred_served_vpid for the rule and its measurements (LOCAL PATCH, Cloudflare
-            // port; upstream materializes preferred_vpid).
-            if let Some((vpid, served)) = preferred_served_vpid(data, cid, extra_vid) {
+            // port; upstream materializes preferred_vpid) — within the set when one is given.
+            if let Some((vpid, served)) = typo_pool_vpid(data, cid, extra_vid, set_code) {
                 race.offer(score, served, cid as u32, vpid, name);
             }
         }
@@ -5683,7 +5746,7 @@ pub(crate) fn fuzzy_name_match(
 }
 
 /// One fuzzy candidate: the best score of a distinct (card, name) class (LOCAL PATCH,
-/// Cloudflare port — the cross-partition fuzzy race's wire unit; see fuzzy_candidates).
+/// Cloudflare port — the cross-partition fuzzy race's wire unit; see fuzzy_candidates_in).
 pub(crate) struct FuzzyCandidateInner {
     pub score: f32,
     /// Whether `vpid` is a printing a default search shows — the race's tiebreak on a score tie,
@@ -5708,11 +5771,16 @@ pub(crate) struct FuzzyCandidateInner {
 /// oracle id). `k` bounds the reply; a competitor outside a partition's top `k` classes would
 /// need `k` better classes all sharing the global best's name or card, which the callers'
 /// k=8 makes practically unreachable.
-pub(crate) fn fuzzy_candidates(
+///
+/// `set_code` restricts the pool to the cards with a canonical printing in that set, each carrying
+/// its best printing there — the pool `fuzzy_name_match_in` races over, so the gather's global race
+/// and the winner's local one stay the same race. `None` is the whole corpus.
+pub(crate) fn fuzzy_candidates_in(
     data: &Archived<CardData>,
     needle: &str,
     floor: f32,
     k: usize,
+    set_code: Option<&str>,
 ) -> Vec<FuzzyCandidateInner> {
     let Some((needle_bytes, needle_tg)) = fuzzy_needle(needle) else { return Vec::new() };
     let mut name_bytes: Vec<u8> = Vec::with_capacity(64);
@@ -5727,7 +5795,7 @@ pub(crate) fn fuzzy_candidates(
         fold_separators_into(name, &mut name_bytes);
         name_trigrams_into(&name_bytes, &mut name_tg);
         if let Some(score) = fuzzy_score_cleared(&name_tg, &needle_tg, &name_bytes, &needle_bytes, floor, &mut dp)
-            && let Some((vpid, served)) = preferred_served_vpid(data, cid, extra_vid)
+            && let Some((vpid, served)) = typo_pool_vpid(data, cid, extra_vid, set_code)
         {
             found.push((score, served, cid as u32, vpid, name));
         }

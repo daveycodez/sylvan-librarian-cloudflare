@@ -270,12 +270,48 @@ describe("the merge's corner cases", () => {
 	test("containment: a name that IS the query wins across partitions (blitzschlag)", async () => {
 		const got = await both(
 			at(N, {
-				0: { contained: [named("Blitzschlag Storm")] },
+				0: { contained: [{ object: "card", name: "Storm Surge", printed_name: "Blitzschlagsturm" }] },
 				2: { contained: [{ object: "card", name: "Lightning Bolt", printed_name: "Blitzschlag" }] },
 			}),
 			"blitzschlag",
 		);
 		expect(got.json.name).toBe("Lightning Bolt");
+	});
+
+	// ...within its tier: an English name that merely CONTAINS the query outranks a foreign printed
+	// name that IS it. api.scryfall.com 2026-09-25: `fuzzy=inganno` is Wedding Announcement, not
+	// Guile (Italian "Inganno"); likewise `verfall`, `velocita`, `disputa`, `nautilo`, `fusione`.
+	test("containment: English containment outranks another partition's whole printed name", async () => {
+		const got = await both(
+			at(N, {
+				0: { contained: [named("Wedding Announcement // Wedding Festivity")] },
+				2: { contained: [{ object: "card", name: "Guile", printed_name: "Inganno" }] },
+			}),
+			"inganno",
+		);
+		expect(got.json.name).toBe("Wedding Announcement // Wedding Festivity");
+	});
+
+	// Each partition answers its printed-name matches only when no oracle or flavor name of its own
+	// carries the words; the merge applies the same tier across partitions. api.scryfall.com
+	// 2026-09-25: `fuzzy=austere` is Austere Command, not ambiguous with Dour Port-Mage's French name.
+	test("containment: an English name outranks another partition's printed name", async () => {
+		const french = { object: "card", name: "Dour Port-Mage", printed_name: "Portmage austère" };
+		const got = await both(
+			at(N, { 0: { contained: [french] }, 3: { contained: [named("Austere Command")] } }),
+			"austere",
+		);
+		expect(got.json.name).toBe("Austere Command");
+		// A flavor name is English: it stays in the first tier, so two cards there are still ambiguous.
+		const flavored = { object: "card", name: "Walking Ballista", flavor_name: "Assaultron Invader" };
+		const two = await both(
+			at(N, { 1: { contained: [flavored] }, 2: { contained: [named("Assaultron Dominator")] } }),
+			"assaultron",
+		);
+		expect(two.json.type).toBe("ambiguous");
+		// Printed names alone still answer: nothing English carries `goad`.
+		const ego = { object: "card", name: "Unmoored Ego", printed_name: "Ego à Deriva" };
+		expect((await both(at(N, { 2: { contained: [ego] } }), "red goad")).json.name).toBe("Unmoored Ego");
 	});
 
 	test("a complete miss is Scryfall's 404 with the name quoted", async () => {
@@ -371,8 +407,8 @@ describe("an object still on the build before the bundle (rolling deploy)", () =
 			scryfallExactNameProbe: reply("probe", async () => ({
 				probe: await stages.scryfallExactNameProbe("shok", "", "https://x"),
 			})),
-			fuzzyCandidates: reply("candidates", async () => ({ candidates: await stages.fuzzyCandidates("shok") })),
-			scryfallFuzzyName: reply("fuzzy", () => stages.scryfallFuzzyName("shok", "https://x")),
+			fuzzyCandidates: reply("candidates", async () => ({ candidates: await stages.fuzzyCandidates("shok", "") })),
+			scryfallFuzzyName: reply("fuzzy", () => stages.scryfallFuzzyName("shok", "https://x", "")),
 			scryfallNamesContaining: reply("contained", async () => ({
 				cards: await stages.scryfallNamesContaining(["shok"], "", 2, "https://x"),
 			})),

@@ -833,6 +833,11 @@ export async function cardsNamedHandler(
  * shipped with (card_engine's `Fuzzy name matching` module comment): on the OLD pg_trgm score
  * this order turned `bolt` and `jac bel`, which Scryfall calls ambiguous, into hits.
  *
+ * A `set=` scopes ALL THREE stages, the typo race's candidate pool included: api.scryfall.com
+ * answers `fuzzy=lightning bolt&set=war` with a 404 and `fuzzy=lightning blow&set=m11` with M11's
+ * Lightning Bolt (2026-09-25). The typo stage used to race the whole corpus and answer Lightning
+ * Bolt from outside the set.
+ *
  * The ORDER is semantic, not a sequence of calls: the partitioned engine asks every partition for
  * all three stages at once and applies the order when it merges (backlog n7,
  * PartitionedEngine.scryfallNamedFuzzy); `resolveNamedFuzzyStaged` is the same order asked one

@@ -561,10 +561,11 @@ class WasmEngine implements Engine {
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
 
-	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
+	async scryfallFuzzyName(name: string, baseUrl: string, setCode = ""): Promise<ScryfallFuzzyResult> {
 		const out = JSON.parse(
 			this.w.fuzzy_card_by_name(
 				name,
+				setCode,
 				FUZZY_SIMILARITY_FLOOR,
 				FUZZY_SIMILARITY_LEAD,
 				JSON.stringify(CARD_OBJECT_FIELDS),
@@ -1574,8 +1575,9 @@ export interface GatherOps {
 	queryKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Uint8Array;
 	/** The row packet (gather.ts's decodeRowPacket) for these vpids, in `shaping.shape`. */
 	fetchRows(vpids: number[], fields: string[], shaping: RowShaping): Uint8Array;
-	/** This partition's scores-bearing fuzzy candidates (the cross-partition race's phase 1). */
-	fuzzyCandidates(name: string): FuzzyCandidateWire[];
+	/** This partition's scores-bearing fuzzy candidates (the cross-partition race's phase 1),
+	 * over the cards with a printing in `setCode` when one is given. */
+	fuzzyCandidates(name: string, setCode: string): FuzzyCandidateWire[];
 }
 
 /** How many candidate classes each partition ships the race — see the wasm export's docstring
@@ -1593,7 +1595,7 @@ export function gatherOps(label?: string): GatherOps | null {
 			handle.query_keys(opts.filterTreeJson, engine.optsJsonFor(opts), inlineRows, shaping.shape, shaping.baseUrl),
 		fetchRows: (vpids, fields, shaping) =>
 			handle.fetch_rows(Uint32Array.from(vpids), JSON.stringify(fields), shaping.shape, shaping.baseUrl),
-		fuzzyCandidates: (name) =>
-			decodeFuzzyCandidates(handle.fuzzy_candidates(name, FUZZY_SIMILARITY_FLOOR, FUZZY_CANDIDATE_CLASSES)),
+		fuzzyCandidates: (name, setCode) =>
+			decodeFuzzyCandidates(handle.fuzzy_candidates(name, setCode, FUZZY_SIMILARITY_FLOOR, FUZZY_CANDIDATE_CLASSES)),
 	};
 }

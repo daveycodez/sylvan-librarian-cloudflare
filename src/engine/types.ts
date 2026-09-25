@@ -237,8 +237,12 @@ export interface Engine {
 	/**
 	 * Scryfall's typo-tolerant `?fuzzy=` match. `ambiguous` stays distinct from `miss` because
 	 * Scryfall reports it, and a 404 would tell the client the card does not exist.
+	 *
+	 * `setCode` ("" for none) scopes the candidate POOL: only cards with a printing in that set race,
+	 * and a hit is the card's best printing there — api.scryfall.com answers `fuzzy=lightning
+	 * bolt&set=war` with a 404 and `fuzzy=lightning blow&set=m11` with M11's Lightning Bolt.
 	 */
-	scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult>;
+	scryfallFuzzyName(name: string, baseUrl: string, setCode?: string): Promise<ScryfallFuzzyResult>;
 	/** Scryfall's autocomplete catalog: printed names, prefix matches first. */
 	scryfallAutocomplete(prefix: string, limit: number): Promise<string[]>;
 	/**

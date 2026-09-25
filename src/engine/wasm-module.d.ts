@@ -44,7 +44,7 @@ declare module "sylvan-engine-wasm" {
 		): Uint8Array;
 		fetch_rows(vpids: Uint32Array, fieldsJson: string, shape: string, baseUrl: string): Uint8Array;
 		sort_key_version(): number;
-		fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
+		fuzzy_candidates(name: string, setCode: string, floor: number, k: number): Uint8Array;
 		scryfall_search(filterTreeJson: string, optsJson: string, baseUrl: string): Uint8Array;
 		query_widens(filterTreeJson: string, optsJson: string): boolean;
 		catalog(): string;
@@ -64,7 +64,7 @@ declare module "sylvan-engine-wasm" {
 		cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
 		printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
 		card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
-		fuzzy_card_by_name(name: string, floor: number, lead: number, fieldsJson: string): string;
+		fuzzy_card_by_name(name: string, setCode: string, floor: number, lead: number, fieldsJson: string): string;
 		autocomplete(prefix: string, limit: number): string;
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
@@ -108,7 +108,13 @@ declare module "sylvan-engine-wasm" {
 	export function printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
 	export function card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
 	/** `{"status": "hit"|"ambiguous"|"miss", "card": ...}`. */
-	export function fuzzy_card_by_name(name: string, floor: number, lead: number, fieldsJson: string): string;
+	export function fuzzy_card_by_name(
+		name: string,
+		setCode: string,
+		floor: number,
+		lead: number,
+		fieldsJson: string,
+	): string;
 	/** Printed card names matching a partial name, prefix matches first. JSON array. */
 	export function autocomplete(prefix: string, limit: number): string;
 	/**
@@ -216,7 +222,7 @@ declare module "sylvan-engine-wasm" {
 	 * packed little-endian as `(n u32, then per candidate: score f32,
 	 * oracle_id 16 raw uuid bytes, vpid u32, namelen u16, name UTF-8)`.
 	 */
-	export function fuzzy_candidates(name: string, floor: number, k: number): Uint8Array;
+	export function fuzzy_candidates(name: string, setCode: string, floor: number, k: number): Uint8Array;
 	/**
 	 * A page of Scryfall card objects as `<total> <rowCount>\n<cards JSON array>` in UTF-8 bytes.
 	 * The objects are built in the engine, so the DO never materializes a card. Needs only the

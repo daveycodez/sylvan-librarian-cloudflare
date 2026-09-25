@@ -103,8 +103,13 @@ interface SearchEngineStub {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
-	scryfallFuzzyName(name: string, baseUrl: string, reportedShards?: number): Promise<ScryfallFuzzyResult & Telemetry>;
-	fuzzyCandidates(name: string): Promise<{ candidates: FuzzyCandidateWire[] }>;
+	scryfallFuzzyName(
+		name: string,
+		baseUrl: string,
+		reportedShards?: number,
+		setCode?: string,
+	): Promise<ScryfallFuzzyResult & Telemetry>;
+	fuzzyCandidates(name: string, setCode?: string): Promise<{ candidates: FuzzyCandidateWire[] }>;
 	scryfallAutocomplete(
 		prefix: string,
 		limit: number,
@@ -712,14 +717,14 @@ export class RemoteEngine implements Engine {
 		return card;
 	}
 
-	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
-		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, currentShardWidth(this.region)));
+	async scryfallFuzzyName(name: string, baseUrl: string, setCode = ""): Promise<ScryfallFuzzyResult> {
+		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, currentShardWidth(this.region), setCode));
 	}
 
 	/** This partition's scores-bearing fuzzy candidates — no telemetry riders (like the gather
 	 * phases, it is partition machinery, not a shard-controller-fed route). */
-	async fuzzyCandidates(name: string): Promise<FuzzyCandidateWire[]> {
-		const { candidates } = await withRetry(() => this.stub.fuzzyCandidates(name), this.reconnect);
+	async fuzzyCandidates(name: string, setCode = ""): Promise<FuzzyCandidateWire[]> {
+		const { candidates } = await withRetry(() => this.stub.fuzzyCandidates(name, setCode), this.reconnect);
 		return candidates;
 	}
 

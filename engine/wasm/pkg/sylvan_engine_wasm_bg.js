@@ -625,21 +625,27 @@ export function finish_store_load_lz4() {
  * oracle_id (a card never competes with itself, two cards sharing a name are one answer);
  * `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
  * whose local race the global winner provably also wins — to materialize the card.
+ *
+ * `set_code` ("" for none) is `fuzzy_card_by_name`'s: the same set-scoped pool, so the global race
+ * and the winner's local one stay one race.
  * @param {string} name
+ * @param {string} set_code
  * @param {number} floor
  * @param {number} k
  * @returns {Uint8Array}
  */
-export function fuzzy_candidates(name, floor, k) {
+export function fuzzy_candidates(name, set_code, floor, k) {
     const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.fuzzy_candidates(ptr0, len0, floor, k);
+    const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.fuzzy_candidates(ptr0, len0, ptr1, len1, floor, k);
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }
-    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-    return v2;
+    return v3;
 }
 
 /**
@@ -647,32 +653,40 @@ export function fuzzy_candidates(name, floor, k) {
  *
  * `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
  * tell the client the card does not exist.
+ *
+ * `set_code` ("" for none) scopes the candidate POOL: only cards with a printing in the set race,
+ * and a hit is the card's best printing there — `fuzzy=lightning bolt&set=war` is Scryfall's 404
+ * and `fuzzy=lightning blow&set=m11` its M11 Lightning Bolt (see card_engine's
+ * `preferred_served_vpid_in`).
  * @param {string} name
+ * @param {string} set_code
  * @param {number} floor
  * @param {number} lead
  * @param {string} fields_json
  * @returns {string}
  */
-export function fuzzy_card_by_name(name, floor, lead, fields_json) {
-    let deferred4_0;
-    let deferred4_1;
+export function fuzzy_card_by_name(name, set_code, floor, lead, fields_json) {
+    let deferred5_0;
+    let deferred5_1;
     try {
         const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.fuzzy_card_by_name(ptr0, len0, floor, lead, ptr1, len1);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
+        const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.fuzzy_card_by_name(ptr0, len0, ptr1, len1, floor, lead, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
         if (ret[3]) {
-            ptr3 = 0; len3 = 0;
+            ptr4 = 0; len4 = 0;
             throw takeFromExternrefTable0(ret[2]);
         }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
     } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
     }
 }
 
@@ -726,9 +740,9 @@ export function js_spelled_numbers(values) {
  * ```text
  * header_len: u32 LE, header: header_len bytes of JSON —
  *   {"exact": <exact_name_probe(folded, set_code, fields)>,
- *    "fuzzy": <fuzzy_card_by_name(folded, floor, lead, fields)> or null,
+ *    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, fields)> or null,
  *    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
- * then the fuzzy_candidates(folded, floor, k) packet unchanged, or nothing
+ * then the fuzzy_candidates(folded, set_code, floor, k) packet unchanged, or nothing
  * ```
  *
  * A stage whose answer the router can never read is SKIPPED, which is what keeps one call no
@@ -749,6 +763,10 @@ export function js_spelled_numbers(values) {
  * `fuzzy` is this store's own local race, and the router uses it only when this partition wins
  * the global race: its local race is a sub-race the global winner also leads, which is the
  * materialize call the three-round router made to the winning partition.
+ *
+ * `set_code` scopes all three stages alike — the typo stage's candidate pool included, which is
+ * what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a global
+ * leader is still an answer in the set and containment is still unreachable.
  *
  * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
  * @param {string} folded

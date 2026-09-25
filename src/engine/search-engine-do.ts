@@ -627,12 +627,15 @@ export class SearchEngine extends DurableObject<Env> {
 		}));
 	}
 
+	/** `setCode` is LAST so an isolate on the build before it (which never sends one) still lines
+	 * up with this signature, and an object on that build ignores it from a newer isolate. */
 	async scryfallFuzzyName(
 		name: string,
 		baseUrl: string,
 		reportedShards?: number,
+		setCode = "",
 	): Promise<ScryfallFuzzyResult & SearchTelemetry> {
-		return this.instrumented(reportedShards, (engine) => engine.scryfallFuzzyName(name, baseUrl));
+		return this.instrumented(reportedShards, (engine) => engine.scryfallFuzzyName(name, baseUrl, setCode));
 	}
 
 	async scryfallAutocomplete(
@@ -787,11 +790,11 @@ export class SearchEngine extends DurableObject<Env> {
 	 * scores, so racing it globally was impossible; see PartitionedEngine's
 	 * scryfallFuzzyName for the exact rule these feed).
 	 */
-	async fuzzyCandidates(name: string): Promise<{ candidates: FuzzyCandidateWire[] }> {
+	async fuzzyCandidates(name: string, setCode = ""): Promise<{ candidates: FuzzyCandidateWire[] }> {
 		await this.engine();
 		const ops = gatherOps(this.label);
 		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
-		return { candidates: ops.fuzzyCandidates(name) };
+		return { candidates: ops.fuzzyCandidates(name, setCode) };
 	}
 
 	/**

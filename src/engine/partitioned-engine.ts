@@ -991,12 +991,12 @@ export class PartitionedEngine implements Engine {
 
 	// ── the name routes: fan out and combine (see header for the fuzzy caveat) ──
 
-	async scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult> {
-		const race = raceFuzzyCandidates(await this.all((e) => e.fuzzyCandidates(name)), FUZZY_SIMILARITY_LEAD);
+	async scryfallFuzzyName(name: string, baseUrl: string, setCode = ""): Promise<ScryfallFuzzyResult> {
+		const race = raceFuzzyCandidates(await this.all((e) => e.fuzzyCandidates(name, setCode)), FUZZY_SIMILARITY_LEAD);
 		if (race.status !== "hit" || race.winner === undefined) return { status: race.status, card: null };
 		// One more RPC to the winning partition materializes the card: its local race is a
 		// sub-race of the global one the winner just led by >= lead, so it resolves the same hit.
-		return this.at(race.winner).scryfallFuzzyName(name, baseUrl);
+		return this.at(race.winner).scryfallFuzzyName(name, baseUrl, setCode);
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
@@ -1374,12 +1374,32 @@ export function mergeContained(
 	// dedupe that only counts distinct names reads the pair as ambiguous — where Scryfall, and
 	// a single store, answer the card the query names. Folded here because the card object
 	// carries the name as PRINTED, while the engine matched the folded form.
+	//
+	// THE ENGLISH TIER, re-applied globally for the same reason, and AHEAD of the whole-name rank:
+	// each partition answers its printed-name matches — a printed name that IS the query included
+	// — only when no oracle or flavor name of its own carries the words (core_api's
+	// `cards_containing_all_words`), but a partition cannot see that ANOTHER one did. `fuzzy=spirit
+	// ugin` puts Ugin, the Spirit Dragon in one archive and Ugin's Conjurant — whose Spanish name,
+	// "Espíritu conjurado de Ugin", carries both words — in another, and `fuzzy=inganno` puts
+	// Wedding Announcement in one and Guile, whose Italian name IS "Inganno", in another;
+	// api.scryfall.com answers the English card both times. An answer is English when its oracle
+	// and flavor names alone carry every word, which is exactly the set the engine's first tier
+	// admits; the whole-name rank then runs within the tier that answers.
+	const cards = [...byName.values()];
 	const whole = words.map(unseparated).join("");
-	const named = [...byName.values()].filter(
-		(card) => equalsUnseparated(card.name, whole) || equalsUnseparated(card.printed_name, whole),
+	const needles = words.map(unseparated).filter((w) => w.length > 0);
+	const english = cards.filter((card) => {
+		const pool = [card.name, card.flavor_name].map((n) => (typeof n === "string" ? unseparated(n) : ""));
+		return needles.every((w) => pool.some((n) => n.includes(w)));
+	});
+	const tier = english.length > 0 ? english : cards;
+	const named = tier.filter((card) =>
+		(english.length > 0 ? [card.name, card.flavor_name] : [card.name, card.printed_name]).some((n) =>
+			equalsUnseparated(n, whole),
+		),
 	);
 	if (named.length > 0) return named.slice(0, 1);
-	return [...byName.values()].slice(0, limit);
+	return tier.slice(0, limit);
 }
 
 /**

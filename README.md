@@ -577,6 +577,30 @@ The complete list of intentional differences:
   such inputs stay a 404 (or `ambiguous`), and the case is pinned as a
   KNOWN_DEVIATION in the live-parity corpus, which asserts both sides' recorded
   behavior separately.
+- **`/cards/named` decides WHICH names compete the way Scryfall does, and
+  `set=` scopes every stage.** Measured on api.scryfall.com 2026-09-25; 123 of
+  147 probed `fuzzy=` needles now answer Scryfall's card and printing, where 67
+  did. Art-series cards are never a name answer — `exact=Minion of the Mighty //
+  Kobold` is a 404 and `fuzzy=minion of the mighty kobold` answers the afr card.
+  Containment also leaves out emblems and front cards (`last hope emblem` and
+  `lakes aveng` are 404s) and keeps every other extras class (a token, a plane,
+  a vanguard, a scheme, an unk playtest card), so `jace mind scul`, `lili last
+  hope` and `teferi hero` answer the card instead of calling it ambiguous with
+  its own art series or emblem. A foreign printed name answers containment only
+  where no oracle or flavor name carries the words, even when it IS the query:
+  `austere` is Austere Command and `inganno` Wedding Announcement, not Guile
+  (23 needles, no exception). With `set=` the typo race runs over that set's
+  cards alone: `lightning bolt&set=war` is a 404, `lightning blow&set=m11` is
+  M11's Lightning Bolt, and `mind scul&set=wwk` falls through to containment
+  in the set. What is left: a TYPO winner that scores weakly loses on Scryfall
+  to a card that uniquely contains every word — below about 0.71 on this
+  port's metric in 31 of 33 probes, pinned as the `ugin spirit` KNOWN_DEVIATION
+  with the evidence, not yet reproduced — and the metric's own resolution,
+  pinned as `lightning blast&set=m11` (0.6595 here, a 404 there). Seen in the
+  probe and not pinned: `jace sculpt` and `assaultron` (a weak typo winner
+  against an ambiguous containment), `sculptor` (Storm Sculptor there, Soul
+  Sculptor here) and `breakfast` (a Food token's flavor name, "Breakfast 7:00
+  AM", is no rival there).
 - **`/cards/*` cache tiers are measured from**
   `api.scryfall.com` rather than inherited from `/search`: `public,
   max-age=57600` on the cacheable routes, `no-cache` on `/cards/random`, and

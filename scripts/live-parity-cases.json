@@ -667,6 +667,91 @@
 			"path": "/cards/named?fuzzy=firion%20edificer"
 		},
 		{
+			"name": "named-fuzzy-art-series-no-rival-jace-mind-scul",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=jace+mind+scul"
+		},
+		{
+			"name": "named-fuzzy-emblem-not-contained-last-hope-emblem",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=last+hope+emblem"
+		},
+		{
+			"name": "named-fuzzy-english-name-over-printed-austere",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=austere"
+		},
+		{
+			"name": "named-fuzzy-art-series-not-typo-minion-kobold",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=minion+of+the+mighty+kobold"
+		},
+		{
+			"name": "named-exact-art-series-not-found",
+			"method": "GET",
+			"path": "/cards/named?exact=Minion%20of%20the%20Mighty%20%2F%2F%20Kobold"
+		},
+		{
+			"name": "named-fuzzy-set-name-not-in-set-war",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lightning+bolt&set=war"
+		},
+		{
+			"name": "named-fuzzy-set-typo-race-in-set-m11",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lightning+blow&set=m11"
+		},
+		{
+			"name": "named-fuzzy-set-typo-then-containment-wwk",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=mind+scul&set=WWK"
+		},
+		{
+			"name": "named-fuzzy-weak-typo-over-unique-containment-ugin-spirit",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=ugin+spirit",
+			"known_deviation": {
+				"reason": "THE STAGE ORDER, where the typo stage's lead is weak. The mirror runs typo before containment (the primeval-titanoth rule), and here the typo race has a clear winner: `uginspirit` scores 0.775 against Inspirit. api.scryfall.com answers Ugin, the Spirit Dragon, the one card whose names carry both words. Measured 2026-09-25 over 33 needles where exactly one card contains every word and the typo race picks a different card: Scryfall answered the TYPO winner for all 20 scoring 0.714 or more on this port's metric (soulcatchers 0.908, reminiscen, suspende, channeli, invigorato, fungusa, shriekmas, snorti, stranglero, righteousnes surg, archaeomancer spa, plagu engineere, weaknes she, trailblazer boo, fir concentrate, rebirt hym, necro plag, griselbran mas, inquisitor serr 0.714, countersp) and the CONTAINED card for all 11 scoring 0.703 or less (hyd disintegrat 0.703, tuk returned, lightnin weave, soil shake, moderator, oppressor, talaria, sunbringer, setes train, shadowfa, prophesi 0.625). The two exceptions sit above the line: this needle (0.775) and `mindstat` (0.795 for Mindstab; Scryfall answers Mindstatic). So the evidence reads as a threshold near 0.71, below which a unique containment answer beats the typo winner. It is not reproduced here yet: it is a fitted rule over an approximate metric, and it moves the bundle's skip rule (containment is then needed wherever no local candidate clears the threshold). Replayed offline over the 147 probed needles it fixes those 11 and changes nothing else. THIS needle stays wrong even under it.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "card",
+						"name": "Ugin, the Spirit Dragon"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "card",
+						"name": "Inspirit"
+					}
+				}
+			}
+		},
+		{
+			"name": "named-fuzzy-set-typo-metric-lightning-blast-m11",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lightning+blast&set=m11",
+			"known_deviation": {
+				"reason": "THE TYPO METRIC'S RESOLUTION, seen through a set. Scryfall scopes the typo race to the set (`fuzzy=lightning blow&set=m11` answers M11's Lightning Bolt although Lightning Blow is the closer name and is not in M11; `fuzzy=lightning bolt&set=war` is a 404), and so does the mirror. Inside M11 `lightning blast` scores 0.6595 against Lightning Bolt on this port's (J + L) / 2, which clears the 0.625 floor; api.scryfall.com answers 404, so its own score for the pair falls under its floor while `lightning blow` (0.709 here) clears it. No floor separates the two on this metric without losing needles the fit already holds: `counterspellxxxxxxxxxx` resolves on Scryfall at 0.657 and `ancestral` at 0.664. Measured 2026-09-25.",
+				"scryfall": {
+					"status": 404,
+					"expect": {
+						"object": "error",
+						"code": "not_found"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "card",
+						"name": "Lightning Bolt",
+						"set": "m11"
+					}
+				}
+			}
+		},
+		{
 			"name": "search-order-edhrec-desc-unranked-first",
 			"method": "GET",
 			"path": "/cards/search?dir=desc&order=edhrec&q=e%3Akhm&unique=prints",

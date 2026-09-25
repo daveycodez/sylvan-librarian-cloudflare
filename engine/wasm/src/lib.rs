@@ -829,11 +829,17 @@ pub fn card_by_external_id(namespace: &str, external_id: u64, fields_json: &str)
 ///
 /// `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
 /// tell the client the card does not exist.
+///
+/// `set_code` ("" for none) scopes the candidate POOL: only cards with a printing in the set race,
+/// and a hit is the card's best printing there — `fuzzy=lightning bolt&set=war` is Scryfall's 404
+/// and `fuzzy=lightning blow&set=m11` its M11 Lightning Bolt (see card_engine's
+/// `preferred_served_vpid_in`).
 #[wasm_bindgen]
-pub fn fuzzy_card_by_name(name: &str, floor: f32, lead: f32, fields_json: &str) -> Result<String, JsError> {
+pub fn fuzzy_card_by_name(name: &str, set_code: &str, floor: f32, lead: f32, fields_json: &str) -> Result<String, JsError> {
     let fields = parse_fields(fields_json)?;
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
     with_store(|store| {
-        let (status, card) = store.fuzzy_card_by_name(name, floor, lead, fields).map_err(js_err)?;
+        let (status, card) = store.fuzzy_card_by_name_in(name, set, floor, lead, fields).map_err(js_err)?;
         Ok(serde_json::json!({ "status": status, "card": card }).to_string())
     })
 }
@@ -1858,10 +1864,14 @@ pub fn sort_key_version() -> u8 {
 /// oracle_id (a card never competes with itself, two cards sharing a name are one answer);
 /// `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
 /// whose local race the global winner provably also wins — to materialize the card.
+///
+/// `set_code` ("" for none) is `fuzzy_card_by_name`'s: the same set-scoped pool, so the global race
+/// and the winner's local one stay one race.
 #[wasm_bindgen]
-pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsError> {
+pub fn fuzzy_candidates(name: &str, set_code: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsError> {
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
     with_store(|store| {
-        let out = store.fuzzy_candidates(name, floor, k as usize);
+        let out = store.fuzzy_candidates_in(name, set, floor, k as usize);
         let mut buf = Vec::with_capacity(4 + out.len() * 40);
         buf.extend_from_slice(&(out.len() as u32).to_le_bytes());
         for c in &out {
@@ -1902,9 +1912,9 @@ pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsErr
 /// ```text
 /// header_len: u32 LE, header: header_len bytes of JSON —
 ///   {"exact": <exact_name_probe(folded, set_code, fields)>,
-///    "fuzzy": <fuzzy_card_by_name(folded, floor, lead, fields)> or null,
+///    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, fields)> or null,
 ///    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
-/// then the fuzzy_candidates(folded, floor, k) packet unchanged, or nothing
+/// then the fuzzy_candidates(folded, set_code, floor, k) packet unchanged, or nothing
 /// ```
 ///
 /// A stage whose answer the router can never read is SKIPPED, which is what keeps one call no
@@ -1926,6 +1936,10 @@ pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsErr
 /// the global race: its local race is a sub-race the global winner also leads, which is the
 /// materialize call the three-round router made to the winning partition.
 ///
+/// `set_code` scopes all three stages alike — the typo stage's candidate pool included, which is
+/// what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a global
+/// leader is still an answer in the set and containment is still unreachable.
+///
 /// `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
@@ -1945,9 +1959,9 @@ pub fn named_fuzzy_bundle(
     let (fuzzy, contained, candidates) = if ranked {
         (None, None, Vec::new())
     } else {
-        let candidates = fuzzy_candidates(folded, floor, k)?;
+        let candidates = fuzzy_candidates(folded, set_code, floor, k)?;
         if candidates.get(..4).is_some_and(|n| n != [0u8; 4]) {
-            (Some(fuzzy_card_by_name(folded, floor, lead, fields_json)?), None, candidates)
+            (Some(fuzzy_card_by_name(folded, set_code, floor, lead, fields_json)?), None, candidates)
         } else {
             let miss = serde_json::json!({ "status": "miss", "card": serde_json::Value::Null }).to_string();
             let contained = cards_containing_all_words(words_json, set_code, limit, fields_json)?;
@@ -2041,8 +2055,11 @@ mod named_fuzzy_bundle_tests {
         let needles = [
             ("lightning bolt", ""),     // a whole name: exact only
             ("lightning bolt", "lea"),  // ... within its set
-            ("lightning bolt", "m19"),  // a set it is not in: no rank, so the typo stage runs
+            ("lightning bolt", "m19"),  // a set it is not in: no rank, and no candidate IN m19
             ("lihgtning bolt", ""),     // a typo
+            ("lihgtning bolt", "lea"),  // a typo within a set the card is in
+            ("lihgtning bolt", "rav"),  // ... and one it is not: Lightning Helix is, but too far
+            ("shokc", "m19"),           // a set-scoped typo race between two near names
             ("counterspel", ""),        // a typo
             ("shock", "m19"),           // exact, beside a near name
             ("shokc", ""),              // a typo between two near names
@@ -2060,8 +2077,8 @@ mod named_fuzzy_bundle_tests {
             let tail = &bundle[4 + header_len..];
 
             let probe = exact_name_probe(folded, set, FIELDS).expect("probe");
-            let candidates = fuzzy_candidates(folded, FLOOR, K).expect("candidates");
-            let fuzzy = fuzzy_card_by_name(folded, FLOOR, LEAD, FIELDS).expect("fuzzy");
+            let candidates = fuzzy_candidates(folded, set, FLOOR, K).expect("candidates");
+            let fuzzy = fuzzy_card_by_name(folded, set, FLOOR, LEAD, FIELDS).expect("fuzzy");
             let contained = cards_containing_all_words(&words, set, LIMIT, FIELDS).expect("contained");
             let rank_is_null = serde_json::from_str::<serde_json::Value>(&probe).expect("probe JSON")["rank"].is_null();
             let has_candidates = u32::from_le_bytes(candidates[..4].try_into().expect("u32")) > 0;
@@ -2440,7 +2457,7 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 1);
 
         let v: serde_json::Value =
-            serde_json::from_str(&fuzzy_card_by_name("chunk test", 0.4, 0.05, "null").expect("fuzzy")).expect("valid JSON");
+            serde_json::from_str(&fuzzy_card_by_name("chunk test", "", 0.4, 0.05, "null").expect("fuzzy")).expect("valid JSON");
         assert_eq!(v["status"], "hit");
         assert_eq!(v["card"]["name"], "Chunk Test");
 

@@ -34,7 +34,7 @@ export async function resolveNamedFuzzyStaged(
 	const exactHit = await engine.scryfallExactName(folded, setCode, baseUrl);
 	if (exactHit) return { status: "card", card: exactHit };
 
-	const { status, card } = await engine.scryfallFuzzyName(folded, baseUrl);
+	const { status, card } = await engine.scryfallFuzzyName(folded, baseUrl, setCode);
 	if (status === "ambiguous") return { status: "ambiguous" };
 	if (status === "hit" && card) return { status: "card", card };
 
@@ -47,8 +47,8 @@ export async function resolveNamedFuzzyStaged(
 /** The per-stage calls one store answers — what a bundle is made of. */
 export interface NamedFuzzyStages {
 	scryfallExactNameProbe(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe>;
-	fuzzyCandidates(name: string): Promise<FuzzyCandidateWire[]>;
-	scryfallFuzzyName(name: string, baseUrl: string): Promise<ScryfallFuzzyResult>;
+	fuzzyCandidates(name: string, setCode: string): Promise<FuzzyCandidateWire[]>;
+	scryfallFuzzyName(name: string, baseUrl: string, setCode: string): Promise<ScryfallFuzzyResult>;
 	scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -76,9 +76,9 @@ export async function bundleFromStages(
 ): Promise<NamedFuzzyBundle> {
 	const exact = await stages.scryfallExactNameProbe(folded, setCode, baseUrl);
 	if (exact.rank !== null) return { exact, fuzzy: null, candidates: [], contained: null };
-	const candidates = await stages.fuzzyCandidates(folded);
+	const candidates = await stages.fuzzyCandidates(folded, setCode);
 	if (candidates.length > 0) {
-		return { exact, fuzzy: await stages.scryfallFuzzyName(folded, baseUrl), candidates, contained: null };
+		return { exact, fuzzy: await stages.scryfallFuzzyName(folded, baseUrl, setCode), candidates, contained: null };
 	}
 	return {
 		exact,

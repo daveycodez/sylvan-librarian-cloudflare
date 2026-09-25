@@ -42,7 +42,7 @@ use super::{
     COMPAT_TEXTLESS, COMPAT_VARIATION, FINISH_ETCHED, FINISH_FOIL, FINISH_GLOSSY, FINISH_NONFOIL,
     FINISH_NAMES, VOCAB_NONE, bits_to_names, compat_flag, games_pack, games_to_names,
     // The engine surface #912 adds: external-id addressing, fuzzy name match, autocomplete.
-    EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER, FuzzyOutcome, fuzzy_name_match, record_of_exact_name,
+    EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER, FuzzyOutcome, fuzzy_name_match_in, record_of_exact_name,
     // The multilingual surface: the widened driver and the virtual-pid resolvers. The by-id
     // lookups reach BOTH printing spaces through find_vpid_by_*, never through the canonical
     // index alone — see card_by_scryfall_id.
@@ -1975,9 +1975,24 @@ impl BufferStore {
         lead: f32,
         fields: Option<Vec<String>>,
     ) -> Result<(&'static str, Option<Value>), EngineError> {
+        self.fuzzy_card_by_name_in(name, None, floor, lead, fields)
+    }
+
+    /// `fuzzy_card_by_name` with its candidate pool scoped to one set (LOCAL PATCH, Cloudflare
+    /// port): only cards with a canonical printing in `set_code` compete, and a hit is that
+    /// card's best printing there. `None` is `fuzzy_card_by_name`. See
+    /// `crate::preferred_served_vpid_in` for the api.scryfall.com measurements.
+    pub fn fuzzy_card_by_name_in(
+        &self,
+        name: &str,
+        set_code: Option<&str>,
+        floor: f32,
+        lead: f32,
+        fields: Option<Vec<String>>,
+    ) -> Result<(&'static str, Option<Value>), EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        match fuzzy_name_match(data, name, floor, lead) {
+        match fuzzy_name_match_in(data, name, floor, lead, set_code) {
             FuzzyOutcome::Miss => Ok(("miss", None)),
             FuzzyOutcome::Ambiguous => Ok(("ambiguous", None)),
             FuzzyOutcome::Hit { cid, vpid } => {
@@ -2001,10 +2016,17 @@ impl BufferStore {
     /// LOCAL PATCH (Cloudflare port): the scores-bearing fuzzy surface for the partitioned
     /// gather — the top `k` distinct (card, name) candidate classes clearing `floor`, so the
     /// gather can run the exact global FLOOR/LEAD race that `fuzzy_card_by_name` runs locally
-    /// (see `crate::fuzzy_candidates` for why `{status, card}` alone forces a conservative
+    /// (see `crate::fuzzy_candidates_in` for why `{status, card}` alone forces a conservative
     /// merge). `oracle_id` is the cross-partition card identity; `vpid` is partition-local.
     pub fn fuzzy_candidates(&self, name: &str, floor: f32, k: usize) -> Vec<FuzzyCandidate> {
-        crate::fuzzy_candidates(self.data(), name, floor, k)
+        self.fuzzy_candidates_in(name, None, floor, k)
+    }
+
+    /// `fuzzy_candidates` over the cards with a canonical printing in `set_code` — the pool
+    /// `fuzzy_card_by_name_in` races over (LOCAL PATCH, Cloudflare port). `None` is
+    /// `fuzzy_candidates`.
+    pub fn fuzzy_candidates_in(&self, name: &str, set_code: Option<&str>, floor: f32, k: usize) -> Vec<FuzzyCandidate> {
+        crate::fuzzy_candidates_in(self.data(), name, floor, k, set_code)
             .into_iter()
             .map(|c| FuzzyCandidate {
                 score: c.score,
@@ -2232,6 +2254,13 @@ impl BufferStore {
             let Some((pid, score, served)) = self.best_printing_of_scoped(cid, set_code, restrict) else {
                 continue;
             };
+            // `/cards/named` NEVER ANSWERS AN ART-SERIES CARD BY NAME (LOCAL PATCH, Cloudflare
+            // port). Measured on api.scryfall.com 2026-09-25: `exact=Minion of the Mighty // Kobold`
+            // and `exact=Lightning Bolt // Lightning Bolt` are both 404s, and `fuzzy=` with either
+            // spelling answers the real card. A collection identifier is not measured and keeps them.
+            if scope == NameScope::Exact && layout_of(data, pid as u32) == Some("art_series") {
+                continue;
+            }
             let served = u8::from(served);
             if best.is_none_or(|(bv, bt, bs, _, _)| (served, tier, score) > (bv, bt, bs)) {
                 best = Some((served, tier, score, cid, pid as u32));
@@ -2394,6 +2423,9 @@ impl BufferStore {
                 continue;
             }
             let Some((vpid, score, served)) = self.best_printing_of(cid, set_code) else { continue };
+            if outside_containment_pool(data, vpid as u32) {
+                continue;
+            }
             let answer = Answer { name, score, served, cid, vpid, matched: 0 };
             if equals_unseparated(name, &whole) {
                 // An oracle name that IS the query. Nothing outranks it, and a second card
@@ -2427,7 +2459,30 @@ impl BufferStore {
         // so "berserker" matching a card's ja and es names cannot fake a two-answer tie. Two
         // different CARDS are two answers, exactly like two oracle names. Skipped once the pass
         // above already proved ambiguity: the caller only reads the count past `limit`.
-        for pn in [&data.indexes.printed_names, &data.indexes.flavor_names] {
+        //
+        // THE PRINTED PASS IS A SECOND TIER (LOCAL PATCH, Cloudflare port): its answers — a printed
+        // name that IS the query included — are the answer only when neither an oracle nor a flavor
+        // name carries the words at all. Measured on api.scryfall.com 2026-09-25:
+        //
+        //   - A foreign printed name CONTAINING the words never competes with an English one: 17 of
+        //     17 needles — `fuzzy=austere` is Austere Command although the French "Portmage austère"
+        //     (Dour Port-Mage) carries the word too, and likewise `redress`, `nerada`, `allegra`,
+        //     `extremis`, `atoner`, `captor`, `realist`, `circular`, `reverie`, `officiant`,
+        //     `combustible`, `symbiont`, `violet`, `courtier`, `diadem` and `pixies` each answer
+        //     their one English name where this called them ambiguous.
+        //   - Nor does one that IS the query: `verfall`, `velocita`, `disputa`, `nautilo`, `inganno`
+        //     and `fusione` are each a whole foreign printed name (Decomposition's German, Yare's
+        //     Italian, ...) and each answers the one English name containing it (Riverfall Mimic,
+        //     Reckless Velocitaur, Silverquill, the Disputant, Nautiloid Ship, Wedding Announcement,
+        //     Fusion Elemental).
+        //   - Flavor names are NOT the lower tier: `fuzzy=assaultron`, `cordyceps` and `bloodbender`
+        //     are each one oracle name plus another card's flavor name, and each is ambiguous there.
+        //
+        // What the tier leaves alone is every needle only a printed name answers: `red goad`,
+        // `blitzschlag`, `ego à deriva`.
+        let mut foreign: Vec<Answer> = Vec::new();
+        let mut exact_foreign: Option<Answer> = None;
+        for (is_printed, pn) in [(true, &data.indexes.printed_names), (false, &data.indexes.flavor_names)] {
             if exact.is_some() || pn.name_ids.is_empty() {
                 continue;
             }
@@ -2448,6 +2503,9 @@ impl BufferStore {
                 let rec = rec as usize;
                 let Some(printed) = str_at(&data.strings, u32::from(pn.name_ids[rec])) else { continue };
                 let Some((vpid, score, served)) = self.best_vpid_of_record_in(pn, rec, set_code) else { continue };
+                if outside_containment_pool(data, vpid) {
+                    continue;
+                }
                 let cid = card_of_vpid(data, vpid) as usize;
                 let name = crate::folded_name(&data.cards[cid], &data.strings);
                 // The printing's whole pool: this printed name OR the oracle name it prints.
@@ -2456,24 +2514,25 @@ impl BufferStore {
                 }
                 let answer = Answer { name, score, served, cid, vpid: vpid as usize, matched: printed.len() };
                 if equals_unseparated(printed, &whole) {
-                    // A printed name that IS the query — `fuzzy=egoaderiva` and `fuzzy=ego à
-                    // deriva` alike. It outranks containment, but never an ORACLE name that is
+                    // A record name that IS the query — `fuzzy=egoaderiva` and `fuzzy=ego à deriva`
+                    // alike. It outranks containment IN ITS TIER, but never an ORACLE name that is
                     // also the query: `exact=` is oracle-scoped and this stage keeps that order.
-                    if exact
-                        .as_ref()
-                        .is_none_or(|best| best.matched > 0 && (served, score) > (best.served, best.score))
-                    {
-                        exact = Some(answer);
+                    let slot = if is_printed { &mut exact_foreign } else { &mut exact };
+                    if slot.as_ref().is_none_or(|best| best.matched > 0 && (served, score) > (best.served, best.score)) {
+                        *slot = Some(answer);
                     }
                     continue;
                 }
-                Self::offer_answer(&mut answers, answer, limit);
+                Self::offer_answer(if is_printed { &mut foreign } else { &mut answers }, answer, limit);
             }
         }
-        // A name that IS the query is THE answer, however many other names carry its letters.
-        let mut by_name = match exact {
-            Some(answer) => vec![answer],
-            None => answers,
+        // A name that IS the query is THE answer of its tier, however many other names carry its
+        // letters; the English tier first, and the printed names only where it holds nothing.
+        let mut by_name = match (exact, exact_foreign) {
+            (Some(answer), _) => vec![answer],
+            (None, _) if !answers.is_empty() => answers,
+            (None, Some(answer)) => vec![answer],
+            (None, None) => foreign,
         };
         by_name.sort_unstable_by(|a, b| b.served.cmp(&a.served).then_with(|| b.score.total_cmp(&a.score)));
         Ok(by_name
@@ -3321,6 +3380,30 @@ fn strip_separators(word: &str) -> String {
 /// `matched` is the length of the PRINTED name that supplied the words the oracle name could not,
 /// and 0 when the oracle name carried all of them — the rank that decides which of a card's
 /// printings answers (see `cards_containing_all_words`).
+/// The layouts `/cards/named?fuzzy=`'s containment stage never answers with (LOCAL PATCH,
+/// Cloudflare port). Measured on api.scryfall.com 2026-09-25, each by a needle only that class
+/// contains: `fuzzy=mighty kobold` (the art-series "Minion of the Mighty // Kobold"), `hope
+/// emblem` and `last hope emblem` (Liliana's emblem) and `lakes aveng` (the "Great Lakes
+/// Avengers" front card) are all 404s — and an art series or emblem sharing a served card's name
+/// no longer makes it ambiguous: `jace mind scul`, `lili last hope` and `teferi hero` answer the
+/// card. The other extras classes stay in: `tuk returned` (a token), `antarc research` (a plane),
+/// `jaya avat` (a vanguard), `soil shake` (a scheme), `welc austr` (an unk playtest card) and
+/// `counter&set=wc98` (a gold-bordered memorabilia printing) each answer their card. The typo and
+/// exact stages keep every class: `liliana last hope emblem` and `counter` (the `Counters` front
+/// card) are typo hits.
+const CONTAINMENT_EXCLUDED_LAYOUTS: [&str; 3] = ["art_series", "emblem", "front_card"];
+
+/// The printing `vpid`'s layout, as stored.
+fn layout_of(data: &Archived<CardData>, vpid: u32) -> Option<&str> {
+    str_at(&data.strings, u32::from(printing_at(data, vpid).card_layout_id))
+}
+
+/// Whether the printing `vpid` lies outside the containment stage's pool; see
+/// `CONTAINMENT_EXCLUDED_LAYOUTS`.
+fn outside_containment_pool(data: &Archived<CardData>, vpid: u32) -> bool {
+    layout_of(data, vpid).is_some_and(|layout| CONTAINMENT_EXCLUDED_LAYOUTS.contains(&layout))
+}
+
 struct Answer<'a> {
     name: &'a str,
     score: f32,
@@ -5254,6 +5337,97 @@ mod tests {
         let rows = store.cards_containing_all_words(&["deriva".to_owned()], None, 2, fields).expect("contains");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["lang"], json!("pt"));
+    }
+
+    /// Containment's POOL and TIERS (LOCAL PATCH, Cloudflare port), each as measured on
+    /// api.scryfall.com 2026-09-25 — see `CONTAINMENT_EXCLUDED_LAYOUTS` and the printed-pass
+    /// comment in `cards_containing_all_words`. An art series, an emblem and a front card never
+    /// answer, and so never make a served card ambiguous; a token still does; and a foreign printed
+    /// name answers only where no English name carries the words.
+    #[test]
+    fn containment_leaves_out_three_layouts_and_ranks_english_names_first() {
+        let with_layout = |mut row: Value, layout: &str| {
+            row["card_layout"] = json!(layout);
+            row
+        };
+        let jace = annex_row("Jace, the Mind Sculptor", "oracle-j", "row-j", "en", 200.0);
+        let art = with_layout(
+            annex_row("Jace, the Mind Sculptor // Jace, the Mind Sculptor", "oracle-ja", "row-ja", "en", 10.0),
+            "art_series",
+        );
+        let emblem = with_layout(annex_row("Liliana, the Last Hope Emblem", "oracle-e", "row-e", "en", 10.0), "emblem");
+        let front = with_layout(annex_row("Great Lakes Avengers", "oracle-f", "row-f", "en", 10.0), "front_card");
+        let token = with_layout(annex_row("Tuktuk the Returned", "oracle-t", "row-t", "en", 10.0), "token");
+        let austere = annex_row("Austere Command", "oracle-c", "row-c", "en", 100.0);
+        let dour = annex_row("Dour Port-Mage", "oracle-d", "row-d-en", "en", 100.0);
+        let mut dour_fr = annex_row("Dour Port-Mage", "oracle-d", "row-d-fr", "fr", 50.0);
+        dour_fr["is_canonical"] = json!(false);
+        dour_fr["printed_name"] = json!("Portmage austère");
+        dour_fr["printed_name_folded"] = json!("portmage austere");
+        let wedding = annex_row("Wedding Announcement", "oracle-w", "row-w", "en", 100.0);
+        let guile = annex_row("Guile", "oracle-g", "row-g-en", "en", 100.0);
+        let mut guile_it = annex_row("Guile", "oracle-g", "row-g-it", "it", 50.0);
+        guile_it["is_canonical"] = json!(false);
+        guile_it["printed_name"] = json!("Inganno");
+        guile_it["printed_name_folded"] = json!("inganno");
+        let (_b, store) =
+            build_store(&[jace, art, emblem, front, token, austere, dour, dour_fr, wedding, guile, guile_it]);
+        let names = |words: &[&str]| -> Vec<String> {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            let rows = store.cards_containing_all_words(&words, None, 2, Some(vec!["name".to_owned()])).expect("contains");
+            rows.iter().map(|r| r["name"].as_str().expect("name").to_owned()).collect()
+        };
+        assert_eq!(names(&["jace", "mind", "scul"]), ["Jace, the Mind Sculptor"], "the art series does not compete");
+        assert!(names(&["hope", "emblem"]).is_empty(), "an emblem is no answer");
+        assert!(names(&["lakes", "aveng"]).is_empty(), "a front card is no answer");
+        assert_eq!(names(&["tuk", "returned"]), ["Tuktuk the Returned"], "a token still is");
+        assert_eq!(names(&["austere"]), ["Austere Command"], "the English name outranks the French one");
+        assert_eq!(names(&["portmage"]), ["Dour Port-Mage"], "a printed name alone still answers");
+        assert_eq!(names(&["inganno"]), ["Wedding Announcement"], "English containment outranks a whole printed name");
+        assert_eq!(names(&["portmage", "austere"]), ["Dour Port-Mage"], "which still wins its own tier");
+    }
+
+    /// The typo stage's POOL (LOCAL PATCH, Cloudflare port): scoped to the set when one is given —
+    /// the race runs over the set's cards, so a closer name outside it neither wins nor competes —
+    /// and never an art-series card. Measured on api.scryfall.com 2026-09-25: `fuzzy=lightning
+    /// blow&set=m11` is M11's Lightning Bolt, `fuzzy=lightning bolt&set=war` a 404, and
+    /// `fuzzy=minion of the mighty kobold` the afr card, not the art series it spells exactly.
+    #[test]
+    fn the_typo_pool_is_the_sets_cards_and_never_an_art_series() {
+        let printing = |name: &str, oracle: &str, scry: &str, set: &str, prefer: f64| {
+            let mut row = annex_row(name, oracle, scry, "en", prefer);
+            row["card_set_code"] = json!(set);
+            row
+        };
+        let bolt_lea = printing("Lightning Bolt", "oracle-b", "row-b-lea", "lea", 200.0);
+        let bolt_m11 = printing("Lightning Bolt", "oracle-b", "row-b-m11", "m11", 100.0);
+        let blow = printing("Lightning Blow", "oracle-w", "row-w", "ice", 100.0);
+        let minion = printing("Minion of the Mighty", "oracle-m", "row-m", "afr", 100.0);
+        let mut art = printing("Minion of the Mighty // Kobold", "oracle-a", "row-a", "aafr", 100.0);
+        art["card_layout"] = json!("art_series");
+        let (_b, store) = build_store(&[bolt_lea, bolt_m11, blow, minion, art]);
+        let (floor, lead) = (crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD);
+        let fields = Some(vec!["name".to_owned(), "set_code".to_owned()]);
+        let ask = |needle: &str, set: Option<&str>| {
+            let (status, card) = store.fuzzy_card_by_name_in(needle, set, floor, lead, fields.clone()).expect("fuzzy");
+            (status, card.map(|c| format!("{} ({})", c["name"].as_str().unwrap_or(""), c["set_code"].as_str().unwrap_or(""))))
+        };
+        assert_eq!(ask("lightning blow", None), ("hit", Some("Lightning Blow (ice)".to_owned())));
+        assert_eq!(ask("lightning blow", Some("m11")), ("hit", Some("Lightning Bolt (m11)".to_owned())));
+        assert_eq!(ask("lightning blow", Some("M11")), ("hit", Some("Lightning Bolt (m11)".to_owned())), "any case");
+        assert_eq!(ask("lightning bolt", Some("ice")), ("hit", Some("Lightning Blow (ice)".to_owned())));
+        assert_eq!(ask("lightning bolt", Some("war")), ("miss", None));
+        assert_eq!(ask("minion of the mighty kobold", None), ("hit", Some("Minion of the Mighty (afr)".to_owned())));
+        // Nor does the exact stage answer the art series, by any spelling of its name.
+        for spelling in ["minion of the mighty // kobold", "minion of the mighty kobold"] {
+            assert!(store.exact_card_by_name(spelling, None, fields.clone()).expect("exact").is_none(), "{spelling}");
+            assert_eq!(store.exact_name_rank(spelling, None), None, "{spelling}");
+        }
+        assert!(store.exact_card_by_name("minion of the mighty", None, fields.clone()).expect("exact").is_some());
+        // The candidates the partitioned race reads are the same pool.
+        let set_scoped = store.fuzzy_candidates_in("lightning blow", Some("m11"), floor, 8);
+        assert!(!set_scoped.is_empty() && set_scoped.iter().all(|c| c.folded_name == "lightning bolt"));
+        assert!(store.fuzzy_candidates("minion of the mighty kobold", floor, 8).iter().all(|c| !c.folded_name.contains("//")));
     }
 
     /// Scryfall's containment slack, both halves, on the printing that made the mirror's

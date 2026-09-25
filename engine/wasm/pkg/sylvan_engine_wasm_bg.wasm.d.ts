@@ -26,7 +26,7 @@ export const card_by_scryfall_id: (a: number, b: number, c: number, d: number) =
 export const cards_by_scryfall_ids: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const printings_of_oracle_id: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const card_by_external_id: (a: number, b: number, c: bigint, d: number, e: number) => [number, number, number, number];
-export const fuzzy_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const fuzzy_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const exact_card_by_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const exact_name_rank: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const exact_name_probe: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
@@ -43,7 +43,7 @@ export const random_search_shaped: (a: number, b: bigint, c: number, d: number, 
 export const shaped_frames_from_rows: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const js_spelled_numbers: (a: number, b: number) => [number, number];
 export const sort_key_version: () => number;
-export const fuzzy_candidates: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const fuzzy_candidates: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const named_fuzzy_bundle: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
 export const size: () => number;
 export const card_count: () => number;
