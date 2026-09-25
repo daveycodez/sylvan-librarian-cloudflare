@@ -2,8 +2,9 @@
 // emits one EMIT_ORACLE_PAIRS run per batch, right after that batch's EMIT_ROUTING, holding one
 // 32-byte (scryfall id, oracle id) record per draft whose card object carries an oracle id — and
 // NONE for a reversible printing, whose card object has no top-level oracle_id. The coordinator
-// stages both emits in one routing_keys row per batch, so the ordering and the always-emit rule
-// are what that staging leans on. (Which printings get a record is pinned against the NATIVE
+// stages both emits in one routing_keys row per scores slice, the batches' runs concatenated in
+// order (routingStagingRows), so the ordering and the always-emit rule are what that staging leans
+// on. (Which printings get a record is pinned against the NATIVE
 // builder's rows in engine/builder: `both_publishers_emit_the_same_oracle_pairs`.)
 
 import { describe, expect, test } from "bun:test";

@@ -75,6 +75,89 @@ export function packBlob(raw: Uint8Array): Uint8Array {
 	return out;
 }
 
+/**
+ * fflate's hash-table size for a PackStream, as its `mem` option (12 + mem bits). The default for
+ * a stream is 20 bits: a 2MB table per stream, 71MB for the bucket phase's 32 at once, measured.
+ * At 4 (16 bits) the 32 hold ~13MB, and on draft JSON the ratio is within 1% of packBlob's.
+ */
+export const PACK_STREAM_MEM = 4;
+/** Raw bytes a PackStream collects before handing them to the compressor: fflate compresses per
+ * push once 8KB is buffered, allocating a block-sized output each time, so pushing ~1.5KB drafts
+ * one by one cost ~3x the CPU of one packBlob over the same bytes. */
+const PACK_STREAM_PUSH_BYTES = 64 * 1024;
+
+/**
+ * One packed blob built INCREMENTALLY, a length-prefixed entry at a time — the bucket phase keeps
+ * one per partition, so what it holds while it reads is compressed bytes (plus one push buffer),
+ * not every partition's raw drafts. `finish()` returns the same format packBlob does: the header
+ * with the raw length, then one deflate stream that decodes to exactly the entries pushed.
+ */
+export class PackStream {
+	private readonly parts: Uint8Array[] = [];
+	private packed = 0;
+	private pending: Uint8Array[] = [];
+	private pendingBytes = 0;
+	private readonly deflate: import("fflate").Deflate;
+	/** Raw (length-prefixed) bytes pushed so far. */
+	raw = 0;
+	/** Entries pushed so far. */
+	count = 0;
+
+	constructor() {
+		this.deflate = new (fflate().Deflate)({ level: BLOB_CODEC_LEVEL, mem: PACK_STREAM_MEM }, (chunk) => {
+			this.parts.push(chunk);
+			this.packed += chunk.length;
+		});
+	}
+
+	/**
+	 * An upper bound on the finished blob's size: the header, what is already compressed, what is
+	 * waiting to be, the compressor's own unflushed input (it compresses whenever 8KB is buffered),
+	 * and deflate's worst case of a few bytes per 64KB stored block.
+	 */
+	get packedBound(): number {
+		return HEADER_BYTES + this.packed + this.pendingBytes + 8192 + 1024 + Math.ceil(this.raw / 65536) * 8;
+	}
+
+	/** Append one entry, framed as a length-prefixed batch entry ([u32 le length][bytes]). */
+	push(entry: Uint8Array): void {
+		const head = new Uint8Array(4);
+		new DataView(head.buffer).setUint32(0, entry.length, true);
+		this.pending.push(head, entry);
+		this.pendingBytes += 4 + entry.length;
+		this.raw += 4 + entry.length;
+		this.count += 1;
+		if (this.pendingBytes >= PACK_STREAM_PUSH_BYTES) this.drain(false);
+	}
+
+	private drain(final: boolean): void {
+		const chunk = new Uint8Array(this.pendingBytes);
+		let at = 0;
+		for (const piece of this.pending) {
+			chunk.set(piece, at);
+			at += piece.length;
+		}
+		this.pending = [];
+		this.pendingBytes = 0;
+		this.deflate.push(chunk, final);
+	}
+
+	/** The finished blob. The stream is spent afterwards. */
+	finish(): Uint8Array {
+		this.drain(true);
+		const out = new Uint8Array(HEADER_BYTES + this.packed);
+		out.set(BLOB_CODEC_MAGIC, 0);
+		new DataView(out.buffer).setUint32(4, this.raw, true);
+		let at = HEADER_BYTES;
+		for (const part of this.parts) {
+			out.set(part, at);
+			at += part.length;
+		}
+		this.parts.length = 0;
+		return out;
+	}
+}
+
 /** The raw bytes of a stored blob: decompressed when packed, passed through when not. */
 export function unpackBlob(stored: Uint8Array): Uint8Array {
 	if (!isPackedBlob(stored)) return stored;

@@ -164,20 +164,20 @@ import {
 } from "./engine/store-kv";
 import { tagAliasesKey, writeTagAliases } from "./engine/tag-aliases";
 import type { Env, StoreManifest, StoreManifestCache, StoreManifestPartition } from "./engine/types";
-import { packBlob, unpackBlob } from "./import-blob-codec";
+import { PackStream, packBlob, unpackBlob } from "./import-blob-codec";
 import {
-	AGG_FETCH_BATCHES,
-	AGG_SLICE_BATCHES,
+	AGG_SLICE_RAW_BYTES,
 	adjustPace,
 	advanceMeters,
 	BUCKET_FETCH_BATCHES,
 	BUCKET_SLICE_BATCHES,
+	BUCKET_SLICE_RAW_BYTES,
 	DO_FREE_GB_SECONDS_PER_DAY,
+	DRAFT_FETCH_ROWS,
 	deadManDelayMs,
 	decideCacheCodec,
 	EMPTY_RUN_METERS,
-	FINALIZE_FETCH_BATCHES,
-	FINALIZE_SLICE_BATCHES,
+	FINALIZE_SLICE_RAW_BYTES,
 	LATE_ALARM_MS,
 	LZ4_CACHE_RATIO,
 	LZ4_OFF_FRACTION,
@@ -186,6 +186,7 @@ import {
 	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
+	MEASURED_BATCH_RAW_BYTES,
 	PACE_START_BPS,
 	POOL_GATE_BUDGET_BYTES,
 	PURGE_SLICE_BYTES,
@@ -217,15 +218,20 @@ import {
 import { PURGE_TABLES, type PurgeScope, type PurgeTable, planPurgeSlice } from "./import-purge";
 import { InflateRecodeSource, MEMBER_RAW_BYTES, type ResumableInflate, skipBytes } from "./import-recode";
 import {
-	BLOB_GROUP_BYTES,
 	blobBytes,
 	blobGroups,
 	bucketDrafts,
+	DRAFT_BATCH_BYTES,
 	exactBuffer,
+	feedSlices,
 	lengthPrefixed,
 	orderedRowCursor,
+	type PackedDraftGroup,
+	packedDraftGroups,
 	packPartHashes,
 	reorderSlice,
+	routingStagingRows,
+	STAGED_ROW_BYTES,
 	spillIndex,
 	splitBatch,
 	unpackPartHashes,
@@ -381,19 +387,18 @@ const TRANSFORM_SLICE_LINES = 10_000;
  * inflater checkpoint lets a slice resume mid-dump without re-inflating the
  * prefix; the slice's own cost is an id-only serde parse of its window (~1s). */
 const CANONICAL_SLICE_LINES = 24_000;
-/** Draft batches folded into the corpus-wide finalize tables per slice.
+/** Raw draft bytes folded into the corpus-wide finalize tables per slice.
  *
- * Bigger than AGG_SLICE_BATCHES because the work per draft is far smaller — three fields off a
- * narrow serde struct, one hash lookup, no dedupe map, no interners — while the per-slice OVERHEAD
- * is large and fixed: the whole TagData snapshot is restored and re-exported around every slice
- * (~20MB of JSON), which is what makes the phase resumable. 24 batches ≈ 45MB of staged drafts,
- * putting today's corpus at ~35 slices. */
-const SCORES_SLICE_BATCHES = 24;
-/** Batch rows materialized as JS buffers at once inside a scores slice (~15MB) — the same
- * resident-bytes budget the agg slice keeps. */
-const SCORES_FETCH_BATCHES = 8;
-/** Drafts per SQLite batch row (~1.5MB of draft JSON, under the 2MB value cap). */
-// Draft batching is by BYTES (BLOB_GROUP_BYTES, via blobGroups) rather than by draft count.
+ * 24 of the 1.5MB batches it was counted in until 2026-09-25 (staged rows are up to
+ * DRAFT_BATCH_BYTES now), so the same work per slice: small per draft — three fields off a narrow
+ * serde struct, one hash lookup, no dedupe map, no interners — against a fixed per-slice overhead,
+ * the corpus tables restored and re-exported around it. ~36MB of drafts per slice. */
+const SCORES_SLICE_RAW_BYTES = 24 * MEASURED_BATCH_RAW_BYTES;
+/** Draft rows materialized as JS buffers at once inside a scores slice — the agg slice's
+ * resident-bytes budget (DRAFT_FETCH_ROWS). */
+const SCORES_FETCH_ROWS = DRAFT_FETCH_ROWS;
+/** Drafts per SQLite batch row: DRAFT_BATCH_BYTES of draft JSON, packed under the 2MB value cap. */
+// Draft batching is by BYTES (DRAFT_BATCH_BYTES, via packedDraftGroups) rather than by draft count.
 //
 // It was `DRAFTS_PER_BATCH = 1_000`, which silently made the SQLite row size a function of how fat
 // a draft happens to be — and Durable Object SQLite rejects a value over 2 MB with SQLITE_TOOBIG.
@@ -402,7 +407,7 @@ const SCORES_FETCH_BATCHES = 8;
 // hit. The spill and row batches were already byte-capped; drafts were the one that was not.
 /** SQLite blob row size for staged dumps and tag-data snapshots. The wasm module cuts its streamed
  * snapshot exports at the same size (engine/wasm-import SNAPSHOT_CHUNK), so each emit is one row. */
-const STAGE_BLOB_BYTES = 1_900_000;
+const STAGE_BLOB_BYTES = STAGED_ROW_BYTES;
 /** The two snapshot tables: the TagData (tags, labels, slugs; the canonical set before tags), and
  * the corpus-wide finalize tables alone. */
 type SnapshotTable = "tagdata_blobs" | "corpus_blobs";
@@ -760,11 +765,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- re-export every tag map it never reads (see stepScores).
 			CREATE TABLE IF NOT EXISTS corpus_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
-			-- The routing filter's raw input, one row per scores batch: tab-separated
-			-- partition/key lines emitted by scores_add_drafts (EMIT_ROUTING). Staged rather than
+			-- The routing filter's raw input, one row per scores SLICE (one per batch until
+			-- 2026-09-25, see routingStagingRows): tab-separated partition/key lines emitted by
+			-- scores_add_drafts (EMIT_ROUTING), the slice's batches in order. Staged rather than
 			-- accumulated in wasm
 			-- because 1.2M keys resident would be ~55MB against a 124MiB ceiling; the routing phase
-			-- streams them straight into hashes. "pairs" is the SAME batch's oracle-index input
+			-- streams them straight into hashes. "pairs" is the SAME batches' oracle-index input
 			-- (EMIT_ORACLE_PAIRS, 32 bytes a printing), in the same row so it costs no row written
 			-- of its own; the oracle_index phase reads it and drops the table.
 			CREATE TABLE IF NOT EXISTS routing_keys (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL, pairs BLOB);
@@ -1171,8 +1177,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		const spentRead = meters.rows_read;
 		const spentWritten = meters.rows_written;
-		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0);
-		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0);
+		const [dayRead, dayWritten] = this.dayMeters(day);
 		const overRun = !retiring && (spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN);
 		const overDay = dayRead > MAX_DAY_ROWS_READ || dayWritten > MAX_DAY_ROWS_WRITTEN;
 		if (retiring && overDay) {
@@ -1245,8 +1250,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		try {
 			await this.step(phase);
 			// A slice that succeeded clears the retry state, so a recovered
-			// transient failure stops being reported as an ongoing problem.
-			this.metaSet("retries", "0");
+			// transient failure stops being reported as an ongoing problem —
+			// written only when a retry was recorded: the unconditional reset
+			// wrote a row on every healthy alarm (FIXED_ROWS_WRITTEN_PER_ALARM).
+			if ((this.metaGet("retries") ?? "0") !== "0") this.metaSet("retries", "0");
 			// Only when something was actually being retried: attempts is always
 			// >= 1 here, so an unconditional reset would write a row on every
 			// healthy slice to clear a counter nothing had raised.
@@ -1456,8 +1463,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const elapsed = this.alarmStartedAt > 0 ? now - this.alarmStartedAt : 0;
 		if (this.rowsRead === 0 && this.rowsWritten === 0 && this.alarmStartedAt === 0) return;
 		const day = ImportCoordinator.dayKey();
-		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0) + this.rowsRead;
-		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0) + this.rowsWritten;
+		const [dayReadBefore, dayWrittenBefore] = this.dayMeters(day);
+		const dayRead = dayReadBefore + this.rowsRead;
+		const dayWritten = dayWrittenBefore + this.rowsWritten;
 		const meters = advanceMeters(parseMeters(this.metaGet("run_meters")), {
 			rowsRead: this.rowsRead,
 			rowsWritten: this.rowsWritten,
@@ -1483,9 +1491,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.alarmCounted = true;
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("run_meters", JSON.stringify(meters));
-			this.metaSet(`${day}:read`, String(dayRead));
-			this.metaSet(`${day}:written`, String(dayWritten));
+			this.metaSet(day, `${dayRead},${dayWritten}`);
 		});
+	}
+
+	/**
+	 * The day's [rows read, rows written]: ONE meta row, `day:<date>` = "read,written", since
+	 * 2026-09-25 — the two rows it replaced (`day:<date>:read` and `:written`) cost a read each at
+	 * the top of every alarm and a read and a write each in every flush. A day that began under the
+	 * two-row code has only those, and they are summed in once; the first flush carries them into
+	 * the merged row. Old days of either shape are swept by metaClear's date prefix.
+	 */
+	private dayMeters(day: string): [number, number] {
+		const merged = this.metaGet(day);
+		if (merged !== null) {
+			const [read, written] = merged.split(",");
+			return [Number(read) || 0, Number(written) || 0];
+		}
+		return [Number(this.metaGet(`${day}:read`) ?? 0), Number(this.metaGet(`${day}:written`) ?? 0)];
 	}
 
 	/**
@@ -2121,46 +2144,45 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// the two would otherwise duplicate drafts on resume.
 		this.ctx.storage.transactionSync(() => {
 			let seq = Number(this.sqlAll<{ m: number }>("SELECT COALESCE(MAX(seq), -1) AS m FROM draft_batches")[0]?.m ?? -1);
-			// Byte-capped rows, the same `blobGroups` the spill and row batches below already use.
-			// The last group is partial unless this slice reached the end of the dump, so it goes
-			// back into the pending row rather than being written undersized once per slice.
-			// The hash vector is cut at the same boundaries, staying parallel to its drafts.
+			// Byte-capped rows of DRAFT_BATCH_BYTES raw, packed (packedDraftGroups re-cuts a group
+			// that would not fit a row). The last group is partial unless this slice reached the end
+			// of the dump, so it goes back into the pending row rather than being written
+			// undersized once per slice. The hash vector is cut at the same boundaries, staying
+			// parallel to its drafts.
 			const pending = this.takePendingDrafts();
 			const allDrafts = pending.drafts.concat(draftBuf);
 			const allHashes = pending.hashes.concat(hashBuf);
-			const groups = blobGroups(allDrafts);
-			let at = 0;
-			for (const group of exhausted ? groups : groups.slice(0, -1)) {
-				const raw = lengthPrefixed(group);
+			const groups = packedDraftGroups(allDrafts, packBlob);
+			const tail = exhausted ? undefined : groups.pop();
+			for (const group of groups) {
 				this.sqlRun(
 					"INSERT INTO draft_batches (seq, count, bytes, part_hashes, raw_len) VALUES (?, ?, ?, ?, ?)",
 					++seq,
-					group.length,
-					exactBuffer(packBlob(raw)),
-					exactBuffer(packPartHashes(allHashes.slice(at, at + group.length))),
-					raw.length,
+					group.end - group.start,
+					exactBuffer(group.packed),
+					exactBuffer(packPartHashes(allHashes.slice(group.start, group.end))),
+					group.raw,
 				);
-				at += group.length;
 			}
-			const tail = exhausted ? [] : (groups.at(-1) ?? []);
-			this.storePendingDrafts(tail, allHashes.slice(at, at + tail.length));
+			this.storePendingDrafts(tail ? { ...tail, hashes: allHashes.slice(tail.start, tail.end) } : null);
 			this.metaSet("lines_done", String(seen));
 			this.metaSet("transform_raw_offset", String(rawOffset + result.consumed));
 			this.persistStreamCheckpoint(corpus, stream, rawOffset + result.consumed, exhausted);
-			for (const [k, v] of Object.entries(stats)) {
-				this.metaSet(`tf_${k}`, String(Number(this.metaGet(`tf_${k}`) ?? 0) + v));
-			}
+			// The running totals, ONE row (was one per counter, six writes a slice).
+			const totals = this.transformTotals(linesDone);
+			for (const [k, v] of Object.entries(stats)) totals[k] = (totals[k] ?? 0) + v;
+			this.metaSet("tf_stats", JSON.stringify(totals));
 			if (exhausted) {
 				// Parse-coverage integrity check (bulk.rs JsonlStream parity): a
 				// large dump that mostly failed to parse means the format changed.
-				const totalBytes = Number(this.metaGet("tf_total_bytes") ?? 0);
-				const parsedBytes = Number(this.metaGet("tf_parsed_bytes") ?? 0);
+				const totalBytes = totals.total_bytes ?? 0;
+				const parsedBytes = totals.parsed_bytes ?? 0;
 				if (totalBytes >= PARSE_COVERAGE_MIN_BYTES && parsedBytes < PARSE_COVERAGE_THRESHOLD * totalBytes) {
 					throw new Error(
 						`bulk parse coverage ${parsedBytes}/${totalBytes} bytes below ${PARSE_COVERAGE_THRESHOLD}; format changed?`,
 					);
 				}
-				this.metaSet("drafts_total", this.metaGet("tf_drafts") ?? "0");
+				this.metaSet("drafts_total", String(totals.drafts ?? 0));
 				// all_cards was streamed, never staged: nothing to drop.
 				this.metaSet("phase", "tags");
 			}
@@ -2191,18 +2213,35 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return { drafts, hashes };
 	}
 
-	private storePendingDrafts(drafts: Uint8Array[], hashes: bigint[]): void {
+	/** Replace the pending row with this slice's partial last group (already packed), or clear it. */
+	private storePendingDrafts(tail: (PackedDraftGroup & { hashes: bigint[] }) | null): void {
 		this.sqlRun("DELETE FROM draft_batches WHERE seq = -1");
-		if (drafts.length > 0) {
-			const raw = lengthPrefixed(drafts);
+		if (tail && tail.end > tail.start) {
 			this.sqlRun(
 				"INSERT INTO draft_batches (seq, count, bytes, part_hashes, raw_len) VALUES (-1, ?, ?, ?, ?)",
-				drafts.length,
-				exactBuffer(packBlob(raw)),
-				exactBuffer(packPartHashes(hashes)),
-				raw.length,
+				tail.end - tail.start,
+				exactBuffer(tail.packed),
+				exactBuffer(packPartHashes(tail.hashes)),
+				tail.raw,
 			);
 		}
+	}
+
+	/**
+	 * The transform's running totals (parsed, skipped, drafts, canonical, parsed_bytes, total_bytes),
+	 * kept in ONE meta row, `tf_stats`, since 2026-09-25. A transform begun under the code that kept
+	 * one `tf_<name>` row per counter has only those, and they are read once, on the first slice
+	 * this code runs; the first slice of a run (linesDone 0) has nothing to carry.
+	 */
+	private transformTotals(linesDone: number): Record<string, number> {
+		const merged = this.metaGet("tf_stats");
+		if (merged !== null) return JSON.parse(merged) as Record<string, number>;
+		const totals: Record<string, number> = {};
+		if (linesDone === 0) return totals;
+		for (const k of ["parsed", "skipped", "drafts", "canonical", "parsed_bytes", "total_bytes"]) {
+			totals[k] = Number(this.metaGet(`tf_${k}`) ?? 0);
+		}
+		return totals;
 	}
 
 	// ── phase: tags ────────────────────────────────────────────────────────────
@@ -2408,28 +2447,35 @@ export class ImportCoordinator extends DurableObject<Env> {
 		});
 
 		let fed = 0;
+		let fedBytes = 0;
+		let exhausted = false;
 		let names = 0n;
 		// Batches are read in small groups rather than one query: a slice's worth of staged drafts
-		// is ~45MB, and materializing that as JS ArrayBuffers alongside the restored tables is
+		// is ~36MB, and materializing that as JS ArrayBuffers alongside the restored tables is
 		// the one place this phase could crowd the isolate.
-		while (fed < SCORES_SLICE_BATCHES) {
+		while (fedBytes < SCORES_SLICE_RAW_BYTES) {
 			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
 				"SELECT seq, bytes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
 				done + fed,
-				SCORES_FETCH_BATCHES,
+				SCORES_FETCH_ROWS,
 			);
 			// Staged bytes are already the length-prefixed batch framing the wasm reads, so a
 			// batch goes across exactly as it was written — no split, no rejoin.
 			for (const row of rows) {
-				// The routing emit that this call produces is tagged with the batch's OWN seq, so a
-				// retried slice replaces its rows rather than appending a second copy of them.
+				// The routing emit that this call produces is tagged with the batch's OWN seq, so the
+				// slice's row can be keyed by where the slice began and cut back per batch if needed.
 				routingSeq = row.seq;
-				names = wasm.scoresAddDrafts(unpackBlob(new Uint8Array(row.bytes)), partitionCount);
+				const batch = unpackBlob(new Uint8Array(row.bytes));
+				fedBytes += batch.length;
+				names = wasm.scoresAddDrafts(batch, partitionCount);
 			}
 			fed += rows.length;
-			if (rows.length < SCORES_FETCH_BATCHES) break;
+			// A short fetch is the end of the staging — never "this slice happened to be small".
+			if (rows.length < SCORES_FETCH_ROWS) {
+				exhausted = true;
+				break;
+			}
 		}
-		const exhausted = fed < SCORES_SLICE_BATCHES;
 		if (exhausted) names = wasm.scoresFinish();
 		wasm.setHandlers({});
 
@@ -2445,18 +2491,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.writeSnapshot("corpus_blobs", wasm);
 			if (!corpusStaged) this.metaSet("corpus_staged", "1");
 			this.metaSet("routing_lines", String(Number(this.metaGet("routing_lines") ?? 0) + routingLines));
-			// Keyed by the batch cursor this slice started from, so a RETRIED slice
-			// overwrites its own rows instead of doubling them. Duplicate keys would
-			// not corrupt the filter (it dedupes), but they would inflate the build.
-			// The pairs ride in the same statement: one row written per batch, as before.
-			// Stored raw — random UUIDs do not compress.
-			for (const blob of routingBlobs) {
-				const pairs = pairBlobs.get(blob.seq);
+			// ONE row for the slice where there was one per batch (routingStagingRows): keyed by the
+			// seq of its first batch, so a RETRIED slice — which starts from the same committed
+			// cursor — replaces its own row instead of doubling it.
+			for (const row of routingStagingRows(routingBlobs, pairBlobs, packBlob, STAGE_BLOB_BYTES)) {
 				this.sqlRun(
 					"INSERT OR REPLACE INTO routing_keys (seq, bytes, pairs) VALUES (?, ?, ?)",
-					blob.seq,
-					exactBuffer(packBlob(blob.bytes)),
-					pairs ? exactBuffer(pairs) : null,
+					row.seq,
+					exactBuffer(row.bytes),
+					row.pairs ? exactBuffer(row.pairs) : null,
 				);
 			}
 			this.metaSet("scores_batch_done", String(done + fed));
@@ -2692,10 +2735,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * every draft — and it runs before agg because N is pinned at the end of tags
 	 * and every partition's share is a function of it.
 	 *
-	 * Memory: a slice holds the drafts it has not yet flushed as VIEWS into their
-	 * batch buffers, so what stays resident is every batch with an unflushed
-	 * draft — bounded by the accumulators (N x BLOB_GROUP_BYTES) plus the fetch
-	 * group, ~60MB at N=32 and ~27MB at N=10, against the 128MB isolate.
+	 * Memory: each partition's group is built as a PackStream, so what a slice
+	 * holds is COMPRESSED bytes — at most one row's worth per partition — plus
+	 * each stream's compressor (~0.4MB) and the fetch group. Groups are up to
+	 * DRAFT_BATCH_BYTES raw (6MB, since 2026-09-25), which as raw views would be
+	 * N x 6MB, 192MB at N=32; packed as they go it is ~15MB at N=32. A group
+	 * whose packed bound would pass a row is flushed early, whatever its raw size.
 	 *
 	 * Idempotent per slice: a group's key is a pure function of the slice's
 	 * source cursor and the group's ordinal within it (`done x 128 + ordinal`,
@@ -2710,28 +2755,28 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const pp = this.requirePp();
 		const n = pp.partitions.length;
 		const done = Number(this.metaGet("bucket_batch_done") ?? 0);
-		const acc: Uint8Array[][] = Array.from({ length: n }, () => []);
-		const accBytes = new Array<number>(n).fill(0);
+		const acc: (PackStream | null)[] = new Array(n).fill(null);
 		const ordinal = new Array<number>(n).fill(0);
 		let groups = 0;
 		const flush = (partition: number) => {
-			const group = acc[partition] as Uint8Array[];
-			if (group.length === 0) return;
+			const group = acc[partition];
+			if (!group || group.count === 0) return;
 			this.sqlRun(
 				"INSERT OR REPLACE INTO draft_parts (partition, seq, count, bytes) VALUES (?, ?, ?, ?)",
 				partition,
 				done * 128 + (ordinal[partition] as number),
-				group.length,
-				exactBuffer(packBlob(lengthPrefixed(group))),
+				group.count,
+				exactBuffer(group.finish()),
 			);
 			ordinal[partition] = (ordinal[partition] as number) + 1;
-			acc[partition] = [];
-			accBytes[partition] = 0;
+			acc[partition] = null;
 			groups += 1;
 		};
 		let fed = 0;
+		let fedBytes = 0;
+		let exhausted = false;
 		let sourceBytes = 0;
-		while (fed < BUCKET_SLICE_BATCHES) {
+		while (fed < BUCKET_SLICE_BATCHES && fedBytes < BUCKET_SLICE_RAW_BYTES) {
 			const want = Math.min(BUCKET_FETCH_BATCHES, BUCKET_SLICE_BATCHES - fed);
 			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer; part_hashes: ArrayBuffer | null }>(
 				"SELECT seq, bytes, part_hashes FROM draft_batches WHERE seq >= ? ORDER BY seq LIMIT ?",
@@ -2747,25 +2792,35 @@ export class ImportCoordinator extends DurableObject<Env> {
 				}
 				// Deleted at the end of this slice: churn, like the groups it becomes.
 				sourceBytes += row.bytes.byteLength + row.part_hashes.byteLength;
-				const byPartition = bucketDrafts(
-					{ bytes: unpackBlob(new Uint8Array(row.bytes)), partHashes: new Uint8Array(row.part_hashes) },
-					n,
-				);
+				const raw = unpackBlob(new Uint8Array(row.bytes));
+				fedBytes += raw.length;
+				const byPartition = bucketDrafts({ bytes: raw, partHashes: new Uint8Array(row.part_hashes) }, n);
 				for (let p = 0; p < n; p++) {
 					for (const draft of byPartition[p] as Uint8Array[]) {
-						// Same cap rule as blobGroups: a group's length-prefixed encoding stays under it.
-						if ((acc[p] as Uint8Array[]).length > 0 && (accBytes[p] as number) + 4 + draft.length > BLOB_GROUP_BYTES) {
+						// A group ends where the next draft would take it past DRAFT_BATCH_BYTES raw (the
+						// blobGroups rule), or past a row once packed.
+						const open = acc[p];
+						if (
+							open &&
+							open.count > 0 &&
+							(open.raw + 4 + draft.length > DRAFT_BATCH_BYTES ||
+								open.packedBound + 4 + draft.length > STAGE_BLOB_BYTES)
+						) {
 							flush(p);
 						}
-						(acc[p] as Uint8Array[]).push(draft);
-						accBytes[p] = (accBytes[p] as number) + 4 + draft.length;
+						const group = acc[p] ?? new PackStream();
+						acc[p] = group;
+						group.push(draft);
 					}
 				}
 			}
 			fed += rows.length;
-			if (rows.length < want) break;
+			// A short fetch is the end of the staging, and the only seal condition.
+			if (rows.length < want) {
+				exhausted = true;
+				break;
+			}
 		}
-		const exhausted = fed < BUCKET_SLICE_BATCHES;
 		this.ctx.storage.transactionSync(() => {
 			for (let p = 0; p < n; p++) flush(p);
 			// The consumed source rows go in the SAME transaction as the cursor, so the pool never
@@ -3026,32 +3081,38 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// `seq > ?` seek on the composite key reads this partition's next groups
 		// and nothing else.
 		let last = Number(this.metaGet("agg_seq_done") ?? -1);
-		// Fetched in AGG_FETCH_BATCHES-sized groups rather than one query for
-		// the whole slice — the split stepScores documents: the slice is a CPU
-		// budget, the group is the resident-bytes budget, and materializing a
-		// 64-batch slice at once would be ~120MB against a 128MB isolate.
-		let fed = 0;
-		while (fed < AGG_SLICE_BATCHES) {
-			const want = Math.min(AGG_FETCH_BATCHES, AGG_SLICE_BATCHES - fed);
+		// Fetched DRAFT_FETCH_ROWS rows at a time rather than one query for the
+		// whole slice — the split stepScores documents: the slice (raw bytes) is a
+		// CPU budget, the fetch group is the resident-bytes budget, and
+		// materializing a whole slice at once would be ~96MB against a 128MB
+		// isolate.
+		let fedBytes = 0;
+		let exhausted = false;
+		while (fedBytes < AGG_SLICE_RAW_BYTES) {
 			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
 				"SELECT seq, bytes FROM draft_parts WHERE partition = ? AND seq > ? ORDER BY seq LIMIT ?",
 				pp.partition,
 				last,
-				want,
+				DRAFT_FETCH_ROWS,
 			);
 			for (const row of rows) {
 				// Every draft in the group is this partition's, in emission order —
 				// stepBucket preserved it within and across batches — so the group
-				// is fed whole, no filter.
-				wasm.aggDrafts(unpackBlob(new Uint8Array(row.bytes)));
+				// is fed whole, no filter: in WASM_FEED_BYTES pieces (feedSlices),
+				// since each call's input lands in linear memory, which never shrinks.
+				const batch = unpackBlob(new Uint8Array(row.bytes));
+				fedBytes += batch.length;
+				for (const piece of feedSlices(batch)) wasm.aggDrafts(piece);
 				last = row.seq;
 			}
-			fed += rows.length;
-			// Short group means the staging ran out, which is the seal condition
+			// A short fetch means the staging ran out, which is the seal condition
 			// below — never "this group happened to be small".
-			if (rows.length < want) break;
+			if (rows.length < DRAFT_FETCH_ROWS) {
+				exhausted = true;
+				break;
+			}
 		}
-		if (fed < AGG_SLICE_BATCHES) {
+		if (exhausted) {
 			const winners = wasm.aggFinish();
 			// The rest of what finalize looks up, now that the partition's drafts have named every key
 			// they will ask for: the art tags of the illustrations they show, and the corpus tables'
@@ -3098,27 +3159,30 @@ export class ImportCoordinator extends DurableObject<Env> {
 			onSpill: (b) => spillBuf.push(b),
 		});
 		let staged = 0n;
-		// Same fetch-group split as stepAgg and stepScores: FINALIZE_SLICE_BATCHES
-		// is the CPU budget, FINALIZE_FETCH_BATCHES the resident-bytes one.
-		let fed = 0;
-		while (fed < FINALIZE_SLICE_BATCHES) {
-			const want = Math.min(FINALIZE_FETCH_BATCHES, FINALIZE_SLICE_BATCHES - fed);
+		// Same fetch-group split as stepAgg and stepScores: FINALIZE_SLICE_RAW_BYTES
+		// is the CPU budget, DRAFT_FETCH_ROWS the resident-bytes one.
+		let fedBytes = 0;
+		let finished = false;
+		while (fedBytes < FINALIZE_SLICE_RAW_BYTES) {
 			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
 				"SELECT seq, bytes FROM draft_parts WHERE partition = ? AND seq > ? ORDER BY seq LIMIT ?",
 				pp.partition,
 				last,
-				want,
+				DRAFT_FETCH_ROWS,
 			);
 			for (const row of rows) {
 				// Same rows, same order as stepAgg — the finalize pass's contract
-				// with the aggregation it follows.
-				staged = wasm.finalizeDrafts(unpackBlob(new Uint8Array(row.bytes)));
+				// with the aggregation it follows — and the same WASM_FEED_BYTES pieces.
+				const batch = unpackBlob(new Uint8Array(row.bytes));
+				fedBytes += batch.length;
+				for (const piece of feedSlices(batch)) staged = wasm.finalizeDrafts(piece);
 				last = row.seq;
 			}
-			fed += rows.length;
-			if (rows.length < want) break;
+			if (rows.length < DRAFT_FETCH_ROWS) {
+				finished = true;
+				break;
+			}
 		}
-		const finished = fed < FINALIZE_SLICE_BATCHES;
 		if (finished) staged = wasm.finalizeEnd();
 		wasm.setHandlers({});
 
@@ -3152,7 +3216,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			}
 		});
 		console.log(
-			`Finalize slice (partition ${pp.partition}): ${fed} batches, ${staged} rows staged` +
+			`Finalize slice (partition ${pp.partition}): ${(fedBytes / 1e6).toFixed(1)}MB of drafts, ${staged} rows staged` +
 				`${finished ? " (done)" : ""}`,
 		);
 	}

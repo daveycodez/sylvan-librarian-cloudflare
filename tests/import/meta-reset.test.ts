@@ -56,8 +56,12 @@ function seed(): Database {
 		// day-scoped totals below outlive the reset.
 		["run_meters", '{"rows_read":98000,"rows_written":1200,"alarms":412,"active_ms":2811000}'],
 		["run_summary", "published card-store-v2026090301-1789424305.store (38765 cards, 10 partitions)"],
+		// The day's meters are ONE row, "read,written", since 2026-09-25; a day that began before
+		// that also has the two rows it replaced, and both shapes live and die by the date prefix.
+		[TODAY, "1200000,9000"],
 		[`${TODAY}:read`, "1200000"],
 		[`${TODAY}:written`, "9000"],
+		["day:2026-08-08", "4500000,20000"],
 		["day:2026-08-08:read", "4500000"],
 		["day:2026-07-30:read", "12"],
 	];
@@ -75,7 +79,7 @@ describe("metaClear", () => {
 	test("keeps today's spend, drops run state and previous days", () => {
 		const db = seed();
 		metaClear(db, TODAY);
-		expect(keysIn(db)).toEqual([`${TODAY}:read`, `${TODAY}:written`]);
+		expect(keysIn(db)).toEqual([TODAY, `${TODAY}:read`, `${TODAY}:written`]);
 	});
 
 	test("the surviving totals still carry their values", () => {
@@ -83,6 +87,8 @@ describe("metaClear", () => {
 		metaClear(db, TODAY);
 		const row = db.query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?").get(`${TODAY}:read`);
 		expect(row?.value).toBe("1200000");
+		const merged = db.query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?").get(TODAY);
+		expect(merged?.value).toBe("1200000,9000");
 	});
 
 	test("a run started on a new day starts from zero", () => {
@@ -97,6 +103,6 @@ describe("metaClear", () => {
 		const db = seed();
 		metaClear(db, TODAY);
 		metaClear(db, TODAY);
-		expect(keysIn(db)).toEqual([`${TODAY}:read`, `${TODAY}:written`]);
+		expect(keysIn(db)).toEqual([TODAY, `${TODAY}:read`, `${TODAY}:written`]);
 	});
 });

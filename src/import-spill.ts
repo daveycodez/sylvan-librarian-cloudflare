@@ -18,6 +18,22 @@
 /** Byte cap for a persisted blob group (safely under SQLite's 2MB value cap). */
 export const BLOB_GROUP_BYTES = 1_500_000;
 
+/**
+ * Raw bytes per staged DRAFT group: a draft_batches row (transform) and a draft_parts row (bucket).
+ *
+ * Four times BLOB_GROUP_BYTES because those rows are stored PACKED (import-blob-codec.ts): drafts
+ * deflate ~7x, so a 1.5MB-raw group was a ~0.2MB row, and every draft cost ~4x the rows it needed —
+ * inserted by transform, deleted by bucket, re-inserted and purged per partition. Rows written are
+ * the free plan's tightest meter (100k/day). 6MB raw is ~0.9MB packed at the real corpus's ratio;
+ * a group that packs past STAGED_ROW_BYTES anyway is re-cut at BLOB_GROUP_BYTES by its writer
+ * (packedDraftGroups), so no ratio can reach SQLite's 2MB value cap. Wasm is still fed at most
+ * BLOB_GROUP_BYTES per call (feedSlices).
+ */
+export const DRAFT_BATCH_BYTES = 6_000_000;
+
+/** The most a packed staged row may hold: just under the Durable Object's 2MB value cap. */
+export const STAGED_ROW_BYTES = 1_900_000;
+
 export function lengthPrefixed(blobs: Uint8Array[]): Uint8Array {
 	const total = blobs.reduce((n, b) => n + 4 + b.length, 0);
 	const out = new Uint8Array(total);
@@ -63,12 +79,12 @@ export function exactBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 /** Split blobs into groups whose length-prefixed encoding stays under the cap. */
-export function blobGroups(blobs: Uint8Array[]): Uint8Array[][] {
+export function blobGroups(blobs: Uint8Array[], cap: number = BLOB_GROUP_BYTES): Uint8Array[][] {
 	const groups: Uint8Array[][] = [];
 	let group: Uint8Array[] = [];
 	let bytes = 0;
 	for (const b of blobs) {
-		if (group.length > 0 && bytes + 4 + b.length > BLOB_GROUP_BYTES) {
+		if (group.length > 0 && bytes + 4 + b.length > cap) {
 			groups.push(group);
 			group = [];
 			bytes = 0;
@@ -324,4 +340,119 @@ export function orderedRowCursor(
 		cursor += 1;
 		return row;
 	};
+}
+
+/** One staged draft group: the drafts [start, end) of the caller's list, packed. */
+export interface PackedDraftGroup {
+	start: number;
+	end: number;
+	/** Length-prefixed raw bytes (the draft_batches `raw_len`). */
+	raw: number;
+	packed: Uint8Array;
+}
+
+/**
+ * Drafts cut into staged groups of DRAFT_BATCH_BYTES raw, each packed. A group whose packed bytes
+ * would pass STAGED_ROW_BYTES — drafts that compress under ~3.2x, which no corpus has come near —
+ * is re-cut at BLOB_GROUP_BYTES, the size every group was before, whose packed form cannot reach
+ * the cap. In draft order, covering every draft exactly once.
+ */
+export function packedDraftGroups(drafts: Uint8Array[], pack: (raw: Uint8Array) => Uint8Array): PackedDraftGroup[] {
+	const out: PackedDraftGroup[] = [];
+	let start = 0;
+	for (const group of blobGroups(drafts, DRAFT_BATCH_BYTES)) {
+		const raw = lengthPrefixed(group);
+		const packed = pack(raw);
+		if (packed.length <= STAGED_ROW_BYTES) {
+			out.push({ start, end: start + group.length, raw: raw.length, packed });
+			start += group.length;
+			continue;
+		}
+		for (const sub of blobGroups(group, BLOB_GROUP_BYTES)) {
+			const subRaw = lengthPrefixed(sub);
+			out.push({ start, end: start + sub.length, raw: subRaw.length, packed: pack(subRaw) });
+			start += sub.length;
+		}
+	}
+	return out;
+}
+
+/**
+ * The most one agg_drafts / finalize_drafts call is handed. Each call's input is allocated in the
+ * group instance's linear memory, which never shrinks, while the aggregation state grows around
+ * it — so a big input buffer leaves a big hole, and the store build that runs later in the same
+ * instance inherits the high-water. Measured at 2x/3x the corpus (the build's worst partition):
+ * 1.5MB feeds 101.4/109.1MB, 256KB feeds 96.9/104.4MB — below the 98.0/106.2MB of the 1.5MB
+ * groups fed whole before 2026-09-25 — at the same CPU.
+ */
+export const WASM_FEED_BYTES = 256 * 1024;
+
+/**
+ * A length-prefixed batch cut at entry boundaries into views of at most `cap` bytes (an entry
+ * larger than `cap` stands alone). Staged draft groups are up to DRAFT_BATCH_BYTES raw; wasm is fed
+ * WASM_FEED_BYTES at a time. Views, not copies: the caller's batch stays the one resident copy.
+ */
+export function feedSlices(batch: Uint8Array, cap: number = WASM_FEED_BYTES): Uint8Array[] {
+	const dv = new DataView(batch.buffer, batch.byteOffset, batch.byteLength);
+	const out: Uint8Array[] = [];
+	let start = 0;
+	let at = 0;
+	while (at < batch.length) {
+		if (at + 4 > batch.length) throw new Error(`truncated batch header at ${at}`);
+		const next = at + 4 + dv.getUint32(at, true);
+		if (next > batch.length) throw new Error(`truncated batch entry at ${at}`);
+		if (next - start > cap && at > start) {
+			out.push(batch.subarray(start, at));
+			start = at;
+		}
+		at = next;
+	}
+	if (at > start) out.push(batch.subarray(start, at));
+	return out;
+}
+
+/** One staged routing_keys row: the routing filter's input text (packed) and the oracle pairs. */
+export interface RoutingStagingRow {
+	seq: number;
+	bytes: Uint8Array;
+	pairs: Uint8Array | null;
+}
+
+/**
+ * A scores slice's routing-filter input and oracle-index pairs as staged routing_keys rows: ONE
+ * row for the whole slice, keyed by the seq of its first batch. Until 2026-09-25 it was one row
+ * per batch, ~1,480 a night at 1x, each written and then deleted by the oracle_index phase.
+ *
+ * The text and the pairs are the batches' own, concatenated in batch order, so the routing and
+ * oracle_index phases read exactly the lines and records they did before. Every batch's text
+ * opens with the name-keys stamp, the first batch's included, so the row still opens with it. A
+ * slice whose concatenation would not fit a row (`cap`), or that lacks a batch's pairs, is staged
+ * per batch as before. Per-batch keys are the batches' own seqs, all within this slice's range,
+ * so they cannot collide with another slice's row either way.
+ */
+export function routingStagingRows(
+	routing: readonly { seq: number; bytes: Uint8Array }[],
+	pairs: ReadonlyMap<number, Uint8Array>,
+	pack: (raw: Uint8Array) => Uint8Array,
+	cap: number,
+): RoutingStagingRow[] {
+	const first = routing[0];
+	if (!first) return [];
+	const concat = (parts: Uint8Array[]) => {
+		const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+		let at = 0;
+		for (const p of parts) {
+			out.set(p, at);
+			at += p.length;
+		}
+		return out;
+	};
+	const batchPairs = routing.map((b) => pairs.get(b.seq));
+	if (batchPairs.every((p) => p !== undefined)) {
+		const text = pack(concat(routing.map((b) => b.bytes)));
+		// Stored raw: random UUIDs do not compress.
+		const joined = concat(batchPairs as Uint8Array[]);
+		if (text.length <= cap && joined.length <= cap) return [{ seq: first.seq, bytes: text, pairs: joined }];
+	}
+	return routing.map((b) => ({ seq: b.seq, bytes: pack(b.bytes), pairs: pairs.get(b.seq) ?? null }));
 }

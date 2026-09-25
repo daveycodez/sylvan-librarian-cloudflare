@@ -324,10 +324,11 @@ function check(ok: boolean, what: string): void {
 	) as Record<string, number>;
 	meters.rows_written = MAX_RUN_ROWS_WRITTEN + 1;
 	old.storage.db.run("UPDATE meta SET value = ? WHERE key = 'run_meters'", [JSON.stringify(meters)]);
-	const dayKey = `${DAY_PREFIX}${new Date().toISOString().slice(0, 10)}:written`;
+	// The day's meters are one row, "read,written" (ImportCoordinator.dayMeters).
+	const dayKey = `${DAY_PREFIX}${new Date().toISOString().slice(0, 10)}`;
 	old.storage.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
 		dayKey,
-		String(MAX_DAY_ROWS_WRITTEN + 1),
+		`0,${MAX_DAY_ROWS_WRITTEN + 1}`,
 	]);
 	old.wedged = false;
 	await old.drive((_phase, n) => n >= 1);

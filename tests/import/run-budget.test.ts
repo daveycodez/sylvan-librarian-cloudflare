@@ -25,17 +25,19 @@
 import { describe, expect, test } from "bun:test";
 import { REGION_HINTS } from "../../src/engine/region";
 import {
-	AGG_SLICE_BATCHES,
+	AGG_SLICE_RAW_BYTES,
 	CURRENT_SLICES,
 	DEAD_MAN_MARGIN_MS,
 	DO_STORAGE_POOL_BYTES,
+	DRAFT_FETCH_ROWS,
 	deadManDelayMs,
-	FINALIZE_SLICE_BATCHES,
+	FINALIZE_SLICE_RAW_BYTES,
 	FIXED_ROWS_WRITTEN_PER_ALARM,
 	MAX_DAY_ROWS_WRITTEN,
 	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
+	MEASURED_BATCH_RAW_BYTES,
 	PACE_MAX_BPS,
 	PACE_MIN_BPS,
 	PACE_START_BPS,
@@ -48,6 +50,7 @@ import {
 	TOLL_2026_08_28,
 } from "../../src/import-budget";
 import { partitionCountFor } from "../../src/import-publish";
+import { BLOB_GROUP_BYTES, DRAFT_BATCH_BYTES } from "../../src/import-spill";
 
 /**
  * The 2026-08-28 nightly, as its own logs describe it.
@@ -106,15 +109,19 @@ const CORPUS_2026_09_04: RunShape = { ...CORPUS_2026_08_28, spillGroupsPerPartit
 
 /** What agg/finalize were before 2026-08-28 — and no bucket phase, which did not exist yet. */
 const SLICES_BEFORE: SliceSizes = {
-	aggBatches: 8,
-	finalizeBatches: 4,
+	draftBatchBytes: BLOB_GROUP_BYTES,
+	aggBytes: 8 * BLOB_GROUP_BYTES,
+	finalizeBytes: 4 * BLOB_GROUP_BYTES,
 	reorderRows: REORDER_SLICE_ROWS,
 	bucketBatches: null,
 	purgeBytes: null,
 };
 
+/** The draft rows every measured shape below was staged in, before 2026-09-25's 6MB rows. */
+const SLICES_1_5MB_ROWS: SliceSizes = { ...CURRENT_SLICES, draftBatchBytes: BLOB_GROUP_BYTES };
+
 /** The 2026-08-28 slice sizes WITHOUT the bucket phase: the pipeline between that fix and 2026-09-04. */
-const SLICES_UNBUCKETED: SliceSizes = { ...CURRENT_SLICES, bucketBatches: null, purgeBytes: null };
+const SLICES_UNBUCKETED: SliceSizes = { ...SLICES_1_5MB_ROWS, bucketBatches: null, purgeBytes: null };
 
 /** Today's slices with each partition's staging deleted in one commit — the commit that wedged, 2026-09-15. */
 const SLICES_UNSLICED_PURGE: SliceSizes = { ...CURRENT_SLICES, purgeBytes: null };
@@ -124,7 +131,10 @@ const SLICES_UNSLICED_PURGE: SliceSizes = { ...CURRENT_SLICES, purgeBytes: null 
  * before/after claims below are stated against it; BUCKET_SLICE_BATCHES dropped to 16 on 2026-09-16
  * for storage churn (see PACE_START_BPS), a separate trade priced where the growth test says so.
  */
-const SLICES_2026_09_04: SliceSizes = { ...CURRENT_SLICES, bucketBatches: 64, purgeBytes: null };
+const SLICES_2026_09_04: SliceSizes = { ...SLICES_1_5MB_ROWS, bucketBatches: 64, purgeBytes: null };
+
+/** The pipeline the day before 2026-09-25: today's slices, 1.5MB draft rows. */
+const SLICES_2026_09_24: SliceSizes = SLICES_1_5MB_ROWS;
 
 /**
  * The staged-draft bytes behind CORPUS_2026_08_28's N=10: partitionCountFor
@@ -276,27 +286,30 @@ describe("the run's storage budget", () => {
 		expect(now.rowsWritten).toBeLessThan(before.rowsWritten * 1.1);
 	});
 
-	test("the nightly stays inside the day's write cap as the corpus grows — through 2x", () => {
+	test("the nightly stays inside the day's write cap as the corpus grows — through 3x", () => {
 		// The wall the bucket phase was built for. Unbucketed, every partition
 		// rescanned the whole staging and N grew with the corpus, so the alarm
 		// count — and with it the write toll — grew as N x corpus. Bucketed, every
 		// term is linear.
 		//
-		// THROUGH 2x, NOT 3x, since 2026-09-16: BUCKET_SLICE_BATCHES dropped 64 → 16
+		// From 2026-09-16 this held only THROUGH 2x: BUCKET_SLICE_BATCHES dropped 64 → 16
 		// so no bucket alarm churns ~190MB of storage in one burst (the bursts that
 		// left storage hours behind), and at 16 each slice flushes more partial
-		// groups, which is write rows. At the corpus's ~7%/year, 2x is about ten
-		// years out. When this goes red, the lever is carrying each partition's
-		// partial group across bucket slices instead of flushing it every slice —
-		// not raising the slice back.
-		for (const multiple of [1, 1.5, 2]) {
+		// groups, which is write rows. 2026-09-25 put 3x back: draft rows four times
+		// the size (DRAFT_BATCH_BYTES) and a per-alarm toll of 5 rows instead of 7.
+		// The harness measured 6.2k/12.1k/19.4k rows written at 1x/2x/3x, against
+		// 16.6k/34.4k and a trap before (x5). When this goes red, the lever is
+		// carrying each partition's partial group across bucket slices instead of
+		// flushing it every slice — not raising the slice back.
+		for (const multiple of [1, 1.5, 2, 2.5, 3]) {
 			const cost = projectRunCost(corpusAt(multiple));
 			expect(cost.rowsWritten * HARNESS_WRITE_MULTIPLE).toBeLessThan(MAX_DAY_ROWS_WRITTEN);
 			expect(cost.rowsRead * 2).toBeLessThan(MAX_RUN_ROWS_READ);
 		}
 		// The regression twin, on the pipeline the bucket phase replaced: it could
 		// not have done 2.5x, and its alarm count at 3x is what "quadratic" means.
-		const unbucketed = projectRunCost(corpusAt(2.5), SLICES_UNBUCKETED);
+		// At that pipeline's own per-alarm toll (TOLL_2026_08_28), not today's lighter one.
+		const unbucketed = projectRunCost(corpusAt(2.5), SLICES_UNBUCKETED, TOLL_2026_08_28);
 		expect(unbucketed.rowsWritten * HARNESS_WRITE_MULTIPLE).toBeGreaterThan(MAX_DAY_ROWS_WRITTEN);
 		expect(projectRunCost(corpusAt(3), SLICES_UNBUCKETED).alarms).toBeGreaterThan(
 			4 * projectRunCost(corpusAt(3), SLICES_2026_09_04).alarms,
@@ -323,30 +336,45 @@ describe("the run's storage budget", () => {
 	});
 
 	test("agg and finalize slice the same staging, so they cost the same alarms", () => {
-		// They walk the identical draft_batches cursor in the identical order —
+		// They walk the identical draft_parts cursor in the identical order —
 		// that is the finalize pass's contract with the aggregation before it.
 		// Divergent slice sizes are not wrong, but they are always a decision,
 		// never a drift, so pin them together.
-		expect(AGG_SLICE_BATCHES).toBe(FINALIZE_SLICE_BATCHES);
+		expect(AGG_SLICE_RAW_BYTES).toBe(FINALIZE_SLICE_RAW_BYTES);
+		// The same work per slice as the 64 batches of 1.5MB they were counted in.
+		expect(AGG_SLICE_RAW_BYTES).toBe(64 * MEASURED_BATCH_RAW_BYTES);
+	});
+
+	test("draft rows four times the size cut the staging's rows written by about three quarters", () => {
+		// 2026-09-25: draft_batches and draft_parts rows hold DRAFT_BATCH_BYTES (6MB) raw, packed
+		// ~0.9MB. Every staged row is written once and deleted once (bucket, then the partition
+		// purge), and the per-row terms are what this moves; the alarms barely move.
+		expect(DRAFT_BATCH_BYTES).toBe(4 * BLOB_GROUP_BYTES);
+		for (const shape of [CORPUS_2026_09_04, corpusAt(2), corpusAt(3)]) {
+			const before = projectRunCost(shape, SLICES_2026_09_24);
+			const now = projectRunCost(shape);
+			const perRow = (c: typeof now) => c.rowsWritten - c.fixedRowsWritten;
+			expect(perRow(now)).toBeLessThan(perRow(before));
+			expect(now.alarms).toBeLessThanOrEqual(before.alarms);
+		}
 	});
 
 	test("a slice never asks for more than the isolate can hold", () => {
 		// The 4-batch finalize slice was sized for a JS row-JSON buffer that had
 		// already been deleted. The rule that replaced it: the SLICE is a CPU
 		// budget and the FETCH GROUP is the memory budget, so the fetch group is
-		// what has to stay small — a staged batch is ~1.9MB and the isolate
-		// ceiling is 128MB.
-		const STAGE_BATCH_BYTES = 1_900_000;
+		// what has to stay small — a staged row is up to DRAFT_BATCH_BYTES raw (and
+		// its packed bytes beside it) and the isolate ceiling is 128MB.
 		const ISOLATE_BUDGET_BYTES = 128 * 1024 * 1024;
-		for (const group of [8]) {
-			expect(group * STAGE_BATCH_BYTES).toBeLessThan(ISOLATE_BUDGET_BYTES / 4);
-		}
+		expect(DRAFT_FETCH_ROWS * DRAFT_BATCH_BYTES * 1.2).toBeLessThan(ISOLATE_BUDGET_BYTES / 4);
 		// And the slice itself must not be so large that even ONE fetch group's
-		// worth of work overruns the 30s allowance: ~15ms of CPU per batch was
+		// worth of work overruns the 30s allowance: ~15ms of CPU per 1.5MB batch was
 		// measured on the 2026-08-28 production alarms.
 		const CPU_MS_PER_BATCH = 15;
 		const DO_CPU_ALLOWANCE_MS = 30_000;
-		expect(FINALIZE_SLICE_BATCHES * CPU_MS_PER_BATCH * 4).toBeLessThan(DO_CPU_ALLOWANCE_MS);
+		expect((FINALIZE_SLICE_RAW_BYTES / MEASURED_BATCH_RAW_BYTES) * CPU_MS_PER_BATCH * 4).toBeLessThan(
+			DO_CPU_ALLOWANCE_MS,
+		);
 		expect(FIXED_ROWS_WRITTEN_PER_ALARM).toBeGreaterThan(0);
 	});
 });

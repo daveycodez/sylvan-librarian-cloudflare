@@ -24,6 +24,8 @@ import {
 	FIXED_ROWS_WRITTEN_PER_ALARM,
 	LATE_ALARM_MS,
 	MAX_RUN_ACTIVE_MS,
+	MERGED_DAY_METERS_ROWS_READ_SAVED,
+	MERGED_DAY_METERS_ROWS_WRITTEN_SAVED,
 	MERGED_METERS_ROWS_READ_SAVED,
 	MERGED_METERS_ROWS_WRITTEN_SAVED,
 	PACE_MAX_BPS,
@@ -35,6 +37,8 @@ import {
 	paceDelayMs,
 	parseMeters,
 	projectedGbSeconds,
+	RETRIES_RESET_ROWS_READ_ADDED,
+	RETRIES_RESET_ROWS_WRITTEN_SAVED,
 	TOLL_2026_08_28,
 } from "../../src/import-budget";
 
@@ -154,12 +158,29 @@ describe("storage churn pacing", () => {
 	});
 });
 
-describe("what the merged row costs the row meters", () => {
-	test("less than the two rows it replaced: one read for both budget checks, one read and one write to bank", () => {
+describe("what the merged rows cost the row meters", () => {
+	test("less than the rows they replaced: one read for both budget checks, one read and one write to bank", () => {
 		expect(MERGED_METERS_ROWS_READ_SAVED).toBe(2);
 		expect(MERGED_METERS_ROWS_WRITTEN_SAVED).toBe(1);
-		expect(FIXED_ROWS_READ_PER_ALARM).toBe(TOLL_2026_08_28.read - MERGED_METERS_ROWS_READ_SAVED);
-		expect(FIXED_ROWS_WRITTEN_PER_ALARM).toBe(TOLL_2026_08_28.written - MERGED_METERS_ROWS_WRITTEN_SAVED);
+		// The day's two meter rows, merged the same way on 2026-09-25.
+		expect(MERGED_DAY_METERS_ROWS_READ_SAVED).toBe(2);
+		expect(MERGED_DAY_METERS_ROWS_WRITTEN_SAVED).toBe(1);
+		// And the `retries` reset, written only when a retry was recorded: one read to see.
+		expect(RETRIES_RESET_ROWS_WRITTEN_SAVED).toBe(1);
+		expect(RETRIES_RESET_ROWS_READ_ADDED).toBe(1);
+		expect(FIXED_ROWS_READ_PER_ALARM).toBe(
+			TOLL_2026_08_28.read -
+				MERGED_METERS_ROWS_READ_SAVED -
+				MERGED_DAY_METERS_ROWS_READ_SAVED +
+				RETRIES_RESET_ROWS_READ_ADDED,
+		);
+		expect(FIXED_ROWS_WRITTEN_PER_ALARM).toBe(
+			TOLL_2026_08_28.written -
+				MERGED_METERS_ROWS_WRITTEN_SAVED -
+				MERGED_DAY_METERS_ROWS_WRITTEN_SAVED -
+				RETRIES_RESET_ROWS_WRITTEN_SAVED,
+		);
+		expect(FIXED_ROWS_WRITTEN_PER_ALARM).toBe(5);
 		expect(CURRENT_TOLL).toEqual({ read: FIXED_ROWS_READ_PER_ALARM, written: FIXED_ROWS_WRITTEN_PER_ALARM });
 	});
 });

@@ -24,6 +24,7 @@
 //     scaled synthetic corpus and prints rows read/written per phase.
 
 import type { CacheCodec } from "./engine/types";
+import { BLOB_GROUP_BYTES, DRAFT_BATCH_BYTES } from "./import-spill";
 
 /**
  * What one import run may spend before it stops itself. The free plan allows
@@ -107,9 +108,16 @@ export const MAX_DAY_ROWS_WRITTEN = 60_000;
  * groups AND deletes ~96MB of source batches in one alarm, a ~190MB burst —
  * the size of burst that left Durable Object storage hours behind (see
  * PACE_START_BPS). At 16 the burst is ~48MB and the pacing spreads the rest.
+ *
+ * Since 2026-09-25 a slice is also capped at BUCKET_SLICE_RAW_BYTES of raw drafts, the same 16
+ * rows at DRAFT_BATCH_BYTES (6MB each). The rows are stored packed (~7x), so the burst is ~28MB
+ * of rows written and deleted. A run staged across that deploy, whose rows are 1.5MB, still
+ * reads 16 of them per slice.
  */
 export const BUCKET_SLICE_BATCHES = 16;
-export const BUCKET_FETCH_BATCHES = 8;
+export const BUCKET_SLICE_RAW_BYTES = 96_000_000;
+/** Source rows materialized at once: two 6MB-raw rows, ~12MB, the resident-bytes half of the split. */
+export const BUCKET_FETCH_BATCHES = 2;
 
 /**
  * Staged bytes one purge slice may delete (src/import-purge.ts).
@@ -134,11 +142,13 @@ export const PURGE_SLICE_BYTES = 32 * 1024 * 1024;
 export const PURGE_SLICE_MAX_ROWS = 64;
 
 /**
- * Draft batches aggregated per slice.
+ * Raw draft bytes one agg slice reads: 64 of the 1.5MB batches it was counted in until 2026-09-25.
+ * Staged groups are up to DRAFT_BATCH_BYTES now, and bucket tails are smaller, so a count of
+ * rows is no longer a budget of work; the bytes are (and they are what the CPU note below prices).
  *
- * RAISED 8 → 64 on 2026-08-28, with the resident bytes bounded separately by
- * AGG_FETCH_BATCHES below — the split stepScores has had since it was written.
- * At 8, one partition's aggregation over the real corpus's ~1,180 staged
+ * As a batch count, the history: RAISED 8 → 64 on 2026-08-28, with the resident bytes bounded
+ * separately by the fetch group (DRAFT_FETCH_ROWS below), the split stepScores has had since it
+ * was written. At 8, one partition's aggregation over the real corpus's ~1,180 staged
  * batches took ~148 alarms, and TEN partitions took ~1,480. Every one of those
  * alarms pays the same fixed toll (FIXED_ROWS_PER_ALARM below), which is why
  * the 2026-08-28 run's single most-read storage statement was
@@ -148,22 +158,23 @@ export const PURGE_SLICE_MAX_ROWS = 64;
  * 40-90ms of CPU per 4-batch finalize slice (~15ms/batch on an edge core), so
  * 64 batches is ~1s against the 30s Durable Object allowance.
  */
-export const AGG_SLICE_BATCHES = 64;
+export const AGG_SLICE_RAW_BYTES = 64 * BLOB_GROUP_BYTES;
 
 /**
- * Batch rows materialized as JS buffers at once inside an agg slice.
+ * Draft rows materialized as JS buffers at once inside an agg or finalize slice.
  *
  * The SLICE is a CPU budget; this is the MEMORY budget, and they are different
- * numbers for the same reason stepScores keeps them apart: a staged batch is
- * ~1.9MB, so eight resident at once is ~15MB alongside the restored tag heap,
- * and a slice that materialized all 64 of its batches in one query would be
- * ~120MB against a 128MB isolate. Same value as SCORES_FETCH_BATCHES, same
- * reasoning, and it is what makes the slice above safe to raise at all.
+ * numbers for the same reason stepScores keeps them apart: a slice that
+ * materialized all of its rows in one query would hold ~96MB of drafts against a
+ * 128MB isolate. Two rows of up to DRAFT_BATCH_BYTES raw each is ~12MB raw beside
+ * their packed bytes — what eight 1.5MB rows held before 2026-09-25. Each row
+ * reaches wasm in WASM_FEED_BYTES pieces (feedSlices), never whole.
  */
-export const AGG_FETCH_BATCHES = 8;
+export const DRAFT_FETCH_ROWS = 2;
 
 /**
- * Draft batches finalized per slice.
+ * Raw draft bytes finalized per slice — the same bytes and the same rows as agg's (see
+ * AGG_SLICE_RAW_BYTES), 64 of the 1.5MB batches it was counted in. The history, as a count:
  *
  * RAISED 4 → 64 on 2026-08-28, and the old value's justification is the reason
  * why. It read: "Finalize buffers ~2KB of row JSON per row in JS while the
@@ -180,11 +191,7 @@ export const AGG_FETCH_BATCHES = 8;
  * finalize slices — for THREE partitions — before it tripped
  * MAX_RUN_ROWS_READ. At 64 the same partition is ~19 alarms.
  */
-export const FINALIZE_SLICE_BATCHES = 64;
-
-/** Batch rows materialized as JS buffers at once inside a finalize slice — the
- * memory half of the split, exactly as AGG_FETCH_BATCHES is. ~15MB resident. */
-export const FINALIZE_FETCH_BATCHES = 8;
+export const FINALIZE_SLICE_RAW_BYTES = 64 * BLOB_GROUP_BYTES;
 
 /**
  * Build positions rewritten per reorder slice. Each slice indexes the spill and
@@ -233,8 +240,30 @@ export const TOLL_2026_08_28: AlarmToll = { read: 20, written: 8 };
 /** Reads and writes the merged `run_meters` row saves per alarm against the 2026-08-28 toll. */
 export const MERGED_METERS_ROWS_READ_SAVED = 2;
 export const MERGED_METERS_ROWS_WRITTEN_SAVED = 1;
-export const FIXED_ROWS_READ_PER_ALARM = TOLL_2026_08_28.read - MERGED_METERS_ROWS_READ_SAVED;
-export const FIXED_ROWS_WRITTEN_PER_ALARM = TOLL_2026_08_28.written - MERGED_METERS_ROWS_WRITTEN_SAVED;
+/**
+ * The day's two meter rows, `day:<date>:read` and `:written`, merged into one `day:<date>` row
+ * (2026-09-25): one read instead of two for the budget check, and one read and one write instead
+ * of two and two in flushMeters.
+ */
+export const MERGED_DAY_METERS_ROWS_READ_SAVED = 2;
+export const MERGED_DAY_METERS_ROWS_WRITTEN_SAVED = 1;
+/**
+ * The `retries` reset after a healthy slice, written only when a retry was recorded (2026-09-25):
+ * it wrote a row on every alarm to clear a counter that was nearly always already zero. It reads
+ * the row first to see.
+ */
+export const RETRIES_RESET_ROWS_WRITTEN_SAVED = 1;
+export const RETRIES_RESET_ROWS_READ_ADDED = 1;
+export const FIXED_ROWS_READ_PER_ALARM =
+	TOLL_2026_08_28.read -
+	MERGED_METERS_ROWS_READ_SAVED -
+	MERGED_DAY_METERS_ROWS_READ_SAVED +
+	RETRIES_RESET_ROWS_READ_ADDED;
+export const FIXED_ROWS_WRITTEN_PER_ALARM =
+	TOLL_2026_08_28.written -
+	MERGED_METERS_ROWS_WRITTEN_SAVED -
+	MERGED_DAY_METERS_ROWS_WRITTEN_SAVED -
+	RETRIES_RESET_ROWS_WRITTEN_SAVED;
 export const CURRENT_TOLL: AlarmToll = { read: FIXED_ROWS_READ_PER_ALARM, written: FIXED_ROWS_WRITTEN_PER_ALARM };
 
 // ─── Durable Object duration: the free plan's other meter ────────────────────
@@ -444,7 +473,11 @@ export function adjustPace(paceBps: number, lagMs: number, churnBytes: number): 
 
 /** The shape of a corpus, as the cost model needs to see it. */
 export interface RunShape {
-	/** draft_batches rows the transform staged (byte-capped, ~1.9MB each). */
+	/**
+	 * The staged drafts, in the unit they were measured in: 1.5MB-raw batches
+	 * (MEASURED_BATCH_RAW_BYTES). How many ROWS they make is the slice sizes' business
+	 * (SliceSizes.draftBatchBytes).
+	 */
 	stagedBatches: number;
 	/** Rows one partition finalizes — the reorder phase's slice input. */
 	rowsPerPartition: number;
@@ -474,11 +507,14 @@ export interface RunShape {
  * have cost, which is the only way to state "the old value did not fit" as an
  * assertion rather than as a claim in a comment. */
 export interface SliceSizes {
-	aggBatches: number;
-	finalizeBatches: number;
+	/** Raw draft bytes per staged draft_batches row and per bucketed draft_parts group. */
+	draftBatchBytes: number;
+	/** Raw draft bytes one agg / finalize slice reads. */
+	aggBytes: number;
+	finalizeBytes: number;
 	reorderRows: number;
 	/**
-	 * Source batches per bucket slice — or `null` for the pipeline BEFORE the
+	 * Source rows per bucket slice — or `null` for the pipeline BEFORE the
 	 * bucket phase, where every partition rescanned the whole draft staging.
 	 * Kept as a model so the budget test can state what that pipeline cost as an
 	 * assertion, the same way `SLICES_BEFORE` keeps the pre-2026-08-28 slices.
@@ -493,9 +529,14 @@ export interface SliceSizes {
 	purgeBytes: number | null;
 }
 
+/** The raw bytes of one batch of RunShape.stagedBatches — BLOB_GROUP_BYTES, the size every staged
+ * draft row was when the shapes were measured. */
+export const MEASURED_BATCH_RAW_BYTES = BLOB_GROUP_BYTES;
+
 export const CURRENT_SLICES: SliceSizes = {
-	aggBatches: AGG_SLICE_BATCHES,
-	finalizeBatches: FINALIZE_SLICE_BATCHES,
+	draftBatchBytes: DRAFT_BATCH_BYTES,
+	aggBytes: AGG_SLICE_RAW_BYTES,
+	finalizeBytes: FINALIZE_SLICE_RAW_BYTES,
 	reorderRows: REORDER_SLICE_ROWS,
 	bucketBatches: BUCKET_SLICE_BATCHES,
 	purgeBytes: PURGE_SLICE_BYTES,
@@ -543,13 +584,18 @@ export function projectRunCost(
 	// end of every slice rather than carrying it over). Without it — the
 	// pipeline before 2026-09-04 — every partition walked all of draft_batches
 	// twice and filtered in process, so its "groups" were the whole staging.
-	const bucketAlarms = slices.bucketBatches === null ? 0 : Math.ceil(shape.stagedBatches / slices.bucketBatches);
+	//
+	// Rows are DRAFT-BYTE-capped: the staging's raw bytes over the row size (2026-09-25: 6MB, four
+	// of the 1.5MB rows the shape was measured in). Agg and finalize slices are budgeted in raw
+	// bytes, so a partition's slices are its share of the raw bytes over the slice's.
+	const stagedRawBytes = shape.stagedBatches * MEASURED_BATCH_RAW_BYTES;
+	const stagedRows = Math.ceil(stagedRawBytes / slices.draftBatchBytes);
+	const bucketAlarms = slices.bucketBatches === null ? 0 : Math.ceil(stagedRows / slices.bucketBatches);
 	const groupsPerPartition =
-		slices.bucketBatches === null
-			? shape.stagedBatches
-			: Math.ceil(shape.stagedBatches / shape.partitions) + bucketAlarms;
-	const aggAlarms = Math.ceil(groupsPerPartition / slices.aggBatches);
-	const finalizeAlarms = Math.ceil(groupsPerPartition / slices.finalizeBatches);
+		slices.bucketBatches === null ? stagedRows : Math.ceil(stagedRows / shape.partitions) + bucketAlarms;
+	const partitionRawBytes = slices.bucketBatches === null ? stagedRawBytes : stagedRawBytes / shape.partitions;
+	const aggAlarms = Math.ceil(partitionRawBytes / slices.aggBytes);
+	const finalizeAlarms = Math.ceil(partitionRawBytes / slices.finalizeBytes);
 	const reorderAlarms = Math.ceil(shape.rowsPerPartition / slices.reorderRows);
 	// One build alarm and one publish alarm per partition is the floor; a
 	// multi-chunk partition adds publish alarms, which the caller folds into
@@ -568,7 +614,7 @@ export function projectRunCost(
 	// once; each partition then reads its own groups TWICE (agg, then finalize),
 	// reorder makes two full passes over the spill groups per slice, and build
 	// walks the ordered groups once and precharges the same count.
-	const bucketReads = slices.bucketBatches === null ? 0 : shape.stagedBatches;
+	const bucketReads = slices.bucketBatches === null ? 0 : stagedRows;
 	const workReads =
 		bucketReads +
 		shape.partitions *
@@ -579,7 +625,7 @@ export function projectRunCost(
 	// delete (billed as a write) per source batch it consumes; then each
 	// partition's spill groups written once by finalize, once by reorder, and
 	// once as chunk staging by build.
-	const bucketWrites = slices.bucketBatches === null ? 0 : shape.partitions * groupsPerPartition + shape.stagedBatches;
+	const bucketWrites = slices.bucketBatches === null ? 0 : shape.partitions * groupsPerPartition + stagedRows;
 
 	const fixedRowsRead = alarms * toll.read;
 	const fixedRowsWritten = alarms * toll.written;
@@ -588,8 +634,7 @@ export function projectRunCost(
 		fixedRowsRead,
 		fixedRowsWritten,
 		rowsRead: fixedRowsRead + workReads,
-		rowsWritten:
-			fixedRowsWritten + shape.stagedBatches + bucketWrites + shape.partitions * 3 * shape.spillGroupsPerPartition,
+		rowsWritten: fixedRowsWritten + stagedRows + bucketWrites + shape.partitions * 3 * shape.spillGroupsPerPartition,
 	};
 }
 
