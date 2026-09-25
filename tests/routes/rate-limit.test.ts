@@ -203,6 +203,8 @@ describe("limited routes", () => {
 		expect(isRateLimitedRoute("_root", {})).toBe(false);
 		// The reference mirrors read KV per uncached request; they are limited like Scryfall's.
 		for (const key of ["sets", "catalog", "symbology"]) expect(isRateLimitedRoute(key, {})).toBe(true);
+		// The card page embeds card.js's two searches (src/routes/card-embed.ts).
+		expect(isRateLimitedRoute("card", {})).toBe(true);
 	});
 
 	test("includes the SSR root only when it embeds a query", () => {

@@ -4,7 +4,8 @@
 // behind the Basic-Auth /_admin mount now — see src/routes/admin.ts.)
 
 import { concatBytes, decodeUtf8, encodeUtf8, escapeLtBytes } from "../engine/bytes";
-import { criticalCss } from "./assets";
+import { assetPath, criticalCss } from "./assets";
+import { cardJsAnswers, embeddedFetchScript } from "./card-embed";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
 import { buildBaseHtml, buildCardHtml, earlyHintsLinkHeader, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
@@ -152,14 +153,38 @@ const CARD_SPEC = [
 	{ name: "collector_number", converter: strParam(), default: "", positional: true },
 ] as const;
 
-/** Serve the per-card page for /card/{set_code}/{collector_number} (upstream card()). */
-export function cardHandler(_ctx: RouteContext, positionalArgs: string[], params: Record<string, string>): Response {
+/**
+ * Serve the per-card page for /card/{set_code}/{collector_number} (upstream card()).
+ *
+ * PORT-ONLY: with card.js's two /search answers in it (card-embed.ts), so a view is one browser
+ * request and ~2 engine calls where it was three and ~11. Anything the embed cannot compute is left
+ * to card.js, which then fetches it exactly as upstream's page does.
+ */
+export async function cardHandler(
+	ctx: RouteContext,
+	positionalArgs: string[],
+	params: Record<string, string>,
+): Promise<Response> {
 	// The handler ignores the values, but binding still runs: a query param
 	// colliding with a path segment is a 400 upstream (TypeError → HTTPBadRequest).
 	bindParams("APIResource.card", CARD_SPEC, positionalArgs, params);
 	const siteName = SITE_NAME;
 	const html = replaceAllLiteral(buildCardHtml(criticalCss()), SITE_NAME_PLACEHOLDER, siteName);
-	return new Response(html, { headers: { "content-type": "text/html", ...pageCacheHeader() } });
+	const { answers, transient } = await cardJsAnswers(ctx);
+	// An engine fault leaves a page card.js can still finish on its own, but it must not stand at the
+	// edge for an hour in place of the embedded one. Everything else is a property of the URL and the
+	// store, and the nightly purgeEverything drops it with the store it came from.
+	const headers = { "content-type": "text/html", ...(transient ? NO_STORE_HEADER : pageCacheHeader()) };
+	// Ahead of the deferred card.js, the page's first caller of fetch().
+	const at = answers.length > 0 ? html.indexOf(cardJsTag()) : -1;
+	if (at === -1) return new Response(html, { headers });
+	const body = concatBytes([encodeUtf8(html.slice(0, at)), embeddedFetchScript(answers), encodeUtf8(html.slice(at))]);
+	return new Response(body, { headers });
+}
+
+/** card.html's card.js tag, as buildCardHtml versions it. */
+function cardJsTag(): string {
+	return `<script src="${assetPath("card.js")}" defer></script>`;
 }
 
 /** Send the legacy index paths to / (upstream _redirect_to_root, falcon.HTTPMovedPermanently). */

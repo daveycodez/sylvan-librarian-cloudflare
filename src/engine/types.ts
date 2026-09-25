@@ -153,6 +153,19 @@ export interface Engine {
 	searchCardsAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult>;
 	/** Pre-encoded cards — for the JSON API, which only ever needs the bytes. */
 	searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult>;
+	/**
+	 * `searchCardsAsJson` answered by the ONE partition the routing filter says holds a printing
+	 * address (`setNumberKey`), from that partition's own rows — NOT the global answer. Null when
+	 * nothing routes the address (no routing filter, not partitioned) or that partition cannot
+	 * answer at this layout. A caller may trust only the rows AT the address: every printing at one
+	 * address lives in one partition, so those are exactly the rows a gather returns for it, in the
+	 * gather's order; whatever else the query matched in other partitions is missing.
+	 */
+	searchCardsAtAddress?(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+		addressKey: string,
+	): Promise<EngineSerializedResult | null>;
 	cardTypeCounts(): Promise<Record<string, number>>;
 	cardKeywordCounts(): Promise<Record<string, number>>;
 	/**

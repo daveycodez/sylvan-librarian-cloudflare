@@ -472,6 +472,31 @@ export async function runSearchParts(
 	return { cardsBytes: result.cardsBytes, tail: `,${tail}`, totalCards: result.totalCards };
 }
 
+/**
+ * runSearchParts answered by the one partition holding a printing address
+ * (Engine.searchCardsAtAddress), or null when the engine cannot route it. The same preparation and
+ * the same error mapping; only the rows AT that address are the global answer's.
+ */
+export async function runSearchPartsAtAddress(
+	ctx: RouteContext,
+	opts: RunSearchOptions,
+	shape: ResponseShape,
+	addressKey: string,
+): Promise<SearchParts | null> {
+	const prep = await prepareSearch(ctx, opts);
+	const atAddress = prep.engine.searchCardsAtAddress?.bind(prep.engine);
+	if (atAddress === undefined) return null;
+	let result: EngineSerializedResult | null;
+	try {
+		result = await prep.timer.time("engine_query", () => atAddress(prep.engineOpts, shape, addressKey));
+	} catch (err) {
+		engineFailure(prep.query, err);
+	}
+	if (result === null) return null;
+	const tail = JSON.stringify(metadataFor(prep, result.totalCards)).slice(1);
+	return { cardsBytes: result.cardsBytes, tail: `,${tail}`, totalCards: result.totalCards };
+}
+
 // Keyword parameters of search(), in signature order (binding reports the
 // first failing parameter in this order, like upstream's ParamBinder plan).
 const SEARCH_SPEC = [

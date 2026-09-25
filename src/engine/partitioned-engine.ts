@@ -774,6 +774,30 @@ export class PartitionedEngine implements Engine {
 		);
 	}
 
+	/**
+	 * See Engine.searchCardsAtAddress: one local search, not the gather, on the partition the routing
+	 * filter names for `addressKey` (the site's card page, src/routes/card-embed.ts). Pinned to this
+	 * request's partition count like an oracle pin, so an object cut at another count refuses rather
+	 * than answering from rows the hint was not computed for — and that refusal, or an object not
+	 * answering, is null: the caller runs the whole search, which is what it cost before.
+	 */
+	async searchCardsAtAddress(
+		opts: EngineSearchOptions,
+		shape: ResultShape,
+		addressKey: string,
+	): Promise<EngineSerializedResult | null> {
+		await this.routed();
+		const hint = this.routing?.lookup(addressKey) ?? null;
+		if (hint === null || hint >= this.n) return null;
+		try {
+			return await this.at(hint).searchCardsAsJson(opts, shape, this.n);
+		} catch (err) {
+			if (!(err instanceof StaleModulusError) && !isStuckEngine(err)) throw err;
+			console.warn(`address search not answered by partition ${hint} (${err}); searching everywhere instead`);
+			return null;
+		}
+	}
+
 	scryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
 		return this.pinnedOrGathered(
 			opts,

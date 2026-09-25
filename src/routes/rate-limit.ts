@@ -120,6 +120,8 @@ export function isRateLimitedRoute(routeKey: string, params: Record<string, stri
 	// request with no brake at all — a nonce in the query string defeats the edge cache — and
 	// Scryfall rate-limits them like everything else.
 	if (routeKey === "sets" || routeKey === "catalog" || routeKey === "symbology") return true;
+	// The card page embeds card.js's two searches (src/routes/card-embed.ts), so it computes.
+	if (routeKey === "card") return true;
 	// The SSR root only computes when a query is embedded.
 	return routeKey === "_root" && Boolean(params.q || params.query);
 }
