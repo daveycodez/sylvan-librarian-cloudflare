@@ -25,6 +25,10 @@ export interface ImportEmitHandlers {
 	/** One scores batch's routing-filter input: `<partition>\t<key>\n` lines,
 	 * the same text the native builder writes to `routing-keys.tsv`. */
 	onRoutingKeys?(bytes: Uint8Array): void;
+	/** One scores batch's oracle-index input: 32-byte (scryfall id, oracle id) records, the same
+	 * bytes the native builder writes to `oracle-pairs.bin` (src/engine/oracle-index.ts). Emitted
+	 * right after that batch's onRoutingKeys, and likewise even when empty. */
+	onOraclePairs?(bytes: Uint8Array): void;
 	onStats?(stats: Record<string, number>): void;
 	/** The resumable inflater's raw output: one emit per inflateFeed call. */
 	onInflate?(bytes: Uint8Array): void;
@@ -43,6 +47,7 @@ const EMIT = {
 	ROUTING: 8,
 	INFLATE: 9,
 	TAG_ALIASES: 10,
+	ORACLE_PAIRS: 11,
 } as const;
 
 interface ImportExports {
@@ -131,6 +136,9 @@ export class ImportWasm {
 						return;
 					case EMIT.ROUTING:
 						h.onRoutingKeys?.(view(ptr, len).slice());
+						return;
+					case EMIT.ORACLE_PAIRS:
+						h.onOraclePairs?.(view(ptr, len).slice());
 						return;
 					case EMIT.TAG_ALIASES:
 						h.onTagAliases?.(view(ptr, len).slice());

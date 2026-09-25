@@ -274,7 +274,7 @@ fn hex_val(b: u8) -> Option<u8> {
 
 /// A hyphenated (or bare) hex UUID string as 16 bytes; None unless it holds exactly 32 hex
 /// digits. Case-insensitive, so a stray uppercase digit cannot make a canonical row read foreign.
-fn parse_uuid16(id: &str) -> Option<[u8; 16]> {
+pub(crate) fn parse_uuid16(id: &str) -> Option<[u8; 16]> {
     let mut out = [0u8; 16];
     let mut n = 0usize;
     let mut hi: Option<u8> = None;

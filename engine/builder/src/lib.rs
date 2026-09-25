@@ -460,12 +460,24 @@ pub fn build_store_partitioned_spilled<W: Write>(
     writeln!(routing_out.borrow_mut(), "{}", transform::NAME_KEYS_STAMP)
         .map_err(|e| format!("write routing-keys.tsv: {e}"))?;
     let mut routing_count = 0u64;
+    // The scryfall id → oracle id index's input (transform::oracle_pair_of_row): 32 raw bytes per
+    // printing whose card object carries an oracle id, in build order — the SAME records the
+    // nightly's `EMIT_ORACLE_PAIRS` stages, so `scripts/seed-oracle-index.ts` encodes them with the
+    // coordinator's own encoder and both publishers write byte-identical buckets. Written here for
+    // the reason routing-keys.tsv is: this pass already holds every finalized row once.
+    let oracle_path = out_dir.join("oracle-pairs.bin");
+    let oracle_out = std::cell::RefCell::new(BufWriter::with_capacity(
+        1 << 20,
+        std::fs::File::create(&oracle_path).map_err(|e| format!("create oracle-pairs.bin: {e}"))?,
+    ));
+    let mut oracle_count = 0u64;
     let artist_entities = aggregates.artist_entities();
     let mut accum = PartitionAccum::new(built_at, n);
     for k in 0..n as usize {
         let (mut counter, store_key) = accum.open(out_dir, k)?;
         let mut rows = parts.rows(k, &aggregates, tags)?;
         let routing_here = std::cell::Cell::new(0u64);
+        let oracle_here = std::cell::Cell::new(0u64);
         // A card's name repeats on every printing of it; one line per (partition, name key) is all
         // the filter needs, and this partition's names are a few thousand strings.
         let names_here = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
@@ -490,6 +502,12 @@ pub fn build_store_partitioned_spilled<W: Write>(
                         routing_here.set(routing_here.get() + 1);
                     }
                 }
+                if let Some(pair) = transform::oracle_pair_of_row(&row) {
+                    if oracle_out.borrow_mut().write_all(&pair).is_err() {
+                        row_err.set(true);
+                    }
+                    oracle_here.set(oracle_here.get() + 1);
+                }
                 let bytes = serde_json::to_vec(&row).unwrap_or_else(|_| {
                     row_err.set(true);
                     Vec::new()
@@ -512,11 +530,14 @@ pub fn build_store_partitioned_spilled<W: Write>(
         counter.flush()?;
         accum.record(k, store_key, counter.written, &stats);
         routing_count += routing_here.get();
+        oracle_count += oracle_here.get();
         // This partition is published to disk; its drafts are dead weight from here.
         parts.release(k);
     }
     routing_out.borrow_mut().flush().map_err(|e| format!("flush routing-keys.tsv: {e}"))?;
     eprintln!("wrote {} ({routing_count} routing keys)", routing_path.display());
+    oracle_out.borrow_mut().flush().map_err(|e| format!("flush oracle-pairs.bin: {e}"))?;
+    eprintln!("wrote {} ({oracle_count} oracle pairs)", oracle_path.display());
     Ok(accum.finish())
 }
 

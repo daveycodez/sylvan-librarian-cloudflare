@@ -2941,6 +2941,46 @@ pub fn is_name_routing_key(key: &str) -> bool {
     key.starts_with("nm:") || key.starts_with("ns:")
 }
 
+/// Bytes per entry of the scryfall id → oracle id index's input: the scryfall id's 16 raw bytes,
+/// then the oracle id's 16. The nightly's `EMIT_ORACLE_PAIRS` and the native builder's
+/// `oracle-pairs.bin` are both flat runs of these; src/engine/oracle-index.ts encodes either.
+pub const ORACLE_PAIR_BYTES: usize = 32;
+
+/// The layout whose card object carries NO top-level `oracle_id` (card_engine's
+/// `REVERSIBLE_LAYOUT` in card_object.rs), so `/cards/:id/rulings` answers `data: []` for it.
+const REVERSIBLE_LAYOUT: &str = "reversible_card";
+
+/// This printing's entry in the scryfall id → oracle id index that lets `/cards/:id/rulings` skip
+/// the engine (src/engine/oracle-index.ts), or None when it has none.
+///
+/// THE RULE IS THE CARD OBJECT'S, not the row's: the route reads rulings for the `oracle_id` the
+/// engine's card object carries, and a `reversible_card` printing's object carries none — the row
+/// holds its faces' id (the face merge), which the index must NOT hand out, or those printings
+/// would answer their card's rulings where the engine answers `[]`. They are left out and miss,
+/// which asks the engine. An id that is not a UUID is left out for the same reason: a miss is
+/// always today's answer, an entry is a claim.
+///
+/// ONE function for both publishers — [`CorpusPassDraft::oracle_pair`] (the nightly) and
+/// [`oracle_pair_of_row`] (the native builder) — and `both_publishers_emit_the_same_oracle_pairs`
+/// pins their inputs together, because the buckets they produce must be byte-identical.
+pub fn oracle_pair_of(scryfall_id: &str, oracle_id: &str, layout: Option<&str>) -> Option<[u8; ORACLE_PAIR_BYTES]> {
+    if layout == Some(REVERSIBLE_LAYOUT) {
+        return None;
+    }
+    let s = crate::tags::parse_uuid16(scryfall_id)?;
+    let o = crate::tags::parse_uuid16(oracle_id)?;
+    let mut pair = [0u8; ORACLE_PAIR_BYTES];
+    pair[..16].copy_from_slice(&s);
+    pair[16..].copy_from_slice(&o);
+    Some(pair)
+}
+
+/// [`oracle_pair_of`] against a finalized row — the native builder's shape.
+pub fn oracle_pair_of_row(row: &Value) -> Option<[u8; ORACLE_PAIR_BYTES]> {
+    let text = |key: &str| row.get(key).and_then(Value::as_str);
+    oracle_pair_of(text("scryfall_id")?, text("oracle_id")?, text("card_layout"))
+}
+
 /// The draft fields the nightly's corpus-wide pass (`scores_add_drafts` in engine/wasm-import)
 /// reads, deserialized straight off a staged `RowDraft` blob — every field name is `RowDraft`'s.
 ///
@@ -2985,9 +3025,18 @@ pub struct CorpusPassDraft {
     // routing keys are: it is the one visit that sees every draft of every partition.
     #[serde(default)]
     pub card_artist: Option<String>,
+    // The oracle index's one extra input (`oracle_pair_of`): whether the card object carries a
+    // top-level oracle id at all.
+    #[serde(default)]
+    pub card_layout: Option<String>,
 }
 
 impl CorpusPassDraft {
+    /// This draft's oracle-index entry — [`oracle_pair_of_row`] over the finalized row it becomes.
+    pub fn oracle_pair(&self) -> Option<[u8; ORACLE_PAIR_BYTES]> {
+        oracle_pair_of(&self.scryfall_id, &self.oracle_id, self.card_layout.as_deref())
+    }
+
     /// This draft's routing keys — [`routing_keys_of_row`] over the finalized row it becomes.
     pub fn routing_keys(&self, out: &mut Vec<String>) {
         let address = self
@@ -3111,6 +3160,68 @@ mod tests {
             }
         }
         assert_eq!(compared, 32);
+    }
+
+    /// THE TWO PUBLISHERS EMIT THE SAME ORACLE PAIRS — the input half of "both publishers write
+    /// byte-identical oracle-index buckets" (the encoding half is one TS function both call). The
+    /// same shape as the routing-key test above: the nightly's draft through `CorpusPassDraft`,
+    /// the native builder's finalized row through `oracle_pair_of_row`, over every fixture — and a
+    /// reversible printing, which both must LEAVE OUT (its card object has no top-level oracle_id).
+    #[test]
+    fn both_publishers_emit_the_same_oracle_pairs() {
+        let mut reversible = fixture("delver_of_secrets");
+        reversible["layout"] = json!("reversible_card");
+        for face in reversible["card_faces"].as_array_mut().unwrap() {
+            face["layout"] = json!("normal");
+        }
+        let mut cards: Vec<(String, Value)> = [
+            "lightning_bolt",
+            "fire_ice",
+            "delver_of_secrets",
+            "delver_es",
+            "shock_ja",
+            "prepare_es",
+            "jace_the_mind_sculptor",
+            "llanowar_elves",
+        ]
+        .iter()
+        .map(|n| ((*n).to_owned(), fixture(n)))
+        .collect();
+        cards.push(("reversible".to_owned(), reversible));
+        let mut present = 0;
+        for (name, card) in &cards {
+            for canonical in [true, false] {
+                let draft = transform_row(card, canonical).unwrap().unwrap();
+                let staged = serde_json::to_vec(&draft).unwrap();
+                let pass: CorpusPassDraft = serde_json::from_slice(&staged).unwrap();
+                let nightly = pass.oracle_pair();
+                let row = finalize(vec![draft.clone()], &TagData::default()).next().unwrap();
+                let native = oracle_pair_of_row(&row);
+                assert_eq!(nightly, native, "{name} canonical={canonical}");
+                if name == "reversible" {
+                    assert_eq!(native, None, "a reversible printing's card object has no oracle_id to index");
+                    continue;
+                }
+                let pair = native.expect("every other fixture is indexed");
+                assert_eq!(pair[..16], crate::tags::parse_uuid16(&draft.scryfall_id).unwrap());
+                assert_eq!(pair[16..], crate::tags::parse_uuid16(&draft.oracle_id).unwrap());
+                present += 1;
+            }
+        }
+        assert_eq!(present, 16);
+    }
+
+    #[test]
+    fn an_oracle_pair_needs_two_uuids_and_a_top_level_oracle_id() {
+        let s = "0A1B2C3D-4E5F-4A6B-8C7D-8E9FA0B1C2D3";
+        let o = "11111111-2222-4333-8444-555555555555";
+        let pair = oracle_pair_of(s, o, Some("normal")).unwrap();
+        assert_eq!(pair[0], 0x0a, "case is folded: the engine's id parse folds it too");
+        assert_eq!(pair[16], 0x11);
+        assert_eq!(oracle_pair_of(s, o, None), Some(pair));
+        assert_eq!(oracle_pair_of(s, o, Some("reversible_card")), None);
+        assert_eq!(oracle_pair_of(s, "", Some("normal")), None);
+        assert_eq!(oracle_pair_of("not-a-uuid", o, Some("normal")), None);
     }
 
     #[test]

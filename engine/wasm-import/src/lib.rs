@@ -60,8 +60,11 @@
 //!                                    a partition can compute neither), AND
 //!                                    EMIT_ROUTING lines for the id→partition
 //!                                    routing filter (`n` = partition_count; 0
-//!                                    to skip). The one pass that sees every
-//!                                    draft once is the one place both belong.
+//!                                    to skip), then EMIT_ORACLE_PAIRS (the
+//!                                    scryfall id → oracle id index's pairs,
+//!                                    also skipped at 0). The one pass that
+//!                                    sees every draft once is the one place
+//!                                    all of them belong.
 //!   scores_finish()                  seals those tables — call after ALL drafts,
 //!                                    BEFORE the per-partition loop opens
 //!   agg_drafts(ptr, len)             draft-blob batch (length-prefixed), ONE
@@ -91,7 +94,7 @@ use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
     art_tags_of, finalize_row, illust_count_qualifies, is_name_routing_key, is_pinned, transform_row, CorpusPassDraft,
-    PinnedPrintings, RowDraft, NAME_KEYS_STAMP,
+    PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -148,6 +151,10 @@ const EMIT_ROUTING: u32 = 8;
 /// The alias → slug maps (`TagData::aliases_json`), for the coordinator to publish beside the
 /// store under `tagAliasesKey` — the same JSON the native builder writes to `tag-aliases.json`.
 const EMIT_TAG_ALIASES: u32 = 10;
+/// One scores batch's oracle-index input: 32-byte (scryfall id, oracle id) records
+/// (`transform::oracle_pair_of`), the SAME bytes the native builder writes to `oracle-pairs.bin`,
+/// so one encoder (src/engine/oracle-index.ts) builds both publishers' buckets.
+const EMIT_ORACLE_PAIRS: u32 = 11;
 
 // `wasm_import_module = "env"` is load-bearing, not decoration: the host
 // instantiates with `imports.env.emit` / `imports.env.pull_row`
@@ -586,6 +593,10 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
         // corpus); one line per (partition, name key) per batch is all the filter needs, and it
         // is what keeps the coordinator's accumulator well inside its pre-size.
         let mut names_seen: HashSet<(u64, String)> = HashSet::new();
+        // The oracle index's pairs ride the same pass for the same reason the routing keys do —
+        // `scryfall_id` and `oracle_id` are already deserialized for them — and leave the same way:
+        // emitted per batch, staged by the coordinator beside the batch's routing keys.
+        let mut pairs: Vec<u8> = Vec::with_capacity(if partition_count > 0 { blobs.len() * ORACLE_PAIR_BYTES } else { 0 });
         for blob in blobs {
             let draft: CorpusPassDraft = match serde_json::from_slice(blob) {
                 Ok(d) => d,
@@ -616,6 +627,9 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
                     routing.push_str(key);
                     routing.push('\n');
                 }
+                if let Some(pair) = draft.oracle_pair() {
+                    pairs.extend_from_slice(&pair);
+                }
             }
         }
         if partition_count > 0 {
@@ -623,6 +637,9 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
             // consumed, and a skipped emit would leave that batch's row absent on a retry rather
             // than replaced.
             emit_bytes(EMIT_ROUTING, routing.as_bytes());
+            // After the routing emit, and likewise even when empty: the coordinator stages both in
+            // ONE row per batch, so a batch it has keys for must never lack its pairs.
+            emit_bytes(EMIT_ORACLE_PAIRS, &pairs);
         }
         s.tags.corpus.names() as i64
     })
