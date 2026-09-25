@@ -211,6 +211,18 @@ describe("method handling", () => {
 		}
 	});
 
+	test("a collection POST's preflight is answered, and a browser may reuse the answer for two hours", async () => {
+		// Scryfall sends Max-Age 300; ours is longer so a browser client (mtg-seeker) preflights
+		// every two hours (Chrome's cap; Safari clamps to 10 min) rather than every 5 minutes.
+		// Request style is unchanged: the POST is still application/json, which Scryfall requires.
+		const res = await testDispatch(ctx, "/cards/collection", "OPTIONS");
+		expect(res.status).toBeLessThan(300);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+		expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+		expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Content-Type");
+		expect(res.headers.get("Access-Control-Max-Age")).toBe("7200");
+	});
+
 	test("HEAD is implied by GET on every route", async () => {
 		const res = await testDispatch(ctx, "/get_pid", "HEAD");
 		expect(res.status).toBe(200);

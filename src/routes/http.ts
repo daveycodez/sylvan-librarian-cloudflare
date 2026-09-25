@@ -38,7 +38,7 @@ const SECURITY_HEADERS: Record<string, string> = {
 	// post a collection to it — a gap with no error message anywhere, because the failing exchange
 	// is the OPTIONS the page never sees.
 	//
-	// The three values are Scryfall's own, verbatim, including the header list a client is unlikely
+	// The first three values are Scryfall's own, verbatim, including the header list a client is unlikely
 	// to send all of. Copying it rather than trimming to what these routes read keeps the answer a
 	// property of the API being mirrored rather than of this implementation's current parameter set.
 	"Access-Control-Allow-Origin": "*",
@@ -46,7 +46,12 @@ const SECURITY_HEADERS: Record<string, string> = {
 	"Access-Control-Allow-Headers":
 		"Accept, Accept-Charset, Accept-Language, Authorization, Cache-Control, Content-Language, " +
 		"Content-Type, DNT, Host, If-Modified-Since, Keep-Alive, Origin, Referer, User-Agent, X-Requested-With",
-	"Access-Control-Max-Age": "300",
+	// NOT Scryfall's value (it sends 300). How long a browser may reuse a preflight answer is a
+	// property of this deployment's CORS policy, which never varies, and changes nothing a client
+	// sends: a browser's collection POST (application/json, which Scryfall requires) still
+	// preflights, every two hours instead of every five minutes. 7200 is Chrome's cap; Safari/WebKit
+	// (every iOS browser) clamps it to 600 s.
+	"Access-Control-Max-Age": "7200",
 };
 
 /** Applied to every response, matching upstream's process_response middlewares. */
