@@ -29,3 +29,5 @@ jobs:
         run: |
           npm i --prefix /tmp/wt --silent @cloudflare/workers-types@latest
           bun scripts/check-location-hints.ts /tmp/wt/node_modules/@cloudflare/workers-types/index.d.ts
+      - name: colo table current (src/engine/colos.gen.ts, backlog p4)
+        run: bun scripts/gen-colo-table.ts --check

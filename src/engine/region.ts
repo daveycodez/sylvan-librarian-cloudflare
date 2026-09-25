@@ -18,6 +18,8 @@
 // one isolate serves users on both sides of a meridian, so it addresses two
 // regions and must not pool their load signals.
 
+import { COLOS } from "./colos.gen";
+
 export const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 	AF: "afr",
 	AN: "oc",
@@ -68,8 +70,47 @@ export const REGIONS = {
  */
 export const REGION_HINTS = Object.keys(REGIONS) as readonly DurableObjectLocationHint[];
 
+/**
+ * The region for a Cloudflare location (colo), by where that colo IS (backlog p4). North America
+ * and Europe split at the same meridians as the client rule below; the rest go by Cloudflare's
+ * own region for the colo. Null for a colo the generated table does not know.
+ */
+export function hintForColo(colo: string): DurableObjectLocationHint | null {
+	const entry = COLOS[colo];
+	if (!entry) return null;
+	const [, lon, , region] = entry;
+	switch (region) {
+		case "NA":
+			return lon >= -100 ? "enam" : "wnam";
+		case "EU":
+			return lon >= 15 ? "eeur" : "weur";
+		case "SA":
+			return "sam";
+		case "AF":
+			return "afr";
+		case "ME":
+			return "me";
+		case "OC":
+			return "oc";
+		case "AP":
+			return "apac";
+	}
+}
+
+/**
+ * The region that serves this request — chosen by the COLO the isolate runs in, since every engine
+ * call starts from the isolate: a request that enters Cloudflare at SIN runs its engine calls from
+ * SIN whatever the client's country, and routing it by the client (a US reader → wnam) paid
+ * 250 ms+ per engine call — ~480 requests a day, measured 09-23..24 (backlog p4). The rate limiter
+ * follows too; its objects store nothing, so they are simply placed afresh.
+ *
+ * Deterministic per colo, so one colo never splits a region's traffic. A colo the table does not
+ * know (added since the last regeneration) falls back to the client rule below.
+ */
 export function regionHint(request: Request): DurableObjectLocationHint {
-	const cf = request.cf as { continent?: string; longitude?: string } | undefined;
+	const cf = request.cf as { colo?: string; continent?: string; longitude?: string } | undefined;
+	const byColo = cf?.colo ? hintForColo(cf.colo) : null;
+	if (byColo) return byColo;
 	const continent = cf?.continent ?? "NA";
 	const lon = Number.parseFloat(cf?.longitude ?? "");
 	if (continent === "NA" && Number.isFinite(lon)) return lon >= -100 ? "enam" : "wnam";

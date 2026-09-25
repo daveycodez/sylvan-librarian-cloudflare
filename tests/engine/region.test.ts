@@ -12,10 +12,11 @@
 // state to be keyed by region.
 
 import { describe, expect, test } from "bun:test";
-import { CONTINENT_TO_HINT, REGION_HINTS, REGIONS, regionHint } from "../../src/engine/region";
+import { COLOS } from "../../src/engine/colos.gen";
+import { CONTINENT_TO_HINT, hintForColo, REGION_HINTS, REGIONS, regionHint } from "../../src/engine/region";
 
 /** A request carrying the `cf` fields the mapping reads, and nothing else. */
-function req(cf: { continent?: string; longitude?: string } | undefined): Request {
+function req(cf: { colo?: string; continent?: string; longitude?: string } | undefined): Request {
 	const request = new Request("https://example.com/search?q=elf");
 	Object.defineProperty(request, "cf", { value: cf, configurable: true });
 	return request;
@@ -145,5 +146,50 @@ describe("the region list is every location hint (backlog g2)", () => {
 		];
 		expect([...REGION_HINTS].sort()).toEqual(all.sort());
 		expect(Object.keys(REGIONS)).toEqual([...REGION_HINTS]);
+	});
+});
+
+describe("routing by the colo the isolate runs in (backlog p4)", () => {
+	test("the colo decides, not the client's geography", () => {
+		// A US reader whose request entered at SIN runs every engine call from SIN.
+		expect(regionHint(req({ colo: "SIN", continent: "NA", longitude: "-122.4" }))).toBe("apac");
+		expect(regionHint(req({ colo: "FRA", continent: "NA", longitude: "-74.0" }))).toBe("weur");
+	});
+
+	test("each Cloudflare region lands where its colos are", () => {
+		const cases: [string, DurableObjectLocationHint][] = [
+			["EWR", "enam"],
+			["LAX", "wnam"],
+			["FRA", "weur"],
+			["WAW", "eeur"],
+			["GRU", "sam"],
+			["JNB", "afr"],
+			["DXB", "me"],
+			["SYD", "oc"],
+			["BOM", "apac"],
+		];
+		for (const [colo, hint] of cases) expect([colo, hintForColo(colo)]).toEqual([colo, hint]);
+	});
+
+	test("a colo the table does not know falls back to the client rule", () => {
+		expect(hintForColo("ZZZ")).toBeNull();
+		expect(regionHint(req({ colo: "ZZZ", continent: "EU", longitude: "21.0" }))).toBe("eeur");
+		expect(regionHint(req({ colo: "ZZZ" }))).toBe("wnam");
+	});
+
+	test("every known colo maps to a real location hint, deterministically", () => {
+		for (const colo of Object.keys(COLOS)) {
+			const hint = hintForColo(colo);
+			expect(hint !== null && REGION_HINTS.includes(hint)).toBe(true);
+			expect(hintForColo(colo)).toBe(hint);
+		}
+	});
+
+	test("every region some colo can reach — all of them once Asia splits (g3)", () => {
+		const reached = new Set(Object.keys(COLOS).map((c) => hintForColo(c)));
+		// me is now reachable: CONTINENT_TO_HINT never returned it (Middle East clients are "AS").
+		for (const hint of ["wnam", "enam", "weur", "eeur", "apac", "oc", "sam", "afr", "me"] as const) {
+			expect(reached.has(hint)).toBe(true);
+		}
 	});
 });
