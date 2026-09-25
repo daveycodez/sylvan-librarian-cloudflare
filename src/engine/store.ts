@@ -39,9 +39,10 @@ import {
 	withResolvedMultilingual,
 } from "../routes/scryfall-compat/objects";
 import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
-import { encodeUtf8, NEWLINE } from "./bytes";
+import { decodeUtf8, encodeUtf8, NEWLINE } from "./bytes";
 import { collectionBatchRequest, decodeCollectionPacket } from "./collection-batch";
 import { serializeCards } from "./columnar";
+import { decodeFuzzyCandidates } from "./fuzzy-wire";
 import type { RowShaping } from "./gather";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
 import { probePlacement } from "./placement";
@@ -363,7 +364,7 @@ class WasmEngine implements Engine {
 		// and the rows stay bytes all the way to the response body. `subarray` is a view, not a
 		// copy, so nothing here is proportional to the payload.
 		const split = answer.indexOf(NEWLINE);
-		const [total = "0", rows = "0"] = new TextDecoder().decode(answer.subarray(0, split)).split(" ");
+		const [total = "0", rows = "0"] = decodeUtf8(answer.subarray(0, split)).split(" ");
 		return { totalCards: Number(total), cardsBytes: answer.subarray(split + 1), rowCount: Number(rows) };
 	}
 
@@ -478,7 +479,7 @@ class WasmEngine implements Engine {
 		// widening flag; only the short ASCII prefix is decoded and the cards stay bytes all the
 		// way to the response body.
 		const split = answer.indexOf(NEWLINE);
-		const [total = "0", rows = "0", widened = "0"] = new TextDecoder().decode(answer.subarray(0, split)).split(" ");
+		const [total = "0", rows = "0", widened = "0"] = decodeUtf8(answer.subarray(0, split)).split(" ");
 		return {
 			totalCards: Number(total),
 			cardsBytes: answer.subarray(split + 1),
@@ -1424,36 +1425,6 @@ export interface GatherOps {
 	fetchRows(vpids: number[], fields: string[], shaping: RowShaping): Uint8Array;
 	/** This partition's scores-bearing fuzzy candidates (the cross-partition race's phase 1). */
 	fuzzyCandidates(name: string): FuzzyCandidateWire[];
-}
-
-/** Decode `fuzzy_candidates`' packed reply: `n: u32, then n of (score: f32, oracle_id: 16B,
- * vpid: u32, served: u8, namelen: u16, name)`, all LITTLE-ENDIAN except the oracle's raw uuid
- * bytes. */
-function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] {
-	const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
-	const n = view.getUint32(0, true);
-	const out: FuzzyCandidateWire[] = [];
-	let at = 4;
-	for (let i = 0; i < n; i++) {
-		const score = view.getFloat32(at, true);
-		at += 4;
-		const hex = Array.from(packed.subarray(at, at + 16), (b) => b.toString(16).padStart(2, "0")).join("");
-		at += 16;
-		const oracleId =
-			hex === "00000000000000000000000000000000"
-				? ""
-				: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-		const vpid = view.getUint32(at, true);
-		at += 4;
-		const served = packed[at] === 1;
-		at += 1;
-		const len = view.getUint16(at, true);
-		at += 2;
-		const foldedName = new TextDecoder().decode(packed.subarray(at, at + len));
-		at += len;
-		out.push({ score, served, oracleId, vpid, foldedName });
-	}
-	return out;
 }
 
 /** How many candidate classes each partition ships the race — see the wasm export's docstring

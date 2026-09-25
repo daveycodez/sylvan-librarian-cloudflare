@@ -39,11 +39,33 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 	return out;
 }
 
+/** One decoder for the isolate: a TextDecoder is stateless between non-streaming `decode` calls,
+ * so a per-call one bought nothing but an allocation. */
 const DECODER = new TextDecoder();
 
-/** Decode UTF-8 bytes — for the one caller that genuinely needs the payload as values. */
+/** Decode UTF-8 bytes — a framing prefix, a name, or the one payload a caller genuinely needs as
+ * values. */
 export function decodeUtf8(bytes: Uint8Array): string {
 	return DECODER.decode(bytes);
+}
+
+/** `b.toString(16).padStart(2, "0")` for every byte, built on first use (not at module load). */
+let hexByte: string[] | null = null;
+
+/**
+ * The 16 raw bytes at `at` as a lowercase hyphenated UUID (8-4-4-4-12) — the spelling the store's
+ * JSON carries for an oracle id. One table lookup per byte where the old path allocated an array,
+ * sixteen strings, a join and five slices per id.
+ */
+export function uuidFromBytes(bytes: Uint8Array, at: number): string {
+	hexByte ??= Array.from({ length: 256 }, (_, b) => b.toString(16).padStart(2, "0"));
+	const hex = hexByte;
+	let out = "";
+	for (let i = 0; i < 16; i++) {
+		if (i === 4 || i === 6 || i === 8 || i === 10) out += "-";
+		out += hex[bytes[at + i] as number] as string;
+	}
+	return out;
 }
 
 const LT = 0x3c;
