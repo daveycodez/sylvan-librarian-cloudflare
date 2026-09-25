@@ -9,6 +9,7 @@ import {
 	generationOf,
 	type Hint,
 	nextPlacement,
+	notifyRetireReason,
 	type PlacementBlock,
 	UNSERVED_SEED,
 	unreachableEngine,
@@ -182,5 +183,32 @@ describe("what a publish retires", () => {
 		expect(unreachableEngine(parsed("engine-sam-g1-p3"), flipped)).toBe(false);
 		expect(unreachableEngine(parsed("engine-sam-g2-p3"), flipped)).toBe(true);
 		expect(unreachableEngine(parsed(engineName("wnam", 2, 7)), flipped)).toBe(false);
+	});
+});
+
+describe("notifyRetireReason — what the publish fan-out retires instead of notifying", () => {
+	const partitioned = { partition_count: 10 };
+
+	test("a pre-partitioning single-store region object is retired, not notified", () => {
+		expect(notifyRetireReason({ region: "enam" }, partitioned)).toBe("unpartitioned");
+		expect(notifyRetireReason({ region: "wnam", generation: 0 }, partitioned)).toBe("unpartitioned");
+	});
+
+	test("every partition object is notified", () => {
+		expect(notifyRetireReason({ region: "enam", partition: 0 }, partitioned)).toBeNull();
+		expect(notifyRetireReason({ region: "apac", partition: 9 }, partitioned)).toBeNull();
+	});
+
+	test("against an unpartitioned manifest nothing is retired for lacking a partition", () => {
+		expect(notifyRetireReason({ region: "enam" }, {})).toBeNull();
+		expect(notifyRetireReason({ region: "enam" }, null)).toBeNull();
+	});
+
+	test("an unreachable object is still retired as unreachable", () => {
+		const placement: PlacementBlock = { v: 1, gens: { enam: 2 } };
+		expect(notifyRetireReason({ region: "enam", partition: 3 }, { ...partitioned, placement })).toBe("unreachable");
+		expect(
+			notifyRetireReason({ region: "enam", generation: 2, partition: 3 }, { ...partitioned, placement }),
+		).toBeNull();
 	});
 });

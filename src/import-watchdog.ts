@@ -79,6 +79,11 @@ export const RELEASE_TIMEOUT_MS = 15_000;
  * into a restart every 20 minutes all day.
  */
 export const MAX_FAILOVERS_PER_DAY = 3;
+// Log levels: nothing here logs at ERROR. A failover, a suspect mark and the daily cap are the
+// watchdog handling a platform stall — the site keeps serving the last published store throughout
+// — and ERROR is kept for failures someone has to act on (an import that failed outright logs its
+// own). The cap line repeats every tick while it holds, so WARN also keeps it from reading as ten
+// separate incidents.
 /**
  * How long a coordinator must have been suspect before a second missed check replaces it. Under
  * the 10-minute tick, so the NEXT tick confirms; a second tick minutes after the first (a late or
@@ -382,7 +387,7 @@ export async function runImportWatchdog(
 	if (action.kind === "failover") {
 		const recent = pointer.failovers.filter((t) => t > now - 24 * 3_600_000);
 		if (recent.length >= MAX_FAILOVERS_PER_DAY) {
-			console.error(
+			console.warn(
 				`Import watchdog: ${pointer.name} needs replacing (${action.why}), but ${recent.length} failovers in the ` +
 					`last 24h is the cap (MAX_FAILOVERS_PER_DAY) — something is wedging every coordinator; not restarting again`,
 			);
@@ -396,14 +401,14 @@ export async function runImportWatchdog(
 		// the new coordinator idle and starts it (LOST_START_WINDOW_MS); the other order could leave
 		// two unfenced runs.
 		await env.STORE_KV.put(COORDINATOR_POINTER_KEY, JSON.stringify(next));
-		console.error(
+		console.warn(
 			`Import watchdog: FAILOVER — ${pointer.name} (epoch ${pointer.epoch}) replaced by ${next.name} ` +
 				`(epoch ${next.epoch}): ${action.why}. The old object retires if it ever wakes; a fresh run starts now ` +
 				`(failover ${next.failovers.length}/${MAX_FAILOVERS_PER_DAY} today)`,
 		);
 		const started = await within(coordinatorFor(env, next.name).fetch(startUrl("watchdog-failover", next)), timeoutMs);
 		if (started === "timeout")
-			console.error(`Import watchdog: the new coordinator ${next.name} did not answer its start`);
+			console.warn(`Import watchdog: the new coordinator ${next.name} did not answer its start`);
 		return action;
 	}
 

@@ -17,7 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { engineName, parseEngineName, replicaGroupOf } from "../../src/engine/engine-namespace";
-import { type PlacementBlock, unreachableEngine } from "../../src/engine/placement-policy";
+import { notifyRetireReason, type PlacementBlock } from "../../src/engine/placement-policy";
 import { manifestServableBy } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 
@@ -85,12 +85,16 @@ async function fanOut(
 	/** The published manifest's placement; null is a manifest without one (the seed). The default is an
 	 * empty block: no alias, generation 0 — the fan-out as it was before g1. */
 	placement: PlacementBlock | null = { v: 1 },
+	/** The published manifest's partition count; undefined keeps the unpartitioned-name fixtures notified. */
+	partitionCount?: number,
 ) {
 	const stub = (name: string) => ns.get({ name });
-	// g1: what no request can reach is retired, never prepared.
+	// g1: what no request can reach is retired, never prepared — and, against a partitioned
+	// manifest, the pre-partitioning single-store region objects.
+	const manifest = { placement: placement ?? undefined, partition_count: partitionCount };
 	const retire = announcedNames.filter((name) => {
 		const parsed = parseEngineName(name);
-		return parsed !== null && unreachableEngine(parsed, placement ?? undefined);
+		return parsed !== null && notifyRetireReason(parsed, manifest) !== null;
 	});
 	await Promise.allSettled(
 		retire.map(async (name) => {
@@ -274,9 +278,21 @@ describe("g1: objects no request can reach are retired, not prepared", () => {
 		expect(retired).toEqual([]);
 	});
 
+	test("the pre-partitioning region objects are retired, not notified — the nightly REFUSING errors", async () => {
+		const live = { "engine-enam": 1, "engine-wnam": 1, "engine-enam-p0": 1, "engine-wnam-p3": 1 };
+		const ns = fakeNamespace(live);
+		const { retired, acked } = await fanOut(ns, Object.keys(live), { v: 1 }, 10);
+		expect(retired.sort()).toEqual(["engine-enam", "engine-wnam"]);
+		for (const name of retired) {
+			expect(ns.calls.get(name)).toEqual({ prepared: 0, committed: 0, released: 1, shards: 1 });
+			expect(ns.announced.has(name)).toBe(false);
+		}
+		expect(acked.map((a) => a.name).sort()).toEqual(["engine-enam-p0", "engine-wnam-p3"]);
+	});
+
 	test("the coordinator's notify retires through the same predicate the mirror uses", () => {
 		const src = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
-		expect(src).toContain("unreachableEngine(parsed, placement)");
+		expect(src).toContain("notifyRetireReason(parsed, published as StoreManifest | null)");
 		expect(src).toContain("engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation)");
 	});
 });

@@ -95,6 +95,7 @@ import {
 	continentOfColo,
 	effectiveRegion,
 	nextPlacement,
+	notifyRetireReason,
 	type PlacementBlock,
 	unreachableEngine,
 } from "./engine/placement-policy";
@@ -3866,11 +3867,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// below, and without first prefetching a build into them. An isolate still holding the
 		// previous manifest (its memo is 60s) may re-create one; it announces itself on load and the
 		// next notify retires it again.
-		const placement = (published as StoreManifest | null)?.placement;
-		const retire = announced.filter((name) => {
+		// Also the pre-partitioning single-store region objects (notifyRetireReason): announced
+		// long ago, addressed by nothing, and each one logged a refusal at ERROR every night.
+		const reasons = new Map<string, string>();
+		for (const name of announced) {
 			const parsed = parseEngineName(name);
-			return parsed !== null && unreachableEngine(parsed, placement);
-		});
+			const reason = parsed === null ? null : notifyRetireReason(parsed, published as StoreManifest | null);
+			if (reason) reasons.set(name, reason);
+		}
+		const retire = [...reasons.keys()];
 		const live = announced.filter((name) => !retire.includes(name));
 		if (retire.length > 0) {
 			const gone = await Promise.allSettled(
@@ -3881,10 +3886,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 					await this.env.STORE_KV.delete(`${REGION_LIVE_PREFIX}${name}`);
 				}),
 			);
-			const regions = [...new Set(retire.map((n) => parseEngineName(n)?.region))].join(", ");
+			const failed = retire.filter((_, i) => gone[i]?.status === "rejected");
 			console.log(
-				`Publish notify: retired ${gone.filter((r) => r.status === "fulfilled").length}/${retire.length} ` +
-					`object(s) no request can reach (${regions}: aliased, or an older generation)`,
+				`Publish notify: retired ${retire.length - failed.length}/${retire.length} object(s) no request can reach ` +
+					`(${retire.map((n) => `${n}: ${reasons.get(n)}`).join(", ")})` +
+					(failed.length > 0 ? `; ${failed.length} left announced, retried at the next publish` : ""),
 			);
 		}
 		if (live.length === 0) {

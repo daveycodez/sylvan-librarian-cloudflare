@@ -118,6 +118,28 @@ export function unreachableEngine(
 	return (parsed.generation ?? 0) !== generationOf(parsed.region, placement);
 }
 
+/**
+ * Why the publish fan-out should RETIRE an announced object instead of notifying it, or null to
+ * notify it.
+ *
+ * `unreachable`: see unreachableEngine. `unpartitioned`: a name with no `-p<k>` — the single-store
+ * region objects (`engine-enam`, `engine-wnam`, …) from before the store was partitioned. No request
+ * addresses one any more (every serving path names a partition), but their announcements outlived
+ * them, so every nightly notified them, and each logged "REFUSING a pushed manifest this object
+ * cannot serve" at ERROR — five a night on DeckGen, noise that looked like a failure. Retiring
+ * releases their old store and deletes the announcement, so it happens once.
+ */
+export function notifyRetireReason(
+	parsed: { region: string; generation?: number; partition?: number },
+	manifest: { placement?: PlacementBlock; partition_count?: number } | null | undefined,
+): "unreachable" | "unpartitioned" | null {
+	if (unreachableEngine(parsed, manifest?.placement)) return "unreachable";
+	// Only against a partitioned manifest: were the published store ever unpartitioned, these would
+	// be the objects that serve it, not leftovers.
+	if (manifest?.partition_count !== undefined && parsed.partition === undefined) return "unpartitioned";
+	return null;
+}
+
 type Verdict = "on" | "off" | "unknown";
 
 function verdict(hint: Hint, colos: readonly string[] | undefined, continentOf: (colo: string) => string | undefined) {

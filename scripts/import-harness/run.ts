@@ -174,7 +174,9 @@ function fakeEngines() {
 		}),
 	};
 }
-const ANNOUNCED = ["engine-sam-p0", "engine-afr-p1", "engine-enam-p0"];
+// engine-enam / engine-wnam: pre-partitioning single-store region objects whose announcements
+// outlived them — every nightly notified them and each logged a refusal at ERROR.
+const ANNOUNCED = ["engine-sam-p0", "engine-afr-p1", "engine-enam-p0", "engine-enam", "engine-wnam"];
 
 /** Everything the coordinator reaches for that is not this machine. */
 function makeEnv(kv: FakeKV, baseUrl: string) {
@@ -415,6 +417,12 @@ async function main(): Promise<number> {
 			? "an aliased object was prepared or committed instead of retired"
 			: null,
 		engineCalls.includes("prepare engine-enam-p0") ? null : "the served object was not prepared",
+		engineCalls.includes("release engine-enam") && engineCalls.includes("release engine-wnam")
+			? null
+			: "the notify did not retire the pre-partitioning region objects",
+		engineCalls.some((c) => /^(prepare|commit) engine-(enam|wnam)$/.test(c))
+			? "a pre-partitioning region object was notified (the nightly ERROR refusals)"
+			: null,
 		liveLeft === "engine:live:engine-enam-p0" ? null : `announcements left: ${liveLeft}`,
 	].filter((p): p is string => p !== null);
 	if (placementProblems.length) {
