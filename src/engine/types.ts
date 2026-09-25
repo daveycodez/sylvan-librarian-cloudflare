@@ -295,7 +295,13 @@ export interface Engine {
 	 * (`/cards/:code/:number`, and a collection POST's `set`+`collector_number` and `name`
 	 * identifiers). One RPC for the whole batch so 75 identifiers are not 75 round trips.
 	 */
-	scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]>;
+	scryfallFirstOfEach(
+		filterTreeJsons: string[],
+		baseUrl: string,
+		/** When every tree looks up ONE address, its `setNumberKey` — the partitioned router then
+		 * asks the partition the routing filter names instead of all of them. */
+		addressKey?: string,
+	): Promise<(Record<string, unknown> | null)[]>;
 	/**
 	 * A whole `POST /cards/collection` batch — every identifier kind — resolved in ONE round, each
 	 * found card as finished Scryfall JSON bytes.
@@ -322,6 +328,13 @@ export interface CollectionBatch {
 	keys: CollectionBatchKey[];
 	/** Filter trees answered by their first printing — `{set, collector_number}`. */
 	trees: string[];
+	/**
+	 * Per tree, the routing key of the ADDRESS it looks up (`setNumberKey`), or null. Trees that
+	 * share a key are alternatives at one address — English, then any language — and all live in
+	 * the one partition that key names, so the partitioned router asks that partition alone.
+	 * Absent means no tree is routable: every partition is asked.
+	 */
+	treeAddresses?: (string | null)[];
 	/** `{name}` and `{name, set}`, under the batch's scope. */
 	names: NameIdentifier[];
 }

@@ -26,6 +26,7 @@ import {
 	RoutingKeyAccumulator,
 	routingHash,
 	scryfallIdKey,
+	setNumberKey,
 } from "../../src/engine/routing-filter";
 
 const IDENTITY = { builtAt: "1786869419", partitionCount: 9, partitionHash: "fnv1a64/oracle_id/v1" };
@@ -51,6 +52,16 @@ function parse(bytes: Uint8Array, identity = IDENTITY): RoutingFilter {
 	if ("reason" in parsed) throw new Error(`parse refused: ${parsed.reason}`);
 	return parsed.filter;
 }
+
+describe("the address key", () => {
+	// WIRE FORMAT, shared with engine/builder/src/transform.rs's `set_number_routing_key` — the Rust
+	// test `address_routing_key_is_spelled_like_the_router_spells_it` pins the same literals.
+	test("is the set lowercased and the collector number exactly as written", () => {
+		expect(setNumberKey("LEA", "161")).toBe("sn:lea/161");
+		expect(setNumberKey("war", "184★")).toBe("sn:war/184★");
+		expect(setNumberKey("10e", "A-42")).toBe("sn:10e/A-42");
+	});
+});
 
 describe("key namespacing", () => {
 	test("the same integer in two namespaces is two different keys", () => {

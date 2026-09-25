@@ -24,6 +24,7 @@
 
 import { encodeUtf8 } from "../../engine/bytes";
 import { readKvBytesMemo } from "../../engine/kv-memo";
+import { setNumberKey } from "../../engine/routing-filter";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
 import type { CollectionBatch, CollectionBatchKey, CollectionScope, Engine } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
@@ -1236,7 +1237,7 @@ async function resolveIdentifiers(
 	scope: CollectionScope | null,
 	kinds: IdentifierKindTally,
 ): Promise<(Uint8Array | null)[]> {
-	const batch: CollectionBatch = { keys: [], trees: [], names: [] };
+	const batch: CollectionBatch = { keys: [], trees: [], treeAddresses: [], names: [] };
 	// Where each identifier's answer lands: a slot in one of the batch's three lists, or nowhere.
 	const slots: ({ list: "keys" | "trees" | "names"; at: number } | null)[] = [];
 	const key = (k: CollectionBatchKey) => slots.push({ list: "keys", at: batch.keys.push(k) - 1 });
@@ -1271,6 +1272,10 @@ async function resolveIdentifiers(
 			const [set, number] = [String(id.set), String(id.collector_number)];
 			slots.push({ list: "trees", at: batch.trees.length });
 			batch.trees.push(setAndCollectorNumber(set, number, "en"), setAndCollectorNumber(set, number, null));
+			// Both trees look up one ADDRESS, which lives in one partition: its key lets the
+			// partitioned engine ask only that one.
+			const address = setNumberKey(set, number);
+			batch.treeAddresses?.push(address, address);
 			kinds.pair++;
 		} else if (id.name !== undefined) {
 			// FOLDED AND TRIMMED, the way `/cards/named?exact=` hands its needle over; the engine
@@ -1417,7 +1422,9 @@ async function resolvePathCard(
 	const trees = suffix
 		? [setAndCollectorNumber(identifier, number, suffix)]
 		: [setAndCollectorNumber(identifier, number, "en"), setAndCollectorNumber(identifier, number, null)];
-	const cards = await engine.scryfallFirstOfEach(trees, baseUrl);
+	// Every tree is the same ADDRESS, and an address lives in one partition: its key routes the
+	// lookup there (one call) rather than to all of them.
+	const cards = await engine.scryfallFirstOfEach(trees, baseUrl, setNumberKey(identifier, number));
 	return cards.find((card) => card !== null) ?? null;
 }
 

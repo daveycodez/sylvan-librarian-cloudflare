@@ -575,6 +575,14 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
         oracle_id: String,
         #[serde(default)]
         compat_blob: serde_json::Map<String, Value>,
+        // The address key's inputs: one key per (set, collector_number), carried by the address's
+        // one canonical printing (see transform::routing_keys_of).
+        #[serde(default)]
+        card_set_code: Option<String>,
+        #[serde(default)]
+        collector_number: Option<String>,
+        #[serde(default)]
+        is_canonical: bool,
         // The artist entity relation's input, read in this same pass for the same reason the
         // routing keys are: it is the one visit that sees every draft of every partition.
         #[serde(default)]
@@ -619,10 +627,16 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
             s.tags.corpus.observe_artists(draft.card_artist.as_deref(), &draft.compat_blob);
             if partition_count > 0 {
                 keys.clear();
+                let address = draft
+                    .card_set_code
+                    .as_deref()
+                    .zip(draft.collector_number.as_deref())
+                    .filter(|_| draft.is_canonical);
                 routing_keys_of(
                     &draft.scryfall_id,
                     draft.illustration_id.as_deref(),
                     &draft.compat_blob,
+                    address,
                     &mut keys,
                 );
                 let p = fnv1a64_oracle_id(&draft.oracle_id) % u64::from(partition_count);

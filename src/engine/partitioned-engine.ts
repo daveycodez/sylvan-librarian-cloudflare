@@ -24,14 +24,17 @@
 //   collection (scryfallCollectionBatch)
 //                                      ONE round, at most N: every identifier
 //                                      kind in one call per partition. Names
-//                                      and {set,collector_number} trees go to
-//                                      all N (either could live anywhere);
-//                                      keys go only to the partition the
-//                                      modulus or routing filter names, so a
-//                                      batch of ids alone asks 1-2 partitions.
-//                                      A name's rank and its local winner's
-//                                      card come back together, so there is
-//                                      no materialize round
+//                                      go to all N (a name could live
+//                                      anywhere); keys and {set,
+//                                      collector_number} addresses go only to
+//                                      the partitions the modulus or routing
+//                                      filter names — a lone address is ONE
+//                                      call. A name's rank and its local
+//                                      winner's card come back together, so
+//                                      there is no materialize round
+//   set + collector number             1 when the routing filter knows the
+//   (/cards/:set/:number)              address (setNumberKey), else N; a
+//                                      hinted miss is 1 + (N-1)
 //   named exact / fuzzy / containing   N, combined (see each method's rules)
 //   autocomplete                       N, merged prefix-first
 //
@@ -894,7 +897,21 @@ export class PartitionedEngine implements Engine {
 		return out;
 	}
 
-	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
+	async scryfallFirstOfEach(
+		filterTreeJsons: string[],
+		baseUrl: string,
+		addressKey?: string,
+	): Promise<(Record<string, unknown> | null)[]> {
+		if (addressKey !== undefined) {
+			// Every printing at one address lives in one partition, so the partition holding a card
+			// for ANY of the trees holds the whole answer: the routed partition first, the rest only
+			// if it has none — one call for `/cards/:set/:number`, where every one was N.
+			const found = await this.hinted(addressKey, async (e) => {
+				const cards = await e.scryfallFirstOfEach(filterTreeJsons, baseUrl);
+				return cards.some((card) => card !== null) ? cards : null;
+			});
+			return found ?? filterTreeJsons.map(() => null);
+		}
 		const perPartition = await this.all((e) => e.scryfallFirstOfEach(filterTreeJsons, baseUrl));
 		return filterTreeJsons.map((_, i) => {
 			for (const cards of perPartition) {
@@ -1038,10 +1055,13 @@ export class PartitionedEngine implements Engine {
 	 * The per-kind methods above spent up to 2N on the names (rank, then materialize the winners),
 	 * N on the `{set, collector_number}` trees and up to N on the keys, each its own fan-out.
 	 *
-	 * Every partition is sent the names and trees whole, since either could live anywhere — and
-	 * then the keys too, since every partition is being called regardless. A batch of keys ALONE is
-	 * routed: a key the modulus or the routing filter places goes to that partition only, one
-	 * nothing places rides to all of them, and a partition with nothing to answer is not called.
+	 * WHICH partitions are called: every one for a batch with names (a name could live anywhere);
+	 * otherwise the ones the keys and trees are ROUTED to — a key by the oracle modulus or the
+	 * routing filter, a tree by its address's `setNumberKey` — and every one again if anything has
+	 * no route. EVERY called partition is sent EVERY key and tree: each is one probe or one narrow
+	 * query, so a partition being called anyway answers the rest for free, and whatever misses then
+	 * needs only the partitions nobody called. A lone `{set, collector_number}` — 74% of DeckGen's
+	 * collection POSTs on 2026-09-24 — is therefore one call, where it was N.
 	 *
 	 * The merge keeps the rules the per-kind methods had:
 	 *   - keys and trees: the first card in PARTITION ORDER — a hint names the lowest owning
@@ -1049,9 +1069,10 @@ export class PartitionedEngine implements Engine {
 	 *   - names: the best rank, strictly greater so a tie keeps the lowest partition, and THAT
 	 *     partition's card, which is what its materialize round would have returned: the engine
 	 *     ranks and picks a name by the same `name_best`
-	 * then scryfallCardsByIdentifiers' two repair rounds, keys only: an oracle miss re-reads the
-	 * manifest and asks the new owner if N moved, and a routed key that missed asks every partition
-	 * but the one it was routed to. Both are rare by construction and never on the common path.
+	 * then the repair rounds, both rare by construction: an oracle miss re-reads the manifest and
+	 * asks the new owner if N moved, and a routed key — or an address none of whose trees hit —
+	 * asks only the partitions round 1 did not call. A hint from another build, or a lookup of
+	 * something the filter never held, costs that second round; it can never cost a wrong answer.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
@@ -1059,62 +1080,66 @@ export class PartitionedEngine implements Engine {
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
 		const out = emptyCollectionAnswer(batch);
+		const hintOf = (routingKey: string, n: number): number | null => {
+			const hint = this.routing?.lookup(routingKey) ?? null;
+			return hint === null || hint >= n ? null : hint;
+		};
 		const targetOf = (key: CollectionBatchKey, n: number): number | null => {
 			if (key.kind === "oracle_id") return partitionOfOracleId(key.id, n);
-			const routingKey =
+			return hintOf(
 				key.kind === "scryfall_id"
 					? scryfallIdKey(key.id)
 					: key.kind === "illustration_id"
 						? illustrationIdKey(key.id)
-						: externalIdKey(key.namespace, key.id);
-			const hint = this.routing?.lookup(routingKey) ?? null;
-			return hint === null || hint >= n ? null : hint;
+						: externalIdKey(key.namespace, key.id),
+				n,
+			);
 		};
 		// Each reply is taken in partition order, whatever order the calls finish in.
-		const ask = (asks: { p: number; keyAt: number[]; whole: boolean }[]) =>
+		type Ask = { p: number; keyAt: number[]; treeAt: number[]; names: boolean };
+		const ask = (asks: Ask[]) =>
 			Promise.all(
-				asks.map(async ({ p, keyAt, whole }) => {
+				asks.map(async ({ p, keyAt, treeAt, names }) => {
 					const sub: CollectionBatch = {
 						keys: keyAt.map((i) => batch.keys[i] as CollectionBatchKey),
-						trees: whole ? batch.trees : [],
-						names: whole ? batch.names : [],
+						trees: treeAt.map((i) => batch.trees[i] as string),
+						names: names ? batch.names : [],
 					};
-					return { keyAt, whole, answer: await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope) };
+					return { keyAt, treeAt, answer: await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope) };
 				}),
 			);
-		const fillKeys = (replies: Awaited<ReturnType<typeof ask>>) => {
-			for (const { keyAt, answer } of replies) {
+		const fill = (replies: Awaited<ReturnType<typeof ask>>) => {
+			for (const { keyAt, treeAt, answer } of replies) {
 				for (const [j, i] of keyAt.entries()) if (out.keys[i] === null) out.keys[i] = answer.keys[j] ?? null;
+				for (const [j, i] of treeAt.entries()) if (out.trees[i] === null) out.trees[i] = answer.trees[j] ?? null;
 			}
 		};
-
-		// WHICH partitions are called: all of them for a batch with names or trees (either could live
-		// anywhere), and otherwise the ones the keys' modulus or routing-filter hints name — all of
-		// them again if any key has no hint. EVERY called partition is sent EVERY key: a key is one
-		// index probe, so a partition being called anyway answers the rest for free, and a key that
-		// misses then needs only the partitions nobody called. That keeps a batch at N calls however
-		// it misses, where the per-kind methods either paid hint + (N-1) or skipped the partitions
-		// hinted for other ids and could report a card that exists as not found.
-		const whole = batch.trees.length > 0 || batch.names.length > 0;
+		const hasNames = batch.names.length > 0;
 		const allKeys = batch.keys.map((_, i) => i);
-		let everywhere = whole;
+		const allTrees = batch.trees.map((_, i) => i);
+
+		// Round 1: the routed partitions, or all of them.
+		let everywhere = hasNames;
 		const called = new Set<number>();
-		for (const key of everywhere ? [] : batch.keys) {
-			const target = targetOf(key, this.n);
-			if (target === null) {
-				everywhere = true;
-				break;
+		const route = (target: number | null) => {
+			if (target === null) everywhere = true;
+			else called.add(target);
+		};
+		if (!everywhere) {
+			for (const key of batch.keys) route(targetOf(key, this.n));
+			for (const [i] of batch.trees.entries()) {
+				const address = batch.treeAddresses?.[i];
+				route(address ? hintOf(address, this.n) : null);
 			}
-			called.add(target);
 		}
+		const askedIn1 = (p: number) => everywhere || called.has(p);
 		const round1 = await ask(
 			Array.from({ length: this.n }, (_, p) => p)
-				.filter((p) => everywhere || called.has(p))
-				.map((p) => ({ p, keyAt: allKeys, whole })),
+				.filter(askedIn1)
+				.map((p) => ({ p, keyAt: allKeys, treeAt: allTrees, names: hasNames })),
 		);
-		fillKeys(round1);
+		fill(round1);
 		for (const { answer } of round1) {
-			for (let i = 0; i < batch.trees.length; i++) out.trees[i] ??= answer.trees[i] ?? null;
 			for (let i = 0; i < batch.names.length; i++) {
 				const rank = answer.nameRanks[i] ?? null;
 				if (rank !== null && beatsExactRank(rank, out.nameRanks[i] ?? null)) {
@@ -1123,7 +1148,6 @@ export class PartitionedEngine implements Engine {
 				}
 			}
 		}
-		const askedIn1 = (p: number) => everywhere || called.has(p);
 
 		// An oracle id that missed its owner is not in the store at this N; if N has moved, it may
 		// be in its NEW owner, which round 1 did not ask when that owner is past the old count.
@@ -1136,19 +1160,29 @@ export class PartitionedEngine implements Engine {
 					const p2 = targetOf(batch.keys[i] as CollectionBatchKey, freshN) as number;
 					if (p2 >= this.n || !askedIn1(p2)) regrouped.set(p2, [...(regrouped.get(p2) ?? []), i]);
 				}
-				const asks = [...regrouped].sort(([a], [b]) => a - b).map(([p, keyAt]) => ({ p, keyAt, whole: false }));
-				fillKeys(await ask(asks));
+				const asks = [...regrouped]
+					.sort(([a], [b]) => a - b)
+					.map(([p, keyAt]) => ({ p, keyAt, treeAt: [], names: false }));
+				fill(await ask(asks));
 			}
 		}
 
-		// Any other key that missed was hinted somewhere it is not (a filter from another build, or
-		// a collision): it can only be in a partition round 1 did not call.
-		const missed = batch.keys.flatMap((key, i) => (key.kind !== "oracle_id" && out.keys[i] === null ? [i] : []));
-		if (missed.length > 0 && !everywhere) {
-			const asks = Array.from({ length: this.n }, (_, p) => p)
-				.filter((p) => !askedIn1(p))
-				.map((p) => ({ p, keyAt: missed, whole: false }));
-			fillKeys(await ask(asks));
+		// Anything else that missed was routed somewhere it is not (a filter from another build, a
+		// collision, or a lookup of something that does not exist): it can only be in a partition
+		// round 1 did not call. A tree misses only as an ADDRESS — the English tree of an address
+		// with no English printing misses while its lang-less twin hits, and that is an answer.
+		if (!everywhere) {
+			const keyAt = batch.keys.flatMap((key, i) => (key.kind !== "oracle_id" && out.keys[i] === null ? [i] : []));
+			const answered = new Set(
+				allTrees.filter((i) => out.trees[i] !== null).map((i) => batch.treeAddresses?.[i] ?? null),
+			);
+			const treeAt = allTrees.filter((i) => !answered.has(batch.treeAddresses?.[i] ?? null));
+			if (keyAt.length > 0 || treeAt.length > 0) {
+				const asks = Array.from({ length: this.n }, (_, p) => p)
+					.filter((p) => !askedIn1(p))
+					.map((p) => ({ p, keyAt, treeAt, names: false }));
+				fill(await ask(asks));
+			}
 		}
 		return out;
 	}

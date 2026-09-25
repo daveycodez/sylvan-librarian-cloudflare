@@ -24,6 +24,7 @@ import {
 	illustrationIdKey,
 	RoutingFilter,
 	scryfallIdKey,
+	setNumberKey,
 } from "../../src/engine/routing-filter";
 import { type CollectionBatch, StaleModulusError, type StoreManifest } from "../../src/engine/types";
 
@@ -199,11 +200,13 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			const held = val<Record<string, Record<string, unknown>>>("byKey", {});
 			const ranks = val<(number[] | null)[]>("collectionRanks", []);
 			const tree = val<Record<string, unknown> | null>("firstOfEach", null);
+			// `byTree` answers per tree string, for a test that needs the English tree to miss.
+			const byTree = val<Record<string, Record<string, unknown>> | null>("byTree", null);
 			const card = val<Record<string, unknown> | null>("collectionCard", null);
 			const nameRanks = batch.names.map((_, i) => ranks[i] ?? null);
 			return {
 				keys: batch.keys.map((k) => cardBytes(held[String(k.id)] ?? null)),
-				trees: batch.trees.map(() => cardBytes(tree)),
+				trees: batch.trees.map((t) => cardBytes(byTree ? (byTree[t] ?? null) : tree)),
 				names: nameRanks.map((rank) => (rank === null ? null : cardBytes(card))),
 				nameRanks,
 			};
@@ -646,6 +649,97 @@ describe("a collection batch is ONE round of at most N calls", () => {
 		expect(answer(got).keys).toEqual([{ id: "a" }]);
 		expect(calls.length).toBe(N);
 		expect(calls.filter((c) => c.endsWith(":1"))).toEqual(["scryfallCollectionBatch[a|t0|n0]:1"]);
+	});
+
+	describe("a {set, collector_number} address is routed like a key", () => {
+		const k = setNumberKey("lea", "161");
+		const pair = { trees: ["en", "any"], treeAddresses: [k, k] };
+
+		test("a lone address is ONE call — 74% of DeckGen's collection POSTs", async () => {
+			const { engine, calls } = build(
+				{ 2: { firstOfEach: { id: "bolt" } } },
+				undefined,
+				filterOf([{ key: k, partition: 2 }]),
+			);
+			const got = await engine.scryfallCollectionBatch({ keys: [], names: [], ...pair }, "https://x");
+			expect(answer(got).trees).toEqual([{ id: "bolt" }, { id: "bolt" }]);
+			expect(calls).toEqual(["scryfallCollectionBatch[|t2|n0]:2"]);
+		});
+
+		test("an English miss with a lang-less hit is an ANSWER, not a reason to ask again", async () => {
+			const { engine, calls } = build(
+				{ 2: { byTree: { any: { id: "hoc-95", lang: "dw" } } } },
+				undefined,
+				filterOf([{ key: k, partition: 2 }]),
+			);
+			const got = await engine.scryfallCollectionBatch({ keys: [], names: [], ...pair }, "https://x");
+			expect(answer(got).trees).toEqual([null, { id: "hoc-95", lang: "dw" }]);
+			expect(calls.length).toBe(1);
+		});
+
+		test("an address hinted wrong asks only the partitions round 1 did not call", async () => {
+			const { engine, calls } = build(
+				{ 3: { firstOfEach: { id: "bolt" } } },
+				undefined,
+				filterOf([{ key: k, partition: 1 }]),
+			);
+			const got = await engine.scryfallCollectionBatch({ keys: [], names: [], ...pair }, "https://x");
+			expect(answer(got).trees).toEqual([{ id: "bolt" }, { id: "bolt" }]);
+			expect(calls.length).toBe(N);
+			expect(calls.filter((c) => c.endsWith(":1"))).toEqual(["scryfallCollectionBatch[|t2|n0]:1"]);
+		});
+
+		test("addresses and ids share the round: each called partition answers both", async () => {
+			const routing = filterOf([
+				{ key: k, partition: 2 },
+				{ key: scryfallIdKey("a"), partition: 0 },
+			]);
+			const { engine, calls } = build(
+				{ 0: { byKey: { a: { id: "a" } } }, 2: { firstOfEach: { id: "bolt" } } },
+				undefined,
+				routing,
+			);
+			const got = await engine.scryfallCollectionBatch({ keys: [sid("a")], names: [], ...pair }, "https://x");
+			expect(answer(got)).toEqual({ keys: [{ id: "a" }], trees: [{ id: "bolt" }, { id: "bolt" }], names: [] });
+			expect(calls.sort()).toEqual(["scryfallCollectionBatch[a|t2|n0]:0", "scryfallCollectionBatch[a|t2|n0]:2"]);
+		});
+
+		test("a batch with names still asks every partition, once", async () => {
+			const { engine, calls } = build(
+				{ 2: { firstOfEach: { id: "bolt" } } },
+				undefined,
+				filterOf([{ key: k, partition: 2 }]),
+			);
+			await engine.scryfallCollectionBatch({ keys: [], names: names("x"), ...pair }, "https://x");
+			expect(calls.length).toBe(N);
+		});
+
+		test("without the address in the filter, the lookup is the old fan-out, still one round", async () => {
+			const { engine, calls } = build({ 2: { firstOfEach: { id: "bolt" } } });
+			const got = await engine.scryfallCollectionBatch({ keys: [], names: [], ...pair }, "https://x");
+			expect(answer(got).trees).toEqual([{ id: "bolt" }, { id: "bolt" }]);
+			expect(calls.length).toBe(N);
+		});
+
+		test("/cards/:set/:number: the routed partition alone, then the rest only on a miss", async () => {
+			const routed = build({ 2: { firstOfEach: { id: "bolt" } } }, undefined, filterOf([{ key: k, partition: 2 }]));
+			expect(await routed.engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).toEqual([
+				{ id: "bolt" },
+				{ id: "bolt" },
+			]);
+			expect(routed.calls).toEqual(["scryfallFirstOfEach:2"]);
+
+			const stale = build({ 3: { firstOfEach: { id: "bolt" } } }, undefined, filterOf([{ key: k, partition: 1 }]));
+			expect(await stale.engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).toEqual([
+				{ id: "bolt" },
+				{ id: "bolt" },
+			]);
+			expect(stale.calls.length).toBe(N);
+
+			const nowhere = build({}, undefined, filterOf([{ key: k, partition: 1 }]));
+			expect(await nowhere.engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).toEqual([null, null]);
+			expect(nowhere.calls.length).toBe(N);
+		});
 	});
 
 	test("nothing to resolve costs nothing", async () => {

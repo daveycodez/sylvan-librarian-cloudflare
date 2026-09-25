@@ -88,6 +88,8 @@ export const ROUTING_NAMESPACES = {
 	arena: "arena",
 	tcgplayer: "tcgplayer",
 	cardmarket: "cardmarket",
+	/** A printing ADDRESS, `<set>/<collector_number>` — see `setNumberKey`. */
+	setNumber: "sn",
 } as const;
 
 /** `<namespace>:<id>` — the exact bytes both sides hash. */
@@ -103,6 +105,17 @@ export function scryfallIdKey(id: string): string {
 /** The key for an illustration UUID. */
 export function illustrationIdKey(id: string): string {
 	return routingKey(ROUTING_NAMESPACES.illustrationId, id.toLowerCase());
+}
+
+/**
+ * The key for a printing ADDRESS — `/cards/:set/:number` and a collection `{set, collector_number}`:
+ * the set code lowercased (the engine compares it lowercased), the collector number exactly as
+ * written (the engine compares it exactly). One key per address, whatever the language: every
+ * printing at an address shares one oracle id, so the address alone names its partition — see
+ * `set_number_routing_key` in engine/builder/src/transform.rs, which writes the other side.
+ */
+export function setNumberKey(setCode: string, collectorNumber: string): string {
+	return routingKey(ROUTING_NAMESPACES.setNumber, `${setCode.toLowerCase()}/${collectorNumber}`);
 }
 
 /** The key for one of the external integer id namespaces. */

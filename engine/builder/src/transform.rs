@@ -2781,11 +2781,28 @@ pub fn finalize_row(
 const ROUTING_EXTERNAL_IDS: [(&str, &str); 4] =
     [("mtgo_id", "mtgo"), ("arena_id", "arena"), ("tcgplayer_id", "tcgplayer"), ("cardmarket_id", "cardmarket")];
 
+/// The routing key of a printing ADDRESS — `/cards/:set/:number` and a collection
+/// `{set, collector_number}` — as `setNumberKey` in routing-filter.ts spells it: the set code
+/// lowercased, the collector number exactly as stored, since the engine compares it exactly.
+///
+/// One key per address, never per language: every printing at an address shares one oracle id
+/// (measured over the 2026-09-23 corpus: 118,610 addresses, 542,910 printings, none spanning two
+/// partitions), so the address alone names its partition, and the English-then-any fallback the
+/// routes run is answered by that one partition.
+pub fn set_number_routing_key(set_code: &str, collector_number: &str) -> String {
+    format!("sn:{}/{collector_number}", set_code.to_ascii_lowercase())
+}
+
 /// Append one printing's routing keys.
 ///
 /// `compat` is the printing's compat residue — `RowDraft::compat_blob` on the draft side,
 /// `card_compat_blob` on the finalized-row side; the two publishers reach it under different
 /// names, which is why this takes the map rather than the row.
+///
+/// `address` is the printing's `(set_code, collector_number)` when THIS row should carry the
+/// address key — the caller passes it for canonical rows only, exactly one per address (every
+/// address has exactly one canonical printing, measured as above), so the filter build sorts
+/// 118k address keys rather than one per printing of every language.
 ///
 /// A missing or oddly-typed id is SKIPPED rather than an error: a key the filter does not carry
 /// costs one fan-out, and refusing to build a store over it would be wildly out of proportion.
@@ -2793,8 +2810,12 @@ pub fn routing_keys_of(
     scryfall_id: &str,
     illustration_id: Option<&str>,
     compat: &Map<String, Value>,
+    address: Option<(&str, &str)>,
     out: &mut Vec<String>,
 ) {
+    if let Some((set_code, collector_number)) = address.filter(|(s, n)| !s.is_empty() && !n.is_empty()) {
+        out.push(set_number_routing_key(set_code, collector_number));
+    }
     if !scryfall_id.is_empty() {
         out.push(format!("i:{}", scryfall_id.to_ascii_lowercase()));
     }
@@ -2818,10 +2839,14 @@ pub fn routing_keys_of(
 /// [`routing_keys_of`] against a finalized row (`card_compat_blob`) — the native builder's shape.
 pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
     let empty = Map::new();
+    let text = |key: &str| row.get(key).and_then(Value::as_str);
+    let canonical = row.get("is_canonical").and_then(Value::as_bool).unwrap_or(false);
+    let address = text("card_set_code").zip(text("collector_number")).filter(|_| canonical);
     routing_keys_of(
-        row.get("scryfall_id").and_then(Value::as_str).unwrap_or(""),
-        row.get("illustration_id").and_then(Value::as_str),
+        text("scryfall_id").unwrap_or(""),
+        text("illustration_id"),
         row.get("card_compat_blob").and_then(Value::as_object).unwrap_or(&empty),
+        address,
         out,
     );
 }
@@ -2834,6 +2859,37 @@ mod tests {
     fn fixture(name: &str) -> Value {
         let path = format!("{}/src/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"));
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// The address key's spelling is WIRE FORMAT: `setNumberKey` in src/engine/routing-filter.ts
+    /// hashes the same bytes, and tests/engine/routing-filter.test.ts pins the same literals.
+    #[test]
+    fn address_routing_key_is_spelled_like_the_router_spells_it() {
+        assert_eq!(set_number_routing_key("LEA", "161"), "sn:lea/161");
+        assert_eq!(set_number_routing_key("war", "184★"), "sn:war/184★");
+        // The collector number is compared exactly by the engine, so it is keyed exactly.
+        assert_eq!(set_number_routing_key("10e", "A-42"), "sn:10e/A-42");
+    }
+
+    /// One address key per ADDRESS: only the canonical row carries it, so the filter build sorts
+    /// one key per address rather than one per printing of every language.
+    #[test]
+    fn only_the_canonical_row_carries_the_address_key() {
+        let row = |canonical: bool| {
+            serde_json::json!({
+                "scryfall_id": "ABC",
+                "card_set_code": "c17",
+                "collector_number": "73",
+                "is_canonical": canonical,
+                "card_compat_blob": { "multiverse_ids": [433932] },
+            })
+        };
+        let mut keys = Vec::new();
+        routing_keys_of_row(&row(true), &mut keys);
+        assert_eq!(keys, ["sn:c17/73", "i:abc", "multiverse:433932"]);
+        keys.clear();
+        routing_keys_of_row(&row(false), &mut keys);
+        assert_eq!(keys, ["i:abc", "multiverse:433932"]);
     }
 
     #[test]
