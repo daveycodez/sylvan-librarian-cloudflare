@@ -233,8 +233,10 @@ function beatsExactRank(a: number[], b: number[] | null): boolean {
 // Why wait at all (backlog n1): before this, the first lookups of every fresh isolate asked all ten
 // partitions — 27 of 135 single-address batches right after b3, ~100k DO calls a day.
 
-/** How long a routable request may wait for the colo's copy of the filter. */
-export const ROUTING_WAIT_MS = 20;
+/** How long a routable request may wait for the colo's copy of the filter. Measured on DeckGen
+ * 09-25 (96 colo loads): p50 14 ms, p75 57, p90 170 — 20 ms caught 70% of them; 60 catches ~75%
+ * and still never waits on the slow tail. */
+export const ROUTING_WAIT_MS = 60;
 
 /** Cached per isolate and keyed by BUILD, because the filter is immutable per
  * build — a new generation is a new key, not a new value under the old one.
