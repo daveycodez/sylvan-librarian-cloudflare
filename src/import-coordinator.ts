@@ -94,7 +94,12 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "./engine/reference-kv";
-import { buildRoutingFilterFromHashes, RoutingKeyAccumulator } from "./engine/routing-filter";
+import {
+	buildRoutingFilterFromHashes,
+	NAME_KEYS_STAMP,
+	ROUTING_FEATURE_NAME_KEYS,
+	RoutingKeyAccumulator,
+} from "./engine/routing-filter";
 import {
 	encodeRulingsBucket,
 	parseRulingLine,
@@ -2239,6 +2244,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("tag_aliases", tagAliasesJson);
 			this.metaSet("tags_nonce", wasm.nonce);
 			this.metaSet("scores_batch_done", "0");
+			// The routing filter's line count, summed as the scores slices stage them — see stepRouting.
+			this.metaSet("routing_lines", "0");
 			// built_at is fixed ONCE, here at the end of tags, never in stepBuild
 			// (plan B3): with N builds in one run, a built_at stamped per build
 			// would fork the store key family on any mid-loop restart, stranding
@@ -2346,8 +2353,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.tagsExport();
 		wasm.setHandlers({});
 
+		// Counted HERE, where the text is in hand, and committed in the same transaction as the cursor
+		// — so a retried slice (which restarts from the last committed cursor) never counts a batch
+		// twice. stepRouting sizes its accumulator from the total.
+		let routingLines = 0;
+		for (const blob of routingBlobs) {
+			for (let i = blob.bytes.indexOf(10); i !== -1; i = blob.bytes.indexOf(10, i + 1)) routingLines++;
+		}
 		this.ctx.storage.transactionSync(() => {
 			this.writeTagSnapshot(tagBlobs);
+			this.metaSet("routing_lines", String(Number(this.metaGet("routing_lines") ?? 0) + routingLines));
 			// Keyed by the batch cursor this slice started from, so a RETRIED slice
 			// overwrites its own rows instead of doubling them. Duplicate keys would
 			// not corrupt the filter (it dedupes), but they would inflate the build.
@@ -2395,18 +2410,32 @@ export class ImportCoordinator extends DurableObject<Env> {
 		try {
 			if (!builtAt || !formatVersion) throw new Error("built_at/format_version are not stamped yet");
 			// Read in one pass (sqlAll) and folded into hashes row by row. The staged text is ~60MB on today's corpus and the
-			// accumulator holds three typed arrays instead of 1.2M strings — the difference between
-			// ~15MB and well past this object's 128MB.
-			const acc = new RoutingKeyAccumulator(1 << 21);
+			// accumulator holds four typed arrays instead of 1.9M strings — the difference between
+			// ~20MB and well past this object's 128MB.
+			//
+			// SIZED EXACTLY from the scores pass's own count (`routing_lines`): 1,910,333 id lines plus
+			// ~45k deduplicated name lines on the 2026-09-23 corpus, where the fixed 2^21 hint it
+			// replaced was 97% full with name keys and overflowed outright at 2x the corpus — and an
+			// overflow doubles every column while the old ones are live. Floored at the old 2^21, so
+			// a run staged partly before the count existed (a short total) sizes as it always did.
+			const counted = Number(this.metaGet("routing_lines") ?? 0);
+			const acc = new RoutingKeyAccumulator(Math.max(counted, 1 << 21));
 			const decoder = new TextDecoder();
 			let lines = 0;
+			// Name keys are claimed only if EVERY staged batch opened with the stamp: a run resumed
+			// across the deploy that added them has early batches without any, and a name missing
+			// from the filter must never read as "no other partition holds it".
+			let batches = 0;
+			let stampedBatches = 0;
 			for (const row of this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM routing_keys ORDER BY seq")) {
 				const text = decoder.decode(unpackBlob(new Uint8Array(row.bytes)));
+				batches++;
+				if (text.startsWith(`${NAME_KEYS_STAMP}\n`)) stampedBatches++;
 				let at = 0;
 				while (at < text.length) {
 					let end = text.indexOf("\n", at);
 					if (end === -1) end = text.length;
-					if (end > at) {
+					if (end > at && text.charCodeAt(at) !== 35 /* # */) {
 						const tab = text.indexOf("\t", at);
 						if (tab !== -1 && tab < end) {
 							acc.add(text.slice(tab + 1, end), Number(text.slice(at, tab)));
@@ -2417,12 +2446,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 				}
 			}
 			if (lines === 0) throw new Error("the scores phase staged no routing keys");
-			const sealed = acc.seal();
-			const bytes = buildRoutingFilterFromHashes(sealed, {
-				builtAt,
-				partitionCount: pp.partitions.length,
-				partitionHash: PARTITION_HASH_ALGO,
-			});
+			const sealed = acc.seal(pp.partitions.length);
+			const names = batches > 0 && stampedBatches === batches;
+			const bytes = buildRoutingFilterFromHashes(
+				sealed,
+				{
+					builtAt,
+					partitionCount: pp.partitions.length,
+					partitionHash: PARTITION_HASH_ALGO,
+				},
+				names ? ROUTING_FEATURE_NAME_KEYS : 0,
+			);
 			// The family is in flight from its FIRST key in KV, and this is that key. The marker used
 			// to be set at partition 0's first chunk, hours from here, and the filter — grouped with
 			// the family by built_at — sat unprotected in between: two deploy-built generations in
@@ -2432,7 +2466,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			await this.markPublishing();
 			await writeRoutingFilter(this.env, formatVersion, builtAt, bytes);
 			console.log(
-				`Routing filter published: ${sealed.lo.length} ids from ${lines} rows, ` +
+				`Routing filter published: ${sealed.lo.length} keys (${names ? sealed.nameKeys : 0} names` +
+					`${names ? "" : `, name routing OFF: ${stampedBatches}/${batches} batches stamped`}) from ${lines} ` +
+					`rows (sized for ${counted}, ${acc.grows} grows), ` +
 					`${(bytes.byteLength / 1024).toFixed(0)}KB — bare-id routes ask ONE of ` +
 					`${pp.partitions.length} partitions.`,
 			);

@@ -193,7 +193,7 @@ if (routing) {
 			"--remote",
 		]);
 		console.log(
-			`  routing filter uploaded: ${routing.keys} ids, ${(routing.bytes.byteLength / 1024).toFixed(0)}KB ` +
+			`  routing filter uploaded: ${routing.keys} keys (${routing.nameKeys} names), ${(routing.bytes.byteLength / 1024).toFixed(0)}KB ` +
 				`(bare-id routes ask ONE partition instead of ${manifest.partition_count})`,
 		);
 	} finally {

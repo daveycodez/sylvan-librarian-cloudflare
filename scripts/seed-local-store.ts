@@ -139,7 +139,7 @@ if (routing) {
 		await unlink(routingTmp).catch(() => {});
 	}
 	console.log(
-		`Routing filter seeded: ${routing.keys} ids, ${(routing.bytes.byteLength / 1024).toFixed(0)}KB ` +
+		`Routing filter seeded: ${routing.keys} keys (${routing.nameKeys} names), ${(routing.bytes.byteLength / 1024).toFixed(0)}KB ` +
 			`(bare-id routes ask ONE partition instead of ${manifest.partition_count}).`,
 	);
 } else {

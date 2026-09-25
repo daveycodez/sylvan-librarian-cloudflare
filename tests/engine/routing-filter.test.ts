@@ -20,6 +20,8 @@ import {
 	buildRoutingFilterFromHashes,
 	externalIdKey,
 	illustrationIdKey,
+	nameKey,
+	ROUTING_FEATURE_NAME_KEYS,
 	ROUTING_FILTER_MAGIC_V1,
 	type RoutingEntry,
 	RoutingFilter,
@@ -261,4 +263,112 @@ describe("corpus scale — the meter this exists for", () => {
 		expect(rate).toBeGreaterThan(0.3);
 		expect(rate).toBeLessThan(0.55);
 	}, 120_000);
+});
+
+describe("name keys (backlog n6)", () => {
+	// WIRE FORMAT, shared with engine/builder/src/transform.rs's `name_routing_keys_of` — the Rust
+	// test `name_routing_keys_are_spelled_like_the_router_spells_them` pins the same literals.
+	test("the key is `nm:` + the collated folded name", () => {
+		expect(nameKey("lim-dul's vault")).toBe("nm:limdulsvault");
+		expect(nameKey("fire // ice")).toBe("nm:fireice");
+		expect(nameKey("fire")).toBe("nm:fire");
+		expect(nameKey("who // what // when // where // why")).toBe("nm:whowhatwhenwherewhy");
+		expect(nameKey("godzilla, primeval champion")).toBe("nm:godzillaprimevalchampion");
+	});
+
+	const named = (entries: RoutingEntry[], identity = IDENTITY) =>
+		parse(buildRoutingFilter(entries, identity, ROUTING_FEATURE_NAME_KEYS), identity);
+
+	test("seal: one partition is `sole`; several with ONE served is `served`; anything else asks everyone", () => {
+		const filter = named([
+			// Every printing of a card repeats its name — one partition, however many lines.
+			{ key: "ns:opt", partition: 4 },
+			{ key: "ns:opt", partition: 4 },
+			{ key: "nm:opt", partition: 4 },
+			// Extras only, one partition: still sole.
+			{ key: "nm:cabbages", partition: 7 },
+			// The real card served in 6, its art-series face in 1 and 2: served 6.
+			{ key: "nm:brainstorm", partition: 1 },
+			{ key: "ns:brainstorm", partition: 6 },
+			{ key: "nm:brainstorm", partition: 2 },
+			{ key: "nm:brainstorm", partition: 6 },
+			// Served in two partitions: undecidable.
+			{ key: "ns:fire", partition: 3 },
+			{ key: "ns:fire", partition: 5 },
+			// Extras in two, served nowhere: undecidable.
+			{ key: "nm:token", partition: 0 },
+			{ key: "nm:token", partition: 8 },
+		]);
+		expect(filter.hasNameKeys).toBe(true);
+		expect(filter.lookupName("nm:opt")).toEqual({ sole: 4 });
+		expect(filter.lookupName("nm:cabbages")).toEqual({ sole: 7 });
+		expect(filter.lookupName("nm:brainstorm")).toEqual({ served: 6 });
+		expect(filter.lookupName("nm:fire")).toBeNull();
+		expect(filter.lookupName("nm:token")).toBeNull();
+	});
+
+	test("id keys keep the lowest partition beside name keys", () => {
+		const filter = named([
+			{ key: scryfallIdKey("a"), partition: 5 },
+			{ key: scryfallIdKey("a"), partition: 2 },
+			{ key: "ns:opt", partition: 4 },
+		]);
+		expect(filter.lookup(scryfallIdKey("a"))).toBe(2);
+		expect(filter.lookupName("nm:opt")).toEqual({ sole: 4 });
+	});
+
+	test("a served value that would not fit the byte is stored as undecidable, never wrapped", () => {
+		const wide = { ...IDENTITY, partitionCount: 200 };
+		const filter = named(
+			[
+				{ key: "ns:big", partition: 100 },
+				{ key: "nm:big", partition: 3 },
+				{ key: "ns:small", partition: 20 },
+				{ key: "nm:small", partition: 3 },
+			],
+			wide,
+		);
+		expect(filter.lookupName("nm:big")).toBeNull();
+		expect(filter.lookupName("nm:small")).toEqual({ served: 20 });
+	});
+
+	test("the features word gates every name answer: a filter built without it — or before it — says nothing", () => {
+		const entries = [{ key: "ns:opt", partition: 4 }];
+		const unstamped = parse(buildRoutingFilter(entries, IDENTITY));
+		expect(unstamped.hasNameKeys).toBe(false);
+		expect(unstamped.lookupName("nm:opt")).toBeNull();
+		// The byte at offset 28 is the whole difference; an SRF2 filter from before it was written
+		// carries a zero there and reads as unstamped.
+		const stamped = buildRoutingFilter(entries, IDENTITY, ROUTING_FEATURE_NAME_KEYS);
+		expect(new DataView(stamped.buffer).getUint32(28, true)).toBe(ROUTING_FEATURE_NAME_KEYS);
+		const zeroed = stamped.slice();
+		new DataView(zeroed.buffer).setUint32(28, 0, true);
+		expect(parse(zeroed).lookupName("nm:opt")).toBeNull();
+		expect(parse(stamped).lookupName("nm:opt")).toEqual({ sole: 4 });
+	});
+
+	test("`ns:` hashes as `nm:` — the lookup side only ever asks `nm:`", () => {
+		const acc = new RoutingKeyAccumulator(2);
+		acc.add("ns:opt", 1);
+		acc.add("nm:opt", 1);
+		const sealed = acc.seal(IDENTITY.partitionCount);
+		expect(sealed.lo.length).toBe(1);
+		expect(sealed.nameKeys).toBe(1);
+		const h = routingHash("nm:opt");
+		expect([sealed.lo[0], sealed.hi[0]]).toEqual([h.lo, h.hi]);
+	});
+
+	test("sealing name keys needs the partition count", () => {
+		const acc = new RoutingKeyAccumulator();
+		acc.add("nm:opt", 1);
+		expect(() => acc.seal()).toThrow(/partition count/);
+	});
+
+	test("an honest capacity hint never grows the columns", () => {
+		const acc = new RoutingKeyAccumulator(100);
+		for (let i = 0; i < 100; i++) acc.add(scryfallIdKey(String(i)), i % 9);
+		expect(acc.grows).toBe(0);
+		acc.add(scryfallIdKey("one too many"), 0);
+		expect(acc.grows).toBe(1);
+	});
 });
