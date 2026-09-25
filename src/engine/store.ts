@@ -1172,8 +1172,10 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 
 	if (ctx?.label) {
 		// And report WHERE it is, which nothing else can: a cold load is the one moment an object may
-		// have just been created, and creation is when its region was fixed forever. Throttled and
-		// fire-and-forget; see placement.ts for why this must never move onto the request path.
+		// have just been created, and creation is when its region was fixed forever. Once per object
+		// per PLACEMENT_FRESH_MS (remembered in its own storage, so a reload inside the window costs
+		// one SELECT) and fire-and-forget; see placement.ts for why this must never move onto the
+		// request path.
 		probePlacement(ctx);
 	}
 

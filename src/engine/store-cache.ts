@@ -136,6 +136,11 @@ CREATE TABLE IF NOT EXISTS live_manifest (
 CREATE TABLE IF NOT EXISTS announced (
 	id INTEGER PRIMARY KEY,
 	store_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS placement (
+	id INTEGER PRIMARY KEY,
+	colo TEXT NOT NULL,
+	at INTEGER NOT NULL
 );`;
 
 /** `sql.exec` with the binding types this module actually uses, and rows as plain records. */
@@ -530,4 +535,44 @@ export function announcedFor(storage: ArchiveCacheStorage): string | null {
 export function recordAnnounced(storage: ArchiveCacheStorage, storeKey: string): void {
 	ensureCacheSchema(storage);
 	exec(storage, "INSERT OR REPLACE INTO announced (id, store_key) VALUES (0, ?)", storeKey);
+}
+
+/** Where this object last found itself (see placement.ts), and when. */
+export interface PlacementRecord {
+	colo: string;
+	at: number;
+}
+
+/**
+ * The placement this object last measured, or null if it never has (or the row is unreadable).
+ *
+ * Per OBJECT, not per isolate: a probe's answer is a property of the object, and every hibernation
+ * wake starts a fresh isolate — so a module-level throttle re-probed on every one of DeckGen's
+ * ~10,400 daily reloads (2026-09-23). Lives in the storage `releaseCache` wipes (deleteAll drops the
+ * table with everything else, and the next ensureCacheSchema recreates it), so a released object
+ * measures itself again if it is ever woken again. `pruneCache` touches only the archive tables.
+ */
+export function lastPlacement(storage: ArchiveCacheStorage): PlacementRecord | null {
+	try {
+		ensureCacheSchema(storage);
+		const row = exec(storage, "SELECT colo, at FROM placement WHERE id = 0")[0];
+		return row ? { colo: String(row.colo), at: Number(row.at) } : null;
+	} catch {
+		// Unreadable is "never measured": the cost is one redundant probe, never a missed one.
+		return null;
+	}
+}
+
+/**
+ * Record a measured placement. An upsert rather than INSERT OR REPLACE, because REPLACE is a
+ * delete plus an insert and the free plan's meter counts both: this is ONE row written.
+ */
+export function recordPlacement(storage: ArchiveCacheStorage, placement: PlacementRecord): void {
+	ensureCacheSchema(storage);
+	exec(
+		storage,
+		"INSERT INTO placement (id, colo, at) VALUES (0, ?, ?) ON CONFLICT(id) DO UPDATE SET colo = excluded.colo, at = excluded.at",
+		placement.colo,
+		placement.at,
+	);
 }

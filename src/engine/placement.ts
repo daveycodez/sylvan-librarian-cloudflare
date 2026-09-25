@@ -8,8 +8,13 @@
 //
 // It looks by fetching Cloudflare's own trace endpoint, which every colo answers
 // locally with the colo that answered. The reply's `colo=` is the IATA code of
-// the machine the DO is running on and `loc=` is that machine's country. Paired
-// with the object's own name, one log line settles it:
+// the machine the DO is running on. Its `loc=` is NOT the object's country: it is
+// the country the request is attributed to, which follows the request that woke
+// the object — measured 2026-09-23 on DeckGen, engine-weur-p1 answered colo=AMS
+// every time and loc= GB, FR, DE, BE, IT, NL, ES, NO and PT across one day's
+// wakes, and every engine-sam-* object answered colo=EWR with loc= BR, AR, PE, VE,
+// CO, CL, UY. Read `colo` for placement; `loc` is logged only because it is free,
+// and says who was asking. Paired with the object's own name, one line settles it:
 //
 //   [engine-wnam] placement: colo=SJC loc=US
 //
@@ -23,27 +28,43 @@
 // colos wnam traffic arrives at — and engine-wnam's own colo either sits among
 // them or does not. ENGINE-PLACEMENT.md walks that query.
 //
-// COST, which is the reason this is not simply always on:
+// COST, and why this is once per OBJECT per PLACEMENT_FRESH_MS:
 //
-//   - An outbound request keeps a Durable Object from being evicted for as long
-//     as the connection is pooled — up to ~15 minutes — and a DO is billed for
-//     duration while it is alive. On the free plan's 128MB objects that is
-//     ~115 GB-s against 13,000 GB-s/day, so it is affordable at this frequency
-//     and ruinous at request frequency.
-//   - So: never on the request path. This is called from the cold store load and
-//     from the nightly publish notify, both of which are rare and already doing
-//     far more I/O than one 200-byte GET. The throttle below is the backstop.
+//   - One subrequest per probe. The throttle used to be module state, i.e. per
+//     ISOLATE, and an idle object hibernates after ~10s and wakes in a fresh one —
+//     so every reload probed: 10,446 probes on DeckGen on 2026-09-23 (342 on the
+//     free account) for an answer that changes only if the object moves. It is
+//     now remembered in the object's own storage (store-cache.ts `placement`),
+//     like announceSelfOnce, at one row written per probe.
+//   - An outbound fetch does NOT keep the object alive. What held objects open
+//     was the probe's own uncancellable timer (see PROBE_TIMEOUT_MS), not the
+//     connection; with the timer cancelled a probe costs its round trip.
+//   - Still never on the request path: the callers are the cold store load and
+//     the publish prepare/notify, and the work is parked on waitUntil.
+
+import { type ArchiveCacheStorage, lastPlacement, type PlacementRecord, recordPlacement } from "./store-cache";
 
 /** Cloudflare's trace endpoint: every colo answers it locally, naming itself. */
 export const PLACEMENT_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace";
 
 /**
- * Floor on how often ONE isolate will probe.
+ * How long a measured placement stands before this object measures again.
  *
- * The callers are rare by construction, so this exists to bound the pathological
- * case rather than the normal one: a region that thrashes — loads, evicts, loads
- * again — would otherwise pay the eviction hold on every wake and never be
- * allowed to go idle at all.
+ * Just under a day, so that the nightly publish — the one recurring moment every warm object is
+ * called anyway — finds the record stale and re-measures, and a placement line is never more than
+ * about a night old for an object that is in use. A cold load inside the window reads the record
+ * and does nothing, which is the whole saving.
+ */
+export const PLACEMENT_FRESH_MS = 20 * 60 * 60 * 1000;
+
+/**
+ * Floor on how often ONE isolate will probe ONE label, whatever storage says.
+ *
+ * The backstop for the case storage cannot cover: a probe that FAILS records nothing, so without
+ * this a trace endpoint that is down would be retried on every wake that shares an isolate. Keyed
+ * by label because several partition objects can share an isolate, and a single module-wide slot
+ * let one object's probe suppress its neighbours'. Also the only throttle a context without
+ * storage has (the store loader outside a Durable Object).
  */
 export const PROBE_MIN_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -67,11 +88,13 @@ export const PROBE_MIN_INTERVAL_MS = 60 * 60 * 1000;
  */
 export const PROBE_TIMEOUT_MS = 5_000;
 
-/** What a probe needs from its caller: somewhere to park the work, and who to
- * name in the log. Structurally the useful half of DurableObjectState. */
+/** What a probe needs from its caller: somewhere to park the work, who to name
+ * in the log, and — inside a Durable Object — where to remember the answer.
+ * Structurally the useful half of LoadContext. */
 export interface PlacementContext {
 	waitUntil(p: Promise<unknown>): void;
 	label?: string;
+	storage?: ArchiveCacheStorage;
 }
 
 /** Trace body → its fields. `colo` and `loc` are the two that matter; the rest
@@ -94,56 +117,87 @@ export function placementLine(label: string, trace: { colo?: string; loc?: strin
 	return `[${label}] placement: colo=${trace.colo ?? "?"} loc=${trace.loc ?? "?"}`;
 }
 
-/** Last probe this isolate started, and whether one is still running. Module
- * state, so it is per isolate — which is the right grain: a fresh isolate is
- * exactly the case worth re-measuring. */
-let lastProbeAt = 0;
-let probing = false;
+/** Per label: the last probe this isolate started, and whether one is running.
+ * Module state, so per isolate — the failed-probe backstop only; a success is
+ * remembered in the object's storage. */
+const slots = new Map<string, { lastProbeAt: number; probing: boolean }>();
 
-/** Claim the right to probe now, or decline. Exported so the throttle is
+/** Claim the right to probe `label` now, or decline. Exported so the throttle is
  * testable without a network. */
-export function takeProbeSlot(now: number): boolean {
-	if (probing) return false;
-	if (lastProbeAt !== 0 && now - lastProbeAt < PROBE_MIN_INTERVAL_MS) return false;
-	lastProbeAt = now;
-	probing = true;
+export function takeProbeSlot(label: string, now: number): boolean {
+	const slot = slots.get(label);
+	if (slot?.probing) return false;
+	if (slot && now - slot.lastProbeAt < PROBE_MIN_INTERVAL_MS) return false;
+	slots.set(label, { lastProbeAt: now, probing: true });
 	return true;
 }
 
+function releaseProbeSlot(label: string): void {
+	const slot = slots.get(label);
+	if (slot) slot.probing = false;
+}
+
+/** Whether this object's stored placement is still fresh, i.e. nothing to do. */
+export function placementIsFresh(storage: ArchiveCacheStorage | undefined, now: number): boolean {
+	if (!storage) return false;
+	const last = lastPlacement(storage);
+	return last !== null && now - last.at < PLACEMENT_FRESH_MS;
+}
+
 /**
- * Ask this object where it is, and log the answer. Fire-and-forget: it returns
- * before anything has been fetched, and it never throws.
+ * Ask this object where it is, log the answer, and remember it — at most once per
+ * PLACEMENT_FRESH_MS per object. Fire-and-forget: the work is parked on waitUntil
+ * and it never throws or rejects. The returned promise resolves with what was
+ * recorded (null when skipped or failed), for a caller that wants to wait — e.g.
+ * a publish ack carrying a fresh placement.
  *
  * Call sites must be off the request path — a cold store load, a publish notify.
  * See the cost note at the top of this file.
  */
-export function probePlacement(ctx: PlacementContext, fetcher: typeof fetch = fetch): void {
+export function probePlacement(ctx: PlacementContext, fetcher: typeof fetch = fetch): Promise<PlacementRecord | null> {
 	const label = ctx.label;
 	// No label means this is not running inside a Durable Object (the store
 	// loader is isolate-global and is used from tests and tooling too), and an
 	// unattributed colo answers nothing worth the request.
-	if (!label) return;
-	if (!takeProbeSlot(Date.now())) return;
+	if (!label) return Promise.resolve(null);
+	const now = Date.now();
+	// The saving: one SELECT on the object's own SQLite in place of a subrequest.
+	if (placementIsFresh(ctx.storage, now)) return Promise.resolve(null);
+	if (!takeProbeSlot(label, now)) return Promise.resolve(null);
 	// See PROBE_TIMEOUT_MS: the deadline has to be cancellable, so it is a plain
 	// timer on a controller rather than `AbortSignal.timeout`. Cleared in the
 	// `finally` below, which runs on every outcome — answered, failed, or timed
 	// out — so the only thing that ever holds the invocation is the fetch itself.
 	const deadline = new AbortController();
 	const timer = setTimeout(() => deadline.abort(new Error(`no trace within ${PROBE_TIMEOUT_MS}ms`)), PROBE_TIMEOUT_MS);
-	ctx.waitUntil(
-		fetcher(PLACEMENT_TRACE_URL, { signal: deadline.signal })
-			.then((res) => res.text())
-			.then((body) => {
-				console.log(placementLine(label, parseTrace(body)));
-			})
-			.catch((err) => {
-				// A failed probe is a missing diagnostic, never an incident: warn and
-				// let the next cold load try again.
-				console.warn(`[${label}] could not determine its placement: ${err}`);
-			})
-			.finally(() => {
-				clearTimeout(timer);
-				probing = false;
-			}),
-	);
+	const done = fetcher(PLACEMENT_TRACE_URL, { signal: deadline.signal })
+		.then((res) => res.text())
+		.then((body): PlacementRecord | null => {
+			const trace = parseTrace(body);
+			console.log(placementLine(label, trace));
+			// A trace without a colo measured nothing: log it, record nothing.
+			if (!trace.colo) return null;
+			const record = { colo: trace.colo, at: now };
+			if (ctx.storage) {
+				try {
+					recordPlacement(ctx.storage, record);
+				} catch (err) {
+					// Unrecorded means the next wake past PROBE_MIN_INTERVAL_MS measures again.
+					console.warn(`[${label}] could not record its placement locally: ${err}`);
+				}
+			}
+			return record;
+		})
+		.catch((err) => {
+			// A failed probe is a missing diagnostic, never an incident: warn and
+			// let a later load try again (PROBE_MIN_INTERVAL_MS paces the retries).
+			console.warn(`[${label}] could not determine its placement: ${err}`);
+			return null;
+		})
+		.finally(() => {
+			clearTimeout(timer);
+			releaseProbeSlot(label);
+		});
+	ctx.waitUntil(done);
+	return done;
 }

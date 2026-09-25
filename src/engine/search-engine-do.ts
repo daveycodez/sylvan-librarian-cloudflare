@@ -1123,10 +1123,11 @@ export class SearchEngine extends DurableObject<Env> {
 		await settleInFlightLoad(this.label);
 		if (tryGetLoadedEngine(this.label) === null) return { swapped: false, shards: this.announcedShards };
 		// Deliberately BELOW the cold early-return. A publish is the one recurring, off-request moment
-		// to re-check where this object is, but a probe holds an object open for as long as its
-		// outbound connection is pooled — and "a cold object wakes, writes one row and evicts again"
-		// is a property this fan-out depends on. A warm object is already alive and already paying
-		// duration, so it is the only one this costs nothing to ask.
+		// to re-check where this object is, but "a cold object wakes, writes one row and evicts again"
+		// is a property this fan-out depends on, and a probe is a subrequest plus a placement row.
+		// A warm object is already alive, so it is the one worth asking; probePlacement itself skips
+		// the fetch while the stored placement is younger than PLACEMENT_FRESH_MS (just under a day,
+		// so a nightly publish finds it stale and re-measures).
 		probePlacement(this.loadContext());
 		const swapped = await refreshNow(this.env, this.loadContext(), manifest);
 		console.log(`[${this.label}] publish notify: ${swapped ? "swapped to the new store" : "already current"}`);
@@ -1188,6 +1189,8 @@ export class SearchEngine extends DurableObject<Env> {
 		if (tryGetLoadedEngine(this.label) === null) return { prepared: true, shards: this.announcedShards };
 		// Warm: hold the bytes locally under the OLD store. See prefetchStore for
 		// why every failure here degrades to a slower commit, never a failed one.
+		// The placement re-check rides here for the reason notifyPublish gives, and
+		// is a no-op while the stored placement is fresh.
 		probePlacement(this.loadContext());
 		const held = manifest ? await prefetchStore(this.env, this.loadContext(), manifest) : false;
 		console.log(`[${this.label}] publish prepare: ${held ? "holding the new store locally" : "nothing prefetched"}`);

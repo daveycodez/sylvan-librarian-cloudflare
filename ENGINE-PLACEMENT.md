@@ -70,8 +70,8 @@ Two things worth knowing for the next person who runs this:
 
 Also observed, and it cuts against the caution in §2: the free account's object **evicted within ten
 minutes of a probe**, so the "an outbound request pins a DO for up to ~15 minutes" figure did not
-bind here. One observation is not a rule — the throttle stays — but the cost is likely lower than the
-worst case assumed below.
+bind here. What had held objects open was the probe's own uncancellable timeout, since fixed (see
+`PROBE_TIMEOUT_MS` in `src/engine/placement.ts`); an outbound fetch does not.
 
 ## 1. Prevention: one module may create an engine object
 
@@ -132,11 +132,17 @@ The label is the object's own name, so it carries the replica and partition suff
 
 It runs on a **cold store load** (the one moment an object may have just been created) and on
 **publish notify to an already-warm object** (a nightly re-check that costs nothing extra, because
-the object is alive and billing duration regardless). It is fire-and-forget, throttled to at most one
-probe per isolate per hour, and never on the request path — an outbound request keeps a Durable
-Object resident for as long as its connection is pooled, up to ~15 minutes, and duration is billed
-while it is alive. At request frequency that would be ruinous; at this frequency it is ~115 GB-s per
-probe against the free plan's 13,000 GB-s/day.
+the object is alive and billing duration regardless). It is fire-and-forget, never on the request
+path, and **once per object per 20 hours**: the answer is stored in the object's own SQLite (a
+`placement` row, upserted), and a wake inside the window reads it instead of probing. The throttle
+used to be per isolate, and every hibernation wake is a fresh isolate, so every reload probed —
+10,446 probes on DeckGen on 2026-09-23, 342 on the free account. 20 hours rather than 24 so the
+nightly publish finds a warm object's record stale and re-measures it. A per-isolate, per-label
+hourly floor remains only as the backstop for a failed probe, which records nothing.
+
+**Read `colo`, not `loc`.** `loc=` is the country of the request that woke the object, not of the
+object: on 2026-09-23 `engine-weur-p1` answered `colo=AMS` every time with `loc` across nine
+European countries, and every `engine-sam-*` object answered `colo=EWR` with South American `loc`s.
 
 **The caller side.** `src/engine/remote-engine.ts` summarises warm RPC wall time per region, tagged
 with the colo the calling isolate is in:

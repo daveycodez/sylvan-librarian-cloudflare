@@ -16,6 +16,7 @@
 // chain, which never ran in the 92 minutes the code existed) kept it from
 // placing eight objects from the wrong place.
 
+import { Database } from "bun:sqlite";
 import { describe, expect, spyOn, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +28,7 @@ import {
 } from "../../src/engine/engine-namespace";
 import { PROBE_MIN_INTERVAL_MS, parseTrace, placementLine } from "../../src/engine/placement";
 import { REGION_HINTS } from "../../src/engine/region";
+import { type ArchiveCacheStorage, lastPlacement } from "../../src/engine/store-cache";
 import type { Env } from "../../src/engine/types";
 
 const SRC = join(import.meta.dir, "../../src");
@@ -315,10 +317,155 @@ describe("probing never lands on the request path", () => {
 		}
 	});
 
-	test("the throttle interval is long enough to bound the eviction hold", () => {
-		// An outbound request keeps a DO resident for as long as its connection is
-		// pooled (~15 minutes). An interval below that would keep an idle object
-		// alive continuously and defeat scale-to-zero outright.
+	test("the per-isolate backstop is long enough that a dead trace endpoint is not retried per wake", () => {
+		// It only matters when a probe FAILED (a success is remembered in storage for
+		// PLACEMENT_FRESH_MS). An object hibernates after ~10s idle, so a backstop in seconds would
+		// put a failing subrequest on nearly every wake.
 		expect(PROBE_MIN_INTERVAL_MS).toBeGreaterThan(15 * 60 * 1000);
+	});
+});
+
+/** The DO's SQLite, for real: bun:sqlite behind the ArchiveCacheStorage surface, counting row writes. */
+function sqliteStorage() {
+	const db = new Database(":memory:");
+	let rowWrites = 0;
+	const storage = {
+		sql: {
+			exec(query: string, ...bindings: unknown[]) {
+				if (bindings.length === 0 && query.includes(";")) {
+					db.exec(query);
+					return { toArray: () => [] };
+				}
+				const stmt = db.query(query);
+				if (/^\s*(INSERT|UPDATE|DELETE)/i.test(query)) {
+					rowWrites += stmt.run(...(bindings as never[])).changes;
+					return { toArray: () => [] };
+				}
+				return { toArray: () => stmt.all(...(bindings as never[])) as Record<string, SqlStorageValue>[] };
+			},
+		},
+	} as unknown as ArchiveCacheStorage;
+	return { storage, db, rowWrites: () => rowWrites };
+}
+
+describe("probing is once per OBJECT, remembered in its storage", () => {
+	async function freshPlacement(gen: number) {
+		return await import(`../../src/engine/placement.ts?persist=${gen}`);
+	}
+	const trace = (colo = "AMS") => (async () => new Response(`colo=${colo}\nloc=DE\n`)) as unknown as typeof fetch;
+
+	test("a fresh isolate on the same object does not probe again inside PLACEMENT_FRESH_MS", async () => {
+		// THE REGRESSION: the throttle lived in module state, and every hibernation wake is a fresh
+		// isolate — 10,446 probes on DeckGen on 2026-09-23 for objects that never moved.
+		const { storage, rowWrites } = sqliteStorage();
+		let clock = 1_000_000;
+		const nowSpy = spyOn(Date, "now").mockImplementation(() => clock);
+		const log = spyOn(console, "log").mockImplementation(() => {});
+		try {
+			let fetches = 0;
+			const fetcher = (async () => {
+				fetches += 1;
+				return new Response("colo=AMS\nloc=DE\n");
+			}) as unknown as typeof fetch;
+			const ctx = { waitUntil: () => {}, label: "engine-weur-p1", storage };
+
+			const first = await freshPlacement(1);
+			expect(await first.probePlacement(ctx, fetcher)).toEqual({ colo: "AMS", at: 1_000_000 });
+			expect(fetches).toBe(1);
+			expect(rowWrites()).toBe(1);
+
+			// Wake after wake, each in a new isolate (a new module instance), 90 minutes apart.
+			for (let wake = 2; wake < 12; wake++) {
+				clock += 90 * 60 * 1000;
+				const p = await freshPlacement(wake);
+				expect(await p.probePlacement(ctx, fetcher)).toBeNull();
+			}
+			expect(fetches).toBe(1);
+			expect(rowWrites()).toBe(1);
+
+			// Past the window the next wake measures again — and it is ONE row, an upsert, not a
+			// REPLACE's delete plus insert.
+			clock = 1_000_000 + first.PLACEMENT_FRESH_MS;
+			const later = await freshPlacement(99);
+			await later.probePlacement(ctx, trace("CDG"));
+			expect(rowWrites()).toBe(2);
+			expect(lastPlacement(storage)).toEqual({ colo: "CDG", at: clock });
+		} finally {
+			nowSpy.mockRestore();
+			log.mockRestore();
+		}
+	});
+
+	test("a failed probe records nothing, and the per-isolate backstop paces the retry", async () => {
+		const { storage, rowWrites } = sqliteStorage();
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const p = await freshPlacement(200);
+			const ctx = { waitUntil: () => {}, label: "engine-weur-p2", storage };
+			const failing = (async () => {
+				throw new Error("trace unreachable");
+			}) as unknown as typeof fetch;
+			expect(await p.probePlacement(ctx, failing)).toBeNull();
+			expect(rowWrites()).toBe(0);
+			expect(lastPlacement(storage)).toBeNull();
+			let fetches = 0;
+			await p.probePlacement(ctx, (async () => {
+				fetches += 1;
+				return new Response("colo=AMS\n");
+			}) as unknown as typeof fetch);
+			expect(fetches).toBe(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("objects sharing an isolate do not suppress each other's probe", async () => {
+		// Partitions of one region can be co-resident; one module-wide slot let engine-weur-p1's
+		// probe starve engine-weur-p2's for an hour.
+		const log = spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const p = await freshPlacement(300);
+			const a = sqliteStorage();
+			const b = sqliteStorage();
+			await p.probePlacement({ waitUntil: () => {}, label: "engine-weur-p1", storage: a.storage }, trace());
+			await p.probePlacement({ waitUntil: () => {}, label: "engine-weur-p2", storage: b.storage }, trace());
+			expect(lastPlacement(a.storage)?.colo).toBe("AMS");
+			expect(lastPlacement(b.storage)?.colo).toBe("AMS");
+		} finally {
+			log.mockRestore();
+		}
+	});
+
+	test("a placement is fresh for less than a day, so every nightly prepare re-measures a warm object", async () => {
+		const p = await freshPlacement(400);
+		expect(p.PLACEMENT_FRESH_MS).toBeLessThan(24 * 60 * 60 * 1000);
+		expect(p.PLACEMENT_FRESH_MS).toBeGreaterThan(12 * 60 * 60 * 1000);
+	});
+
+	test("the table arrives on an object that predates it, and a released object answers 'never measured'", async () => {
+		// Existing objects already hold the older tables; `placement` must appear by CREATE TABLE IF
+		// NOT EXISTS alone, with no migration step and nothing else touched. And releaseCache's
+		// deleteAll drops every table — the next read must answer "never measured", not throw.
+		const { storage, db } = sqliteStorage();
+		db.exec("CREATE TABLE announced (id INTEGER PRIMARY KEY, store_key TEXT NOT NULL)");
+		db.exec("INSERT INTO announced (id, store_key) VALUES (0, 'card-store-old')");
+		const log = spyOn(console, "log").mockImplementation(() => {});
+		try {
+			expect(lastPlacement(storage)).toBeNull();
+			const p = await freshPlacement(500);
+			await p.probePlacement({ waitUntil: () => {}, label: "engine-weur-p3", storage }, trace("AMS"));
+			expect(lastPlacement(storage)?.colo).toBe("AMS");
+			expect(db.query("SELECT store_key FROM announced").get()).toEqual({ store_key: "card-store-old" });
+
+			// deleteAll(): every table gone, schema included.
+			const tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
+			for (const { name } of tables) db.exec(`DROP TABLE ${name}`);
+			expect(lastPlacement(storage)).toBeNull();
+			const again = await freshPlacement(501);
+			const ctx = { waitUntil: () => {}, label: "engine-weur-p3", storage };
+			expect((await again.probePlacement(ctx, trace("FRA")))?.colo).toBe("FRA");
+		} finally {
+			log.mockRestore();
+		}
 	});
 });
