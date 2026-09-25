@@ -1590,8 +1590,17 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      trigger (both polarities echo true), `-is:playtest t:conspiracy` answered 29 here against
  *      25 there — the gate opened and the absent tag excluded nothing. GENERATION-ONLY again: one
  *      more word in a vocabulary the store already holds.
+ *
+ *   51 (2026-09-25): the ROUTING FILTER learns printing addresses — `sn:<set>/<collector_number>`,
+ *      one per address, emitted from its canonical row (ce23f58) — so `/cards/:set/:number` and a
+ *      collection `{set, collector_number}` ask the one partition that holds the address instead of
+ *      all of them. No archive byte changes and every reader keeps loading a generation-50 store;
+ *      what it lacks is the filter's new keys, which leave every address lookup at the old N-way
+ *      cost until a publish writes them. The deploy of ce23f58 reused the generation-50 store
+ *      ("A store built 2h 35m ago is already live — skipping the import"), so this bump is what
+ *      makes the next deploy publish the filter instead of waiting for the nightly.
  */
-export const STORE_CONTENT_GENERATION = 50;
+export const STORE_CONTENT_GENERATION = 51;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
