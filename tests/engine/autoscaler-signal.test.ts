@@ -22,7 +22,7 @@
 // it passed only on file-ordering luck, and renaming this file broke it. The
 // marker now lives in types.ts beside the error it encodes.
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const reportEngineLoad = mock((_region: string, _depth: number) => {});
 const reportEngineRate = mock((_region: string, _rate: number) => {});
@@ -44,7 +44,7 @@ mock.module("../../src/engine/shard-controller", () => ({
 	foldWidthAnnouncement: realController.foldWidthAnnouncement,
 }));
 
-const { RemoteEngine } = await import("../../src/engine/remote-engine");
+const { RemoteEngine, setEngineHedgeForTests } = await import("../../src/engine/remote-engine");
 
 type Stub = ConstructorParameters<typeof RemoteEngine>[0];
 
@@ -195,5 +195,67 @@ describe("the search envelope", () => {
 	test("carries no autoscaler riders", async () => {
 		const result = await search({ acquireMs: 0, load: 2, rate: 55, shards: 2 });
 		expect(result).toEqual({ totalCards: 2, cards: [{ name: "Llanowar Elves" }] });
+	});
+});
+
+describe("a HEDGED answer feeds nothing", () => {
+	// A call silent for ENGINE_HEDGE_MS is also sent to the same partition in a neighbouring region
+	// (remote-engine.ts hedgedCall). The neighbour's riders describe ITS object, and the wall time
+	// includes the silence of this region's: fed here, they would open replicas in this region, or
+	// adopt the neighbour's width, on evidence about somewhere else.
+	const hung = {
+		searchCardsAsObjects: () => new Promise(() => {}),
+		fetch: () => new Promise(() => {}),
+	} as unknown as Stub;
+	const hedgeTo = (stub: Record<string, unknown>) => ({
+		region: "enam",
+		partition: 0,
+		connect: () => stub as unknown as Stub,
+	});
+	beforeEach(() => setEngineHedgeForTests(10));
+	afterEach(() => setEngineHedgeForTests(4_000));
+
+	test("the RPC transport: the neighbour's answer is returned, its riders reach no report", async () => {
+		const neighbour = {
+			searchCardsAsObjects: async () => ({ totalCards: 1, cards: [], acquireMs: 0, load: 9, rate: 80, shards: 4 }),
+		};
+		const engine = new RemoteEngine(hung, "wnam", "SJC", undefined, false, hedgeTo(neighbour));
+		expect(await engine.searchCardsAsObjects({ limit: 10 } as never)).toEqual({ totalCards: 1, cards: [] });
+		expect(reportEngineLoad).not.toHaveBeenCalled();
+		expect(reportEngineRate).not.toHaveBeenCalled();
+		expect(reportEngineLatency).not.toHaveBeenCalled();
+		expect(adoptShardWidth).not.toHaveBeenCalled();
+	});
+
+	test("the page transport: likewise, and the riders are still stripped from the client's response", async () => {
+		const neighbour = {
+			fetch: async () =>
+				new Response("{}", {
+					status: 200,
+					headers: { "x-acquire-ms": "0", "x-load": "9", "x-rate": "80", "x-shards": "4" },
+				}),
+		};
+		const engine = new RemoteEngine(hung, "wnam", "SJC", undefined, false, hedgeTo(neighbour));
+		const res = await engine.scryfallSearchPage({ limit: 10 } as never, "https://x", {} as never, {});
+		expect(res.headers.get("x-load")).toBeNull();
+		expect(res.headers.get("x-shards")).toBeNull();
+		expect(reportEngineLoad).not.toHaveBeenCalled();
+		expect(reportEngineRate).not.toHaveBeenCalled();
+		expect(reportEngineLatency).not.toHaveBeenCalled();
+		expect(adoptShardWidth).not.toHaveBeenCalled();
+	});
+
+	test("the primary winning after the hedge fired still feeds as it always has", async () => {
+		const slow = {
+			searchCardsAsObjects: () =>
+				new Promise((resolve) =>
+					setTimeout(() => resolve({ totalCards: 2, cards: [], acquireMs: 0, load: 1, rate: 5, shards: 1 }), 30),
+				),
+		} as unknown as Stub;
+		const silent = hedgeTo({ searchCardsAsObjects: () => new Promise(() => {}) });
+		await new RemoteEngine(slow, "wnam", "SJC", undefined, false, silent).searchCardsAsObjects({ limit: 10 } as never);
+		expect(reportEngineLoad).toHaveBeenCalledWith("wnam", 1);
+		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 5);
+		expect(adoptShardWidth).toHaveBeenCalledWith("wnam", 1);
 	});
 });

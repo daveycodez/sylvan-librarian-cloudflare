@@ -162,6 +162,11 @@ export function siblingStub(env: Env, label: string, partition: number): EngineS
  * object is created next to the traffic it will serve. Calling it from anywhere
  * else — a Durable Object, an alarm, a cron — places the object relative to the
  * caller instead, permanently.
+ *
+ * The one call for ANOTHER region is the hedge (index.ts, remote-engine.ts ENGINE_HEDGE_MS): a slow
+ * call's neighbouring served region, same partition, shard 0. Still an edge isolate passing that
+ * region's own hint, and those objects already exist in practice — the neighbour's own traffic made
+ * them — so a hedge addresses them rather than creating them.
  */
 export function placeEngineStub(
 	env: Env,

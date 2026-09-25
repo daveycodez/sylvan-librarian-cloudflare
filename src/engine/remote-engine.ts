@@ -269,6 +269,144 @@ const ENGINE_CALL_ATTEMPTS = 2;
 const retryPause = () => new Promise((resolve) => setTimeout(resolve, 100 + Math.floor(Math.random() * 200)));
 
 /**
+ * How long an engine call may stay silent before the SAME call is also sent to the same partition
+ * in a neighbouring region (placement-policy.ts hedgeRegionFor), the first answer winning.
+ *
+ * WHY: an engine object evicted after ~10s idle is torn down while requests are still arriving, and
+ * a request that lands on the dying instance can HANG until the object restarts elsewhere — 19.2s
+ * (engine-enam-p8, 09-24 09:58), 22.5s (wnam-p7), 35–36.7s (enam-p5; weur-p0 and p3 sharing one
+ * isolate, 09-25), ~30 a day on 09-24, and 15 minutes for wnam-p2/p8 on 09-23. Retrying the SAME
+ * object waits on the same teardown; the neighbour's copy of the partition is a different object on
+ * the same store and answers identically.
+ *
+ * WHY 4s: healthy engine wall times are p50 14–18ms, p90 72–121ms, p99 438–637ms, p999 1.1–2.6s,
+ * and a call carrying a store wake is ~100–400ms from the local cache, 0.3–1s from KV, occasionally
+ * 1–3s — so 4s sits above everything a healthy call spends, and a hedge fires on well under 0.1%
+ * of healthy calls (fewer than one in a thousand, since even p999 is 2.6s). It is also well under
+ * the 10s after which mtg-seeker's client gives up, so a hedged answer (4s + a warm neighbour's
+ * ~100ms, + ~100ms of ocean when the neighbour is across one) still reaches it.
+ */
+export let ENGINE_HEDGE_MS = 4_000;
+
+/** For tests: shorten (or with Infinity, disable) the hedge delay. */
+export function setEngineHedgeForTests(ms: number): void {
+	ENGINE_HEDGE_MS = ms;
+}
+
+/** The neighbour a RemoteEngine hedges a slow call to: the same partition, shard 0, another region. */
+export interface EngineHedge {
+	/** The neighbouring served region (hedgeRegionFor). */
+	region: string;
+	/** The partition both objects hold — for the log line. */
+	partition: number;
+	/** A stub to that object, built by index.ts through placeEngineStub, and only when the hedge fires. */
+	connect: () => SearchEngineStub;
+}
+
+/** Which side of a hedged call answered. */
+type HedgeWinner = "primary" | "hedge";
+
+/**
+ * Run `primary` (today's call, retry included); if it has not settled within ENGINE_HEDGE_MS, also
+ * run `hedge` once, and take the first SUCCESSFUL answer.
+ *
+ * - Primary settles before the timer: exactly today's behaviour, and no hedge call is made — so a
+ *   fast call costs nothing, and a fast transient failure still gets its one retry on a fresh stub
+ *   (inside `primary`) and then fails.
+ * - After the timer, a failure from either side waits for the other; both failing surfaces the
+ *   PRIMARY's error. A query error from the primary is the query's own answer, identical in every
+ *   region, so it is surfaced at once rather than waiting on the hedge.
+ * - The hedge is bounded by what is left of ENGINE_CALL_DEADLINE_MS, measured from the primary's
+ *   start, so the pair never outlives the deadline a lone call has. It is ONE attempt: no retry,
+ *   so a slow call costs at most one extra Durable Object request.
+ * - The loser's answer, when it arrives, goes to `dispose` (a stream Response's body is cancelled
+ *   there) and is otherwise ignored. `abandoned` tells the primary's retry loop not to retry for an
+ *   answer nobody is waiting for.
+ */
+function hedgedCall<T>(
+	primary: (abandoned: () => boolean) => Promise<T>,
+	hedge: (() => Promise<T>) | null,
+	describe: { region: string; hedgeRegion: string; partition: number; method: string },
+	dispose?: (loser: T) => void,
+): Promise<{ value: T; from: HedgeWinner }> {
+	if (hedge === null || !Number.isFinite(ENGINE_HEDGE_MS)) {
+		return primary(() => false).then((value) => ({ value, from: "primary" as const }));
+	}
+	const started = Date.now();
+	const where = `[${describe.region}] engine hedge p${describe.partition} ${describe.method}`;
+	return new Promise((resolve, reject) => {
+		let done = false;
+		let hedgeState: "idle" | "running" | "failed" = "idle";
+		let primaryFailure: { err: unknown } | null = null;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const win = (value: T, from: HedgeWinner) => {
+			done = true;
+			if (timer !== undefined) clearTimeout(timer);
+			resolve({ value, from });
+		};
+		const fail = (err: unknown) => {
+			done = true;
+			if (timer !== undefined) clearTimeout(timer);
+			reject(err);
+		};
+		const lose = (value: T) => {
+			try {
+				dispose?.(value);
+			} catch {
+				// A loser that cannot be disposed of is garbage either way.
+			}
+		};
+		primary(() => done).then(
+			(value) => {
+				if (done) return lose(value);
+				if (hedgeState !== "idle") {
+					console.warn(`${where}: primary won after ${Date.now() - started}ms (hedge to ${describe.hedgeRegion})`);
+				}
+				win(value, "primary");
+			},
+			(err) => {
+				if (done) return;
+				// Before the hedge fired: today's behaviour. After: wait for the hedge, unless it already
+				// failed or the error is the query's own answer.
+				if (hedgeState === "running" && !(err instanceof EngineQueryError)) {
+					primaryFailure = { err };
+					return;
+				}
+				fail(err);
+			},
+		);
+		timer = setTimeout(() => {
+			timer = undefined;
+			if (done) return;
+			hedgeState = "running";
+			const remaining = Math.max(1, ENGINE_CALL_DEADLINE_MS - (Date.now() - started));
+			console.warn(
+				`${where}: no answer from ${describe.region} after ${Date.now() - started}ms; asking ${describe.hedgeRegion}`,
+			);
+			let attempt: Promise<T>;
+			try {
+				attempt = withDeadline(hedge(), remaining, `hedged ${describe.method}`);
+			} catch (err) {
+				attempt = Promise.reject(err);
+			}
+			attempt.then(
+				(value) => {
+					if (done) return lose(value);
+					console.warn(`${where}: hedge won — ${describe.hedgeRegion} answered at ${Date.now() - started}ms`);
+					win(value, "hedge");
+				},
+				(err) => {
+					hedgeState = "failed";
+					if (done) return;
+					console.warn(`${where}: hedge to ${describe.hedgeRegion} failed after ${Date.now() - started}ms: ${err}`);
+					if (primaryFailure) fail(primaryFailure.err);
+				},
+			);
+		}, ENGINE_HEDGE_MS);
+	});
+}
+
+/**
  * Run one engine RPC, retrying failures the runtime flags as transient.
  *
  * Every deploy RESETS every DO, and an RPC landing during the reset is
@@ -279,12 +417,17 @@ const retryPause = () => new Promise((resolve) => setTimeout(resolve, 100 + Math
  * engine RPCs are pure reads, so retrying is always safe. Engine-unavailable
  * errors (real 503 semantics) are never retried.
  */
-async function withRetry<T>(call: () => Promise<T>, reconnect?: () => void): Promise<T> {
+async function withRetry<T>(
+	call: () => Promise<T>,
+	reconnect?: () => void,
+	/** True once a hedge has answered in this call's place: a failure is then not worth retrying. */
+	abandoned: () => boolean = () => false,
+): Promise<T> {
 	for (let attempt = 0; ; attempt++) {
 		try {
 			return await unwrap(withDeadline(call(), ENGINE_CALL_DEADLINE_MS, "engine RPC"));
 		} catch (err) {
-			if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err)) throw err;
+			if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err) || abandoned()) throw err;
 			console.warn(`retryable engine RPC failure (attempt ${attempt + 1}): ${err}`);
 			// A fresh stub before the second attempt: after "Connection closed: this Durable Object
 			// instance is no longer active. Reconnect or retry the request." the OLD stub's connection
@@ -441,6 +584,27 @@ function sampleWarmRpc(region: string, colo: string, rpcMs: number, aliased: boo
 	w.sum = 0;
 }
 
+/**
+ * One request on the payload stream (ENGINE_STREAM_PATH) with a deadline: the object's Response, or
+ * the error class its 503 names. The transport reports EVERY failure as a 503 with the class name in
+ * a header, so the class has to be rebuilt here or the raw 503 becomes the client's answer — which
+ * is exactly how a malformed regex in a user's query produced a 5xx with a non-JSON body.
+ */
+async function pageAttempt(stub: SearchEngineStub, body: string, ms: number): Promise<Response> {
+	const answer = await withDeadline(
+		stub.fetch(new Request(`https://engine${ENGINE_STREAM_PATH}`, { method: "POST", body })),
+		ms,
+		"engine page",
+	);
+	if (answer.status !== 503) return answer;
+	const kind = answer.headers.get("x-engine-error");
+	const message = await answer.text();
+	if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
+	if (kind === "StaleModulusError") throw new StaleModulusError(message);
+	if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
+	throw new Error(message);
+}
+
 /** The streaming transport's riders (search-engine-do.ts), stripped before a response leaves the isolate. */
 export const ENGINE_TELEMETRY_HEADERS = [
 	"x-total-cards",
@@ -477,6 +641,10 @@ export class RemoteEngine implements Engine {
 		/** This request's own hint was aliased onto `region` (g1's placement block): its objects are
 		 * far from this colo on purpose, so the warm-RPC floor is not read as misplacement. */
 		private readonly aliased = false,
+		/** Where a call that stays silent for ENGINE_HEDGE_MS is ALSO sent (see hedgedCall): this
+		 * partition's object in a neighbouring served region. Absent means never hedge — the warm ping
+		 * for a newly opened shard, whose whole point is waking THIS object, is built without one. */
+		private readonly hedge?: EngineHedge,
 	) {}
 
 	/** Swap in a fresh stub before a retry (see `connect`). */
@@ -485,17 +653,43 @@ export class RemoteEngine implements Engine {
 	};
 
 	/**
+	 * One PURE-READ call through the stub: today's deadline and single retry, hedged to the
+	 * neighbouring region when this call stays silent (hedgedCall). `call` is handed the stub and
+	 * the fan-out width to report — this region's own for the primary, NONE for the hedge: the width
+	 * rendezvous remembers the widest value any caller reports, and this region's width folded into
+	 * the neighbour's shard-0 object would open replicas there that its own traffic never asked for.
+	 *
+	 * Only reads may come through here: a hedged call runs twice. Every engine query RPC is one;
+	 * `cardCount` (the warm ping) deliberately is not routed here, and nothing that writes is.
+	 */
+	private read<T>(
+		method: string,
+		call: (stub: SearchEngineStub, reportedShards: number | undefined) => Promise<T>,
+	): Promise<{ value: T; from: HedgeWinner }> {
+		const hedge = this.hedge;
+		return hedgedCall(
+			(abandoned) => withRetry(() => call(this.stub, currentShardWidth(this.region)), this.reconnect, abandoned),
+			hedge ? () => unwrap(call(hedge.connect(), undefined)) : null,
+			{ region: this.region, hedgeRegion: hedge?.region ?? "", partition: hedge?.partition ?? -1, method },
+		);
+	}
+
+	/**
 	 * One search RPC, with the DO's riders stripped and fed to the autoscaler.
 	 *
-	 * A RELAYED sample is dropped wholesale: it describes the regional DO, not
-	 * the colo shard being scaled — its wall time includes a cross-colo hop, and
-	 * its depth/rate are the region's. Since every freshly opened shard relays
-	 * until it warms, reporting these would let each expansion argue for the next.
+	 * An answer the HEDGE gave is not fed at all: its load, rate and width are the neighbour's
+	 * object's, and its wall time includes the ENGINE_HEDGE_MS this region's object spent silent —
+	 * fed as this region's, it would argue for replicas here (or adopt the neighbour's width) on
+	 * evidence about somewhere else. The hedge's own log line (hedgedCall) is what counts them.
 	 */
-	private async searchRpc<T extends object>(call: () => Promise<T & Telemetry>): Promise<Omit<T, keyof Telemetry>> {
+	private async searchRpc<T extends object>(
+		method: string,
+		call: (stub: SearchEngineStub, reportedShards: number | undefined) => Promise<T & Telemetry>,
+	): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
-		const { acquireMs, load, rate, shards, ...result } = await withRetry(call, this.reconnect);
-		this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards });
+		const { value, from } = await this.read(method, call);
+		const { acquireMs, load, rate, shards, ...result } = value;
+		if (from === "primary") this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards });
 		return result as Omit<T, keyof Telemetry>;
 	}
 
@@ -557,57 +751,65 @@ export class RemoteEngine implements Engine {
 		/** The partition count a pinned "cards" call was routed against (pinned-oracle.ts). */
 		pinnedPartitionCount?: number,
 	): Promise<Response> {
-		const body = JSON.stringify({
-			call,
-			opts,
-			baseUrl,
-			envelope,
-			cache,
-			shards: currentShardWidth(this.region),
-			...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
-		});
+		// The hedge's body reports NO width, for the reason `read` gives: this region's fan-out must not
+		// be folded into the neighbour's rendezvous.
+		const bodyWith = (shards: number | undefined) =>
+			JSON.stringify({
+				call,
+				opts,
+				baseUrl,
+				envelope,
+				cache,
+				shards,
+				...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
+			});
+		const body = bodyWith(currentShardWidth(this.region));
+		const hedge = this.hedge;
 		let rpcStart = Date.now();
-		let res: Response | undefined;
-		// The same deadline and single retry the RPC transport has (withRetry): a deploy resets every
-		// object, and a request landing mid-reset fails as a thrown fetch or as the object's own 503.
-		for (let attempt = 0; res === undefined; attempt++) {
-			rpcStart = Date.now();
-			try {
-				const answer = await withDeadline(
-					this.stub.fetch(new Request(`https://engine${ENGINE_STREAM_PATH}`, { method: "POST", body })),
-					ENGINE_CALL_DEADLINE_MS,
-					"engine page",
-				);
-				if (answer.status !== 503) {
-					res = answer;
-					break;
+		const { value: res, from } = await hedgedCall(
+			async (abandoned) => {
+				// The same deadline and single retry the RPC transport has (withRetry): a deploy resets every
+				// object, and a request landing mid-reset fails as a thrown fetch or as the object's own 503.
+				for (let attempt = 0; ; attempt++) {
+					rpcStart = Date.now();
+					try {
+						return await pageAttempt(this.stub, body, ENGINE_CALL_DEADLINE_MS);
+					} catch (err) {
+						if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err) || abandoned()) throw err;
+						console.warn(`retryable engine page failure (attempt ${attempt + 1}): ${err}`);
+						this.reconnect(); // a dead connection fails the retry identically (withRetry)
+						await retryPause();
+					}
 				}
-				// The transport reports EVERY failure as a 503 with the class name in a header, so the
-				// class has to be rebuilt here or the raw 503 becomes the client's answer — which is
-				// exactly how a malformed regex in a user's query produced a 5xx with a non-JSON body.
-				const kind = answer.headers.get("x-engine-error");
-				const message = await answer.text();
-				if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
-				if (kind === "StaleModulusError") throw new StaleModulusError(message);
-				if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
-				throw new Error(message);
-			} catch (err) {
-				if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err)) throw err;
-				console.warn(`retryable engine page failure (attempt ${attempt + 1}): ${err}`);
-				this.reconnect(); // a dead connection fails the retry identically (withRetry)
-				await retryPause();
-			}
-		}
+			},
+			// A hedged GATHER ("cards2") re-runs the whole gather in the neighbour: its coordinator fans out
+			// to ITS siblings, so one hedge here also covers a sibling that is stuck behind this region's
+			// coordinator — and the answer is one region's complete page, never a mix of two.
+			hedge ? () => pageAttempt(hedge.connect(), bodyWith(undefined), ENGINE_CALL_DEADLINE_MS) : null,
+			{
+				region: this.region,
+				hedgeRegion: hedge?.region ?? "",
+				partition: hedge?.partition ?? -1,
+				method: call === "cards2" ? "page-gather" : "page",
+			},
+			// The loser's stream is never read; cancel it so the pipe it holds is released.
+			(loser) => {
+				loser.body?.cancel().catch(() => {});
+			},
+		);
 		const num = (name: string): number | undefined => {
 			const raw = res.headers.get(name);
 			return raw === null ? undefined : Number(raw);
 		};
-		this.feedAutoscaler(rpcStart, {
-			acquireMs: num("x-acquire-ms"),
-			load: num("x-load"),
-			rate: num("x-rate"),
-			shards: num("x-shards"),
-		});
+		// Not a hedged answer's riders: see searchRpc.
+		if (from === "primary") {
+			this.feedAutoscaler(rpcStart, {
+				acquireMs: num("x-acquire-ms"),
+				load: num("x-load"),
+				rate: num("x-rate"),
+				shards: num("x-shards"),
+			});
+		}
 		// The riders are for THIS isolate, not the client: passed through verbatim they published the
 		// shard controller's load, rate and width signals on every /cards/search — and cached them
 		// at the edge. Body, status and every other header pass through untouched.
@@ -617,8 +819,8 @@ export class RemoteEngine implements Engine {
 	}
 
 	searchCardsAsObjects(opts: EngineSearchOptions, pinnedPartitionCount?: number): Promise<EngineSearchResult> {
-		return this.searchRpc(() =>
-			this.stub.searchCardsAsObjects(opts, currentShardWidth(this.region), pinnedPartitionCount),
+		return this.searchRpc("searchCardsAsObjects", (stub, shards) =>
+			stub.searchCardsAsObjects(opts, shards, pinnedPartitionCount),
 		);
 	}
 
@@ -627,8 +829,8 @@ export class RemoteEngine implements Engine {
 		shape: ResultShape,
 		pinnedPartitionCount?: number,
 	): Promise<EngineSerializedResult> {
-		return this.searchRpc(() =>
-			this.stub.searchCardsAsJson(opts, shape, currentShardWidth(this.region), pinnedPartitionCount),
+		return this.searchRpc("searchCardsAsJson", (stub, shards) =>
+			stub.searchCardsAsJson(opts, shape, shards, pinnedPartitionCount),
 		);
 	}
 
@@ -636,22 +838,24 @@ export class RemoteEngine implements Engine {
 	//
 	// Same instrumentation as the local twins — the gather object's riders feed
 	// the autoscaler exactly as a single-store object's do, so partitioned
-	// serving cannot quietly blind the shard controller.
+	// serving cannot quietly blind the shard controller. A hedged gather re-runs
+	// the WHOLE gather in the neighbour region (its coordinator, its siblings),
+	// so the answer is still one region's, on one build.
 
 	gatherSearchAsObjects(opts: EngineSearchOptions): Promise<EngineSearchResult> {
-		return this.searchRpc(() => this.stub.gatherSearchAsObjects(opts, currentShardWidth(this.region)));
+		return this.searchRpc("gatherSearchAsObjects", (stub, shards) => stub.gatherSearchAsObjects(opts, shards));
 	}
 
 	gatherSearchAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.gatherSearchAsJson(opts, shape, currentShardWidth(this.region)));
+		return this.searchRpc("gatherSearchAsJson", (stub, shards) => stub.gatherSearchAsJson(opts, shape, shards));
 	}
 
 	gatherScryfallSearch(opts: EngineSearchOptions, baseUrl: string): Promise<EngineSerializedResult> {
-		return this.searchRpc(() => this.stub.gatherScryfallSearch(opts, baseUrl, currentShardWidth(this.region)));
+		return this.searchRpc("gatherScryfallSearch", (stub, shards) => stub.gatherScryfallSearch(opts, baseUrl, shards));
 	}
 
 	private catalog() {
-		this.catalogOnce ??= withRetry(() => this.stub.typeAndKeywordCounts(), this.reconnect);
+		this.catalogOnce ??= this.read("typeAndKeywordCounts", (stub) => stub.typeAndKeywordCounts()).then((r) => r.value);
 		return this.catalogOnce;
 	}
 
@@ -667,23 +871,29 @@ export class RemoteEngine implements Engine {
 		return (await this.catalog()).setsWithExtras;
 	}
 
-	randomCardsAsObjects(
+	async randomCardsAsObjects(
 		numCards: number,
 		fields: string[],
 		filterTreeJson?: string,
 	): Promise<Record<string, unknown>[]> {
-		return withRetry(() => this.stub.randomCardsAsObjects(numCards, fields, filterTreeJson), this.reconnect);
+		return (
+			await this.read("randomCardsAsObjects", (stub) => stub.randomCardsAsObjects(numCards, fields, filterTreeJson))
+		).value;
 	}
 
-	randomCardsAsJson(
+	async randomCardsAsJson(
 		numCards: number,
 		fields: string[],
 		shape: ResultShape,
 		filterTreeJson?: string,
 	): Promise<EngineSerializedResult> {
-		return withRetry(() => this.stub.randomCardsAsJson(numCards, fields, shape, filterTreeJson), this.reconnect);
+		return (
+			await this.read("randomCardsAsJson", (stub) => stub.randomCardsAsJson(numCards, fields, shape, filterTreeJson))
+		).value;
 	}
 
+	/** NEVER hedged: its one caller is the warm ping for a newly opened shard (index.ts), whose whole
+	 * point is to wake THIS object — a neighbour answering in its place would admit a cold shard. */
 	cardCount(): Promise<number> {
 		return withRetry(() => this.stub.cardCount(), this.reconnect);
 	}
@@ -694,22 +904,22 @@ export class RemoteEngine implements Engine {
 	// being invisible to it. mtg-seeker points at `/cards/*`; if this went through plain
 	// `withRetry` the shard controller would see only `/search` depth, rate and latency, and would
 	// sit at one shard while the traffic that actually arrives saturated it. Same reason they pass
-	// `currentShardWidth(this.region)`: the shard rendezvous is what scale-out depends on, and a
-	// second serving surface has to join it rather than route around it.
+	// `currentShardWidth(this.region)` (as `shards`, from `read`): the shard rendezvous is what
+	// scale-out depends on, and a second serving surface has to join it rather than route around it.
 
 	async scryfallSearch(
 		opts: EngineSearchOptions,
 		baseUrl: string,
 		pinnedPartitionCount?: number,
 	): Promise<EngineSerializedResult> {
-		return this.searchRpc(() =>
-			this.stub.scryfallSearch(opts, baseUrl, currentShardWidth(this.region), pinnedPartitionCount),
+		return this.searchRpc("scryfallSearch", (stub, shards) =>
+			stub.scryfallSearch(opts, baseUrl, shards, pinnedPartitionCount),
 		);
 	}
 
 	async scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardById(scryfallId, baseUrl, currentShardWidth(this.region)),
+		const { card } = await this.searchRpc("scryfallCardById", (stub, shards) =>
+			stub.scryfallCardById(scryfallId, baseUrl, shards),
 		);
 		return card;
 	}
@@ -719,41 +929,43 @@ export class RemoteEngine implements Engine {
 		externalId: number,
 		baseUrl: string,
 	): Promise<Record<string, unknown> | null> {
-		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardByExternalId(namespace, externalId, baseUrl, currentShardWidth(this.region)),
+		const { card } = await this.searchRpc("scryfallCardByExternalId", (stub, shards) =>
+			stub.scryfallCardByExternalId(namespace, externalId, baseUrl, shards),
 		);
 		return card;
 	}
 
 	async scryfallFuzzyName(name: string, baseUrl: string, setCode = ""): Promise<ScryfallFuzzyResult> {
-		return this.searchRpc(() => this.stub.scryfallFuzzyName(name, baseUrl, currentShardWidth(this.region), setCode));
+		return this.searchRpc("scryfallFuzzyName", (stub, shards) =>
+			stub.scryfallFuzzyName(name, baseUrl, shards, setCode),
+		);
 	}
 
 	/** This partition's scores-bearing fuzzy candidates — no telemetry riders (like the gather
 	 * phases, it is partition machinery, not a shard-controller-fed route). */
 	async fuzzyCandidates(name: string, setCode = ""): Promise<FuzzyCandidateWire[]> {
-		const { candidates } = await withRetry(() => this.stub.fuzzyCandidates(name, setCode), this.reconnect);
-		return candidates;
+		const { value } = await this.read("fuzzyCandidates", (stub) => stub.fuzzyCandidates(name, setCode));
+		return value.candidates;
 	}
 
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
-		const { names } = await this.searchRpc(() =>
-			this.stub.scryfallAutocomplete(prefix, limit, currentShardWidth(this.region)),
+		const { names } = await this.searchRpc("scryfallAutocomplete", (stub, shards) =>
+			stub.scryfallAutocomplete(prefix, limit, shards),
 		);
 		return names;
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallExactName(folded, setCode, baseUrl, currentShardWidth(this.region)),
+		const { card } = await this.searchRpc("scryfallExactName", (stub, shards) =>
+			stub.scryfallExactName(folded, setCode, baseUrl, shards),
 		);
 		return card;
 	}
 
 	/** The name route's probe (ExactNameProbe). */
 	async scryfallExactNameProbe(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe> {
-		const { probe } = await this.searchRpc(() =>
-			this.stub.scryfallExactNameProbe(folded, setCode, baseUrl, currentShardWidth(this.region)),
+		const { probe } = await this.searchRpc("scryfallExactNameProbe", (stub, shards) =>
+			stub.scryfallExactNameProbe(folded, setCode, baseUrl, shards),
 		);
 		return probe;
 	}
@@ -766,15 +978,15 @@ export class RemoteEngine implements Engine {
 		limit: number,
 		baseUrl: string,
 	): Promise<NamedFuzzyBundle> {
-		const { bundle } = await this.searchRpc(() =>
-			this.stub.scryfallNamedFuzzyBundle(folded, setCode, words, limit, baseUrl, currentShardWidth(this.region)),
+		const { bundle } = await this.searchRpc("scryfallNamedFuzzyBundle", (stub, shards) =>
+			stub.scryfallNamedFuzzyBundle(folded, setCode, words, limit, baseUrl, shards),
 		);
 		return bundle;
 	}
 
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
-		const { rank } = await this.searchRpc(() =>
-			this.stub.scryfallExactNameRank(folded, setCode, currentShardWidth(this.region)),
+		const { rank } = await this.searchRpc("scryfallExactNameRank", (stub, shards) =>
+			stub.scryfallExactNameRank(folded, setCode, shards),
 		);
 		return rank;
 	}
@@ -785,15 +997,15 @@ export class RemoteEngine implements Engine {
 		limit: number,
 		baseUrl: string,
 	): Promise<Record<string, unknown>[]> {
-		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallNamesContaining(words, setCode, limit, baseUrl, currentShardWidth(this.region)),
+		const { cards } = await this.searchRpc("scryfallNamesContaining", (stub, shards) =>
+			stub.scryfallNamesContaining(words, setCode, limit, baseUrl, shards),
 		);
 		return cards;
 	}
 
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {
-		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallFirstOfEach(filterTreeJsons, baseUrl, currentShardWidth(this.region)),
+		const { cards } = await this.searchRpc("scryfallFirstOfEach", (stub, shards) =>
+			stub.scryfallFirstOfEach(filterTreeJsons, baseUrl, shards),
 		);
 		return cards;
 	}
@@ -804,8 +1016,8 @@ export class RemoteEngine implements Engine {
 		baseUrl: string,
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
-		const { packet } = await this.searchRpc(() =>
-			this.stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, currentShardWidth(this.region)),
+		const { packet } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
+			stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, shards),
 		);
 		return decodeCollectionPacket(packet, batch);
 	}

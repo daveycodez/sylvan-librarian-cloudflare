@@ -103,6 +103,41 @@ export function routableRegions(placement: PlacementBlock | undefined): Hint[] {
 	return [...new Set((Object.keys(REGIONS) as Hint[]).map((h) => effectiveRegion(h, placement)))];
 }
 
+/**
+ * Where a slow engine call is HEDGED (remote-engine.ts ENGINE_HEDGE_MS): the neighbouring regions to
+ * try, nearest first, continent before ocean. Every region holds the same store, so partition k of
+ * any of them answers a call to partition k identically; this only decides which one is closest.
+ * The second choice is what a neighbour that is not served (aliased) falls back to — a hedge that
+ * crosses an ocean still answers in ~100ms of extra round trip, against the 10–36s it replaces.
+ */
+const HEDGE_NEIGHBOURS: Record<Hint, readonly Hint[]> = {
+	enam: ["wnam", "weur"],
+	wnam: ["enam"],
+	weur: ["eeur", "enam"],
+	eeur: ["weur", "enam"],
+	apac: ["apac-se", "apac-ne"],
+	"apac-se": ["apac", "apac-ne"],
+	"apac-ne": ["apac-se", "apac"],
+	oc: ["apac-se", "apac"],
+	// Aliased by the seed (onto enam, weur, eeur); these apply only once probes find them served.
+	sam: ["enam", "wnam"],
+	afr: ["weur", "eeur"],
+	me: ["eeur", "weur"],
+};
+
+/**
+ * The region a slow call to `region`'s objects is hedged to, or null for no hedge. Only ever a
+ * SERVED region (one no alias redirects — its objects exist at the edge and the pool budget already
+ * counts them, since routableRegions is what manifestPoolShardCap divides by), and never `region`
+ * itself: a second call to the object that is not answering waits on the same teardown.
+ */
+export function hedgeRegionFor(region: Hint, placement: PlacementBlock | undefined): Hint | null {
+	for (const h of HEDGE_NEIGHBOURS[region] ?? []) {
+		if (h !== region && effectiveRegion(h, placement) === h) return h;
+	}
+	return null;
+}
+
 /** The generation a region's object names carry. */
 export function generationOf(region: Hint, placement: PlacementBlock | undefined): number {
 	const g = blockOf(placement).gens?.[region];

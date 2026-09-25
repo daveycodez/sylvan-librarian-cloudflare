@@ -11,7 +11,7 @@ import {
 	PartitionedEngine,
 	routingFilterSoon,
 } from "./engine/partitioned-engine";
-import { effectiveRegion, generationOf, routableRegions } from "./engine/placement-policy";
+import { effectiveRegion, generationOf, hedgeRegionFor, routableRegions } from "./engine/placement-policy";
 import { PlacementProbe } from "./engine/placement-probe";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
@@ -147,6 +147,15 @@ async function resolveEngine(
 				}),
 		);
 	}
+	// THE HEDGE (remote-engine.ts ENGINE_HEDGE_MS): a call that stays silent for 4s is also sent to
+	// the same partition's shard-0 object in a neighbouring served region — an evicted object's
+	// dying instance can hold a request 10–36s, and every region holds the same store. The stub is
+	// built HERE, in the request isolate, through placeEngineStub with that region's own hint and
+	// generation, so the rule above holds for it too: were the neighbour's object ever created by a
+	// hedge, the hint places it in the neighbour's region. Only when the hedge fires. Never on the
+	// warm ping above, which exists to wake THIS region's object.
+	const hedgeRegion = hedgeRegionFor(region, manifest.placement);
+	const hedgeGeneration = hedgeRegion === null ? 0 : generationOf(hedgeRegion, manifest.placement);
 	return new PartitionedEngine(
 		(partition) =>
 			new RemoteEngine(
@@ -155,6 +164,13 @@ async function resolveEngine(
 				colo,
 				() => placeEngineStub(env, region, shard, partition, generation),
 				aliased,
+				hedgeRegion === null
+					? undefined
+					: {
+							region: hedgeRegion,
+							partition,
+							connect: () => placeEngineStub(env, hedgeRegion, 0, partition, hedgeGeneration),
+						},
 			),
 		manifest,
 		// The stale-modulus retry (Decision 3b): re-read the one manifest key.
