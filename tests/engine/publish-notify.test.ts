@@ -87,6 +87,8 @@ async function fanOut(
 	placement: PlacementBlock | null = { v: 1 },
 	/** The published manifest's partition count; undefined keeps the unpartitioned-name fixtures notified. */
 	partitionCount?: number,
+	/** x1(b): the pool-aware shard cap (manifestPoolShardCap); unbounded by default. */
+	poolCap = Number.POSITIVE_INFINITY,
 ) {
 	const stub = (name: string) => ns.get({ name });
 	// g1: what no request can reach is retired, never prepared — and, against a partitioned
@@ -127,7 +129,8 @@ async function fanOut(
 		const parsed = parseEngineName(a.name);
 		if (!parsed || parsed.shard === 0) return false;
 		const regionGroup = engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation);
-		return parsed.shard >= ((regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1);
+		const width = (regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1;
+		return parsed.shard >= Math.min(width, poolCap);
 	});
 	await Promise.allSettled(
 		stale.map(async (a) => {
@@ -187,6 +190,17 @@ describe("what the fan-out does to the objects that exist", () => {
 		expect(stale).toEqual(["engine-wnam-3"]);
 		expect(ns.calls.get("engine-wnam-3")?.released).toBe(1);
 		expect(ns.calls.get("engine-wnam-2")?.released).toBe(0);
+	});
+
+	test("a region wider than the pool holds is released down to the pool cap (x1(b))", async () => {
+		// The region still announces width 4, but the pool holds 2 replicas a region: shards 2 and 3
+		// are ones no isolate routes to any more (the controller is capped the same way), so their
+		// caches go back now rather than when the announcement decays.
+		const live = { "engine-wnam-p0": 4, "engine-wnam-1-p0": 1, "engine-wnam-2-p0": 1, "engine-wnam-3-p0": 1 };
+		const ns = fakeNamespace(live);
+		const { stale } = await fanOut(ns, Object.keys(live), { v: 1 }, undefined, 2);
+		expect(stale.sort()).toEqual(["engine-wnam-2-p0", "engine-wnam-3-p0"]);
+		expect(ns.calls.get("engine-wnam-1-p0")?.released).toBe(0);
 	});
 
 	test("shard 0 is never released, whatever the width says", async () => {

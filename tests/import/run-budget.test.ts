@@ -422,20 +422,30 @@ describe("the Durable Objects storage pool", () => {
 	const crossing = (warmRegions: number, generationsHeld: number) =>
 		DO_STORAGE_POOL_BYTES / today(warmRegions, generationsHeld);
 
+	/** The regions requests can reach today: eleven hints, sam/afr/me aliased by g1 — 8 on both accounts. */
+	const ROUTABLE = 8;
+
 	test("tonight's publish fits the pool even with every region warm", () => {
-		// Every region (all eleven hints), each holding the old AND the new archives between prepare
-		// and commit, beside the coordinator's measured staging peak. ~3.7GB of 5GB.
-		expect(today(REGION_HINTS.length, 2)).toBeLessThan(DO_STORAGE_POOL_BYTES);
+		// Every hint's region warm, each holding ONE generation (x1: the prepare drops the old
+		// archives before it prefetches the new ones), beside the coordinator's measured staging
+		// peak. ~2.1GB of 5GB with all eleven; ~1.7GB with the eight routable ones.
+		expect(today(REGION_HINTS.length, 1)).toBeLessThan(DO_STORAGE_POOL_BYTES);
+		expect(today(ROUTABLE, 1)).toBeLessThan(0.35 * DO_STORAGE_POOL_BYTES);
 	});
 
 	test("the pool is the NEAREST wall, and this is the tripwire for it", () => {
-		// With all eleven regions warm through a publish the pool crosses at ~1.45x the corpus; with
-		// the cache's own arithmetic (one generation) at ~2.6x; with five warm regions holding two,
-		// ~2.8x. The corpus grows ~7% a year, so the first line still goes red in about five and a
-		// half years — and when it does the answer is to shrink the staging or the double-hold
-		// (backlog x1: drop the old archive before fetching the new one), not to raise the number.
-		expect(crossing(REGION_HINTS.length, 2)).toBeGreaterThan(1.05);
-		expect(crossing(REGION_HINTS.length, 1)).toBeGreaterThan(1.5);
-		expect(crossing(5, 2)).toBeGreaterThan(1.4);
+		// With every publish holding one generation (x1) the pool crosses at ~3.2x the corpus for the
+		// eight routable regions and ~2.6x were all eleven hints ever served separately. The corpus
+		// grows ~7% a year: 2x is ~10 years out, 3x ~16. When a line goes red the answer is to shrink
+		// the staging or the replicas, not to raise the number.
+		expect(crossing(ROUTABLE, 1)).toBeGreaterThan(3.0);
+		expect(crossing(REGION_HINTS.length, 1)).toBeGreaterThan(2.5);
+	});
+
+	test("before x1 the double hold was the wall: every region warm crossed at ~1.45x", () => {
+		// Kept as a model, so the reason x1 exists stays an assertion rather than a claim.
+		expect(crossing(REGION_HINTS.length, 2)).toBeLessThan(1.5);
+		expect(crossing(ROUTABLE, 2)).toBeLessThan(2.0);
+		expect(today(ROUTABLE, 2)).toBeGreaterThan(today(ROUTABLE, 1) + 1e9);
 	});
 });

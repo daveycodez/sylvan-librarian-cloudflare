@@ -98,6 +98,11 @@ export function effectiveRegion(hint: Hint, placement: PlacementBlock | undefine
 	return to;
 }
 
+/** The regions requests can reach under `placement` — every hint after its alias, once each (x1's pool cap counts these). */
+export function routableRegions(placement: PlacementBlock | undefined): Hint[] {
+	return [...new Set((Object.keys(REGIONS) as Hint[]).map((h) => effectiveRegion(h, placement)))];
+}
+
 /** The generation a region's object names carry. */
 export function generationOf(region: Hint, placement: PlacementBlock | undefined): number {
 	const g = blockOf(placement).gens?.[region];

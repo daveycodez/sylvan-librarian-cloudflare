@@ -53,6 +53,7 @@ import {
 	type CacheWriter,
 	cacheCodecOf,
 	cachedArchiveStream,
+	cachedBuiltAt,
 	cachedCompressedStream,
 	cachedLz4Stream,
 	cacheWriter,
@@ -63,7 +64,7 @@ import {
 	isCompressedCached,
 	isLz4Cached,
 	lz4CacheKey,
-	pruneCache,
+	pruneCacheOlderThan,
 	putCompressedChunk,
 	readLiveManifest,
 	recordAnnounced,
@@ -133,6 +134,13 @@ interface LabelState {
 	loading: Promise<Engine> | null;
 	/** The one refreshNow in flight: concurrent callers are all reacting to the same publish. */
 	refreshing: Promise<boolean> | null;
+	/**
+	 * The one prefetch in flight, and which archive it is filling. preparePublish reaches
+	 * prefetchStore without refreshNow's single-flight, and a coordinator that retries its prepare
+	 * phase while the first attempt is still fetching would otherwise run two fills of one archive
+	 * side by side — each dropping and rewriting the other's chunks (x1).
+	 */
+	prefetching: { storeKey: string; done: Promise<boolean> } | null;
 	/** The last request-path load that failed, while its backoff window is open. See getEngine. */
 	lastLoadFailure: { at: number; message: string } | null;
 }
@@ -249,7 +257,7 @@ function stateFor(label: string | undefined): LabelState {
 	const key = label ?? "";
 	let s = states.get(key);
 	if (!s) {
-		s = { current: null, loading: null, refreshing: null, lastLoadFailure: null };
+		s = { current: null, loading: null, refreshing: null, prefetching: null, lastLoadFailure: null };
 		states.set(key, s);
 	}
 	return s;
@@ -841,6 +849,8 @@ function archiveBytes(
 	let sink: CacheWriter | null = null;
 	if (storage) {
 		try {
+			// Drop, then fill (x1): the older build's rows go before the tee writes its first one.
+			dropOlderBuilds(ctx, storage, [key], key);
 			sink = cacheWriter(storage, key, expected);
 		} catch (err) {
 			console.warn(`${tag(ctx)}local archive cache unwritable for ${key} (serving from KV anyway): ${err}`);
@@ -923,7 +933,14 @@ function compressedArchiveBytes(
 	// NO TEE when the codec is LZ4 (design r3, change 4): the object is about to hold this archive
 	// as LZ4, and teeing the gzip chunks first would hold both families of one archive at once —
 	// at the publish, in every warm region together. The LZ4 copy is written from wasm after the
-	// load instead (fillLz4Cache); the stale builds are still pruned at commit.
+	// load instead (fillLz4Cache).
+	//
+	// DROP, THEN FILL (x1), in both codecs: this object's older builds go NOW, before the first
+	// chunk is tee'd, not at commit. A miss means neither family of THIS archive is held, so what
+	// remains is a build this load is replacing — and tee'ing beside it held two builds at once in
+	// every object that woke onto a publish it had not been prepared for. Under LZ4 nothing is tee'd,
+	// but the old rows would otherwise still sit beside the LZ4 fill's until commit.
+	if (storage) dropOlderBuilds(ctx, storage, keep, source.storeKey);
 	const teeGzip = codec === "gzip";
 	let teeBroken = storage === undefined || !teeGzip;
 	const tee = (seq: number, bytes: Uint8Array) => {
@@ -941,9 +958,10 @@ function compressedArchiveBytes(
 		format: "gzip",
 		commit: () => {
 			if (storage && !teeGzip) {
-				// Nothing tee'd; the object's older builds are still dead weight.
+				// Nothing tee'd. The older builds went before the load; anything a concurrent writer
+				// left since is still dead weight.
 				try {
-					const dropped = pruneCache(storage, keep);
+					const dropped = pruneCacheOlderThan(storage, keep, cachedBuiltAt(source.storeKey));
 					if (dropped.length) console.log(`${tag(ctx)}dropped ${dropped.length} stale cached archive(s)`);
 				} catch (err) {
 					console.warn(`${tag(ctx)}could not prune the archive cache: ${err}`);
@@ -957,7 +975,7 @@ function compressedArchiveBytes(
 					dropAll();
 					return;
 				}
-				const dropped = pruneCache(storage, keep);
+				const dropped = pruneCacheOlderThan(storage, keep, cachedBuiltAt(source.storeKey));
 				console.log(
 					`${tag(ctx)}cached ${source.storeKey} compressed while loading it (${chunkCount} chunks)` +
 						`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
@@ -989,7 +1007,7 @@ function commitSink(
 			console.warn(`${tag(ctx)}archive cache for ${key} did not match its manifest length; not cached`);
 			return;
 		}
-		const dropped = ctx?.storage ? pruneCache(ctx.storage, keep) : [];
+		const dropped = ctx?.storage ? pruneCacheOlderThan(ctx.storage, keep, cachedBuiltAt(key)) : [];
 		console.log(
 			`${tag(ctx)}cached ${key} locally while loading it (${rows} rows)` +
 				`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
@@ -1006,6 +1024,30 @@ function commitSink(
 function cacheKeysOf(source: ArchiveSource): string[] {
 	if (source.gzipBytes === undefined) return [source.storeKey];
 	return [...compressedCacheKeys(source.storeKey, source.chunkCount as number), lz4CacheKey(source.storeKey)];
+}
+
+/**
+ * DROP, THEN FILL (backlog x1): before a fill of `storeKey` writes anything, drop every cached build
+ * but the one being filled (`keep`), and never one NEWER than it (pruneCacheOlderThan's guard).
+ * Never throws: a drop that fails leaves the old behaviour — two builds for one fill — not a failed
+ * load.
+ */
+function dropOlderBuilds(
+	ctx: LoadContext | undefined,
+	storage: ArchiveCacheStorage,
+	keep: readonly string[],
+	storeKey: string,
+): string[] {
+	try {
+		const dropped = pruneCacheOlderThan(storage, keep, cachedBuiltAt(storeKey));
+		if (dropped.length) {
+			console.log(`${tag(ctx)}dropped ${dropped.length} older cached archive(s) before filling ${storeKey}`);
+		}
+		return dropped;
+	} catch (err) {
+		console.warn(`${tag(ctx)}could not drop the older cached archives before filling ${storeKey}: ${err}`);
+		return [];
+	}
 }
 
 /**
@@ -1037,8 +1079,8 @@ function fillLz4Cache(
 	try {
 		if (isLz4Cached(storage, source.storeKey)) return;
 		// Everything but the LZ4 family this fill writes: the gzip copy of THIS archive, and any
-		// other build's rows a prune has not reached.
-		const dropped = pruneCache(storage, [key]);
+		// OLDER build's rows a prune has not reached — never a newer build a prepare is holding (x1).
+		const dropped = pruneCacheOlderThan(storage, [key], cachedBuiltAt(source.storeKey));
 		const writer = cacheWriter(storage, key, null);
 		let frames = 0;
 		try {
@@ -1080,7 +1122,7 @@ export function pruneToManifest(ctx: LoadContext, manifest: StoreManifest): numb
 	if (!storage || !source) return 0;
 	try {
 		ensureCacheSchema(storage);
-		return pruneCache(storage, cacheKeysOf(source)).length;
+		return pruneCacheOlderThan(storage, cacheKeysOf(source), cachedBuiltAt(source.storeKey)).length;
 	} catch (err) {
 		console.warn(`${tag(ctx)}could not prune stale cached archives: ${err}`);
 		return 0;
@@ -1392,7 +1434,9 @@ export async function refreshNow(env: Env, ctx: LoadContext, known?: StoreManife
 
 /**
  * Step 1 of the two-step publish, in the loader's terms: hold the new archive
- * in LOCAL storage, swapping nothing. The old store serves throughout.
+ * in LOCAL storage, swapping nothing. The old store serves throughout — from
+ * wasm memory, which is why its cached rows are dropped BEFORE the new ones are
+ * fetched (x1: drop, then fill), and the object never holds two builds.
  *
  * The FORMAT held follows the ARCHIVE's, exactly as a cold load's does: a
  * gzipped archive is prefetched as its COMPRESSED chunks (fetched whole from KV,
@@ -1417,31 +1461,64 @@ export async function prefetchStore(env: Env, ctx: LoadContext, manifest: StoreM
 		);
 		return false;
 	}
-	if (liveCurrent(stateFor(ctx.label), ctx.label)?.storeKey === source.storeKey) return false;
+	const state = stateFor(ctx.label);
+	if (liveCurrent(state, ctx.label)?.storeKey === source.storeKey) return false;
+	// SINGLE-FLIGHTED PER LABEL (x1). A second prefetch of the same archive — the coordinator
+	// retrying its prepare phase while the first attempt is still fetching, or a notify racing a
+	// prepare — shares the first one's answer instead of fetching every chunk again beside it. One
+	// of ANOTHER archive waits for the one in flight to finish, so two fills never interleave.
+	for (;;) {
+		const inFlight = state.prefetching;
+		if (!inFlight) break;
+		if (inFlight.storeKey === source.storeKey) return inFlight.done;
+		await inFlight.done.catch(() => false);
+	}
+	const done = prefetchOnce(env, ctx, ctx.storage, source).finally(() => {
+		if (state.prefetching?.done === done) state.prefetching = null;
+	});
+	state.prefetching = { storeKey: source.storeKey, done };
+	return done;
+}
+
+async function prefetchOnce(
+	env: Env,
+	ctx: LoadContext,
+	storage: ArchiveCacheStorage,
+	source: ArchiveSource,
+): Promise<boolean> {
 	try {
-		ensureCacheSchema(ctx.storage);
+		ensureCacheSchema(storage);
+		const builtAt = cachedBuiltAt(source.storeKey);
 		if (source.gzipBytes !== undefined) {
 			const chunkCount = source.chunkCount as number;
 			// The prefetch always stages GZIP, even under an LZ4 codec: the new archive is not in wasm
 			// yet, so there is nothing to encode from, and a second store-sized buffer does not fit the
 			// isolate. The commit swap inflates it and fillLz4Cache converts it (r3). A held LZ4 copy
-			// of the same archive (a retried phase) is already the better form.
+			// of the same archive (a retried phase) is already the better form — and asking FIRST is
+			// what keeps a retried prepare free: nothing is dropped and nothing is fetched.
 			if (
-				!isLz4Cached(ctx.storage, source.storeKey) &&
-				!isCompressedCached(ctx.storage, source.storeKey, chunkCount, source.gzipBytes)
+				!isLz4Cached(storage, source.storeKey) &&
+				!isCompressedCached(storage, source.storeKey, chunkCount, source.gzipBytes)
 			) {
+				// DROP, THEN FILL (x1). The build this object serves lives in wasm memory, not in these
+				// rows, and the new manifest is already written (the coordinator's manifest step runs
+				// before notify), so the old build's cache is never read again: a wake from here loads
+				// the recorded build. Filling beside it held two builds in every warm object of every
+				// region at once, and SQLite kept that mark. See pruneCacheOlderThan.
+				dropOlderBuilds(ctx, storage, cacheKeysOf(source), source.storeKey);
 				for (let seq = 0; seq < chunkCount; seq++) {
-					putCompressedChunk(ctx.storage, source.storeKey, seq, await fetchStoredChunk(env, source.storeKey, seq));
+					putCompressedChunk(storage, source.storeKey, seq, await fetchStoredChunk(env, source.storeKey, seq));
 				}
 			}
-			const dropped = pruneCache(ctx.storage, cacheKeysOf(source));
+			const dropped = pruneCacheOlderThan(storage, cacheKeysOf(source), builtAt);
 			console.log(
 				`${tag(ctx)}prefetched ${source.storeKey} (${chunkCount} compressed chunks) before swapping` +
 					`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
 			);
 		} else {
-			const rows = await fillCache(ctx.storage, source.storeKey, kvSourceStream(env, source), source.storeBytes);
-			const dropped = pruneCache(ctx.storage, [source.storeKey]);
+			dropOlderBuilds(ctx, storage, [source.storeKey], source.storeKey);
+			const rows = await fillCache(storage, source.storeKey, kvSourceStream(env, source), source.storeBytes);
+			const dropped = pruneCacheOlderThan(storage, [source.storeKey], builtAt);
 			console.log(
 				`${tag(ctx)}prefetched ${source.storeKey} (${rows} rows) before swapping` +
 					`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,

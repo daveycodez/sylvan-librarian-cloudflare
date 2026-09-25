@@ -647,8 +647,10 @@ export function projectRunCost(
  * one partition compressed` — that is, regions x the whole compressed store —
  * and the coordinator's staging peaks while the drafts are bucketed (just
  * after transform, before the loop starts consuming them). Both scale with the
- * corpus and they collide on the same night: the publish prefetches the NEW
- * archives into the cache while the OLD ones are still held. Pure, so the
+ * corpus and they are both standing marks — every SQLite file keeps its
+ * high-water (see "WHAT IT CANNOT DO" in the r3 section below). Until x1 the publish prefetched the NEW
+ * archives into the cache while the OLD ones were still held, two generations
+ * per region; since x1 every fill drops the old build first, one. Pure, so the
  * budget test can project it forward the way projectRunCost projects the
  * meters — the pool is the 5GB free-plan limit, and the thing that trips it
  * should be a red test, not a failed nightly.
@@ -659,12 +661,17 @@ export function projectPoolBytes(shape: {
 	/** `partitions[k].store_gzip_bytes` from the live manifest, one per partition. */
 	partitionGzipBytes: readonly number[];
 	/**
-	 * Store generations a warm region holds at once. 2 during a publish: the
-	 * prepare step prefetches the NEW archives into local storage while the OLD
-	 * ones still serve, and the commit swaps and only then drops the old rows.
+	 * Store generations a warm region holds at once. 1 since x1 (drop, then fill): the prepare step
+	 * drops the OLD archives before it prefetches the NEW ones — the old store serves from wasm
+	 * memory, not from its rows. 2 is what every publish held before, kept as a model so the budget
+	 * test can state that it did not fit.
 	 */
 	generationsHeld: number;
-	/** The coordinator's staging at its peak (drafts + tag snapshot + one partition's spill). */
+	/**
+	 * The coordinator's own high-water mark: its staging at its peak (drafts + tag snapshot + one
+	 * partition's spill). Not staging PLUS the notify residue — both live in the coordinator's one
+	 * file, whose mark is the larger of them, and the residue (~0.066GB) is the smaller.
+	 */
 	stagingPeakBytes: number;
 }): number {
 	const cached = shape.partitionGzipBytes.reduce((s, b) => s + b, 0);
@@ -688,11 +695,23 @@ export const DO_STORAGE_POOL_BYTES = 5 * 1024 * 1024 * 1024;
 // of the NEW build. The dead band below is for predictability, not cost.
 //
 // WHAT IT CANNOT DO IS GIVE THE POOL BACK. A Durable Object's SQLite keeps the pages its deletes
-// free (only deleteAll returns them), so each object's file sits at its high-water mark — and that
-// mark is set at the publish, when the object holds its OLD cache beside the NEW build's gzip
-// prefetch (store.ts prefetchStore; x1 would remove that overlap and is not built). Switching the
-// codec off stops the mark from GROWING with the corpus; it does not lower it until the object is
-// released. Hence a gate that turns on only well inside the budget.
+// free (only deleteAll returns them), so each object's FILE sits at its high-water mark. Measured
+// 2026-09-25 in workerd (miniflare 5 / workerd 1.20260801, a 14.7MB partition, four publishes):
+// `databaseSize` falls back to the live pages after a DELETE, but the object's .sqlite file keeps the
+// most it ever held — 30.5MB (two builds) when each fill wrote the new build beside the old, 15.3MB
+// (one build) when the old build was dropped first and its freed pages reused. Production agrees on
+// the second half: the three coordinators x8 released read ~0.2MB of databaseSize each and were
+// still billed ~1.1GB until deleteAll.
+//
+// So the mark is set by the worst moment of every fill, and since x1 (drop, then fill — store.ts
+// prefetchStore, compressedArchiveBytes, fillLz4Cache) that moment holds ONE build: the old one is
+// dropped before the new one's first row, and under LZ4 the prefetched gzip goes before the LZ4
+// frames are written. The worst moment is therefore max(gzip, LZ4) of one build, not their sum plus
+// the old build's (cacheHighWaterFactor). An object created before x1 keeps its old mark until it is
+// released — at most the two builds the gate accepted when it was set, which one build of either
+// codec now fits inside, so a flip to LZ4 does not grow it. Switching the codec OFF stops the mark
+// from growing with the corpus; it does not lower it until the object is released. Hence a gate
+// that turns on only well inside the budget.
 
 /** LZ4 cache bytes per gzip byte: x1.449 measured over all ten partitions (x1.453 worst), rounded UP. */
 export const LZ4_CACHE_RATIO = 1.5;
@@ -709,12 +728,24 @@ export const LZ4_ON_FRACTION = 0.8;
 export const LZ4_OFF_FRACTION = 0.88;
 
 /**
- * The pool at its high-water mark under a cache codec: every replica object holding its cache
- * (`cacheFactor` x the build's gzip bytes) BESIDE the next build's gzip prefetch, plus the
- * coordinator's own staging high-water mark, plus any staging a failed-over coordinator left behind.
+ * What one replica object's cache file peaks at, per gzip byte of the build it holds (x1): ONE build,
+ * in the larger of the two forms it passes through. A gzip object holds the gzip chunks (1); an LZ4
+ * object holds the prefetched gzip, drops it, then writes the LZ4 frames (LZ4_CACHE_RATIO) — never
+ * both, and never beside the previous build. Before x1 this was `cacheFactor + 1`: the object's own
+ * cache beside the next build's gzip prefetch.
+ */
+export function cacheHighWaterFactor(cacheFactor: number): number {
+	return Math.max(cacheFactor, 1);
+}
+
+/**
+ * The pool at its high-water mark under a cache codec: every replica object at its cache file's
+ * high-water mark (cacheHighWaterFactor x the build's gzip bytes), plus the coordinator's own
+ * staging high-water mark, plus the staging replaced coordinators still hold.
  *
- * Summed, not max'd: SQLite files keep their high-water marks (see above), so the staging peak of
- * the build and the prefetch overlap of the publish are both standing costs, not moments.
+ * Summed, not max'd: they are different objects, and every SQLite file keeps its own high-water
+ * mark (see above), so the staging peak of the build and each replica's fill are standing costs,
+ * not moments that could be scheduled apart.
  */
 export function projectCachePool(shape: {
 	/** Replica groups that hold a cache: every ROUTABLE region's shard 0, plus the shards announced above it. */
@@ -729,8 +760,104 @@ export function projectCachePool(shape: {
 	strandedBytes: number;
 }): number {
 	const perBuild = shape.partitionGzipBytes.reduce((s, b) => s + b, 0);
-	return shape.replicas * perBuild * (shape.cacheFactor + 1) + shape.stagingPeakBytes + shape.strandedBytes;
+	return (
+		shape.replicas * perBuild * cacheHighWaterFactor(shape.cacheFactor) + shape.stagingPeakBytes + shape.strandedBytes
+	);
 }
+
+/** generation 52's raw store bytes, the corpus STAGING_PEAK_BYTES_2026_09_25 was measured at. */
+export const STAGING_PEAK_STORE_BYTES = 425_181_152;
+
+/**
+ * The coordinator staging high-water to budget for a build: last night's MEASURED mark when the
+ * manifest carries it (StoreManifest.cache.staging_bytes, written by the pool gate from
+ * RunMeters.peak_db_bytes), else the 2026-09-25 meter reading scaled by the store.
+ */
+export function stagingBytesOf(manifest: {
+	store_bytes?: number;
+	cache?: { staging_bytes?: number } | undefined;
+}): number {
+	const measured = manifest.cache?.staging_bytes;
+	if (typeof measured === "number" && Number.isFinite(measured) && measured > 0) return measured;
+	return (STAGING_PEAK_BYTES_2026_09_25 * (manifest.store_bytes ?? 0)) / STAGING_PEAK_STORE_BYTES;
+}
+
+/**
+ * x1(b): how many replica shards per region the pool can hold — the cap the shard controller
+ * expands to (index.ts) and the notify releases above (stepNotify).
+ *
+ * Every region may open the same number, so the bound is uniform: `regions x cap` replica groups,
+ * each holding one build at the manifest's codec (cacheHighWaterFactor), plus the coordinator's
+ * staging, must stay under the gate's OFF threshold — the same line past which the gate itself
+ * turns LZ4 off, so the cap and the codec can never disagree about what fits. Shard 0 always
+ * exists, so the cap is never below 1.
+ *
+ * `null` when the inputs cannot decide it (no partition sizes, no regions): the caller keeps its
+ * configured cap. Measured inputs today (0.147GB per build, 8 routable regions, 0.50GB staging):
+ * 3 shards per region under gzip, 2 under LZ4; at 2x the corpus 1; at 3x 1.
+ */
+export function poolShardCap(shape: {
+	regions: number;
+	partitionGzipBytes: readonly number[];
+	cacheFactor: number;
+	stagingPeakBytes: number;
+	budget?: number;
+}): number | null {
+	const perReplica = shape.partitionGzipBytes.reduce((s, b) => s + b, 0) * cacheHighWaterFactor(shape.cacheFactor);
+	if (!(perReplica > 0) || !(shape.regions >= 1)) return null;
+	const room = LZ4_OFF_FRACTION * (shape.budget ?? POOL_GATE_BUDGET_BYTES) - Math.max(0, shape.stagingPeakBytes || 0);
+	return Math.max(1, Math.floor(room / (shape.regions * perReplica)));
+}
+
+/** poolShardCap for a published manifest, over the `regions` requests can reach under its placement. */
+export function manifestPoolShardCap(
+	manifest: {
+		store_bytes?: number;
+		partitions?: readonly { store_gzip_bytes?: number }[];
+		cache?: { v?: number; codec?: string; staging_bytes?: number };
+	},
+	regions: number,
+): number | null {
+	return poolShardCap({
+		regions,
+		partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
+		cacheFactor: manifest.cache?.v === 1 && manifest.cache.codec === "lz4" ? LZ4_CACHE_RATIO : 1,
+		stagingPeakBytes: stagingBytesOf(manifest),
+	});
+}
+
+/**
+ * x1(c): may a run START staging while replaced coordinators still hold theirs? The pool at this
+ * run's own staging peak, beside the live build's caches and every retiring run's staging (each
+ * budgeted at one staging peak — x8's watchdog releases them within a tick or two, but a wedged one
+ * holds its rows until it wakes), must stay under the budget. Nothing retiring is always yes.
+ */
+export function poolAdmitsRun(shape: {
+	retiring: number;
+	replicas: number;
+	partitionGzipBytes: readonly number[];
+	cacheFactor: number;
+	stagingPeakBytes: number;
+	budget?: number;
+}): boolean {
+	if (shape.retiring <= 0) return true;
+	const projected = projectCachePool({
+		replicas: shape.replicas,
+		partitionGzipBytes: shape.partitionGzipBytes,
+		cacheFactor: shape.cacheFactor,
+		stagingPeakBytes: shape.stagingPeakBytes,
+		strandedBytes: shape.retiring * shape.stagingPeakBytes,
+	});
+	return projected <= (shape.budget ?? POOL_GATE_BUDGET_BYTES);
+}
+
+/** How long a run waits at listing for retiring coordinators to be released (the watchdog's tick is 10 minutes). */
+export const POOL_WAIT_MS = 5 * 60_000;
+/**
+ * Waits before a run starts anyway. An hour covers six watchdog ticks; past it a retiring object is
+ * wedged, and not importing tonight does not free its rows — the run proceeds and says so.
+ */
+export const MAX_POOL_WAITS = 12;
 
 /** The codec the next build publishes, with a dead band so a replica shard opening or closing does not toggle it. */
 export function decideCacheCodec(
@@ -748,6 +875,10 @@ export function decideCacheCodec(
  * read 0.486–0.495GB for the ImportCoordinator namespace on DeckGen 2026-09-20, -21 and -23, each a
  * run stalled while holding its staging (backlog x1, report 13). The pool gate measures its own
  * (RunMeters.peak_db_bytes) and uses this only for a run that began before that meter existed,
- * scaled by the store's raw bytes against generation 52's 425,181,152.
+ * scaled by the store's raw bytes against generation 52's 425,181,152. The first gated runs agreed:
+ * 2026-09-25's Pool gate lines read 0.50GB (free) and 0.54GB (DeckGen), 1% margin included. All of
+ * these staged drafts at deflate level 1; DRAFT_CODEC_LEVEL 6 takes ~20% off the drafts, ~80% of
+ * the peak. Left as measured — a fallback should not be an estimate — and the gate's own
+ * measurement replaces it from the first run that stages at level 6.
  */
 export const STAGING_PEAK_BYTES_2026_09_25 = 495_000_000;

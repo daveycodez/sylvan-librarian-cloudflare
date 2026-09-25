@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	type ArchiveCacheStorage,
 	cachedArchiveStream,
+	cachedBuiltAt,
 	cachedLz4Stream,
 	cacheWriter,
 	dropCached,
@@ -19,6 +20,7 @@ import {
 	isLz4Cached,
 	lz4CacheKey,
 	pruneCache,
+	pruneCacheOlderThan,
 } from "../../src/engine/store-cache";
 
 /**
@@ -313,5 +315,44 @@ describe("the LZ4 family (r3)", () => {
 	test("its key is its own family, never one of the gzip chunk keys", () => {
 		expect(lz4CacheKey(KEY)).toBe(`${KEY}:lz4v1`);
 		expect(lz4CacheKey(KEY)).not.toMatch(/:gz:/);
+	});
+});
+
+describe("drop, then fill (x1)", () => {
+	const at = (builtAt: number, family: string) => `card-store-v7-${builtAt}-p3.store${family}`;
+
+	test("a cache key names its build whatever family follows, and NaN when it names none", () => {
+		expect(cachedBuiltAt(at(1790000000000, ":gz:0"))).toBe(1790000000000);
+		expect(cachedBuiltAt(at(1790000000000, ":lz4v1"))).toBe(1790000000000);
+		expect(cachedBuiltAt("card-store-v7-1790000000000.store")).toBe(1790000000000);
+		expect(cachedBuiltAt("in-flight:lz4v1")).toBeNaN();
+		expect(cachedBuiltAt("card-store-v7-notanumber-p3.store:gz:0")).toBeNaN();
+	});
+
+	test("drops every older build and every key that names none — but never a NEWER build", async () => {
+		const store = fakeStorage();
+		for (const key of [at(100, ":gz:0"), at(100, ":lz4v1"), at(200, ":gz:0"), at(300, ":gz:0"), "stray"]) {
+			await fillCache(store, key, streamOf(ramp(10), 10), 10);
+		}
+		// Filling build 200: 100's two families and the stray go; 200 is kept; 300 — newer — survives.
+		const dropped = pruneCacheOlderThan(store, [at(200, ":gz:0"), at(200, ":lz4v1")], 200);
+		expect(dropped.sort()).toEqual([at(100, ":gz:0"), at(100, ":lz4v1"), "stray"].sort());
+		expect([...store.rows.keys()].sort()).toEqual([at(200, ":gz:0"), at(300, ":gz:0")].sort());
+	});
+
+	test("the guard covers rows no meta row names, too — a newer fill still being written", () => {
+		const store = fakeStorage();
+		const older = cacheWriter(store, at(100, ":lz4v1"), null);
+		older.write(ramp(2_000_000));
+		const newer = cacheWriter(store, at(300, ":lz4v1"), null);
+		newer.write(ramp(2_000_000));
+		expect(pruneCacheOlderThan(store, [], 200)).toEqual([at(100, ":lz4v1")]);
+		expect(store.rows.has(at(300, ":lz4v1"))).toBe(true);
+	});
+
+	test("an unparseable target falls back to the plain prune rather than keeping everything", async () => {
+		const store = fakeStorage();
+		await fillCache(store, at(300, ":gz:0"), streamOf(ramp(10), 10), 10);
+		expect(pruneCacheOlderThan(store, [], "not-a-build")).toEqual([at(300, ":gz:0")]);
 	});
 });

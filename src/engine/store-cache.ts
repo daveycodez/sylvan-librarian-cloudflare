@@ -88,7 +88,9 @@
 //
 // Rows are keyed by ARCHIVE KEY, which is unique per build (`card-store-v<format>-<built_at>.store`),
 // so a nightly publish cannot overwrite bytes a reader is streaming: the new build fills under its
-// own key and the old key's rows are dropped once the new one is complete.
+// own key. The old key's rows are dropped BEFORE that fill starts (pruneCacheOlderThan, backlog x1),
+// not after it completes — the old store serves from wasm memory, never from these rows, and a fill
+// beside them held two builds per object at every publish.
 
 import { BLOB_GROUP_BYTES, blobBytes, exactBuffer } from "../import-spill";
 import type { CacheCodec } from "./types";
@@ -331,14 +333,6 @@ export async function fillCache(
 }
 
 /**
- * Drop every cached archive except `keep`.
- *
- * Retention has to be positive rather than incidental: a nightly publish changes both archive keys,
- * so without this a colo would accumulate ~88MB a day against a 5GB account-wide ceiling — the same
- * leak that let production hold 15 store builds in KV under a policy of 2 (see staleStoreKeys).
- * Called after a fill, when the replacement is known good.
- */
-/**
  * Throw away one cached archive, because it turned out not to be the bytes it claimed.
  *
  * The cache's whole safety argument is that it can only ever be a FASTER way to get the SAME bytes,
@@ -357,9 +351,61 @@ export function dropCached(storage: ArchiveCacheStorage, key: string): void {
 	exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 }
 
+/**
+ * Drop every cached archive except `keep`.
+ *
+ * Retention has to be positive rather than incidental: a nightly publish changes both archive keys,
+ * so without this a colo would accumulate ~88MB a day against a 5GB account-wide ceiling — the same
+ * leak that let production hold 15 store builds in KV under a policy of 2 (see staleStoreKeys).
+ * The loader's fills call the guarded form, pruneCacheOlderThan, BEFORE they write (x1).
+ */
 export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]): string[] {
+	return pruneWhere(storage, keep, () => true);
+}
+
+/**
+ * The build a cache key belongs to: the `<built_at>` of `card-store-v<fmt>-<built_at>[-p<k>].store`,
+ * whatever family suffix follows (`:gz:<seq>`, `:lz4v1`). NaN for a key that names no build.
+ */
+export function cachedBuiltAt(key: string): number {
+	const at = /^card-store-v\d+-(\d+)(?:-p\d+)?\.store(?::|$)/.exec(key);
+	return at ? Number(at[1]) : Number.NaN;
+}
+
+/**
+ * DROP, THEN FILL (backlog x1): every cached archive except `keep`, and except any build NEWER than
+ * `builtAt` — called BEFORE a fill writes its first row, so an object never holds two builds' caches.
+ *
+ * Why before and not after. The fills used to write the new build beside the old one and prune once
+ * the new copy was complete, so every object held two builds at its worst moment — at the publish,
+ * every warm object in every region at once — and SQLite keeps the pages its deletes free, so that
+ * moment set each object's file for good. Dropping first lets the fill reuse the pages the old build
+ * gave back: the object peaks at one build (measured in workerd and in bun's SQLite; see the x1
+ * commit). Nothing the object needs is lost: the old build serves from wasm memory, not from these
+ * rows, and a fill only ever starts for a build the object has been told is live (or is loading).
+ *
+ * THE GUARD is the one thing a positive keep-list cannot say: a build newer than the one being
+ * filled is never dropped. It can be here — a prepare held the next build, then a cold wake read an
+ * older record and KV's colo-cached manifest agreed — and dropping it would throw away the bytes the
+ * next swap is about to read. A key that names no build is dropped, as `pruneCache` would.
+ */
+export function pruneCacheOlderThan(
+	storage: ArchiveCacheStorage,
+	keep: readonly string[],
+	builtAt: number | string,
+): string[] {
+	const limit = Number(builtAt);
+	if (!Number.isFinite(limit)) return pruneCache(storage, keep);
+	return pruneWhere(storage, keep, (key) => !(cachedBuiltAt(key) > limit));
+}
+
+function pruneWhere(
+	storage: ArchiveCacheStorage,
+	keep: readonly string[],
+	droppable: (key: string) => boolean,
+): string[] {
 	const keys = exec(storage, "SELECT archive_key FROM archive_cache_meta").map((r) => String(r.archive_key));
-	const stale = keys.filter((k) => !keep.includes(k));
+	const stale = keys.filter((k) => !keep.includes(k) && droppable(k));
 	for (const key of stale) {
 		exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 		exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
@@ -371,7 +417,7 @@ export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]
 	const known = new Set(keys);
 	const orphans = exec(storage, "SELECT DISTINCT archive_key FROM archive_cache")
 		.map((r) => String(r.archive_key))
-		.filter((k) => !known.has(k) && !keep.includes(k));
+		.filter((k) => !known.has(k) && !keep.includes(k) && droppable(k));
 	for (const key of orphans) exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 	return [...stale, ...orphans];
 }

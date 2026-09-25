@@ -71,6 +71,31 @@ function admitPending(c: Controller, region = R): number | null {
 	return target;
 }
 
+describe("the pool-aware cap (x1(b))", () => {
+	test("SHARDS_MAX as configured, never above what the pool holds", async () => {
+		const c = await freshController();
+		expect(c.effectiveShardCap(undefined, null)).toBeUndefined();
+		expect(c.effectiveShardCap(5, null)).toBe(5);
+		expect(c.effectiveShardCap(undefined, 3)).toBe(3);
+		expect(c.effectiveShardCap(undefined, 20)).toBe(c.DEFAULT_MAX_SHARDS);
+		expect(c.effectiveShardCap(2, 3)).toBe(2);
+		expect(c.effectiveShardCap(8, 3)).toBe(3);
+		// SHARDS_MAX=0 is unbounded by LOAD, not by the pool.
+		expect(c.effectiveShardCap(0, 2)).toBe(2);
+		// A pool cap that decides nothing leaves the configuration alone.
+		expect(c.effectiveShardCap(4, Number.NaN)).toBe(4);
+		expect(c.effectiveShardCap(4, 0)).toBe(4);
+	});
+
+	test("a region cannot adopt past the pool cap, and the draw never exceeds it", async () => {
+		const c = await freshController();
+		const cap = c.effectiveShardCap(undefined, 2) as number;
+		c.pickShard(R, cap);
+		c.adoptShardWidth(R, 6);
+		for (let i = 0; i < 300; i++) expect(c.pickShard(R, cap)).toBeLessThan(2);
+	});
+});
+
 describe("steady state", () => {
 	test("stays at one shard, and shard 0 keeps the plain name", async () => {
 		const c = await freshController();

@@ -13,7 +13,7 @@
 //     (routingStagingRows), falling back to one per batch rather than ever overflowing a row.
 
 import { describe, expect, test } from "bun:test";
-import { PackStream, packBlob, unpackBlob } from "../../src/import-blob-codec";
+import { DRAFT_CODEC_LEVEL, PackStream, packBlob, packDraftBlob, unpackBlob } from "../../src/import-blob-codec";
 import {
 	BLOB_GROUP_BYTES,
 	DRAFT_BATCH_BYTES,
@@ -126,6 +126,26 @@ describe("PackStream", () => {
 
 	test("an empty stream is an empty batch", () => {
 		expect(unpackBlob(new PackStream().finish()).length).toBe(0);
+	});
+
+	test("at DRAFT_CODEC_LEVEL (x1) it decodes the same, its bound holds, and it is no bigger than level 1", () => {
+		const all = drafts(3000, 5);
+		const expected = lengthPrefixed(all);
+		const l1 = new PackStream();
+		const l6 = new PackStream(DRAFT_CODEC_LEVEL);
+		for (const d of all) {
+			l1.push(d);
+			l6.push(d);
+		}
+		const bound = l6.packedBound;
+		const packed = l6.finish();
+		expect(packed.length).toBeLessThanOrEqual(bound);
+		expect(Buffer.from(unpackBlob(packed)).equals(Buffer.from(expected))).toBe(true);
+		expect(packed.length).toBeLessThanOrEqual(l1.finish().length);
+		// And the one-shot form the transform stages with, which a level-1 reader decodes unchanged.
+		const oneShot = packDraftBlob(expected);
+		expect(Buffer.from(unpackBlob(oneShot)).equals(Buffer.from(expected))).toBe(true);
+		expect(oneShot.length).toBeLessThanOrEqual(packBlob(expected).length);
 	});
 });
 

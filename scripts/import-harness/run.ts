@@ -51,6 +51,7 @@ import { plugin } from "bun";
 import { RETIRED_COLO_ENGINE_NAMES, RETIRED_HOLDING_BYTES } from "../../src/engine/retired-engine-sweep";
 import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
+import { measureEnginePool } from "./engine-pool";
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
 import { FakeKV, MeteredStorage } from "./storage";
 
@@ -469,7 +470,11 @@ async function main(): Promise<number> {
 	const metersRow = (
 		storage.db.query("SELECT value FROM meta WHERE key = ?").all("run_meters") as { value?: string }[]
 	)[0];
-	const meters = JSON.parse(metersRow?.value ?? "{}") as { rows_read?: number; rows_written?: number };
+	const meters = JSON.parse(metersRow?.value ?? "{}") as {
+		rows_read?: number;
+		rows_written?: number;
+		peak_db_bytes?: number;
+	};
 	const coordinatorRead = Number(meters.rows_read ?? 0);
 	const coordinatorWritten = Number(meters.rows_written ?? 0);
 	const elapsed = ((Date.now() - started) / 1000).toFixed(1);
@@ -496,6 +501,12 @@ async function main(): Promise<number> {
 	console.log(
 		`${"coordinator's meter".padEnd(22)} ${"".padStart(7)} ${fmt(coordinatorRead).padStart(14)} ` +
 			`${fmt(coordinatorWritten).padStart(14)}   <- what MAX_RUN_ROWS_READ is checked against`,
+	);
+	// The staging high-water r3's pool gate budgets with (RunMeters.peak_db_bytes, sampled at every
+	// flush), and the file's own high-water: this SQLite keeps freed pages, so page_count never falls.
+	console.log(
+		`staging high-water: ${fmt(Number(meters.peak_db_bytes ?? 0))} bytes by the coordinator's meter, ` +
+			`${fmt(storage.sql.databaseSize)} bytes of file at the end`,
 	);
 
 	if (opts.statements) {
@@ -608,6 +619,16 @@ async function main(): Promise<number> {
 		console.error(`\nFAILED: retired-engine sweep — ${sweepProblems.join("; ")}`);
 		return 1;
 	}
+
+	// ── x1: what one engine object's SQLite holds through a publish of this build ─────────────────
+	const pool = await measureEnginePool(kv);
+	console.log("");
+	for (const line of pool.lines) console.log(line);
+	if (!pool.ok) {
+		console.error("\nFAILED: an engine object held two builds' caches at once (above)");
+		return 1;
+	}
+
 	console.log(`\nOK — published ${fmt(kv.size())} KV keys, ${fmt(kv.bytes())} bytes`);
 	return 0;
 }

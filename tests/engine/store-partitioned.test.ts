@@ -182,74 +182,115 @@ function fakeEnv(entries: Map<string, Uint8Array | string>, putFailures = 0) {
 	return { env, reads, puts, chunkReads: () => reads.filter((k) => k.startsWith("store:card-")) };
 }
 
+/**
+ * What a fake storage has held at its worst moment (x1): the most distinct BUILDS with cached rows
+ * at once, and the most cached bytes. Updated on every row insert and delete.
+ */
+interface CacheMeter {
+	peakBuilds: number;
+	peakBytes: number;
+	resetPeak(): void;
+}
+const meters = new WeakMap<ArchiveCacheStorage, CacheMeter>();
+const meterOf = (storage: ArchiveCacheStorage) => meters.get(storage) as CacheMeter;
+
 /** A minimal SQLite fake speaking exactly the statements store-cache issues. */
 function fakeStorage(): ArchiveCacheStorage {
 	const rows = new Map<string, Map<number, Uint8Array>>();
 	const meta = new Map<string, { total: number; count: number }>();
 	let live: string | null = null;
 	let announced: string | null = null;
-	return {
+	const held = () => {
+		const builds = new Set([...rows.keys()].map((k) => cache.cachedBuiltAt(k)));
+		let bytes = 0;
+		for (const list of rows.values()) for (const r of list.values()) bytes += r.length;
+		return { builds: builds.size, bytes };
+	};
+	const meter: CacheMeter = {
+		peakBuilds: 0,
+		peakBytes: 0,
+		resetPeak() {
+			const now = held();
+			meter.peakBuilds = now.builds;
+			meter.peakBytes = now.bytes;
+		},
+	};
+	const sample = () => {
+		const now = held();
+		meter.peakBuilds = Math.max(meter.peakBuilds, now.builds);
+		meter.peakBytes = Math.max(meter.peakBytes, now.bytes);
+	};
+	const storage = {
 		sql: {
 			exec(query: string, ...b: unknown[]) {
-				const q = query.trim();
-				const out = (rowsOut: Record<string, unknown>[]) => ({
-					toArray: () => rowsOut as never[],
-				});
-				if (q.startsWith("CREATE TABLE")) return out([]);
-				if (q.startsWith("SELECT total_bytes")) {
-					const m = meta.get(b[0] as string);
-					return out(m ? [{ total_bytes: m.total, row_count: m.count }] : []);
-				}
-				if (q.startsWith("SELECT bytes")) {
-					const one = rows.get(b[0] as string)?.get(b[1] as number);
-					return out(one ? [{ bytes: one }] : []);
-				}
-				if (q.startsWith("SELECT archive_key")) {
-					return out([...meta.keys()].map((archive_key) => ({ archive_key })));
-				}
-				if (q.startsWith("SELECT DISTINCT archive_key FROM archive_cache")) {
-					return out([...rows.keys()].map((archive_key) => ({ archive_key })));
-				}
-				if (q.startsWith("INSERT INTO archive_cache_meta")) {
-					meta.set(b[0] as string, { total: b[1] as number, count: b[2] as number });
-					return out([]);
-				}
-				if (q.startsWith("INSERT INTO archive_cache")) {
-					let list = rows.get(b[0] as string);
-					if (!list) {
-						list = new Map();
-						rows.set(b[0] as string, list);
-					}
-					if (list.has(b[1] as number)) throw new Error("UNIQUE constraint failed");
-					list.set(b[1] as number, new Uint8Array(b[2] as ArrayBuffer));
-					return out([]);
-				}
-				if (q.startsWith("DELETE FROM archive_cache_meta")) {
-					meta.delete(b[0] as string);
-					return out([]);
-				}
-				if (q.startsWith("DELETE FROM archive_cache")) {
-					rows.delete(b[0] as string);
-					return out([]);
-				}
-				if (q.startsWith("INSERT OR REPLACE INTO live_manifest")) {
-					live = b[0] as string;
-					return out([]);
-				}
-				if (q.startsWith("SELECT json FROM live_manifest")) {
-					return out(live === null ? [] : [{ json: live }]);
-				}
-				if (q.startsWith("INSERT OR REPLACE INTO announced")) {
-					announced = b[0] as string;
-					return out([]);
-				}
-				if (q.startsWith("SELECT store_key FROM announced")) {
-					return out(announced === null ? [] : [{ store_key: announced }]);
-				}
-				throw new Error(`fake storage cannot answer: ${q.slice(0, 60)}`);
+				const result = execInner(query, ...b);
+				if (/^\s*(INSERT|DELETE)/.test(query)) sample();
+				return result;
 			},
 		},
 	} as unknown as ArchiveCacheStorage;
+	meters.set(storage, meter);
+	return storage;
+	function execInner(query: string, ...b: unknown[]) {
+		{
+			const q = query.trim();
+			const out = (rowsOut: Record<string, unknown>[]) => ({
+				toArray: () => rowsOut as never[],
+			});
+			if (q.startsWith("CREATE TABLE")) return out([]);
+			if (q.startsWith("SELECT total_bytes")) {
+				const m = meta.get(b[0] as string);
+				return out(m ? [{ total_bytes: m.total, row_count: m.count }] : []);
+			}
+			if (q.startsWith("SELECT bytes")) {
+				const one = rows.get(b[0] as string)?.get(b[1] as number);
+				return out(one ? [{ bytes: one }] : []);
+			}
+			if (q.startsWith("SELECT archive_key")) {
+				return out([...meta.keys()].map((archive_key) => ({ archive_key })));
+			}
+			if (q.startsWith("SELECT DISTINCT archive_key FROM archive_cache")) {
+				return out([...rows.keys()].map((archive_key) => ({ archive_key })));
+			}
+			if (q.startsWith("INSERT INTO archive_cache_meta")) {
+				meta.set(b[0] as string, { total: b[1] as number, count: b[2] as number });
+				return out([]);
+			}
+			if (q.startsWith("INSERT INTO archive_cache")) {
+				let list = rows.get(b[0] as string);
+				if (!list) {
+					list = new Map();
+					rows.set(b[0] as string, list);
+				}
+				if (list.has(b[1] as number)) throw new Error("UNIQUE constraint failed");
+				list.set(b[1] as number, new Uint8Array(b[2] as ArrayBuffer));
+				return out([]);
+			}
+			if (q.startsWith("DELETE FROM archive_cache_meta")) {
+				meta.delete(b[0] as string);
+				return out([]);
+			}
+			if (q.startsWith("DELETE FROM archive_cache")) {
+				rows.delete(b[0] as string);
+				return out([]);
+			}
+			if (q.startsWith("INSERT OR REPLACE INTO live_manifest")) {
+				live = b[0] as string;
+				return out([]);
+			}
+			if (q.startsWith("SELECT json FROM live_manifest")) {
+				return out(live === null ? [] : [{ json: live }]);
+			}
+			if (q.startsWith("INSERT OR REPLACE INTO announced")) {
+				announced = b[0] as string;
+				return out([]);
+			}
+			if (q.startsWith("SELECT store_key FROM announced")) {
+				return out(announced === null ? [] : [{ store_key: announced }]);
+			}
+			throw new Error(`fake storage cannot answer: ${q.slice(0, 60)}`);
+		}
+	}
 }
 
 // ── A published two-partition store ───────────────────────────────────────────
@@ -816,6 +857,186 @@ describe("the announcement is written once per store, not once per wake", () => 
 		expect(puts).toEqual([]);
 		await (await wake()).getEngine(env, ctxFor("engine-announce3-p0", 0, storage));
 		expect(puts).toEqual(["engine:live:engine-announce3-p0"]);
+	});
+});
+
+// ── Drop, then fill (backlog x1) ──────────────────────────────────────────────────
+//
+// An object's cache must never hold two builds at once. The pool gate multiplies ONE build per
+// replica object; before x1 the publish prefetch and the cold-load tee both wrote the new build
+// beside the old one and pruned after, and SQLite keeps that mark. These pin the order.
+describe("drop, then fill (x1)", () => {
+	async function publishAt(builtAt: string, codec: "gzip" | "lz4", size = 64) {
+		const raw = [0, 1].map((k) => {
+			const bytes = new Uint8Array(size);
+			for (let i = 0; i < size; i++) bytes[i] = (i * 31 + k * 7 + Number(builtAt)) & 0xff;
+			// A size that has to mean bytes on disk is incompressible, so gzip cannot hide a second build.
+			if (size > 1024) {
+				for (let at = 0; at < size; at += 65_536)
+					crypto.getRandomValues(bytes.subarray(at, Math.min(size, at + 65_536)));
+			}
+			bytes[0] = k === 0 ? 7 : 9;
+			return bytes;
+		});
+		const gz = await Promise.all(raw.map((r) => gzipBytes(r)));
+		const partitions = raw.map((r, k) => ({
+			store_key: `card-store-v1-${builtAt}-p${k}.store`,
+			store_bytes: r.length,
+			store_gzip_bytes: (gz[k] as Uint8Array).length,
+			chunk_count: 1,
+			card_count: 10,
+			printing_count: 20,
+		}));
+		const manifest: StoreManifest = {
+			store_key: `card-store-v1-${builtAt}.store`,
+			built_at: builtAt,
+			card_count: 20,
+			printing_count: 40,
+			upstream_commit: "abc",
+			format_version: 1,
+			store_bytes: raw.reduce((s, r) => s + r.length, 0),
+			store_gzip_bytes: gz.reduce((s, g) => s + g.length, 0),
+			chunk_count: 2,
+			partition_count: 2,
+			partition_hash: PARTITION_HASH_ALGO,
+			partitions,
+			cache: { v: 1, codec, projected_lz4_bytes: 1 },
+		};
+		const entries = new Map<string, Uint8Array | string>();
+		entries.set("store:manifest", JSON.stringify(manifest));
+		partitions.forEach((p, k) => {
+			entries.set(chunkKey(p.store_key, 0), gz[k] as Uint8Array);
+		});
+		return { entries, manifest, raw };
+	}
+	function settlingCtx(label: string, storage: ArchiveCacheStorage) {
+		const pending: Promise<unknown>[] = [];
+		return {
+			ctx: { ...ctxFor(label, 1, storage), waitUntil: (p: Promise<unknown>) => pending.push(p) },
+			settle: async () => {
+				while (pending.length) await pending.shift();
+			},
+		};
+	}
+	const merged = (...pubs: { entries: Map<string, Uint8Array | string> }[]) =>
+		new Map(pubs.flatMap((p) => [...p.entries]));
+
+	for (const codec of ["gzip", "lz4"] as const) {
+		test(`a warm publish (${codec}) never holds two builds: the prefetch drops the old one first`, async () => {
+			const old = await publishAt("400", codec);
+			const fresh = await publishAt("401", codec);
+			const storage = fakeStorage();
+			const w = settlingCtx(`engine-x1warm${codec}-p1`, storage);
+			await store.getEngine(fakeEnv(old.entries).env, w.ctx);
+			await w.settle();
+			meterOf(storage).resetPeak();
+			expect(meterOf(storage).peakBuilds).toBe(1);
+
+			const env = fakeEnv(merged(old, fresh)).env;
+			expect(await store.prefetchStore(env, w.ctx, fresh.manifest)).toBe(true);
+			expect(await store.swapToStore(env, w.ctx, fresh.manifest)).toBe(true);
+			await w.settle();
+			expect(meterOf(storage).peakBuilds).toBe(1);
+			expect(instanceFor(`engine-x1warm${codec}-p1`).loaded).toEqual(fresh.raw[1] as Uint8Array);
+			// And it ends holding the new build in the codec's family.
+			const key = fresh.manifest.partitions?.[1]?.store_key as string;
+			expect(
+				codec === "lz4"
+					? cache.isLz4Cached(storage, key)
+					: cache.isCompressedCached(storage, key, 1, fresh.manifest.partitions?.[1]?.store_gzip_bytes as number),
+			).toBe(true);
+		});
+
+		test(`a cold load (${codec}) of a build the object was never told of drops the old one before its tee`, async () => {
+			const old = await publishAt("410", codec);
+			const fresh = await publishAt("411", codec);
+			const storage = fakeStorage();
+			const w = settlingCtx(`engine-x1cold${codec}-p1`, storage);
+			await store.getEngine(fakeEnv(old.entries).env, w.ctx);
+			await w.settle();
+			meterOf(storage).resetPeak();
+
+			// Evicted, never prepared (a straggler): a fresh label on the same storage, KV names 411.
+			const next = settlingCtx(`engine-x1cold${codec}b-p1`, storage);
+			const kv = merged(old, fresh);
+			kv.set("store:manifest", JSON.stringify(fresh.manifest));
+			await store.getEngine(fakeEnv(kv).env, next.ctx);
+			await next.settle();
+			expect(meterOf(storage).peakBuilds).toBe(1);
+			expect(instanceFor(`engine-x1cold${codec}b-p1`).loaded).toEqual(fresh.raw[1] as Uint8Array);
+		});
+	}
+
+	test("a retried prepare costs nothing: no chunk is fetched and nothing is dropped", async () => {
+		const old = await publishAt("420", "gzip");
+		const fresh = await publishAt("421", "gzip");
+		const storage = fakeStorage();
+		const w = settlingCtx("engine-x1retry-p1", storage);
+		await store.getEngine(fakeEnv(old.entries).env, w.ctx);
+		const first = fakeEnv(merged(old, fresh));
+		expect(await store.prefetchStore(first.env, w.ctx, fresh.manifest)).toBe(true);
+		expect(first.chunkReads().length).toBe(1);
+		const again = fakeEnv(merged(old, fresh));
+		expect(await store.prefetchStore(again.env, w.ctx, fresh.manifest)).toBe(true);
+		expect(again.chunkReads().length).toBe(0);
+	});
+
+	test("concurrent prefetches of one archive are single-flighted: one fetch, one answer", async () => {
+		const old = await publishAt("430", "gzip");
+		const fresh = await publishAt("431", "gzip");
+		const storage = fakeStorage();
+		const w = settlingCtx("engine-x1flight-p1", storage);
+		await store.getEngine(fakeEnv(old.entries).env, w.ctx);
+		const { env, chunkReads } = fakeEnv(merged(old, fresh));
+		const answers = await Promise.all([
+			store.prefetchStore(env, w.ctx, fresh.manifest),
+			store.prefetchStore(env, w.ctx, fresh.manifest),
+			store.prefetchStore(env, w.ctx, fresh.manifest),
+		]);
+		expect(answers).toEqual([true, true, true]);
+		expect(chunkReads().length).toBe(1);
+		expect(meterOf(storage).peakBuilds).toBe(1);
+	});
+
+	test("a NEWER build a prepare is holding survives a cold load of an older one", async () => {
+		// Prepared for 441, then evicted; the wake read no record and KV's colo-cached manifest still
+		// said 440. The drop before 440's tee must leave 441 alone — the next swap reads it.
+		const old = await publishAt("440", "gzip");
+		const fresh = await publishAt("441", "gzip");
+		const storage = fakeStorage();
+		const held = settlingCtx("engine-x1newer-p1", storage);
+		expect(await store.prefetchStore(fakeEnv(fresh.entries).env, held.ctx, fresh.manifest)).toBe(true);
+		const woke = settlingCtx("engine-x1newerb-p1", storage);
+		await store.getEngine(fakeEnv(old.entries).env, woke.ctx);
+		await woke.settle();
+		const key = fresh.manifest.partitions?.[1]?.store_key as string;
+		expect(cache.isCompressedCached(storage, key, 1, fresh.manifest.partitions?.[1]?.store_gzip_bytes as number)).toBe(
+			true,
+		);
+	});
+
+	test("a real SQLite file stays at ONE build across nightly publishes (pages the drop frees are reused)", async () => {
+		// bun:sqlite without auto_vacuum keeps every freed page, so page_count x page_size is the file's
+		// high-water mark — the quantity that stays billed (see the x1 commit's workerd measurement).
+		const { MeteredStorage } = await import("../../scripts/import-harness/storage");
+		const sqlite = new MeteredStorage();
+		const storage = sqlite as unknown as ArchiveCacheStorage;
+		const size = 400_000;
+		let pub = await publishAt("450", "gzip", size);
+		const w = settlingCtx("engine-x1file-p1", storage);
+		await store.getEngine(fakeEnv(pub.entries).env, w.ctx);
+		const oneBuild = pub.manifest.partitions?.[1]?.store_gzip_bytes as number;
+		for (const next of ["451", "452", "453"]) {
+			const fresh = await publishAt(next, "gzip", size);
+			const env = fakeEnv(merged(pub, fresh)).env;
+			await store.prefetchStore(env, w.ctx, fresh.manifest);
+			await store.swapToStore(env, w.ctx, fresh.manifest);
+			await w.settle();
+			pub = fresh;
+		}
+		// Two builds would be ~800KB; one build plus the schema's pages is a little over 400KB.
+		expect(sqlite.sql.databaseSize).toBeLessThan(oneBuild * 1.25 + 64 * 1024);
+		expect(sqlite.sql.databaseSize).toBeGreaterThan(oneBuild);
 	});
 });
 

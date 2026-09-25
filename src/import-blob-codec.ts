@@ -54,6 +54,26 @@ const HEADER_BYTES = 8;
  */
 export const BLOB_CODEC_LEVEL = 1;
 
+/**
+ * Deflate level for the staged DRAFTS alone — draft_batches (transform) and draft_parts (bucket) —
+ * the rows that ARE the coordinator's storage high-water: every partition's drafts at once, just
+ * before the partition loop starts consuming them (backlog x1, report 13: ~80% of the peak). That
+ * peak is what r3's pool gate budgets as the coordinator's share of the 5GB pool, so bytes here are
+ * pool bytes; everywhere else a staged blob is transient and level 1 stays.
+ *
+ * MEASURED 2026-09-25 on real card JSON (store-build/rows.jsonl, 24 rows of 6MB raw spread over the
+ * 2.04GB file, fflate under bun): level 1 3.91x, level 6 4.91x — 20.4% fewer stored bytes through
+ * packBlob, 21.4% through PackStream (mem 4) — for 11.4 → 15.2 ms per raw MB of compress CPU
+ * (PackStream 12.3 → 16.4). At the real corpus's ~1.78GB of raw drafts that is ~0.08GB off the
+ * staging peak, and about +0.1s on a transform slice and +0.4s on a 96MB bucket slice against the
+ * 30s allowance. Level 9 is no better than 6 (report 16). Decoding is unchanged: a deflate stream
+ * reads the same at any level, so rows staged at level 1 by a run a deploy lands in stay readable.
+ */
+export const DRAFT_CODEC_LEVEL = 6;
+
+/** A deflate level fflate accepts. */
+type DeflateLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+
 /** True when `bytes` carries the codec header. */
 export function isPackedBlob(bytes: Uint8Array): boolean {
 	return (
@@ -65,14 +85,19 @@ export function isPackedBlob(bytes: Uint8Array): boolean {
 	);
 }
 
-/** Compress one staged blob for storage. */
-export function packBlob(raw: Uint8Array): Uint8Array {
-	const deflated = fflate().deflateSync(raw, { level: BLOB_CODEC_LEVEL });
+/** Compress one staged blob for storage; staged drafts pass DRAFT_CODEC_LEVEL. */
+export function packBlob(raw: Uint8Array, level: DeflateLevel = BLOB_CODEC_LEVEL): Uint8Array {
+	const deflated = fflate().deflateSync(raw, { level });
 	const out = new Uint8Array(HEADER_BYTES + deflated.length);
 	out.set(BLOB_CODEC_MAGIC, 0);
 	new DataView(out.buffer, out.byteOffset, out.byteLength).setUint32(4, raw.length, true);
 	out.set(deflated, HEADER_BYTES);
 	return out;
+}
+
+/** packBlob at DRAFT_CODEC_LEVEL: a staged draft row. */
+export function packDraftBlob(raw: Uint8Array): Uint8Array {
+	return packBlob(raw, DRAFT_CODEC_LEVEL);
 }
 
 /**
@@ -103,8 +128,8 @@ export class PackStream {
 	/** Entries pushed so far. */
 	count = 0;
 
-	constructor() {
-		this.deflate = new (fflate().Deflate)({ level: BLOB_CODEC_LEVEL, mem: PACK_STREAM_MEM }, (chunk) => {
+	constructor(level: DeflateLevel = BLOB_CODEC_LEVEL) {
+		this.deflate = new (fflate().Deflate)({ level, mem: PACK_STREAM_MEM }, (chunk) => {
 			this.parts.push(chunk);
 			this.packed += chunk.length;
 		});

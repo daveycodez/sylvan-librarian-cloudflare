@@ -31,6 +31,12 @@ plugin({
 			},
 			loader: "object",
 		}));
+		// The query engine's glue, as wrangler aliases it (wrangler.jsonc `alias`): the engine-object
+		// half of the harness (engine-pool.ts) drives the real loader and the real engine wasm.
+		build.module("sylvan-engine-wasm", async () => ({
+			exports: { ...(await import("../../src/engine/wasm-shim")) },
+			loader: "object",
+		}));
 		build.onLoad({ filter: /\.wasm$/ }, async (args) => ({
 			exports: { default: new WasmModule(await Bun.file(args.path).arrayBuffer()) },
 			loader: "object",

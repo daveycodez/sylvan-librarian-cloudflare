@@ -11,16 +11,17 @@ import {
 	PartitionedEngine,
 	routingFilterSoon,
 } from "./engine/partitioned-engine";
-import { effectiveRegion, generationOf } from "./engine/placement-policy";
+import { effectiveRegion, generationOf, routableRegions } from "./engine/placement-policy";
 import { PlacementProbe } from "./engine/placement-probe";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
-import { markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
+import { effectiveShardCap, markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
 import { readManifest } from "./engine/store-kv";
 import { liveTagAliases } from "./engine/tag-aliases";
 import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
+import { manifestPoolShardCap } from "./import-budget";
 import { ImportCoordinator } from "./import-coordinator";
 import { runImportWatchdog, startNightlyImport, WATCHDOG_CRON } from "./import-watchdog";
 import { checkSearchParamLengths, QueryBudgetExceeded } from "./parser";
@@ -54,10 +55,11 @@ export { ImportCoordinator, PlacementProbe, RateLimiter, SearchEngine };
 // A region whose lone shard reports sustained queue depth fans out to
 // engine-<region>-1, -2, ... (shard 0 keeps the plain name, so single-shard
 // steady state is byte-identical to unsharded routing); see shard-controller.
-// The cap needs no plan detection any more: a shard holds the store only in
-// memory (streamed from KV), so an extra shard costs no storage at all — the
-// old design pinned a 70MB SQLite copy per shard against the DO pool, which is
-// why the cap used to be plan-aware. SHARDS_MAX (runtime var) overrides it.
+// The cap is POOL-aware again (x1(b)): every shard object caches its partition's
+// compressed archive in its own SQLite, so each replica a region opens is one more
+// build against the 5GB Durable Objects pool. SHARDS_MAX (runtime var) sets the
+// cap, and the live manifest's pool arithmetic (import-budget.ts poolShardCap)
+// bounds it — 3 per region at today's corpus under gzip caches, 2 under LZ4.
 // Engine stubs are resolved per request, and deliberately not memoised. A stub
 // is a request-scoped I/O object — reusing one across requests fails with
 // "Cannot perform I/O on behalf of a different request" — and caching just the
@@ -90,7 +92,12 @@ async function resolveEngine(
 	// SHARDS_MAX="0" is meaningful (unbounded), so an explicit 0 must survive —
 	// hence the NaN check rather than `|| undefined`, which would swallow it.
 	const configured = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10);
-	const maxShards = Number.isNaN(configured) ? undefined : configured;
+	// x1(b): and never more replicas than the Durable Objects pool holds — every shard caches a
+	// build. The same cap the nightly's notify releases shards above (import-coordinator stepNotify).
+	const maxShards = effectiveShardCap(
+		Number.isNaN(configured) ? undefined : configured,
+		manifestPoolShardCap(manifest, routableRegions(manifest.placement).length),
+	);
 	const shard = pickShard(region, maxShards);
 	source.tag = `do-${engineName(region, shard, undefined, generation).slice("engine-".length)}`;
 

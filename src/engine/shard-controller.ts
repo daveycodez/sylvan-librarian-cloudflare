@@ -725,6 +725,22 @@ export function adoptShardWidth(region: string, width: number): void {
 }
 
 /**
+ * The cap `pickShard` is handed (x1(b)): SHARDS_MAX as configured — absent is DEFAULT_MAX_SHARDS,
+ * 0 is unbounded — and never above what the Durable Objects pool can hold (import-budget.ts
+ * poolShardCap, from the live manifest). Every shard of every region holds a cached build, so the
+ * pool, not the load signal, is what bounds the fan-out on the free plan: 3 per region at today's
+ * corpus under gzip caches, 2 under LZ4, 1 at twice the corpus. SHARDS_MAX=0 no longer means
+ * "unbounded" past the pool. A pool cap the manifest cannot decide (`null`) leaves SHARDS_MAX alone.
+ */
+export function effectiveShardCap(configured: number | undefined, poolCap: number | null): number | undefined {
+	if (poolCap === null || !Number.isFinite(poolCap) || poolCap < 1) return configured;
+	const cap = Math.floor(poolCap);
+	if (configured === undefined) return Math.min(DEFAULT_MAX_SHARDS, cap);
+	if (configured === 0) return cap;
+	return Math.min(configured, cap);
+}
+
+/**
  * Pick the shard index for one request: 0 is the region's plain-named DO, so a
  * single-shard steady state is byte-identical to unsharded routing. Also the
  * lazy home of contraction — isolates have no timers, so the check rides the

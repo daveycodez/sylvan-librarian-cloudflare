@@ -97,6 +97,7 @@ import {
 	nextPlacement,
 	notifyRetireReason,
 	type PlacementBlock,
+	routableRegions,
 	unreachableEngine,
 } from "./engine/placement-policy";
 import { probeHints } from "./engine/placement-probe";
@@ -166,7 +167,7 @@ import {
 } from "./engine/store-kv";
 import { tagAliasesKey, writeTagAliases } from "./engine/tag-aliases";
 import type { Env, StoreManifest, StoreManifestCache, StoreManifestPartition } from "./engine/types";
-import { PackStream, packBlob, unpackBlob } from "./import-blob-codec";
+import { DRAFT_CODEC_LEVEL, PackStream, packBlob, packDraftBlob, unpackBlob } from "./import-blob-codec";
 import {
 	AGG_SLICE_RAW_BYTES,
 	adjustPace,
@@ -185,20 +186,25 @@ import {
 	LZ4_OFF_FRACTION,
 	MAX_DAY_ROWS_READ,
 	MAX_DAY_ROWS_WRITTEN,
+	MAX_POOL_WAITS,
 	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
 	MEASURED_BATCH_RAW_BYTES,
+	manifestPoolShardCap,
 	PACE_START_BPS,
 	POOL_GATE_BUDGET_BYTES,
+	POOL_WAIT_MS,
 	PURGE_SLICE_BYTES,
 	PURGE_SLICE_MAX_ROWS,
 	paceDelayMs,
 	parseMeters,
+	poolAdmitsRun,
 	projectCachePool,
 	projectedGbSeconds,
 	REORDER_SLICE_ROWS,
 	STAGING_PEAK_BYTES_2026_09_25,
+	stagingBytesOf,
 } from "./import-budget";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
 import { DUMP_KINDS, type DumpKind, firstFetchPhase, phaseAfterFetch, TRANSFORM_KIND } from "./import-phases";
@@ -585,6 +591,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private paceBps = 0;
 	private nextDueMs = 0;
 	private lateThisAlarm = false;
+	/** A wait the running step asked for before the next alarm (x1: the listing's pool wait); 0 = none. */
+	private stepDelayMs = 0;
 	/** When the running alarm started, or last banked its time (flushMeters advances it). */
 	private alarmStartedAt = 0;
 	/** Whether the running alarm has been counted into the ledger yet (flushMeters runs more than once per alarm). */
@@ -1073,6 +1081,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.churnThisAlarm = 0;
 		this.nextDueMs = 0;
 		this.lateThisAlarm = false;
+		this.stepDelayMs = 0;
 		const limit = ALARM_WATCHDOG_MS_BY_PHASE[phase] ?? ALARM_WATCHDOG_MS;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const watchdog = new Promise<never>((_, reject) => {
@@ -1273,7 +1282,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (next !== "idle") {
 				if (!this.lateThisAlarm) this.paceBps = adjustPace(this.paceBps, 0, this.churnThisAlarm);
 				const now = Date.now();
-				const delay = paceDelayMs(this.churnThisAlarm, now - this.alarmStartedAt, this.paceBps);
+				const delay = Math.max(
+					paceDelayMs(this.churnThisAlarm, now - this.alarmStartedAt, this.paceBps),
+					this.stepDelayMs,
+				);
 				this.nextDueMs = now + delay;
 				if (delay >= 5_000) {
 					console.log(
@@ -1618,6 +1630,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	private async stepListing(): Promise<void> {
+		if (await this.waitForRetiringStaging()) return;
 		const kinds = DUMP_KINDS;
 		const res = await fetch(this.bulkDataUrl(), {
 			headers: { "User-Agent": userAgent(), Accept: "application/json" },
@@ -1656,6 +1669,50 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("phase", firstFetchPhase());
 		});
 		console.log(`Import run listed ${kinds.length} dumps to fetch`);
+	}
+
+	/**
+	 * x1(c): hold the run at listing — before it stages a byte — while replaced coordinators still
+	 * hold their staging and this run's own peak would not fit beside them and the live caches
+	 * (poolAdmitsRun). x8's watchdog releases a retiring coordinator within a tick or two of its
+	 * purge, so the wait is normally one or two POOL_WAIT_MS; after MAX_POOL_WAITS the run goes
+	 * ahead and says so, because a wedged retiring object frees nothing by our not importing.
+	 *
+	 * Costs one KV read on a normal night (the pointer, which names nothing retiring) and nothing
+	 * else. Each wait is one ordinary alarm; it banks its meters, so the watchdog sees a live run.
+	 */
+	private async waitForRetiringStaging(): Promise<boolean> {
+		const pointer = await readPointer(this.env.STORE_KV).catch(() => null);
+		const retiring = pointer?.retiring?.length ?? 0;
+		if (retiring === 0) return false;
+		const live = await this.liveManifestJson();
+		if (!live?.partitions?.length) return false;
+		const staging = stagingBytesOf(live);
+		const cacheFactor = live.cache?.v === 1 && live.cache.codec === "lz4" ? LZ4_CACHE_RATIO : 1;
+		const fits = poolAdmitsRun({
+			retiring,
+			replicas: routableRegions(live.placement).length,
+			partitionGzipBytes: live.partitions.map((p) => p.store_gzip_bytes ?? 0),
+			cacheFactor,
+			stagingPeakBytes: staging,
+		});
+		if (fits) return false;
+		const waits = Number(this.metaGet("pool_waits") ?? 0);
+		if (waits >= MAX_POOL_WAITS) {
+			console.warn(
+				`Pool: ${retiring} replaced coordinator(s) still hold staging after ${waits} waits; starting anyway — ` +
+					"not importing tonight would not release them",
+			);
+			return false;
+		}
+		this.metaSet("pool_waits", String(waits + 1));
+		this.stepDelayMs = POOL_WAIT_MS;
+		console.warn(
+			`Pool: ${retiring} replaced coordinator(s) still hold staging (${pointer?.retiring?.join(", ")}), and this ` +
+				`run's ~${(staging / 1e9).toFixed(2)}GB peak would not fit beside them and the live caches; waiting ` +
+				`${POOL_WAIT_MS / 60_000} minutes for the watchdog to release them (wait ${waits + 1}/${MAX_POOL_WAITS})`,
+		);
+		return true;
 	}
 
 	// ── phase: fetch (ranged, resumable, compressed-at-rest) ───────────────────
@@ -2154,7 +2211,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const pending = this.takePendingDrafts();
 			const allDrafts = pending.drafts.concat(draftBuf);
 			const allHashes = pending.hashes.concat(hashBuf);
-			const groups = packedDraftGroups(allDrafts, packBlob);
+			const groups = packedDraftGroups(allDrafts, packDraftBlob);
 			const tail = exhausted ? undefined : groups.pop();
 			for (const group of groups) {
 				this.sqlRun(
@@ -2810,7 +2867,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 						) {
 							flush(p);
 						}
-						const group = acc[p] ?? new PackStream();
+						const group = acc[p] ?? new PackStream(DRAFT_CODEC_LEVEL);
 						acc[p] = group;
 						group.push(draft);
 					}
@@ -3757,7 +3814,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * Every input is measured or read, none guessed: the replica groups that will hold a cache
 	 * (every routable region's shard 0, plus every shard announced right now — one KV list), this
 	 * build's partition sizes, this run's own databaseSize high-water mark, and one such mark per
-	 * watchdog failover in the last day for the staging a replaced coordinator may still hold.
+	 * replaced coordinator the watchdog has not yet released (the pointer's `retiring`, x8).
 	 * What it cannot see is an object holding storage WITHOUT an announcement (released objects
 	 * delete theirs together with their storage, so only a hand-deleted key would be one).
 	 *
@@ -3782,26 +3839,29 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const meters = parseMeters(this.metaGet("run_meters"));
 		// Unsampled only for a run that began before this shipped: the 2026-09-25 measured peak, scaled
 		// by the store. Staging is written with a 1% margin for tomorrow's slightly larger corpus.
-		const staging =
-			(meters?.peak_db_bytes || (STAGING_PEAK_BYTES_2026_09_25 * (manifest.store_bytes ?? 0)) / 425_181_152) * 1.01;
+		const staging = (meters?.peak_db_bytes || stagingBytesOf({ store_bytes: manifest.store_bytes })) * 1.01;
+		// Replaced coordinators that still hold staging: the pointer's `retiring` list, which x8's
+		// watchdog empties as each one gives its storage back (deleteAll). It used to be every failover
+		// of the last 24 hours, released or not — on 2026-09-25 that charged the free account 1.5GB for
+		// three objects x8 had released at 05:40, and kept it on gzip at a projected 4.94GB.
 		const pointer = await readPointer(this.env.STORE_KV).catch(() => null);
-		const failovers = (pointer?.failovers ?? []).filter((t) => Date.now() - t < 24 * 3600_000).length;
+		const retiring = pointer?.retiring?.length ?? 0;
 		const projected = projectCachePool({
 			replicas: groups.size,
 			partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
 			cacheFactor: LZ4_CACHE_RATIO,
 			stagingPeakBytes: staging,
-			strandedBytes: failovers * staging,
+			strandedBytes: retiring * staging,
 		});
 		const was = previous?.cache?.v === 1 ? previous.cache.codec : undefined;
 		const codec = decideCacheCodec(was, projected);
 		console.log(
-			`Pool gate: ${groups.size} cache replica(s), staging ${(staging / 1e9).toFixed(2)}GB, ${failovers} ` +
-				`failover(s) today; LZ4 projection ${(projected / 1e9).toFixed(2)}GB of ` +
-				`${(POOL_GATE_BUDGET_BYTES / 1e9).toFixed(1)}GB → cache codec ${codec}` +
+			`Pool gate: ${groups.size} cache replica(s), staging ${(staging / 1e9).toFixed(2)}GB, ${retiring} ` +
+				`replaced coordinator(s) not yet released; LZ4 projection ${(projected / 1e9).toFixed(2)}GB of ` +
+				`${(POOL_GATE_BUDGET_BYTES / 1e9).toFixed(1)}GB (one build per replica: drop, then fill) → cache codec ${codec}` +
 				`${codec !== (was ?? "gzip") ? ` (was ${was ?? "gzip"})` : ""}`,
 		);
-		return { v: 1, codec, projected_lz4_bytes: Math.round(projected) };
+		return { v: 1, codec, projected_lz4_bytes: Math.round(projected), staging_bytes: Math.round(staging) };
 	}
 
 	// ── phase: notify (push the new store to every region) ─────────────────────
@@ -3980,11 +4040,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// abandoned engine-wnam-3 would keep one compressed partition per `-p<k>` object forever,
 		// and their own prune never runs again because they never load again. Width keys are the
 		// REGION's shard-0 group, so a shard's own group is not its width key — the region prefix is.
+		// x1(b): and never wider than the pool can hold (manifestPoolShardCap) — the same cap every
+		// isolate's shard controller expands to, so a shard above it is one no isolate routes to.
+		const poolCap =
+			manifestPoolShardCap(published ?? {}, routableRegions((published as StoreManifest | null)?.placement).length) ??
+			Number.POSITIVE_INFINITY;
 		const stale = acked.filter((a) => {
 			const parsed = parseEngineName(a.name);
 			if (!parsed || parsed.shard === 0) return false;
 			const regionGroup = engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation);
-			return parsed.shard >= ((regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1);
+			const width = (regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1;
+			return parsed.shard >= Math.min(width, poolCap);
 		});
 		// Release the storage AND retire the announcement together. Deleting only the
 		// storage would leave `engine:live:<name>` behind, so the next publish would
