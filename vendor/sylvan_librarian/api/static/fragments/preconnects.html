@@ -1,2 +1,12 @@
 <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" />
 <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" crossorigin />
+<!--
+  LOCAL PATCH (Cloudflare port): card images come from Scryfall's CDN (see
+  buildImageUrl in app.js/card.js), so upstream's CloudFront host above now
+  serves only the font stylesheets (no-cors) and the woff2 files (CORS) and
+  keeps both of its preconnects. An <img> without a crossorigin attribute is a
+  no-cors, credentialed request, which uses a different connection pool from a
+  CORS one. So this preconnect has NO crossorigin; with the attribute, the
+  browser would warm a socket no image could use.
+-->
+<link rel="preconnect" href="https://cards.scryfall.io" />
