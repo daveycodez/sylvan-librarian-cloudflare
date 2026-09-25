@@ -321,6 +321,7 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 				expect(of(gather)).toEqual([]);
 			}
 			expect(calls.filter((c) => c.includes("[cards2"))).toEqual([]);
+			expect(engine.pinnedAnswer).toBe(true);
 		});
 
 		test("an unpinned query still gathers", async () => {
@@ -328,6 +329,7 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 			await engine.scryfallSearchPage(OPTS, "https://x", { pretty: false, pageOffset: 0, noMatchDetails: "" }, {});
 			expect(calls.some((c) => c.startsWith("scryfallSearchPage[cards2]"))).toBe(true);
 			expect(calls.some((c) => c.startsWith("scryfallSearchPage[cards,"))).toBe(false);
+			expect(engine.pinnedAnswer).toBe(false);
 		});
 
 		test("a partition cut at another count refuses, and the gather answers instead", async () => {
@@ -335,6 +337,8 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 			await engine.searchCardsAsObjects(pinnedOpts);
 			expect(calls).toContain(`searchCardsAsObjects[${N}]:${owner}`);
 			expect(of("gatherSearchAsObjects").length).toBe(1);
+			// Asked of the owner, answered by the gather: not a pinned answer.
+			expect(engine.pinnedAnswer).toBe(false);
 			await engine.scryfallSearchPage(
 				pinnedOpts,
 				"https://x",
@@ -1494,6 +1498,7 @@ describe("exact names route through the filter (backlog n6)", () => {
 			await engine.scryfallSearch(pinned, "https://x");
 			await engine.searchCardsAsJson(pinned, "rows");
 			expect(calls).toEqual([`scryfallSearch[${N}]:2`, `searchCardsAsJson[${N}]:2`]);
+			expect(engine.pinnedAnswer).toBe(true);
 		});
 
 		test("an EMPTY pinned answer is not trusted: the gather answers", async () => {
@@ -1501,6 +1506,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 			await engine.searchCardsAsObjects(pinned);
 			expect(calls[0]).toBe(`searchCardsAsObjects[${N}]:2`);
 			expect(calls.filter((c) => c.startsWith("gatherSearchAsObjects")).length).toBe(1);
+			expect(engine.pinnedAnswer).toBe(false);
+			expect(engine.partitionCalls).toBe(2);
 		});
 
 		test("a served route, or no route, gathers", async () => {

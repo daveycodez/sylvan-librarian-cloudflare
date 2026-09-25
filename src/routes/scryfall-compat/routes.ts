@@ -57,6 +57,7 @@ import {
 	type ScryfallError,
 	toScryfallCard,
 } from "./objects";
+import { queryShape } from "./query-shape";
 import { scryfallTermPolicy } from "./query-terms";
 import { asBool, scryfallCollectionJson, scryfallJson, scryfallListJson } from "./respond";
 import { setAndCollectorNumber, TRUE_TREE } from "./trees";
@@ -594,6 +595,10 @@ export async function cardsSearchHandler(
 	//
 	// THE RESOLVED VALUES ARE WHAT THIS ROUTE ECHOES — a trigger term overrides an explicit
 	// `include_extras=false` in the rows AND in `next_page`. See `nextPageUrl`.
+	//
+	// The query as the USER wrote it, before the gate's `NOT is:extra` conjuncts: what the per-miss
+	// log line at the end records (query-shape.ts — no values, only the tree's shape).
+	const userShape = queryShape(filterTree);
 	const gate = await applyExtrasGate(
 		engine,
 		filterTree,
@@ -665,8 +670,9 @@ export async function cardsSearchHandler(
 	//
 	// next_page is computed up front because it does not depend on the counts: the DO drops it when
 	// has_more is false, which is the one fact it needs the counts for.
+	let status = 0;
 	try {
-		return await engine.scryfallSearchPage(
+		const res = await engine.scryfallSearchPage(
 			{
 				filterTreeJson: canonicalStringify(filterTree as FilterValue),
 				unique,
@@ -734,8 +740,25 @@ export async function cardsSearchHandler(
 			},
 			CARDS_CACHE,
 		);
+		status = res.status;
+		return res;
 	} catch (err) {
-		return engineFailure(err, pretty, q);
+		const res = engineFailure(err, pretty, q);
+		status = res.status;
+		return res;
+	} finally {
+		// ONE LINE PER MISS — every request that gets here missed the Workers Cache — and the route's
+		// only per-request record, as `collection batch:` is for POST /cards/collection: what the
+		// searches that are not pinned ask, and what each cost, so the next shape worth pinning is
+		// picked from data. The shape is values-free (query-shape.ts). `pin` is whether
+		// PartitionedEngine ANSWERED from one pinned partition (an oracle id's owner or a `!"Name"`'s
+		// sole partition) rather than the gather; `calls` is its partition RPC count before
+		// RemoteEngine's transient retry — a gather is 1 from here (the coordinator fans out), a
+		// name pin that fell back to it 2. Grep "cards/search:".
+		const partitioned = engine as { partitionCalls?: number; pinnedAnswer?: boolean };
+		console.log(
+			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${asBool(params.include_multilingual) ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status}`,
+		);
 	}
 }
 

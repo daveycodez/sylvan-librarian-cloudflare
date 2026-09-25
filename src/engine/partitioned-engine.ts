@@ -622,6 +622,13 @@ export class PartitionedEngine implements Engine {
 	 */
 	partitionCalls = 0;
 
+	/**
+	 * Whether this request's search was ANSWERED by one pinned partition — an oracle id's owner or a
+	 * `!"Name"`'s sole partition — rather than by the gather. A pin that fell back (stale modulus, a
+	 * stuck owner, an empty name-pinned page) is false. Read by `/cards/search`'s per-miss log line.
+	 */
+	pinnedAnswer = false;
+
 	private at(partition: number): RemoteEngine {
 		this.partitionCalls++;
 		let e = this.engines.get(partition);
@@ -712,7 +719,9 @@ export class PartitionedEngine implements Engine {
 		const p = this.pinnedPartition(opts);
 		if (p !== null) {
 			try {
-				return await pinned(this.at(p), this.n);
+				const answer = await pinned(this.at(p), this.n);
+				this.pinnedAnswer = true;
+				return answer;
 			} catch (err) {
 				// A stale layout, or an owner that is not answering: the gather reaches the same rows.
 				if (!(err instanceof StaleModulusError) && !isStuckEngine(err)) throw err;
@@ -723,7 +732,10 @@ export class PartitionedEngine implements Engine {
 			if (named !== null) {
 				try {
 					const answer = await pinned(this.at(named), this.n);
-					if (!empty(answer)) return answer;
+					if (!empty(answer)) {
+						this.pinnedAnswer = true;
+						return answer;
+					}
 				} catch (err) {
 					if (!(err instanceof StaleModulusError) && !isStuckEngine(err)) throw err;
 					console.warn(`name-pinned search not answered by partition ${named} (${err}); gathering instead`);

@@ -2,7 +2,7 @@
 // make it a drop-in replacement rather than an approximation — absent keys stay absent, and a
 // miss is a Scryfall-shaped 404 rather than this port's routes listing.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { encodeRulingsBucket, type RulingRow, rulingsBucketKey, rulingsBucketOf } from "../../src/engine/rulings-kv";
 import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
 import { setParserForTests } from "../../src/routes/parser-bridge";
@@ -25,7 +25,46 @@ function postCtx(body: unknown, engine = new FakeEngine()) {
 	});
 }
 
+/** Every console.log line `run` emits that starts with `prefix`. */
+async function loggedLines(prefix: string, run: () => Promise<unknown>): Promise<string[]> {
+	const logged: string[] = [];
+	const spy = spyOn(console, "log").mockImplementation((line: unknown) => {
+		logged.push(String(line));
+	});
+	try {
+		await run();
+	} finally {
+		spy.mockRestore();
+	}
+	return logged.filter((l) => l.startsWith(prefix));
+}
+
 describe("GET /cards/search", () => {
+	test("logs one values-free shape line per request that reaches the Worker", async () => {
+		const lines = await loggedLines("cards/search: ", () =>
+			testDispatch(ctx, "/cards/search?q=elf&unique=art&order=released&page=2"),
+		);
+		expect(lines.length).toBe(1);
+		expect(lines[0]).toMatch(
+			/^cards\/search: shape=card_name:coll unique=artwork order=released dir=\w+ page=2 extras=[01] variations=[01] multilingual=0 pin=0 calls=-1 status=\d{3}$/,
+		);
+		expect(lines[0]).not.toContain("elf");
+	});
+
+	test("the line carries the engine's pin and partition-call count, and a failed search's status", async () => {
+		const engine = Object.assign(new FakeEngine(), { partitionCalls: 1, pinnedAnswer: true });
+		const pinned = await loggedLines("cards/search: ", () => testDispatch(makeCtx({ engine }), "/cards/search?q=bolt"));
+		expect(pinned[0]).toMatch(/ pin=1 calls=1 status=200$/);
+
+		const failing = new FakeEngine();
+		failing.searchError = new Error("boom");
+		const failed = await loggedLines("cards/search: ", () =>
+			testDispatch(makeCtx({ engine: failing }), "/cards/search?q=bolt"),
+		);
+		expect(failed.length).toBe(1);
+		expect(failed[0]).toMatch(/ pin=0 calls=-1 status=5\d\d$/);
+	});
+
 	test("answers a Scryfall List object with the cards spliced in", async () => {
 		const res = await testDispatch(ctx, "/cards/search?q=elf");
 		expect(res.status).toBe(200);
