@@ -13,7 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { convertManaSymbols, formatCardText, formatOracleText } from "../../src/routes/noscript";
+import { convertManaSymbols, escapeHtml, formatCardText, formatOracleText } from "../../src/routes/noscript";
 
 type EscapingCase = {
 	id: string;
@@ -57,4 +57,35 @@ describe("the two wrappers stay pinned to formatCardText", () => {
 			expect(formatOracleText(c.input, true)).toBe(c.modal_newlines);
 		});
 	}
+});
+
+// escapeHtml returns its input untouched when nothing needs escaping. The fast path must agree
+// with the plain four-pass form on EVERY code unit, not only the four it looks for — and must stay
+// stateless across calls (a global regex's lastIndex would make the second call skip a match).
+describe("escapeHtml fast path", () => {
+	const reference = (t: string) =>
+		t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+
+	test("agrees with the four-pass form on every BMP code unit, alone and in context", () => {
+		for (let c = 0; c < 0x10000; c++) {
+			const s = String.fromCharCode(c);
+			for (const t of [s, `a${s}b`, `${s}&${s}`, `${s}${s}"`]) {
+				if (escapeHtml(t) !== reference(t)) throw new Error(`mismatch at U+${c.toString(16)}: ${JSON.stringify(t)}`);
+			}
+		}
+	});
+
+	test("escapes all four, leaves the apostrophe, and repeats identically", () => {
+		expect(escapeHtml(`Look at a card & say "done". <b>it's</b>`)).toBe(
+			"Look at a card &amp; say &quot;done&quot;. &lt;b&gt;it's&lt;/b&gt;",
+		);
+		expect(escapeHtml("&")).toBe("&amp;");
+		expect(escapeHtml("&")).toBe("&amp;");
+		expect(escapeHtml("")).toBe("");
+	});
+
+	test("returns clean input unchanged", () => {
+		const url = "https://cards.scryfall.io/normal/front/0/a/0a1b.jpg";
+		expect(escapeHtml(url)).toBe(url);
+	});
 });
