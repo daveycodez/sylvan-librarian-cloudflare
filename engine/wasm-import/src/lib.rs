@@ -30,14 +30,20 @@
 //!   4 spill blob                     one encoded CardRow (store in add order)
 //!   5 store chunk                    archive bytes, in order
 //!   6 finalized row json             ENGINE_COLUMNS row (D1 cards table feed)
-//!   7 tag-data blob                  serialized TagData snapshot (persist +
-//!                                    restore across DO evictions)
+//!   7 tag-data chunk                 one SNAPSHOT_CHUNK-sized piece of the
+//!                                    serialized TagData snapshot (persist +
+//!                                    restore across DO evictions), in order
 //!   8 compat chunk                   residue-archive bytes, in order. Interleaves with kind 5:
 //!                                    the residue is written mid-build, before the search indexes
 //!                                    exist, which is what keeps the build's peak under the cap.
 //!   9 inflated bytes                 the resumable inflater's raw output, one
 //!                                    emit per inflate_feed call (see the
 //!                                    resumable-inflate section below)
+//!  10 tag aliases                    the alias -> slug maps (tag_aliases_export)
+//!  11 oracle pairs                   one scores batch's (scryfall id, oracle id)
+//!                                    records, after its routing keys
+//!  12 corpus chunk                   one SNAPSHOT_CHUNK-sized piece of the corpus
+//!                                    tables alone (corpus_export), in order
 //!
 //! Exports drive the phases in order; all buffers passed in are allocated
 //! with `alloc` and consumed (freed) by the callee:
@@ -51,7 +57,16 @@
 //!                                    marked is_canonical by id-membership in the
 //!                                    restored canonical set
 //!   tags_begin() / tags_add_lines(ptr, len) / tags_finish(kind)
-//!   tags_export() / tags_restore(ptr, len)
+//!   tags_export()                    TagData, streamed in chunks (kind 7)
+//!   tags_restore_pull()              TagData back, PULLED row by row through
+//!                                    pull_row (tags_restore(ptr, len) takes one
+//!                                    whole buffer, for callers that have one)
+//!   corpus_export() /                the corpus tables alone (kind 12), and back —
+//!   corpus_restore_pull(source)      what the scores phase carries between slices
+//!   tags_restore_pull_partition(p, n)  a partition's fresh instance: labels, slugs
+//!                                    and the oracle tags of partition p of n
+//!   partition_tables_restore_pull(which)  after agg_finish: the art tags and the
+//!                                    corpus tables, kept to the partition's keys
 //!   scores_add_drafts(ptr, len, n)   draft-blob batch, EVERY partition, in
 //!                                    emission order → the corpus-wide tables in
 //!                                    TagData (cubecobra percent-rank over the
@@ -81,6 +96,9 @@
 //!
 //! Batches of blobs (draft blobs in `agg_drafts`/`finalize_drafts`) are
 //! length-prefixed concatenations: repeating [u32 le length][bytes].
+//!
+//! The pull restores read a host-held snapshot through the same `pull_row` the
+//! build uses: index 0, 1, ... in row order, -1 at the end.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::{HashMap, HashSet};
@@ -93,8 +111,8 @@ use serde_json::Value;
 use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
-    art_tags_of, finalize_row, illust_count_qualifies, is_name_routing_key, is_pinned, transform_row, CorpusPassDraft,
-    PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
+    art_tags_of, finalize_row, illust_count_qualifies, illustration_ids, is_name_routing_key, is_pinned, transform_row,
+    ArtistSpellings, CorpusPassDraft, CorpusTables, PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -155,6 +173,110 @@ const EMIT_TAG_ALIASES: u32 = 10;
 /// (`transform::oracle_pair_of`), the SAME bytes the native builder writes to `oracle-pairs.bin`,
 /// so one encoder (src/engine/oracle-index.ts) builds both publishers' buckets.
 const EMIT_ORACLE_PAIRS: u32 = 11;
+/// One chunk of the corpus-tables snapshot (`corpus_export`), at most SNAPSHOT_CHUNK bytes.
+const EMIT_CORPUS: u32 = 12;
+
+/// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
+/// each emit is exactly one staged row — the same cut the host used to make itself by slicing one
+/// whole-snapshot emit — and neither side ever holds the serialized snapshot as one buffer.
+const SNAPSHOT_CHUNK: usize = 1_900_000;
+
+/// `io::Write` that hands the host SNAPSHOT_CHUNK-sized emits as they fill.
+///
+/// `serde_json::to_vec` built the whole snapshot in linear memory first, and its doubling growth
+/// peaked at ~3x the snapshot beside the tables being serialized — the allocation that trapped
+/// `tags_export` in the scores phase at 3x the corpus. Streaming holds one chunk.
+struct EmitWriter {
+    kind: u32,
+    buf: Vec<u8>,
+    total: usize,
+}
+
+impl EmitWriter {
+    fn new(kind: u32) -> Self {
+        EmitWriter { kind, buf: Vec::with_capacity(SNAPSHOT_CHUNK), total: 0 }
+    }
+
+    fn emit_buffered(&mut self) {
+        if !self.buf.is_empty() {
+            emit_bytes(self.kind, &self.buf);
+            self.total += self.buf.len();
+            self.buf.clear();
+        }
+    }
+
+    /// Emit the tail; returns the snapshot's total length.
+    fn finish(mut self) -> usize {
+        self.emit_buffered();
+        self.total
+    }
+}
+
+impl Write for EmitWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let mut at = 0;
+        while at < data.len() {
+            let take = (SNAPSHOT_CHUNK - self.buf.len()).min(data.len() - at);
+            self.buf.extend_from_slice(&data[at..at + take]);
+            at += take;
+            if self.buf.len() == SNAPSHOT_CHUNK {
+                self.emit_buffered();
+            }
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `io::Read` over a snapshot the HOST holds as rows: pull_row(0), pull_row(1), ... until -1.
+///
+/// The pull restores never receive the serialized snapshot as one buffer — the old `tags_restore`
+/// took it whole, so linear memory held the JSON and the structures built from it at once. This
+/// holds one row. A row larger than the buffer answers -1 like the end does, which leaves the JSON
+/// truncated and the parse failing loudly rather than restoring a prefix.
+struct PullReader {
+    buf: Vec<u8>,
+    pos: usize,
+    len: usize,
+    next: u32,
+    done: bool,
+}
+
+impl PullReader {
+    fn new() -> Self {
+        PullReader { buf: vec![0u8; SNAPSHOT_CHUNK + 64 * 1024], pos: 0, len: 0, next: 0, done: false }
+    }
+}
+
+impl std::io::Read for PullReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while self.pos == self.len {
+            if self.done {
+                return Ok(0);
+            }
+            let n = unsafe { pull_row(self.next, self.buf.as_mut_ptr(), self.buf.len()) };
+            self.next += 1;
+            if n < 0 {
+                self.done = true;
+                return Ok(0);
+            }
+            self.len = n as usize;
+            self.pos = 0;
+        }
+        let k = out.len().min(self.len - self.pos);
+        out[..k].copy_from_slice(&self.buf[self.pos..self.pos + k]);
+        self.pos += k;
+        Ok(k)
+    }
+}
+
+/// A JSON reader over the host's snapshot rows (see PullReader).
+fn pulled_snapshot() -> std::io::BufReader<PullReader> {
+    std::io::BufReader::with_capacity(64 * 1024, PullReader::new())
+}
 
 // `wasm_import_module = "env"` is load-bearing, not decoration: the host
 // instantiates with `imports.env.emit` / `imports.env.pull_row`
@@ -202,6 +324,11 @@ struct AggState {
     ranks: PrintingRanks,
     sealed: bool,
     positions_seen: u32,
+    /// The partition's card names and illustration ids, gathered as its drafts go past — the keys
+    /// the partition-scoped restore after `agg_finish` keeps the corpus tables and the art tags to
+    /// (`partition_tables_restore_pull`). Taken, and so freed, by that restore.
+    names: HashSet<String>,
+    illustration_ids: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -470,18 +597,335 @@ pub extern "C" fn labels_add_lines(ptr: *mut u8, len: usize) -> i64 {
 
 /// Serialize the accumulated TagData for host-side persistence (survives DO
 /// eviction between the tags phase and finalize).
+///
+/// STREAMED, as SNAPSHOT_CHUNK-sized EMIT_TAGDATA emits the host stores one row each — the same
+/// rows it used to cut out of one whole-snapshot emit. Returns the snapshot's length, or -1.
 #[unsafe(no_mangle)]
 pub extern "C" fn tags_export() -> i64 {
-    with_state(|s| match serde_json::to_vec(&s.tags) {
-        Ok(bytes) => {
-            emit_bytes(EMIT_TAGDATA, &bytes);
-            bytes.len() as i64
-        }
-        Err(e) => {
-            log(&format!("tags_export: {e}"));
-            -1
+    with_state(|s| {
+        let mut w = EmitWriter::new(EMIT_TAGDATA);
+        match serde_json::to_writer(&mut w, &s.tags) {
+            Ok(()) => w.finish() as i64,
+            Err(e) => {
+                log(&format!("tags_export: {e}"));
+                -1
+            }
         }
     })
+}
+
+/// Restore TagData by PULLING the snapshot's rows (pull_row 0, 1, ... until -1) rather than
+/// receiving it as one host buffer: linear memory holds the structures and one row, never the
+/// serialized snapshot beside them. Returns mapped ids, or -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn tags_restore_pull() -> i64 {
+    match serde_json::from_reader::<_, TagData>(pulled_snapshot()) {
+        Ok(tags) => with_state(|s| {
+            let n = tags.oracle.len() + tags.art.len();
+            s.tags = tags;
+            n as i64
+        }),
+        Err(e) => {
+            log(&format!("tags_restore_pull: {e}"));
+            -1
+        }
+    }
+}
+
+// ─── the corpus tables' own snapshot, and the partition-scoped restore ──────
+//
+// The scores phase used to restore and re-export the WHOLE TagData around every slice — every
+// oracle id's tags, every illustration's, the labels, the slug table — to carry the three corpus
+// tables it actually builds. It now carries those alone (`corpus_export` / `corpus_restore_pull`).
+//
+// And every partition's instance used to restore the whole TagData plus the whole sealed corpus
+// tables: a corpus-wide term in a heap whose every other term is bounded by the partition size,
+// and the one that carried agg, finalize and build past the isolate at 2x. A partition now keeps
+// only what its own rows can look up, and every lookup stays exact:
+//
+//   oracle tags   keyed by oracle_id: kept iff fnv1a64(oracle_id) % N == p, the partition rule
+//                 itself (the draft's hash is the same function of the same string)
+//   art tags      keyed by illustration_id: kept iff one of the partition's drafts shows it
+//   cubecobra     keyed by card_name: kept iff one of the partition's drafts carries the name
+//   illust count  keyed by (illustration_id, card_name): kept iff the name is one of those — the
+//                 key contains the name, so the name alone decides it
+//
+// The labels (agg's pins, read before any draft is seen), the slug table the tag lists index into,
+// and the artist spellings (handed to the builder whole) stay whole: all small.
+
+/// What `filtered_map` keeps while a restore runs. Held here rather than threaded through serde,
+/// whose derive has no way to hand a field deserializer context; set by the one export that
+/// restores, cleared when it returns. (wasm32-unknown-unknown is single-threaded.)
+enum Keep {
+    /// Keys whose partition is `p` of `n`.
+    Partition { p: u64, n: u64 },
+    /// Keys in the set (after the field's own projection — see `filtered_illust`).
+    Keys(HashSet<String>),
+}
+
+thread_local! {
+    static KEEP: std::cell::RefCell<Option<Keep>> = const { std::cell::RefCell::new(None) };
+}
+
+fn kept(key: &str) -> bool {
+    KEEP.with(|k| match k.borrow().as_ref() {
+        Some(Keep::Partition { p, n }) => fnv1a64_oracle_id(key) % n == *p,
+        Some(Keep::Keys(set)) => set.contains(key),
+        None => true,
+    })
+}
+
+/// Run `f` with `keep` installed, and uninstalled (its key set dropped) on the way out.
+fn with_keep<R>(keep: Keep, f: impl FnOnce() -> R) -> R {
+    KEEP.with(|k| *k.borrow_mut() = Some(keep));
+    let r = f();
+    KEEP.with(|k| *k.borrow_mut() = None);
+    r
+}
+
+/// A JSON object read entry by entry, inserting only the entries whose key `kept` accepts — so the
+/// heap holds the partition's share plus one entry, never the whole map.
+fn filtered_map<'de, D, V>(d: D) -> Result<HashMap<String, V>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    V: serde::Deserialize<'de>,
+{
+    filtered_map_by(d, |key| key)
+}
+
+/// The illustration counts, filtered on the CARD NAME inside each key (`illust_group_key`): the
+/// same name set the cubecobra scores are kept to.
+fn filtered_illust<'de, D: serde::Deserializer<'de>>(d: D) -> Result<HashMap<String, u64>, D::Error> {
+    filtered_map_by(d, CorpusTables::illust_key_name)
+}
+
+fn filtered_map_by<'de, D, V>(d: D, project: fn(&str) -> &str) -> Result<HashMap<String, V>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    V: serde::Deserialize<'de>,
+{
+    struct Visit<V>(fn(&str) -> &str, std::marker::PhantomData<V>);
+    impl<'de, V: serde::Deserialize<'de>> serde::de::Visitor<'de> for Visit<V> {
+        type Value = HashMap<String, V>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a map")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Self::Value, A::Error> {
+            let mut out = HashMap::new();
+            while let Some(k) = m.next_key::<String>()? {
+                if kept((self.0)(&k)) {
+                    let v = m.next_value::<V>()?;
+                    out.insert(k, v);
+                } else {
+                    m.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+            Ok(out)
+        }
+    }
+    d.deserialize_map(Visit(project, std::marker::PhantomData))
+}
+
+/// `filtered_map` under an `Option` — the sealed scores are `Option<HashMap>` in the snapshot.
+fn filtered_scores<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<HashMap<String, f64>>, D::Error> {
+    struct Visit;
+    impl<'de> serde::de::Visitor<'de> for Visit {
+        type Value = Option<HashMap<String, f64>>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("null or a map")
+        }
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            filtered_map(d).map(Some)
+        }
+    }
+    d.deserialize_option(Visit)
+}
+
+/// The TagData fields a partition's fresh instance needs before its first draft: the labels and
+/// the slug table whole, the oracle tags filtered by the partition rule. Everything else in the
+/// snapshot — art tags, the canonical set, the alias maps, a legacy snapshot's corpus tables — is
+/// skipped as it is parsed, never stored.
+#[derive(serde::Deserialize)]
+struct PartitionTags {
+    #[serde(default)]
+    labels: HashSet<String>,
+    #[serde(default)]
+    slugs: Vec<String>,
+    #[serde(default, deserialize_with = "filtered_map")]
+    oracle: HashMap<String, Vec<u32>>,
+}
+
+/// The art tags alone, filtered to the partition's illustrations.
+#[derive(serde::Deserialize)]
+struct PartitionArt {
+    #[serde(default, deserialize_with = "filtered_map")]
+    art: HashMap<String, Vec<u32>>,
+}
+
+/// The corpus tables, filtered to the partition's names (`pending` is empty once sealed, and
+/// skipped either way).
+#[derive(serde::Deserialize)]
+struct PartitionCorpus {
+    #[serde(default, deserialize_with = "filtered_scores")]
+    scores: Option<HashMap<String, f64>>,
+    #[serde(default, deserialize_with = "filtered_illust")]
+    illust: HashMap<String, u64>,
+    #[serde(default)]
+    artists: ArtistSpellings,
+}
+
+/// A TagData snapshot's `corpus` field alone: where the tables lived before they had a snapshot of
+/// their own, so where a run staged across the deploy that split them finds them.
+#[derive(serde::Deserialize)]
+struct LegacyCorpus<C> {
+    /// Absent in a snapshot older than the corpus tables; serde reads a missing `Option` as None.
+    corpus: Option<C>,
+}
+
+/// A partition's fresh instance: TagData restricted to partition `p` of `n` — the labels, the slug
+/// table, and the oracle tags the partition rule gives it. The art tags and the corpus tables
+/// follow at the seal (`partition_tables_restore_pull`), once the partition's drafts have named
+/// the keys it needs. Returns the oracle ids kept, or -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn tags_restore_pull_partition(p: u32, n: u32) -> i64 {
+    if n == 0 || p >= n {
+        log(&format!("tags_restore_pull_partition: partition {p} of {n}"));
+        return -1;
+    }
+    let keep = Keep::Partition { p: u64::from(p), n: u64::from(n) };
+    match with_keep(keep, || serde_json::from_reader::<_, PartitionTags>(pulled_snapshot())) {
+        Ok(part) => with_state(|s| {
+            let mut tags = TagData::default();
+            tags.labels = part.labels;
+            tags.slugs = part.slugs;
+            tags.oracle = part.oracle;
+            let kept = tags.oracle.len() as i64;
+            s.tags = tags;
+            kept
+        }),
+        Err(e) => {
+            log(&format!("tags_restore_pull_partition: {e}"));
+            -1
+        }
+    }
+}
+
+/// After `agg_finish`: pull a snapshot again and keep this partition's share of it.
+///
+///   `which` 1  the TagData snapshot's art tags, for the illustrations the partition's drafts show
+///   `which` 2  the corpus-tables snapshot (`corpus_export`), for the names the drafts carry
+///   `which` 3  the same tables out of a TagData snapshot's `corpus` field — a run whose scores
+///              phase finished before the deploy that gave the tables their own snapshot
+///
+/// The corpus must be sealed (the scores phase finished), or the restore refuses rather than let
+/// finalize score every row null. Returns the entries kept, or -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn partition_tables_restore_pull(which: u32) -> i64 {
+    let keys = with_state(|s| {
+        if !s.agg.sealed {
+            return None;
+        }
+        Some(match which {
+            1 => std::mem::take(&mut s.agg.illustration_ids),
+            _ => std::mem::take(&mut s.agg.names),
+        })
+    });
+    let Some(keys) = keys else {
+        log("partition_tables_restore_pull before agg_finish");
+        return -1;
+    };
+    let corpus = |part: Option<PartitionCorpus>| -> i64 {
+        match part {
+            Some(PartitionCorpus { scores: Some(scores), illust, artists }) => with_state(|s| {
+                let n = scores.len() as i64;
+                s.tags.corpus = CorpusTables::sealed_from_parts(scores, illust, artists);
+                n
+            }),
+            _ => {
+                log("partition_tables_restore_pull: the corpus tables are not sealed (scores phase incomplete?)");
+                -1
+            }
+        }
+    };
+    match which {
+        1 => match with_keep(Keep::Keys(keys), || serde_json::from_reader::<_, PartitionArt>(pulled_snapshot())) {
+            Ok(part) => with_state(|s| {
+                s.tags.art = part.art;
+                s.tags.art.len() as i64
+            }),
+            Err(e) => {
+                log(&format!("partition_tables_restore_pull(art): {e}"));
+                -1
+            }
+        },
+        2 => match with_keep(Keep::Keys(keys), || serde_json::from_reader::<_, PartitionCorpus>(pulled_snapshot())) {
+            Ok(part) => corpus(Some(part)),
+            Err(e) => {
+                log(&format!("partition_tables_restore_pull(corpus): {e}"));
+                -1
+            }
+        },
+        3 => match with_keep(Keep::Keys(keys), || {
+            serde_json::from_reader::<_, LegacyCorpus<PartitionCorpus>>(pulled_snapshot())
+        }) {
+            Ok(legacy) => corpus(legacy.corpus),
+            Err(e) => {
+                log(&format!("partition_tables_restore_pull(legacy corpus): {e}"));
+                -1
+            }
+        },
+        _ => {
+            log(&format!("partition_tables_restore_pull: unknown table {which}"));
+            -1
+        }
+    }
+}
+
+/// The corpus tables ALONE (`TagData::corpus`), streamed as EMIT_CORPUS chunks exactly as
+/// `tags_export` streams the whole TagData. The scores phase persists these between its slices and
+/// nothing else: the tag maps it never reads never enter its heap. Returns the length, or -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn corpus_export() -> i64 {
+    with_state(|s| {
+        let mut w = EmitWriter::new(EMIT_CORPUS);
+        match serde_json::to_writer(&mut w, &s.tags.corpus) {
+            Ok(()) => w.finish() as i64,
+            Err(e) => {
+                log(&format!("corpus_export: {e}"));
+                -1
+            }
+        }
+    })
+}
+
+/// Restore the corpus tables by pulling rows: `source` 0 reads a `corpus_export` snapshot, 1 the
+/// `corpus` field of a TagData snapshot (a scores phase begun before the tables had a snapshot of
+/// their own). Returns the distinct names, or -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn corpus_restore_pull(source: u32) -> i64 {
+    let restored = match source {
+        0 => serde_json::from_reader::<_, CorpusTables>(pulled_snapshot()).map_err(|e| e.to_string()),
+        1 => serde_json::from_reader::<_, LegacyCorpus<CorpusTables>>(pulled_snapshot())
+            .map(|legacy| legacy.corpus.unwrap_or_default())
+            .map_err(|e| e.to_string()),
+        _ => Err(format!("unknown source {source}")),
+    };
+    match restored {
+        Ok(corpus) => with_state(|s| {
+            s.tags.corpus = corpus;
+            s.tags.corpus.names() as i64
+        }),
+        Err(e) => {
+            log(&format!("corpus_restore_pull: {e}"));
+            -1
+        }
+    }
 }
 
 /// Emit the alias → slug maps of the loaded TagData as one EMIT_TAG_ALIASES payload.
@@ -550,9 +994,9 @@ fn split_batch(buf: &[u8]) -> Result<Vec<&[u8]>, String> {
 ///   * `illustration_count` groups by `(illustration_id, card_name)`, a key with no oracle_id in
 ///     it — the only finalize aggregate the partition hash does not co-locate.
 ///
-/// The tables land in `TagData`, which the coordinator snapshots per slice
-/// (tags_export/tags_restore) — the same one persistence path the canonical id set rides, so this
-/// phase is resumable and eviction-proof for free.
+/// The tables land in `TagData::corpus`, which the coordinator snapshots per slice ON ITS OWN
+/// (corpus_export/corpus_restore_pull): the slices never read the tag maps, so they never carry
+/// them, and the phase stays resumable and eviction-proof.
 ///
 /// Only the `CorpusPassDraft` fields are read per draft, so the batch is not parsed into `RowDraft`s.
 /// Returns distinct card names observed so far.
@@ -692,6 +1136,17 @@ pub extern "C" fn agg_drafts(ptr: *mut u8, len: usize) -> i64 {
             // only while that row goes past (transform::PIN_BONUS).
             s.agg.pins.observe(&draft, &s.tags.labels);
             s.agg.ranks.observe(&draft);
+            // Every key finalize will look this draft up by, other than its oracle id (which the
+            // partition rule already decides): its name for the cubecobra score and the
+            // illustration count, and every illustration it shows for the art tags.
+            if !s.agg.names.contains(&draft.card_name) {
+                s.agg.names.insert(draft.card_name.clone());
+            }
+            for ill in illustration_ids(&draft) {
+                if !s.agg.illustration_ids.contains(ill) {
+                    s.agg.illustration_ids.insert(ill.to_owned());
+                }
+            }
             let first = s.agg.by_id.len() as u32;
             s.agg.by_id.entry(draft.scryfall_id.clone()).or_insert(first);
             s.agg.winner_pos.insert(draft.scryfall_id, pos);

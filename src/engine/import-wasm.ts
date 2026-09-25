@@ -19,7 +19,10 @@ export interface ImportEmitHandlers {
 	onDraft?(bytes: Uint8Array, partHash: bigint): void;
 	onSpill?(bytes: Uint8Array): void;
 	onChunk?(bytes: Uint8Array): void;
+	/** One chunk of the TagData snapshot (tags_export streams it), at most one staged row's bytes. */
 	onTagData?(bytes: Uint8Array): void;
+	/** One chunk of the corpus-tables snapshot (corpus_export), likewise. */
+	onCorpus?(bytes: Uint8Array): void;
 	/** The alias -> slug maps as JSON (`TagData::aliases_json`), one emit per tagAliasesExport. */
 	onTagAliases?(bytes: Uint8Array): void;
 	/** One scores batch's routing-filter input: `<partition>\t<key>\n` lines,
@@ -32,7 +35,8 @@ export interface ImportEmitHandlers {
 	onStats?(stats: Record<string, number>): void;
 	/** The resumable inflater's raw output: one emit per inflateFeed call. */
 	onInflate?(bytes: Uint8Array): void;
-	/** Serve spilled row blob #index (add order) during the store build. */
+	/** Serve row #index of whatever the running export pulls: the spilled rows (add order) during
+	 * the store build, a snapshot's staged rows during a pull restore. null = no such row. */
 	pullRow?(index: number): Uint8Array | null;
 }
 
@@ -48,6 +52,7 @@ const EMIT = {
 	INFLATE: 9,
 	TAG_ALIASES: 10,
 	ORACLE_PAIRS: 11,
+	CORPUS: 12,
 } as const;
 
 interface ImportExports {
@@ -62,7 +67,11 @@ interface ImportExports {
 	tags_finish(kind: number): bigint;
 	tags_export(): bigint;
 	tag_aliases_export(): bigint;
-	tags_restore(ptr: number, len: number): bigint;
+	tags_restore_pull(): bigint;
+	tags_restore_pull_partition(partition: number, partitions: number): bigint;
+	partition_tables_restore_pull(which: number): bigint;
+	corpus_export(): bigint;
+	corpus_restore_pull(source: number): bigint;
 	scores_add_drafts(ptr: number, len: number, partitionCount: number): bigint;
 	scores_finish(): bigint;
 	agg_drafts(ptr: number, len: number): bigint;
@@ -83,6 +92,9 @@ interface ImportExports {
 	inflate_save(dest: number, cap: number): bigint;
 	inflate_total_out(): bigint;
 }
+
+/** A staged snapshot, served to a pull restore row by row: row `index` unpacked, null past the end. */
+export type SnapshotRows = (index: number) => Uint8Array | null;
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -139,6 +151,9 @@ export class ImportWasm {
 						return;
 					case EMIT.ORACLE_PAIRS:
 						h.onOraclePairs?.(view(ptr, len).slice());
+						return;
+					case EMIT.CORPUS:
+						h.onCorpus?.(view(ptr, len).slice());
 						return;
 					case EMIT.TAG_ALIASES:
 						h.onTagAliases?.(view(ptr, len).slice());
@@ -288,8 +303,62 @@ export class ImportWasm {
 		if (this.ex.tag_aliases_export() < 0n) throw new Error("wasm-import tag_aliases_export failed");
 	}
 
-	tagsRestore(bytes: Uint8Array): bigint {
-		return this.sendBytes(bytes, (p, l) => this.ex.tags_restore(p, l), "tags_restore");
+	/**
+	 * Restore TagData by PULLING its staged rows through `row(i)` (null past the last), one at a
+	 * time: neither side ever holds the serialized snapshot whole. Returns mapped ids.
+	 */
+	tagsRestorePull(row: SnapshotRows): bigint {
+		return this.pull(row, () => this.ex.tags_restore_pull(), "tags_restore_pull");
+	}
+
+	/**
+	 * A partition's fresh instance: the labels, the slug table and the oracle tags of `partition`
+	 * of `partitions` — its share of the TagData snapshot, and nothing else. The art tags and the
+	 * corpus tables follow at the seal (partitionTablesRestorePull). Returns oracle ids kept.
+	 */
+	tagsRestorePullPartition(row: SnapshotRows, partition: number, partitions: number): bigint {
+		return this.pull(
+			row,
+			() => this.ex.tags_restore_pull_partition(partition, partitions),
+			"tags_restore_pull_partition",
+		);
+	}
+
+	/**
+	 * After aggFinish, the partition's share of a snapshot, kept to the keys its drafts named:
+	 * `art` from the TagData snapshot, `corpus` from the corpus-tables snapshot, or `legacy-corpus`
+	 * from a TagData snapshot's own corpus field (a run whose scores phase predates the split).
+	 * Returns entries kept.
+	 */
+	partitionTablesRestorePull(table: "art" | "corpus" | "legacy-corpus", row: SnapshotRows): bigint {
+		const which = table === "art" ? 1 : table === "corpus" ? 2 : 3;
+		return this.pull(row, () => this.ex.partition_tables_restore_pull(which), "partition_tables_restore_pull");
+	}
+
+	/** Emit the corpus tables alone, chunked, through onCorpus. */
+	corpusExport(): void {
+		if (this.ex.corpus_export() < 0n) throw new Error("wasm-import corpus_export failed");
+	}
+
+	/**
+	 * Restore the corpus tables by pulling staged rows: from a corpus snapshot, or (`legacy`) from a
+	 * TagData snapshot's corpus field. Returns distinct names.
+	 */
+	corpusRestorePull(row: SnapshotRows, legacy = false): bigint {
+		return this.pull(row, () => this.ex.corpus_restore_pull(legacy ? 1 : 0), "corpus_restore_pull");
+	}
+
+	/** Run one pull export with `row` serving pull_row, then put the previous handlers back. */
+	private pull(row: SnapshotRows, call: () => bigint, label: string): bigint {
+		const prev = this.handlers;
+		this.handlers = { ...prev, pullRow: row };
+		try {
+			const rc = call();
+			if (rc < 0n) throw new Error(`wasm-import ${label} failed (see [wasm-import] log)`);
+			return rc;
+		} finally {
+			this.handlers = prev;
+		}
 	}
 
 	/**

@@ -36,6 +36,7 @@ const STAGING_TABLES = [
 	"spill_batches",
 	"routing_keys",
 	"tagdata_blobs",
+	"corpus_blobs",
 	"draft_parts",
 	"draft_batches",
 	"stage_members",

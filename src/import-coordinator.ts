@@ -73,7 +73,14 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { addressAnnouncedEngine, engineName, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
-import { dropGroupWasm, groupWasm, type ImportWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
+import {
+	dropGroupWasm,
+	groupWasm,
+	type ImportWasm,
+	newGroupWasm,
+	type SnapshotRows,
+	transientWasm,
+} from "./engine/import-wasm";
 import { staleKeys } from "./engine/kv-versions";
 import {
 	ORACLE_INDEX_KEY_PREFIX,
@@ -393,8 +400,12 @@ const SCORES_FETCH_BATCHES = 8;
 // Adding the Scryfall compat residue to `RowDraft` (generation 10) grew each draft enough to cross
 // that, and the import failed in the transform phase with nothing to say a size limit was what it
 // hit. The spill and row batches were already byte-capped; drafts were the one that was not.
-/** SQLite blob row size for staged dumps and tag-data snapshots. */
+/** SQLite blob row size for staged dumps and tag-data snapshots. The wasm module cuts its streamed
+ * snapshot exports at the same size (engine/wasm-import SNAPSHOT_CHUNK), so each emit is one row. */
 const STAGE_BLOB_BYTES = 1_900_000;
+/** The two snapshot tables: the TagData (tags, labels, slugs; the canonical set before tags), and
+ * the corpus-wide finalize tables alone. */
+type SnapshotTable = "tagdata_blobs" | "corpus_blobs";
 /** Lines per wasm transform call within a slice. */
 const LINES_PER_CALL = 2_000;
 // Store retention lives in src/engine/store-kv.ts (KEEP_STORES_IN_KV), shared with the deploy
@@ -743,6 +754,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- every row it already wrote.
 			CREATE TABLE IF NOT EXISTS ordered_rows (base INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS tagdata_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
+			-- The corpus-wide finalize tables ALONE (cubecobra scores, illustration counts, artist
+			-- spellings), rewritten by every scores slice and read by every partition's seal. They
+			-- rode inside tagdata_blobs until 2026-09-25, which made each scores slice restore and
+			-- re-export every tag map it never reads (see stepScores).
+			CREATE TABLE IF NOT EXISTS corpus_blobs (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			CREATE TABLE IF NOT EXISTS chunk_staging (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
 			-- The routing filter's raw input, one row per scores batch: tab-separated
 			-- partition/key lines emitted by scores_add_drafts (EMIT_ROUTING). Staged rather than
@@ -1964,7 +1980,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 *
 	 * Continuity is the labels mechanism, exactly: the set lives inside the
 	 * wasm's TagData (canonical_add_lines), and the ONE snapshot path —
-	 * tags_export into tagdata_blobs, tags_restore back out — is what carries
+	 * tags_export streamed into tagdata_blobs, pulled back out row by row — is what carries
 	 * it across slices, across DO evictions, and into every transient transform
 	 * instance. Each slice here restores the snapshot, adds its lines, and
 	 * re-exports in the same transaction as its cursor, so a retried slice
@@ -1980,9 +1996,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.reset();
 		const rawDone = Number(this.metaGet("canonical_raw_done") ?? 0);
 		if (rawDone > 0) {
-			const snapshot = this.tagSnapshotBytes();
-			if (!snapshot) throw new FatalImportError("canonical: id snapshot missing mid-phase");
-			wasm.tagsRestore(snapshot);
+			if (!this.hasSnapshot("tagdata_blobs")) throw new FatalImportError("canonical: id snapshot missing mid-phase");
+			wasm.tagsRestorePull(this.snapshotRows("tagdata_blobs"));
 		}
 
 		let added = 0n;
@@ -2006,13 +2021,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}).finally(() => stream.close());
 		feed();
 
-		const tagBlobs: Uint8Array[] = [];
-		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
-		wasm.tagsExport();
-		wasm.setHandlers({});
-
 		this.ctx.storage.transactionSync(() => {
-			this.writeTagSnapshot(tagBlobs);
+			this.writeSnapshot("tagdata_blobs", wasm);
 			this.metaSet("canonical_raw_done", String(rawDone + result.consumed));
 			this.persistStreamCheckpoint("default_cards", stream, rawDone + result.consumed, result.exhausted);
 			const lines = Number(this.metaGet("canonical_lines") ?? 0) + fed;
@@ -2050,13 +2060,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// group phases use after an eviction (one persistence path, no drift).
 		const wasm = transientWasm();
 		wasm.reset();
-		const snapshot = this.tagSnapshotBytes();
-		if (!snapshot) {
+		if (!this.hasSnapshot("tagdata_blobs")) {
 			// Not retryable: the snapshot is written by the canonical phase, which
 			// the chain guarantees ran to completion before this one.
 			throw new FatalImportError("transform: canonical id snapshot missing (canonical phase incomplete?)");
 		}
-		wasm.tagsRestore(snapshot);
+		wasm.tagsRestorePull(this.snapshotRows("tagdata_blobs"));
 
 		const linesDone = Number(this.metaGet("lines_done") ?? 0);
 		// The raw-offset cursor pairs with lines_done: it names the byte at which
@@ -2201,7 +2210,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private async stepTags(): Promise<void> {
 		// Tag dumps are small next to default_cards; both fit one slice. The
 		// TagData snapshot persists so later phases survive eviction.
-		const wasm = newGroupWasm();
+		//
+		// A DISPOSABLE instance, not the group's. It used to be newGroupWasm(), and so it outlived
+		// this alarm: nothing between tags and the first partition's agg replaces the group
+		// instance, so its heap sat beside the scores phase's own for every scores slice — the
+		// second wasm heap that put scores at 151.8MB at 2x the corpus. Every phase after this one
+		// restores what it needs from the snapshot written below, and each partition's agg builds
+		// its own group instance. Dropping any group left in this isolate (a run that died
+		// mid-loop) is the same move for the same reason.
+		dropGroupWasm();
+		const wasm = transientWasm();
 		wasm.reset();
 		for (const [kind, code] of [
 			["oracle_tags", 1],
@@ -2238,18 +2256,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (labelBatch.length > 0) labelCount += wasm.labelsAddLines(labelBatch.join("\n"));
 		console.log(`Representative labels: ${labelCount}`);
 
-		const tagBlobs: Uint8Array[] = [];
 		// The alias -> slug maps, cut from the same TagData: stashed in meta now (the key that names
 		// them needs built_at, stamped below) and published beside the manifest by stepManifest.
 		// See src/engine/tag-aliases.ts for why this ships with the store rather than the code.
 		let tagAliasesJson = "";
 		wasm.setHandlers({
-			onTagData: (b) => tagBlobs.push(b),
 			onTagAliases: (b) => {
 				tagAliasesJson = new TextDecoder().decode(b);
 			},
 		});
-		wasm.tagsExport();
 		wasm.tagAliasesExport();
 		wasm.setHandlers({});
 		if (!tagAliasesJson) throw new Error("tags: the wasm import emitted no alias map");
@@ -2285,10 +2300,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		this.ctx.storage.transactionSync(() => {
 			// Overwrites the canonical phase's snapshot, deliberately: the canonical
 			// set was consumed when transform completed, and from here every restart
-			// path restores THIS TagData (tags + labels).
-			this.writeTagSnapshot(tagBlobs);
+			// path restores THIS TagData (tags + labels). Streamed straight into its rows.
+			this.writeSnapshot("tagdata_blobs", wasm);
 			this.metaSet("tag_aliases", tagAliasesJson);
-			this.metaSet("tags_nonce", wasm.nonce);
 			this.metaSet("scores_batch_done", "0");
 			// The routing filter's line count, summed as the scores slices stage them — see stepRouting.
 			this.metaSet("routing_lines", "0");
@@ -2307,7 +2321,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Progressive staging purge: this phase is the only consumer of the
 			// tags dumps and the labels dump, and the TagData snapshot just
 			// written above is what every restart path restores from
-			// (restoreTags reads tagdata_blobs, never these) — so their staged
+			// (stepAgg reads tagdata_blobs, never these) — so their staged
 			// bytes are dead the moment this transaction commits. (default_cards'
 			// blobs went earlier still, at the end of the canonical phase — its
 			// only consumer.) Dropped in bounded slices on the next alarms, then
@@ -2341,23 +2355,42 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * Computed once, here, where the drafts are already fully staged (transform finished two
 	 * phases ago) and no partition has been chosen yet.
 	 *
-	 * The mechanism is the canonical id set's, exactly (stepCanonical): the tables live inside the
-	 * wasm's TagData, and the ONE snapshot path — tags_export into tagdata_blobs, tags_restore
-	 * back out — carries them across slices, across evictions, and into every per-partition
-	 * instance the loop creates. Each slice restores, adds its batches, and re-exports in the same
-	 * transaction as its cursor, so a retried slice restores exactly the tables its cursor
-	 * describes.
+	 * The tables have a snapshot of their OWN (corpus_blobs), which each slice restores, adds its
+	 * batches to, and re-exports in the same transaction as its cursor — so a retried slice
+	 * restores exactly the tables its cursor describes, and an eviction costs one slice. They rode
+	 * inside the TagData snapshot until 2026-09-25, which made every slice restore and re-export
+	 * every tag map, label and slug it never reads: ~3x the snapshot resident at once, beside the
+	 * tags phase's group heap that was still alive here. That was 151.8MB of wasm at 2x the corpus,
+	 * and at 3x `tags_export` trapped. Each partition's seal reads the tables back, kept to that
+	 * partition's names (stepAgg).
 	 */
 	private async stepScores(): Promise<void> {
+		// Nothing before the partition loop needs a group instance (stepTags no longer makes one);
+		// one left in this isolate by a run that died mid-loop is dead weight beside this slice.
+		dropGroupWasm();
 		const wasm = transientWasm();
 		wasm.reset();
-		const snapshot = this.tagSnapshotBytes();
-		if (!snapshot) {
-			// Not retryable: the snapshot is written by the tags phase, which the chain
-			// guarantees ran to completion before this one.
-			throw new FatalImportError("scores: TagData snapshot missing (tags phase incomplete?)");
+		const done = Number(this.metaGet("scores_batch_done") ?? 0);
+		// Which snapshot holds the tables so far. Set by this phase's first slice under this code;
+		// absent only for a run whose earlier slices ran before the tables had a snapshot of their
+		// own, and carried them inside tagdata_blobs instead — read from there, once, then carried
+		// on in corpus_blobs like any other run's.
+		const corpusStaged = this.metaGet("corpus_staged") === "1";
+		if (done === 0 || !corpusStaged) {
+			if (!this.hasSnapshot("tagdata_blobs")) {
+				// Not retryable: the snapshot is written by the tags phase, which the chain
+				// guarantees ran to completion before this one.
+				throw new FatalImportError("scores: TagData snapshot missing (tags phase incomplete?)");
+			}
 		}
-		wasm.tagsRestore(snapshot);
+		if (done > 0) {
+			if (corpusStaged) {
+				if (!this.hasSnapshot("corpus_blobs")) throw new FatalImportError("scores: corpus snapshot missing mid-phase");
+				wasm.corpusRestorePull(this.snapshotRows("corpus_blobs"));
+			} else {
+				wasm.corpusRestorePull(this.snapshotRows("tagdata_blobs"), true);
+			}
+		}
 
 		// The routing filter's key set rides this pass (see the wasm export): every draft of every
 		// partition, exactly once, is precisely what it needs and precisely what this phase already
@@ -2374,11 +2407,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			onOraclePairs: (b) => pairBlobs.set(routingSeq, b),
 		});
 
-		const done = Number(this.metaGet("scores_batch_done") ?? 0);
 		let fed = 0;
 		let names = 0n;
 		// Batches are read in small groups rather than one query: a slice's worth of staged drafts
-		// is ~45MB, and materializing that as JS ArrayBuffers alongside the restored tag heap is
+		// is ~45MB, and materializing that as JS ArrayBuffers alongside the restored tables is
 		// the one place this phase could crowd the isolate.
 		while (fed < SCORES_SLICE_BATCHES) {
 			const rows = this.sqlAll<{ seq: number; bytes: ArrayBuffer }>(
@@ -2399,10 +2431,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		const exhausted = fed < SCORES_SLICE_BATCHES;
 		if (exhausted) names = wasm.scoresFinish();
-
-		const tagBlobs: Uint8Array[] = [];
-		wasm.setHandlers({ onTagData: (b) => tagBlobs.push(b) });
-		wasm.tagsExport();
 		wasm.setHandlers({});
 
 		// Counted HERE, where the text is in hand, and committed in the same transaction as the cursor
@@ -2413,7 +2441,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			for (let i = blob.bytes.indexOf(10); i !== -1; i = blob.bytes.indexOf(10, i + 1)) routingLines++;
 		}
 		this.ctx.storage.transactionSync(() => {
-			this.writeTagSnapshot(tagBlobs);
+			// Streamed straight into its rows, one chunk resident at a time.
+			this.writeSnapshot("corpus_blobs", wasm);
+			if (!corpusStaged) this.metaSet("corpus_staged", "1");
 			this.metaSet("routing_lines", String(Number(this.metaGet("routing_lines") ?? 0) + routingLines));
 			// Keyed by the batch cursor this slice started from, so a RETRIED slice
 			// overwrites its own rows instead of doubling them. Duplicate keys would
@@ -2793,54 +2823,52 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return partitionStoreKey(formatVersion, builtAt, partition);
 	}
 
-	/** The TagData snapshot: each byte-capped row unpacked, then reassembled; null when none. */
-	private tagSnapshotBytes(): Uint8Array | null {
-		const rows = this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM tagdata_blobs ORDER BY seq");
-		if (rows.length === 0) return null;
-		// Rows are packed one by one (see writeTagSnapshot), so each is unpacked on its own; a row
-		// the previous build wrote is unpacked bytes, and unpackBlob passes those through.
-		const pieces = rows.map((r) => unpackBlob(new Uint8Array(r.bytes as ArrayBuffer)));
-		const merged = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0));
-		let at = 0;
-		for (const piece of pieces) {
-			merged.set(piece, at);
-			at += piece.length;
-		}
-		return merged;
+	/** Whether a snapshot table holds any rows (one index read). */
+	private hasSnapshot(table: SnapshotTable): boolean {
+		return this.sqlAll<{ seq: number }>(`SELECT seq FROM ${table} LIMIT 1`).length > 0;
 	}
 
 	/**
-	 * Replace the TagData snapshot (caller supplies the surrounding transaction).
-	 *
-	 * Each row is one STAGE_BLOB_BYTES slice of the export, PACKED (packBlob, deflate level 1)
-	 * before it is inserted: the export is serde_json's TagData, which compresses several-fold,
-	 * and this table is rewritten three times a run (canonical, tags, scores). Every rewrite is
-	 * churn — the bytes deleted plus the bytes inserted — that the pacing turns into alarm sleeps
-	 * at ≤2MB/s, and the eviction restore reads all of it back. Slice by slice rather than the
-	 * whole export at once, so the only transient copy is one packed slice (the export itself is
-	 * ~20MB of JSON, and the scores-phase call runs beside the group wasm's corpus tables).
+	 * A snapshot table served to a pull restore, one row per call: row `index` unpacked, null past
+	 * the last. The restore holds one row at a time; the old path read every row, unpacked each,
+	 * and copied them into one merged buffer that then went into wasm whole — the snapshot three
+	 * times over at its peak. A row the previous build wrote unpacked passes through unpackBlob.
 	 */
-	private writeTagSnapshot(blobs: Uint8Array[]): void {
-		this.noteChurn(this.blobBytesIn("tagdata_blobs"));
-		this.sqlRun("DELETE FROM tagdata_blobs");
-		let seq = -1;
-		for (const blob of blobs) {
-			for (let at = 0; at < blob.length; at += STAGE_BLOB_BYTES) {
-				this.sqlRun(
-					"INSERT INTO tagdata_blobs (seq, bytes) VALUES (?, ?)",
-					++seq,
-					exactBuffer(packBlob(blob.subarray(at, Math.min(at + STAGE_BLOB_BYTES, blob.length)))),
-				);
-			}
-		}
+	private snapshotRows(table: SnapshotTable): SnapshotRows {
+		return (index) => {
+			const row = this.sqlAll<{ bytes: ArrayBuffer }>(`SELECT bytes FROM ${table} WHERE seq = ?`, index)[0];
+			return row ? unpackBlob(new Uint8Array(row.bytes)) : null;
+		};
 	}
 
-	/** Restore in-wasm TagData from the SQLite snapshot (post-eviction). */
-	private restoreTags(wasm: ReturnType<typeof groupWasm>): void {
-		const merged = this.tagSnapshotBytes();
-		if (!merged) throw new Error("tagdata snapshot missing; cannot restore tags");
-		const n = wasm.tagsRestore(merged);
-		console.log(`Restored TagData after eviction (${n} mapped ids)`);
+	/**
+	 * Replace a snapshot table with the instance's export (caller supplies the surrounding
+	 * transaction): the TagData into tagdata_blobs, the corpus tables alone into corpus_blobs.
+	 *
+	 * STREAMED: the wasm emits STAGE_BLOB_BYTES-sized chunks and each is packed and inserted as it
+	 * arrives, so neither side ever holds the serialized snapshot whole — the rows are the ones the
+	 * old path cut out of one whole-snapshot emit. Each row is PACKED (packBlob, deflate level 1):
+	 * the snapshot is serde_json, which compresses several-fold, and every rewrite is churn — the
+	 * bytes deleted plus the bytes inserted — that the pacing turns into alarm sleeps at ≤2MB/s.
+	 */
+	private writeSnapshot(table: SnapshotTable, wasm: ImportWasm): void {
+		this.noteChurn(this.blobBytesIn(table));
+		this.sqlRun(`DELETE FROM ${table}`);
+		let seq = -1;
+		const put = (chunk: Uint8Array) => {
+			this.sqlRun(`INSERT INTO ${table} (seq, bytes) VALUES (?, ?)`, ++seq, exactBuffer(packBlob(chunk)));
+		};
+		try {
+			if (table === "tagdata_blobs") {
+				wasm.setHandlers({ onTagData: put });
+				wasm.tagsExport();
+			} else {
+				wasm.setHandlers({ onCorpus: put });
+				wasm.corpusExport();
+			}
+		} finally {
+			wasm.setHandlers({});
+		}
 	}
 
 	/**
@@ -2961,9 +2989,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 						"the next scheduled import restarts cleanly",
 				);
 			}
+			// This partition's share of the TagData and nothing more: the labels and the slug table
+			// whole, the oracle tags its own oracle ids hash to. The art tags and the corpus tables
+			// follow at the seal below, kept to the names and illustrations its drafts turn out to
+			// carry. Restoring the WHOLE TagData and corpus tables into every partition's heap was
+			// a corpus-wide term in a heap whose every other term is bounded by the partition size.
 			const fresh = newGroupWasm();
 			fresh.reset();
-			this.restoreTags(fresh);
+			if (!this.hasSnapshot("tagdata_blobs")) throw new Error("tagdata snapshot missing; cannot restore tags");
+			const oracleIds = fresh.tagsRestorePullPartition(
+				this.snapshotRows("tagdata_blobs"),
+				pp.partition,
+				pp.partitions.length,
+			);
+			console.log(`Restored partition ${pp.partition}'s share of the TagData: ${oracleIds} oracle ids' tags`);
 			this.ctx.storage.transactionSync(() => {
 				this.metaSet("tags_nonce", fresh.nonce);
 				this.metaSet("agg_partition_started", String(pp.partition));
@@ -3014,7 +3053,20 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		if (fed < AGG_SLICE_BATCHES) {
 			const winners = wasm.aggFinish();
-			console.log(`Aggregation sealed for partition ${pp.partition}/${pp.partitions.length}: ${winners} winners`);
+			// The rest of what finalize looks up, now that the partition's drafts have named every key
+			// they will ask for: the art tags of the illustrations they show, and the corpus tables'
+			// entries for the names they carry. Exact — see the wasm export. A run whose scores
+			// phase finished before the tables had a snapshot of their own reads them from the
+			// TagData snapshot, where it left them.
+			const art = wasm.partitionTablesRestorePull("art", this.snapshotRows("tagdata_blobs"));
+			const scored =
+				this.metaGet("corpus_staged") === "1"
+					? wasm.partitionTablesRestorePull("corpus", this.snapshotRows("corpus_blobs"))
+					: wasm.partitionTablesRestorePull("legacy-corpus", this.snapshotRows("tagdata_blobs"));
+			console.log(
+				`Aggregation sealed for partition ${pp.partition}/${pp.partitions.length}: ${winners} winners; ` +
+					`kept ${art} illustrations' art tags and ${scored} names' scores`,
+			);
 			wasm.finalizeBegin();
 			this.ctx.storage.transactionSync(() => {
 				this.metaSet("agg_sealed", "1");

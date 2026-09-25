@@ -2288,6 +2288,20 @@ impl CorpusTables {
         self.scores.is_some()
     }
 
+    /// A SEALED table from parts already computed elsewhere — the wasm import's partition-scoped
+    /// restore, which reads a sealed snapshot back keeping only the names and illustration groups
+    /// one partition's rows can ask about. Every lookup those rows make is answered exactly as the
+    /// whole table would answer it; nothing else is asked of a partition's copy.
+    pub fn sealed_from_parts(scores: HashMap<String, f64>, illust: HashMap<String, u64>, artists: ArtistSpellings) -> Self {
+        CorpusTables { pending: Vec::new(), scores: Some(scores), illust, artists, index: HashMap::new() }
+    }
+
+    /// The card name inside an [`illust_group_key`] — what the partition-scoped restore filters the
+    /// illustration counts on. Empty for a key without the separator, which no key written here has.
+    pub fn illust_key_name(key: &str) -> &str {
+        key.split_once('\u{1f}').map_or("", |(_, name)| name)
+    }
+
     /// This name's cubecobra score, or None when the table is unsealed or the name was never seen.
     pub fn cubecobra(&self, card_name: &str) -> Option<f64> {
         self.scores.as_ref().and_then(|m| m.get(card_name).copied())
@@ -3064,6 +3078,38 @@ mod tests {
     fn fixture(name: &str) -> Value {
         let path = format!("{}/src/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"));
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// The partition-scoped restore rebuilds a sealed table from a partition's share of the entries
+    /// and filters the illustration counts on the name inside each key: both must answer exactly
+    /// what the whole table answers for the names kept.
+    #[test]
+    fn a_table_sealed_from_parts_answers_like_the_whole_for_its_names() {
+        let mut whole = CorpusTables::default();
+        whole.observe("Alpha", Some(10), Some("ill-1"));
+        whole.observe("Alpha", Some(10), Some("ill-1"));
+        whole.observe("Beta", Some(20), Some("ill-1"));
+        whole.observe("Gamma", None, None);
+        whole.seal();
+        let json = serde_json::to_value(&whole).unwrap();
+        let illust: HashMap<String, u64> = serde_json::from_value(json["illust"].clone()).unwrap();
+        let keep = |name: &str| name == "Alpha" || name == "Gamma";
+        let scores: HashMap<String, f64> = serde_json::from_value::<HashMap<String, f64>>(json["scores"].clone())
+            .unwrap()
+            .into_iter()
+            .filter(|(n, _)| keep(n))
+            .collect();
+        let illust: HashMap<String, u64> =
+            illust.into_iter().filter(|(k, _)| keep(CorpusTables::illust_key_name(k))).collect();
+        let part = CorpusTables::sealed_from_parts(scores, illust, ArtistSpellings::new());
+        assert!(part.is_sealed());
+        for name in ["Alpha", "Gamma"] {
+            assert_eq!(part.cubecobra(name), whole.cubecobra(name));
+            assert_eq!(part.illustration_count(Some("ill-1"), name), whole.illustration_count(Some("ill-1"), name));
+        }
+        assert_eq!(part.illustration_count(Some("ill-1"), "Alpha"), 2);
+        assert_eq!(part.cubecobra("Beta"), None, "a name the partition never carried is not kept");
+        assert_eq!(CorpusTables::illust_key_name(&illust_group_key("ill-9", "A // B")), "A // B");
     }
 
     /// The address key's spelling is WIRE FORMAT: `setNumberKey` in src/engine/routing-filter.ts

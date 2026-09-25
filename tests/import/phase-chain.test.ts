@@ -164,13 +164,16 @@ describe("the coordinator never deletes staging in one commit", () => {
 		expect(src.match(/beginPurge\("blobs"/g)?.length ?? 0).toBe(1);
 	});
 
-	test("the TagData snapshot is packed once on the way into SQLite and unpacked on the way out", () => {
-		// Serde's JSON compresses several-fold, the table is rewritten three times a run, and every
-		// rewrite is churn the pacing sleeps on. unpackBlob passes an unpacked (older) snapshot through.
-		const write = src.slice(src.indexOf("private writeTagSnapshot("), src.indexOf("private restoreTags("));
-		expect(write).toContain("packBlob(blob.subarray(");
-		const read = src.slice(src.indexOf("private tagSnapshotBytes("), src.indexOf("private writeTagSnapshot("));
-		expect(read).toContain("unpackBlob(new Uint8Array(r.bytes as ArrayBuffer))");
+	test("the snapshots are packed once on the way into SQLite and unpacked on the way out", () => {
+		// Serde's JSON compresses several-fold, the tables are rewritten every canonical and scores
+		// slice, and every rewrite is churn the pacing sleeps on. unpackBlob passes an unpacked (older)
+		// snapshot through. Both directions stream a row at a time: no merged whole-snapshot buffer.
+		const write = src.slice(src.indexOf("private writeSnapshot("), src.indexOf("private ensureWasmContinuity("));
+		expect(write).toContain("exactBuffer(packBlob(chunk))");
+		const read = src.slice(src.indexOf("private snapshotRows("), src.indexOf("private writeSnapshot("));
+		expect(read).toContain("unpackBlob(new Uint8Array(row.bytes))");
+		expect(src).not.toContain("tagsRestore(");
+		expect(src).not.toContain("tagSnapshotBytes");
 	});
 
 	test("an armed alarm that is overdue by the idle window does not keep a run alive", () => {
