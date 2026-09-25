@@ -11,13 +11,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { edgeCacheUrl } from "../../src/engine/edge-cache";
 import { partitionOfOracleId } from "../../src/engine/partition";
 import {
+	firstDecided,
 	mergeAutocomplete,
 	PartitionedEngine,
 	raceFuzzyCandidates,
 	resetCatalogMemoForTests,
 	sumCounts,
 } from "../../src/engine/partitioned-engine";
-import type { RemoteEngine } from "../../src/engine/remote-engine";
+import { EngineCallTimeoutError, type RemoteEngine } from "../../src/engine/remote-engine";
 import {
 	buildRoutingFilter,
 	externalIdKey,
@@ -347,6 +348,140 @@ describe("point routes", () => {
 		const { engine, of } = build();
 		await engine.randomCardsAsObjects(1, ["name"]);
 		expect(of("randomCardsAsObjects").length).toBe(1);
+	});
+});
+
+/** A promise the test settles by hand — a partition that has not answered YET. */
+function deferred<T>() {
+	let resolve: (value: T) => void = () => {};
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
+/** Whether `promise` has settled once the microtasks queued so far have run. */
+async function settledYet(promise: Promise<unknown>): Promise<boolean> {
+	let done = false;
+	const mark = () => {
+		done = true;
+	};
+	promise.then(mark, mark);
+	for (let i = 0; i < 10; i++) await Promise.resolve();
+	return done;
+}
+
+/** A partition that never answers: the object the 35s deadline was waiting on. */
+const NEVER = new Promise<never>(() => {});
+
+describe("a point lookup's fan-out answers when its answer is DECIDED, not when the slowest partition does", () => {
+	// DeckGen, 2026-09-25: `/cards/plst/MMA-154` fanned out to ten weur partitions because its fresh
+	// isolate's routing filter arrived 144ms after ROUTING_WAIT_MS. The owner answered in 258ms; the
+	// request 500'd at +35.000s on a partition that never answered. `/cards/m13/54`, 20:39, likewise.
+
+	describe("firstDecided", () => {
+		test("lowest: a later partition's answer waits on the earlier ones, then wins over the ones after it", async () => {
+			const p0 = deferred<string | null>();
+			const decided = firstDecided([p0.promise, Promise.resolve("p1"), NEVER], "lowest");
+			expect(await settledYet(decided)).toBe(false);
+			p0.resolve(null);
+			expect(await decided).toBe("p1");
+		});
+
+		test("lowest: the lower of two answers wins, whichever arrives first", async () => {
+			const p0 = deferred<string | null>();
+			const decided = firstDecided([p0.promise, Promise.resolve("p1")], "lowest");
+			p0.resolve("p0");
+			expect(await decided).toBe("p0");
+		});
+
+		test("lowest: a failure BEFORE the answer fails the lookup; one after it does not", async () => {
+			const boom = new EngineCallTimeoutError("engine RPC did not answer within 35000ms");
+			await expect(firstDecided([Promise.reject(boom), Promise.resolve("p1")], "lowest")).rejects.toBe(boom);
+			expect(await firstDecided([Promise.resolve(null), Promise.resolve("p1"), Promise.reject(boom)], "lowest")).toBe(
+				"p1",
+			);
+		});
+
+		test("sole: the first answer wins while other partitions are still out", async () => {
+			expect(await firstDecided([NEVER, NEVER, Promise.resolve("owner"), NEVER], "sole")).toBe("owner");
+		});
+
+		test("sole: a failure elsewhere does not fail an answer that arrives later", async () => {
+			const owner = deferred<string | null>();
+			const decided = firstDecided([Promise.reject(new Error("Network connection lost.")), owner.promise], "sole");
+			expect(await settledYet(decided)).toBe(false);
+			owner.resolve("owner");
+			expect(await decided).toBe("owner");
+		});
+
+		test("a miss is reported only when EVERY partition answered null; a failure then is the error, not a 404", async () => {
+			expect(await firstDecided([Promise.resolve(null), Promise.resolve(null)], "sole")).toBeNull();
+			expect(await firstDecided([Promise.resolve(null), Promise.resolve(null)], "lowest")).toBeNull();
+			const boom = new Error("Network connection lost.");
+			await expect(firstDecided([Promise.resolve(null), Promise.reject(boom)], "sole")).rejects.toBe(boom);
+			expect(await settledYet(firstDecided([Promise.resolve(null), NEVER], "sole"))).toBe(false);
+			expect(await firstDecided([], "sole")).toBeNull();
+		});
+	});
+
+	/** A partitioned engine with some partitions' methods replaced (a hang, a failure). */
+	function buildWith(
+		perPartition: Record<number, Record<string, unknown>>,
+		overrides: Record<number, Record<string, () => Promise<unknown>>>,
+		routing: RoutingFilter | null = null,
+	) {
+		return new PartitionedEngine(
+			(p) => ({ ...fakeRemote(p, [], perPartition[p] ?? {}), ...(overrides[p] ?? {}) }) as unknown as RemoteEngine,
+			manifestOf(N),
+			async () => manifestOf(N),
+			routing,
+		);
+	}
+
+	const k = setNumberKey("plst", "MMA-154");
+	const both = [{ id: "admirers" }, { id: "admirers" }];
+
+	test("/cards/:set/:number with no filter: the owner's card, while another partition never answers", async () => {
+		const engine = buildWith({ 2: { firstOfEach: { id: "admirers" } } }, { 0: { scryfallFirstOfEach: () => NEVER } });
+		expect(await engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).toEqual(both);
+	});
+
+	test("/cards/:set/:number with no filter: a partition that fails does not fail the owner's answer", async () => {
+		const engine = buildWith(
+			{ 3: { firstOfEach: { id: "admirers" } } },
+			{ 1: { scryfallFirstOfEach: () => Promise.reject(new EngineCallTimeoutError("did not answer")) } },
+		);
+		expect(await engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).toEqual(both);
+	});
+
+	test("/cards/:set/:number: a hinted miss's fan-out answers the same way", async () => {
+		const engine = buildWith(
+			{ 3: { firstOfEach: { id: "admirers" } } },
+			{ 2: { scryfallFirstOfEach: () => NEVER } },
+			filterOf([{ key: k, partition: 1 }]),
+		);
+		expect(await engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).toEqual(both);
+	});
+
+	test("/cards/:set/:number: with no card anywhere and a partition failed, the failure is the answer, never a 404", async () => {
+		const boom = new EngineCallTimeoutError("did not answer");
+		const engine = buildWith({}, { 1: { scryfallFirstOfEach: () => Promise.reject(boom) } });
+		await expect(engine.scryfallFirstOfEach(["en", "any"], "https://x", k)).rejects.toBe(boom);
+	});
+
+	test("a bare id keeps the LOWEST answer: a partition after it never answering does not matter", async () => {
+		const engine = buildWith({ 1: { cardById: { name: "Hit" } } }, { 3: { scryfallCardById: () => NEVER } });
+		expect(await engine.scryfallCardById("some-uuid", "https://x")).toEqual({ name: "Hit" });
+	});
+
+	test("a bare id still waits on a partition BEFORE its answer, which could hold the lower copy", async () => {
+		const p0 = deferred<Record<string, unknown> | null>();
+		const engine = buildWith({ 2: { cardById: { name: "Upper" } } }, { 0: { scryfallCardById: () => p0.promise } });
+		const answer = engine.scryfallCardById("some-uuid", "https://x");
+		expect(await settledYet(answer)).toBe(false);
+		p0.resolve({ name: "Lower" });
+		expect(await answer).toEqual({ name: "Lower" });
 	});
 });
 

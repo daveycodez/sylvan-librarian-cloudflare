@@ -9,6 +9,9 @@ declare module "sylvan-engine-wasm" {
 	/** Wasm linear memory reserved by the default instance, in bytes — a
 	 * high-water mark, since it never shrinks. Provided by the Workers shim. */
 	export function linearMemoryBytes(): number;
+	/** Every engine instance this isolate holds, by label, with its linear memory in bytes —
+	 * the co-location gauge the store loader logs. Provided by the Workers shim. */
+	export function residentEngines(): { label: string; bytes: number }[];
 	/**
 	 * One wasm engine instance per Durable Object label (Workers shim). The Rust
 	 * engine's store is module-global per INSTANCE, and colocated partition

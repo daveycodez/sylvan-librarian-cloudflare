@@ -1081,3 +1081,38 @@ describe("a store load that stalls", () => {
 		}
 	});
 });
+
+describe("every store load says what its isolate holds (the co-location gauge)", () => {
+	const MB = 1048576;
+
+	test("a fresh isolate's first load: load #1, itself alone, logged at info", () => {
+		const clause = store.isolateClause(1, 0, [{ label: "engine-weur-p6", bytes: 45.6 * MB }]);
+		expect(clause.text).toBe("isolate load #1, holds 1 engine(s), 45.6MB linear: engine-weur-p6 45.6MB");
+		expect(clause.crowded).toBe(false);
+	});
+
+	test("two ~45MB partitions fit the 128MB isolate and are not flagged", () => {
+		const clause = store.isolateClause(2, 31_400, [
+			{ label: "engine-enam-p8", bytes: 44.4 * MB },
+			{ label: "engine-enam-p9", bytes: 47.4 * MB },
+		]);
+		expect(clause.text).toBe(
+			"isolate load #2 (first 31s ago), holds 2 engine(s), 91.8MB linear: engine-enam-p8 44.4MB, engine-enam-p9 47.4MB",
+		);
+		expect(clause.crowded).toBe(false);
+	});
+
+	test("a third partition in the isolate is flagged: three do not fit beside the JS heap", () => {
+		const clause = store.isolateClause(3, 40_000, [
+			{ label: "engine-enam-p7", bytes: 44.2 * MB },
+			{ label: "engine-enam-p8", bytes: 44.4 * MB },
+			{ label: "engine-enam-p9", bytes: 47.4 * MB },
+		]);
+		expect(clause.crowded).toBe(true);
+		expect(clause.text).toContain("holds 3 engine(s), 136.0MB linear");
+	});
+
+	test("one oversized instance is flagged by bytes alone", () => {
+		expect(store.isolateClause(1, 0, [{ label: "x", bytes: store.CROWDED_ISOLATE_BYTES }]).crowded).toBe(true);
+	});
+});

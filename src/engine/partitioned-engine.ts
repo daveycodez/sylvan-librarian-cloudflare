@@ -38,7 +38,12 @@
 //                                      the target
 //   set + collector number             1 when the routing filter knows the
 //   (/cards/:set/:number)              address (setNumberKey), else N; a
-//                                      hinted miss is 1 + (N-1)
+//                                      hinted miss is 1 + (N-1). A fan-out
+//                                      answers with the FIRST card to arrive
+//                                      (one partition holds an address), and
+//                                      an id fan-out once its lowest answer is
+//                                      decided (firstDecided), never on the
+//                                      slowest object
 //   named exact                        1 when the routing filter places the
 //                                      name (nameKey) and that partition's
 //                                      probe settles it, else N probes
@@ -588,6 +593,94 @@ function parseCatalogTables(bytes: Uint8Array): CatalogTables | null {
 }
 
 /**
+ * How a point lookup's fan-out picks its answer, which is what decides how EARLY it may resolve.
+ *
+ *   "lowest"  the lowest partition answering non-null wins. A scryfall_id two partitions both
+ *             answer (46 in the real corpus) resolves to the lower one, which is also the
+ *             partition the routing filter stores. Resolved once partition p has answered
+ *             non-null and every partition before p has answered null.
+ *   "sole"    at most one partition CAN answer: a {set, collector_number} address, every printing
+ *             of which lives in one partition (store-build/routing-keys.tsv, 2026-09-24: 0 of its
+ *             `sn:` keys are emitted by two partitions). Resolved on the first non-null answer.
+ */
+export type FanOutAnswer = "lowest" | "sole";
+
+/**
+ * The fan-out's answer as soon as it is DECIDED, rather than when the slowest partition settles.
+ *
+ * This was `Promise.all`, and that made every partition a single point of failure: one object
+ * that did not answer within ENGINE_CALL_DEADLINE_MS failed a lookup another partition had
+ * already answered. Measured on DeckGen 2026-09-25: `/cards/plst/MMA-154` fanned out to ten
+ * weur partitions (its fresh isolate's routing filter took 204ms, past ROUTING_WAIT_MS); the
+ * owner, p6, answered in 258ms; the request 500'd at exactly +35.000s because another partition
+ * never answered. `/cards/m13/54` at 20:39 the same way: nine partitions answered within 4.1s, the
+ * tenth took the request down.
+ *
+ * A failure fails the lookup only when the answer DEPENDS on it: under "lowest", a failed
+ * partition before the first non-null one (it might have held the card); under "sole", a failure
+ * when no partition answered at all (a 404 would claim a card does not exist when one partition
+ * could not say). A miss is still only ever reported once EVERY partition has answered null.
+ *
+ * `runs` is in partition order. The calls this stops waiting for are not cancelled; their
+ * answers and errors are dropped, and every rejection is handled so none surfaces as unhandled.
+ */
+export function firstDecided<T>(runs: Promise<T | null>[], rule: FanOutAnswer): Promise<T | null> {
+	type Slot = { state: "pending" } | { state: "value"; value: T | null } | { state: "error"; error: unknown };
+	return new Promise<T | null>((resolve, reject) => {
+		const slots: Slot[] = runs.map(() => ({ state: "pending" }));
+		let settled = 0;
+		let decided = false;
+		const decide = () => {
+			if (decided) return;
+			if (rule === "sole") {
+				for (const s of slots) {
+					if (s.state === "value" && s.value !== null) {
+						decided = true;
+						resolve(s.value);
+						return;
+					}
+				}
+			} else {
+				for (const s of slots) {
+					// An earlier partition that has not answered could still be the one that wins.
+					if (s.state === "pending") break;
+					if (s.state === "error") {
+						decided = true;
+						reject(s.error);
+						return;
+					}
+					if (s.value !== null) {
+						decided = true;
+						resolve(s.value);
+						return;
+					}
+				}
+			}
+			if (settled < slots.length) return;
+			decided = true;
+			const failed = slots.find((s) => s.state === "error");
+			if (failed?.state === "error") reject(failed.error);
+			else resolve(null);
+		};
+		runs.forEach((run, i) => {
+			run.then(
+				(value) => {
+					slots[i] = { state: "value", value };
+					settled += 1;
+					decide();
+				},
+				(error: unknown) => {
+					slots[i] = { state: "error", error };
+					settled += 1;
+					decide();
+				},
+			);
+		});
+		decide();
+	});
+}
+
+/**
  * An engine object that did not answer in time, or kept failing with the platform's reset errors
  * after RemoteEngine's own retry. Worth trying ANOTHER object for; a query or store error is not.
  */
@@ -655,12 +748,13 @@ export class PartitionedEngine implements Engine {
 		return Promise.all(Array.from({ length: this.n }, (_, p) => run(this.at(p), p)));
 	}
 
-	private async firstNonNull<T>(run: (e: RemoteEngine) => Promise<T | null>): Promise<T | null> {
-		// Parallel, then FIRST BY PARTITION ORDER — deterministic even in the
-		// (id-keyed: impossible; name-keyed: vanishing) case of two answers.
-		const answers = await this.all((e) => run(e));
-		for (const a of answers) if (a !== null) return a;
-		return null;
+	private firstNonNull<T>(run: (e: RemoteEngine) => Promise<T | null>, rule: FanOutAnswer): Promise<T | null> {
+		// Parallel, then FIRST BY PARTITION ORDER (or the sole answer) — deterministic even in the
+		// case of two answers, and resolved as soon as it is decided (firstDecided).
+		return firstDecided(
+			Array.from({ length: this.n }, (_, p) => run(this.at(p))),
+			rule,
+		);
 	}
 
 	/**
@@ -676,16 +770,21 @@ export class PartitionedEngine implements Engine {
 	 * then asked exactly as before: total RPCs 1 + (N-1) = N, never more than the
 	 * fan-out it replaced.
 	 */
-	private async hinted<T>(key: string, run: (e: RemoteEngine) => Promise<T | null>): Promise<T | null> {
+	private async hinted<T>(
+		key: string,
+		run: (e: RemoteEngine) => Promise<T | null>,
+		rule: FanOutAnswer = "lowest",
+	): Promise<T | null> {
 		await this.routed();
 		const hint = this.routing?.lookup(key) ?? null;
-		if (hint === null || hint >= this.n) return this.firstNonNull(run);
+		if (hint === null || hint >= this.n) return this.firstNonNull(run, rule);
 		const first = await run(this.at(hint));
 		if (first !== null) return first;
 		const others = Array.from({ length: this.n }, (_, p) => p).filter((p) => p !== hint);
-		const answers = await Promise.all(others.map((p) => run(this.at(p))));
-		for (const a of answers) if (a !== null) return a;
-		return null;
+		return firstDecided(
+			others.map((p) => run(this.at(p))),
+			rule,
+		);
 	}
 
 	// ── search / listing: one RPC to the gather, or ONE to the owning partition ──
@@ -973,10 +1072,18 @@ export class PartitionedEngine implements Engine {
 			// Every printing at one address lives in one partition, so the partition holding a card
 			// for ANY of the trees holds the whole answer: the routed partition first, the rest only
 			// if it has none — one call for `/cards/:set/:number`, where every one was N.
-			const found = await this.hinted(addressKey, async (e) => {
-				const cards = await e.scryfallFirstOfEach(filterTreeJsons, baseUrl);
-				return cards.some((card) => card !== null) ? cards : null;
-			});
+			//
+			// And because only that one partition CAN answer, a fan-out (no filter yet, or a hint that
+			// missed) takes the first answer that arrives rather than waiting on every partition: an
+			// object that is slow or not answering cannot fail a lookup it has no part in ("sole").
+			const found = await this.hinted(
+				addressKey,
+				async (e) => {
+					const cards = await e.scryfallFirstOfEach(filterTreeJsons, baseUrl);
+					return cards.some((card) => card !== null) ? cards : null;
+				},
+				"sole",
+			);
 			return found ?? filterTreeJsons.map(() => null);
 		}
 		const perPartition = await this.all((e) => e.scryfallFirstOfEach(filterTreeJsons, baseUrl));

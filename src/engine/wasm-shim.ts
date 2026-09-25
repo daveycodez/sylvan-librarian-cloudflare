@@ -181,6 +181,18 @@ export function linearMemoryBytes(): number {
 	return instances.get(DEFAULT_LABEL)?.memory?.buffer.byteLength ?? 0;
 }
 
+/**
+ * Every engine instance THIS ISOLATE holds, by label, with its linear memory in bytes.
+ *
+ * The co-location gauge. Partition objects of one class may share an isolate, each instance's
+ * linear memory never shrinks, and the isolate's ceiling is 128MB — so two ~45MB partitions fit
+ * and three do not. The store loader logs this with every load: a line naming three labels is an
+ * isolate about to be reset for memory, and every object in it with it.
+ */
+export function residentEngines(): { label: string; bytes: number }[] {
+	return [...instances].map(([label, inst]) => ({ label, bytes: inst.memory?.buffer.byteLength ?? 0 }));
+}
+
 /** Everything the store loader calls, bound to one label's instance. */
 export interface EngineHandle {
 	begin_store_load(totalLen: number): void;

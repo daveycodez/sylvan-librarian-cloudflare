@@ -303,6 +303,48 @@ function tag(ctx?: LoadContext): string {
 	return ctx?.label ? `[${ctx.label}] ` : "";
 }
 
+/**
+ * What THIS ISOLATE has loaded, for the co-location half of every "store loaded" line.
+ *
+ * Two questions the 2026-09-25 DeckGen logs could not answer: whether a partition that reloads
+ * every ~30s (engine-enam-p8, 157 loads in 95 minutes) comes back in a NEW isolate each time or in
+ * the same one, and what else that isolate holds when it goes. `load #1` is a fresh isolate; the
+ * resident list is every engine instance beside this one, with its linear memory — which never
+ * shrinks, so two ~45MB partitions fit the 128MB isolate and three do not.
+ */
+let isolateLoads = 0;
+let isolateFirstLoadAt = 0;
+
+/** Linear memory past which a line is logged at WARN: under ~28MB left for the JS heap and a third store. */
+export const CROWDED_ISOLATE_BYTES = 100 * 1024 * 1024;
+
+/** The isolate clause of a "store loaded" line, and whether it reads as crowded. Pure, for the tests. */
+export function isolateClause(
+	loadNumber: number,
+	sinceFirstMs: number,
+	resident: readonly { label: string; bytes: number }[],
+): { text: string; crowded: boolean } {
+	const total = resident.reduce((sum, r) => sum + r.bytes, 0);
+	const mb = (bytes: number) => (bytes / 1048576).toFixed(1);
+	const list = resident.map((r) => `${r.label || "default"} ${mb(r.bytes)}MB`).join(", ");
+	return {
+		text:
+			`isolate load #${loadNumber}${loadNumber > 1 ? ` (first ${Math.round(sinceFirstMs / 1000)}s ago)` : ""}, ` +
+			`holds ${resident.length} engine(s), ${mb(total)}MB linear${list ? `: ${list}` : ""}`,
+		crowded: resident.length >= 3 || total >= CROWDED_ISOLATE_BYTES,
+	};
+}
+
+/** Count this load against the isolate, and describe what the isolate now holds. */
+function noteIsolateLoad(): { text: string; crowded: boolean } {
+	const now = Date.now();
+	isolateLoads += 1;
+	if (isolateLoads === 1) isolateFirstLoadAt = now;
+	// Guarded: a test's stand-in for the wasm module may not provide the gauge.
+	const resident = typeof wasm.residentEngines === "function" ? wasm.residentEngines() : [];
+	return isolateClause(isolateLoads, now - isolateFirstLoadAt, resident);
+}
+
 /** The `catalog()` wasm export's payload, parsed once per loaded store. */
 interface WasmCatalog {
 	card_types: Record<string, number>;
@@ -1375,11 +1417,12 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	// synchronous execution, so it cannot see the decompression or the copy into
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
 	// linear-memory figure is the honest one here, and is a high-water mark.
-	console.log(
+	const isolate = noteIsolateLoad();
+	(isolate.crowded ? console.warn : console.log)(
 		`${tag(ctx)}store loaded from ${cached ? `local cache (${format})` : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
 			`${source.storeBytes} bytes${!cached && source.gzipBytes ? ` from ${source.gzipBytes} gzipped` : ""}, ` +
 			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
-			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
+			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB); ${isolate.text}`,
 	);
 	return engine;
 }
