@@ -296,7 +296,7 @@ function collectionSchemaError(entry: Record<string, unknown>): ScryfallError | 
 //
 // Matched, because cache behaviour is part of what a client observes and this surface exists so
 // mtg-seeker can change one base URL and nothing else. Note these are Scryfall's, NOT /search's
-// `max-age=90, stale-while-revalidate=86400`: /search answers this project's own shape to its own
+// `max-age=90, s-maxage=3600, stale-while-revalidate=86400`: /search answers this project's own shape to its own
 // frontend, and the two surfaces have no reason to agree.
 //
 // ONE DEVIATION: `named` gets the SAME 16 hours as everything else, not Scryfall's 48. A card

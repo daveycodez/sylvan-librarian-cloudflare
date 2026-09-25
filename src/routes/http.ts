@@ -100,14 +100,20 @@ export function cacheHeader(seconds: number): Record<string, string> {
 }
 
 /**
- * Search-bearing responses: upstream's 90s max-age plus stale-while-revalidate
- * (a deliberate deviation, see README): Workers Cache serves an expired entry
- * instantly while refreshing in the background, turning repeat-query cold
- * isolate hits into edge-speed responses. A day of SWR bounds staleness at
- * one nightly import cycle.
+ * Search-bearing responses: upstream's 90s max-age for the BROWSER, plus stale-while-revalidate
+ * (a deliberate deviation, see README): Workers Cache serves an expired entry instantly while
+ * refreshing in the background, turning repeat-query cold isolate hits into edge-speed responses.
+ * A day of SWR bounds staleness at one nightly import cycle.
+ *
+ * The EDGE keeps an entry fresh for an hour (`s-maxage=3600`, backlog s8): with SWR the reader
+ * sees no difference, but each 90 s expiry was a background refresh run — a Worker invocation and
+ * an engine gather — for a result that changes once a night. Not a day: the nightly purge is never
+ * retried and a manual import-store.sh recovery does not purge, so an hour caps what either can
+ * leave behind. Browsers stay at 90 s — nothing purges a browser. Deploys reset the edge anyway
+ * (Workers Cache is per version).
  */
 export function searchCacheHeader(): Record<string, string> {
-	return { "Cache-Control": "public, max-age=90, stale-while-revalidate=86400" };
+	return { "Cache-Control": "public, max-age=90, s-maxage=3600, stale-while-revalidate=86400" };
 }
 
 /**
@@ -135,14 +141,14 @@ export function pageCacheHeader(edgeSeconds = 3600): Record<string, string> {
 
 /**
  * A page with search results embedded in it. Same always-revalidate rule as any
- * other document — it names an asset URL too — over the search tier's shorter
- * edge TTL and stale-while-revalidate. The SWR stays on the SHARED cache only:
+ * other document — it names an asset URL too — over the search tier's edge TTL
+ * (an hour, as searchCacheHeader) and stale-while-revalidate. The SWR stays on the SHARED cache only:
  * as a browser directive it let a client render a day-old document, and so a
  * day-old bundle pointer. /search's JSON keeps searchCacheHeader() unchanged; it
  * carries no asset URL.
  */
 export function searchPageCacheHeader(): Record<string, string> {
-	return { "Cache-Control": "public, max-age=0, must-revalidate, s-maxage=90, stale-while-revalidate=86400" };
+	return { "Cache-Control": "public, max-age=0, must-revalidate, s-maxage=3600, stale-while-revalidate=86400" };
 }
 
 /** Upstream set_no_store_header. */

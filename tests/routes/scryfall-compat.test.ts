@@ -988,7 +988,7 @@ describe("cache headers", () => {
 
 	test("/search keeps its own tier — the two surfaces have no reason to agree", async () => {
 		expect((await testDispatch(ctx, "/search?q=elf")).headers.get("Cache-Control")).toBe(
-			"public, max-age=90, stale-while-revalidate=86400",
+			"public, max-age=90, s-maxage=3600, stale-while-revalidate=86400",
 		);
 	});
 });

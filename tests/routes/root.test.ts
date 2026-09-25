@@ -63,7 +63,7 @@ describe("_root with a search query", () => {
 		const res = await testDispatch(makeCtx(), "/?q=elf");
 		expect(res.status).toBe(200);
 		expect(res.headers.get("Cache-Control")).toBe(
-			"public, max-age=0, must-revalidate, s-maxage=90, stale-while-revalidate=86400",
+			"public, max-age=0, must-revalidate, s-maxage=3600, stale-while-revalidate=86400",
 		);
 		const html = await res.text();
 		expect(html).not.toContain("<!-- SERVER_SIDE_RESULTS -->");

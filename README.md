@@ -682,8 +682,10 @@ The complete list of intentional differences:
 - **Fixed site title**: pages always say "Sylvan Librarian" instead of
   upstream's hostname-derived name. The derivation port stays tested in
   `src/routes/site-name.ts`.
-- **`stale-while-revalidate=86400` on search responses**, so repeat queries
-  never pay a cold start. Upstream sends plain `max-age=90`.
+- **`s-maxage=3600, stale-while-revalidate=86400` on search responses**, so
+  repeat queries never pay a cold start and the edge refreshes a result at most
+  hourly; browsers keep upstream's `max-age=90`. Upstream sends plain
+  `max-age=90`.
 - **Assets are versioned by path, not by query.** Upstream appends
   `?v=<content hash>` to a fixed path; here the hash is the filename
   (`/static/app.<hash>.min.js`), as Vite and TanStack Start emit it. Upstream

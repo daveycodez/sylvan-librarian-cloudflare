@@ -65,7 +65,7 @@ describe("search param coercion", () => {
 			title: "Invalid Limit",
 			description: `Limit must be an integer between 0 and ${paginationCeiling()}.`,
 		});
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, s-maxage=3600, stale-while-revalidate=86400");
 	});
 
 	// The ceiling grows with wall-clock time (upstream #1036), so the test asks the same function
@@ -223,7 +223,7 @@ describe("search envelope", () => {
 	test("engine-path envelope keys, values and order", async () => {
 		const res = await testDispatch(makeCtx(), "/search?q=elf");
 		expect(res.status).toBe(200);
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, s-maxage=3600, stale-while-revalidate=86400");
 		expect(res.headers.get("content-type")).toBe("application/json");
 		const body = await json(res);
 		expect(Object.keys(body)).toEqual([
@@ -299,7 +299,7 @@ describe("search failure modes", () => {
 			title: "Invalid Search Query",
 			description: 'Failed to parse query: "PARSE_FAIL(("',
 		});
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, stale-while-revalidate=86400");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=90, s-maxage=3600, stale-while-revalidate=86400");
 	});
 
 	test("a query that PARSES to a bare value is a 400, and never reaches the engine", async () => {
