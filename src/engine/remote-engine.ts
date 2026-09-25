@@ -734,17 +734,10 @@ export class RemoteEngine implements Engine {
 	 * reads absent, which costs the router a fan-out, never an answer).
 	 */
 	async scryfallExactNameProbe(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe> {
-		try {
-			const { probe } = await this.searchRpc(() =>
-				this.stub.scryfallExactNameProbe(folded, setCode, baseUrl, currentShardWidth(this.region)),
-			);
-			return probe;
-		} catch (err) {
-			if (!isMissingRpcMethod(err, "scryfallExactNameProbe")) throw err;
-			const rank = await this.scryfallExactNameRank(folded, setCode);
-			const card = rank === null ? null : await this.scryfallExactName(folded, setCode, baseUrl);
-			return { rank, present: rank !== null, card };
-		}
+		const { probe } = await this.searchRpc(() =>
+			this.stub.scryfallExactNameProbe(folded, setCode, baseUrl, currentShardWidth(this.region)),
+		);
+		return probe;
 	}
 
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
@@ -784,11 +777,4 @@ export class RemoteEngine implements Engine {
 		);
 		return decodeCollectionPacket(packet, batch);
 	}
-}
-
-/** The error workerd raises when a stub's object has no such method — an object still on the
- * previous build during a rolling deploy (see scryfallExactNameProbe). */
-function isMissingRpcMethod(err: unknown, method: string): boolean {
-	const message = err instanceof Error ? err.message : String(err);
-	return message.includes(`does not implement the method "${method}"`);
 }
