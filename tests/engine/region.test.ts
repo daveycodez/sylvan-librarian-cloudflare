@@ -152,7 +152,7 @@ describe("the region list is every location hint (backlog g2)", () => {
 describe("routing by the colo the isolate runs in (backlog p4)", () => {
 	test("the colo decides, not the client's geography", () => {
 		// A US reader whose request entered at SIN runs every engine call from SIN.
-		expect(regionHint(req({ colo: "SIN", continent: "NA", longitude: "-122.4" }))).toBe("apac");
+		expect(regionHint(req({ colo: "SIN", continent: "NA", longitude: "-122.4" }))).toBe("apac-se");
 		expect(regionHint(req({ colo: "FRA", continent: "NA", longitude: "-74.0" }))).toBe("weur");
 	});
 
@@ -185,11 +185,32 @@ describe("routing by the colo the isolate runs in (backlog p4)", () => {
 		}
 	});
 
-	test("every region some colo can reach — all of them once Asia splits (g3)", () => {
+	test("every location hint is reached by some colo (reachability, backlog g2/g3)", () => {
+		// Before p4/g3, me, apac-ne and apac-se could never be returned. A hint no colo reaches is a
+		// region this deployment claims to support and never serves.
 		const reached = new Set(Object.keys(COLOS).map((c) => hintForColo(c)));
-		// me is now reachable: CONTINENT_TO_HINT never returned it (Middle East clients are "AS").
-		for (const hint of ["wnam", "enam", "weur", "eeur", "apac", "oc", "sam", "afr", "me"] as const) {
-			expect(reached.has(hint)).toBe(true);
-		}
+		expect([...reached].sort()).toEqual([...REGION_HINTS].sort());
+	});
+
+	test("Asia splits by the colo's country (backlog g3)", () => {
+		const cases: [string, DurableObjectLocationHint][] = [
+			["NRT", "apac-ne"],
+			["KIX", "apac-ne"],
+			["ICN", "apac-ne"],
+			["ULN", "apac-ne"],
+			["GUM", "apac-ne"],
+			["SIN", "apac-se"],
+			["HKG", "apac-se"],
+			["TPE", "apac-se"],
+			["CGK", "apac-se"],
+			["BKK", "apac-se"],
+			["MNL", "apac-se"],
+			["BOM", "apac"],
+			["DEL", "apac"],
+			["DAC", "apac"],
+			["KHI", "apac"],
+			["NQZ", "apac"],
+		];
+		for (const [colo, hint] of cases) expect([colo, hintForColo(colo)]).toEqual([colo, hint]);
 	});
 });

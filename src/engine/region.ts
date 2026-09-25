@@ -93,8 +93,25 @@ export function hintForColo(colo: string): DurableObjectLocationHint | null {
 		case "OC":
 			return "oc";
 		case "AP":
-			return "apac";
+			return asiaHint(entry[2], entry[0]);
 	}
+}
+
+/**
+ * Asia-Pacific by the colo's country (backlog g3): Cloudflare added apac-ne (Japan, Korea…) and
+ * apac-se (Singapore, Indonesia…) in June 2026, and most Asian traffic enters at SIN, HKG and TPE
+ * (~3,060 requests over 2 days) while apac objects sit in ICN. Everything else in Asia — India,
+ * Bangladesh, Nepal, Pakistan, Sri Lanka, Central Asia — stays on apac, which keeps serving.
+ * Guam goes with Japan, its nearest neighbour. Mainland China (no colo in the table today) splits
+ * at 30°N.
+ */
+const APAC_NE = new Set(["JP", "KR", "KP", "MN", "GU"]);
+const APAC_SE = new Set(["SG", "MY", "ID", "TH", "VN", "PH", "KH", "LA", "MM", "BN", "TL", "HK", "MO", "TW"]);
+function asiaHint(country: string, lat: number): DurableObjectLocationHint {
+	if (APAC_NE.has(country)) return "apac-ne";
+	if (APAC_SE.has(country)) return "apac-se";
+	if (country === "CN") return lat >= 30 ? "apac-ne" : "apac-se";
+	return "apac";
 }
 
 /**
