@@ -170,7 +170,15 @@ function rethrowForRpc(err: unknown): never {
 
 export class SearchEngine extends DurableObject<Env> {
 	/** Searches already executing here; snapshotted per request as the queue-
-	 * depth (`load`) signal. */
+	 * depth (`load`) signal.
+	 *
+	 * GATHERS ARE NOT COUNTED. A gather spends its wall time awaiting its siblings' RPCs, not this
+	 * object's CPU, so two gathers in flight are concurrency, not a queue — and on a warm object
+	 * they were the ONLY way `load` could reach 2: every other handler runs synchronously once its
+	 * engine is in hand, and the next RPC is not delivered until it returns. Counted, they opened
+	 * weur-1 on 2026-09-22 08:20:56 (11 isolates in 230ms, "sustained queue depth") during a
+	 * DeckGen burst with no store load anywhere in the window; weur-1 then served ~30 requests in
+	 * 48h. See instrumentedGather. */
 	private inFlightSearches = 0;
 	/** Arrivals per second, for the request-RATE the shard controller gates
 	 * expansion on. Rate is the cause-side measurement: latency rises for
@@ -489,16 +497,14 @@ export class SearchEngine extends DurableObject<Env> {
 		run: () => Promise<T>,
 	): Promise<T & SearchTelemetry> {
 		const now = Date.now();
+		// `load` is what is executing HERE; this gather is not added to it (see inFlightSearches).
 		const load = this.inFlightSearches;
 		const rate = this.searchRate(now);
 		const shards = this.rendezvous(reportedShards ?? 1, now);
-		this.inFlightSearches += 1;
 		try {
 			return { ...(await run()), load, rate, shards };
 		} catch (err) {
 			rethrowForRpc(err);
-		} finally {
-			this.inFlightSearches -= 1;
 		}
 	}
 

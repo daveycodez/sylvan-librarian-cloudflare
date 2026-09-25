@@ -115,11 +115,33 @@ describe("what a sample reports", () => {
 		expect(reportEngineLatency).toHaveBeenCalledTimes(1);
 	});
 
-	test("a wake-carrying answer reports load and rate but not latency", async () => {
-		await search({ acquireMs: 950, load: 1, rate: 60 });
-		expect(reportEngineLoad).toHaveBeenCalledWith("wnam", 1);
+	test("a wake-carrying answer reports its rate, but neither its depth nor its latency", async () => {
+		// Its depth is the queue behind the object's own store load, not a shortage of replicas.
+		await search({ acquireMs: 950, load: 7, rate: 60 });
+		expect(reportEngineLoad).not.toHaveBeenCalled();
 		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 60);
 		expect(reportEngineLatency).not.toHaveBeenCalled();
+	});
+
+	test("overload during a wake still reaches the controller: rate on the wake, depth right after it", async () => {
+		// The arrivals are real demand whatever the store was doing, so the rate rider — the primary
+		// trigger — is untouched; and the first warm answer after the load reports depth again.
+		await search({ acquireMs: 1_200, load: 9, rate: 58 });
+		await search({ acquireMs: 0, load: 3, rate: 58 });
+		expect(reportEngineRate).toHaveBeenCalledTimes(2);
+		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 58);
+		expect(reportEngineLoad).toHaveBeenCalledTimes(1);
+		expect(reportEngineLoad).toHaveBeenCalledWith("wnam", 3);
+	});
+
+	test("the streaming transport drops a wake-carrying depth the same way", async () => {
+		const stub = {
+			fetch: async () =>
+				new Response("{}", { status: 200, headers: { "x-acquire-ms": "830", "x-load": "6", "x-rate": "12" } }),
+		} as unknown as Stub;
+		await new RemoteEngine(stub, "weur").scryfallSearchPage({ limit: 10 } as never, "https://x", {} as never, {});
+		expect(reportEngineLoad).not.toHaveBeenCalled();
+		expect(reportEngineRate).toHaveBeenCalledWith("weur", 12);
 	});
 
 	test("a DO that sends no riders reports nothing rather than zeroes", async () => {

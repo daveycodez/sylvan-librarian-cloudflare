@@ -485,3 +485,79 @@ describe("a cold gather wakes every partition at once", () => {
 		expect(page.acquireMs).toBe(900);
 	});
 });
+
+describe("a gather awaiting its siblings is concurrency, not queue depth", () => {
+	// 2026-09-22 08:20:56, DeckGen: 11 isolates opened weur-1 on "sustained queue depth" within
+	// 230ms, with no store load anywhere in weur for the 25s before. On a warm object every
+	// non-gather handler runs to completion before the next RPC is delivered, so the only thing
+	// that could have been "in flight" at an arrival was a gather waiting on its siblings.
+	test("an arrival during an in-flight warm gather reports load 0, and so does a second gather", async () => {
+		let releaseSibling = () => {};
+		const siblingGate = new Promise<void>((resolve) => {
+			releaseSibling = resolve;
+		});
+		const row = new TextEncoder().encode('{"name":"x"}');
+		const keys = (p: number) =>
+			encodeKeyPacket({ total: 1, entries: [{ key: new Uint8Array([p + 1]), vpid: 0 }], inlineRows: [row] });
+		gatherStore = {
+			ownLoad: Promise.resolve(),
+			loaded: true,
+			ownLoadMs: 0,
+			events: [],
+			manifest: {
+				store_key: "card-store-v1-7.store",
+				store_bytes: 20,
+				built_at: "7",
+				card_count: 2,
+				partition_count: 2,
+				partitions: [
+					{ store_key: "card-store-v1-7-p0.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
+					{ store_key: "card-store-v1-7-p1.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
+				],
+			},
+			ops: {
+				storeKey: "card-store-v1-7-p0.store",
+				sortKeyVersion: () => 1,
+				queryKeys: () => keys(0),
+				fetchRows: () => encodeRowPacket([row]),
+			},
+		};
+		const sibling = {
+			async searchKeys() {
+				await siblingGate;
+				return {
+					packed: keys(1),
+					storeKey: "card-store-v1-7-p1.store",
+					sortKeyVersion: 1,
+					shape: "rows",
+					acquireMs: 0,
+				};
+			},
+			async fetchRows() {
+				return { rowsBytes: encodeRowPacket([row]), shape: "rows" };
+			},
+		};
+		const env = { SEARCH_ENGINE: { idFromName: (n: string) => n, get: () => sibling } };
+		const storage = { sql: { exec: () => ({ toArray: () => [] }) } };
+		const engine = new SearchEngine(
+			{ waitUntil: () => {}, storage, id: { name: "engine-weur-p0" } } as never,
+			env as never,
+		) as unknown as {
+			gatherSearchAsJson(o: unknown, shape: string): Promise<{ load: number }>;
+			searchCardsAsObjects(o: unknown): Promise<{ load: number }>;
+		};
+		const OPTS = { filterTreeJson: "{}", unique: "printing", orderby: "name", limit: 2, offset: 0, fields: ["name"] };
+		try {
+			const first = engine.gatherSearchAsJson(OPTS, "rows");
+			const second = engine.gatherSearchAsJson(OPTS, "rows");
+			// Both gathers are now parked on their sibling; a plain search arrives.
+			const plain = await engine.searchCardsAsObjects({ limit: 1 });
+			expect(plain.load).toBe(0);
+			releaseSibling();
+			expect((await first).load).toBe(0);
+			expect((await second).load).toBe(0);
+		} finally {
+			gatherStore = null;
+		}
+	});
+});

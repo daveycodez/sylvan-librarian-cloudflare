@@ -105,7 +105,12 @@
 //    Blind on the warm path — a warm search is synchronous CPU whose only
 //    await resolves in a microtask, and microtasks drain before the event
 //    loop delivers a queued RPC, so waiting requests pile up OUTSIDE the
-//    counter's view. It mostly detects wake-time pileups.
+//    counter's view. What it used to see instead was not load: wake-time
+//    pileups (requests queued behind the object's own store load) and
+//    gathers awaiting their siblings. Both are now excluded — wake-carrying
+//    replies at the caller (remote-engine.ts), gathers at the DO
+//    (search-engine-do.ts inFlightSearches) — so on today's handlers this
+//    trigger is effectively quiet, and RATE is what expands.
 // 2. LATENCY TREND (reportEngineLatency): the isolate's own wall time per
 //    RPC, compared against a slow "healthy floor" EWMA. Event-loop queuing
 //    inside the DO is invisible to counters but shows up here as sustained

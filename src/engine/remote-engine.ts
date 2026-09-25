@@ -521,7 +521,14 @@ export class RemoteEngine implements Engine {
 		// The rendezvous: adopt a fan-out this region already reached, so an
 		// isolate that never expanded on its own stops pinning shard 0.
 		if (shards !== undefined) adoptShardWidth(this.region, shards);
-		if (load !== undefined) reportEngineLoad(this.region, load);
+		// A wake-carrying reply's depth is the queue behind the object's OWN store load: every
+		// request that arrived during the load waited for it and reports the ones before it. That
+		// says nothing about whether one more replica is needed once the store is in memory, and a
+		// burst that merely happened to meet a reload would open a replica that then idles. Its
+		// RATE is still reported — arrivals are demand whether or not the store was loaded — so
+		// real overload during a wake still expands on the rate bar, and on depth in the warm
+		// replies that follow it.
+		if (load !== undefined && !acquireMs) reportEngineLoad(this.region, load);
 		if (rate !== undefined) reportEngineRate(this.region, rate);
 		// Wake-carrying calls are excluded from the latency signal: their wall time
 		// is legitimately inflated by the load, so reporting them would let every
