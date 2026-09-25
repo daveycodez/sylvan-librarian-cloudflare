@@ -11,9 +11,7 @@
 // into the response — however many layers carry them there.
 
 import { CARD_OBJECT_FIELDS } from "../routes/scryfall-compat/objects";
-import { stringifyScryfall } from "../routes/scryfall-compat/respond";
-import { encodeUtf8 } from "./bytes";
-import type { CollectionBatch, CollectionBatchAnswer, CollectionKeyIdentifier, CollectionScope, Engine } from "./types";
+import type { CollectionBatch, CollectionBatchAnswer, CollectionScope } from "./types";
 
 /**
  * How a `{set, collector_number}` tree is answered: its first printing under these options, the
@@ -87,75 +85,4 @@ export function emptyCollectionAnswer(batch: CollectionBatch): CollectionBatchAn
 		names: none(batch.names.length),
 		nameRanks: new Array<number[] | null>(batch.names.length).fill(null),
 	};
-}
-
-/** The error workerd raises when a stub's object has no such method — see collectionBatchFromSeparateCalls. */
-export function isMissingRpcMethod(err: unknown, method: string): boolean {
-	const message = err instanceof Error ? err.message : String(err);
-	return message.includes(`does not implement the method "${method}"`);
-}
-
-/**
- * ROLLING-DEPLOY SHIM: one store's answer to a batch, through the per-kind methods that predate
- * `scryfallCollectionBatch`. For a request handler on this build that reaches an object still on
- * the previous one, which has no such method; it costs the calls the batch saves, for that one
- * object, for that one window. Delete it (and its caller in remote-engine.ts) once a later deploy
- * has shipped — no object can be older than the build before it.
- */
-export async function collectionBatchFromSeparateCalls(
-	engine: Pick<
-		Engine,
-		| "scryfallCardsByIds"
-		| "scryfallCardsByIdentifiers"
-		| "scryfallFirstOfEach"
-		| "scryfallCollectionNames"
-		| "scryfallCollectionNameRanks"
-	>,
-	batch: CollectionBatch,
-	baseUrl: string,
-	scope: CollectionScope | null,
-): Promise<CollectionBatchAnswer> {
-	const out = emptyCollectionAnswer(batch);
-	const bytes = (card: Record<string, unknown> | null | undefined) =>
-		card ? encodeUtf8(stringifyScryfall(card)) : null;
-	const ids = batch.keys.flatMap((k, i) => (k.kind === "scryfall_id" ? [{ i, id: k.id }] : []));
-	const others = batch.keys.flatMap((k, i) => (k.kind === "scryfall_id" ? [] : [{ i, key: k }]));
-	await Promise.all([
-		ids.length === 0
-			? null
-			: engine
-					.scryfallCardsByIds(
-						ids.map((e) => e.id),
-						baseUrl,
-					)
-					.then((cards) => {
-						const byId = new Map(cards.map((c) => [String(c.id).toLowerCase(), c]));
-						for (const { i, id } of ids) out.keys[i] = bytes(byId.get(id.toLowerCase()));
-					}),
-		others.length === 0
-			? null
-			: engine
-					.scryfallCardsByIdentifiers(
-						others.map((e) => e.key as CollectionKeyIdentifier),
-						baseUrl,
-					)
-					.then((cards) => {
-						for (const [j, { i }] of others.entries()) out.keys[i] = bytes(cards[j]);
-					}),
-		batch.trees.length === 0
-			? null
-			: engine.scryfallFirstOfEach(batch.trees, baseUrl).then((cards) => {
-					for (const [i, card] of cards.entries()) out.trees[i] = bytes(card);
-				}),
-		batch.names.length === 0
-			? null
-			: Promise.all([
-					engine.scryfallCollectionNameRanks(batch.names, scope),
-					engine.scryfallCollectionNames(batch.names, baseUrl, scope),
-				]).then(([ranks, cards]) => {
-					out.nameRanks = ranks;
-					for (const [i, card] of cards.entries()) out.names[i] = bytes(card);
-				}),
-	]);
-	return out;
 }

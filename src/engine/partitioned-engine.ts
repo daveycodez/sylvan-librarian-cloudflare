@@ -13,11 +13,8 @@
 //                                      isolate (CATALOG_CACHE); every later call
 //                                      is 0, like setsWithExtras
 //   random                             1, partition weighted by card_count
-//   oracle_id-keyed                    1, partitionOfOracleId; a miss re-reads
-//                                      the manifest (cacheTtl 60) and retries
-//                                      ONCE iff the modulus moved the target
-//   scryfall_id / external /           1 when the routing filter knows the id
-//   illustration-keyed                 (routing-filter.ts, ~740KB in KV), else
+//   scryfall_id / external-keyed       1 when the routing filter knows the id
+//                                      (routing-filter.ts, ~740KB in KV), else
 //                                      the old N-way first-non-null fan-out —
 //                                      and 1 + (N-1) when a hint comes back
 //                                      empty, so never worse than the fan-out
@@ -34,7 +31,11 @@
 //                                      back together, so there is no
 //                                      materialize round; a routed name its
 //                                      partition does not settle costs a
-//                                      second round to the rest
+//                                      second round to the rest. An oracle id
+//                                      goes by partitionOfOracleId; its miss
+//                                      re-reads the manifest (cacheTtl 60) and
+//                                      asks again ONCE iff the modulus moved
+//                                      the target
 //   set + collector number             1 when the routing filter knows the
 //   (/cards/:set/:number)              address (setNumberKey), else N; a
 //                                      hinted miss is 1 + (N-1)
@@ -84,7 +85,6 @@ import {
 	type CollectionBatch,
 	type CollectionBatchAnswer,
 	type CollectionBatchKey,
-	type CollectionKeyIdentifier,
 	type CollectionScope,
 	type Engine,
 	type EngineSearchOptions,
@@ -904,24 +904,6 @@ export class PartitionedEngine implements Engine {
 		return this.at(this.weightedPartition()).randomCardsAsJson(numCards, fields, shape, filterTreeJson);
 	}
 
-	// ── oracle-keyed: exactly one RPC, with the stale-modulus retry ─────────────
-
-	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const p = partitionOfOracleId(oracleId, this.n);
-		const card = await this.at(p).scryfallCardByOracleId(oracleId, baseUrl);
-		if (card !== null) return card;
-		// A miss under a stale isolate manifest is a WRONG-PARTITION ask, not a
-		// missing card (Decision 3b): re-read the manifest and retry once, only
-		// when the modulus actually moved the target.
-		const fresh = await this.reread();
-		const freshN = fresh?.partition_count;
-		if (freshN !== undefined && freshN !== this.n) {
-			const p2 = partitionOfOracleId(oracleId, freshN);
-			if (p2 !== p) return this.at(p2).scryfallCardByOracleId(oracleId, baseUrl);
-		}
-		return null;
-	}
-
 	// ── bare-UUID and external ids: ONE RPC when the filter knows the id ────────
 	//
 	// A bare printing UUID cannot name its oracle partition arithmetically (plan
@@ -944,146 +926,7 @@ export class PartitionedEngine implements Engine {
 		);
 	}
 
-	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		return this.hinted(illustrationIdKey(illustrationId), (e) =>
-			e.scryfallCardByIllustrationId(illustrationId, baseUrl),
-		);
-	}
-
 	// ── collection batches: one batch RPC per partition, merged per-position ────
-
-	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
-		const byId = new Map<string, Record<string, unknown>>();
-		const collect = (cards: Record<string, unknown>[]) => {
-			for (const card of cards) byId.set(String(card.id), card);
-		};
-		// With the filter, a batch goes only to the partitions its ids actually name
-		// — for a short collection that is one or two objects instead of nine. A
-		// second round then covers whatever the hints missed, asking only the
-		// partitions the first round did NOT, so the total is never above N.
-		const hinted = new Map<number, string[]>();
-		let unhinted = false;
-		await this.routed();
-		if (this.routing !== null) {
-			for (const id of scryfallIds) {
-				const p = this.routing.lookup(scryfallIdKey(id));
-				if (p === null || p >= this.n) {
-					unhinted = true;
-					continue;
-				}
-				const list = hinted.get(p);
-				if (list) list.push(id);
-				else hinted.set(p, [id]);
-			}
-		}
-		if (this.routing !== null && hinted.size < this.n) {
-			const asked = await Promise.all(
-				[...hinted.entries()].map(([p, ids]) => this.at(p).scryfallCardsByIds(ids, baseUrl)),
-			);
-			for (const cards of asked) collect(cards);
-			// Anything still missing could only live where we have not looked. Ids the
-			// filter did not recognise could live anywhere, so an unrecognised id costs
-			// the rest of the fan-out — one round later, and still N calls in total.
-			const missing = scryfallIds.filter((id) => !byId.has(id));
-			if (missing.length > 0 && (unhinted || hinted.size < this.n)) {
-				const rest = Array.from({ length: this.n }, (_, p) => p).filter((p) => !hinted.has(p));
-				const more = await Promise.all(rest.map((p) => this.at(p).scryfallCardsByIds(missing, baseUrl)));
-				for (const cards of more) collect(cards);
-			}
-		} else {
-			// Each partition returns ITS matches in request order, skipping misses;
-			// re-merge by id so the combined list is in request order too.
-			for (const cards of await this.all((e) => e.scryfallCardsByIds(scryfallIds, baseUrl))) collect(cards);
-		}
-		return scryfallIds.flatMap((id) => {
-			const card = byId.get(id);
-			return card ? [card] : [];
-		});
-	}
-
-	/**
-	 * The key-shaped collection identifiers, batched by the partition each one names —
-	 * `oracle_id` arithmetically, the rest through the routing filter — so a batch costs one RPC
-	 * per partition asked and never more than N, exactly like scryfallCardsByIds. A miss under a
-	 * hint is asked of the partitions the first round did NOT cover; an oracle miss additionally
-	 * gets the stale-modulus re-read once (Decision 3b), re-targeted only if N moved.
-	 */
-	async scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-	): Promise<(Record<string, unknown> | null)[]> {
-		const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
-		if (identifiers.length === 0) return out;
-		await this.routed();
-		const targetOf = (ident: CollectionKeyIdentifier, n: number): number | null => {
-			if (ident.kind === "oracle_id") return partitionOfOracleId(ident.id, n);
-			const key =
-				ident.kind === "illustration_id" ? illustrationIdKey(ident.id) : externalIdKey(ident.namespace, ident.id);
-			const hint = this.routing?.lookup(key) ?? null;
-			return hint === null || hint >= n ? null : hint;
-		};
-		const ask = async (partition: number, at: number[]): Promise<void> => {
-			const cards = await this.at(partition).scryfallCardsByIdentifiers(
-				at.map((i) => identifiers[i] as CollectionKeyIdentifier),
-				baseUrl,
-			);
-			for (const [j, i] of at.entries()) if (out[i] === null) out[i] = cards[j] ?? null;
-		};
-
-		// Round 1: every identifier with a target, grouped by it. An UNTARGETED one — no routing
-		// filter in this isolate yet (every cold isolate's first request), or an id the filter does
-		// not know — could live anywhere, so it rides along to every partition: still at most N
-		// RPCs, and the same fan-out the per-identifier routes did before batching.
-		const grouped = new Map<number, number[]>();
-		const untargeted: number[] = [];
-		for (let i = 0; i < identifiers.length; i++) {
-			const p = targetOf(identifiers[i] as CollectionKeyIdentifier, this.n);
-			if (p === null) untargeted.push(i);
-			else grouped.set(p, [...(grouped.get(p) ?? []), i]);
-		}
-		const round1 = new Map<number, number[]>(grouped);
-		if (untargeted.length > 0) {
-			for (let p = 0; p < this.n; p++) round1.set(p, [...(grouped.get(p) ?? []), ...untargeted]);
-		}
-		await Promise.all([...round1.entries()].map(([p, at]) => ask(p, at)));
-
-		// Oracle misses: the one case with an arithmetic target that a stale modulus can point
-		// wrong. Re-read the manifest once; if N moved, ask the fresh owners of what missed.
-		const oracleMissed = [...grouped.values()]
-			.flat()
-			.filter((i) => out[i] === null && (identifiers[i] as CollectionKeyIdentifier).kind === "oracle_id");
-		if (oracleMissed.length > 0) {
-			const freshN = (await this.reread())?.partition_count;
-			if (freshN !== undefined && freshN !== this.n) {
-				const regrouped = new Map<number, number[]>();
-				for (const i of oracleMissed) {
-					const ident = identifiers[i] as CollectionKeyIdentifier;
-					const p2 = targetOf(ident, freshN) as number;
-					if (p2 !== targetOf(ident, this.n)) regrouped.set(p2, [...(regrouped.get(p2) ?? []), i]);
-				}
-				await Promise.all([...regrouped.entries()].map(([p, at]) => ask(p, at)));
-			}
-		}
-
-		// Round 2: a HINTED identifier that missed is a filter from another build, and the card can
-		// only live where round 1 did not ask for it — every partition but its hint's. Untargeted
-		// ones were already asked everywhere. Rare by construction (a routing filter is published
-		// with its build), so its up-to-N extra RPCs are not on the common path.
-		const hintedMisses = [...grouped.entries()].flatMap(([hint, at]) =>
-			at
-				.filter((i) => out[i] === null && (identifiers[i] as CollectionKeyIdentifier).kind !== "oracle_id")
-				.map((i) => ({ i, hint })),
-		);
-		if (hintedMisses.length > 0) {
-			await Promise.all(
-				Array.from({ length: this.n }, (_, p) => p).map((p) => {
-					const at = hintedMisses.filter((m) => m.hint !== p).map((m) => m.i);
-					return at.length > 0 ? ask(p, at) : Promise.resolve();
-				}),
-			);
-		}
-		return out;
-	}
 
 	async scryfallFirstOfEach(
 		filterTreeJsons: string[],
@@ -1212,73 +1055,10 @@ export class PartitionedEngine implements Engine {
 	}
 
 	/**
-	 * A collection POST's `{name}` identifiers, ranked across every partition and materialized
-	 * from the winners: TWO rounds of at most N RPCs, whatever the batch size.
-	 *
-	 * The rank round is `scryfallExactName`'s protocol run 75-wide — the same reason it exists
-	 * there applies here identifier by identifier, since a needle is often one card's whole name
-	 * and another card's face name and those two cards hash apart. The materialize round asks each
-	 * partition ONLY for the identifiers it won, so a batch that all lands in one partition costs
-	 * one call and a batch spread across ten costs ten — never one per identifier.
-	 */
-	async scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<(Record<string, unknown> | null)[]> {
-		if (identifiers.length === 0) return [];
-		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers, scope));
-		const winner = new Array<number>(identifiers.length).fill(-1);
-		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
-		for (const [p, ranks] of perPartition.entries()) {
-			for (let i = 0; i < identifiers.length; i++) {
-				const rank = ranks[i] ?? null;
-				// Strictly greater, so an exact tie keeps the LOWEST partition index — the same
-				// deterministic tiebreak the single-needle path gives.
-				if (rank !== null && beatsExactRank(rank, best[i] ?? null)) {
-					best[i] = rank;
-					winner[i] = p;
-				}
-			}
-		}
-		const claimed = new Map<number, number[]>();
-		for (const [i, p] of winner.entries()) {
-			if (p < 0) continue;
-			const positions = claimed.get(p);
-			if (positions) positions.push(i);
-			else claimed.set(p, [i]);
-		}
-		const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
-		await Promise.all(
-			[...claimed].map(async ([p, positions]) => {
-				const asked = positions.map((i) => identifiers[i] as NameIdentifier);
-				const cards = await this.at(p).scryfallCollectionNames(asked, baseUrl, scope);
-				for (const [k, position] of positions.entries()) out[position] = cards[k] ?? null;
-			}),
-		);
-		return out;
-	}
-
-	/** The best rank any partition holds per identifier — for an Engine asked directly. */
-	async scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		scope?: CollectionScope | null,
-	): Promise<(number[] | null)[]> {
-		const perPartition = await this.all((e) => e.scryfallCollectionNameRanks(identifiers, scope));
-		const best: (number[] | null)[] = new Array(identifiers.length).fill(null);
-		for (const ranks of perPartition) {
-			for (let i = 0; i < identifiers.length; i++) {
-				const rank = ranks[i] ?? null;
-				if (rank !== null && beatsExactRank(rank, best[i] ?? null)) best[i] = rank;
-			}
-		}
-		return best;
-	}
-
-	/**
 	 * A whole collection batch in ONE round of at most N calls — see Engine.scryfallCollectionBatch.
-	 * The per-kind methods above spent up to 2N on the names (rank, then materialize the winners),
-	 * N on the `{set, collector_number}` trees and up to N on the keys, each its own fan-out.
+	 * The per-kind methods it replaced (b9bc501) spent up to 2N on the names (rank, then materialize
+	 * the winners), N on the `{set, collector_number}` trees and up to N on the keys, each its own
+	 * fan-out.
 	 *
 	 * WHICH partitions are called: the ones the identifiers are ROUTED to — a key by the oracle
 	 * modulus or the routing filter, a tree by its address's `setNumberKey`, a name by its

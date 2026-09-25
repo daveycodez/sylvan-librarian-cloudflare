@@ -125,10 +125,6 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("randomCardsAsJson");
 			return { totalCards: 0, cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
-		scryfallCardByOracleId: async () => {
-			count("scryfallCardByOracleId");
-			return val<Record<string, unknown> | null>("oracleCard", null);
-		},
 		scryfallCardById: async () => {
 			count("scryfallCardById");
 			return val<Record<string, unknown> | null>("cardById", null);
@@ -136,20 +132,6 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 		scryfallCardByExternalId: async () => {
 			count("scryfallCardByExternalId");
 			return null;
-		},
-		scryfallCardByIllustrationId: async () => {
-			count("scryfallCardByIllustrationId");
-			return null;
-		},
-		scryfallCardsByIds: async (ids: string[]) => {
-			count("scryfallCardsByIds");
-			return val<Record<string, unknown>[]>("byIds", []).filter((c) => ids.includes(String(c.id)));
-		},
-		scryfallCardsByIdentifiers: async (identifiers: { kind: string; id: string | number }[]) => {
-			count("scryfallCardsByIdentifiers");
-			// `byKey` maps an identifier's id to the card this partition holds for it.
-			const held = val<Record<string, Record<string, unknown>>>("byKey", {});
-			return identifiers.map((ident) => held[String(ident.id)] ?? null);
 		},
 		scryfallFirstOfEach: async (filters: string[]) => {
 			count("scryfallFirstOfEach");
@@ -166,17 +148,6 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 		scryfallExactName: async () => {
 			count("scryfallExactName");
 			return val<Record<string, unknown> | null>("exact", null);
-		},
-		scryfallCollectionNames: async (identifiers: { folded: string }[]) => {
-			count("scryfallCollectionNames");
-			// One card for every identifier this partition was ASKED about — the router only asks
-			// for the ones it won, so the length is the test's assertion surface.
-			return identifiers.map(() => val<Record<string, unknown> | null>("collectionCard", null));
-		},
-		scryfallCollectionNameRanks: async (identifiers: { folded: string }[]) => {
-			count("scryfallCollectionNameRanks");
-			const ranks = val<(number[] | null)[]>("collectionRanks", []);
-			return identifiers.map((_, i) => ranks[i] ?? null);
 		},
 		scryfallExactNameProbe: async () => {
 			count("scryfallExactNameProbe");
@@ -359,16 +330,6 @@ describe("search and listing make ONE isolate RPC, to the gather", () => {
 });
 
 describe("point routes", () => {
-	test("oracle-keyed: exactly ONE RPC, to the owning partition", async () => {
-		const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdbf87";
-		const owner = partitionOfOracleId(oracleId, N);
-		const { engine, of, calls } = build({ [owner]: { oracleCard: { name: "Found" } } });
-		const card = await engine.scryfallCardByOracleId(oracleId, "https://x");
-		expect(card).toEqual({ name: "Found" });
-		expect(of("scryfallCardByOracleId")).toEqual([`scryfallCardByOracleId:${owner}`]);
-		expect(calls.length).toBe(1);
-	});
-
 	test("scryfall_id-keyed: N parallel, first non-null", async () => {
 		const { engine, of } = build({ 2: { cardById: { name: "Hit" } } });
 		const card = await engine.scryfallCardById("some-uuid", "https://x");
@@ -376,12 +337,10 @@ describe("point routes", () => {
 		expect(of("scryfallCardById").length).toBe(N);
 	});
 
-	test("external and illustration ids: N each", async () => {
+	test("external ids: N", async () => {
 		const { engine, of } = build();
 		await engine.scryfallCardByExternalId("multiverse", 42, "https://x");
-		await engine.scryfallCardByIllustrationId("uuid", "https://x");
 		expect(of("scryfallCardByExternalId").length).toBe(N);
-		expect(of("scryfallCardByIllustrationId").length).toBe(N);
 	});
 
 	test("random: ONE RPC, weighted by card_count", async () => {
@@ -466,18 +425,13 @@ describe("the routing filter collapses the bare-id fan-out", () => {
 		expect(calls.length).toBe(1);
 	});
 
-	test("external and illustration ids collapse the same way", async () => {
-		const routing = filterOf([
-			{ key: externalIdKey("multiverse", 634752), partition: 1 },
-			{ key: illustrationIdKey(ART), partition: 3 },
-		]);
-		const { engine, of } = build({ 1: {}, 3: {} }, undefined, routing);
-		// Both partitions answer null here, so these are the WORST case — see the
-		// fallback test below for what that costs.
+	test("external ids collapse the same way", async () => {
+		const routing = filterOf([{ key: externalIdKey("multiverse", 634752), partition: 1 }]);
+		const { engine, of } = build({ 1: {} }, undefined, routing);
+		// The partition answers null here, so this is the WORST case — see the fallback test below
+		// for what that costs.
 		await engine.scryfallCardByExternalId("multiverse", 634752, "https://x");
 		expect(of("scryfallCardByExternalId")[0]).toBe("scryfallCardByExternalId:1");
-		await engine.scryfallCardByIllustrationId(ART, "https://x");
-		expect(of("scryfallCardByIllustrationId")[0]).toBe("scryfallCardByIllustrationId:3");
 	});
 
 	test("a hint that comes back empty falls back to the REST — never more than the fan-out", async () => {
@@ -508,59 +462,42 @@ describe("the routing filter collapses the bare-id fan-out", () => {
 		expect(await engine.scryfallCardById(CARD, "https://x")).toEqual({ name: "Hit" });
 		expect(of("scryfallCardById").length).toBe(N);
 	});
-
-	test("a collection of known ids asks only the partitions that hold them", async () => {
-		const a = "11111111-1111-4111-8111-111111111111";
-		const b = "22222222-2222-4222-8222-222222222222";
-		const routing = filterOf([
-			{ key: scryfallIdKey(a), partition: 1 },
-			{ key: scryfallIdKey(b), partition: 1 },
-		]);
-		const { engine, of } = build({ 1: { byIds: [{ id: a }, { id: b }] } }, undefined, routing);
-		expect(await engine.scryfallCardsByIds([a, b], "https://x")).toEqual([{ id: a }, { id: b }]);
-		expect(of("scryfallCardsByIds")).toEqual(["scryfallCardsByIds:1"]);
-	});
-
-	test("a collection with an unknown id still resolves it, in request order", async () => {
-		const known = "11111111-1111-4111-8111-111111111111";
-		const stranger = "33333333-3333-4333-8333-333333333333";
-		const routing = filterOf([{ key: scryfallIdKey(known), partition: 1 }]);
-		const { engine, of } = build(
-			{ 1: { byIds: [{ id: known }] }, 3: { byIds: [{ id: stranger }] } },
-			undefined,
-			routing,
-		);
-		expect(await engine.scryfallCardsByIds([stranger, known], "https://x")).toEqual([{ id: stranger }, { id: known }]);
-		// One hinted batch plus the partitions it did not cover — still at most N.
-		expect(of("scryfallCardsByIds").length).toBeLessThanOrEqual(N);
-	});
 });
 
 describe("the key-shaped collection identifiers are ONE batch per partition asked", () => {
 	// oracle_id, illustration_id, mtgo_id and multiverse_id used to be resolved one RPC per
-	// identifier — 75 x N Durable Object requests for a batch of misses.
+	// identifier — 75 x N Durable Object requests for a batch of misses. They ride
+	// scryfallCollectionBatch now, which the per-kind batch methods were folded into.
 	const ext = (id: number) => ({ kind: "external" as const, namespace: "multiverse", id });
+	const keysOf = (keys: CollectionBatch["keys"]): CollectionBatch => ({ keys, trees: [], names: [] });
+	const idsOf = (got: { keys: (Uint8Array | null)[] }) =>
+		got.keys.map((b) => (cardOf(b) as { id: string | number } | null)?.id ?? null);
 
-	test("hinted identifiers go to their partitions, one RPC each, however many there are", async () => {
+	test("hinted identifiers go to their partitions, one call each, however many there are", async () => {
 		const ids = Array.from({ length: 75 }, (_, i) => 1000 + i);
 		const routing = filterOf(ids.map((id, i) => ({ key: externalIdKey("multiverse", id), partition: i % 2 })));
 		const held = (parity: number) =>
 			Object.fromEntries(ids.filter((_, i) => i % 2 === parity).map((id) => [String(id), { id }]));
-		const { engine, of } = build({ 0: { byKey: held(0) }, 1: { byKey: held(1) } }, undefined, routing);
-		const cards = await engine.scryfallCardsByIdentifiers(ids.map(ext), "https://x");
-		expect(cards.map((c) => c?.id)).toEqual(ids);
-		expect(of("scryfallCardsByIdentifiers").sort()).toEqual([
-			"scryfallCardsByIdentifiers:0",
-			"scryfallCardsByIdentifiers:1",
-		]);
+		const { engine, calls } = build({ 0: { byKey: held(0) }, 1: { byKey: held(1) } }, undefined, routing);
+		expect(idsOf(await engine.scryfallCollectionBatch(keysOf(ids.map(ext)), "https://x"))).toEqual(ids);
+		expect(calls.map((c) => c.slice(c.lastIndexOf(":"))).sort()).toEqual([":0", ":1"]);
+	});
+
+	test("an illustration id the filter knows is ONE call", async () => {
+		const art = "7eb65d52-deea-4693-9111-9f95a3b0c915";
+		const routing = filterOf([{ key: illustrationIdKey(art), partition: 3 }]);
+		const { engine, calls } = build({ 3: { byKey: { [art]: { id: "art" } } } }, undefined, routing);
+		const got = await engine.scryfallCollectionBatch(keysOf([{ kind: "illustration_id", id: art }]), "https://x");
+		expect(idsOf(got)).toEqual(["art"]);
+		expect(calls).toEqual([`scryfallCollectionBatch[${art}|t0|n0]:3`]);
 	});
 
 	test("unhinted identifiers cost the fan-out once, never per identifier", async () => {
 		const ids = Array.from({ length: 75 }, (_, i) => 5000 + i);
-		const { engine, of } = build({}, undefined, filterOf([]));
-		const cards = await engine.scryfallCardsByIdentifiers(ids.map(ext), "https://x");
-		expect(cards.every((c) => c === null)).toBe(true);
-		expect(of("scryfallCardsByIdentifiers").length).toBe(N);
+		const { engine, calls } = build({}, undefined, filterOf([]));
+		const got = await engine.scryfallCollectionBatch(keysOf(ids.map(ext)), "https://x");
+		expect(got.keys.every((c) => c === null)).toBe(true);
+		expect(calls.length).toBe(N);
 	});
 
 	test("without a routing filter, an unhinted id still reaches a partition round 1 asked for oracle ids", async () => {
@@ -569,21 +506,22 @@ describe("the key-shaped collection identifiers are ONE batch per partition aske
 		// every partition — including p — or it is reported not_found while the card exists.
 		const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdb001";
 		const p = partitionOfOracleId(oracleId, N);
-		const { engine, of } = build(
+		const { engine, calls } = build(
 			{ [p]: { byKey: { [oracleId]: { id: oracleId }, "9999": { id: 9999 } } } },
 			undefined,
 			null,
 		);
-		const cards = await engine.scryfallCardsByIdentifiers(
-			[{ kind: "oracle_id" as const, id: oracleId }, ext(9999)],
+		const got = await engine.scryfallCollectionBatch(
+			keysOf([{ kind: "oracle_id", id: oracleId }, ext(9999)]),
 			"https://x",
 		);
-		expect(cards.map((c) => c?.id)).toEqual([oracleId, 9999]);
+		expect(idsOf(got)).toEqual([oracleId, 9999]);
 		// One round: every partition asked once, none twice.
-		expect(of("scryfallCardsByIdentifiers").length).toBe(N);
+		expect(calls.length).toBe(N);
+		expect(new Set(calls).size).toBe(N);
 	});
 
-	test("oracle ids group by their arithmetic owner", async () => {
+	test("oracle ids group by their arithmetic owner: one call per owner", async () => {
 		const oracle = (i: number) => `aa686c34-cf28-4d4a-bcef-5a34cccdb${String(i).padStart(3, "0")}`;
 		const ids = Array.from({ length: 20 }, (_, i) => oracle(i));
 		const owners = new Set(ids.map((id) => partitionOfOracleId(id, N)));
@@ -593,13 +531,13 @@ describe("the key-shaped collection identifiers are ONE batch per partition aske
 			perPartition[p] ??= { byKey: {} };
 			(perPartition[p].byKey as Record<string, unknown>)[id] = { id };
 		}
-		const { engine, of } = build(perPartition, undefined, filterOf([]));
-		const cards = await engine.scryfallCardsByIdentifiers(
-			ids.map((id) => ({ kind: "oracle_id" as const, id })),
+		const { engine, calls } = build(perPartition, undefined, filterOf([]));
+		const got = await engine.scryfallCollectionBatch(
+			keysOf(ids.map((id) => ({ kind: "oracle_id" as const, id }))),
 			"https://x",
 		);
-		expect(cards.map((c) => c?.id)).toEqual(ids);
-		expect(of("scryfallCardsByIdentifiers").length).toBe(owners.size);
+		expect(idsOf(got)).toEqual(ids);
+		expect(calls.length).toBe(owners.size);
 	});
 });
 
@@ -825,8 +763,9 @@ describe("a collection batch is ONE round of at most N calls", () => {
 
 describe("the stale-modulus retry (Decision 3b)", () => {
 	const oracleId = "aa686c34-cf28-4d4a-bcef-5a34cccdbf87";
+	const oracleKey = (id: string): CollectionBatch => ({ keys: [{ kind: "oracle_id", id }], trees: [], names: [] });
 
-	test("a miss re-reads the manifest and retries ONCE when the modulus moved the target", async () => {
+	test("a miss re-reads the manifest and asks ONCE more when the modulus moved the target", async () => {
 		// The card lives where a FRESH modulus says; the pinned manifest's N is stale.
 		// Search for an id the modulus change MOVES (about half of them, but not any
 		// fixed one — hardcoding an id would couple the test to the hash function).
@@ -838,19 +777,21 @@ describe("the stale-modulus retry (Decision 3b)", () => {
 		const freshOwner = partitionOfOracleId(moved, freshN);
 		const staleOwner = partitionOfOracleId(moved, N);
 		expect(freshOwner).not.toBe(staleOwner);
-		const { engine, of } = build({ [freshOwner]: { oracleCard: { name: "Moved" } } }, async () => manifestOf(freshN));
-		const card = await engine.scryfallCardByOracleId(moved, "https://x");
-		expect(card).toEqual({ name: "Moved" });
-		expect(of("scryfallCardByOracleId")).toEqual([
-			`scryfallCardByOracleId:${staleOwner}`,
-			`scryfallCardByOracleId:${freshOwner}`,
+		const { engine, calls } = build({ [freshOwner]: { byKey: { [moved]: { name: "Moved" } } } }, async () =>
+			manifestOf(freshN),
+		);
+		const got = await engine.scryfallCollectionBatch(oracleKey(moved), "https://x");
+		expect(got.keys.map(cardOf)).toEqual([{ name: "Moved" }]);
+		expect(calls).toEqual([
+			`scryfallCollectionBatch[${moved}|t0|n0]:${staleOwner}`,
+			`scryfallCollectionBatch[${moved}|t0|n0]:${freshOwner}`,
 		]);
 	});
 
 	test("a genuine miss with an unchanged manifest does NOT retry", async () => {
-		const { engine, of } = build({}, async () => manifestOf(N));
-		expect(await engine.scryfallCardByOracleId(oracleId, "https://x")).toBeNull();
-		expect(of("scryfallCardByOracleId").length).toBe(1);
+		const { engine, calls } = build({}, async () => manifestOf(N));
+		expect((await engine.scryfallCollectionBatch(oracleKey(oracleId), "https://x")).keys).toEqual([null]);
+		expect(calls.length).toBe(1);
 	});
 
 	test("a changed N that maps to the SAME partition does not re-ask it", async () => {
@@ -862,26 +803,13 @@ describe("the stale-modulus retry (Decision 3b)", () => {
 				break;
 			}
 		}
-		const { engine, of } = build({}, async () => manifestOf(sameN));
-		expect(await engine.scryfallCardByOracleId(oracleId, "https://x")).toBeNull();
-		expect(of("scryfallCardByOracleId").length).toBe(1);
+		const { engine, calls } = build({}, async () => manifestOf(sameN));
+		expect((await engine.scryfallCollectionBatch(oracleKey(oracleId), "https://x")).keys).toEqual([null]);
+		expect(calls.length).toBe(1);
 	});
 });
 
 describe("batches and catalogs", () => {
-	test("collection byIds: one batch RPC per partition, merged back into request order", async () => {
-		const { engine, of } = build({
-			1: { byIds: [{ id: "b", name: "B" }] },
-			3: { byIds: [{ id: "a", name: "A" }] },
-		});
-		const cards = await engine.scryfallCardsByIds(["a", "b", "missing"], "https://x");
-		expect(cards).toEqual([
-			{ id: "a", name: "A" },
-			{ id: "b", name: "B" },
-		]);
-		expect(of("scryfallCardsByIds").length).toBe(N);
-	});
-
 	test("firstOfEach: one batch RPC per partition, per-position first non-null", async () => {
 		const { engine, of } = build({ 2: { firstOfEach: { name: "X" } } });
 		const cards = await engine.scryfallFirstOfEach(["f1", "f2"], "https://x");
@@ -889,60 +817,35 @@ describe("batches and catalogs", () => {
 		expect(of("scryfallFirstOfEach").length).toBe(N);
 	});
 
-	test("collection names: N rank RPCs, then one materialize RPC per WINNING partition", async () => {
-		// The two-round protocol, and why it is not `firstNonNull` per identifier: partition 1 has
-		// a FACE match for the first needle and partition 2 has a WHOLE-name match, and the higher
-		// tier has to win however the partitions are ordered. Partition 1 answers a rank and is
-		// never asked for a card.
-		const { engine, of } = build({
-			1: { collectionRanks: [[1, 0], null], collectionCard: { name: "face" } },
-			2: {
-				collectionRanks: [
-					[2, 0],
-					[2, 0],
-				],
-				collectionCard: { name: "whole" },
-			},
-		});
-		const cards = await engine.scryfallCollectionNames(
-			[
-				{ folded: "a", setCode: "" },
-				{ folded: "b", setCode: "" },
-			],
-			"https://x",
-		);
-		expect(cards).toEqual([{ name: "whole" }, { name: "whole" }]);
-		expect(of("scryfallCollectionNameRanks").length).toBe(N);
-		expect(of("scryfallCollectionNames").length).toBe(1);
-	});
-
 	test("collection names: each identifier comes back from the partition that won IT", async () => {
-		const { engine, of } = build({
-			1: { collectionRanks: [[2, 0], null], collectionCard: { name: "p1" } },
-			2: { collectionRanks: [null, [2, 0]], collectionCard: { name: "p2" } },
+		const { engine, calls } = build({
+			1: { collectionRanks: [[1, 2, 0], null], collectionCard: { name: "p1" } },
+			2: { collectionRanks: [null, [1, 2, 0]], collectionCard: { name: "p2" } },
 		});
-		const cards = await engine.scryfallCollectionNames(
-			[
-				{ folded: "a", setCode: "" },
-				{ folded: "b", setCode: "" },
-			],
+		const got = await engine.scryfallCollectionBatch(
+			{
+				keys: [],
+				trees: [],
+				names: [
+					{ folded: "a", setCode: "" },
+					{ folded: "b", setCode: "" },
+				],
+			},
 			"https://x",
 		);
-		expect(cards).toEqual([{ name: "p1" }, { name: "p2" }]);
-		expect(of("scryfallCollectionNames").length).toBe(2);
+		expect(got.names.map(cardOf)).toEqual([{ name: "p1" }, { name: "p2" }]);
+		expect(calls.length).toBe(N);
 	});
 
 	test("collection names: a needle no partition ranks is a null IN PLACE, and costs no second round", async () => {
-		const { engine, of } = build();
-		expect(await engine.scryfallCollectionNames([{ folded: "zzz", setCode: "" }], "https://x")).toEqual([null]);
-		expect(of("scryfallCollectionNameRanks").length).toBe(N);
-		expect(of("scryfallCollectionNames").length).toBe(0);
-	});
-
-	test("collection names: an empty batch touches no partition at all", async () => {
 		const { engine, calls } = build();
-		expect(await engine.scryfallCollectionNames([], "https://x")).toEqual([]);
-		expect(calls.length).toBe(0);
+		const got = await engine.scryfallCollectionBatch(
+			{ keys: [], trees: [], names: [{ folded: "zzz", setCode: "" }] },
+			"https://x",
+		);
+		expect(got.names).toEqual([null]);
+		expect(got.nameRanks).toEqual([null]);
+		expect(calls.length).toBe(N);
 	});
 
 	test("catalog: N summed, ONCE per store generation — types and keywords share the fan-out", async () => {

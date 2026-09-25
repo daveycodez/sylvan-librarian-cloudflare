@@ -214,10 +214,6 @@ export interface Engine {
 	): Promise<Response>;
 	/** One card object by Scryfall id, or null for a genuine miss (which IS the 404 here). */
 	scryfallCardById(scryfallId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
-	/** Card objects for these ids, in the order given, skipping misses. */
-	scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]>;
-	/** The representative printing of an oracle id, as a card object. */
-	scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/** One card by a marketplace or client id. `namespace` is Scryfall's own path segment. */
 	scryfallCardByExternalId(
 		namespace: string,
@@ -253,40 +249,6 @@ export interface Engine {
 	 */
 	scryfallExactNameProbe?(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe>;
 	/**
-	 * A `POST /cards/collection` `{name}` identifier batch, resolved to one card each.
-	 *
-	 * NOT `scryfallExactName` looped: the two surfaces read different keys (see the engine's
-	 * `collection_card_by_name`), and a collection POST carries up to 75 identifiers, which
-	 * looped would be 75 round trips per partition.
-	 */
-	scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<(Record<string, unknown> | null)[]>;
-	/**
-	 * `[tier, score]` per identifier for this engine's best candidate, or null — the batched twin
-	 * of `scryfallExactNameRank`, and there for the same partitioned router. Under a scope the
-	 * score is the scope's prefer score, so partitions are compared by the key the pick was made by.
-	 */
-	scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		scope?: CollectionScope | null,
-	): Promise<(number[] | null)[]>;
-	/** `illustration_id`, one of the collection endpoint's identifiers; not a searchable field. */
-	scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null>;
-	/**
-	 * A `POST /cards/collection` batch of the KEY-shaped identifiers — `oracle_id`,
-	 * `illustration_id`, `mtgo_id`, `multiverse_id` — resolved to one card (or null) each, in order.
-	 *
-	 * NOT the single-card lookups looped: each of those is a billed Durable Object RPC, and a
-	 * batch of 75 identifiers the store lacks was 75 x N of them. One RPC per partition asked.
-	 */
-	scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-	): Promise<(Record<string, unknown> | null)[]>;
-	/**
 	 * The containment stage of `/cards/named?fuzzy=`: one card per distinct name containing every
 	 * word. The caller asks for 2 — more than one distinct name is `ambiguous`, not a guess.
 	 */
@@ -315,8 +277,8 @@ export interface Engine {
 	 * What the route calls. A partition answers every name with its rank AND its local winner's
 	 * card, so the partitioned router keeps the global winner's card without a second round, and
 	 * the keys and trees ride the same call instead of their own fan-outs: N calls for a batch the
-	 * separate methods above spent up to 2N + N + N on. The bytes are spliced into the response,
-	 * never parsed.
+	 * per-kind methods it replaced (b9bc501) spent up to 2N + N + N on. The bytes are spliced into
+	 * the response, never parsed.
 	 */
 	scryfallCollectionBatch(
 		batch: CollectionBatch,
@@ -324,6 +286,12 @@ export interface Engine {
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer>;
 }
+
+/** A collection identifier that is a KEY into the store rather than a query, Scryfall ids aside. */
+export type CollectionKeyIdentifier =
+	| { kind: "oracle_id"; id: string }
+	| { kind: "illustration_id"; id: string }
+	| { kind: "external"; namespace: string; id: number };
 
 /** A collection identifier that is a KEY into the store, Scryfall ids included — see Engine.scryfallCollectionBatch. */
 export type CollectionBatchKey = CollectionKeyIdentifier | { kind: "scryfall_id"; id: string };
@@ -366,19 +334,6 @@ export interface CollectionBatchAnswer {
 }
 
 /**
- * One `POST /cards/collection` `{"name": …, "set": …}` identifier, as the engine takes it.
- *
- * `folded` is lowercased and accent-folded by the route (foldAccents in src/parser/pystr.ts), the
- * same shape `/cards/named?exact=` hands over; the engine collates it. `setCode` is "" for an
- * identifier that names no set.
- */
-/** A collection identifier that is a KEY into the store rather than a query: see Engine.scryfallCardsByIdentifiers. */
-export type CollectionKeyIdentifier =
-	| { kind: "oracle_id"; id: string }
-	| { kind: "illustration_id"; id: string }
-	| { kind: "external"; namespace: string; id: number };
-
-/**
  * One store's whole answer to an `exact=` name — `scryfallExactNameRank` and `scryfallExactName`
  * in one reply, plus `present`: whether the store holds the name at all, set or no set. What the
  * partitioned router asks the partition the routing filter names for a name (backlog n6).
@@ -389,6 +344,13 @@ export interface ExactNameProbe {
 	card: Record<string, unknown> | null;
 }
 
+/**
+ * One `POST /cards/collection` `{"name": …, "set": …}` identifier, as the engine takes it.
+ *
+ * `folded` is lowercased and accent-folded by the route (foldAccents in src/parser/pystr.ts), the
+ * same shape `/cards/named?exact=` hands over; the engine collates it. `setCode` is "" for an
+ * identifier that names no set.
+ */
 export interface NameIdentifier {
 	folded: string;
 	setCode: string;

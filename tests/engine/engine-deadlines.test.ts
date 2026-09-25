@@ -188,16 +188,31 @@ describe("a retry after a closed connection goes through a FRESH stub", () => {
 		expect(connects).toBe(1);
 	});
 
+	/** A `collection_batch` packet answering one key with `card` (see collection-batch.ts). */
+	const onePacket = (card: string): Uint8Array => {
+		const header = new TextEncoder().encode("[]");
+		const body = new TextEncoder().encode(card);
+		const out = new Uint8Array(4 + header.length + 4 + body.length);
+		const view = new DataView(out.buffer);
+		view.setUint32(0, header.length, true);
+		out.set(header, 4);
+		view.setUint32(4 + header.length, body.length, true);
+		out.set(body, 8 + header.length);
+		return out;
+	};
+
 	test("the /cards/* surface (searchRpc) reconnects — the collection route that failed", async () => {
 		const dead = { calls: 0 };
 		const engine = new RemoteEngine(deadStub(dead), "wnam", "SJC", () => {
 			return {
-				scryfallCardsByIdentifiers: async () => ({ cards: [{ id: "a" }] }),
+				scryfallCollectionBatch: async () => ({ packet: onePacket('{"id":"a"}') }),
 			} as unknown as Stub;
 		});
-		expect(await engine.scryfallCardsByIdentifiers([{ kind: "oracle_id", id: "x" }] as never, "https://x")).toEqual([
-			{ id: "a" },
-		]);
+		const got = await engine.scryfallCollectionBatch(
+			{ keys: [{ kind: "oracle_id", id: "x" }], trees: [], names: [] },
+			"https://x",
+		);
+		expect(got.keys.map((b) => (b === null ? null : new TextDecoder().decode(b)))).toEqual(['{"id":"a"}']);
 		expect(dead.calls).toBe(1);
 	});
 

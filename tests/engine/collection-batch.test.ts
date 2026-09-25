@@ -1,5 +1,5 @@
-// POST /cards/collection's one-round batch: the packet codec, the rolling-deploy fallback, and the
-// response the route splices from the engine's bytes — which must be the document the old
+// POST /cards/collection's one-round batch: the packet codec, the absence of a per-kind fallback,
+// and the response the route splices from the engine's bytes — which must be the document the old
 // objects-then-stringify path wrote, byte for byte.
 
 import { describe, expect, test } from "bun:test";
@@ -84,55 +84,23 @@ describe("the collection packet", () => {
 	});
 });
 
-describe("an object still on the previous build", () => {
-	test("is answered through the per-kind methods it does have", async () => {
-		const asked: string[] = [];
-		const telemetry = {};
-		const stub = {
-			scryfallCollectionBatch: async () => {
-				throw new TypeError('The RPC receiver does not implement the method "scryfallCollectionBatch".');
-			},
-			scryfallCardsByIds: async (ids: string[]) => {
-				asked.push("byIds");
-				return { cards: ids.map((id) => ({ id: id.toUpperCase() })), ...telemetry };
-			},
-			scryfallCardsByIdentifiers: async (idents: unknown[]) => {
-				asked.push("byIdentifiers");
-				return { cards: idents.map(() => ({ id: "mtgo", cmc: 3 })), ...telemetry };
-			},
-			scryfallFirstOfEach: async (trees: string[]) => {
-				asked.push("firstOfEach");
-				return { cards: trees.map((t) => (t === "t-any" ? { id: "tree" } : null)), ...telemetry };
-			},
-			scryfallCollectionNameRanks: async () => {
-				asked.push("ranks");
-				return { ranks: [[1, 2, 0]], ...telemetry };
-			},
-			scryfallCollectionNames: async () => {
-				asked.push("names");
-				return { cards: [{ id: "bolt" }], ...telemetry };
-			},
-		};
-		const got = await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x");
-		const read = (b: Uint8Array | null) => (b === null ? null : text.decode(b));
-		// The ids are matched back case-insensitively, as the per-kind route always did; the
-		// decimal fields are written as decimals, as stringifyScryfall always has.
-		expect(got.keys.map(read)).toEqual(['{"id":"A"}', '{"id":"mtgo","cmc":3.0}']);
-		expect(got.trees.map(read)).toEqual([null, '{"id":"tree"}']);
-		expect(got.names.map(read)).toEqual(['{"id":"bolt"}']);
-		expect(got.nameRanks).toEqual([[1, 2, 0]]);
-		expect(asked.sort()).toEqual(["byIdentifiers", "byIds", "firstOfEach", "names", "ranks"]);
-	});
-
-	test("any other failure is not papered over", async () => {
-		const stub = {
-			scryfallCollectionBatch: async () => {
-				throw new Error("Engine query failed: bad scope");
-			},
-		};
-		await expect(new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x")).rejects.toThrow(
-			/bad scope/,
-		);
+describe("RemoteEngine's batch has no per-kind fallback", () => {
+	// The rolling-deploy shim that answered a previous-build object through the per-kind methods
+	// is gone with them (backlog n3): every object has had scryfallCollectionBatch since b9bc501.
+	test("a failure of the batch call is the caller's, whatever it says", async () => {
+		for (const message of [
+			"Engine query failed: bad scope",
+			'The RPC receiver does not implement the method "scryfallCollectionBatch".',
+		]) {
+			const stub = {
+				scryfallCollectionBatch: async () => {
+					throw new Error(message);
+				},
+			};
+			await expect(new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x")).rejects.toThrow(
+				message,
+			);
+		}
 	});
 });
 

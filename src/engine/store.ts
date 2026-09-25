@@ -75,7 +75,6 @@ import {
 import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
-	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -83,7 +82,6 @@ import type {
 	EngineSerializedResult,
 	Env,
 	ExactNameProbe,
-	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -530,21 +528,6 @@ class WasmEngine implements Engine {
 		return row === null ? null : toScryfallCard(row, baseUrl);
 	}
 
-	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
-		const rows = JSON.parse(
-			this.w.cards_by_scryfall_ids(JSON.stringify(scryfallIds), JSON.stringify(CARD_OBJECT_FIELDS)),
-		) as EngineRow[];
-		return this.toCards(rows, baseUrl);
-	}
-
-	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const rows = JSON.parse(this.w.printings_of_oracle_id(oracleId, JSON.stringify(CARD_OBJECT_FIELDS))) as EngineRow[];
-		// Printings are stored in descending default-prefer order, so the first is the
-		// representative printing every other by-name path shows.
-		const first = rows[0];
-		return first === undefined ? null : toScryfallCard(first, baseUrl);
-	}
-
 	async scryfallCardByExternalId(
 		namespace: string,
 		externalId: number,
@@ -601,66 +584,6 @@ class WasmEngine implements Engine {
 			this.w.exact_card_by_name(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow | null;
 		return row === null ? null : toScryfallCard(row, baseUrl);
-	}
-
-	/**
-	 * The collection identifiers' own name rule, one card each — see the engine's
-	 * `collection_card_by_name` for what separates it from `exact_card_by_name`.
-	 *
-	 * Looped HERE rather than by the caller: the loop is inside the Durable Object, so 75
-	 * identifiers cost 75 wasm calls and ONE RPC instead of 75 round trips.
-	 */
-	async scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<(Record<string, unknown> | null)[]> {
-		// ONE wasm call for the batch: the engine binds the scope once and reuses it for every
-		// identifier (see `collection_cards_by_names`), and the boundary is crossed once.
-		const rows = JSON.parse(
-			this.w.collection_cards_by_names(
-				JSON.stringify(identifiers.map(({ folded, setCode }) => [folded, setCode])),
-				JSON.stringify(CARD_OBJECT_FIELDS),
-				scope?.prefer ?? "default",
-				scope?.filterTreeJson ?? "",
-			),
-		) as (EngineRow | null)[];
-		return rows.map((row) => (row === null ? null : toScryfallCard(row, baseUrl)));
-	}
-
-	async scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		scope?: CollectionScope | null,
-	): Promise<(number[] | null)[]> {
-		return JSON.parse(
-			this.w.collection_name_ranks(
-				JSON.stringify(identifiers.map(({ folded, setCode }) => [folded, setCode])),
-				scope?.prefer ?? "default",
-				scope?.filterTreeJson ?? "",
-			),
-		) as (number[] | null)[];
-	}
-
-	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const row = JSON.parse(
-			this.w.card_by_illustration_id(illustrationId, JSON.stringify(CARD_OBJECT_FIELDS)),
-		) as EngineRow | null;
-		return row === null ? null : toScryfallCard(row, baseUrl);
-	}
-
-	async scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-	): Promise<(Record<string, unknown> | null)[]> {
-		// One RPC in, N wasm calls: the per-kind lookups are each a single index probe, and the
-		// cost this batch exists to remove is the RPC, not the probe.
-		const out: (Record<string, unknown> | null)[] = [];
-		for (const ident of identifiers) {
-			if (ident.kind === "oracle_id") out.push(await this.scryfallCardByOracleId(ident.id, baseUrl));
-			else if (ident.kind === "illustration_id") out.push(await this.scryfallCardByIllustrationId(ident.id, baseUrl));
-			else out.push(await this.scryfallCardByExternalId(ident.namespace, ident.id, baseUrl));
-		}
-		return out;
 	}
 
 	async scryfallNamesContaining(

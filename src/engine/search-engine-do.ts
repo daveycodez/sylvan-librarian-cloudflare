@@ -91,7 +91,6 @@ import { readLiveManifest, recordLiveManifest } from "./store-cache";
 import { isPartitionedManifest, manifestServableBy, readManifest } from "./store-kv";
 import type {
 	CollectionBatch,
-	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -100,7 +99,6 @@ import type {
 	Env,
 	ExactNameProbe,
 	FuzzyCandidateWire,
-	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -123,9 +121,6 @@ interface ScryfallCardReply {
 }
 interface ScryfallCardsReply {
 	cards: Record<string, unknown>[];
-}
-interface ScryfallMaybeCardsByKeyReply {
-	cards: (Record<string, unknown> | null)[];
 }
 interface ScryfallMaybeCardsReply {
 	cards: (Record<string, unknown> | null)[];
@@ -619,36 +614,6 @@ export class SearchEngine extends DurableObject<Env> {
 		}));
 	}
 
-	async scryfallCardsByIds(
-		scryfallIds: string[],
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<ScryfallCardsReply & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			cards: await engine.scryfallCardsByIds(scryfallIds, baseUrl),
-		}));
-	}
-
-	async scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<ScryfallMaybeCardsByKeyReply & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			cards: await engine.scryfallCardsByIdentifiers(identifiers, baseUrl),
-		}));
-	}
-
-	async scryfallCardByOracleId(
-		oracleId: string,
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			card: await engine.scryfallCardByOracleId(oracleId, baseUrl),
-		}));
-	}
-
 	async scryfallCardByExternalId(
 		namespace: string,
 		externalId: number,
@@ -709,37 +674,6 @@ export class SearchEngine extends DurableObject<Env> {
 	): Promise<{ rank: number[] | null } & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			rank: await engine.scryfallExactNameRank(folded, setCode),
-		}));
-	}
-
-	async scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope: CollectionScope | null,
-		reportedShards?: number,
-	): Promise<ScryfallMaybeCardsReply & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			cards: await engine.scryfallCollectionNames(identifiers, baseUrl, scope),
-		}));
-	}
-
-	async scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		scope: CollectionScope | null,
-		reportedShards?: number,
-	): Promise<{ ranks: (number[] | null)[] } & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			ranks: await engine.scryfallCollectionNameRanks(identifiers, scope),
-		}));
-	}
-
-	async scryfallCardByIllustrationId(
-		illustrationId: string,
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<ScryfallCardReply & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			card: await engine.scryfallCardByIllustrationId(illustrationId, baseUrl),
 		}));
 	}
 

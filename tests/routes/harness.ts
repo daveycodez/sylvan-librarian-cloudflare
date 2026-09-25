@@ -6,12 +6,10 @@
 
 import { afterEach, beforeEach } from "bun:test";
 import { encodeUtf8 } from "../../src/engine/bytes";
-import { collectionBatchFromSeparateCalls } from "../../src/engine/collection-batch";
 import { serializeCards } from "../../src/engine/columnar";
 import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
-	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -36,6 +34,7 @@ import {
 	scryfallCsvResponse,
 	scryfallHttpError,
 	scryfallListJson,
+	stringifyScryfall,
 } from "../../src/routes/scryfall-compat/respond";
 import { NOT_FOUND_DETAILS } from "../../src/routes/scryfall-compat/routes";
 
@@ -278,19 +277,6 @@ export class FakeEngine implements Engine {
 		return at < 0 ? null : this.fixtureCard(at, baseUrl);
 	}
 
-	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
-		const out: Record<string, unknown>[] = [];
-		for (const id of scryfallIds) {
-			const card = await this.scryfallCardById(id, baseUrl);
-			if (card) out.push(card);
-		}
-		return out;
-	}
-
-	async scryfallCardByOracleId(_oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		return this.fixtureCard(0, baseUrl);
-	}
-
 	async scryfallCardByExternalId(
 		_namespace: string,
 		_externalId: number,
@@ -346,46 +332,6 @@ export class FakeEngine implements Engine {
 		});
 	}
 
-	async scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<(Record<string, unknown> | null)[]> {
-		this.collectionNameBatches.push(identifiers);
-		this.collectionScopes.push(scope ?? null);
-		return identifiers.map(({ folded }) => {
-			const at = this.collectionAt(folded);
-			return at < 0 ? null : this.fixtureCard(at, baseUrl);
-		});
-	}
-
-	async scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		_scope?: CollectionScope | null,
-	): Promise<(number[] | null)[]> {
-		return identifiers.map(({ folded }) => (this.collectionAt(folded) < 0 ? null : [2, 0]));
-	}
-
-	async scryfallCardByIllustrationId(
-		_illustrationId: string,
-		baseUrl: string,
-	): Promise<Record<string, unknown> | null> {
-		return this.fixtureCard(0, baseUrl);
-	}
-
-	async scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-	): Promise<(Record<string, unknown> | null)[]> {
-		const out: (Record<string, unknown> | null)[] = [];
-		for (const ident of identifiers) {
-			if (ident.kind === "oracle_id") out.push(await this.scryfallCardByOracleId(ident.id, baseUrl));
-			else if (ident.kind === "illustration_id") out.push(await this.scryfallCardByIllustrationId(ident.id, baseUrl));
-			else out.push(await this.scryfallCardByExternalId(ident.namespace, ident.id, baseUrl));
-		}
-		return out;
-	}
-
 	async scryfallNamesContaining(
 		words: string[],
 		_setCode: string,
@@ -420,15 +366,39 @@ export class FakeEngine implements Engine {
 	}
 
 	/**
-	 * The one-round batch, answered through the per-kind methods above — the same composition a
-	 * previous-build object gets — so the route tests' overrides and batch captures still apply.
+	 * The one-round batch, answered from the fake's own lookups in the packet's terms: each found
+	 * card as Scryfall JSON bytes. A Scryfall id goes through scryfallCardById, an external id
+	 * through scryfallCardByExternalId and the trees through scryfallFirstOfEach, so a route test's
+	 * override of those still applies; an oracle or illustration id is the first fixture card, as
+	 * the fake has always answered them. A batch with names is recorded in collectionNameBatches /
+	 * collectionScopes, once per request.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
-		return collectionBatchFromSeparateCalls(this, batch, baseUrl, scope ?? null);
+		const bytes = (card: Record<string, unknown> | null) => (card ? encodeUtf8(stringifyScryfall(card)) : null);
+		const keys: (Uint8Array | null)[] = [];
+		for (const key of batch.keys) {
+			if (key.kind === "scryfall_id") keys.push(bytes(await this.scryfallCardById(key.id, baseUrl)));
+			else if (key.kind === "external")
+				keys.push(bytes(await this.scryfallCardByExternalId(key.namespace, key.id, baseUrl)));
+			else keys.push(bytes(this.fixtureCard(0, baseUrl)));
+		}
+		const trees = batch.trees.length === 0 ? [] : (await this.scryfallFirstOfEach(batch.trees, baseUrl)).map(bytes);
+		if (batch.names.length > 0) {
+			this.collectionNameBatches.push(batch.names);
+			this.collectionScopes.push(scope ?? null);
+		}
+		const at = batch.names.map(({ folded }) => this.collectionAt(folded));
+		return {
+			keys,
+			trees,
+			names: at.map((i) => bytes(i < 0 ? null : this.fixtureCard(i, baseUrl))),
+			// [served, tier, score]: every fixture name is a served whole-name match.
+			nameRanks: at.map((i) => (i < 0 ? null : [1, 2, 0])),
+		};
 	}
 }
 

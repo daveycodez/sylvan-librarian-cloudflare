@@ -1,7 +1,7 @@
 // Engine implementation backed by the region's SearchEngine DO — the only
 // serving path: isolates parse and RPC here, never loading the store.
 
-import { collectionBatchFromSeparateCalls, decodeCollectionPacket, isMissingRpcMethod } from "./collection-batch";
+import { decodeCollectionPacket } from "./collection-batch";
 import {
 	adoptShardWidth,
 	currentShardWidth,
@@ -12,7 +12,6 @@ import {
 import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
-	CollectionKeyIdentifier,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -20,7 +19,6 @@ import type {
 	EngineSerializedResult,
 	ExactNameProbe,
 	FuzzyCandidateWire,
-	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -97,16 +95,6 @@ interface SearchEngineStub {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
-	scryfallCardsByIds(
-		scryfallIds: string[],
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<{ cards: Record<string, unknown>[] } & Telemetry>;
-	scryfallCardByOracleId(
-		oracleId: string,
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
 	scryfallCardByExternalId(
 		namespace: string,
 		externalId: number,
@@ -137,33 +125,12 @@ interface SearchEngineStub {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<{ probe: ExactNameProbe } & Telemetry>;
-	scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope: CollectionScope | null,
-		reportedShards?: number,
-	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
-	scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		scope: CollectionScope | null,
-		reportedShards?: number,
-	): Promise<{ ranks: (number[] | null)[] } & Telemetry>;
 	scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
 		scope: CollectionScope | null,
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array } & Telemetry>;
-	scryfallCardByIllustrationId(
-		illustrationId: string,
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<{ card: Record<string, unknown> | null } & Telemetry>;
-	scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-		reportedShards?: number,
-	): Promise<{ cards: (Record<string, unknown> | null)[] } & Telemetry>;
 	scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -724,30 +691,6 @@ export class RemoteEngine implements Engine {
 		return card;
 	}
 
-	async scryfallCardsByIds(scryfallIds: string[], baseUrl: string): Promise<Record<string, unknown>[]> {
-		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallCardsByIds(scryfallIds, baseUrl, currentShardWidth(this.region)),
-		);
-		return cards;
-	}
-
-	async scryfallCardByOracleId(oracleId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardByOracleId(oracleId, baseUrl, currentShardWidth(this.region)),
-		);
-		return card;
-	}
-
-	async scryfallCardsByIdentifiers(
-		identifiers: CollectionKeyIdentifier[],
-		baseUrl: string,
-	): Promise<(Record<string, unknown> | null)[]> {
-		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallCardsByIdentifiers(identifiers, baseUrl, currentShardWidth(this.region)),
-		);
-		return cards;
-	}
-
 	async scryfallCardByExternalId(
 		namespace: string,
 		externalId: number,
@@ -811,34 +754,6 @@ export class RemoteEngine implements Engine {
 		return rank;
 	}
 
-	async scryfallCollectionNames(
-		identifiers: NameIdentifier[],
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<(Record<string, unknown> | null)[]> {
-		const { cards } = await this.searchRpc(() =>
-			this.stub.scryfallCollectionNames(identifiers, baseUrl, scope ?? null, currentShardWidth(this.region)),
-		);
-		return cards;
-	}
-
-	async scryfallCollectionNameRanks(
-		identifiers: NameIdentifier[],
-		scope?: CollectionScope | null,
-	): Promise<(number[] | null)[]> {
-		const { ranks } = await this.searchRpc(() =>
-			this.stub.scryfallCollectionNameRanks(identifiers, scope ?? null, currentShardWidth(this.region)),
-		);
-		return ranks;
-	}
-
-	async scryfallCardByIllustrationId(illustrationId: string, baseUrl: string): Promise<Record<string, unknown> | null> {
-		const { card } = await this.searchRpc(() =>
-			this.stub.scryfallCardByIllustrationId(illustrationId, baseUrl, currentShardWidth(this.region)),
-		);
-		return card;
-	}
-
 	async scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -858,24 +773,22 @@ export class RemoteEngine implements Engine {
 		return cards;
 	}
 
-	/**
-	 * The one-round collection batch. An object still on the previous build has no such method
-	 * during a rolling deploy; it is answered through the per-kind methods it does have (see
-	 * collectionBatchFromSeparateCalls), not failed.
-	 */
+	/** The one-round collection batch — see Engine.scryfallCollectionBatch. */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
-		try {
-			const { packet } = await this.searchRpc(() =>
-				this.stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, currentShardWidth(this.region)),
-			);
-			return decodeCollectionPacket(packet, batch);
-		} catch (err) {
-			if (!isMissingRpcMethod(err, "scryfallCollectionBatch")) throw err;
-			return collectionBatchFromSeparateCalls(this, batch, baseUrl, scope ?? null);
-		}
+		const { packet } = await this.searchRpc(() =>
+			this.stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, currentShardWidth(this.region)),
+		);
+		return decodeCollectionPacket(packet, batch);
 	}
+}
+
+/** The error workerd raises when a stub's object has no such method — an object still on the
+ * previous build during a rolling deploy (see scryfallExactNameProbe). */
+function isMissingRpcMethod(err: unknown, method: string): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return message.includes(`does not implement the method "${method}"`);
 }
