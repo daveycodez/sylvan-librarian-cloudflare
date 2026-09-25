@@ -18,6 +18,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { gunzipSync } from "node:zlib";
 import type { ArchiveCacheStorage } from "../../src/engine/store-cache";
+import * as cache from "../../src/engine/store-cache";
 import { chunkKey, gzipBytes, PARTITION_HASH_ALGO } from "../../src/engine/store-kv";
 import type { Env, StoreManifest } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
@@ -41,6 +42,11 @@ function instanceFor(label: string): FakeInstance {
 	}
 	return inst;
 }
+
+const FAKE_LZ4_BLOCK = 24;
+const sum8 = (bytes: Uint8Array) => bytes.reduce((s, b) => (s + b) & 0xff, 0);
+/** Every label that began an LZ4 load, in order — "did this load read the LZ4 family?" */
+const lz4Loads: string[] = [];
 
 function handleFor(label: string) {
 	const inst = instanceFor(label);
@@ -77,6 +83,38 @@ function handleFor(label: string) {
 			const out = new Uint8Array(gunzipSync(gz));
 			if (out.length !== inst.expected) throw new Error(`fake wasm: inflated ${out.length} of ${inst.expected} bytes`);
 			inst.loaded = out;
+		},
+		// The LZ4 cache (r3), as a toy frame format with the real one's properties: frames of up to
+		// FAKE_LZ4_BLOCK raw bytes, each `[0x4c, len, sum8, ...bytes]`, arriving in any pieces; a
+		// frame whose sum does not match is a refused load, like the real xxh32.
+		begin_store_load_lz4(total: number) {
+			inst.staged = [];
+			inst.expected = total;
+			lz4Loads.push(label);
+		},
+		store_load_lz4_chunk(chunk: Uint8Array) {
+			inst.staged.push(chunk.slice());
+		},
+		finish_store_load_lz4() {
+			const stream = Buffer.concat(inst.staged);
+			const out: number[] = [];
+			for (let at = 0; at < stream.length; ) {
+				const len = stream[at + 1] as number;
+				const body = stream.subarray(at + 3, at + 3 + len);
+				if (stream[at] !== 0x4c || body.length !== len || sum8(body) !== stream[at + 2]) {
+					throw new Error("fake wasm: corrupt LZ4 frame");
+				}
+				out.push(...body);
+				at += 3 + len;
+			}
+			if (out.length !== inst.expected) throw new Error(`fake wasm: decoded ${out.length} of ${inst.expected} bytes`);
+			inst.loaded = Uint8Array.from(out);
+		},
+		store_lz4_frame(index: number) {
+			const bytes = inst.loaded;
+			if (!bytes || index * FAKE_LZ4_BLOCK >= bytes.length) return new Uint8Array(0);
+			const body = bytes.subarray(index * FAKE_LZ4_BLOCK, (index + 1) * FAKE_LZ4_BLOCK);
+			return Uint8Array.from([0x4c, body.length, sum8(body), ...body]);
 		},
 		unload_store() {
 			inst.loaded = null;
@@ -168,6 +206,9 @@ function fakeStorage(): ArchiveCacheStorage {
 				}
 				if (q.startsWith("SELECT archive_key")) {
 					return out([...meta.keys()].map((archive_key) => ({ archive_key })));
+				}
+				if (q.startsWith("SELECT DISTINCT archive_key FROM archive_cache")) {
+					return out([...rows.keys()].map((archive_key) => ({ archive_key })));
 				}
 				if (q.startsWith("INSERT INTO archive_cache_meta")) {
 					meta.set(b[0] as string, { total: b[1] as number, count: b[2] as number });
@@ -473,6 +514,143 @@ describe("prepare/commit at the loader level", () => {
 		// it: prepare and commit both report false and keep whatever was serving.
 		expect(await store.prefetchStore(env, ctxFor("engine-unnamed", undefined, storage), manifest)).toBe(false);
 		expect(await store.swapToStore(env, ctxFor("engine-unnamed", undefined, storage), manifest)).toBe(false);
+	});
+});
+
+describe("the LZ4 cache (r3)", () => {
+	/** A publish whose manifest carries the pool gate's answer. */
+	async function publishWith(builtAt: string, codec: "lz4" | "gzip" | undefined) {
+		const pub = await publishV2(builtAt);
+		if (codec) pub.manifest.cache = { v: 1, codec, projected_lz4_bytes: 1 };
+		pub.entries.set("store:manifest", JSON.stringify(pub.manifest));
+		return pub;
+	}
+	/** A load context whose background work the test can wait for — the fill runs after the load. */
+	function waitingCtx(label: string, partition: number, storage: ArchiveCacheStorage) {
+		const pending: Promise<unknown>[] = [];
+		return {
+			ctx: { ...ctxFor(label, partition, storage), waitUntil: (p: Promise<unknown>) => pending.push(p) },
+			pending,
+		};
+	}
+	const keyOf = (m: StoreManifest, k: number) => (m.partitions ?? [])[k]?.store_key as string;
+
+	test("under an LZ4 codec a cold KV load tees no gzip, then caches LZ4 only; the next wake reads it", async () => {
+		const { entries, manifest, raw } = await publishWith("140", "lz4");
+		const storage = fakeStorage();
+		const first = fakeEnv(entries);
+		const a = waitingCtx("engine-lz4a-p0", 0, storage);
+		await store.getEngine(first.env, a.ctx);
+		await Promise.all(a.pending);
+		const key = keyOf(manifest, 0);
+		expect(cache.isLz4Cached(storage, key)).toBe(true);
+		// Never both families of one archive: no gzip was tee'd on the way in.
+		expect(cache.isCompressedCached(storage, key, 1, manifest.partitions?.[0]?.store_gzip_bytes as number)).toBe(false);
+
+		const second = fakeEnv(entries);
+		await store.getEngine(second.env, ctxFor("engine-lz4b-p0", 0, storage));
+		expect(second.chunkReads().length).toBe(0);
+		expect(lz4Loads).toContain("engine-lz4b-p0");
+		expect(instanceFor("engine-lz4b-p0").loaded).toEqual(raw[0] as Uint8Array);
+	});
+
+	test("an absent or gzip codec caches gzip exactly as before and writes no LZ4", async () => {
+		for (const [builtAt, codec] of [
+			["141", undefined],
+			["142", "gzip"],
+		] as const) {
+			const { entries, manifest } = await publishWith(builtAt, codec);
+			const storage = fakeStorage();
+			const w = waitingCtx(`engine-gz${builtAt}-p1`, 1, storage);
+			await store.getEngine(fakeEnv(entries).env, w.ctx);
+			await Promise.all(w.pending);
+			const key = keyOf(manifest, 1);
+			expect(cache.isLz4Cached(storage, key)).toBe(false);
+			expect(cache.isCompressedCached(storage, key, 1, manifest.partitions?.[1]?.store_gzip_bytes as number)).toBe(
+				true,
+			);
+		}
+	});
+
+	test("the publish swap converts the prefetched gzip to LZ4, dropping the gzip and the old build", async () => {
+		const old = await publishWith("143", "lz4");
+		const fresh = await publishWith("144", "lz4");
+		const entries = new Map([...old.entries, ...fresh.entries]);
+		const storage = fakeStorage();
+		const w = waitingCtx("engine-lz4swap-p1", 1, storage);
+		await store.getEngine(fakeEnv(old.entries).env, w.ctx);
+		await Promise.all(w.pending);
+		expect(cache.isLz4Cached(storage, keyOf(old.manifest, 1))).toBe(true);
+
+		// Prepare holds the new build as gzip (nothing to encode from yet); commit swaps and converts.
+		const env = fakeEnv(entries).env;
+		expect(await store.prefetchStore(env, w.ctx, fresh.manifest)).toBe(true);
+		expect(await store.swapToStore(env, w.ctx, fresh.manifest)).toBe(true);
+		await Promise.all(w.pending);
+		const key = keyOf(fresh.manifest, 1);
+		expect(cache.isLz4Cached(storage, key)).toBe(true);
+		expect(cache.isCompressedCached(storage, key, 1, fresh.manifest.partitions?.[1]?.store_gzip_bytes as number)).toBe(
+			false,
+		);
+		expect(cache.isLz4Cached(storage, keyOf(old.manifest, 1))).toBe(false);
+		expect(instanceFor("engine-lz4swap-p1").loaded).toEqual(fresh.raw[1] as Uint8Array);
+	});
+
+	test("a held LZ4 copy is read even after the gate turns LZ4 off", async () => {
+		const on = await publishWith("145", "lz4");
+		const storage = fakeStorage();
+		const w = waitingCtx("engine-lz4on-p0", 0, storage);
+		await store.getEngine(fakeEnv(on.entries).env, w.ctx);
+		await Promise.all(w.pending);
+		// The same build, re-announced with the codec off: the copy is not thrown away for a KV load.
+		const off = new Map(on.entries);
+		off.set(
+			"store:manifest",
+			JSON.stringify({ ...on.manifest, cache: { v: 1, codec: "gzip", projected_lz4_bytes: 9 } }),
+		);
+		const again = fakeEnv(off);
+		await store.getEngine(again.env, ctxFor("engine-lz4off-p0", 0, storage));
+		expect(again.chunkReads().length).toBe(0);
+		expect(lz4Loads).toContain("engine-lz4off-p0");
+	});
+
+	test("a corrupt LZ4 copy fails its load, is dropped, and the next load reads KV", async () => {
+		const { entries, manifest, raw } = await publishWith("146", "lz4");
+		const storage = fakeStorage();
+		const key = keyOf(manifest, 0);
+		// A committed copy whose one frame fails its checksum: readable, and wrong.
+		const writer = cache.cacheWriter(storage, cache.lz4CacheKey(key), null);
+		writer.write(Uint8Array.from([0x4c, 3, 0, 1, 2, 3]));
+		expect(writer.commit()).toBe(1);
+		await expect(store.getEngine(fakeEnv(entries).env, ctxFor("engine-lz4bad-p0", 0, storage))).rejects.toThrow(
+			/corrupt LZ4/,
+		);
+		expect(cache.isLz4Cached(storage, key)).toBe(false);
+		const retry = fakeEnv(entries);
+		await store.getEngine(retry.env, ctxFor("engine-lz4bad2-p0", 0, storage));
+		expect(retry.chunkReads().length).toBe(1);
+		expect(instanceFor("engine-lz4bad2-p0").loaded).toEqual(raw[0] as Uint8Array);
+	});
+
+	test("a cold object told of a new build drops the old build's cache (pruneToManifest)", async () => {
+		const old = await publishWith("147", "lz4");
+		const fresh = await publishWith("148", "lz4");
+		const storage = fakeStorage();
+		const w = waitingCtx("engine-lz4cold-p0", 0, storage);
+		await store.getEngine(fakeEnv(old.entries).env, w.ctx);
+		await Promise.all(w.pending);
+		expect(store.pruneToManifest(w.ctx, fresh.manifest)).toBe(1);
+		expect(cache.isLz4Cached(storage, keyOf(old.manifest, 0))).toBe(false);
+		// Idempotent, and never touches what the new manifest names.
+		expect(store.pruneToManifest(w.ctx, fresh.manifest)).toBe(0);
+	});
+
+	test("objects read an absent, unknown-version or unknown-codec block as gzip", () => {
+		expect(cache.cacheCodecOf(undefined)).toBe("gzip");
+		expect(cache.cacheCodecOf({})).toBe("gzip");
+		expect(cache.cacheCodecOf({ cache: { v: 2, codec: "lz4" } })).toBe("gzip");
+		expect(cache.cacheCodecOf({ cache: { v: 1, codec: "zstd" } })).toBe("gzip");
+		expect(cache.cacheCodecOf({ cache: { v: 1, codec: "lz4" } })).toBe("lz4");
 	});
 });
 

@@ -41,6 +41,28 @@ export async function liveManifestBuiltAts(remote: boolean): Promise<string[] | 
 }
 
 /**
+ * The LIVE manifest as an object — for the blocks a deploy must carry forward (see
+ * carryManifestBlocks). `manifest: null` with `failed` unset is an absent or unparseable manifest;
+ * `failed` is a read that did not answer, which the caller reports rather than mistaking for "none".
+ */
+export async function liveManifestObject(
+	remote: boolean,
+): Promise<{ manifest: Record<string, unknown> | null; failed: string | null }> {
+	const read = await kvGetText(MANIFEST_KEY, remote);
+	if (read.failed) return { manifest: null, failed: read.failed };
+	if (read.value === null) return { manifest: null, failed: null };
+	try {
+		const parsed = JSON.parse(read.value.slice(read.value.indexOf("{"))) as unknown;
+		return {
+			manifest: parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null,
+			failed: null,
+		};
+	} catch {
+		return { manifest: null, failed: null };
+	}
+}
+
+/**
  * The built_at the in-Worker coordinator is still uploading, if any (PUBLISHING_KEY in
  * src/engine/store-kv.ts). Its family has no manifest yet and a built_at older than every
  * deploy-built generation, which is exactly the shape an age-ordered sweep retires — and did, on

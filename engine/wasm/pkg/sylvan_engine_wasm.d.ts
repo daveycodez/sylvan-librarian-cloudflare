@@ -40,6 +40,14 @@ export function begin_store_load(total_len: number): void;
 export function begin_store_load_gzip(total_len: number): void;
 
 /**
+ * Start a load whose bytes are the LZ4 frame stream a Durable Object cached (see the section
+ * comment). Same atomic contract and the same buffer as the other two load paths: the active
+ * store is untouched until `finish_store_load_lz4` succeeds, and a failed load's buffer is
+ * recycled as the spare.
+ */
+export function begin_store_load_lz4(total_len: number): void;
+
+/**
  * One card by a marketplace or client id, or `null`. `namespace` is Scryfall's own path segment.
  */
 export function card_by_external_id(namespace: string, external_id: bigint, fields_json: string): string;
@@ -217,6 +225,12 @@ export function finish_store_load(): void;
 export function finish_store_load_gzip(): void;
 
 /**
+ * Finish an LZ4 load: no partial frame left over, the output exactly the declared length, and
+ * the header this build's. Then the store swaps in atomically, as the other two paths do.
+ */
+export function finish_store_load_lz4(): void;
+
+/**
  * The scores-bearing fuzzy surface for the cross-partition FLOOR/LEAD race: this partition's
  * top `k` distinct (card, name) candidate classes clearing `floor`, packed little-endian:
  *
@@ -386,10 +400,25 @@ export function store_load_chunk(chunk: Uint8Array): void;
 export function store_load_gzip_chunk(chunk: Uint8Array): void;
 
 /**
+ * Decode one piece of the frame stream. Pieces may split frames (and their headers) anywhere.
+ */
+export function store_load_lz4_chunk(chunk: Uint8Array): void;
+
+/**
  * Whether a store is loaded. A poisoned slot reports false: the instance holds nothing usable,
  * and the next load or query surfaces the poisoned error for the shim to act on.
  */
 export function store_loaded(): boolean;
+
+/**
+ * Frame `index` of the ACTIVE store's LZ4 encoding, or an empty array past the last one.
+ *
+ * The encoder half of the cache: after a load that inflated gzip, the Durable Object walks
+ * `index = 0, 1, …` and writes each frame into its cache, so the archive is encoded from the
+ * bytes already in linear memory — one frame (~0.5MB) resident on the JS side at a time. The JS
+ * walk is synchronous, so nothing can swap the store out between two frames of one encoding.
+ */
+export function store_lz4_frame(index: number): Uint8Array;
 
 /**
  * The archive format version this build reads/writes. A store manifest's

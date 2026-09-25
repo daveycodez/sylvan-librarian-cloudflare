@@ -50,14 +50,18 @@ import {
 	type ArchiveCacheStorage,
 	announcedFor,
 	type CacheWriter,
+	cacheCodecOf,
 	cachedArchiveStream,
 	cachedCompressedStream,
+	cachedLz4Stream,
 	cacheWriter,
 	compressedCacheKeys,
 	dropCached,
 	ensureCacheSchema,
 	fillCache,
 	isCompressedCached,
+	isLz4Cached,
+	lz4CacheKey,
 	pruneCache,
 	putCompressedChunk,
 	readLiveManifest,
@@ -73,6 +77,7 @@ import {
 	readManifest,
 } from "./store-kv";
 import type {
+	CacheCodec,
 	CollectionBatch,
 	CollectionBatchAnswer,
 	CollectionScope,
@@ -682,36 +687,45 @@ async function announceSelfOnce(env: Env, ctx: LoadContext | undefined, storeKey
  */
 const GZIP_FEED_BYTES = 1024 * 1024;
 
+/** What the bytes handed to feedStore are: the raw archive, stored gzip members, or cached LZ4 frames. */
+type StoreFormat = "raw" | "gzip" | "lz4";
+
 /**
  * Stream the store bytes into wasm memory, in blocks (see load-blocks.ts for why).
  *
- * `gzipped` bytes are the stored gzip members, inflated INSIDE the engine straight into the store
+ * `gzip` bytes are the stored gzip members, inflated INSIDE the engine straight into the store
  * buffer (see begin_store_load_gzip in engine/wasm/src/lib.rs for the measurement that moved the
- * gunzip there: 306-752ms of DO CPU per partition through DecompressionStream in workerd).
+ * gunzip there: 306-752ms of DO CPU per partition through DecompressionStream in workerd). `lz4`
+ * bytes are this object's own cached frames (backlog r3), decoded the same way at a fraction of
+ * the inflate's cost, and crossed at the same 1MB ceiling for the same reason.
  */
 async function feedStore(
 	w: wasm.EngineHandle,
 	body: ReadableStream<Uint8Array>,
 	totalLen: number,
 	sink: CacheWriter | null,
-	gzipped = false,
+	format: StoreFormat = "raw",
 	fence?: LoadFence,
 ): Promise<FeedCounts> {
 	// Every call into the instance is fenced: an abandoned load whose read resumes must not feed
 	// the buffer a newer load is filling.
 	checkFence(fence);
-	if (gzipped) {
-		w.begin_store_load_gzip(totalLen);
+	if (format === "gzip" || format === "lz4") {
+		const [begin, chunk, finish] =
+			format === "gzip"
+				? [w.begin_store_load_gzip, w.store_load_gzip_chunk, w.finish_store_load_gzip]
+				: [w.begin_store_load_lz4, w.store_load_lz4_chunk, w.finish_store_load_lz4];
+		begin(totalLen);
 		const counts = await feedBlocks(
 			body,
 			(block) => {
 				checkFence(fence);
-				w.store_load_gzip_chunk(block);
+				chunk(block);
 			},
 			GZIP_FEED_BYTES,
 		);
 		checkFence(fence);
-		w.finish_store_load_gzip();
+		finish();
 		return counts;
 	}
 	w.begin_store_load(totalLen);
@@ -804,11 +818,21 @@ function compressedArchiveBytes(
 	env: Env,
 	ctx: LoadContext | undefined,
 	source: ArchiveSource,
-): { body: ReadableStream<Uint8Array>; cached: boolean; commit: () => void; invalidate: () => void } {
+	/** What the manifest being loaded lets this object WRITE (cacheCodecOf). Reads take either. */
+	codec: CacheCodec = "gzip",
+): {
+	body: ReadableStream<Uint8Array>;
+	cached: boolean;
+	format: "gzip" | "lz4";
+	commit: () => void;
+	invalidate: () => void;
+} {
 	const storage = ctx?.storage;
 	const gzipBytes = source.gzipBytes as number; // callers gate on presence
 	const chunkCount = source.chunkCount as number; // compressed manifests always carry it (kvArchiveStream enforces)
 	const keys = compressedCacheKeys(source.storeKey, chunkCount);
+	// Everything this archive may be cached under, in either family: what every prune keeps.
+	const keep = cacheKeysOf(source);
 	const dropAll = () => {
 		if (!storage) return;
 		try {
@@ -820,8 +844,22 @@ function compressedArchiveBytes(
 	if (storage) {
 		try {
 			ensureCacheSchema(storage);
+			// LZ4 first (r3): the cheaper decode, and — held — the only family the object keeps.
+			// Taken whatever the codec says: a gate that turned LZ4 off tonight must not make an
+			// object throw away a copy it already has and pay a KV reload for it.
+			const lz4 = cachedLz4Stream(storage, source.storeKey);
+			if (lz4) {
+				const dropLz4 = () => {
+					try {
+						dropCached(storage, lz4CacheKey(source.storeKey));
+					} catch (err) {
+						console.warn(`${tag(ctx)}could not drop the LZ4 cache for ${source.storeKey}: ${err}`);
+					}
+				};
+				return { body: lz4, cached: true, format: "lz4", commit: () => {}, invalidate: dropLz4 };
+			}
 			const local = cachedCompressedStream(storage, source.storeKey, chunkCount, gzipBytes, false);
-			if (local) return { body: local, cached: true, commit: () => {}, invalidate: dropAll };
+			if (local) return { body: local, cached: true, format: "gzip", commit: () => {}, invalidate: dropAll };
 		} catch (err) {
 			console.warn(
 				`${tag(ctx)}compressed archive cache unreadable for ${source.storeKey} (falling back to KV): ${err}`,
@@ -830,7 +868,13 @@ function compressedArchiveBytes(
 	}
 	// Miss: read KV, teeing each STORED chunk in. Tee faults must never fail the
 	// load — warn once and stop writing, exactly like the decompressed sink.
-	let teeBroken = storage === undefined;
+	//
+	// NO TEE when the codec is LZ4 (design r3, change 4): the object is about to hold this archive
+	// as LZ4, and teeing the gzip chunks first would hold both families of one archive at once —
+	// at the publish, in every warm region together. The LZ4 copy is written from wasm after the
+	// load instead (fillLz4Cache); the stale builds are still pruned at commit.
+	const teeGzip = codec === "gzip";
+	let teeBroken = storage === undefined || !teeGzip;
 	const tee = (seq: number, bytes: Uint8Array) => {
 		if (teeBroken || !storage) return;
 		try {
@@ -841,9 +885,20 @@ function compressedArchiveBytes(
 		}
 	};
 	return {
-		body: kvSourceStream(env, source, storage ? tee : undefined, false),
+		body: kvSourceStream(env, source, storage && teeGzip ? tee : undefined, false),
 		cached: false,
+		format: "gzip",
 		commit: () => {
+			if (storage && !teeGzip) {
+				// Nothing tee'd; the object's older builds are still dead weight.
+				try {
+					const dropped = pruneCache(storage, keep);
+					if (dropped.length) console.log(`${tag(ctx)}dropped ${dropped.length} stale cached archive(s)`);
+				} catch (err) {
+					console.warn(`${tag(ctx)}could not prune the archive cache: ${err}`);
+				}
+				return;
+			}
 			if (!storage || teeBroken) return;
 			try {
 				if (!isCompressedCached(storage, source.storeKey, chunkCount, gzipBytes)) {
@@ -851,7 +906,7 @@ function compressedArchiveBytes(
 					dropAll();
 					return;
 				}
-				const dropped = pruneCache(storage, keys);
+				const dropped = pruneCache(storage, keep);
 				console.log(
 					`${tag(ctx)}cached ${source.storeKey} compressed while loading it (${chunkCount} chunks)` +
 						`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,
@@ -890,6 +945,94 @@ function commitSink(
 		);
 	} catch (err) {
 		console.warn(`${tag(ctx)}could not cache ${key} locally (KV still serves): ${err}`);
+	}
+}
+
+/**
+ * Every cache key an archive may occupy: its gzip chunk family and its LZ4 family (or, for an
+ * uncompressed archive, its one decompressed family). What a prune that keeps THIS archive keeps.
+ */
+function cacheKeysOf(source: ArchiveSource): string[] {
+	if (source.gzipBytes === undefined) return [source.storeKey];
+	return [...compressedCacheKeys(source.storeKey, source.chunkCount as number), lz4CacheKey(source.storeKey)];
+}
+
+/**
+ * Re-encode the store this label just loaded into its LZ4 cache (backlog r3), when the manifest
+ * says LZ4 and the load inflated gzip — a KV miss, a gzip cache hit, or a publish swap from the
+ * gzip the prefetch held.
+ *
+ * ORDER IS THE POOL (design r3, change 4): the gzip rows go FIRST, then the LZ4 rows are written,
+ * so an object never holds both families of one archive. Encoding first would, at the publish
+ * commit, have every warm object in every region holding both at once — ~+0.15GB per warm region
+ * at today's corpus, ~+2.3GB at 2x with eight regions, past the pool. The store is already in
+ * wasm memory, so nothing needs the gzip copy; an eviction between the drop and the commit costs
+ * one KV reload, and a failed encode leaves no cache at all, which the next load refills.
+ *
+ * SYNCHRONOUS once it starts: every frame and every row write happens in one turn, so no request
+ * or publish swap can change the active store between two frames (the stillCurrent check guards
+ * the gap before it starts). Measured under V8 at ~67ms of encode per partition (2026-09-25, node,
+ * every partition of generation 52) plus ~15 row writes — once per object per publish.
+ */
+function fillLz4Cache(
+	ctx: LoadContext,
+	w: wasm.EngineHandle,
+	source: ArchiveSource,
+	stillCurrent: () => boolean,
+): void {
+	const storage = ctx.storage;
+	if (!storage || !stillCurrent()) return;
+	const key = lz4CacheKey(source.storeKey);
+	try {
+		if (isLz4Cached(storage, source.storeKey)) return;
+		// Everything but the LZ4 family this fill writes: the gzip copy of THIS archive, and any
+		// other build's rows a prune has not reached.
+		const dropped = pruneCache(storage, [key]);
+		const writer = cacheWriter(storage, key, null);
+		let frames = 0;
+		try {
+			for (;;) {
+				const frame = w.store_lz4_frame(frames);
+				if (frame.length === 0) break;
+				writer.write(frame);
+				frames += 1;
+			}
+		} catch (err) {
+			writer.abort();
+			throw err;
+		}
+		const rows = writer.commit();
+		if (rows === 0) {
+			console.warn(`${tag(ctx)}LZ4 cache for ${source.storeKey} came out empty; not kept`);
+			return;
+		}
+		console.log(
+			`${tag(ctx)}cached ${source.storeKey} as LZ4 (${frames} frames, ${rows} rows)` +
+				`${dropped.length ? `, dropped ${dropped.length} gzip/stale` : ""}`,
+		);
+	} catch (err) {
+		// The cache is an optimisation over KV: a fill that fails costs the next wake a KV load.
+		console.warn(`${tag(ctx)}could not cache ${source.storeKey} as LZ4 (the next load reads KV): ${err}`);
+	}
+}
+
+/**
+ * Drop every cached archive a COLD object holds that the manifest it was just told about does
+ * not name (design r3, change 6: the cold branch of preparePublish). Once the publisher has
+ * recorded the new manifest here, the old build's cache is never read again — a wake loads the
+ * recorded build, falling back to KV — so keeping it only means the next cold load holds two
+ * builds while it fills the new one. Never throws: a prune that fails is the old behaviour.
+ */
+export function pruneToManifest(ctx: LoadContext, manifest: StoreManifest): number {
+	const storage = ctx.storage;
+	const source = tryArchiveOfManifest(manifest, ctx.partition);
+	if (!storage || !source) return 0;
+	try {
+		ensureCacheSchema(storage);
+		return pruneCache(storage, cacheKeysOf(source)).length;
+	} catch (err) {
+		console.warn(`${tag(ctx)}could not prune stale cached archives: ${err}`);
+		return 0;
 	}
 }
 
@@ -1026,19 +1169,30 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	// take; it is the compression revert staying code-only (StoreManifest
 	// .store_gzip_bytes is the format flag), not a partitioning fallback.
 	const compressedMode = source.gzipBytes !== undefined;
-	const fetch = compressedMode
-		? { ...compressedArchiveBytes(env, ctx, source), sink: null as CacheWriter | null }
+	// What the manifest lets this object write (r3's pool gate): read once, from the manifest it
+	// is loading, so a load and the fill after it agree.
+	const codec = cacheCodecOf(manifest);
+	const fetch: {
+		body: ReadableStream<Uint8Array>;
+		cached: boolean;
+		format: StoreFormat;
+		sink: CacheWriter | null;
+		commit: () => void;
+		invalidate: () => void;
+	} = compressedMode
+		? { ...compressedArchiveBytes(env, ctx, source, codec), sink: null }
 		: (() => {
 				const f = archiveBytes(ctx, source.storeKey, source.storeBytes, () => kvSourceStream(env, source));
 				return {
 					body: f.body,
 					cached: f.cached,
+					format: "raw" as const,
 					sink: f.sink,
 					commit: () => commitSink(ctx, f.sink, source.storeKey, [source.storeKey]),
 					invalidate: () => f.sink?.abort(),
 				};
 			})();
-	const { body, cached, sink } = fetch;
+	const { body, cached, sink, format } = fetch;
 	if (liveCurrent(state, ctx?.label)) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
 		// getEngine), so a brief unloaded window is invisible to callers.
@@ -1057,7 +1211,7 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	// ~105ms under V8. `store_gzip_bytes` stays a flag the reader can see absent.
 	let counts: FeedCounts;
 	try {
-		counts = await feedStore(w, body, source.storeBytes, sink, compressedMode, fence);
+		counts = await feedStore(w, body, source.storeBytes, sink, format, fence);
 	} catch (err) {
 		// An abandoned load stops here: no cache invalidation it does not own, no fallback load.
 		if (err instanceof StoreLoadStalledError) throw err;
@@ -1107,12 +1261,29 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	checkFence(fence);
 	const engine = new WasmEngine(w);
 	state.current = { storeKey: source.storeKey, engine, manifest, handle: w, generation: w.instanceGeneration() };
+	if (ctx?.storage && format === "gzip" && codec === "lz4") {
+		// After this load resolves, not inside it: the request (or the publish commit) that caused
+		// the load is answered first, and the one-off encode runs on the next turn. It re-checks that
+		// THIS store is still the label's before it touches anything (a swap may have begun).
+		const fillCtx = ctx;
+		const generation = w.instanceGeneration();
+		const stillCurrent = () =>
+			state.current?.storeKey === source.storeKey && state.current.handle.instanceGeneration() === generation;
+		ctx.waitUntil(
+			new Promise<void>((resolve) =>
+				setTimeout(() => {
+					fillLz4Cache(fillCtx, w, source, stillCurrent);
+					resolve();
+				}, 0),
+			),
+		);
+	}
 	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
 	// synchronous execution, so it cannot see the decompression or the copy into
 	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
 	// linear-memory figure is the honest one here, and is a high-water mark.
 	console.log(
-		`${tag(ctx)}store loaded from ${cached ? "local cache" : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
+		`${tag(ctx)}store loaded from ${cached ? `local cache (${format})` : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
 			`${source.storeBytes} bytes${!cached && source.gzipBytes ? ` from ${source.gzipBytes} gzipped` : ""}, ` +
 			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
@@ -1200,12 +1371,19 @@ export async function prefetchStore(env: Env, ctx: LoadContext, manifest: StoreM
 		ensureCacheSchema(ctx.storage);
 		if (source.gzipBytes !== undefined) {
 			const chunkCount = source.chunkCount as number;
-			if (!isCompressedCached(ctx.storage, source.storeKey, chunkCount, source.gzipBytes)) {
+			// The prefetch always stages GZIP, even under an LZ4 codec: the new archive is not in wasm
+			// yet, so there is nothing to encode from, and a second store-sized buffer does not fit the
+			// isolate. The commit swap inflates it and fillLz4Cache converts it (r3). A held LZ4 copy
+			// of the same archive (a retried phase) is already the better form.
+			if (
+				!isLz4Cached(ctx.storage, source.storeKey) &&
+				!isCompressedCached(ctx.storage, source.storeKey, chunkCount, source.gzipBytes)
+			) {
 				for (let seq = 0; seq < chunkCount; seq++) {
 					putCompressedChunk(ctx.storage, source.storeKey, seq, await fetchStoredChunk(env, source.storeKey, seq));
 				}
 			}
-			const dropped = pruneCache(ctx.storage, compressedCacheKeys(source.storeKey, chunkCount));
+			const dropped = pruneCache(ctx.storage, cacheKeysOf(source));
 			console.log(
 				`${tag(ctx)}prefetched ${source.storeKey} (${chunkCount} compressed chunks) before swapping` +
 					`${dropped.length ? `, dropped ${dropped.length} stale` : ""}`,

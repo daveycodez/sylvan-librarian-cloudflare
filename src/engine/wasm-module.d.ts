@@ -25,6 +25,12 @@ declare module "sylvan-engine-wasm" {
 		begin_store_load_gzip(totalLen: number): void;
 		store_load_gzip_chunk(chunk: Uint8Array): void;
 		finish_store_load_gzip(): void;
+		/** A load whose bytes are the Durable Object's cached LZ4 frames (backlog r3). */
+		begin_store_load_lz4(totalLen: number): void;
+		store_load_lz4_chunk(chunk: Uint8Array): void;
+		finish_store_load_lz4(): void;
+		/** Frame `index` of the ACTIVE store's LZ4 encoding; empty past the last one. */
+		store_lz4_frame(index: number): Uint8Array;
 		unload_store(): void;
 		store_loaded(): boolean;
 		query(filterTreeJson: string, optsJson: string): string;

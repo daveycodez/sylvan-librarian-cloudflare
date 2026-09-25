@@ -10,11 +10,14 @@ import { describe, expect, test } from "bun:test";
 import {
 	type ArchiveCacheStorage,
 	cachedArchiveStream,
+	cachedLz4Stream,
 	cacheWriter,
 	dropCached,
 	ensureCacheSchema,
 	fillCache,
 	isCached,
+	isLz4Cached,
+	lz4CacheKey,
 	pruneCache,
 } from "../../src/engine/store-cache";
 
@@ -47,6 +50,9 @@ function fakeStorage(): ArchiveCacheStorage & { rows: Map<string, ArrayBuffer[]>
 				}
 				if (q.startsWith("SELECT archive_key")) {
 					return toArray([...meta.keys()].map((archive_key) => ({ archive_key })));
+				}
+				if (q.startsWith("SELECT DISTINCT archive_key FROM archive_cache")) {
+					return toArray([...rows.keys()].map((archive_key) => ({ archive_key })));
 				}
 				if (q.startsWith("INSERT INTO archive_cache_meta")) {
 					meta.set(b[0] as string, { total: b[1] as number, count: b[2] as number });
@@ -269,5 +275,43 @@ describe("archive cache", () => {
 		await fillCache(store, KEY, streamOf(ramp(1000), 500), 1000);
 		expect(pruneCache(store, [KEY])).toEqual([]);
 		expect(isCached(store, KEY, 1000)).toBe(true);
+	});
+
+	test("prune also drops rows no meta row names — a writer that died — unless the key is kept", () => {
+		// The LZ4 encode is one writer spanning many rows; an isolate lost mid-encode leaves rows
+		// without a meta row, which no reader accepts and no meta-driven prune ever found.
+		const store = fakeStorage();
+		const dead = cacheWriter(store, `${KEY}:lz4v1`, null);
+		dead.write(ramp(2_000_000)); // one full row flushed, never committed
+		const live = cacheWriter(store, "in-flight:lz4v1", null);
+		live.write(ramp(1_600_000));
+		expect(store.rows.has(`${KEY}:lz4v1`)).toBe(true);
+		expect(pruneCache(store, ["in-flight:lz4v1"])).toEqual([`${KEY}:lz4v1`]);
+		expect(store.rows.has(`${KEY}:lz4v1`)).toBe(false);
+		expect(store.rows.has("in-flight:lz4v1")).toBe(true);
+	});
+});
+
+describe("the LZ4 family (r3)", () => {
+	test("a length-free writer commits what it was given, and refuses to commit nothing", async () => {
+		const store = fakeStorage();
+		const frames = ramp(3_100_000);
+		const writer = cacheWriter(store, lz4CacheKey(KEY), null);
+		writer.write(frames.subarray(0, 1_000_000));
+		writer.write(frames.subarray(1_000_000));
+		expect(isLz4Cached(store, KEY)).toBe(false); // meta last: not readable until commit
+		expect(writer.commit()).toBe(3);
+		expect(isLz4Cached(store, KEY)).toBe(true);
+		expect(await drain(cachedLz4Stream(store, KEY) as ReadableStream<Uint8Array>)).toEqual(frames);
+
+		const empty = cacheWriter(store, lz4CacheKey("other"), null);
+		expect(empty.commit()).toBe(0);
+		expect(isLz4Cached(store, "other")).toBe(false);
+		expect(cachedLz4Stream(store, "other")).toBeNull();
+	});
+
+	test("its key is its own family, never one of the gzip chunk keys", () => {
+		expect(lz4CacheKey(KEY)).toBe(`${KEY}:lz4v1`);
+		expect(lz4CacheKey(KEY)).not.toMatch(/:gz:/);
 	});
 });

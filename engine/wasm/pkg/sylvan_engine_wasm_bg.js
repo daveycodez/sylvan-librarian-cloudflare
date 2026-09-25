@@ -73,6 +73,20 @@ export function begin_store_load_gzip(total_len) {
 }
 
 /**
+ * Start a load whose bytes are the LZ4 frame stream a Durable Object cached (see the section
+ * comment). Same atomic contract and the same buffer as the other two load paths: the active
+ * store is untouched until `finish_store_load_lz4` succeeds, and a failed load's buffer is
+ * recycled as the spare.
+ * @param {number} total_len
+ */
+export function begin_store_load_lz4(total_len) {
+    const ret = wasm.begin_store_load_lz4(total_len);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * One card by a marketplace or client id, or `null`. `namespace` is Scryfall's own path segment.
  * @param {string} namespace
  * @param {bigint} external_id
@@ -581,6 +595,17 @@ export function finish_store_load_gzip() {
 }
 
 /**
+ * Finish an LZ4 load: no partial frame left over, the output exactly the declared length, and
+ * the header this build's. Then the store swaps in atomically, as the other two paths do.
+ */
+export function finish_store_load_lz4() {
+    const ret = wasm.finish_store_load_lz4();
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * The scores-bearing fuzzy surface for the cross-partition FLOOR/LEAD race: this partition's
  * top `k` distinct (card, name) candidate classes clearing `floor`, packed little-endian:
  *
@@ -988,6 +1013,19 @@ export function store_load_gzip_chunk(chunk) {
 }
 
 /**
+ * Decode one piece of the frame stream. Pieces may split frames (and their headers) anywhere.
+ * @param {Uint8Array} chunk
+ */
+export function store_load_lz4_chunk(chunk) {
+    const ptr0 = passArray8ToWasm0(chunk, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.store_load_lz4_chunk(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * Whether a store is loaded. A poisoned slot reports false: the instance holds nothing usable,
  * and the next load or query surfaces the poisoned error for the shim to act on.
  * @returns {boolean}
@@ -995,6 +1033,26 @@ export function store_load_gzip_chunk(chunk) {
 export function store_loaded() {
     const ret = wasm.store_loaded();
     return ret !== 0;
+}
+
+/**
+ * Frame `index` of the ACTIVE store's LZ4 encoding, or an empty array past the last one.
+ *
+ * The encoder half of the cache: after a load that inflated gzip, the Durable Object walks
+ * `index = 0, 1, …` and writes each frame into its cache, so the archive is encoded from the
+ * bytes already in linear memory — one frame (~0.5MB) resident on the JS side at a time. The JS
+ * walk is synchronous, so nothing can swap the store out between two frames of one encoding.
+ * @param {number} index
+ * @returns {Uint8Array}
+ */
+export function store_lz4_frame(index) {
+    const ret = wasm.store_lz4_frame(index);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
 }
 
 /**

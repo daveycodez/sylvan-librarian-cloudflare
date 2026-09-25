@@ -32,6 +32,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
+	CARRIED_MANIFEST_BLOCKS,
+	carryManifestBlocks,
 	chunkForKv,
 	chunkKey,
 	KEEP_STORES_IN_KV,
@@ -43,7 +45,7 @@ import {
 } from "../src/engine/store-kv";
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
-import { liveManifestBuiltAts, pruneOldStores, publishingBuiltAts } from "./kv-prune";
+import { liveManifestBuiltAts, liveManifestObject, pruneOldStores, publishingBuiltAts } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
@@ -227,9 +229,24 @@ console.log(`  tag aliases uploaded from ${TAG_ALIASES_FILE}`);
 const previouslyLive = await liveManifestBuiltAts(true);
 const inFlight = await publishingBuiltAts(true);
 
+// The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool — are not
+// the builder's to know. Carried from the manifest being replaced, or every deploy would reset
+// them. A read that failed publishes without them, which is each block's safe default (gzip
+// caches), and says so.
+const live = await liveManifestObject(true);
+if (live.failed) {
+	console.warn(
+		`Could not read the live manifest to carry ${CARRIED_MANIFEST_BLOCKS.join(", ")} forward (${live.failed}); ` +
+			"publishing without them — each reads as its safe default until the next nightly decides it again.",
+	);
+}
+const published = carryManifestBlocks(manifest, live.manifest);
+const carried = CARRIED_MANIFEST_BLOCKS.filter((b) => (published as Record<string, unknown>)[b] !== undefined);
+if (carried.length) console.log(`  carried forward from the live manifest: ${carried.join(", ")}`);
+
 // The commit point.
 const manifestPath = join(tmpdir(), "sylvan-store-manifest.json");
-await writeFile(manifestPath, JSON.stringify(manifest));
+await writeFile(manifestPath, JSON.stringify(published));
 try {
 	await kv(["key", "put", MANIFEST_KEY, "--path", manifestPath, "--remote"]);
 

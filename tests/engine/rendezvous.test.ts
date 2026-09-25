@@ -87,6 +87,11 @@ mock.module("../../src/engine/store", () => ({
 		publishCalls.push("prefetchStore");
 		return true;
 	},
+	// The cold branch of preparePublish drops a stale build's cache (r3); nothing is loaded.
+	pruneToManifest: () => {
+		publishCalls.push("pruneToManifest");
+		return 0;
+	},
 	swapToStore: async () => {
 		publishCalls.push("swapToStore");
 		return true;
@@ -192,13 +197,14 @@ describe("the two-step publish delegates swap to COMMIT, never prepare", () => {
 		expect(publishCalls).toEqual(["prefetchStore", "swapToStore"]);
 	});
 
-	test("a COLD object acks both steps without touching the loader", async () => {
+	test("a COLD object acks both steps without loading, only dropping a stale build's cache", async () => {
 		publishCalls.length = 0;
 		objectIsWarm = false;
 		const engine = makePublishDo();
 		expect((await engine.preparePublish(MANIFEST)).prepared).toBe(true);
 		expect((await engine.commitPublish()).swapped).toBe(false);
-		expect(publishCalls).toEqual([]);
+		// No prefetch, no swap: the one loader call is the row-delete prune (r3), which loads nothing.
+		expect(publishCalls).toEqual(["pruneToManifest"]);
 		objectIsWarm = true;
 	});
 

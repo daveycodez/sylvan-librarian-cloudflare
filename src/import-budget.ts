@@ -23,6 +23,8 @@
 //   - scripts/import-harness, which drives this exact pipeline end to end on a
 //     scaled synthetic corpus and prints rows read/written per phase.
 
+import type { CacheCodec } from "./engine/types";
+
 /**
  * What one import run may spend before it stops itself. The free plan allows
  * 5,000,000 rows read and 100,000 written per DAY, across everything — so
@@ -293,6 +295,12 @@ export interface RunMeters {
 	 * slow (still banking) from one that is dead (nothing banked, nothing scheduled). 0 = never.
 	 */
 	banked_ms: number;
+	/**
+	 * The coordinator's own `ctx.storage.sql.databaseSize` high-water mark this run, sampled on
+	 * every flush — the MEASURED staging peak r3's pool gate budgets with (decideCacheCodec). Rides
+	 * the row every alarm already writes, so it costs no write. 0 = not sampled.
+	 */
+	peak_db_bytes: number;
 }
 
 export const EMPTY_RUN_METERS: RunMeters = {
@@ -305,16 +313,26 @@ export const EMPTY_RUN_METERS: RunMeters = {
 	pace_bps: 0,
 	late_alarms: 0,
 	banked_ms: 0,
+	peak_db_bytes: 0,
 };
 
 /** Bank one flush; `newAlarm` counts the alarm once per alarm, not per flush. */
 export function advanceMeters(
 	prev: RunMeters | null,
-	delta: { rowsRead: number; rowsWritten: number; elapsedMs: number; newAlarm: boolean; churnBytes?: number },
+	delta: {
+		rowsRead: number;
+		rowsWritten: number;
+		elapsedMs: number;
+		newAlarm: boolean;
+		churnBytes?: number;
+		/** `databaseSize` at this flush; folded into the high-water mark. */
+		dbBytes?: number;
+	},
 ): RunMeters {
 	return {
 		...EMPTY_RUN_METERS,
 		...(prev ?? {}),
+		peak_db_bytes: Math.max(prev?.peak_db_bytes ?? 0, delta.dbBytes ?? 0),
 		rows_read: (prev?.rows_read ?? 0) + delta.rowsRead,
 		rows_written: (prev?.rows_written ?? 0) + delta.rowsWritten,
 		alarms: (prev?.alarms ?? 0) + (delta.newAlarm ? 1 : 0),
@@ -339,6 +357,7 @@ export function parseMeters(value: string | null | undefined): RunMeters | null 
 			pace_bps: n(parsed.pace_bps),
 			late_alarms: n(parsed.late_alarms),
 			banked_ms: n(parsed.banked_ms),
+			peak_db_bytes: n(parsed.peak_db_bytes),
 		};
 	} catch {
 		return null;
@@ -609,3 +628,81 @@ export function projectPoolBytes(shape: {
 
 /** The Workers Free plan's Durable Objects storage pool, in bytes. */
 export const DO_STORAGE_POOL_BYTES = 5 * 1024 * 1024 * 1024;
+
+// ── r3: the engine objects' local cache codec, gated on the pool ──────────────
+//
+// An engine object can hold its partition's local cache as the gzip members KV stores, or as LZ4
+// frames the engine re-encodes after a load (store-cache.ts, "The LZ4 archive cache") — ~3x
+// cheaper to decode on every wake in workerd, x1.449 the bytes (every partition of generation 52,
+// 2026-09-25: 212.6MB of LZ4 against 146.7MB of gzip, x1.453 at worst). So the nightly decides per
+// BUILD which one objects may WRITE, from measured inputs, and publishes the answer in the manifest
+// (StoreManifest.cache). Readers accept either family whatever it says.
+//
+// A FLIP COSTS NOTHING EXTRA to carry out. Every publish is a new build under new archive keys, so
+// every cache is rewritten anyway: the codec only chooses what an object writes after its NEXT load
+// of the NEW build. The dead band below is for predictability, not cost.
+//
+// WHAT IT CANNOT DO IS GIVE THE POOL BACK. A Durable Object's SQLite keeps the pages its deletes
+// free (only deleteAll returns them), so each object's file sits at its high-water mark — and that
+// mark is set at the publish, when the object holds its OLD cache beside the NEW build's gzip
+// prefetch (store.ts prefetchStore; x1 would remove that overlap and is not built). Switching the
+// codec off stops the mark from GROWING with the corpus; it does not lower it until the object is
+// released. Hence a gate that turns on only well inside the budget.
+
+/** LZ4 cache bytes per gzip byte: x1.449 measured over all ten partitions (x1.453 worst), rounded UP. */
+export const LZ4_CACHE_RATIO = 1.5;
+
+/**
+ * The pool the gate budgets against: 5.0e9, not DO_STORAGE_POOL_BYTES (5 GiB). The plan says "5 GB";
+ * budgeting against the smaller reading costs 7% of headroom and removes the question of which unit
+ * the dashboard means.
+ */
+export const POOL_GATE_BUDGET_BYTES = 5_000_000_000;
+/** gzip -> lz4 only when the LZ4 projection is at or under this share of the budget. */
+export const LZ4_ON_FRACTION = 0.8;
+/** lz4 -> gzip as soon as the LZ4 projection passes this share. Between the two, keep what was published. */
+export const LZ4_OFF_FRACTION = 0.88;
+
+/**
+ * The pool at its high-water mark under a cache codec: every replica object holding its cache
+ * (`cacheFactor` x the build's gzip bytes) BESIDE the next build's gzip prefetch, plus the
+ * coordinator's own staging high-water mark, plus any staging a failed-over coordinator left behind.
+ *
+ * Summed, not max'd: SQLite files keep their high-water marks (see above), so the staging peak of
+ * the build and the prefetch overlap of the publish are both standing costs, not moments.
+ */
+export function projectCachePool(shape: {
+	/** Replica groups that hold a cache: every ROUTABLE region's shard 0, plus the shards announced above it. */
+	replicas: number;
+	/** `partitions[k].store_gzip_bytes` of the build being published. */
+	partitionGzipBytes: readonly number[];
+	/** 1 for gzip caches, LZ4_CACHE_RATIO for lz4. */
+	cacheFactor: number;
+	/** The coordinator's databaseSize high-water mark (RunMeters.peak_db_bytes). */
+	stagingPeakBytes: number;
+	/** Staging still held by replaced (failed-over) coordinators; 0 once they are released. */
+	strandedBytes: number;
+}): number {
+	const perBuild = shape.partitionGzipBytes.reduce((s, b) => s + b, 0);
+	return shape.replicas * perBuild * (shape.cacheFactor + 1) + shape.stagingPeakBytes + shape.strandedBytes;
+}
+
+/** The codec the next build publishes, with a dead band so a replica shard opening or closing does not toggle it. */
+export function decideCacheCodec(
+	previous: CacheCodec | undefined,
+	projectedLz4Bytes: number,
+	budget: number = POOL_GATE_BUDGET_BYTES,
+): CacheCodec {
+	if (!Number.isFinite(projectedLz4Bytes) || projectedLz4Bytes <= 0) return "gzip";
+	if (previous === "lz4") return projectedLz4Bytes > LZ4_OFF_FRACTION * budget ? "gzip" : "lz4";
+	return projectedLz4Bytes <= LZ4_ON_FRACTION * budget ? "lz4" : "gzip";
+}
+
+/**
+ * The coordinator's staging at its peak — a METER READING: GraphQL durableObjectsSqlStorageGroups
+ * read 0.486–0.495GB for the ImportCoordinator namespace on DeckGen 2026-09-20, -21 and -23, each a
+ * run stalled while holding its staging (backlog x1, report 13). The pool gate measures its own
+ * (RunMeters.peak_db_bytes) and uses this only for a run that began before that meter existed,
+ * scaled by the store's raw bytes against generation 52's 425,181,152.
+ */
+export const STAGING_PEAK_BYTES_2026_09_25 = 495_000_000;

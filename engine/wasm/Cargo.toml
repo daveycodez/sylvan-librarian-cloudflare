@@ -13,6 +13,15 @@ serde_json = "1"
 # The cold-load inflater (begin_store_load_gzip). The pure-Rust zlib-rs backend — faster than
 # miniz_oxide on the ~40MB partition a wake inflates, and no C toolchain for wasm32.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# The Durable Object's LOCAL cache codec (backlog r3; begin_store_load_lz4, store_lz4_frame): LZ4
+# blocks decode ~3x faster than the gzip inflate above on the partition every wake materialises.
+# Block API only — no frame format, no twox-hash. Encode runs over the store this crate already
+# holds (trusted input), so the unchecked encoder; decode keeps `checked-decode`, so even a frame
+# whose checksum somehow matched cannot write outside its output slice.
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "checked-decode"] }
+# xxh32 over each compressed frame: the LZ4 cache's stand-in for gzip's CRC, which is what keeps a
+# readable-and-wrong cached copy (the 2026-08-13 incident) a refused load rather than a served one.
+xxhash-rust = { version = "0.8", features = ["xxh32"] }
 
 # card_engine's `rand` pulls in `getrandom`, which refuses to compile for
 # wasm32-unknown-unknown unless a backend is chosen. The `wasm_js` feature +

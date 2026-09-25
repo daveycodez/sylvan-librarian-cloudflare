@@ -189,6 +189,10 @@ export interface EngineHandle {
 	begin_store_load_gzip(totalLen: number): void;
 	store_load_gzip_chunk(chunk: Uint8Array): void;
 	finish_store_load_gzip(): void;
+	begin_store_load_lz4(totalLen: number): void;
+	store_load_lz4_chunk(chunk: Uint8Array): void;
+	finish_store_load_lz4(): void;
+	store_lz4_frame(index: number): Uint8Array;
 	unload_store(): void;
 	store_loaded(): boolean;
 	query(filterTreeJson: string, optsJson: string): string;
@@ -248,6 +252,10 @@ export function engineFor(label: string): EngineHandle {
 		begin_store_load_gzip: wrap("begin_store_load_gzip"),
 		store_load_gzip_chunk: wrap("store_load_gzip_chunk"),
 		finish_store_load_gzip: wrap("finish_store_load_gzip"),
+		begin_store_load_lz4: wrap("begin_store_load_lz4"),
+		store_load_lz4_chunk: wrap("store_load_lz4_chunk"),
+		finish_store_load_lz4: wrap("finish_store_load_lz4"),
+		store_lz4_frame: wrap("store_lz4_frame"),
 		unload_store: wrap("unload_store"),
 		store_loaded: wrap("store_loaded"),
 		query: wrap("query"),

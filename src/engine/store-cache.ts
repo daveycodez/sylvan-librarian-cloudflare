@@ -91,6 +91,7 @@
 // own key and the old key's rows are dropped once the new one is complete.
 
 import { BLOB_GROUP_BYTES, blobBytes, exactBuffer } from "../import-spill";
+import type { CacheCodec } from "./types";
 
 /**
  * The DO storage surface this module needs. Narrowed to what it calls so the loader can be handed
@@ -234,7 +235,13 @@ export interface CacheWriter {
 	abort(): void;
 }
 
-export function cacheWriter(storage: ArchiveCacheStorage, key: string, expectedBytes: number): CacheWriter {
+/**
+ * `expectedBytes` null is for a copy whose length is only known once written — the LZ4 family,
+ * encoded frame by frame. Its integrity rests on the frames instead (a per-frame checksum, and
+ * the engine refusing a stream that does not decode to exactly the manifest's store_bytes), and
+ * `commit()` still refuses an empty copy.
+ */
+export function cacheWriter(storage: ArchiveCacheStorage, key: string, expectedBytes: number | null): CacheWriter {
 	ensureCacheSchema(storage);
 	// A previous partial attempt under this same key would collide on the primary key.
 	exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
@@ -270,7 +277,7 @@ export function cacheWriter(storage: ArchiveCacheStorage, key: string, expectedB
 				flush(group.subarray(0, filled));
 				filled = 0;
 			}
-			if (written !== expectedBytes) {
+			if (expectedBytes === null ? written === 0 : written !== expectedBytes) {
 				// Never leave a readable short copy. No meta row means the next load goes to KV.
 				exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 				return 0;
@@ -279,7 +286,7 @@ export function cacheWriter(storage: ArchiveCacheStorage, key: string, expectedB
 				storage,
 				"INSERT INTO archive_cache_meta (archive_key, total_bytes, row_count) VALUES (?, ?, ?)",
 				key,
-				expectedBytes,
+				written,
 				seq,
 			);
 			return seq;
@@ -357,7 +364,16 @@ export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]
 		exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 		exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
 	}
-	return stale;
+	// Rows with no meta row at all: a copy whose writer died before commit. The LZ4 encode is the
+	// one writer that spans many rows in one pass, so an isolate lost mid-encode leaves exactly
+	// this — rows no reader will ever accept and no meta-driven prune would ever find. A key in
+	// `keep` is left alone: it may be a writer that has simply not committed yet.
+	const known = new Set(keys);
+	const orphans = exec(storage, "SELECT DISTINCT archive_key FROM archive_cache")
+		.map((r) => String(r.archive_key))
+		.filter((k) => !known.has(k) && !keep.includes(k));
+	for (const key of orphans) exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
+	return [...stale, ...orphans];
 }
 
 // ── The COMPRESSED archive cache (partitioned stores) ──────────────────────────
@@ -483,6 +499,56 @@ export function cachedCompressedStream(
 			}
 		},
 	});
+}
+
+// ── The LZ4 archive cache (backlog r3) ─────────────────────────────────────────
+//
+// The same archive, re-encoded by the engine as independent LZ4 frames (engine/wasm/src/lib.rs,
+// "The LZ4 local cache"), under ONE row family per archive: `<archiveKey>:lz4v1`. What it buys is
+// the wake: every hibernated object that wakes inflates its partition again, and the inflate was
+// 211-329ms of a ~390ms workerd wake (2026-09-24) — 75% of SearchEngine CPU is reloads. LZ4 frames
+// decode ~3x faster in workerd (66ms) and 5.1x faster under V8 in node (18ms vs 92ms, every
+// partition of generation 52, 2026-09-25). What it costs is bytes: x1.449 the stored gzip across
+// those ten partitions (x1.453 at worst), which is why the nightly gates it on the storage pool
+// and says so in the manifest (StoreManifest.cache, cacheCodecOf).
+//
+// Readers take whichever family is there — LZ4, then gzip, then KV — whatever the manifest's
+// codec says; the codec decides only what an object WRITES. An object never holds both families
+// for one archive at the moment it writes LZ4: the gzip rows go first (store.ts fillLz4Cache).
+//
+// The family tag is the format version: a reader that does not know `lz4v1` sees no cache.
+
+/** The row family's tag, and the stream format's version. */
+export const LZ4_CACHE_TAG = "lz4v1";
+
+/** Cache key of an archive's LZ4 copy — the prune keep-list's unit, like compressedCacheKeys. */
+export function lz4CacheKey(archiveKey: string): string {
+	return `${archiveKey}:${LZ4_CACHE_TAG}`;
+}
+
+/** Whether a COMMITTED LZ4 copy of the archive is held (its meta row is written last). */
+export function isLz4Cached(storage: ArchiveCacheStorage, archiveKey: string): boolean {
+	return (
+		exec(storage, "SELECT total_bytes FROM archive_cache_meta WHERE archive_key = ?", lz4CacheKey(archiveKey)).length >
+		0
+	);
+}
+
+/** The cached LZ4 frame stream, one row per pull, or null when no committed copy is held. */
+export function cachedLz4Stream(storage: ArchiveCacheStorage, archiveKey: string): ReadableStream<Uint8Array> | null {
+	const key = lz4CacheKey(archiveKey);
+	const meta = exec(storage, "SELECT total_bytes FROM archive_cache_meta WHERE archive_key = ?", key)[0];
+	if (!meta) return null;
+	return cachedArchiveStream(storage, key, Number(meta.total_bytes));
+}
+
+/**
+ * The codec an object obeys for the manifest in hand. Absent, an unknown version or an unknown
+ * codec is gzip: an object that cannot read the gate's answer must not spend pool on it.
+ */
+export function cacheCodecOf(manifest: { cache?: { v?: number; codec?: string } } | null | undefined): CacheCodec {
+	const block = manifest?.cache;
+	return block?.v === 1 && block.codec === "lz4" ? "lz4" : "gzip";
 }
 
 /**

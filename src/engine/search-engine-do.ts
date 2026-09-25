@@ -82,6 +82,7 @@ import {
 	getEngine,
 	type LoadContext,
 	prefetchStore,
+	pruneToManifest,
 	refreshNow,
 	settleInFlightLoad,
 	swapToStore,
@@ -1120,7 +1121,17 @@ export class SearchEngine extends DurableObject<Env> {
 			}
 		}
 		await settleInFlightLoad(this.label); // see notifyPublish
-		if (tryGetLoadedEngine(this.label) === null) return { prepared: true, shards: this.announcedShards };
+		if (tryGetLoadedEngine(this.label) === null) {
+			// Cold, and now told what is live: the old build's cached archive will never be read
+			// again, so it goes now rather than sitting beside the new one through this object's next
+			// cold load (r3). A handful of row deletes; nothing is loaded.
+			if (manifest) {
+				const dropped = pruneToManifest(this.loadContext(), manifest);
+				if (dropped > 0)
+					console.log(`[${this.label}] publish prepare (cold): dropped ${dropped} stale cached archive(s)`);
+			}
+			return { prepared: true, shards: this.announcedShards };
+		}
 		// Warm: hold the bytes locally under the OLD store. See prefetchStore for
 		// why every failure here degrades to a slower commit, never a failed one.
 		// The placement re-check rides here for the reason notifyPublish gives, and

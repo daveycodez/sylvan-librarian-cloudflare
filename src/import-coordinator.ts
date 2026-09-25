@@ -103,6 +103,7 @@ import {
 	setsListKey,
 	symbologyKey,
 } from "./engine/reference-kv";
+import { REGION_HINTS } from "./engine/region";
 import {
 	buildRoutingFilterFromHashes,
 	ROUTING_FEATURE_NAME_KEYS,
@@ -147,7 +148,7 @@ import {
 	writeRoutingFilter,
 } from "./engine/store-kv";
 import { tagAliasesKey, writeTagAliases } from "./engine/tag-aliases";
-import type { Env, StoreManifest, StoreManifestPartition } from "./engine/types";
+import type { Env, StoreManifest, StoreManifestCache, StoreManifestPartition } from "./engine/types";
 import { packBlob, unpackBlob } from "./import-blob-codec";
 import {
 	AGG_FETCH_BATCHES,
@@ -158,22 +159,27 @@ import {
 	BUCKET_SLICE_BATCHES,
 	DO_FREE_GB_SECONDS_PER_DAY,
 	deadManDelayMs,
+	decideCacheCodec,
 	EMPTY_RUN_METERS,
 	FINALIZE_FETCH_BATCHES,
 	FINALIZE_SLICE_BATCHES,
 	LATE_ALARM_MS,
+	LZ4_CACHE_RATIO,
 	MAX_DAY_ROWS_READ,
 	MAX_DAY_ROWS_WRITTEN,
 	MAX_RUN_ACTIVE_MS,
 	MAX_RUN_ROWS_READ,
 	MAX_RUN_ROWS_WRITTEN,
 	PACE_START_BPS,
+	POOL_GATE_BUDGET_BYTES,
 	PURGE_SLICE_BYTES,
 	PURGE_SLICE_MAX_ROWS,
 	paceDelayMs,
 	parseMeters,
+	projectCachePool,
 	projectedGbSeconds,
 	REORDER_SLICE_ROWS,
+	STAGING_PEAK_BYTES_2026_09_25,
 } from "./import-budget";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
 import { DUMP_KINDS, type DumpKind, firstFetchPhase, phaseAfterFetch, TRANSFORM_KIND } from "./import-phases";
@@ -1430,6 +1436,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			elapsedMs: elapsed,
 			newAlarm: !this.alarmCounted,
 			churnBytes: this.churnUnbanked,
+			// r3's pool gate reads this run's high-water mark at the manifest step. A getter over
+			// the open database, not a read of any row.
+			dbBytes: this.ctx.storage.sql.databaseSize,
 		});
 		// Pacing state rides the same row, so it costs no extra write. The due
 		// time is only known once the next alarm is scheduled (the final flush).
@@ -3470,6 +3479,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 					`uploading; the live manifest keeps serving and the next run starts over.`,
 			);
 		}
+		// The blocks the nightly decides and every publish carries (StoreManifest.cache): read the
+		// live manifest once, decide from it and tonight's measurements, write them in.
+		const previous = await this.liveManifestJson();
+		manifest.cache = await this.cacheGate(manifest, previous);
 		await writeManifest(this.env, manifest);
 		// Published: a manifest names the family now, and the manifest read inside
 		// every sweep protects it from here. The in-flight marker has done its job.
@@ -3510,6 +3523,67 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("reference_step", "sets");
 			this.metaSet("purges_done", "0");
 		});
+	}
+
+	/** The manifest KV serves right now, parsed, or null — never a throw: the gates fall back to defaults. */
+	private async liveManifestJson(): Promise<StoreManifest | null> {
+		try {
+			return JSON.parse(
+				(await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null",
+			) as StoreManifest | null;
+		} catch (err) {
+			console.warn(`Manifest gates: could not read the live manifest (${err}); deciding from defaults`);
+			return null;
+		}
+	}
+
+	/**
+	 * r3's pool gate: may engine objects cache THIS build as LZ4?
+	 *
+	 * Every input is measured or read, none guessed: the replica groups that will hold a cache
+	 * (every routable region's shard 0, plus every shard announced right now — one KV list), this
+	 * build's partition sizes, this run's own databaseSize high-water mark, and one such mark per
+	 * watchdog failover in the last day for the staging a replaced coordinator may still hold.
+	 * What it cannot see is an object holding storage WITHOUT an announcement (released objects
+	 * delete theirs together with their storage, so only a hand-deleted key would be one).
+	 *
+	 * Hysteresis state is the PREVIOUS manifest's codec, not the coordinator's meta table, which a
+	 * run start clears and a failover starts empty.
+	 */
+	private async cacheGate(manifest: StoreManifest, previous: StoreManifest | null): Promise<StoreManifestCache> {
+		const routable = new Set<string>(REGION_HINTS);
+		const groups = new Set([...routable].map((r) => `${r}/0`));
+		try {
+			for (const key of await this.listAllKeys(REGION_LIVE_PREFIX)) {
+				const parsed = parseEngineName(key.slice(REGION_LIVE_PREFIX.length));
+				if (parsed && routable.has(parsed.region)) groups.add(`${parsed.region}/${parsed.shard}`);
+			}
+		} catch (err) {
+			console.warn(`Pool gate: could not list the announced objects (${err}); counting one replica per region`);
+		}
+		const meters = parseMeters(this.metaGet("run_meters"));
+		// Unsampled only for a run that began before this shipped: the 2026-09-25 measured peak, scaled
+		// by the store. Staging is written with a 1% margin for tomorrow's slightly larger corpus.
+		const staging =
+			(meters?.peak_db_bytes || (STAGING_PEAK_BYTES_2026_09_25 * (manifest.store_bytes ?? 0)) / 425_181_152) * 1.01;
+		const pointer = await readPointer(this.env.STORE_KV).catch(() => null);
+		const failovers = (pointer?.failovers ?? []).filter((t) => Date.now() - t < 24 * 3600_000).length;
+		const projected = projectCachePool({
+			replicas: groups.size,
+			partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
+			cacheFactor: LZ4_CACHE_RATIO,
+			stagingPeakBytes: staging,
+			strandedBytes: failovers * staging,
+		});
+		const was = previous?.cache?.v === 1 ? previous.cache.codec : undefined;
+		const codec = decideCacheCodec(was, projected);
+		console.log(
+			`Pool gate: ${groups.size} cache replica(s), staging ${(staging / 1e9).toFixed(2)}GB, ${failovers} ` +
+				`failover(s) today; LZ4 projection ${(projected / 1e9).toFixed(2)}GB of ` +
+				`${(POOL_GATE_BUDGET_BYTES / 1e9).toFixed(1)}GB → cache codec ${codec}` +
+				`${codec !== (was ?? "gzip") ? ` (was ${was ?? "gzip"})` : ""}`,
+		);
+		return { v: 1, codec, projected_lz4_bytes: Math.round(projected) };
 	}
 
 	// ── phase: notify (push the new store to every region) ─────────────────────

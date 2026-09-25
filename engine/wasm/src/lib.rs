@@ -45,6 +45,9 @@ thread_local! {
     /// The buffer of the last store this instance let go of, kept for the next load to refill.
     /// See `store_buffer`.
     static SPARE: RefCell<Option<AlignedVec>> = const { RefCell::new(None) };
+    /// An in-progress LZ4 load (the Durable Object's local cache, backlog r3): the store buffer
+    /// the frames decode into, plus any frame split across two crossings.
+    static LZ4_LOADING: RefCell<Option<Lz4Load>> = const { RefCell::new(None) };
 }
 
 /// Prefix of every error that means THIS INSTANCE can no longer be trusted. The wasm target is
@@ -116,6 +119,9 @@ fn abandon_loads() -> Result<(), String> {
     with_mut(&GZ_LOADING, "gzip decoder", |g| *g = None)?;
     if let Some(buf) = with_mut(&GZ_BUF, "gzip buffer", |b| b.take())? {
         recycle(buf)?;
+    }
+    if let Some(load) = with_mut(&LZ4_LOADING, "lz4 load", |l| l.take())? {
+        recycle(load.buf)?;
     }
     Ok(())
 }
@@ -360,6 +366,216 @@ fn finish_store_load_gzip_inner() -> Result<(), String> {
             Err(e.to_string())
         }
     }
+}
+
+// ─── The LZ4 local cache (backlog r3) ────────────────────────────────────────
+//
+// KV keeps gzip; what changes is the copy a Durable Object keeps in its OWN SQLite, which every
+// wake of a hibernated object materialises. The gzip inflate above measured 211-329ms per ~44MB
+// partition in workerd (2026-09-24, fresh isolates, ~84% of a wake); LZ4 blocks decoded the same
+// partition in 66ms at x1.46 the bytes. The store is ENCODED here too, from the archive this
+// instance already holds (`store_lz4_frame`), after a load that inflated gzip — so no second
+// store-sized buffer ever exists on either side.
+//
+// The stream is frames, one per LZ4_BLOCK_BYTES of raw archive:
+//
+//   [raw_len u32 LE][comp_len u32 LE][xxh32(compressed) u32 LE][LZ4 block, comp_len bytes]
+//
+// Independent blocks (no dictionary carried between frames), so a frame decodes straight into its
+// place in the store buffer. The per-frame xxh32 is what gzip's CRC was: the check that turns a
+// readable-and-wrong cached copy into a refused load. The format's version lives in the cache
+// key's family tag (`:lz4v1`), not in the bytes — an unknown tag is a cache miss on the JS side.
+
+/// Raw bytes per LZ4 frame. 1MB keeps every crossing and the one buffered partial frame small;
+/// the ratio barely depends on it (21.38MB at 1MB blocks against 21.35MB at 4MB, 2026-09-24).
+pub const LZ4_BLOCK_BYTES: usize = 1 << 20;
+/// `raw_len`, `comp_len`, `xxh32`.
+const LZ4_FRAME_HEADER: usize = 12;
+
+struct Lz4Load {
+    buf: AlignedVec,
+    total: usize,
+    /// A frame the last crossing cut short, header included; at most one frame long.
+    pending: Vec<u8>,
+}
+
+fn frame_header(bytes: &[u8]) -> (usize, usize, u32) {
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    (word(0) as usize, word(4) as usize, word(8))
+}
+
+/// A frame header that could not have been written by `store_lz4_frame`: refused before its
+/// length is trusted for anything, including how many bytes to buffer.
+fn check_frame_header(raw: usize, comp: usize) -> Result<(), String> {
+    if raw == 0 || raw > LZ4_BLOCK_BYTES {
+        return Err(format!("store_load_lz4_chunk: frame declares {raw} raw bytes (max {LZ4_BLOCK_BYTES})"));
+    }
+    if comp == 0 || comp > lz4_flex::block::get_maximum_output_size(raw) {
+        return Err(format!("store_load_lz4_chunk: frame declares {comp} compressed bytes for {raw} raw"));
+    }
+    Ok(())
+}
+
+/// Verify one whole frame and decode it into its place at the end of the store buffer.
+fn decode_frame(load: &mut Lz4Load, raw: usize, sum: u32, block: &[u8]) -> Result<(), String> {
+    if xxhash_rust::xxh32::xxh32(block, 0) != sum {
+        return Err("store_load_lz4_chunk: frame checksum mismatch (corrupt cached copy)".to_string());
+    }
+    let at = load.buf.len();
+    if at + raw > load.total {
+        return Err(format!(
+            "store_load_lz4_chunk: decodes past the declared total ({at} + {raw} > {})",
+            load.total
+        ));
+    }
+    load.buf.resize(at + raw, 0);
+    match lz4_flex::block::decompress_into(block, &mut load.buf[at..]) {
+        Ok(n) if n == raw => Ok(()),
+        Ok(n) => Err(format!("store_load_lz4_chunk: frame decoded to {n} bytes, header says {raw}")),
+        Err(e) => Err(format!("store_load_lz4_chunk: {e}")),
+    }
+}
+
+/// Take one crossing's bytes: finish a buffered partial frame, decode every whole frame in place
+/// (no copy), and buffer the tail.
+fn lz4_feed(load: &mut Lz4Load, mut input: &[u8]) -> Result<(), String> {
+    if !load.pending.is_empty() {
+        if load.pending.len() < LZ4_FRAME_HEADER {
+            let take = (LZ4_FRAME_HEADER - load.pending.len()).min(input.len());
+            load.pending.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if load.pending.len() < LZ4_FRAME_HEADER {
+                return Ok(());
+            }
+        }
+        let (raw, comp, sum) = frame_header(&load.pending);
+        check_frame_header(raw, comp)?;
+        let need = LZ4_FRAME_HEADER + comp;
+        let take = (need - load.pending.len()).min(input.len());
+        load.pending.extend_from_slice(&input[..take]);
+        input = &input[take..];
+        if load.pending.len() < need {
+            return Ok(());
+        }
+        let mut frame = std::mem::take(&mut load.pending);
+        decode_frame(load, raw, sum, &frame[LZ4_FRAME_HEADER..])?;
+        // Keep the allocation for the next straddling frame.
+        frame.clear();
+        load.pending = frame;
+    }
+    while input.len() >= LZ4_FRAME_HEADER {
+        let (raw, comp, sum) = frame_header(input);
+        check_frame_header(raw, comp)?;
+        if input.len() < LZ4_FRAME_HEADER + comp {
+            break;
+        }
+        decode_frame(load, raw, sum, &input[LZ4_FRAME_HEADER..LZ4_FRAME_HEADER + comp])?;
+        input = &input[LZ4_FRAME_HEADER + comp..];
+    }
+    load.pending.extend_from_slice(input);
+    Ok(())
+}
+
+/// Start a load whose bytes are the LZ4 frame stream a Durable Object cached (see the section
+/// comment). Same atomic contract and the same buffer as the other two load paths: the active
+/// store is untouched until `finish_store_load_lz4` succeeds, and a failed load's buffer is
+/// recycled as the spare.
+#[wasm_bindgen]
+pub fn begin_store_load_lz4(total_len: u32) -> Result<(), JsError> {
+    let total = total_len as usize;
+    if total == 0 {
+        return Err(JsError::new("begin_store_load_lz4: total_len must be non-zero"));
+    }
+    let js = |e: String| JsError::new(&e);
+    abandon_loads().map_err(js)?;
+    let buf = store_buffer(total).map_err(js)?;
+    // Sized once for the largest frame the encoder can write, so buffering a straddling frame
+    // never doubles its way past it: linear memory never shrinks, and every byte of slack here
+    // is paid for the instance's life.
+    let pending = Vec::with_capacity(LZ4_FRAME_HEADER + lz4_flex::block::get_maximum_output_size(LZ4_BLOCK_BYTES));
+    with_mut(&LZ4_LOADING, "lz4 load", |l| *l = Some(Lz4Load { buf, total, pending })).map_err(js)?;
+    Ok(())
+}
+
+/// Decode one piece of the frame stream. Pieces may split frames (and their headers) anywhere.
+#[wasm_bindgen]
+pub fn store_load_lz4_chunk(chunk: &[u8]) -> Result<(), JsError> {
+    store_load_lz4_chunk_inner(chunk).map_err(|e| JsError::new(&e))
+}
+
+fn store_load_lz4_chunk_inner(chunk: &[u8]) -> Result<(), String> {
+    let failed = LZ4_LOADING.with(|l| {
+        let Ok(mut slot) = l.try_borrow_mut() else {
+            return Err(poisoned("lz4 load"));
+        };
+        let Some(load) = slot.as_mut() else {
+            return Err("store_load_lz4_chunk called without begin_store_load_lz4".to_string());
+        };
+        Ok(lz4_feed(load, chunk).err())
+    })?;
+    if let Some(msg) = failed {
+        abandon_loads()?; // abort the load, keeping its buffer; the active store is untouched
+        return Err(msg);
+    }
+    Ok(())
+}
+
+/// Finish an LZ4 load: no partial frame left over, the output exactly the declared length, and
+/// the header this build's. Then the store swaps in atomically, as the other two paths do.
+#[wasm_bindgen]
+pub fn finish_store_load_lz4() -> Result<(), JsError> {
+    finish_store_load_lz4_inner().map_err(|e| JsError::new(&e))
+}
+
+fn finish_store_load_lz4_inner() -> Result<(), String> {
+    let load = with_mut(&LZ4_LOADING, "lz4 load", |l| l.take())?
+        .ok_or_else(|| "finish_store_load_lz4 called without begin_store_load_lz4".to_string())?;
+    let Lz4Load { buf, total, pending } = load;
+    if !pending.is_empty() || buf.len() != total {
+        let msg = format!(
+            "finish_store_load_lz4: incomplete load ({} of declared {} bytes, {} bytes of a frame left over)",
+            buf.len(),
+            total,
+            pending.len()
+        );
+        recycle(buf)?;
+        return Err(msg);
+    }
+    match BufferStore::try_from_aligned(buf) {
+        Ok(store) => install(store),
+        Err((e, buf)) => {
+            recycle(buf)?;
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Frame `index` of the ACTIVE store's LZ4 encoding, or an empty array past the last one.
+///
+/// The encoder half of the cache: after a load that inflated gzip, the Durable Object walks
+/// `index = 0, 1, …` and writes each frame into its cache, so the archive is encoded from the
+/// bytes already in linear memory — one frame (~0.5MB) resident on the JS side at a time. The JS
+/// walk is synchronous, so nothing can swap the store out between two frames of one encoding.
+#[wasm_bindgen]
+pub fn store_lz4_frame(index: u32) -> Result<Vec<u8>, JsError> {
+    with_store(|store| Ok(lz4_frame_of(store.bytes(), index as usize)))
+}
+
+fn lz4_frame_of(bytes: &[u8], index: usize) -> Vec<u8> {
+    let start = index.saturating_mul(LZ4_BLOCK_BYTES);
+    if start >= bytes.len() {
+        return Vec::new();
+    }
+    let block = &bytes[start..bytes.len().min(start + LZ4_BLOCK_BYTES)];
+    let mut out = vec![0u8; LZ4_FRAME_HEADER + lz4_flex::block::get_maximum_output_size(block.len())];
+    // Infallible: the output is sized by the crate's own bound for this input.
+    let comp = lz4_flex::block::compress_into(block, &mut out[LZ4_FRAME_HEADER..]).unwrap_or(0);
+    out.truncate(LZ4_FRAME_HEADER + comp);
+    let sum = xxhash_rust::xxh32::xxh32(&out[LZ4_FRAME_HEADER..], 0);
+    out[0..4].copy_from_slice(&(block.len() as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&(comp as u32).to_le_bytes());
+    out[8..12].copy_from_slice(&sum.to_le_bytes());
+    out
 }
 
 /// Drop the active store, keeping its buffer as the spare the next load refills
@@ -1297,6 +1513,120 @@ mod tests {
         assert_eq!(from_gzip, from_raw);
         let v: serde_json::Value = serde_json::from_str(&from_gzip).expect("valid JSON out");
         assert_eq!(v["rows"][0]["name"], "Gzip Test");
+    }
+
+    /// Bytes shaped like an archive for the codec: compressible runs mixed with noise, several
+    /// frames long and not a multiple of the frame size.
+    fn codec_sample(len: usize) -> Vec<u8> {
+        let mut state = 0x9E37_79B9u32;
+        (0..len)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                if (i / 4096) % 3 == 0 { (state & 0xFF) as u8 } else { (i % 251) as u8 }
+            })
+            .collect()
+    }
+
+    fn lz4_stream(bytes: &[u8]) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for index in 0.. {
+            let frame = lz4_frame_of(bytes, index);
+            if frame.is_empty() {
+                break;
+            }
+            stream.extend_from_slice(&frame);
+        }
+        stream
+    }
+
+    fn lz4_decode(stream: &[u8], total: usize, piece: usize) -> Result<AlignedVec, String> {
+        let mut load = Lz4Load { buf: AlignedVec::with_capacity(total), total, pending: Vec::new() };
+        for part in stream.chunks(piece) {
+            lz4_feed(&mut load, part)?;
+        }
+        if !load.pending.is_empty() {
+            return Err(format!("{} bytes of a frame left over", load.pending.len()));
+        }
+        Ok(load.buf)
+    }
+
+    /// The LZ4 cache stream round-trips through every way a crossing can cut it: a piece smaller
+    /// than a frame header, one that splits headers and blocks at odd offsets, and the whole
+    /// stream at once. Frames are LZ4_BLOCK_BYTES of raw each except the last.
+    #[test]
+    fn lz4_frames_round_trip_across_any_crossing() {
+        let raw = codec_sample(2 * LZ4_BLOCK_BYTES + 12_345);
+        let stream = lz4_stream(&raw);
+        assert!(stream.len() < raw.len(), "the sample must actually compress");
+        assert_eq!(frame_header(&stream).0, LZ4_BLOCK_BYTES, "full frames carry a whole block");
+        for piece in [5, 7_919, 1 << 20, stream.len()] {
+            let out = lz4_decode(&stream, raw.len(), piece).expect("decode");
+            assert_eq!(&out[..], &raw[..], "piece size {piece}");
+        }
+        assert!(lz4_frame_of(&raw, 3).is_empty(), "past the last frame is empty, not an error");
+    }
+
+    /// The readable-and-wrong guard: a flipped byte inside a block, a truncated stream, a header
+    /// claiming more than a frame can hold, and a stream longer than the declared total are all
+    /// refused — never decoded into a store that then fails in a query.
+    #[test]
+    fn lz4_refuses_a_corrupt_or_short_stream() {
+        let raw = codec_sample(LZ4_BLOCK_BYTES + 777);
+        let stream = lz4_stream(&raw);
+
+        let mut flipped = stream.clone();
+        flipped[LZ4_FRAME_HEADER + 40] ^= 0x01;
+        let err = lz4_decode(&flipped, raw.len(), 4096).expect_err("checksum");
+        assert!(err.contains("checksum"), "{err}");
+
+        let err = lz4_decode(&stream[..stream.len() - 3], raw.len(), 4096).expect_err("truncated");
+        assert!(err.contains("left over"), "{err}");
+
+        let mut huge = stream.clone();
+        huge[0..4].copy_from_slice(&((LZ4_BLOCK_BYTES as u32) + 1).to_le_bytes());
+        assert!(lz4_decode(&huge, raw.len(), 4096).expect_err("oversized frame").contains("raw bytes"));
+
+        let err = lz4_decode(&stream, raw.len() - 1, 4096).expect_err("past the total");
+        assert!(err.contains("declared total"), "{err}");
+    }
+
+    /// The exported trio, end to end over a real store: encode the ACTIVE store frame by frame,
+    /// unload, load the frames back in odd pieces, and answer the same query. A corrupt stream
+    /// fails at the chunk, keeps its buffer as the spare, and never becomes the store.
+    #[test]
+    fn lz4_cache_loads_the_store_it_encoded() {
+        load_wire_store();
+        let tree = r#"{"node_type": "TrueNode"}"#;
+        let before = query(tree, "{}").expect("query");
+        let mut stream = Vec::new();
+        for index in 0.. {
+            let frame = store_lz4_frame(index).expect("frame");
+            if frame.is_empty() {
+                break;
+            }
+            stream.extend_from_slice(&frame);
+        }
+        let total = STORE.with(|s| s.borrow().as_ref().map(|st| st.bytes().len())).expect("store");
+        unload_store().expect("unload");
+
+        begin_store_load_lz4(total as u32).expect("begin lz4");
+        for piece in stream.chunks(3) {
+            store_load_lz4_chunk(piece).expect("lz4 chunk");
+        }
+        finish_store_load_lz4().expect("finish lz4");
+        assert_eq!(query(tree, "{}").expect("query"), before);
+        unload_store().expect("unload");
+
+        let mut corrupt = stream.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xFF;
+        begin_store_load_lz4(total as u32).expect("begin lz4");
+        assert!(store_load_lz4_chunk_inner(&corrupt).is_err());
+        assert!(LZ4_LOADING.with(|l| l.borrow().is_none()), "a failed chunk abandons the load");
+        assert!(SPARE.with(|s| s.borrow().is_some()), "and keeps its buffer as the spare");
+        assert!(!store_loaded());
     }
 
     /// The chunked load path, driven natively: StoreBuilder bytes streamed in

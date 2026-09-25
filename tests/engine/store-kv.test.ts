@@ -11,7 +11,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	assembleChunk,
+	CARRIED_MANIFEST_BLOCKS,
 	CHUNK_HEADROOM_WARN_BYTES,
+	carryManifestBlocks,
 	chunkCountFor,
 	chunkForKv,
 	chunkHeadroom,
@@ -726,6 +728,28 @@ describe("the publishers", () => {
 		expect(kvPrune).not.toContain("MANIFEST_KEY_V2");
 		expect(read("prune-kv.ts")).toContain("liveManifestBuiltAts(remote)");
 		expect(read("seed-remote-kv.ts")).toContain("liveManifestBuiltAts(true)");
+	});
+
+	test("the deploy publishes the nightly's decided blocks forward, never its bare skeleton", () => {
+		// A deploy that wrote the builder's skeleton would reset r3's cache codec every time.
+		const src = read("seed-remote-kv.ts");
+		expect(src).toContain("carryManifestBlocks(manifest, live.manifest)");
+		expect(src).toContain("JSON.stringify(published)");
+		expect(src).not.toContain("JSON.stringify(manifest)");
+	});
+
+	test("carryManifestBlocks copies what the live manifest decided, and never overrides the new one", () => {
+		const live = { built_at: "1", cache: { v: 1, codec: "lz4", projected_lz4_bytes: 3 }, unrelated: true };
+		const next = { built_at: "2" };
+		const out = carryManifestBlocks(next, live) as Record<string, unknown>;
+		expect(out.cache).toEqual(live.cache);
+		expect(out.built_at).toBe("2");
+		expect(out.unrelated).toBeUndefined();
+		expect(next).toEqual({ built_at: "2" }); // pure
+		const own = { built_at: "3", cache: { v: 1, codec: "gzip", projected_lz4_bytes: 9 } };
+		expect((carryManifestBlocks(own, live) as Record<string, unknown>).cache).toEqual(own.cache);
+		expect(carryManifestBlocks(next, null)).toEqual(next);
+		for (const block of CARRIED_MANIFEST_BLOCKS) expect(["cache", "placement"]).toContain(block);
 	});
 });
 

@@ -44,6 +44,7 @@ import {
 	REORDER_SLICE_ROWS,
 	type RunShape,
 	type SliceSizes,
+	STAGING_PEAK_BYTES_2026_09_25,
 	TOLL_2026_08_28,
 } from "../../src/import-budget";
 import { partitionCountFor } from "../../src/import-publish";
@@ -360,15 +361,8 @@ const PARTITION_GZIP_BYTES_2026_09_04 = [
 	15_209_706,
 ];
 
-/**
- * The coordinator's staging at its peak — a METER READING now, replacing the 1.92GB estimate this
- * used to carry (raw draft_batches 1.77GB + ~150MB, from before the drafts were stored compressed,
- * import-blob-codec.ts). GraphQL durableObjectsSqlStorageGroups read 0.486–0.495GB for the
- * ImportCoordinator namespace on DeckGen 2026-09-20, -21 and -23, each a run stalled while holding
- * its staging (backlog x1, report 13). The estimate tripped this tripwire the day the region list
- * grew to all eleven hints (backlog g2) — on an input that was four times too large.
- */
-const STAGING_PEAK_BYTES_2026_09_25 = 495_000_000;
+// The coordinator's staging peak (STAGING_PEAK_BYTES_2026_09_25) is a meter reading, and lives in
+// import-budget.ts beside the pool gate that falls back on it.
 
 describe("the dead-man alarm", () => {
 	test("fires only after the watchdog would have ended a live handler", () => {

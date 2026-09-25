@@ -1476,6 +1476,13 @@ impl BufferStore {
         self.bytes
     }
 
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, backlog r3): the loaded archive's bytes, read-only,
+    /// so the wasm crate can re-encode the store it already holds into the Durable Object's LZ4
+    /// cache without a second copy of it or a round trip through `into_bytes`.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Copy `bytes` into a fresh aligned buffer and validate. Convenience for
     /// callers that already hold the archive contiguously (tests, the native
     /// builder's round-trip check).

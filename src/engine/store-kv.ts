@@ -1903,6 +1903,23 @@ export function manifestShapeProblem(manifest: StoreManifest): string | null {
 }
 
 /**
+ * The manifest blocks the NIGHTLY decides and every other publisher must carry forward from the
+ * manifest it replaces: r3's cache codec (StoreManifest.cache), which only the coordinator can
+ * measure the pool for. A builder knows nothing of it, so a deploy that published its skeleton as
+ * is would silently reset it every time.
+ */
+export const CARRIED_MANIFEST_BLOCKS = ["cache"] as const;
+
+/** `next` with every carried block the live manifest holds and `next` does not. Pure. */
+export function carryManifestBlocks<M extends object>(next: M, live: Record<string, unknown> | null): M {
+	const out = { ...next } as Record<string, unknown>;
+	for (const block of CARRIED_MANIFEST_BLOCKS) {
+		if (out[block] === undefined && live?.[block] !== undefined) out[block] = live[block];
+	}
+	return out as M;
+}
+
+/**
  * Write the manifest — the commit point — refusing a malformed one.
  *
  * Every earlier write in a publish is invisible to readers (chunk keys are
