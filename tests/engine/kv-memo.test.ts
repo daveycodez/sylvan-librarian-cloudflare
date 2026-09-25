@@ -105,3 +105,26 @@ describe("readKvBytesMemo through the edge cache", () => {
 		expect(b.gets.size).toBe(0);
 	});
 });
+
+describe("readKvBytesMemo with an edgeKey (a key rewritten in place, named by its version)", () => {
+	test("KV is read at the KV key; the memo and the colo copy are named by the edgeKey", async () => {
+		const entries = installCaches();
+		const { kv, gets } = countingKv(50);
+		const opts = { edgeTtl: 86_400, edgeKey: "rulings:v2:1f@g1-100-7" };
+		await readKvBytesMemo(kv, "rulings:v2:1f", opts);
+		expect([...gets.keys()]).toEqual(["rulings:v2:1f"]);
+		expect([...entries.keys()]).toEqual([edgeCacheUrl("rulings:v2:1f@g1-100-7")]);
+		// Same isolate, same name: the memo answers.
+		await readKvBytesMemo(kv, "rulings:v2:1f", opts);
+		expect(gets.get("rulings:v2:1f")).toBe(1);
+	});
+
+	test("a new edgeKey for the same KV key is a miss in the memo AND the colo", async () => {
+		const entries = installCaches();
+		const { kv, gets } = countingKv(50);
+		await readKvBytesMemo(kv, "rulings:v2:1f", { edgeTtl: 86_400, edgeKey: "rulings:v2:1f@old" });
+		await readKvBytesMemo(kv, "rulings:v2:1f", { edgeTtl: 86_400, edgeKey: "rulings:v2:1f@new" });
+		expect(gets.get("rulings:v2:1f")).toBe(2);
+		expect(entries.has(edgeCacheUrl("rulings:v2:1f@new"))).toBe(true);
+	});
+});

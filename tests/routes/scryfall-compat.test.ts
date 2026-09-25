@@ -10,7 +10,17 @@ import {
 	oracleIndexBucketOf,
 	uuidBytes,
 } from "../../src/engine/oracle-index";
-import { encodeRulingsBucket, type RulingRow, rulingsBucketKey, rulingsBucketOf } from "../../src/engine/rulings-kv";
+import {
+	encodeRulingsBucket,
+	RULINGS_BUCKET_COUNT,
+	RULINGS_CONTENT_GENERATION,
+	RULINGS_FORMAT_VERSION,
+	RULINGS_META_KEY,
+	type RulingRow,
+	type RulingsMeta,
+	rulingsBucketKey,
+	rulingsBucketOf,
+} from "../../src/engine/rulings-kv";
 import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
@@ -1909,6 +1919,116 @@ describe("GET /cards/:id/rulings", () => {
 				const actual = await observed(await testDispatch(makeCtx({ engine: afterEngine, kv: after.kv }), c.path));
 				expect(actual, c.name).toEqual(expected);
 				expect(afterEngine.calls, c.name).toBe(c.hit ? 0 : 1);
+			}
+		});
+
+		// THE CONTRACT, for the rulings bucket's colo copy (readRulingsBucket): with a meta published
+		// and the Cache API present, every case answers what the plain KV read answers — on the
+		// isolate that fills the colo copy AND on a later isolate that is served from it.
+		test("every case answers exactly the same through the rulings bucket's colo copy", async () => {
+			type Setup = { kv: FakeKV; engine: CountingEngine };
+			const cases: { name: string; path: string; setup: (s: Setup) => void; fromColo: boolean }[] = [
+				{ name: "card with rulings", path: `/cards/${PRINTING}/rulings`, setup: () => {}, fromColo: true },
+				{ name: "pretty", path: `/cards/${PRINTING}/rulings?pretty=true`, setup: () => {}, fromColo: true },
+				{ name: "uppercase id", path: `/cards/${PRINTING.toUpperCase()}/rulings`, setup: () => {}, fromColo: true },
+				{ name: "engine path (multiverse)", path: "/cards/multiverse/12345/rulings", setup: () => {}, fromColo: true },
+				{
+					name: "card with no rulings",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ kv, engine }) => {
+						engine.oracleId = "dddddddd-0000-4000-8000-000000000004";
+						kv.put(rulingsBucketKey(rulingsBucketOf(engine.oracleId) as number), encodeRulingsBucket([]).bytes);
+					},
+					fromColo: true,
+				},
+				{
+					name: "rulings bucket never published (503)",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ kv }) => kv.values.delete(rulingsBucketKey(rulingsBucketOf(ORACLE_ID) as number)),
+					fromColo: false,
+				},
+				{
+					name: "rulings bucket unreadable (500)",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ kv }) => kv.failOn.add(rulingsBucketKey(rulingsBucketOf(ORACLE_ID) as number)),
+					fromColo: false,
+				},
+				{
+					name: "an id nothing holds (404)",
+					path: "/cards/aaaaaaaa-0000-4000-8000-00000000dead/rulings",
+					setup: () => {},
+					fromColo: false,
+				},
+				{
+					name: "a card object with no oracle_id ([])",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ engine }) => {
+						engine.oracleId = undefined as unknown as string;
+					},
+					fromColo: false,
+				},
+			];
+			const meta: RulingsMeta = {
+				format_version: RULINGS_FORMAT_VERSION,
+				content_generation: RULINGS_CONTENT_GENERATION,
+				bucket_count: RULINGS_BUCKET_COUNT,
+				built_at: "1758700000",
+				ruling_count: RULINGS.length,
+			};
+			/** Another isolate: the same KV contents behind a new binding object, so empty memos. */
+			const isolateOf = (kv: FakeKV): FakeKV => {
+				const other = new FakeKV();
+				for (const [k, v] of kv.values) other.put(k, v);
+				for (const k of kv.failOn) other.failOn.add(k);
+				return other;
+			};
+			/** The same index on both sides, so the only difference is how the rulings bucket is read. */
+			const indexFor = (kv: FakeKV, engine: CountingEngine): void =>
+				publishIndex(
+					kv,
+					typeof engine.oracleId === "string"
+						? [[PRINTING, engine.oracleId]]
+						: [["ffffffff-0000-4000-8000-000000000009", OTHER_ORACLE_ID]],
+				);
+			const g = globalThis as { caches?: unknown };
+			for (const c of cases) {
+				// Today: no meta, no Cache API — the plain KV read through the isolate memo.
+				const before = rulingsCtx();
+				const beforeEngine = new CountingEngine();
+				c.setup({ kv: before.kv, engine: beforeEngine });
+				indexFor(before.kv, beforeEngine);
+				const expected = await observed(await testDispatch(makeCtx({ engine: beforeEngine, kv: before.kv }), c.path));
+
+				const entries = new Map<string, Uint8Array>();
+				g.caches = {
+					default: {
+						match: async (url: string) => {
+							const hit = entries.get(url);
+							return hit ? new Response(hit.slice()) : undefined;
+						},
+						put: async (url: string, res: Response) => {
+							entries.set(url, new Uint8Array(await res.arrayBuffer()));
+						},
+					},
+				};
+				try {
+					const after = rulingsCtx();
+					const afterEngine = new CountingEngine();
+					c.setup({ kv: after.kv, engine: afterEngine });
+					indexFor(after.kv, afterEngine);
+					after.kv.put(RULINGS_META_KEY, JSON.stringify(meta));
+					const filling = await observed(await testDispatch(makeCtx({ engine: afterEngine, kv: after.kv }), c.path));
+					expect(filling, `${c.name}, filling`).toEqual(expected);
+					await new Promise((resolve) => setTimeout(resolve, 0)); // the deferred puts land
+
+					const later = isolateOf(after.kv);
+					const served = await observed(await testDispatch(makeCtx({ engine: afterEngine, kv: later }), c.path));
+					expect(served, `${c.name}, from the colo`).toEqual(expected);
+					const rulingsReads = later.reads.filter((k) => k.startsWith("rulings:"));
+					if (c.fromColo) expect(rulingsReads, c.name).toEqual([]);
+				} finally {
+					delete g.caches;
+				}
 			}
 		});
 

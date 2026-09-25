@@ -421,7 +421,11 @@ The complete list of intentional differences:
   envelope, so it never parses the ~104KB value it read. They are deliberately
   **not** in the card store: rulings hang off `oracle_id` rather than off a
   printing, only this route reads them, and 26MB in the archive would be paid
-  for by every store load.
+  for by every store load. The bucket is read through the colo's Cache API
+  under the publish version `rulings:meta` records (written after every
+  bucket), so a colo pays one KV read per bucket per publish plus one meta
+  check an hour, and a new publish is a miss within the same ~62 minutes the
+  plain KV read took to see it.
   The `/cards/:id/rulings` shape — nearly all of this route's traffic — does not
   ask the engine which card it is either: a scryfall id → oracle id index in KV
   ([src/engine/oracle-index.ts](src/engine/oracle-index.ts), 64 binary buckets,

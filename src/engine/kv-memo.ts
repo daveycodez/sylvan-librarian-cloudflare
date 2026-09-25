@@ -10,7 +10,7 @@
  * the memo window plus `cacheTtl`, both under the hour the routes' own response tiers already
  * accept.
  *
- * Keyed by the NAMESPACE object, then a POOL, then the key, so two bindings (or two test fakes)
+ * Keyed by the NAMESPACE object, then a POOL, then the key (or its versioned `edgeKey`), so two bindings (or two test fakes)
  * never share an entry and one dataset's large values cannot evict another's. A miss is memoized
  * too — an unpublished key must not cost a read per request. A failed read is not memoized: it is
  * reported and retried by the next request.
@@ -51,11 +51,18 @@ export interface KvMemoOptions {
 	 * next reader asks KV). For a key read per request whose absence is a normal state for a while.
 	 */
 	edgeMissTtl?: number;
+	/**
+	 * What the value is known as in the memo and the colo cache, when that must say more than the KV
+	 * key does — a key rewritten IN PLACE whose publish version the caller knows (the rulings
+	 * buckets: `rulings:v2:1f@<version>`). A new version is then a miss in both tiers rather than
+	 * yesterday's bytes for up to `edgeTtl`. Default: the KV key itself.
+	 */
+	edgeKey?: string;
 	/** `ctx.waitUntil`, so the edge-cache store is off the request path. */
 	defer?: (p: Promise<unknown>) => void;
 }
 
-export const KV_MEMO_DEFAULTS: Required<Omit<KvMemoOptions, "defer">> = {
+export const KV_MEMO_DEFAULTS: Required<Omit<KvMemoOptions, "defer" | "edgeKey">> = {
 	cacheTtl: 3600,
 	memoMs: 60_000,
 	maxEntries: 8,
@@ -83,7 +90,8 @@ export async function readKvBytesMemo(
 		pools.set(pool, memo);
 	}
 	const now = Date.now();
-	const hit = memo.get(key);
+	const name = options.edgeKey ?? key;
+	const hit = memo.get(name);
 	if (hit && now - hit.at < memoMs) return hit.bytes;
 	const fromKv = async (): Promise<Uint8Array | null> => {
 		const value = await kv.get(key, { type: "arrayBuffer", cacheTtl });
@@ -91,9 +99,9 @@ export async function readKvBytesMemo(
 	};
 	const bytes =
 		edgeTtl > 0
-			? await readThroughEdgeCache(edgeCacheUrl(key), edgeTtl, fromKv, options.defer, edgeMissTtl)
+			? await readThroughEdgeCache(edgeCacheUrl(name), edgeTtl, fromKv, options.defer, edgeMissTtl)
 			: await fromKv();
-	memo.delete(key);
+	memo.delete(name);
 	const incoming = bytes?.byteLength ?? 0;
 	let held = 0;
 	if (maxBytes > 0) for (const entry of memo.values()) held += entry.bytes?.byteLength ?? 0;
@@ -103,7 +111,7 @@ export async function readKvBytesMemo(
 		held -= memo.get(oldest.value)?.bytes?.byteLength ?? 0;
 		memo.delete(oldest.value);
 	}
-	memo.set(key, { at: now, bytes });
+	memo.set(name, { at: now, bytes });
 	return bytes;
 }
 

@@ -81,16 +81,33 @@ export async function readThroughEdgeCache(
 	}
 	const bytes = await load();
 	if (cache && (bytes !== null || missTtlSeconds > 0)) {
-		const headers: Record<string, string> = {
-			"Content-Type": "application/octet-stream",
-			"Cache-Control": `public, max-age=${bytes === null ? missTtlSeconds : ttlSeconds}`,
-		};
-		if (bytes === null) headers[EDGE_CACHE_ABSENT_HEADER] = "1";
-		const store = cache.put(url, new Response(bytes ?? new Uint8Array(0), { headers })).catch((err) => {
-			console.warn(`edge cache write of ${url} failed (the next cold isolate reads KV): ${err}`);
-		});
-		if (defer) defer(store);
-		else await store;
+		await putEdgeCache(url, bytes, bytes === null ? missTtlSeconds : ttlSeconds, defer);
 	}
 	return bytes;
+}
+
+/**
+ * Store `bytes` at `url` in this colo's cache for `ttlSeconds` — or, for null, an ABSENT entry that
+ * `readThroughEdgeCache` answers as null. Best effort, like every write here: where Cache API is
+ * absent it does nothing, and a failed put is a warning. `defer` (a `ctx.waitUntil`) takes the put
+ * off the request's critical path.
+ */
+export async function putEdgeCache(
+	url: string,
+	bytes: Uint8Array | null,
+	ttlSeconds: number,
+	defer?: (p: Promise<unknown>) => void,
+): Promise<void> {
+	const cache = edgeCache();
+	if (!cache) return;
+	const headers: Record<string, string> = {
+		"Content-Type": "application/octet-stream",
+		"Cache-Control": `public, max-age=${ttlSeconds}`,
+	};
+	if (bytes === null) headers[EDGE_CACHE_ABSENT_HEADER] = "1";
+	const store = cache.put(url, new Response(bytes ?? new Uint8Array(0), { headers })).catch((err) => {
+		console.warn(`edge cache write of ${url} failed (the next cold isolate reads KV): ${err}`);
+	});
+	if (defer) defer(store);
+	else await store;
 }

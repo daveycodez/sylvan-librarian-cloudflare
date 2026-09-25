@@ -31,7 +31,13 @@ import {
 	oracleIndexBucketOf,
 } from "../../engine/oracle-index";
 import { setNumberKey } from "../../engine/routing-filter";
-import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
+import {
+	RulingsFormatError,
+	readRulingsBucket,
+	rulingsBucketKey,
+	rulingsBucketOf,
+	rulingsSlice,
+} from "../../engine/rulings-kv";
 import type { CollectionBatch, CollectionBatchKey, CollectionScope, Engine } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm, TagAliasTables } from "../../parser";
@@ -1546,9 +1552,10 @@ async function rulingsForOracle(ctx: RouteContext, oracleId: string, pretty: boo
 
 	let value: Uint8Array | null;
 	try {
-		// Memoized per isolate and colo-cached (src/engine/kv-memo.ts): a bucket is rewritten
-		// nightly and the answer sits under a 16h tier, so the read need not be metered per request.
-		value = await readKvBytesMemo(ctx.env.STORE_KV, rulingsBucketKey(bucket));
+		// Memoized per isolate and read through the colo's cache under the current publish's version
+		// (readRulingsBucket): a new publish is a miss, and a colo pays one metered read per bucket
+		// per publish rather than one per request.
+		value = await readRulingsBucket(ctx.env.STORE_KV, bucket, (p) => ctx.waitUntil(p));
 	} catch (err) {
 		console.error("Rulings: KV read failed", err);
 		return scryfallJson(errorObject("internal_error", 500, RULINGS_UNREADABLE_DETAILS), pretty, NO_STORE_HEADER);
