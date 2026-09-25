@@ -436,6 +436,51 @@ export function exact_card_by_name(folded, set_code, fields_json) {
 }
 
 /**
+ * `exact_name_rank` and `exact_card_by_name` in ONE call, plus whether this store holds the
+ * name at all — `{"rank": <exact_name_rank's text>, "present": bool, "card": <row or null>}`
+ * (LOCAL PATCH, Cloudflare port).
+ *
+ * FOR THE NAME ROUTE (backlog n6). The router asks the partition the routing filter names for a
+ * name FIRST, and one reply has to be enough to decide whether it is the answer: the rank says
+ * whether a served card won (which no other partition can beat when this one is the name's only
+ * served holder), and `present` says whether a MISS is real. A set-restricted miss here is
+ * authoritative only if this store holds the name at all — then the filter's word that no other
+ * partition does is exact, rather than an arbitrary value for a key it never held. So `present`
+ * is computed, without the set, only when the restricted scan found nothing.
+ *
+ * `rank` is written by the same `format!` as `exact_name_rank`, so the router compares the two
+ * exports' ranks as the same numbers.
+ * @param {string} folded
+ * @param {string} set_code
+ * @param {string} fields_json
+ * @returns {string}
+ */
+export function exact_name_probe(folded, set_code, fields_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.exact_name_probe(ptr0, len0, ptr1, len1, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
  * How well this partition's best `exact=` candidate matches, as `[served, tier, score]`, or
  * `null`.
  *

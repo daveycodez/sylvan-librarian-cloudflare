@@ -664,6 +664,42 @@ pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> 
     })
 }
 
+/// `exact_name_rank` and `exact_card_by_name` in ONE call, plus whether this store holds the
+/// name at all — `{"rank": <exact_name_rank's text>, "present": bool, "card": <row or null>}`
+/// (LOCAL PATCH, Cloudflare port).
+///
+/// FOR THE NAME ROUTE (backlog n6). The router asks the partition the routing filter names for a
+/// name FIRST, and one reply has to be enough to decide whether it is the answer: the rank says
+/// whether a served card won (which no other partition can beat when this one is the name's only
+/// served holder), and `present` says whether a MISS is real. A set-restricted miss here is
+/// authoritative only if this store holds the name at all — then the filter's word that no other
+/// partition does is exact, rather than an arbitrary value for a key it never held. So `present`
+/// is computed, without the set, only when the restricted scan found nothing.
+///
+/// `rank` is written by the same `format!` as `exact_name_rank`, so the router compares the two
+/// exports' ranks as the same numbers.
+#[wasm_bindgen]
+pub fn exact_name_probe(folded: &str, set_code: &str, fields_json: &str) -> Result<String, JsError> {
+    let fields = parse_fields(fields_json)?;
+    let set = if set_code.is_empty() { None } else { Some(set_code) };
+    with_store(|store| {
+        let rank = store.exact_name_rank(folded, set);
+        let present = rank.is_some() || (set.is_some() && store.exact_name_rank(folded, None).is_some());
+        let card = match rank {
+            Some(_) => store.exact_card_by_name(folded, set, fields).map_err(js_err)?,
+            None => None,
+        };
+        let rank_text = match rank {
+            Some((served, tier, score)) => format!("[{served},{tier},{score}]"),
+            None => "null".to_string(),
+        };
+        Ok(format!(
+            r#"{{"rank":{rank_text},"present":{present},"card":{}}}"#,
+            card.unwrap_or(serde_json::Value::Null)
+        ))
+    })
+}
+
 /// The best printing a COLLECTION IDENTIFIER's `name` names, or `null` — `POST /cards/collection`.
 ///
 /// NOT `exact_card_by_name` with a different caller: a collection identifier reads a card's FACE
@@ -816,13 +852,27 @@ pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -
                 store.collection_cards_by_names(&names, fields.clone(), scope.as_ref()).map_err(js_err)?,
             )
         };
-        let header: Vec<serde_json::Value> = ranks
+        let rank_list: Vec<serde_json::Value> = ranks
             .iter()
             .map(|r| match r {
                 Some((served, tier, score)) => serde_json::json!([served, tier, score]),
                 None => serde_json::Value::Null,
             })
             .collect();
+        // `"presence": true` (the name route, backlog n6) widens the header to `{"ranks": [...],
+        // "present": [...]}`: per name, whether this store holds it AT ALL — no set, no scope, and
+        // `exact=`'s wider name rule, i.e. `exact_name_rank(folded, None)` — computed only for a
+        // name the restricted scan missed. See `exact_name_probe` for why a routed miss needs it.
+        let header = if req.get("presence").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+            let present: Vec<bool> = ranks
+                .iter()
+                .zip(&names)
+                .map(|(rank, (folded, _))| rank.is_some() || store.exact_name_rank(folded, None).is_some())
+                .collect();
+            serde_json::json!({ "ranks": rank_list, "present": present })
+        } else {
+            serde_json::Value::Array(rank_list)
+        };
         let header = serde_json::to_vec(&header).map_err(|e| JsError::new(&e.to_string()))?;
 
         let mut buf = Vec::with_capacity(4 + header.len() + (keys.len() + trees.len() + names.len()) * 2048);

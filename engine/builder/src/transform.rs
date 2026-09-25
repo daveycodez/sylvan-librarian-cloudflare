@@ -2836,7 +2836,9 @@ pub fn routing_keys_of(
     }
 }
 
-/// [`routing_keys_of`] against a finalized row (`card_compat_blob`) — the native builder's shape.
+/// [`routing_keys_of`] and [`name_routing_keys_of`] against a finalized row (`card_compat_blob`,
+/// `card_is_tags` as a `{tag: true}` map) — the native builder's shape. [`CorpusPassDraft`] is the
+/// nightly's twin, and `both_publishers_emit_the_same_routing_keys` pins the two together.
 pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
     let empty = Map::new();
     let text = |key: &str| row.get(key).and_then(Value::as_str);
@@ -2849,6 +2851,160 @@ pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
         address,
         out,
     );
+    let extra = row.get("card_is_tags").and_then(Value::as_object).is_some_and(|tags| tags.contains_key(EXTRA_IS_TAG));
+    name_routing_keys_of(text("card_name_folded").unwrap_or(""), text("flavor_name_folded"), canonical, extra, out);
+}
+
+// ─── the routing filter's NAME keys (LOCAL PATCH, Cloudflare port) ───────────────
+//
+// `/cards/named?exact=`, a collection `{"name"}` identifier and a `!"Name"` search all name a card
+// by its FOLDED name, and a name — unlike an oracle id — does not say which partition holds it, so
+// all three asked every partition. These keys let the router ask the one that does.
+//
+// THE KEY is `nm:` + the COLLATED folded name (every non-alphanumeric removed), because that is
+// what the engine compares: `name_best` collates its needle and matches it against a card's
+// collated whole name, the collated halves of a name that splits in exactly two, and (for
+// `exact=` only) the flavor names; `!` (`exact_name_matches`) reads the same whole/half rule over
+// the card's name, a reversible printing's own joined name and the flavor names. Equal folded
+// needles collate equally, so one namespace serves every rule, and a key emitted for a rule a
+// surface does not read can only WIDEN that surface's route, never make it wrong: the router
+// verifies every answer it trusts (`lookupName` in src/engine/routing-filter.ts).
+//
+// WHICH ROWS: canonical rows (the engine's `printings` space, where a card's name and its served
+// printings live) emit their whole and face names; EVERY row carrying a flavor name emits it,
+// canonical or not, because the flavor index covers both spaces.
+//
+// SERVED: a row a default search shows (no `extra` tag) writes `ns:` instead of `nm:`. Both hash
+// as `nm:<key>` — the prefix is a flag for the filter build, which stores "the one partition
+// holding a SERVED card of this name" when the name itself spans several partitions (an
+// art-series card's face name colliding with the real card's: 1,804 of the 2,275 multi-partition
+// names on the 2026-09-23 corpus). The engine ranks served first, so that partition's served
+// answer beats anything the others hold.
+//
+// WIRE FORMAT, like the id namespaces above: `nameKey` in routing-filter.ts spells the other side.
+
+/// The first line of every routing-key batch this build writes (the TSV and each nightly emit):
+/// its presence is what lets a filter claim it carries name keys. A filter built from a mix of
+/// batches with and without it — a nightly resumed across the deploy that added them — must not,
+/// because a name key's absence would then read as "no partition holds this name".
+pub const NAME_KEYS_STAMP: &str = "#nm1";
+
+/// The engine's `collate_name` (card_engine lib.rs), which is `pub(crate)` there: every character
+/// `char::is_alphanumeric` rejects, removed. Pinned against the engine by the real-corpus
+/// differential (`name_routes_match_the_all_partition_merge` in engine/builder/tests).
+fn collate_name(folded: &str) -> String {
+    folded.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// One name's keys: the collated whole, and the collated halves when it splits in EXACTLY two on
+/// `" // "` (a five-part name has no face keys — `name_key_tier`). Halves are collated after the
+/// split, as the engine does, so a needle cannot straddle the join.
+fn push_name_keys(name: &str, prefix: &str, out: &mut Vec<String>) {
+    let whole = collate_name(name);
+    if !whole.is_empty() {
+        out.push(format!("{prefix}{whole}"));
+    }
+    let mut halves = name.split(" // ");
+    if let (Some(front), Some(back), None) = (halves.next(), halves.next(), halves.next()) {
+        let (front, back) = (collate_name(front), collate_name(back));
+        if !front.is_empty() && front != whole {
+            out.push(format!("{prefix}{front}"));
+        }
+        // An art-series card doubles its name ("Delver of Secrets // Delver of Secrets"): one key.
+        if !back.is_empty() && back != whole && back != front {
+            out.push(format!("{prefix}{back}"));
+        }
+    }
+}
+
+/// Append one row's NAME routing keys — see the section comment. `extra` is whether the row
+/// carries the `extra` `is:` tag; everything else is served.
+pub fn name_routing_keys_of(
+    card_name_folded: &str,
+    flavor_name_folded: Option<&str>,
+    canonical: bool,
+    extra: bool,
+    out: &mut Vec<String>,
+) {
+    let prefix = if extra { "nm:" } else { "ns:" };
+    if canonical {
+        push_name_keys(card_name_folded, prefix, out);
+    }
+    if let Some(flavor) = flavor_name_folded.filter(|f| !f.is_empty()) {
+        push_name_keys(flavor, prefix, out);
+    }
+}
+
+/// Whether a routing key is a NAME key — the lines a publisher dedupes before emitting, since one
+/// card's name repeats on every printing of it (126,734 name lines, 44,492 distinct per batch).
+pub fn is_name_routing_key(key: &str) -> bool {
+    key.starts_with("nm:") || key.starts_with("ns:")
+}
+
+/// The draft fields the nightly's corpus-wide pass (`scores_add_drafts` in engine/wasm-import)
+/// reads, deserialized straight off a staged `RowDraft` blob — every field name is `RowDraft`'s.
+///
+/// Lives HERE, beside [`routing_keys_of_row`], so the test that pins the two publishers' routing
+/// keys together deserializes exactly what the nightly deserializes.
+#[derive(Debug, serde::Deserialize)]
+pub struct CorpusPassDraft {
+    pub card_name: String,
+    #[serde(default)]
+    pub edhrec_rank: Option<i64>,
+    #[serde(default)]
+    pub illustration_id: Option<String>,
+    #[serde(default)]
+    pub raw_lang_en: bool,
+    #[serde(default)]
+    pub raw_set_type: Option<String>,
+    #[serde(default)]
+    pub card_border: Option<String>,
+    // ── the routing filter's inputs ─────────────────────────────────────────
+    #[serde(default)]
+    pub scryfall_id: String,
+    #[serde(default)]
+    pub oracle_id: String,
+    #[serde(default)]
+    pub compat_blob: Map<String, Value>,
+    // The address key's inputs: one key per (set, collector_number), carried by the address's
+    // one canonical printing (see routing_keys_of).
+    #[serde(default)]
+    pub card_set_code: Option<String>,
+    #[serde(default)]
+    pub collector_number: Option<String>,
+    #[serde(default)]
+    pub is_canonical: bool,
+    // The name keys' inputs (name_routing_keys_of).
+    #[serde(default)]
+    pub card_name_folded: String,
+    #[serde(default)]
+    pub flavor_name_folded: Option<String>,
+    #[serde(default)]
+    pub card_is_tags: Vec<String>,
+    // The artist entity relation's input, read in this same pass for the same reason the
+    // routing keys are: it is the one visit that sees every draft of every partition.
+    #[serde(default)]
+    pub card_artist: Option<String>,
+}
+
+impl CorpusPassDraft {
+    /// This draft's routing keys — [`routing_keys_of_row`] over the finalized row it becomes.
+    pub fn routing_keys(&self, out: &mut Vec<String>) {
+        let address = self
+            .card_set_code
+            .as_deref()
+            .zip(self.collector_number.as_deref())
+            .filter(|_| self.is_canonical);
+        routing_keys_of(&self.scryfall_id, self.illustration_id.as_deref(), &self.compat_blob, address, out);
+        let extra = self.card_is_tags.iter().any(|t| t == EXTRA_IS_TAG);
+        name_routing_keys_of(
+            &self.card_name_folded,
+            self.flavor_name_folded.as_deref(),
+            self.is_canonical,
+            extra,
+            out,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2890,6 +3046,71 @@ mod tests {
         keys.clear();
         routing_keys_of_row(&row(false), &mut keys);
         assert_eq!(keys, ["i:abc", "multiverse:433932"]);
+    }
+
+    /// The name keys' spelling is WIRE FORMAT: `nameKey` in src/engine/routing-filter.ts hashes the
+    /// same bytes, and tests/engine/routing-filter.test.ts pins the same literals.
+    #[test]
+    fn name_routing_keys_are_spelled_like_the_router_spells_them() {
+        let keys = |name: &str, flavor: Option<&str>, canonical: bool, extra: bool| {
+            let mut out = Vec::new();
+            name_routing_keys_of(name, flavor, canonical, extra, &mut out);
+            out
+        };
+        // Collated: every non-alphanumeric gone, the fold already done by the caller.
+        assert_eq!(keys("lim-dul's vault", None, true, false), ["ns:limdulsvault"]);
+        // Exactly two halves: the whole and both faces.
+        assert_eq!(keys("fire // ice", None, true, false), ["ns:fireice", "ns:fire", "ns:ice"]);
+        // A five-part name is its own key and has no face keys (`exact=Who` is not_found).
+        assert_eq!(keys("who // what // when // where // why", None, true, false), ["ns:whowhatwhenwherewhy"]);
+        // A doubled art-series name gives its face key once.
+        assert_eq!(
+            keys("delver of secrets // delver of secrets", None, true, true),
+            ["nm:delverofsecretsdelverofsecrets", "nm:delverofsecrets"]
+        );
+        // Extras write `nm:`, served rows `ns:`.
+        assert_eq!(keys("cabbages", None, true, true), ["nm:cabbages"]);
+        // A non-canonical row carries no card-name key, but its flavor name is always a key.
+        assert_eq!(keys("titanoth rex", Some("godzilla, primeval champion"), false, false), ["ns:godzillaprimevalchampion"]);
+        assert!(keys("titanoth rex", None, false, false).is_empty());
+        assert_eq!(keys("", None, true, false), Vec::<String>::new());
+    }
+
+    /// THE TWO PUBLISHERS EMIT THE SAME KEYS. The native builder reads a FINALIZED row
+    /// (`routing_keys_of_row`); the nightly reads the staged DRAFT through `CorpusPassDraft`,
+    /// deserialized exactly as `scores_add_drafts` deserializes it. A field renamed on one side
+    /// would drop that side's keys with no error (`#[serde(default)]`), so this compares them over
+    /// every fixture, canonical and not, served and extra.
+    #[test]
+    fn both_publishers_emit_the_same_routing_keys() {
+        let mut compared = 0;
+        for name in ["lightning_bolt", "fire_ice", "delver_of_secrets", "delver_es", "shock_ja", "prepare_es", "jace_the_mind_sculptor", "llanowar_elves"] {
+            for canonical in [true, false] {
+                for extra in [false, true] {
+                    let mut draft = transform_row(&fixture(name), canonical).unwrap().unwrap();
+                    draft.set_extra(extra);
+                    if name == "lightning_bolt" {
+                        draft.flavor_name = Some("Bolt of Lightning // Other".into());
+                        draft.flavor_name_folded = Some("bolt of lightning // other".into());
+                    }
+                    let staged = serde_json::to_vec(&draft).unwrap();
+                    let pass: CorpusPassDraft = serde_json::from_slice(&staged).unwrap();
+                    let mut nightly = Vec::new();
+                    pass.routing_keys(&mut nightly);
+
+                    let row = finalize(vec![draft], &TagData::default()).next().unwrap();
+                    let mut native = Vec::new();
+                    routing_keys_of_row(&row, &mut native);
+                    assert_eq!(nightly, native, "{name} canonical={canonical} extra={extra}");
+                    assert!(
+                        !canonical || native.iter().any(|k| is_name_routing_key(k)),
+                        "{name}: a canonical row names its card"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 32);
     }
 
     #[test]

@@ -154,6 +154,24 @@ export function collection_name_ranks(identifiers_json: string, prefer: string, 
 export function exact_card_by_name(folded: string, set_code: string, fields_json: string): string;
 
 /**
+ * `exact_name_rank` and `exact_card_by_name` in ONE call, plus whether this store holds the
+ * name at all — `{"rank": <exact_name_rank's text>, "present": bool, "card": <row or null>}`
+ * (LOCAL PATCH, Cloudflare port).
+ *
+ * FOR THE NAME ROUTE (backlog n6). The router asks the partition the routing filter names for a
+ * name FIRST, and one reply has to be enough to decide whether it is the answer: the rank says
+ * whether a served card won (which no other partition can beat when this one is the name's only
+ * served holder), and `present` says whether a MISS is real. A set-restricted miss here is
+ * authoritative only if this store holds the name at all — then the filter's word that no other
+ * partition does is exact, rather than an arbitrary value for a key it never held. So `present`
+ * is computed, without the set, only when the restricted scan found nothing.
+ *
+ * `rank` is written by the same `format!` as `exact_name_rank`, so the router compares the two
+ * exports' ranks as the same numbers.
+ */
+export function exact_name_probe(folded: string, set_code: string, fields_json: string): string;
+
+/**
  * How well this partition's best `exact=` candidate matches, as `[served, tier, score]`, or
  * `null`.
  *

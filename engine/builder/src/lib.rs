@@ -455,6 +455,10 @@ pub fn build_store_partitioned_spilled<W: Write>(
         1 << 20,
         std::fs::File::create(&routing_path).map_err(|e| format!("create routing-keys.tsv: {e}"))?,
     ));
+    // The stamp that lets the filter claim its NAME keys (transform::NAME_KEYS_STAMP): a reader
+    // skips `#` lines, and a file without it builds a filter that never answers a name lookup.
+    writeln!(routing_out.borrow_mut(), "{}", transform::NAME_KEYS_STAMP)
+        .map_err(|e| format!("write routing-keys.tsv: {e}"))?;
     let mut routing_count = 0u64;
     let artist_entities = aggregates.artist_entities();
     let mut accum = PartitionAccum::new(built_at, n);
@@ -462,6 +466,9 @@ pub fn build_store_partitioned_spilled<W: Write>(
         let (mut counter, store_key) = accum.open(out_dir, k)?;
         let mut rows = parts.rows(k, &aggregates, tags)?;
         let routing_here = std::cell::Cell::new(0u64);
+        // A card's name repeats on every printing of it; one line per (partition, name key) is all
+        // the filter needs, and this partition's names are a few thousand strings.
+        let names_here = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
         let stats = {
             // `encode_standalone`'s blob IS the row's compact JSON, which is also rows.jsonl's
             // line — so the tee and the build share ONE serialization instead of each doing
@@ -472,13 +479,17 @@ pub fn build_store_partitioned_spilled<W: Write>(
                 transform::routing_keys_of_row(&row, &mut keys);
                 {
                     let mut r = routing_out.borrow_mut();
+                    let mut names = names_here.borrow_mut();
                     for key in &keys {
+                        if transform::is_name_routing_key(key) && !names.insert(key.clone()) {
+                            continue;
+                        }
                         if writeln!(r, "{k}\t{key}").is_err() {
                             row_err.set(true);
                         }
+                        routing_here.set(routing_here.get() + 1);
                     }
                 }
-                routing_here.set(routing_here.get() + keys.len() as u64);
                 let bytes = serde_json::to_vec(&row).unwrap_or_else(|_| {
                     row_err.set(true);
                     Vec::new()

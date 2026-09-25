@@ -80,7 +80,7 @@
 //! length-prefixed concatenations: repeating [u32 le length][bytes].
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -90,8 +90,8 @@ use serde_json::Value;
 use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
-    art_tags_of, finalize_row, illust_count_qualifies, is_pinned, routing_keys_of, transform_row, PinnedPrintings,
-    RowDraft,
+    art_tags_of, finalize_row, illust_count_qualifies, is_name_routing_key, is_pinned, transform_row, CorpusPassDraft,
+    PinnedPrintings, RowDraft, NAME_KEYS_STAMP,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -547,47 +547,14 @@ fn split_batch(buf: &[u8]) -> Result<Vec<&[u8]>, String> {
 /// (tags_export/tags_restore) — the same one persistence path the canonical id set rides, so this
 /// phase is resumable and eviction-proof for free.
 ///
-/// Only five fields are read per draft, so the batch is not parsed into `RowDraft`s.
+/// Only the `CorpusPassDraft` fields are read per draft, so the batch is not parsed into `RowDraft`s.
 /// Returns distinct card names observed so far.
 #[unsafe(no_mangle)]
 pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u32) -> i64 {
-    /// The corpus tables' inputs: the percent-rank's pair, and what
-    /// `transform::illust_count_key` reads to decide whether a row is counted.
-    #[derive(serde::Deserialize)]
-    struct TableInputs {
-        card_name: String,
-        #[serde(default)]
-        edhrec_rank: Option<i64>,
-        #[serde(default)]
-        illustration_id: Option<String>,
-        #[serde(default)]
-        raw_lang_en: bool,
-        #[serde(default)]
-        raw_set_type: Option<String>,
-        #[serde(default)]
-        card_border: Option<String>,
-        // ── the routing filter's inputs (transform::routing_keys_of) ─────────
-        // Read here rather than in a pass of their own: this phase already visits every draft of
-        // every partition exactly once, which is precisely the visit the filter needs.
-        #[serde(default)]
-        scryfall_id: String,
-        #[serde(default)]
-        oracle_id: String,
-        #[serde(default)]
-        compat_blob: serde_json::Map<String, Value>,
-        // The address key's inputs: one key per (set, collector_number), carried by the address's
-        // one canonical printing (see transform::routing_keys_of).
-        #[serde(default)]
-        card_set_code: Option<String>,
-        #[serde(default)]
-        collector_number: Option<String>,
-        #[serde(default)]
-        is_canonical: bool,
-        // The artist entity relation's input, read in this same pass for the same reason the
-        // routing keys are: it is the one visit that sees every draft of every partition.
-        #[serde(default)]
-        card_artist: Option<String>,
-    }
+    // The fields this pass reads — the percent-rank's pair, what `transform::illust_count_key`
+    // reads to decide whether a row is counted, the routing filter's inputs and the artist entity
+    // relation's — live in the builder crate as `CorpusPassDraft`, beside the native publisher's
+    // `routing_keys_of_row`, so one test pins the two publishers' routing keys together.
     let buf = take_buf(ptr, len);
     let blobs = match split_batch(&buf) {
         Ok(b) => b,
@@ -607,9 +574,20 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
         // and never accumulated: 1.2M keys held in wasm would be ~55MB against a 124MiB ceiling
         // the build peak already spends most of.
         let mut routing = String::new();
+        if partition_count > 0 {
+            // Every batch opens with the stamp: the coordinator claims name keys for the filter
+            // only when EVERY staged batch carries it (a run resumed across the deploy that added
+            // them has batches without), and it skips `#` lines otherwise.
+            routing.push_str(NAME_KEYS_STAMP);
+            routing.push('\n');
+        }
         let mut keys: Vec<String> = Vec::with_capacity(8);
+        // A card's name repeats on every printing of it (126,734 name lines on the 2026-09-23
+        // corpus); one line per (partition, name key) per batch is all the filter needs, and it
+        // is what keeps the coordinator's accumulator well inside its pre-size.
+        let mut names_seen: HashSet<(u64, String)> = HashSet::new();
         for blob in blobs {
-            let draft: TableInputs = match serde_json::from_slice(blob) {
+            let draft: CorpusPassDraft = match serde_json::from_slice(blob) {
                 Ok(d) => d,
                 Err(e) => {
                     log(&format!("scores_add_drafts: draft parse: {e}"));
@@ -627,20 +605,12 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
             s.tags.corpus.observe_artists(draft.card_artist.as_deref(), &draft.compat_blob);
             if partition_count > 0 {
                 keys.clear();
-                let address = draft
-                    .card_set_code
-                    .as_deref()
-                    .zip(draft.collector_number.as_deref())
-                    .filter(|_| draft.is_canonical);
-                routing_keys_of(
-                    &draft.scryfall_id,
-                    draft.illustration_id.as_deref(),
-                    &draft.compat_blob,
-                    address,
-                    &mut keys,
-                );
+                draft.routing_keys(&mut keys);
                 let p = fnv1a64_oracle_id(&draft.oracle_id) % u64::from(partition_count);
                 for key in &keys {
+                    if is_name_routing_key(key) && !names_seen.insert((p, key.clone())) {
+                        continue;
+                    }
                     routing.push_str(&p.to_string());
                     routing.push('\t');
                     routing.push_str(key);
