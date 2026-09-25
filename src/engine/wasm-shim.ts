@@ -220,6 +220,16 @@ export interface EngineHandle {
 	collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 	card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
+	named_fuzzy_bundle(
+		folded: string,
+		setCode: string,
+		floor: number,
+		lead: number,
+		k: number,
+		wordsJson: string,
+		limit: number,
+		fieldsJson: string,
+	): Uint8Array;
 	linearMemoryBytes(): number;
 	/** Bumped each time this label's instance is dropped after a trap; see dropInstance. */
 	instanceGeneration(): number;
@@ -286,6 +296,7 @@ export function engineFor(label: string): EngineHandle {
 		collection_batch: wrap("collection_batch"),
 		card_by_illustration_id: wrap("card_by_illustration_id"),
 		cards_containing_all_words: wrap("cards_containing_all_words"),
+		named_fuzzy_bundle: wrap("named_fuzzy_bundle"),
 		linearMemoryBytes: () => instances.get(label)?.memory?.buffer.byteLength ?? 0,
 		instanceGeneration: () => generations.get(label) ?? 0,
 	};

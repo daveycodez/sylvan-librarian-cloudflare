@@ -64,6 +64,16 @@ declare module "sylvan-engine-wasm" {
 		collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 		card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 		cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
+		named_fuzzy_bundle(
+			folded: string,
+			setCode: string,
+			floor: number,
+			lead: number,
+			k: number,
+			wordsJson: string,
+			limit: number,
+			fieldsJson: string,
+		): Uint8Array;
 		linearMemoryBytes(): number;
 		/** Bumped each time this label's instance is dropped after a trap. */
 		instanceGeneration(): number;
@@ -129,6 +139,22 @@ declare module "sylvan-engine-wasm" {
 		limit: number,
 		fieldsJson: string,
 	): string;
+	/**
+	 * `/cards/named?fuzzy=`'s three stages against this store in one call (backlog n7): the exact
+	 * probe, the local typo race and containment as a JSON header, then `fuzzy_candidates`' packet
+	 * — each section byte-for-byte its own export's answer, skipped where the router cannot read it
+	 * (see src/engine/named-fuzzy.ts for the layout).
+	 */
+	export function named_fuzzy_bundle(
+		folded: string,
+		setCode: string,
+		floor: number,
+		lead: number,
+		k: number,
+		wordsJson: string,
+		limit: number,
+		fieldsJson: string,
+	): Uint8Array;
 	/** Printing count (upstream size()); 0 = no store loaded. */
 	export function size(): number;
 	/** Oracle-card count of the loaded store. */

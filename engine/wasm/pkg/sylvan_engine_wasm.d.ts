@@ -269,6 +269,47 @@ export function fuzzy_card_by_name(name: string, floor: number, lead: number, fi
 export function init_store(bytes: Uint8Array): void;
 
 /**
+ * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
+ * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
+ * router asks each partition ONCE where it used to ask every partition three times over three
+ * sequential rounds (probes, then fuzzy candidates plus the winner's materialize, then
+ * containment).
+ *
+ * Every section is written by the export that answers that stage alone, called here with the
+ * same arguments, so the bundle cannot drift from them:
+ *
+ * ```text
+ * header_len: u32 LE, header: header_len bytes of JSON —
+ *   {"exact": <exact_name_probe(folded, set_code, fields)>,
+ *    "fuzzy": <fuzzy_card_by_name(folded, floor, lead, fields)> or null,
+ *    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
+ * then the fuzzy_candidates(folded, floor, k) packet unchanged, or nothing
+ * ```
+ *
+ * A stage whose answer the router can never read is SKIPPED, which is what keeps one call no
+ * dearer than the stages it replaces:
+ *
+ * - This store ranks the needle exactly (`rank` non-null): nothing else is computed. Some
+ *   partition then has an exact rank, so the router's exact stage is certain to answer, and the
+ *   typo and containment stages never run anywhere. `fuzzy` and `contained` are null and there
+ *   are no candidate bytes.
+ * - Otherwise the candidates are always computed (the router races every partition's). If there
+ *   is at least one, containment is skipped: the global race then has a leader, so it is a hit or
+ *   ambiguous and never falls through to containment. `contained` is null.
+ * - With NO candidate, the local race is a miss by construction (`fuzzy_name_match` and
+ *   `fuzzy_candidates` offer the same scores against the same floor), so `fuzzy` is the miss
+ *   `fuzzy_card_by_name` would write, built by the same `json!` — without a second scan — and
+ *   containment runs.
+ *
+ * `fuzzy` is this store's own local race, and the router uses it only when this partition wins
+ * the global race: its local race is a sub-race the global winner also leads, which is the
+ * materialize call the three-round router made to the winning partition.
+ *
+ * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
+ */
+export function named_fuzzy_bundle(folded: string, set_code: string, floor: number, lead: number, k: number, words_json: string, limit: number, fields_json: string): Uint8Array;
+
+/**
  * Every printing of one oracle card, representative first. Empty array for an unknown id.
  */
 export function printings_of_oracle_id(oracle_id: string, fields_json: string): string;

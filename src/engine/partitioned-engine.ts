@@ -45,7 +45,16 @@
 //   search pinned to !"Name"           1, when the filter names ONE partition
 //                                      holding the name and it finds rows;
 //                                      else the gather
-//   named fuzzy / containing           N, combined (see each method's rules)
+//   named fuzzy (scryfallNamedFuzzy)   ONE round of N bundles — exact probe,
+//                                      typo candidates and local race, and
+//                                      containment from each partition at once,
+//                                      each skipped where it cannot matter; 1
+//                                      for an exact name the routing filter
+//                                      places, whose partition is asked first
+//                                      (a settled miss or a typo then asks the
+//                                      other N-1). It was up to 3N+1 over five
+//                                      sequential waits
+//   containing (the staged path)       N, combined (see each method's rules)
 //   autocomplete                       N, merged prefix-first
 //
 // Cross-partition NAME semantics are EXACT: fuzzy fans out the scores-bearing
@@ -63,6 +72,7 @@
 import { collateName, foldAccents } from "../parser/pystr";
 import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
+import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged } from "./named-fuzzy";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedExactName, pinnedOracleId } from "./pinned-oracle";
 import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } from "./remote-engine";
@@ -95,6 +105,8 @@ import {
 	type ExactNameProbe,
 	FUZZY_SIMILARITY_LEAD,
 	type FuzzyCandidateWire,
+	type NamedFuzzyAnswer,
+	type NamedFuzzyBundle,
 	type NameIdentifier,
 	type ResultShape,
 	type ScryfallFuzzyResult,
@@ -1276,26 +1288,158 @@ export class PartitionedEngine implements Engine {
 	): Promise<Record<string, unknown>[]> {
 		// The caller asks for 2 and reads ≥2 DISTINCT NAMES as ambiguous; distinct
 		// names survive a cross-partition dedupe, so the semantics carry over.
-		const perPartition = await this.all((e) => e.scryfallNamesContaining(words, setCode, limit, baseUrl));
-		const byName = new Map<string, Record<string, unknown>>();
-		for (const cards of perPartition) {
-			for (const card of cards) {
-				const key = String(card.name ?? "");
-				if (!byName.has(key)) byName.set(key, card);
+		return mergeContained(
+			await this.all((e) => e.scryfallNamesContaining(words, setCode, limit, baseUrl)),
+			words,
+			limit,
+		);
+	}
+
+	/**
+	 * `/cards/named?fuzzy=` in ONE round (backlog n7): one bundle per partition — its exact probe,
+	 * its typo candidates and local race, and its containment matches, each skipped where it cannot
+	 * matter (see NamedFuzzyBundle) — merged by `mergeNamedFuzzyBundles` under exactly the rules the
+	 * three stages apply one after another (`resolveNamedFuzzyStaged`). Those spent up to 3N + 1
+	 * calls over as many as five sequential waits: the exact probes (a routed name first, then the
+	 * rest), every partition's candidates, the winner's materialize, then every partition's
+	 * containment. This is N calls in one wait.
+	 *
+	 * A name the routing filter places is asked of its partition FIRST, exactly as
+	 * `scryfallExactName` asks it (backlog n6): when that one reply settles the name with a card,
+	 * it is the answer — ONE call for an exact name. Anything else — a typo, a set-restricted miss,
+	 * a garbage hint — asks the rest in one more round and merges every reply, the routed one
+	 * included.
+	 *
+	 * A combination of replies the merge cannot read (a stage a partition skipped turning out to be
+	 * needed, which the skip rules make impossible) is answered by the three stages, logged.
+	 */
+	async scryfallNamedFuzzy(
+		folded: string,
+		words: string[],
+		setCode: string,
+		baseUrl: string,
+	): Promise<NamedFuzzyAnswer> {
+		await this.routed();
+		const hint = this.nameHintOf(folded);
+		const bundle = (p: number) =>
+			this.at(p).scryfallNamedFuzzyBundle(folded, setCode, words, NAMED_CONTAINMENT_LIMIT, baseUrl);
+		const replies: NamedFuzzyBundle[] = new Array(this.n);
+		let asked = Array.from({ length: this.n }, (_, p) => p);
+		// A routed MISS the hint settles is the exact stage's answer too (`scryfallExactName` returns
+		// it without asking further), so the other partitions' ranks are not consulted.
+		let exactSettledMiss = false;
+		if (hint !== null) {
+			const first = hintPartition(hint);
+			const reply = await bundle(first);
+			if (nameReplySettles(hint, reply.exact.rank, reply.exact.present)) {
+				if (reply.exact.rank !== null && reply.exact.card !== null) return { status: "card", card: reply.exact.card };
+				exactSettledMiss = reply.exact.rank === null;
+			}
+			replies[first] = reply;
+			asked = asked.filter((p) => p !== first);
+		}
+		await Promise.all(
+			asked.map(async (p) => {
+				replies[p] = await bundle(p);
+			}),
+		);
+		const merged = mergeNamedFuzzyBundles(replies, words, NAMED_CONTAINMENT_LIMIT, exactSettledMiss);
+		if (merged !== null) return merged;
+		console.warn("named fuzzy: the bundles do not combine; asking the three stages instead");
+		return resolveNamedFuzzyStaged(this, folded, words, setCode, baseUrl);
+	}
+}
+
+/**
+ * The containment stage's cross-partition merge: one card per distinct name, in partition order —
+ * the caller asks for 2 and reads ≥2 DISTINCT NAMES as ambiguous, and distinct names survive a
+ * cross-partition dedupe, so the semantics carry over — with the whole-name rank re-applied.
+ */
+export function mergeContained(
+	perPartition: Record<string, unknown>[][],
+	words: string[],
+	limit: number,
+): Record<string, unknown>[] {
+	const byName = new Map<string, Record<string, unknown>>();
+	for (const cards of perPartition) {
+		for (const card of cards) {
+			const key = String(card.name ?? "");
+			if (!byName.has(key)) byName.set(key, card);
+		}
+	}
+	// THE WHOLE-NAME RANK, re-applied globally. Each partition already prefers a name that IS
+	// the query over one that merely carries its letters (the engine's containment rule), but
+	// that ranking is LOCAL: `fuzzy=blitzschlag` puts the German printing of Lightning Bolt in
+	// one archive and some other card whose name contains those letters in another, and a
+	// dedupe that only counts distinct names reads the pair as ambiguous — where Scryfall, and
+	// a single store, answer the card the query names. Folded here because the card object
+	// carries the name as PRINTED, while the engine matched the folded form.
+	const whole = words.map(unseparated).join("");
+	const named = [...byName.values()].filter(
+		(card) => equalsUnseparated(card.name, whole) || equalsUnseparated(card.printed_name, whole),
+	);
+	if (named.length > 0) return named.slice(0, 1);
+	return [...byName.values()].slice(0, limit);
+}
+
+/**
+ * Every partition's NamedFuzzyBundle (in partition order), combined into the answer the three
+ * stages give asked one after another over the same partitions — or null when the replies cannot
+ * say (a stage the merge needs was skipped somewhere), for the caller to ask the stages instead.
+ *
+ *   1. EXACT: the best rank, strictly greater so a tie keeps the lowest partition, and that
+ *      partition's card — `scryfallExactName`'s merge. Skipped when the routed partition settled
+ *      the name as absent (`exactSettledMiss`), which is that method's answer too.
+ *   2. TYPO: `raceFuzzyCandidates` over every partition's candidates; ambiguous is the answer, and
+ *      a hit is the WINNING partition's own local race, which is what the stage's materialize call
+ *      to that partition returned — its local race is a sub-race the global winner also leads.
+ *   3. CONTAINMENT: `mergeContained`, where two distinct names are ambiguous.
+ *
+ * Each stage is reached only where the previous one fell through, so the skip rules guarantee its
+ * inputs: no partition ranked the needle (else stage 1 answered), so every one raced; and no
+ * partition had a candidate (else stage 2 answered), so every one ran containment.
+ */
+export function mergeNamedFuzzyBundles(
+	replies: NamedFuzzyBundle[],
+	words: string[],
+	limit: number,
+	exactSettledMiss = false,
+): NamedFuzzyAnswer | null {
+	if (exactSettledMiss) {
+		// The settled word says no partition holds the name; one that ranks it anyway skipped its
+		// typo stage, and the stages are the only faithful answer.
+		if (replies.some((r) => r.exact.rank !== null)) return null;
+	} else {
+		let best: number[] | null = null;
+		let card: Record<string, unknown> | null = null;
+		for (const reply of replies) {
+			if (reply.exact.rank !== null && beatsExactRank(reply.exact.rank, best)) {
+				best = reply.exact.rank;
+				card = reply.exact.card;
 			}
 		}
-		// THE WHOLE-NAME RANK, re-applied globally. Each partition already prefers a name that IS
-		// the query over one that merely carries its letters (the engine's containment rule), but
-		// that ranking is LOCAL: `fuzzy=blitzschlag` puts the German printing of Lightning Bolt in
-		// one archive and some other card whose name contains those letters in another, and a
-		// dedupe that only counts distinct names reads the pair as ambiguous — where Scryfall, and
-		// a single store, answer the card the query names. Folded here because the card object
-		// carries the name as PRINTED, while the engine matched the folded form.
-		const whole = words.map(unseparated).join("");
-		const named = [...byName.values()].filter(
-			(card) => equalsUnseparated(card.name, whole) || equalsUnseparated(card.printed_name, whole),
-		);
-		if (named.length > 0) return named.slice(0, 1);
-		return [...byName.values()].slice(0, limit);
+		if (best !== null) return card === null ? null : { status: "card", card };
 	}
+
+	if (replies.some((r) => r.fuzzy === null)) return null;
+	const race = raceFuzzyCandidates(
+		replies.map((r) => r.candidates),
+		FUZZY_SIMILARITY_LEAD,
+	);
+	if (race.status === "ambiguous") return { status: "ambiguous" };
+	if (race.status === "hit" && race.winner !== undefined) {
+		const local = replies[race.winner]?.fuzzy ?? null;
+		if (local?.status === "ambiguous") return { status: "ambiguous" };
+		if (local?.status === "hit" && local.card) return { status: "card", card: local.card };
+	}
+
+	const contained: Record<string, unknown>[][] = [];
+	for (const reply of replies) {
+		if (reply.contained === null) return null;
+		contained.push(reply.contained);
+	}
+	const found = mergeContained(contained, words, limit);
+	if (found.length > 1) return { status: "ambiguous" };
+	const only = found[0];
+	return only ? { status: "card", card: only } : { status: "miss" };
 }

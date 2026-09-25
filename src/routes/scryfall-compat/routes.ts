@@ -24,6 +24,7 @@
 
 import { encodeUtf8 } from "../../engine/bytes";
 import { readKvBytesMemo } from "../../engine/kv-memo";
+import { resolveNamedFuzzyStaged } from "../../engine/named-fuzzy";
 import {
 	OracleIndexFormatError,
 	oracleIdLookup,
@@ -38,7 +39,13 @@ import {
 	rulingsBucketOf,
 	rulingsSlice,
 } from "../../engine/rulings-kv";
-import type { CollectionBatch, CollectionBatchKey, CollectionScope, Engine } from "../../engine/types";
+import type {
+	CollectionBatch,
+	CollectionBatchKey,
+	CollectionScope,
+	Engine,
+	NamedFuzzyAnswer,
+} from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm, TagAliasTables } from "../../parser";
 import { canonicalStringify } from "../../parser";
@@ -825,6 +832,11 @@ export async function cardsNamedHandler(
  * `ambiguous` or resolves to the wrong card. The reorder is only correct alongside the metric it
  * shipped with (card_engine's `Fuzzy name matching` module comment): on the OLD pg_trgm score
  * this order turned `bolt` and `jac bel`, which Scryfall calls ambiguous, into hits.
+ *
+ * The ORDER is semantic, not a sequence of calls: the partitioned engine asks every partition for
+ * all three stages at once and applies the order when it merges (backlog n7,
+ * PartitionedEngine.scryfallNamedFuzzy); `resolveNamedFuzzyStaged` is the same order asked one
+ * stage at a time.
  */
 async function namedFuzzy(
 	engine: Engine,
@@ -841,20 +853,15 @@ async function namedFuzzy(
 	}
 
 	try {
-		const exactHit = await engine.scryfallExactName(needle, setCode, baseUrl);
-		if (exactHit) return renderCard(exactHit, render.format, render.face, render.version, pretty, CARDS_CACHE);
-
-		const { status, card } = await engine.scryfallFuzzyName(needle, baseUrl);
-		if (status === "ambiguous") return ambiguous(fuzzy, pretty);
-		if (status === "hit" && card)
-			return renderCard(card, render.format, render.face, render.version, pretty, CARDS_CACHE);
-
-		// Two is all it takes to tell "one match" from "ambiguous"; asking for more would scan the
-		// same corpus to throw the rest away.
-		const contained = await engine.scryfallNamesContaining(words, setCode, 2, baseUrl);
-		if (contained.length > 1) return ambiguous(fuzzy, pretty);
-		const only = contained[0];
-		if (only) return renderCard(only, render.format, render.face, render.version, pretty, CARDS_CACHE);
+		// The partitioned engine resolves all three stages in one round of partition calls (backlog
+		// n7); any other engine is asked them one after another. The answer is the same either way.
+		const answer: NamedFuzzyAnswer = engine.scryfallNamedFuzzy
+			? await engine.scryfallNamedFuzzy(needle, words, setCode, baseUrl)
+			: await resolveNamedFuzzyStaged(engine, needle, words, setCode, baseUrl);
+		if (answer.status === "ambiguous") return ambiguous(fuzzy, pretty);
+		if (answer.status === "card") {
+			return renderCard(answer.card, render.format, render.face, render.version, pretty, CARDS_CACHE);
+		}
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}

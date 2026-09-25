@@ -100,6 +100,7 @@ import type {
 	Env,
 	ExactNameProbe,
 	FuzzyCandidateWire,
+	NamedFuzzyBundle,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -665,6 +666,21 @@ export class SearchEngine extends DurableObject<Env> {
 		return this.instrumented(reportedShards, async (engine) => {
 			if (!engine.scryfallExactNameProbe) throw new Error("exact-name probes come from a loaded store only");
 			return { probe: await engine.scryfallExactNameProbe(folded, setCode, baseUrl) };
+		});
+	}
+
+	/** `/cards/named?fuzzy=`'s three stages in one reply — see NamedFuzzyBundle. */
+	async scryfallNamedFuzzyBundle(
+		folded: string,
+		setCode: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<{ bundle: NamedFuzzyBundle } & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => {
+			if (!engine.scryfallNamedFuzzyBundle) throw new Error("named-fuzzy bundles come from a loaded store only");
+			return { bundle: await engine.scryfallNamedFuzzyBundle(folded, setCode, words, limit, baseUrl) };
 		});
 	}
 

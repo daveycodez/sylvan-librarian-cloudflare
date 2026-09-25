@@ -1,0 +1,1997 @@
+{
+	"note": "Per-partition answers of each /cards/named?fuzzy= stage (exact_name_probe, fuzzy_candidates, fuzzy_card_by_name, cards_containing_all_words with limit 2), recorded off the ten-partition store-build of built_at below with the committed wasm engine; card objects slimmed to name/printed_name/set/collector_number. hint is the n6 name filter's word on the needle. expect is the three-stage answer. Replayed by named-fuzzy.test.ts.",
+	"built_at": "1790294946",
+	"cases": [
+		{
+			"label": "exact whole name, a face match elsewhere",
+			"fuzzy": "Lightning Bolt",
+			"set": "",
+			"hint": null,
+			"expect": "card:Lightning Bolt",
+			"partitions": [
+				{
+					"rank": [1, 2, 2098330.3],
+					"present": true,
+					"exact": {
+						"name": "Lightning Bolt",
+						"set": "msc",
+						"collector_number": "806"
+					},
+					"candidates": [
+						{
+							"score": 1,
+							"served": true,
+							"oracleId": "4457ed35-7c10-48c8-9776-456485fdf070",
+							"vpid": 3123,
+							"foldedName": "lightning bolt"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Bolt",
+							"set": "msc",
+							"collector_number": "806"
+						}
+					},
+					"contained": [
+						{
+							"name": "Lightning Bolt",
+							"set": "msc",
+							"collector_number": "806"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.7472527623176575,
+							"served": false,
+							"oracleId": "93bc4e17-bd0e-4516-af6f-09a25712a323",
+							"vpid": 6618,
+							"foldedName": "lightning colt"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Colt",
+							"set": "cmb2",
+							"collector_number": "57"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": [0, 1, 2098326],
+					"present": true,
+					"exact": {
+						"name": "Lightning Bolt // Lightning Bolt",
+						"set": "astx",
+						"collector_number": "76"
+					},
+					"candidates": [
+						{
+							"score": 0.6730769276618958,
+							"served": false,
+							"oracleId": "2b93787d-47ea-4b8b-912d-ffc5d5440171",
+							"vpid": 1884,
+							"foldedName": "lightning bolt // lightning bolt"
+						},
+						{
+							"score": 0.656410276889801,
+							"served": true,
+							"oracleId": "d50f1ff7-d2bc-4e36-876d-77648f447f5b",
+							"vpid": 10696,
+							"foldedName": "lightning wolf"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Bolt // Lightning Bolt",
+							"set": "astx",
+							"collector_number": "76"
+						}
+					},
+					"contained": [
+						{
+							"name": "Lightning Bolt // Lightning Bolt",
+							"set": "astx",
+							"collector_number": "76"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6703296899795532,
+							"served": true,
+							"oracleId": "6b7bbdb7-bdd5-4eb1-912e-f2f810772ac8",
+							"vpid": 4736,
+							"foldedName": "lightning blow"
+						},
+						{
+							"score": 0.6643356680870056,
+							"served": false,
+							"oracleId": "2284420f-1773-409f-b330-964a1267b13d",
+							"vpid": 1578,
+							"foldedName": "lightning"
+						},
+						{
+							"score": 0.6595238447189331,
+							"served": true,
+							"oracleId": "91fd731c-e076-4f2d-9f22-872880c3cc3d",
+							"vpid": 6565,
+							"foldedName": "lightning blast"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Blow",
+							"set": "me3",
+							"collector_number": "18"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": [1, 1, 2098332.8],
+					"present": true,
+					"exact": {
+						"name": "Emeritus of Conflict // Lightning Bolt",
+						"set": "sos",
+						"collector_number": "113"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Emeritus of Conflict // Lightning Bolt",
+							"set": "sos",
+							"collector_number": "113"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "exact, several partitions answer (faces)",
+			"fuzzy": "Fire",
+			"set": "",
+			"hint": {
+				"served": 7
+			},
+			"expect": "card:Fire // Ice",
+			"partitions": [
+				{
+					"rank": [0, 1, 2098327.8],
+					"present": true,
+					"exact": {
+						"name": "Start // Fire",
+						"set": "cmb2",
+						"collector_number": "101"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Jaya, Venerated Firemage",
+							"set": "war",
+							"collector_number": "135"
+						},
+						{
+							"name": "Valakut Fireboar",
+							"set": "roe",
+							"collector_number": "170"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Wildfire Howl",
+							"set": "blb",
+							"collector_number": "162"
+						},
+						{
+							"name": "Ragefire Hellkite",
+							"set": "dmu",
+							"collector_number": "285"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Hallar, the Firefletcher",
+							"set": "dom",
+							"collector_number": "196"
+						},
+						{
+							"name": "Crucible of Fire",
+							"set": "ima",
+							"collector_number": "122"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Fireslinger",
+							"set": "jvc",
+							"collector_number": "36"
+						},
+						{
+							"name": "Akoum Firebird",
+							"set": "bfz",
+							"collector_number": "138"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Firefist Adept",
+							"set": "dom",
+							"collector_number": "121"
+						},
+						{
+							"name": "Savage Firecat",
+							"set": "ody",
+							"collector_number": "218"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Heartfire Immolator",
+							"set": "fdn",
+							"collector_number": "201"
+						},
+						{
+							"name": "Fireforger's Puzzleknot",
+							"set": "kld",
+							"collector_number": "213"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Breath of Fire",
+							"set": "gs1",
+							"collector_number": "33"
+						},
+						{
+							"name": "Ghostfire Blade",
+							"set": "ktk",
+							"collector_number": "220"
+						}
+					]
+				},
+				{
+					"rank": [1, 1, 2098351.3],
+					"present": true,
+					"exact": {
+						"name": "Fire // Ice",
+						"set": "dmr",
+						"collector_number": "215"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Campfire",
+							"set": "cmm",
+							"collector_number": "374"
+						},
+						{
+							"name": "Sarkhan, Fireblood",
+							"set": "m19",
+							"collector_number": "154"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Kiora of Fire and Ashes",
+							"set": "fra",
+							"collector_number": "247"
+						},
+						{
+							"name": "Loyal Fire Sage",
+							"set": "tle",
+							"collector_number": "242"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Radha's Firebrand",
+							"set": "dmu",
+							"collector_number": "141"
+						},
+						{
+							"name": "Fire Covenant",
+							"set": "ecc",
+							"collector_number": "54"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "exact within a set",
+			"fuzzy": "Counterspell",
+			"set": "lea",
+			"hint": {
+				"sole": 7
+			},
+			"expect": "card:Counterspell",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6333333253860474,
+							"served": false,
+							"oracleId": "14994561-5048-4974-93c2-98b2fc3ee868",
+							"vpid": 1013,
+							"foldedName": "counters"
+						},
+						{
+							"score": 0.6333333253860474,
+							"served": false,
+							"oracleId": "48f0cd77-5daa-46aa-9f70-a98c6df15674",
+							"vpid": 3356,
+							"foldedName": "counters"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Counters",
+							"set": "ftla",
+							"collector_number": "6"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": [1, 2, 1956012],
+					"present": true,
+					"exact": {
+						"name": "Counterspell",
+						"set": "lea",
+						"collector_number": "54"
+					},
+					"candidates": [
+						{
+							"score": 1,
+							"served": true,
+							"oracleId": "cc187110-1148-4090-bbb8-e205694a39f5",
+							"vpid": 8988,
+							"foldedName": "counterspell"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Counterspell",
+							"set": "dsc",
+							"collector_number": "114"
+						}
+					},
+					"contained": [
+						{
+							"name": "Counterspell",
+							"set": "lea",
+							"collector_number": "54"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "set-restricted exact miss, then a typo hit",
+			"fuzzy": "Lightning Bolt",
+			"set": "m19",
+			"hint": null,
+			"expect": "card:Lightning Bolt",
+			"partitions": [
+				{
+					"rank": null,
+					"present": true,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 1,
+							"served": true,
+							"oracleId": "4457ed35-7c10-48c8-9776-456485fdf070",
+							"vpid": 3123,
+							"foldedName": "lightning bolt"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Bolt",
+							"set": "msc",
+							"collector_number": "806"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.7472527623176575,
+							"served": false,
+							"oracleId": "93bc4e17-bd0e-4516-af6f-09a25712a323",
+							"vpid": 6618,
+							"foldedName": "lightning colt"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Colt",
+							"set": "cmb2",
+							"collector_number": "57"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": true,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6730769276618958,
+							"served": false,
+							"oracleId": "2b93787d-47ea-4b8b-912d-ffc5d5440171",
+							"vpid": 1884,
+							"foldedName": "lightning bolt // lightning bolt"
+						},
+						{
+							"score": 0.656410276889801,
+							"served": true,
+							"oracleId": "d50f1ff7-d2bc-4e36-876d-77648f447f5b",
+							"vpid": 10696,
+							"foldedName": "lightning wolf"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Bolt // Lightning Bolt",
+							"set": "astx",
+							"collector_number": "76"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6703296899795532,
+							"served": true,
+							"oracleId": "6b7bbdb7-bdd5-4eb1-912e-f2f810772ac8",
+							"vpid": 4736,
+							"foldedName": "lightning blow"
+						},
+						{
+							"score": 0.6643356680870056,
+							"served": false,
+							"oracleId": "2284420f-1773-409f-b330-964a1267b13d",
+							"vpid": 1578,
+							"foldedName": "lightning"
+						},
+						{
+							"score": 0.6595238447189331,
+							"served": true,
+							"oracleId": "91fd731c-e076-4f2d-9f22-872880c3cc3d",
+							"vpid": 6565,
+							"foldedName": "lightning blast"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Blow",
+							"set": "me3",
+							"collector_number": "18"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": true,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "typo hit",
+			"fuzzy": "lihgtning bolt",
+			"set": "",
+			"hint": null,
+			"expect": "card:Lightning Bolt",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.656410276889801,
+							"served": true,
+							"oracleId": "4457ed35-7c10-48c8-9776-456485fdf070",
+							"vpid": 3123,
+							"foldedName": "lightning bolt"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Lightning Bolt",
+							"set": "msc",
+							"collector_number": "806"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "typo hit",
+			"fuzzy": "counterspel",
+			"set": "",
+			"hint": {
+				"served": 0
+			},
+			"expect": "card:Counterspell",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.696969747543335,
+							"served": false,
+							"oracleId": "14994561-5048-4974-93c2-98b2fc3ee868",
+							"vpid": 1013,
+							"foldedName": "counters"
+						},
+						{
+							"score": 0.696969747543335,
+							"served": false,
+							"oracleId": "48f0cd77-5daa-46aa-9f70-a98c6df15674",
+							"vpid": 3356,
+							"foldedName": "counters"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Counters",
+							"set": "ftla",
+							"collector_number": "6"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.9083333015441895,
+							"served": true,
+							"oracleId": "cc187110-1148-4090-bbb8-e205694a39f5",
+							"vpid": 8988,
+							"foldedName": "counterspell"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Counterspell",
+							"set": "dsc",
+							"collector_number": "114"
+						}
+					},
+					"contained": [
+						{
+							"name": "Counterspell",
+							"set": "dsc",
+							"collector_number": "114"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "typo stage beats containment",
+			"fuzzy": "primeval titanoth",
+			"set": "",
+			"hint": {
+				"sole": 7
+			},
+			"expect": "card:Primeval Titan",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.7991071343421936,
+							"served": true,
+							"oracleId": "ae83ef2c-960f-4c5b-97cc-52465c687c18",
+							"vpid": 7670,
+							"foldedName": "primeval titan"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Primeval Titan",
+							"set": "ima",
+							"collector_number": "183"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Titanoth Rex",
+							"set": "prm",
+							"collector_number": "80925"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "containment, a printed name",
+			"fuzzy": "blitzschlag",
+			"set": "",
+			"hint": {
+				"served": 8
+			},
+			"expect": "card:Lightning Bolt",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Lightning Bolt",
+							"printed_name": "Blitzschlag",
+							"set": "msc",
+							"collector_number": "806"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Rhystic Lightning",
+							"printed_name": "Rhystischer Blitzschlag",
+							"set": "pcy",
+							"collector_number": "99"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "containment, one name",
+			"fuzzy": "ego a deriva",
+			"set": "",
+			"hint": {
+				"sole": 9
+			},
+			"expect": "card:Unmoored Ego",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Unmoored Ego",
+							"printed_name": "Ego à Deriva",
+							"set": "grn",
+							"collector_number": "212"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "ambiguous in containment",
+			"fuzzy": "bolt",
+			"set": "",
+			"hint": {
+				"sole": 0
+			},
+			"expect": "ambiguous",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Lightning Bolt",
+							"set": "msc",
+							"collector_number": "806"
+						},
+						{
+							"name": "Thunderbolts",
+							"set": "fmsc",
+							"collector_number": "39"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Boltwing Marauder",
+							"set": "dtk",
+							"collector_number": "214"
+						},
+						{
+							"name": "Branching Bolt",
+							"set": "arc",
+							"collector_number": "82"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Stonesplitter Bolt",
+							"set": "woe",
+							"collector_number": "151"
+						},
+						{
+							"name": "Feedback Bolt",
+							"set": "5dn",
+							"collector_number": "64"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Guiding Bolt",
+							"set": "clb",
+							"collector_number": "24"
+						},
+						{
+							"name": "Beacon Bolt",
+							"set": "grn",
+							"collector_number": "154"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Plasma Bolt",
+							"set": "eoe",
+							"collector_number": "152"
+						},
+						{
+							"name": "Intimidation Bolt",
+							"set": "arb",
+							"collector_number": "99"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Firebolt",
+							"set": "mh1",
+							"collector_number": "122"
+						},
+						{
+							"name": "Bolt Hound",
+							"set": "m21",
+							"collector_number": "131"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Crescendo Conductor // Boltwave",
+							"set": "ysos",
+							"collector_number": "9"
+						},
+						{
+							"name": "General Thunderbolt Ross",
+							"set": "msc",
+							"collector_number": "595"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Demon Bolt",
+							"set": "clb",
+							"collector_number": "787"
+						},
+						{
+							"name": "Forked Bolt",
+							"set": "ddp",
+							"collector_number": "60"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Rift Bolt",
+							"set": "2x2",
+							"collector_number": "122"
+						},
+						{
+							"name": "Judgment Bolt",
+							"set": "fin",
+							"collector_number": "559"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Boltbender",
+							"set": "mkc",
+							"collector_number": "30"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "ambiguous in containment",
+			"fuzzy": "aust com",
+			"set": "",
+			"hint": {
+				"served": 6
+			},
+			"expect": "ambiguous",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Welcome to Australia",
+							"set": "unk",
+							"collector_number": "RZ04y"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Austere Command",
+							"set": "msc",
+							"collector_number": "121"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Ominous Asylum",
+							"printed_name": "Manicomio Infausto",
+							"set": "spm",
+							"collector_number": "181"
+						},
+						{
+							"name": "Come Back Wrong",
+							"printed_name": "Ritorno Infausto",
+							"set": "dsk",
+							"collector_number": "86"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found",
+			"fuzzy": "zzzz qqqq",
+			"set": "",
+			"hint": {
+				"sole": 2
+			},
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		}
+	]
+}

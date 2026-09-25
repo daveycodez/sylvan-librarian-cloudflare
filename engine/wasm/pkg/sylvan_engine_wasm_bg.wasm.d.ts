@@ -40,6 +40,7 @@ export const query_keys: (a: number, b: number, c: number, d: number, e: number,
 export const fetch_rows: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const sort_key_version: () => number;
 export const fuzzy_candidates: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const named_fuzzy_bundle: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
 export const size: () => number;
 export const card_count: () => number;
 export const __init_panic_hook: () => void;

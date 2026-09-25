@@ -45,6 +45,7 @@ import { serializeCards } from "./columnar";
 import { decodeFuzzyCandidates } from "./fuzzy-wire";
 import type { RowShaping } from "./gather";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
+import { decodeNamedFuzzyPacket } from "./named-fuzzy";
 import { probePlacement } from "./placement";
 import {
 	type ArchiveCacheStorage,
@@ -87,6 +88,7 @@ import type {
 	EngineSerializedResult,
 	Env,
 	ExactNameProbe,
+	NamedFuzzyBundle,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -601,6 +603,39 @@ class WasmEngine implements Engine {
 			this.w.cards_containing_all_words(JSON.stringify(words), setCode, limit, JSON.stringify(CARD_OBJECT_FIELDS)),
 		) as EngineRow[];
 		return this.toCards(rows, baseUrl);
+	}
+
+	/**
+	 * `named_fuzzy_bundle` — the three `?fuzzy=` stages in one call, each built exactly as its own
+	 * method above builds it (same floor, lead, candidate count and fields; the rows mapped by the
+	 * same toScryfallCard), so a bundle's sections ARE those methods' answers. See NamedFuzzyBundle.
+	 */
+	async scryfallNamedFuzzyBundle(
+		folded: string,
+		setCode: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+	): Promise<NamedFuzzyBundle> {
+		const packet = decodeNamedFuzzyPacket<EngineRow>(
+			this.w.named_fuzzy_bundle(
+				folded,
+				setCode,
+				FUZZY_SIMILARITY_FLOOR,
+				FUZZY_SIMILARITY_LEAD,
+				FUZZY_CANDIDATE_CLASSES,
+				JSON.stringify(words),
+				limit,
+				JSON.stringify(CARD_OBJECT_FIELDS),
+			),
+		);
+		const card = (row: EngineRow | null) => (row === null ? null : toScryfallCard(row, baseUrl));
+		return {
+			exact: { rank: packet.exact.rank, present: packet.exact.present, card: card(packet.exact.card) },
+			fuzzy: packet.fuzzy === null ? null : { status: packet.fuzzy.status, card: card(packet.fuzzy.card) },
+			candidates: packet.candidates,
+			contained: packet.contained === null ? null : this.toCards(packet.contained, baseUrl),
+		};
 	}
 
 	async scryfallFirstOfEach(filterTreeJsons: string[], baseUrl: string): Promise<(Record<string, unknown> | null)[]> {

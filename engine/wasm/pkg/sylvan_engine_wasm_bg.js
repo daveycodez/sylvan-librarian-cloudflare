@@ -692,6 +692,72 @@ export function init_store(bytes) {
 }
 
 /**
+ * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
+ * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
+ * router asks each partition ONCE where it used to ask every partition three times over three
+ * sequential rounds (probes, then fuzzy candidates plus the winner's materialize, then
+ * containment).
+ *
+ * Every section is written by the export that answers that stage alone, called here with the
+ * same arguments, so the bundle cannot drift from them:
+ *
+ * ```text
+ * header_len: u32 LE, header: header_len bytes of JSON —
+ *   {"exact": <exact_name_probe(folded, set_code, fields)>,
+ *    "fuzzy": <fuzzy_card_by_name(folded, floor, lead, fields)> or null,
+ *    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
+ * then the fuzzy_candidates(folded, floor, k) packet unchanged, or nothing
+ * ```
+ *
+ * A stage whose answer the router can never read is SKIPPED, which is what keeps one call no
+ * dearer than the stages it replaces:
+ *
+ * - This store ranks the needle exactly (`rank` non-null): nothing else is computed. Some
+ *   partition then has an exact rank, so the router's exact stage is certain to answer, and the
+ *   typo and containment stages never run anywhere. `fuzzy` and `contained` are null and there
+ *   are no candidate bytes.
+ * - Otherwise the candidates are always computed (the router races every partition's). If there
+ *   is at least one, containment is skipped: the global race then has a leader, so it is a hit or
+ *   ambiguous and never falls through to containment. `contained` is null.
+ * - With NO candidate, the local race is a miss by construction (`fuzzy_name_match` and
+ *   `fuzzy_candidates` offer the same scores against the same floor), so `fuzzy` is the miss
+ *   `fuzzy_card_by_name` would write, built by the same `json!` — without a second scan — and
+ *   containment runs.
+ *
+ * `fuzzy` is this store's own local race, and the router uses it only when this partition wins
+ * the global race: its local race is a sub-race the global winner also leads, which is the
+ * materialize call the three-round router made to the winning partition.
+ *
+ * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
+ * @param {string} folded
+ * @param {string} set_code
+ * @param {number} floor
+ * @param {number} lead
+ * @param {number} k
+ * @param {string} words_json
+ * @param {number} limit
+ * @param {string} fields_json
+ * @returns {Uint8Array}
+ */
+export function named_fuzzy_bundle(folded, set_code, floor, lead, k, words_json, limit, fields_json) {
+    const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(words_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.named_fuzzy_bundle(ptr0, len0, ptr1, len1, floor, lead, k, ptr2, len2, limit, ptr3, len3);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v5 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v5;
+}
+
+/**
  * Every printing of one oracle card, representative first. Empty array for an unknown id.
  * @param {string} oracle_id
  * @param {string} fields_json

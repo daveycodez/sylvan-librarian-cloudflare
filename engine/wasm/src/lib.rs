@@ -1373,6 +1373,208 @@ pub fn fuzzy_candidates(name: &str, floor: f32, k: u32) -> Result<Vec<u8>, JsErr
     })
 }
 
+/// `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
+/// n7): the exact stage, the typo stage and the containment stage together, so the partitioned
+/// router asks each partition ONCE where it used to ask every partition three times over three
+/// sequential rounds (probes, then fuzzy candidates plus the winner's materialize, then
+/// containment).
+///
+/// Every section is written by the export that answers that stage alone, called here with the
+/// same arguments, so the bundle cannot drift from them:
+///
+/// ```text
+/// header_len: u32 LE, header: header_len bytes of JSON —
+///   {"exact": <exact_name_probe(folded, set_code, fields)>,
+///    "fuzzy": <fuzzy_card_by_name(folded, floor, lead, fields)> or null,
+///    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
+/// then the fuzzy_candidates(folded, floor, k) packet unchanged, or nothing
+/// ```
+///
+/// A stage whose answer the router can never read is SKIPPED, which is what keeps one call no
+/// dearer than the stages it replaces:
+///
+/// - This store ranks the needle exactly (`rank` non-null): nothing else is computed. Some
+///   partition then has an exact rank, so the router's exact stage is certain to answer, and the
+///   typo and containment stages never run anywhere. `fuzzy` and `contained` are null and there
+///   are no candidate bytes.
+/// - Otherwise the candidates are always computed (the router races every partition's). If there
+///   is at least one, containment is skipped: the global race then has a leader, so it is a hit or
+///   ambiguous and never falls through to containment. `contained` is null.
+/// - With NO candidate, the local race is a miss by construction (`fuzzy_name_match` and
+///   `fuzzy_candidates` offer the same scores against the same floor), so `fuzzy` is the miss
+///   `fuzzy_card_by_name` would write, built by the same `json!` — without a second scan — and
+///   containment runs.
+///
+/// `fuzzy` is this store's own local race, and the router uses it only when this partition wins
+/// the global race: its local race is a sub-race the global winner also leads, which is the
+/// materialize call the three-round router made to the winning partition.
+///
+/// `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn named_fuzzy_bundle(
+    folded: &str,
+    set_code: &str,
+    floor: f32,
+    lead: f32,
+    k: u32,
+    words_json: &str,
+    limit: u32,
+    fields_json: &str,
+) -> Result<Vec<u8>, JsError> {
+    let exact = exact_name_probe(folded, set_code, fields_json)?;
+    // `exact_name_probe` writes `{"rank":null,` exactly when the needle ranks nowhere here.
+    let ranked = !exact.starts_with(r#"{"rank":null,"#);
+    let (fuzzy, contained, candidates) = if ranked {
+        (None, None, Vec::new())
+    } else {
+        let candidates = fuzzy_candidates(folded, floor, k)?;
+        if candidates.get(..4).is_some_and(|n| n != [0u8; 4]) {
+            (Some(fuzzy_card_by_name(folded, floor, lead, fields_json)?), None, candidates)
+        } else {
+            let miss = serde_json::json!({ "status": "miss", "card": serde_json::Value::Null }).to_string();
+            let contained = cards_containing_all_words(words_json, set_code, limit, fields_json)?;
+            (Some(miss), Some(contained), candidates)
+        }
+    };
+    let header = format!(
+        r#"{{"exact":{exact},"fuzzy":{},"contained":{}}}"#,
+        fuzzy.as_deref().unwrap_or("null"),
+        contained.as_deref().unwrap_or("null"),
+    );
+    let header_len = u32::try_from(header.len()).map_err(|_| JsError::new("bundle header exceeds u32 length"))?;
+    let mut buf = Vec::with_capacity(4 + header.len() + candidates.len());
+    buf.extend_from_slice(&header_len.to_le_bytes());
+    buf.extend_from_slice(header.as_bytes());
+    buf.extend_from_slice(&candidates);
+    Ok(buf)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod named_fuzzy_bundle_tests {
+    use super::*;
+
+    const FLOOR: f32 = 0.625;
+    const LEAD: f32 = 0.002;
+    const K: u32 = 8;
+    const LIMIT: u32 = 2;
+    const FIELDS: &str = r#"["name", "scryfall_id", "oracle_id", "set_code", "collector_number"]"#;
+
+    /// A store where every stage has something to find: whole names, a name several others
+    /// contain, near-misses a typo lands between, and two sets.
+    fn load_names_store() {
+        let mk = |i: usize, name: &str, set: &str| {
+            serde_json::json!({
+                "card_name": name,
+                "card_name_folded": name.to_lowercase(),
+                "oracle_id": format!("99999999-9999-4999-8999-{i:012}"),
+                "scryfall_id": format!("aaaaaaaa-aaaa-4aaa-8aaa-{i:012}"),
+                "card_set_code": set,
+                "set_name": "Test Set",
+                "collector_number": format!("{i}"),
+                "oracle_text": "Do the thing.",
+                "type_line": "Instant",
+                "card_types": ["Instant"],
+                "card_legalities": {"vintage": "legal"},
+                "card_colors": {"R": true},
+                "card_color_identity": {"R": true},
+                "edhrec_rank": 100 + i,
+                "prefer_score": 100.0,
+            })
+        };
+        let names = [
+            ("Lightning Bolt", "lea"),
+            ("Lightning Helix", "rav"),
+            ("Chain Lightning", "leg"),
+            ("Counterspell", "lea"),
+            ("Shock", "m19"),
+            ("Shocker", "m19"),
+            ("Bolt of Fire", "tst"),
+        ];
+        let mut builder = card_engine::StoreBuilder::new();
+        for (i, (name, set)) in names.iter().enumerate() {
+            builder.add_card(&mk(i + 1, name, set)).expect("add");
+        }
+        let mut bytes = Vec::new();
+        builder.finish_to_writer(&mut bytes).expect("finish");
+        init_store(&bytes).expect("load");
+    }
+
+    fn words_of(folded: &str) -> String {
+        let words: Vec<&str> =
+            folded.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')).filter(|w| !w.is_empty()).collect();
+        serde_json::to_string(&words).expect("words")
+    }
+
+    /// Which stages a bundle computed, read off the bundle itself.
+    #[derive(Debug, PartialEq)]
+    enum Ran {
+        ExactOnly,
+        ExactAndFuzzy,
+        AllThree,
+    }
+
+    /// THE BUNDLE IS THE SEPARATE EXPORTS, byte for byte: its header's sections are exactly what
+    /// `exact_name_probe`, `fuzzy_card_by_name` and `cards_containing_all_words` answer on their
+    /// own, and its tail is exactly `fuzzy_candidates`' packet — for every stage the skip rules
+    /// keep, and the skipped ones are exactly the ones the rules name.
+    #[test]
+    fn the_bundle_is_the_separate_exports_byte_for_byte() {
+        load_names_store();
+        let needles = [
+            ("lightning bolt", ""),     // a whole name: exact only
+            ("lightning bolt", "lea"),  // ... within its set
+            ("lightning bolt", "m19"),  // a set it is not in: no rank, so the typo stage runs
+            ("lihgtning bolt", ""),     // a typo
+            ("counterspel", ""),        // a typo
+            ("shock", "m19"),           // exact, beside a near name
+            ("shokc", ""),              // a typo between two near names
+            ("lightning", ""),          // no typo candidate: containment, two names
+            ("helix", ""),              // containment, one name
+            ("bolt", "tst"),            // containment within a set
+            ("zzzz qqqq", ""),          // nothing anywhere
+        ];
+        let mut seen = Vec::new();
+        for (folded, set) in needles {
+            let words = words_of(folded);
+            let bundle = named_fuzzy_bundle(folded, set, FLOOR, LEAD, K, &words, LIMIT, FIELDS).expect("bundle");
+            let header_len = u32::from_le_bytes(bundle[..4].try_into().expect("u32")) as usize;
+            let header = std::str::from_utf8(&bundle[4..4 + header_len]).expect("utf8 header");
+            let tail = &bundle[4 + header_len..];
+
+            let probe = exact_name_probe(folded, set, FIELDS).expect("probe");
+            let candidates = fuzzy_candidates(folded, FLOOR, K).expect("candidates");
+            let fuzzy = fuzzy_card_by_name(folded, FLOOR, LEAD, FIELDS).expect("fuzzy");
+            let contained = cards_containing_all_words(&words, set, LIMIT, FIELDS).expect("contained");
+            let rank_is_null = serde_json::from_str::<serde_json::Value>(&probe).expect("probe JSON")["rank"].is_null();
+            let has_candidates = u32::from_le_bytes(candidates[..4].try_into().expect("u32")) > 0;
+
+            let (ran, expected) = if !rank_is_null {
+                (Ran::ExactOnly, (format!(r#"{{"exact":{probe},"fuzzy":null,"contained":null}}"#), Vec::new()))
+            } else if has_candidates {
+                (Ran::ExactAndFuzzy, (format!(r#"{{"exact":{probe},"fuzzy":{fuzzy},"contained":null}}"#), candidates))
+            } else {
+                // The skipped fuzzy_card_by_name would have answered exactly the miss written.
+                (Ran::AllThree, (format!(r#"{{"exact":{probe},"fuzzy":{fuzzy},"contained":{contained}}}"#), candidates))
+            };
+            assert_eq!(header, expected.0, "{folded:?} set={set:?}: header sections");
+            assert_eq!(tail, &expected.1[..], "{folded:?} set={set:?}: candidate bytes");
+            if ran == Ran::AllThree {
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(&fuzzy).expect("fuzzy JSON")["status"] == "miss",
+                    "{folded:?}: no candidate must mean a local miss"
+                );
+            }
+            seen.push(ran);
+        }
+        unload_store().expect("unload");
+        // Every skip rule was exercised, so none of the three branches is untested.
+        for branch in [Ran::ExactOnly, Ran::ExactAndFuzzy, Ran::AllThree] {
+            assert!(seen.contains(&branch), "no needle took the {branch:?} branch: {seen:?}");
+        }
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

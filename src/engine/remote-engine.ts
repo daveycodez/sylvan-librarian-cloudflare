@@ -2,6 +2,7 @@
 // serving path: isolates parse and RPC here, never loading the store.
 
 import { decodeCollectionPacket } from "./collection-batch";
+import { bundleFromStages } from "./named-fuzzy";
 import {
 	adoptShardWidth,
 	currentShardWidth,
@@ -19,6 +20,7 @@ import type {
 	EngineSerializedResult,
 	ExactNameProbe,
 	FuzzyCandidateWire,
+	NamedFuzzyBundle,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -125,6 +127,14 @@ interface SearchEngineStub {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<{ probe: ExactNameProbe } & Telemetry>;
+	scryfallNamedFuzzyBundle(
+		folded: string,
+		setCode: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<{ bundle: NamedFuzzyBundle } & Telemetry>;
 	scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
@@ -727,17 +737,39 @@ export class RemoteEngine implements Engine {
 		return card;
 	}
 
-	/**
-	 * The name route's probe (ExactNameProbe). An object still on the previous build has no such
-	 * method during a rolling deploy; it is answered by the rank and the card, asked separately —
-	 * two calls to that one object, and `present` only as strong as the rank (a set-restricted miss
-	 * reads absent, which costs the router a fan-out, never an answer).
-	 */
+	/** The name route's probe (ExactNameProbe). */
 	async scryfallExactNameProbe(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe> {
 		const { probe } = await this.searchRpc(() =>
 			this.stub.scryfallExactNameProbe(folded, setCode, baseUrl, currentShardWidth(this.region)),
 		);
 		return probe;
+	}
+
+	/**
+	 * `/cards/named?fuzzy=`'s three stages from this object in one call (NamedFuzzyBundle).
+	 *
+	 * ROLLING DEPLOY: an object still on the build before n7 has no such method, and workerd says
+	 * so ("does not implement the method"). Its bundle is then built from the stage calls it does
+	 * answer (`bundleFromStages`, the same skip rules the engine applies) — up to three calls to
+	 * that one object, and the same answer. Once every object on both accounts has served a deploy
+	 * with the bundle, the fallback is dead and goes, as n6's probe fallback did (758d9719).
+	 */
+	async scryfallNamedFuzzyBundle(
+		folded: string,
+		setCode: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+	): Promise<NamedFuzzyBundle> {
+		try {
+			const { bundle } = await this.searchRpc(() =>
+				this.stub.scryfallNamedFuzzyBundle(folded, setCode, words, limit, baseUrl, currentShardWidth(this.region)),
+			);
+			return bundle;
+		} catch (err) {
+			if (!isMissingRpcMethod(err, "scryfallNamedFuzzyBundle")) throw err;
+			return bundleFromStages(this, folded, setCode, words, limit, baseUrl);
+		}
 	}
 
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
@@ -777,4 +809,11 @@ export class RemoteEngine implements Engine {
 		);
 		return decodeCollectionPacket(packet, batch);
 	}
+}
+
+/** The error workerd raises when a stub's object has no such method — an object still on the
+ * previous build during a rolling deploy (see scryfallNamedFuzzyBundle). */
+function isMissingRpcMethod(err: unknown, method: string): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return message.includes(`does not implement the method "${method}"`);
 }

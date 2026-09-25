@@ -263,6 +263,23 @@ export interface Engine {
 	 */
 	scryfallExactNameProbe?(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe>;
 	/**
+	 * All three `?fuzzy=` stages against one store in one reply (see NamedFuzzyBundle). Only a store
+	 * and its remote client answer it; the partitioned engine is its caller.
+	 */
+	scryfallNamedFuzzyBundle?(
+		folded: string,
+		setCode: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+	): Promise<NamedFuzzyBundle>;
+	/**
+	 * `/cards/named?fuzzy=` resolved whole — exact, then typo, then containment — when this engine
+	 * can do better than asking the three stages one after another (the partitioned engine: one
+	 * round of bundles). Absent, the route runs the stages itself (`resolveNamedFuzzyStaged`).
+	 */
+	scryfallNamedFuzzy?(folded: string, words: string[], setCode: string, baseUrl: string): Promise<NamedFuzzyAnswer>;
+	/**
 	 * The containment stage of `/cards/named?fuzzy=`: one card per distinct name containing every
 	 * word. The caller asks for 2 — more than one distinct name is `ambiguous`, not a guess.
 	 */
@@ -419,6 +436,29 @@ export interface ScryfallFuzzyResult {
 	status: "hit" | "ambiguous" | "miss";
 	card: Record<string, unknown> | null;
 }
+
+/**
+ * One store's whole answer to `/cards/named?fuzzy=` (backlog n7) — engine/wasm's
+ * `named_fuzzy_bundle`, decoded: each stage exactly as its own method answers it, or null where
+ * the store skipped a stage whose answer the router can never read.
+ *
+ *   exact       `scryfallExactNameProbe` — always
+ *   fuzzy       this store's own `scryfallFuzzyName` — null when it ranks the needle exactly
+ *   candidates  `fuzzyCandidates` — empty when it ranks the needle exactly
+ *   contained   `scryfallNamesContaining` — null unless the store has no rank and no candidate
+ */
+export interface NamedFuzzyBundle {
+	exact: ExactNameProbe;
+	fuzzy: ScryfallFuzzyResult | null;
+	candidates: FuzzyCandidateWire[];
+	contained: Record<string, unknown>[] | null;
+}
+
+/** What `/cards/named?fuzzy=` resolved to — the route renders the card, or answers the 404. */
+export type NamedFuzzyAnswer =
+	| { status: "card"; card: Record<string, unknown> }
+	| { status: "ambiguous" }
+	| { status: "miss" };
 
 /**
  * RPC error marker: workerd propagates only Error#message across RPC, so the
