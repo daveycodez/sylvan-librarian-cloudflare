@@ -413,26 +413,6 @@ function metadataFor(prep: PreparedSearch, totalCards: number): SearchMetadata {
 }
 
 /**
- * Port of _search/_search_engine, returning the envelope as DATA — for the
- * server-rendered page, which reads the rows to build HTML. The JSON API uses
- * runSearchJson instead, which never materializes them.
- */
-export async function runSearch(ctx: RouteContext, opts: RunSearchOptions): Promise<SearchEnvelope> {
-	const prep = await prepareSearch(ctx, opts);
-	let totalCards: number;
-	let rawCards: CardRow[];
-	try {
-		const result = await prep.timer.time("engine_query", () => prep.engine.searchCardsAsObjects(prep.engineOpts));
-		totalCards = result.totalCards;
-		rawCards = result.cards;
-	} catch (err) {
-		engineFailure(prep.query, err);
-	}
-	const cards = prep.timer.time("engine_collect", () => [...rawCards]);
-	return { cards, ...metadataFor(prep, totalCards) };
-}
-
-/**
  * The same search, returning the envelope as UTF-8 BYTES.
  *
  * The engine hands back `cards` already encoded in the requested shape, and it
@@ -451,6 +431,31 @@ export async function runSearchJson(
 	opts: RunSearchOptions,
 	shape: ResponseShape,
 ): Promise<Uint8Array[]> {
+	const parts = await runSearchParts(ctx, opts, shape);
+	return [encodeUtf8('{"cards":'), parts.cardsBytes, encodeUtf8(parts.tail)];
+}
+
+/** The envelope in its two halves: `{"cards":` + cardsBytes + tail is the whole of it. */
+export interface SearchParts {
+	/** The rows exactly as the engine wrote them — the envelope's `cards` value. */
+	cardsBytes: Uint8Array;
+	/** `,"compiled":…}` — every key after `cards`, closing brace included. */
+	tail: string;
+	totalCards: number;
+}
+
+/**
+ * runSearchJson before it is flattened, for the server-rendered page: it needs the rows as values
+ * (to render HTML) AND as JSON (to embed), and the engine's bytes are already the JSON — so the
+ * page parses them once and splices them, rather than asking the engine for objects and
+ * re-serializing them. Row bytes are byte-identical to JSON.stringify of their parse for the
+ * default fields (all strings): verified over /search pages locally, 2026-09-24.
+ */
+export async function runSearchParts(
+	ctx: RouteContext,
+	opts: RunSearchOptions,
+	shape: ResponseShape,
+): Promise<SearchParts> {
 	const prep = await prepareSearch(ctx, opts);
 	let result: EngineSerializedResult;
 	try {
@@ -464,7 +469,7 @@ export async function runSearchJson(
 	// The metadata is built AFTER the query, so its timings tree includes the
 	// spans above — which is why this cannot be encoded before the payload.
 	const tail = JSON.stringify(metadataFor(prep, result.totalCards)).slice(1);
-	return [encodeUtf8('{"cards":'), result.cardsBytes, encodeUtf8(`,${tail}`)];
+	return { cardsBytes: result.cardsBytes, tail: `,${tail}`, totalCards: result.totalCards };
 }
 
 // Keyword parameters of search(), in signature order (binding reports the

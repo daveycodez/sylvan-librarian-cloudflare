@@ -3,6 +3,7 @@
 // index redirects.
 
 import { describe, expect, test } from "bun:test";
+import { serializeEmbeddedJson } from "../../src/routes/html";
 import { buildImageUrl, createCardHtml, scryfallImageUrl } from "../../src/routes/noscript";
 import { FakeEngine, json, makeCtx, testDispatch, useFakeParser } from "./harness";
 
@@ -18,6 +19,17 @@ describe("_root without a query", () => {
 		expect(html).toContain("<!-- SERVER_SIDE_RESULTS -->");
 		expect(html).toContain("<!-- SERVER_SIDE_RESULTS_COUNT -->");
 		expect(html).toContain("<!-- SERVER_SIDE_EMBEDDED_DATA -->");
+	});
+
+	// app.js's loadRandomCards() fetch, started from the head. `crossorigin` is what makes the
+	// preload reusable by a default-mode fetch(); without it the browser fetches twice.
+	test("preloads the random sample app.js will fetch, keyed on `q` exactly as app.js is", async () => {
+		const tag = '<link rel="preload" href="/random_search?num_cards=12&amp;shape=columnar" as="fetch" crossorigin />';
+		for (const path of ["/", "/?q=", "/?query=elf"]) {
+			const html = await (await testDispatch(makeCtx(), path)).text();
+			expect(html.split(tag).length - 1).toBe(1);
+			expect(html.indexOf(tag)).toBeLessThan(html.indexOf("</head>"));
+		}
 	});
 
 	test("site name is derived from the request host", async () => {
@@ -86,6 +98,32 @@ describe("_root with a search query", () => {
 		// And it is still the same JSON: the escape is a JSON escape, not a mangling.
 		const parsed = JSON.parse(payload.slice(payload.indexOf("{"), payload.lastIndexOf("}") + 1));
 		expect(parsed.cards[0].name).toBe("</script><img src=x onerror=alert(1)>");
+	});
+
+	// The rows are spliced as the engine's bytes, not re-serialized: the embedded envelope must
+	// still be exactly what serializeEmbeddedJson would have written for the same data.
+	test("the spliced envelope is byte-identical to serializeEmbeddedJson of its own value", async () => {
+		const engine = new FakeEngine();
+		engine.cards = [
+			{ name: 'A <b> & "c" — Æther\n ', set_code: "m19", collector_number: "1", power: null },
+			...engine.cards.slice(0, 3),
+		];
+		const html = await (await testDispatch(makeCtx({ engine }), "/?q=%3Celf")).text();
+		const line = html.slice(html.indexOf("window.EMBEDDED_SEARCH_RESULTS = "));
+		const payload = line.slice("window.EMBEDDED_SEARCH_RESULTS = ".length, line.indexOf(";\n"));
+		const value = JSON.parse(payload);
+		expect(payload).toBe(serializeEmbeddedJson(value));
+		expect(Object.keys(value)[0]).toBe("cards");
+		expect(value.query).toBe("<elf");
+		expect(payload).not.toContain("<");
+		expect(value.cards[0].name).toBe('A <b> & "c" — Æther\n ');
+		// The no-JS markup still renders from the parsed rows.
+		expect(html).toContain('<div class="card-name">A &lt;b&gt; &amp; &quot;c&quot; — Æther\n </div>');
+	});
+
+	test("a results page does not preload the random sample it will never fetch", async () => {
+		const html = await (await testDispatch(makeCtx(), "/?q=elf")).text();
+		expect(html).not.toContain("/random_search");
 	});
 
 	test("bad enum on _root is a binding 400, not a soft failure", async () => {

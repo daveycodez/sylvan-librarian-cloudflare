@@ -3,15 +3,16 @@
 // index → / redirect. (prefer_score_tuner left with upstream #963: it lives
 // behind the Basic-Auth /_admin mount now — see src/routes/admin.ts.)
 
+import { concatBytes, decodeUtf8, encodeUtf8, escapeLtBytes } from "../engine/bytes";
 import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
-import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER, serializeEmbeddedJson } from "./html";
+import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
 import { NO_STORE_HEADER, pageCacheHeader, searchPageCacheHeader } from "./http";
-import { generateResultsCountHtml, generateResultsHtml } from "./noscript";
+import { type CardRow, generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
 import type { RouteContext } from "./registry";
-import { EngineQueryError, runSearch, SearchBadRequest } from "./search";
+import { EngineQueryError, runSearchParts, SearchBadRequest } from "./search";
 import { SITE_NAME } from "./site-name";
 
 // Keyword parameters of _root(), in signature order (request_host is injected
@@ -24,6 +25,21 @@ const ROOT_SPEC = [
 	{ name: "unique", converter: enumParam(UNIQUE_ON), default: null },
 	{ name: "prefer", converter: enumParam(PREFER_ORDER), default: null },
 ] as const;
+
+/**
+ * PORT-ONLY: start app.js's discovery fetch from the head. With no `q`, app.js's init() calls
+ * loadRandomCards(), whose fetch otherwise waits for the deferred bundle to download, parse and
+ * run. It is consumed by that fetch, not doubled: the URL matches, `crossorigin` makes the preload
+ * `cors` with same-origin credentials like fetch()'s defaults, and fetch()'s `Accept:
+ * application/json` does not block reuse (Chromium 152: measured; WebKit: Accept is in
+ * shouldIgnoreHeaderForCacheReuse; Gecko: only CORS-safelisted headers are required). `no-store`
+ * stops the answer being cached, not the preload being consumed.
+ */
+const RANDOM_PRELOAD =
+	'\n    <link rel="preload" href="/random_search?num_cards=12&amp;shape=columnar" as="fetch" crossorigin />';
+const CANONICAL_LINK = '<link rel="canonical" href="/" />';
+
+const EMBEDDED_DATA_PLACEHOLDER = "<!-- SERVER_SIDE_EMBEDDED_DATA -->";
 
 /** Return the index page, optionally with embedded search results (upstream _root()). */
 export async function rootHandler(
@@ -38,6 +54,12 @@ export async function rootHandler(
 	// Revalidated by the browser on every navigation, cached an hour at the edge.
 	let headers: Record<string, string> = pageCacheHeader();
 
+	// app.js reads ONLY `q` (not `query`) to choose between the embedded results and a random
+	// sample, so the preload keys on the same test: `/?query=x` still loads random cards.
+	if (!bound.q) {
+		htmlContent = htmlContent.replace(CANONICAL_LINK, () => CANONICAL_LINK + RANDOM_PRELOAD);
+	}
+
 	const searchQuery = (bound.query as string | null) || (bound.q as string | null);
 	if (!searchQuery) {
 		// No manifest pre-check: the page renders, and its client-side search
@@ -49,17 +71,24 @@ export async function rootHandler(
 	}
 	if (searchQuery) {
 		try {
-			// Run the search server-side and embed results in the HTML.
-			const searchResults = await runSearch(ctx, {
-				query: searchQuery,
-				orderby: (bound.orderby as CardOrdering | null) ?? "edhrec",
-				direction: (bound.direction as SortDirection | null) ?? "asc",
-				unique: (bound.unique as UniqueOn | null) ?? "card",
-				prefer: (bound.prefer as PreferOrder | null) ?? "default",
-			});
+			// Run the search server-side and embed results in the HTML. The rows come back as the
+			// engine's own JSON bytes: parsed ONCE here for the HTML, and spliced verbatim (`<`
+			// escaped) into the embedded envelope, rather than cloned across the RPC as objects and
+			// re-serialized here.
+			const found = await runSearchParts(
+				ctx,
+				{
+					query: searchQuery,
+					orderby: (bound.orderby as CardOrdering | null) ?? "edhrec",
+					direction: (bound.direction as SortDirection | null) ?? "asc",
+					unique: (bound.unique as UniqueOn | null) ?? "card",
+					prefer: (bound.prefer as PreferOrder | null) ?? "default",
+				},
+				"rows",
+			);
 
-			const cards = searchResults.cards ?? [];
-			const totalCards = searchResults.total_cards ?? cards.length;
+			const cards = JSON.parse(decodeUtf8(found.cardsBytes)) as CardRow[];
+			const totalCards = found.totalCards;
 
 			// Server-side HTML for cards (for no-JS support).
 			const resultsHtml = cards.length > 0 ? generateResultsHtml(cards) : "";
@@ -74,12 +103,20 @@ export async function rootHandler(
 				);
 			}
 
-			// Embed the full envelope for JavaScript enhancement.
-			const searchResultsJson = serializeEmbeddedJson(searchResults);
-			const embeddedData = `// Server-side embedded search results\n      window.EMBEDDED_SEARCH_RESULTS = ${searchResultsJson};\n      `;
-			htmlContent = replaceAllLiteral(htmlContent, "<!-- SERVER_SIDE_EMBEDDED_DATA -->", embeddedData);
-
-			headers = searchPageCacheHeader();
+			// Embed the full envelope for JavaScript enhancement: the same bytes
+			// serializeEmbeddedJson({cards, ...metadata}) wrote. lastIndexOf, because the anchor
+			// sits in the closing <script>, after the (escaped, so anchor-free) results markup.
+			const at = htmlContent.lastIndexOf(EMBEDDED_DATA_PLACEHOLDER);
+			const body = concatBytes([
+				encodeUtf8(
+					`${htmlContent.slice(0, at)}// Server-side embedded search results\n      window.EMBEDDED_SEARCH_RESULTS = {"cards":`,
+				),
+				escapeLtBytes(found.cardsBytes),
+				encodeUtf8(
+					`${found.tail.replaceAll("<", "\\u003c")};\n      ${htmlContent.slice(at + EMBEDDED_DATA_PLACEHOLDER.length)}`,
+				),
+			]);
+			return new Response(body, { headers: { "content-type": "text/html", ...searchPageCacheHeader() } });
 		} catch (err) {
 			// If search fails, just serve the page without embedded results.
 			// EngineQueryError lands here too: upstream would have recovered via

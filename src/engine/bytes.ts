@@ -39,6 +39,36 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 	return out;
 }
 
+const DECODER = new TextDecoder();
+
+/** Decode UTF-8 bytes — for the one caller that genuinely needs the payload as values. */
+export function decodeUtf8(bytes: Uint8Array): string {
+	return DECODER.decode(bytes);
+}
+
+const LT = 0x3c;
+const LT_ESCAPE = ENCODER.encode("\\u003c");
+
+/**
+ * JSON bytes made safe to inline in an HTML `<script>`: every `<` becomes `<`, exactly what
+ * serializeEmbeddedJson does to a string (upstream #1037). Byte-level is sound because UTF-8 never
+ * uses 0x3C inside a multi-byte sequence (continuation bytes are 0x80-0xBF). A payload with no `<`
+ * — nearly all of them — comes back as the same view, uncopied.
+ */
+export function escapeLtBytes(bytes: Uint8Array): Uint8Array {
+	let at = bytes.indexOf(LT);
+	if (at === -1) return bytes;
+	const parts: Uint8Array[] = [];
+	let from = 0;
+	while (at !== -1) {
+		parts.push(bytes.subarray(from, at), LT_ESCAPE);
+		from = at + 1;
+		at = bytes.indexOf(LT, from);
+	}
+	parts.push(bytes.subarray(from));
+	return concatBytes(parts);
+}
+
 /** A JSON response built from byte runs, without ever concatenating strings. */
 export function jsonBytesResponse(parts: readonly Uint8Array[], headers?: Record<string, string>): Response {
 	return new Response(concatBytes(parts), {
