@@ -17,8 +17,10 @@ import { parseEngineName } from "../../src/engine/engine-namespace";
 import {
 	RETIRED_COLO_ENGINE_NAMES,
 	RETIRED_HOLDING_BYTES,
+	RETIRED_SWEEP_KV_KEY,
 	type RetiredSweepRecord,
 	retiredSweepMode,
+	runRetiredEngineSweep,
 	sweepRetiredEngines,
 } from "../../src/engine/retired-engine-sweep";
 
@@ -191,13 +193,87 @@ describe("the colo-era names", () => {
 		// The colo era's call (6f34fd43…acd533d6): env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name)).
 		const ns = readFileSync(join(import.meta.dir, "../../src/engine/engine-namespace.ts"), "utf8");
 		expect(ns).toContain("return env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name));");
-		const src = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
-		const sweep = src.slice(src.indexOf("private async sweepRetiredColoEngines("));
-		expect(sweep.slice(0, 600)).toContain("addressAnnouncedEngine(this.env, name)");
-		// Wired from exactly one place in notify, and before the early return for "nothing live".
-		const notify = src.slice(src.indexOf("private async stepNotify("));
-		expect(src.split("this.sweepRetiredColoEngines()").length).toBe(2);
-		expect(notify.indexOf("this.sweepRetiredColoEngines()")).toBeLessThan(notify.indexOf("if (live.length === 0)"));
+		const src = readFileSync(join(import.meta.dir, "../../src/engine/retired-engine-sweep.ts"), "utf8");
+		const run = src.slice(src.indexOf("export async function runRetiredEngineSweep("));
+		expect(run).toContain("addressAnnouncedEngine(env as Env, name)");
+	});
+
+	test("the watchdog cron runs it, and nothing else does", () => {
+		const index = readFileSync(join(import.meta.dir, "../../src/index.ts"), "utf8");
+		const watchdog = index.slice(index.indexOf("if (controller.cron === WATCHDOG_CRON) {"));
+		expect(watchdog.slice(0, watchdog.indexOf("return;"))).toContain("runRetiredEngineSweep(this.env)");
+		expect(index.split("runRetiredEngineSweep(").length).toBe(2);
+		const coordinator = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
+		expect(coordinator).not.toContain("sweepRetired");
+	});
+});
+
+// ── runRetiredEngineSweep: the watchdog's entry point ──────────────────────────
+
+describe("runRetiredEngineSweep", () => {
+	function fakeEnv(setting: string | undefined, sizes: Record<string, number>) {
+		const kv = new Map<string, string>();
+		const addressed: string[] = [];
+		const env = {
+			RETIRED_ENGINE_SWEEP: setting,
+			STORE_KV: {
+				get: async (key: string, type?: string) => {
+					const v = kv.get(key);
+					return v === undefined ? null : type === "json" ? JSON.parse(v) : v;
+				},
+				put: async (key: string, value: string) => {
+					kv.set(key, value);
+				},
+			},
+			SEARCH_ENGINE: {
+				idFromName: (name: string) => name,
+				get: (name: string) => {
+					addressed.push(name);
+					return {
+						storageFootprint: async () => ({ label: name, bytes: sizes[name] ?? 8192 }),
+						releaseCache: async () => {
+							sizes[name] = 4096;
+						},
+					};
+				},
+			},
+		};
+		return { env: env as never, kv, addressed };
+	}
+
+	test("unset: no object addressed and no KV read or write", async () => {
+		const f = fakeEnv(undefined, {});
+		let reads = 0;
+		const get = (f.env as { STORE_KV: { get: (...a: unknown[]) => unknown } }).STORE_KV.get;
+		(f.env as { STORE_KV: { get: (...a: unknown[]) => unknown } }).STORE_KV.get = (...a: unknown[]) => {
+			reads++;
+			return get(...a);
+		};
+		await runRetiredEngineSweep(f.env);
+		expect(f.addressed).toEqual([]);
+		expect(reads).toBe(0);
+		expect(f.kv.size).toBe(0);
+	});
+
+	test("dry-run measures all eleven, records it in KV, and the next tick wakes nothing", async () => {
+		const f = fakeEnv("dry-run", { "engine-LAX": 3_000_000 });
+		await runRetiredEngineSweep(f.env);
+		expect(f.addressed.length).toBe(11);
+		expect(JSON.parse(f.kv.get(RETIRED_SWEEP_KV_KEY) as string).mode).toBe("dry-run");
+		await runRetiredEngineSweep(f.env);
+		expect(f.addressed.length).toBe(11);
+	});
+
+	test("release after a dry-run releases only the holders and records release", async () => {
+		const sizes = { "engine-LAX": 3_000_000, "engine-LAX-4": 2_000_000, "engine-BOS": 16_384 };
+		const f = fakeEnv("dry-run", sizes);
+		await runRetiredEngineSweep(f.env);
+		(f.env as { RETIRED_ENGINE_SWEEP: string }).RETIRED_ENGINE_SWEEP = "release";
+		await runRetiredEngineSweep(f.env);
+		const record = JSON.parse(f.kv.get(RETIRED_SWEEP_KV_KEY) as string);
+		expect(record.mode).toBe("release");
+		expect(record.released.sort()).toEqual(["engine-LAX", "engine-LAX-4"]);
+		expect(sizes["engine-BOS"]).toBe(16_384);
 	});
 });
 

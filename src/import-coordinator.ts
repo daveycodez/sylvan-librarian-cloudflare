@@ -121,7 +121,6 @@ import {
 	symbologyKey,
 } from "./engine/reference-kv";
 import { REGION_HINTS } from "./engine/region";
-import { RETIRED_SWEEP_RECORD_KEY, type RetiredSweepRecord, sweepRetiredEngines } from "./engine/retired-engine-sweep";
 import {
 	buildRoutingFilterFromHashes,
 	ROUTING_FEATURE_NAME_KEYS,
@@ -3954,8 +3953,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 					(failed.length > 0 ? `; ${failed.length} left announced, retried at the next publish` : ""),
 			);
 		}
-		// c1: the colo-era objects nothing announces — off unless RETIRED_ENGINE_SWEEP is set.
-		await this.sweepRetiredColoEngines();
 		if (live.length === 0) {
 			// Nothing has ever loaded a store, so there is nobody to tell. Not an error: it is the
 			// state of a fresh deployment, and the first real request will read the manifest from KV.
@@ -4072,40 +4069,6 @@ export class ImportCoordinator extends DurableObject<Env> {
 				`${released.filter((r) => r.status === "fulfilled").length}/${stale.length} released stale storage`,
 		);
 		this.metaSet("phase", "rulings");
-	}
-
-	/**
-	 * The one-time sweep of the colo-era engine objects (src/engine/retired-engine-sweep.ts): off
-	 * unless RETIRED_ENGINE_SWEEP is "dry-run" or "release", and once per value — the finished sweep
-	 * is recorded under RETIRED_SWEEP_RECORD_KEY, in KV-style storage that metaClear never touches,
-	 * so a nightly with the var still set addresses no object. Unset, it costs nothing: not even the
-	 * record is read.
-	 *
-	 * Addressed with addressAnnouncedEngine although nothing announces these names: it is exactly the
-	 * colo era's own call (`SEARCH_ENGINE.get(SEARCH_ENGINE.idFromName(name))`, no hint), so each name
-	 * reaches the object that era created, and a name this account never had cannot be placed.
-	 *
-	 * Never fails the phase: the store is already live, and this is housekeeping.
-	 */
-	private async sweepRetiredColoEngines(): Promise<void> {
-		const stub = (name: string) =>
-			addressAnnouncedEngine(this.env, name) as unknown as {
-				storageFootprint(): Promise<{ label: string; bytes: number }>;
-				releaseCache(): Promise<unknown>;
-			};
-		try {
-			const done = await sweepRetiredEngines({
-				setting: (this.env as { RETIRED_ENGINE_SWEEP?: string }).RETIRED_ENGINE_SWEEP,
-				lastDone: () => this.storeGet<RetiredSweepRecord>(RETIRED_SWEEP_RECORD_KEY),
-				footprint: async (name) => (await stub(name).storageFootprint()).bytes,
-				release: async (name) => {
-					await stub(name).releaseCache();
-				},
-			});
-			if (done) await this.storePut(RETIRED_SWEEP_RECORD_KEY, done);
-		} catch (err) {
-			console.warn(`Retired-engine sweep failed; the next publish runs it again: ${err}`);
-		}
 	}
 
 	// ── phase: rulings (KV) ────────────────────────────────────────────────────

@@ -48,7 +48,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./shims";
 import { plugin } from "bun";
-import { RETIRED_COLO_ENGINE_NAMES, RETIRED_HOLDING_BYTES } from "../../src/engine/retired-engine-sweep";
+import {
+	RETIRED_COLO_ENGINE_NAMES,
+	RETIRED_HOLDING_BYTES,
+	RETIRED_SWEEP_KV_KEY,
+	runRetiredEngineSweep,
+} from "../../src/engine/retired-engine-sweep";
 import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
 import { measureEnginePool } from "./engine-pool";
@@ -254,20 +259,19 @@ function makeEnv(kv: FakeKV, baseUrl: string) {
 }
 
 /**
- * c1: the one-time colo-era sweep, driven through the coordinator's real notify phase against real
+ * c1: the one-time colo-era sweep, driven through the watchdog cron's runner against real
  * SearchEngine objects. The nightly above ran with RETIRED_ENGINE_SWEEP unset; then dry-run twice,
  * release twice. Returns what went wrong.
  */
 async function retiredSweepScenario(
-	coordinator: unknown,
 	env: Record<string, unknown>,
-	storage: MeteredStorage,
 	engines: ReturnType<typeof fakeEngines>,
 ): Promise<string[]> {
 	const problems: string[] = [];
 	const fleet = engines.colo.fleet;
 	if (!fleet) return ["no colo fleet"];
-	const notify = () => (coordinator as { stepNotify(): Promise<void> }).stepNotify();
+	const tick = () => runRetiredEngineSweep(env as never);
+	const kv = env.STORE_KV as FakeKV;
 	const addressed = () => engines.calls.filter((c) => c.startsWith("address "));
 	const rows = (name: string): number => {
 		try {
@@ -279,12 +283,9 @@ async function retiredSweepScenario(
 			return 0; // no table: nothing stored
 		}
 	};
-	const recorded = (): string | null => {
-		const row = storage.db.query("SELECT value FROM __harness_kv WHERE key = 'retired_engine_sweep'").get() as
-			| { value: string }
-			| undefined;
-		return row ? String((JSON.parse(row.value) as { mode?: string }).mode) : null;
-	};
+	const record = async (): Promise<{ mode?: string; freedBytes?: number } | null> =>
+		(await kv.get(RETIRED_SWEEP_KV_KEY, "json")) as { mode?: string; freedBytes?: number } | null;
+	const recorded = async (): Promise<string | null> => (await record())?.mode ?? null;
 	const holders = Object.keys(COLO_HOLDINGS).filter((n) => (COLO_HOLDINGS[n] ?? 0) * 1e6 > RETIRED_HOLDING_BYTES);
 	const small = Object.keys(COLO_HOLDINGS).filter((n) => !holders.includes(n));
 	const neverHad = RETIRED_COLO_ENGINE_NAMES.filter((n) => !(n in COLO_HOLDINGS));
@@ -298,14 +299,14 @@ async function retiredSweepScenario(
 		if (setting === undefined) delete env.RETIRED_ENGINE_SWEEP;
 		else env.RETIRED_ENGINE_SWEEP = setting;
 		const mark = addressed().length;
-		await notify();
+		await tick();
 		const now = addressed().slice(mark);
-		console.log(`sweep ${label}: addressed ${now.length} colo-era object(s); record=${recorded() ?? "none"}`);
+		console.log(`sweep ${label}: addressed ${now.length} colo-era object(s); record=${(await recorded()) ?? "none"}`);
 		return now;
 	};
 
 	if (addressed().length > 0) problems.push("the nightly addressed colo-era objects with RETIRED_ENGINE_SWEEP unset");
-	if (recorded() !== null) problems.push("a sweep was recorded with the var unset");
+	if ((await recorded()) !== null) problems.push("a sweep was recorded with the var unset");
 
 	const dry = await step("dry-run", "dry-run");
 	if (dry.length !== RETIRED_COLO_ENGINE_NAMES.length) problems.push(`dry-run addressed ${dry.length}, not 11`);
@@ -315,7 +316,7 @@ async function retiredSweepScenario(
 			problems.push(`dry-run changed ${name}`);
 	}
 	for (const name of neverHad) if (!untouched(name)) problems.push(`dry-run wrote to never-created ${name}`);
-	if (recorded() !== "dry-run") problems.push("dry-run was not recorded as finished");
+	if ((await recorded()) !== "dry-run") problems.push("dry-run was not recorded as finished");
 
 	if ((await step("dry-run", "dry-run again")).length > 0) problems.push("a finished dry-run woke objects again");
 
@@ -335,20 +336,8 @@ async function retiredSweepScenario(
 			problems.push(`release touched ${name}, which holds less than ${RETIRED_HOLDING_BYTES} bytes`);
 	}
 	for (const name of neverHad) if (!untouched(name)) problems.push(`release wrote to never-created ${name}`);
-	if (recorded() !== "release") problems.push("release was not recorded as finished");
-	const freed = Number(
-		(
-			JSON.parse(
-				String(
-					(
-						storage.db.query("SELECT value FROM __harness_kv WHERE key = 'retired_engine_sweep'").get() as {
-							value: string;
-						}
-					).value,
-				),
-			) as { freedBytes?: number }
-		).freedBytes ?? 0,
-	);
+	if ((await recorded()) !== "release") problems.push("release was not recorded as finished");
+	const freed = Number((await record())?.freedBytes ?? 0);
 	const held = holders.reduce((t, n) => t + (COLO_HOLDINGS[n] ?? 0) * 1e6, 0);
 	if (freed < held) problems.push(`release reports ${freed} bytes freed, less than the ${held} its holders held`);
 
@@ -614,7 +603,7 @@ async function main(): Promise<number> {
 		return 1;
 	}
 
-	const sweepProblems = await retiredSweepScenario(coordinator, env, storage, engines);
+	const sweepProblems = await retiredSweepScenario(env, engines);
 	if (sweepProblems.length) {
 		console.error(`\nFAILED: retired-engine sweep — ${sweepProblems.join("; ")}`);
 		return 1;

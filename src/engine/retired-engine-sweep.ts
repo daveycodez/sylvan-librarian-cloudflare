@@ -15,8 +15,10 @@
 // object the colo era created. A name an account never had gets a transient empty instance, which
 // storageFootprint neither writes to nor keeps (see SearchEngine.storageFootprint).
 //
-// Off unless the RETIRED_ENGINE_SWEEP var says otherwise, and at most once per value: the
-// coordinator records what finished, so a nightly with the var still set wakes nothing.
+// Off unless the RETIRED_ENGINE_SWEEP var says otherwise, and at most once per value. It runs on the
+// every-10-minutes watchdog cron (runRetiredEngineSweep, called from index.ts's scheduled handler),
+// not the nightly, so a push that sets the var reports within ten minutes; a finished value is
+// recorded in KV (RETIRED_SWEEP_KV_KEY), so later ticks with the var still set wake nothing.
 //
 //   unset / ""   off: no object is addressed, nothing is read or logged
 //   "dry-run"    ask each name for its storage footprint (read-only) and log every size
@@ -26,6 +28,9 @@
 //
 // Only deleteAll gives billed storage back — deleting rows does not (x8 metered 1.1 GB after every
 // row was purged, 14.6 MB after deleteAll) — which is why release is releaseCache and nothing finer.
+
+import { addressAnnouncedEngine } from "./engine-namespace";
+import type { Env } from "./types";
 
 /** Every colo-era engine name that held storage when the DO list was inventoried on 2026-09-24. */
 export const RETIRED_COLO_ENGINE_NAMES = [
@@ -45,12 +50,12 @@ export const RETIRED_COLO_ENGINE_NAMES = [
 /** Above this an object holds a cached archive (tens of MB); below it, at most SQLite's own pages. */
 export const RETIRED_HOLDING_BYTES = 1_000_000;
 
-/** Where the coordinator records a finished sweep. KV-style storage, so metaClear never resets it. */
-export const RETIRED_SWEEP_RECORD_KEY = "retired_engine_sweep";
+/** Where a finished sweep is recorded: one KV key per account, written at most once per mode. */
+export const RETIRED_SWEEP_KV_KEY = "ops:retired-engine-sweep";
 
 export type RetiredSweepMode = "dry-run" | "release";
 
-/** What a finished sweep leaves behind in coordinator storage. */
+/** What a finished sweep leaves behind at RETIRED_SWEEP_KV_KEY. */
 export interface RetiredSweepRecord {
 	mode: RetiredSweepMode;
 	at: string;
@@ -88,9 +93,9 @@ const mb = (bytes: number): string => `${(bytes / 1e6).toFixed(1)}MB`;
 /**
  * Run the sweep the var asks for, unless that exact value already finished. Returns the record to
  * persist when this call completed a sweep, or null when there is nothing to record — the var is off
- * or invalid, the value already finished, or something failed and the next publish should retry.
- * Never throws for a single object's failure; the caller still wraps it, because notify must not
- * fail on a cleanup.
+ * or invalid, the value already finished, or something failed and the next tick should retry.
+ * Never throws for a single object's failure; the caller still wraps it, because the watchdog cron
+ * must not fail on a cleanup.
  */
 export async function sweepRetiredEngines(deps: RetiredSweepDeps): Promise<RetiredSweepRecord | null> {
 	const log = deps.log ?? ((line: string) => console.log(line));
@@ -152,9 +157,40 @@ export async function sweepRetiredEngines(deps: RetiredSweepDeps): Promise<Retir
 	if (failures.length > 0) {
 		warn(
 			`Retired-engine sweep (${mode}): ${failures.length} call(s) failed, so it is not recorded as finished ` +
-				`and the next publish runs it again: ${failures.join("; ")}`,
+				`and the next watchdog tick runs it again: ${failures.join("; ")}`,
 		);
 		return null;
 	}
 	return record;
+}
+
+/**
+ * The sweep as the watchdog cron runs it: the var off (the normal state) costs nothing — no KV read,
+ * no object addressed. Addressed with addressAnnouncedEngine although nothing announces these names:
+ * it is exactly the colo era's own call (`SEARCH_ENGINE.get(SEARCH_ENGINE.idFromName(name))`, no
+ * hint), so each name reaches the object that era created, and a name this account never had cannot
+ * be placed. Never throws: the store is live either way, and this is housekeeping.
+ */
+export async function runRetiredEngineSweep(
+	env: Pick<Env, "STORE_KV" | "SEARCH_ENGINE"> & { RETIRED_ENGINE_SWEEP?: string },
+): Promise<void> {
+	if (retiredSweepMode(env.RETIRED_ENGINE_SWEEP) === "off") return;
+	const stub = (name: string) =>
+		addressAnnouncedEngine(env as Env, name) as unknown as {
+			storageFootprint(): Promise<{ label: string; bytes: number }>;
+			releaseCache(): Promise<unknown>;
+		};
+	try {
+		const done = await sweepRetiredEngines({
+			setting: env.RETIRED_ENGINE_SWEEP,
+			lastDone: async () => (await env.STORE_KV.get<RetiredSweepRecord>(RETIRED_SWEEP_KV_KEY, "json")) ?? undefined,
+			footprint: async (name) => (await stub(name).storageFootprint()).bytes,
+			release: async (name) => {
+				await stub(name).releaseCache();
+			},
+		});
+		if (done) await env.STORE_KV.put(RETIRED_SWEEP_KV_KEY, JSON.stringify(done));
+	} catch (err) {
+		console.warn(`Retired-engine sweep failed; the next watchdog tick runs it again: ${err}`);
+	}
 }

@@ -15,6 +15,7 @@ import { effectiveRegion, generationOf, hedgeRegionFor, routableRegions } from "
 import { PlacementProbe } from "./engine/placement-probe";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
+import { runRetiredEngineSweep } from "./engine/retired-engine-sweep";
 import { SearchEngine } from "./engine/search-engine-do";
 import { effectiveShardCap, markShardReady, pickShard, takeWarmTarget, unmarkPending } from "./engine/shard-controller";
 import { readManifest } from "./engine/store-kv";
@@ -381,6 +382,8 @@ export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
 	override async scheduled(controller: ScheduledController): Promise<void> {
 		if (controller.cron === WATCHDOG_CRON) {
 			this.ctx.waitUntil(runImportWatchdog(this.env));
+			// c1's one-time colo-era sweep: nothing at all unless RETIRED_ENGINE_SWEEP is set.
+			this.ctx.waitUntil(runRetiredEngineSweep(this.env));
 			return;
 		}
 		this.ctx.waitUntil(startNightlyImport(this.env));
