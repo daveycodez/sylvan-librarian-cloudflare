@@ -309,6 +309,20 @@ describe("the merge's corner cases", () => {
 			"assaultron",
 		);
 		expect(two.json.type).toBe("ambiguous");
+		// A flavor name on the FACES is the faces' names joined, and English too. api.scryfall.com
+		// 2026-09-25: `fuzzy=lord of bats` is Voldaren Bloodcaster vow/338 ("Dracula, Lord of Blood" //
+		// "Dracula, Lord of Bats"); a foreign printed name elsewhere carrying the words is no rival.
+		const voldaren = {
+			object: "card",
+			name: "Voldaren Bloodcaster // Bloodbat Summoner",
+			card_faces: [
+				{ object: "card_face", name: "Voldaren Bloodcaster", flavor_name: "Dracula, Lord of Blood" },
+				{ object: "card_face", name: "Bloodbat Summoner", flavor_name: "Dracula, Lord of Bats" },
+			],
+		};
+		const foreignBats = { object: "card", name: "Some Card", printed_name: "Lord of Bats" };
+		const bats = await both(at(N, { 1: { contained: [voldaren] }, 3: { contained: [foreignBats] } }), "lord of bats");
+		expect(bats.json.name).toBe("Voldaren Bloodcaster // Bloodbat Summoner");
 		// Printed names alone still answer: nothing English carries `goad`.
 		const ego = { object: "card", name: "Unmoored Ego", printed_name: "Ego à Deriva" };
 		expect((await both(at(N, { 2: { contained: [ego] } }), "red goad")).json.name).toBe("Unmoored Ego");

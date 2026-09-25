@@ -238,6 +238,22 @@ function equalsUnseparated(value: unknown, whole: string): boolean {
 }
 
 /**
+ * A card object's flavor-name KEY: its top-level `flavor_name`, or else the flavor names its faces
+ * carry, joined " // " in face order over the faces that carry one — the key the engine matches
+ * (core_api's `FaceFlavorKey`). Measured on api.scryfall.com 2026-09-25: `fuzzy=lord of bats` and
+ * `fuzzy=recyclops` answer printings whose flavor names sit on their faces alone.
+ */
+export function flavorKeyOf(card: Record<string, unknown>): string | undefined {
+	if (typeof card.flavor_name === "string") return card.flavor_name;
+	const faces = card.card_faces;
+	if (!Array.isArray(faces)) return undefined;
+	const names = faces
+		.map((f) => (f !== null && typeof f === "object" ? (f as Record<string, unknown>).flavor_name : undefined))
+		.filter((n): n is string => typeof n === "string");
+	return names.length > 0 ? names.join(" // ") : undefined;
+}
+
+/**
  * Whether exact-name rank `a` beats `b` — TIER first, then prefer_score, with null losing to
  * anything. The pair is compared, never interpreted; see core_api's `exact_name_rank`.
  */
@@ -1515,17 +1531,18 @@ export function mergeContained(
 	// Wedding Announcement in one and Guile, whose Italian name IS "Inganno", in another;
 	// api.scryfall.com answers the English card both times. An answer is English when its oracle
 	// and flavor names alone carry every word, which is exactly the set the engine's first tier
-	// admits; the whole-name rank then runs within the tier that answers.
+	// admits; the whole-name rank then runs within the tier that answers. A flavor name is the
+	// printing's KEY (`flavorKeyOf`), which for a printing whose faces carry them is their join.
 	const cards = [...byName.values()];
 	const whole = words.map(unseparated).join("");
 	const needles = words.map(unseparated).filter((w) => w.length > 0);
 	const english = cards.filter((card) => {
-		const pool = [card.name, card.flavor_name].map((n) => (typeof n === "string" ? unseparated(n) : ""));
+		const pool = [card.name, flavorKeyOf(card)].map((n) => (typeof n === "string" ? unseparated(n) : ""));
 		return needles.every((w) => pool.some((n) => n.includes(w)));
 	});
 	const tier = english.length > 0 ? english : cards;
 	const named = tier.filter((card) =>
-		(english.length > 0 ? [card.name, card.flavor_name] : [card.name, card.printed_name]).some((n) =>
+		(english.length > 0 ? [card.name, flavorKeyOf(card)] : [card.name, card.printed_name]).some((n) =>
 			equalsUnseparated(n, whole),
 		),
 	);

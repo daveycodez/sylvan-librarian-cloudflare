@@ -2,7 +2,7 @@ use memchr::memmem;
 use rkyv::Archived;
 use serde_json::Value;
 use super::regex_compat::{CompiledRegex, QUERY_REGEX_FLAGS, REGEX_COMPILE_ERR_PREFIX, SELF_REF_SENTINEL, SelfRefScope};
-use super::{AOracleCard, APrinting, AStrings, ManaCost, str_at, mana_lane, lane_add, lane_get, lanes_ge, LANES8_HI, mana_pip_counts, mana_cmc, mana_bare_generic, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, NO_TYPE_LINE_INDEX, PrintedNameIndex, OracleTextIndex, SortedTrigramIndex, TypeLineIndex, flavor_fingerprint, flavor_match_sets};
+use super::{AOracleCard, APrinting, AStrings, ManaCost, str_at, mana_lane, lane_add, lane_get, lanes_ge, LANES8_HI, mana_pip_counts, mana_cmc, mana_bare_generic, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, NO_TYPE_LINE_INDEX, FaceFlavorNames, PrintedNameIndex, OracleTextIndex, SortedTrigramIndex, TypeLineIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
 
 /// Compile a query regex for public search.
@@ -1532,8 +1532,16 @@ pub(crate) enum FilterExpr {
     /// records: a `name:` query that matches no flavor name never grows this arm at all, so the
     /// hottest predicate in the language pays a bounded scan of a table two orders of magnitude
     /// smaller than the corpus and nothing else.
+    ///
+    /// `face_keys` (LOCAL PATCH, Cloudflare port) is the same answer for the FACE-LEVEL flavor
+    /// names: each entry is one `FaceFlavorKey`'s interned face flavor-name ids in face order, and
+    /// a printing matches iff its own faces carry exactly that sequence. Measured on
+    /// api.scryfall.com 2026-09-25: `name:megatron` and `!"Megatron // Megatron"` find Blightsteel
+    /// Colossus sld/1079, whose two faces are each sold as "Megatron". Empty on every needle that
+    /// hits no face key, which is every needle but a handful.
     FlavorNameIn {
         ids: Vec<u32>,
+        face_keys: Vec<Vec<u32>>,
     },
 
     /// `is:unique` — the owning CARD has been printed in exactly one SET. Card-level and total, off
@@ -2194,6 +2202,12 @@ fn flavor_name_ids(
     ids
 }
 
+/// The face-id sequences of the [`FaceFlavorKey`](super::FaceFlavorKey)s whose COLLATED key
+/// satisfies `pred` — `flavor_name_ids`' twin over the face-level keys, in the same form.
+fn face_flavor_key_ids(faces: &FaceFlavorNames, pred: impl Fn(&str) -> bool) -> Vec<Vec<u32>> {
+    faces.keys.iter().filter(|k| pred(&k.collated)).map(|k| k.face_ids.clone()).collect()
+}
+
 /// Vocab ids (ascending) whose artist string satisfies `pred`.
 fn artist_match_ids(artist_vocab: &AStrings, pred: impl Fn(&str) -> bool) -> Vec<u16> {
     artist_vocab
@@ -2549,28 +2563,37 @@ impl FilterExpr {
     /// Both name predicates that Scryfall reaches flavor names through are handled — the bare
     /// `name:word` (collated on both sides) and `!"…"` (collated, and matching either half of a
     /// `A // B` name, exactly as the oracle-name arm does).
-    pub(crate) fn bind_flavor_names(&mut self, idx: &rkyv::Archived<PrintedNameIndex>, collated: &AStrings) {
+    pub(crate) fn bind_flavor_names<'a>(
+        &mut self,
+        idx: &rkyv::Archived<PrintedNameIndex>,
+        collated: &AStrings,
+        faces: &dyn Fn() -> &'a FaceFlavorNames,
+    ) {
         match self {
             FilterExpr::And(children) | FilterExpr::Or(children) => {
                 for c in children {
-                    c.bind_flavor_names(idx, collated);
+                    c.bind_flavor_names(idx, collated, faces);
                 }
             }
-            FilterExpr::Not(inner) => inner.bind_flavor_names(idx, collated),
+            FilterExpr::Not(inner) => inner.bind_flavor_names(idx, collated, faces),
             FilterExpr::TextContains { field: TextSearchField::NameCollated, word } => {
                 let finder = memmem::Finder::new(word.as_bytes());
-                let ids = flavor_name_ids(idx, collated, |s| finder.find(s.as_bytes()).is_some());
-                if !ids.is_empty() {
+                let hit = |s: &str| finder.find(s.as_bytes()).is_some();
+                let ids = flavor_name_ids(idx, collated, hit);
+                let face_keys = face_flavor_key_ids(faces(), hit);
+                if !ids.is_empty() || !face_keys.is_empty() {
                     let original = std::mem::replace(self, FilterExpr::True);
-                    *self = FilterExpr::Or(vec![original, FilterExpr::FlavorNameIn { ids }]);
+                    *self = FilterExpr::Or(vec![original, FilterExpr::FlavorNameIn { ids, face_keys }]);
                 }
             }
             FilterExpr::ExactName(needle) => {
                 let needle = needle.clone();
-                let ids = flavor_name_ids(idx, collated, |s| exact_name_matches(s, &needle));
-                if !ids.is_empty() {
+                let hit = |s: &str| exact_name_matches(s, &needle);
+                let ids = flavor_name_ids(idx, collated, hit);
+                let face_keys = face_flavor_key_ids(faces(), hit);
+                if !ids.is_empty() || !face_keys.is_empty() {
                     let original = std::mem::replace(self, FilterExpr::True);
-                    *self = FilterExpr::Or(vec![original, FilterExpr::FlavorNameIn { ids }]);
+                    *self = FilterExpr::Or(vec![original, FilterExpr::FlavorNameIn { ids, face_keys }]);
                 }
             }
             _ => {}
@@ -3125,10 +3148,16 @@ impl FilterExpr {
                 tri_bool(p.printed_name_folded_id != super::NONE_STR)
             }
 
-            FilterExpr::FlavorNameIn { ids } => {
+            FilterExpr::FlavorNameIn { ids, face_keys } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 let id = u32::from(p.flavor_name_folded_id);
-                tri_bool(id != super::NONE_STR && ids.binary_search(&id).is_ok())
+                // A printing carries its flavor name at top level or on its faces, never both.
+                tri_bool(
+                    (id != super::NONE_STR && ids.binary_search(&id).is_ok())
+                        || (!face_keys.is_empty()
+                            && !p.faces.is_empty()
+                            && face_keys.iter().any(|key| super::face_flavor_ids(p).eq(key.iter().copied()))),
+                )
             }
 
             // Presence in EITHER place Scryfall puts the key: the printing's own top-level

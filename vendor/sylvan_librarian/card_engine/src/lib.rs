@@ -581,10 +581,11 @@ struct PrintingFace {
     // occurrences on 15 printings in the 2026-08-16 all_cards bulk, all `transform` or
     // `reversible_card` (vow/338 "Dracula, Lord of Blood" // "Dracula, Lord of Bats").
     //
-    // NOT INDEXED, and that is Scryfall's own split rather than a shortcut:
-    // `exact=Dracula, Lord of Blood` answers 404 there while `exact=Godzilla, Primeval Champion`
-    // (a card-level flavor name) answers prm/80925. Only the card-level one reaches the name
-    // routes; this one is emission-only, like `flavor_text` beside it.
+    // NOT INDEXED ONE FACE AT A TIME, and that is Scryfall's own split: `exact=Dracula, Lord of
+    // Blood` answers 404 there while `exact=Godzilla, Primeval Champion` (a card-level flavor
+    // name) answers prm/80925. The faces' names JOINED are the printing's key — `exact=Dracula,
+    // Lord of Blood // Dracula, Lord of Bats` is vow/338 (2026-09-25) — which the name surfaces
+    // read through `FaceFlavorKey`, derived from this field at load (LOCAL PATCH).
     flavor_name_id: u32,
     // The face's artist AS SCRYFALL PRINTS IT (interned; NONE_STR = absent) — the string a card
     // object emits. `card_artist_vid` above cannot stand in for it twice over: it indexes the
@@ -5294,6 +5295,108 @@ fn build_printed_name_index(
     idx.offsets.push(idx.vpids.len() as u32);
     idx.trigrams = finalize_trigram_index(trigram_map, idx.name_ids.len());
     idx
+}
+
+/// One FACE-LEVEL flavor-name key: the flavor names a printing's faces carry, joined `" // "` in
+/// face order over the faces that carry one — Scryfall's name key for such a printing.
+///
+/// LOCAL PATCH (Cloudflare port). Measured on api.scryfall.com 2026-09-25: when the flavor names
+/// sit on the FACES (15 printings, all `transform` or `reversible_card`), the printing's name key
+/// is their join, never one face's alone. `exact=Megatron // Megatron` is Blightsteel Colossus
+/// sld/1079 while `exact=Megatron` is a 404; `exact=Chucky` is Kardur sld/1807, whose front face
+/// alone carries one; `exact=Dracula, Lord of Blood` stays the 404 it always was, and
+/// `fuzzy=lord of bats` and `fuzzy=recyclops` answer the faces' printings by containment.
+/// `name:megatron` and `!"Megatron // Megatron"` find sld/1079 on `/cards/search` too.
+///
+/// DERIVED AT LOAD, NOT STORED. The archive already carries every face's flavor name
+/// (`PrintingFace.flavor_name_id`), so this table is computed from it once per store rather than
+/// written by the builders, and no archive format or content generation moves for it. The
+/// card-level `flavor_names` index is untouched: the two are read side by side wherever a flavor
+/// name is a name.
+pub(crate) struct FaceFlavorKey {
+    /// The join, lowercased — the FOLDED form the name surfaces compare. Not accent-folded (the
+    /// engine carries no Unicode fold); every face flavor name in the 2026-09-25 corpus is ASCII.
+    pub(crate) folded: String,
+    /// `collate_name(folded)`: what `exact=`, `name:` and `!` compare.
+    pub(crate) collated: String,
+    /// The interned `PrintingFace.flavor_name_id`s the key is made of, in face order — what a
+    /// printing is matched against when a `name:` predicate selects this key.
+    pub(crate) face_ids: Vec<u32>,
+    /// Every printing carrying the key, both spaces, best first: language, then the store's own
+    /// within-card order (`card_row_build_order`), exactly as `build_printed_name_index` orders a
+    /// record — so "the first served one through the set filter" means the same thing here.
+    pub(crate) vpids: Vec<u32>,
+}
+
+/// Every [`FaceFlavorKey`] a store holds, sorted by `folded`. A handful per partition; empty on a
+/// store with no face-level flavor name.
+#[derive(Default)]
+pub(crate) struct FaceFlavorNames {
+    pub(crate) keys: Vec<FaceFlavorKey>,
+}
+
+/// The interned face flavor-name ids of one printing, in face order, NONE_STR skipped.
+pub(crate) fn face_flavor_ids(p: &APrinting) -> impl Iterator<Item = u32> + '_ {
+    p.faces.iter().map(|f| u32::from(f.flavor_name_id)).filter(|&id| id != NONE_STR)
+}
+
+impl FaceFlavorNames {
+    /// One pass over both printing spaces. Only a printing with faces can carry one, and the
+    /// face check is a length read, so the pass costs a touch of each printing and nothing else.
+    pub(crate) fn build(data: &Archived<CardData>) -> Self {
+        let n = data.printings.len() as u32;
+        let mut by_key: HashMap<Vec<u32>, Vec<u32>> = HashMap::new();
+        for (base, space) in [(0u32, &data.printings), (n, &data.foreign)] {
+            for (i, p) in space.iter().enumerate() {
+                if p.faces.is_empty() {
+                    continue;
+                }
+                let ids: Vec<u32> = face_flavor_ids(p).collect();
+                if !ids.is_empty() {
+                    by_key.entry(ids).or_default().push(base + i as u32);
+                }
+            }
+        }
+        let order_of = |v: u32| {
+            let p = printing_at(data, v);
+            (
+                u16::from(p.compat.lang_id),
+                (0u128, p.prefer_score.as_ref().map(|x| f32::from(*x)), u128::from(p.illustration_id), u128::from(p.scryfall_id)),
+            )
+        };
+        let mut keys: Vec<FaceFlavorKey> = Vec::with_capacity(by_key.len());
+        for (face_ids, mut vpids) in by_key {
+            let names: Vec<&str> = face_ids.iter().filter_map(|&id| str_at(&data.strings, id)).collect();
+            if names.len() != face_ids.len() {
+                continue;
+            }
+            let folded = names.join(" // ").to_lowercase();
+            let collated = collate_name(&folded);
+            if collated.is_empty() {
+                continue;
+            }
+            vpids.sort_unstable_by(|&a, &b| {
+                let ((la, ka), (lb, kb)) = (order_of(a), order_of(b));
+                la.cmp(&lb).then_with(|| card_row_build_order(ka, kb))
+            });
+            keys.push(FaceFlavorKey { folded, collated, face_ids, vpids });
+        }
+        // Two printings whose faces carry the same names under different interned ids cannot
+        // happen (one string, one id), so the key set is already distinct.
+        keys.sort_unstable_by(|a, b| a.folded.cmp(&b.folded).then_with(|| a.face_ids.cmp(&b.face_ids)));
+        FaceFlavorNames { keys }
+    }
+}
+
+/// A store's [`FaceFlavorNames`], computed on first use. Held by whoever holds the archive
+/// (`BufferStore`), because the table is a function of the archive alone.
+#[derive(Default)]
+pub(crate) struct FaceFlavorCache(std::sync::OnceLock<FaceFlavorNames>);
+
+impl FaceFlavorCache {
+    pub(crate) fn get(&self, data: &Archived<CardData>) -> &FaceFlavorNames {
+        self.0.get_or_init(|| FaceFlavorNames::build(data))
+    }
 }
 
 // ─── Fuzzy name matching ─────────────────────────────────────────────────────
@@ -19679,7 +19782,9 @@ fn bind_and_split_filter(
     let json_val: Value = serde_json::from_str(json_str)
         .map_err(|e| RetryableQueryError::new_err(format!("bad query JSON: {e}")))?;
 
-    Ok(bind_and_split_filter_value(&json_val, unique, data, sort_col)?)
+    // The pyo3 path holds no per-store cache; a fresh one derives the face keys per call, which
+    // only a `name:` or `!` predicate pays for.
+    Ok(bind_and_split_filter_value(&json_val, unique, data, &FaceFlavorCache::default(), sort_col)?)
 }
 
 /// The pure-Rust core of `bind_and_split_filter` (LOCAL PATCH, Cloudflare
@@ -19701,6 +19806,7 @@ fn bind_and_split_filter_value(
     json_val: &Value,
     unique: &str,
     data: &Archived<CardData>,
+    face_flavors: &FaceFlavorCache,
     sort_col: SortCol,
 ) -> Result<(Option<PlaneExpr>, FilterExpr, SortBound, FilterExpr), EngineError> {
     // Must run before build_filter so legality shifts resolve in workers that
@@ -19715,7 +19821,11 @@ fn bind_and_split_filter_value(
     // called from a dozen benches and tests that never build one. THE TWO BELONG TOGETHER: every
     // production filter reaches the engine through here.
     filter_expr.bind_type_lines(&data.indexes.type_lines, &data.strings);
-    filter_expr.bind_flavor_names(&data.indexes.flavor_names, &data.indexes.flavor_names_collated);
+    // The face-level flavor keys are derived from the archive on first use (`FaceFlavorCache`),
+    // and only a `name:` or `!` predicate ever asks for them.
+    filter_expr.bind_flavor_names(&data.indexes.flavor_names, &data.indexes.flavor_names_collated, &|| {
+        face_flavors.get(data)
+    });
     if let Some(msg) = take_regex_match_failed() {
         return Err(EngineError::unsupported_regex(msg.strip_prefix(REGEX_MATCH_ERR_PREFIX).unwrap_or(&msg)));
     }

@@ -667,6 +667,116 @@
 			"path": "/cards/named?fuzzy=firion%20edificer"
 		},
 		{
+			"name": "named-exact-face-flavor-joined-megatron",
+			"method": "GET",
+			"path": "/cards/named?exact=Megatron%20%2F%2F%20Megatron"
+		},
+		{
+			"name": "named-exact-face-flavor-one-face-not-found-megatron",
+			"method": "GET",
+			"path": "/cards/named?exact=Megatron"
+		},
+		{
+			"name": "named-exact-face-flavor-front-only-chucky",
+			"method": "GET",
+			"path": "/cards/named?exact=Chucky"
+		},
+		{
+			"name": "named-exact-face-flavor-joined-dracula",
+			"method": "GET",
+			"path": "/cards/named?exact=Dracula%2C%20Lord%20of%20Blood%20%2F%2F%20Dracula%2C%20Lord%20of%20Bats"
+		},
+		{
+			"name": "named-exact-face-flavor-one-face-not-found-dracula",
+			"method": "GET",
+			"path": "/cards/named?exact=Dracula%2C%20Lord%20of%20Blood"
+		},
+		{
+			"name": "named-exact-flavor-collated-godzillaprimevalchampion",
+			"method": "GET",
+			"path": "/cards/named?exact=godzillaprimevalchampion"
+		},
+		{
+			"name": "named-exact-flavor-token-lunch",
+			"method": "GET",
+			"path": "/cards/named?exact=Lunch%201%3A00%20PM"
+		},
+		{
+			"name": "named-fuzzy-face-flavor-whole-chucky",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=chucky"
+		},
+		{
+			"name": "named-fuzzy-face-flavor-contained-recyclops",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=recyclops"
+		},
+		{
+			"name": "named-fuzzy-face-flavor-contained-lord-of-bats",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lord%20of%20bats"
+		},
+		{
+			"name": "named-fuzzy-face-flavor-whole-megatron-megatron",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=megatron%20megatron"
+		},
+		{
+			"name": "named-fuzzy-flavor-whole-over-containment-bag-end",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=bag%20end"
+		},
+		{
+			"name": "named-fuzzy-extra-flavor-not-contained-lunch",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lunch"
+		},
+		{
+			"name": "named-fuzzy-extra-flavor-not-contained-afternoon-tea",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=afternoon%20tea"
+		},
+		{
+			"name": "named-fuzzy-extra-flavor-not-contained-awoken-avatar",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=awoken%20avatar"
+		},
+		{
+			"name": "named-fuzzy-extra-flavor-not-contained-black-beast-aaargh",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=black%20beast%20aaargh"
+		},
+		{
+			"name": "named-fuzzy-extra-flavor-no-rival-aaargh",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=aaargh"
+		},
+		{
+			"name": "named-fuzzy-extra-flavor-no-rival-breakfast",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=breakfast"
+		},
+		{
+			"name": "search-name-face-flavor-megatron",
+			"method": "GET",
+			"path": "/cards/search?q=name%3Amegatron"
+		},
+		{
+			"name": "search-exact-face-flavor-joined-megatron",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Megatron%20%2F%2F%20Megatron%22"
+		},
+		{
+			"name": "search-name-extra-flavor-aaargh",
+			"method": "GET",
+			"path": "/cards/search?q=name%3Aaaargh"
+		},
+		{
+			"name": "search-name-extra-flavor-aaargh-include-extras",
+			"method": "GET",
+			"path": "/cards/search?q=name%3Aaaargh&include_extras=true"
+		},
+		{
 			"name": "named-fuzzy-art-series-no-rival-jace-mind-scul",
 			"method": "GET",
 			"path": "/cards/named?fuzzy=jace+mind+scul"

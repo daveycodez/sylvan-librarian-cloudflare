@@ -603,9 +603,27 @@ The complete list of intentional differences:
   with the evidence, not yet reproduced — and the metric's own resolution,
   pinned as `lightning blast&set=m11` (0.6595 here, a 404 there). Seen in the
   probe and not pinned: `jace sculpt` and `assaultron` (a weak typo winner
-  against an ambiguous containment), `sculptor` (Storm Sculptor there, Soul
-  Sculptor here) and `breakfast` (a Food token's flavor name, "Breakfast 7:00
-  AM", is no rival there).
+  against an ambiguous containment) and `sculptor` (Storm Sculptor there, Soul
+  Sculptor here).
+- **A flavor name is a name on `/cards/named`, keyed the way Scryfall keys
+  it.** Measured on api.scryfall.com 2026-09-25 (about 100 probes; 99 of the
+  101 cached answers now match on the local ten-partition store, the other two
+  being the weak-typo-winner line above). The key is a printing's top-level
+  `flavor_name`, or, when the flavor names sit on its faces, those names joined
+  " // " over the faces that carry one: `exact=Megatron // Megatron` is
+  Blightsteel Colossus sld/1079 and `exact=Megatron` a 404, `exact=Chucky` is
+  Kardur sld/1807 (one face carries one), and `fuzzy=recyclops` and `lord of
+  bats` answer the faces' printings. `exact=` compares it collated, after the
+  card's own name keys (`exact=godzillaprimevalchampion` is Titanoth Rex
+  prm/80925), and answers the printing carrying it, tokens included (`exact=Lunch
+  1:00 PM` is the Food token). Containment reads no flavor name of an `is:extra`
+  printing: `lunch`, `afternoon tea`, `awoken avatar` and `black beast aaargh`
+  are 404s, `aaargh` is Dark Depths alone and `breakfast` Second Breakfast.
+  `name:megatron` and `!"Megatron // Megatron"` find sld/1079 on
+  `/cards/search`, and `name:aaargh` finds the Marit Lage token only with
+  `include_extras=true`. The face key is derived from the stored faces when a
+  store loads, so it needed no store rebuild; the routing filter does not carry
+  it, so such a needle asks every partition.
 - **`/cards/*` cache tiers are measured from**
   `api.scryfall.com` rather than inherited from `/search`: `public,
   max-age=57600` on the cacheable routes, `no-cache` on `/cards/random`, and

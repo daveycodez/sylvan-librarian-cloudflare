@@ -1478,6 +1478,9 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
 /// ARCHIVE_HEADER_LEN stays 16-aligned.
 pub struct BufferStore {
     bytes: AlignedVec,
+    /// The face-level flavor-name keys, derived from the archive on first use — see
+    /// `crate::FaceFlavorKey`. LOCAL PATCH (Cloudflare port).
+    face_flavors: crate::FaceFlavorCache,
 }
 
 impl BufferStore {
@@ -1504,7 +1507,7 @@ impl BufferStore {
                 bytes,
             ));
         }
-        let store = BufferStore { bytes };
+        let store = BufferStore { bytes, face_flavors: crate::FaceFlavorCache::default() };
         // Adopt the archive's legality shifts HERE, at load, rather than leaving it to the first
         // filter query. `legality_bits_to_json` decodes against the process-global FORMAT_SHIFTS
         // registry and reports an EMPTY object when it is unpopulated -- not an error -- and the
@@ -1644,7 +1647,7 @@ impl BufferStore {
         )
         .bind_prefer(&data.coll_vocab);
         let (plane_expr, mut filter_expr, sort_bound, unsplit) =
-            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, params.sort_col)?;
+            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, &self.face_flavors, params.sort_col)?;
 
         // The multilingual widening: either trigger sends the query to the widened driver over
         // both printing spaces, with the FULL bound filter (`unsplit` — the widened driver has no
@@ -1696,7 +1699,7 @@ impl BufferStore {
         let data = self.data();
         let params = QueryParams::from_strs(&opts.unique, &opts.prefer, &opts.orderby, &opts.direction, 1, 0);
         let (_, _, _, unsplit) =
-            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, params.sort_col)?;
+            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, &self.face_flavors, params.sort_col)?;
         Ok(unsplit.widens_to_annex())
     }
 
@@ -2266,8 +2269,8 @@ impl BufferStore {
     /// `Lightning-Bolt`, `limduls vault`, `Kongming Sleeping Dragon` and `whowhatwhenwherewhy` all
     /// resolve on both surfaces, where the folded comparison this used to do answered 404 on every
     /// one of them (`!"limduls vault"` already compared collated; the two name surfaces did not).
-    /// The FLAVOR pass at the bottom stays FOLDED: its index is keyed on folded names, and a
-    /// collated probe of it would miss the spelling that works today.
+    /// The FLAVOR pass at the bottom (`flavor_name_best`) asks its folded record first and then
+    /// compares collated too, so the spelling that works folded keeps its answer.
     fn name_best(
         &self,
         folded: &str,
@@ -2342,8 +2345,7 @@ impl BufferStore {
         //   exact=Mechagodzilla, the Weapon    -> 200, Crystalline Giant prm/80937
         //   exact=Yojimbo                      -> 200, Solitude sld/7004
         //   exact=Titanoth Rex   (control)     -> 200, Titanoth Rex iko/174 (the oracle default)
-        //   exact=Dracula, Lord of Blood       -> 404  (a FACE flavor name — face-level does not
-        //                                              participate, and is not indexed here)
+        //   exact=Dracula, Lord of Blood       -> 404  (ONE FACE's flavor name — see below)
         //
         // A flavor name resolves to the PRINTING that carries it, not the card's default — which
         // is why this pass answers with the record's own vpid. It runs only when the oracle scan
@@ -2353,14 +2355,69 @@ impl BufferStore {
         // `{"name":"Godzilla, King of the Monsters"}`, `{"name":"Yojimbo"}` and
         // `{"name":"Godzilla, Primeval Champion"}` are all not_found there while `exact=` answers
         // Zilortha, Solitude and Titanoth Rex — so the fallback is scoped, not shared.
-        if scope == NameScope::Exact
-            && best.is_none()
-            && let Some(rec) = record_of_exact_name(&data.indexes.flavor_names, &data.strings, folded)
-            && let Some((vpid, score, served)) = self.best_vpid_of_record_in(&data.indexes.flavor_names, rec, set_code)
-        {
-            return Some((u8::from(served), TIER_FLAVOR_NAME, f64::from(score), card_of_vpid(data, vpid) as usize, vpid));
+        if scope == NameScope::Exact && best.is_none() {
+            return self.flavor_name_best(folded, &needle, set_code);
         }
         best
+    }
+
+    /// `exact=`'s flavor-name pass: the best printing whose flavor name — the card-level one, or
+    /// its faces' joined — IS the needle, as `name_best` ranks it (served, then prefer score).
+    ///
+    /// COLLATED, like the name keys before it (LOCAL PATCH, Cloudflare port). Measured on
+    /// api.scryfall.com 2026-09-25: `exact=godzillaprimevalchampion` and `exact=Godzilla Primeval
+    /// Champion` both answer Titanoth Rex prm/80925, where a folded lookup answered 404. The
+    /// folded record is still asked first, so a needle spelled as stored answers exactly the
+    /// record it always did; the collated scan over the ~546 pre-collated names is the fallback.
+    ///
+    /// FACE-LEVEL FLAVOR NAMES ARE ONE KEY, joined " // " over the faces that carry one (see
+    /// `crate::FaceFlavorKey`): `exact=Megatron // Megatron` is Blightsteel Colossus sld/1079 and
+    /// `exact=Megatron` a 404, `exact=Chucky` is Kardur sld/1807 (its front face alone carries
+    /// one), `exact=Dracula, Lord of Blood // Dracula, Lord of Bats` is vow/338 and `exact=Dracula,
+    /// Lord of Blood` a 404 — all measured the same day.
+    ///
+    /// Extras count here: `exact=Egg Pawn` is the Myr token carrying it, `exact=Lunch 1:00 PM` the
+    /// Food token. Only containment leaves them out.
+    fn flavor_name_best(&self, folded: &str, needle: &str, set_code: Option<&str>) -> Option<(u8, u8, f64, usize, u32)> {
+        let data = self.data();
+        let idx = &data.indexes.flavor_names;
+        let as_rank = |(vpid, score, served): (u32, f32, bool)| {
+            (u8::from(served), TIER_FLAVOR_NAME, f64::from(score), card_of_vpid(data, vpid) as usize, vpid)
+        };
+        if let Some(rec) = record_of_exact_name(idx, &data.strings, folded)
+            && let Some(hit) = self.best_vpid_of_record_in(idx, rec, set_code)
+        {
+            return Some(as_rank(hit));
+        }
+        if needle.is_empty() {
+            return None;
+        }
+        let mut best: Option<(u32, f32, bool)> = None;
+        let mut offer = |hit: (u32, f32, bool)| {
+            if best.is_none_or(|(_, bs, bv)| (hit.2, hit.1) > (bv, bs)) {
+                best = Some(hit);
+            }
+        };
+        for (rec, collated) in data.indexes.flavor_names_collated.iter().enumerate() {
+            if collated.as_str() == needle
+                && let Some(hit) = self.best_vpid_of_record_in(idx, rec, set_code)
+            {
+                offer(hit);
+            }
+        }
+        for key in &self.face_flavor_names().keys {
+            if key.collated == needle
+                && let Some(hit) = self.best_vpid_among(key.vpids.iter().copied(), set_code)
+            {
+                offer(hit);
+            }
+        }
+        best.map(as_rank)
+    }
+
+    /// The store's face-level flavor-name keys, derived on first use — see `crate::FaceFlavorKey`.
+    fn face_flavor_names(&self) -> &crate::FaceFlavorNames {
+        self.face_flavors.get(self.data())
     }
 
     /// A record's best printing passing the set filter, with its prefer score and whether a
@@ -2375,11 +2432,16 @@ impl BufferStore {
         rec: usize,
         set_code: Option<&str>,
     ) -> Option<(u32, f32, bool)> {
+        let (from, to) = (u32::from(idx.offsets[rec]) as usize, u32::from(idx.offsets[rec + 1]) as usize);
+        self.best_vpid_among(idx.vpids[from..to].iter().map(|v| u32::from(*v)), set_code)
+    }
+
+    /// `best_vpid_of_record_in`'s rule over any best-first run of virtual printing ids — a
+    /// record's, or a face-level flavor key's (`crate::FaceFlavorKey::vpids`).
+    fn best_vpid_among(&self, vpids: impl Iterator<Item = u32>, set_code: Option<&str>) -> Option<(u32, f32, bool)> {
         let data = self.data();
-        let pn = idx;
         let extra_vid = crate::extra_vid_of(data);
-        let (from, to) = (u32::from(pn.offsets[rec]) as usize, u32::from(pn.offsets[rec + 1]) as usize);
-        let mut passing = pn.vpids[from..to].iter().map(|v| u32::from(*v)).filter(|&v| {
+        let mut passing = vpids.filter(|&v| {
             set_code.is_none_or(|s| printing_at(data, v).card_set_code.as_str().eq_ignore_ascii_case(s))
         });
         let first = passing.next()?;
@@ -2535,6 +2597,20 @@ impl BufferStore {
         //
         // What the tier leaves alone is every needle only a printed name answers: `red goad`,
         // `blitzschlag`, `ego à deriva`.
+        //
+        // AN EXTRA'S FLAVOR NAME IS NO CONTAINMENT KEY (LOCAL PATCH, Cloudflare port), though
+        // `exact=` and the whole-name stage before this one still read it. Measured on
+        // api.scryfall.com 2026-09-25: `lunch`, `afternoon tea` and `awoken avatar` (each only a
+        // token's flavor name) and `black beast aaargh` are 404s, `aaargh` is Dark Depths alone
+        // although a Marit Lage token is "The Black Beast of Aaargh", and `breakfast` and `supper`
+        // answer Second Breakfast and Supper for Spiders rather than calling a Food token a rival.
+        // So a flavor record answers here only through a printing a default search shows; one
+        // whose every printing through the set filter is an extra is skipped. The printed pass
+        // keeps its extras, as it always has.
+        //
+        // FACE-LEVEL FLAVOR NAMES are the same tier, keyed by their join (`crate::FaceFlavorKey`):
+        // `recyclops` is Garruk Relentless sld/2169 and `lord of bats` Voldaren Bloodcaster
+        // vow/338, measured the same day. They follow the flavor records below.
         let mut foreign: Vec<Answer> = Vec::new();
         let mut exact_foreign: Option<Answer> = None;
         for (is_printed, pn) in [(true, &data.indexes.printed_names), (false, &data.indexes.flavor_names)] {
@@ -2558,7 +2634,7 @@ impl BufferStore {
                 let rec = rec as usize;
                 let Some(printed) = str_at(&data.strings, u32::from(pn.name_ids[rec])) else { continue };
                 let Some((vpid, score, served)) = self.best_vpid_of_record_in(pn, rec, set_code) else { continue };
-                if outside_containment_pool(data, vpid) {
+                if outside_containment_pool(data, vpid) || (!is_printed && !served) {
                     continue;
                 }
                 let cid = card_of_vpid(data, vpid) as usize;
@@ -2579,6 +2655,29 @@ impl BufferStore {
                     continue;
                 }
                 Self::offer_answer(if is_printed { &mut foreign } else { &mut answers }, answer, limit);
+            }
+        }
+        if exact.is_none() {
+            for key in &self.face_flavor_names().keys {
+                let Some((vpid, score, served)) = self.best_vpid_among(key.vpids.iter().copied(), set_code) else {
+                    continue;
+                };
+                if !served || outside_containment_pool(data, vpid) {
+                    continue;
+                }
+                let cid = card_of_vpid(data, vpid) as usize;
+                let name = crate::folded_name(&data.cards[cid], &data.strings);
+                if !needles.iter().all(|w| contains_unseparated(&key.folded, w) || contains_unseparated(name, w)) {
+                    continue;
+                }
+                let answer = Answer { name, score, served, cid, vpid: vpid as usize, matched: key.folded.len() };
+                if equals_unseparated(&key.folded, &whole) {
+                    if exact.as_ref().is_none_or(|best| best.matched > 0 && (served, score) > (best.served, best.score)) {
+                        exact = Some(answer);
+                    }
+                    continue;
+                }
+                Self::offer_answer(&mut answers, answer, limit);
             }
         }
         // A name that IS the query is THE answer of its tier, however many other names carry its
@@ -2675,7 +2774,7 @@ impl BufferStore {
         let filter = match &scope.filter_tree {
             Some(tree) if !Self::is_true_node(tree) => {
                 let (_, _, _, unsplit) =
-                    super::bind_and_split_filter_value(tree, "printing", data, super::SortCol::Name)?;
+                    super::bind_and_split_filter_value(tree, "printing", data, &self.face_flavors, super::SortCol::Name)?;
                 Some(unsplit)
             }
             _ => None,
@@ -5266,6 +5365,115 @@ mod tests {
         assert!(store.collection_card_by_name(needle, None, None, None).expect("coll").is_none(), "a collection id does not");
         // The oracle name still answers both.
         assert!(store.collection_card_by_name("zilortha, strength incarnate", None, None, None).expect("coll").is_some());
+    }
+
+    /// FACE-LEVEL flavor names are one key, joined " // ", on every name surface; an extra's
+    /// flavor name answers `exact=` but never containment; `exact=` compares flavor names
+    /// collated. All measured on api.scryfall.com 2026-09-25 (see `crate::FaceFlavorKey` and
+    /// `cards_containing_all_words`).
+    #[test]
+    fn face_flavor_names_are_one_joined_key_and_an_extras_flavor_name_is_no_containment_key() {
+        let faced = |name: &str, oracle: &str, scry: &str, set: &str, cn: &str, faces: [(&str, Option<&str>); 2]| {
+            let mut row = annex_row(name, oracle, scry, "en", 100.0);
+            row["card_set_code"] = json!(set);
+            row["collector_number"] = json!(cn);
+            row["card_layout"] = json!("transform");
+            row["card_faces"] = Value::Array(
+                faces
+                    .iter()
+                    .map(|(face, flavor)| {
+                        let mut f = json!({ "name": face, "type_line": "Creature", "oracle_text": "", "colors": ["B"] });
+                        if let Some(flavor) = flavor {
+                            f["flavor_name"] = json!(flavor);
+                        }
+                        f
+                    })
+                    .collect(),
+            );
+            row
+        };
+        let flavored = |name: &str, oracle: &str, scry: &str, set: &str, cn: &str, flavor: &str, extra: bool| {
+            let mut row = annex_row(name, oracle, scry, "en", 100.0);
+            row["card_set_code"] = json!(set);
+            row["collector_number"] = json!(cn);
+            row["flavor_name"] = json!(flavor);
+            row["flavor_name_folded"] = json!(flavor.to_lowercase());
+            if extra {
+                row["card_layout"] = json!("token");
+                row["card_is_tags"] = json!({ "extra": true });
+            }
+            row
+        };
+        let store = build_store(&[
+            faced("Blightsteel Colossus // Blightsteel Colossus", "o-bc", "r-bc", "sld", "1079",
+                [("Blightsteel Colossus", Some("Megatron")), ("Blightsteel Colossus", Some("Megatron"))]),
+            faced("Kardur, Doomscourge // Kardur, Doomscourge", "o-kd", "r-kd", "sld", "1807",
+                [("Kardur, Doomscourge", Some("Chucky")), ("Kardur, Doomscourge", None)]),
+            faced("Voldaren Bloodcaster // Bloodbat Summoner", "o-vb", "r-vb", "vow", "338",
+                [("Voldaren Bloodcaster", Some("Dracula, Lord of Blood")), ("Bloodbat Summoner", Some("Dracula, Lord of Bats"))]),
+            flavored("Dark Depths", "o-dd", "r-dd", "sld", "1680", "Castle of Aaargh", false),
+            flavored("Marit Lage", "o-ml", "r-ml", "sld", "1681", "The Black Beast of Aaargh", true),
+            flavored("Food", "o-fd", "r-fd", "sld", "2548", "Lunch 1:00 PM", true),
+            flavored("Titanoth Rex", "o-tr", "r-tr", "prm", "80925", "Godzilla, Primeval Champion", false),
+        ])
+        .1;
+        let fields = Some(vec!["collector_number".to_owned()]);
+        let cn = |c: Option<Value>| c.map(|c| c["collector_number"].as_str().unwrap().to_owned());
+        let exact = |n: &str| cn(store.exact_card_by_name(n, None, fields.clone()).expect("exact"));
+        let contained = |words: &[&str]| -> Vec<String> {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            store
+                .cards_containing_all_words(&words, None, 2, fields.clone())
+                .expect("containment")
+                .into_iter()
+                .map(|c| c["collector_number"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let one = |s: &str| Some(s.to_owned());
+
+        // exact=: the join is the key, one face's name is not.
+        assert_eq!(exact("megatron // megatron"), one("1079"));
+        assert_eq!(exact("megatronmegatron"), one("1079"), "collated, like every name key");
+        assert_eq!(exact("megatron"), None);
+        assert_eq!(exact("chucky"), one("1807"), "only the front face carries one");
+        assert_eq!(exact("dracula, lord of blood // dracula, lord of bats"), one("338"));
+        assert_eq!(exact("dracula, lord of blood"), None);
+        // ...a card-level flavor name collated, and an extra's flavor name still answers.
+        assert_eq!(exact("godzillaprimevalchampion"), one("80925"));
+        assert_eq!(exact("godzilla primeval champion"), one("80925"));
+        assert_eq!(exact("lunch 1:00 pm"), one("2548"));
+        // A collection identifier reads no flavor name of either kind.
+        assert!(store.collection_card_by_name("megatron // megatron", None, None, None).expect("coll").is_none());
+        // With a set: the carrier's set answers, another does not.
+        assert!(store.exact_card_by_name("chucky", Some("sld"), None).expect("exact").is_some());
+        assert!(store.exact_card_by_name("chucky", Some("vow"), None).expect("exact").is_none());
+
+        // Containment: the face keys contain, pooled with the card's oracle name...
+        assert_eq!(contained(&["lord", "of", "bats"]), vec!["338"]);
+        assert_eq!(contained(&["summoner", "bats"]), vec!["338"], "pooled across the key and the oracle name");
+        // ...and an extra's flavor name is no key: the token's words find nothing, and a word a
+        // served printing's flavor name shares answers that printing alone.
+        assert!(contained(&["lunch"]).is_empty());
+        assert!(contained(&["black", "beast", "aaargh"]).is_empty());
+        assert_eq!(contained(&["aaargh"]), vec!["1680"]);
+
+        // /cards/search: `name:` and `!` reach the joined key, printing-scoped.
+        let opts = QueryOptions { unique: "printing".to_owned(), fields: fields.clone(), ..QueryOptions::default() };
+        let search = |tree: Value| -> Vec<String> {
+            let out = store.query_value(&tree, &opts).expect("search");
+            out.rows.iter().map(|r| r["collector_number"].as_str().unwrap().to_owned()).collect()
+        };
+        let name_contains = |value: &str| {
+            json!({ "node_type": "CardBinaryOperatorNode", "kwargs": { "op": ":",
+                "lhs": { "node_type": "CardAttributeNode", "kwargs": { "attribute_name": "card_name", "original_attribute": "name" } },
+                "rhs": { "node_type": "CollatedNameValueNode", "kwargs": { "value": value } } } })
+        };
+        let bang = |value: &str| json!({ "node_type": "ExactNameNode", "kwargs": { "value": value } });
+        assert_eq!(search(name_contains("Megatron")), vec!["1079"]);
+        assert_eq!(search(name_contains("lordofbats")), vec!["338"], "collated across the join");
+        assert_eq!(search(bang("megatronmegatron")), vec!["1079"]);
+        assert_eq!(search(bang("megatron")), Vec::<String>::new(), "one face's name is not the key");
+        assert_eq!(search(bang("chucky")), vec!["1807"]);
     }
 
     /// A name two oracle cards carry, one of them extras-only, answers the SERVED card on every
