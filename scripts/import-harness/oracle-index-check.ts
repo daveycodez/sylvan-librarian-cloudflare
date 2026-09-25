@@ -104,8 +104,12 @@ export async function checkOracleIndex(
 		return { ok: true, lines };
 	}
 	const repo = join(import.meta.dir, "..", "..");
-	if (!existsSync(join(repo, BUILDER))) {
-		console.log("  building the native store builder for the parity check (first run only)...");
+	// ALWAYS (incremental, seconds when current): a binary left from before a builder change runs
+	// stale code and reports a missing sidecar — the check's own false failure on 2026-09-25.
+	{
+		console.log(
+			`  building the native store builder for the parity check${existsSync(join(repo, BUILDER)) ? " (incremental)" : ""}...`,
+		);
 		const built = Bun.spawnSync(
 			[
 				"scripts/with-rust.sh",
