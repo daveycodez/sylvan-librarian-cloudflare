@@ -105,7 +105,6 @@ import {
 } from "./engine/reference-kv";
 import {
 	buildRoutingFilterFromHashes,
-	NAME_KEYS_STAMP,
 	ROUTING_FEATURE_NAME_KEYS,
 	RoutingKeyAccumulator,
 } from "./engine/routing-filter";
@@ -2441,45 +2440,38 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const pp = this.requirePp();
 		const builtAt = this.metaGet("built_at") ?? "";
 		const formatVersion = Number(this.metaGet("format_version") ?? 0);
+		// The tags phase's wasm instance is still referenced here, and nothing reads it again: scores
+		// ran on a transient instance restored from the snapshot, and agg builds a fresh one per
+		// partition. Its linear memory (17/32/54MB at 1×/2×/3× the corpus in the harness) would sit
+		// beside this phase's peak for nothing. Dropping it is the eviction case agg already handles.
+		dropGroupWasm();
 		try {
 			if (!builtAt || !formatVersion) throw new Error("built_at/format_version are not stamped yet");
-			// Read in one pass (sqlAll) and folded into hashes row by row. The staged text is ~60MB on today's corpus and the
-			// accumulator holds four typed arrays instead of 1.9M strings — the difference between
-			// ~20MB and well past this object's 128MB.
+			// STREAMED (sqlIter): one staged batch in hand at a time, hashed where its bytes lie
+			// (`addBatch`) — never the whole ~30MB of packed staging at once, and no string per key.
 			//
-			// SIZED EXACTLY from the scores pass's own count (`routing_lines`): 1,910,333 id lines plus
-			// ~45k deduplicated name lines on the 2026-09-23 corpus, where the fixed 2^21 hint it
-			// replaced was 97% full with name keys and overflowed outright at 2x the corpus — and an
-			// overflow doubles every column while the old ones are live. Floored at the old 2^21, so
-			// a run staged partly before the count existed (a short total) sizes as it always did.
+			// SIZED EXACTLY from the scores pass's own count (`routing_lines`): 1,955,867 counted lines
+			// for 1,954,660 keys on the 2026-09-25 corpus — the count includes each batch's stamp line,
+			// so it runs over the keys, never under. The 2^21 floor it used to carry held ~1.4MB of
+			// unused columns at 1×; 2^21 is now only the guess for a run staged before the count
+			// existed, where running out costs a grow.
 			const counted = Number(this.metaGet("routing_lines") ?? 0);
-			const acc = new RoutingKeyAccumulator(Math.max(counted, 1 << 21));
-			const decoder = new TextDecoder();
+			const acc = new RoutingKeyAccumulator(counted > 0 ? counted : 1 << 21);
 			let lines = 0;
 			// Name keys are claimed only if EVERY staged batch opened with the stamp: a run resumed
 			// across the deploy that added them has early batches without any, and a name missing
 			// from the filter must never read as "no other partition holds it".
 			let batches = 0;
 			let stampedBatches = 0;
-			for (const row of this.sqlAll<{ bytes: ArrayBuffer }>("SELECT bytes FROM routing_keys ORDER BY seq")) {
-				const text = decoder.decode(unpackBlob(new Uint8Array(row.bytes)));
+			for (const row of this.sqlIter<{ bytes: ArrayBuffer }>("SELECT bytes FROM routing_keys ORDER BY seq")) {
+				const read = acc.addBatch(unpackBlob(new Uint8Array(row.bytes)));
 				batches++;
-				if (text.startsWith(`${NAME_KEYS_STAMP}\n`)) stampedBatches++;
-				let at = 0;
-				while (at < text.length) {
-					let end = text.indexOf("\n", at);
-					if (end === -1) end = text.length;
-					if (end > at && text.charCodeAt(at) !== 35 /* # */) {
-						const tab = text.indexOf("\t", at);
-						if (tab !== -1 && tab < end) {
-							acc.add(text.slice(tab + 1, end), Number(text.slice(at, tab)));
-							lines++;
-						}
-					}
-					at = end + 1;
-				}
+				if (read.stamped) stampedBatches++;
+				lines += read.keys;
 			}
 			if (lines === 0) throw new Error("the scores phase staged no routing keys");
+			// Sorts in place and hands back exact copies of the distinct keys, releasing the
+			// accumulator's columns — see `seal` and backlog x2 for the memory this phase holds.
 			const sealed = acc.seal(pp.partitions.length);
 			const names = batches > 0 && stampedBatches === batches;
 			const bytes = buildRoutingFilterFromHashes(
