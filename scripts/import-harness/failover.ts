@@ -3,7 +3,7 @@
 //
 //   bun run harness:failover
 //
-// Two scenarios, each on its own KV namespace:
+// Seven scenarios, each on its own KV namespace (5-7 are backlog x3's, at the bottom):
 //
 //   1. LOST ALARM. A run's alarm vanishes mid-transform (2026-09-17: the final `purge` alarm was
 //      never delivered). The object still answers, so the watchdog KICKS it; the chain resumes
@@ -14,6 +14,12 @@
 //      fresh coordinator, which publishes. Then the wedged one wakes (2026-09-21's did, after 4.5h)
 //      and its alarm chain runs again. It must retire: purge its staging, end `superseded`, and
 //      leave every KV key exactly as the replacement published it.
+//
+//   3-4. A replaced run waking over budget; replaced coordinators releasing their storage.
+//
+//   5-7. NEVER MORE THAN THREE GENERATIONS (x3), each watching every KV write: a wedge mid-publish
+//      whose run wakes past its top-of-alarm check (the write-time fence stops it); a deploy landing
+//      mid-nightly (the deploy wins); and the byte guard dropping the rollback, then refusing.
 //
 // Bun, not workerd — see run.ts for what a green harness does and does not prove. What this one
 // proves is the protocol: who writes what, in which order, and that the fence holds.
@@ -446,6 +452,348 @@ function check(ok: boolean, what: string): void {
 		await c.coordinator.fetch(new Request(`https://coordinator/release?epoch=${epochs[2]}`))
 	).json()) as { released?: boolean };
 	check(refused.released === false && !c.released(), "the current coordinator refuses to release");
+}
+
+// ── x3: never more than three store generations in KV ─────────────────────────
+// Retention by role (src/engine/kv-retention.ts): the live family, the family it replaced, and the
+// one upload-lease holder's. Every scenario below watches EVERY KV write and fails if a fourth
+// generation is ever present, and starts from a namespace holding two real generations (live and
+// rollback), so the third is always the one under test.
+
+const retention = await import("../../src/engine/kv-retention");
+const storeKv = await import("../../src/engine/store-kv");
+const deployUpload = await import("../deploy-upload");
+type StoreManifest = import("../../src/engine/types").StoreManifest;
+type DeployKv = import("../deploy-upload").DeployKv;
+
+/** Fail on any write after which KV holds more than three generations; remember the most seen. */
+function watchGenerations(kv: FakeKV): { max: () => number; violations: string[] } {
+	let max = 0;
+	const violations: string[] = [];
+	kv.onWrite = (key, op) => {
+		const n = retention.generationsPresent(kv.keys(retention.GENERATION_KEY_PREFIX)).length;
+		max = Math.max(max, n);
+		if (n > 3) violations.push(`${op} ${key}: ${n} generations`);
+	};
+	return { max: () => max, violations };
+}
+
+async function manifestOf(kv: FakeKV): Promise<StoreManifest> {
+	return JSON.parse(String(await kv.get(storeKv.MANIFEST_KEY, "text"))) as StoreManifest;
+}
+
+function generations(kv: FakeKV): string[] {
+	return retention.generationsPresent(kv.keys(retention.GENERATION_KEY_PREFIX));
+}
+
+function keysOf(kv: FakeKV, builtAt: string): string[] {
+	return kv.keys(retention.GENERATION_KEY_PREFIX).filter((k) => retention.generationOfKey(k) === builtAt);
+}
+
+function metaOf(i: Instance, key: string): string | null {
+	const row = i.storage.db.query("SELECT value FROM meta WHERE key = ?").all(key) as { value?: string }[];
+	return row[0]?.value === undefined ? null : String(row[0].value);
+}
+
+/** Move a finished run's start 13 hours back, so the next cron start is a new day and not a duplicate. */
+function backdateRun(i: Instance): void {
+	const row = i.storage.db.query("SELECT value FROM __harness_kv WHERE key = 'run'").all() as { value: string }[];
+	const run = JSON.parse(row[0]?.value ?? "{}") as { startedAt?: string };
+	run.startedAt = new Date(Date.now() - 13 * 3_600_000).toISOString();
+	i.storage.db.run("UPDATE __harness_kv SET value = ? WHERE key = 'run'", [JSON.stringify(run)]);
+}
+
+function runDetail(i: Instance): string {
+	const row = i.storage.db.query("SELECT value FROM __harness_kv WHERE key = 'run'").all() as { value?: string }[];
+	return row[0]?.value ? String((JSON.parse(row[0].value) as { detail?: string }).detail ?? "") : "";
+}
+
+/** Two nightly runs on the legacy coordinator: the second live, the first its rollback. */
+async function seedTwoGenerations(
+	kv: FakeKV,
+	ns: ReturnType<typeof namespace>,
+	env: Parameters<typeof watchdog.runImportWatchdog>[0],
+): Promise<{ g1: string; g2: string; a: Instance }> {
+	await watchdog.startNightlyImport(env);
+	const a = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
+	await a.drive();
+	const g1 = String((await manifestOf(kv)).built_at);
+	backdateRun(a);
+	await Bun.sleep(1_100); // built_at is in seconds: the next run's must differ
+	await watchdog.startNightlyImport(env);
+	await a.drive();
+	const live = await manifestOf(kv);
+	const g2 = String(live.built_at);
+	check(
+		g2 !== g1 && live.previous_built_at === g1 && generations(kv).join() === [g2, g1].join(),
+		`seeded: live ${g2}, its manifest names ${live.previous_built_at} as the rollback, and KV holds exactly those two`,
+	);
+	backdateRun(a);
+	await Bun.sleep(1_100);
+	return { g1, g2, a };
+}
+
+/** The deploy side (scripts/deploy-upload.ts) over the harness KV, with a clock its waits advance. */
+function fakeDeployKv(kv: FakeKV, clock = { offset: 0 }): DeployKv {
+	return {
+		get: async (key) => ({ value: (await kv.get(key, "text")) as string | null, failed: null }),
+		put: (key, value, opts) =>
+			kv.put(key, value, opts?.metadata !== undefined ? { metadata: opts.metadata } : undefined),
+		list: async (prefix) => (await kv.list({ prefix })).keys,
+		deleteKeys: async (keys) => {
+			for (const key of keys) await kv.delete(key);
+			return true;
+		},
+		sleep: async (ms) => {
+			clock.offset += ms;
+		},
+		now: () => Date.now() + clock.offset,
+	};
+}
+
+/**
+ * A deploy publishing a store: scripts/import-store.sh's fence, then seed-remote-kv.ts's sequence
+ * through the REAL deploy-upload functions — begin (fence settle, lease, sweep, guard), the family's
+ * keys, the lease check, the manifest, finish. The family is the live one's bytes under a new
+ * built_at, so the result is a servable store.
+ */
+async function deployPublish(kv: FakeKV, builtAt: string): Promise<StoreManifest> {
+	const live = await manifestOf(kv);
+	const from = String(live.built_at);
+	const rename = (k: string) => k.replace(`-${from}`, `-${builtAt}`);
+	const family = keysOf(kv, from);
+	const values = new Map<string, Uint8Array>();
+	for (const k of family) values.set(k, new Uint8Array((await kv.get(k, "arrayBuffer")) as ArrayBuffer));
+	const incomingBytes = [...values.values()].reduce((n, v) => n + v.byteLength, 0);
+	const dkv = fakeDeployKv(kv);
+	await deployUpload.writeDeployFence(dkv);
+	const begun = await deployUpload.beginDeployUpload(dkv, { builtAt, incomingBytes });
+	if (!begun.ok) throw new Error(`deploy refused: ${begun.why}`);
+	for (const [k, v] of values) await kv.put(rename(k), v, { metadata: retention.kvBytesMetadata(v.byteLength) });
+	if (!(await deployUpload.deployStillHoldsLease(dkv, builtAt))) throw new Error("deploy lost its lease");
+	const next: StoreManifest = {
+		...live,
+		built_at: builtAt,
+		store_key: rename(live.store_key),
+		partitions: live.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
+	};
+	const published = retention.withPreviousBuiltAt(next, live);
+	await kv.put(storeKv.MANIFEST_KEY, JSON.stringify(published));
+	await deployUpload.finishDeployUpload(dkv, published);
+	return published;
+}
+
+// ── 5. a wedge mid-publish: the replacement publishes, the old run wakes past its top check ──
+{
+	console.log("\n5. x3: a run wedges mid-publish, is failed over, and wakes past its top-of-alarm check");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const watch = watchGenerations(kv);
+	const { g1, g2, a: old } = await seedTwoGenerations(kv, ns, env);
+
+	await watchdog.startNightlyImport(env);
+	await old.drive((phase) => phase === "publish");
+	await old.drive((_phase, n) => n >= 1); // partition 0's chunk goes up
+	await old.drive((phase) => phase !== "publish"); // partition 0 completes
+	await old.drive((phase) => phase === "publish"); // …and it stops short of partition 1's chunk
+	const g3 = String(metaOf(old, "built_at"));
+	const oldKeys = keysOf(kv, g3);
+	check(
+		old.phase() === "publish" &&
+			oldKeys.some((k) => k.includes("-p0.store:")) &&
+			!oldKeys.some((k) => k.includes("-p1.")),
+		`the old run (build ${g3}) wedges with ${oldKeys.length} key(s) of its family uploaded, about to put partition 1`,
+	);
+	old.wedged = true;
+	const t0 = Date.now();
+	await watchdog.runImportWatchdog(env, t0, 200);
+	const failover = await watchdog.runImportWatchdog(env, t0 + 10 * 60_000, 200);
+	check(failover.kind === "failover", "the watchdog fails over");
+	const fresh = instances.get((await watchdog.readPointer(kv)).name);
+	if (!fresh) throw new Error("no replacement instance");
+	await fresh.drive();
+	const g4 = String((await manifestOf(kv)).built_at);
+	check(fresh.runState() === "done" && g4 !== g3, `the replacement published build ${g4}`);
+	check(keysOf(kv, g3).length === 0, "the old run's orphan family was retired before the replacement's first key");
+	const live = await manifestOf(kv);
+	check(
+		live.previous_built_at === g2 && generations(kv).join() === [g4, g2].join() && keysOf(kv, g1).length === 0,
+		`KV holds live ${g4} and rollback ${g2}; ${g1} (the old rollback) is gone`,
+	);
+	const published = snapshot(kv);
+
+	// The wedge clears. Its top-of-alarm read of the pointer is STALE (KV is eventually consistent),
+	// so the run gets past it and goes to put partition 1 — the write-time fence must stop it.
+	old.wedged = false;
+	kv.staleGets.set(watchdog.COORDINATOR_POINTER_KEY, [null]);
+	const putsBefore = kv.puts.length;
+	await old.drive();
+	check(
+		(kv.staleGets.get(watchdog.COORDINATOR_POINTER_KEY) ?? []).length === 0,
+		"its top-of-alarm check read the stale pointer and passed",
+	);
+	check(
+		kv.puts.slice(putsBefore).every((k) => retention.generationOfKey(k) !== g3) && keysOf(kv, g3).length === 0,
+		"the write-time fence stopped its next put: nothing of its family came back",
+	);
+	check(old.released(), "it retired and released its storage");
+	const after = snapshot(kv);
+	const changed = [...new Set([...published.keys(), ...after.keys()])].filter((k) => published.get(k) !== after.get(k));
+	check(changed.length === 0, `KV is exactly what the replacement published (${changed.length} key(s) differ)`);
+	check(
+		watch.violations.length === 0 && watch.max() <= 3,
+		`never more than three generations at any write (max ${watch.max()}${watch.violations.length ? `; ${watch.violations[0]}` : ""})`,
+	);
+}
+
+// ── 6. a deploy lands mid-nightly: the deploy wins ─────────────────────────────
+{
+	console.log("\n6. x3: a deploy fences a nightly that is mid-upload, and the deploy wins");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const watch = watchGenerations(kv);
+	const { g1, g2, a } = await seedTwoGenerations(kv, ns, env);
+
+	await watchdog.startNightlyImport(env);
+	await a.drive((phase) => phase === "publish");
+	await a.drive((_phase, n) => n >= 1);
+	const g3 = String(metaOf(a, "built_at"));
+	check(
+		keysOf(kv, g3).length >= 2 && retention.parseUploadLease(String(await kv.get(PUBLISHING_KEY)))?.built_at === g3,
+		`the nightly (build ${g3}) holds the upload lease with ${keysOf(kv, g3).length} key(s) up`,
+	);
+
+	await Bun.sleep(1_100);
+	const d = String(Math.floor(Date.now() / 1000));
+	const deployed = await deployPublish(kv, d);
+	check(keysOf(kv, g3).length === 0, "the deploy retired the nightly's half-uploaded family before its own first key");
+	check(
+		deployed.previous_built_at === g2 && generations(kv).join() === [d, g2].join() && keysOf(kv, g1).length === 0,
+		`the deploy's store ${d} is live, ${g2} is its rollback, ${g1} is gone`,
+	);
+	check((await kv.get(PUBLISHING_KEY)) === null, "the deploy released its lease");
+	const published = snapshot(kv);
+
+	await a.drive();
+	check(
+		a.runState() === "superseded" && !a.released(),
+		`the nightly retired at its next alarm (state ${a.runState()}) and keeps its storage for tomorrow's run`,
+	);
+	const after = snapshot(kv);
+	const changed = [...new Set([...published.keys(), ...after.keys()])].filter((k) => published.get(k) !== after.get(k));
+	check(changed.length === 0, `…and wrote nothing: KV is what the deploy published (${changed.length} key(s) differ)`);
+
+	// A run that starts AFTER the fence is not retired by it — and waits while a deploy holds the lease.
+	const fence = retention.parseDeployFence(await kv.get(retention.DEPLOY_FENCE_KEY, "json"));
+	await kv.put(
+		PUBLISHING_KEY,
+		retention.encodeUploadLease({ built_at: "999", owner: retention.DEPLOY_LEASE_OWNER, epoch: fence?.at ?? 0 }),
+	);
+	await watchdog.startNightlyImport(env);
+	await a.drive((phase) => phase === "routing");
+	const due = Date.now();
+	await a.drive((_phase, n) => n >= 1);
+	const next = await a.storage.getAlarm();
+	const g5 = String(metaOf(a, "built_at"));
+	check(
+		a.phase() === "routing" && next !== null && next >= due + 4 * 60_000 && keysOf(kv, g5).length === 0,
+		`a later run meeting a deploy's lease waits (${next === null ? "no alarm" : `${Math.round((next - due) / 60_000)}min`}) and uploads nothing`,
+	);
+	await kv.delete(PUBLISHING_KEY);
+	await a.drive();
+	const live = await manifestOf(kv);
+	check(
+		a.runState() === "done" && String(live.built_at) === g5 && live.previous_built_at === d,
+		`once the lease is free it publishes ${g5}, with the deploy's ${d} as its rollback`,
+	);
+	check(generations(kv).join() === [g5, d].join(), `KV ends holding ${g5} and ${d}`);
+	check(
+		watch.violations.length === 0 && watch.max() <= 3,
+		`never more than three generations at any write (max ${watch.max()}${watch.violations.length ? `; ${watch.violations[0]}` : ""})`,
+	);
+}
+
+// ── 7. the byte guard: drop the rollback, or refuse ─────────────────────────────
+{
+	console.log("\n7. x3: the byte guard drops the rollback generation near the cap, and refuses over it");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const watch = watchGenerations(kv);
+	const { g1, g2, a } = await seedTwoGenerations(kv, ns, env);
+
+	// The harness corpus is a few MB, so the rest of a namespace near the cap is one filler key whose
+	// metadata says what a list would — exactly what the guard reads.
+	const FILLER = "x3:filler";
+	const live = await manifestOf(kv);
+	const known = retention.manifestChunkSizes(live);
+	const sum = (keys: { name: string; metadata?: unknown }[]) =>
+		keys.reduce((n, k) => n + retention.listedKeyBytes(k, known).bytes, 0);
+	const all = (await kv.list()).keys;
+	const used = sum(all);
+	const rollbackBytes = sum(all.filter((k) => retention.generationOfKey(k.name) === g1));
+	const incoming = Math.ceil((live.store_gzip_bytes ?? 0) * retention.NEW_FAMILY_ALLOWANCE);
+	// Over the guard with the rollback, under it without: the rollback has to go.
+	await kv.put(FILLER, "x", {
+		metadata: retention.kvBytesMetadata(retention.KV_GUARD_BYTES - used - incoming + Math.floor(rollbackBytes / 2)),
+	});
+	let firstKeyGenerations: string[] | null = null;
+	const watching = kv.onWrite;
+	kv.onWrite = (key, op) => {
+		watching?.(key, op);
+		const at = retention.generationOfKey(key);
+		if (op === "put" && at && at !== g1 && at !== g2 && firstKeyGenerations === null) {
+			firstKeyGenerations = generations(kv).filter((g) => g !== at);
+		}
+	};
+	await watchdog.startNightlyImport(env);
+	await a.drive();
+	const g3 = String((await manifestOf(kv)).built_at);
+	check(
+		JSON.stringify(firstKeyGenerations) === JSON.stringify([g2]),
+		`near the cap, the rollback ${g1} was dropped BEFORE build ${g3}'s first key (present then: ${JSON.stringify(firstKeyGenerations)})`,
+	);
+	check(
+		a.runState() === "done" &&
+			(await manifestOf(kv)).previous_built_at === g2 &&
+			generations(kv).join() === [g3, g2].join(),
+		`the run published ${g3}; ${g2} is its rollback`,
+	);
+
+	// Over the guard even without the rollback: the run refuses before its family's first key.
+	await kv.put(FILLER, "x", { metadata: retention.kvBytesMetadata(retention.KV_GUARD_BYTES) });
+	backdateRun(a);
+	await Bun.sleep(1_100);
+	await watchdog.startNightlyImport(env);
+	await a.drive();
+	const refused = String(metaOf(a, "built_at"));
+	check(
+		a.runState() === "failed" && runDetail(a).includes("byte guard"),
+		`over the cap the run fails with the guard's reason (${runDetail(a).slice(0, 80)}…)`,
+	);
+	check(
+		keysOf(kv, refused).length === 0 && String((await manifestOf(kv)).built_at) === g3,
+		`nothing of build ${refused} was uploaded, and ${g3} is still live`,
+	);
+	check((await kv.get(PUBLISHING_KEY)) === null, "the refused run released its lease");
+
+	// The deploy's guard: same decision, same refusal, before its first key.
+	const dkv = fakeDeployKv(kv);
+	const deployKeysBefore = kv.keys().length;
+	const begun = await deployUpload.beginDeployUpload(dkv, { builtAt: "4102444800", incomingBytes: 50_000_000 });
+	check(
+		!begun.ok && (await kv.get(PUBLISHING_KEY)) === null && generations(kv).join() === [g3, g2].join(),
+		`the deploy refuses too, releases its lease and deletes nothing (${kv.keys().length - deployKeysBefore} key(s) added: the fence)`,
+	);
+	check(
+		watch.violations.length === 0 && watch.max() <= 3,
+		`never more than three generations at any write (max ${watch.max()}${watch.violations.length ? `; ${watch.violations[0]}` : ""})`,
+	);
 }
 
 server.stop();

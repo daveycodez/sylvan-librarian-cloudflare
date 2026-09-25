@@ -25,6 +25,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { kvBytesMetadata } from "../src/engine/kv-retention";
 import {
 	encodeRulingsBucket,
 	parseRulingLine,
@@ -127,7 +128,11 @@ entries.push({ key: RULINGS_META_KEY, value: JSON.stringify(meta) });
 // ── write ────────────────────────────────────────────────────────────────────
 
 const bulkFile = join(tmpdir(), "sylvan-rulings-bulk.json");
-await writeFile(bulkFile, JSON.stringify(entries));
+// Every value carries its size (`{b}`), which the byte guard sums from a list (src/engine/kv-retention.ts).
+await writeFile(
+	bulkFile,
+	JSON.stringify(entries.map((e) => ({ ...e, metadata: kvBytesMetadata(Buffer.byteLength(e.value)) }))),
+);
 try {
 	const argv = [...wranglerArgv(), "kv", "bulk", "put", bulkFile, ...(await kvTargetArgs(remote))];
 	const proc = Bun.spawn(argv, { stdout: "inherit", stderr: "inherit" });

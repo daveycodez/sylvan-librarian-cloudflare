@@ -81,6 +81,22 @@ import {
 	type SnapshotRows,
 	transientWasm,
 } from "./engine/import-wasm";
+import {
+	DEPLOY_FENCE_KEY,
+	DEPLOY_LEASE_OWNER,
+	decideUploadLease,
+	describePlan,
+	encodeUploadLease,
+	GENERATION_KEY_PREFIX,
+	kvBytesMetadata,
+	type ListedKey,
+	NEW_FAMILY_ALLOWANCE,
+	parseDeployFence,
+	parseUploadLease,
+	planRetention,
+	type UploadLease,
+	withPreviousBuiltAt,
+} from "./engine/kv-retention";
 import { staleKeys } from "./engine/kv-versions";
 import {
 	ORACLE_INDEX_KEY_PREFIX,
@@ -146,7 +162,6 @@ import {
 	chunkHeadroomWarning,
 	chunkKey,
 	gzipBytes,
-	KEEP_STORES_IN_KV,
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
@@ -159,7 +174,6 @@ import {
 	REGION_LIVE_PREFIX,
 	STORE_CONTENT_GENERATION,
 	type StagedRow,
-	staleStoreKeys,
 	storeKeyStem,
 	writeManifest,
 	writeRoutingFilter,
@@ -245,7 +259,6 @@ import {
 } from "./import-spill";
 import {
 	COORDINATOR_POINTER_KEY,
-	type CoordinatorPointer,
 	type CoordinatorStatus,
 	LEGACY_COORDINATOR_NAME,
 	readPointer,
@@ -375,6 +388,27 @@ function isQuotaError(err: unknown): boolean {
 
 class FatalImportError extends Error {}
 
+/**
+ * Who replaced this run (backlog x3): the watchdog's newer coordinator (the pointer's epoch), a
+ * deploy that fenced every run started before it (DEPLOY_FENCE_KEY), or an upload-lease holder that
+ * outranks it. Any of them means this run publishes nothing more and retires.
+ */
+interface Superseder {
+	name: string;
+	epoch: number;
+	by: "watchdog" | "deploy" | "lease";
+}
+
+/** Thrown by a write-time fence check; the alarm body turns it into a retire, never a failed run. */
+class SupersededError extends Error {
+	constructor(readonly superseder: Superseder) {
+		super(`superseded by ${superseder.name} (${superseder.by}, epoch ${superseder.epoch})`);
+	}
+}
+
+/** How long a run waits before asking again when a deploy holds the upload lease. */
+const DEPLOY_LEASE_WAIT_MS = 5 * 60_000;
+
 // Slice budgets — sized so a slice stays far under the 30s DO CPU allowance.
 /** Compressed dump bytes fetched per slice (network-bound, cheap CPU). */
 const FETCH_SLICE_BYTES = 48 * 1024 * 1024;
@@ -420,7 +454,7 @@ const STAGE_BLOB_BYTES = STAGED_ROW_BYTES;
 type SnapshotTable = "tagdata_blobs" | "corpus_blobs";
 /** Lines per wasm transform call within a slice. */
 const LINES_PER_CALL = 2_000;
-// Store retention lives in src/engine/store-kv.ts (KEEP_STORES_IN_KV), shared with the deploy
+// Store retention lives in src/engine/kv-retention.ts (retention by role), shared with the deploy
 // path so one policy governs both writers.
 /** JsonlStream parity: parse-coverage hard-failure thresholds (bulk.rs). */
 const PARSE_COVERAGE_MIN_BYTES = 1_000_000;
@@ -950,22 +984,90 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
-	 * The coordinator the watchdog designated after this one, or null while this one is current.
+	 * Who replaced this run, or null while it is still the one allowed to publish.
 	 *
-	 * Compared by EPOCH, never by name: KV is eventually consistent, so a freshly designated
-	 * coordinator's first reads may still see the pointer that named its predecessor — an older
-	 * epoch, which must not make it retire itself. A pointer that cannot be read retires nothing
-	 * either; the next alarm reads it again.
+	 * Three fences, read fresh every time:
+	 *   - the watchdog's pointer: a NEWER epoch than this coordinator's means it was failed over.
+	 *     Compared by EPOCH, never by name: KV is eventually consistent, so a freshly designated
+	 *     coordinator's first reads may still see the pointer that named its predecessor — an older
+	 *     epoch, which must not make it retire itself.
+	 *   - the deploy fence (DEPLOY_FENCE_KEY): a deploy that began AFTER this run started owns the
+	 *     upload now, and deletes this run's family before its own first key (x3: the deploy wins).
+	 *   - with `lease`, the upload lease: a holder this run would have to yield to has taken it.
+	 *     Only once this run holds the lease (from its family's first key on), so a run still short
+	 *     of that point is not retired by a deploy it will simply wait for.
+	 *
+	 * A read that fails retires nothing: the next alarm, or the next write's fence, reads it again —
+	 * and the manifest write has the chunk check behind it either way.
 	 */
-	private async supersededBy(): Promise<CoordinatorPointer | null> {
+	private async supersededBy(opts: { lease?: boolean } = {}): Promise<Superseder | null> {
+		const mine = Number(this.metaGet("coordinator_epoch") ?? 0);
 		try {
 			const pointer = await readPointer(this.env.STORE_KV);
-			const mine = Number(this.metaGet("coordinator_epoch") ?? 0);
-			return pointer.epoch > mine ? pointer : null;
+			if (pointer.epoch > mine) return { name: pointer.name, epoch: pointer.epoch, by: "watchdog" };
 		} catch (err) {
 			console.warn(`Import fence: could not read ${COORDINATOR_POINTER_KEY} (${err}); carrying on`);
-			return null;
 		}
+		try {
+			const fence = parseDeployFence(await this.env.STORE_KV.get(DEPLOY_FENCE_KEY, "json"));
+			// A run from before run_started_ms was recorded reads 0: any fence retires it, which is
+			// the deploy winning over a run whose start this code cannot place.
+			const started = Number(this.metaGet("run_started_ms") ?? 0);
+			if (fence && fence.at > started) return { name: "the deploy", epoch: fence.at, by: "deploy" };
+		} catch (err) {
+			console.warn(`Import fence: could not read ${DEPLOY_FENCE_KEY} (${err}); carrying on`);
+		}
+		if (opts.lease) {
+			const me = this.myLease();
+			try {
+				const held = parseUploadLease(await this.env.STORE_KV.get(PUBLISHING_KEY));
+				const decision = me.built_at && held ? decideUploadLease(held, me) : null;
+				if (decision?.kind === "yield") {
+					return { name: decision.holder.owner || "an older run", epoch: decision.holder.epoch, by: "lease" };
+				}
+			} catch (err) {
+				console.warn(`Import fence: could not read ${PUBLISHING_KEY} (${err}); carrying on`);
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The write-time fence (x3): right before every chunk put and before the manifest write. The
+	 * top-of-alarm check alone left a gap — a slice that wedges between that read and its put can
+	 * resume hours later, after its successor has swept the family it is about to write into.
+	 */
+	private async fenceBeforeWrite(): Promise<void> {
+		const superseder = await this.supersededBy({ lease: true });
+		if (superseder) throw new SupersededError(superseder);
+	}
+
+	/** This run's claim on the upload lease. */
+	private myLease(): UploadLease {
+		return {
+			built_at: this.metaGet("built_at") ?? "",
+			owner: this.metaGet("coordinator_name") ?? LEGACY_COORDINATOR_NAME,
+			epoch: Number(this.metaGet("coordinator_epoch") ?? 0),
+		};
+	}
+
+	/** Send this run to its retire purge: it publishes nothing more, whatever phase it was in. */
+	private beginRetire(superseder: Superseder, phase: string): void {
+		console.warn(
+			`Import run superseded in phase ${phase}: ${
+				superseder.by === "watchdog"
+					? `the watchdog designated ${superseder.name} (epoch ${superseder.epoch})`
+					: superseder.by === "deploy"
+						? `a deploy fenced every run started before ${new Date(superseder.epoch).toISOString()}`
+						: `${superseder.name} (epoch ${superseder.epoch}) holds the upload lease`
+			} after this coordinator (${this.metaGet("coordinator_name") ?? LEGACY_COORDINATOR_NAME}, epoch ` +
+				`${this.metaGet("coordinator_epoch") ?? 0}); retiring its staging and publishing nothing`,
+		);
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("superseded_by", superseder.name);
+			this.metaSet("superseded_kind", superseder.by);
+			this.beginPurge("retire");
+		});
 	}
 
 	private async getRun(): Promise<RunRecord> {
@@ -1042,6 +1144,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Who this run is, for the fence (supersededBy): the pointer's epoch when it was started.
 			this.metaSet("coordinator_name", self.name);
 			this.metaSet("coordinator_epoch", String(self.epoch));
+			// When this run began, for the deploy fence: a deploy that began later retires it.
+			this.metaSet("run_started_ms", String(Date.now()));
 			this.beginPurge("reset");
 		});
 		await this.storePut("run", record);
@@ -1124,16 +1228,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (!(phase === "purge_staging" && this.metaGet("purge_scope") === "retire")) {
 			const successor = await this.supersededBy();
 			if (successor) {
-				console.warn(
-					`Import run superseded in phase ${phase}: the watchdog designated ${successor.name} ` +
-						`(epoch ${successor.epoch}) after this coordinator ` +
-						`(${this.metaGet("coordinator_name") ?? LEGACY_COORDINATOR_NAME}, epoch ` +
-						`${this.metaGet("coordinator_epoch") ?? 0}); retiring its staging and publishing nothing`,
-				);
-				this.ctx.storage.transactionSync(() => {
-					this.metaSet("superseded_by", successor.name);
-					this.beginPurge("retire");
-				});
+				this.beginRetire(successor, phase);
 				phase = "purge_staging";
 			}
 		}
@@ -1295,6 +1390,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 				await this.armAlarm(this.nextDueMs);
 			}
 		} catch (err) {
+			if (err instanceof SupersededError && !retiring) {
+				// A write-time fence (fenceBeforeWrite) found this run replaced: retire, exactly as the
+				// top-of-alarm check would have, from the next alarm on.
+				this.beginRetire(err.superseder, phase);
+				this.nextDueMs = Date.now();
+				await this.armAlarm(this.nextDueMs);
+				return;
+			}
 			if (retiring && (err instanceof FatalImportError || isQuotaError(err))) {
 				await this.deferRetire(
 					`purge slice failed: ${err}`,
@@ -1380,18 +1483,135 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
-	 * Tell every retention sweep that this run's family is in flight (see
-	 * PUBLISHING_KEY). First called in stepRouting, before the family's FIRST
-	 * key lands in KV (the routing filter is grouped with the family by
-	 * built_at and was once retired unprotected), then at each partition's
-	 * first chunk: idempotent, and each call refreshes the TTL so a run that
-	 * crawls across deploys for days keeps its protection for as long as it
-	 * keeps making progress.
+	 * Before this run's family puts its FIRST key (backlog x3): take the upload lease, retire every
+	 * family that plays no role, and ask the byte guard whether one more family fits.
+	 *
+	 * First called in stepRouting — the routing filter is the family's first key, grouped with it by
+	 * built_at, and was once retired unprotected — then at each partition's first chunk, where it
+	 * only refreshes the lease's TTL (so a run that crawls across deploys for days stays protected
+	 * for as long as it keeps making progress) behind the write-time fence.
+	 *
+	 *   1. The fence: a run the watchdog or a deploy replaced retires here (SupersededError).
+	 *   2. The lease (decideUploadLease). A deploy holding it means "wait": the run asks again in
+	 *      DEPLOY_LEASE_WAIT_MS. Any other holder that outranks this run means it was replaced.
+	 *   3. One list of the WHOLE namespace, with metadata — every put carries `{b: bytes}` — and the
+	 *      plan (planRetention): the live family, the family it replaced and this one stay;
+	 *      everything else is deleted before this family's first key, so KV never holds a fourth.
+	 *      A displaced run's family goes too. That is safe only because a displaced run can no
+	 *      longer write a manifest: its fence (pointer, deploy fence, lease) and the chunk check
+	 *      both run right before writeManifest, and the pointer or fence that displaced it has had
+	 *      the whole build — tens of minutes — to reach every colo.
+	 *   4. The guard: the namespace after the sweep plus the live family x NEW_FAMILY_ALLOWANCE
+	 *      over KV_GUARD_BYTES drops the rollback family; still over refuses the run
+	 *      (FatalImportError) — the site keeps serving, and nothing half-uploaded is left behind.
+	 *
+	 * KV cost per run: one list (a page per 1,000 keys; the namespace holds ~450), two reads, one
+	 * lease put, and the deletes owed — about one family a night, ~13 keys at 1x, ~23 at 2x.
 	 */
-	private async markPublishing(): Promise<void> {
-		const builtAt = this.metaGet("built_at") ?? "";
-		if (!builtAt) throw new Error("publish: no built_at to mark as in flight");
-		await this.env.STORE_KV.put(PUBLISHING_KEY, builtAt, { expirationTtl: PUBLISHING_TTL_SECONDS });
+	private async beginFamilyUpload(): Promise<"go" | "wait"> {
+		const me = this.myLease();
+		if (!me.built_at) throw new Error("publish: no built_at to mark as in flight");
+		if (this.metaGet("upload_lease") === me.built_at) {
+			await this.fenceBeforeWrite();
+			await this.putLease(me);
+			return "go";
+		}
+		const superseder = await this.supersededBy();
+		if (superseder) throw new SupersededError(superseder);
+		const held = parseUploadLease(await this.env.STORE_KV.get(PUBLISHING_KEY));
+		const decision = decideUploadLease(held, me);
+		if (decision.kind === "yield") {
+			if (decision.holder.owner === DEPLOY_LEASE_OWNER) {
+				console.warn(
+					`Upload lease: ${decision.why}; this run waits ${DEPLOY_LEASE_WAIT_MS / 60_000}min and asks again ` +
+						"(a deploy's lease is released when its manifest lands, or expires in two hours)",
+				);
+				return "wait";
+			}
+			throw new SupersededError({
+				name: decision.holder.owner || "an older run",
+				epoch: decision.holder.epoch,
+				by: "lease",
+			});
+		}
+		if (decision.displaced) {
+			console.warn(
+				`Upload lease taken from ${decision.displaced.owner || "a pre-x3 run"} (epoch ${decision.displaced.epoch}, ` +
+					`build ${decision.displaced.built_at}); its family is retired below unless a manifest names it`,
+			);
+		}
+		await this.putLease(me);
+
+		const live = await this.readLiveManifest();
+		const keys = await this.listAllKeysWithMetadata("");
+		const incoming =
+			live.manifest?.store_gzip_bytes !== undefined
+				? Math.ceil(live.manifest.store_gzip_bytes * NEW_FAMILY_ALLOWANCE)
+				: undefined;
+		// An unreadable manifest decides nothing: no roles, so nothing is deleted (planRetention), and
+		// no size to project from, so the guard does not run. The next publish decides again.
+		const plan = planRetention(keys, {
+			live: live.failed ? null : live.manifest,
+			inFlight: me.built_at,
+			incomingBytes: live.failed ? undefined : incoming,
+		});
+		console.log(`KV retention before build ${me.built_at}'s first key: ${describePlan(plan)}`);
+		if (plan.decision === "drop-rollback") {
+			console.warn("KV byte guard: dropping the rollback generation so this build's family fits");
+		}
+		// Families with no role go even when the guard refuses: that is space back, and a refused run
+		// uploads nothing that could need them.
+		await this.deleteKeys(plan.retire, "retired before this build's first key");
+		if (plan.decision === "refuse") {
+			throw new FatalImportError(
+				`KV byte guard: ${(plan.projectedBytes / 1_000_000).toFixed(1)}MB projected with this build's family ` +
+					"even without the rollback generation, over the guard — refusing to start an upload that would " +
+					"fail at the free plan's 1GB part way through. The live store keeps serving.",
+			);
+		}
+		this.metaSet("upload_lease", me.built_at);
+		return "go";
+	}
+
+	/** A small JSON value, carrying its size like every other put (the byte guard sums them). */
+	private async putJson(key: string, value: unknown): Promise<void> {
+		const json = JSON.stringify(value);
+		await this.env.STORE_KV.put(key, json, { metadata: kvBytesMetadata(json.length) });
+	}
+
+	private async putLease(me: UploadLease): Promise<void> {
+		const value = encodeUploadLease(me);
+		await this.env.STORE_KV.put(PUBLISHING_KEY, value, {
+			expirationTtl: PUBLISHING_TTL_SECONDS,
+			metadata: kvBytesMetadata(value.length),
+		});
+	}
+
+	/** The live manifest, or `failed` when the read did not answer (not the same as absent). */
+	private async readLiveManifest(): Promise<{ manifest: StoreManifest | null; failed: string | null }> {
+		try {
+			const text = await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" });
+			return { manifest: text ? (JSON.parse(text) as StoreManifest) : null, failed: null };
+		} catch (err) {
+			return { manifest: null, failed: String(err) };
+		}
+	}
+
+	/** Every key under `prefix` with its metadata, ALL pages (see listAllKeys). */
+	private async listAllKeysWithMetadata(prefix: string): Promise<ListedKey[]> {
+		const keys: ListedKey[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await this.env.STORE_KV.list(prefix ? { prefix, cursor } : { cursor });
+			for (const k of page.keys) keys.push({ name: k.name, metadata: k.metadata });
+			cursor = page.list_complete ? undefined : page.cursor;
+		} while (cursor);
+		return keys;
+	}
+
+	private async deleteKeys(keys: readonly string[], why: string): Promise<void> {
+		for (const key of keys) await this.env.STORE_KV.delete(key);
+		if (keys.length > 0) console.log(`Retention: dropped ${keys.length} key(s) ${why}`);
 	}
 
 	/**
@@ -1407,8 +1627,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 	private async releasePublishing(): Promise<void> {
 		const builtAt = this.metaGet("built_at") ?? "";
 		try {
-			const held = await this.env.STORE_KV.get(PUBLISHING_KEY);
-			if (held === null) return;
+			const raw = await this.env.STORE_KV.get(PUBLISHING_KEY);
+			if (raw === null) return;
+			const held = parseUploadLease(raw)?.built_at ?? raw;
 			if (!builtAt || held !== builtAt) {
 				console.log(`Leaving ${PUBLISHING_KEY} alone: it names build ${held}, not this run's ${builtAt || "(none)"}`);
 				return;
@@ -2599,6 +2820,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// partition. Its linear memory (17/32/54MB at 1×/2×/3× the corpus in the harness) would sit
 		// beside this phase's peak for nothing. Dropping it is the eviction case agg already handles.
 		dropGroupWasm();
+		// The family's first key is the filter below: the lease, the sweep and the byte guard go
+		// first (beginFamilyUpload). Outside the try, because a refusal or a supersede must stop the
+		// run, where a filter that fails to build only costs fan-out.
+		if (builtAt && formatVersion && (await this.beginFamilyUpload()) === "wait") {
+			this.stepDelayMs = DEPLOY_LEASE_WAIT_MS;
+			return;
+		}
 		try {
 			if (!builtAt || !formatVersion) throw new Error("built_at/format_version are not stamped yet");
 			// STREAMED (sqlIter): one staged batch in hand at a time, hashed where its bytes lie
@@ -2637,13 +2865,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 				},
 				names ? ROUTING_FEATURE_NAME_KEYS : 0,
 			);
-			// The family is in flight from its FIRST key in KV, and this is that key. The marker used
-			// to be set at partition 0's first chunk, hours from here, and the filter — grouped with
-			// the family by built_at — sat unprotected in between: two deploy-built generations in
-			// that window made it third-newest and retention retired it, so the generation shipped
-			// with every /cards/<id> fanning out N ways until the next night. A marker put that
-			// fails lands in the catch below, which is right: an unprotected filter IS the bug.
-			await this.markPublishing();
+			// The family is in flight from its FIRST key in KV, and this is that key: the lease was taken
+			// above (beginFamilyUpload). It used to be set at partition 0's first chunk, hours from
+			// here, and the filter — grouped with the family by built_at — sat unprotected in between:
+			// two deploy-built generations in that window made it third-newest and retention retired
+			// it, so the generation shipped with every /cards/<id> fanning out N ways until the next night.
 			await writeRoutingFilter(this.env, formatVersion, builtAt, bytes);
 			console.log(
 				`Routing filter published: ${sealed.lo.length} keys (${names ? sealed.nameKeys : 0} names` +
@@ -2726,12 +2952,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const { changed, meta } = await planOracleIndexPublish(buckets, pairCount, builtAt, published);
 			for (let at = 0; at < changed.length; at += RULINGS_PUT_CONCURRENCY) {
 				await Promise.all(
-					changed
-						.slice(at, at + RULINGS_PUT_CONCURRENCY)
-						.map((b) => this.env.STORE_KV.put(oracleIndexBucketKey(b), buckets[b] as Uint8Array)),
+					changed.slice(at, at + RULINGS_PUT_CONCURRENCY).map((b) =>
+						this.env.STORE_KV.put(oracleIndexBucketKey(b), buckets[b] as Uint8Array, {
+							metadata: kvBytesMetadata((buckets[b] as Uint8Array).byteLength),
+						}),
+					),
 				);
 			}
-			await this.env.STORE_KV.put(ORACLE_INDEX_META_KEY, JSON.stringify(meta));
+			await this.putJson(ORACLE_INDEX_META_KEY, meta);
 			// Only when the layout moved: a list costs a KV operation, and on every other night there
 			// is nothing under the prefix but the current layout's own stable keys.
 			if (published?.format_version !== meta.format_version) {
@@ -3493,11 +3721,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 		if (rec.chunks_published === 0) {
 			const warning = chunkHeadroomWarning(rec.store_bytes, rec.cut);
 			if (warning) console.warn(warning);
-			// First set in stepRouting, before the family's first key; refreshed here
+			// First taken in stepRouting, before the family's first key; refreshed here
 			// per partition so a run that crawls across days keeps its week-long TTL
 			// ahead of it. From the routing filter until the manifest write, the
-			// family is in flight and no sweep may age it out.
-			await this.markPublishing();
+			// family is in flight and no sweep may retire it.
+			if ((await this.beginFamilyUpload()) === "wait") {
+				this.stepDelayMs = DEPLOY_LEASE_WAIT_MS;
+				return;
+			}
 		}
 
 		// One chunk per slice. A put that lands but whose marker rolls back (the
@@ -3548,7 +3779,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 						`${stored.byteLength} bytes, over KV's ${KV_VALUE_CAP_BYTES} cap`,
 				);
 			}
-			await this.env.STORE_KV.put(chunkKey(storeKey, rec.chunks_published), stored);
+			// The write-time fence, right before the put: a run replaced since this alarm's top check
+			// (a wedge can sit between the two for hours) must not write into a swept family.
+			await this.fenceBeforeWrite();
+			await this.env.STORE_KV.put(chunkKey(storeKey, rec.chunks_published), stored, {
+				metadata: kvBytesMetadata(stored.byteLength),
+			});
 			this.ctx.storage.transactionSync(() => {
 				recordChunk(pp, cursor, stored.byteLength);
 				this.savePp(pp);
@@ -3622,21 +3858,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			partition_hash: PARTITION_HASH_ALGO,
 			partitions,
 		};
-		// The manifest is the commit point: the one write where a bug becomes a
-		// served outage rather than a failed run. writeManifest refuses a malformed
-		// SHAPE; this refuses a manifest whose CHUNKS are gone. Both halves are
-		// load-bearing. On 2026-09-15 every partition this run had uploaded was
-		// retired by the deploy sweeps that landed during its days-long upload,
-		// and the write below went ahead and named them — fifteen hours of 503.
-		// The family cannot be re-uploaded (each partition's staging rows are
-		// dropped the moment it publishes), so the honest outcome is a failed run
-		// and a fresh start on the next cron, with the previous manifest untouched.
 		// The alias map goes BEFORE the manifest, like the chunks and the routing filter: the
 		// manifest is the commit point, and a reader that finds the manifest must find the map its
 		// build resolves through. Idempotent, like the manifest put. Absent only for a run whose
 		// tags phase predates the export (a deploy landed mid-run); that build serves alias
 		// spellings as plain slugs until the next run, and the Worker says so in its log.
 		const tagAliasesJson = this.metaGet("tag_aliases");
+		await this.fenceBeforeWrite();
 		if (tagAliasesJson) {
 			await writeTagAliases(this.env, formatVersion, builtAt, tagAliasesJson);
 			console.log(`Tag aliases published: ${tagAliasesKey(formatVersion, builtAt)} (${tagAliasesJson.length} bytes)`);
@@ -3646,6 +3874,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 					"Alias tag spellings match nothing on this build; the next run publishes them.",
 			);
 		}
+		// The blocks the nightly decides and every publish carries (StoreManifest.cache, .placement):
+		// read the live manifest once, decide from it and tonight's measurements, write them in. The same read
+		// names the rollback role (previous_built_at) — the family this manifest replaces.
+		const previous = await this.liveManifestJson();
+		const placement = await this.placementGate(manifest, previous);
+		if (placement) manifest.placement = placement;
+		manifest.cache = await this.cacheGate(manifest, previous);
+		const published = withPreviousBuiltAt(manifest, previous);
+		// The manifest is the commit point: the one write where a bug becomes a
+		// served outage rather than a failed run. writeManifest refuses a malformed
+		// SHAPE; this refuses a manifest whose CHUNKS are gone. Both halves are
+		// load-bearing. On 2026-09-15 every partition this run had uploaded was
+		// retired by the deploy sweeps that landed during its days-long upload,
+		// and the write below went ahead and named them — fifteen hours of 503.
+		// The family cannot be re-uploaded (each partition's staging rows are
+		// dropped the moment it publishes), so the honest outcome is a failed run
+		// and a fresh start on the next cron, with the previous manifest untouched.
+		// The chunk check and the fence LAST, immediately before the commit point: the gates above
+		// take requests of their own, and a sweep or a successor landing during them must be seen.
 		const present = await this.listFamilyKeys(formatVersion, builtAt);
 		// A `list` is eventually consistent and can lag a key this run put a minute ago; a `get` of
 		// that key is not. The refusal below guards against a SWEEP having deleted chunks, which a
@@ -3667,28 +3914,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 					`uploading; the live manifest keeps serving and the next run starts over.`,
 			);
 		}
-		// The blocks the nightly decides and every publish carries (StoreManifest.cache): read the
-		// live manifest once, decide from it and tonight's measurements, write them in.
-		const previous = await this.liveManifestJson();
-		const placement = await this.placementGate(manifest, previous);
-		if (placement) manifest.placement = placement;
-		manifest.cache = await this.cacheGate(manifest, previous);
-		await writeManifest(this.env, manifest);
+		await this.fenceBeforeWrite();
+		await writeManifest(this.env, published);
 		// Published: a manifest names the family now, and the manifest read inside
-		// every sweep protects it from here. The in-flight marker has done its job.
+		// every sweep protects it from here. The upload lease has done its job.
 		await this.releasePublishing();
 
-		// Retention: keep the newest KEEP_STORES_IN_KV builds, decided from the keys that are actually in
-		// KV. The predecessor stays addressable so a reader mid-stream finishes and a bad build can
-		// be rolled back by republishing the older manifest. A partitioned build's N chunk families
-		// share one built_at and retire together (see staleStoreKeys).
-		//
-		// This used to read a history list out of `meta` — which `metaClear()` wipes at the start of
-		// every run, so the list was always empty and NOTHING was ever deleted. Production reached 15
-		// store builds and 3 residue builds, ~510MB of a 1GB namespace, before anyone counted. A
-		// sweep derived from the keys themselves cannot drift from what is there, and it heals a
-		// namespace that already leaked.
-		await this.pruneOldStores(builtAt || undefined);
+		// Retention by role, now that the roles have moved: this build is live, the one it replaced
+		// is the rollback, and any other upload-lease holder keeps its family. Everything else — the
+		// old rollback, a superseded run's orphan — goes. Decided from the keys actually in KV, so it
+		// cannot drift from what is there and it heals a namespace that already leaked.
+		await this.sweepByRole(published);
 
 		// The store is LIVE from here — every reader that reads the manifest from
 		// now on gets it. What is left is the edge cache, which still holds
@@ -4148,7 +4384,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			}
 			written += 1;
 			pending.push(async () => {
-				await this.env.STORE_KV.put(rulingsBucketKey(bucket), bytes);
+				await this.env.STORE_KV.put(rulingsBucketKey(bucket), bytes, { metadata: kvBytesMetadata(bytes.byteLength) });
 				// AFTER the put, never with it: a hash recorded for bytes that never reached KV would
 				// make every later import skip the bucket it most needs to write.
 				this.sqlRun(
@@ -4185,7 +4421,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			built_at: this.metaGet("built_at") ?? "",
 			ruling_count: total,
 		};
-		await this.env.STORE_KV.put(RULINGS_META_KEY, JSON.stringify(meta));
+		await this.putJson(RULINGS_META_KEY, meta);
 		await this.pruneOldKeys(RULINGS_KEY_PREFIX, rulingsCurrentPrefix(), "rulings");
 		this.metaSet("phase", "reference");
 		console.log(`Rulings published to KV: ${total} rulings across ${RULINGS_BUCKET_COUNT} buckets`);
@@ -4258,52 +4494,29 @@ export class ImportCoordinator extends DurableObject<Env> {
 	}
 
 	/**
-	 * Delete every store build but the newest KEEP_STORES_IN_KV, plus the one just published,
-	 * plus the build the live manifest points at.
+	 * Retention by role after this run's manifest (kv-retention.ts): keep `live` (the manifest just
+	 * written — passed in, NOT re-read, because a read of the key this alarm just wrote may still
+	 * answer with the old manifest, and that answer would make this very build look like debris),
+	 * the family it replaced, and whoever holds the upload lease now; delete every other generation
+	 * key. That is the old rollback and any superseded run's orphan — never more than one family's
+	 * worth of deletes a night unless a run was replaced.
 	 *
-	 * The manifest read is protection against age alone deciding: a family the
-	 * live manifest references is a family the serving path depends on, whatever
-	 * its timestamp says.
+	 * Note what this sweep collects for free: the orphaned pre-partition chunk family, and any
+	 * generation key of a kind added later — the pattern is `store:card-<kind>-v<fmt>-<built_at>…`.
 	 *
-	 * Note what this sweep collects for free: the orphaned pre-partition chunk
-	 * family. Its keys have no `-p<k>` suffix, staleStoreKeys' pattern matches
-	 * suffix-less families too, and no manifest names it any more — so it groups
-	 * by its own built_at, ages out of the newest-KEEP set, and goes.
-	 *
-	 * One list operation, one manifest read, and however many deletes are owed;
-	 * best effort, because a chunk that will not delete costs storage and gets
-	 * another chance next publish, and losing a completed publish over cleanup
-	 * would be the worse trade.
+	 * One list operation and one lease read; best effort, because a key that will not delete costs
+	 * storage and gets another chance at the next family's first key, and losing a completed publish
+	 * over cleanup would be the worse trade.
 	 */
-	private async pruneOldStores(currentBuiltAt: string | undefined): Promise<void> {
+	private async sweepByRole(live: StoreManifest): Promise<void> {
 		try {
-			const names: string[] = [];
-			let cursor: string | undefined;
-			do {
-				const page = await this.env.STORE_KV.list({ prefix: "store:card-", cursor });
-				names.push(...page.keys.map((k) => k.name));
-				cursor = page.list_complete ? undefined : page.cursor;
-			} while (cursor);
-
-			const protect: string[] = currentBuiltAt ? [currentBuiltAt] : [];
-			try {
-				const live = JSON.parse((await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null") as {
-					built_at?: unknown;
-				} | null;
-				if (live?.built_at) protect.push(String(live.built_at));
-			} catch {
-				// An unreadable manifest protects nothing extra; the newest-KEEP
-				// rule still holds and the next publish gets another chance.
-			}
-
-			let removed = 0;
-			for (const key of staleStoreKeys(names, KEEP_STORES_IN_KV, protect)) {
-				await this.env.STORE_KV.delete(key);
-				removed += 1;
-			}
-			if (removed > 0) console.log(`Retention: dropped ${removed} chunk(s) from superseded store builds`);
+			const keys = await this.listAllKeysWithMetadata(GENERATION_KEY_PREFIX);
+			const held = parseUploadLease(await this.env.STORE_KV.get(PUBLISHING_KEY));
+			const inFlight = held && held.built_at !== String(live.built_at) ? held.built_at : null;
+			const plan = planRetention(keys, { live, inFlight });
+			await this.deleteKeys(plan.retire, `from generations with no role (${describePlan(plan)})`);
 		} catch (err) {
-			console.warn(`Retention: could not prune old store builds: ${err}`);
+			console.warn(`Retention: could not sweep store generations by role: ${err}`);
 		}
 	}
 
@@ -4373,7 +4586,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const hash = await sha256Hex(bytes);
 		const known = this.sqlAll<{ hash: string }>("SELECT hash FROM reference_values WHERE key = ?", key)[0];
 		if (known && String(known.hash) === hash) return false;
-		await this.env.STORE_KV.put(key, bytes);
+		await this.env.STORE_KV.put(key, bytes, { metadata: kvBytesMetadata(bytes.byteLength) });
 		this.sqlRun("INSERT OR REPLACE INTO reference_values (key, hash) VALUES (?, ?)", key, hash);
 		return true;
 	}
@@ -4436,7 +4649,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			symbol_count: count,
 			catalogs: JSON.parse(this.metaGet("reference_catalogs") ?? "{}"),
 		};
-		await this.env.STORE_KV.put(REFERENCE_META_KEY, JSON.stringify(meta));
+		await this.putJson(REFERENCE_META_KEY, meta);
 		await this.pruneOldKeys(REFERENCE_KEY_PREFIX, referenceCurrentPrefix(), "reference");
 		this.metaSet("phase", "purge");
 		console.log(`Reference symbology: ${count} symbols${written ? " (written)" : " (already current)"}`);
@@ -4693,7 +4906,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// needed. Only deleteAll releases an object's storage, and a retired coordinator holds
 			// nothing a later run needs (should the legacy singleton ever be named again, it starts
 			// empty, like any new coordinator).
-			this.releaseAfterAlarm = true;
+			//
+			// NOT when a deploy fenced it (x3): the watchdog's pointer still names this coordinator, so
+			// it runs tomorrow's nightly in the same space, and its `superseded` record is what tells the
+			// watchdog this run ended rather than never started (LOST_START_WINDOW_MS would restart it).
+			if (this.metaGet("superseded_kind") !== "deploy") this.releaseAfterAlarm = true;
 		}
 	}
 

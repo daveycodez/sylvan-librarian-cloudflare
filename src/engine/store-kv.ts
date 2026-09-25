@@ -96,6 +96,7 @@
 // numbers, and not re-measured. See store-cache.ts.
 
 import { edgeCacheUrl, matchEdgeCache, readThroughEdgeCache } from "./edge-cache";
+import { kvBytesMetadata } from "./kv-retention";
 import type { Env, StoreManifest, StoreManifestPartition } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -243,24 +244,29 @@ export async function announceSelf(env: Env, label?: string): Promise<boolean> {
 export const MANIFEST_KEY = "store:manifest";
 
 /**
- * The built_at of the generation the in-Worker coordinator is STILL UPLOADING, or absent.
+ * THE UPLOAD LEASE: the one generation allowed to be uploading, as `{built_at, owner, epoch}`
+ * (UploadLease in src/engine/kv-retention.ts), or absent.
  *
  * A store family exists in KV before any manifest names it: the coordinator publishes one
- * partition per alarm, and a run interrupted by deploys (every push resets the object mid-slice)
- * can spend days between its first chunk and its manifest write. During that window the family
- * carries a built_at stamped when the build STARTED — older than every deploy-built generation
- * that lands meanwhile — so an age-ordered sweep sees it as the third-newest build and retires
- * it. That is the 2026-09-15 outage: the 22:14 deploy's sweep dropped p0-p7 of the coordinator's
- * generation, the 03:33 deploy's sweep dropped p8, the coordinator uploaded p9 and wrote a
- * manifest naming nine partitions that no longer existed, and sylvan.mtgseeker.com served 503
- * for fifteen hours.
+ * partition per alarm, and a run interrupted by deploys can spend days between its first chunk and
+ * its manifest write. During that window the family carries a built_at stamped when the build
+ * STARTED — older than every deploy-built generation that lands meanwhile — so an age-ordered sweep
+ * saw it as the third-newest build and retired it. That is the 2026-09-15 outage: the 22:14
+ * deploy's sweep dropped p0-p7 of the coordinator's generation, the 03:33 deploy's sweep dropped
+ * p8, the coordinator uploaded p9 and wrote a manifest naming nine partitions that no longer
+ * existed, and sylvan.mtgseeker.com served 503 for fifteen hours.
  *
- * The coordinator writes its built_at here when it starts uploading (refreshed at every
- * partition's first chunk) and deletes it once the manifest is written or the run fails. Every
- * sweep — the deploy's (scripts/prune-kv.ts, seed-remote-kv.ts) and the coordinator's own —
- * protects the family it names, however old. The TTL is a backstop for a run that dies without
- * reaching either delete: a stale marker over-protects one generation for a week and then
- * expires, which is the cheap direction to be wrong in.
+ * Retention is by ROLE now (kv-retention.ts), and this key names the in-flight role: every sweep
+ * keeps the family it names, however old. It holds ONE family. It used to hold a bare built_at that
+ * any run overwrote, so two overlapping runs each believed they were protected and four
+ * generations sat in KV. Now a claimant takes it only by decideUploadLease — the same family, the
+ * deploy, a later run of the same owner, or a higher watchdog epoch — and a holder re-checks it
+ * (with the watchdog pointer and the deploy fence) right before every chunk put and before
+ * writeManifest, retiring when it has been outranked.
+ *
+ * A coordinator's lease lives a week (a run that dies without releasing over-protects one family
+ * for a week, the cheap direction to be wrong in); a deploy's lives two hours
+ * (DEPLOY_LEASE_TTL_SECONDS). Released compare-and-delete: only by the run it names.
  */
 export const PUBLISHING_KEY = "store:publishing";
 export const PUBLISHING_TTL_SECONDS = 7 * 24 * 3600;
@@ -1687,7 +1693,7 @@ export function missingManifestChunks(manifest: StoreManifest, present: Iterable
  *
  * SHAPED LIKE A CHUNK KEY ON PURPOSE. It is not a chunk — it is one ~740 KB
  * value per build — but naming it `store:card-routing-v<fmt>-<built_at>.store:0`
- * puts it inside the retention family of its own generation, so `staleStoreKeys`
+ * puts it inside the retention family of its own generation, so retention (kv-retention.ts)
  * retires it with the archives it describes and no second sweep exists to be
  * forgotten. A key under `store:card-` that the retention pattern did NOT match
  * would be listed on every prune and never deleted, which is the leak this
@@ -1755,7 +1761,9 @@ export async function writeRoutingFilter(
 	if (bytes.byteLength > KV_VALUE_CAP_BYTES) {
 		throw new Error(`routing filter is ${bytes.byteLength} bytes, over the ${KV_VALUE_CAP_BYTES} KV value cap`);
 	}
-	await env.STORE_KV.put(routingFilterKey(formatVersion, builtAt), bytes);
+	await env.STORE_KV.put(routingFilterKey(formatVersion, builtAt), bytes, {
+		metadata: kvBytesMetadata(bytes.byteLength),
+	});
 }
 
 /**
@@ -1935,72 +1943,14 @@ export function carryManifestBlocks<M extends object>(next: M, live: Record<stri
 export async function writeManifest(env: Env, manifest: StoreManifest): Promise<void> {
 	const problem = manifestShapeProblem(manifest);
 	if (problem) throw new Error(`refusing to publish the manifest: ${problem}`);
-	await env.STORE_KV.put(MANIFEST_KEY, JSON.stringify(manifest));
+	const json = JSON.stringify(manifest);
+	await env.STORE_KV.put(MANIFEST_KEY, json, { metadata: kvBytesMetadata(json.length) });
 }
 
-/**
- * Store builds kept in KV: the live one and its predecessor.
- *
- * The predecessor stays addressable so a reader that started streaming it finishes, and so a bad
- * build can be rolled back by republishing the older manifest. More than that is storage nobody
- * reads — at ~38MB a build against a 1GB namespace, which is what made a broken sweep expensive.
- */
-export const KEEP_STORES_IN_KV = 2;
-
-/**
- * The store keys that retention should delete: everything but the newest `keep` BUILDS.
- *
- * Derived from the key names rather than from recorded history, and that is the fix rather than an
- * implementation detail. Retention used to read a `kv_store_history` list out of the coordinator's
- * `meta` table — which `metaClear()` wipes at the start of every run, so `previous` was always
- * empty, nothing was ever retired, and each night added another ~38MB. Production was holding 15
- * store builds and 3 residue builds, ~510MB of a 1GB namespace, against a policy of 2.
- *
- * A key name carries everything the decision needs (`store:card-store-v<format>-<built_at>.store:<n>`,
- * or `...-<built_at>-p<k>.store:<n>` for a partitioned build's chunk families),
- * so the sweep is a pure function of what is actually in KV. It cannot drift from reality, it
- * self-heals a namespace that already leaked, and it costs one list operation.
- *
- * Every family of one build goes together. The `-p<k>` suffix is OPTIONAL in the pattern and
- * deliberately not captured: a partitioned build's N chunk families share one built_at, so they
- * group as ONE build and retire all-or-nothing — retiring some partitions of a generation while
- * keeping others would leave a manifest pointing at a store with holes.
- *
- * THE SUFFIX-LESS FAMILIES MATCH TOO, and that is load-bearing exactly once: the
- * pre-partition generation-19 build (and the long-gone `card-compat-` residue
- * family) is an un-suffixed family that no manifest names any more, so the first
- * partitioned publish leaves it orphaned in KV. Because the pattern groups it by
- * built_at like any other build, it simply ages out of the newest-`keep` set and
- * the ordinary sweep collects it — no one-off cleanup script.
- * (tests/engine/store-kv.test.ts pins this.)
- *
- * `protect` names built_ats that are NEVER retired, however old: the build just
- * published, the build the live manifest points at, and the build the coordinator
- * is still uploading (PUBLISHING_KEY). The second stops an age-only sweep from
- * deleting the store readers are actively serving when a publish did not advance
- * built_at. The third stops it from deleting a family whose built_at predates the
- * deploy-built generations only because its upload has been crawling across
- * deploys — the family that has no manifest yet and is about to get one.
- */
-export function staleStoreKeys(names: string[], keep: number, protect?: string | readonly string[]): string[] {
-	const parsed = names.flatMap((name) => {
-		// `routing` and `aliases` join `store` and `compat` here so a build's routing
-		// filter (routingFilterKey) and tag alias map (tagAliasesKey) retire with the
-		// archives they describe. Neither is a chunk family, but both ARE part of the
-		// generation, and a `store:card-` key this pattern misses would be listed
-		// forever and deleted never.
-		const at = /^store:card-(?:store|compat|routing|aliases)-v\d+-(\d+)(?:-p\d+)?\.store:\d+$/.exec(name);
-		return at ? [{ name, builtAt: at[1] as string }] : [];
-	});
-	const builds = [...new Set(parsed.map((k) => k.builtAt))].sort((a, b) => Number(b) - Number(a));
-	// Protected builds are kept whatever their age says — a manifest points at
-	// them, and a sweep that deleted one would take a live path down rather than tidy it.
-	const keptBuilds = new Set(builds.slice(0, Math.max(keep, 1)));
-	for (const builtAt of typeof protect === "string" ? [protect] : (protect ?? [])) {
-		if (builtAt) keptBuilds.add(builtAt);
-	}
-	return parsed.filter((k) => !keptBuilds.has(k.builtAt)).map((k) => k.name);
-}
+// Store retention — which generations stay in KV — is decided BY ROLE in src/engine/kv-retention.ts
+// (planRetention): the live family, the family it replaced, and the one upload-lease holder. The
+// age-ordered `staleStoreKeys(names, KEEP_STORES_IN_KV, protect)` it replaced let a superseded
+// run's newer orphan displace the rollback, and held four generations when two runs overlapped.
 
 /** How many chunks a store of this size occupies on the grid. */
 export function chunkCountFor(storeBytes: number, cut: number = KV_CHUNK_BYTES): number {

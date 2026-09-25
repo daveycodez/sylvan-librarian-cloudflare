@@ -230,9 +230,12 @@ remaining wakes skip the network and pay only the in-wasm inflate. Reverting to 
 **Publishing** is one chunk per partition (each cut under KV's 25 MiB value cap
 and gzipped before the put), plus the ~758KB routing filter, then the manifest
 as the commit point — written last, because a manifest naming chunks that are
-not in KV yet is exactly the state a reader must never see. Two generations are
-retained (`KEEP_STORES_IN_KV`), so a reader mid-stream finishes and a bad build
-can be rolled back by republishing the previous manifest.
+not in KV yet is exactly the state a reader must never see. Generations are
+retained by role (`src/engine/kv-retention.ts`): the live one, the one it
+replaced (so a reader mid-stream finishes and a bad build can be rolled back by
+republishing the previous manifest), and the one holding the upload lease — never
+a fourth. Near the free plan's 1 GB a byte guard drops the rollback before a new
+upload starts, and refuses the upload if even that does not fit.
 
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
 `/cards/*` carries Scryfall's own tiers (16h, `no-cache` for random, private for

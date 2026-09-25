@@ -26,6 +26,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { kvBytesMetadata } from "../src/engine/kv-retention";
 import {
 	encodeOracleIndexBuckets,
 	ORACLE_INDEX_KEY_PREFIX,
@@ -147,6 +148,7 @@ async function main(): Promise<void> {
 				key: oracleIndexBucketKey(b),
 				value: Buffer.from(buckets[b] as Uint8Array).toString("base64"),
 				base64: true,
+				metadata: kvBytesMetadata((buckets[b] as Uint8Array).byteLength),
 			}));
 			const file = join(tmpdir(), "sylvan-oracle-index-bulk.json");
 			await writeFile(file, JSON.stringify(entries));
@@ -164,7 +166,18 @@ async function main(): Promise<void> {
 				const file = join(tmpdir(), `sylvan-oracle-index-${b}.bin`);
 				await writeFile(file, buckets[b] as Uint8Array);
 				try {
-					const argv = [...wranglerArgv(), "kv", "key", "put", oracleIndexBucketKey(b), "--path", file, ...target];
+					const argv = [
+						...wranglerArgv(),
+						"kv",
+						"key",
+						"put",
+						oracleIndexBucketKey(b),
+						"--path",
+						file,
+						"--metadata",
+						JSON.stringify(kvBytesMetadata((buckets[b] as Uint8Array).byteLength)),
+						...target,
+					];
 					const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "inherit" });
 					if ((await proc.exited) !== 0) throw new Error(`kv key put ${oracleIndexBucketKey(b)} failed`);
 				} finally {

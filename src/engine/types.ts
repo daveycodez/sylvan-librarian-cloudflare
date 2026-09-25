@@ -583,6 +583,12 @@ export interface StoreManifest {
 	 */
 	store_key: string;
 	built_at: string;
+	/**
+	 * The built_at of the manifest THIS one replaced — the ROLLBACK role in retention by role
+	 * (src/engine/kv-retention.ts). Written by every publisher (withPreviousBuiltAt); absent on a
+	 * manifest from before x3, where retention falls back to the newest family older than this one.
+	 */
+	previous_built_at?: string;
 	card_count: number;
 	printing_count: number;
 	upstream_commit: string;

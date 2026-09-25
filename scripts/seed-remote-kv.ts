@@ -20,6 +20,13 @@
 // already fails earlier, at the builder's own argv parsing, if the builder
 // predates `--partitions`; this is the second line of defense.)
 //
+// RETENTION BY ROLE AND THE DEPLOY'S LEASE (backlog x3, scripts/deploy-upload.ts): before the first
+// chunk the deploy takes the upload lease from whoever holds it (the deploy wins; import-store.sh's
+// fence has already told every nightly run that began earlier to retire), deletes every generation
+// that is not the live one or the one it replaced, and asks the byte guard whether this build's
+// family — its EXACT size, cut and compressed above — fits under the free plan's 1 GB. After the
+// manifest it releases the lease and sweeps with the new roles. KV never holds a fourth generation.
+//
 // There is no incremental path and no dedup, deliberately. The predecessor of
 // this script uploaded only the 40,000-byte chunks D1 did not already hold,
 // with content hashes and reuse accounting, because ~1,800 row writes per
@@ -31,12 +38,12 @@ import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { kvBytesMetadata, withPreviousBuiltAt } from "../src/engine/kv-retention";
 import {
 	CARRIED_MANIFEST_BLOCKS,
 	carryManifestBlocks,
 	chunkForKv,
 	chunkKey,
-	KEEP_STORES_IN_KV,
 	MANIFEST_KEY,
 	manifestShapeProblem,
 	PARTITION_HASH_ALGO,
@@ -45,7 +52,8 @@ import {
 } from "../src/engine/store-kv";
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
-import { liveManifestBuiltAts, liveManifestObject, pruneOldStores, publishingBuiltAts } from "./kv-prune";
+import { beginDeployUpload, deployStillHoldsLease, finishDeployUpload } from "./deploy-upload";
+import { liveManifestObject, wranglerDeployKv } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
@@ -176,6 +184,30 @@ async function namespaceId(): Promise<string> {
 	return found;
 }
 
+// The family's other keys, read now so the byte guard can count them with the chunks.
+const routing = routingFilterFromBuildDir(dir, manifest);
+// REQUIRED where the filter is optional: a build without it answers every alias tag spelling with
+// nothing (see src/engine/tag-aliases.ts). The builder writes it beside every store, so absent means
+// a build dir this script should not publish.
+const aliasesPath = tagAliasesFileFromBuildDir(dir);
+const aliasesBytes = readFileSync(aliasesPath).byteLength;
+const builtAt = String(manifest.built_at);
+const incomingBytes =
+	chunksByPartition.reduce((n, pieces) => n + pieces.reduce((m, c) => m + c.length, 0), 0) +
+	(routing?.bytes.byteLength ?? 0) +
+	aliasesBytes;
+
+// Before the family's FIRST key: the fence, the lease, the sweep by role and the byte guard.
+const deployKv = wranglerDeployKv(true);
+const begun = await beginDeployUpload(deployKv, { builtAt, incomingBytes });
+if (!begun.ok) {
+	console.error(`refusing to publish: ${begun.why}`);
+	process.exit(1);
+}
+
+/** `--metadata` for a put of `bytes`: every value carries its size, which the byte guard sums. */
+const sized = (bytes: number) => ["--metadata", JSON.stringify(kvBytesMetadata(bytes))];
+
 // Every partition's chunks first: writing them before the manifest is what
 // makes the manifest a commit point. `--path` because a 20MB value cannot ride
 // an argv string.
@@ -187,7 +219,7 @@ for (let k = 0; k < partitions.length; k++) {
 		const tmp = join(tmpdir(), `sylvan-store-chunk-p${k}-${seq}.bin`);
 		await writeFile(tmp, bytes);
 		try {
-			await kv(["key", "put", chunkKey(partition.store_key, seq), "--path", tmp, "--remote"]);
+			await kv(["key", "put", chunkKey(partition.store_key, seq), "--path", tmp, ...sized(bytes.length), "--remote"]);
 			console.log(
 				`  partition ${k + 1}/${partitions.length} chunk ${seq + 1}/${pieces.length} ` +
 					`(${(bytes.length / 1048576).toFixed(1)}MB) uploaded`,
@@ -201,7 +233,6 @@ for (let k = 0; k < partitions.length; k++) {
 // The routing filter, before the manifest and after the chunks — one more key of
 // this build's family, so a generation whose publish never completes leaves a
 // filter nothing names and retention sweeps with the rest (routingFilterKey).
-const routing = routingFilterFromBuildDir(dir, manifest);
 if (routing) {
 	const routingPath = join(tmpdir(), "sylvan-store-routing.bin");
 	await writeFile(routingPath, routing.bytes);
@@ -212,6 +243,7 @@ if (routing) {
 			routingFilterKey(manifest.format_version, String(manifest.built_at)),
 			"--path",
 			routingPath,
+			...sized(routing.bytes.byteLength),
 			"--remote",
 		]);
 		console.log(
@@ -225,29 +257,17 @@ if (routing) {
 	console.warn(`No ${ROUTING_KEYS_FILE} in ${dir}: bare-id routes will fan out across every partition.`);
 }
 
-// The tag alias map, before the manifest for the same reason as the routing filter — and REQUIRED
-// where the filter is optional: a build without it answers every alias tag spelling with nothing
-// (see src/engine/tag-aliases.ts). The builder writes it beside every store, so absent means a
-// build dir this script should not publish.
-const aliasesPath = tagAliasesFileFromBuildDir(dir);
+// The tag alias map, before the manifest for the same reason as the routing filter.
 await kv([
 	"key",
 	"put",
 	tagAliasesKey(manifest.format_version, String(manifest.built_at)),
 	"--path",
 	aliasesPath,
+	...sized(aliasesBytes),
 	"--remote",
 ]);
 console.log(`  tag aliases uploaded from ${TAG_ALIASES_FILE}`);
-
-// What retention must protect, read BEFORE the manifest is replaced: the build the manifest names
-// right now (a reader mid-stream finishes on it, and a colo whose KV cache still holds this
-// manifest keeps routing to it for up to a minute), and the family the in-Worker coordinator is
-// still uploading. This used to be read AFTER the put, which made the "previously live" entry a
-// second copy of the build just published, and left yesterday's live family protected by age
-// alone — which fails exactly when a nightly run is in flight, since its family is newer.
-const previouslyLive = await liveManifestBuiltAts(true);
-const inFlight = await publishingBuiltAts(true);
 
 // The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool, and g1's
 // placement, decided by its probes — are not the builder's to know. Carried from the manifest being
@@ -260,37 +280,37 @@ if (live.failed) {
 			"publishing without them — each reads as its safe default until the next nightly decides it again.",
 	);
 }
-const published = carryManifestBlocks(manifest, live.manifest);
+// The manifest this one replaces becomes the ROLLBACK role (previous_built_at) — read BEFORE the
+// put, so it names yesterday's build and not a second copy of this one.
+const published = withPreviousBuiltAt(carryManifestBlocks(manifest, live.manifest), live.manifest);
 const carried = CARRIED_MANIFEST_BLOCKS.filter((b) => (published as Record<string, unknown>)[b] !== undefined);
 if (carried.length) console.log(`  carried forward from the live manifest: ${carried.join(", ")}`);
 
-// The commit point.
+// The commit point — only while this deploy still holds the lease. Only another deploy can take it,
+// and that deploy has already deleted this build's family (deployStillHoldsLease).
+if (!(await deployStillHoldsLease(deployKv, builtAt))) {
+	console.error(
+		`refusing to write the manifest: another deploy took the upload lease from build ${builtAt} and has ` +
+			"retired its family; the live manifest is left as it is.",
+	);
+	process.exit(1);
+}
 const manifestPath = join(tmpdir(), "sylvan-store-manifest.json");
-await writeFile(manifestPath, JSON.stringify(published));
+const manifestJson = JSON.stringify(published);
+await writeFile(manifestPath, manifestJson);
 try {
-	await kv(["key", "put", MANIFEST_KEY, "--path", manifestPath, "--remote"]);
-
-	// AFTER the manifest, which is the commit point: the newest build is live, so every build older
-	// than the retention policy is now unreachable. A partitioned build's N chunk families share one
-	// built_at and retire together (see staleStoreKeys). Retention used to be driven by a history
-	// list the importer wiped every run, so nothing was ever deleted — see scripts/kv-prune.ts.
-	// Never retired: the build just published, the one the manifest named a moment ago, and the one
-	// the in-Worker coordinator is still uploading — the family this very sweep deleted eight
-	// partitions of on 2026-09-14 (see scripts/prune-kv.ts). A protect read that FAILED (null) is
-	// not "nothing to protect": the sweep is skipped and the next deploy or nightly retries it.
-	if (previouslyLive === null || inFlight === null) {
-		console.warn(
-			`Retention: could not read the ${previouslyLive === null ? "previous manifest" : "in-flight marker"} — ` +
-				"leaving superseded builds in place this time.",
-		);
-	} else {
-		const protect = [String(manifest.built_at ?? ""), ...previouslyLive, ...inFlight];
-		const prunedChunks = await pruneOldStores(KEEP_STORES_IN_KV, protect, true);
-		if (prunedChunks > 0) console.log(`Retention: dropped ${prunedChunks} chunk(s) from superseded store builds.`);
-	}
+	await kv(["key", "put", MANIFEST_KEY, "--path", manifestPath, ...sized(manifestJson.length), "--remote"]);
 } finally {
 	await unlink(manifestPath).catch(() => {});
 }
+
+// AFTER the manifest, which is the commit point: release the lease, then retention by role with the
+// new roles — this build live, the one it replaced as the rollback, any other lease holder's family
+// kept — and every other generation retired. A read that fails skips the sweep; the next deploy or
+// nightly retries it.
+const swept = await finishDeployUpload(deployKv, published);
+if (swept === null) console.warn("Retention: could not read the lease or the key list — no sweep this time.");
+else if (swept > 0) console.log(`Retention: dropped ${swept} key(s) from store generations with no role.`);
 
 const mb = (n: number) => `${(n / 1048576).toFixed(1)}MB`;
 console.log(

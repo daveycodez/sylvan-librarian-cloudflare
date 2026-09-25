@@ -1,4 +1,4 @@
-// Retire superseded store builds, whether or not this deploy published one.
+// Retire store generations that play no role, whether or not this deploy published one.
 //
 //   bun scripts/prune-kv.ts            # local simulated KV
 //   bun scripts/prune-kv.ts --remote   # production KV, from inside a deploy
@@ -11,41 +11,28 @@
 //
 // The layout sweeps live in the two seeding scripts, which run on every deploy. This is the store's
 // counterpart, and it runs unconditionally beside them.
+//
+// RETENTION BY ROLE (backlog x3, src/engine/kv-retention.ts): the family the LIVE MANIFEST names —
+// read, not assumed, because a rollback republishes an OLDER manifest — the family that manifest
+// replaced (`previous_built_at`), and the family of the upload-lease holder (store:publishing),
+// which has no manifest yet and a built_at from when its build started, days before the
+// deploy-built generations that land while it crawls. Both deploys on 2026-09-14/15 swept exactly
+// that family out from under the coordinator. Every other generation goes. A read that FAILED is not
+// "absent": the sweep is skipped and the next deploy or nightly retries it.
 
-import { KEEP_STORES_IN_KV } from "../src/engine/store-kv";
-import { liveManifestBuiltAts, pruneOldStores, publishingBuiltAts } from "./kv-prune";
+import { sweepGenerationsByRole } from "./deploy-upload";
+import { wranglerDeployKv } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 
 const remote = process.argv.includes("--remote");
 if (remote) requireDeployEnvironment();
 
-// Two builds are never swept, whatever their timestamps say. The one the LIVE
-// MANIFEST points at — read rather than assumed, because a rollback republishes
-// an OLDER manifest, and a sweep that decided "newest wins" would delete the
-// store being served. And the one the in-Worker coordinator is STILL UPLOADING
-// — which has no manifest yet, and a built_at from when its build started,
-// days before the deploy-built generations that land while it crawls. Both
-// deploys on 2026-09-14/15 swept exactly that family out from under the
-// coordinator, and its manifest write then named the chunks they had deleted
-// (see publishingBuiltAts and PUBLISHING_KEY).
-const live = await liveManifestBuiltAts(remote);
-const inFlight = live === null ? null : await publishingBuiltAts(remote);
-if (live === null || inFlight === null) {
-	// A read that FAILED is not "absent": sweeping on age alone with the in-flight
-	// marker unread is exactly what retired the coordinator's family on 2026-09-15.
-	console.log(
-		`Retention: could not read the ${live === null ? "live manifest" : "in-flight marker"} — ` +
-			"leaving every store build in place; the next deploy or nightly retries.",
-	);
-} else if (live.length === 0) {
-	// No manifest: sweeping now could delete the only store there is.
-	console.log("Retention: no readable manifest — leaving every store build in place.");
-} else {
-	if (inFlight.length > 0) console.log(`Retention: build ${inFlight[0]} is still being uploaded — protected.`);
-	const removed = await pruneOldStores(KEEP_STORES_IN_KV, [...live, ...inFlight], remote);
-	console.log(
-		removed > 0
-			? `Retention: dropped ${removed} chunk(s) from superseded store builds.`
-			: "Retention: no superseded store builds to drop.",
-	);
-}
+const removed = await sweepGenerationsByRole(wranglerDeployKv(remote));
+console.log(
+	removed === null
+		? "Retention: could not read the live manifest, the upload lease or the key list — leaving every store " +
+				"generation in place; the next deploy or nightly retries."
+		: removed > 0
+			? `Retention: dropped ${removed} key(s) from store generations with no role.`
+			: "Retention: no store generations to drop.",
+);

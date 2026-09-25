@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { pairFromRow } from "../../scripts/seed-oracle-index";
+import { keysToRetire } from "../../src/engine/kv-retention";
 import { staleKeys } from "../../src/engine/kv-versions";
 import {
 	encodeOracleIndexBuckets,
@@ -24,7 +25,6 @@ import {
 } from "../../src/engine/oracle-index";
 import { REFERENCE_KEY_PREFIX } from "../../src/engine/reference-kv";
 import { RULINGS_KEY_PREFIX } from "../../src/engine/rulings-kv";
-import { staleStoreKeys } from "../../src/engine/store-kv";
 
 function pairsOf(pairs: [string, string][]): Uint8Array {
 	const flat = new Uint8Array(pairs.length * ORACLE_PAIR_BYTES);
@@ -206,7 +206,7 @@ describe("refusals", () => {
 
 describe("retention never touches it", () => {
 	// Stable keys, overwritten in place — nothing may sweep them. Every KV sweep in this repo is a
-	// prefix list: the store's (`store:card-`, staleStoreKeys — the coordinator's pruneOldStores
+	// prefix list: the store's (`store:card-`, retention by role — the coordinator's sweepByRole
 	// and scripts/prune-kv.ts), and the layout sweeps (staleKeys under `rulings:v` / `reference:v`,
 	// the coordinator's pruneOldKeys and scripts/kv-prune.ts). The index's own layout sweep keeps
 	// the current version's keys and never matches the meta.
@@ -220,7 +220,7 @@ describe("retention never touches it", () => {
 			expect(keys.filter((k) => k.startsWith(prefix))).toEqual([]);
 			expect(staleKeys(keys, prefix, `${prefix}999:`)).toEqual([]);
 		}
-		expect(staleStoreKeys(keys, 0, [])).toEqual([]);
+		expect(keysToRetire(keys, { live: "1", rollback: null, inFlight: null })).toEqual([]);
 	});
 
 	test("its own layout sweep drops only an older layout's buckets", () => {

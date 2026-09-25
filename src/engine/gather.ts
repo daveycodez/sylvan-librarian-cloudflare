@@ -371,7 +371,7 @@ export function pinGeneration(replies: GenerationReply[]): { pinnedBuiltAt: stri
 		if (!m?.[1]) throw new Error(`phase-1 reply names an unparseable store key: ${storeKey}`);
 		return m[1];
 	};
-	// built_at is numeric (see staleStoreKeys, which sorts builds the same way);
+	// built_at is numeric (see generationsPresent, which sorts builds the same way);
 	// compare as numbers so a length change in the stamp cannot reorder builds.
 	let pinned = "";
 	for (const r of replies) {

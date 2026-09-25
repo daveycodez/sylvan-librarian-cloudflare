@@ -356,7 +356,7 @@ export function dropCached(storage: ArchiveCacheStorage, key: string): void {
  *
  * Retention has to be positive rather than incidental: a nightly publish changes both archive keys,
  * so without this a colo would accumulate ~88MB a day against a 5GB account-wide ceiling — the same
- * leak that let production hold 15 store builds in KV under a policy of 2 (see staleStoreKeys).
+ * leak that let production hold 15 store builds in KV under a policy of 2 (see kv-retention.ts).
  * The loader's fills call the guarded form, pruneCacheOlderThan, BEFORE they write (x1).
  */
 export function pruneCache(storage: ArchiveCacheStorage, keep: readonly string[]): string[] {

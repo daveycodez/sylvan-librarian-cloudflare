@@ -20,7 +20,7 @@
 // manifest). Same dumps, same map, by construction.
 //
 // SHAPED LIKE THE ROUTING FILTER'S KEY on purpose (see routingFilterKey): `store:card-aliases-
-// v<fmt>-<built_at>.store:0` sits inside its generation's retention family, so `staleStoreKeys`
+// v<fmt>-<built_at>.store:0` sits inside its generation's retention family, so retention by role
 // retires it with the archives it describes and no second sweep exists to be forgotten. Immutable
 // per build, like the chunks, so readers cache it hard.
 //
@@ -31,6 +31,7 @@
 
 import { EMPTY_TAG_ALIASES, type TagAliasTables } from "../parser/card-query-nodes";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
+import { kvBytesMetadata } from "./kv-retention";
 import { KV_VALUE_CAP_BYTES } from "./store-kv";
 import type { Env, StoreManifest } from "./types";
 
@@ -117,7 +118,9 @@ export async function writeTagAliases(env: Env, formatVersion: number, builtAt: 
 	if (json.length > KV_VALUE_CAP_BYTES) {
 		throw new Error(`tag aliases are ${json.length} bytes, over the ${KV_VALUE_CAP_BYTES} KV value cap`);
 	}
-	await env.STORE_KV.put(tagAliasesKey(formatVersion, builtAt), json);
+	await env.STORE_KV.put(tagAliasesKey(formatVersion, builtAt), json, {
+		metadata: kvBytesMetadata(new TextEncoder().encode(json).byteLength),
+	});
 }
 
 /** Cached per isolate and keyed by BUILD, because the map is immutable per build — a new

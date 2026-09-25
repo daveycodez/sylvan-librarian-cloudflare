@@ -290,7 +290,7 @@ if (
 // ONE LISTING, NOT N DOWNLOADS. This used to `kv key get` each partition's
 // last chunk — a ~20MB value per partition, buffered whole, N metered reads,
 // ~200MB per deploy — to answer an existence question. A prefix listing of the
-// store keys (a few dozen at KEEP_STORES_IN_KV=2) answers it in one operation.
+// store keys (a few dozen: at most three generations, kv-retention.ts) answers it in one operation.
 // A listing can lag a key put within the last minute, so a chunk it lacks is
 // confirmed by the direct read before it counts as missing: the download
 // happens only in that rare case, never on the common path.

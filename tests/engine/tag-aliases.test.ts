@@ -3,7 +3,7 @@
 // loader answers EMPTY — never throws — for a build without one.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { staleStoreKeys } from "../../src/engine/store-kv";
+import { keysToRetire } from "../../src/engine/kv-retention";
 import {
 	ALIAS_MISS_RETRY_MS,
 	forgetLiveTagAliases,
@@ -46,12 +46,14 @@ describe("the key", () => {
 			"store:card-store-v5-2000-p0.store:0",
 			"store:card-aliases-v5-2000.store:0",
 		];
-		expect(staleStoreKeys(keys, 1, "2000").sort()).toEqual([
+		expect(keysToRetire(keys, { live: "2000", rollback: null, inFlight: null }).sort()).toEqual([
 			"store:card-aliases-v5-1000.store:0",
 			"store:card-routing-v5-1000.store:0",
 			"store:card-store-v5-1000-p0.store:0",
 		]);
-		expect(staleStoreKeys(keys, 1, "1000")).not.toContain("store:card-aliases-v5-1000.store:0");
+		expect(keysToRetire(keys, { live: "1000", rollback: null, inFlight: null })).not.toContain(
+			"store:card-aliases-v5-1000.store:0",
+		);
 	});
 });
 

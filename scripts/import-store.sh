@@ -185,8 +185,9 @@ bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publis
 #     which skips the import because a recent store is already live — skipped the cleanup too, and
 #     KV reached 15 builds (~510MB of a 1GB namespace) against a policy of 2.
 #
-#     The sweep protects the build the manifest names AND the build the in-Worker coordinator is
-#     still uploading (store:publishing). It did not always: on 2026-09-14/15 two deploys retired
+#     The sweep is BY ROLE (src/engine/kv-retention.ts): it keeps the build the manifest names, the
+#     build that manifest replaced, and the build holding the upload lease (store:publishing), and
+#     retires every other generation. It did not always protect the last: on 2026-09-14/15 two deploys retired
 #     the coordinator's half-uploaded generation as "superseded" — its built_at is stamped when the
 #     build starts, days before the deploy-built generations that land while it crawls across
 #     deploy resets — and the coordinator then published a manifest over the deleted chunks.
@@ -247,6 +248,15 @@ fi
 #    rather than silently publishing an unpartitioned store that ships the site
 #    dark; seed-remote-kv.ts refuses an unpartitioned build dir for the same
 #    reason, as the second line of defense.
+# 2c. The deploy fence (backlog x3), BEFORE the build: every nightly run that began before this
+#     moment retires at its next alarm or KV write and publishes nothing, and seed-remote-kv.ts then
+#     takes the upload lease from it and retires its half-uploaded family before this store's first
+#     key. The build's minutes are what let KV show the fence everywhere first. Not fatal:
+#     seed-remote-kv.ts writes a fence itself (and waits it out) when it finds none this recent.
+echo "==> Fencing off any nightly import in flight (the deploy wins)..."
+bun scripts/deploy-fence.ts --remote \
+    || echo "!!! Deploy fence not written — the store upload writes one and waits for it to settle."
+
 echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes)..."
 "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
 ./target/fast-native/sylvan-store-builder --out store-build --partitions auto

@@ -34,7 +34,6 @@ import {
 	readManifest,
 	type StagedRow,
 	splitStore,
-	staleStoreKeys,
 	storeKeyStem,
 	writeManifest,
 } from "../../src/engine/store-kv";
@@ -722,12 +721,22 @@ describe("the publishers", () => {
 		expect(src).not.toContain("MANIFEST_KEY_V2");
 	});
 
-	test("every deploy sweep protects the build the live manifest references", () => {
-		const kvPrune = read("kv-prune.ts");
-		expect(kvPrune).toContain("export async function liveManifestBuiltAts");
-		expect(kvPrune).not.toContain("MANIFEST_KEY_V2");
-		expect(read("prune-kv.ts")).toContain("liveManifestBuiltAts(remote)");
-		expect(read("seed-remote-kv.ts")).toContain("liveManifestBuiltAts(true)");
+	test("every deploy sweep is retention by role, from the live manifest (x3)", () => {
+		const upload = read("deploy-upload.ts");
+		// Both deploy-side entry points read the live manifest for the roles and plan through the
+		// one shared decision; the post-manifest sweep is handed the manifest it just wrote.
+		expect(upload.match(/kv\.get\(MANIFEST_KEY\)/g)?.length).toBe(2);
+		expect(upload.match(/planRetention\(/g)?.length).toBe(2);
+		expect(upload).not.toContain("MANIFEST_KEY_V2");
+		expect(read("prune-kv.ts")).toContain("sweepGenerationsByRole(wranglerDeployKv(remote))");
+		const seed = read("seed-remote-kv.ts");
+		expect(seed).toContain("beginDeployUpload(deployKv, { builtAt, incomingBytes })");
+		expect(seed).toContain("finishDeployUpload(deployKv, published)");
+		expect(seed).toContain("withPreviousBuiltAt(carryManifestBlocks(manifest, live.manifest), live.manifest)");
+		// The deploy writes its fence before it builds.
+		const sh = readFileSync(join(import.meta.dir, "../../scripts/import-store.sh"), "utf8");
+		expect(sh.indexOf("scripts/deploy-fence.ts --remote")).toBeGreaterThan(0);
+		expect(sh.indexOf("scripts/deploy-fence.ts --remote")).toBeLessThan(sh.indexOf("cargo build"));
 	});
 
 	test("the deploy publishes the nightly's decided blocks forward, never its bare skeleton", () => {
@@ -813,179 +822,6 @@ describe("chunk headroom", () => {
 	});
 });
 
-describe("staleStoreKeys", () => {
-	// Retention used to read a history list out of the coordinator's `meta` table, which
-	// `metaClear()` wipes at the start of every run — so the list was always empty, nothing was ever
-	// deleted, and production reached 15 store builds and 3 residue builds (~510MB of a 1GB
-	// namespace) against a policy of 2. Deriving the sweep from the keys themselves is what makes it
-	// unable to drift, so these pin the derivation.
-	const keys = [
-		"store:card-store-v11-1000.store:0",
-		"store:card-store-v11-1000.store:1",
-		"store:card-compat-v11-1000.store:0",
-		"store:card-store-v11-2000.store:0",
-		"store:card-compat-v11-2000.store:0",
-		"store:card-store-v11-3000.store:0",
-		"store:card-compat-v11-3000.store:0",
-	];
-
-	test("keeps the newest builds and retires the rest", () => {
-		expect(staleStoreKeys(keys, 2, "3000").sort()).toEqual([
-			"store:card-compat-v11-1000.store:0",
-			"store:card-store-v11-1000.store:0",
-			"store:card-store-v11-1000.store:1",
-		]);
-	});
-
-	test("retires a build's residue archive with it", () => {
-		// The residue is keyed by its own name, so a sweep that only knew about `card-store-` would
-		// leave every `card-compat-` behind — which is its own slow leak.
-		const stale = staleStoreKeys(keys, 1, "3000");
-		expect(stale).toContain("store:card-compat-v11-1000.store:0");
-		expect(stale).toContain("store:card-compat-v11-2000.store:0");
-		expect(stale).not.toContain("store:card-compat-v11-3000.store:0");
-	});
-
-	test("never retires the build the manifest points at", () => {
-		// Even when its timestamp is not the newest — a republished older manifest is a rollback,
-		// and a sweep that deleted the live store would take the site down rather than tidy it.
-		expect(staleStoreKeys(keys, 1, "1000")).not.toContain("store:card-store-v11-1000.store:0");
-	});
-
-	test("a namespace holding only the current build has nothing to retire", () => {
-		expect(staleStoreKeys(["store:card-store-v11-3000.store:0"], 2, "3000")).toEqual([]);
-	});
-
-	test("leaves keys that are not store chunks alone", () => {
-		// The manifest especially: it is the commit point, and the other datasets share the
-		// namespace. Two builds so there is genuinely something to retire, or the assertion would
-		// pass on a sweep that retires nothing at all.
-		const others = ["store:manifest", "rulings:v2:00", "reference:v2:sets:list", "rulings:meta"];
-		const withStores = [...others, "store:card-store-v11-1.store:0", "store:card-store-v11-2.store:0"];
-		expect(staleStoreKeys(withStores, 1, "2")).toEqual(["store:card-store-v11-1.store:0"]);
-	});
-
-	// A partitioned build is N chunk families sharing one built_at, and retention must treat them as
-	// ONE build: retiring some partitions of a generation while keeping others leaves a manifest
-	// pointing at a store with holes, which 503s every card the missing partitions own.
-	describe("partitioned families", () => {
-		/** Two partitioned builds (N=3 and N=2) plus one suffix-less pre-partition
-		 * build, mixed chunk seqs. */
-		const partitioned = [
-			// built_at 1000, N=3
-			"store:card-store-v2026081501-1000-p0.store:0",
-			"store:card-store-v2026081501-1000-p0.store:1",
-			"store:card-store-v2026081501-1000-p1.store:0",
-			"store:card-store-v2026081501-1000-p2.store:0",
-			// built_at 2000, N=2
-			"store:card-store-v2026081501-2000-p0.store:0",
-			"store:card-store-v2026081501-2000-p1.store:0",
-			// the pre-partition build, built_at 500 — suffix-less family
-			"store:card-store-v2026081402-500.store:0",
-			"store:card-store-v2026081402-500.store:1",
-		];
-
-		test("an N-family retires all-or-nothing, grouped by built_at", () => {
-			const stale = staleStoreKeys(partitioned, 1, "2000");
-			// EVERY key of build 1000 goes — all three partitions, every chunk.
-			expect(stale.filter((k) => k.includes("-1000-")).length).toBe(4);
-			// And NO key of the kept build does.
-			expect(stale.some((k) => k.includes("-2000-"))).toBe(false);
-		});
-
-		test("THE ORPHANED PRE-PARTITION FAMILY IS COLLECTED BY THE ORDINARY SWEEP", () => {
-			// The one-time transition's only leftover in KV. Once `store:manifest`
-			// names a partitioned build, the generation-19 chunk family is referenced
-			// by nothing — and because the pattern matches SUFFIX-LESS families too,
-			// it groups by its own built_at, ages out of the newest-`keep` set, and
-			// goes. No one-off cleanup script, and nothing to remember to run.
-			//
-			// keep=2 across three builds: 500 is the oldest and the one to go.
-			const stale = staleStoreKeys(partitioned, 2, "2000").sort();
-			expect(stale).toEqual(["store:card-store-v2026081402-500.store:0", "store:card-store-v2026081402-500.store:1"]);
-		});
-
-		test("the suffix-less family is matched at all — the property the sweep rests on", () => {
-			// If the pattern had been tightened to REQUIRE `-p<k>` when the
-			// partitioned store landed, the pre-partition family would be invisible to
-			// retention and sit in a 1GB namespace forever. Alone against keep=1 with
-			// a newer partitioned build, every one of its chunks must be named.
-			const orphaned = [
-				"store:card-store-v2026081402-500.store:0",
-				"store:card-store-v2026081402-500.store:1",
-				"store:card-store-v2026081501-2000-p0.store:0",
-			];
-			expect(staleStoreKeys(orphaned, 1, "2000").sort()).toEqual([
-				"store:card-store-v2026081402-500.store:0",
-				"store:card-store-v2026081402-500.store:1",
-			]);
-		});
-
-		test("the live partitioned build is never retired, whatever its age", () => {
-			// A republished older manifest is a rollback; the sweep must not take the
-			// site down behind it. Same property the suffix-less test above pins, for
-			// -p keys.
-			const stale = staleStoreKeys(partitioned, 1, "1000");
-			expect(stale.some((k) => k.includes("-1000-"))).toBe(false);
-		});
-
-		test("a -p suffix does not leak into the build grouping", () => {
-			// The regex must group by built_at alone: if p10 parsed as part of the
-			// timestamp, one partition of a build could be "newer" than its siblings.
-			const keys = [
-				"store:card-store-v1-100-p0.store:0",
-				"store:card-store-v1-100-p10.store:0",
-				"store:card-store-v1-200-p0.store:0",
-			];
-			expect(staleStoreKeys(keys, 1, "200")).toEqual([
-				"store:card-store-v1-100-p0.store:0",
-				"store:card-store-v1-100-p10.store:0",
-			]);
-		});
-	});
-
-	// Age alone does not decide. A build the live manifest references is a build
-	// the serving path depends on, whatever its timestamp says, so every sweeper
-	// passes that built_at alongside the one it just published.
-	describe("the protect list", () => {
-		// Three builds against keep=2, oldest first — the shape where an age-only
-		// sweep and a protected sweep genuinely disagree.
-		const dualWindow = [
-			"store:card-store-v2026081402-500.store:0",
-			"store:card-store-v2026081402-500.store:1",
-			"store:card-store-v2026081501-1000-p0.store:0",
-			"store:card-store-v2026081501-1000-p1.store:0",
-			"store:card-store-v2026081501-2000-p0.store:0",
-			"store:card-store-v2026081501-2000-p1.store:0",
-		];
-
-		test("WITHOUT protection the sweep takes the oldest family — the hazard is real", () => {
-			const stale = staleStoreKeys(dualWindow, 2, "2000");
-			expect(stale.filter((k) => k.includes("-500.")).length).toBe(2);
-		});
-
-		test("a family the live manifest references survives, however old", () => {
-			const stale = staleStoreKeys(dualWindow, 2, ["2000", "500"]);
-			expect(stale).toEqual([]);
-		});
-
-		test("protection is per-build, not blanket: unreferenced old builds still retire", () => {
-			const withOlder = ["store:card-store-v2026081501-900-p0.store:0", ...dualWindow];
-			const stale = staleStoreKeys(withOlder, 2, ["2000", "500"]);
-			expect(stale).toEqual(["store:card-store-v2026081501-900-p0.store:0"]);
-		});
-
-		test("a plain string still means one protected build — the old call shape", () => {
-			expect(staleStoreKeys(dualWindow, 1, "500").filter((k) => k.includes("-500."))).toEqual([]);
-		});
-
-		test("empty strings in the protect list protect nothing", () => {
-			const stale = staleStoreKeys(dualWindow, 2, ["2000", ""]);
-			expect(stale.filter((k) => k.includes("-500.")).length).toBe(2);
-		});
-	});
-});
-
 describe("chunkForKv", () => {
 	/** Compressible: gzip collapses a repeating pattern to almost nothing. */
 	const compressible = (n: number) => new Uint8Array(n).fill(0x41);
@@ -1049,35 +885,6 @@ describe("chunkForKv", () => {
 
 	test("a tiny archive is one chunk", () => {
 		expect(chunkForKv(compressible(1_000), fakeGzip).chunks.length).toBe(1);
-	});
-});
-
-describe("retention and the in-flight coordinator build", () => {
-	// 2026-09-15: the DeckGen coordinator built generation 1789224220 on Sept 12 and spent three
-	// days uploading it one partition per alarm, reset by every deploy in between. Its built_at was
-	// older than both deploy-built generations that landed meanwhile, so the deploy sweeps retired
-	// it as the third-newest build — p0-p7 on the 22:14 deploy, p8 on the 03:33 deploy — and the
-	// coordinator then uploaded p9 and wrote a manifest naming nine chunks that were gone.
-	const fmt = 2026090301;
-	const inFlight = "1789224220";
-	const family = (builtAt: string, partitions: number[]) =>
-		partitions.map((k) => `store:card-store-v${fmt}-${builtAt}-p${k}.store:0`);
-	const keys = [
-		...family(inFlight, [0, 1, 2, 3, 4, 5, 6, 7]), // partial: p8, p9 still to come
-		...family("1789417939", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-		...family("1789424305", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-	];
-
-	test("without the marker the age-ordered sweep retires the partial family (the outage)", () => {
-		expect(staleStoreKeys(keys, 2, ["1789424305"]).sort()).toEqual(family(inFlight, [0, 1, 2, 3, 4, 5, 6, 7]).sort());
-	});
-
-	test("the marker's built_at protects it, however old and however partial", () => {
-		expect(staleStoreKeys(keys, 2, ["1789424305", inFlight])).toEqual([]);
-	});
-
-	test("a released marker (run published or failed) lets age decide again", () => {
-		expect(staleStoreKeys(keys, 2, ["1789424305"]).length).toBe(8);
 	});
 });
 

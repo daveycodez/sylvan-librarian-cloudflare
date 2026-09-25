@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGunzip } from "node:zlib";
 import { plugin } from "bun";
+import { kvBytesMetadata } from "../src/engine/kv-retention";
 import { MANIFEST_KEY } from "../src/engine/store-kv";
 import { parseTagAliasTables, tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest } from "../src/engine/types";
@@ -63,7 +64,9 @@ async function kvGet(key: string): Promise<string | null> {
 }
 
 async function kvPut(key: string, path: string): Promise<void> {
-	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "put", key, "--path", path, ...target], {
+	// With its size, like every value the repo puts: the byte guard sums them (kv-retention.ts).
+	const sized = ["--metadata", JSON.stringify(kvBytesMetadata(readFileSync(path).byteLength))];
+	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "put", key, "--path", path, ...sized, ...target], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
