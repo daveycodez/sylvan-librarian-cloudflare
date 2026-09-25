@@ -8,6 +8,7 @@ import {
 	COORDINATOR_POINTER_KEY,
 	type CoordinatorPointer,
 	type CoordinatorStatus,
+	coordinatorNameAt,
 	decideWatchdog,
 	KICK_GRACE_MS,
 	LEGACY_POINTER,
@@ -273,7 +274,10 @@ describe("runImportWatchdog", () => {
 
 	test("the watchdog follows the pointer, not the legacy name", async () => {
 		const kv = new MapKV();
-		await kv.put(COORDINATOR_POINTER_KEY, JSON.stringify({ name: "import-b", epoch: NOW - MIN, failovers: [] }));
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({ name: "import-b", epoch: NOW - MIN, failovers: [], retiring: [] }),
+		);
 		const log: string[] = [];
 		const ns = namespace({ "import-b": answers({}) }, log, kv);
 		await runImportWatchdog(envOf(kv, ns), NOW, 20);
@@ -285,7 +289,13 @@ describe("runImportWatchdog", () => {
 		const failovers = Array.from({ length: MAX_FAILOVERS_PER_DAY }, (_, i) => NOW - (i + 1) * 3_600_000);
 		await kv.put(
 			COORDINATOR_POINTER_KEY,
-			JSON.stringify({ name: "import-c", epoch: NOW - 3_600_000, failovers, suspectSince: NOW - 10 * MIN }),
+			JSON.stringify({
+				name: "import-c",
+				epoch: NOW - 3_600_000,
+				failovers,
+				suspectSince: NOW - 10 * MIN,
+				retiring: [],
+			}),
 		);
 		kv.puts.length = 0;
 		const log: string[] = [];
@@ -299,7 +309,10 @@ describe("runImportWatchdog", () => {
 
 	test("a designated coordinator whose start was lost is started", async () => {
 		const kv = new MapKV();
-		await kv.put(COORDINATOR_POINTER_KEY, JSON.stringify({ name: "import-d", epoch: NOW - 15 * MIN, failovers: [] }));
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({ name: "import-d", epoch: NOW - 15 * MIN, failovers: [], retiring: [] }),
+		);
 		const log: string[] = [];
 		const ns = namespace({ "import-d": answers({ state: "idle" }) }, log, kv);
 		await runImportWatchdog(envOf(kv, ns), NOW, 20);
@@ -330,5 +343,113 @@ describe("runImportWatchdog", () => {
 		);
 		await startNightlyImport(envOf(kv, ns));
 		expect(urls).toEqual(["?reason=cron&name=import-e&epoch=1234"]);
+	});
+});
+
+// ── releasing the coordinators a failover replaced ───────────────────────────
+// 2026-09-24's three failovers left the free account's ImportCoordinator namespace at 1.11 GB with
+// every staging row purged: only deleteAll gives an object's space back, and nothing asked for it.
+
+describe("the release sweep", () => {
+	const released: Handler = async (path) =>
+		path === "/release" ? Response.json({ released: true, detail: "deleted" }) : Response.json(status({}));
+	const notYet: Handler = async (path) =>
+		path === "/release" ? Response.json({ released: false, detail: "run in flight" }) : Response.json(status({}));
+
+	test("a failover adds the replaced coordinator to the retiring list", () => {
+		const next = nextPointer({ name: "import-a", epoch: 1, failovers: [], retiring: ["singleton"] }, NOW);
+		expect(next.retiring).toEqual(["singleton", "import-a"]);
+		expect(nextPointer(next, NOW + 1).retiring).toEqual(["singleton", "import-a", next.name]);
+	});
+
+	test("a pointer written before `retiring` existed derives it from previous and the ledger", async () => {
+		const kv = new MapKV();
+		const epochs = [NOW - 40 * MIN, NOW - 20 * MIN, NOW];
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({
+				name: coordinatorNameAt(NOW),
+				epoch: NOW,
+				failovers: epochs,
+				previous: coordinatorNameAt(epochs[1] as number),
+			}),
+		);
+		expect((await readPointer(kv)).retiring?.sort()).toEqual(
+			["singleton", coordinatorNameAt(epochs[0] as number), coordinatorNameAt(epochs[1] as number)].sort(),
+		);
+		// The legacy line (epoch 0) replaced nothing, and an explicit list is taken as written.
+		await kv.put(COORDINATOR_POINTER_KEY, JSON.stringify({ name: "singleton", epoch: 0, failovers: [] }));
+		expect((await readPointer(kv)).retiring).toBeUndefined();
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({ name: "import-z", epoch: 5, failovers: [], retiring: ["import-y", "import-z"] }),
+		);
+		expect((await readPointer(kv)).retiring).toEqual(["import-y"]);
+	});
+
+	test("each tick asks every retired coordinator, then keeps only the ones not yet released", async () => {
+		const kv = new MapKV();
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({
+				name: "import-c",
+				epoch: NOW - MIN,
+				failovers: [],
+				retiring: ["singleton", "import-a", "import-b"],
+			}),
+		);
+		kv.puts.length = 0;
+		const log: string[] = [];
+		const ns = namespace(
+			{ singleton: released, "import-a": notYet, "import-b": hang, "import-c": answers({}) },
+			log,
+			kv,
+		);
+		await runImportWatchdog(envOf(kv, ns), NOW, 20);
+		expect(log.map((l) => l.split(" [")[0]).sort()).toEqual(
+			["singleton /release", "import-a /release", "import-b /release", "import-c /status"].sort(),
+		);
+		const pointer = await readPointer(kv);
+		expect(pointer.retiring).toEqual(["import-a", "import-b"]);
+		expect(pointer.name).toBe("import-c");
+		expect(kv.puts).toEqual([COORDINATOR_POINTER_KEY]);
+	});
+
+	test("the release carries the pointer's epoch, and a tick that releases nothing writes nothing", async () => {
+		const kv = new MapKV();
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({ name: "import-c", epoch: 4321, failovers: [], retiring: ["import-a"] }),
+		);
+		kv.puts.length = 0;
+		const urls: string[] = [];
+		const ns = namespace(
+			{
+				"import-a": async (path, url) => {
+					urls.push(`${path}${url.search}`);
+					return Response.json({ released: false, detail: "run in flight" });
+				},
+				"import-c": answers({}),
+			},
+			[],
+			kv,
+		);
+		await runImportWatchdog(envOf(kv, ns), NOW, 20);
+		expect(urls).toEqual(["/release?epoch=4321"]);
+		expect(kv.puts).toEqual([]);
+	});
+
+	test("the current coordinator is never on the list it sweeps", async () => {
+		const kv = new MapKV();
+		await kv.put(
+			COORDINATOR_POINTER_KEY,
+			JSON.stringify({
+				name: "import-c",
+				epoch: NOW - MIN,
+				failovers: [NOW - 2 * MIN, NOW - MIN],
+				previous: "import-c",
+			}),
+		);
+		expect((await readPointer(kv)).retiring).not.toContain("import-c");
 	});
 });

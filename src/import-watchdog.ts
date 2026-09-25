@@ -70,6 +70,8 @@ export const KICK_GRACE_MS = 10 * 60_000;
  * wedged object never answers at all.
  */
 export const STATUS_TIMEOUT_MS = 45_000;
+/** How long a replaced coordinator gets to answer `/release`; one that does not is asked again next tick. */
+export const RELEASE_TIMEOUT_MS = 15_000;
 /**
  * Failovers per rolling 24 hours before the watchdog stops and says so. Each one restarts a
  * ~45-minute import and leaves the wedged object's staging behind until it wakes and retires, so a
@@ -96,6 +98,12 @@ export interface CoordinatorPointer {
 	previous?: string;
 	/** When the watchdog first found this coordinator not answering; cleared when it answers again. */
 	suspectSince?: number;
+	/**
+	 * Coordinators this line replaced whose storage is not yet released. Each tick asks each one to
+	 * `/release` (deleteAll) and drops the names that did. Absent on a pointer written before this
+	 * field existed: readPointer then derives it from `previous` and the failover ledger.
+	 */
+	retiring?: string[];
 }
 
 export const LEGACY_POINTER: CoordinatorPointer = { name: LEGACY_COORDINATOR_NAME, epoch: 0, failovers: [] };
@@ -128,13 +136,39 @@ interface WatchdogKV {
 export async function readPointer(kv: WatchdogKV): Promise<CoordinatorPointer> {
 	const raw = (await kv.get(COORDINATOR_POINTER_KEY, "json")) as Partial<CoordinatorPointer> | null | undefined;
 	if (!raw || typeof raw.name !== "string" || !raw.name || typeof raw.epoch !== "number") return LEGACY_POINTER;
+	const failovers = Array.isArray(raw.failovers) ? raw.failovers.filter((t) => typeof t === "number") : [];
+	const retiring = Array.isArray(raw.retiring)
+		? raw.retiring.filter((n): n is string => typeof n === "string" && n !== raw.name)
+		: replacedBefore(raw.name, raw.epoch, failovers, raw.previous);
 	return {
 		name: raw.name,
 		epoch: raw.epoch,
-		failovers: Array.isArray(raw.failovers) ? raw.failovers.filter((t) => typeof t === "number") : [],
+		failovers,
 		...(typeof raw.previous === "string" ? { previous: raw.previous } : {}),
 		...(typeof raw.suspectSince === "number" ? { suspectSince: raw.suspectSince } : {}),
+		...(retiring.length > 0 || Array.isArray(raw.retiring) ? { retiring } : {}),
 	};
+}
+
+/** The coordinator name a failover at `epoch` designated (nextPointer's naming). */
+export function coordinatorNameAt(epoch: number): string {
+	return `import-${new Date(epoch).toISOString()}`;
+}
+
+/**
+ * The coordinators a pointer written before `retiring` existed had already replaced: the legacy
+ * singleton (every failover line starts there), `previous`, and every name in the failover ledger
+ * older than the current one. The ledger holds only the last 24 hours, so an older failover's
+ * object is not found this way; 2026-09-24's three are.
+ */
+function replacedBefore(name: string, epoch: number, failovers: number[], previous: unknown): string[] {
+	if (epoch <= 0) return [];
+	const names = [
+		LEGACY_COORDINATOR_NAME,
+		...(typeof previous === "string" ? [previous] : []),
+		...failovers.filter((t) => t < epoch).map(coordinatorNameAt),
+	];
+	return [...new Set(names)].filter((n) => n !== name);
 }
 
 /**
@@ -195,10 +229,11 @@ export function nextPointer(current: CoordinatorPointer, now: number): Coordinat
 	// runs behind: the fence compares epochs, and a tie would retire nothing.
 	const epoch = Math.max(now, current.epoch + 1);
 	return {
-		name: `import-${new Date(epoch).toISOString()}`,
+		name: coordinatorNameAt(epoch),
 		epoch,
 		failovers: [...current.failovers.filter((t) => t > now - 24 * 3_600_000), epoch],
 		previous: current.name,
+		retiring: [...new Set([...(current.retiring ?? []), current.name])],
 	};
 }
 
@@ -240,6 +275,55 @@ export async function startNightlyImport(env: WatchdogEnv): Promise<Response> {
 }
 
 /**
+ * Ask every replaced coordinator on the pointer's `retiring` list to release its storage, and
+ * return the pointer without the ones that did (written back only when the list changed).
+ *
+ * The replaced objects' purges delete their staging rows, but not the space: after 2026-09-24's
+ * three failovers the free account's coordinators held 1.11 GB of its 5 GB storage pool with every
+ * staging table empty. An object that does not answer, or is still retiring, is asked again next
+ * tick; one the watchdog cannot name any more (older than the ledger) is not found this way.
+ */
+async function releaseRetired(
+	env: WatchdogEnv,
+	pointer: CoordinatorPointer,
+	timeoutMs: number,
+): Promise<CoordinatorPointer> {
+	const names = pointer.retiring ?? [];
+	if (names.length === 0) return pointer;
+	const remaining: string[] = [];
+	await Promise.all(
+		names.map(async (name) => {
+			try {
+				const answer = await within(
+					coordinatorFor(env, name).fetch(`https://coordinator/release?epoch=${pointer.epoch}`),
+					timeoutMs,
+				);
+				if (answer === "timeout" || !answer.ok) {
+					remaining.push(name);
+					console.warn(
+						`Import watchdog: ${name} did not answer its release (${answer === "timeout" ? "timeout" : answer.status}); asking again next tick`,
+					);
+					return;
+				}
+				const body = (await answer.json()) as { released?: boolean; detail?: string };
+				if (body.released) console.log(`Import watchdog: released retired coordinator ${name}: ${body.detail}`);
+				else {
+					remaining.push(name);
+					console.log(`Import watchdog: ${name} not released yet: ${body.detail}`);
+				}
+			} catch (err) {
+				remaining.push(name);
+				console.warn(`Import watchdog: release of ${name} failed (${err}); asking again next tick`);
+			}
+		}),
+	);
+	if (remaining.length === names.length) return pointer;
+	const next = { ...pointer, retiring: names.filter((n) => remaining.includes(n)) };
+	await env.STORE_KV.put(COORDINATOR_POINTER_KEY, JSON.stringify(next));
+	return next;
+}
+
+/**
  * One watchdog tick. Returns what it decided, for the log line and the tests.
  *
  * `timeoutMs` is a parameter only so tests need not wait out the real deadline.
@@ -249,7 +333,7 @@ export async function runImportWatchdog(
 	now: number = Date.now(),
 	timeoutMs: number = STATUS_TIMEOUT_MS,
 ): Promise<WatchdogAction> {
-	const pointer = await readPointer(env.STORE_KV);
+	const pointer = await releaseRetired(env, await readPointer(env.STORE_KV), Math.min(timeoutMs, RELEASE_TIMEOUT_MS));
 	const coordinator = coordinatorFor(env, pointer.name);
 
 	let status: CoordinatorStatus | "unresponsive" | "error";

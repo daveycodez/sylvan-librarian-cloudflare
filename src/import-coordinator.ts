@@ -509,6 +509,8 @@ function userAgent(): string {
 export class ImportCoordinator extends DurableObject<Env> {
 	/** Schema created once per instance — see ensureSchema. */
 	private schemaReady = false;
+	/** Set when a retire purge finishes: the alarm deletes the whole object's storage once its last write is done. */
+	private releaseAfterAlarm = false;
 
 	// ── metered storage ────────────────────────────────────────────────────────
 	//
@@ -764,9 +766,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── HTTP surface ───────────────────────────────────────────────────────────
 	//
-	// Three routes, all internal (a Durable Object has no public URL): the triggers' `/start-import`,
-	// and the watchdog's `/status` and `/kick` (src/import-watchdog.ts). Progress itself lives in the
-	// Worker logs, where an unattended nightly run belongs.
+	// Four routes, all internal (a Durable Object has no public URL): the triggers' `/start-import`,
+	// and the watchdog's `/status`, `/kick` and `/release` (src/import-watchdog.ts). Progress itself
+	// lives in the Worker logs, where an unattended nightly run belongs.
 
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
@@ -783,6 +785,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			case "/kick": {
 				const at = Number(url.searchParams.get("at") ?? Date.now());
 				return Response.json(await this.kick(Number.isFinite(at) ? at : Date.now()));
+			}
+			case "/release": {
+				const epoch = Number(url.searchParams.get("epoch") ?? 0);
+				return Response.json(await this.release(Number.isFinite(epoch) ? epoch : 0));
 			}
 			default:
 				return new Response("not found", { status: 404 });
@@ -824,6 +830,48 @@ export class ImportCoordinator extends DurableObject<Env> {
 		await this.armAlarm(Date.now());
 		console.warn(`Import watchdog kick: re-armed the alarm in phase ${this.metaGet("phase") ?? "idle"}`);
 		return { kicked: true, state: run.state };
+	}
+
+	/**
+	 * The watchdog's cleanup of a coordinator it replaced: give back ALL of its storage, which only
+	 * `deleteAll` does — a purge deletes the rows, but 09-24's three retired runs on the free account
+	 * still held ~1 GB between them (1.11 GB for the namespace) after purging every staging row.
+	 *
+	 * `designated` is the epoch of the pointer the watchdog read; a coordinator at that epoch or
+	 * newer is current and releases nothing. Nor does a run still in flight: it retires through its
+	 * own alarm chain (the fence) and releases itself when the purge ends, so this only makes sure an
+	 * alarm is armed. An object with nothing stored answers `released` without writing a byte — a
+	 * name the watchdog asks about may never have been created at all.
+	 */
+	private async release(designated: number): Promise<{ released: boolean; detail: string }> {
+		const hasTables =
+			this.sqlAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'").length > 0;
+		const run = await this.getRun();
+		if (!hasTables && run.state === "idle") return { released: true, detail: "nothing stored" };
+		const mine = hasTables ? Number(this.metaGet("coordinator_epoch") ?? 0) : 0;
+		if (!(designated > mine)) {
+			return { released: false, detail: `current coordinator (epoch ${mine}, pointer epoch ${designated})` };
+		}
+		if (run.state === "running" || run.state === "starting") {
+			// Never over a deferred retire (deferRetire): its alarm is set for when the budget allows.
+			if ((await this.ctx.storage.getAlarm()) === null) await this.armAlarm(Date.now());
+			const phase = hasTables ? (this.metaGet("phase") ?? "idle") : "idle";
+			return { released: false, detail: `run in flight (phase ${phase}); it retires through its own alarms` };
+		}
+		const bytes = await this.releaseStorage(`superseded (epoch ${mine} < ${designated}), run ${run.state}`);
+		return { released: true, detail: `deleted ${bytes} bytes (run ${run.state})` };
+	}
+
+	/** deleteAll, which also drops the alarm (compatibility date ≥ 2026-02-24). Returns the bytes it freed. */
+	private async releaseStorage(why: string): Promise<number> {
+		const bytes = this.ctx.storage.sql.databaseSize;
+		await this.ctx.storage.deleteAll();
+		this.schemaReady = false;
+		console.log(
+			`Import coordinator storage released (${why}): deleteAll freed the ${(bytes / 1048576).toFixed(1)}MB ` +
+				"its database still held",
+		);
+		return bytes;
 	}
 
 	/**
@@ -981,6 +1029,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// exactly what keeps an object active and billed.
 			clearTimeout(timer);
 		}
+		// After the body and its meter flush, never inside them: both write to tables deleteAll drops.
+		if (this.releaseAfterAlarm) {
+			this.releaseAfterAlarm = false;
+			await this.releaseStorage(`retired, superseded by ${this.metaGet("superseded_by") ?? "a newer coordinator"}`);
+		}
 	}
 
 	private async runAlarmBody(phaseAtStart: Phase, watchdogMs: number, alarmInfo?: AlarmInvocationInfo): Promise<void> {
@@ -1009,9 +1062,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			}
 		}
 		// A RETIRING run never fails (backlog x6, 2026-09-25). Its purge is bounded cleanup of its
-		// own staging, and every stop below used to route through failRun — which ended the run
-		// `failed` with the staging stranded (1.11 GB on the free account after 09-24's three
-		// failovers) and released a publishing marker that by then belonged to its successor. So
+		// own staging, and every stop below used to route through failRun — which would end the run
+		// `failed` with its staging stranded, and release a publishing marker that by then belonged
+		// to its successor. (09-24's three retired runs did finish their purges.) So
 		// the per-run budgets do not stop it, and the day budget, the attempt limit and a spent
 		// retry count only defer it.
 		const retiring = phase === "purge_staging" && this.metaGet("purge_scope") === "retire";
@@ -4076,6 +4129,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			} satisfies RunRecord);
 			await this.disarmAlarm();
 			this.logRunSummary("superseded");
+			// Deleting the rows did not give their space back: 09-24's three retired runs purged ~1 GB
+			// of staging and the namespace still held 1.11 GB, not the ~0.1 GB its live coordinator
+			// needed. Only deleteAll releases an object's storage, and a retired coordinator holds
+			// nothing a later run needs (should the legacy singleton ever be named again, it starts
+			// empty, like any new coordinator).
+			this.releaseAfterAlarm = true;
 		}
 	}
 

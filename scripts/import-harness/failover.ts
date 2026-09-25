@@ -80,8 +80,14 @@ class Instance {
 	}
 
 	phase(): string {
+		if (this.storage.isEmpty()) return "idle";
 		const row = this.storage.db.query("SELECT value FROM meta WHERE key = 'phase'").all() as { value?: string }[];
 		return String(row[0]?.value ?? "idle");
+	}
+
+	/** Its storage was given back with deleteAll and nothing has been written since. */
+	released(): boolean {
+		return this.storage.deleteAllCalls > 0 && this.storage.isEmpty();
 	}
 
 	runState(): string {
@@ -90,6 +96,7 @@ class Instance {
 	}
 
 	stagingRows(): number {
+		if (this.storage.isEmpty()) return 0;
 		let rows = 0;
 		for (const table of STAGING_TABLES) {
 			const r = this.storage.db.query(`SELECT COUNT(*) AS n FROM ${table}`).all() as { n: number }[];
@@ -247,8 +254,10 @@ function check(ok: boolean, what: string): void {
 	// The wedge clears. Its alarm, still armed from 11:33:18, finally fires.
 	old.wedged = false;
 	const woke = await old.drive();
-	check(old.runState() === "superseded", `the old coordinator woke and ended ${old.runState()} after ${woke} alarm(s)`);
-	check(old.stagingRows() === 0, `its staging is purged (${oldStaging} rows → ${old.stagingRows()})`);
+	check(
+		old.released(),
+		`the old coordinator woke, retired and released ALL its storage after ${woke} alarm(s) (${oldStaging} staging rows before)`,
+	);
 	check((await old.storage.getAlarm()) === null, "it has no alarm left");
 	const after = snapshot(kv);
 	const changed = [...new Set([...published.keys(), ...after.keys()])].filter((k) => published.get(k) !== after.get(k));
@@ -264,7 +273,16 @@ function check(ok: boolean, what: string): void {
 		body.skipped === "duplicate-cron" && fresh.runState() === "done" && (await fresh.storage.getAlarm()) === null,
 		"a cron start reaches the replacement, which ignores it as a duplicate of the run it just finished",
 	);
-	check(old.runState() === "superseded", "the retired coordinator is left alone");
+	check(old.released(), "the retired coordinator is left alone");
+
+	// The next tick asks the retired one to release: it already has, and nothing is written to it.
+	const sweep = await watchdog.runImportWatchdog(env, Date.now(), 200);
+	const swept = await watchdog.readPointer(kv);
+	check(
+		sweep.kind === "none" && (swept.retiring ?? []).length === 0 && old.storage.isEmpty(),
+		`the watchdog's release sweep drops it from the retiring list (${JSON.stringify(swept.retiring)})`,
+	);
+	check(!fresh.released() && fresh.runState() === "done", "…and never touches the current coordinator");
 }
 
 // ── 3. a replaced run that wakes over budget must not touch its successor's marker ────
@@ -272,7 +290,7 @@ function check(ok: boolean, what: string): void {
 // later in the same alarm body — a run or day budget, the attempt limit, a retry run out —
 // went through failRun, which deleted PUBLISHING_KEY unconditionally. By then the marker held
 // the SUCCESSOR's built_at, so the old run released the new run's protection, and it ended
-// `failed` with its staging stranded (1.11 GB on the free account after 09-24's failovers).
+// `failed` with its staging stranded.
 {
 	console.log("\n3. a replaced run wakes with its budgets spent while its successor is publishing");
 	const kv = new FakeKV();
@@ -328,12 +346,104 @@ function check(ok: boolean, what: string): void {
 	// Tomorrow: the day's meter resets. The spent RUN budget does not stop a retire purge.
 	old.storage.db.run("DELETE FROM meta WHERE key = ?", [dayKey]);
 	await old.drive();
-	check(old.runState() === "superseded", `it ends superseded, not failed (state ${old.runState()})`);
-	check(old.stagingRows() === 0, `its staging is purged (${oldStaging} rows → ${old.stagingRows()})`);
+	check(old.released(), `it ends released, not failed (${oldStaging} staging rows before)`);
 	check((await kv.get(PUBLISHING_KEY)) === marker, "…and the marker is still the successor's");
 
 	await fresh.drive();
 	check(fresh.runState() === "done", `the replacement published (state ${fresh.runState()})`);
+}
+
+// ── 4. coordinators replaced before `retiring` existed give their storage back ──────────
+// 2026-09-25: 09-24's three failovers left the free account's ImportCoordinator namespace at 1.11 GB
+// — every replaced run had purged its staging rows, and the space stayed with the object. The
+// pointer they were replaced under has no `retiring` list; the watchdog derives one from it.
+{
+	console.log("\n4. replaced coordinators from before the release sweep: the watchdog releases them");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const t = Date.now();
+	const epochs = [t - 40 * 60_000, t - 20 * 60_000, t];
+	const [nameA, nameB, nameC] = epochs.map(watchdog.coordinatorNameAt) as [string, string, string];
+
+	const started = async (name: string, epoch: number): Promise<Instance> => {
+		const i = ns.instanceFor(name);
+		const params = new URLSearchParams({ reason: "harness", name, epoch: String(epoch) });
+		await i.coordinator.fetch(new Request(`https://coordinator/start-import?${params}`));
+		await i.drive((phase) => phase === "bucket");
+		await i.drive((phase, n) => phase !== "bucket" || n >= 1);
+		return i;
+	};
+	// What the pre-fix code left: the retire purge ran, the run ended `superseded`, the pages stayed.
+	const retiredTheOldWay = async (i: Instance): Promise<void> => {
+		for (const table of STAGING_TABLES) i.storage.db.run(`DELETE FROM ${table}`);
+		const run = JSON.parse(
+			(i.storage.db.query("SELECT value FROM __harness_kv WHERE key = 'run'").all() as { value: string }[])[0]?.value ??
+				"{}",
+		) as Record<string, unknown>;
+		i.storage.db.run("UPDATE __harness_kv SET value = ? WHERE key = 'run'", [
+			JSON.stringify({ ...run, state: "superseded" }),
+		]);
+		i.storage.db.run("UPDATE meta SET value = 'idle' WHERE key = 'phase'");
+		await i.storage.deleteAlarm();
+	};
+
+	const singleton = await started(watchdog.LEGACY_COORDINATOR_NAME, 0);
+	await retiredTheOldWay(singleton);
+	const a = await started(nameA, epochs[0] as number);
+	await retiredTheOldWay(a);
+	// B is still mid-run, and its alarm was lost: it has to retire before it can release.
+	const b = await started(nameB, epochs[1] as number);
+	await b.storage.deleteAlarm();
+	const c = await started(nameC, epochs[2] as number);
+	const held = singleton.storage.sql.databaseSize + a.storage.sql.databaseSize;
+	check(
+		singleton.stagingRows() === 0 && a.stagingRows() === 0 && held > 1_000_000,
+		`two retired coordinators hold ${(held / 1048576).toFixed(1)}MB with no staging rows at all`,
+	);
+	await kv.put(
+		watchdog.COORDINATOR_POINTER_KEY,
+		JSON.stringify({ name: nameC, epoch: epochs[2], failovers: epochs, previous: nameB }),
+	);
+	check(
+		JSON.stringify((await watchdog.readPointer(kv)).retiring?.slice().sort()) ===
+			JSON.stringify([watchdog.LEGACY_COORDINATOR_NAME, nameA, nameB].sort()),
+		"a pointer without `retiring` derives it: the singleton, previous, and the ledger's older names",
+	);
+
+	const cAlarm = await c.storage.getAlarm();
+	await watchdog.runImportWatchdog(env, Date.now(), 200);
+	check(singleton.released() && a.released(), "one tick releases both retired coordinators' storage");
+	check(!b.released() && (await b.storage.getAlarm()) !== null, "the one still mid-run gets an alarm, not a deleteAll");
+	check(
+		JSON.stringify((await watchdog.readPointer(kv)).retiring) === JSON.stringify([nameB]),
+		"the pointer keeps only the name still to release",
+	);
+	check(!c.released() && (await c.storage.getAlarm()) === cAlarm, "the current coordinator is untouched");
+
+	await b.drive();
+	check(b.released(), "the mid-run one retires on its alarm and releases itself");
+	await watchdog.runImportWatchdog(env, Date.now(), 200);
+	check(
+		JSON.stringify((await watchdog.readPointer(kv)).retiring) === "[]",
+		"the next tick finds nothing left to release",
+	);
+
+	// A name the watchdog asks about may never have been created: asking writes nothing.
+	const ghost = ns.instanceFor("import-never-created");
+	const reply = (await (
+		await ghost.coordinator.fetch(new Request(`https://coordinator/release?epoch=${epochs[2]}`))
+	).json()) as { released?: boolean };
+	check(
+		reply.released === true && ghost.storage.isEmpty() && ghost.storage.deleteAllCalls === 0,
+		"a never-created name answers released and stores nothing",
+	);
+	// And the current coordinator refuses, whatever it is asked.
+	const refused = (await (
+		await c.coordinator.fetch(new Request(`https://coordinator/release?epoch=${epochs[2]}`))
+	).json()) as { released?: boolean };
+	check(refused.released === false && !c.released(), "the current coordinator refuses to release");
 }
 
 server.stop();
@@ -341,5 +451,5 @@ if (failures.length > 0) {
 	console.error(`\nFAILED: ${failures.length} check(s)`);
 	process.exit(1);
 }
-console.log("\nOK — kick and failover both hold");
+console.log("\nOK — kick, failover and release all hold");
 process.exit(0);
