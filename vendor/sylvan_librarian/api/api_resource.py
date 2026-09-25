@@ -154,6 +154,9 @@ RESULT_FIELD_COLUMNS: dict[str, str] = {
     "type_line": "type_line",
     "illustration_id": "illustration_id",
     "scryfall_id": "scryfall_id",
+    # The card's (not the printing's) id: what `oracleid:` searches, so a caller holding one
+    # printing can ask for all of them the way Scryfall's prints list does (the card page).
+    "oracle_id": "oracle_id",
     "price_usd": "price_usd",
     # The other two currencies CardOrdering already sorts by (see the sql_orderby map's
     # EUR/TIX entries). Without these a caller can rank a page by EUR or TIX and then have
@@ -184,6 +187,7 @@ RESULT_FIELD_COLUMNS: dict[str, str] = {
 RESULT_FIELD_OUTPUT_CAST: dict[str, str] = {
     "illustration_id": "::text",
     "scryfall_id": "::text",
+    "oracle_id": "::text",
 }
 
 # Scryfall's canonical color order, used to reshape identity objects into lists.

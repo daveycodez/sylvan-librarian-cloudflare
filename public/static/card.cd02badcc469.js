@@ -1,6 +1,20 @@
 const HTML_ESCAPE_RE = /[&<>"]/g;
 const HTML_ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
 const INITIAL_PAGE_TITLE = document.title;
+// What the card page's lookup asks /search for: the fields renderCardFace draws, plus oracle_id,
+// which finds the card's other printings the way Scryfall's own prints list does.
+const CARD_FIELDS = [
+  'name',
+  'set_code',
+  'collector_number',
+  'power',
+  'toughness',
+  'mana_cost',
+  'oracle_text',
+  'set_name',
+  'type_line',
+  'oracle_id',
+];
 
 function escapeHtml(str) {
   if (str == null) return '';
@@ -16,6 +30,9 @@ function buildImageUrl(card, version, face) {
   const ext = version === 'png' ? 'png' : 'jpg';
   return `https://cards.scryfall.io/${version}/${side}/${card.scryfall_id[0]}/${card.scryfall_id[1]}/${card.scryfall_id}.${ext}`;
 }
+// LOCAL PATCH (Cloudflare port): buildImageUrl builds from scryfall_id, so the card page's
+// lookup has to ask for it.
+CARD_FIELDS.push('scryfall_id');
 
 // Flip button for double-faced cards, mirroring the search page's progressive enhancement:
 // shown only when a face-2 image exists on the CDN (transform/MDFC backs; split and
@@ -26,6 +43,18 @@ function attachFlipButton(container, card) {
   probe.onload = () => {
     const wrapper = container.querySelector('.modal-image-wrapper');
     if (!wrapper || wrapper.querySelector('.card-flip-button')) return;
+    // A frame that hugs the image, so the button's percentage offsets resolve
+    // against the picture rather than the flex area around it. See app.js.
+    const img = wrapper.querySelector('.modal-image');
+    if (!img) return;
+    let frame = wrapper.querySelector('.card-image-frame');
+    if (!frame) {
+      const node = img.closest('a') || img;
+      frame = document.createElement('div');
+      frame.className = 'card-image-frame';
+      node.parentNode.insertBefore(frame, node);
+      frame.appendChild(node);
+    }
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'card-flip-button';
@@ -54,7 +83,7 @@ function attachFlipButton(container, card) {
         img.classList.remove('card-image-flipping');
       }, 150);
     });
-    wrapper.appendChild(button);
+    frame.appendChild(button);
   };
   probe.src = buildImageUrl(card, 'normal', 2);
 }
@@ -127,17 +156,27 @@ const MANA_SYMBOLS = new Map([
 ]);
 const MANA_RE = /\{[^}]{1,5}\}/g;
 
-function convertManaSymbols(text) {
+function formatCardText(text, isModal = true, convertNewlines = false) {
+  if (typeof isModal === 'object' && isModal !== null) {
+    convertNewlines = isModal.convertNewlines || false;
+    isModal = isModal.isModal ?? true;
+  }
   if (!text) return '';
-  return text.replace(MANA_RE, match => {
+  const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
+  const escaped = escapeHtml(text);
+  const formatted = escaped.replace(MANA_RE, match => {
     const cls = MANA_SYMBOLS.get(match);
-    return cls ? `<span class="modal-mana-symbol ${cls}"></span>` : escapeHtml(match);
+    return cls ? `<span class="${symbolClass} ${cls}"></span>` : match;
   });
+  return convertNewlines ? formatted.replace(/\n/g, '<br>') : formatted;
 }
 
-function formatOracleText(text) {
-  if (!text) return '';
-  return convertManaSymbols(escapeHtml(text)).replace(/\n/g, '<br>');
+function convertManaSymbols(text, isModal = true) {
+  return formatCardText(text, isModal, false);
+}
+
+function formatOracleText(text, isModal = true) {
+  return formatCardText(text, isModal, true);
 }
 
 function renderCardFace(card) {
@@ -228,14 +267,27 @@ async function main() {
     document.getElementById('card-loading').textContent = 'Invalid card URL.';
     return;
   }
-  const [, rawSetCode, collectorNumber] = parts;
+  const [, rawSetCode, rawCollectorNumber] = parts;
   const setCode = rawSetCode.toLowerCase();
+  // location.pathname is percent-encoded: /card/war/2★ arrives as "2%E2%98%85", which matches
+  // no printing, and would never equal a printing's collector_number in the filters below.
+  let collectorNumber = rawCollectorNumber;
+  try {
+    collectorNumber = decodeURIComponent(rawCollectorNumber);
+  } catch (_) {
+    // A malformed escape is not a real collector number; search for it as written.
+  }
 
   let card;
   try {
-    const resp = await fetch(`/search?q=${encodeURIComponent(`set:${setCode} cn:${collectorNumber}`)}&unique=printing`);
+    // Quoted: an unquoted collector number with a symbol in it (cn:2★) does not parse.
+    const resp = await fetch(
+      `/search?q=${encodeURIComponent(`set:${setCode} cn:"${escapeExactName(collectorNumber)}"`)}&unique=printing&fields=${CARD_FIELDS.join(',')}`
+    );
     const data = await resp.json();
-    card = data.cards?.[0];
+    // cn: matches on collector_number_int, which collapses numbers differing only by
+    // letters/symbols (e.g. "2018" vs "2018A") — pick the exact printing, not data.cards[0].
+    card = data.cards?.find(c => c.collector_number === collectorNumber) ?? data.cards?.[0];
   } catch (_) {
     document.getElementById('card-loading').textContent = 'Failed to load card.';
     return;
@@ -256,9 +308,16 @@ async function main() {
   document.getElementById('card-loading').style.display = 'none';
 
   try {
-    const printingFields = 'set_code,collector_number,set_name,illustration_id,price_usd,prefer_score';
+    // scryfall_id is what buildImageUrl derives the CDN path from — without it every
+    // alternate-printing thumbnail renders src="". It is the id, not a display field,
+    // which is exactly how it went missing from a list assembled by looking at the strip.
+    const printingFields = 'scryfall_id,set_code,collector_number,set_name,illustration_id,price_usd,prefer_score';
+    // By oracle id, as Scryfall's prints list asks: an exact-name search also returns every card
+    // with a FACE of that name (Emeritus of Conflict // Lightning Bolt), and every un-card variant
+    // sharing a name but not an oracle id. A card with no oracle id falls back to its exact name.
+    const printingsQuery = card.oracle_id ? `oracleid:${card.oracle_id}` : `!"${escapeExactName(card.name)}"`;
     const resp = await fetch(
-      `/search?q=${encodeURIComponent(`!"${escapeExactName(card.name)}"`)}&unique=printing&fields=${printingFields}`
+      `/search?q=${encodeURIComponent(printingsQuery)}&unique=printing&fields=${printingFields}`
     );
     const data = await resp.json();
     const others = (data.cards || []).filter(p => !(p.set_code === setCode && p.collector_number === collectorNumber));

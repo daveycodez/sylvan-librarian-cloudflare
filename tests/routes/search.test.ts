@@ -151,6 +151,18 @@ describe("search fields", () => {
 		expect(engine.lastSearch?.fields).not.toContain("price_tix");
 	});
 
+	test("oracle_id is a readable field, and stays out of the defaults", async () => {
+		// Backlog n5 (upstream PR): card.js asks for it to list a card's other printings by
+		// `oracleid:`. JSON_FIELD_TABLE already emits it (core_api.rs tests select it).
+		const engine = new FakeEngine();
+		const res = await testDispatch(makeCtx({ engine }), "/search?q=elf&fields=name,oracle_id");
+		expect(res.status).toBe(200);
+		expect(engine.lastSearch?.fields).toEqual(["name", "oracle_id"]);
+
+		await testDispatch(makeCtx({ engine }), "/search?q=elf");
+		expect(engine.lastSearch?.fields).not.toContain("oracle_id");
+	});
+
 	test("fields are deduped and forwarded; default is upstream's 9 plus scryfall_id", async () => {
 		const engine = new FakeEngine();
 		await testDispatch(makeCtx({ engine }), "/search?q=elf&fields=name,name,set_code");

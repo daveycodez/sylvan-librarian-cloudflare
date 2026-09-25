@@ -1,6 +1,20 @@
 const HTML_ESCAPE_RE = /[&<>"]/g;
 const HTML_ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
 const INITIAL_PAGE_TITLE = document.title;
+// What the card page's lookup asks /search for: the fields renderCardFace draws, plus oracle_id,
+// which finds the card's other printings the way Scryfall's own prints list does.
+const CARD_FIELDS = [
+  'name',
+  'set_code',
+  'collector_number',
+  'power',
+  'toughness',
+  'mana_cost',
+  'oracle_text',
+  'set_name',
+  'type_line',
+  'oracle_id',
+];
 
 function escapeHtml(str) {
   if (str == null) return '';
@@ -16,6 +30,9 @@ function buildImageUrl(card, version, face) {
   const ext = version === 'png' ? 'png' : 'jpg';
   return `https://cards.scryfall.io/${version}/${side}/${card.scryfall_id[0]}/${card.scryfall_id[1]}/${card.scryfall_id}.${ext}`;
 }
+// LOCAL PATCH (Cloudflare port): buildImageUrl builds from scryfall_id, so the card page's
+// lookup has to ask for it.
+CARD_FIELDS.push('scryfall_id');
 
 // Flip button for double-faced cards, mirroring the search page's progressive enhancement:
 // shown only when a face-2 image exists on the CDN (transform/MDFC backs; split and
@@ -265,7 +282,7 @@ async function main() {
   try {
     // Quoted: an unquoted collector number with a symbol in it (cn:2★) does not parse.
     const resp = await fetch(
-      `/search?q=${encodeURIComponent(`set:${setCode} cn:"${escapeExactName(collectorNumber)}"`)}&unique=printing`
+      `/search?q=${encodeURIComponent(`set:${setCode} cn:"${escapeExactName(collectorNumber)}"`)}&unique=printing&fields=${CARD_FIELDS.join(',')}`
     );
     const data = await resp.json();
     // cn: matches on collector_number_int, which collapses numbers differing only by
@@ -295,8 +312,12 @@ async function main() {
     // alternate-printing thumbnail renders src="". It is the id, not a display field,
     // which is exactly how it went missing from a list assembled by looking at the strip.
     const printingFields = 'scryfall_id,set_code,collector_number,set_name,illustration_id,price_usd,prefer_score';
+    // By oracle id, as Scryfall's prints list asks: an exact-name search also returns every card
+    // with a FACE of that name (Emeritus of Conflict // Lightning Bolt), and every un-card variant
+    // sharing a name but not an oracle id. A card with no oracle id falls back to its exact name.
+    const printingsQuery = card.oracle_id ? `oracleid:${card.oracle_id}` : `!"${escapeExactName(card.name)}"`;
     const resp = await fetch(
-      `/search?q=${encodeURIComponent(`!"${escapeExactName(card.name)}"`)}&unique=printing&fields=${printingFields}`
+      `/search?q=${encodeURIComponent(printingsQuery)}&unique=printing&fields=${printingFields}`
     );
     const data = await resp.json();
     const others = (data.cards || []).filter(p => !(p.set_code === setCode && p.collector_number === collectorNumber));

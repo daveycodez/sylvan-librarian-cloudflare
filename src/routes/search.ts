@@ -45,6 +45,9 @@ export const RESULT_FIELD_NAMES: readonly string[] = [
 	"type_line",
 	"illustration_id",
 	"scryfall_id",
+	// upstream PR (backlog n5): the card's id, what `oracleid:` searches — card.js asks for it to
+	// list a card's other printings by oracle id. JSON_FIELD_TABLE already carries it.
+	"oracle_id",
 	"price_usd",
 	// upstream #913. The two currencies `orderby=` already sorts by: without these a caller can
 	// rank a page by EUR or TIX and then have no way to read the number it was ranked on. Same
