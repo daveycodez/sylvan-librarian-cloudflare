@@ -264,4 +264,14 @@ echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes
 echo "==> Publishing the store to KV..."
 bun scripts/seed-remote-kv.ts store-build
 
+# 5. The scryfall id → oracle id index behind /cards/:id/rulings (src/engine/oracle-index.ts),
+#    from the builder's oracle-pairs.bin sidecar. AFTER the store, and NEVER fatal: without it the
+#    rulings route asks the engine, which is what it did before the index existed. Only here, not
+#    on the skip path above — the pairs come from this build, so a deploy that skips the import
+#    leaves the index to the nightly's `oracle_index` phase (which diffs against the same meta, so
+#    whichever runs second writes only the buckets that moved).
+echo "==> Publishing the oracle index to KV..."
+bun scripts/seed-oracle-index.ts store-build \
+    || echo "!!! Oracle index not published — /cards/:id/rulings asks the engine until the nightly import."
+
 echo "==> Card index published."

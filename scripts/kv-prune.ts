@@ -60,7 +60,10 @@ export async function publishingBuiltAts(remote: boolean): Promise<string[] | nu
  * for a miss, the same test scripts/store-age.ts applies — and `failed` when the read did not
  * answer at all, which callers must not mistake for a miss (see liveManifestBuiltAts).
  */
-async function kvGetText(key: string, remote: boolean): Promise<{ value: string | null; failed: string | null }> {
+export async function kvGetText(
+	key: string,
+	remote: boolean,
+): Promise<{ value: string | null; failed: string | null }> {
 	const proc = Bun.spawn([...wranglerArgv(), "kv", "key", "get", key, ...(await kvTargetArgs(remote))], {
 		stdout: "pipe",
 		stderr: "pipe",

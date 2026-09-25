@@ -49,6 +49,7 @@ import { join } from "node:path";
 import "./shims";
 import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
+import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
 import { FakeKV, MeteredStorage } from "./storage";
 
 interface Options {
@@ -58,6 +59,7 @@ interface Options {
 	maxAlarms: number;
 	statements: boolean;
 	corpusDir: string;
+	native: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
@@ -97,6 +99,9 @@ function parseArgs(argv: string[]): Options {
 		maxAlarms: num("max-alarms", 20_000),
 		statements: flags.has("statements"),
 		corpusDir: flags.get("corpus-dir") ?? join(tmpdir(), "sylvan-import-harness"),
+		// The oracle index's native-builder parity check (oracle-index-check.ts) builds and runs the
+		// native builder against this corpus; `--no-native` skips that half.
+		native: !flags.has("no-native"),
 	};
 }
 
@@ -200,6 +205,12 @@ async function main(): Promise<number> {
 		}
 	}
 
+	// Before the server stops: the parity half runs the native builder against it.
+	let oracle: OracleIndexCheck | null = null;
+	if (!failure && runState() === "done") {
+		oracle = await checkOracleIndex(kv, corpus, server.url, opts.corpusDir, opts.native);
+	}
+
 	server.stop();
 
 	const state = runState();
@@ -294,6 +305,12 @@ async function main(): Promise<number> {
 	}
 	if (state !== "done") {
 		console.error(`\nFAILED: the run ended in state '${state}', not 'done'`);
+		return 1;
+	}
+	console.log("");
+	for (const line of oracle?.lines ?? []) console.log(line);
+	if (!oracle?.ok) {
+		console.error("\nFAILED: the oracle index check (above)");
 		return 1;
 	}
 	console.log(`\nOK — published ${fmt(kv.size())} KV keys, ${fmt(kv.bytes())} bytes`);

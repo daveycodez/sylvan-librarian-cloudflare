@@ -76,6 +76,15 @@ import { addressAnnouncedEngine, parseEngineName, replicaGroupOf } from "./engin
 import { dropGroupWasm, groupWasm, type ImportWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import { staleKeys } from "./engine/kv-versions";
 import {
+	ORACLE_INDEX_KEY_PREFIX,
+	ORACLE_INDEX_META_KEY,
+	OracleIndexBuilder,
+	type OracleIndexMeta,
+	oracleIndexBucketKey,
+	oracleIndexCurrentPrefix,
+	planOracleIndexPublish,
+} from "./engine/oracle-index";
+import {
 	CATALOG_NAMES,
 	catalogKey,
 	encodeCountedArray,
@@ -469,6 +478,7 @@ type Phase =
 	| "tags"
 	| "scores"
 	| "routing"
+	| "oracle_index"
 	| "bucket"
 	| "agg"
 	| "finalize"
@@ -721,8 +731,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- partition/key lines emitted by scores_add_drafts (EMIT_ROUTING). Staged rather than
 			-- accumulated in wasm
 			-- because 1.2M keys resident would be ~55MB against a 124MiB ceiling; the routing phase
-			-- streams them straight into hashes and drops the table.
-			CREATE TABLE IF NOT EXISTS routing_keys (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL);
+			-- streams them straight into hashes. "pairs" is the SAME batch's oracle-index input
+			-- (EMIT_ORACLE_PAIRS, 32 bytes a printing), in the same row so it costs no row written
+			-- of its own; the oracle_index phase reads it and drops the table.
+			CREATE TABLE IF NOT EXISTS routing_keys (seq INTEGER PRIMARY KEY, bytes BLOB NOT NULL, pairs BLOB);
 			-- What the last import left in each published rulings bucket. CROSS-RUN state, unlike
 			-- every table above it: it is what lets a night publish only the buckets whose bytes
 			-- actually moved, so it is neither in the run-start purge nor covered by metaClear.
@@ -756,6 +768,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		if (rawLenCols.length === 0) {
 			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN raw_len INTEGER");
+		}
+		// A live instance's routing_keys predates the oracle index's `pairs` column. Additive and
+		// nullable: a row staged without it reads NULL, which stepOracleIndex treats as "this run
+		// began before the pairs existed" and skips the night's index publish rather than
+		// publishing one that has lost those batches' printings.
+		const pairsCols = this.sqlAll<{ name: string }>(
+			"SELECT name FROM pragma_table_info('routing_keys') WHERE name = 'pairs'",
+		);
+		if (pairsCols.length === 0) {
+			this.sqlRun("ALTER TABLE routing_keys ADD COLUMN pairs BLOB");
 		}
 		// On record once per instance: how the platform's SQLite frees pages. The
 		// staging purges are sliced on the assumption that a commit's cost is the
@@ -1483,6 +1505,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepScores();
 			case "routing":
 				return this.stepRouting();
+			case "oracle_index":
+				return this.stepOracleIndex();
 			case "bucket":
 				return this.stepBucket();
 			case "agg":
@@ -2319,8 +2343,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// stamp the final partition index rather than a hash the publisher would have to re-mod.
 		const partitionCount = this.requirePp().partitions.length;
 		const routingBlobs: { seq: number; bytes: Uint8Array }[] = [];
+		// The oracle index's pairs, by the same batch seq: the wasm emits them right after the
+		// routing keys, and they are staged in the SAME row (see stepOracleIndex).
+		const pairBlobs = new Map<number, Uint8Array>();
 		let routingSeq = -1;
-		wasm.setHandlers({ onRoutingKeys: (b) => routingBlobs.push({ seq: routingSeq, bytes: b }) });
+		wasm.setHandlers({
+			onRoutingKeys: (b) => routingBlobs.push({ seq: routingSeq, bytes: b }),
+			onOraclePairs: (b) => pairBlobs.set(routingSeq, b),
+		});
 
 		const done = Number(this.metaGet("scores_batch_done") ?? 0);
 		let fed = 0;
@@ -2366,11 +2396,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Keyed by the batch cursor this slice started from, so a RETRIED slice
 			// overwrites its own rows instead of doubling them. Duplicate keys would
 			// not corrupt the filter (it dedupes), but they would inflate the build.
+			// The pairs ride in the same statement: one row written per batch, as before.
+			// Stored raw — random UUIDs do not compress.
 			for (const blob of routingBlobs) {
+				const pairs = pairBlobs.get(blob.seq);
 				this.sqlRun(
-					"INSERT OR REPLACE INTO routing_keys (seq, bytes) VALUES (?, ?)",
+					"INSERT OR REPLACE INTO routing_keys (seq, bytes, pairs) VALUES (?, ?, ?)",
 					blob.seq,
 					exactBuffer(packBlob(blob.bytes)),
+					pairs ? exactBuffer(pairs) : null,
 				);
 			}
 			this.metaSet("scores_batch_done", String(done + fed));
@@ -2475,14 +2509,120 @@ export class ImportCoordinator extends DurableObject<Env> {
 		} catch (err) {
 			console.warn(`Routing filter NOT published (${err}); every /cards/<id> lookup will fan out.`);
 		}
+		// The staging stays for one more phase: its `pairs` column is the oracle index's input, and
+		// that phase drops the table (both halves) once it has read them.
+		this.metaSet("phase", "oracle_index");
+	}
+
+	// ── phase: oracle_index (scryfall id → oracle id, for /cards/:id/rulings) ──
+
+	/**
+	 * Build the scryfall id → oracle id index (src/engine/oracle-index.ts) from the pairs the scores
+	 * pass staged beside the routing keys, publish the buckets whose bytes changed, then drop the
+	 * staging.
+	 *
+	 * ITS OWN PHASE, AND SO ITS OWN SLICE, because of memory: the encoder holds the pairs once
+	 * (17MB on the 2026-09-24 corpus, ~35MB at 2×) plus the buckets it has finished, and the
+	 * routing filter's accumulator in the phase before holds ~20MB of hashes and reads ~60MB of
+	 * staged text — the two together in one 128MB isolate is the overlap this split exists to
+	 * avoid. The encoder takes TWO passes over the staged rows (count, then scatter) so it never
+	 * holds the rows and the pairs at once: ~2 x 1,180 rows read, ~0.2% of MAX_RUN_ROWS_READ.
+	 *
+	 * KV COST: one meta read, then a put per CHANGED bucket and the meta last — the hashes in the
+	 * meta are what the next publisher (this phase or the deploy's seed-oracle-index.ts) diffs
+	 * against, so it must never describe bytes KV does not hold. Buckets are keyed by the id's top
+	 * six bits and new printings land uniformly: k new printings touch ~64(1-(63/64)^k) buckets,
+	 * ~51 at k=100, never more than 64 — against the free plan's 1,000 KV writes a day.
+	 *
+	 * BEFORE THE MANIFEST, deliberately: the index is not part of the store generation (stable
+	 * keys, no built_at in them), so publishing it here only means a brand-new printing's rulings
+	 * can answer for the hour or two before the manifest names the partition that holds it —
+	 * rulings the route would serve that printing the moment the manifest landed anyway.
+	 *
+	 * A FAILURE HERE IS NOT A FAILED RUN, exactly like the routing filter: a missing or stale index
+	 * costs one engine call per rulings request, which is what the route did before it existed.
+	 */
+	private async stepOracleIndex(): Promise<void> {
+		const builtAt = this.metaGet("built_at") ?? "";
+		try {
+			const builder = new OracleIndexBuilder();
+			let batches = 0;
+			let unpaired = 0;
+			let pairBytes = 0;
+			for (const row of this.sqlIter<{ pairs: ArrayBuffer | null }>("SELECT pairs FROM routing_keys ORDER BY seq")) {
+				batches++;
+				if (row.pairs === null) {
+					unpaired++;
+					continue;
+				}
+				pairBytes += row.pairs.byteLength;
+				builder.count(new Uint8Array(row.pairs));
+			}
+			if (batches === 0) throw new Error("the scores phase staged no batches");
+			// A run resumed across the deploy that added the pairs has early batches without them.
+			// Publishing would REMOVE those printings from buckets that hold them tonight — safe (a
+			// miss asks the engine) but a step backwards; the index already in KV is the better one.
+			if (unpaired > 0) throw new Error(`${unpaired}/${batches} staged batches carry no oracle pairs`);
+			for (const row of this.sqlIter<{ pairs: ArrayBuffer }>("SELECT pairs FROM routing_keys ORDER BY seq")) {
+				builder.add(new Uint8Array(row.pairs));
+			}
+			const { buckets, pairCount, conflicts } = builder.finish();
+			if (pairCount === 0) throw new Error("the staged batches hold no oracle pairs");
+
+			let published: OracleIndexMeta | null = null;
+			try {
+				published = (await this.env.STORE_KV.get(ORACLE_INDEX_META_KEY, "json")) as OracleIndexMeta | null;
+			} catch (err) {
+				// Unparseable is "describes nothing": every bucket is owed. A failed READ is too —
+				// the cost is re-putting unchanged buckets once, never a wrong one.
+				console.warn(`Oracle index: could not read ${ORACLE_INDEX_META_KEY} (${err}); republishing every bucket`);
+			}
+			const { changed, meta } = await planOracleIndexPublish(buckets, pairCount, builtAt, published);
+			for (let at = 0; at < changed.length; at += RULINGS_PUT_CONCURRENCY) {
+				await Promise.all(
+					changed
+						.slice(at, at + RULINGS_PUT_CONCURRENCY)
+						.map((b) => this.env.STORE_KV.put(oracleIndexBucketKey(b), buckets[b] as Uint8Array)),
+				);
+			}
+			await this.env.STORE_KV.put(ORACLE_INDEX_META_KEY, JSON.stringify(meta));
+			// Only when the layout moved: a list costs a KV operation, and on every other night there
+			// is nothing under the prefix but the current layout's own stable keys.
+			if (published?.format_version !== meta.format_version) {
+				await this.pruneOldKeys(ORACLE_INDEX_KEY_PREFIX, oracleIndexCurrentPrefix(), "oracle-index");
+			}
+			let bucketBytes = 0;
+			let largest = 0;
+			for (const b of buckets) {
+				bucketBytes += b.byteLength;
+				largest = Math.max(largest, b.byteLength);
+			}
+			console.log(
+				`Oracle index published: ${pairCount} printings from ${batches} batches (${pairBytes} staged bytes` +
+					`${conflicts > 0 ? `, ${conflicts} conflicting ids dropped` : ""}), ${changed.length}/${buckets.length} ` +
+					`bucket(s) written, ${(bucketBytes / 1048576).toFixed(1)}MB in all, largest ` +
+					`${(largest / 1024).toFixed(0)}KB — /cards/:id/rulings asks no partition for these.`,
+			);
+		} catch (err) {
+			console.warn(`Oracle index NOT published (${err}); /cards/:id/rulings asks the engine for what it lacks.`);
+		}
 		this.ctx.storage.transactionSync(() => {
-			// Dropped either way: the keys have done their job, and ~60MB of staging against a
-			// shared 5GB pool is not worth keeping for a retry of an optional artifact.
-			this.noteChurn(this.blobBytesIn("routing_keys"));
+			// Dropped either way: the keys and pairs have done their job, and ~80MB of staging
+			// against a shared 5GB pool is not worth keeping for a retry of optional artifacts.
+			this.noteChurn(this.routingStagingBytes());
 			this.sqlRun("DELETE FROM routing_keys");
 			this.metaSet("bucket_batch_done", "0");
 			this.metaSet("phase", "bucket");
 		});
+	}
+
+	/** Both halves of routing_keys' staged bytes in ONE scan (blobBytesIn measures `bytes` only). */
+	private routingStagingBytes(): number {
+		return Number(
+			this.sqlAll<{ n: number }>(
+				"SELECT COALESCE(SUM(LENGTH(bytes)), 0) + COALESCE(SUM(LENGTH(pairs)), 0) AS n FROM routing_keys",
+			)[0]?.n ?? 0,
+		);
 	}
 
 	// ── phase: bucket (the drafts, re-grouped by partition, ONCE) ──────────────
