@@ -210,6 +210,7 @@ export interface EngineHandle {
 	autocomplete(prefix: string, limit: number): string;
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	exact_name_rank(folded: string, setCode: string): string;
+	exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
 	collection_cards_by_names(identifiersJson: string, fieldsJson: string, prefer: string, scopeJson: string): string;
 	collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
 	collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
@@ -271,6 +272,7 @@ export function engineFor(label: string): EngineHandle {
 		autocomplete: wrap("autocomplete"),
 		exact_card_by_name: wrap("exact_card_by_name"),
 		exact_name_rank: wrap("exact_name_rank"),
+		exact_name_probe: wrap("exact_name_probe"),
 		collection_cards_by_names: wrap("collection_cards_by_names"),
 		collection_name_ranks: wrap("collection_name_ranks"),
 		collection_batch: wrap("collection_batch"),

@@ -4,6 +4,7 @@
 // The packet is what engine/wasm's `collection_batch` writes, little-endian:
 //
 //   header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+//     (or, when the batch asked for `presence`, {"ranks": [...], "present": [bool per name]})
 //   then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
 //
 // Decoding takes VIEWS into the packet (subarray, never slice), so a card's bytes are copied once —
@@ -40,6 +41,7 @@ export function collectionBatchRequest(batch: CollectionBatch, scope: Collection
 		names: batch.names.map(({ folded, setCode }) => [folded, setCode]),
 		prefer: scope?.prefer ?? "default",
 		scope: scope?.filterTreeJson ?? "",
+		...(batch.presence ? { presence: true } : {}),
 	});
 }
 
@@ -47,7 +49,13 @@ export function collectionBatchRequest(batch: CollectionBatch, scope: Collection
 export function decodeCollectionPacket(packet: Uint8Array, batch: CollectionBatch): CollectionBatchAnswer {
 	const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
 	const headerLen = view.getUint32(0, true);
-	const nameRanks = JSON.parse(decoder.decode(packet.subarray(4, 4 + headerLen))) as (number[] | null)[];
+	// Two header shapes: the plain rank array, and `{ranks, present}` for a batch that asked for
+	// presence — which a store on the previous build ignores, answering the plain array.
+	const header = JSON.parse(decoder.decode(packet.subarray(4, 4 + headerLen))) as
+		| (number[] | null)[]
+		| { ranks: (number[] | null)[]; present: boolean[] };
+	const nameRanks = Array.isArray(header) ? header : header.ranks;
+	const namePresent = Array.isArray(header) ? undefined : header.present;
 	let at = 4 + headerLen;
 	const take = (count: number): (Uint8Array | null)[] => {
 		const out: (Uint8Array | null)[] = [];
@@ -67,7 +75,7 @@ export function decodeCollectionPacket(packet: Uint8Array, batch: CollectionBatc
 			`collection packet does not match its batch: ${packet.byteLength} bytes, read ${at}; ${nameRanks.length} ranks for ${batch.names.length} names`,
 		);
 	}
-	return { keys, trees, names, nameRanks };
+	return namePresent === undefined ? { keys, trees, names, nameRanks } : { keys, trees, names, nameRanks, namePresent };
 }
 
 /** An answer with nothing found, sized to `batch` — the start of a merge. */

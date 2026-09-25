@@ -247,6 +247,12 @@ export interface Engine {
 	 */
 	scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null>;
 	/**
+	 * `scryfallExactNameRank` and `scryfallExactName` in one reply, plus whether this store holds
+	 * the name at all — what the partitioned router asks a routed partition (see ExactNameProbe).
+	 * Only a store and its remote client answer it; the partitioned engine is its caller.
+	 */
+	scryfallExactNameProbe?(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe>;
+	/**
 	 * A `POST /cards/collection` `{name}` identifier batch, resolved to one card each.
 	 *
 	 * NOT `scryfallExactName` looped: the two surfaces read different keys (see the engine's
@@ -337,6 +343,12 @@ export interface CollectionBatch {
 	treeAddresses?: (string | null)[];
 	/** `{name}` and `{name, set}`, under the batch's scope. */
 	names: NameIdentifier[];
+	/**
+	 * Ask each store whether it holds each name AT ALL (`CollectionBatchAnswer.namePresent`) — what
+	 * lets the partitioned router trust a routed partition's MISS (see `nameReplySettles`). A store
+	 * on a build before it ignores the flag.
+	 */
+	presence?: boolean;
 }
 
 /** Per slot of a CollectionBatch, the card as Scryfall JSON bytes, or null for none. */
@@ -346,6 +358,11 @@ export interface CollectionBatchAnswer {
 	names: (Uint8Array | null)[];
 	/** `[served, tier, score]` per name, or null — what the partitioned router merges names by. */
 	nameRanks: (number[] | null)[];
+	/**
+	 * Per name, whether this store holds it at all — no set, no scope, and `exact=`'s wider name
+	 * rule — when the batch asked for `presence` and the store understood; absent otherwise.
+	 */
+	namePresent?: boolean[];
 }
 
 /**
@@ -360,6 +377,17 @@ export type CollectionKeyIdentifier =
 	| { kind: "oracle_id"; id: string }
 	| { kind: "illustration_id"; id: string }
 	| { kind: "external"; namespace: string; id: number };
+
+/**
+ * One store's whole answer to an `exact=` name — `scryfallExactNameRank` and `scryfallExactName`
+ * in one reply, plus `present`: whether the store holds the name at all, set or no set. What the
+ * partitioned router asks the partition the routing filter names for a name (backlog n6).
+ */
+export interface ExactNameProbe {
+	rank: number[] | null;
+	present: boolean;
+	card: Record<string, unknown> | null;
+}
 
 export interface NameIdentifier {
 	folded: string;

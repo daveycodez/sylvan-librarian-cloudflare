@@ -18,6 +18,7 @@ import type {
 	EngineSearchOptions,
 	EngineSearchResult,
 	EngineSerializedResult,
+	ExactNameProbe,
 	FuzzyCandidateWire,
 	NameIdentifier,
 	ResultShape,
@@ -130,6 +131,12 @@ interface SearchEngineStub {
 		setCode: string,
 		reportedShards?: number,
 	): Promise<{ rank: number[] | null } & Telemetry>;
+	scryfallExactNameProbe(
+		folded: string,
+		setCode: string,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<{ probe: ExactNameProbe } & Telemetry>;
 	scryfallCollectionNames(
 		identifiers: NameIdentifier[],
 		baseUrl: string,
@@ -775,6 +782,26 @@ export class RemoteEngine implements Engine {
 			this.stub.scryfallExactName(folded, setCode, baseUrl, currentShardWidth(this.region)),
 		);
 		return card;
+	}
+
+	/**
+	 * The name route's probe (ExactNameProbe). An object still on the previous build has no such
+	 * method during a rolling deploy; it is answered by the rank and the card, asked separately —
+	 * two calls to that one object, and `present` only as strong as the rank (a set-restricted miss
+	 * reads absent, which costs the router a fan-out, never an answer).
+	 */
+	async scryfallExactNameProbe(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe> {
+		try {
+			const { probe } = await this.searchRpc(() =>
+				this.stub.scryfallExactNameProbe(folded, setCode, baseUrl, currentShardWidth(this.region)),
+			);
+			return probe;
+		} catch (err) {
+			if (!isMissingRpcMethod(err, "scryfallExactNameProbe")) throw err;
+			const rank = await this.scryfallExactNameRank(folded, setCode);
+			const card = rank === null ? null : await this.scryfallExactName(folded, setCode, baseUrl);
+			return { rank, present: rank !== null, card };
+		}
 	}
 
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {

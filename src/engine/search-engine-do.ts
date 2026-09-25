@@ -98,6 +98,7 @@ import type {
 	EngineSearchResult,
 	EngineSerializedResult,
 	Env,
+	ExactNameProbe,
 	FuzzyCandidateWire,
 	NameIdentifier,
 	ResultShape,
@@ -686,6 +687,19 @@ export class SearchEngine extends DurableObject<Env> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			card: await engine.scryfallExactName(folded, setCode, baseUrl),
 		}));
+	}
+
+	/** The name route's probe — see ExactNameProbe. */
+	async scryfallExactNameProbe(
+		folded: string,
+		setCode: string,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<{ probe: ExactNameProbe } & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => {
+			if (!engine.scryfallExactNameProbe) throw new Error("exact-name probes come from a loaded store only");
+			return { probe: await engine.scryfallExactNameProbe(folded, setCode, baseUrl) };
+		});
 	}
 
 	async scryfallExactNameRank(

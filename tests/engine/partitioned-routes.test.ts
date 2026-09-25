@@ -22,6 +22,8 @@ import {
 	buildRoutingFilter,
 	externalIdKey,
 	illustrationIdKey,
+	nameKey,
+	ROUTING_FEATURE_NAME_KEYS,
 	RoutingFilter,
 	scryfallIdKey,
 	setNumberKey,
@@ -83,15 +85,15 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 		searchCardsAsObjects: async (_opts: unknown, pinned?: number) => {
 			count(`searchCardsAsObjects[${pinned ?? "-"}]`);
 			if (answers.staleModulus) throw new StaleModulusError("cut at another count");
-			return { totalCards: 1, cards: [] };
+			return { totalCards: val("totalCards", 1), cards: [] };
 		},
 		searchCardsAsJson: async (_opts: unknown, _shape: unknown, pinned?: number) => {
 			count(`searchCardsAsJson[${pinned ?? "-"}]`);
-			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
+			return { totalCards: val("totalCards", 1), cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
 		scryfallSearch: async (_opts: unknown, _base: unknown, pinned?: number) => {
 			count(`scryfallSearch[${pinned ?? "-"}]`);
-			return { totalCards: 1, cardsBytes: new Uint8Array(), rowCount: 0 };
+			return { totalCards: val("totalCards", 1), cardsBytes: new Uint8Array(), rowCount: 0 };
 		},
 		scryfallSearchPage: async (_o: unknown, _b: unknown, _e: unknown, _c: unknown, call = "cards", pinned?: number) => {
 			count(`scryfallSearchPage[${call}${pinned === undefined ? "" : `,${pinned}`}]`);
@@ -176,6 +178,17 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			const ranks = val<(number[] | null)[]>("collectionRanks", []);
 			return identifiers.map((_, i) => ranks[i] ?? null);
 		},
+		scryfallExactNameProbe: async () => {
+			count("scryfallExactNameProbe");
+			// The same answers the rank and the card give, in one reply; `present` overrides whether
+			// this partition holds the name at all (defaults to "it answered").
+			const rank = val<number[] | null>("exactRank", "exact" in answers ? [1, 2, 0] : null);
+			return {
+				rank,
+				present: val<boolean>("present", rank !== null),
+				card: rank === null ? null : val<Record<string, unknown> | null>("exact", null),
+			};
+		},
 		scryfallExactNameRank: async () => {
 			count("scryfallExactNameRank");
 			// A partition that can answer ranks; `exactRank` overrides the tier/score so a test
@@ -203,12 +216,22 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			// `byTree` answers per tree string, for a test that needs the English tree to miss.
 			const byTree = val<Record<string, Record<string, unknown>> | null>("byTree", null);
 			const card = val<Record<string, unknown> | null>("collectionCard", null);
-			const nameRanks = batch.names.map((_, i) => ranks[i] ?? null);
+			// `rankByName` ranks a name by its folded text — for the routed tests, where a partition is
+			// sent only some of the names, so position is not identity; `presentNames` are the names
+			// this partition holds even where it ranks none.
+			const byName = val<Record<string, number[] | null> | null>("rankByName", null);
+			const present = val<string[]>("presentNames", []);
+			const nameRanks = batch.names.map((n, i) => (byName ? (byName[n.folded] ?? null) : (ranks[i] ?? null)));
 			return {
 				keys: batch.keys.map((k) => cardBytes(held[String(k.id)] ?? null)),
 				trees: batch.trees.map((t) => cardBytes(byTree ? (byTree[t] ?? null) : tree)),
-				names: nameRanks.map((rank) => (rank === null ? null : cardBytes(card))),
+				names: nameRanks.map((rank, i) =>
+					rank === null ? null : cardBytes(byName ? { p: partition, name: batch.names[i]?.folded } : card),
+				),
 				nameRanks,
+				...(batch.presence
+					? { namePresent: batch.names.map((n, i) => nameRanks[i] !== null || present.includes(n.folded)) }
+					: {}),
 			};
 		},
 	} as unknown as RemoteEngine;
@@ -365,12 +388,16 @@ describe("point routes", () => {
 });
 
 /** A routing filter placing the given ids, built at the fake manifest's identity. */
-function filterOf(entries: { key: string; partition: number }[]): RoutingFilter {
-	const bytes = buildRoutingFilter(entries, {
-		builtAt: "100",
-		partitionCount: N,
-		partitionHash: "fnv1a64/oracle_id/v1",
-	});
+function filterOf(entries: { key: string; partition: number }[], features = 0): RoutingFilter {
+	const bytes = buildRoutingFilter(
+		entries,
+		{
+			builtAt: "100",
+			partitionCount: N,
+			partitionHash: "fnv1a64/oracle_id/v1",
+		},
+		features,
+	);
 	const parsed = RoutingFilter.parse(bytes, {
 		builtAt: "100",
 		partitionCount: N,
@@ -1111,12 +1138,13 @@ describe("name-route combination rules", () => {
 		).toBe("hit");
 	});
 
-	test("exact: rank every partition, materialize only the winner", async () => {
+	test("exact: every partition probed ONCE — rank and card together, no materialize round", async () => {
 		const { engine, of } = build({ 3: { exact: { name: "Opt" } } });
 		expect(await engine.scryfallExactName("opt", "", "https://x")).toEqual({ name: "Opt" });
-		// N cheap rank calls, then ONE card materialization — not N of them.
-		expect(of("scryfallExactNameRank").length).toBe(N);
-		expect(of("scryfallExactName").length).toBe(1);
+		// N probes, where rank-then-materialize was N + 1.
+		expect(of("scryfallExactNameProbe").length).toBe(N);
+		expect(of("scryfallExactNameRank")).toEqual([]);
+		expect(of("scryfallExactName")).toEqual([]);
 	});
 
 	test("exact: a WHOLE-name match in a later partition beats a face match in an earlier one", async () => {
@@ -1137,7 +1165,7 @@ describe("name-route combination rules", () => {
 		});
 		// The face match sits in the LOWER partition index and carries the HIGHER score, so it
 		// wins under both of the rules this replaced.
-		expect(of("scryfallExactName").length).toBe(1);
+		expect(of("scryfallExactNameProbe").length).toBe(N);
 	});
 
 	test("exact: with no whole-name match anywhere, the best prefer_score wins", async () => {
@@ -1169,7 +1197,7 @@ describe("name-route combination rules", () => {
 			3: { exact: { name: "Earth Rumble" }, exactRank: [1, 1, 0.1] },
 		});
 		expect(await engine.scryfallExactName("earthrumble", "", "https://x")).toEqual({ name: "Earth Rumble" });
-		expect(of("scryfallExactName")).toEqual(["scryfallExactName:3"]);
+		expect(of("scryfallExactNameProbe").length).toBe(N);
 		// With NO served card anywhere the extras-only card still answers: a fallback, not an
 		// exclusion (`exact=Cabbages` is jtla/39 on api.scryfall.com).
 		const alone = build({ 2: { exact: { name: "Cabbages" }, exactRank: [0, 2, 9.9] } });
@@ -1259,5 +1287,232 @@ describe("name-route combination rules", () => {
 				{ b: 3, c: 4 },
 			]),
 		).toEqual({ a: 1, b: 5, c: 4 });
+	});
+});
+
+describe("exact names route through the filter (backlog n6)", () => {
+	// A name key's value: its one partition, N + its one SERVED partition, or 255. The builders
+	// write `ns:` for a served row and `nm:` for an extra; both hash as `nm:`.
+	const named = (entries: { key: string; partition: number }[]) => filterOf(entries, ROUTING_FEATURE_NAME_KEYS);
+	const SOLE = named([{ key: "ns:lightningbolt", partition: 2 }]);
+	// The real card in 2, its art-series face in 0: several hold it, one holds it served.
+	const SERVED = named([
+		{ key: "ns:brainstorm", partition: 2 },
+		{ key: "nm:brainstorm", partition: 0 },
+	]);
+	// Served in two partitions: nothing the filter can decide.
+	const TWO_SERVED = named([
+		{ key: "ns:fire", partition: 1 },
+		{ key: "ns:fire", partition: 3 },
+	]);
+
+	test("the spelling: collated, and not routed when non-ASCII survives the fold", () => {
+		expect(nameKey("lim-dul's vault")).toBe("nm:limdulsvault");
+		expect(nameKey("fire // ice")).toBe("nm:fireice");
+		// Typographic quotes both sides drop are fine; a letter the two collations may disagree on is not.
+		expect(nameKey("urza’s saga")).toBe("nm:urzassaga");
+		expect(nameKey("アクスガルドの自慢屋")).toBeNull();
+		expect(nameKey("   ")).toBeNull();
+	});
+
+	test("the seal: sole, served, ambiguous — and a filter without the feature answers nothing", () => {
+		expect(SOLE.lookupName("nm:lightningbolt")).toEqual({ sole: 2 });
+		expect(SERVED.lookupName("nm:brainstorm")).toEqual({ served: 2 });
+		expect(TWO_SERVED.lookupName("nm:fire")).toBeNull();
+		const unstamped = filterOf([{ key: "ns:lightningbolt", partition: 2 }]);
+		expect(unstamped.lookupName("nm:lightningbolt")).toBeNull();
+	});
+
+	test("exact: a name ONE partition holds is ONE probe", async () => {
+		const { engine, calls } = build({ 2: { exact: { name: "Lightning Bolt" } } }, undefined, SOLE);
+		expect(await engine.scryfallExactName("lightning bolt", "", "https://x")).toEqual({ name: "Lightning Bolt" });
+		expect(calls).toEqual(["scryfallExactNameProbe:2"]);
+	});
+
+	test("exact: a set-restricted miss where the name lives is the answer — it holds the name, so no one else does", async () => {
+		const { engine, calls } = build({ 2: { exactRank: null, present: true } }, undefined, SOLE);
+		expect(await engine.scryfallExactName("lightning bolt", "lea", "https://x")).toBeNull();
+		expect(calls).toEqual(["scryfallExactNameProbe:2"]);
+	});
+
+	test("exact: a sole hint the partition cannot confirm asks the rest — N probes, never a wrong answer", async () => {
+		// The filter was never built with this name (its bytes read "1" by chance), and the card is in 3.
+		const garbage = named([{ key: "ns:lightningbolt", partition: 1 }]);
+		const { engine, calls } = build({ 3: { exact: { name: "Real" } } }, undefined, garbage);
+		expect(await engine.scryfallExactName("lightning bolt", "", "https://x")).toEqual({ name: "Real" });
+		expect(calls.length).toBe(N);
+		expect(calls[0]).toBe("scryfallExactNameProbe:1");
+	});
+
+	test("exact: the one SERVED holder answering served is the answer, whatever the others hold", async () => {
+		const { engine, calls } = build(
+			{
+				0: { exact: { name: "Brainstorm // Brainstorm (art series)" }, exactRank: [0, 1, 9.9] },
+				2: { exact: { name: "Brainstorm" }, exactRank: [1, 2, 0.1] },
+			},
+			undefined,
+			SERVED,
+		);
+		expect(await engine.scryfallExactName("brainstorm", "", "https://x")).toEqual({ name: "Brainstorm" });
+		expect(calls).toEqual(["scryfallExactNameProbe:2"]);
+	});
+
+	test("exact: a served route that answers only an extra asks the rest and merges in partition order", async () => {
+		// `set=` admitted only the served holder's memorabilia printing; the art-series card in 0
+		// scores higher on the same served-0 footing and wins, as the fan-out would have said.
+		const { engine, calls } = build(
+			{
+				0: { exact: { name: "art series" }, exactRank: [0, 1, 9.9] },
+				2: { exact: { name: "memorabilia" }, exactRank: [0, 2, 0.1] },
+			},
+			undefined,
+			SERVED,
+		);
+		expect(await engine.scryfallExactName("brainstorm", "wc98", "https://x")).toEqual({ name: "memorabilia" });
+		expect(calls.length).toBe(N);
+		// A tie between the routed reply and a later one keeps the LOWER partition, routed or not.
+		const tie = build(
+			{
+				0: { exact: { name: "lower" }, exactRank: [0, 2, 5] },
+				2: { exact: { name: "routed" }, exactRank: [0, 2, 5] },
+			},
+			undefined,
+			SERVED,
+		);
+		expect(await tie.engine.scryfallExactName("brainstorm", "", "https://x")).toEqual({ name: "lower" });
+	});
+
+	test("exact: an undecidable name, or a filter without name keys, probes every partition once", async () => {
+		const two = build({ 1: { exact: { name: "Fire // Ice" }, exactRank: [1, 1, 0.7] } }, undefined, TWO_SERVED);
+		expect(await two.engine.scryfallExactName("fire", "", "https://x")).toEqual({ name: "Fire // Ice" });
+		expect(two.calls.length).toBe(N);
+		const old = build(
+			{ 2: { exact: { name: "Lightning Bolt" } } },
+			undefined,
+			filterOf([{ key: "ns:lightningbolt", partition: 2 }]),
+		);
+		await old.engine.scryfallExactName("lightning bolt", "", "https://x");
+		expect(old.calls.length).toBe(N);
+	});
+
+	describe("collection names", () => {
+		const names = (...folded: string[]) => folded.map((f) => ({ folded: f, setCode: "" }));
+		const MANY = named([
+			{ key: "ns:lightningbolt", partition: 2 },
+			{ key: "ns:counterspell", partition: 2 },
+			{ key: "ns:opt", partition: 3 },
+			// Served in two partitions: no route.
+			{ key: "ns:mystery", partition: 1 },
+			{ key: "ns:mystery", partition: 3 },
+		]);
+		const names0 = (got: { names: (Uint8Array | null)[] }) => got.names.map(cardOf);
+
+		test("routed names go to their own partitions only, each asked for its own names — one round", async () => {
+			const { engine, calls } = build(
+				{
+					2: { rankByName: { "lightning bolt": [1, 2, 0], counterspell: [1, 2, 0] } },
+					3: { rankByName: { opt: [1, 2, 0] } },
+				},
+				undefined,
+				MANY,
+			);
+			const got = await engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("lightning bolt", "opt", "counterspell") },
+				"https://x",
+			);
+			expect(names0(got)).toEqual([
+				{ p: 2, name: "lightning bolt" },
+				{ p: 3, name: "opt" },
+				{ p: 2, name: "counterspell" },
+			]);
+			expect(calls.sort()).toEqual(["scryfallCollectionBatch[|t0|n1]:3", "scryfallCollectionBatch[|t0|n2]:2"]);
+		});
+
+		test("a routed name its partition does not settle is asked of every other one, and merged in order", async () => {
+			const garbage = named([{ key: "ns:lightningbolt", partition: 1 }]);
+			const { engine, calls } = build({ 3: { rankByName: { "lightning bolt": [1, 2, 0] } } }, undefined, garbage);
+			const got = await engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("lightning bolt") },
+				"https://x",
+			);
+			expect(names0(got)).toEqual([{ p: 3, name: "lightning bolt" }]);
+			expect(calls.length).toBe(N);
+			expect(calls.filter((c) => c.endsWith(":1"))).toEqual(["scryfallCollectionBatch[|t0|n1]:1"]);
+		});
+
+		test("a sole partition's miss is settled by presence — no second round", async () => {
+			const { engine, calls } = build({ 2: { rankByName: {}, presentNames: ["lightning bolt"] } }, undefined, SOLE);
+			const got = await engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: [{ folded: "lightning bolt", setCode: "lea" }] },
+				"https://x",
+			);
+			expect(names0(got)).toEqual([null]);
+			expect(calls).toEqual(["scryfallCollectionBatch[|t0|n1]:2"]);
+		});
+
+		test("one unrouted name calls every partition — but the routed names still go only to theirs", async () => {
+			const { engine, calls } = build(
+				{
+					1: { rankByName: { mystery: [1, 2, 0] } },
+					2: { rankByName: { "lightning bolt": [1, 2, 0] } },
+				},
+				undefined,
+				MANY,
+			);
+			const got = await engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("lightning bolt", "mystery") },
+				"https://x",
+			);
+			expect(names0(got)).toEqual([
+				{ p: 2, name: "lightning bolt" },
+				{ p: 1, name: "mystery" },
+			]);
+			expect(calls.sort()).toEqual([
+				"scryfallCollectionBatch[|t0|n1]:0",
+				"scryfallCollectionBatch[|t0|n1]:1",
+				"scryfallCollectionBatch[|t0|n1]:3",
+				"scryfallCollectionBatch[|t0|n2]:2",
+			]);
+		});
+	});
+
+	describe('a `!"Name"` search is pinned to the name\'s one partition', () => {
+		const exactTree = (value: string) =>
+			JSON.stringify({
+				node_type: "AndNode",
+				kwargs: {
+					operands: [
+						{ node_type: "ExactNameNode", kwargs: { value } },
+						{ node_type: "NotNode", kwargs: { operand: { node_type: "TrueNode", kwargs: {} } } },
+					],
+				},
+			});
+		const pinned = { ...OPTS, filterTreeJson: exactTree("lightningbolt") };
+
+		test("a sole route asks that partition alone, carrying this isolate's N", async () => {
+			const { engine, calls } = build({}, undefined, SOLE);
+			await engine.scryfallSearch(pinned, "https://x");
+			await engine.searchCardsAsJson(pinned, "rows");
+			expect(calls).toEqual([`scryfallSearch[${N}]:2`, `searchCardsAsJson[${N}]:2`]);
+		});
+
+		test("an EMPTY pinned answer is not trusted: the gather answers", async () => {
+			const { engine, calls } = build({ 2: { totalCards: 0 } }, undefined, SOLE);
+			await engine.searchCardsAsObjects(pinned);
+			expect(calls[0]).toBe(`searchCardsAsObjects[${N}]:2`);
+			expect(calls.filter((c) => c.startsWith("gatherSearchAsObjects")).length).toBe(1);
+		});
+
+		test("a served route, or no route, gathers", async () => {
+			const served = build({}, undefined, SERVED);
+			await served.engine.searchCardsAsObjects({ ...OPTS, filterTreeJson: exactTree("brainstorm") });
+			expect(served.calls.map((c) => c.split(":")[0])).toEqual(["gatherSearchAsObjects"]);
+			// A name the filter never held reads an arbitrary byte, which may well name a partition:
+			// that partition's empty answer is what sends it to the gather.
+			const nothing = { totalCards: 0 };
+			const none = build({ 0: nothing, 1: nothing, 2: nothing, 3: nothing }, undefined, SOLE);
+			await none.engine.searchCardsAsObjects({ ...OPTS, filterTreeJson: exactTree("notacard") });
+			expect(none.calls.some((c) => c.startsWith("gatherSearchAsObjects"))).toBe(true);
+		});
 	});
 });

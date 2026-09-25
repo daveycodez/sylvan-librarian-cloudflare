@@ -49,6 +49,20 @@ describe("the collection packet", () => {
 		expect(got.keys[0]?.buffer).toBe(packet.buffer);
 	});
 
+	test("a batch that asked for presence reads the widened header; one that did not has none", () => {
+		const slots = ['{"k":"a"}', null, null, null, null];
+		const widened = decodeCollectionPacket(packetOf({ ranks: [null], present: [true] } as never, slots), BATCH);
+		expect(widened.nameRanks).toEqual([null]);
+		expect(widened.namePresent).toEqual([true]);
+		// A store on the previous build ignores the flag and answers the plain array.
+		const plain = decodeCollectionPacket(packetOf([null], slots), BATCH);
+		expect(plain.nameRanks).toEqual([null]);
+		expect(plain.namePresent).toBeUndefined();
+		const req = (b: CollectionBatch) => JSON.parse(collectionBatchRequest(b, null)) as Record<string, unknown>;
+		expect(req({ ...BATCH, presence: true }).presence).toBe(true);
+		expect("presence" in req(BATCH)).toBe(false);
+	});
+
 	test("a packet that does not match its batch is refused, not misread", () => {
 		const short = packetOf([null], ['{"k":"a"}', null, null, null]);
 		expect(() => decodeCollectionPacket(short, BATCH)).toThrow();

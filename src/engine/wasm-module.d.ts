@@ -52,6 +52,7 @@ declare module "sylvan-engine-wasm" {
 		autocomplete(prefix: string, limit: number): string;
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
+		exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
 		collection_cards_by_names(identifiersJson: string, fieldsJson: string, prefer: string, scopeJson: string): string;
 		collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
 		collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
@@ -91,6 +92,11 @@ declare module "sylvan-engine-wasm" {
 	export function exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	/** `[tier, score]` for this store's best `exact=` candidate, or `null`. Compare, never interpret. */
 	export function exact_name_rank(folded: string, setCode: string): string;
+	/**
+	 * `{"rank": <exact_name_rank's answer>, "present": bool, "card": <row or null>}` in one call —
+	 * the name route's probe (see `exact_name_probe` in engine/wasm/src/lib.rs).
+	 */
+	export function exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
 	/**
 	 * The best printing a COLLECTION IDENTIFIER's `name` names, or JSON `null` — a different key
 	 * rule from `exact_card_by_name`'s, not a different caller. Same needle shape.

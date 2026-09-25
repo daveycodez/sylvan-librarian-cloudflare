@@ -81,6 +81,7 @@ import type {
 	EngineSearchResult,
 	EngineSerializedResult,
 	Env,
+	ExactNameProbe,
 	NameIdentifier,
 	ResultShape,
 	ScryfallFuzzyResult,
@@ -578,6 +579,20 @@ class WasmEngine implements Engine {
 	 */
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
 		return JSON.parse(this.w.exact_name_rank(folded, setCode)) as number[] | null;
+	}
+
+	/** `exact_name_probe` — see ExactNameProbe. */
+	async scryfallExactNameProbe(folded: string, setCode: string, baseUrl: string): Promise<ExactNameProbe> {
+		const probe = JSON.parse(this.w.exact_name_probe(folded, setCode, JSON.stringify(CARD_OBJECT_FIELDS))) as {
+			rank: number[] | null;
+			present: boolean;
+			card: EngineRow | null;
+		};
+		return {
+			rank: probe.rank,
+			present: probe.present,
+			card: probe.card === null ? null : toScryfallCard(probe.card, baseUrl),
+		};
 	}
 
 	async scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null> {

@@ -1599,8 +1599,17 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      cost until a publish writes them. The deploy of ce23f58 reused the generation-50 store
  *      ("A store built 2h 35m ago is already live — skipping the import"), so this bump is what
  *      makes the next deploy publish the filter instead of waiting for the nightly.
+ *
+ *   52 (2026-09-25): the ROUTING FILTER learns NAMES (backlog n6) — `nm:<collated name>`, from
+ *      canonical rows' whole and face names and every row's flavor name, valued "the one partition
+ *      holding it" or "the one holding it served" — and its header's features word says so. That
+ *      turns `/cards/named?exact=`, a collection `{name}` and a `!"Name"` search from an N-way ask
+ *      into one partition for 94% of names. No archive byte changes: a generation-51 store loads
+ *      and answers exactly as before, but its filter has no name keys (features 0), so every name
+ *      keeps fanning out until a publish writes one. Same call as 51: this bump is what makes the
+ *      next deploy publish it rather than the nightly.
  */
-export const STORE_CONTENT_GENERATION = 51;
+export const STORE_CONTENT_GENERATION = 52;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

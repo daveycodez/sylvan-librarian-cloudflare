@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { pinnedOracleId } from "../../src/engine/pinned-oracle";
+import { pinnedExactName, pinnedOracleId } from "../../src/engine/pinned-oracle";
 import { canonicalStringify, EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
 import type { FilterValue } from "../../src/parser/nodes";
 import { applyExtrasGate } from "../../src/routes/extras-gate";
@@ -72,5 +72,19 @@ describe("a query fans out when", () => {
 	test("the tree is not JSON", () => {
 		expect(pinnedOracleId("not json")).toBeNull();
 		expect(pinnedOracleId("")).toBeNull();
+	});
+});
+
+describe('a `!"Name"` query names its one required name (backlog n6)', () => {
+	test("the card page's search, through the extras gate, carries the collated name", async () => {
+		expect(pinnedExactName(await wire('!"Lim-Dûl\'s Vault" unique:prints'))).toBe("limdulsvault");
+		expect(pinnedExactName(await wire("!fire t:instant"))).toBe("fire");
+	});
+
+	test("an OR, a negation, or no exact name does not", async () => {
+		expect(pinnedExactName(await wire('!"Opt" or t:goblin'))).toBeNull();
+		expect(pinnedExactName(await wire('-!"Opt"'))).toBeNull();
+		expect(pinnedExactName(await wire("t:goblin"))).toBeNull();
+		expect(pinnedExactName("not json")).toBeNull();
 	});
 });

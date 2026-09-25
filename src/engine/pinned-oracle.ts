@@ -54,3 +54,40 @@ export function pinnedOracleId(filterTreeJson: string): string | null {
 		return null;
 	}
 }
+
+/**
+ * Does this query require ONE exact name (`!"Name"`)? Then its value — already collated by the
+ * parser (`ExactNameNode.kwargs`) — is a name the routing filter may place in one partition
+ * (backlog n6): the site's card page searches `!"Name"&unique=printing`, and every such search
+ * gathered all N partitions for a card that lives in one.
+ *
+ * Same walk as `pinnedOracleId` — conjunctions only, since an `OrNode` can widen past the name and
+ * a `NotNode` excludes it — and the same "first one found" rule: two different required names
+ * match nothing at all. Returns the COLLATED value; the caller keys it.
+ */
+function exactNameIn(node: unknown): string | null {
+	if (!node || typeof node !== "object") return null;
+	const { node_type, kwargs } = node as WireNode;
+	if (!kwargs) return null;
+	if (node_type === "AndNode") {
+		const operands = kwargs.operands;
+		if (!Array.isArray(operands)) return null;
+		for (const operand of operands) {
+			const pinned = exactNameIn(operand);
+			if (pinned !== null) return pinned;
+		}
+		return null;
+	}
+	if (node_type !== "ExactNameNode") return null;
+	const value = kwargs.value;
+	return typeof value === "string" && value !== "" ? value : null;
+}
+
+/** The collated exact name a filter tree requires of every row, or null. */
+export function pinnedExactName(filterTreeJson: string): string | null {
+	try {
+		return exactNameIn(JSON.parse(filterTreeJson));
+	} catch {
+		return null;
+	}
+}
