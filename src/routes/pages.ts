@@ -7,7 +7,7 @@ import { concatBytes, decodeUtf8, encodeUtf8, escapeLtBytes } from "../engine/by
 import { criticalCss } from "./assets";
 import type { CardOrdering, PreferOrder, SortDirection, UniqueOn } from "./enums";
 import { CARD_ORDERING, PREFER_ORDER, SORT_DIRECTION, UNIQUE_ON } from "./enums";
-import { buildBaseHtml, buildCardHtml, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
+import { buildBaseHtml, buildCardHtml, earlyHintsLinkHeader, replaceAllLiteral, SITE_NAME_PLACEHOLDER } from "./html";
 import { NO_STORE_HEADER, pageCacheHeader, searchPageCacheHeader } from "./http";
 import { type CardRow, generateResultsCountHtml, generateResultsHtml } from "./noscript";
 import { bindParams, enumParam, strParam } from "./param-binding";
@@ -50,6 +50,8 @@ export async function rootHandler(
 	const bound = bindParams("APIResource._root", ROOT_SPEC, [], params);
 	const siteName = SITE_NAME;
 	let htmlContent = buildBaseHtml(criticalCss(), siteName);
+	// 103 Early Hints (backlog h8): from the base page's own <head>, before any per-request edit.
+	const link = { Link: earlyHintsLinkHeader(htmlContent) };
 
 	// Revalidated by the browser on every navigation, cached an hour at the edge.
 	let headers: Record<string, string> = pageCacheHeader();
@@ -116,7 +118,7 @@ export async function rootHandler(
 					`${found.tail.replaceAll("<", "\\u003c")};\n      ${htmlContent.slice(at + EMBEDDED_DATA_PLACEHOLDER.length)}`,
 				),
 			]);
-			return new Response(body, { headers: { "content-type": "text/html", ...searchPageCacheHeader() } });
+			return new Response(body, { headers: { "content-type": "text/html", ...searchPageCacheHeader(), ...link } });
 		} catch (err) {
 			// If search fails, just serve the page without embedded results.
 			// EngineQueryError lands here too: upstream would have recovered via
@@ -142,7 +144,7 @@ export async function rootHandler(
 		}
 	}
 
-	return new Response(htmlContent, { headers: { "content-type": "text/html", ...headers } });
+	return new Response(htmlContent, { headers: { "content-type": "text/html", ...headers, ...link } });
 }
 
 const CARD_SPEC = [

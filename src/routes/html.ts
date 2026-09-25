@@ -75,6 +75,49 @@ export function buildBaseHtml(criticalCss: string, siteName: string): string {
 	return built;
 }
 
+/**
+ * The `Link` header for 103 Early Hints (backlog h8): every connection and early fetch the page's
+ * own <head> asks for — its preconnects, its font/style preloads, the site stylesheet and app.js —
+ * so the browser can start them while the Worker is still building the page. Cloudflare caches
+ * the header per path and replays it as a 103 on the next request (HTTP/2 and 3 only; the zone
+ * setting is on for mtgseeker.com; workers.dev ignores it). Derived from the built HTML rather than
+ * listed by hand, so it can never name a URL the page does not load. The body is unchanged.
+ */
+const linkHeaderCache = new Map<string, string>();
+export function earlyHintsLinkHeader(html: string): string {
+	const cached = linkHeaderCache.get(html);
+	if (cached !== undefined) return cached;
+	const head = html.slice(0, Math.max(0, html.indexOf("</head>")));
+	const attr = (tag: string, name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
+	const has = (tag: string, name: string) => new RegExp(`\\s${name}(?=[\\s/>=])`).test(tag);
+	const hints: string[] = [];
+	const seen = new Set<string>();
+	const push = (hint: string) => {
+		if (!seen.has(hint)) {
+			seen.add(hint);
+			hints.push(hint);
+		}
+	};
+	for (const [tag] of head.matchAll(/<link\b[^>]*>/g)) {
+		const rel = attr(tag, "rel");
+		const href = attr(tag, "href");
+		if (!href) continue;
+		const cors = has(tag, "crossorigin") ? "; crossorigin" : "";
+		if (rel === "preconnect") push(`<${href}>; rel=preconnect${cors}`);
+		else if (rel === "preload") {
+			const as = attr(tag, "as");
+			const type = attr(tag, "type");
+			push(`<${href}>; rel=preload${as ? `; as=${as}` : ""}${type ? `; type="${type}"` : ""}${cors}`);
+		} else if (rel === "stylesheet" && href.startsWith("/static/")) push(`<${href}>; rel=preload; as=style`);
+	}
+	for (const [, src] of head.matchAll(/<script\b[^>]*\bsrc="(\/static\/[^"]+)"/g))
+		push(`<${src}>; rel=preload; as=script`);
+	const value = hints.join(", ");
+	if (linkHeaderCache.size >= BASE_HTML_CACHE_MAX) linkHeaderCache.clear();
+	linkHeaderCache.set(html, value);
+	return value;
+}
+
 let cardHtmlCache: string | null = null;
 
 /** Build card.html with fragments, critical CSS and versioned asset URLs. The site name placeholder stays in. */

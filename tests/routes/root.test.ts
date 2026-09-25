@@ -283,3 +283,30 @@ describe("font loading hints", () => {
 		expect(preconnects.some((l) => l.includes("crossorigin"))).toBe(true);
 	});
 });
+
+describe("103 Early Hints (backlog h8)", () => {
+	test("/ sends a Link header naming exactly what its <head> loads early", async () => {
+		const res = await testDispatch(makeCtx(), "/");
+		const link = res.headers.get("Link") ?? "";
+		const html = await res.text();
+		const head = html.slice(0, html.indexOf("</head>"));
+		const app = /<script\b[^>]*\bsrc="(\/static\/app\.[0-9a-f]+\.min\.js)"/.exec(head)?.[1];
+		const css = /href="(\/static\/styles\.[0-9a-f]+\.css)"/.exec(head)?.[1];
+		expect(app).toBeDefined();
+		expect(css).toBeDefined();
+		expect(link).toContain(`<${app}>; rel=preload; as=script`);
+		expect(link).toContain(`<${css}>; rel=preload; as=style`);
+		expect(link).toContain("<https://cards.scryfall.io>; rel=preconnect");
+		// Every URL in the header is one the page itself names — derived, never listed by hand.
+		for (const [, url] of link.matchAll(/<([^>]+)>/g)) expect(head).toContain(url as string);
+		// Font preloads keep their CORS mode, or the browser would fetch the font twice.
+		expect(link).toMatch(/mana-subset\.woff2>; rel=preload; as=font; type="font\/woff2"; crossorigin/);
+	});
+
+	test("the random-cards preload stays out: hints are per path, and /?q= shares /'s", async () => {
+		const plain = (await testDispatch(makeCtx(), "/")).headers.get("Link") ?? "";
+		const searched = (await testDispatch(makeCtx(), "/?q=elf")).headers.get("Link") ?? "";
+		expect(plain).not.toContain("random_search");
+		expect(searched).toBe(plain);
+	});
+});
