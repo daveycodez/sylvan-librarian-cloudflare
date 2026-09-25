@@ -2,7 +2,6 @@
 // serving path: isolates parse and RPC here, never loading the store.
 
 import { decodeCollectionPacket } from "./collection-batch";
-import { bundleFromStages } from "./named-fuzzy";
 import {
 	adoptShardWidth,
 	currentShardWidth,
@@ -392,6 +391,7 @@ export function warmWindowLines(
 	region: string,
 	colo: string,
 	now: number,
+	aliased = false,
 ): { log: string | null; warn: string | null } {
 	const prefix = `[${region}@${colo}]`;
 	const log =
@@ -404,15 +404,20 @@ export function warmWindowLines(
 	// window actually timed are `engine-<region>[-<n>]-p<k>`, and the window
 	// mixes every partition and shard this isolate addressed, so the floor says
 	// "at least one of them is far", never which.
+	//
+	// ALIASED traffic is far by design: an EZE request maps to `sam`, which g1's placement block
+	// sends to enam's objects in the US East, so its floor is the Buenos Aires–Virginia round trip and
+	// the warning would accuse objects that sit exactly where they should (`[enam@EZE] … 383ms`,
+	// 2026-09-25). The window still logs; only the placement accusation is withheld.
 	const warn =
-		w.count >= WARM_RPC_FAR_MIN_SAMPLES && w.min >= WARM_RPC_FAR_MS
+		!aliased && w.count >= WARM_RPC_FAR_MIN_SAMPLES && w.min >= WARM_RPC_FAR_MS
 			? `${prefix} warm engine rpc floor is ${w.min}ms — an engine-${region}[-<n>]-p<k> object may not be ` +
 				`in ${region}; check their placement lines (see ENGINE-PLACEMENT.md)`
 			: null;
 	return { log, warn };
 }
 
-function sampleWarmRpc(region: string, colo: string, rpcMs: number): void {
+function sampleWarmRpc(region: string, colo: string, rpcMs: number, aliased: boolean): void {
 	const now = Date.now();
 	const w = warmWindows.get(region) ?? { start: now, count: 0, min: Number.POSITIVE_INFINITY, max: 0, sum: 0 };
 	warmWindows.set(region, w);
@@ -426,7 +431,7 @@ function sampleWarmRpc(region: string, colo: string, rpcMs: number): void {
 	// FROM. The colo is what makes the line checkable: the colos that appear here
 	// under a region are the colos that region's traffic actually arrives at, so
 	// they are what an object's self-reported colo has to sit among.
-	const { log, warn } = warmWindowLines(w, region, colo, now);
+	const { log, warn } = warmWindowLines(w, region, colo, now, aliased);
 	if (log) console.log(log);
 	if (warn) console.warn(warn);
 	w.start = now;
@@ -469,6 +474,9 @@ export class RemoteEngine implements Engine {
 		 * active. Reconnect or retry the request.") fails every later call the same way. Without it a
 		 * retry reuses `stub` — right for the tests' plain objects, wrong for a real dead connection. */
 		private readonly connect?: () => SearchEngineStub,
+		/** This request's own hint was aliased onto `region` (g1's placement block): its objects are
+		 * far from this colo on purpose, so the warm-RPC floor is not read as misplacement. */
+		private readonly aliased = false,
 	) {}
 
 	/** Swap in a fresh stub before a retry (see `connect`). */
@@ -525,7 +533,7 @@ export class RemoteEngine implements Engine {
 		if (!acquireMs) {
 			const rpcMs = Date.now() - rpcStart;
 			reportEngineLatency(this.region, rpcMs);
-			sampleWarmRpc(this.region, this.colo, rpcMs);
+			sampleWarmRpc(this.region, this.colo, rpcMs, this.aliased);
 		}
 	}
 
@@ -750,15 +758,7 @@ export class RemoteEngine implements Engine {
 		return probe;
 	}
 
-	/**
-	 * `/cards/named?fuzzy=`'s three stages from this object in one call (NamedFuzzyBundle).
-	 *
-	 * ROLLING DEPLOY: an object still on the build before n7 has no such method, and workerd says
-	 * so ("does not implement the method"). Its bundle is then built from the stage calls it does
-	 * answer (`bundleFromStages`, the same skip rules the engine applies) — up to three calls to
-	 * that one object, and the same answer. Once every object on both accounts has served a deploy
-	 * with the bundle, the fallback is dead and goes, as n6's probe fallback did (758d9719).
-	 */
+	/** `/cards/named?fuzzy=`'s three stages from this object in one call (NamedFuzzyBundle). */
 	async scryfallNamedFuzzyBundle(
 		folded: string,
 		setCode: string,
@@ -766,15 +766,10 @@ export class RemoteEngine implements Engine {
 		limit: number,
 		baseUrl: string,
 	): Promise<NamedFuzzyBundle> {
-		try {
-			const { bundle } = await this.searchRpc(() =>
-				this.stub.scryfallNamedFuzzyBundle(folded, setCode, words, limit, baseUrl, currentShardWidth(this.region)),
-			);
-			return bundle;
-		} catch (err) {
-			if (!isMissingRpcMethod(err, "scryfallNamedFuzzyBundle")) throw err;
-			return bundleFromStages(this, folded, setCode, words, limit, baseUrl);
-		}
+		const { bundle } = await this.searchRpc(() =>
+			this.stub.scryfallNamedFuzzyBundle(folded, setCode, words, limit, baseUrl, currentShardWidth(this.region)),
+		);
+		return bundle;
 	}
 
 	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
@@ -814,11 +809,4 @@ export class RemoteEngine implements Engine {
 		);
 		return decodeCollectionPacket(packet, batch);
 	}
-}
-
-/** The error workerd raises when a stub's object has no such method — an object still on the
- * previous build during a rolling deploy (see scryfallNamedFuzzyBundle). */
-function isMissingRpcMethod(err: unknown, method: string): boolean {
-	const message = err instanceof Error ? err.message : String(err);
-	return message.includes(`does not implement the method "${method}"`);
 }

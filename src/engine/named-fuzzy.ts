@@ -63,8 +63,10 @@ export interface NamedFuzzyStages {
  * an exact rank skips everything else; any typo candidate skips containment; no candidate means
  * a local typo miss without asking.
  *
- * What RemoteEngine answers for an object still on the build before the bundle during a rolling
- * deploy — up to three calls to that one object in place of one.
+ * Production never calls it: every store answers the bundle itself. It is the TypeScript
+ * statement of those skip rules, which tests/engine/named-fuzzy.test.ts builds each partition's
+ * bundle from. (It was RemoteEngine's fallback for objects on the build before the bundle,
+ * removed once every object on both accounts had served a deploy with it.)
  */
 export async function bundleFromStages(
 	stages: NamedFuzzyStages,

@@ -39,6 +39,15 @@ describe("a closed warm window", () => {
 		expect(fast.warn).toBeNull();
 	});
 
+	test("traffic aliased onto a far region logs its window but raises no placement warning", () => {
+		// [enam@EZE] n=9 min=383ms on 2026-09-25: EZE maps to sam, which g1 aliases to enam.
+		const slow = window({ count: 9, min: 383, max: 4078, sum: 11_586 });
+		const aliased = warmWindowLines(slow, "enam", "EZE", 3_000, true);
+		expect(aliased.warn).toBeNull();
+		expect(aliased.log).toContain("[enam@EZE] warm engine rpc: n=9 min=383ms");
+		expect(warmWindowLines(slow, "enam", "EZE", 3_000).warn).toContain("[enam@EZE] warm engine rpc floor is 383ms");
+	});
+
 	test("an empty window says nothing at all", () => {
 		const { log, warn } = warmWindowLines(window({ min: Number.POSITIVE_INFINITY }), "wnam", "SJC", 3_000);
 		expect(log).toBeNull();

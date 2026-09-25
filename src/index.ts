@@ -77,7 +77,9 @@ async function resolveEngine(
 	// cannot disagree. `livePartitionedManifest` throws the loud 503 when there is no usable
 	// manifest; see the partitioned-serving note below.
 	const manifest = await livePartitionedManifest(env, (p) => ctx.waitUntil(p));
-	const region = effectiveRegion(regionHint(request), manifest.placement);
+	const hint = regionHint(request);
+	const region = effectiveRegion(hint, manifest.placement);
+	const aliased = region !== hint;
 	const generation = generationOf(region, manifest.placement);
 	// The colo THIS isolate is running in, carried into the warm-RPC log line.
 	// It is the other half of the placement join: a colo that shows up serving
@@ -122,8 +124,12 @@ async function resolveEngine(
 		ctx.waitUntil(
 			Promise.all(
 				Array.from({ length: count }, (_, p) =>
-					new RemoteEngine(placeEngineStub(env, region, warmTarget, p, generation), region, colo, () =>
+					new RemoteEngine(
 						placeEngineStub(env, region, warmTarget, p, generation),
+						region,
+						colo,
+						() => placeEngineStub(env, region, warmTarget, p, generation),
+						aliased,
 					).cardCount(),
 				),
 			)
@@ -136,8 +142,12 @@ async function resolveEngine(
 	}
 	return new PartitionedEngine(
 		(partition) =>
-			new RemoteEngine(placeEngineStub(env, region, shard, partition, generation), region, colo, () =>
+			new RemoteEngine(
 				placeEngineStub(env, region, shard, partition, generation),
+				region,
+				colo,
+				() => placeEngineStub(env, region, shard, partition, generation),
+				aliased,
 			),
 		manifest,
 		// The stale-modulus retry (Decision 3b): re-read the one manifest key.

@@ -12,7 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { bundleFromStages, type NamedFuzzyStages, resolveNamedFuzzyStaged } from "../../src/engine/named-fuzzy";
 import { mergeNamedFuzzyBundles, nameReplySettles, PartitionedEngine } from "../../src/engine/partitioned-engine";
-import { RemoteEngine } from "../../src/engine/remote-engine";
+import type { RemoteEngine } from "../../src/engine/remote-engine";
 import {
 	buildRoutingFilter,
 	type NameHint,
@@ -381,57 +381,5 @@ describe("the merge's corner cases", () => {
 		expect(await e.bundled.scryfallNamedFuzzy?.("shok", ["shok"], "", "https://x")).toEqual(
 			await resolveNamedFuzzyStaged(e.staged, "shok", ["shok"], "", "https://x"),
 		);
-	});
-});
-
-describe("an object still on the build before the bundle (rolling deploy)", () => {
-	test("is asked the stages it answers, and the bundle is the same", async () => {
-		const s: Stages = {
-			...MISS,
-			candidates: [cand(0.9, "o-1", "shock")],
-			fuzzy: { status: "hit", card: named("Shock") },
-		};
-		const asked: string[] = [];
-		const stages = stagesOf(s);
-		const reply =
-			<T>(name: string, f: () => Promise<T>) =>
-			async () => {
-				asked.push(name);
-				return f();
-			};
-		const stub = {
-			scryfallNamedFuzzyBundle: async () => {
-				asked.push("bundle");
-				throw new Error('The RPC receiver does not implement the method "scryfallNamedFuzzyBundle".');
-			},
-			scryfallExactNameProbe: reply("probe", async () => ({
-				probe: await stages.scryfallExactNameProbe("shok", "", "https://x"),
-			})),
-			fuzzyCandidates: reply("candidates", async () => ({ candidates: await stages.fuzzyCandidates("shok", "") })),
-			scryfallFuzzyName: reply("fuzzy", () => stages.scryfallFuzzyName("shok", "https://x", "")),
-			scryfallNamesContaining: reply("contained", async () => ({
-				cards: await stages.scryfallNamesContaining(["shok"], "", 2, "https://x"),
-			})),
-		};
-		const got = await new RemoteEngine(stub as never, "wnam").scryfallNamedFuzzyBundle(
-			"shok",
-			"",
-			["shok"],
-			2,
-			"https://x",
-		);
-		expect(got).toEqual(await bundleFromStages(stages, "shok", "", ["shok"], 2, "https://x"));
-		expect(asked).toEqual(["bundle", "probe", "candidates", "fuzzy"]);
-	});
-
-	test("any other failure is the failure", async () => {
-		const stub = {
-			scryfallNamedFuzzyBundle: async () => {
-				throw new Error("boom");
-			},
-		};
-		await expect(
-			new RemoteEngine(stub as never, "wnam").scryfallNamedFuzzyBundle("x", "", ["x"], 2, "https://x"),
-		).rejects.toThrow("boom");
 	});
 });
