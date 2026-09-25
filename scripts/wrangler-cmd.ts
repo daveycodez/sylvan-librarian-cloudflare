@@ -34,3 +34,17 @@ const LOCAL_WRANGLER = new URL("../node_modules/.bin/wrangler", import.meta.url)
 export function wranglerArgv(): string[] {
 	return existsSync(LOCAL_WRANGLER) ? [LOCAL_WRANGLER] : ["bunx", "wrangler"];
 }
+
+/**
+ * What a failed wrangler run actually said. Its last lines are the same footer every time ("If you
+ * think this is a bug… Logs were written to …"), which is all the deploy logs of 2026-09-25 kept of
+ * three failed chunk puts; the `✘ [ERROR]` line and what follows it are the cause.
+ */
+export function wranglerFailure(output: string): string {
+	const lines = output
+		.split("\n")
+		.map((l) => l.trimEnd())
+		.filter((l) => l.trim() && !/If you think this is a bug|Logs were written to/.test(l));
+	const at = lines.findIndex((l) => /\[ERROR\]|✘/.test(l));
+	return (at >= 0 ? lines.slice(at, at + 6) : lines.slice(-6)).join(" | ") || "no output";
+}

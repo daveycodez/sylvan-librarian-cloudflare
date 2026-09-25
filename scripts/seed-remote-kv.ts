@@ -50,7 +50,7 @@ import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
 import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
-import { wranglerArgv } from "./wrangler-cmd";
+import { wranglerArgv, wranglerFailure } from "./wrangler-cmd";
 
 const dir = process.argv.slice(2).find((a) => !a.startsWith("--"));
 if (!dir) {
@@ -129,16 +129,36 @@ if (problem) {
 // by nothing else. See requireDeployEnvironment.
 requireDeployEnvironment();
 
-/** Run a wrangler KV command, failing loudly with its own message. */
+/** Attempts a KV write gets, and the waits between them: a put is idempotent (same key, same bytes). */
+const KV_ATTEMPTS = 4;
+const KV_BACKOFF_MS = [5_000, 15_000, 30_000];
+
+/**
+ * Run a wrangler KV command, retrying a failed one and failing loudly with its own message.
+ *
+ * RETRIED because a chunk put fails now and then with nothing wrong on our side: on 2026-09-25 the
+ * DeckGen deploy lost a 13–14MB put after 3 good ones and, 30 minutes later, after 4; the free
+ * account's lost its first put the same minute as DeckGen's first failure, and its next deploy
+ * uploaded all ten. Every command here is a put of a fixed key and value, so asking again is safe.
+ */
 async function kv(args: string[]): Promise<void> {
-	const proc = Bun.spawn([...wranglerArgv(), "kv", ...args, "--namespace-id", await namespaceId()], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const out = await new Response(proc.stdout).text();
-	const err = await new Response(proc.stderr).text();
-	if ((await proc.exited) !== 0) {
-		throw new Error(`wrangler kv ${args[0]} failed: ${(err.trim() || out.trim()).split("\n").slice(-4).join(" ")}`);
+	for (let attempt = 1; ; attempt++) {
+		const proc = Bun.spawn([...wranglerArgv(), "kv", ...args, "--namespace-id", await namespaceId()], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const out = await new Response(proc.stdout).text();
+		const err = await new Response(proc.stderr).text();
+		if ((await proc.exited) === 0) return;
+		const why = wranglerFailure(`${out}\n${err}`);
+		if (attempt >= KV_ATTEMPTS) {
+			throw new Error(`wrangler kv ${args.slice(0, 3).join(" ")} failed ${attempt} times: ${why}`);
+		}
+		const wait = KV_BACKOFF_MS[attempt - 1] ?? 30_000;
+		console.warn(
+			`  wrangler kv ${args.slice(0, 3).join(" ")} failed (attempt ${attempt}/${KV_ATTEMPTS}), retrying in ${wait / 1000}s: ${why}`,
+		);
+		await Bun.sleep(wait);
 	}
 }
 
