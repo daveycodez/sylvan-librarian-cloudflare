@@ -269,6 +269,13 @@ export function fuzzy_card_by_name(name: string, floor: number, lead: number, fi
 export function init_store(bytes: Uint8Array): void;
 
 /**
+ * `values` as a JSON array in JavaScript's spelling — FOR THE PARITY TEST, which feeds it
+ * doubles by their bits (a JSON round trip would let serde_json's best-effort float parse move
+ * the value it is testing) and compares against `JSON.stringify`. Not on any request path.
+ */
+export function js_spelled_numbers(values: Float64Array): string;
+
+/**
  * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
  * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
  * router asks each partition ONCE where it used to ask every partition three times over three
@@ -370,6 +377,15 @@ export function query_keys(filter_tree_json: string, opts_json: string, inline_r
 export function query_rows(filter_tree_json: string, opts_json: string): Uint8Array;
 
 /**
+ * The same query as [`query`], answered as `total: u32 LE` followed by a row packet of the page
+ * in `shape` (see [`parse_page_shape`]) — the single-store `/search?shape=columnar`.
+ *
+ * Its own export rather than [`query_keys`] + [`fetch_rows`]: those answer a page at `offset` by
+ * fetching all `offset + limit` keys first, and a deep page would pay for every row before it.
+ */
+export function query_shaped(filter_tree_json: string, opts_json: string, shape: string): Uint8Array;
+
+/**
  * Whether a query would run the multilingual (widened) driver — `include_multilingual`, or a
  * `lang:` leaf in the bound filter.
  *
@@ -396,6 +412,14 @@ export function query_widens(filter_tree_json: string, opts_json: string): boole
 export function random_search(n: number, seed: bigint, filter_tree_json: string, fields_json: string): string;
 
 /**
+ * [`random_search`]'s draw — same arguments, same seed semantics, the same rows — answered as a
+ * row packet in `shape` (see [`parse_page_shape`]), for `/random_search` and `/cards/random`.
+ * Both routes' callers wrote the draw through `JSON.stringify`, so `"rows"` is JavaScript's
+ * spelling too: the joined frames are the bytes they wrote.
+ */
+export function random_search_shaped(n: number, seed: bigint, filter_tree_json: string, fields_json: string, shape: string): Uint8Array;
+
+/**
  * One engine row as a Scryfall card object, for the differential test that guards the port.
  *
  * Needs NO store: the builder is a pure function of the row and the base URL, which is what lets
@@ -414,6 +438,13 @@ export function scryfall_card_from_row(row_json: string, base_url: string): stri
  * be attached, like every other card-object entry point.
  */
 export function scryfall_search(filter_tree_json: string, opts_json: string, base_url: string): Uint8Array;
+
+/**
+ * Rows given as a JSON array, written as a row packet in `shape` — FOR THE PARITY TEST
+ * (tests/engine/columnar-parity.test.ts), which diffs it against `serializeCards` over rows
+ * built to break the writer. Needs no store; not on any request path.
+ */
+export function shaped_frames_from_rows(rows_json: string, shape: string): Uint8Array;
 
 /**
  * Printing count of the loaded store (the upstream `size()` health number);

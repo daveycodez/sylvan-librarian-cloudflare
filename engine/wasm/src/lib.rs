@@ -1196,10 +1196,21 @@ pub const KEY_PACKET_FLAG_WIDENED: u32 = 1;
 /// That is what lets the coordinating object assemble `/cards/search` without parsing or
 /// re-serialising a card: every pass over the payload that the single-store path had already
 /// removed (see src/engine/store.ts's `scryfallSearch`) stays removed on the partitioned path.
+///
+/// Two more shapes write JSON as JAVASCRIPT spells it (see [`write_js_json`], backlog n11): the
+/// columnar frame `/search?shape=columnar` is assembled from, and JS-spelled rows for the page
+/// exports whose callers always re-serialized through `JSON.stringify` ([`random_search_shaped`]).
 #[derive(Clone, Copy)]
 enum RowShape {
     Rows,
     Cards,
+    /// `nfields: u16`, then per field, in the row's key order, `vlen: u32 LE` and the value's JSON
+    /// in JavaScript's spelling: one row's column values, which src/engine/columnar.ts's
+    /// `assembleColumnar` splices into `{"k":[…],…}` without a parser.
+    Columns,
+    /// The row's JSON in JavaScript's spelling. Never asked for by name on the gather's wire:
+    /// [`parse_shape`] does not accept it; [`parse_page_shape`] spells it `"rows"`.
+    JsRows,
 }
 
 /// A plain `String` error rather than a `JsError`, so the rejection is testable natively:
@@ -1208,7 +1219,8 @@ fn parse_shape(shape: &str) -> Result<RowShape, String> {
     match shape {
         "rows" => Ok(RowShape::Rows),
         "cards" => Ok(RowShape::Cards),
-        other => Err(format!("unknown row shape {other:?}: expected \"rows\" or \"cards\"")),
+        "columns" => Ok(RowShape::Columns),
+        other => Err(format!("unknown row shape {other:?}: expected \"rows\", \"cards\" or \"columns\"")),
     }
 }
 
@@ -1228,6 +1240,11 @@ fn write_framed_row(
             serde_json::Value::Object(map) => card_engine::card_object::write_scryfall_card(buf, map, base_url),
             _ => return Err(JsError::new("a card-shaped row must be a JSON object")),
         },
+        RowShape::Columns => match row {
+            serde_json::Value::Object(map) => write_columns_frame(buf, map).map_err(|m| JsError::new(&m))?,
+            _ => return Err(JsError::new("a column-shaped row must be a JSON object")),
+        },
+        RowShape::JsRows => write_js_json(buf, row),
     }
     let len = u32::try_from(buf.len() - len_at - 4).map_err(|_| JsError::new("framed row exceeds u32 length"))?;
     buf[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
@@ -1312,6 +1329,506 @@ pub fn fetch_rows(vpids: &[u32], fields_json: &str, shape: &str, base_url: &str)
         }
         Ok(buf)
     })
+}
+
+// ─── JavaScript-spelled pages: the columnar shape (LOCAL PATCH, Cloudflare port, n11) ────────
+//
+// `/search?shape=columnar` (the site's own search and its `/random_search` preload) was written by
+// JavaScript: the engine's rows went through `JSON.parse`, were inverted into one list per field,
+// and came back out of `JSON.stringify`. That round trip is most of what a columnar page costs,
+// and the bytes it produces differ from the engine's in one respect only: NUMBERS are spelled the
+// way JavaScript spells them (`5.0` is `5`, `-0.0` is `0`, `1e21` is `1e+21`, a u64 past 2^53 is
+// rounded). Everything below writes those bytes directly, so the page is assembled by memcpy
+// (src/engine/columnar.ts's `assembleColumnar`) and stays byte-identical to what it replaced —
+// `tests/engine/columnar-parity.test.ts` diffs the two.
+
+/// A value's JSON exactly as `JSON.stringify(JSON.parse(serde_json::to_string(value)))` writes it.
+///
+/// Two things separate that from serde_json's own output:
+///
+/// - numbers, spelled by [`write_js_number`];
+/// - object key ORDER: an object `JSON.parse` built lists its array-index keys ("0", "17") first,
+///   ascending numerically, then the rest in insertion order — see [`JsEntries`].
+///
+/// String escaping already agrees: both escape `"`, `\` and the C0 controls (`\b \f \n \r \t` by
+/// name, the rest as lowercase `\u00XX`), and neither escapes DEL, U+2028, U+2029 or anything
+/// astral. A Rust string cannot hold the lone surrogate `JSON.stringify` would escape.
+fn write_js_json(buf: &mut Vec<u8>, value: &serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Null => buf.extend_from_slice(b"null"),
+        Value::Bool(true) => buf.extend_from_slice(b"true"),
+        Value::Bool(false) => buf.extend_from_slice(b"false"),
+        Value::Number(n) => write_js_number(buf, n),
+        Value::String(s) => write_json_string(buf, s),
+        Value::Array(items) => {
+            buf.push(b'[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    buf.push(b',');
+                }
+                write_js_json(buf, item);
+            }
+            buf.push(b']');
+        }
+        Value::Object(map) => {
+            buf.push(b'{');
+            for (i, (key, item)) in JsEntries::of(map).enumerate() {
+                if i > 0 {
+                    buf.push(b',');
+                }
+                write_json_string(buf, key);
+                buf.push(b':');
+                write_js_json(buf, item);
+            }
+            buf.push(b'}');
+        }
+    }
+}
+
+/// serde_json's string escaping, which is `JSON.stringify`'s (see [`write_js_json`]).
+fn write_json_string(buf: &mut Vec<u8>, s: &str) {
+    // Writing into a Vec cannot fail.
+    let _ = serde_json::to_writer(&mut *buf, s);
+}
+
+/// An object's entries in the order JavaScript enumerates a parsed object's own keys.
+enum JsEntries<'a> {
+    /// No array-index key: the map's own order, which is what insertion order was.
+    Plain(serde_json::map::Iter<'a>),
+    /// Array-index keys first, ascending by value; then the others in the map's order.
+    Reordered(std::vec::IntoIter<(&'a String, &'a serde_json::Value)>),
+}
+
+impl<'a> JsEntries<'a> {
+    fn of(map: &'a serde_json::Map<String, serde_json::Value>) -> Self {
+        if !map.keys().any(|k| js_array_index(k).is_some()) {
+            return JsEntries::Plain(map.iter());
+        }
+        let mut indexed: Vec<(u32, (&'a String, &'a serde_json::Value))> =
+            map.iter().filter_map(|(k, v)| js_array_index(k).map(|i| (i, (k, v)))).collect();
+        indexed.sort_unstable_by_key(|(i, _)| *i);
+        let mut ordered: Vec<(&'a String, &'a serde_json::Value)> = indexed.into_iter().map(|(_, kv)| kv).collect();
+        ordered.extend(map.iter().filter(|(k, _)| js_array_index(k).is_none()));
+        JsEntries::Reordered(ordered.into_iter())
+    }
+}
+
+impl<'a> Iterator for JsEntries<'a> {
+    type Item = (&'a String, &'a serde_json::Value);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            JsEntries::Plain(it) => it.next(),
+            JsEntries::Reordered(it) => it.next(),
+        }
+    }
+}
+
+/// `key` as an ECMAScript array index — the canonical decimal spelling of an integer in
+/// `0..2^32 - 1` — or `None`. Those are the keys an object enumerates first.
+fn js_array_index(key: &str) -> Option<u32> {
+    let b = key.as_bytes();
+    if b.is_empty() || b.len() > 10 || (b.len() > 1 && b[0] == b'0') || !b.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let value: u64 = key.parse().ok()?;
+    u32::try_from(value).ok().filter(|&v| v != u32::MAX)
+}
+
+/// The largest magnitude below which every integer is exactly a JavaScript number.
+const JS_MAX_SAFE_MAGNITUDE: u64 = 1 << 53;
+
+/// A JSON number as `JSON.stringify` writes the value `JSON.parse` read from serde_json's spelling.
+///
+/// An integer JavaScript holds exactly is written as-is. One past 2^53 is not held exactly: the
+/// parse rounds it to the nearest double (ties to even — which is also what `as f64` does), and
+/// that double is what gets written.
+fn write_js_number(buf: &mut Vec<u8>, n: &serde_json::Number) {
+    if let Some(u) = n.as_u64() {
+        if u <= JS_MAX_SAFE_MAGNITUDE {
+            let _ = write!(buf, "{u}");
+        } else {
+            write_js_f64(buf, u as f64);
+        }
+    } else if let Some(i) = n.as_i64() {
+        if i.unsigned_abs() <= JS_MAX_SAFE_MAGNITUDE {
+            let _ = write!(buf, "{i}");
+        } else {
+            write_js_f64(buf, i as f64);
+        }
+    } else if let Some(f) = n.as_f64() {
+        write_js_f64(buf, f);
+    }
+}
+
+/// A double as ECMAScript's Number::toString writes it (ECMA-262 §6.1.6.1.20), which is what
+/// `JSON.stringify` writes for a finite number; NaN and the infinities are `null`.
+///
+/// The DIGITS are the shortest that round-trip — Rust's `{:e}` and JavaScript both produce the
+/// shortest, closest decimal — so only the LAYOUT is JavaScript's own: with `k` digits and the
+/// decimal point `n` places from the left of them (value = 0.d₁d₂…dₖ × 10ⁿ),
+///
+/// - `k ≤ n ≤ 21`: the digits then `n - k` zeros (`5`, and `1e20` is `100000000000000000000`);
+/// - `0 < n ≤ 21`: a point after `n` digits (`12.5`);
+/// - `-6 < n ≤ 0`: `0.`, `-n` zeros, the digits (`0.5`, `0.000001`);
+/// - otherwise an exponent, always signed: `1e+21`, `1.5e-7`.
+///
+/// `-0` is `0`, as JavaScript writes it.
+fn write_js_f64(buf: &mut Vec<u8>, x: f64) {
+    if !x.is_finite() {
+        buf.extend_from_slice(b"null");
+        return;
+    }
+    if x == 0.0 {
+        buf.push(b'0');
+        return;
+    }
+    let mut sci = ShortText::default();
+    // `{:e}` with no precision is the shortest round-trip form: `d[.ddd]e[-]x`.
+    let _ = std::fmt::Write::write_fmt(&mut sci, format_args!("{:e}", x.abs()));
+    let text = sci.as_bytes();
+    let Some(e_at) = text.iter().position(|&c| c == b'e') else {
+        // Unreachable: `{:e}` always writes an exponent.
+        buf.extend_from_slice(text);
+        return;
+    };
+    let exponent: i32 = std::str::from_utf8(&text[e_at + 1..]).ok().and_then(|t| t.parse().ok()).unwrap_or(0);
+    let mut digits = [0u8; 20];
+    let mut k = 0usize;
+    for &c in &text[..e_at] {
+        if c.is_ascii_digit() && k < digits.len() {
+            digits[k] = c;
+            k += 1;
+        }
+    }
+    if k > 0 && !(digits[k - 1] - b'0').is_multiple_of(2) {
+        k = js_even_tie(x.abs(), &mut digits, k, exponent);
+    }
+    let digits = &digits[..k];
+    let k = k as i32;
+    let n = exponent + 1;
+    if x < 0.0 {
+        buf.push(b'-');
+    }
+    if k <= n && n <= 21 {
+        buf.extend_from_slice(digits);
+        buf.resize(buf.len() + (n - k) as usize, b'0');
+    } else if 0 < n && n <= 21 {
+        buf.extend_from_slice(&digits[..n as usize]);
+        buf.push(b'.');
+        buf.extend_from_slice(&digits[n as usize..]);
+    } else if -6 < n && n <= 0 {
+        buf.extend_from_slice(b"0.");
+        buf.resize(buf.len() + (-n) as usize, b'0');
+        buf.extend_from_slice(digits);
+    } else {
+        buf.push(digits[0]);
+        if k > 1 {
+            buf.push(b'.');
+            buf.extend_from_slice(&digits[1..]);
+        }
+        let e = n - 1;
+        let _ = write!(buf, "e{}{}", if e < 0 { '-' } else { '+' }, e.unsigned_abs());
+    }
+}
+
+/// The one place the DIGITS differ: when two shortest `k`-digit decimals are EXACTLY as close to
+/// `ax` and both read back as it, ECMAScript takes the one whose last digit is even (Number::toString
+/// step 5: "if there are two such possible values of s, choose the one that is even"), where Rust's
+/// shortest formatter takes the upper — `2^-25` is `2.9802322387695312e-8` in V8 and `…313e-8` in
+/// Rust. A tie needs `ax`'s exact expansion to be the midpoint, k + 1 digits ending in 5, so this is
+/// called only for an odd last digit and returns at the first cheap check that fails; the exact
+/// expansion (a double has at most 767 significant digits) is formatted only for a real candidate.
+///
+/// Rewrites `digits` to the even neighbour when that is JavaScript's answer, and returns the digit
+/// count.
+fn js_even_tie(ax: f64, digits: &mut [u8; 20], k: usize, exponent: i32) -> usize {
+    let near = format!("{ax:.k$e}"); // k + 1 significant digits, exactly rounded
+    let Some((mantissa, exp)) = near.split_once('e') else { return k };
+    if exp.parse::<i32>().ok() != Some(exponent) {
+        return k;
+    }
+    let near_digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    if near_digits.len() != k + 1 || near_digits[k] != b'5' {
+        return k;
+    }
+    let exact = format!("{ax:.767e}");
+    let mut exact_digits = exact.split_once('e').map_or("", |(m, _)| m).bytes().filter(u8::is_ascii_digit);
+    if !near_digits.iter().all(|&d| exact_digits.next() == Some(d)) || exact_digits.any(|d| d != b'0') {
+        return k;
+    }
+    // A true midpoint between `lower` and `lower + 1` in the last place.
+    let lower = &near_digits[..k];
+    let mut upper = lower.to_vec();
+    let mut i = k;
+    loop {
+        if i == 0 {
+            return k; // 99…9 + 1 carries into another digit: not a pair of k-digit decimals
+        }
+        i -= 1;
+        if upper[i] == b'9' {
+            upper[i] = b'0';
+        } else {
+            upper[i] += 1;
+            break;
+        }
+    }
+    let even: &[u8] = if (lower[k - 1] - b'0').is_multiple_of(2) { lower } else { &upper };
+    if even == &digits[..k] {
+        return k;
+    }
+    // Only if it reads back as `ax` — at a power of two the spacing below is half the spacing above.
+    let text = format!("{}e{}", std::str::from_utf8(even).unwrap_or("0"), exponent - (k as i32 - 1));
+    if text.parse::<f64>().ok() != Some(ax) {
+        return k;
+    }
+    digits[..k].copy_from_slice(even);
+    let mut kept = k;
+    while kept > 1 && digits[kept - 1] == b'0' {
+        kept -= 1;
+    }
+    kept
+}
+
+/// A fixed stack buffer for one formatted double (`{:e}` of an f64 is at most 24 bytes).
+#[derive(Default)]
+struct ShortText {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl ShortText {
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl std::fmt::Write for ShortText {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len + s.len();
+        if end > self.bytes.len() {
+            return Err(std::fmt::Error);
+        }
+        self.bytes[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// One row as a [`RowShape::Columns`] frame body: `nfields: u16`, then each value as
+/// `vlen: u32 LE` + its JavaScript-spelled JSON, in the order JavaScript enumerates the row's keys
+/// (which, for the engine's field names, is the map's sorted order — the order `columnKeys` in
+/// src/engine/columnar.ts derives from the request's fields). The keys themselves are NOT
+/// written: every row of a page carries the same ones, so the assembler writes them once.
+fn write_columns_frame(buf: &mut Vec<u8>, map: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let nfields = u16::try_from(map.len()).map_err(|_| format!("a column frame holds at most 65535 fields, not {}", map.len()))?;
+    buf.extend_from_slice(&nfields.to_le_bytes());
+    for (_, value) in JsEntries::of(map) {
+        let at = buf.len();
+        buf.extend_from_slice(&[0u8; 4]);
+        write_js_json(buf, value);
+        let len = u32::try_from(buf.len() - at - 4).map_err(|_| "a column value exceeds u32 length".to_owned())?;
+        buf[at..at + 4].copy_from_slice(&len.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// The shapes a whole-page export writes: `"rows"` ([`RowShape::JsRows`] — JavaScript's spelling,
+/// unlike the gather's `"rows"`) or `"columns"`.
+fn parse_page_shape(shape: &str) -> Result<RowShape, String> {
+    match shape {
+        "rows" => Ok(RowShape::JsRows),
+        "columns" => Ok(RowShape::Columns),
+        other => Err(format!("unknown page shape {other:?}: expected \"rows\" or \"columns\"")),
+    }
+}
+
+/// `rows` as a row packet — `n: u32 LE`, then each row framed as [`write_framed_row`] frames it.
+fn page_packet(rows: &[serde_json::Value], shape: RowShape, prefix: &[u8]) -> Result<Vec<u8>, JsError> {
+    let mut buf = Vec::with_capacity(prefix.len() + 4 + rows.len() * 512);
+    buf.extend_from_slice(prefix);
+    buf.extend_from_slice(&u32::try_from(rows.len()).unwrap_or(u32::MAX).to_le_bytes());
+    for row in rows {
+        write_framed_row(&mut buf, row, shape, "")?;
+    }
+    Ok(buf)
+}
+
+/// The same query as [`query`], answered as `total: u32 LE` followed by a row packet of the page
+/// in `shape` (see [`parse_page_shape`]) — the single-store `/search?shape=columnar`.
+///
+/// Its own export rather than [`query_keys`] + [`fetch_rows`]: those answer a page at `offset` by
+/// fetching all `offset + limit` keys first, and a deep page would pay for every row before it.
+#[wasm_bindgen]
+pub fn query_shaped(filter_tree_json: &str, opts_json: &str, shape: &str) -> Result<Vec<u8>, JsError> {
+    let shape = parse_page_shape(shape).map_err(|m| JsError::new(&m))?;
+    let opts = QueryOptions::from_json_str(opts_json).map_err(js_err)?;
+    with_store(|store| {
+        let out = store.query(filter_tree_json, &opts).map_err(js_err)?;
+        let total = u32::try_from(out.total).unwrap_or(u32::MAX);
+        page_packet(&out.rows, shape, &total.to_le_bytes())
+    })
+}
+
+/// [`random_search`]'s draw — same arguments, same seed semantics, the same rows — answered as a
+/// row packet in `shape` (see [`parse_page_shape`]), for `/random_search` and `/cards/random`.
+/// Both routes' callers wrote the draw through `JSON.stringify`, so `"rows"` is JavaScript's
+/// spelling too: the joined frames are the bytes they wrote.
+#[wasm_bindgen]
+pub fn random_search_shaped(
+    n: u32,
+    seed: u64,
+    filter_tree_json: &str,
+    fields_json: &str,
+    shape: &str,
+) -> Result<Vec<u8>, JsError> {
+    let shape = parse_page_shape(shape).map_err(|m| JsError::new(&m))?;
+    let fields = parse_fields(fields_json)?;
+    let filter: Option<serde_json::Value> = if filter_tree_json.is_empty() || filter_tree_json == "null" {
+        None
+    } else {
+        Some(serde_json::from_str(filter_tree_json).map_err(|e| JsError::new(&format!("bad filter JSON: {e}")))?)
+    };
+    with_store(|store| {
+        let rows = store.sample_preferred(n as usize, seed, filter.as_ref(), fields).map_err(js_err)?;
+        page_packet(&rows, shape, &[])
+    })
+}
+
+/// Rows given as a JSON array, written as a row packet in `shape` — FOR THE PARITY TEST
+/// (tests/engine/columnar-parity.test.ts), which diffs it against `serializeCards` over rows
+/// built to break the writer. Needs no store; not on any request path.
+#[wasm_bindgen]
+pub fn shaped_frames_from_rows(rows_json: &str, shape: &str) -> Result<Vec<u8>, JsError> {
+    let shape = parse_page_shape(shape).map_err(|m| JsError::new(&m))?;
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(rows_json).map_err(|e| JsError::new(&format!("rows are not a JSON array: {e}")))?;
+    page_packet(&rows, shape, &[])
+}
+
+/// `values` as a JSON array in JavaScript's spelling — FOR THE PARITY TEST, which feeds it
+/// doubles by their bits (a JSON round trip would let serde_json's best-effort float parse move
+/// the value it is testing) and compares against `JSON.stringify`. Not on any request path.
+#[wasm_bindgen]
+pub fn js_spelled_numbers(values: &[f64]) -> String {
+    let mut buf = Vec::with_capacity(values.len() * 24 + 2);
+    buf.push(b'[');
+    for (i, &v) in values.iter().enumerate() {
+        if i > 0 {
+            buf.push(b',');
+        }
+        write_js_f64(&mut buf, v);
+    }
+    buf.push(b']');
+    String::from_utf8(buf).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod js_spelling_tests {
+    use super::*;
+
+    fn js(x: f64) -> String {
+        let mut buf = Vec::new();
+        write_js_f64(&mut buf, x);
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    fn js_value(v: &serde_json::Value) -> String {
+        let mut buf = Vec::new();
+        write_js_json(&mut buf, v);
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    /// Every layout branch of Number::toString, spelled as V8 spells it.
+    #[test]
+    fn doubles_are_spelled_as_javascript_spells_them() {
+        let table: &[(f64, &str)] = &[
+            (5.0, "5"),
+            (-5.0, "-5"),
+            (0.0, "0"),
+            (-0.0, "0"),
+            (0.5, "0.5"),
+            (12.5, "12.5"),
+            (-0.25, "-0.25"),
+            (1e20, "100000000000000000000"),
+            (123456789012345680000.0, "123456789012345680000"),
+            (1e21, "1e+21"),
+            (1.5e21, "1.5e+21"),
+            (1e-6, "0.000001"),
+            (1.5e-6, "0.0000015"),
+            (1e-7, "1e-7"),
+            (1.5e-7, "1.5e-7"),
+            (-1.5e-7, "-1.5e-7"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (f64::MIN_POSITIVE, "2.2250738585072014e-308"),
+            (5e-324, "5e-324"),
+            (0.1 + 0.2, "0.30000000000000004"),
+            (9007199254740993.0, "9007199254740992"),
+            // Exact midpoints of two shortest candidates: JavaScript takes the even one.
+            (2f64.powi(-25), "2.9802322387695312e-8"),
+            (6_632_827_120_354_249.0 / 4.0, "1658206780088562.2"),
+            (-429_276_287_732_437.0 / 16.0, "-26829767983277.312"),
+            (f64::NAN, "null"),
+            (f64::INFINITY, "null"),
+            (f64::NEG_INFINITY, "null"),
+        ];
+        for &(x, want) in table {
+            assert_eq!(js(x), want, "{x:e}");
+        }
+    }
+
+    #[test]
+    fn integers_past_two_to_the_53_round_as_a_javascript_parse_rounds_them() {
+        let v: serde_json::Value = serde_json::from_str(
+            "[9007199254740992,9007199254740993,-9007199254740993,18446744073709551615,-9223372036854775808,5.0,-0.0]",
+        )
+        .expect("json");
+        assert_eq!(
+            js_value(&v),
+            "[9007199254740992,9007199254740992,-9007199254740992,18446744073709552000,-9223372036854776000,5,0]"
+        );
+    }
+
+    #[test]
+    fn array_index_keys_enumerate_first_as_a_parsed_object_does() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"b":1,"10":2,"a":3,"9":4,"01":5,"4294967295":6,"4294967294":7}"#)
+            .expect("json");
+        // serde_json's map is sorted: 01, 10, 4294967294, 4294967295, 9, a, b. JavaScript lists
+        // the array indices (9, 10, 4294967294 — not 01, not 2^32 - 1) first, by value.
+        assert_eq!(js_value(&v), r#"{"9":4,"10":2,"4294967294":7,"01":5,"4294967295":6,"a":3,"b":1}"#);
+    }
+
+    /// The columnar keys are derived in TypeScript by SORTING the requested fields, which is right
+    /// only while the engine's rows iterate in sorted key order — i.e. while serde_json's map is a
+    /// BTreeMap. A dependency turning on serde_json's `preserve_order` feature would flip it to
+    /// insertion order workspace-wide and silently permute every columnar page; this fails first.
+    #[test]
+    fn engine_rows_iterate_in_sorted_key_order() {
+        let mut map = serde_json::Map::new();
+        for key in ["type_line", "cmc", "name", "a"] {
+            map.insert(key.to_owned(), serde_json::Value::Null);
+        }
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["a", "cmc", "name", "type_line"]);
+    }
+
+    #[test]
+    fn a_columns_frame_is_nfields_then_length_prefixed_values() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"name":"Fire // Ice","cmc":4.0,"legal":{"modern":"legal"},"p":null}"#).expect("json");
+        let serde_json::Value::Object(map) = v else { unreachable!() };
+        let mut buf = Vec::new();
+        write_columns_frame(&mut buf, &map).expect("frame");
+        let mut want = vec![4u8, 0];
+        for value in ["4", r#"{"modern":"legal"}"#, r#""Fire // Ice""#, "null"] {
+            want.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            want.extend_from_slice(value.as_bytes());
+        }
+        assert_eq!(buf, want);
+        assert!(parse_page_shape("cards").is_err());
+        assert!(matches!(parse_shape("columns"), Ok(RowShape::Columns)));
+        assert!(parse_shape("js_rows").is_err());
+    }
 }
 
 /// The sort-key layout version this build emits (the first byte of every key). The gather

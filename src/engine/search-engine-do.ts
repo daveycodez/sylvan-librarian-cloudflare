@@ -56,7 +56,7 @@ import {
 	stringifyScryfall,
 } from "../routes/scryfall-compat/respond";
 import { concatBytes, encodeUtf8 } from "./bytes";
-import { serializeCards } from "./columnar";
+import { assembleColumnar, columnKeys, columnsGather } from "./columnar";
 import { parseEngineName, siblingStub } from "./engine-namespace";
 import {
 	decodeRowPacket,
@@ -978,7 +978,8 @@ export class SearchEngine extends DurableObject<Env> {
 	/**
 	 * The API row shapes, gathered. The `"rows"` shape is the frames joined — the same
 	 * parse→stringify round trip commit 70c254e removed from the single-store path, removed
-	 * here too; only `"columnar"` needs the rows as values to invert them.
+	 * here too. `"columnar"` no longer needs the rows as values either (backlog n11): every
+	 * partition writes column frames and the page is assembled from them by memcpy (columnar.ts).
 	 */
 	async gatherSearchAsJson(
 		opts: EngineSearchOptions,
@@ -986,11 +987,20 @@ export class SearchEngine extends DurableObject<Env> {
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
 		return this.instrumentedGather(reportedShards, async () => {
+			if (shape === "columnar") {
+				const keys = columnKeys(opts.fields);
+				const page = await this.gatherRun(opts, columnsGather(keys));
+				return {
+					totalCards: page.total,
+					cardsBytes: assembleColumnar(keys, page.slots),
+					rowCount: page.slots.length,
+					acquireMs: page.acquireMs,
+				};
+			}
 			const page = await this.gatherRun(opts, ROWS_GATHER);
 			return {
 				totalCards: page.total,
-				cardsBytes:
-					shape === "rows" ? joinJsonArray(page.slots) : encodeUtf8(serializeCards(parseSlots(page.slots), shape)),
+				cardsBytes: joinJsonArray(page.slots),
 				rowCount: page.slots.length,
 				acquireMs: page.acquireMs,
 			};

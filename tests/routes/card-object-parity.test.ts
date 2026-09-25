@@ -14,26 +14,16 @@
 // builder is a pure function of a row and a base URL and needs no store loaded.
 
 import { describe, expect, test } from "bun:test";
-import * as bg from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";
 import { CARD_OBJECT_FIELDS, toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
+import { newEngine } from "../engine/wasm-engine";
 
-// Instantiated here rather than through src/engine/wasm-shim.ts: that shim's `.wasm` import
-// resolves to a WebAssembly.Module only under wrangler's CompiledWasm rule, and Bun hands back
-// something else. Same two steps the shim performs, against bytes read from disk.
-const wasmBytes = await Bun.file(
-	new URL("../../engine/wasm/pkg/sylvan_engine_wasm_bg.wasm", import.meta.url),
-).arrayBuffer();
-// `WebAssembly.Module` is typed abstract by bun-types, so the constructor is reached through the
-// namespace value rather than the type. Runtime behaviour is the ordinary one.
-const WasmModule = (WebAssembly as unknown as { Module: new (b: ArrayBuffer) => WebAssembly.Module }).Module;
-const instance = new WebAssembly.Instance(new WasmModule(wasmBytes), {
-	"./sylvan_engine_wasm_bg.js": bg,
-});
-(bg as { __wbg_set_wasm: (e: unknown) => void }).__wbg_set_wasm(instance.exports);
-(instance.exports as { __wbindgen_start?: () => void }).__wbindgen_start?.();
-const scryfall_card_from_row = (bg as unknown as { scryfall_card_from_row: (r: string, b: string) => string })
-	.scryfall_card_from_row;
+// Instantiated through the shared test helper rather than src/engine/wasm-shim.ts (whose `.wasm`
+// import resolves only under wrangler), and never directly: the glue is shared by every test file
+// in the run, and the helper is what keeps two files' instances from marshalling through each
+// other's memory.
+const engine = newEngine();
+const scryfall_card_from_row = (row: string, base: string) => engine.use((g) => g.scryfall_card_from_row(row, base));
 
 const BASE = "https://sylvan.example/api";
 

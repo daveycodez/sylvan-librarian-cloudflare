@@ -394,8 +394,14 @@ export function pinGeneration(replies: GenerationReply[]): { pinnedBuiltAt: stri
  * The shape is named per request and echoed per reply, never assumed: a page of
  * card objects spliced from rows would be well-formed JSON with the wrong
  * schema, which no parser downstream would catch.
+ *
+ * `"columns"` is one row's values alone, JavaScript-spelled, for the columnar
+ * /search page (columnar.ts's `assembleColumnar`). It is the first shape a
+ * sibling on the previous build REFUSES rather than ignores — that build passes
+ * the shape to its engine, which rejects a name it does not know — so a gather
+ * asking for it runs its clients through `tolerateUnknownShape`.
  */
-export type RowShape = "rows" | "cards";
+export type RowShape = "rows" | "cards" | "columns";
 
 /** The shape a gather asks for; `baseUrl` only matters for `"cards"` (image and API URIs). */
 export interface RowShaping {
@@ -483,6 +489,73 @@ export const ROWS_GATHER: GatherShaping = {
 	...ROWS_SHAPING,
 	reshape: (row) => encoder.encode(JSON.stringify(row)),
 };
+
+/**
+ * Whether `err` is a partition refusing `shape` as a name it does not know — the previous build,
+ * whose engine answers `unknown row shape "columns": expected "rows" or "cards"` (engine/wasm
+ * `parse_shape`). The message crosses the sibling RPC intact.
+ */
+export function isUnknownRowShape(err: unknown, shape: RowShape): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return message.includes(`unknown row shape "${shape}"`);
+}
+
+/**
+ * `client`, asked for `shape` — and, when it turns out to run a build that refuses the shape, asked
+ * again for plain rows and answered AS THE PREVIOUS BUILD: a phase-1 reply with no `shape`, a
+ * phase-2 reply as one JSON array. Those are exactly the forms `runTwoPhase` already reshapes, row
+ * by kept row, so a sibling that has not taken the deploy costs the page a reshape instead of a 500.
+ *
+ * WHY NOT DETECT THE BUILD UP FRONT. Nothing a sibling says before it is asked tells the builds
+ * apart, and every shape before `"columns"` rolled out without needing to: a build predating
+ * shaping ignored the argument and answered rows, which the absent `shape` reveals. `"columns"` is
+ * the first shape an older build receives and REJECTS (it hands the name to its engine), so the
+ * rejection is the signal. It is paid once per sibling per gather, only while a deploy is rolling:
+ * after the first refusal the wrapper asks that sibling for rows directly.
+ */
+export function tolerateUnknownShape(client: PartitionClient, shape: RowShape): PartitionClient {
+	if (shape === "rows") return client;
+	let legacy = false;
+	const fallBack = (err: unknown, what: string): void => {
+		if (!isUnknownRowShape(err, shape)) throw err;
+		legacy = true;
+		console.warn(`gather: a partition refused ${shape} rows in ${what} (${err}); asking it for rows instead`);
+	};
+	return {
+		async searchKeys(opts, inlineRows, shaping) {
+			if (!legacy) {
+				try {
+					return await client.searchKeys(opts, inlineRows, shaping);
+				} catch (err) {
+					fallBack(err, "searchKeys");
+				}
+			}
+			const reply = await client.searchKeys(opts, inlineRows, ROWS_SHAPING);
+			return {
+				packed: reply.packed,
+				storeKey: reply.storeKey,
+				sortKeyVersion: reply.sortKeyVersion,
+				...(reply.acquireMs === undefined ? {} : { acquireMs: reply.acquireMs }),
+			};
+		},
+		async fetchRows(vpids, fields, storeKey, shaping) {
+			if (!legacy) {
+				try {
+					return await client.fetchRows(vpids, fields, storeKey, shaping);
+				} catch (err) {
+					fallBack(err, "fetchRows");
+				}
+			}
+			const reply = await client.fetchRows(vpids, fields, storeKey, ROWS_SHAPING);
+			// A build that frames its rows (every one that can refuse a shape) answers the row packet;
+			// the previous-build form is the JSON array, which is one join away.
+			return {
+				rowsBytes: reply.shape === undefined ? reply.rowsBytes : joinJsonArray(decodeRowPacket(reply.rowsBytes)),
+			};
+		},
+		...(client.refresh ? { refresh: client.refresh.bind(client) } : {}),
+	};
+}
 
 /** A gathered page: the exact unpaginated total, and the page's rows as bytes in merged order. */
 export interface GatheredPage {
@@ -579,11 +652,14 @@ async function askKeys(
  * reshaped here — and only the rows the page kept.
  */
 export async function runTwoPhase(
-	clients: PartitionClient[],
+	partitionClients: PartitionClient[],
 	opts: EngineSearchOptions,
 	shaping: GatherShaping,
 	sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<GatheredPage> {
+	// A sibling on the previous build may refuse the shape outright rather than ignore it; see
+	// tolerateUnknownShape, which turns that refusal into the legacy replies reshaped below.
+	const clients = partitionClients.map((c) => tolerateUnknownShape(c, shaping.shape));
 	// Phase 1 asks every partition for its best `offset + limit` keys FROM ZERO,
 	// never for its own page at `offset`. The distinction is the whole
 	// correctness argument of the merge: the global rows [offset, offset+limit)

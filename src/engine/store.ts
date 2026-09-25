@@ -39,11 +39,11 @@ import {
 	withResolvedMultilingual,
 } from "../routes/scryfall-compat/objects";
 import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
-import { decodeUtf8, encodeUtf8, NEWLINE } from "./bytes";
+import { decodeUtf8, NEWLINE } from "./bytes";
 import { collectionBatchRequest, decodeCollectionPacket } from "./collection-batch";
-import { serializeCards } from "./columnar";
+import { assembleColumnar, columnKeys, decodeShapedPage } from "./columnar";
 import { decodeFuzzyCandidates } from "./fuzzy-wire";
-import type { RowShaping } from "./gather";
+import { decodeRowPacket, joinJsonArray, type RowShaping } from "./gather";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
 import { decodeNamedFuzzyPacket } from "./named-fuzzy";
 import { probePlacement } from "./placement";
@@ -352,16 +352,19 @@ class WasmEngine implements Engine {
 	 * `query_rows` hands them back once. Field selection already happened in the engine, so the
 	 * encoded array is exactly the answer.
 	 *
-	 * `columnar` still parses, because inverting rows into per-field arrays genuinely needs the
-	 * values -- and it is the shape almost nothing asks for.
+	 * `columnar` -- the site's own shape -- no longer parses either (backlog n11): the engine writes
+	 * each row as a column frame, values already spelled as `JSON.stringify` spells them, and the
+	 * page is assembled by memcpy. See columnar.ts.
 	 */
 	async searchCardsAsJson(opts: EngineSearchOptions, shape: ResultShape): Promise<EngineSerializedResult> {
 		if (shape === "columnar") {
-			const result = this.query(opts);
+			const { total, frames } = decodeShapedPage(
+				this.w.query_shaped(opts.filterTreeJson, this.optsJson(opts), "columns"),
+			);
 			return {
-				totalCards: result.total,
-				cardsBytes: encodeUtf8(serializeCards(result.rows, shape)),
-				rowCount: result.rows.length,
+				totalCards: total,
+				cardsBytes: assembleColumnar(columnKeys(opts.fields), frames),
+				rowCount: frames.length,
 			};
 		}
 		const answer = this.w.query_rows(opts.filterTreeJson, this.optsJson(opts));
@@ -434,8 +437,20 @@ class WasmEngine implements Engine {
 		shape: ResultShape,
 		filterTreeJson?: string,
 	): Promise<EngineSerializedResult> {
-		const rows = await this.randomCardsAsObjects(numCards, fields, filterTreeJson);
-		return { totalCards: rows.length, cardsBytes: encodeUtf8(serializeCards(rows, shape)), rowCount: rows.length };
+		// The same draw as randomCardsAsObjects, written by the engine in the page's shape rather than
+		// parsed here and serialized back (backlog n11). Both shapes arrive JavaScript-spelled, so the
+		// bytes are the ones `JSON.stringify` wrote over the parsed draw.
+		const seed = crypto.getRandomValues(new BigUint64Array(1))[0] ?? 0n;
+		const packet = this.w.random_search_shaped(
+			numCards,
+			seed,
+			filterTreeJson ?? "null",
+			JSON.stringify(fields),
+			shape === "columnar" ? "columns" : "rows",
+		);
+		const frames = decodeRowPacket(packet);
+		const cardsBytes = shape === "columnar" ? assembleColumnar(columnKeys(fields), frames) : joinJsonArray(frames);
+		return { totalCards: frames.length, cardsBytes, rowCount: frames.length };
 	}
 
 	async cardCount(): Promise<number> {

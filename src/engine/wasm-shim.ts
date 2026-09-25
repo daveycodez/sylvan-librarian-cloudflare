@@ -204,6 +204,8 @@ export interface EngineHandle {
 	query_widens(filterTreeJson: string, optsJson: string): boolean;
 	catalog(): string;
 	random_search(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string): string;
+	random_search_shaped(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string, shape: string): Uint8Array;
+	query_shaped(filterTreeJson: string, optsJson: string, shape: string): Uint8Array;
 	size(): number;
 	card_by_scryfall_id(scryfallId: string, fieldsJson: string): string;
 	cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
@@ -277,6 +279,8 @@ export function engineFor(label: string): EngineHandle {
 		query_widens: wrap("query_widens"),
 		catalog: wrap("catalog"),
 		random_search: wrap("random_search"),
+		random_search_shaped: wrap("random_search_shaped"),
+		query_shaped: wrap("query_shaped"),
 		size: wrap("size"),
 		card_by_scryfall_id: wrap("card_by_scryfall_id"),
 		cards_by_scryfall_ids: wrap("cards_by_scryfall_ids"),

@@ -49,6 +49,16 @@ declare module "sylvan-engine-wasm" {
 		query_widens(filterTreeJson: string, optsJson: string): boolean;
 		catalog(): string;
 		random_search(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string): string;
+		/** random_search's draw as a row packet in `shape` ("rows" | "columns"), JavaScript-spelled. */
+		random_search_shaped(
+			n: number,
+			seed: bigint,
+			filterTreeJson: string,
+			fieldsJson: string,
+			shape: string,
+		): Uint8Array;
+		/** `total: u32 LE` + a row packet of the page in `shape` ("rows" | "columns"), JavaScript-spelled. */
+		query_shaped(filterTreeJson: string, optsJson: string, shape: string): Uint8Array;
 		size(): number;
 		card_by_scryfall_id(scryfallId: string, fieldsJson: string): string;
 		cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
@@ -228,4 +238,25 @@ declare module "sylvan-engine-wasm" {
 	 * filter chose rather than the card's default-preferred one.
 	 */
 	export function random_search(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string): string;
+	/**
+	 * random_search's draw as a row packet (`n u32`, then per row `rowlen u32` + bytes) in `shape`:
+	 * "rows" (row JSON) or "columns" (column frames, see columnar.ts). Both are spelled as
+	 * JavaScript's JSON.stringify spells them — the bytes the route used to write over the parse.
+	 */
+	export function random_search_shaped(
+		n: number,
+		seed: bigint,
+		filterTreeJson: string,
+		fieldsJson: string,
+		shape: string,
+	): Uint8Array;
+	/**
+	 * The same query as query(), answered as `total u32 LE` followed by a row packet of the page in
+	 * `shape` ("rows" | "columns"), JavaScript-spelled — the single-store /search?shape=columnar.
+	 */
+	export function query_shaped(filterTreeJson: string, optsJson: string, shape: string): Uint8Array;
+	/** Test-only: rows (a JSON array) as a row packet in `shape`. Needs no store. */
+	export function shaped_frames_from_rows(rowsJson: string, shape: string): Uint8Array;
+	/** Test-only: the doubles as a JSON array in JavaScript's spelling. Needs no store. */
+	export function js_spelled_numbers(values: Float64Array): string;
 }

@@ -692,6 +692,28 @@ export function init_store(bytes) {
 }
 
 /**
+ * `values` as a JSON array in JavaScript's spelling — FOR THE PARITY TEST, which feeds it
+ * doubles by their bits (a JSON round trip would let serde_json's best-effort float parse move
+ * the value it is testing) and compares against `JSON.stringify`. Not on any request path.
+ * @param {Float64Array} values
+ * @returns {string}
+ */
+export function js_spelled_numbers(values) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArrayF64ToWasm0(values, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.js_spelled_numbers(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
  * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
  * router asks each partition ONCE where it used to ask every partition three times over three
@@ -903,6 +925,33 @@ export function query_rows(filter_tree_json, opts_json) {
 }
 
 /**
+ * The same query as [`query`], answered as `total: u32 LE` followed by a row packet of the page
+ * in `shape` (see [`parse_page_shape`]) — the single-store `/search?shape=columnar`.
+ *
+ * Its own export rather than [`query_keys`] + [`fetch_rows`]: those answer a page at `offset` by
+ * fetching all `offset + limit` keys first, and a deep page would pay for every row before it.
+ * @param {string} filter_tree_json
+ * @param {string} opts_json
+ * @param {string} shape
+ * @returns {Uint8Array}
+ */
+export function query_shaped(filter_tree_json, opts_json, shape) {
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(opts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(shape, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.query_shaped(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
+
+/**
  * Whether a query would run the multilingual (widened) driver — `include_multilingual`, or a
  * `lang:` leaf in the bound filter.
  *
@@ -968,6 +1017,34 @@ export function random_search(n, seed, filter_tree_json, fields_json) {
 }
 
 /**
+ * [`random_search`]'s draw — same arguments, same seed semantics, the same rows — answered as a
+ * row packet in `shape` (see [`parse_page_shape`]), for `/random_search` and `/cards/random`.
+ * Both routes' callers wrote the draw through `JSON.stringify`, so `"rows"` is JavaScript's
+ * spelling too: the joined frames are the bytes they wrote.
+ * @param {number} n
+ * @param {bigint} seed
+ * @param {string} filter_tree_json
+ * @param {string} fields_json
+ * @param {string} shape
+ * @returns {Uint8Array}
+ */
+export function random_search_shaped(n, seed, filter_tree_json, fields_json, shape) {
+    const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(shape, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.random_search_shaped(n, seed, ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
+
+/**
  * One engine row as a Scryfall card object, for the differential test that guards the port.
  *
  * Needs NO store: the builder is a pure function of the row and the base URL, which is what lets
@@ -1027,6 +1104,28 @@ export function scryfall_search(filter_tree_json, opts_json, base_url) {
     var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
     return v4;
+}
+
+/**
+ * Rows given as a JSON array, written as a row packet in `shape` — FOR THE PARITY TEST
+ * (tests/engine/columnar-parity.test.ts), which diffs it against `serializeCards` over rows
+ * built to break the writer. Needs no store; not on any request path.
+ * @param {string} rows_json
+ * @param {string} shape
+ * @returns {Uint8Array}
+ */
+export function shaped_frames_from_rows(rows_json, shape) {
+    const ptr0 = passStringToWasm0(rows_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(shape, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.shaped_frames_from_rows(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
 }
 
 /**
@@ -1164,6 +1263,14 @@ function getArrayU8FromWasm0(ptr, len) {
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
+let cachedFloat64ArrayMemory0 = null;
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+    }
+    return cachedFloat64ArrayMemory0;
+}
+
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
@@ -1194,6 +1301,13 @@ function passArray32ToWasm0(arg, malloc) {
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
