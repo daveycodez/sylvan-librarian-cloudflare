@@ -473,6 +473,14 @@ The complete list of intentional differences:
   date) match Scryfall exactly. End to end against api.scryfall.com over 19
   cards with rulings: same set 19/19, same `published_at` sequence 19/19,
   byte-identical order 8/19 — the remainder differ only within one date.
+  **The dump's exact repeats are served, as Scryfall serves them.** The file
+  repeats 37 whole tuples across 11 cards, and api.scryfall.com returned every
+  one of those repeats on 2026-09-25 (Varis, Silverymoon Ranger: 21 rulings, 11
+  distinct); upstream's unique index drops them, and so did this port until
+  then. Re-measured that day over 37 cards, Doubling Season and Blood Moon
+  among them: same rulings with repeats counted 37/37 (26/37 before),
+  same `published_at` sequence 37/37, and within-date order still at chance —
+  the file's own order matched 1 of the 36 cards with a same-date tie.
 - **`/sets`, `/catalog/*` and `/symbology` are mirrored into KV**, where
   upstream mirrors them into Postgres (#922). Same decision, different store:
   the corpus cannot answer them (a Set object carries eight fields no card

@@ -2,8 +2,8 @@
 //
 // The route never parses a bucket — it binary-searches an index and copies one byte range into the
 // response — so a writer and reader that disagree by one byte do not fail loudly, they serve one
-// card's rulings under another card's id. These pin the round trip, the ordering upstream's SQL
-// guarantees (ORDER BY published_at, comment), and every way a bucket can be unreadable.
+// card's rulings under another card's id. These pin the round trip, Scryfall's newest-first order
+// and its repeats, and every way a bucket can be unreadable.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -92,14 +92,46 @@ describe("encode and slice", () => {
 		]);
 	});
 
-	test("the file's repeated tuples are served once", () => {
-		// 37 of 77,998 entries on 2026-08-11 are exact repeats; upstream drops them on its unique
-		// index, so a client must not see the same ruling twice here either.
+	test("the file's repeated tuples are served as often as the file repeats them, like Scryfall", () => {
+		// The dump repeats 37 whole tuples across 11 cards, and on 2026-09-25 api.scryfall.com served
+		// every one of those repeats (Varis, Silverymoon Ranger: 21 rulings, 11 distinct). They used
+		// to be dropped here, on upstream's unique-index model, which lost them. Deliberately NOT
+		// adjacent in the input — the file does not keep a repeat next to its twin (25 of 37 pairs),
+		// and nothing may now rely on it.
 		const id = uuidIn(0x40, 3);
-		const twice = ruling(id, "2020-01-01", "Said once.");
-		const { bytes, rulingCount } = encodeRulingsBucket([twice, { ...twice }, ruling(id, "2020-01-01", "Said too.")]);
-		expect(rulingCount).toBe(2);
-		expect((rulingsOf(bytes, id) as unknown[]).length).toBe(2);
+		const twice = ruling(id, "2020-01-01", "Said twice.");
+		const { bytes, rulingCount } = encodeRulingsBucket([
+			twice,
+			ruling(id, "2020-01-01", "Said once."),
+			ruling(id, "2018-05-05", "Older, and said twice."),
+			{ ...twice },
+			ruling(id, "2018-05-05", "Older, and said twice."),
+		]);
+		expect(rulingCount).toBe(5);
+		expect((rulingsOf(bytes, id) as Record<string, unknown>[]).map((r) => `${r.published_at} ${r.comment}`)).toEqual([
+			"2020-01-01 Said once.",
+			"2020-01-01 Said twice.",
+			"2020-01-01 Said twice.",
+			"2018-05-05 Older, and said twice.",
+			"2018-05-05 Older, and said twice.",
+		]);
+	});
+
+	test("the bytes are a function of the rulings, not of the order the dump lists them in", () => {
+		// What lets the publisher skip a bucket whose content did not move: a dump that reorders its
+		// lines — repeats included — must encode to the same bytes, or every night rewrites all 256.
+		const id = uuidIn(0x41, 9);
+		const rows = [
+			ruling(id, "2024-11-08", "Planeswalkers will enter with double the normal number of loyalty counters."),
+			ruling(id, "2024-11-08", "Battles will enter with double the normal number of defense counters."),
+			ruling(id, "2006-02-01", "An older ruling."),
+			ruling(id, "2024-11-08", "Battles will enter with double the normal number of defense counters."),
+			ruling(id, "2024-11-08", "Doubling Season affects permanents that enter with counters."),
+		];
+		const forward = encodeRulingsBucket(rows);
+		const backward = encodeRulingsBucket(rows.slice().reverse());
+		expect(backward.rulingCount).toBe(5);
+		expect(backward.bytes).toEqual(forward.bytes);
 	});
 
 	test("a card with no rulings in the bucket is null, which the route reads as an empty list", () => {

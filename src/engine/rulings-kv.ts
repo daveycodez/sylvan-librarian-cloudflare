@@ -21,7 +21,7 @@
 // passes entirely instead. Measured over 5,000 lookups on the real corpus: 1.07us each.
 //
 // Sizing, measured against the 2026-08-11 rulings dump (77,998 entries, 19,770 distinct oracle
-// ids, 25.7MB of JSONL; 77,961 rulings after the file's own repeats are dropped):
+// ids, 25.7MB of JSONL — every entry kept, the file's 37 exact repeats included, as Scryfall does):
 //
 //   - 256 buckets, split on the first byte of the oracle id. Ids are UUIDv4, so the split is
 //     uniform: mean 104,428 bytes per bucket, max 164,710, min 63,523. One bucket is one KV read,
@@ -75,6 +75,10 @@ export const RULINGS_FORMAT_VERSION = 2;
  *
  * Bump this when the bytes change for the same layout. `--if-missing` compares both, so a deploy
  * republishes rather than skipping over data it would render differently.
+ *
+ * NOT bumped when the nightly lands a change on its own: serving the dump's exact repeats (see
+ * `encodeRulingsBucket`) moved ~11 buckets, which the nightly's per-bucket hashes rewrite at 11:17,
+ * where a bump republishes all 256 on each account — 257 of the free plan's 1,000 KV writes a day.
  */
 export const RULINGS_CONTENT_GENERATION = 1;
 
@@ -103,7 +107,7 @@ export interface RulingsMeta {
 	bucket_count: number;
 	/** Epoch seconds, matching the store manifest's `built_at`. */
 	built_at: string;
-	/** Rulings across all buckets, after dropping duplicates. */
+	/** Rulings across all buckets, the dump's exact repeats included (see `encodeRulingsBucket`). */
 	ruling_count: number;
 }
 
@@ -421,8 +425,16 @@ function rulingObject(row: RulingRow): string {
 /**
  * Encode one bucket from the rulings that belong in it.
  *
- * Exact duplicates are dropped — the bulk file repeats a tuple often enough to matter (37 of 77,998
- * on 2026-08-11), and upstream drops them on its unique index rather than serving a ruling twice.
+ * EXACT REPEATS ARE KEPT, because api.scryfall.com serves them. The bulk file repeats a whole
+ * (oracle id, source, date, comment) tuple 37 times (37 of 77,998 entries on 2026-08-11, 37 of
+ * 78,948 on 2026-09-25, across 11 cards), and on 2026-09-25 every one of those 11 cards' rulings
+ * came back from Scryfall with every repeat in it: Varis, Silverymoon Ranger 21 rulings where the
+ * distinct tuples are 11, Expand the Sphere 12 for 6, Slick Imitator 9 for 6. So a repeat is two
+ * rulings Scryfall holds with the same text, not a quirk of the export, and this used to drop it —
+ * upstream's unique index did the same — which lost 37 rulings a client switching its base URL
+ * would have seen. Nothing is deduplicated, so nothing depends on repeats being adjacent either:
+ * the file does not keep them adjacent (25 of the 37 pairs are not), and Scryfall does not serve
+ * them adjacent (36 of 37 are not), which is the within-date order below and just as unreproducible.
  *
  * ORDER IS `published_at` DESCENDING, `comment` ascending — NEWEST FIRST, which is Scryfall's own
  * order and NOT upstream's `ORDER BY published_at, comment`. Measured against api.scryfall.com on
@@ -436,7 +448,15 @@ function rulingObject(row: RulingRow): string {
  * ruling id and the bulk file carries no id. Re-measured 2026-08-16 over 25 cards with both
  * several dates and a date carrying 4+ rulings, against api.scryfall.com: the file's own order
  * within a date matched 0 of 25, as did that order reversed, whole-file order,
- * date-ascending-then-file, and the rule below.
+ * date-ascending-then-file, and the rule below. Measured a third time 2026-09-25, over 37 cards
+ * (Doubling Season and Blood Moon among them, 36 with a same-date tie): newest date first held on
+ * all 14 that span several dates, while within a date the file's order (a stable date-descending
+ * sort) matched 1 of the 36, its reverse 1, and `comment` ascending 1 — chance, and the one
+ * `comment` match is a card with only two distinct comments on its date, one of them repeated. Doubling Season's five same-date rulings
+ * are, as file positions, 4 2 3 1 0 at Scryfall; Blood Moon's are 0 3 2 1. Scryfall's order was the
+ * same on every request, every printing and the multiverse route, so it is a stored key, just not
+ * one the dump carries — nor comment length, case-folded or reversed text, or a hash of the
+ * comment, the line or the oracle id and comment together, all tried and all at chance.
  *
  * PRESERVING THE DUMP'S ORDER IS NOT THE ANSWER, and the reason is worth keeping so it is not
  * retried: the six boilerplate "kicker" rulings come back in a DIFFERENT order on different cards
@@ -447,9 +467,9 @@ function rulingObject(row: RulingRow): string {
  * 13,847 of the 19,770 cards with rulings have a crowded date, so this is most of them — see the
  * README's deviations list.
  *
- * Determinism matters beyond tidiness: the bytes are a pure function of the ruling SET, so a dump
- * that reorders its lines without changing content produces identical buckets, which is what lets
- * the publisher skip writing them.
+ * Determinism matters beyond tidiness: the bytes are a pure function of the ruling MULTISET, so a
+ * dump that reorders its lines without changing content produces identical buckets, which is what
+ * lets the publisher skip writing them.
  */
 export function encodeRulingsBucket(rows: Iterable<RulingRow>): { bytes: Uint8Array; rulingCount: number } {
 	const byOracle = new Map<string, RulingRow[]>();
@@ -479,14 +499,8 @@ export function encodeRulingsBucket(rows: Iterable<RulingRow>): { bytes: Uint8Ar
 								? 1
 								: 0,
 			);
-		const rendered: string[] = [];
-		let previous = "";
-		for (const row of sorted) {
-			const object = rulingObject(row);
-			if (object === previous) continue; // the file's own repeats, in sort order and adjacent
-			previous = object;
-			rendered.push(object);
-		}
+		// Every row, repeats included: see "EXACT REPEATS ARE KEPT" above.
+		const rendered = sorted.map(rulingObject);
 		rulingCount += rendered.length;
 		entries.push({ key: hex, json: `[${rendered.join(",")}]` });
 	}

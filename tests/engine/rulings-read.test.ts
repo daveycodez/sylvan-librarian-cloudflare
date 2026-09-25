@@ -26,6 +26,8 @@ import {
 
 const T0 = Date.UTC(2026, 8, 25, 12, 0, 0);
 const BUCKET = 0x1f;
+/** The version prefix a meta of this build's content generation carries. */
+const G = `g${RULINGS_CONTENT_GENERATION}`;
 const KEY = rulingsBucketKey(BUCKET);
 const bytes = (s: string) => new TextEncoder().encode(s);
 const text = (b: Uint8Array | null) => (b === null ? null : new TextDecoder().decode(b));
@@ -159,13 +161,13 @@ describe("readRulingsBucket through the colo cache", () => {
 		const ns = namespace();
 		ns.publish("night-1", meta("100"));
 		await readRulingsBucket(ns.isolate(), BUCKET);
-		expect(entries.get(copyName("g1-100-7"))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
+		expect(entries.get(copyName(`${G}-100-7`))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
 		at(RULINGS_SETTLE_S - 1);
 		await readRulingsBucket(ns.isolate(), BUCKET);
-		expect(entries.get(copyName("g1-100-7"))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
+		expect(entries.get(copyName(`${G}-100-7`))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
 		at(RULINGS_SETTLE_S + RULINGS_UNSETTLED_EDGE_TTL_S);
 		await readRulingsBucket(ns.isolate(), BUCKET);
-		expect(entries.get(copyName("g1-100-7"))?.maxAge).toBe(RULINGS_EDGE_TTL_S);
+		expect(entries.get(copyName(`${G}-100-7`))?.maxAge).toBe(RULINGS_EDGE_TTL_S);
 	});
 
 	test("the colo checks the meta hourly, and a check that finds the same version keeps its `since`", async () => {
@@ -179,7 +181,7 @@ describe("readRulingsBucket through the colo cache", () => {
 		expect(metaGets(ns.gets)).toBe(1);
 		at(RULINGS_VERSION_CHECK_S);
 		const kv = ns.isolate();
-		expect(await currentRulingsVersion(kv)).toEqual({ version: "g1-100-7", since: T0 });
+		expect(await currentRulingsVersion(kv)).toEqual({ version: `${G}-100-7`, since: T0 });
 		expect(metaGets(ns.gets)).toBe(2);
 		expect(entries.has(RULINGS_SEEN_URL)).toBe(true);
 	});
@@ -204,9 +206,9 @@ describe("readRulingsBucket through the colo cache", () => {
 		expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-2");
 		expect(bucketGets(ns.gets)).toBe(before + 1);
 		// The new version starts its own settle window.
-		expect(entries.get(copyName("g1-200-9"))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
+		expect(entries.get(copyName(`${G}-200-9`))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
 		expect(await currentRulingsVersion(ns.isolate())).toEqual({
-			version: "g1-200-9",
+			version: `${G}-200-9`,
 			since: T0 + RULINGS_VERSION_CHECK_S * 1000,
 		});
 	});
@@ -252,7 +254,7 @@ describe("readRulingsBucket with no usable meta is the plain read", () => {
 			const ns = namespace();
 			ns.publish("night-1", m);
 			expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-1");
-			expect(entries.has(copyName("g1-100-7"))).toBe(false);
+			expect(entries.has(copyName(`${G}-100-7`))).toBe(false);
 			expect([...entries.keys()]).toEqual([RULINGS_SEEN_URL]);
 		}
 	});
