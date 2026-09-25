@@ -154,6 +154,9 @@
 	"durable_objects": {
 		"bindings": [
 			{ "name": "IMPORT_COORDINATOR", "class_name": "ImportCoordinator" },
+			// The engine objects, one per region × replica × partition (engine-namespace.ts). The
+			// colo-era objects of this namespace (engine-LAX…, before 2026-08-12) are released once
+			// by the nightly, gated by the RETIRED_ENGINE_SWEEP runtime var — see .env.example.
 			{ "name": "SEARCH_ENGINE", "class_name": "SearchEngine" },
 			// Per-IP token-bucket rate limiter (one tiny in-memory DO per IP);
 			// limits are runtime env vars — see RATE_LIMIT_* in .env.example.

@@ -47,6 +47,8 @@ import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./shims";
+import { plugin } from "bun";
+import { RETIRED_COLO_ENGINE_NAMES, RETIRED_HOLDING_BYTES } from "../../src/engine/retired-engine-sweep";
 import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
@@ -148,30 +150,90 @@ function fakeProbes() {
 	};
 }
 
+// c1: the colo-era objects are the REAL SearchEngine class over real SQLite, so the sweep's
+// storageFootprint and releaseCache run as shipped. search-engine-do imports store.ts, which imports
+// the engine by the alias wrangler resolves to the shim; resolve it the same way here. The shim
+// instantiates lazily, and neither method ever reaches it.
+plugin({
+	name: "engine-wasm-alias",
+	setup(build) {
+		build.module("sylvan-engine-wasm", async () => ({
+			exports: await import(join(import.meta.dir, "../../src/engine/wasm-shim.ts")),
+			loader: "object",
+		}));
+	},
+});
+
+/**
+ * What the colo era left behind, as DeckGen's inventory had it: cache-sized objects (MB of archive
+ * rows), one that holds only a few KB, and the rest names this "account" never had.
+ */
+const COLO_HOLDINGS: Record<string, number> = { "engine-LAX": 3, "engine-LAX-4": 2, "engine-BOS": 0 };
+
+interface ColoObject {
+	storage: MeteredStorage;
+	engine: { storageFootprint(): Promise<{ bytes: number }>; releaseCache(): Promise<unknown> };
+}
+
+/** Real SearchEngine objects by name, created on first address — as the platform does. */
+function coloFleet(make: (name: string, storage: MeteredStorage) => ColoObject["engine"]) {
+	const objects = new Map<string, ColoObject>();
+	const object = (name: string): ColoObject => {
+		let found = objects.get(name);
+		if (!found) {
+			const storage = new MeteredStorage();
+			found = { storage, engine: make(name, storage) };
+			objects.set(name, found);
+		}
+		return found;
+	};
+	for (const [name, mb] of Object.entries(COLO_HOLDINGS)) {
+		const db = object(name).storage.db;
+		db.exec("CREATE TABLE archive_cache (archive_key TEXT NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL)");
+		// Incompressible, like the compressed archive chunks the real cache holds.
+		const chunk = new Uint8Array(1_000_000).map((_, i) => (i * 2654435761) >>> 24);
+		for (let seq = 0; seq < mb; seq++) db.run("INSERT INTO archive_cache VALUES ('store/p0', ?, ?)", [seq, chunk]);
+		if (mb === 0) db.run("INSERT INTO archive_cache VALUES ('store/p0', 0, x'00')");
+	}
+	return { objects, object };
+}
+
 /**
  * The engine objects the publish fan-out reaches, recording what each was asked: two announced
  * objects of the hints g1 aliases (sam, afr) and one of a served hint (enam), so the harness sees
- * the notify retire the first two and prepare the third.
+ * the notify retire the first two and prepare the third. A colo-era name reaches its real object.
  */
 function fakeEngines() {
 	const calls: string[] = [];
+	const colo: { fleet: ReturnType<typeof coloFleet> | null } = { fleet: null };
 	return {
 		calls,
+		colo,
 		idFromName: (name: string) => ({ name }),
-		get: (id: { name: string }) => ({
-			preparePublish: async () => {
-				calls.push(`prepare ${id.name}`);
-				return { prepared: true, shards: 1 };
-			},
-			commitPublish: async () => {
-				calls.push(`commit ${id.name}`);
-				return { swapped: false, shards: 1 };
-			},
-			releaseCache: async () => {
-				calls.push(`release ${id.name}`);
-				return { released: true };
-			},
-		}),
+		get: (id: { name: string }) => {
+			if ((RETIRED_COLO_ENGINE_NAMES as readonly string[]).includes(id.name) && colo.fleet) {
+				calls.push(`address ${id.name}`);
+				return colo.fleet.object(id.name).engine;
+			}
+			return fakeEngine(id, calls);
+		},
+	};
+}
+
+function fakeEngine(id: { name: string }, calls: string[]) {
+	return {
+		preparePublish: async () => {
+			calls.push(`prepare ${id.name}`);
+			return { prepared: true, shards: 1 };
+		},
+		commitPublish: async () => {
+			calls.push(`commit ${id.name}`);
+			return { swapped: false, shards: 1 };
+		},
+		releaseCache: async () => {
+			calls.push(`release ${id.name}`);
+			return { released: true };
+		},
 	};
 }
 // engine-enam / engine-wnam: pre-partitioning single-store region objects whose announcements
@@ -188,6 +250,110 @@ function makeEnv(kv: FakeKV, baseUrl: string) {
 		PLACEMENT_PROBE: fakeProbes(),
 		SEARCH_ENGINE: fakeEngines(),
 	};
+}
+
+/**
+ * c1: the one-time colo-era sweep, driven through the coordinator's real notify phase against real
+ * SearchEngine objects. The nightly above ran with RETIRED_ENGINE_SWEEP unset; then dry-run twice,
+ * release twice. Returns what went wrong.
+ */
+async function retiredSweepScenario(
+	coordinator: unknown,
+	env: Record<string, unknown>,
+	storage: MeteredStorage,
+	engines: ReturnType<typeof fakeEngines>,
+): Promise<string[]> {
+	const problems: string[] = [];
+	const fleet = engines.colo.fleet;
+	if (!fleet) return ["no colo fleet"];
+	const notify = () => (coordinator as { stepNotify(): Promise<void> }).stepNotify();
+	const addressed = () => engines.calls.filter((c) => c.startsWith("address "));
+	const rows = (name: string): number => {
+		try {
+			const row = fleet.objects.get(name)?.storage.db.query("SELECT COUNT(*) AS n FROM archive_cache").get() as
+				| { n: number }
+				| undefined;
+			return Number(row?.n ?? 0);
+		} catch {
+			return 0; // no table: nothing stored
+		}
+	};
+	const recorded = (): string | null => {
+		const row = storage.db.query("SELECT value FROM __harness_kv WHERE key = 'retired_engine_sweep'").get() as
+			| { value: string }
+			| undefined;
+		return row ? String((JSON.parse(row.value) as { mode?: string }).mode) : null;
+	};
+	const holders = Object.keys(COLO_HOLDINGS).filter((n) => (COLO_HOLDINGS[n] ?? 0) * 1e6 > RETIRED_HOLDING_BYTES);
+	const small = Object.keys(COLO_HOLDINGS).filter((n) => !holders.includes(n));
+	const neverHad = RETIRED_COLO_ENGINE_NAMES.filter((n) => !(n in COLO_HOLDINGS));
+	const before = new Map(Object.keys(COLO_HOLDINGS).map((n) => [n, rows(n)]));
+	/** The object ran no statement and holds nothing: exactly what instantiation alone leaves. */
+	const untouched = (name: string) => {
+		const s = fleet.objects.get(name)?.storage;
+		return !s || (s.statements().length === 0 && s.deleteAllCalls === 0 && s.isEmpty());
+	};
+	const step = async (setting: string | undefined, label: string): Promise<string[]> => {
+		if (setting === undefined) delete env.RETIRED_ENGINE_SWEEP;
+		else env.RETIRED_ENGINE_SWEEP = setting;
+		const mark = addressed().length;
+		await notify();
+		const now = addressed().slice(mark);
+		console.log(`sweep ${label}: addressed ${now.length} colo-era object(s); record=${recorded() ?? "none"}`);
+		return now;
+	};
+
+	if (addressed().length > 0) problems.push("the nightly addressed colo-era objects with RETIRED_ENGINE_SWEEP unset");
+	if (recorded() !== null) problems.push("a sweep was recorded with the var unset");
+
+	const dry = await step("dry-run", "dry-run");
+	if (dry.length !== RETIRED_COLO_ENGINE_NAMES.length) problems.push(`dry-run addressed ${dry.length}, not 11`);
+	for (const name of Object.keys(COLO_HOLDINGS)) {
+		const s = fleet.objects.get(name)?.storage;
+		if (rows(name) !== before.get(name) || s?.deleteAllCalls !== 0 || (s?.statements().length ?? 0) > 0)
+			problems.push(`dry-run changed ${name}`);
+	}
+	for (const name of neverHad) if (!untouched(name)) problems.push(`dry-run wrote to never-created ${name}`);
+	if (recorded() !== "dry-run") problems.push("dry-run was not recorded as finished");
+
+	if ((await step("dry-run", "dry-run again")).length > 0) problems.push("a finished dry-run woke objects again");
+
+	const release = await step("release", "release");
+	// Every call addresses the name afresh, as the coordinator's stubs do: eleven measurements, then a
+	// release and a read-back per holder.
+	if (release.length !== RETIRED_COLO_ENGINE_NAMES.length + 2 * holders.length)
+		problems.push(
+			`release addressed ${release.length}, not 11 measurements + ${holders.length} × (release, read-back)`,
+		);
+	for (const name of holders) {
+		const s = fleet.objects.get(name)?.storage;
+		if (!(s?.deleteAllCalls === 1 && s.isEmpty())) problems.push(`release did not deleteAll ${name}`);
+	}
+	for (const name of small) {
+		if (fleet.objects.get(name)?.storage.deleteAllCalls !== 0 || rows(name) !== before.get(name))
+			problems.push(`release touched ${name}, which holds less than ${RETIRED_HOLDING_BYTES} bytes`);
+	}
+	for (const name of neverHad) if (!untouched(name)) problems.push(`release wrote to never-created ${name}`);
+	if (recorded() !== "release") problems.push("release was not recorded as finished");
+	const freed = Number(
+		(
+			JSON.parse(
+				String(
+					(
+						storage.db.query("SELECT value FROM __harness_kv WHERE key = 'retired_engine_sweep'").get() as {
+							value: string;
+						}
+					).value,
+				),
+			) as { freedBytes?: number }
+		).freedBytes ?? 0,
+	);
+	const held = holders.reduce((t, n) => t + (COLO_HOLDINGS[n] ?? 0) * 1e6, 0);
+	if (freed < held) problems.push(`release reports ${freed} bytes freed, less than the ${held} its holders held`);
+
+	if ((await step("release", "release again")).length > 0) problems.push("a finished release woke objects again");
+	if ((await step(undefined, "var removed")).length > 0) problems.push("the var removed still woke objects");
+	return problems;
 }
 
 async function main(): Promise<number> {
@@ -230,6 +396,13 @@ async function main(): Promise<number> {
 			alarm(): Promise<void>;
 		}
 	)(ctx, env);
+
+	const { SearchEngine } = await import("../../src/engine/search-engine-do");
+	const engines = env.SEARCH_ENGINE as ReturnType<typeof fakeEngines>;
+	engines.colo.fleet = coloFleet(
+		(name, objectStorage) =>
+			new SearchEngine({ id: { name }, storage: objectStorage, waitUntil: () => {} } as never, env as never) as never,
+	);
 
 	const phaseOf = (): string => {
 		const row = (storage.db.query("SELECT value FROM meta WHERE key = 'phase'").all() as { value?: string }[])[0];
@@ -427,6 +600,12 @@ async function main(): Promise<number> {
 	].filter((p): p is string => p !== null);
 	if (placementProblems.length) {
 		console.error(`\nFAILED: placement/cache blocks — ${placementProblems.join("; ")}`);
+		return 1;
+	}
+
+	const sweepProblems = await retiredSweepScenario(coordinator, env, storage, engines);
+	if (sweepProblems.length) {
+		console.error(`\nFAILED: retired-engine sweep — ${sweepProblems.join("; ")}`);
 		return 1;
 	}
 	console.log(`\nOK — published ${fmt(kv.size())} KV keys, ${fmt(kv.bytes())} bytes`);

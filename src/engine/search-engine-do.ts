@@ -1215,6 +1215,24 @@ export class SearchEngine extends DurableObject<Env> {
 		return { released: true };
 	}
 
+	/**
+	 * How many bytes this object's storage holds, changing nothing — the dry run in front of a
+	 * release (src/engine/retired-engine-sweep.ts).
+	 *
+	 * It must be safe to call on a name that never existed, because addressing one instantiates it:
+	 * this class has no constructor and no blockConcurrencyWhile, so instantiation runs only the
+	 * in-memory field initialisers, and this reads `databaseSize` and nothing else — no
+	 * ensureCacheSchema, no placement probe, no manifest record, no engine() and so no store load or
+	 * archive cache fill. Measured on local workerd (wrangler dev, 2026-09-25) with this class: a
+	 * never-created name asked this reports 8192 bytes and leaves exactly what a method touching no
+	 * storage at all leaves — miniflare's own `__miniflare_do_name` row, which production has no
+	 * equivalent of; a 5MB object reports 5,021,696, and after releaseCache 4096, twice, so asking
+	 * again re-creates nothing. tests/engine/retired-engine-sweep.test.ts pins that no statement runs.
+	 */
+	async storageFootprint(): Promise<{ label: string; bytes: number }> {
+		return { label: this.label, bytes: this.ctx.storage.sql.databaseSize };
+	}
+
 	// ── Engine acquisition ─────────────────────────────────────────────────────
 
 	/**
