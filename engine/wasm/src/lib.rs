@@ -30,6 +30,8 @@ use wasm_bindgen::prelude::*;
 
 use card_engine::{AlignedVec, BufferStore, EngineError, QueryOptions};
 
+pub mod names;
+
 thread_local! {
     /// The active store. Worker isolates are single-threaded, so a
     /// thread_local RefCell is a plain module-level slot.
@@ -48,6 +50,9 @@ thread_local! {
     /// An in-progress LZ4 load (the Durable Object's local cache, backlog r3): the store buffer
     /// the frames decode into, plus any frame split across two crossings.
     static LZ4_LOADING: RefCell<Option<Lz4Load>> = const { RefCell::new(None) };
+    /// The corpus-wide card names `/cards/autocomplete` answers from (backlog n8, names.rs) —
+    /// independent of the store: a different blob, loaded on this object's first autocomplete.
+    static NAMES: RefCell<Option<names::NameList>> = const { RefCell::new(None) };
 }
 
 /// Prefix of every error that means THIS INSTANCE can no longer be trusted. The wasm target is
@@ -1173,6 +1178,48 @@ pub fn cards_containing_all_words(
 #[wasm_bindgen]
 pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
     with_store(|store| Ok(serde_json::to_string(&store.autocomplete(prefix, limit as usize)).unwrap_or_else(|_| "[]".into())))
+}
+
+// ─── /cards/autocomplete from the card-names blob (backlog n8) ───────────────
+// The router asks ONE object; that object answers for the whole corpus from the published names
+// blob (names.rs) rather than from its own partition's archive. The JS side (src/engine/store.ts
+// `autocompleteFromNames`) fetches the blob — its own SQLite cache first, KV once per generation —
+// and hands it over gzipped, as stored.
+
+/// Replace this instance's card names with a gzipped blob. Returns how many pairs it holds. The
+/// previous list is dropped FIRST, so a reload reuses its memory instead of holding two.
+#[wasm_bindgen]
+pub fn load_names(gz: &[u8]) -> Result<u32, JsError> {
+    with_mut(&NAMES, "names", |n| *n = None).map_err(|e| JsError::new(&e))?;
+    let list = names::NameList::from_gzip(gz).map_err(|e| JsError::new(&e))?;
+    let count = list.len() as u32;
+    with_mut(&NAMES, "names", |n| *n = Some(list)).map_err(|e| JsError::new(&e))?;
+    Ok(count)
+}
+
+/// Bytes the loaded names hold in linear memory (0 when none are loaded) — for the load log line.
+#[wasm_bindgen]
+pub fn names_heap_bytes() -> u32 {
+    NAMES.with(|n| n.try_borrow().ok().and_then(|g| g.as_ref().map(|l| l.heap_bytes() as u32)).unwrap_or(0))
+}
+
+/// Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the
+/// partitioned fan-out's merge gives, from one object. Errors when no names are loaded.
+#[wasm_bindgen]
+pub fn names_autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
+    NAMES.with(|n| {
+        let guard = n.try_borrow().map_err(|_| JsError::new(&poisoned("names")))?;
+        let list = guard.as_ref().ok_or_else(|| JsError::new("no card names loaded"))?;
+        Ok(serde_json::to_string(&names::autocomplete(list, prefix, limit as usize)).unwrap_or_else(|_| "[]".into()))
+    })
+}
+
+/// The loaded STORE's own `(collated, printed)` autocomplete pairs, as a JSON array of pairs —
+/// what its build published into the names blob, read back from the archive. Verification only
+/// (the real-corpus differential); nothing on a request path calls it.
+#[wasm_bindgen]
+pub fn store_autocomplete_names() -> Result<String, JsError> {
+    with_store(|store| Ok(serde_json::to_string(&store.autocomplete_names()).unwrap_or_else(|_| "[]".into())))
 }
 
 // ─── The partitioned two-phase gather (LOCAL PATCH, Cloudflare port) ─────────

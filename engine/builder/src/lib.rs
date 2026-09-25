@@ -11,6 +11,9 @@
 // pure transform/tags logic from this crate.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bulk;
+// names (the per-partition lines of the autocomplete names blob, backlog n8) is NOT gated: the
+// nightly's wasm import emits the same lines the native build writes.
+pub mod names;
 // ranks (the per-card printing order behind the representative choice) is NOT gated: all three
 // import paths compute it, the wasm one included. A wasm build that omitted it would still link
 // — transform's caller passes a rank — and would quietly produce a store whose prefer_score
@@ -474,6 +477,16 @@ pub fn build_store_partitioned_spilled<W: Write>(
         std::fs::File::create(&oracle_path).map_err(|e| format!("create oracle-pairs.bin: {e}"))?,
     ));
     let mut oracle_count = 0u64;
+    // The autocomplete names blob's input (names::partition_names_tsv): each partition's served
+    // `(collated, printed)` pairs as the engine read them off the archive it just built — the SAME
+    // lines the nightly's build emits (EMIT_NAMES), so `scripts/seed-remote-kv.ts` encodes them with
+    // the coordinator's own encoder (src/engine/card-names.ts) and both publish identical bytes.
+    let names_path = out_dir.join(names::CARD_NAMES_FILE);
+    let mut names_out = BufWriter::with_capacity(
+        1 << 20,
+        std::fs::File::create(&names_path).map_err(|e| format!("create {}: {e}", names::CARD_NAMES_FILE))?,
+    );
+    let mut names_count = 0usize;
     let artist_entities = aggregates.artist_entities();
     let mut accum = PartitionAccum::new(built_at, n);
     for k in 0..n as usize {
@@ -531,6 +544,10 @@ pub fn build_store_partitioned_spilled<W: Write>(
             return Err("encoding a finalized row or writing rows.jsonl failed".to_owned().into());
         }
         counter.flush()?;
+        names_out
+            .write_all(&names::partition_names_tsv(&stats.autocomplete_names).map_err(|e| format!("partition {k}: {e}"))?)
+            .map_err(|e| format!("write {}: {e}", names::CARD_NAMES_FILE))?;
+        names_count += stats.autocomplete_names.len();
         accum.record(k, store_key, counter.written, &stats);
         routing_count += routing_here.get();
         oracle_count += oracle_here.get();
@@ -541,6 +558,8 @@ pub fn build_store_partitioned_spilled<W: Write>(
     eprintln!("wrote {} ({routing_count} routing keys)", routing_path.display());
     oracle_out.borrow_mut().flush().map_err(|e| format!("flush oracle-pairs.bin: {e}"))?;
     eprintln!("wrote {} ({oracle_count} oracle pairs)", oracle_path.display());
+    names_out.flush().map_err(|e| format!("flush {}: {e}", names::CARD_NAMES_FILE))?;
+    eprintln!("wrote {} ({names_count} served names, per partition)", names_path.display());
     Ok(accum.finish())
 }
 

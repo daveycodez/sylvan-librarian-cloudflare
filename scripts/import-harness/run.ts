@@ -54,6 +54,7 @@ import {
 	RETIRED_SWEEP_KV_KEY,
 	runRetiredEngineSweep,
 } from "../../src/engine/retired-engine-sweep";
+import { checkCardNames } from "./card-names-check";
 import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
 import { measureEnginePool } from "./engine-pool";
@@ -615,6 +616,16 @@ async function main(): Promise<number> {
 	for (const line of pool.lines) console.log(line);
 	if (!pool.ok) {
 		console.error("\nFAILED: an engine object held two builds' caches at once (above)");
+		return 1;
+	}
+
+	// n8: the card-names blob — published, answering as the fan-out does, and the native builder's
+	// byte for byte. Reads the native build the oracle check left, and removes it.
+	const names = await checkCardNames(kv, oracle.nativeDir ?? null);
+	console.log("");
+	for (const line of names.lines) console.log(line);
+	if (!names.ok) {
+		console.error("\nFAILED: the card-names check (above)");
 		return 1;
 	}
 

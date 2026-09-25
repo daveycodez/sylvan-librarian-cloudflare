@@ -33,6 +33,10 @@ export interface ImportEmitHandlers {
 	 * right after that batch's onRoutingKeys, and likewise even when empty. */
 	onOraclePairs?(bytes: Uint8Array): void;
 	onStats?(stats: Record<string, number>): void;
+	/** One partition build's autocomplete names (backlog n8): `<collated>\t<printed>\n` lines, the
+	 * same text the native builder appends to `card-names.tsv` (src/engine/card-names.ts). Emitted by
+	 * buildStoreStream once, after the archive's last chunk and before its stats. */
+	onNames?(bytes: Uint8Array): void;
 	/** The resumable inflater's raw output: one emit per inflateFeed call. */
 	onInflate?(bytes: Uint8Array): void;
 	/** Serve row #index of whatever the running export pulls: the spilled rows (add order) during
@@ -53,6 +57,7 @@ const EMIT = {
 	TAG_ALIASES: 10,
 	ORACLE_PAIRS: 11,
 	CORPUS: 12,
+	NAMES: 13,
 } as const;
 
 interface ImportExports {
@@ -154,6 +159,9 @@ export class ImportWasm {
 						return;
 					case EMIT.CORPUS:
 						h.onCorpus?.(view(ptr, len).slice());
+						return;
+					case EMIT.NAMES:
+						h.onNames?.(view(ptr, len).slice());
 						return;
 					case EMIT.TAG_ALIASES:
 						h.onTagAliases?.(view(ptr, len).slice());

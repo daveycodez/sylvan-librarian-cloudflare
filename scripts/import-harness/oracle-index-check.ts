@@ -34,6 +34,8 @@ const BUILDER = "./target/release/sylvan-store-builder";
 export interface OracleIndexCheck {
 	ok: boolean;
 	lines: string[];
+	/** The native builder's output dir, left for the card-names check (card-names-check.ts) to read and remove. */
+	nativeDir?: string;
 }
 
 function isUuid(v: unknown): v is string {
@@ -153,6 +155,5 @@ export async function checkOracleIndex(
 		`oracle index: the native builder's ${nativeBuckets.length} buckets are byte-identical to the nightly's — ` +
 			`the deploy seeder would write ${seederPlan.changed.length} of them after this night`,
 	);
-	rmSync(out, { recursive: true, force: true });
-	return { ok: true, lines };
+	return { ok: true, lines, nativeDir: out };
 }

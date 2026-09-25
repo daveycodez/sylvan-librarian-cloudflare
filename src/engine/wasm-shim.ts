@@ -226,6 +226,13 @@ export interface EngineHandle {
 	fuzzy_card_by_name(name: string, setCode: string, floor: number, lead: number, fieldsJson: string): string;
 	fuzzy_candidates(name: string, setCode: string, floor: number, k: number): Uint8Array;
 	autocomplete(prefix: string, limit: number): string;
+	/** n8: the corpus-wide card names (a gzipped blob), replacing any loaded before. Returns the pair count. */
+	load_names(gz: Uint8Array): number;
+	/** n8: autocomplete over the loaded names — the whole corpus's answer. Throws when none are loaded. */
+	names_autocomplete(prefix: string, limit: number): string;
+	names_heap_bytes(): number;
+	/** n8: the loaded store's own (collated, printed) pairs, JSON — verification only (the harness). */
+	store_autocomplete_names(): string;
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	exact_name_rank(folded: string, setCode: string): string;
 	exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
@@ -304,6 +311,10 @@ export function engineFor(label: string): EngineHandle {
 		// throw "not a function" at runtime on every query whose race actually ran.
 		fuzzy_candidates: wrap("fuzzy_candidates"),
 		autocomplete: wrap("autocomplete"),
+		load_names: wrap("load_names"),
+		names_autocomplete: wrap("names_autocomplete"),
+		names_heap_bytes: wrap("names_heap_bytes"),
+		store_autocomplete_names: wrap("store_autocomplete_names"),
 		exact_card_by_name: wrap("exact_card_by_name"),
 		exact_name_rank: wrap("exact_name_rank"),
 		exact_name_probe: wrap("exact_name_probe"),

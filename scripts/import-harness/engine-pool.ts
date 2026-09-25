@@ -78,11 +78,15 @@ async function olderBuild(kv: FakeKV, manifest: StoreManifest, olderAt: string):
 			await kv.put(chunkKey(rekey(part.store_key), seq), bytes);
 		}
 	}
+	// n8: its card-names blob too, so the object holds last night's names beside last night's archive.
+	const names = manifest.names_key ? await kv.get(manifest.names_key, { type: "arrayBuffer" }) : null;
+	if (manifest.names_key && names) await kv.put(rekey(manifest.names_key), names as ArrayBuffer);
 	return {
 		...manifest,
 		built_at: olderAt,
 		store_key: rekey(manifest.store_key),
 		partitions: (manifest.partitions ?? []).map((p) => ({ ...p, store_key: rekey(p.store_key) })),
+		...(manifest.names_key ? { names_key: rekey(manifest.names_key) } : {}),
 	};
 }
 
@@ -100,7 +104,16 @@ export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 		0,
 	);
 	const gzipBytes = parts[partition]?.store_gzip_bytes ?? 0;
-	const env = { STORE_KV: kv } as unknown as Parameters<typeof store.prefetchStore>[0];
+	// Every KV get of a card-names key, counted: n8's promise is one per object per build, never on a wake.
+	const namesReads: string[] = [];
+	const countingKv = {
+		get: (key: string, opts: unknown) => {
+			if (key.startsWith("store:card-names-")) namesReads.push(key);
+			return kv.get(key, opts as never);
+		},
+	};
+	const env = { STORE_KV: countingKv } as unknown as Parameters<typeof store.prefetchStore>[0];
+	const named = Boolean(published.names_key);
 
 	const lines = [
 		`engine objects (partition ${partition}, one build = ${mb(gzipBytes)} gzip): live = the most the object held at once, file = its SQLite's size after`,
@@ -130,6 +143,8 @@ export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 			// Last night: the object loads the older build and caches it in this codec.
 			await store.swapToStore(env, ctxFor(label), from);
 			await settle();
+			// n8: and has answered an autocomplete, so it holds that build's card names too.
+			if (named) await store.autocompleteFromNames(env, ctxFor(label), "li", 20);
 			const held = s.live();
 			s.resetPeak();
 			if (path.startsWith("warm")) {
@@ -141,6 +156,20 @@ export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 				await store.getEngine(env, ctxFor(`engine-harness${n}b-p${partition}`));
 			}
 			await settle();
+			const woken = path.startsWith("warm") ? label : `engine-harness${n}b-p${partition}`;
+			let namesNote = "";
+			if (named) {
+				// The new build's names: one KV read here, then a wake (a fresh instance on the same
+				// storage) must answer from SQLite.
+				const before = namesReads.length;
+				await store.autocompleteFromNames(env, ctxFor(woken), "li", 20);
+				await store.getEngine(env, ctxFor(`engine-harness${n}c-p${partition}`));
+				await store.autocompleteFromNames(env, ctxFor(`engine-harness${n}c-p${partition}`), "li", 20);
+				await settle();
+				const read = namesReads.length - before;
+				ok &&= read === 1;
+				namesNote = `; names: ${read} KV read for the new build, 0 on the wake after${read === 1 ? "" : "  <- NOT ONE"}`;
+			}
 			const after = s.live();
 			const oneBuild = Math.max(held, after);
 			// Slack for what is not cache — the manifest record, the placement row, page rounding.
@@ -148,7 +177,8 @@ export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 			ok &&= within;
 			lines.push(
 				`  ${codec.padEnd(4)} ${path.padEnd(42)} held ${mb(held)} → peak ${mb(s.peak())} → ${mb(after)}; ` +
-					`file ${mb(s.file())} (${(s.file() / oneBuild).toFixed(2)} builds)${within ? "" : "  <- TWO BUILDS AT ONCE"}`,
+					`file ${mb(s.file())} (${(s.file() / oneBuild).toFixed(2)} builds)${within ? "" : "  <- TWO BUILDS AT ONCE"}` +
+					namesNote,
 			);
 		}
 	}

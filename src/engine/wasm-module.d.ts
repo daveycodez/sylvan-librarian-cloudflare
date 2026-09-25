@@ -69,6 +69,10 @@ declare module "sylvan-engine-wasm" {
 		card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
 		fuzzy_card_by_name(name: string, setCode: string, floor: number, lead: number, fieldsJson: string): string;
 		autocomplete(prefix: string, limit: number): string;
+		load_names(gz: Uint8Array): number;
+		names_autocomplete(prefix: string, limit: number): string;
+		names_heap_bytes(): number;
+		store_autocomplete_names(): string;
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
 		exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
@@ -120,6 +124,13 @@ declare module "sylvan-engine-wasm" {
 	): string;
 	/** Printed card names matching a partial name, prefix matches first. JSON array. */
 	export function autocomplete(prefix: string, limit: number): string;
+	/** n8: load the corpus-wide card-names blob (gzipped); returns the pair count. */
+	export function load_names(gz: Uint8Array): number;
+	/** n8: autocomplete for the whole corpus from the loaded names. JSON array. */
+	export function names_autocomplete(prefix: string, limit: number): string;
+	export function names_heap_bytes(): number;
+	/** The loaded store's own (collated, printed) autocomplete pairs, JSON — verification only. */
+	export function store_autocomplete_names(): string;
 	/**
 	 * The best printing of a card whose FOLDED name matches exactly, or JSON `null`. `folded` is
 	 * already lowercased and accent-folded by the caller; `setCode` is "" for no restriction.

@@ -114,6 +114,11 @@ interface SearchEngineStub {
 		limit: number,
 		reportedShards?: number,
 	): Promise<{ names: string[] } & Telemetry>;
+	scryfallAutocompleteNames(
+		prefix: string,
+		limit: number,
+		reportedShards?: number,
+	): Promise<{ names: string[] } & Telemetry>;
 	scryfallExactName(
 		folded: string,
 		setCode: string,
@@ -951,6 +956,15 @@ export class RemoteEngine implements Engine {
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
 		const { names } = await this.searchRpc("scryfallAutocomplete", (stub, shards) =>
 			stub.scryfallAutocomplete(prefix, limit, shards),
+		);
+		return names;
+	}
+
+	/** n8: the whole corpus's autocomplete from this one object's card-names blob (see the DO's
+	 * scryfallAutocompleteNames). Throws where the object cannot — the router then fans out. */
+	async scryfallAutocompleteNames(prefix: string, limit: number): Promise<string[]> {
+		const { names } = await this.searchRpc("scryfallAutocompleteNames", (stub, shards) =>
+			stub.scryfallAutocompleteNames(prefix, limit, shards),
 		);
 		return names;
 	}

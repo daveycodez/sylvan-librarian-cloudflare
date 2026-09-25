@@ -716,14 +716,60 @@ fn archive_section_stats(d: &CardData) -> StoreStats {
         foreign_printing_count: d.foreign.len(),
         annex_only_oracles_dropped: 0, // the builder entry points overwrite from BuiltStore
         annex_only_rows_dropped: 0,
+        autocomplete_names: Vec::new(), // likewise: autocomplete_names_of, at the same two sites
     }
+}
+
+/// LOCAL PATCH (sylvan-librarian-cloudflare, backlog n8): every name `BufferStore::autocomplete`
+/// can offer from this store, as `(collated, printed)` — sorted, one entry per distinct pair.
+///
+/// Read off the SAME unarchived structures `write_archive` has just serialized, with the build-time
+/// twins of the three things `autocomplete` reads per card: `collated_name`, the printed name
+/// (`str_at(card_name_id)`, falling back to the collated name), and `any_printing_is_served`. So a
+/// card this returns is exactly a card whose autocomplete candidacy survives the extras gate, and
+/// its two strings are exactly the ones the ranking compares and returns. `BufferStore::
+/// autocomplete_names` is the archived twin, and a test pins the two equal.
+///
+/// Why the builder and not the reader: the port answers `/cards/autocomplete` from ONE object
+/// (engine/wasm/src/names.rs) over a corpus-wide list of these pairs, published beside the store.
+/// Both publishers — the native builder and the in-Worker nightly, which never holds a whole
+/// archive — build every partition through here, so neither reimplements which name a card
+/// carries (the first row of its oracle group in BUILD order) or which printings are served.
+/// ~3,400 pairs a partition, allocated once the archive is written, so never at the build's peak
+/// (the nightly harness's per-partition wasm heap peaks are unchanged to the 0.1MB).
+fn autocomplete_names_of(d: &CardData) -> Vec<(String, String)> {
+    let extra_vid = d.coll_vocab.iter().position(|s| s.as_str() == crate::EXTRA_IS_TAG).map(|p| p as u16);
+    let mut out: Vec<(String, String)> = Vec::with_capacity(d.cards.len());
+    for (cid, card) in d.cards.iter().enumerate() {
+        // `any_printing_is_served`, over the canonical range, with its "no extras vocabulary means
+        // every card is servable" reading of a missing tag.
+        let served = match extra_vid {
+            None => true,
+            Some(vid) => (d.offsets[cid] as usize..d.offsets[cid + 1] as usize)
+                .any(|pid| !d.printings[pid].card_is_tags.contains(&vid)),
+        };
+        if !served {
+            continue;
+        }
+        let collated = crate::collated_name_of(card, &d.strings);
+        // `str_at` over the plain table: NONE_STR is absent, anything else indexes.
+        let printed = if card.card_name_id == crate::NONE_STR {
+            collated
+        } else {
+            d.strings[card.card_name_id as usize].as_str()
+        };
+        out.push((collated.to_owned(), printed.to_owned()));
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 // ─── Store builder ───────────────────────────────────────────────────────────
 
 /// Counts of what a finished store contains, returned by
 /// [`StoreBuilder::finish_to_writer`] for manifests and logging.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreStats {
     /// Oracle cards (post-grouping).
     pub card_count: usize,
@@ -763,6 +809,9 @@ pub struct StoreStats {
     /// Rows those drops removed, so a spilled stream's completeness check stays EXACT:
     /// `printing_count + foreign_printing_count + annex_only_rows_dropped == staged rows`.
     pub annex_only_rows_dropped: usize,
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, backlog n8): what `/cards/autocomplete` may offer
+    /// from this store — see `autocomplete_names_of`. The reason this struct is no longer `Copy`.
+    pub autocomplete_names: Vec<(String, String)>,
 }
 
 /// Non-python twin of the pyo3 staged-reload surface: `new()` ≙ reload_begin
@@ -825,6 +874,9 @@ impl StoreBuilder {
         stats.annex_only_rows_dropped = built.annex_only_rows_dropped;
         write_archive(&built.card_data, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
+        // AFTER the archive is out, so the serializer's buffers are gone before the names are
+        // allocated: the build's peak (the 128MB isolate's, in the nightly) is not raised by them.
+        stats.autocomplete_names = autocomplete_names_of(&built.card_data);
         Ok(stats)
     }
 }
@@ -924,6 +976,9 @@ impl SpillingStoreBuilder {
         stats.annex_only_rows_dropped = built.annex_only_rows_dropped;
         write_archive(&built.card_data, w)?;
         w.flush().map_err(|e| EngineError::runtime(format!("flush store: {e}")))?;
+        // AFTER the archive is out, so the serializer's buffers are gone before the names are
+        // allocated: the build's peak (the 128MB isolate's, in the nightly) is not raised by them.
+        stats.autocomplete_names = autocomplete_names_of(&built.card_data);
         Ok(stats)
     }
 }
@@ -2709,6 +2764,28 @@ impl BufferStore {
         Some((pid, data.printings[pid].prefer_score.as_ref().map_or(f32::MIN, |v| f32::from(*v)), served))
     }
 
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, backlog n8): the archived twin of the builder's
+    /// `autocomplete_names_of` — every `(collated, printed)` pair `autocomplete` can return from
+    /// this store, sorted and deduplicated, read through the very accessors `autocomplete` reads.
+    /// What the builder publishes is checked against this (tests below, and the real-corpus
+    /// differential, which reads it through the wasm crate's `store_autocomplete_names`).
+    pub fn autocomplete_names(&self) -> Vec<(String, String)> {
+        let data = self.data();
+        let extra_vid = data.coll_vocab.iter().position(|s| s.as_str() == crate::EXTRA_IS_TAG).map(|p| p as u16);
+        let mut out: Vec<(String, String)> = Vec::with_capacity(data.cards.len());
+        for (cid, card) in data.cards.iter().enumerate() {
+            if !self.any_printing_is_served(cid, extra_vid) {
+                continue;
+            }
+            let collated = crate::collated_name(card, &data.strings);
+            let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(collated);
+            out.push((collated.to_owned(), printed.to_owned()));
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// Whether any CANONICAL printing of this card is one a default search would show.
     ///
     /// The card-level reading of `-is:extra`, which is the gate `/cards/search` ANDs in: a name
@@ -2775,6 +2852,11 @@ impl BufferStore {
     /// the same class as the `unique=art` representative and `/sets` same-date ordering. The
     /// printed name is the tiebreak here because it is total and deterministic, and because a
     /// partitioned merge has to be able to recompute it from the names alone.
+    ///
+    /// A SECOND COPY OF THIS RANKING ANSWERS PRODUCTION: `engine/wasm/src/names.rs` runs it over the
+    /// corpus-wide list `autocomplete_names` describes, so `/cards/autocomplete` asks one engine
+    /// object instead of every partition (backlog n8). Change the two together — the differential
+    /// in that file (fixture-sized in CI, the real corpus when asked) fails on any drift.
     pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
         let data = self.data();
         // COLLATED, not merely lowered. `collate_name` is what `card_name_collated` is built with

@@ -31,6 +31,8 @@ interface FakeInstance {
 	loaded: Uint8Array | null;
 	/** The shim's drop counter: a test bumps it to simulate an instance lost to a trap. */
 	generation: number;
+	/** n8: the card names load_names took, or null. */
+	names?: string[] | null;
 }
 const instances = new Map<string, FakeInstance>();
 
@@ -129,6 +131,22 @@ function handleFor(label: string) {
 		fetch_rows: () => new Uint8Array(2),
 		linearMemoryBytes: () => inst.loaded?.length ?? 0,
 		instanceGeneration: () => inst.generation,
+		// n8: the names blob as the real crate reads it — gzip, the header, then name lines — and a
+		// toy ranking (printed names containing the prefix, in blob order).
+		load_names(gz: Uint8Array) {
+			const text = new TextDecoder().decode(gunzipSync(gz));
+			if (!text.startsWith("sylvan-card-names/1\n")) throw new Error("fake wasm: not a names blob");
+			inst.names = text
+				.split("\n")
+				.slice(1, -1)
+				.map((l) => l.slice(l.indexOf("\t") + 1));
+			return inst.names.length;
+		},
+		names_autocomplete(prefix: string, limit: number) {
+			if (!inst.names) throw new Error("no card names loaded");
+			return JSON.stringify(inst.names.filter((n) => n.toLowerCase().includes(prefix)).slice(0, limit));
+		},
+		names_heap_bytes: () => 0,
 	};
 }
 
@@ -1114,5 +1132,108 @@ describe("every store load says what its isolate holds (the co-location gauge)",
 
 	test("one oversized instance is flagged by bytes alone", () => {
 		expect(store.isolateClause(1, 0, [{ label: "x", bytes: store.CROWDED_ISOLATE_BYTES }]).crowded).toBe(true);
+	});
+});
+
+// ── n8: /cards/autocomplete from the card-names blob ──────────────────────────
+
+describe("the card-names blob (n8)", () => {
+	async function publishNamed(builtAt: string, names: string[]) {
+		const published = await publishV2(builtAt);
+		const lines = names.map((n) => `${n.toLowerCase().replace(/[^a-z0-9]/g, "")}\t${n}\n`).join("");
+		const gz = await gzipBytes(new TextEncoder().encode(`sylvan-card-names/1\n${lines}`));
+		const key = `store:card-names-v1-${builtAt}.store:0`;
+		const manifest = { ...published.manifest, names_key: key, names_bytes: gz.byteLength };
+		published.entries.set(key, gz);
+		published.entries.set("store:manifest", JSON.stringify(manifest));
+		return { ...published, manifest, key };
+	}
+	const archiveOf = (manifest: StoreManifest, k: number) => (manifest.partitions ?? [])[k]?.store_key ?? "";
+
+	test("KV once per object per build: a wake reads the names from the object's own SQLite", async () => {
+		const { entries, key, manifest } = await publishNamed("140", ["Lightning Bolt", "Lightning Helix", "Shock"]);
+		const storage = fakeStorage();
+		const { env, reads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-names-p1", 1, storage);
+		const namesReads = () => reads.filter((k) => k === key).length;
+
+		await store.getEngine(env, ctx);
+		expect(await store.autocompleteFromNames(env, ctx, "light", 20)).toEqual(["Lightning Bolt", "Lightning Helix"]);
+		expect(namesReads()).toBe(1);
+		// Cached beside THIS object's archive, as KV holds it.
+		expect(cache.cachedNames(storage, archiveOf(manifest, 1), manifest.names_bytes)).toEqual(
+			entries.get(key) as Uint8Array,
+		);
+
+		// Warm: the instance answers; nothing is read again.
+		expect(await store.autocompleteFromNames(env, ctx, "shock", 20)).toEqual(["Shock"]);
+		expect(namesReads()).toBe(1);
+
+		// A wake: the instance is gone (a fresh isolate, or a trap) and so are its names.
+		const inst = instanceFor("engine-names-p1");
+		inst.generation += 1;
+		inst.loaded = null;
+		inst.names = null;
+		await store.getEngine(env, ctx);
+		expect(await store.autocompleteFromNames(env, ctx, "bolt", 20)).toEqual(["Lightning Bolt"]);
+		expect(namesReads()).toBe(1);
+	});
+
+	test("concurrent first calls share ONE load", async () => {
+		const { entries, key } = await publishNamed("141", ["Shock", "Shocker"]);
+		const storage = fakeStorage();
+		const { env, reads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-names-once-p0", 0, storage);
+		await store.getEngine(env, ctx);
+		const answers = await Promise.all([
+			store.autocompleteFromNames(env, ctx, "sho", 20),
+			store.autocompleteFromNames(env, ctx, "shock", 1),
+			store.autocompleteFromNames(env, ctx, "er", 20),
+		]);
+		expect(answers).toEqual([["Shock", "Shocker"], ["Shock"], ["Shocker"]]);
+		expect(reads.filter((k) => k === key).length).toBe(1);
+	});
+
+	test("no blob named, or one gone or the wrong size, is refused — the router then fans out", async () => {
+		const plain = await publishV2("142");
+		const env = fakeEnv(plain.entries).env;
+		const ctx = ctxFor("engine-names-none-p0", 0, fakeStorage());
+		await store.getEngine(env, ctx);
+		expect(store.autocompleteFromNames(env, ctx, "sho", 20)).rejects.toThrow(store.CardNamesUnavailableError);
+
+		const gone = await publishNamed("143", ["Shock"]);
+		gone.entries.delete(gone.key);
+		const goneCtx = ctxFor("engine-names-gone-p0", 0, fakeStorage());
+		const goneEnv = fakeEnv(gone.entries).env;
+		await store.getEngine(goneEnv, goneCtx);
+		expect(store.autocompleteFromNames(goneEnv, goneCtx, "sho", 20)).rejects.toThrow(/not in KV/);
+
+		const short = await publishNamed("144", ["Shock"]);
+		short.entries.set(short.key, (short.entries.get(short.key) as Uint8Array).subarray(1));
+		const shortCtx = ctxFor("engine-names-short-p0", 0, fakeStorage());
+		const shortEnv = fakeEnv(short.entries).env;
+		await store.getEngine(shortEnv, shortCtx);
+		expect(store.autocompleteFromNames(shortEnv, shortCtx, "sho", 20)).rejects.toThrow(/the manifest says/);
+	});
+
+	test("the names go with their build: a new build's fill drops the old names first (x1)", async () => {
+		const first = await publishNamed("150", ["Shock"]);
+		const storage = fakeStorage();
+		const ctx = ctxFor("engine-names-swap-p0", 0, storage);
+		const firstEnv = fakeEnv(first.entries).env;
+		await store.getEngine(firstEnv, ctx);
+		await store.autocompleteFromNames(firstEnv, ctx, "sho", 20);
+		expect(cache.cachedNames(storage, archiveOf(first.manifest, 0), first.manifest.names_bytes)).not.toBeNull();
+
+		const second = await publishNamed("151", ["Shock", "Shockwave"]);
+		const secondEnv = fakeEnv(second.entries).env;
+		meterOf(storage).resetPeak();
+		expect(await store.swapToStore(secondEnv, ctx, second.manifest)).toBe(true);
+		// The swap's own drop took the old build's names with its archive.
+		expect(cache.cachedNames(storage, archiveOf(first.manifest, 0), first.manifest.names_bytes)).toBeNull();
+		// The new build answers from ITS names, and caches them beside its archive.
+		expect(await store.autocompleteFromNames(secondEnv, ctx, "sho", 20)).toEqual(["Shock", "Shockwave"]);
+		expect(cache.cachedNames(storage, archiveOf(second.manifest, 0), second.manifest.names_bytes)).not.toBeNull();
+		expect(meterOf(storage).peakBuilds).toBe(1);
 	});
 });

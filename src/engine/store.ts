@@ -40,6 +40,7 @@ import {
 } from "../routes/scryfall-compat/objects";
 import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
 import { decodeUtf8, NEWLINE } from "./bytes";
+import { cardNamesOf } from "./card-names";
 import { collectionBatchRequest, decodeCollectionPacket } from "./collection-batch";
 import { assembleColumnar, columnKeys, decodeShapedPage } from "./columnar";
 import { decodeFuzzyCandidates } from "./fuzzy-wire";
@@ -56,6 +57,7 @@ import {
 	cachedBuiltAt,
 	cachedCompressedStream,
 	cachedLz4Stream,
+	cachedNames,
 	cacheWriter,
 	compressedCacheKeys,
 	dropCached,
@@ -64,8 +66,10 @@ import {
 	isCompressedCached,
 	isLz4Cached,
 	lz4CacheKey,
+	namesCacheKey,
 	pruneCacheOlderThan,
 	putCompressedChunk,
+	putNames,
 	readLiveManifest,
 	recordAnnounced,
 	recordLiveManifest,
@@ -129,7 +133,11 @@ interface LabelState {
 		handle: wasm.EngineHandle;
 		/** The wasm instance generation the store was loaded into (see liveCurrent). */
 		generation: number;
+		/** n8: the names blob (manifest `names_key`) loaded into this instance, once one is. */
+		names?: string;
 	} | null;
+	/** n8: the one names load in flight (autocompleteFromNames), whoever asked first. */
+	namesLoading: Promise<void> | null;
 	/** The ONE load in flight for this label, whoever started it (getEngine or swapToStore). */
 	loading: Promise<Engine> | null;
 	/** The one refreshNow in flight: concurrent callers are all reacting to the same publish. */
@@ -257,7 +265,14 @@ function stateFor(label: string | undefined): LabelState {
 	const key = label ?? "";
 	let s = states.get(key);
 	if (!s) {
-		s = { current: null, loading: null, refreshing: null, prefetching: null, lastLoadFailure: null };
+		s = {
+			current: null,
+			loading: null,
+			refreshing: null,
+			prefetching: null,
+			lastLoadFailure: null,
+			namesLoading: null,
+		};
 		states.set(key, s);
 	}
 	return s;
@@ -1673,6 +1688,129 @@ export async function settleInFlightLoad(label?: string): Promise<void> {
  * gather learns partition_count without a KV read on the request path. */
 export function currentManifest(label?: string): StoreManifest | null {
 	return liveCurrent(stateFor(label), label)?.manifest ?? null;
+}
+
+// ── /cards/autocomplete from the card-names blob (backlog n8) ─────────────────
+
+/** Thrown when this object cannot answer from names — the caller (the router) then fans out. */
+export class CardNamesUnavailableError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CardNamesUnavailableError";
+	}
+}
+
+/** How long an isolate's colo may serve a cached names blob: immutable per build, like the chunks. */
+const CARD_NAMES_CACHE_TTL = 604_800;
+
+/**
+ * `/cards/autocomplete` for the WHOLE corpus, answered by this one object from the names blob of the
+ * build it has loaded (card-names.ts; engine/wasm/src/names.rs ranks it exactly as the engine does).
+ * The caller has acquired the engine first (SearchEngine.instrumented), so a store is loaded.
+ *
+ * WHERE THE BLOB COMES FROM, cheapest first — and KV at most ONCE per object per generation:
+ *
+ *   1. this wasm instance, when it already holds the blob this build names (every call after the
+ *      first, until the instance or the build changes);
+ *   2. this object's SQLite (store-cache.ts, `<archiveKey>:names`) — what an object pays after every
+ *      hibernation wake, instead of a KV read: ~10k reloads a day against the free plan's 100k KV
+ *      reads would otherwise make this route the account's largest KV reader;
+ *   3. KV, once, then cached here — DROP, THEN FILL, like every archive fill (x1): the prune that
+ *      runs first keeps this build's families (the names key follows its archive, namesKeptWith) and
+ *      drops any older build's, so an object never holds two builds' names.
+ *
+ * A manifest naming no blob, a blob that is gone or the wrong length, or one wasm refuses, throws
+ * CardNamesUnavailableError; the router answers by the fan-out instead. A cached copy wasm refuses is
+ * dropped, so the next call reads KV rather than the same bad rows (the 2026-08-13 lesson).
+ */
+export async function autocompleteFromNames(
+	env: Env,
+	ctx: LoadContext,
+	prefix: string,
+	limit: number,
+): Promise<string[]> {
+	const state = stateFor(ctx.label);
+	for (;;) {
+		const current = liveCurrent(state, ctx.label);
+		if (!current) throw new CardNamesUnavailableError("no store is loaded to name a card-names blob");
+		const names = cardNamesOf(current.manifest);
+		if (!names) {
+			throw new CardNamesUnavailableError(`the loaded build (${current.manifest.store_key}) publishes no card names`);
+		}
+		if (current.names === names.key) {
+			return JSON.parse(current.handle.names_autocomplete(prefix, limit)) as string[];
+		}
+		if (!state.namesLoading) {
+			const loading = loadNames(env, ctx, current, names).finally(() => {
+				if (state.namesLoading === loading) state.namesLoading = null;
+			});
+			state.namesLoading = loading;
+		}
+		await state.namesLoading;
+		// Loaded into the store that was current when the load began. A swap in the meantime (a
+		// publish) means the NEW store asks again on the next pass; the same store answers now.
+		if (liveCurrent(state, ctx.label) === current && current.names === names.key) {
+			return JSON.parse(current.handle.names_autocomplete(prefix, limit)) as string[];
+		}
+	}
+}
+
+async function loadNames(
+	env: Env,
+	ctx: LoadContext,
+	current: NonNullable<LabelState["current"]>,
+	names: { key: string; bytes: number },
+): Promise<void> {
+	const storage = ctx.storage;
+	const archiveKey = current.storeKey;
+	let blob: Uint8Array | null = null;
+	let from = "local cache";
+	if (storage) {
+		try {
+			ensureCacheSchema(storage);
+			blob = cachedNames(storage, archiveKey, names.bytes);
+		} catch (err) {
+			console.warn(`${tag(ctx)}card names cache unreadable for ${archiveKey} (reading KV): ${err}`);
+		}
+	}
+	if (!blob) {
+		from = "KV";
+		const buf = await env.STORE_KV.get(names.key, { type: "arrayBuffer", cacheTtl: CARD_NAMES_CACHE_TTL });
+		if (buf === null) throw new CardNamesUnavailableError(`${names.key} is not in KV`);
+		if (buf.byteLength !== names.bytes) {
+			throw new CardNamesUnavailableError(`${names.key} is ${buf.byteLength} bytes, the manifest says ${names.bytes}`);
+		}
+		blob = new Uint8Array(buf);
+		if (storage) {
+			try {
+				// DROP, THEN FILL (x1). Kept: every family of the archive this object serves, which
+				// keeps its names key too; dropped: anything older, never anything newer.
+				const source = tryArchiveOfManifest(current.manifest, ctx.partition);
+				const keep = source ? cacheKeysOf(source) : [archiveKey];
+				dropOlderBuilds(ctx, storage, keep, archiveKey);
+				putNames(storage, archiveKey, blob);
+			} catch (err) {
+				console.warn(`${tag(ctx)}card names not cached for ${archiveKey} (KV again next wake): ${err}`);
+			}
+		}
+	}
+	let count: number;
+	try {
+		count = current.handle.load_names(blob);
+	} catch (err) {
+		if (from !== "KV" && storage) {
+			try {
+				dropCached(storage, namesCacheKey(archiveKey));
+			} catch {}
+		}
+		throw new CardNamesUnavailableError(`${names.key} from ${from} did not load: ${err}`);
+	}
+	current.names = names.key;
+	console.log(
+		`${tag(ctx)}card names loaded from ${from}: ${names.key} (${count} names, ${names.bytes} bytes gzipped, ` +
+			`${(current.handle.names_heap_bytes() / 1048576).toFixed(1)}MB in wasm; ` +
+			`linear memory ${(current.handle.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
+	);
 }
 
 /**

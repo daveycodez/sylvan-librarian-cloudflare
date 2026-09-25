@@ -58,6 +58,8 @@ let gatherStore: {
 
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
+	// n8: imported by search-engine-do for scryfallAutocompleteNames; nothing here routes to it.
+	autocompleteFromNames: async () => [],
 	collectionPacketOf: () => new Uint8Array(),
 	getEngine: async () => {
 		const g = gatherStore;

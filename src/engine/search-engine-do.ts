@@ -76,6 +76,7 @@ import { probePlacement } from "./placement";
 import { siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
 import {
+	autocompleteFromNames,
 	collectionPacketOf,
 	currentManifest,
 	gatherOps,
@@ -645,6 +646,22 @@ export class SearchEngine extends DurableObject<Env> {
 	): Promise<ScryfallNamesReply & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			names: await engine.scryfallAutocomplete(prefix, limit),
+		}));
+	}
+
+	/**
+	 * n8: `/cards/autocomplete` for the WHOLE corpus from this one object — the build's card-names
+	 * blob, not this partition's archive (store.ts autocompleteFromNames). A new method rather than a
+	 * flag on scryfallAutocomplete, so an object on the build before it FAILS the call instead of
+	 * answering from its own tenth of the names; the router then fans out.
+	 */
+	async scryfallAutocompleteNames(
+		prefix: string,
+		limit: number,
+		reportedShards?: number,
+	): Promise<ScryfallNamesReply & SearchTelemetry> {
+		return this.instrumented(reportedShards, async () => ({
+			names: await autocompleteFromNames(this.env, this.loadContext(), prefix, limit),
 		}));
 	}
 

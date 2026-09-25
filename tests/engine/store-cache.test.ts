@@ -12,15 +12,19 @@ import {
 	cachedArchiveStream,
 	cachedBuiltAt,
 	cachedLz4Stream,
+	cachedNames,
 	cacheWriter,
+	compressedCacheKeys,
 	dropCached,
 	ensureCacheSchema,
 	fillCache,
 	isCached,
 	isLz4Cached,
 	lz4CacheKey,
+	namesCacheKey,
 	pruneCache,
 	pruneCacheOlderThan,
+	putNames,
 } from "../../src/engine/store-cache";
 
 /**
@@ -354,5 +358,60 @@ describe("drop, then fill (x1)", () => {
 		const store = fakeStorage();
 		await fillCache(store, at(300, ":gz:0"), streamOf(ramp(10), 10), 10);
 		expect(pruneCacheOlderThan(store, [], "not-a-build")).toEqual([at(300, ":gz:0")]);
+	});
+});
+
+// n8: the card-names blob rides beside its archive, under `<archiveKey>:names`, and every prune
+// keeps it exactly when it keeps a family of that archive — so it is dropped with its build and
+// never outlives it, and no keep-list had to learn about it.
+describe("the card-names cache", () => {
+	const OLD = "card-store-v7-1000-p3.store";
+	const NEW = "card-store-v7-2000-p3.store";
+	const blob = ramp(4096);
+
+	test("round-trips whole, and a wrong length reads as a miss", () => {
+		const storage = fakeStorage();
+		ensureCacheSchema(storage);
+		expect(cachedNames(storage, NEW, blob.byteLength)).toBeNull();
+		putNames(storage, NEW, blob);
+		expect(cachedNames(storage, NEW, blob.byteLength)).toEqual(blob);
+		expect(cachedNames(storage, NEW, blob.byteLength + 1)).toBeNull();
+		expect(cachedBuiltAt(namesCacheKey(NEW))).toBe(2000);
+	});
+
+	test("kept by every keep-list that keeps its archive — gzip, LZ4 or raw", () => {
+		for (const keep of [compressedCacheKeys(NEW, 2), [lz4CacheKey(NEW)], [NEW]]) {
+			const storage = fakeStorage();
+			ensureCacheSchema(storage);
+			putNames(storage, NEW, blob);
+			pruneCacheOlderThan(storage, keep, 2000);
+			pruneCache(storage, keep);
+			expect(cachedNames(storage, NEW, blob.byteLength)).toEqual(blob);
+		}
+	});
+
+	test("dropped with its build — drop, then fill", () => {
+		const storage = fakeStorage();
+		ensureCacheSchema(storage);
+		putNames(storage, OLD, blob);
+		const dropped = pruneCacheOlderThan(storage, [...compressedCacheKeys(NEW, 1), lz4CacheKey(NEW)], 2000);
+		expect(dropped).toContain(namesCacheKey(OLD));
+		expect(cachedNames(storage, OLD, blob.byteLength)).toBeNull();
+	});
+
+	test("a NEWER build's names survive a prune for an older one (the x1 guard)", () => {
+		const storage = fakeStorage();
+		ensureCacheSchema(storage);
+		putNames(storage, NEW, blob);
+		expect(pruneCacheOlderThan(storage, compressedCacheKeys(OLD, 1), 1000)).toEqual([]);
+		expect(cachedNames(storage, NEW, blob.byteLength)).toEqual(blob);
+	});
+
+	test("another archive's names are not kept by a prefix that merely looks alike", () => {
+		const storage = fakeStorage();
+		ensureCacheSchema(storage);
+		putNames(storage, "card-store-v7-2000-p1.store", blob);
+		pruneCache(storage, compressedCacheKeys("card-store-v7-2000-p10.store", 1));
+		expect(cachedNames(storage, "card-store-v7-2000-p1.store", blob.byteLength)).toBeNull();
 	});
 });

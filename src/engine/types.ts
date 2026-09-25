@@ -661,6 +661,18 @@ export interface StoreManifest {
 	/** One record per partition, index k at position k. Length === partition_count. */
 	partitions?: StoreManifestPartition[];
 
+	/**
+	 * n8: this build's card-names blob (src/engine/card-names.ts) — every served name pair of the
+	 * corpus, which lets `/cards/autocomplete` ask ONE engine object instead of all N. The KV key,
+	 * and the bytes KV holds under it (gzipped), which a reader checks what it fetched against.
+	 *
+	 * Per BUILD, like the routing filter, so neither is carried forward: each publisher writes its
+	 * own. Optional and read-tolerant (cardNamesOf): a manifest without them — published before n8,
+	 * or by a run that could not build the blob — makes autocomplete fan out as it always did.
+	 */
+	names_key?: string;
+	names_bytes?: number;
+
 	// ── Blocks the nightly decides and every later publish carries forward ─────
 	//
 	// Neither describes the store's bytes, so neither is a format change: a reader that predates

@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { edgeCacheUrl } from "../../src/engine/edge-cache";
-import { partitionOfOracleId } from "../../src/engine/partition";
+import { gatherPartitionOf, partitionOfOracleId } from "../../src/engine/partition";
 import {
 	firstDecided,
 	mergeAutocomplete,
@@ -170,6 +170,13 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 		scryfallAutocomplete: async () => {
 			count("scryfallAutocomplete");
 			return val<string[]>("names", []);
+		},
+		scryfallAutocompleteNames: async (prefix: string, limit: number) => {
+			count("scryfallAutocompleteNames");
+			// `namesFails` models an object that cannot answer from names: on the build before n8
+			// (no such method) or with the blob gone from KV.
+			if (answers.namesFails) throw new Error("no such method: scryfallAutocompleteNames");
+			return val<string[]>("wholeCorpus", [`${prefix}:${limit}`]);
 		},
 		scryfallNamesContaining: async () => {
 			count("scryfallNamesContaining");
@@ -1244,6 +1251,81 @@ describe("name-route combination rules", () => {
 		// exclusion (`exact=Cabbages` is jtla/39 on api.scryfall.com).
 		const alone = build({ 2: { exact: { name: "Cabbages" }, exactRank: [0, 2, 9.9] } });
 		expect(await alone.engine.scryfallExactName("cabbages", "", "https://x")).toEqual({ name: "Cabbages" });
+	});
+
+	// n8: a build that publishes card names is answered by ONE object — any partition can, from the
+	// corpus-wide blob — chosen by the prefix, so a keystroke's repeats land on the same object.
+	describe("autocomplete from the card-names blob (n8)", () => {
+		const named = (perPartition: Record<number, Record<string, unknown>> = {}) => {
+			const calls: string[] = [];
+			const manifest = {
+				...manifestOf(N),
+				names_key: "store:card-names-v1-100.store:0",
+				names_bytes: 4321,
+			};
+			const engine = new PartitionedEngine(
+				(p) => fakeRemote(p, calls, perPartition[p] ?? {}),
+				manifest,
+				async () => manifest,
+				null,
+			);
+			return { engine, calls };
+		};
+
+		test("one call, to gatherPartitionOf(prefix), whose answer is the answer", async () => {
+			const { engine, calls } = named();
+			expect(await engine.scryfallAutocomplete("lig", 20)).toEqual(["lig:20"]);
+			expect(calls.length).toBe(1);
+			const [call] = calls;
+			expect(call).toBe(`scryfallAutocompleteNames:${gatherPartitionOf("autocomplete:lig", N)}`);
+			// The same prefix, the same object; the prefixes spread across the partitions.
+			await engine.scryfallAutocomplete("lig", 20);
+			expect(calls[1]).toBe(call);
+			const spread = new Set<string>();
+			for (const prefix of ["ab", "bo", "ch", "dr", "el", "fi", "go", "he", "is", "ja", "ki", "li"]) {
+				const one = named();
+				await one.engine.scryfallAutocomplete(prefix, 20);
+				spread.add(one.calls[0] as string);
+			}
+			expect(spread.size).toBeGreaterThan(1);
+		});
+
+		test("an object that cannot answer from names costs 1 + N, and the fan-out's answer", async () => {
+			const everywhere = Object.fromEntries(
+				Array.from({ length: N }, (_, p) => [p, { namesFails: true, names: p === 1 ? ["Shock"] : [] }]),
+			);
+			const { engine, calls } = named(everywhere);
+			expect(await engine.scryfallAutocomplete("sho", 20)).toEqual(["Shock"]);
+			expect(calls.filter((c) => c.startsWith("scryfallAutocompleteNames:")).length).toBe(1);
+			expect(calls.filter((c) => c.startsWith("scryfallAutocomplete:")).length).toBe(N);
+		});
+
+		test("a manifest naming no blob fans out exactly as before n8", async () => {
+			const { engine, of } = build({ 0: { names: ["Shock"] }, 2: { names: ["Aftershock"] } });
+			expect(await engine.scryfallAutocomplete("sho", 20)).toEqual(["Shock", "Aftershock"]);
+			expect(of("scryfallAutocomplete").length).toBe(N);
+			expect(of("scryfallAutocompleteNames").length).toBe(0);
+		});
+
+		test("a malformed names_key or names_bytes reads as no blob", async () => {
+			for (const bad of [
+				{ names_key: "card-names-v1-100", names_bytes: 10 },
+				{ names_key: "store:card-names-v1-100.store:0", names_bytes: 0 },
+				{ names_key: "store:card-names-v1-100.store:0" },
+			]) {
+				const calls: string[] = [];
+				const manifest = { ...manifestOf(N), ...bad } as StoreManifest;
+				const engine = new PartitionedEngine(
+					(p) => fakeRemote(p, calls),
+					manifest,
+					async () => manifest,
+					null,
+				);
+				await engine.scryfallAutocomplete("sho", 20);
+				expect(calls.filter((c) => c.startsWith("scryfallAutocompleteNames:")).length).toBe(0);
+				expect(calls.length).toBe(N);
+			}
+		});
 	});
 
 	test("autocomplete: merged prefix-first, deduped, capped", () => {

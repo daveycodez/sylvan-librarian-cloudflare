@@ -27,6 +27,11 @@ export interface EngineGlue {
 	random_search_shaped(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string, shape: string): Uint8Array;
 	shaped_frames_from_rows(rowsJson: string, shape: string): Uint8Array;
 	js_spelled_numbers(values: Float64Array): string;
+	autocomplete(prefix: string, limit: number): string;
+	store_autocomplete_names(): string;
+	load_names(gz: Uint8Array): number;
+	names_autocomplete(prefix: string, limit: number): string;
+	names_heap_bytes(): number;
 }
 
 // `WebAssembly.Module` is typed abstract by bun-types, so the constructor is reached through the

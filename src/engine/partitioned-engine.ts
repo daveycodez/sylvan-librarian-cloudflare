@@ -60,7 +60,10 @@
 //                                      other N-1). It was up to 3N+1 over five
 //                                      sequential waits
 //   containing (the staged path)       N, combined (see each method's rules)
-//   autocomplete                       N, merged prefix-first
+//   autocomplete                       1, to gatherPartitionOf(prefix), which answers for the
+//                                      whole corpus from the build's card-names blob (n8); N,
+//                                      merged prefix-first, when the manifest names no blob or
+//                                      that one object cannot answer (then 1 + N)
 //
 // Cross-partition NAME semantics are EXACT: fuzzy fans out the scores-bearing
 // fuzzy_candidates export and runs the engine's own FLOOR/LEAD race globally
@@ -75,6 +78,7 @@
 // autocomplete_merge_key_matches_the_single_store).
 
 import { collateName, foldAccents } from "../parser/pystr";
+import { cardNamesOf } from "./card-names";
 import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged } from "./named-fuzzy";
@@ -1383,7 +1387,27 @@ export class PartitionedEngine implements Engine {
 		return out;
 	}
 
+	/**
+	 * ONE object answers (n8): any partition can, because it answers from the build's card-names
+	 * blob — every served name of the corpus — rather than from its own archive, with a line-for-line
+	 * copy of the engine's ranking (engine/wasm/src/names.rs), so the answer is the merge's, byte for
+	 * byte. Which object is a function of the prefix alone, like the gather coordinator: the same
+	 * keystroke always lands on the same object, and a prefix's traffic spreads across the N.
+	 *
+	 * The fan-out below is what answers when there is no blob to answer from — a manifest published
+	 * before n8 names none (cardNamesOf), an object on the build before this one has no such method —
+	 * or when the one object cannot (a blob missing from KV, a stuck object): 1 + N calls, never a
+	 * different answer.
+	 */
 	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
+		if (cardNamesOf(this.manifest)) {
+			const p = gatherPartitionOf(`autocomplete:${prefix}`, this.n);
+			try {
+				return await this.at(p).scryfallAutocompleteNames(prefix, limit);
+			} catch (err) {
+				console.warn(`autocomplete not answered from partition ${p}'s card names (${err}); asking every partition`);
+			}
+		}
 		return mergeAutocomplete(await this.all((e) => e.scryfallAutocomplete(prefix, limit)), prefix, limit);
 	}
 

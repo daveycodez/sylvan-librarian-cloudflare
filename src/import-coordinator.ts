@@ -72,6 +72,7 @@
 // its SQLite inputs — minutes of redone compute, never a wrong store.
 
 import { DurableObject } from "cloudflare:workers";
+import { encodeCardNames, writeCardNames } from "./engine/card-names";
 import { addressAnnouncedEngine, engineName, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
 import {
 	dropGroupWasm,
@@ -212,6 +213,7 @@ import {
 	PURGE_SLICE_MAX_ROWS,
 	paceDelayMs,
 	parseMeters,
+	partitionCacheBytes,
 	poolAdmitsRun,
 	projectCachePool,
 	projectedGbSeconds,
@@ -368,6 +370,11 @@ const ALARM_WATCHDOG_MS_BY_PHASE: Partial<Record<Phase, number>> = { notify: 10 
  * a second of old answers still being served from the edge.
  */
 const PURGE_PASSES = 1;
+
+/** n8: the meta row holding partition `k`'s card-name lines until the manifest step encodes them. */
+function cardNamesMetaKey(partition: number): string {
+	return `card_names_p${partition}`;
+}
 
 /** Meta keys under this prefix are day-scoped and survive a run reset. */
 const DAY_PREFIX = "day:";
@@ -1912,7 +1919,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const fits = poolAdmitsRun({
 			retiring,
 			replicas: routableRegions(live.placement).length,
-			partitionGzipBytes: live.partitions.map((p) => p.store_gzip_bytes ?? 0),
+			partitionGzipBytes: partitionCacheBytes(live),
 			cacheFactor,
 			stagingPeakBytes: staging,
 		});
@@ -3640,10 +3647,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.sqlRun("INSERT INTO chunk_staging (seq, bytes) VALUES (?, ?)", ++chunkSeq, exactBuffer(packBlob(b)));
 		};
 		const built = { card_count: 0, printing_count: 0, store_bytes: 0 };
+		// n8: this partition's served name pairs (a few hundred KB of text), kept for the manifest
+		// step's card-names blob — one meta row per partition, written with the build's own record.
+		const names: { lines: Uint8Array | null } = { lines: null };
 		wasm.setHandlers({
 			pullRow: lookup,
 			onChunk: (b) => {
 				for (const chunk of grid.push(b)) stage(chunk);
+			},
+			onNames: (b) => {
+				names.lines = b;
 			},
 			onStats: (s) => {
 				built.card_count = s.card_count ?? 0;
@@ -3669,8 +3682,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// either per build would fork the key family on a mid-loop restart.
 			recordBuild(pp, built.store_bytes, built.card_count, built.printing_count);
 			this.savePp(pp);
+			if (names.lines) this.metaSet(cardNamesMetaKey(pp.partition), new TextDecoder().decode(names.lines));
 			this.metaSet("phase", "publish");
 		});
+		if (!names.lines) {
+			console.warn(`Build (partition ${pp.partition}): the wasm emitted no card names; this build publishes none`);
+		}
 		// Release the wasm group NOW rather than after this partition's publish
 		// slices (plan B3: dropGroupWasm after each build(p), §5.5
 		// emit-one-release-one). Linear memory peaks at 90-106MB per partition and
@@ -3874,6 +3891,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 					"Alias tag spellings match nothing on this build; the next run publishes them.",
 			);
 		}
+		// n8: the card-names blob, before the manifest that names it, like the alias map. Absent only
+		// when a partition's build staged no names (a deploy landed mid-run); autocomplete then fans
+		// out on this build, as every build before n8 did.
+		const names = await this.publishCardNames(formatVersion, builtAt, pp.partitions.length);
+		if (names) {
+			manifest.names_key = names.key;
+			manifest.names_bytes = names.bytes;
+		}
 		// The blocks the nightly decides and every publish carries (StoreManifest.cache, .placement):
 		// read the live manifest once, decide from it and tonight's measurements, write them in. The same read
 		// names the rollback role (previous_built_at) — the family this manifest replaces.
@@ -3951,6 +3976,46 @@ export class ImportCoordinator extends DurableObject<Env> {
 		});
 	}
 
+	/**
+	 * n8: encode every partition's staged name lines into the build's card-names blob
+	 * (card-names.ts, the encoder scripts/seed-remote-kv.ts uses on the native builder's sidecar) and
+	 * put it. Null — publish without one — when a partition staged none or the lines do not encode:
+	 * both are permanent for this run, and a missing blob only costs the fan-out. A KV put that fails
+	 * throws, and the step's retry puts the same key again.
+	 *
+	 * Memory: the staged text (~1.1MB today), the distinct lines as strings and the encoded blob, a
+	 * few MB for the length of this call, in a phase whose wasm is long dropped.
+	 */
+	private async publishCardNames(
+		formatVersion: number,
+		builtAt: string,
+		partitions: number,
+	): Promise<{ key: string; bytes: number } | null> {
+		const encoder = new TextEncoder();
+		const parts: Uint8Array[] = [];
+		for (let k = 0; k < partitions; k++) {
+			const lines = this.metaGet(cardNamesMetaKey(k));
+			if (lines === null) {
+				console.warn(`Card names NOT published for build ${builtAt}: partition ${k}'s build staged none`);
+				return null;
+			}
+			parts.push(encoder.encode(lines));
+		}
+		let raw: Uint8Array;
+		try {
+			raw = encodeCardNames(parts);
+		} catch (err) {
+			console.warn(`Card names NOT published for build ${builtAt}: ${err}`);
+			return null;
+		}
+		const published = await writeCardNames(this.env.STORE_KV, formatVersion, builtAt, raw);
+		console.log(
+			`Card names published: ${published.key} (${published.count} names, ${published.raw} bytes raw -> ` +
+				`${published.bytes} gzipped)`,
+		);
+		return published;
+	}
+
 	// ── phase: placement (g1's nightly probes) ─────────────────────────────────
 
 	/**
@@ -4007,7 +4072,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const mayBump =
 			projectCachePool({
 				replicas,
-				partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
+				partitionGzipBytes: partitionCacheBytes(manifest),
 				cacheFactor: 1,
 				stagingPeakBytes: meters?.peak_db_bytes || STAGING_PEAK_BYTES_2026_09_25,
 				strandedBytes: 0,
@@ -4083,7 +4148,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const retiring = pointer?.retiring?.length ?? 0;
 		const projected = projectCachePool({
 			replicas: groups.size,
-			partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
+			partitionGzipBytes: partitionCacheBytes(manifest),
 			cacheFactor: LZ4_CACHE_RATIO,
 			stagingPeakBytes: staging,
 			strandedBytes: retiring * staging,

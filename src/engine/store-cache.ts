@@ -405,7 +405,8 @@ function pruneWhere(
 	droppable: (key: string) => boolean,
 ): string[] {
 	const keys = exec(storage, "SELECT archive_key FROM archive_cache_meta").map((r) => String(r.archive_key));
-	const stale = keys.filter((k) => !keep.includes(k) && droppable(k));
+	const kept = (k: string) => keep.includes(k) || namesKeptWith(k, keep);
+	const stale = keys.filter((k) => !kept(k) && droppable(k));
 	for (const key of stale) {
 		exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 		exec(storage, "DELETE FROM archive_cache_meta WHERE archive_key = ?", key);
@@ -417,9 +418,56 @@ function pruneWhere(
 	const known = new Set(keys);
 	const orphans = exec(storage, "SELECT DISTINCT archive_key FROM archive_cache")
 		.map((r) => String(r.archive_key))
-		.filter((k) => !known.has(k) && !keep.includes(k) && droppable(k));
+		.filter((k) => !known.has(k) && !kept(k) && droppable(k));
 	for (const key of orphans) exec(storage, "DELETE FROM archive_cache WHERE archive_key = ?", key);
 	return [...stale, ...orphans];
+}
+
+// ── The card-names cache (backlog n8) ──────────────────────────────────────────
+//
+// The corpus-wide names blob /cards/autocomplete answers from (card-names.ts), cached as KV holds
+// it — gzipped, one row family — under the archive key of the build this object serves:
+// `<archiveKey>:names`. So it belongs to that build for every prune: `cachedBuiltAt` reads its
+// built_at like any other family's, and `pruneWhere` keeps it exactly when it keeps ANY family of
+// its archive (namesKeptWith) — every existing keep-list names the archive's gzip, LZ4 or raw
+// family and none has to learn a fourth. Dropped with its build, filled after the drop (store.ts
+// autocompleteFromNames runs the same guarded prune first): one build's names per object, ever.
+
+/** Cache key of the names blob held beside `archiveKey`. */
+export function namesCacheKey(archiveKey: string): string {
+	return `${archiveKey}:names`;
+}
+
+/** Whether `key` is a names cache whose archive `keep` keeps (by any of its families). */
+function namesKeptWith(key: string, keep: readonly string[]): boolean {
+	if (!key.endsWith(":names")) return false;
+	const archive = key.slice(0, -":names".length);
+	return keep.some((k) => k === archive || k.startsWith(`${archive}:`));
+}
+
+/** The cached names blob for `archiveKey`, whole, or null when no complete copy of `bytes` is held. */
+export function cachedNames(storage: ArchiveCacheStorage, archiveKey: string, bytes: number): Uint8Array | null {
+	const key = namesCacheKey(archiveKey);
+	const meta = cachedMeta(storage, key, bytes);
+	if (!meta) return null;
+	const out = new Uint8Array(bytes);
+	let at = 0;
+	for (let seq = 0; seq < meta.rowCount; seq++) {
+		const row = exec(storage, "SELECT bytes FROM archive_cache WHERE archive_key = ? AND seq = ?", key, seq)[0];
+		if (!row) return null;
+		const piece = blobBytes(row.bytes);
+		if (at + piece.byteLength > bytes) return null;
+		out.set(piece, at);
+		at += piece.byteLength;
+	}
+	return at === bytes ? out : null;
+}
+
+/** Cache a names blob (whole and in hand) beside `archiveKey`: rows first, meta last. */
+export function putNames(storage: ArchiveCacheStorage, archiveKey: string, blob: Uint8Array): void {
+	const writer = cacheWriter(storage, namesCacheKey(archiveKey), blob.byteLength);
+	writer.write(blob);
+	if (writer.commit() === 0) throw new Error(`card names cache for ${archiveKey} did not commit its own length`);
 }
 
 // ── The COMPRESSED archive cache (partitioned stores) ──────────────────────────

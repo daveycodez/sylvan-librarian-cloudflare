@@ -284,6 +284,12 @@ export function init_store(bytes: Uint8Array): void;
 export function js_spelled_numbers(values: Float64Array): string;
 
 /**
+ * Replace this instance's card names with a gzipped blob. Returns how many pairs it holds. The
+ * previous list is dropped FIRST, so a reload reuses its memory instead of holding two.
+ */
+export function load_names(gz: Uint8Array): number;
+
+/**
  * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
  * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
  * router asks each partition ONCE where it used to ask every partition three times over three
@@ -327,6 +333,17 @@ export function js_spelled_numbers(values: Float64Array): string;
  * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
  */
 export function named_fuzzy_bundle(folded: string, set_code: string, floor: number, lead: number, k: number, words_json: string, limit: number, fields_json: string): Uint8Array;
+
+/**
+ * Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the
+ * partitioned fan-out's merge gives, from one object. Errors when no names are loaded.
+ */
+export function names_autocomplete(prefix: string, limit: number): string;
+
+/**
+ * Bytes the loaded names hold in linear memory (0 when none are loaded) — for the load log line.
+ */
+export function names_heap_bytes(): number;
 
 /**
  * Every printing of one oracle card, representative first. Empty array for an unknown id.
@@ -470,6 +487,13 @@ export function size(): number;
  * not return a silently misordered page.
  */
 export function sort_key_version(): number;
+
+/**
+ * The loaded STORE's own `(collated, printed)` autocomplete pairs, as a JSON array of pairs —
+ * what its build published into the names blob, read back from the archive. Verification only
+ * (the real-corpus differential); nothing on a request path calls it.
+ */
+export function store_autocomplete_names(): string;
 
 /**
  * Append one chunk of the archive (wasm-bindgen copies the chunk into linear

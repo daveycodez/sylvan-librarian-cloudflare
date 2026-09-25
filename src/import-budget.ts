@@ -809,18 +809,35 @@ export function poolShardCap(shape: {
 	return Math.max(1, Math.floor(room / (shape.regions * perReplica)));
 }
 
+/**
+ * What each partition's engine object caches for a build, per partition: its archive's stored gzip
+ * bytes plus the build's card-names blob (n8, `names_bytes`), which EVERY partition object caches
+ * once it answers an autocomplete — ~0.45MB beside a ~15MB partition today. The pool projections
+ * take their per-object bytes from here, so the names are counted wherever the archives are. (The
+ * LZ4 factor then multiplies the names too, which they never are: a slight over-count, the safe
+ * direction for a gate.)
+ */
+export function partitionCacheBytes(manifest: {
+	partitions?: readonly { store_gzip_bytes?: number }[];
+	names_bytes?: number;
+}): number[] {
+	const names = typeof manifest.names_bytes === "number" && manifest.names_bytes > 0 ? manifest.names_bytes : 0;
+	return (manifest.partitions ?? []).map((p) => (p.store_gzip_bytes ?? 0) + names);
+}
+
 /** poolShardCap for a published manifest, over the `regions` requests can reach under its placement. */
 export function manifestPoolShardCap(
 	manifest: {
 		store_bytes?: number;
 		partitions?: readonly { store_gzip_bytes?: number }[];
+		names_bytes?: number;
 		cache?: { v?: number; codec?: string; staging_bytes?: number };
 	},
 	regions: number,
 ): number | null {
 	return poolShardCap({
 		regions,
-		partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
+		partitionGzipBytes: partitionCacheBytes(manifest),
 		cacheFactor: manifest.cache?.v === 1 && manifest.cache.codec === "lz4" ? LZ4_CACHE_RATIO : 1,
 		stagingPeakBytes: stagingBytesOf(manifest),
 	});

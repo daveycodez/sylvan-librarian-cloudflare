@@ -728,6 +728,22 @@ export function js_spelled_numbers(values) {
 }
 
 /**
+ * Replace this instance's card names with a gzipped blob. Returns how many pairs it holds. The
+ * previous list is dropped FIRST, so a reload reuses its memory instead of holding two.
+ * @param {Uint8Array} gz
+ * @returns {number}
+ */
+export function load_names(gz) {
+    const ptr0 = passArray8ToWasm0(gz, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.load_names(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] >>> 0;
+}
+
+/**
  * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
  * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
  * router asks each partition ONCE where it used to ask every partition three times over three
@@ -795,6 +811,43 @@ export function named_fuzzy_bundle(folded, set_code, floor, lead, k, words_json,
     var v5 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
     return v5;
+}
+
+/**
+ * Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the
+ * partitioned fan-out's merge gives, from one object. Errors when no names are loaded.
+ * @param {string} prefix
+ * @param {number} limit
+ * @returns {string}
+ */
+export function names_autocomplete(prefix, limit) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.names_autocomplete(ptr0, len0, limit);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Bytes the loaded names hold in linear memory (0 when none are loaded) — for the load log line.
+ * @returns {number}
+ */
+export function names_heap_bytes() {
+    const ret = wasm.names_heap_bytes();
+    return ret >>> 0;
 }
 
 /**
@@ -1165,6 +1218,31 @@ export function size() {
 export function sort_key_version() {
     const ret = wasm.sort_key_version();
     return ret;
+}
+
+/**
+ * The loaded STORE's own `(collated, printed)` autocomplete pairs, as a JSON array of pairs —
+ * what its build published into the names blob, read back from the archive. Verification only
+ * (the real-corpus differential); nothing on a request path calls it.
+ * @returns {string}
+ */
+export function store_autocomplete_names() {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ret = wasm.store_autocomplete_names();
+        var ptr1 = ret[0];
+        var len1 = ret[1];
+        if (ret[3]) {
+            ptr1 = 0; len1 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
 }
 
 /**

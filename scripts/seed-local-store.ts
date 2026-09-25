@@ -16,6 +16,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { cardNamesKey } from "../src/engine/card-names";
 import {
 	chunkForKv,
 	chunkKey,
@@ -27,6 +28,7 @@ import {
 } from "../src/engine/store-kv";
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
+import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
 import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -149,6 +151,24 @@ if (routing) {
 // `otag:reanimate-copy` through the same KV value production does, or not at all.
 await localKvPut(tagAliasesKey(manifest.format_version, String(manifest.built_at)), tagAliasesFileFromBuildDir(dir));
 console.log(`Tag aliases seeded from ${TAG_ALIASES_FILE}.`);
+// n8: the card-names blob, before the manifest, as seed-remote-kv.ts publishes it.
+const cardNames = cardNamesFromBuildDir(dir);
+if (cardNames) {
+	const stored = gzipSync(cardNames.raw);
+	const namesKey = cardNamesKey(manifest.format_version, String(manifest.built_at));
+	const namesTmp = join(tmpdir(), "sylvan-local-card-names.bin");
+	await writeFile(namesTmp, stored);
+	try {
+		await localKvPut(namesKey, namesTmp);
+	} finally {
+		await unlink(namesTmp).catch(() => {});
+	}
+	manifest.names_key = namesKey;
+	manifest.names_bytes = stored.byteLength;
+	console.log(`Card names seeded: ${cardNames.count} names (/cards/autocomplete asks one partition).`);
+} else {
+	console.warn(`No ${CARD_NAMES_FILE} in ${dir}: /cards/autocomplete will fan out across every partition.`);
+}
 // The manifest LAST, at the one key, exactly as seed-remote-kv.ts publishes it:
 // dev reads through the identical loader, so seeding anywhere else would test a
 // path production does not have.

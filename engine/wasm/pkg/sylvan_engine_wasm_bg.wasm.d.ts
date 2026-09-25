@@ -36,6 +36,10 @@ export const card_by_illustration_id: (a: number, b: number, c: number, d: numbe
 export const collection_batch: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const cards_containing_all_words: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
+export const load_names: (a: number, b: number) => [number, number, number];
+export const names_heap_bytes: () => number;
+export const names_autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
+export const store_autocomplete_names: () => [number, number, number, number];
 export const query_keys: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
 export const fetch_rows: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const query_shaped: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];

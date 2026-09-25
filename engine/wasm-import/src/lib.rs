@@ -44,6 +44,10 @@
 //!                                    records, after its routing keys
 //!  12 corpus chunk                   one SNAPSHOT_CHUNK-sized piece of the corpus
 //!                                    tables alone (corpus_export), in order
+//!  13 card names                     one partition build's served (collated, printed)
+//!                                    name pairs as `<collated>\t<printed>\n` lines
+//!                                    (build_store_stream, before its stats) — the
+//!                                    autocomplete names blob's input
 //!
 //! Exports drive the phases in order; all buffers passed in are allocated
 //! with `alloc` and consumed (freed) by the callee:
@@ -91,7 +95,8 @@
 //!                                    spill + row emits for winners
 //!   finalize_end() -> staged rows    frees tags+aggregates before build
 //!   build_store_stream() -> i64      pulls spilled rows in build order,
-//!                                    emits store chunks; total bytes or -1
+//!                                    emits store chunks, then the partition's
+//!                                    card names (kind 13); total bytes or -1
 //!   current_alloc() / peak_alloc()   heap observability
 //!
 //! Batches of blobs (draft blobs in `agg_drafts`/`finalize_drafts`) are
@@ -108,6 +113,7 @@ use std::sync::Mutex;
 
 use card_engine::{fnv1a64_oracle_id, SpillingStoreBuilder};
 use serde_json::Value;
+use sylvan_store_builder::names::partition_names_tsv as names_tsv;
 use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
@@ -175,6 +181,10 @@ const EMIT_TAG_ALIASES: u32 = 10;
 const EMIT_ORACLE_PAIRS: u32 = 11;
 /// One chunk of the corpus-tables snapshot (`corpus_export`), at most SNAPSHOT_CHUNK bytes.
 const EMIT_CORPUS: u32 = 12;
+/// One partition build's autocomplete names (`names::partition_names_tsv` over
+/// `StoreStats::autocomplete_names`), the SAME lines the native builder appends to
+/// `card-names.tsv`, so one encoder (src/engine/card-names.ts) publishes both builders' blobs.
+const EMIT_NAMES: u32 = 13;
 
 /// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
 /// each emit is exactly one staged row — the same cut the host used to make itself by slicing one
@@ -1430,6 +1440,15 @@ pub extern "C" fn build_store_stream() -> i64 {
                 return -1;
             }
             let _ = w.flush();
+            // The partition's autocomplete names (backlog n8): a few thousand short lines, read off
+            // the structures the archive was just serialized from — no second pass over the rows.
+            match names_tsv(&stats.autocomplete_names) {
+                Ok(lines) => emit_bytes(EMIT_NAMES, &lines),
+                Err(e) => {
+                    log(&format!("build_store_stream: {e}"));
+                    return -1;
+                }
+            }
             emit_stats(serde_json::json!({
                 "card_count": stats.card_count,
                 "printing_count": stats.printing_count,

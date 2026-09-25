@@ -38,6 +38,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { cardNamesKey } from "../src/engine/card-names";
 import { kvBytesMetadata, withPreviousBuiltAt } from "../src/engine/kv-retention";
 import {
 	CARRIED_MANIFEST_BLOCKS,
@@ -52,6 +53,7 @@ import {
 } from "../src/engine/store-kv";
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
+import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
 import { beginDeployUpload, deployStillHoldsLease, finishDeployUpload } from "./deploy-upload";
 import { liveManifestObject, wranglerDeployKv } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
@@ -191,11 +193,14 @@ const routing = routingFilterFromBuildDir(dir, manifest);
 // a build dir this script should not publish.
 const aliasesPath = tagAliasesFileFromBuildDir(dir);
 const aliasesBytes = readFileSync(aliasesPath).byteLength;
+const cardNames = cardNamesFromBuildDir(dir);
+const cardNamesStored = cardNames ? gzip(cardNames.raw) : null;
 const builtAt = String(manifest.built_at);
 const incomingBytes =
 	chunksByPartition.reduce((n, pieces) => n + pieces.reduce((m, c) => m + c.length, 0), 0) +
 	(routing?.bytes.byteLength ?? 0) +
-	aliasesBytes;
+	aliasesBytes +
+	(cardNamesStored?.byteLength ?? 0);
 
 // Before the family's FIRST key: the fence, the lease, the sweep by role and the byte guard.
 const deployKv = wranglerDeployKv(true);
@@ -268,6 +273,29 @@ await kv([
 	"--remote",
 ]);
 console.log(`  tag aliases uploaded from ${TAG_ALIASES_FILE}`);
+
+// n8: the card-names blob, before the manifest that names it — one more key of this build's family
+// (cardNamesKey, store:card-names-…), so retention keeps and retires it with the archives it
+// describes. Optional like the routing filter: without it /cards/autocomplete fans out, as before n8.
+if (cardNamesStored) {
+	const namesKey = cardNamesKey(manifest.format_version, String(manifest.built_at));
+	const namesPath = join(tmpdir(), "sylvan-store-card-names.bin");
+	await writeFile(namesPath, cardNamesStored);
+	try {
+		await kv(["key", "put", namesKey, "--path", namesPath, ...sized(cardNamesStored.byteLength), "--remote"]);
+	} finally {
+		await unlink(namesPath).catch(() => {});
+	}
+	manifest.names_key = namesKey;
+	manifest.names_bytes = cardNamesStored.byteLength;
+	console.log(
+		`  card names uploaded: ${cardNames?.count} names, ${((cardNames?.raw.byteLength ?? 0) / 1024).toFixed(0)}KB raw -> ` +
+			`${(cardNamesStored.byteLength / 1024).toFixed(0)}KB gzip (/cards/autocomplete asks ONE partition instead of ` +
+			`${manifest.partition_count})`,
+	);
+} else {
+	console.warn(`No ${CARD_NAMES_FILE} in ${dir}: /cards/autocomplete will fan out across every partition.`);
+}
 
 // The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool, and g1's
 // placement, decided by its probes — are not the builder's to know. Carried from the manifest being
