@@ -24,6 +24,12 @@
 
 import { encodeUtf8 } from "../../engine/bytes";
 import { readKvBytesMemo } from "../../engine/kv-memo";
+import {
+	OracleIndexFormatError,
+	oracleIdLookup,
+	oracleIndexBucketKey,
+	oracleIndexBucketOf,
+} from "../../engine/oracle-index";
 import { setNumberKey } from "../../engine/routing-filter";
 import { RulingsFormatError, rulingsBucketKey, rulingsBucketOf, rulingsSlice } from "../../engine/rulings-kv";
 import type { CollectionBatch, CollectionBatchKey, CollectionScope, Engine } from "../../engine/types";
@@ -1383,6 +1389,17 @@ export async function cardsHandler(
 	// the route's `public` tier, a miss about the PATH drops `public` and keeps only the max-age.
 	const missCache = addressesNothing ? PATH_MISS_CACHE : CARDS_CACHE;
 
+	// `/cards/:id/rulings` — ~all of this route's traffic (every sampled DeckGen request was this
+	// shape) — learns the oracle id from the KV index (src/engine/oracle-index.ts) instead of from
+	// a partition Durable Object. Only a HIT short-cuts: a miss (a printing newer than the last
+	// publish, a reversible printing, an id nothing holds, an index not yet published or
+	// unreadable) falls through to the engine path below, which is exactly the answer this route
+	// gave before the index existed — the index can add no 404 and no 200 the engine would not.
+	if (number === "rulings" && !suffix && COLLECTION_UUID_RE.test(identifier)) {
+		const oracleId = await oracleIdFromIndex(ctx, identifier);
+		if (oracleId !== null) return rulingsForOracle(ctx, oracleId, pretty);
+	}
+
 	let card: Record<string, unknown> | null;
 	try {
 		card = await resolvePathCard(ctx, identifier, number, suffix, wantsRulings);
@@ -1468,7 +1485,60 @@ const RULINGS_UNREADABLE_DETAILS = "The rulings store could not be read.";
  * is the one `/cards/*` answer the Durable Object has no part in.
  */
 async function rulingsForCard(ctx: RouteContext, card: Record<string, unknown>, pretty: boolean): Promise<Response> {
-	const oracleId = typeof card.oracle_id === "string" ? card.oracle_id : "";
+	return rulingsForOracle(ctx, typeof card.oracle_id === "string" ? card.oracle_id : "", pretty);
+}
+
+/**
+ * How the oracle index is read: through the colo's Cache API (unmetered, where KV bills every
+ * `get`) for 12h — inside the 16h the rulings answer itself is cached for — then this isolate's own
+ * copy for 10 minutes, in a pool of its own bounded at 16 buckets (~4.4MB), so a spread of ids
+ * cannot flush the rulings and reference values the default pool holds.
+ *
+ * A bucket KV does not hold is remembered at the colo for 6h. That state exists only between the
+ * deploy that ships this reader and the first publish (every publish writes all 64), and without
+ * the negative entry each request in it would add a metered read of nothing to today's rulings
+ * read: ~28k a day on DeckGen against a 100k budget. With it, a colo pays at most 4 reads a day
+ * per bucket it is asked for; the price is that a colo can keep asking the engine for up to 6h
+ * after the index lands — which is exactly the answer it gave before.
+ *
+ * Staleness is safe in one direction by construction: a stale bucket LACKS a new printing, and a
+ * miss asks the engine. An existing printing's oracle id never changes.
+ */
+const ORACLE_INDEX_READ = {
+	pool: "oracle-index",
+	edgeTtl: 43_200,
+	edgeMissTtl: 21_600,
+	memoMs: 600_000,
+	maxEntries: 16,
+	maxBytes: 4_600_000,
+};
+
+/** A printing's oracle id from the KV index, or null for "ask the engine" — never a failure. */
+async function oracleIdFromIndex(ctx: RouteContext, scryfallId: string): Promise<string | null> {
+	const bucket = oracleIndexBucketOf(scryfallId);
+	if (bucket === null) return null;
+	let value: Uint8Array | null;
+	try {
+		value = await readKvBytesMemo(ctx.env.STORE_KV, oracleIndexBucketKey(bucket), {
+			...ORACLE_INDEX_READ,
+			defer: (p) => ctx.waitUntil(p),
+		});
+	} catch (err) {
+		console.warn(`Oracle index: KV read failed, asking the engine: ${err}`);
+		return null;
+	}
+	if (value === null) return null;
+	try {
+		return oracleIdLookup(value, scryfallId);
+	} catch (err) {
+		if (!(err instanceof OracleIndexFormatError)) throw err;
+		console.error(`Oracle index: ${oracleIndexBucketKey(bucket)} is not readable, asking the engine`, err);
+		return null;
+	}
+}
+
+/** The rulings List for one oracle id — the card path's and the oracle index's shared tail. */
+async function rulingsForOracle(ctx: RouteContext, oracleId: string, pretty: boolean): Promise<Response> {
 	const bucket = oracleId ? rulingsBucketOf(oracleId) : null;
 	// A card carrying no usable oracle id has no rulings to find. Upstream answers the same empty
 	// List rather than a miss — the card itself resolved, so the 404 would be about the wrong thing.

@@ -119,6 +119,7 @@ cron (nightly refresh; the deploy does the first build)
         ──▶ ImportCoordinator (SQLite-backed Durable Object, serializes runs)
               └─ alarm-chained pipeline, all inside the 128MB isolate:
                    fetch → canonical → transform → tags → scores
+                     → routing → oracle_index → bucket
                      → [per partition: agg → finalize → reorder → build → publish]
                      → notify → rulings → reference → purge
                    (scores is corpus-GLOBAL — the cubecobra percent-rank and the
@@ -421,6 +422,16 @@ The complete list of intentional differences:
   **not** in the card store: rulings hang off `oracle_id` rather than off a
   printing, only this route reads them, and 26MB in the archive would be paid
   for by every store load.
+  The `/cards/:id/rulings` shape — nearly all of this route's traffic — does not
+  ask the engine which card it is either: a scryfall id → oracle id index in KV
+  ([src/engine/oracle-index.ts](src/engine/oracle-index.ts), 64 binary buckets,
+  read through the colo cache) answers it, and a miss falls back to the engine
+  call, so the index can only ever answer what the engine would. Both
+  publishers write it from the pass that already visits every printing (the
+  nightly's `oracle_index` phase after `routing`, and the deploy's
+  [scripts/seed-oracle-index.ts](scripts/seed-oracle-index.ts) from the native
+  builder's `oracle-pairs.bin`), byte-identically, putting only the buckets
+  whose bytes moved.
   `import_rulings` is not a public route: like every import it sits behind
   upstream's `/_admin` mount (#963), which this port answers with the mount's
   own 401 — the nightly import replaced it, not an endpoint.

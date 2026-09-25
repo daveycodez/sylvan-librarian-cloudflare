@@ -3,6 +3,13 @@
 // miss is a Scryfall-shaped 404 rather than this port's routes listing.
 
 import { describe, expect, spyOn, test } from "bun:test";
+import {
+	encodeOracleIndexBuckets,
+	ORACLE_PAIR_BYTES,
+	oracleIndexBucketKey,
+	oracleIndexBucketOf,
+	uuidBytes,
+} from "../../src/engine/oracle-index";
 import { encodeRulingsBucket, type RulingRow, rulingsBucketKey, rulingsBucketOf } from "../../src/engine/rulings-kv";
 import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
 import { setParserForTests } from "../../src/routes/parser-bridge";
@@ -1794,6 +1801,178 @@ describe("GET /cards/:id/rulings", () => {
 	test("pretty indents the envelope", async () => {
 		const res = await testDispatch(rulingsCtx().ctx, "/cards/aaaaaaaa-0000-4000-8000-000000000001/rulings?pretty=1");
 		expect(await res.text()).toContain('\n  "data": ');
+	});
+
+	describe("the oracle index (src/engine/oracle-index.ts)", () => {
+		const PRINTING = "aaaaaaaa-0000-4000-8000-000000000001";
+
+		/** Publish an index holding `pairs` into `kv`, every bucket, as both publishers do. */
+		function publishIndex(kv: FakeKV, pairs: [string, string][]): void {
+			const flat = new Uint8Array(pairs.length * ORACLE_PAIR_BYTES);
+			pairs.forEach(([s, o], i) => {
+				flat.set(uuidBytes(s) as Uint8Array, i * ORACLE_PAIR_BYTES);
+				flat.set(uuidBytes(o) as Uint8Array, i * ORACLE_PAIR_BYTES + 16);
+			});
+			const { buckets } = encodeOracleIndexBuckets(flat);
+			for (let b = 0; b < buckets.length; b++) kv.put(oracleIndexBucketKey(b), buckets[b] as Uint8Array);
+		}
+
+		/**
+		 * Counts every engine call, so a hit can be shown to have asked none. Folds the id's case
+		 * the way the REAL engine does (card_engine's `parse_uuid_or_hash` reads an id as a u128),
+		 * which FakeEngine's exact-string lookup does not — the index folds it too.
+		 */
+		class CountingEngine extends RulingsEngine {
+			calls = 0;
+			override async scryfallCardById(id: string, baseUrl: string): Promise<Record<string, unknown> | null> {
+				this.calls++;
+				return super.scryfallCardById(id.toLowerCase(), baseUrl);
+			}
+		}
+
+		/** Everything a client can observe: status, every header, the body's exact bytes. */
+		async function observed(res: Response): Promise<{ status: number; headers: [string, string][]; body: string }> {
+			return {
+				status: res.status,
+				headers: [...res.headers.entries()].sort(([a], [b]) => a.localeCompare(b)),
+				body: Buffer.from(await res.arrayBuffer()).toString("base64"),
+			};
+		}
+
+		test("a printing the index holds answers without an engine call", async () => {
+			const { kv } = rulingsCtx();
+			publishIndex(kv, [[PRINTING, ORACLE_ID]]);
+			const engine = new CountingEngine();
+			const res = await testDispatch(makeCtx({ engine, kv }), `/cards/${PRINTING}/rulings`);
+			expect(res.status).toBe(200);
+			expect(((await json(res)).data as unknown[]).length).toBe(2);
+			expect(engine.calls).toBe(0);
+		});
+
+		// THE CONTRACT: for every case the route distinguishes, the answer with the index published
+		// is byte-for-byte the answer without it (today's engine path) — status, headers and body.
+		test("every case answers exactly what the engine path answers", async () => {
+			type Setup = { kv: FakeKV; engine: CountingEngine };
+			const cases: { name: string; path: string; setup: (s: Setup) => void; hit: boolean }[] = [
+				{ name: "hit, card with rulings", path: `/cards/${PRINTING}/rulings`, setup: () => {}, hit: true },
+				{ name: "hit, pretty", path: `/cards/${PRINTING}/rulings?pretty=true`, setup: () => {}, hit: true },
+				{ name: "hit, uppercase id", path: `/cards/${PRINTING.toUpperCase()}/rulings`, setup: () => {}, hit: true },
+				{
+					name: "hit, card with no rulings",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ kv, engine }) => {
+						engine.oracleId = "dddddddd-0000-4000-8000-000000000004";
+						kv.put(rulingsBucketKey(rulingsBucketOf(engine.oracleId) as number), encodeRulingsBucket([]).bytes);
+					},
+					hit: true,
+				},
+				{
+					name: "hit, rulings bucket never published (503)",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ kv }) => kv.values.delete(rulingsBucketKey(rulingsBucketOf(ORACLE_ID) as number)),
+					hit: true,
+				},
+				{
+					name: "hit, rulings bucket unreadable (500)",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ kv }) => kv.failOn.add(rulingsBucketKey(rulingsBucketOf(ORACLE_ID) as number)),
+					hit: true,
+				},
+				{
+					name: "miss, an id nothing holds (404)",
+					path: "/cards/aaaaaaaa-0000-4000-8000-00000000dead/rulings",
+					setup: () => {},
+					hit: false,
+				},
+				{
+					name: "miss, a card object with no oracle_id (reversible: [])",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ engine }) => {
+						engine.oracleId = undefined as unknown as string;
+					},
+					hit: false,
+				},
+			];
+			for (const c of cases) {
+				// Today: no index in KV at all.
+				const before = rulingsCtx();
+				const beforeEngine = new CountingEngine();
+				c.setup({ kv: before.kv, engine: beforeEngine });
+				const expected = await observed(await testDispatch(makeCtx({ engine: beforeEngine, kv: before.kv }), c.path));
+				// With the index published — holding the printing only where the engine's card object
+				// would carry an oracle id, exactly as oracle_pair_of decides.
+				const after = rulingsCtx();
+				const afterEngine = new CountingEngine();
+				c.setup({ kv: after.kv, engine: afterEngine });
+				if (c.hit) publishIndex(after.kv, [[PRINTING, afterEngine.oracleId]]);
+				else publishIndex(after.kv, [["ffffffff-0000-4000-8000-000000000009", OTHER_ORACLE_ID]]);
+				const actual = await observed(await testDispatch(makeCtx({ engine: afterEngine, kv: after.kv }), c.path));
+				expect(actual, c.name).toEqual(expected);
+				expect(afterEngine.calls, c.name).toBe(c.hit ? 0 : 1);
+			}
+		});
+
+		test("the index's oracle id wins: it is the one the route reads rulings for", async () => {
+			const { kv } = rulingsCtx();
+			publishIndex(kv, [[PRINTING, OTHER_ORACLE_ID]]);
+			const body = await json(
+				await testDispatch(makeCtx({ engine: new CountingEngine(), kv }), `/cards/${PRINTING}/rulings`),
+			);
+			expect((body.data as Record<string, unknown>[])[0]?.comment).toBe("Another card's.");
+		});
+
+		test("a printing the index lacks (newer than the publish) falls back to the engine", async () => {
+			const { kv } = rulingsCtx();
+			publishIndex(kv, [["ffffffff-0000-4000-8000-000000000009", OTHER_ORACLE_ID]]);
+			const engine = new CountingEngine();
+			const res = await testDispatch(makeCtx({ engine, kv }), `/cards/${PRINTING}/rulings`);
+			expect(res.status).toBe(200);
+			expect(((await json(res)).data as unknown[]).length).toBe(2);
+			expect(engine.calls).toBe(1);
+		});
+
+		test("an unpublished, unreadable or failing index bucket falls back, never fails the request", async () => {
+			const bucketKey = oracleIndexBucketKey(oracleIndexBucketOf(PRINTING) as number);
+			for (const breakIt of [
+				(_kv: FakeKV) => {},
+				(kv: FakeKV) => kv.put(bucketKey, new TextEncoder().encode("not a bucket")),
+				(kv: FakeKV) => kv.failOn.add(bucketKey),
+				(kv: FakeKV) => {
+					// A value from the WRONG bucket under this key: refused, not searched.
+					publishIndex(kv, [[PRINTING, OTHER_ORACLE_ID]]);
+					const wrong = kv.values.get(oracleIndexBucketKey(0)) as Uint8Array;
+					kv.put(bucketKey, wrong);
+				},
+			]) {
+				const { kv } = rulingsCtx();
+				breakIt(kv);
+				const engine = new CountingEngine();
+				const res = await testDispatch(makeCtx({ engine, kv }), `/cards/${PRINTING}/rulings`);
+				expect(res.status).toBe(200);
+				expect(((await json(res)).data as Record<string, unknown>[])[0]?.oracle_id).toBe(ORACLE_ID);
+				expect(engine.calls).toBe(1);
+			}
+		});
+
+		test("only the /cards/:id/rulings shape reads it; set/number and external ids ask the engine", async () => {
+			const { kv } = rulingsCtx();
+			publishIndex(kv, [[PRINTING, OTHER_ORACLE_ID]]);
+			for (const path of ["/cards/multiverse/12345/rulings", "/cards/m15/18/rulings"]) {
+				const body = await json(await testDispatch(makeCtx({ engine: new RulingsEngine(), kv }), path));
+				expect((body.data as Record<string, unknown>[])[0]?.oracle_id).toBe(ORACLE_ID);
+			}
+			// A plain card read never touches the index either.
+			await testDispatch(makeCtx({ engine: new RulingsEngine(), kv }), `/cards/${PRINTING}`);
+			expect(kv.reads.filter((k) => k.startsWith("oracle-index:")).length).toBe(0);
+		});
+
+		test("a bucket is read once per isolate while fresh, in its own memo pool", async () => {
+			const { kv } = rulingsCtx();
+			publishIndex(kv, [[PRINTING, ORACLE_ID]]);
+			const c = makeCtx({ engine: new CountingEngine(), kv });
+			for (let i = 0; i < 5; i++) await testDispatch(c, `/cards/${PRINTING}/rulings?i=${i}`);
+			expect(kv.reads.filter((k) => k.startsWith("oracle-index:")).length).toBe(1);
+		});
 	});
 });
 

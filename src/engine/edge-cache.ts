@@ -48,37 +48,47 @@ export async function matchEdgeCache(url: string): Promise<Uint8Array | null> {
 	}
 }
 
+/** Marks a cached ABSENCE (see `missTtlSeconds`): a header, because an empty body is a value. */
+export const EDGE_CACHE_ABSENT_HEADER = "X-Sylvan-Absent";
+
 /**
  * The bytes at `url` from this colo's cache, else from `load` — which are then stored for
  * `ttlSeconds`. `defer` (a `ctx.waitUntil`) takes the store off the request's critical path.
+ *
+ * A null from `load` is stored only when `missTtlSeconds` > 0, and then only for that long — for
+ * a value whose ABSENCE is read per request (an oracle-index bucket before its first publish),
+ * where not caching the miss would make every request a metered KV read of nothing. Default 0:
+ * a late-published value (the alias map) is found by the very next reader.
  */
 export async function readThroughEdgeCache(
 	url: string,
 	ttlSeconds: number,
 	load: () => Promise<Uint8Array | null>,
 	defer?: (p: Promise<unknown>) => void,
+	missTtlSeconds = 0,
 ): Promise<Uint8Array | null> {
 	const cache = edgeCache();
 	if (cache) {
 		try {
 			const hit = await cache.match(url);
-			if (hit) return new Uint8Array(await hit.arrayBuffer());
+			if (hit) {
+				if (hit.headers.get(EDGE_CACHE_ABSENT_HEADER) === "1") return null;
+				return new Uint8Array(await hit.arrayBuffer());
+			}
 		} catch (err) {
 			console.warn(`edge cache read of ${url} failed (reading through): ${err}`);
 		}
 	}
 	const bytes = await load();
-	if (cache && bytes !== null) {
-		const store = cache
-			.put(
-				url,
-				new Response(bytes, {
-					headers: { "Content-Type": "application/octet-stream", "Cache-Control": `public, max-age=${ttlSeconds}` },
-				}),
-			)
-			.catch((err) => {
-				console.warn(`edge cache write of ${url} failed (the next cold isolate reads KV): ${err}`);
-			});
+	if (cache && (bytes !== null || missTtlSeconds > 0)) {
+		const headers: Record<string, string> = {
+			"Content-Type": "application/octet-stream",
+			"Cache-Control": `public, max-age=${bytes === null ? missTtlSeconds : ttlSeconds}`,
+		};
+		if (bytes === null) headers[EDGE_CACHE_ABSENT_HEADER] = "1";
+		const store = cache.put(url, new Response(bytes ?? new Uint8Array(0), { headers })).catch((err) => {
+			console.warn(`edge cache write of ${url} failed (the next cold isolate reads KV): ${err}`);
+		});
 		if (defer) defer(store);
 		else await store;
 	}
