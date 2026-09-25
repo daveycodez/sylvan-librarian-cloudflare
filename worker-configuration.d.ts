@@ -11,11 +11,12 @@ interface __BaseEnv_Env {
 	IMPORT_COORDINATOR: DurableObjectNamespace<import("./src/index").ImportCoordinator>;
 	SEARCH_ENGINE: DurableObjectNamespace<import("./src/index").SearchEngine>;
 	RATE_LIMITER: DurableObjectNamespace<import("./src/index").RateLimiter>;
+	PLACEMENT_PROBE: DurableObjectNamespace<import("./src/index").PlacementProbe>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/index");
-		durableNamespaces: "ImportCoordinator" | "SearchEngine" | "RateLimiter";
+		durableNamespaces: "ImportCoordinator" | "SearchEngine" | "RateLimiter" | "PlacementProbe";
 	}
 	interface Env extends __BaseEnv_Env {}
 }

@@ -37,6 +37,14 @@ export type EngineStub = ReturnType<Env["SEARCH_ENGINE"]["get"]>;
  * out. Shard 0 keeps the plain name, so single-shard steady state is
  * byte-identical to unsharded routing.
  *
+ * `-g<k>` IS THE REGION'S GENERATION (backlog g1), and generation 0 omits it, so every name that
+ * existed before generations did is byte-identical. A generation exists because an object's
+ * placement is fixed at creation and nothing can move it: when a hint Cloudflare could not host
+ * becomes hostable, its old objects sit where Cloudflare put them instead, and the only way to get
+ * objects IN the region is fresh names — `engine-sam-g1-p0` — created at the edge by its own
+ * traffic. The generation per hint rides the manifest (placement-policy.ts), and the nightly
+ * retires every object of an older one.
+ *
  * THE `-p<k>` SUFFIX IS PART OF EVERY LIVE OBJECT'S NAME (CARD-PARTITIONING §2):
  * `partition` names which SUBSET OF THE DATA the object holds, where the shard
  * number names which REPLICA it is. They multiply — `engine-wnam-2-p3` is
@@ -51,8 +59,14 @@ export type EngineStub = ReturnType<Env["SEARCH_ENGINE"]["get"]>;
  * — which is the documented remediation for a misplaced one, and a thing to do
  * deliberately rather than by accident.
  */
-export function engineName(region: DurableObjectLocationHint, shard: number, partition?: number): string {
-	const base = shard === 0 ? `engine-${region}` : `engine-${region}-${shard}`;
+export function engineName(
+	region: DurableObjectLocationHint,
+	shard: number,
+	partition?: number,
+	generation = 0,
+): string {
+	const stem = generation > 0 ? `engine-${region}-g${generation}` : `engine-${region}`;
+	const base = shard === 0 ? stem : `${stem}-${shard}`;
 	return partition === undefined ? base : `${base}-p${partition}`;
 }
 
@@ -63,7 +77,7 @@ export function regionOfEngineName(name: string): string | null {
 }
 
 /**
- * An engine name, taken apart: `engine-<region>[-<n>][-p<k>]`.
+ * An engine name, taken apart: `engine-<region>[-g<k>][-<n>][-p<k>]`.
  *
  * `partition` comes back undefined for a replica-group name (`engine-wnam-2`),
  * which is a real thing to parse — the shard controller names groups, not
@@ -80,16 +94,23 @@ export function regionOfEngineName(name: string): string | null {
  * Longest-first makes `apac-ne` win over its prefix `apac`.
  */
 const ENGINE_NAME_RE = new RegExp(
-	`^engine-(${[...REGION_HINTS].sort((a, b) => b.length - a.length).join("|")})(?:-(\\d+))?(?:-p(\\d+))?$`,
+	`^engine-(${[...REGION_HINTS].sort((a, b) => b.length - a.length).join("|")})(?:-g([1-9]\\d*))?(?:-(\\d+))?(?:-p(\\d+))?$`,
 );
 
-export function parseEngineName(name: string): { region: string; shard: number; partition?: number } | null {
+/**
+ * `generation` is present only when it is not 0 — the same convention as `partition` — so a name
+ * without `-g` parses exactly as it always has.
+ */
+export function parseEngineName(
+	name: string,
+): { region: string; shard: number; partition?: number; generation?: number } | null {
 	const match = ENGINE_NAME_RE.exec(name);
 	if (!match?.[1]) return null;
 	return {
 		region: match[1],
-		shard: match[2] === undefined ? 0 : Number(match[2]),
-		...(match[3] === undefined ? {} : { partition: Number(match[3]) }),
+		shard: match[3] === undefined ? 0 : Number(match[3]),
+		...(match[4] === undefined ? {} : { partition: Number(match[4]) }),
+		...(match[2] === undefined ? {} : { generation: Number(match[2]) }),
 	};
 }
 
@@ -103,7 +124,7 @@ export function parseEngineName(name: string): { region: string; shard: number; 
 export function replicaGroupOf(name: string): string | null {
 	const parsed = parseEngineName(name);
 	if (!parsed) return null;
-	return engineName(parsed.region as DurableObjectLocationHint, parsed.shard);
+	return engineName(parsed.region as DurableObjectLocationHint, parsed.shard, undefined, parsed.generation);
 }
 
 /**
@@ -115,7 +136,7 @@ export function replicaGroupOf(name: string): string | null {
 export function siblingEngineName(label: string, partition: number): string | null {
 	const parsed = parseEngineName(label);
 	if (!parsed) return null;
-	return engineName(parsed.region as DurableObjectLocationHint, parsed.shard, partition);
+	return engineName(parsed.region as DurableObjectLocationHint, parsed.shard, partition, parsed.generation);
 }
 
 /**
@@ -147,8 +168,10 @@ export function placeEngineStub(
 	region: DurableObjectLocationHint,
 	shard: number,
 	partition?: number,
+	/** The region's current generation (placement-policy.ts generationOf); 0 is the plain name. */
+	generation = 0,
 ): EngineStub {
-	const name = engineName(region, shard, partition);
+	const name = engineName(region, shard, partition, generation);
 	// The hint only applies at creation, so passing it on every get() is free and
 	// makes placement explicit rather than "wherever the first caller happened to
 	// be".

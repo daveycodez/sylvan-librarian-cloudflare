@@ -157,13 +157,18 @@
 			{ "name": "SEARCH_ENGINE", "class_name": "SearchEngine" },
 			// Per-IP token-bucket rate limiter (one tiny in-memory DO per IP);
 			// limits are runtime env vars — see RATE_LIMIT_* in .env.example.
-			{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }
+			{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
+			// The nightly placement probe (backlog g1, src/engine/placement-probe.ts): created with a
+			// location hint and a fresh unique id, it reports the colo it landed in and stores nothing,
+			// so every probe object ceases to exist when it goes idle. 44 requests a night.
+			{ "name": "PLACEMENT_PROBE", "class_name": "PlacementProbe" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["ImportCoordinator"] },
 		{ "tag": "v2", "new_sqlite_classes": ["SearchEngine"] },
-		{ "tag": "v3", "new_sqlite_classes": ["RateLimiter"] }
+		{ "tag": "v3", "new_sqlite_classes": ["RateLimiter"] },
+		{ "tag": "v4", "new_sqlite_classes": ["PlacementProbe"] }
 	],
 
 	// The nightly rebuild, after Scryfall's daily bulk-data refresh window, and the import watchdog (src/import-watchdog.ts), which replaces a

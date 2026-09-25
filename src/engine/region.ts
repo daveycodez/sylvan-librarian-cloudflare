@@ -18,7 +18,7 @@
 // one isolate serves users on both sides of a meridian, so it addresses two
 // regions and must not pool their load signals.
 
-import { COLOS } from "./colos.gen";
+import { COLOS, type ColoRegion } from "./colos.gen";
 
 export const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 	AF: "afr",
@@ -34,6 +34,13 @@ export const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 interface RegionSpec {
 	/** Where Cloudflare places a Durable Object created with this hint. */
 	readonly where: string;
+	/**
+	 * The continent the hint promises, in the colo table's region codes — what g1's nightly probes
+	 * judge "did the object land where the hint says?" against (placement-policy.ts). Continent,
+	 * never colo: a hint's spawn pool spans several colos, and objects of one generation land
+	 * across them independently.
+	 */
+	readonly continent: ColoRegion;
 }
 
 /**
@@ -45,17 +52,17 @@ interface RegionSpec {
  * (backlog g2)
  */
 export const REGIONS = {
-	wnam: { where: "Western North America" },
-	enam: { where: "Eastern North America" },
-	sam: { where: "South America" },
-	weur: { where: "Western Europe" },
-	eeur: { where: "Eastern Europe" },
-	apac: { where: "Asia-Pacific" },
-	"apac-ne": { where: "Northeast Asia (Japan, Korea)" },
-	"apac-se": { where: "Southeast Asia (Singapore, Indonesia)" },
-	oc: { where: "Oceania" },
-	afr: { where: "Africa" },
-	me: { where: "Middle East" },
+	wnam: { where: "Western North America", continent: "NA" },
+	enam: { where: "Eastern North America", continent: "NA" },
+	sam: { where: "South America", continent: "SA" },
+	weur: { where: "Western Europe", continent: "EU" },
+	eeur: { where: "Eastern Europe", continent: "EU" },
+	apac: { where: "Asia-Pacific", continent: "AP" },
+	"apac-ne": { where: "Northeast Asia (Japan, Korea)", continent: "AP" },
+	"apac-se": { where: "Southeast Asia (Singapore, Indonesia)", continent: "AP" },
+	oc: { where: "Oceania", continent: "OC" },
+	afr: { where: "Africa", continent: "AF" },
+	me: { where: "Middle East", continent: "ME" },
 } as const satisfies Record<DurableObjectLocationHint, RegionSpec>;
 
 /**

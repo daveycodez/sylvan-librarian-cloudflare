@@ -142,6 +142,65 @@ describe("placement carries the partition", () => {
 	});
 });
 
+describe("the region's generation (backlog g1)", () => {
+	test("generation 0 is today's name, byte for byte, so no object is abandoned on deploy", () => {
+		expect(engineName("sam", 0, 3, 0)).toBe("engine-sam-p3");
+		expect(engineName("sam", 2, 3, 0)).toBe(engineName("sam", 2, 3));
+	});
+
+	test("a generation sits between the hint and the shard", () => {
+		expect(engineName("sam", 0, 3, 1)).toBe("engine-sam-g1-p3");
+		expect(engineName("apac-ne", 2, 0, 12)).toBe("engine-apac-ne-g12-2-p0");
+		expect(engineName("sam", 0, undefined, 1)).toBe("engine-sam-g1");
+	});
+
+	test("every hint × generation × shard × partition round-trips", () => {
+		for (const region of REGION_HINTS) {
+			for (const generation of [0, 1, 12]) {
+				for (const shard of [0, 3]) {
+					for (const partition of [undefined, 0, 9]) {
+						const name = engineName(region, shard, partition, generation);
+						expect(parseEngineName(name)).toEqual({
+							region,
+							shard,
+							...(partition === undefined ? {} : { partition }),
+							...(generation === 0 ? {} : { generation }),
+						});
+					}
+				}
+			}
+		}
+	});
+
+	test("replica groups and siblings keep the generation", () => {
+		expect(replicaGroupOf("engine-sam-g1-2-p7")).toBe("engine-sam-g1-2");
+		expect(siblingEngineName("engine-sam-g1-p0", 4)).toBe("engine-sam-g1-p4");
+		// A different generation is a different replica group: its width is its own.
+		expect(replicaGroupOf("engine-sam-g1-p0")).not.toBe(replicaGroupOf("engine-sam-p0"));
+	});
+
+	test("-g0 has no spelling, and a generation is not mistaken for a shard", () => {
+		expect(parseEngineName("engine-sam-g0-p1")).toBeNull();
+		expect(parseEngineName("engine-sam-g01-p1")).toBeNull();
+		expect(parseEngineName("engine-sam-1-p1")).toEqual({ region: "sam", shard: 1, partition: 1 });
+	});
+
+	test("placing a generation hints the object into its own region", () => {
+		const gets: { name: string; hint?: string }[] = [];
+		const env = {
+			SEARCH_ENGINE: {
+				idFromName: (name: string) => ({ name }),
+				get: (id: { name: string }, options?: { locationHint?: string }) => {
+					gets.push({ name: id.name, hint: options?.locationHint });
+					return {};
+				},
+			},
+		} as unknown as Env;
+		placeEngineStub(env, "sam", 0, 2, 1);
+		expect(gets).toEqual([{ name: "engine-sam-g1-p2", hint: "sam" }]);
+	});
+});
+
 describe("the gather partition spread", () => {
 	test("is deterministic and in range", () => {
 		for (const q of ["t:goblin", "lightning bolt", "", "lang:ja o:draw"]) {

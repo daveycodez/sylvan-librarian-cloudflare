@@ -16,7 +16,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseEngineName, replicaGroupOf } from "../../src/engine/engine-namespace";
+import { engineName, parseEngineName, replicaGroupOf } from "../../src/engine/engine-namespace";
+import { type PlacementBlock, unreachableEngine } from "../../src/engine/placement-policy";
 import { manifestServableBy } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 
@@ -78,8 +79,26 @@ function fakeNamespace(live: Record<string, number>, failOn = new Set<string>(),
  * The coordinator is a Durable Object wrapped in a long alarm chain, so driving the real phase would
  * mean standing up SQLite, the run record and the phase machine to test twenty lines of fan-out.
  */
-async function fanOut(ns: ReturnType<typeof fakeNamespace>, liveNames: string[]) {
+async function fanOut(
+	ns: ReturnType<typeof fakeNamespace>,
+	announcedNames: string[],
+	/** The published manifest's placement; null is a manifest without one (the seed). The default is an
+	 * empty block: no alias, generation 0 — the fan-out as it was before g1. */
+	placement: PlacementBlock | null = { v: 1 },
+) {
 	const stub = (name: string) => ns.get({ name });
+	// g1: what no request can reach is retired, never prepared.
+	const retire = announcedNames.filter((name) => {
+		const parsed = parseEngineName(name);
+		return parsed !== null && unreachableEngine(parsed, placement ?? undefined);
+	});
+	await Promise.allSettled(
+		retire.map(async (name) => {
+			await stub(name).releaseCache();
+			ns.announced.delete(name);
+		}),
+	);
+	const liveNames = announcedNames.filter((name) => !retire.includes(name));
 	const prepared = await Promise.allSettled(
 		liveNames.map(async (name) => ({ name, ...(await stub(name).preparePublish()) })),
 	);
@@ -103,7 +122,7 @@ async function fanOut(ns: ReturnType<typeof fakeNamespace>, liveNames: string[])
 	const stale = acked.filter((a) => {
 		const parsed = parseEngineName(a.name);
 		if (!parsed || parsed.shard === 0) return false;
-		const regionGroup = replicaGroupOf(`engine-${parsed.region}`);
+		const regionGroup = engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation);
 		return parsed.shard >= ((regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1);
 	});
 	await Promise.allSettled(
@@ -112,7 +131,7 @@ async function fanOut(ns: ReturnType<typeof fakeNamespace>, liveNames: string[])
 			ns.announced.delete(a.name);
 		}),
 	);
-	return { acked, stale: stale.map((s) => s.name) };
+	return { acked, stale: stale.map((s) => s.name), retired: retire };
 }
 
 describe("the fan-out never creates an object", () => {
@@ -214,6 +233,51 @@ describe("what the fan-out does to the objects that exist", () => {
 		const { stale } = await fanOut(ns, Object.keys(live));
 		// wnam runs 2, so shard 1 stays. weur runs 1, so its shard 1 goes.
 		expect(stale).toEqual(["engine-weur-1"]);
+	});
+});
+
+describe("g1: objects no request can reach are retired, not prepared", () => {
+	test("an aliased hint's objects are released and un-announced, and never prepared", async () => {
+		// The seed (no block yet): sam→enam, afr→weur, me→eeur.
+		const live = { "engine-sam-p0": 1, "engine-sam-p1": 1, "engine-afr-p0": 1, "engine-enam-p0": 1 };
+		const ns = fakeNamespace(live);
+		const { retired, acked } = await fanOut(ns, Object.keys(live), null);
+		expect(retired.sort()).toEqual(["engine-afr-p0", "engine-sam-p0", "engine-sam-p1"]);
+		for (const name of retired) {
+			expect(ns.calls.get(name)).toEqual({ prepared: 0, committed: 0, released: 1, shards: 1 });
+			expect(ns.announced.has(name)).toBe(false);
+		}
+		expect(acked.map((a) => a.name)).toEqual(["engine-enam-p0"]);
+	});
+
+	test("after a flip-back, the older generation is retired and the current one served", async () => {
+		const placement: PlacementBlock = { v: 1, gens: { sam: 1 } };
+		const live = { "engine-sam-p0": 1, "engine-sam-g1-p0": 1, "engine-sam-g1-p1": 1 };
+		const ns = fakeNamespace(live);
+		const { retired, acked } = await fanOut(ns, Object.keys(live), placement);
+		expect(retired).toEqual(["engine-sam-p0"]);
+		expect(acked.map((a) => a.name).sort()).toEqual(["engine-sam-g1-p0", "engine-sam-g1-p1"]);
+	});
+
+	test("a generation's width is its own: engine-sam-g1-p0 reports for engine-sam-g1-<n>", async () => {
+		const placement: PlacementBlock = { v: 1, gens: { sam: 1 } };
+		const live = { "engine-sam-g1-p0": 2, "engine-sam-g1-1-p0": 1, "engine-sam-g1-2-p0": 1 };
+		const ns = fakeNamespace(live);
+		const { stale } = await fanOut(ns, Object.keys(live), placement);
+		expect(stale).toEqual(["engine-sam-g1-2-p0"]);
+	});
+
+	test("with no alias and generation 0 nothing is retired — today's fan-out exactly", async () => {
+		const live = { "engine-sam-p0": 1, "engine-wnam-p0": 1 };
+		const ns = fakeNamespace(live);
+		const { retired } = await fanOut(ns, Object.keys(live), { v: 1 });
+		expect(retired).toEqual([]);
+	});
+
+	test("the coordinator's notify retires through the same predicate the mirror uses", () => {
+		const src = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
+		expect(src).toContain("unreachableEngine(parsed, placement)");
+		expect(src).toContain("engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation)");
 	});
 });
 

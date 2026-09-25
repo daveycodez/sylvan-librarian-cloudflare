@@ -11,6 +11,8 @@ import {
 	PartitionedEngine,
 	routingFilterSoon,
 } from "./engine/partitioned-engine";
+import { effectiveRegion, generationOf } from "./engine/placement-policy";
+import { PlacementProbe } from "./engine/placement-probe";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
@@ -30,7 +32,7 @@ import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } f
 import { scryfallHttpError } from "./routes/scryfall-compat/respond";
 import { NOT_FOUND_DETAILS } from "./routes/scryfall-compat/routes";
 
-export { ImportCoordinator, RateLimiter, SearchEngine };
+export { ImportCoordinator, PlacementProbe, RateLimiter, SearchEngine };
 
 // Engine routing: one SearchEngine DO per REGION, named by the location hint
 // the request maps to (engine-wnam, engine-weur, ...) and created there.
@@ -67,7 +69,16 @@ async function resolveEngine(
 	ctx: ExecutionContext,
 	source: { tag: string },
 ): Promise<Engine> {
-	const region = regionHint(request);
+	// The manifest comes FIRST (memoised per isolate, so this costs no extra read): it carries g1's
+	// placement block, and the region an engine request goes to is the hint AFTER its alias — sam's
+	// users reach enam's warm objects while Cloudflare cannot host sam, and their own fresh
+	// generation once it can. Everything below — the shard controller's key, the object names, the
+	// locationHint — takes the effective region and its generation, so a name and its hint still
+	// cannot disagree. `livePartitionedManifest` throws the loud 503 when there is no usable
+	// manifest; see the partitioned-serving note below.
+	const manifest = await livePartitionedManifest(env, (p) => ctx.waitUntil(p));
+	const region = effectiveRegion(regionHint(request), manifest.placement);
+	const generation = generationOf(region, manifest.placement);
 	// The colo THIS isolate is running in, carried into the warm-RPC log line.
 	// It is the other half of the placement join: a colo that shows up serving
 	// `wnam` traffic is, by definition, a colo wnam traffic arrives at, so the
@@ -79,7 +90,7 @@ async function resolveEngine(
 	const configured = Number.parseInt((env as { SHARDS_MAX?: string }).SHARDS_MAX ?? "", 10);
 	const maxShards = Number.isNaN(configured) ? undefined : configured;
 	const shard = pickShard(region, maxShards);
-	source.tag = `do-${engineName(region, shard).slice("engine-".length)}`;
+	source.tag = `do-${engineName(region, shard, undefined, generation).slice("engine-".length)}`;
 
 	// ── Partitioned serving (plan B5) ───────────────────────────────────────────
 	//
@@ -97,7 +108,6 @@ async function resolveEngine(
 	// again, so an object created anywhere else is misplaced permanently and
 	// silently. See engine-namespace.ts, which is where the rule is enforced
 	// rather than described.
-	const manifest = await livePartitionedManifest(env, (p) => ctx.waitUntil(p));
 	// Decision-time warm ping for a shard the controller just opened: start its
 	// wake NOW rather than at its first real request, and REPORT THE OUTCOME,
 	// because the shard takes no traffic until this resolves. A fresh shard is
@@ -112,8 +122,8 @@ async function resolveEngine(
 		ctx.waitUntil(
 			Promise.all(
 				Array.from({ length: count }, (_, p) =>
-					new RemoteEngine(placeEngineStub(env, region, warmTarget, p), region, colo, () =>
-						placeEngineStub(env, region, warmTarget, p),
+					new RemoteEngine(placeEngineStub(env, region, warmTarget, p, generation), region, colo, () =>
+						placeEngineStub(env, region, warmTarget, p, generation),
 					).cardCount(),
 				),
 			)
@@ -126,8 +136,8 @@ async function resolveEngine(
 	}
 	return new PartitionedEngine(
 		(partition) =>
-			new RemoteEngine(placeEngineStub(env, region, shard, partition), region, colo, () =>
-				placeEngineStub(env, region, shard, partition),
+			new RemoteEngine(placeEngineStub(env, region, shard, partition, generation), region, colo, () =>
+				placeEngineStub(env, region, shard, partition, generation),
 			),
 		manifest,
 		// The stale-modulus retry (Decision 3b): re-read the one manifest key.

@@ -109,6 +109,73 @@ function fmt(n: number): string {
 	return n.toLocaleString("en-US");
 }
 
+/**
+ * g1's probe, answering as Cloudflare places each hint today (where.durableobjects.live and the
+ * placement lines, 2026-09-24/25): sam lands in enam's pool, afr in weur's, me in eeur's.
+ */
+const TODAY_POOLS: Record<string, string[]> = {
+	wnam: ["DFW", "SJC", "SEA", "DEN"],
+	enam: ["EWR", "ATL", "IAD", "ORD"],
+	sam: ["EWR", "MIA", "ATL", "EWR"],
+	weur: ["AMS", "LHR", "CDG", "MAD"],
+	eeur: ["FRA", "WAW", "MXP", "VIE"],
+	apac: ["SIN", "HKG", "ICN", "NRT"],
+	"apac-ne": ["KIX", "NRT", "ICN", "KIX"],
+	"apac-se": ["SIN", "HKG", "SIN", "HKG"],
+	oc: ["SYD", "MEL", "BNE", "AKL"],
+	afr: ["LHR", "AMS", "MAD", "CDG"],
+	me: ["FRA", "MXP", "PRG", "WAW"],
+};
+
+function fakeProbes() {
+	const drawn = new Map<string, number>();
+	let created = 0;
+	return {
+		created: () => created,
+		newUniqueId: () => ({ id: created }),
+		get: (_id: unknown, options?: { locationHint?: string }) => {
+			created += 1;
+			const hint = options?.locationHint ?? "";
+			return {
+				where: async () => {
+					const i = drawn.get(hint) ?? 0;
+					drawn.set(hint, i + 1);
+					const pool = TODAY_POOLS[hint] ?? [];
+					return { colo: pool[i % pool.length] ?? null };
+				},
+			};
+		},
+	};
+}
+
+/**
+ * The engine objects the publish fan-out reaches, recording what each was asked: two announced
+ * objects of the hints g1 aliases (sam, afr) and one of a served hint (enam), so the harness sees
+ * the notify retire the first two and prepare the third.
+ */
+function fakeEngines() {
+	const calls: string[] = [];
+	return {
+		calls,
+		idFromName: (name: string) => ({ name }),
+		get: (id: { name: string }) => ({
+			preparePublish: async () => {
+				calls.push(`prepare ${id.name}`);
+				return { prepared: true, shards: 1 };
+			},
+			commitPublish: async () => {
+				calls.push(`commit ${id.name}`);
+				return { swapped: false, shards: 1 };
+			},
+			releaseCache: async () => {
+				calls.push(`release ${id.name}`);
+				return { released: true };
+			},
+		}),
+	};
+}
+const ANNOUNCED = ["engine-sam-p0", "engine-afr-p1", "engine-enam-p0"];
+
 /** Everything the coordinator reaches for that is not this machine. */
 function makeEnv(kv: FakeKV, baseUrl: string) {
 	return {
@@ -116,6 +183,8 @@ function makeEnv(kv: FakeKV, baseUrl: string) {
 		SCRYFALL_BULK_URL: `${baseUrl}/bulk-data`,
 		SCRYFALL_API_URL: baseUrl,
 		IMPORT_TARGET_PARTITION_BYTES: "",
+		PLACEMENT_PROBE: fakeProbes(),
+		SEARCH_ENGINE: fakeEngines(),
 	};
 }
 
@@ -135,6 +204,7 @@ async function main(): Promise<number> {
 	const kv = new FakeKV();
 	const env = makeEnv(kv, server.url) as unknown as Record<string, unknown>;
 	env.IMPORT_TARGET_PARTITION_BYTES = String(opts.partitionBytes);
+	for (const name of ANNOUNCED) await kv.put(`engine:live:${name}`, "1");
 
 	const ctx = {
 		storage,
@@ -311,6 +381,44 @@ async function main(): Promise<number> {
 	for (const line of oracle?.lines ?? []) console.log(line);
 	if (!oracle?.ok) {
 		console.error("\nFAILED: the oracle index check (above)");
+		return 1;
+	}
+
+	// ── g1 and r3: the blocks the nightly decides, and what the fan-out did with them ──────────
+	const published = JSON.parse(String((await kv.get("store:manifest", { type: "text" })) ?? "null")) as {
+		placement?: { checked?: string; alias?: Record<string, { to: string }>; obs?: Record<string, string[][]> };
+		cache?: { v?: number; codec?: string };
+	} | null;
+	const probes = (env.PLACEMENT_PROBE as ReturnType<typeof fakeProbes>).created();
+	const engineCalls = (env.SEARCH_ENGINE as ReturnType<typeof fakeEngines>).calls;
+	const aliases = Object.entries(published?.placement?.alias ?? {})
+		.map(([h, a]) => `${h}→${a.to}`)
+		.sort()
+		.join(", ");
+	console.log(
+		`placement: ${probes} probe objects; checked ${published?.placement?.checked ?? "no"}; aliases ${aliases || "none"}; ` +
+			`cache codec ${published?.cache?.codec ?? "absent"}`,
+	);
+	console.log(`notify: ${engineCalls.join("; ") || "no engine calls"}`);
+	const liveLeft = kv.keys("engine:live:").sort().join(", ");
+	const placementProblems = [
+		probes === 44 ? null : `expected 44 probe objects (4 × 11 hints), created ${probes}`,
+		published?.placement?.checked ? null : "the manifest's placement block did not pass the first-run gate",
+		aliases === "afr→weur, me→eeur, sam→enam"
+			? null
+			: `aliases are ${aliases || "none"}, not afr→weur, me→eeur, sam→enam`,
+		published?.cache?.v === 1 ? null : "the manifest carries no cache block",
+		engineCalls.includes("release engine-sam-p0") && engineCalls.includes("release engine-afr-p1")
+			? null
+			: "the notify did not retire the aliased hints' objects",
+		engineCalls.some((c) => c.endsWith("engine-sam-p0") && !c.startsWith("release"))
+			? "an aliased object was prepared or committed instead of retired"
+			: null,
+		engineCalls.includes("prepare engine-enam-p0") ? null : "the served object was not prepared",
+		liveLeft === "engine:live:engine-enam-p0" ? null : `announcements left: ${liveLeft}`,
+	].filter((p): p is string => p !== null);
+	if (placementProblems.length) {
+		console.error(`\nFAILED: placement/cache blocks — ${placementProblems.join("; ")}`);
 		return 1;
 	}
 	console.log(`\nOK — published ${fmt(kv.size())} KV keys, ${fmt(kv.bytes())} bytes`);

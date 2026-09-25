@@ -1905,10 +1905,13 @@ export function manifestShapeProblem(manifest: StoreManifest): string | null {
 /**
  * The manifest blocks the NIGHTLY decides and every other publisher must carry forward from the
  * manifest it replaces: r3's cache codec (StoreManifest.cache), which only the coordinator can
- * measure the pool for. A builder knows nothing of it, so a deploy that published its skeleton as
- * is would silently reset it every time.
+ * measure the pool for, and g1's placement (StoreManifest.placement), which only its probes can
+ * decide and whose two-night hysteresis lives in the block itself. A builder knows nothing of
+ * either, so a deploy that published its skeleton as is would silently reset both every time —
+ * placement back to the seed, its generations to 0, which would retire a flipped-back region's
+ * fresh objects and re-create its old names.
  */
-export const CARRIED_MANIFEST_BLOCKS = ["cache"] as const;
+export const CARRIED_MANIFEST_BLOCKS = ["cache", "placement"] as const;
 
 /** `next` with every carried block the live manifest holds and `next` does not. Pure. */
 export function carryManifestBlocks<M extends object>(next: M, live: Record<string, unknown> | null): M {

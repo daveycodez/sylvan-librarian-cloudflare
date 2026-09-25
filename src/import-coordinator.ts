@@ -72,7 +72,7 @@
 // its SQLite inputs — minutes of redone compute, never a wrong store.
 
 import { DurableObject } from "cloudflare:workers";
-import { addressAnnouncedEngine, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
+import { addressAnnouncedEngine, engineName, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
 import { dropGroupWasm, groupWasm, type ImportWasm, newGroupWasm, transientWasm } from "./engine/import-wasm";
 import { staleKeys } from "./engine/kv-versions";
 import {
@@ -84,6 +84,14 @@ import {
 	oracleIndexCurrentPrefix,
 	planOracleIndexPublish,
 } from "./engine/oracle-index";
+import {
+	continentOfColo,
+	effectiveRegion,
+	nextPlacement,
+	type PlacementBlock,
+	unreachableEngine,
+} from "./engine/placement-policy";
+import { probeHints } from "./engine/placement-probe";
 import {
 	CATALOG_NAMES,
 	catalogKey,
@@ -165,6 +173,7 @@ import {
 	FINALIZE_SLICE_BATCHES,
 	LATE_ALARM_MS,
 	LZ4_CACHE_RATIO,
+	LZ4_OFF_FRACTION,
 	MAX_DAY_ROWS_READ,
 	MAX_DAY_ROWS_WRITTEN,
 	MAX_RUN_ACTIVE_MS,
@@ -493,7 +502,10 @@ type Phase =
 	// The partition's staging retired in bounded slices (src/import-purge.ts);
 	// also the run-start reset and the wasm rewind's clean-up, by `purge_scope`.
 	| "purge_staging"
-	// Every partition published and purged: the manifest write, the commit point.
+	// Every partition published and purged: g1's nightly placement probes, just before the
+	// manifest that carries their verdict.
+	| "placement"
+	// The manifest write, the commit point.
 	| "manifest"
 	| "notify"
 	| "rulings"
@@ -1529,6 +1541,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 				return this.stepPublish();
 			case "purge_staging":
 				return this.stepPurgeStaging();
+			case "placement":
+				return this.stepPlacement();
 			case "manifest":
 				return this.stepManifest();
 			case "notify":
@@ -3482,6 +3496,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// The blocks the nightly decides and every publish carries (StoreManifest.cache): read the
 		// live manifest once, decide from it and tonight's measurements, write them in.
 		const previous = await this.liveManifestJson();
+		const placement = await this.placementGate(manifest, previous);
+		if (placement) manifest.placement = placement;
 		manifest.cache = await this.cacheGate(manifest, previous);
 		await writeManifest(this.env, manifest);
 		// Published: a manifest names the family now, and the manifest read inside
@@ -3525,6 +3541,86 @@ export class ImportCoordinator extends DurableObject<Env> {
 		});
 	}
 
+	// ── phase: placement (g1's nightly probes) ─────────────────────────────────
+
+	/**
+	 * Probe where an object created with each location hint lands tonight: PROBES_PER_HINT
+	 * throwaway PlacementProbe objects per hint (placement-probe.ts), 44 Durable Object requests in
+	 * all, each bounded by PROBE_ANSWER_MS. BEFORE the manifest step, so tonight's answers go
+	 * straight into tonight's manifest (placementGate) with no key of their own.
+	 *
+	 * Never fails the run: a probe that does not answer is absent from its hint's list, and the
+	 * policy leaves a hint with no answers exactly as it was. Idempotent across a retried slice:
+	 * the answers are kept in meta and the probes are not re-run.
+	 */
+	private async stepPlacement(): Promise<void> {
+		if (this.metaGet("placement_probes") === null) {
+			const t0 = Date.now();
+			let probes: Partial<Record<DurableObjectLocationHint, string[]>> = {};
+			try {
+				probes = await probeHints(this.env, REGION_HINTS);
+			} catch (err) {
+				console.warn(`Placement probes failed (${err}); tonight's placement stays as it is`);
+			}
+			this.metaSet("placement_probes", JSON.stringify(probes));
+			const answered = Object.values(probes).reduce((n, colos) => n + (colos?.length ?? 0), 0);
+			console.log(
+				`Placement probes: ${answered} answered in ${Date.now() - t0}ms — ` +
+					REGION_HINTS.map((h) => `${h} ${(probes[h] ?? []).join(",") || "-"}`).join("; "),
+			);
+		}
+		this.metaSet("phase", "manifest");
+	}
+
+	/**
+	 * g1: tonight's placement block — the previous manifest's, advanced by tonight's probes
+	 * (nextPlacement). Returns undefined when there was no block and the night changed nothing, so
+	 * the manifest keeps reading as the seed.
+	 *
+	 * The pool guard for a flip-back: a fresh generation is one more region of caches, so it is
+	 * allowed only if the pool with one more replica still fits under the gate's OFF threshold at
+	 * gzip — the codec gate that runs next then decides whether LZ4 still fits too.
+	 */
+	private async placementGate(
+		manifest: StoreManifest,
+		previous: StoreManifest | null,
+	): Promise<PlacementBlock | undefined> {
+		let probes: Partial<Record<DurableObjectLocationHint, string[]>> = {};
+		try {
+			probes = JSON.parse(this.metaGet("placement_probes") ?? "{}");
+		} catch {
+			probes = {};
+		}
+		const before = previous?.placement;
+		const replicas = new Set(REGION_HINTS.map((h) => effectiveRegion(h, before))).size + 1;
+		const meters = parseMeters(this.metaGet("run_meters"));
+		const mayBump =
+			projectCachePool({
+				replicas,
+				partitionGzipBytes: (manifest.partitions ?? []).map((p) => p.store_gzip_bytes ?? 0),
+				cacheFactor: 1,
+				stagingPeakBytes: meters?.peak_db_bytes || STAGING_PEAK_BYTES_2026_09_25,
+				strandedBytes: 0,
+			}) <=
+			LZ4_OFF_FRACTION * POOL_GATE_BUDGET_BYTES;
+		const decision = nextPlacement({
+			previous: before,
+			probes,
+			continentOf: continentOfColo,
+			builtAt: manifest.built_at,
+			hints: REGION_HINTS,
+			mayBump,
+		});
+		const aliases = REGION_HINTS.filter((h) => effectiveRegion(h, decision.placement) !== h)
+			.map((h) => `${h}→${effectiveRegion(h, decision.placement)}`)
+			.join(", ");
+		console.log(
+			`Placement: ${decision.held ? "held" : "decided"}; aliases ${aliases || "none"}` +
+				`${decision.changes.length ? ` — ${decision.changes.join("; ")}` : ""}`,
+		);
+		return decision.placement;
+	}
+
 	/** The manifest KV serves right now, parsed, or null — never a throw: the gates fall back to defaults. */
 	private async liveManifestJson(): Promise<StoreManifest | null> {
 		try {
@@ -3551,12 +3647,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * run start clears and a failover starts empty.
 	 */
 	private async cacheGate(manifest: StoreManifest, previous: StoreManifest | null): Promise<StoreManifestCache> {
-		const routable = new Set<string>(REGION_HINTS);
+		// g1: a hint aliased to another region holds no cache of its own (its objects are retired at
+		// this publish's notify), so only the regions requests can actually reach count.
+		const routable = new Set<string>(REGION_HINTS.map((h) => effectiveRegion(h, manifest.placement)));
 		const groups = new Set([...routable].map((r) => `${r}/0`));
 		try {
 			for (const key of await this.listAllKeys(REGION_LIVE_PREFIX)) {
 				const parsed = parseEngineName(key.slice(REGION_LIVE_PREFIX.length));
-				if (parsed && routable.has(parsed.region)) groups.add(`${parsed.region}/${parsed.shard}`);
+				if (parsed && routable.has(parsed.region) && !unreachableEngine(parsed, manifest.placement)) {
+					groups.add(`${parsed.region}/${parsed.shard}`);
+				}
 			}
 		} catch (err) {
 			console.warn(`Pool gate: could not list the announced objects (${err}); counting one replica per region`);
@@ -3641,7 +3741,36 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// yet, from inside this Durable Object. `locationHint` fixes an object's region at creation,
 		// so that would place engine-apac relative to a hint the coordinator supplied rather than by
 		// a request from apac. Honoured, it is merely wasteful; not honoured, it is permanent.
-		const live = [...(await this.listAllKeys(REGION_LIVE_PREFIX))].map((name) => name.slice(REGION_LIVE_PREFIX.length));
+		const announced = [...(await this.listAllKeys(REGION_LIVE_PREFIX))].map((name) =>
+			name.slice(REGION_LIVE_PREFIX.length),
+		);
+		// g1: objects no request can reach any more — their hint is aliased to another region's
+		// objects, or their generation is not the hint's current one — are RETIRED here instead of
+		// prepared: storage released and announcement deleted together, exactly as a stale shard is
+		// below, and without first prefetching a build into them. An isolate still holding the
+		// previous manifest (its memo is 60s) may re-create one; it announces itself on load and the
+		// next notify retires it again.
+		const placement = (published as StoreManifest | null)?.placement;
+		const retire = announced.filter((name) => {
+			const parsed = parseEngineName(name);
+			return parsed !== null && unreachableEngine(parsed, placement);
+		});
+		const live = announced.filter((name) => !retire.includes(name));
+		if (retire.length > 0) {
+			const gone = await Promise.allSettled(
+				retire.map(async (name) => {
+					await (
+						addressAnnouncedEngine(this.env, name) as unknown as { releaseCache(): Promise<unknown> }
+					).releaseCache();
+					await this.env.STORE_KV.delete(`${REGION_LIVE_PREFIX}${name}`);
+				}),
+			);
+			const regions = [...new Set(retire.map((n) => parseEngineName(n)?.region))].join(", ");
+			console.log(
+				`Publish notify: retired ${gone.filter((r) => r.status === "fulfilled").length}/${retire.length} ` +
+					`object(s) no request can reach (${regions}: aliased, or an older generation)`,
+			);
+		}
 		if (live.length === 0) {
 			// Nothing has ever loaded a store, so there is nobody to tell. Not an error: it is the
 			// state of a fresh deployment, and the first real request will read the manifest from KV.
@@ -3729,7 +3858,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const stale = acked.filter((a) => {
 			const parsed = parseEngineName(a.name);
 			if (!parsed || parsed.shard === 0) return false;
-			const regionGroup = replicaGroupOf(`engine-${parsed.region}`);
+			const regionGroup = engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation);
 			return parsed.shard >= ((regionGroup !== null ? widthOf.get(regionGroup) : undefined) ?? 1);
 		});
 		// Release the storage AND retire the announcement together. Deleting only the
@@ -4346,8 +4475,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			} else if (pp) {
 				const isLast = pp.partition === pp.partitions.length - 1;
 				if (isLast) {
-					this.metaSet("phase", "manifest");
-					next = "writing the manifest";
+					this.metaSet("phase", "placement");
+					next = "probing placement, then writing the manifest";
 				} else {
 					const advanced = advanceToNextPartition(pp);
 					if (!advanced) throw new Error(`purge_staging: could not advance past partition ${pp.partition}`);

@@ -229,10 +229,10 @@ console.log(`  tag aliases uploaded from ${TAG_ALIASES_FILE}`);
 const previouslyLive = await liveManifestBuiltAts(true);
 const inFlight = await publishingBuiltAts(true);
 
-// The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool — are not
-// the builder's to know. Carried from the manifest being replaced, or every deploy would reset
-// them. A read that failed publishes without them, which is each block's safe default (gzip
-// caches), and says so.
+// The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool, and g1's
+// placement, decided by its probes — are not the builder's to know. Carried from the manifest being
+// replaced, or every deploy would reset them. A read that failed publishes without them, which is
+// each block's safe default (gzip caches; the seed placement), and says so.
 const live = await liveManifestObject(true);
 if (live.failed) {
 	console.warn(

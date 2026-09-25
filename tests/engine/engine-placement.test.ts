@@ -91,13 +91,29 @@ describe("only one module may bring an engine object into existence", () => {
 
 	test("no other source file passes a locationHint", () => {
 		const offenders = sourceFiles(SRC)
-			.filter((f) => f.path !== CHOKE_POINT && f.path !== "routes/rate-limit.ts")
+			.filter(
+				(f) => f.path !== CHOKE_POINT && f.path !== "routes/rate-limit.ts" && f.path !== "engine/placement-probe.ts",
+			)
 			.filter((f) => /locationHint/.test(code(f.text)))
 			.map((f) => f.path);
 		// rate-limit.ts is exempt on purpose: its objects are per-IP, hold a few
 		// counters, and are created by the same edge isolate that serves the
 		// request. A misplaced one costs a token bucket, not an ~88MB archive.
+		// placement-probe.ts is exempt because placing an object by a hint IS the probe — see below
+		// for what keeps that exemption from ever reaching an engine object.
 		expect(offenders).toEqual([]);
+	});
+
+	test("the placement probe places only its own throwaway class, and never stores anything", () => {
+		// g1's nightly probe creates objects with a hint from inside the coordinator — exactly what
+		// this file forbids for engine objects. It is safe only because the probe's objects are a
+		// class of their own, addressed by newUniqueId (never a name anything reuses), and hold no
+		// storage, so each one ceases to exist when idle.
+		const probe = code(sourceFiles(SRC).find((f) => f.path === "engine/placement-probe.ts")?.text ?? "");
+		expect(probe).toContain("newUniqueId()");
+		expect(probe).not.toMatch(/SEARCH_ENGINE/);
+		expect(probe).not.toMatch(/ctx\s*\.\s*storage|\.storage\b|deleteAll/);
+		expect(probe).not.toMatch(/idFromName/);
 	});
 });
 

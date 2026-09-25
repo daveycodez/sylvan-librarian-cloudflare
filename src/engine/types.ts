@@ -1,4 +1,5 @@
 import type { PreferOrder } from "../routes/enums";
+import type { PlacementBlock } from "./placement-policy";
 // Seam between the HTTP routes (src/routes/) and the wasm engine (src/engine/).
 // Routes depend only on this interface; tests may inject a fake.
 
@@ -624,6 +625,12 @@ export interface StoreManifest {
 	 * reads as gzip (store-cache.ts cacheCodecOf) — the pool-safe choice.
 	 */
 	cache?: StoreManifestCache;
+	/**
+	 * g1: the location hints Cloudflare cannot host yet, the served hint each one's traffic goes
+	 * to instead, per-hint object generations, and the probe history behind them
+	 * (placement-policy.ts). Absent reads as UNSERVED_SEED: sam→enam, afr→weur, me→eeur.
+	 */
+	placement?: PlacementBlock;
 }
 
 /** The engine objects' local cache codec. See StoreManifest.cache. */
