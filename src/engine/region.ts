@@ -28,27 +28,45 @@ export const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 	SA: "sam",
 };
 
+/** What a region is, for the reader of the table below. */
+interface RegionSpec {
+	/** Where Cloudflare places a Durable Object created with this hint. */
+	readonly where: string;
+}
+
 /**
- * Every region an engine DO can exist in — the fan-out list the publish notify
- * walks.
+ * EVERY location hint Cloudflare offers, one entry each — and the type makes that a rule, not a
+ * habit: `satisfies Record<DurableObjectLocationHint, …>` fails typecheck the day the runtime
+ * types gain a hint this table does not name. That is how apac-ne and apac-se (added June 2026)
+ * went unnoticed until 09-25: the list was a plain array, so nothing forced it to be complete.
+ * The weekly platform-drift workflow regenerates the types from the newest wrangler to trip it.
+ * (backlog g2)
+ */
+export const REGIONS = {
+	wnam: { where: "Western North America" },
+	enam: { where: "Eastern North America" },
+	sam: { where: "South America" },
+	weur: { where: "Western Europe" },
+	eeur: { where: "Eastern Europe" },
+	apac: { where: "Asia-Pacific" },
+	"apac-ne": { where: "Northeast Asia (Japan, Korea)" },
+	"apac-se": { where: "Southeast Asia (Singapore, Indonesia)" },
+	oc: { where: "Oceania" },
+	afr: { where: "Africa" },
+	me: { where: "Middle East" },
+} as const satisfies Record<DurableObjectLocationHint, RegionSpec>;
+
+/**
+ * Every region an engine DO can exist in — derived from REGIONS, so it is complete by
+ * construction.
  *
  * This list is the whole reason push-notify is possible at all. Colo-named
  * objects could not be notified: `engine-LAX` exists only if LAX saw traffic,
  * there is no registry, and Cloudflare has ~330 locations, so a publisher had no
- * way to enumerate its readers and they had to poll instead. Nine names can just
- * be walked.
+ * way to enumerate its readers and they had to poll instead. A handful of names
+ * can just be walked.
  */
-export const REGION_HINTS: readonly DurableObjectLocationHint[] = [
-	"wnam",
-	"enam",
-	"weur",
-	"eeur",
-	"apac",
-	"oc",
-	"sam",
-	"afr",
-	"me",
-];
+export const REGION_HINTS = Object.keys(REGIONS) as readonly DurableObjectLocationHint[];
 
 export function regionHint(request: Request): DurableObjectLocationHint {
 	const cf = request.cf as { continent?: string; longitude?: string } | undefined;

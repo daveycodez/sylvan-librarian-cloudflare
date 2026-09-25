@@ -361,13 +361,14 @@ const PARTITION_GZIP_BYTES_2026_09_04 = [
 ];
 
 /**
- * The coordinator's staging at its peak, which is the moment the drafts are
- * bucketed: draft_batches (1.77GB, see STAGED_DRAFT_BYTES_2026_08_28) plus the
- * tag snapshot and the rulings blobs (~150MB together). An ESTIMATE from the
- * sizing rule, not a meter reading — replace it with the "Partition loop: …
- * staged draft bytes" log line of a real run when one is at hand.
+ * The coordinator's staging at its peak — a METER READING now, replacing the 1.92GB estimate this
+ * used to carry (raw draft_batches 1.77GB + ~150MB, from before the drafts were stored compressed,
+ * import-blob-codec.ts). GraphQL durableObjectsSqlStorageGroups read 0.486–0.495GB for the
+ * ImportCoordinator namespace on DeckGen 2026-09-20, -21 and -23, each a run stalled while holding
+ * its staging (backlog x1, report 13). The estimate tripped this tripwire the day the region list
+ * grew to all eleven hints (backlog g2) — on an input that was four times too large.
  */
-const STAGING_PEAK_BYTES_2026_09_04 = 1_920_000_000;
+const STAGING_PEAK_BYTES_2026_09_25 = 495_000_000;
 
 describe("the dead-man alarm", () => {
 	test("fires only after the watchdog would have ended a live handler", () => {
@@ -392,7 +393,7 @@ describe("the Durable Objects storage pool", () => {
 			warmRegions,
 			generationsHeld,
 			partitionGzipBytes: PARTITION_GZIP_BYTES_2026_09_04,
-			stagingPeakBytes: STAGING_PEAK_BYTES_2026_09_04,
+			stagingPeakBytes: STAGING_PEAK_BYTES_2026_09_25,
 		});
 
 	/** The corpus multiple at which the pool overflows, everything scaling together. */
@@ -400,20 +401,17 @@ describe("the Durable Objects storage pool", () => {
 		DO_STORAGE_POOL_BYTES / today(warmRegions, generationsHeld);
 
 	test("tonight's publish fits the pool even with every region warm", () => {
-		// Nine regions, each holding the old AND the new archives between prepare
-		// and commit, beside the coordinator's staging peak. ~4.6GB of 5GB.
+		// Every region (all eleven hints), each holding the old AND the new archives between prepare
+		// and commit, beside the coordinator's measured staging peak. ~3.7GB of 5GB.
 		expect(today(REGION_HINTS.length, 2)).toBeLessThan(DO_STORAGE_POOL_BYTES);
 	});
 
 	test("the pool is the NEAREST wall, and this is the tripwire for it", () => {
-		// With every region warm through a publish the pool crosses at ~1.1x the
-		// corpus; with the cache's own arithmetic (one generation, nine regions)
-		// at ~1.6x; with five warm regions holding two, ~1.5x. All of them are
-		// nearer than the write meter's wall now that the bucket phase exists,
-		// and the corpus grows ~7% a year — so this assertion is expected to go
-		// red within a year of 2026-09-04, and when it does the answer is to
-		// shrink the staging (the drafts are packed blobs, import-blob-codec.ts) or the
-		// double-hold, not to raise the number.
+		// With all eleven regions warm through a publish the pool crosses at ~1.45x the corpus; with
+		// the cache's own arithmetic (one generation) at ~2.6x; with five warm regions holding two,
+		// ~2.8x. The corpus grows ~7% a year, so the first line still goes red in about five and a
+		// half years — and when it does the answer is to shrink the staging or the double-hold
+		// (backlog x1: drop the old archive before fetching the new one), not to raise the number.
 		expect(crossing(REGION_HINTS.length, 2)).toBeGreaterThan(1.05);
 		expect(crossing(REGION_HINTS.length, 1)).toBeGreaterThan(1.5);
 		expect(crossing(5, 2)).toBeGreaterThan(1.4);

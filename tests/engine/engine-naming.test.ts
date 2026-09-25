@@ -51,6 +51,22 @@ describe("names round-trip through the parser", () => {
 		}
 	});
 
+	test("a hyphenated hint is one region, not a region plus a shard (backlog g2)", () => {
+		// `[a-z]+` read `engine-apac-ne-p3` as region `apac` followed by garbage: null, so the loader
+		// would have refused every apac-ne/apac-se object. Longest-first alternation fixes it.
+		expect(parseEngineName("engine-apac-ne-p3")).toEqual({ region: "apac-ne", shard: 0, partition: 3 });
+		expect(parseEngineName("engine-apac-se-2-p0")).toEqual({ region: "apac-se", shard: 2, partition: 0 });
+		expect(parseEngineName("engine-apac-3-p1")).toEqual({ region: "apac", shard: 3, partition: 1 });
+		expect(replicaGroupOf("engine-apac-ne-1-p7")).toBe("engine-apac-ne-1");
+	});
+
+	test("a region that is not a location hint is not an engine name", () => {
+		// The colo-era objects (engine-LAX…) and anything invented stay unparseable.
+		for (const bad of ["engine-LAX", "engine-lax-p1", "engine-apac-nw-p1", "engine-asia"]) {
+			expect(parseEngineName(bad)).toBeNull();
+		}
+	});
+
 	test("non-engine names parse to null", () => {
 		for (const bad of ["singleton", "engine-", "engine-wnam-p", "engine-wnam-p1-2", "engine-1wnam", ""]) {
 			expect(parseEngineName(bad)).toBeNull();

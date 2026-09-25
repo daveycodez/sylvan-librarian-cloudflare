@@ -1,0 +1,31 @@
+# Weekly: does Cloudflare offer a Durable Object location hint this deployment does not route to?
+#
+# apac-ne and apac-se were added in June 2026 and went unnoticed until 2026-09-25 (backlog g2),
+# because nothing compared the region list to the platform's. `REGIONS` in src/engine/region.ts
+# now `satisfies Record<DurableObjectLocationHint, …>`, so regenerating the runtime types from the
+# newest wrangler and typechecking is the tripwire; the package check below does not depend on
+# the compatibility date.
+name: platform-drift
+on:
+  schedule: [{ cron: "41 6 * * 1" }]
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  hints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: 1.4.0 }
+      # postinstall is gated on WORKERS_CI=1, so this does NOT pull Scryfall data or touch KV.
+      - run: bun install --frozen-lockfile
+      - name: runtime types from the newest wrangler
+        run: bunx wrangler@latest types worker-configuration.d.ts
+      - run: git --no-pager diff --stat -- worker-configuration.d.ts
+      - name: REGIONS satisfies Record<DurableObjectLocationHint, …>
+        run: bun run typecheck
+      - run: bun test tests/engine/region.test.ts tests/engine/engine-naming.test.ts tests/engine/engine-placement.test.ts
+      - name: newest workers-types union == REGION_HINTS (compatibility-date independent)
+        run: |
+          npm i --prefix /tmp/wt --silent @cloudflare/workers-types@latest
+          bun scripts/check-location-hints.ts /tmp/wt/node_modules/@cloudflare/workers-types/index.d.ts

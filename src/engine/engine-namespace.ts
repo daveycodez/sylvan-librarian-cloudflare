@@ -25,6 +25,7 @@
 // tests/engine/engine-placement.test.ts fails if any other module in src/
 // constructs an engine stub or mentions `locationHint`.
 
+import { REGION_HINTS } from "./region";
 import type { Env } from "./types";
 
 /** The stub type, taken from the binding so this module needs no import of the
@@ -72,8 +73,18 @@ export function regionOfEngineName(name: string): string | null {
  * its mirror in tests/engine/publish-notify.test.ts) group names through
  * `replicaGroupOf` below so `engine-wnam-2-p0 … -p7` count as ONE replica.
  */
+/**
+ * The name grammar, with the region alternatives generated from REGION_HINTS, LONGEST FIRST: a
+ * hint may itself contain a hyphen (`apac-ne`), and `[a-z]+` read `engine-apac-ne-p3` as region
+ * `apac` plus garbage — null, so the loader would have refused every apac-ne/apac-se object.
+ * Longest-first makes `apac-ne` win over its prefix `apac`.
+ */
+const ENGINE_NAME_RE = new RegExp(
+	`^engine-(${[...REGION_HINTS].sort((a, b) => b.length - a.length).join("|")})(?:-(\\d+))?(?:-p(\\d+))?$`,
+);
+
 export function parseEngineName(name: string): { region: string; shard: number; partition?: number } | null {
-	const match = /^engine-([a-z]+)(?:-(\d+))?(?:-p(\d+))?$/.exec(name);
+	const match = ENGINE_NAME_RE.exec(name);
 	if (!match?.[1]) return null;
 	return {
 		region: match[1],

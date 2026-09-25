@@ -12,7 +12,7 @@
 // state to be keyed by region.
 
 import { describe, expect, test } from "bun:test";
-import { CONTINENT_TO_HINT, regionHint } from "../../src/engine/region";
+import { CONTINENT_TO_HINT, REGION_HINTS, REGIONS, regionHint } from "../../src/engine/region";
 
 /** A request carrying the `cf` fields the mapping reads, and nothing else. */
 function req(cf: { continent?: string; longitude?: string } | undefined): Request {
@@ -122,5 +122,28 @@ describe("determinism", () => {
 		expect(regionHint(req({ continent: "NA", longitude: "-118.24" }))).toBe(
 			regionHint(req({ continent: "NA", longitude: "-121.89" })),
 		);
+	});
+});
+
+describe("the region list is every location hint (backlog g2)", () => {
+	test("all eleven hints, each once — the type enforces it, this pins the runtime list", () => {
+		// `REGIONS satisfies Record<DurableObjectLocationHint, …>` is the real guard (typecheck fails
+		// on a missing hint); this catches the runtime list drifting from the table.
+		expect(new Set(REGION_HINTS).size).toBe(REGION_HINTS.length);
+		const all: DurableObjectLocationHint[] = [
+			"afr",
+			"apac",
+			"apac-ne",
+			"apac-se",
+			"eeur",
+			"enam",
+			"me",
+			"oc",
+			"sam",
+			"weur",
+			"wnam",
+		];
+		expect([...REGION_HINTS].sort()).toEqual(all.sort());
+		expect(Object.keys(REGIONS)).toEqual([...REGION_HINTS]);
 	});
 });
