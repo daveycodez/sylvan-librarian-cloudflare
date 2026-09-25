@@ -311,6 +311,13 @@ const PURGE_PASSES = 1;
 /** Meta keys under this prefix are day-scoped and survive a run reset. */
 const DAY_PREFIX = "day:";
 
+/**
+ * How long a retiring run's purge waits after its attempt limit or a spent retry count before
+ * trying again (deferRetire). Long enough not to churn against a platform problem, short enough
+ * that the staging it holds is back in the storage pool the same day.
+ */
+const RETIRE_DEFER_MS = 60 * 60_000;
+
 /** An import failure that retrying cannot fix, so the run stops at once. */
 /** A platform daily-quota rejection (KV writes, DO storage): distinguishable
  * from a transient failure because backoff cannot clear it before midnight. */
@@ -1001,6 +1008,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 				phase = "purge_staging";
 			}
 		}
+		// A RETIRING run never fails (backlog x6, 2026-09-25). Its purge is bounded cleanup of its
+		// own staging, and every stop below used to route through failRun — which ended the run
+		// `failed` with the staging stranded (1.11 GB on the free account after 09-24's three
+		// failovers) and released a publishing marker that by then belonged to its successor. So
+		// the per-run budgets do not stop it, and the day budget, the attempt limit and a spent
+		// retry count only defer it.
+		const retiring = phase === "purge_staging" && this.metaGet("purge_scope") === "retire";
 		// A retry is the ONLY trace a killed slice leaves: the handler never saw
 		// it end, so nothing else could have logged it. Say so, with the phase.
 		if (alarmInfo?.isRetry) {
@@ -1046,8 +1060,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const spentWritten = meters.rows_written;
 		const dayRead = Number(this.metaGet(`${day}:read`) ?? 0);
 		const dayWritten = Number(this.metaGet(`${day}:written`) ?? 0);
-		const overRun = spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN;
+		const overRun = !retiring && (spentRead > MAX_RUN_ROWS_READ || spentWritten > MAX_RUN_ROWS_WRITTEN);
 		const overDay = dayRead > MAX_DAY_ROWS_READ || dayWritten > MAX_DAY_ROWS_WRITTEN;
+		if (retiring && overDay) {
+			await this.deferRetire(
+				`today's storage budget is spent (${dayRead.toLocaleString()} rows read, ${dayWritten.toLocaleString()} written)`,
+				ImportCoordinator.nextUtcDayMs(),
+			);
+			return;
+		}
 		if (overRun || overDay) {
 			const scope = overDay ? "today's" : "this run's";
 			const read = overDay ? dayRead : spentRead;
@@ -1068,7 +1089,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// it is active, and the free plan's day is 13,000 GB-s — which one wedged
 		// coordinator spent by itself on 2026-09-15. A run this long has been
 		// stalling, not working (see MAX_RUN_ACTIVE_MS).
-		if (meters.active_ms > MAX_RUN_ACTIVE_MS) {
+		if (!retiring && meters.active_ms > MAX_RUN_ACTIVE_MS) {
 			const activeS = Math.round(meters.active_ms / 1000);
 			const gbS = Math.round(projectedGbSeconds(meters.active_ms));
 			console.error(
@@ -1093,6 +1114,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// fires with a fresh platform retry budget. Healthy alarms pay nothing.
 		if (alarmInfo?.isRetry) {
 			await this.armAlarm(Date.now() + deadManDelayMs(watchdogMs));
+		}
+		if (attempts > MAX_PHASE_ATTEMPTS && retiring) {
+			await this.deferRetire(`${attempts} attempts without completing a purge slice`, Date.now() + RETIRE_DEFER_MS);
+			return;
 		}
 		if (attempts > MAX_PHASE_ATTEMPTS) {
 			console.error(
@@ -1137,6 +1162,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 				await this.armAlarm(this.nextDueMs);
 			}
 		} catch (err) {
+			if (retiring && (err instanceof FatalImportError || isQuotaError(err))) {
+				await this.deferRetire(
+					`purge slice failed: ${err}`,
+					isQuotaError(err) ? ImportCoordinator.nextUtcDayMs() : Date.now() + RETIRE_DEFER_MS,
+				);
+				return;
+			}
 			if (err instanceof FatalImportError) {
 				console.error(`Import stopped in phase ${phase}: ${err.message}`);
 				await this.failRun(run, `${phase}: ${err.message}`);
@@ -1168,6 +1200,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 				}
 				this.nextDueMs = Date.now() + backoffMs;
 				await this.armAlarm(this.nextDueMs);
+				return;
+			}
+			if (retiring) {
+				await this.deferRetire(`purge slice failed ${MAX_RETRIES} times: ${err}`, Date.now() + RETIRE_DEFER_MS);
 				return;
 			}
 			console.error(`Import failed in phase ${phase}:`, err);
@@ -1225,13 +1261,50 @@ export class ImportCoordinator extends DurableObject<Env> {
 		await this.env.STORE_KV.put(PUBLISHING_KEY, builtAt, { expirationTtl: PUBLISHING_TTL_SECONDS });
 	}
 
-	/** The family is either published (a manifest names it) or abandoned; either way age decides now. */
+	/**
+	 * The family is either published (a manifest names it) or abandoned; either way age decides now.
+	 *
+	 * ONLY THIS RUN'S MARKER. The key is shared by every run the account ever starts, and one
+	 * that ends after another has begun — a coordinator the watchdog replaced, waking late — would
+	 * otherwise delete the marker protecting the run that replaced it (backlog x6, 2026-09-25). So
+	 * it is deleted only while it still names this run's built_at. KV reads can be stale; a stale
+	 * read that skips the delete costs nothing, since the marker expires on its own
+	 * (PUBLISHING_TTL_SECONDS).
+	 */
 	private async releasePublishing(): Promise<void> {
+		const builtAt = this.metaGet("built_at") ?? "";
 		try {
+			const held = await this.env.STORE_KV.get(PUBLISHING_KEY);
+			if (held === null) return;
+			if (!builtAt || held !== builtAt) {
+				console.log(`Leaving ${PUBLISHING_KEY} alone: it names build ${held}, not this run's ${builtAt || "(none)"}`);
+				return;
+			}
 			await this.env.STORE_KV.delete(PUBLISHING_KEY);
 		} catch (err) {
 			console.warn(`Could not clear ${PUBLISHING_KEY}; it expires on its own: ${err}`);
 		}
+	}
+
+	/**
+	 * Park a retiring run's purge until `untilMs` instead of failing it (see `retiring` in
+	 * runAlarmBody). The run stays `running` in phase purge_staging, so the next alarm resumes the
+	 * purge exactly where it stopped; the attempt and retry counters start over.
+	 */
+	private async deferRetire(reason: string, untilMs: number): Promise<void> {
+		console.warn(
+			`Retiring run deferred (${reason}); its staging purge resumes at ${new Date(untilMs).toISOString()}. ` +
+				"A replaced run never fails: failing it would strand its staging.",
+		);
+		this.metaSet("retries", "0");
+		await this.storePut("phase_attempts", 0);
+		this.nextDueMs = untilMs;
+		await this.armAlarm(untilMs);
+	}
+
+	/** A few minutes past the next UTC midnight, when the platform's daily meters (and ours) reset. */
+	private static nextUtcDayMs(now = new Date()): number {
+		return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 5);
 	}
 
 	/** Every key KV currently holds under this run's partition family — the truth the manifest is checked against. */

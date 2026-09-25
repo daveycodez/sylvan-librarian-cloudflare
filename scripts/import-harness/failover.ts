@@ -48,6 +48,10 @@ const corpus = await buildCorpus(PRINTINGS, corpusDir);
 const server = serveDumps(corpus);
 const { ImportCoordinator } = await import("../../src/import-coordinator");
 const watchdog = await import("../../src/import-watchdog");
+const { MAX_DAY_ROWS_WRITTEN, MAX_RUN_ROWS_WRITTEN } = await import("../../src/import-budget");
+const { PUBLISHING_KEY } = await import("../../src/engine/store-kv");
+/** The coordinator's day-meter key prefix (import-coordinator.ts DAY_PREFIX). */
+const DAY_PREFIX = "day:";
 
 /** One Durable Object: the real class over its own metered SQLite. */
 class Instance {
@@ -261,6 +265,75 @@ function check(ok: boolean, what: string): void {
 		"a cron start reaches the replacement, which ignores it as a duplicate of the run it just finished",
 	);
 	check(old.runState() === "superseded", "the retired coordinator is left alone");
+}
+
+// ── 3. a replaced run that wakes over budget must not touch its successor's marker ────
+// 2026-09-25 (backlog x6): the fence sent a replaced run to its retire purge, but every stop
+// later in the same alarm body — a run or day budget, the attempt limit, a retry run out —
+// went through failRun, which deleted PUBLISHING_KEY unconditionally. By then the marker held
+// the SUCCESSOR's built_at, so the old run released the new run's protection, and it ended
+// `failed` with its staging stranded (1.11 GB on the free account after 09-24's failovers).
+{
+	console.log("\n3. a replaced run wakes with its budgets spent while its successor is publishing");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+
+	await watchdog.startNightlyImport(env);
+	const old = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
+	await old.drive((phase) => phase === "bucket");
+	await old.drive((phase, n) => phase !== "bucket" || n >= 1);
+	const oldStaging = old.stagingRows();
+	old.wedged = true;
+	const t0 = Date.now();
+	await watchdog.runImportWatchdog(env, t0, 200);
+	await watchdog.runImportWatchdog(env, t0 + 10 * 60_000, 200);
+	const pointer = await watchdog.readPointer(kv);
+	const fresh = instances.get(pointer.name);
+	if (!fresh) throw new Error("no replacement instance");
+	// The replacement marks its family in flight at routing; stop it mid-run, publishing.
+	await fresh.drive((phase) => phase === "bucket");
+	const marker = await kv.get(PUBLISHING_KEY);
+	check(marker !== null, `the replacement holds the publishing marker (${marker})`);
+
+	// The old run wakes with BOTH budgets spent — its run's and the day's. Before the fix it failed
+	// on the first, releasing the successor's marker and stranding its staging.
+	const meters = JSON.parse(
+		(old.storage.db.query("SELECT value FROM meta WHERE key = 'run_meters'").all() as { value: string }[])[0]?.value ??
+			"{}",
+	) as Record<string, number>;
+	meters.rows_written = MAX_RUN_ROWS_WRITTEN + 1;
+	old.storage.db.run("UPDATE meta SET value = ? WHERE key = 'run_meters'", [JSON.stringify(meters)]);
+	const dayKey = `${DAY_PREFIX}${new Date().toISOString().slice(0, 10)}:written`;
+	old.storage.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
+		dayKey,
+		String(MAX_DAY_ROWS_WRITTEN + 1),
+	]);
+	old.wedged = false;
+	await old.drive((_phase, n) => n >= 1);
+	const next = await old.storage.getAlarm();
+	const now = new Date();
+	const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+	check((await kv.get(PUBLISHING_KEY)) === marker, "the old run left the successor's publishing marker alone");
+	check(
+		old.runState() === "running" && old.phase() === "purge_staging",
+		`it did not fail; it is retiring (state ${old.runState()}, phase ${old.phase()})`,
+	);
+	check(
+		next !== null && next >= tomorrow,
+		`over the day budget its purge waits for the next UTC day (alarm ${next === null ? "none" : new Date(next).toISOString()})`,
+	);
+
+	// Tomorrow: the day's meter resets. The spent RUN budget does not stop a retire purge.
+	old.storage.db.run("DELETE FROM meta WHERE key = ?", [dayKey]);
+	await old.drive();
+	check(old.runState() === "superseded", `it ends superseded, not failed (state ${old.runState()})`);
+	check(old.stagingRows() === 0, `its staging is purged (${oldStaging} rows → ${old.stagingRows()})`);
+	check((await kv.get(PUBLISHING_KEY)) === marker, "…and the marker is still the successor's");
+
+	await fresh.drive();
+	check(fresh.runState() === "done", `the replacement published (state ${fresh.runState()})`);
 }
 
 server.stop();
