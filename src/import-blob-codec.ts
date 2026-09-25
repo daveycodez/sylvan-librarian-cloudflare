@@ -28,7 +28,20 @@
  * this deploy, in the one run it lands in the middle of, are raw at all.
  */
 
-import { deflateSync, inflateSync } from "fflate";
+// LOADED ON FIRST USE, not at module evaluation. fflate builds its Huffman tables at load — a
+// 32,768-entry bit-reversal loop plus the fixed-code maps, run in the interpreter as module
+// top-level code — and every isolate of this script evaluates every module: the router, each
+// SearchEngine object, and the coordinator alike. Only the coordinator ever packs or unpacks a
+// staged blob. Measured on the bundled script (node 24, warm compile cache, 60 cold processes):
+// fflate was ~3.0ms of ~5.8ms of module evaluation. A `require` of a bundled module is what
+// esbuild turns into a synchronous lazy init (`__esm`/`__commonJS`), so both call sites stay
+// synchronous — they run inside sync transactions and sync wasm callbacks (see WHY SYNCHRONOUS).
+type Fflate = typeof import("fflate");
+let fflateModule: Fflate | null = null;
+function fflate(): Fflate {
+	fflateModule ??= require("fflate") as Fflate;
+	return fflateModule;
+}
 
 export const BLOB_CODEC_MAGIC = new Uint8Array([0x53, 0x4c, 0x5a, 0x31]); // "SLZ1"
 const HEADER_BYTES = 8;
@@ -54,7 +67,7 @@ export function isPackedBlob(bytes: Uint8Array): boolean {
 
 /** Compress one staged blob for storage. */
 export function packBlob(raw: Uint8Array): Uint8Array {
-	const deflated = deflateSync(raw, { level: BLOB_CODEC_LEVEL });
+	const deflated = fflate().deflateSync(raw, { level: BLOB_CODEC_LEVEL });
 	const out = new Uint8Array(HEADER_BYTES + deflated.length);
 	out.set(BLOB_CODEC_MAGIC, 0);
 	new DataView(out.buffer, out.byteOffset, out.byteLength).setUint32(4, raw.length, true);
@@ -66,7 +79,7 @@ export function packBlob(raw: Uint8Array): Uint8Array {
 export function unpackBlob(stored: Uint8Array): Uint8Array {
 	if (!isPackedBlob(stored)) return stored;
 	const rawLength = new DataView(stored.buffer, stored.byteOffset, stored.byteLength).getUint32(4, true);
-	const out = inflateSync(stored.subarray(HEADER_BYTES), { out: new Uint8Array(rawLength) });
+	const out = fflate().inflateSync(stored.subarray(HEADER_BYTES), { out: new Uint8Array(rawLength) });
 	if (out.length !== rawLength) {
 		throw new Error(`staged blob decompressed to ${out.length} bytes, header says ${rawLength}`);
 	}

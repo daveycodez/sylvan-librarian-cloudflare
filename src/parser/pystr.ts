@@ -55,29 +55,36 @@ export function fromCodePoints(cps: readonly number[]): string {
 	return out;
 }
 
-const RE_CASED = /\p{Cased}/u;
-const RE_CASE_IGNORABLE = /\p{Case_Ignorable}/u;
-const RE_ALPHA = /^\p{L}$/u;
+// Built on first use: a `u` property-class pattern costs V8 an ICU set construction when it is
+// created, and module-level ones were paid by every isolate at evaluation (~0.4ms for this file's
+// four, node 24, warm compile cache) — including the SearchEngine objects, which import this
+// module for collateName/foldAccents and never test a code point's case at all.
+let reCased: RegExp | null = null;
+let reCaseIgnorable: RegExp | null = null;
+let reAlpha: RegExp | null = null;
 
 /** Mirrors CPython's _PyUnicode_IsCased. */
 export function isCased(cp: number): boolean {
 	if (inRanges(CASED_ADD, cp)) return true;
 	if (inRanges(CASED_DEL, cp)) return false;
-	return RE_CASED.test(String.fromCodePoint(cp));
+	reCased ??= /\p{Cased}/u;
+	return reCased.test(String.fromCodePoint(cp));
 }
 
 /** Mirrors CPython's _PyUnicode_IsCaseIgnorable. */
 export function isCaseIgnorable(cp: number): boolean {
 	if (inRanges(CASE_IGNORABLE_ADD, cp)) return true;
 	if (inRanges(CASE_IGNORABLE_DEL, cp)) return false;
-	return RE_CASE_IGNORABLE.test(String.fromCodePoint(cp));
+	reCaseIgnorable ??= /\p{Case_Ignorable}/u;
+	return reCaseIgnorable.test(String.fromCodePoint(cp));
 }
 
 /** Mirrors Python str.isalpha() for a single code point. */
 export function isAlphaCp(cp: number): boolean {
 	if (inRanges(ALPHA_ADD, cp)) return true;
 	if (inRanges(ALPHA_DEL, cp)) return false;
-	return RE_ALPHA.test(String.fromCodePoint(cp));
+	reAlpha ??= /^\p{L}$/u;
+	return reAlpha.test(String.fromCodePoint(cp));
 }
 
 /** Mirrors Python str.isalpha() for a single-character string. */
@@ -231,8 +238,8 @@ export function foldAccents(value: string): string {
 	return out;
 }
 
-/** Python's `str.isalnum()` per character: category L*, Nd, Nl or No. */
-const ALNUM_RE = /[\p{L}\p{Nd}\p{Nl}\p{No}]/u;
+/** Python's `str.isalnum()` per character: category L*, Nd, Nl or No. Built on first use. */
+let alnumRe: RegExp | null = null;
 
 /**
  * Mirrors api.parsing.card_query_nodes.collate_name: every non-alphanumeric character removed.
@@ -248,9 +255,11 @@ const ALNUM_RE = /[\p{L}\p{Nd}\p{Nl}\p{No}]/u;
  * Python parser and compared byte-for-byte.
  */
 export function collateName(value: string): string {
+	alnumRe ??= /[\p{L}\p{Nd}\p{Nl}\p{No}]/u;
+	const re = alnumRe;
 	let out = "";
 	for (const ch of value) {
-		if (ALNUM_RE.test(ch)) out += ch;
+		if (re.test(ch)) out += ch;
 	}
 	return out;
 }

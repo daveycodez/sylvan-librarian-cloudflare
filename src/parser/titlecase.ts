@@ -20,27 +20,38 @@ const W = "[\\p{L}\\p{N}_]";
 // Python re's \b, spelled as lookarounds over the Unicode \w class.
 const B = `(?:(?<=${W})(?!${W})|(?<!${W})(?=${W}))`;
 
-const SMALL_WORDS = new RegExp(`^(${SMALL})$`, "iu");
-const SMALL_FIRST = new RegExp(`^([${PUNCT}]*)(${SMALL})${B}`, "iu");
-const SMALL_LAST = new RegExp(`${B}(${SMALL})[${PUNCT}]?$`, "iu");
-// Note: case-sensitive in Python (compiled without re.I).
-const SUBPHRASE = new RegExp(`([:.;?!\\-–‒—―][ ])(${SMALL})`, "gu");
-// Python '.' matches everything except \n (not JS's wider line-terminator set).
-const MAC_MC = new RegExp(`^([Mm]c|MC)(${W}[^\\n]+)`, "u");
-const MR_MRS_MS_DR = /^((m((rs?)|s))|Dr)$/iu;
-const INLINE_PERIOD = new RegExp(`${W}[.]${W}`, "iu");
-const UC_ELSEWHERE = new RegExp(`^[${PUNCT}]*?[a-zA-Z]+[A-Z]+?`, "u");
-const CAPFIRST = new RegExp(`^[${PUNCT}]*?(${W})`, "u");
-const APOS_SECOND = new RegExp(`^[dol]['‘]${W}+(?:['s]{2})?$`, "iu");
-const UC_INITIALS = /^(?:[A-Z]\.|[A-Z]\.[A-Z])+$/u;
-
-const CONSONANTS_RE = /^[bcdfghjklmnpqrstvwxz]+$/iu;
+// BUILT ON FIRST USE, not at module evaluation. Every `u`-flagged pattern over \p{L}/\p{N} — and
+// the `iu` ones most of all, which V8 case-closes through ICU at construction — cost ~0.56ms of
+// module evaluation in every isolate (node 24, warm compile cache, 60 cold processes), and only a
+// `name:`/`artist:` term ever reaches titlecase(). Same objects, same flags, built once: SUBPHRASE
+// carries `g`, and String.prototype.replace resets its lastIndex, exactly as before.
+function buildPatterns() {
+	return {
+		SMALL_WORDS: new RegExp(`^(${SMALL})$`, "iu"),
+		SMALL_FIRST: new RegExp(`^([${PUNCT}]*)(${SMALL})${B}`, "iu"),
+		SMALL_LAST: new RegExp(`${B}(${SMALL})[${PUNCT}]?$`, "iu"),
+		// Note: case-sensitive in Python (compiled without re.I).
+		SUBPHRASE: new RegExp(`([:.;?!\\-–‒—―][ ])(${SMALL})`, "gu"),
+		// Python '.' matches everything except \n (not JS's wider line-terminator set).
+		MAC_MC: new RegExp(`^([Mm]c|MC)(${W}[^\\n]+)`, "u"),
+		MR_MRS_MS_DR: /^((m((rs?)|s))|Dr)$/iu,
+		INLINE_PERIOD: new RegExp(`${W}[.]${W}`, "iu"),
+		UC_ELSEWHERE: new RegExp(`^[${PUNCT}]*?[a-zA-Z]+[A-Z]+?`, "u"),
+		CAPFIRST: new RegExp(`^[${PUNCT}]*?(${W})`, "u"),
+		APOS_SECOND: new RegExp(`^[dol]['‘]${W}+(?:['s]{2})?$`, "iu"),
+		UC_INITIALS: /^(?:[A-Z]\.|[A-Z]\.[A-Z])+$/u,
+		CONSONANTS_RE: /^[bcdfghjklmnpqrstvwxz]+$/iu,
+	};
+}
+let patterns: ReturnType<typeof buildPatterns> | null = null;
 
 /**
  * Port of titlecase.titlecase(text) with the upstream call shape:
  * no callback, preserve_blank_lines=False.
  */
 export function titlecase(text: string, smallFirstLast = true): string {
+	patterns ??= buildPatterns();
+	const P = patterns;
 	const lines = text.split(/[\r\n]+/);
 	const processed: string[] = [];
 	for (const line of lines) {
@@ -48,12 +59,12 @@ export function titlecase(text: string, smallFirstLast = true): string {
 		const words = line.split(/[\t ]/);
 		const tcLine: string[] = [];
 		for (let word of words) {
-			if (allCaps && UC_INITIALS.test(word)) {
+			if (allCaps && P.UC_INITIALS.test(word)) {
 				tcLine.push(word);
 				continue;
 			}
 
-			if (APOS_SECOND.test(word)) {
+			if (P.APOS_SECOND.test(word)) {
 				const cps = codePoints(word);
 				const c0 = fromCodePoints(cps.slice(0, 1));
 				const c1 = fromCodePoints(cps.slice(1, 2));
@@ -68,24 +79,24 @@ export function titlecase(text: string, smallFirstLast = true): string {
 				continue;
 			}
 
-			const macMatch = MAC_MC.exec(word);
+			const macMatch = P.MAC_MC.exec(word);
 			if (macMatch) {
 				tcLine.push(`${pyCapitalize(macMatch[1] as string)}${titlecase(macMatch[2] as string, true)}`);
 				continue;
 			}
 
-			if (MR_MRS_MS_DR.test(word)) {
+			if (P.MR_MRS_MS_DR.test(word)) {
 				const cps = codePoints(word);
 				word = pyUpper(fromCodePoints(cps.slice(0, 1))) + fromCodePoints(cps.slice(1));
 				tcLine.push(word);
 				continue;
 			}
 
-			if (INLINE_PERIOD.test(word) || (!allCaps && UC_ELSEWHERE.test(word))) {
+			if (P.INLINE_PERIOD.test(word) || (!allCaps && P.UC_ELSEWHERE.test(word))) {
 				tcLine.push(word);
 				continue;
 			}
-			if (SMALL_WORDS.test(word)) {
+			if (P.SMALL_WORDS.test(word)) {
 				tcLine.push(pyLower(word));
 				continue;
 			}
@@ -115,27 +126,27 @@ export function titlecase(text: string, smallFirstLast = true): string {
 			}
 
 			// A term with all consonants should be considered an acronym, unless too short.
-			if (CONSONANTS_RE.test(word) && codePoints(word).length > 2) {
+			if (P.CONSONANTS_RE.test(word) && codePoints(word).length > 2) {
 				tcLine.push(pyUpper(word));
 				continue;
 			}
 
 			// Just a normal word that needs to be capitalized (CAPFIRST is ^-anchored,
 			// so replace() touches at most one match, like Python's sub on it).
-			tcLine.push(word.replace(CAPFIRST, (m) => pyUpper(m)));
+			tcLine.push(word.replace(P.CAPFIRST, (m) => pyUpper(m)));
 		}
 
 		if (smallFirstLast && tcLine.length > 0) {
 			tcLine[0] = (tcLine[0] as string).replace(
-				SMALL_FIRST,
+				P.SMALL_FIRST,
 				(_m, g1: string, g2: string) => `${g1}${pyCapitalize(g2)}`,
 			);
 			const last = tcLine.length - 1;
-			tcLine[last] = (tcLine[last] as string).replace(SMALL_LAST, (m) => pyCapitalize(m));
+			tcLine[last] = (tcLine[last] as string).replace(P.SMALL_LAST, (m) => pyCapitalize(m));
 		}
 
 		let result = tcLine.join(" ");
-		result = result.replace(SUBPHRASE, (_m, g1: string, g2: string) => `${g1}${pyCapitalize(g2)}`);
+		result = result.replace(P.SUBPHRASE, (_m, g1: string, g2: string) => `${g1}${pyCapitalize(g2)}`);
 		processed.push(result);
 	}
 	return processed.join("\n");

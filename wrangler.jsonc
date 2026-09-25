@@ -23,6 +23,13 @@
 	// the deploy-time compile that makes script size free here. Re-measure before
 	// ever enabling it; do not assume a later workerd fixed it.
 	"compatibility_flags": [],
+	// No esbuild `keepNames`. Wrangler's default wraps every function and class in the bundle in a
+	// `__name(fn, "fn")` call — 807 `Object.defineProperty` calls at module evaluation, in every
+	// isolate: ~0.6ms of it (node 24, warm compile cache, 60 cold processes; `wrangler check
+	// startup` 2.12 -> 1.45ms active). Nothing reads a function's `.name`: wire node types and
+	// error names are explicit strings. Unminified, names survive anyway, except where esbuild
+	// renames a colliding symbol (`decoder3`), which then shows in a stack trace under that name.
+	"keep_names": false,
 	// Console lines are logged in full (`head_sampling_rate` 1, the default), on purpose: the one
 	// thing sampling would thin is the nightly coordinator's alarm chain, which is exactly the trace
 	// a hang investigation needs. INVOCATION logs are off. Measured on DeckGen for 2026-09-21:
