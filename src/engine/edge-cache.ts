@@ -32,6 +32,23 @@ function edgeCache(): Cache | null {
 }
 
 /**
+ * The bytes at `url` from this colo's cache ONLY — null on a miss, where Cache API is absent, or on
+ * any cache error. Never reads KV: for a caller that may wait on the colo copy but must not wait on
+ * a metered, cross-colo KV read (the routing filter's bounded wait, partitioned-engine.ts).
+ */
+export async function matchEdgeCache(url: string): Promise<Uint8Array | null> {
+	const cache = edgeCache();
+	if (!cache) return null;
+	try {
+		const hit = await cache.match(url);
+		return hit ? new Uint8Array(await hit.arrayBuffer()) : null;
+	} catch (err) {
+		console.warn(`edge cache read of ${url} failed: ${err}`);
+		return null;
+	}
+}
+
+/**
  * The bytes at `url` from this colo's cache, else from `load` — which are then stored for
  * `ttlSeconds`. `defer` (a `ctx.waitUntil`) takes the store off the request's critical path.
  */

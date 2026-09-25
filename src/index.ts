@@ -5,7 +5,12 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { BUILD_COMMIT } from "./build-info.gen";
 import { engineName, placeEngineStub } from "./engine/engine-namespace";
-import { livePartitionedManifest, liveRoutingFilter, PartitionedEngine } from "./engine/partitioned-engine";
+import {
+	livePartitionedManifest,
+	liveRoutingFilter,
+	PartitionedEngine,
+	routingFilterSoon,
+} from "./engine/partitioned-engine";
 import { regionHint } from "./engine/region";
 import { RemoteEngine } from "./engine/remote-engine";
 import { SearchEngine } from "./engine/search-engine-do";
@@ -131,6 +136,9 @@ async function resolveEngine(
 		// on a cold isolate and loads them in the background — the fan-out is correct
 		// without it, so nothing here waits on a 740KB KV read.
 		liveRoutingFilter(env, manifest, (p) => ctx.waitUntil(p)),
+		// On a cold isolate, a ROUTED lookup may still get them from the colo's cache — at most
+		// ROUTING_WAIT_MS, never a KV read (backlog n1).
+		() => routingFilterSoon(env, manifest, (p) => ctx.waitUntil(p)),
 	);
 }
 

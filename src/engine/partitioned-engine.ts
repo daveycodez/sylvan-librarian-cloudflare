@@ -57,7 +57,13 @@ import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedOracleId } from "./pinned-oracle";
 import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } from "./remote-engine";
 import { externalIdKey, illustrationIdKey, RoutingFilter, scryfallIdKey } from "./routing-filter";
-import { isPartitionedManifest, MANIFEST_KEY, readManifest, readRoutingFilter } from "./store-kv";
+import {
+	isPartitionedManifest,
+	MANIFEST_KEY,
+	readManifest,
+	readRoutingFilter,
+	readRoutingFilterFromColo,
+} from "./store-kv";
 import {
 	type CollectionBatch,
 	type CollectionBatchAnswer,
@@ -217,19 +223,99 @@ function beatsExactRank(a: number[], b: number[] | null): boolean {
 // external namespaces, 1.23M keys on the real corpus. It turns the bare-UUID
 // routes from an N-way fan-out into ONE RPC.
 //
-// NEVER AWAITED ON THE REQUEST PATH. The first request in a fresh isolate finds
-// nothing cached, fans out exactly as the deployment did before this existed, and
-// schedules the load; every request after it is routed. That is deliberate: a
-// 740KB KV read in front of a 6ms point lookup would trade the meter this exists
-// to fix for the latency it exists to protect, and the fan-out is always correct
-// on its own.
+// NEVER WAITED ON FOR KV. The first request in a fresh isolate finds nothing cached and starts the
+// load, which reads the colo's Cache API copy first (edge-cache.ts) and KV only on a miss. A
+// ROUTABLE request (a bare id, an address, a collection key) may wait for that first stage — the
+// colo copy, a same-machine read — for at most ROUTING_WAIT_MS; everything else, and every wait
+// that runs out, fans out exactly as before, which is always correct on its own. What must never
+// happen is a 740KB cross-colo KV read in front of a 6ms point lookup.
+//
+// Why wait at all (backlog n1): before this, the first lookups of every fresh isolate asked all ten
+// partitions — 27 of 135 single-address batches right after b3, ~100k DO calls a day.
+
+/** How long a routable request may wait for the colo's copy of the filter. */
+export const ROUTING_WAIT_MS = 20;
 
 /** Cached per isolate and keyed by BUILD, because the filter is immutable per
  * build — a new generation is a new key, not a new value under the old one.
  * `filter: null` remembers a build with no usable filter so the isolate stops
  * asking KV for it once per request. */
 let routingCache: { builtAt: string; filter: RoutingFilter | null } | null = null;
-let routingLoad: { builtAt: string; done: Promise<void> } | null = null;
+/** The load in flight: `colo` settles after the Cache API stage — with the filter on a hit, null on a
+ * miss (the KV stage then continues under `done`). */
+let routingLoad: { builtAt: string; done: Promise<void>; colo: Promise<RoutingFilter | null> } | null = null;
+
+/** Validate and cache `bytes` as `builtAt`'s filter; the parsed filter, or null when refused. */
+function adoptRoutingFilter(
+	bytes: Uint8Array,
+	builtAt: string,
+	manifest: StoreManifest,
+	source: string,
+	startedAt: number,
+): RoutingFilter | null {
+	const parsed = RoutingFilter.parse(bytes, {
+		builtAt,
+		partitionCount: manifest.partition_count as number,
+		partitionHash: manifest.partition_hash as string,
+	});
+	if ("reason" in parsed) {
+		// Validated against the manifest the way archiveOfManifest validates
+		// partition_hash: a filter that disagrees was built under another
+		// modulus and would hint at partitions that no longer mean anything.
+		console.warn(`routing filter for ${builtAt} refused (${parsed.reason}); routes fall back to the fan-out`);
+		routingCache = { builtAt, filter: null };
+		return null;
+	}
+	routingCache = { builtAt, filter: parsed.filter };
+	console.log(
+		`routing filter loaded for build ${builtAt}: ${parsed.filter.keyCount} ids, ` +
+			`${(parsed.filter.byteLength / 1024).toFixed(0)}KB, from ${source} in ${Date.now() - startedAt}ms`,
+	);
+	return parsed.filter;
+}
+
+/** Start (once per build per isolate) the two-stage load: colo cache, then KV. */
+function startRoutingLoad(
+	env: Env,
+	manifest: StoreManifest,
+	builtAt: string,
+	waitUntil: (p: Promise<unknown>) => void,
+): NonNullable<typeof routingLoad> {
+	if (routingLoad?.builtAt === builtAt) return routingLoad;
+	let settleColo: (filter: RoutingFilter | null) => void = () => {};
+	const colo = new Promise<RoutingFilter | null>((resolve) => {
+		settleColo = resolve;
+	});
+	const done = (async () => {
+		const startedAt = Date.now();
+		try {
+			const fromColo = await readRoutingFilterFromColo(manifest);
+			if (fromColo !== null) {
+				settleColo(adoptRoutingFilter(fromColo, builtAt, manifest, "the colo cache", startedAt));
+				return;
+			}
+			settleColo(null);
+			// Read-through: KV, then stored in the colo cache for the next fresh isolate.
+			const bytes = await readRoutingFilter(env, manifest);
+			if (bytes === null) {
+				// Not an error. A build published before this existed, or one whose
+				// filter build failed, simply has none — and the fan-out is the
+				// deployment's original behaviour, not a degraded mode.
+				routingCache = { builtAt, filter: null };
+				return;
+			}
+			adoptRoutingFilter(bytes, builtAt, manifest, "KV", startedAt);
+		} catch (err) {
+			settleColo(null);
+			// A failed read must not poison the cache — the next request retries.
+			console.warn(`routing filter for ${builtAt} could not be read (${err}); routes fall back to the fan-out`);
+			routingLoad = null;
+		}
+	})();
+	routingLoad = { builtAt, done, colo };
+	waitUntil(done);
+	return routingLoad;
+}
 
 /**
  * The routing filter for this request's pinned build, if the isolate already has
@@ -244,45 +330,34 @@ export function liveRoutingFilter(
 	if (!builtAt) return null;
 	const cached = routingCache;
 	if (cached?.builtAt === builtAt) return cached.filter;
-	if (routingLoad?.builtAt !== builtAt) {
-		const done = (async () => {
-			try {
-				const bytes = await readRoutingFilter(env, manifest);
-				if (bytes === null) {
-					// Not an error. A build published before this existed, or one whose
-					// filter build failed, simply has none — and the fan-out is the
-					// deployment's original behaviour, not a degraded mode.
-					routingCache = { builtAt, filter: null };
-					return;
-				}
-				const parsed = RoutingFilter.parse(bytes, {
-					builtAt,
-					partitionCount: manifest.partition_count as number,
-					partitionHash: manifest.partition_hash as string,
-				});
-				if ("reason" in parsed) {
-					// Validated against the manifest the way archiveOfManifest validates
-					// partition_hash: a filter that disagrees was built under another
-					// modulus and would hint at partitions that no longer mean anything.
-					console.warn(`routing filter for ${builtAt} refused (${parsed.reason}); routes fall back to the fan-out`);
-					routingCache = { builtAt, filter: null };
-					return;
-				}
-				routingCache = { builtAt, filter: parsed.filter };
-				console.log(
-					`routing filter loaded for build ${builtAt}: ${parsed.filter.keyCount} ids, ` +
-						`${(parsed.filter.byteLength / 1024).toFixed(0)}KB`,
-				);
-			} catch (err) {
-				// A failed read must not poison the cache — the next request retries.
-				console.warn(`routing filter for ${builtAt} could not be read (${err}); routes fall back to the fan-out`);
-				routingLoad = null;
-			}
-		})();
-		routingLoad = { builtAt, done };
-		waitUntil(done);
-	}
+	startRoutingLoad(env, manifest, builtAt, waitUntil);
 	return null;
+}
+
+/**
+ * The routing filter as soon as the colo can hand it over: the isolate's copy at once, else the
+ * load's colo-cache stage for at most `maxWaitMs`, else null (fan out). Never waits on KV.
+ */
+export async function routingFilterSoon(
+	env: Env,
+	manifest: StoreManifest,
+	waitUntil: (p: Promise<unknown>) => void,
+	maxWaitMs: number = ROUTING_WAIT_MS,
+): Promise<RoutingFilter | null> {
+	const builtAt = String(manifest.built_at ?? "");
+	if (!builtAt) return null;
+	const cached = routingCache;
+	if (cached?.builtAt === builtAt) return cached.filter;
+	const load = startRoutingLoad(env, manifest, builtAt, waitUntil);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<null>((resolve) => {
+		timer = setTimeout(() => resolve(null), maxWaitMs);
+	});
+	try {
+		return await Promise.race([load.colo, expired]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** Test hook: forget the isolate's cached routing filter. */
@@ -473,8 +548,19 @@ export class PartitionedEngine implements Engine {
 		/** The build's id→partition hints, when this isolate has them (see
 		 * liveRoutingFilter). Null means every bare-id route fans out, which is
 		 * what the deployment did before the filter existed. */
-		private readonly routing: RoutingFilter | null = null,
+		private routing: RoutingFilter | null = null,
+		/** When `routing` is null (a fresh isolate): the colo copy, waited on for at most
+		 * ROUTING_WAIT_MS by the first ROUTED lookup of this request (routingFilterSoon). */
+		private awaitRouting: (() => Promise<RoutingFilter | null>) | null = null,
 	) {}
+
+	/** Before a routed lookup: take the filter from the colo if this request can still get it. */
+	private async routed(): Promise<void> {
+		if (this.routing !== null || this.awaitRouting === null) return;
+		const wait = this.awaitRouting;
+		this.awaitRouting = null;
+		this.routing = await wait();
+	}
 
 	private get n(): number {
 		return this.manifest.partition_count as number;
@@ -522,6 +608,7 @@ export class PartitionedEngine implements Engine {
 	 * fan-out it replaced.
 	 */
 	private async hinted<T>(key: string, run: (e: RemoteEngine) => Promise<T | null>): Promise<T | null> {
+		await this.routed();
 		const hint = this.routing?.lookup(key) ?? null;
 		if (hint === null || hint >= this.n) return this.firstNonNull(run);
 		const first = await run(this.at(hint));
@@ -777,6 +864,7 @@ export class PartitionedEngine implements Engine {
 		// partitions the first round did NOT, so the total is never above N.
 		const hinted = new Map<number, string[]>();
 		let unhinted = false;
+		await this.routed();
 		if (this.routing !== null) {
 			for (const id of scryfallIds) {
 				const p = this.routing.lookup(scryfallIdKey(id));
@@ -827,6 +915,7 @@ export class PartitionedEngine implements Engine {
 	): Promise<(Record<string, unknown> | null)[]> {
 		const out: (Record<string, unknown> | null)[] = new Array(identifiers.length).fill(null);
 		if (identifiers.length === 0) return out;
+		await this.routed();
 		const targetOf = (ident: CollectionKeyIdentifier, n: number): number | null => {
 			if (ident.kind === "oracle_id") return partitionOfOracleId(ident.id, n);
 			const key =
@@ -1080,6 +1169,7 @@ export class PartitionedEngine implements Engine {
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
 		const out = emptyCollectionAnswer(batch);
+		await this.routed();
 		const hintOf = (routingKey: string, n: number): number | null => {
 			const hint = this.routing?.lookup(routingKey) ?? null;
 			return hint === null || hint >= n ? null : hint;

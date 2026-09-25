@@ -95,7 +95,7 @@
 // wake pays that decompression too, so the gap is the fetch — smaller than these
 // numbers, and not re-measured. See store-cache.ts.
 
-import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
+import { edgeCacheUrl, matchEdgeCache, readThroughEdgeCache } from "./edge-cache";
 import type { Env, StoreManifest, StoreManifestPartition } from "./types";
 import { EngineUnavailableError } from "./types";
 
@@ -1718,6 +1718,15 @@ export async function readRoutingFilter(env: Env, manifest: StoreManifest): Prom
 		const buf = await env.STORE_KV.get(key, { type: "arrayBuffer", cacheTtl: ROUTING_FILTER_CACHE_TTL });
 		return buf === null ? null : new Uint8Array(buf);
 	});
+}
+
+/**
+ * The build's routing filter from THIS colo's Cache API copy only, or null — never KV. What a
+ * routable request may briefly wait on in a fresh isolate (liveRoutingFilter's first stage).
+ */
+export async function readRoutingFilterFromColo(manifest: StoreManifest): Promise<Uint8Array | null> {
+	const key = routingFilterKeyFor(manifest);
+	return key ? matchEdgeCache(edgeCacheUrl(key)) : null;
 }
 
 /**

@@ -380,6 +380,49 @@ function filterOf(entries: { key: string; partition: number }[]): RoutingFilter 
 	return parsed.filter;
 }
 
+describe("a fresh isolate waits briefly for the colo's filter (backlog n1)", () => {
+	const CARD = "0001c639-8bd0-426f-89cb-4ca61f3cc054";
+	function waiting(answer: RoutingFilter | null, perPartition: Record<number, Record<string, unknown>> = {}) {
+		const calls: string[] = [];
+		let asked = 0;
+		const engine = new PartitionedEngine(
+			(p) => fakeRemote(p, calls, perPartition[p] ?? {}),
+			manifestOf(N),
+			async () => manifestOf(N),
+			null,
+			async () => {
+				asked += 1;
+				return answer;
+			},
+		);
+		return { engine, calls, asked: () => asked };
+	}
+
+	test("the first routed lookup takes the colo's filter and asks ONE partition", async () => {
+		const routing = filterOf([{ key: scryfallIdKey(CARD), partition: 2 }]);
+		const { engine, calls, asked } = waiting(routing, { 2: { cardById: { name: "Hit" } } });
+		expect(await engine.scryfallCardById(CARD, "https://x")).toEqual({ name: "Hit" });
+		expect(calls).toEqual(["scryfallCardById:2"]);
+		// Once per request: a second routed lookup reuses what the first one got.
+		await engine.scryfallCardById(CARD, "https://x");
+		expect(asked()).toBe(1);
+	});
+
+	test("an empty wait (the colo had no copy in time) fans out exactly as before, and is not retried", async () => {
+		const { engine, calls, asked } = waiting(null);
+		await engine.scryfallCardById(CARD, "https://x");
+		expect(calls.length).toBe(N);
+		await engine.scryfallCardById(CARD, "https://x");
+		expect(asked()).toBe(1);
+	});
+
+	test("a route the filter cannot help never waits", async () => {
+		const { engine, asked } = waiting(filterOf([]));
+		await engine.searchCardsAsJson(OPTS, "rows");
+		expect(asked()).toBe(0);
+	});
+});
+
 describe("the routing filter collapses the bare-id fan-out", () => {
 	const CARD = "0001c639-8bd0-426f-89cb-4ca61f3cc054";
 	const ART = "7eb65d52-deea-4693-9111-9f95a3b0c915";
