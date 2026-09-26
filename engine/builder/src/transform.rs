@@ -1363,11 +1363,14 @@ fn funny_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
 ///
 /// MEASURED COVERAGE (2026-08-16, the 114,068 English printings of the all_cards bulk against
 /// api.scryfall.com's own `is:extra`, 10,818 printings): this class reaches 10,732 — 45 short and
-/// none over. The 45 are Arena-only duplicate printings with no signal on them at all (hbg 18,
-/// j21 16, ydmu 9, ybro 1) plus one Secret Lair poster; the same field-by-field diff that cleared
-/// `FUNNY_EXTRA_SETS` finds nothing separating them from their own set-mates either, so they are
-/// left rather than enumerated one id at a time. Before the funny/digital/silver-promo/Stickers
-/// rules were added it reached 10,482 with 308 misses and 2 false positives.
+/// none over. The 45 were Arena-only duplicate printings (hbg 18, j21 16, ydmu 9, ybro 1) plus one
+/// Secret Lair poster; the same field-by-field diff that cleared `FUNNY_EXTRA_SETS` found nothing
+/// on the printing separating the Arena ones from their own set-mates. Before the
+/// funny/digital/silver-promo/Stickers rules were added it reached 10,482 with 308 misses and 2
+/// false positives.
+///
+/// THE ARENA DUPLICATES DID HAVE A SIGNAL (2026-09-26), in the one field that diff had waved off
+/// as "scan quality": see the Arena-duplicate rule in the body. With it this class reaches all 44.
 ///
 /// THE "ONE SECRET LAIR POSTER" IS NO LONGER AMONG THEM (2026-08-17). It was sld/1969
 /// `Mechtitan // Mechtitan`, and it did have a signal — the type line the "Card"/"Token" rule
@@ -1410,6 +1413,41 @@ fn extras_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     // their own — Alchemy's playable cards are legal in alchemy/historic, and paper's never-legal
     // conspiracies are ordinary results — so it is the conjunction that carries the class.
     if card.get("digital").and_then(Value::as_bool) == Some(true) && never_legal {
+        return Ok(true);
+    }
+    // AN ARENA DUPLICATE NOBODY OPENS: a digital REPRINT, in an Alchemy or digital draft set, that
+    // no booster carries and that Scryfall holds only a LOW-RES render of. These are the cards
+    // Arena conjures or drafts from a spellbook — ydmu's Power Nine (conjured by the Collectors),
+    // hbg's 902-928 sea creatures and Lightning Bolt, j21's 777-792, and the one or two paper
+    // reprints each newer y-set tacks on after its 30 (ybro/31 History of Benalia, and since the
+    // 2026-08-16 bulk yeoe/41 Flametongue Kavu, ylci/31, ywoe/31, yone/31, ydft/31, yecl/31-33,
+    // ysos/31-32). They are legal where the card is (hbg/911 Ruin Crab is historic-legal), so the
+    // never-legal rule above cannot see them, and they leaked into every default search:
+    // `!"Black Lotus" is:digital&unique=prints` answered vma, ydmu/35 and prm here against
+    // Scryfall's vma and prm.
+    //
+    // THE IMAGE IS THE SIGNAL, AND THAT IS A MEASUREMENT, NOT A CHOICE. Arena's collectible flag is
+    // not in the bulk data; every other field was diffed between the 38 Alchemy-set extras and the
+    // 225 Alchemy-set reprints Scryfall SERVES (api.scryfall.com, 2026-09-26) and overlaps. The 20
+    // served ones no booster carries either — yeoe/31-40's checklands, yotj's Collectors, ymkm/4,
+    // ymkm/11, yblb/24, ywoe/11, ydft/27 — are all `highres_scan`; all 38 extras are `lowres`.
+    // Over the whole 2026-08-16 all_cards bulk the rule fires on 45 printings: the 44 Arena
+    // duplicates this function's coverage note used to call signal-less (hbg 18, j21 16, ydmu 9,
+    // ybro 1) and hbg/A-87 A-Dawnbringer Cleric, a rebalanced card Scryfall has since withdrawn.
+    // `lowres` is not the class on its own — MTGO promos and anthology reprints are served lowres
+    // by the thousand (5,425 digital non-booster reprints are served) — which is why the set type
+    // and `reprint` bound it.
+    //
+    // THE FAILURE MODE, recorded: a newly released collectible y-set reprint whose render is still
+    // `lowres` is hidden until Scryfall scans it and a nightly rebuild sees the new status; a
+    // conjured card that someday gets a high-res render leaks back, as all of them did before.
+    let set_type = s(card, "set_type");
+    if card.get("digital").and_then(Value::as_bool) == Some(true)
+        && card.get("reprint").and_then(Value::as_bool) == Some(true)
+        && card.get("booster").and_then(Value::as_bool) == Some(false)
+        && s(card, "image_status").as_deref() == Some("lowres")
+        && matches!(set_type.as_deref(), Some("alchemy" | "draft_innovation"))
+    {
         return Ok(true);
     }
     // A SILVER-BORDERED PROMO: an Un-card handed out outside its own set (Arena League, judge

@@ -1736,11 +1736,13 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      Attractions and artifact lands (`is:commander` 3,766 here against api.scryfall.com's 3,731,
  *      `is:spell` 32,446 against 32,327). The same pass: the meld role falls back to the card's own
  *      NAME when `all_parts` lists a sibling printing's ids (`is:meldresult&unique=prints` 20
- *      against 24).
+ *      against 24). And Arena's conjured duplicates (ydmu's Power Nine, hbg 902-928, j21 777-792,
+ *      the y-sets' paper reprints after 30) join the extras class on the one field that separates
+ *      them, a low-res render (`!"Black Lotus" is:digital&unique=prints` was vma, ydmu/35, prm).
  *
  *      GENERATION-ONLY. Every change is a value in a column the archive already has — tag words in
- *      `card_is_tags` — so a generation-54 store still LOADS, and would answer `is:commander` from
- *      no row at all once the parser stops rewriting it. This constant is what makes store-age.ts
+ *      `card_is_tags`, a different `extra` verdict — so a generation-54 store still LOADS, and would
+ *      answer `is:commander` from no row at all once the parser stops rewriting it. This constant is what makes store-age.ts
  *      rebuild; the format, and so the per-format manifest key, stays 2026092601 and the rebuild
  *      replaces the store in place.
  */

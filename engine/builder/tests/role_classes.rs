@@ -1,5 +1,5 @@
-//! Who can lead a deck, and what is cast — through the whole native pipeline: Scryfall JSON →
-//! transform → finalize → store → query. Real card JSON from the
+//! Who can lead a deck, what is cast, and which Arena duplicates are extras — through the whole
+//! native pipeline: Scryfall JSON → transform → finalize → store → query. Real card JSON from the
 //! 2026-08-16 bulk, one printing per shape the old rewrites got wrong, each answer pinned against
 //! api.scryfall.com (2026-09-26):
 //!
@@ -15,7 +15,9 @@
 //!     bans (Tajic, Legion's Valor);
 //!   - `is:oathbreaker` reads the front face (Kytheon's and Valki's planeswalkers are backs);
 //!   - `is:spell` refuses Attractions and artifact lands and keeps a modal spell // land, a
-//!     pre-Sixth-Edition `Summon Jaguar` and a meld result.
+//!     pre-Sixth-Edition `Summon Jaguar` and a meld result;
+//!   - Arena's conjured duplicates (ydmu/35 Black Lotus, hbg/911 Ruin Crab) are extras, a served
+//!     y-set reprint (yeoe/31 Clifftop Retreat) is not.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -150,4 +152,16 @@ fn each_role_class_answers_the_printings_scryfall_does() {
     // The meld roles, including the two printings whose `all_parts` names a sibling's ids.
     assert_eq!(addresses(&store, &is("meldresult")), sorted(&["fin/99b", "inr/14b"]));
     assert_eq!(addresses(&store, &is("meldpart")), sorted(&["fin/211", "inr/24"]));
+}
+
+#[test]
+fn arena_conjured_duplicates_are_extras_and_a_served_reprint_is_not() {
+    let store = store();
+    let extras = addresses(&store, &is("extra"));
+    assert!(extras.contains(&"ydmu/35".to_owned()), "ydmu/35 Black Lotus is extra on Scryfall");
+    assert!(extras.contains(&"hbg/911".to_owned()), "hbg/911 Ruin Crab is extra on Scryfall");
+    assert!(!extras.contains(&"yeoe/31".to_owned()), "yeoe/31 Clifftop Retreat is served on Scryfall");
+    // And the gate's other side: Tajic (ymkm/28) and Davriel (j21/15) are digital and served.
+    assert!(!extras.contains(&"ymkm/28".to_owned()));
+    assert!(!extras.contains(&"j21/15".to_owned()));
 }
